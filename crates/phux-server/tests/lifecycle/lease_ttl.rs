@@ -7,23 +7,13 @@
 use std::time::Duration;
 
 use phux_protocol::ids::ResourceId;
-use phux_protocol::wire::frame::{
-    AgentEvent, Command, CommandResult, ControlAction, FrameKind, InputMode,
-};
-use phux_server_testkit::{command, recv_typed};
+use phux_protocol::wire::frame::{AgentEvent, Command, CommandResult, ControlAction, InputMode};
+use phux_server_testkit::command;
 use tokio::net::UnixStream;
-use tokio::time::timeout;
 
-use crate::common::{Seen, Server, attach, find, next_event, state, subscribe};
-
-async fn start() -> (Server, UnixStream, ResourceId, UnixStream) {
-    let server = Server::start(Some("demo"), |_| {});
-    let mut owner = server.connect().await;
-    let pane = attach(&mut owner, "demo").await.focused_resource;
-    let mut events = server.connect().await;
-    subscribe(&mut events, 1, None, Some(u64::MAX)).await;
-    (server, owner, pane, events)
-}
+use crate::common::{
+    assert_no_control, find, journaled_demo as start, next_control as control, state,
+};
 
 async fn acquire(
     stream: &mut UnixStream,
@@ -45,36 +35,6 @@ async fn release(stream: &mut UnixStream, request_id: u32, pane: &ResourceId) {
         terminal_id: pane.clone(),
     };
     assert_eq!(command(stream, request_id, cmd).await, CommandResult::Ok);
-}
-
-/// The next `TERMINAL_CONTROL { action }`: its holder and actor.
-async fn control(events: &mut UnixStream, action: ControlAction) -> AgentEvent {
-    next_event(
-        events,
-        |e: &Seen| matches!(e.event, AgentEvent::TerminalControl { action: a, .. } if a == action),
-    )
-    .await
-    .event
-}
-
-/// No `TERMINAL_CONTROL` at all within `quiet` (a timing assertion).
-async fn assert_no_control(events: &mut UnixStream, quiet: Duration) {
-    let found = timeout(quiet, async {
-        loop {
-            if let (
-                _,
-                FrameKind::Event {
-                    event: event @ AgentEvent::TerminalControl { .. },
-                    ..
-                },
-            ) = recv_typed(events).await
-            {
-                return event;
-            }
-        }
-    })
-    .await;
-    assert!(found.is_err(), "unexpected TERMINAL_CONTROL: {found:?}");
 }
 
 #[test]
@@ -156,7 +116,7 @@ fn a_released_or_replaced_lease_never_expires_a_later_one() {
         control(&mut events, ControlAction::Released).await;
         acquire(&mut driver, 3, &pane, InputMode::Cooperative, 60_000).await;
         control(&mut events, ControlAction::Acquired).await;
-        assert_no_control(&mut events, Duration::from_millis(800)).await;
+        assert_no_control(&mut events, Duration::from_millis(800), |_| true).await;
 
         acquire(&mut driver, 4, &pane, InputMode::Cooperative, 300).await;
         control(&mut events, ControlAction::Acquired).await;
@@ -164,7 +124,7 @@ fn a_released_or_replaced_lease_never_expires_a_later_one() {
         control(&mut events, ControlAction::Acquired).await;
         acquire(&mut driver, 6, &pane, InputMode::Cooperative, 60_000).await;
         control(&mut events, ControlAction::Acquired).await;
-        assert_no_control(&mut events, Duration::from_millis(800)).await;
+        assert_no_control(&mut events, Duration::from_millis(800), |_| true).await;
 
         drop((owner, events, driver));
         server.stop().await;

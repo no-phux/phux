@@ -8,11 +8,4 @@ pub struct WireGlobalMetadata {
     pub value: Option<Vec<u8>>,
 }
 
-impl From<phux_client_runtime::control::GlobalMetadata> for WireGlobalMetadata {
-    fn from(value: phux_client_runtime::control::GlobalMetadata) -> Self {
-        Self {
-            key: value.key,
-            value: value.value,
-        }
-    }
-}
+mirror_from!(phux_client_runtime::control::GlobalMetadata => WireGlobalMetadata { key, value });

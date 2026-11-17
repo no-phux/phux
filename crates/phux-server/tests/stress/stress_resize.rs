@@ -1,17 +1,11 @@
 //! Resize storms against a live PTY: a panicked actor surfaces as a
 //! `wait_until` timeout or as the `run_async` error the teardown unwraps.
 
-use phux_server::LaunchCommand as CommandBuilder;
-
 use phux_server_testkit::builder::E2eBuilder;
 use phux_server_testkit::run_local;
 use phux_server_testkit::tracing_capture::TracingCapture;
 
-fn sh(script: &str) -> CommandBuilder {
-    let mut cmd = CommandBuilder::new("/bin/sh");
-    cmd.args(["-c", script]);
-    cmd
-}
+use phux_server_testkit::sh;
 
 /// Sane drag sizes then degenerate ones (`0x0`, 1-cell, 1000x1000), sent
 /// back to back, must leave the PTY at the last requested geometry.

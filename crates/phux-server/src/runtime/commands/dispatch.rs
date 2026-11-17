@@ -38,10 +38,10 @@ pub(super) async fn dispatch_local(
     {
         return match crate::runtime::apps::app_serving(state, terminal_id) {
             Some(app) => app.command(ctx, command, claim).await,
-            None => CommandResult::Error {
-                code: ErrorCode::InvalidCommand,
-                message: "command not supported by this server".to_owned(),
-            },
+            None => CommandResult::error(
+                ErrorCode::InvalidCommand,
+                "command not supported by this server",
+            ),
         };
     }
 
@@ -137,10 +137,10 @@ pub(super) async fn dispatch_local(
             .await
         }
         // A known-but-unwired tag of the `#[non_exhaustive]` catalog (SPEC §5).
-        _ => CommandResult::Error {
-            code: ErrorCode::InvalidCommand,
-            message: "command not supported by this server".to_owned(),
-        },
+        _ => CommandResult::error(
+            ErrorCode::InvalidCommand,
+            "command not supported by this server",
+        ),
     }
 }
 
@@ -153,8 +153,9 @@ async fn dispatch_attach_resource(
     // A deferring kind's content subscription waits for STREAM_BIND. Kind
     // resolution precedes routing.
     let kind = ctx.state.with(|s| {
-        s.resource_from_wire(terminal_id)
-            .and_then(|core| s.resource_handle(core))
+        s.idspace
+            .resource_from_wire(terminal_id)
+            .and_then(|core| s.resources().handle(core))
             .map(|handle| handle.kind)
     });
     if let Some(kind) = kind
@@ -162,8 +163,7 @@ async fn dispatch_attach_resource(
     {
         return undecodable_kind(crate::id_bridge::wire_kind(kind));
     }
-    let defers =
-        kind.is_some_and(|kind| crate::runtime::apps::app_for(kind).defers_stream_bootstrap());
+    let defers = kind.is_some_and(crate::runtime::apps::defers_stream_bootstrap);
     if ctx.defer_subscription && defers {
         subscribe_deferred_attach(&ctx.state, ctx.client_id, terminal_id, &ctx.out_tx, role).await
     } else {

@@ -24,15 +24,14 @@ path = "src/main.rs"
 # MCP only uses control/transport APIs. Since ADR-0100 the TUI is its own
 # crate (`phux-tui`), so depending on `phux-client` cannot pull in the chrome
 # or the native replica engine; `bun tools/main.ts build-features-check` still pins
-# that no `ratatui` reaches this graph. Protocol server conversions still use
-# libghostty.
+# that no `ratatui` reaches this graph.
 # The surface tools return PNGs as base64 MCP image content.
 base64.workspace = true
 phux-client.workspace = true
 phux-client-runtime.workspace = true
 phux-config.workspace = true
 phux-plugin.workspace = true
-phux-protocol = { workspace = true, features = ["server"] }
+phux-protocol.workspace = true
 # Mail and claims call this host's work store in-process.
 phux-work.workspace = true
 serde.workspace = true

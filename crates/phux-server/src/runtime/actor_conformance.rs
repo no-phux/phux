@@ -6,8 +6,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use phux_core::PrincipalId;
 use phux_protocol::ids::{ResourceId as WireResourceId, ServerInstance};
-use phux_protocol::policy::{PeerIdentity, TransportType};
-use phux_protocol::scope::TerminalScopeSet;
+use phux_protocol::policy::TransportType;
 use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, ControlAction, ErrorCode, FrameKind, InputMode, LiveTarget,
     Refusal, TerminateMode,
@@ -20,11 +19,12 @@ use super::test_support::{
     Connection, acquire, alpha_world, encode, hello, local, owner_peer, spawn_connection,
     wait_until, workload_identity,
 };
-use crate::auth::{AuthenticatedCredential, ConnectionIdentity};
+use crate::auth::ConnectionIdentity;
 use crate::delegation::{DelegatedCredential, DelegationRequest};
-use crate::policy::{ConnectionGrant, GrantFuture, PolicyEngine, PolicyError};
+use crate::policy::ConnectionGrant;
+use crate::policy::testing::{FnPolicy, parse_scopes, scoped_grant};
 use crate::runtime::test_support::error_code;
-use crate::state::{ClientId, ServerState, SharedState};
+use crate::state::{ClientId, SharedState};
 
 /// The automation credential the non-human, non-delegated cases use.
 const AUTOMATION: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -36,34 +36,19 @@ const PHONE: &str = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 /// gets every verb at Global as itself: a non-human principal whose grant
 /// does not stand in the way, so only lease precedence decides. [`PHONE`]
 /// is a human principal, as a paired device's registry record makes it.
-#[derive(Debug)]
-struct Automation;
-
-impl PolicyEngine for Automation {
-    fn authorize_hello<'a>(
-        &'a self,
-        peer_identity: &'a PeerIdentity,
-        credential: Option<&'a AuthenticatedCredential>,
-    ) -> GrantFuture<'a> {
-        let grant = if matches!(peer_identity.transport, TransportType::UnixSocket) {
-            Ok(ConnectionGrant::owner())
-        } else {
-            let phone = credential.is_some_and(|credential| credential.id == PHONE);
-            ConnectionGrant::scoped(
-                TerminalScopeSet::parse_all(&["*@global"]).unwrap(),
-                credential.map(|credential| credential.id.clone()),
-            )
-            .map(|grant| {
-                if phone {
-                    grant.with_kind(phux_core::actor::PrincipalKind::Human)
-                } else {
-                    grant
-                }
-            })
-            .map_err(|error| PolicyError::Internal(error.to_string()))
-        };
-        Box::pin(async move { grant })
-    }
+fn automation() -> FnPolicy {
+    let everything = parse_scopes(&["*@global"]);
+    FnPolicy::new(move |peer_identity, credential| {
+        if matches!(peer_identity.transport, TransportType::UnixSocket) {
+            return Ok(ConnectionGrant::owner());
+        }
+        let grant = scoped_grant(&everything, credential)?;
+        let phone = credential.is_some_and(|credential| credential.id == PHONE);
+        if phone {
+            return Ok(grant.with_kind(phux_core::actor::PrincipalKind::Human));
+        }
+        Ok(grant)
+    })
 }
 
 /// A server with one session, `alpha`, whose pane has a live (no-PTY)
@@ -85,7 +70,7 @@ impl Drop for Fixture {
 impl Fixture {
     fn new() -> Self {
         let root = CancellationToken::new();
-        let (state, alpha, alpha_core) = alpha_world(Arc::new(Automation), &root);
+        let (state, alpha, alpha_core) = alpha_world(Arc::new(automation()), &root);
         let alpha_session = state.with(|s| s.registry().session_of(alpha_core).unwrap());
         Self {
             state,
@@ -97,10 +82,10 @@ impl Fixture {
     }
 
     fn connect(&self, identity: ConnectionIdentity) -> Connection {
-        let client = self.state.with_mut(ServerState::new_client_id);
+        let client = self.state.with_mut(|s| s.clients_mut().new_client_id());
         let transport = identity.peer.transport;
         self.state
-            .with_mut(|s| s.set_connection_identity(client, identity));
+            .with_mut(|s| s.clients_mut().set_connection_identity(client, identity));
         spawn_connection(&self.state, client, transport, &self.root, None, false)
     }
 
@@ -148,7 +133,7 @@ impl Fixture {
     }
 
     fn lease_holder(&self) -> Option<ClientId> {
-        self.state.with(|s| s.input_lease_holder(self.alpha_core))
+        self.state.with(|s| s.leases().holder(self.alpha_core))
     }
 }
 

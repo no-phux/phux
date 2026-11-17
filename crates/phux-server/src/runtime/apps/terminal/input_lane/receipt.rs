@@ -43,12 +43,12 @@ impl Future for InputReceipt {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match &mut self.state {
-            ReceiptState::Ready(result) => {
-                Poll::Ready(result.take().unwrap_or_else(|| CommandResult::Error {
-                    code: ErrorCode::InternalError,
-                    message: "input receipt polled after completion".to_owned(),
-                }))
-            }
+            ReceiptState::Ready(result) => Poll::Ready(result.take().unwrap_or_else(|| {
+                CommandResult::error(
+                    ErrorCode::InternalError,
+                    "input receipt polled after completion",
+                )
+            })),
             ReceiptState::Waiting { result, failure } => match Pin::new(result).poll(cx) {
                 Poll::Pending => Poll::Pending,
                 Poll::Ready(Ok(result)) => Poll::Ready(result),
@@ -61,10 +61,7 @@ impl Future for InputReceipt {
 impl ReceiptFailure {
     fn result(&self) -> CommandResult {
         match self {
-            Self::Internal(message) => CommandResult::Error {
-                code: ErrorCode::InternalError,
-                message: (*message).to_owned(),
-            },
+            Self::Internal(message) => CommandResult::error(ErrorCode::InternalError, *message),
             Self::DeliveryUnknown => delivery_unknown(),
             Self::DeliveryUnknownAndCache {
                 cache,

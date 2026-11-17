@@ -11,6 +11,8 @@
 
 use std::process::{Command, Stdio};
 
+use crate::common::Out;
+
 use tempfile::TempDir;
 
 include!("output_hygiene/support.rs");

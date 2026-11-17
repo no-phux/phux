@@ -77,7 +77,8 @@ impl ServerState {
     /// `false` for unknown or satellite ids.
     #[must_use]
     pub(crate) fn resource_has_live_session(&self, wire: &phux_protocol::ids::ResourceId) -> bool {
-        self.resource_from_wire(wire)
+        self.idspace
+            .resource_from_wire(wire)
             .is_some_and(|core| self.has_live_agent_session_child(core))
     }
 
@@ -90,7 +91,8 @@ impl ServerState {
             .children(parent)
             .into_iter()
             .any(|child| {
-                self.resource_handle(child)
+                self.resources()
+                    .handle(child)
                     .and_then(|handle| {
                         handle.companion::<crate::resource::companions::LiveStream>()
                     })
@@ -176,7 +178,7 @@ impl ServerState {
                     .entry(resource)
                     .or_insert(attribution);
             }
-            self.detach_resource_actor(resource);
+            self.resources_mut().detach_actor(resource);
             closed.push(resource);
         }
         closed
@@ -214,9 +216,9 @@ impl ServerState {
     /// persistent sessions, survive in the store and do not hold it up.
     #[must_use]
     pub(crate) fn self_exit_due(&self) -> bool {
-        self.has_served_client()
+        self.lifecycle().has_served_client()
             && self.exit_watches.is_empty()
-            && self.idle_since().is_some()
+            && self.lifecycle().idle_since().is_some()
             && !self.has_live_activation()
     }
 }
@@ -318,12 +320,12 @@ mod tests {
 
         for resource in [grandparent, child, grandchild] {
             assert!(
-                state.resource_handle(resource).is_none(),
+                state.resources().handle(resource).is_none(),
                 "{resource:?} must leave the resource table with its registry entry"
             );
             assert!(state.registry().record(resource).is_none());
         }
-        assert!(state.resource_ids().is_empty());
+        assert!(state.resources().resource_ids().is_empty());
         assert!(
             tokens.iter().all(CancellationToken::is_cancelled),
             "no descendant engine may keep running unreachable"

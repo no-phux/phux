@@ -13,13 +13,9 @@ fn rotation_has_bounded_ab_overlap_and_preserves_identity() {
     .unwrap();
     let first_secret = secret(&first);
     let now = Utc::now() + Duration::seconds(1);
-    let second = rotate_credential_at(
-        &path,
-        &first.id,
-        Duration::minutes(5),
-        now,
-        AtomicWriteFault::None,
-    )
+    let second = with_lock(&path, |held| {
+        rotate_credential_at(&path, &first.id, Duration::minutes(5), now, held)
+    })
     .unwrap();
     let second_secret = secret(&second);
     let store = TokenStore::load(&path).unwrap();
@@ -60,13 +56,9 @@ fn rotation_preserves_absolute_expiry_for_new_and_overlap_generations() {
     )
     .unwrap();
     let first_secret = secret(&first);
-    let second = rotate_credential_at(
-        &path,
-        &first.id,
-        Duration::minutes(5),
-        now,
-        AtomicWriteFault::None,
-    )
+    let second = with_lock(&path, |held| {
+        rotate_credential_at(&path, &first.id, Duration::minutes(5), now, held)
+    })
     .unwrap();
     let second_secret = secret(&second);
     let store = TokenStore::load(&path).unwrap();
@@ -92,13 +84,9 @@ fn rotation_rejects_an_already_expired_credential_without_changing_the_store() {
     .unwrap();
     let before = fs::read(&path).unwrap();
 
-    let result = rotate_credential_at(
-        &path,
-        &first.id,
-        Duration::minutes(5),
-        now,
-        AtomicWriteFault::None,
-    );
+    let result = with_lock(&path, |held| {
+        rotate_credential_at(&path, &first.id, Duration::minutes(5), now, held)
+    });
 
     assert!(matches!(result, Err(AuthError::CredentialExpired(id)) if id == first.id));
     assert_eq!(fs::read(&path).unwrap(), before);
@@ -107,16 +95,17 @@ fn rotation_rejects_an_already_expired_credential_without_changing_the_store() {
 
 #[test]
 fn fault_injected_rotation_is_old_or_new_at_each_atomic_commit_stage() {
-    for fault in [
-        AtomicWriteFault::BeforeTempSync,
-        AtomicWriteFault::AfterTempSyncBeforeRename,
+    for stage in [
+        WriteFault::BeforeTempSync,
+        WriteFault::AfterTempSyncBeforeRename,
     ] {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("credentials");
         let first =
             mint_credential(&path, None, &[TERMINAL_CONTROL_SCOPE.to_owned()], None).unwrap();
-        let result = with_store_lock(&path, || {
-            rotate_credential_at(&path, &first.id, Duration::minutes(5), Utc::now(), fault)
+        let _armed = fault::inject(stage);
+        let result = with_lock(&path, |held| {
+            rotate_credential_at(&path, &first.id, Duration::minutes(5), Utc::now(), held)
         });
         assert!(result.is_err());
         let store = TokenStore::load(&path).unwrap();
@@ -131,14 +120,9 @@ fn fault_injected_rotation_is_old_or_new_at_each_atomic_commit_stage() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("credentials");
     let first = mint_credential(&path, None, &[TERMINAL_CONTROL_SCOPE.to_owned()], None).unwrap();
-    let rotated = with_store_lock(&path, || {
-        rotate_credential_at(
-            &path,
-            &first.id,
-            Duration::minutes(5),
-            Utc::now(),
-            AtomicWriteFault::AfterRenameBeforeDirectorySync,
-        )
+    let _armed = fault::inject(WriteFault::AfterRenameBeforeDirectorySync);
+    let rotated = with_lock(&path, |held| {
+        rotate_credential_at(&path, &first.id, Duration::minutes(5), Utc::now(), held)
     })
     .unwrap();
     assert!(!rotated.is_durable(), "post-rename ambiguity is explicit");

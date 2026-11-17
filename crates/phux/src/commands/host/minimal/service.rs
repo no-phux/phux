@@ -54,7 +54,7 @@ impl WatchPlan {
             label: label(),
             argv,
             env,
-            log: phux_server::telemetry::state_dir()
+            log: phux_config::instance::state_dir()
                 .join("minimal")
                 .join("watch.log"),
         })

@@ -90,10 +90,6 @@ pub(crate) const METADATA_WRITE: &str = "SET_METADATA (ordinary key)";
 /// row the classifier gives one ([`phux_protocol::kinds::command_rule`]).
 pub(crate) const PERF_READ: &str = "GET_PERF (no reset)";
 
-/// Why an agent read stays on the CLI: the detector projection.
-const DETECTOR: &str = "the detector projection (manifest replay over the pane's screen, plus \
-     `[[plugins]]` agent declarations) is built in the phux binary, not phux-client";
-
 /// Why the `AgentSession` verbs stay on the CLI.
 const AGENT_SESSION: &str = "the Terminal-to-AgentSession resolution and the result documents \
      are assembled in the CLI command (`commands/agent/resource_session.rs`)";
@@ -319,22 +315,19 @@ pub(crate) const TOOLS: &[Row] = &[
         exec: Exec::InProcess,
         touches: Touches::LocalRead,
     },
-    residue(
+    cli(
         "phux_agent_list",
         "agent list",
-        DETECTOR,
         Touches::Wire(&[RESOLVE, "GET_METADATA", "GET_SCREEN"]),
     ),
-    residue(
+    cli(
         "phux_agent_show",
         "agent show",
-        DETECTOR,
         Touches::Wire(&[RESOLVE, "GET_METADATA", "GET_SCREEN"]),
     ),
-    residue(
+    cli(
         "phux_agent_explain",
         "agent explain",
-        DETECTOR,
         Touches::Wire(&[RESOLVE, "GET_METADATA", "GET_SCREEN"]),
     ),
     cli(
@@ -350,8 +343,8 @@ pub(crate) const TOOLS: &[Row] = &[
     residue(
         "phux_agent_wait",
         "agent wait",
-        "the result document's `detection` field is the detector projection, which is built in \
-         the phux binary, not phux-client",
+        "the transition wait, its exit-124 timeout document, and the result document are \
+         assembled in the CLI command (`commands/agent/wait.rs`)",
         Touches::Wire(&[
             RESOLVE,
             "SUBSCRIBE_EVENTS",
@@ -442,12 +435,7 @@ pub(crate) const TOOLS: &[Row] = &[
         "the health checks are the CLI's; a second copy could disagree with `phux doctor`",
         Touches::Wire(&[RESOLVE]),
     ),
-    residue(
-        "phux_whoami",
-        "whoami",
-        "the `whoami` feature check and the refusal document are the CLI command's",
-        Touches::Wire(&[WHOAMI_KEY]),
-    ),
+    cli("phux_whoami", "whoami", Touches::Wire(&[WHOAMI_KEY])),
     residue(
         "phux_perf",
         "perf",

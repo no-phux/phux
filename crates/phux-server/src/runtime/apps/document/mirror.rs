@@ -18,13 +18,6 @@ const LIST_TIMEOUT: Duration = Duration::from_secs(10);
 
 const NO_RUNNER: &str = "on macOS Rune runs the mirrors, and it is not open on this Mac: open Rune here, then try again";
 
-fn refuse(code: ErrorCode, message: impl Into<String>) -> CommandResult {
-    CommandResult::Error {
-        code,
-        message: message.into(),
-    }
-}
-
 fn json(value: &serde_json::Value) -> CommandResult {
     CommandResult::OkWith(CommandValue::Json(value.to_string()))
 }
@@ -35,13 +28,13 @@ pub(crate) async fn handle(state: &SharedState, op: MirrorOp) -> CommandResult {
     match op {
         MirrorOp::Targets if macos => state.with(|s| {
             s.mirror_demand().fresh_targets(Instant::now()).map_or_else(
-                || refuse(ErrorCode::Unavailable, NO_RUNNER),
+                || CommandResult::error(ErrorCode::Unavailable, NO_RUNNER),
                 |targets| json(&serde_json::json!({ "targets": targets })),
             )
         }),
         MirrorOp::Targets => match list_here(state).await {
             Ok(targets) => json(&serde_json::json!({ "targets": targets })),
-            Err(message) => refuse(ErrorCode::Unavailable, message),
+            Err(message) => CommandResult::error(ErrorCode::Unavailable, message),
         },
         MirrorOp::Start { target, jpeg } => start(state, target, jpeg).await,
         MirrorOp::Stop { target } => stop(state, &target),
@@ -53,7 +46,9 @@ pub(crate) async fn handle(state: &SharedState, op: MirrorOp) -> CommandResult {
 pub(crate) fn provide(state: &SharedState, targets: &str) -> CommandResult {
     let targets: serde_json::Value = match serde_json::from_str(targets) {
         Ok(value @ serde_json::Value::Array(_)) => value,
-        _ => return refuse(ErrorCode::InvalidCommand, "targets must be a JSON array"),
+        _ => {
+            return CommandResult::error(ErrorCode::InvalidCommand, "targets must be a JSON array");
+        }
     };
     let mirrors = state.with_mut(|s| {
         let demand = s.mirror_demand_mut();
@@ -76,7 +71,7 @@ fn want(state: &SharedState, target: &str, jpeg: bool) -> Result<String, Command
     state.with_mut(|s| {
         let demand = s.mirror_demand_mut();
         if cfg!(target_os = "macos") && demand.fresh_targets(Instant::now()).is_none() {
-            return Err(refuse(ErrorCode::Unavailable, NO_RUNNER));
+            return Err(CommandResult::error(ErrorCode::Unavailable, NO_RUNNER));
         }
         let known = demand.config.iter().any(|e| e.session_name() == name)
             || demand.started.contains_key(&name);
@@ -100,7 +95,7 @@ fn checked(target: &str) -> Result<MirrorConfigEntry, CommandResult> {
         || entry.target.chars().any(char::is_control)
         || entry.session_name() == MIRROR_SESSION_PREFIX.trim_end_matches('-')
     {
-        return Err(refuse(
+        return Err(CommandResult::error(
             ErrorCode::InvalidCommand,
             "name `display`, `display:OUTPUT`, `App` or `App:title`",
         ));
@@ -136,7 +131,7 @@ fn stop(state: &SharedState, target: &str) -> CommandResult {
     let removed = state.with_mut(|s| {
         let demand = s.mirror_demand_mut();
         if demand.config.iter().any(|e| e.session_name() == name) {
-            return Err(refuse(
+            return Err(CommandResult::error(
                 ErrorCode::PreconditionFailed,
                 "that mirror is a [[mirrors]] entry; remove it from config.toml instead",
             ));
@@ -145,7 +140,7 @@ fn stop(state: &SharedState, target: &str) -> CommandResult {
     });
     match removed {
         Err(refused) => refused,
-        Ok(false) => refuse(
+        Ok(false) => CommandResult::error(
             ErrorCode::NotFound,
             format!("no mirror of {target:?} was started"),
         ),
@@ -158,7 +153,7 @@ fn stop(state: &SharedState, target: &str) -> CommandResult {
 
 /// The local id of the live surface in session `name`.
 fn surface_in(s: &mut ServerState, name: &str) -> Option<u32> {
-    let session = s.find_session_by_name(name)?;
+    let session = s.sessions().find_by_name(name)?;
     let surface = s
         .registry()
         .session(session)?
@@ -168,10 +163,10 @@ fn surface_in(s: &mut ServerState, name: &str) -> Option<u32> {
             let id = s.registry().resource_id(key)?;
             let record = s.registry().record(id)?;
             (record.kind == phux_core::ResourceKind::PixelSurface
-                && s.resource_handle(id).is_some())
+                && s.resources().handle(id).is_some())
             .then_some(id)
         })?;
-    match s.intern_resource_wire(surface) {
+    match s.idspace.intern_resource(surface) {
         phux_protocol::ids::ResourceId::Local { id } => Some(id),
         phux_protocol::ids::ResourceId::Satellite { .. } => None,
     }
@@ -180,7 +175,7 @@ fn surface_in(s: &mut ServerState, name: &str) -> Option<u32> {
 /// This host's capture targets, from `phux agent surface targets --json`.
 async fn list_here(state: &SharedState) -> Result<serde_json::Value, String> {
     let exe = state
-        .with(ServerState::native_host_executable)
+        .with(|s| s.config().native_host_executable())
         .map_err(|err| err.to_string())?;
     let run = tokio::process::Command::new(exe)
         .args(["agent", "surface", "targets", "--json"])

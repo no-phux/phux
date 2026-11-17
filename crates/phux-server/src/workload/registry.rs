@@ -7,12 +7,12 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 
-use super::store::{self, FileRole};
 use super::{
     EnrolledFor, STORE_VERSION, WorkloadCredential, WorkloadError, credential_id, decode_lower_hex,
     subject_public_key_info, validate_org_name, validate_satellite_name, validate_scopes,
     validate_subject,
 };
+use crate::secure_file::{self, FileRole};
 
 mod grants;
 mod managed;
@@ -111,7 +111,7 @@ impl WorkloadRegistry {
     ///
     /// Any [`WorkloadError`] reading or validating the file.
     pub fn load(path: &Path) -> Result<Self, WorkloadError> {
-        match store::read_stable(path, FileRole::Registry)? {
+        match secure_file::read_stable(path, FileRole::Registry)? {
             None => Ok(Self::empty()),
             Some((_, raw)) => Self::from_bytes(&raw),
         }
@@ -304,5 +304,32 @@ mod frozen {
     #[test]
     fn workload_keys() {
         phux_frozen::json::<super::RegistryFile>("workload-keys").check();
+    }
+
+    /// The exact bytes a registry commit writes: pretty JSON in field order
+    /// and one trailing newline (the instance id is random, so the image is
+    /// pinned against its own canonical rendering).
+    #[test]
+    fn workload_keys_commit_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("workload-keys");
+        super::WorkloadRegistry::register(&path, &[7; 32], vec!["observe@global".to_owned()], None)
+            .unwrap();
+        let written = std::fs::read(&path).unwrap();
+        let file: super::RegistryFile = serde_json::from_slice(&written).unwrap();
+        let mut canonical = serde_json::to_vec_pretty(&file).unwrap();
+        canonical.push(b'\n');
+        assert_eq!(written, canonical);
+        let text = String::from_utf8(written).unwrap();
+        assert!(
+            text.starts_with("{\n  \"version\": 1,\n  \"instance\": \""),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "\n  \"generation\": 1,\n  \"credentials\": [\n    {\n      \"id\": \"sha256:"
+            ),
+            "{text}"
+        );
     }
 }

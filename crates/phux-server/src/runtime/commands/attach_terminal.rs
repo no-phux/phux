@@ -64,12 +64,12 @@ pub(super) async fn handle_attach_terminal(
             // any lease seizure or role widening it made (ADR-0127).
             let restore = was_viewer && !role.is_viewer();
             let (released, holder) = state.with_mut(|s| {
-                s.unsubscribe_resource(client_id, core);
+                s.resources_mut().unsubscribe(client_id, core);
                 if restore {
-                    s.set_viewer_mark(client_id, terminal_id, true);
+                    s.clients_mut().mark_viewer(client_id, terminal_id, true);
                 }
                 let released = s.undo_attach_takeover(client_id, core, effects);
-                (released, s.input_lease_holder(core))
+                (released, s.leases().holder(core))
             });
             let lease = handle.companion::<crate::resource::companions::Leasable>();
             if restore
@@ -93,10 +93,7 @@ pub(super) async fn handle_attach_terminal(
                     })
                     .await;
             }
-            CommandResult::Error {
-                code: failure.code,
-                message: failure.message,
-            }
+            CommandResult::error(failure.code, failure.message)
         }
     }
 }
@@ -161,8 +158,11 @@ pub(crate) fn subscribe_attach_terminal(
 ) -> Result<AttachSubscription, CommandResult> {
     let not_found = || terminal_not_found(terminal_id);
     state.with_mut(|s| {
-        let core = s.resource_from_wire(terminal_id).ok_or_else(not_found)?;
-        let handle = s.resource_handle(core).cloned().ok_or_else(not_found)?;
+        let core = s
+            .idspace
+            .resource_from_wire(terminal_id)
+            .ok_or_else(not_found)?;
+        let handle = s.resources().handle(core).cloned().ok_or_else(not_found)?;
         // The lease is a Terminal-facet concept (L1 §1.1), so a takeover of
         // any other kind is refused the way `ACQUIRE_INPUT` refuses it.
         if role.is_some_and(RolePolicy::takes_over)
@@ -170,8 +170,8 @@ pub(crate) fn subscribe_attach_terminal(
         {
             return Err(wrong_resource_kind(error));
         }
-        let was_subscribed = s.subscribers_for_resource(core).contains(&client_id);
-        let was_viewer = s.is_viewer(client_id, terminal_id);
+        let was_subscribed = s.resources().subscribers_for(core).contains(&client_id);
+        let was_viewer = s.clients().is_viewer(client_id, terminal_id);
         s.subscribe_resource(client_id, core, Some(out_tx.clone()));
         let effects = role.map_or_else(RoleEffects::default, |policy| {
             s.apply_attach_role(client_id, terminal_id, Some(core), policy, was_subscribed)
@@ -181,7 +181,7 @@ pub(crate) fn subscribe_attach_terminal(
             handle,
             effects,
             was_viewer,
-            holder: s.input_lease_holder(core),
+            holder: s.leases().holder(core),
         })
     })
 }
@@ -255,10 +255,10 @@ pub(super) async fn subscribe_deferred_attach(
 }
 
 pub(super) fn invalid_agent_cursor() -> CommandResult {
-    CommandResult::Error {
-        code: ErrorCode::InvalidCommand,
-        message: "an agent resume cursor is valid only for AgentSession resources".to_owned(),
-    }
+    CommandResult::error(
+        ErrorCode::InvalidCommand,
+        "an agent resume cursor is valid only for AgentSession resources",
+    )
 }
 
 /// `{ VIEWER, DELIBERATE }` on `ATTACH_RESOURCE` is `INVALID_COMMAND`
@@ -280,7 +280,6 @@ pub(super) fn refuse_invalid_role_policy(command: &Command) -> Option<CommandRes
 
 /// Whether a negotiated bootstrap profile streams the official progressive
 /// libghostty snapshot rather than a synthesized VT bootstrap.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(in crate::runtime) const fn native_checkpoint_profile(
     profile: phux_protocol::caps::BootstrapStreamProfile,
 ) -> bool {

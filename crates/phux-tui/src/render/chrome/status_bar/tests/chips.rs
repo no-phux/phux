@@ -112,7 +112,7 @@ fn notices_are_refused_without_a_bar_row_of_their_own() {
 
 #[test]
 fn badges_mask_underlying_click_targets_in_an_inset_bar() {
-    use phux_config::widget::CellHit;
+    use crate::render::chrome::status_bar::widgets::CellHit;
     for hit in [CellHit::Switch, CellHit::Window(2)] {
         let mut p = windows_bar();
         p.supervisory = Some("[ FROZEN ]".to_owned());

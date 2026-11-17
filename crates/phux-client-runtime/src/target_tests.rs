@@ -12,6 +12,14 @@ fn target(raw: &str) -> RemoteTarget {
     RemoteTarget::parse(raw).unwrap_or_else(|err| unreachable!("{raw}: {err}"))
 }
 
+/// A temporary directory holding `config.toml` with `contents`.
+fn registry(contents: &str) -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = dir.path().join("config.toml");
+    std::fs::write(&config, contents).expect("config");
+    (dir, config)
+}
+
 #[test]
 fn parses_the_cli_target_spellings() {
     let bare = target("mini");
@@ -192,21 +200,15 @@ fn tls_server_names_are_dns_names() {
 /// an entry without one presents none, and half of one is refused.
 #[test]
 fn resolution_carries_the_enrolled_client_identity() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let config = dir.path().join("config.toml");
     let pin = "ab".repeat(32);
-    std::fs::write(
-        &config,
-        format!(
-            "[[remote]]\nname = \"mini\"\nendpoint = \"quic://127.0.0.1:8788\"\n\
+    let (_dir, config) = registry(&format!(
+        "[[remote]]\nname = \"mini\"\nendpoint = \"quic://127.0.0.1:8788\"\n\
              cert-fingerprint = \"{pin}\"\nclient-cert = \"/s/mini.pem\"\n\
              client-key = \"/s/mini.key\"\n\
              [[remote]]\nname = \"bare\"\nendpoint = \"quic://127.0.0.1:8789\"\n\
              [[remote]]\nname = \"half\"\nendpoint = \"quic://127.0.0.1:8790\"\n\
              client-cert = \"/s/half.pem\"\n"
-        ),
-    )
-    .expect("config");
+    ));
     let resolved = resolve("mini", Some(&config)).expect("mini");
     assert_eq!(
         resolved.client_identity,
@@ -235,14 +237,12 @@ fn resolution_carries_the_enrolled_client_identity() {
 /// the leaf, and the registry itself is never rewritten.
 #[test]
 fn a_leaf_pinned_entry_learns_nothing_and_a_paired_authority_wins() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let config = dir.path().join("config.toml");
     let pin = "AB:".repeat(31) + "AB";
-    let registry = format!(
+    let contents = format!(
         "[[remote]]\nname = \"mini\"\nendpoint = \"quic://127.0.0.1:8788\"\n\
          cert-fingerprint = \"{pin}\"\n"
     );
-    std::fs::write(&config, &registry).expect("config");
+    let (_dir, config) = registry(&contents);
     let first = resolve("mini", Some(&config)).expect("mini");
     assert_eq!(first.authority.ca, None);
     assert_eq!(
@@ -262,21 +262,17 @@ fn a_leaf_pinned_entry_learns_nothing_and_a_paired_authority_wins() {
     );
     assert_eq!(
         std::fs::read_to_string(&config).expect("config"),
-        registry,
+        contents,
         "the registry is untouched"
     );
 }
 
 #[test]
 fn duplicate_names_are_ambiguous_not_first_wins() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let config = dir.path().join("config.toml");
-    std::fs::write(
-        &config,
+    let (_dir, config) = registry(
         "[[remote]]\nname = \"mini\"\nendpoint = \"ws://127.0.0.1:1\"\n\
          [[remote]]\nname = \"mini\"\nendpoint = \"ws://127.0.0.1:2\"\n",
-    )
-    .expect("config");
+    );
     let err = resolve("mini", Some(&config)).expect_err("duplicate");
     assert!(err.contains("twice"), "{err}");
 }

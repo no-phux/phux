@@ -38,8 +38,9 @@ pub(in crate::runtime) async fn handle(
     request: CheckoutRequest,
 ) -> CommandResult {
     let handle = state.with(|s| {
-        s.resource_from_wire(terminal_id)
-            .and_then(|core| s.resource_handle(core).cloned())
+        s.idspace
+            .resource_from_wire(terminal_id)
+            .and_then(|core| s.resources().handle(core).cloned())
     });
     let Some(handle) = handle else {
         return crate::runtime::commands::terminal_not_found(terminal_id);

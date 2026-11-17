@@ -1,9 +1,10 @@
 //! Deriving the schema from the codec: field splitting, presence observation, and retired ids.
 
 use super::{
-    BTreeMap, BTreeSet, Decoder, FIELD_RS, FieldEntry, FrameEntry, FrameKind, Presence, Sample,
-    Schema, UNSET_TYPE, samples,
+    BTreeMap, BTreeSet, Decoder, FieldEntry, FrameEntry, FrameKind, Presence, Sample, Schema,
+    UNSET_TYPE, samples,
 };
+use crate::wire::field::FRAME_MODULES;
 
 /// One body-level field: its id and where it sits in the frame bytes.
 pub(super) struct Tlv {
@@ -55,34 +56,12 @@ pub(super) fn decodes(bytes: &[u8]) -> bool {
     FrameKind::decode(bytes).is_ok()
 }
 
-/// `module -> [(CONST_NAME, id)]` parsed from `wire/field.rs`.
-pub(super) fn field_modules() -> BTreeMap<String, Vec<(String, u32)>> {
-    let mut out = BTreeMap::<String, Vec<(String, u32)>>::new();
-    let mut current = None;
-    for line in FIELD_RS.lines() {
-        if let Some(name) = line.strip_prefix("pub mod ") {
-            let name = name.trim_end_matches(" {").to_owned();
-            out.entry(name.clone()).or_default();
-            current = Some(name);
-        } else if line == "}" {
-            current = None;
-        } else if let Some(constant) = field_constant(line) {
-            let module = current
-                .as_ref()
-                .expect("field constants live inside a module");
-            out.get_mut(module).unwrap().push(constant);
-        }
-    }
-    out
-}
-
-fn field_constant(line: &str) -> Option<(String, u32)> {
-    let decl = line.trim().strip_prefix("pub const ")?;
-    let (name, id) = decl
-        .strip_suffix(';')
-        .and_then(|decl| decl.split_once(": u32 = "))
-        .unwrap_or_else(|| panic!("unparsed field constant: {line}"));
-    Some((name.to_owned(), id.parse().unwrap()))
+/// The `(CONST_NAME, id)` fields of the frame module `module` names.
+pub(super) fn frame_module(module: &str) -> Option<&'static [(&'static str, u32)]> {
+    FRAME_MODULES
+        .iter()
+        .find(|(name, _)| *name == module)
+        .map(|(_, fields)| *fields)
 }
 
 /// What the samples of one frame show about one field.
@@ -133,7 +112,6 @@ pub(super) fn retired(ids: &[u32]) -> Vec<u32> {
 /// The schema as the codec defines it, carrying `types` and `description`
 /// and each field's declared `type` over from `current`.
 pub(super) fn derive(current: &Schema) -> Schema {
-    let modules = field_modules();
     let samples = samples();
     let mut by_type: BTreeMap<u8, Vec<&Sample>> = BTreeMap::new();
     for sample in &samples {
@@ -144,7 +122,7 @@ pub(super) fn derive(current: &Schema) -> Schema {
     }
     let frames = by_type
         .into_iter()
-        .map(|(type_byte, group)| derive_frame(type_byte, &group, &modules, current))
+        .map(|(type_byte, group)| derive_frame(type_byte, &group, current))
         .collect();
     Schema {
         description: current.description.clone(),
@@ -153,26 +131,20 @@ pub(super) fn derive(current: &Schema) -> Schema {
     }
 }
 
-pub(super) fn derive_frame(
-    type_byte: u8,
-    samples: &[&Sample],
-    modules: &BTreeMap<String, Vec<(String, u32)>>,
-    current: &Schema,
-) -> FrameEntry {
+pub(super) fn derive_frame(type_byte: u8, samples: &[&Sample], current: &Schema) -> FrameEntry {
     let name = samples[0].name;
     let module = samples[0].module;
     let consts = if module.is_empty() {
         &[][..]
     } else {
-        modules
-            .get(module)
-            .unwrap_or_else(|| panic!("{name}: no `{module}` module in field.rs"))
+        frame_module(module)
+            .unwrap_or_else(|| panic!("{name}: no `{module}` module in field::FRAME_MODULES"))
     };
     let observed = observe(samples);
     for id in observed.keys() {
         assert!(
             consts.iter().any(|(_, known)| known == id),
-            "{name} emits field {id}, which field.rs `{module}` does not name"
+            "{name} emits field {id}, which field `{module}` does not name"
         );
     }
     let declared = current.frames.iter().find(|frame| frame.name == name);
@@ -188,7 +160,7 @@ pub(super) fn derive_frame(
                 .map_or_else(|| UNSET_TYPE.to_owned(), |f| f.ty.clone());
             FieldEntry {
                 id,
-                name: field.to_owned(),
+                name: (*field).to_owned(),
                 ty,
                 presence: seen.presence(),
             }

@@ -11,8 +11,8 @@
 #![allow(clippy::unwrap_used)]
 
 use phux_protocol::ids::{
-    ApprovalId, ClientId, GroupId, IdempotencyKey, ResourceId, ResourceKind, ServerInstance,
-    SessionId, WindowId,
+    ApprovalId, ClientId, IdempotencyKey, ResourceId, ResourceKind, ServerInstance, SessionId,
+    WindowId,
 };
 use phux_protocol::wire::decode::Decoder;
 use phux_protocol::wire::frame::{
@@ -71,21 +71,14 @@ fn event(terminal: Option<ResourceId>, event: AgentEvent, stamp: Option<EventSta
     }
 }
 
+/// No process shape, so the same helper serves both kinds.
 fn spawn(resource: Option<SpawnResource>) -> FrameKind {
-    FrameKind::SpawnResource {
+    crate::common::Spawn {
         request_id: 9,
-        group: GroupId::new(1),
-        // No process shape, so the same helper serves both kinds.
-        command: None,
-        cwd: None,
-        env: None,
-        term: None,
-        satellite: None,
-        owner_terminal: None,
-        agent_session: None,
-        initial_size: None,
         resource: resource.map(Box::new),
+        ..crate::common::Spawn::default()
     }
+    .frame()
 }
 
 #[test]

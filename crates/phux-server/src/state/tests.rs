@@ -12,14 +12,14 @@ use phux_protocol::wire::frame::{FrameKind, Scope};
 #[test]
 fn client_ids_count_from_one_and_the_incarnation_is_per_state() {
     let mut first = ServerState::new();
-    assert_eq!(first.new_client_id(), ClientId(1));
-    assert_eq!(first.new_client_id(), ClientId(2));
-    let stable = first.server_incarnation();
-    assert_eq!(first.server_incarnation(), stable);
+    assert_eq!(first.clients_mut().new_client_id(), ClientId(1));
+    assert_eq!(first.clients_mut().new_client_id(), ClientId(2));
+    let stable = first.lifecycle().server_incarnation();
+    assert_eq!(first.lifecycle().server_incarnation(), stable);
     assert_eq!(format!("{stable:?}"), "ServerIncarnation(<redacted>)");
 
     let second = ServerState::new();
-    assert_ne!(stable, second.server_incarnation());
+    assert_ne!(stable, second.lifecycle().server_incarnation());
 }
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -46,7 +46,7 @@ pub(super) fn mk_agent_handle(parent: ResourceId, token: CancellationToken) -> R
 #[test]
 fn one_shot_session_create_results_are_bounded_and_connection_scoped() {
     let mut state = ServerState::new();
-    let client_id = state.new_client_id();
+    let client_id = state.clients_mut().new_client_id();
     let scope = Scope::Global;
     for index in 0..257 {
         let key = format!("phux.session.created/v1/{index}");
@@ -96,7 +96,7 @@ fn one_shot_session_create_results_are_bounded_and_connection_scoped() {
 #[test]
 fn attach_subscribes_every_client_to_every_pane() {
     let mut s = ServerState::new();
-    let cid = s.new_client_id();
+    let cid = s.clients_mut().new_client_id();
     let err = s.attach_default_caps(cid, "ghost", mk_tx()).unwrap_err();
     assert_eq!(err, AttachError::UnknownSession("ghost".to_owned()));
 
@@ -104,11 +104,11 @@ fn attach_subscribes_every_client_to_every_pane() {
     // Regression: not only the active pane, else input to the others drops.
     let pid2 = s.add_pane_to_session(sid).expect("second pane");
     assert_eq!(s.attach_default_caps(cid, "default", mk_tx()).unwrap(), sid);
-    let other = s.new_client_id();
+    let other = s.clients_mut().new_client_id();
     s.attach_default_caps(other, "default", mk_tx()).unwrap();
     assert!(s.attached().contains_key(&cid));
-    assert_eq!(s.subscribers_for_resource(pid1), &[cid, other]);
-    assert_eq!(s.subscribers_for_resource(pid2), &[cid, other]);
+    assert_eq!(s.resources().subscribers_for(pid1), &[cid, other]);
+    assert_eq!(s.resources().subscribers_for(pid2), &[cid, other]);
 }
 
 #[test]
@@ -118,12 +118,12 @@ fn terminal_fanout_reaches_attach_terminal_only_subscribers_exactly_once() {
     let mut s = ServerState::new();
     let (_sid, pid) = s.seed_session("default");
 
-    let attached = s.new_client_id();
+    let attached = s.clients_mut().new_client_id();
     let (attached_tx, _attached_rx) = mpsc::channel::<Outbound>(DEFAULT_CLIENT_MAILBOX);
     s.attach_default_caps(attached, "default", attached_tx)
         .expect("attach the session-scoped client");
 
-    let watcher = s.new_client_id();
+    let watcher = s.clients_mut().new_client_id();
     let (watcher_tx, _watcher_rx) = mpsc::channel::<Outbound>(DEFAULT_CLIENT_MAILBOX);
     s.subscribe_resource(watcher, pid, Some(watcher_tx));
 
@@ -157,34 +157,34 @@ fn terminal_fanout_reaches_attach_terminal_only_subscribers_exactly_once() {
 fn input_lease_blocks_non_holders_until_released_or_detached() {
     let mut s = ServerState::new();
     let (_sid, pid) = s.seed_session("default");
-    let a = s.new_client_id();
-    let b = s.new_client_id();
-    assert_eq!(s.input_lease_holder(pid), None);
-    assert!(!s.input_blocked(pid, a), "an Open pane blocks no one");
+    let a = s.clients_mut().new_client_id();
+    let b = s.clients_mut().new_client_id();
+    assert_eq!(s.leases().holder(pid), None);
+    assert!(!s.leases().blocked(pid, a), "an Open pane blocks no one");
 
     assert_eq!(s.set_input_lease(pid, a), None);
-    assert!(!s.input_blocked(pid, a) && s.input_blocked(pid, b));
+    assert!(!s.leases().blocked(pid, a) && s.leases().blocked(pid, b));
     assert_eq!(
         s.set_input_lease(pid, b),
         Some(a),
         "a seize returns the prior holder"
     );
-    assert!(s.input_blocked(pid, a));
+    assert!(s.leases().blocked(pid, a));
 
     assert!(!s.release_input_lease(pid, a), "only the holder releases");
     assert!(s.release_input_lease(pid, b));
     assert!(!s.release_input_lease(pid, b), "double release is a no-op");
-    assert_eq!(s.input_lease_holder(pid), None);
+    assert_eq!(s.leases().holder(pid), None);
 
     s.set_input_lease(pid, a);
-    assert_eq!(s.leases_held_by(a), vec![pid]);
+    assert_eq!(s.leases().held_by(a), vec![pid]);
     s.detach(a);
     assert_eq!(
-        s.input_lease_holder(pid),
+        s.leases().holder(pid),
         None,
         "a disconnect never strands the wheel"
     );
-    assert!(s.leases_held_by(a).is_empty());
+    assert!(s.leases().held_by(a).is_empty());
 }
 
 #[test]
@@ -194,7 +194,7 @@ fn same_client_may_rebootstrap_same_session_but_not_switch_sessions() {
     let mut s = ServerState::new();
     let (default, original) = s.seed_session("default");
     let _ = s.seed_session("other");
-    let cid = s.new_client_id();
+    let cid = s.clients_mut().new_client_id();
     s.attach_default_caps(cid, "default", mk_tx()).unwrap();
     let added = s
         .add_pane_to_session(default)
@@ -205,12 +205,12 @@ fn same_client_may_rebootstrap_same_session_but_not_switch_sessions() {
         "same-connection recovery reuses the live session identity"
     );
     assert_eq!(
-        s.subscribers_for_resource(original),
+        s.resources().subscribers_for(original),
         &[cid],
         "reattach must not duplicate an existing subscription",
     );
     assert_eq!(
-        s.subscribers_for_resource(added),
+        s.resources().subscribers_for(added),
         &[cid],
         "reattach must subscribe panes created after the first attach",
     );
@@ -222,7 +222,10 @@ fn same_client_may_rebootstrap_same_session_but_not_switch_sessions() {
 fn attach_stores_hello_caps_and_bootstrap_contract_unchanged() {
     let mut s = ServerState::new();
     let _ = s.seed_session("default");
-    let (default, advertised) = (s.new_client_id(), s.new_client_id());
+    let (default, advertised) = (
+        s.clients_mut().new_client_id(),
+        s.clients_mut().new_client_id(),
+    );
     s.attach_default_caps(default, "default", mk_tx()).unwrap();
     let profile = BootstrapProfile::SynthesizedVtStateSync;
     let limits = BootstrapLimits::new(64 * 1024, 128 * 1024).unwrap();
@@ -255,7 +258,7 @@ fn attach_snapshot_panes_collects_live_handles_for_session_tree() {
     assert_eq!(ids, HashSet::from([pid_a, pid_c]));
     for pane in panes {
         assert_eq!(
-            s.resource_from_wire(&pane.wire_terminal_id),
+            s.idspace.resource_from_wire(&pane.wire_terminal_id),
             Some(pane.terminal_id),
             "wire id should resolve back to the same pane",
         );
@@ -266,31 +269,31 @@ fn attach_snapshot_panes_collects_live_handles_for_session_tree() {
 fn most_recently_touched_session_starts_none_and_tracks_touch_order() {
     let mut s = ServerState::new();
     assert!(
-        s.most_recently_touched_session().is_none(),
+        s.sessions().most_recently_touched().is_none(),
         "fresh state has no prior activity memory",
     );
     assert!(
-        !s.has_session_touch_history(),
+        !s.sessions().has_touch_history(),
         "fresh state has no stale activity memory either",
     );
     let (sid, _pid) = s.seed_session("default");
     s.touch_session(sid);
-    assert_eq!(s.most_recently_touched_session(), Some(sid));
-    assert!(s.has_session_touch_history());
+    assert_eq!(s.sessions().most_recently_touched(), Some(sid));
+    assert!(s.sessions().has_touch_history());
 
     // Later touches win, regardless of attach order.
     let (sid2, _p) = s.seed_session("other");
     s.touch_session(sid2);
-    assert_eq!(s.most_recently_touched_session(), Some(sid2));
+    assert_eq!(s.sessions().most_recently_touched(), Some(sid2));
     s.touch_session(sid);
-    assert_eq!(s.most_recently_touched_session(), Some(sid));
+    assert_eq!(s.sessions().most_recently_touched(), Some(sid));
 }
 
 #[test]
 fn shared_state_with_and_with_mut_round_trip() {
     let shared = SharedState::new();
     let (_sid, pid) = shared.with_mut(|s| s.seed_session("default"));
-    let count = shared.with(|s| s.subscribers_for_resource(pid).len());
+    let count = shared.with(|s| s.resources().subscribers_for(pid).len());
     assert_eq!(count, 0);
 }
 

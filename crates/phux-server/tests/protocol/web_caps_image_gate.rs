@@ -10,8 +10,7 @@ use tempfile::TempDir;
 use tokio::net::UnixStream;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, attach_by_name, join_after_shutdown, recv_typed, recv_until,
-    run_local, send_frame, spawn_server_with_seed_cmd, wait_for_raw_socket,
+    SpawnedServer, attach_by_name, recv_typed, recv_until, run_local, send_frame,
 };
 
 /// Kitty graphics transmit-and-display, base64 payload (`ESC _ G ... ESC \`).
@@ -20,6 +19,12 @@ const KITTY_APC_INTRO: &[u8] = b"\x1b_G";
 const SIXEL_INTRO: &[u8] = b"\x1bPq";
 /// iTerm2 inline image: `OSC 1337 ; ... BEL`.
 const ITERM2_INTRO: &[u8] = b"\x1b]1337;";
+/// Each image escape the fixture emits, named.
+const IMAGE_ESCAPES: [(&str, &[u8]); 3] = [
+    ("kitty graphics APC", KITTY_APC_INTRO),
+    ("sixel DCS", SIXEL_INTRO),
+    ("iTerm2 OSC 1337", ITERM2_INTRO),
+];
 
 /// The markers the seed script prints around the image burst. Plain text, so
 /// they survive every capability profile.
@@ -50,19 +55,16 @@ fn image_burst_command(release: &std::path::Path) -> CommandBuilder {
     cmd
 }
 
-/// Substring search over accumulated wire bytes.
-fn contains(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack.windows(needle.len()).any(|w| w == needle)
-}
+use phux_server_testkit::contains;
 
 /// HELLO with `caps`, then ATTACH and drain through `BOOTSTRAP_READY`.
 async fn attach_with_caps(
-    socket_path: &std::path::Path,
+    server: &SpawnedServer,
     session: &str,
     client_name: &str,
     caps: ClientCapabilities,
 ) -> UnixStream {
-    let mut stream = wait_for_raw_socket(socket_path, SOCKET_CONNECT_DEADLINE).await;
+    let mut stream = server.connect_raw().await;
     send_frame(&mut stream, &phux_server_testkit::hello(client_name, caps)).await;
     let (_, hello_ok) = recv_typed(&mut stream).await;
     assert!(
@@ -97,23 +99,18 @@ async fn drain_output_until(stream: &mut UnixStream, marker: &[u8]) -> Vec<u8> {
 fn no_image_escapes_forwarded_to_client_advertising_none() {
     run_local(async {
         let tmp = TempDir::new().expect("tempdir");
-        let socket_path = tmp.path().join("phux.sock");
         let release = tmp.path().join("release");
-        let (shutdown_tx, server_handle) = spawn_server_with_seed_cmd(
-            socket_path.clone(),
-            "default",
-            image_burst_command(&release),
-        );
+        let server = SpawnedServer::seeded_in(tmp, "default", image_burst_command(&release));
 
         let mut web = attach_with_caps(
-            &socket_path,
+            &server,
             "default",
             "web-profile (no image protocols)",
             web_profile_caps(),
         )
         .await;
         let mut control = attach_with_caps(
-            &socket_path,
+            &server,
             "default",
             "control (all image protocols)",
             ClientCapabilities::new().with_image_protocols(ImageProtocolSet::all()),
@@ -125,11 +122,7 @@ fn no_image_escapes_forwarded_to_client_advertising_none() {
         let web_bytes = drain_output_until(&mut web, END_MARKER).await;
         let control_bytes = drain_output_until(&mut control, END_MARKER).await;
 
-        for (name, intro) in [
-            ("kitty graphics APC", KITTY_APC_INTRO),
-            ("sixel DCS", SIXEL_INTRO),
-            ("iTerm2 OSC 1337", ITERM2_INTRO),
-        ] {
+        for (name, intro) in IMAGE_ESCAPES {
             assert!(
                 contains(&control_bytes, intro),
                 "control client (all image protocols) should receive the \
@@ -143,11 +136,7 @@ fn no_image_escapes_forwarded_to_client_advertising_none() {
             "web-profile client should still receive plain text output",
         );
         // ...but none of the image escapes.
-        for (name, intro) in [
-            ("kitty graphics APC", KITTY_APC_INTRO),
-            ("sixel DCS", SIXEL_INTRO),
-            ("iTerm2 OSC 1337", ITERM2_INTRO),
-        ] {
+        for (name, intro) in IMAGE_ESCAPES {
             assert!(
                 !contains(&web_bytes, intro),
                 "server forwarded a {name} escape to a client that \
@@ -157,11 +146,6 @@ fn no_image_escapes_forwarded_to_client_advertising_none() {
 
         drop(web);
         drop(control);
-        join_after_shutdown(shutdown_tx, server_handle).await;
-        assert!(
-            !socket_path.exists(),
-            "socket file leaked after shutdown: {} still on disk",
-            socket_path.display(),
-        );
+        server.stop().await;
     });
 }

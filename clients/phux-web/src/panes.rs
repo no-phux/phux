@@ -1,7 +1,10 @@
 //! Bounded, client-local split geometry; resource lifetimes remain server-owned.
 
+use phux_client_core::layout::{LayoutNode, SplitDir, kill_pane, split_at};
 use phux_protocol::ids::ResourceId;
 
+/// The axis a browser split divides: `Vertical` sets panes side by side
+/// (a vertical separator), `Horizontal` stacks them.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Axis {
     Vertical,
@@ -14,6 +17,22 @@ impl Axis {
             "vertical" => Ok(Self::Vertical),
             "horizontal" => Ok(Self::Horizontal),
             _ => Err("Split axis must be vertical or horizontal.".to_owned()),
+        }
+    }
+
+    /// The split-tree direction drawing this separator.
+    const fn split_dir(self) -> SplitDir {
+        match self {
+            Self::Vertical => SplitDir::Horizontal,
+            Self::Horizontal => SplitDir::Vertical,
+        }
+    }
+
+    /// The separator a split-tree direction draws.
+    const fn of(dir: SplitDir) -> Self {
+        match dir {
+            SplitDir::Horizontal => Self::Vertical,
+            SplitDir::Vertical => Self::Horizontal,
         }
     }
 }
@@ -57,67 +76,56 @@ impl PaneRect {
     }
 }
 
-pub(crate) enum Layout {
-    Leaf(ResourceId),
-    Split(Axis, Box<Self>, Box<Self>),
+/// The browser's split tree. Every split is even; [`rects`] owns the
+/// geometry, so the stored ratio is never read.
+pub(crate) type Layout = LayoutNode;
+
+const EVEN: f32 = 0.5;
+
+/// Split `target`'s leaf, `id` second along `axis`; `false` (and `layout`
+/// unchanged) when `target` is not a leaf.
+pub(crate) fn insert(layout: &mut Layout, target: &ResourceId, id: ResourceId, axis: Axis) -> bool {
+    let Ok(split) = split_at(layout, target, &id, axis.split_dir(), EVEN) else {
+        return false;
+    };
+    *layout = split;
+    true
 }
 
-impl Layout {
-    pub(crate) fn insert(&mut self, target: &ResourceId, id: ResourceId, axis: Axis) -> bool {
-        match self {
-            Self::Leaf(old) if old == target => {
-                *self = Self::Split(
-                    axis,
-                    Box::new(Self::Leaf(old.clone())),
-                    Box::new(Self::Leaf(id)),
-                );
-                true
-            }
-            Self::Leaf(_) => false,
-            Self::Split(_, first, second) => {
-                first.insert(target, id.clone(), axis) || second.insert(target, id, axis)
-            }
-        }
-    }
+/// `layout` without `id`'s leaf; `None` once no leaf is left.
+pub(crate) fn remove(layout: Layout, id: &ResourceId) -> Option<Layout> {
+    kill_pane(&layout, id).unwrap_or(Some(layout))
+}
 
-    pub(crate) fn remove(self, id: &ResourceId) -> Option<Self> {
-        match self {
-            Self::Leaf(old) => (old != *id).then_some(Self::Leaf(old)),
-            Self::Split(axis, first, second) => match (first.remove(id), second.remove(id)) {
-                (Some(first), Some(second)) => {
-                    Some(Self::Split(axis, Box::new(first), Box::new(second)))
-                }
-                (remaining, None) | (None, remaining) => remaining,
-            },
-        }
-    }
-
-    pub(crate) fn rects(&self, rect: PaneRect, out: &mut Vec<(ResourceId, PaneRect)>) {
-        match self {
-            Self::Leaf(id) => out.push((id.clone(), rect)),
-            Self::Split(axis, first, second) => {
-                // A window can become smaller than the tree's minimum. Preserve
-                // every pane and clip it rather than dropping a live resource.
-                let (a, b) = rect.split(*axis).unwrap_or_else(|| {
-                    let mut a = rect;
-                    let mut b = rect;
-                    match axis {
-                        Axis::Vertical => {
-                            a.cols = (rect.cols / 2).max(1);
-                            b.x += a.cols;
-                            b.cols = rect.cols.saturating_sub(a.cols).max(1);
-                        }
-                        Axis::Horizontal => {
-                            a.rows = (rect.rows / 2).max(1);
-                            b.y += a.rows;
-                            b.rows = rect.rows.saturating_sub(a.rows).max(1);
-                        }
+/// Each leaf's rectangle within `rect`, in leaf order.
+pub(crate) fn rects(layout: &Layout, rect: PaneRect, out: &mut Vec<(ResourceId, PaneRect)>) {
+    match layout {
+        LayoutNode::Leaf(id) => out.push((id.clone(), rect)),
+        LayoutNode::Split {
+            dir, left, right, ..
+        } => {
+            let axis = Axis::of(*dir);
+            // A window can become smaller than the tree's minimum. Preserve
+            // every pane and clip it rather than dropping a live resource.
+            let (a, b) = rect.split(axis).unwrap_or_else(|| {
+                let mut a = rect;
+                let mut b = rect;
+                match axis {
+                    Axis::Vertical => {
+                        a.cols = (rect.cols / 2).max(1);
+                        b.x += a.cols;
+                        b.cols = rect.cols.saturating_sub(a.cols).max(1);
                     }
-                    (a, b)
-                });
-                first.rects(a, out);
-                second.rects(b, out);
-            }
+                    Axis::Horizontal => {
+                        a.rows = (rect.rows / 2).max(1);
+                        b.y += a.rows;
+                        b.rows = rect.rows.saturating_sub(a.rows).max(1);
+                    }
+                }
+                (a, b)
+            });
+            rects(left, a, out);
+            rects(right, b, out);
         }
     }
 }

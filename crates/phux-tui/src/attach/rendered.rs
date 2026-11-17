@@ -187,7 +187,7 @@ mod tests {
     use crate::render::Theme;
     use crate::render::chrome::sidebar::SidebarPainter;
     use crate::render::chrome::status_bar::Position;
-    use phux_config::widget::WindowInfo;
+    use crate::render::chrome::status_bar::widgets::WindowInfo;
 
     const STRIP: SidebarReservation = SidebarReservation {
         edge: SidebarEdge::Left,
@@ -223,9 +223,10 @@ mod tests {
             left: vec![phux_config::Widget::Bare(widget.to_owned())],
             ..Default::default()
         };
-        let reg = phux_config::widget::WidgetRegistry::with_builtins();
+        let reg = crate::render::chrome::status_bar::widgets::WidgetRegistry::with_builtins();
         StatusBarPainter::new(
-            phux_config::widget::StatusBar::build(&cfg, &reg).expect("bar build"),
+            crate::render::chrome::status_bar::widgets::StatusBar::build(&cfg, &reg)
+                .expect("bar build"),
             Position::Bottom,
         )
     }
@@ -239,13 +240,10 @@ mod tests {
         let (kernel, _, mut panes) = published_test_state(entries);
         let (sidebar, sidebar_painter) = sidebar.unzip();
         let chrome = ChromeCtx {
-            viewport: (80, 24),
             sidebar,
             status_bar,
             sidebar_painter,
-            session_name: "alpha",
-            theme: &Theme::default(),
-            leaves: &crate::attach::surface_leaf::LeafBook::default(),
+            ..ChromeCtx::bare((80, 24), "alpha")
         };
         compose_full_frame_cells(
             &chrome,

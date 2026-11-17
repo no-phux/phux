@@ -13,13 +13,12 @@ use std::f32::consts::TAU;
 use phux_protocol::ids::ResourceId;
 
 use crate::creature::Work;
+pub use crate::playground::{AMBER, MINT};
 use crate::playground::{Mood, Pt, Rgb, Rng, Species, hash, lerp};
 
 mod sim;
 pub use sim::STEP;
 
-pub const AMBER: Rgb = [255.0, 181.0, 71.0];
-pub const MINT: Rgb = [98.0, 230.0, 180.0];
 pub const DARK: Rgb = [34.0, 22.0, 12.0];
 
 /// The band clear of the window's chrome: the title bar over it, the

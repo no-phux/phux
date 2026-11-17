@@ -46,27 +46,6 @@ fn two_window_workspace_ids(a: u32, b: u32, c: u32) -> ArrangementDoc {
 }
 
 /// Two windows: window 0 split into panes 1|2, window 1 a single pane 3.
-/// Rows for `workspace` alone: no session graph, no foreign state.
-fn local_items(
-    workspace: &ArrangementDoc,
-    agents: &HashMap<ResourceId, AgentRecord>,
-    meta: &HashMap<ResourceId, FleetPaneMeta>,
-) -> Vec<SelectItem> {
-    fleet_items(
-        workspace,
-        &[],
-        None,
-        agents,
-        meta,
-        ForeignSessions {
-            layouts: &HashMap::new(),
-            agents: &HashMap::new(),
-            terminals: &HashMap::new(),
-        },
-        &[],
-    )
-}
-
 fn two_window_workspace() -> ArrangementDoc {
     two_window_workspace_ids(1, 2, 3)
 }
@@ -117,7 +96,7 @@ fn groups_current_session_panes_under_header_and_foreign_as_switch_rows() {
 #[test]
 fn pane_rows_carry_window_and_leaf_ordinals() {
     let workspace = two_window_workspace();
-    let items = local_items(&workspace, &HashMap::new(), &HashMap::new());
+    let items = local_fleet_items(&workspace, &HashMap::new(), &HashMap::new());
     // Pre-snapshot fallback: flat pane rows, no headers.
     assert_eq!(items.len(), 3);
     assert_eq!(
@@ -154,7 +133,7 @@ fn agent_record_supplies_name_kind_glyph_and_state_word() {
         record("reviewer", Some("claude"), AgentMetaState::Working),
     );
     agents.insert(tid(2), record("builder", None, AgentMetaState::Blocked));
-    let items = local_items(&workspace, &agents, &HashMap::new());
+    let items = local_fleet_items(&workspace, &agents, &HashMap::new());
     assert_eq!(items[0].label, "◐ 0:main.0 reviewer [claude]");
     assert_eq!(items[0].secondary.as_deref(), Some("working"));
     assert!(!items[0].attention, "working is not high attention");
@@ -195,7 +174,7 @@ fn stream_sessions_outrank_the_record_and_list_one_row_each() {
             ..FleetPaneMeta::default()
         },
     );
-    let items = local_items(&workspace, &agents, &meta);
+    let items = local_fleet_items(&workspace, &agents, &meta);
     assert_eq!(items.len(), 2);
     assert_eq!(items[0].label, "● 0.0 reviewer [claude]");
     assert_eq!(items[0].secondary.as_deref(), Some("needs you"));
@@ -227,7 +206,7 @@ fn a_stream_without_a_record_is_named_by_its_provider() {
             ..FleetPaneMeta::default()
         },
     );
-    let items = local_items(&workspace, &HashMap::new(), &meta);
+    let items = local_fleet_items(&workspace, &HashMap::new(), &meta);
     assert_eq!(items[0].label, "◆ 0.0 codex");
     assert_eq!(items[0].secondary.as_deref(), Some("done"));
 }
@@ -253,11 +232,11 @@ fn no_record_falls_back_to_title_then_placeholder() {
             ..FleetPaneMeta::default()
         },
     );
-    let items = local_items(&workspace, &HashMap::new(), &meta);
+    let items = local_fleet_items(&workspace, &HashMap::new(), &meta);
     assert_eq!(items[0].label, "· 0.0 vim src/main.rs");
     assert_eq!(items[0].secondary, None, "no record => no state word");
     // Without a title: the placeholder.
-    let items = local_items(&workspace, &HashMap::new(), &HashMap::new());
+    let items = local_fleet_items(&workspace, &HashMap::new(), &HashMap::new());
     assert_eq!(items[0].label, "· 0.0 no agent");
 }
 
@@ -272,7 +251,7 @@ fn asked_flag_highlights_even_without_a_record() {
             ..FleetPaneMeta::default()
         },
     );
-    let items = local_items(&workspace, &HashMap::new(), &meta);
+    let items = local_fleet_items(&workspace, &HashMap::new(), &meta);
     assert!(
         items[0].attention,
         "the ADR-0035 asked flag must highlight the row"
@@ -294,7 +273,7 @@ fn record_outranks_title_when_both_present() {
             ..FleetPaneMeta::default()
         },
     );
-    let items = local_items(&workspace, &agents, &meta);
+    let items = local_fleet_items(&workspace, &agents, &meta);
     assert_eq!(
         items[0].label, "○ 0.0 reviewer",
         "ADR-0040 decision 3: the record must outrank the OSC title"
@@ -331,7 +310,7 @@ fn secondary_prefers_branch_over_cwd_and_shortens_cwd() {
             ..FleetPaneMeta::default()
         },
     );
-    let items = local_items(&workspace, &agents, &meta);
+    let items = local_fleet_items(&workspace, &agents, &meta);
     assert_eq!(items[0].secondary.as_deref(), Some("working \u{b7} main"));
     assert_eq!(items[1].secondary.as_deref(), Some("idle \u{b7} dir"));
 }

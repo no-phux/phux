@@ -314,6 +314,13 @@ pub(crate) fn windows_data_dir() -> PathBuf {
         .unwrap_or_else(std::env::temp_dir)
 }
 
+/// The canonical server log, `<state dir>/server.log`, used by every writer
+/// and reader of "the server log".
+#[must_use]
+pub fn server_log_path() -> PathBuf {
+    state_dir().join("server.log")
+}
+
 /// Directory of local bug-report bundles: `$XDG_STATE_HOME/<profile-dir>/reports`.
 ///
 /// Written by the TUI `report-bug` action and `phux report new`; listed by

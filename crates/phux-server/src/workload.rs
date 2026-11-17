@@ -17,7 +17,6 @@ mod org_roots;
 mod registry;
 mod reload;
 mod server_identity;
-mod store;
 pub mod tickets;
 mod validate;
 

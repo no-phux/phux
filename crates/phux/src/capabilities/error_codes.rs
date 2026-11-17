@@ -4,10 +4,11 @@
 
 use serde_json::{Value, json};
 
-/// Source files whose `&str` constants are `--json` error codes.
+/// Source files whose `&str` constants are `--json` error codes: the one
+/// closed vocabulary in `phux_client::contract::codes`.
 const SOURCES: [&str; 2] = [
-    include_str!("../commands/json_err/codes.rs"),
-    include_str!("../../../phux-client/src/spatial.rs"),
+    include_str!("../../../phux-client/src/contract/codes.rs"),
+    include_str!("../../../phux-client/src/contract/codes/spatial.rs"),
 ];
 
 /// `[{ "code", "meaning" }]`, sorted by code. A code two sources share keeps

@@ -72,9 +72,7 @@ async fn percent_name_resolves_through_the_agent_resolver() {
     use crate::testkit::{self, ScriptSpec};
     use phux_protocol::wire::frame::Scope;
     let dir = tempfile::tempdir().unwrap();
-    let socket = dir.path().join("spatial.sock");
-    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-    let server = tokio::spawn(testkit::serve_every(listener, || {
+    let (socket, server) = testkit::spawn_serve_every(dir.path(), || {
         let record = |name: &str, kind: Option<&str>| {
             AgentRecord {
                 name: name.to_owned(),
@@ -94,7 +92,7 @@ async fn percent_name_resolves_through_the_agent_resolver() {
                 RESOURCE_AGENT_KEY,
                 record("claude", Some("claude")),
             )
-    }));
+    });
     let swap = |first: &str, second: &str| SpatialOp::Swap {
         first: first.to_owned(),
         second: second.to_owned(),

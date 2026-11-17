@@ -1,97 +1,62 @@
 //! The kitchen view's state and what it does: the fleet as chefs, kept in
 //! step each frame, and the way from a chef to its terminal. The scene is
-//! `crate::kitchen`; the painter is `ui::kitchen`.
+//! `crate::kitchen`; the painter is `ui::kitchen`. The shared ways in and
+//! out are `desk::scene_host`.
 
-use std::cell::{Cell, RefCell};
-use std::time::Duration;
+use std::cell::RefCell;
 
 use phux_protocol::ids::ResourceId;
-use rune::Tx;
 
 use super::Desk;
+use super::fleet::Machine;
+use super::scene_host::{FleetScene, SceneHost, SceneState};
+use super::surfaces::Playground;
 use crate::kitchen::{self, Cook};
-use crate::machines::LOCAL;
 use crate::playground::{self, Mood};
 
-/// How often the kitchen redraws while open: every frame.
-const FRAME: Duration = Duration::from_millis(16);
+pub type Kitchen = SceneHost<kitchen::Kitchen>;
 
 #[derive(Debug, Default)]
-pub struct Kitchen {
-    pub scene: kitchen::Kitchen,
-    /// The view's size in points, from its last layout.
-    pub viewport: [f32; 2],
-    /// App clock seconds at the last frame.
-    last: Option<f64>,
-    /// Whether the theme is dark, as the last view build saw it: night.
-    pub night: Cell<bool>,
-    /// Reduced motion, as the last view build saw it.
-    pub still: Cell<bool>,
+pub struct Backdrop {
     /// The room's static paint and the layout generation it was made for.
     pub room: RefCell<(u32, rune::Shape)>,
     /// The night's darkness, redrawn each frame while it's dark.
     pub mask: rune::Pixels,
 }
 
-impl Desk {
-    pub fn toggle_kitchen(&mut self) {
-        if self.playground == Some(super::surfaces::Playground::Kitchen) {
-            self.close_kitchen();
-            return;
+/// Machines as lines in a fixed order, so a line never swaps places when an
+/// agent there starts needing you; every agent the galaxy knows of as a chef.
+impl FleetScene for kitchen::Kitchen {
+    type Who = Cook;
+    type Backdrop = Backdrop;
+    const PLAYGROUND: Playground = Playground::Kitchen;
+    const MACHINE_ORDER: bool = true;
+    const LAYOUT_FIRST: bool = true;
+
+    fn host(desk: &mut Desk) -> &mut Kitchen {
+        &mut desk.kitchen
+    }
+
+    fn state(&mut self) -> SceneState<'_> {
+        SceneState {
+            selected: &mut self.selected,
+            hovered: &mut self.hovered,
+            nt_target: &mut self.nt_target,
+            reduce: &mut self.reduce,
         }
-        self.close_inbox();
-        self.settings_open = false;
-        self.playground = Some(super::surfaces::Playground::Kitchen);
-        self.kitchen.last = None;
-        self.kitchen.scene.selected = None;
     }
 
-    pub fn close_kitchen(&mut self) {
-        self.close_playground(super::surfaces::Playground::Kitchen);
+    fn waiting_ids(&self) -> Vec<ResourceId> {
+        let waiting = self.chefs.iter().filter(|c| c.who.mood == Mood::Waiting);
+        waiting.map(|c| c.who.id.clone()).collect()
     }
 
-    /// Keep the chefs in step with the fleet and the scene moving while open.
-    pub(super) fn tick_kitchen(&mut self, tx: &mut Tx) -> bool {
-        if self.playground != Some(super::surfaces::Playground::Kitchen) {
-            return false;
-        }
-        self.refresh_kitchen();
-        let dt = self
-            .kitchen
-            .last
-            .map_or(0.0, |last| (self.clock - last) as f32);
-        self.kitchen.last = Some(self.clock);
-        self.kitchen.scene.advance(dt);
-        tx.wake_after(FRAME);
-        true
+    fn selected_id(&self) -> Option<ResourceId> {
+        self.selected_chef().map(|c| c.who.id.clone())
     }
 
-    /// The view laid out at `w` by `h`.
-    pub fn kitchen_laid_out(&mut self, w: f32, h: f32) {
-        self.kitchen.viewport = [w, h];
-        self.refresh_kitchen();
-    }
-
-    /// Machines as lines in a fixed order (this one, this computer, then the
-    /// registry's), so a line never swaps places when an agent there starts
-    /// needing you; every agent the galaxy knows of as a chef.
-    fn refresh_kitchen(&mut self) {
-        let mut planets = self.fleet_machines();
-        let here = self.machines.current.as_deref().unwrap_or(LOCAL);
-        let hosts = &self.machines.hosts;
-        planets.sort_by_key(|p| match p.name.as_str() {
-            n if n == here => 0,
-            LOCAL => 1,
-            n => {
-                2 + hosts
-                    .iter()
-                    .position(|h| h.name == n)
-                    .unwrap_or(hosts.len())
-            }
-        });
-        let lines: Vec<(String, bool)> =
-            planets.iter().map(|p| (p.name.clone(), p.known)).collect();
-        let cooks = planets
+    fn creatures(planets: &[Machine]) -> Vec<Cook> {
+        planets
             .iter()
             .enumerate()
             .flat_map(|(at, p)| {
@@ -104,71 +69,57 @@ impl Desk {
                     work: s.work,
                 })
             })
-            .collect();
-        let scene = &mut self.kitchen.scene;
-        scene.nt_target = if self.kitchen.night.get() { 1.0 } else { 0.0 };
-        scene.reduce = self.kitchen.still.get();
-        let [w, h] = self.kitchen.viewport;
-        scene.layout(w, h, &lines);
-        scene.sync(cooks);
+            .collect()
     }
 
-    /// A press on a chef selects it; a press on the selected one opens its
-    /// terminal, as the galaxy opens a star.
+    fn layout(&mut self, w: f32, h: f32, hosts: &[(String, bool)]) {
+        kitchen::Kitchen::layout(self, w, h, hosts);
+    }
+
+    fn sync(&mut self, who: Vec<Cook>) {
+        kitchen::Kitchen::sync(self, who);
+    }
+
+    fn advance(&mut self, dt: f32) {
+        kitchen::Kitchen::advance(self, dt);
+    }
+}
+
+impl Desk {
+    pub fn toggle_kitchen(&mut self) {
+        self.toggle_scene::<kitchen::Kitchen>();
+    }
+
+    pub fn close_kitchen(&mut self) {
+        self.close_scene::<kitchen::Kitchen>();
+    }
+
+    pub fn kitchen_laid_out(&mut self, w: f32, h: f32) {
+        self.scene_laid_out::<kitchen::Kitchen>(w, h);
+    }
+
     pub fn kitchen_press(&mut self, id: ResourceId) {
-        if self.kitchen.scene.selected.as_ref() == Some(&id) {
-            self.open_chef();
-        } else {
-            self.kitchen.scene.selected = Some(id);
-        }
+        self.scene_press::<kitchen::Kitchen>(id);
     }
 
     pub fn kitchen_deselect(&mut self) {
-        self.kitchen.scene.selected = None;
+        self.scene_deselect::<kitchen::Kitchen>();
     }
 
     pub fn kitchen_hover(&mut self, id: ResourceId, on: bool) {
-        let hovered = &mut self.kitchen.scene.hovered;
-        if on {
-            *hovered = Some(id);
-        } else if hovered.as_ref() == Some(&id) {
-            *hovered = None;
-        }
+        self.scene_hover::<kitchen::Kitchen>(id, on);
     }
 
-    /// The waiting chef after the selected one, round again at the end.
     pub fn kitchen_next_waiting(&mut self) {
-        let scene = &self.kitchen.scene;
-        let waiting: Vec<&ResourceId> = scene
-            .chefs
-            .iter()
-            .filter(|c| c.who.mood == Mood::Waiting)
-            .map(|c| &c.who.id)
-            .collect();
-        if waiting.is_empty() {
-            return;
-        }
-        let next = waiting
-            .iter()
-            .position(|id| Some(*id) == scene.selected.as_ref())
-            .map_or(0, |at| (at + 1) % waiting.len());
-        self.kitchen.scene.selected = Some(waiting[next].clone());
+        self.scene_next_waiting::<kitchen::Kitchen>();
     }
 
-    /// Escape lets go of a chef first, then closes.
     pub fn kitchen_escape(&mut self) {
-        if self.kitchen.scene.selected.take().is_none() {
-            self.close_kitchen();
-        }
+        self.scene_escape::<kitchen::Kitchen>();
     }
 
     /// Close the kitchen on the selected chef's terminal.
     pub fn open_chef(&mut self) {
-        let Some(c) = self.kitchen.scene.selected_chef() else {
-            return;
-        };
-        let id = c.who.id.clone();
-        self.close_kitchen();
-        self.go_to_agent(&id);
+        self.open_scene_pick::<kitchen::Kitchen>();
     }
 }

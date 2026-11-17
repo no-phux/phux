@@ -9,11 +9,11 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
+use super::engine::DocumentResource as _;
 use phux_protocol::wire::frame::{
     AgentEvent, CommandResult, CommandValue, ControlClasses, DocumentInput, ErrorCode, FrameKind,
     OnBehalfOf,
 };
-use phux_tree::DocumentResource as _;
 use tokio::sync::oneshot;
 
 use super::DocumentApi;
@@ -73,10 +73,10 @@ pub(super) async fn relay<A: DocumentApi>(
     relayed: Option<&OnBehalfOf>,
 ) -> CommandResult {
     let found = ctx.state.with(|s| {
-        let core = s.resource_from_wire(terminal_id)?;
-        let handle = s.resource_handle(core)?.clone();
+        let core = s.idspace.resource_from_wire(terminal_id)?;
+        let handle = s.resources().handle(core)?.clone();
         let producer = s.resource_producer(core);
-        let spawner = s.resource_spawner(core);
+        let spawner = s.resources().spawner(core);
         let origin = super::audit::origin(s, ctx.client_id, relayed);
         Some((
             core,
@@ -88,10 +88,10 @@ pub(super) async fn relay<A: DocumentApi>(
         ))
     });
     let Some((core, handle, producer, spawner, class, origin)) = found else {
-        return CommandResult::Error {
-            code: ErrorCode::TerminalNotFound,
-            message: format!("no such resource: {terminal_id}"),
-        };
+        return CommandResult::error(
+            ErrorCode::TerminalNotFound,
+            format!("no such resource: {terminal_id}"),
+        );
     };
     if let Err(error) = handle.document::<A>() {
         return crate::runtime::commands::wrong_resource_kind(error);
@@ -102,14 +102,16 @@ pub(super) async fn relay<A: DocumentApi>(
     if let Some(allowed) = control
         && !class.is_some_and(|class| allowed.contains(class))
     {
-        return CommandResult::Error {
-            code: ErrorCode::PermissionDenied,
-            message: format!("input to this {} was not authorized", A::LABEL),
-        };
+        return CommandResult::error(
+            ErrorCode::PermissionDenied,
+            format!("input to this {} was not authorized", A::LABEL),
+        );
     }
-    let not_connected = || CommandResult::Error {
-        code: ErrorCode::NotProducer,
-        message: format!("the {}'s producer is not connected", A::LABEL),
+    let not_connected = || {
+        CommandResult::error(
+            ErrorCode::NotProducer,
+            format!("the {}'s producer is not connected", A::LABEL),
+        )
     };
     let (Some(producer), Some(spawner)) = (producer, spawner) else {
         return not_connected();
@@ -154,10 +156,10 @@ pub(super) async fn relay<A: DocumentApi>(
     match producer.try_send(Outbound::Frame(event)) {
         Ok(()) => {}
         Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-            return CommandResult::Error {
-                code: ErrorCode::Overflow,
-                message: format!("the {}'s producer is not keeping up", A::LABEL),
-            };
+            return CommandResult::error(
+                ErrorCode::Overflow,
+                format!("the {}'s producer is not keeping up", A::LABEL),
+            );
         }
         Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return not_connected(),
     }
@@ -223,10 +225,10 @@ fn answer(
     };
     drop(table);
     let Some(entry) = entry else {
-        return CommandResult::Error {
-            code: ErrorCode::NotProducer,
-            message: "no copy or paste from this producer is waiting on that reply".to_owned(),
-        };
+        return CommandResult::error(
+            ErrorCode::NotProducer,
+            "no copy or paste from this producer is waiting on that reply",
+        );
     };
     // The viewer may have given up; its answer then goes nowhere.
     let _ = entry.answer.send(text);

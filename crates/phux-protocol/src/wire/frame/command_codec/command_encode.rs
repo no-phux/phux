@@ -16,6 +16,7 @@ use super::{
     encode_key_event, encode_mouse_event, encode_optional_u32, encode_paste_event,
     encode_terminal_id,
 };
+use crate::wire::info::encode_u16_list;
 
 #[allow(
     clippy::too_many_lines,
@@ -105,10 +106,7 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
             enc.write_u8(COMMAND_TAG_APPLY_INPUT);
             enc.write_raw(operation_id.as_bytes());
             encode_terminal_id(terminal_id, enc);
-            enc.write_u16_be(u16::try_from(events.len()).unwrap_or(u16::MAX));
-            for event in events {
-                encode_input_event(event, enc);
-            }
+            encode_u16_list(events, enc, encode_input_event);
         }
         Command::KillResources { ids, operation_id } => {
             enc.write_u8(COMMAND_TAG_KILL_RESOURCES);
@@ -372,10 +370,7 @@ pub(super) fn encode_kill_precondition(precondition: &KillPrecondition, enc: &mu
 
 /// A `u16`-counted list of tagged `ResourceId`s.
 pub(super) fn encode_resource_ids(ids: &[crate::ids::ResourceId], enc: &mut Encoder<'_>) {
-    enc.write_u16_be(u16::try_from(ids.len()).unwrap_or(u16::MAX));
-    for id in ids {
-        encode_terminal_id(id, enc);
-    }
+    encode_u16_list(ids, enc, encode_terminal_id);
 }
 
 pub(super) fn encode_optional_client_id(value: Option<ClientId>, enc: &mut Encoder<'_>) {

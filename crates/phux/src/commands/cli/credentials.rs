@@ -53,40 +53,30 @@ mod tests {
 
     use super::*;
 
+    /// `phux credentials` argv from space-separated words; `~` stands for
+    /// a space inside one word.
+    fn argv(words: &str) -> Vec<String> {
+        std::iter::once("phux credentials")
+            .chain([words])
+            .flat_map(str::split_whitespace)
+            .map(|word| word.replace('~', " "))
+            .collect()
+    }
+
     #[test]
     fn provider_and_consumer_accept_remote_options_without_consuming_child_flags() {
-        let cli = crate::parse_cli([
-            "phux",
-            "credentials",
-            "serve",
-            "--name",
-            "desktop",
-            "--account",
-            "personal",
-            "--remote",
-            "mini",
-        ])
+        let cli = crate::parse_cli(argv(
+            "serve --name desktop --account personal --remote mini",
+        ))
         .expect("provider CLI");
         assert_eq!(
             crate::commands::verb_remote(cli.command.as_ref().expect("command")),
             Some("mini")
         );
-        let cli = crate::parse_cli([
-            "phux",
-            "credentials",
-            "run",
-            "--provider",
-            "desktop",
-            "--env",
-            "TOKEN=op://v/i/f",
-            "--purpose",
-            "test consumer",
-            "--remote",
-            "mini",
-            "--",
-            "consumer",
-            "--version",
-        ])
+        let cli = crate::parse_cli(argv(
+            "run --provider desktop --env TOKEN=op://v/i/f --purpose test~consumer \
+             --remote mini -- consumer --version",
+        ))
         .expect("consumer CLI");
         assert!(
             matches!(cli.command, Some(crate::commands::Command::Credentials(CredentialsArgs {
@@ -98,31 +88,11 @@ mod tests {
     #[test]
     fn consumer_requires_provider_references_purpose_and_command() {
         for args in [
-            vec!["phux", "credentials", "serve"],
-            vec![
-                "phux",
-                "credentials",
-                "run",
-                "--provider",
-                "desktop",
-                "--purpose",
-                "test",
-                "--",
-                "consumer",
-            ],
-            vec![
-                "phux",
-                "credentials",
-                "run",
-                "--provider",
-                "desktop",
-                "--env",
-                "TOKEN=op://v/i/f",
-                "--purpose",
-                "test",
-            ],
+            "serve",
+            "run --provider desktop --purpose test -- consumer",
+            "run --provider desktop --env TOKEN=op://v/i/f --purpose test",
         ] {
-            assert!(crate::parse_cli(args).is_err());
+            assert!(crate::parse_cli(argv(args)).is_err(), "{args}");
         }
     }
 }

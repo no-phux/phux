@@ -56,15 +56,10 @@ fn path_route(state: &SharedState, host: Option<SatelliteHost>) -> PathRoute {
     let Some(host) = host else {
         return PathRoute::Local;
     };
-    state.with(|server| match server.hub_relay(&host) {
-        Some(relay) => PathRoute::Relay(relay),
-        None if server.hub_table().is_some() => {
-            PathRoute::Refused(format!("no satellite named {host} in this hub's registry"))
-        }
-        None => PathRoute::Refused(format!(
-            "this server is not a federation hub; it has no route to satellite {host}"
-        )),
-    })
+    match state.with(|s| s.federation().relay_route(&host)) {
+        Ok(relay) => PathRoute::Relay(relay),
+        Err(refusal) => PathRoute::Refused(refusal),
+    }
 }
 
 /// Dispatch without holding up the connection's frame loop. Closing the
@@ -76,7 +71,7 @@ pub(super) fn handle_path_query(
     request: PathRequest,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
 ) {
-    if !state.with(|s| s.client_speaks_l3(client_id)) {
+    if !state.with(|s| s.clients().speaks_l3(client_id)) {
         return;
     }
     let route = path_route(state, request.host);

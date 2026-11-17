@@ -31,7 +31,7 @@ fn sent_set_metadata(frames: &[FrameKind]) -> bool {
 async fn hidden_view_actions_wait_for_the_layout_read_fence() {
     use tracing::instrument::WithSubscriber;
 
-    let buf = InfoLog::default();
+    let buf = crate::test_util::LogBuf::default();
     let subscriber = tracing_subscriber::fmt()
         .with_ansi(false)
         .with_max_level(tracing::Level::INFO)
@@ -110,35 +110,6 @@ async fn hidden_view_actions_wait_for_the_layout_read_fence() {
         log.contains("reopen-views") && log.contains("close-view"),
         "{log}"
     );
-}
-
-/// In-memory tracing sink for an info-level subscriber.
-#[derive(Clone, Default)]
-struct InfoLog(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-
-impl std::io::Write for InfoLog {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().expect("log lock").extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for InfoLog {
-    type Writer = Self;
-
-    fn make_writer(&'a self) -> Self::Writer {
-        self.clone()
-    }
-}
-
-impl InfoLog {
-    fn text(&self) -> String {
-        String::from_utf8(self.0.lock().expect("log lock").clone()).expect("utf8 log")
-    }
 }
 
 /// Releasing the bootstrap fence on failure does not authorize editing an

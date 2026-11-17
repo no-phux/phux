@@ -6,6 +6,7 @@ use super::{
     MAX_ORG_NAME_BYTES, ResourceKey, SplitDirection, TARGET_MEMBER, TARGET_SATELLITE,
     bounded_dec_str, field,
 };
+use crate::wire::info::{decode_u16_list, encode_u16_list};
 
 pub(super) const NODE_LEAF: u8 = 0;
 
@@ -21,16 +22,17 @@ pub(super) const NODE_SPLIT: u8 = 1;
 /// or `0x01 || host: str || id: u32` (a satellite resource). A record is
 /// `u32` length then body, so groups and nodes can grow at their ends.
 pub(in crate::wire) fn encode_arrangement_doc(doc: &ArrangementDoc, enc: &mut Encoder<'_>) {
-    enc.write_u16_be(u16::try_from(doc.groups.len()).unwrap_or(u16::MAX));
-    for group in &doc.groups {
-        enc.write_record(|enc| {
-            enc.write_raw(&group.id);
-            enc.write_option(group.name.as_deref(), Encoder::write_str);
-            encode_node(&group.tree, enc);
-            if group.locked {
-                enc.write_u8(1);
-            }
-        });
+    encode_u16_list(&doc.groups, enc, |group, enc| {
+        enc.write_record(|enc| encode_group_body(group, enc));
+    });
+}
+
+fn encode_group_body(group: &ArrangementGroup, enc: &mut Encoder<'_>) {
+    enc.write_raw(&group.id);
+    enc.write_option(group.name.as_deref(), Encoder::write_str);
+    encode_node(&group.tree, enc);
+    if group.locked {
+        enc.write_u8(1);
     }
 }
 
@@ -115,11 +117,7 @@ pub(in crate::wire) fn decode_arrangement_doc(value: &[u8]) -> Result<Arrangemen
         return Err(DecodeError::OrganizationLimitExceeded);
     }
     let mut dec = Decoder::new(value);
-    let count = usize::from(dec.read_u16_be()?);
-    let mut groups = dec.bounded_capacity(count);
-    for _ in 0..count {
-        groups.push(dec.read_record(decode_group)?);
-    }
+    let groups = decode_u16_list(&mut dec, |d| d.read_record(decode_group))?;
     Ok(ArrangementDoc { groups })
 }
 

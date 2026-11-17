@@ -7,8 +7,8 @@ use base64::Engine as _;
 use phux_client::attach::AttachError;
 use phux_client::read::{Route, Verb};
 use phux_client::snapshot::{RenderedFrame, ScreenState};
+use phux_config::socket::default_socket_path;
 use phux_protocol::wire::frame::AttachTarget;
-use phux_server::runtime::default_socket_path;
 use phux_tui::attach::run_headless_rendered;
 
 use crate::commands::{
@@ -148,9 +148,9 @@ async fn terminal_or_document(
     read: &ReadOpts,
     json: bool,
 ) -> ControlFlow<ExitCode, phux_protocol::ids::ResourceId> {
-    let resolved = match resolve_resource(socket_path, selector, "snapshot", json, false).await {
+    let resolved = match resolve_resource(socket_path, selector, "snapshot", false).await {
         Ok(resolved) => resolved,
-        Err(code) => return ControlFlow::Break(code),
+        Err(refusal) => return ControlFlow::Break(refusal.emit(json)),
     };
     let route = match phux_client::read::route(Verb::Snapshot, &resolved) {
         Ok(route) => route,
@@ -253,7 +253,9 @@ async fn rendered_attach_target(
     if let Selector::Session(name) = selector {
         return Ok(AttachTarget::ByName(name));
     }
-    let pane = resolve_target(socket_path, &selector, "snapshot", json).await?;
+    let pane = resolve_target(socket_path, &selector, "snapshot")
+        .await
+        .map_err(|refusal| refusal.emit(json))?;
     let snapshot = phux_client::state::get_state(socket_path)
         .await
         .map_err(|err| json_err::report_no_server(json, &err, socket_path, "snapshot"))?
@@ -358,6 +360,41 @@ fn footer(screen: &ScreenState) -> String {
         let _ = write!(out, " truncated={reason}");
     }
     out
+}
+
+/// Run `phux snapshot` as parsed.
+pub(crate) fn run(args: crate::commands::SnapshotArgs, socket: Option<PathBuf>) -> ExitCode {
+    let crate::commands::SnapshotArgs {
+        session,
+        json,
+        scrollback,
+        cells,
+        tail,
+        unwrap,
+        rendered,
+        format,
+        out,
+        cols,
+        rows,
+    } = args;
+    run_snapshot(
+        session.as_deref(),
+        json.json,
+        &ReadOpts {
+            scrollback,
+            cells,
+            tail,
+            unwrap,
+            format,
+            out,
+        },
+        &RenderedOpts {
+            rendered,
+            cols,
+            rows,
+        },
+        socket,
+    )
 }
 
 #[cfg(test)]

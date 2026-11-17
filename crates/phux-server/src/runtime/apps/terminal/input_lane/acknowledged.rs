@@ -363,19 +363,19 @@ fn completion_result(outcome: WriteCompletion) -> CommandResult {
 }
 
 pub(super) fn delivery_unknown() -> CommandResult {
-    CommandResult::Error {
-        code: ErrorCode::InputDeliveryUnknown,
-        message: "PTY input delivery could not be confirmed".to_owned(),
-    }
+    CommandResult::error(
+        ErrorCode::InputDeliveryUnknown,
+        "PTY input delivery could not be confirmed",
+    )
 }
 
 /// The request provably never reached a PTY writer, so unlike
 /// [`delivery_unknown`] a retry under any id cannot duplicate it.
 fn not_written() -> CommandResult {
-    CommandResult::Error {
-        code: ErrorCode::InputNotWritten,
-        message: "PTY input was not written; the pane's writer never received it".to_owned(),
-    }
+    CommandResult::error(
+        ErrorCode::InputNotWritten,
+        "PTY input was not written; the pane's writer never received it",
+    )
 }
 
 /// Pending operations, indexed by ticket and ordered by deadline.

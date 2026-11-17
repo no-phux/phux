@@ -908,8 +908,8 @@ mod tests {
     use crate::layout::{LayoutNode, SplitDir};
     use crate::render::ChromeBreakpoints;
     use crate::render::chrome::sidebar::SidebarPainter;
+    use crate::render::chrome::status_bar::widgets::{StatusBar, WidgetRegistry, WindowInfo};
     use crate::render::theme::Theme;
-    use phux_config::widget::WidgetRegistry;
     use phux_config::{StatusCfg, Widget};
 
     const LEFT20: SidebarReservation = SidebarReservation {
@@ -949,15 +949,14 @@ mod tests {
             left: vec![Widget::Bare("session-name".into())],
             ..Default::default()
         };
-        let bar = phux_config::widget::StatusBar::build(&cfg, &WidgetRegistry::with_builtins())
-            .expect("bar build");
+        let bar = StatusBar::build(&cfg, &WidgetRegistry::with_builtins()).expect("bar build");
         StatusBarPainter::new(bar, Position::Bottom)
     }
 
     /// A left-docked sidebar painter primed with one window.
     fn build_sidebar() -> SidebarPainter {
         let mut painter = SidebarPainter::new(Theme::default());
-        painter.set_windows(vec![phux_config::widget::WindowInfo {
+        painter.set_windows(vec![WindowInfo {
             name: "editor".to_owned(),
             active: true,
             zoomed: false,
@@ -1220,15 +1219,11 @@ mod tests {
     ) -> StatusBarPaint {
         let (kernel, _, mut panes) = published_test_state(entries);
         let (res, strip) = sidebar.map_or((None, None), |(res, strip)| (Some(res), Some(strip)));
-        let theme = Theme::default();
         let mut chrome = ChromeCtx {
-            viewport,
             sidebar: res,
             status_bar: bar,
             sidebar_painter: strip,
-            session_name: "demo",
-            theme: &theme,
-            leaves: &crate::attach::surface_leaf::LeafBook::default(),
+            ..ChromeCtx::bare(viewport, "demo")
         };
         paint_full_frame(
             out,
@@ -1401,15 +1396,9 @@ mod tests {
         clobbered: bool,
     ) -> String {
         let mut out = Vec::new();
-        let theme = Theme::default();
         let mut chrome = ChromeCtx {
-            viewport: (80, 24),
-            sidebar: None,
             status_bar: Some(painter),
-            sidebar_painter: None,
-            session_name: "demo",
-            theme: &theme,
-            leaves: &crate::attach::surface_leaf::LeafBook::default(),
+            ..ChromeCtx::bare((80, 24), "demo")
         };
         paint_bar_after_pane(&mut out, &mut chrome, cursor, fallback, clobbered);
         String::from_utf8_lossy(&out).into_owned()
@@ -1461,15 +1450,11 @@ mod tests {
         bar: Option<&mut StatusBarPainter>,
         strip: &mut SidebarPainter,
     ) {
-        let theme = Theme::default();
         let mut chrome = ChromeCtx {
-            viewport: (80, 24),
             sidebar: Some(LEFT20),
             status_bar: bar,
             sidebar_painter: Some(strip),
-            session_name: "demo",
-            theme: &theme,
-            leaves: &crate::attach::surface_leaf::LeafBook::default(),
+            ..ChromeCtx::bare((80, 24), "demo")
         };
         let (kernel, _effects, _panes) = published_test_state(&[]);
         paint_chrome_in_place(

@@ -52,7 +52,7 @@ impl Fixture {
         )
         .unwrap();
         let host = state.with_mut(|s| {
-            let host = s.new_client_id();
+            let host = s.clients_mut().new_client_id();
             let mut identity = ConnectionIdentity::from(peer);
             identity.credential = Some(AuthenticatedCredential {
                 id: delegation.credential.id.clone(),
@@ -71,7 +71,7 @@ impl Fixture {
                 subject: None,
                 managed: None,
             });
-            s.set_connection_identity(host, identity);
+            s.clients_mut().set_connection_identity(host, identity);
             s.set_connection_grant(
                 host,
                 ConnectionGrant::delegated(
@@ -117,9 +117,9 @@ impl Fixture {
         ResourceId,
     ) {
         let (owner, session, parent) = state.with_mut(|s| {
-            s.set_server_socket_path(dir.join("isolated.sock"));
-            let owner = s.new_client_id();
-            s.set_peer_identity(owner, peer.clone());
+            s.config_mut().server_socket_path = Some(dir.join("isolated.sock"));
+            let owner = s.clients_mut().new_client_id();
+            s.clients_mut().set_peer_identity(owner, peer.clone());
             s.set_connection_grant(owner, ConnectionGrant::owner());
             let launch = phux_core::TerminalLaunch {
                 env: vec![(
@@ -336,10 +336,8 @@ impl Fixture {
     }
     pub(super) async fn ready(&self) -> u64 {
         let generation = self.register().await;
-        decode::<NativePublicationReceipt>(
-            self.publish(generation, 1, NativeUpdate::View { view: Self::view() })
-                .await,
-        );
+        self.published(generation, 1, NativeUpdate::View { view: Self::view() })
+            .await;
         generation
     }
     pub(super) async fn command(
@@ -363,6 +361,35 @@ impl Fixture {
             .await,
         )
     }
+    /// [`Self::command`]'s disposition alone.
+    pub(super) async fn disposition(
+        &self,
+        client: ClientId,
+        id: u64,
+        intent: NativeIntent,
+    ) -> NativeDisposition {
+        self.command(client, id, intent).await.disposition
+    }
+    /// [`Self::publish`], which must be accepted.
+    pub(super) async fn published(
+        &self,
+        generation: u64,
+        id: u64,
+        update: NativeUpdate,
+    ) -> NativePublicationReceipt {
+        decode(self.publish(generation, id, update).await)
+    }
+    /// Publish `question-A` of `kind` as publication `id`.
+    pub(super) async fn ask(&self, generation: u64, id: u64, kind: &str) {
+        self.published(
+            generation,
+            id,
+            NativeUpdate::QuestionOpened {
+                question: question(kind),
+            },
+        )
+        .await;
+    }
     pub(super) async fn receive(&self, generation: u64) -> NativeCommand {
         decode(
             self.request(
@@ -379,8 +406,9 @@ impl Fixture {
     }
     pub(super) async fn cut(&self) -> phux_agent_session::session::AgentSessionBootstrap {
         let bootstrap = self.state.with(|s| {
-            s.resource_from_wire(&self.agent)
-                .and_then(|core| s.resource_handle(core))
+            s.idspace
+                .resource_from_wire(&self.agent)
+                .and_then(|core| s.resources().handle(core))
                 .unwrap()
                 .agent_session()
                 .unwrap()
@@ -422,4 +450,11 @@ pub(super) fn question(kind: &str) -> NativeQuestion {
 }
 pub(super) fn prompt(text: &str) -> NativeIntent {
     NativeIntent::Prompt { text: text.into() }
+}
+/// An answer to `question-A`.
+pub(super) fn answer(response: serde_json::Value) -> NativeIntent {
+    NativeIntent::Answer {
+        question_id: "question-A".into(),
+        response,
+    }
 }

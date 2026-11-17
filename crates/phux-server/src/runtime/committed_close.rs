@@ -71,7 +71,7 @@ pub(super) fn commit_close(
     let killed_clients = s
         .take_killed_sessions()
         .into_iter()
-        .flat_map(|session| s.attached_clients_in_session(session))
+        .flat_map(|session| s.clients().attached_in_session(session))
         .collect();
     CommittedClose {
         closes,
@@ -84,12 +84,15 @@ pub(super) fn commit_close(
 fn close_one(s: &mut ServerState, resource: CoreResourceId) -> Option<ClosedResource> {
     let reason = s.begin_resource_close(resource)?;
     // ADR-0124: a retained pane's close reports the exit it was kept with.
-    let exit = s.retained_outcome(resource).unwrap_or(ExitOutcome::UNKNOWN);
+    let exit = s
+        .retained()
+        .outcome(resource)
+        .unwrap_or(ExitOutcome::UNKNOWN);
     // Interned before the reap, which retires the wire id.
-    let wire_terminal_id = s.intern_resource_wire(resource);
+    let wire_terminal_id = s.idspace.intern_resource(resource);
     let parent = s
         .resource_parent(resource)
-        .map(|parent| s.intern_resource_wire(parent));
+        .map(|parent| s.idspace.intern_resource(parent));
     // Every subscriber, including `ATTACH_RESOURCE`-only ones (L1 §3.1).
     let targets = s.terminal_fanout_targets(resource);
     let publication_fences = s.attach_publication_fences(resource);
@@ -102,7 +105,7 @@ fn close_one(s: &mut ServerState, resource: CoreResourceId) -> Option<ClosedReso
         attribution,
     );
     s.note_closed_before_exit(resource, wire_terminal_id.clone());
-    s.cancel_terminal_pumps(resource);
+    s.resources_mut().cancel_pumps_for_terminal(resource);
     let _ = s.reap_resource(resource);
     Some(ClosedResource {
         wire_terminal_id,

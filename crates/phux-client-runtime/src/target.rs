@@ -367,7 +367,7 @@ pub fn read_token(path: Option<&Path>) -> Result<Option<String>, String> {
 
 /// Everything a dial needs, resolved from the registry.
 ///
-/// Holds no secret: the token file is only NAMED here, and the tunnel thread
+/// Holds no secret: the token file is only NAMED here, and the dial planner
 /// reads it just before dialing, so resolving a host for display never
 /// touches the token.
 #[derive(Debug, Clone, PartialEq, Eq)]

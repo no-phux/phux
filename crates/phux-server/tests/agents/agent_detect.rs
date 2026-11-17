@@ -17,9 +17,10 @@ use tempfile::TempDir;
 use tokio::net::UnixStream;
 use tokio::time::timeout;
 
+use crate::fake_agent::{depart, write_departing_agent, write_fake_agent, write_fake_codex};
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, ServerHandles, attach_by_name, recv_typed, recv_until, run_local,
-    send_frame, spawn_server_with_seed_cmd, wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, ServerHandles, attach_focused, recv_typed, run_local, send_frame,
+    spawn_server_with_seed_cmd, wait_for_socket,
 };
 
 /// Startup grace and identity recheck via the detector's env seams
@@ -54,80 +55,6 @@ fn shorten_detector_timers() {
     }
 }
 
-fn write_executable(path: &Path, script: &str) {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::write(path, script).unwrap();
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
-}
-
-/// A fake `claude` painting the permission dialog Claude Code 2.1.207
-/// actually draws (see `phux-agent-rules/src/fixtures/claude/`): transcript
-/// text above a U+2500 rule, the dialog alone below it, carrying both the
-/// "Do you want to " stem and a numbered option (the rule requires both).
-/// It creates `painted` once the screen is in the PTY, then runs `tail`.
-fn write_fake_agent(dir: &Path, tail: &str) -> PathBuf {
-    let path = dir.join("claude");
-    let rule = "\\342\\224\\200".repeat(20);
-    let script = format!(
-        "#!/bin/sh\n\
-         printf '\\033[2J\\033[H'\n\
-         echo 'some transcript output above the live chrome'\n\
-         echo ''\n\
-         printf '{rule}\\n'\n\
-         echo ' Bash command'\n\
-         echo ''\n\
-         echo '   touch /tmp/probe.txt'\n\
-         echo ''\n\
-         echo ' Do you want to proceed?'\n\
-         printf ' \\342\\235\\257 1. Yes\\n'\n\
-         echo '   2. Yes, and always allow access'\n\
-         echo '   3. No'\n\
-         echo ''\n\
-         echo ' Esc to cancel'\n\
-         : > '{}'\n\
-         {tail}\n",
-        dir.join("painted").display(),
-    );
-    write_executable(&path, &script);
-    path
-}
-
-/// A fake agent that `exec`s `successor` once `depart` exists: a departure
-/// with no trap, no clear, and no PTY EOF, like a `kill -9`. The polling
-/// `sleep` shares the script's process group, so identity is unaffected.
-fn write_departing_agent(dir: &Path, successor: &str) -> PathBuf {
-    let tail = format!(
-        "while [ ! -f '{}' ]; do sleep 0.1; done\nexec {successor}",
-        dir.join("depart").display(),
-    );
-    write_fake_agent(dir, &tail)
-}
-
-fn depart(dir: &Path) {
-    std::fs::write(dir.join("depart"), b"go").unwrap();
-}
-
-/// A fake `codex` painting the command-approval prompt `rules/codex.toml`
-/// matches: a second kind makes an occupant change expressible.
-fn write_fake_codex(dir: &Path) -> PathBuf {
-    let path = dir.join("codex");
-    write_executable(
-        &path,
-        "#!/bin/sh\n\
-         printf '\\033[2J\\033[H'\n\
-         echo 'Would you like to run the following command?'\n\
-         echo ''\n\
-         echo '$ curl -s https://example.com | head -5'\n\
-         echo ''\n\
-         echo ' 1. Yes, proceed (y)'\n\
-         echo ' 3. No, and tell Codex what to do differently (esc)'\n\
-         echo ''\n\
-         echo 'Press enter to confirm or esc to cancel'\n\
-         sleep 30\n",
-    );
-    path
-}
-
 struct Pane {
     _server: ServerHandles,
     socket_path: PathBuf,
@@ -141,12 +68,7 @@ impl Pane {
         let socket_path = tmp.path().join("phux.sock");
         let server = spawn_server_with_seed_cmd(socket_path.clone(), "demo", cmd);
         let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-        send_frame(&mut stream, &attach_by_name("demo")).await;
-        let terminal = recv_until(&mut stream, |_, frame| match frame {
-            FrameKind::Attached { snapshot, .. } => Some(snapshot.focused_resource),
-            _ => None,
-        })
-        .await;
+        let terminal = attach_focused(&mut stream, "demo").await;
         let mut pane = Self {
             _server: server,
             socket_path,
@@ -170,6 +92,13 @@ impl Pane {
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
+        pane
+    }
+
+    /// As [`Self::agent`], once the dialog has published `blocked`.
+    async fn blocked(tmp: &TempDir, agent: &Path) -> Self {
+        let mut pane = Self::agent(tmp, agent).await;
+        assert!(pane.await_state("blocked", DETECT_DEADLINE).await.is_some());
         pane
     }
 
@@ -375,8 +304,7 @@ fn deleting_the_record_hands_it_back_to_the_detector() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let agent = write_fake_agent(tmp.path(), "sleep 30");
-        let mut pane = Pane::agent(&tmp, &agent).await;
-        assert!(pane.await_state("blocked", DETECT_DEADLINE).await.is_some());
+        let mut pane = Pane::blocked(&tmp, &agent).await;
 
         let delete = FrameKind::DeleteMetadata {
             request_id: 7,
@@ -401,8 +329,7 @@ fn a_declared_state_does_not_survive_the_death_of_the_process_it_describes() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let agent = write_departing_agent(tmp.path(), "sleep 300");
-        let mut pane = Pane::agent(&tmp, &agent).await;
-        assert!(pane.await_state("blocked", DETECT_DEADLINE).await.is_some());
+        let mut pane = Pane::blocked(&tmp, &agent).await;
 
         let declared = br#"{"name":"me","kind":"claude","state":"working","attention":"high"}"#;
         pane.set_agent(11, declared).await;
@@ -427,8 +354,7 @@ fn a_detector_written_record_is_retracted_when_the_agent_leaves_the_pane() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let agent = write_departing_agent(tmp.path(), "sleep 300");
-        let mut pane = Pane::agent(&tmp, &agent).await;
-        assert!(pane.await_state("blocked", DETECT_DEADLINE).await.is_some());
+        let mut pane = Pane::blocked(&tmp, &agent).await;
         depart(tmp.path());
 
         let end = deadline(DEPARTURE_DEADLINE);
@@ -452,8 +378,7 @@ fn a_kind_change_never_leaves_a_stale_kind_beside_a_live_state() {
         let tmp = TempDir::new().unwrap();
         let codex = write_fake_codex(tmp.path());
         let agent = write_departing_agent(tmp.path(), &codex.display().to_string());
-        let mut pane = Pane::agent(&tmp, &agent).await;
-        assert!(pane.await_state("blocked", DETECT_DEADLINE).await.is_some());
+        let mut pane = Pane::blocked(&tmp, &agent).await;
         depart(tmp.path());
 
         let pairs = pane
@@ -483,8 +408,7 @@ fn a_declared_kind_never_gains_a_state_derived_from_a_different_occupant() {
         let tmp = TempDir::new().unwrap();
         let codex = write_fake_codex(tmp.path());
         let agent = write_departing_agent(tmp.path(), &codex.display().to_string());
-        let mut pane = Pane::agent(&tmp, &agent).await;
-        assert!(pane.await_state("blocked", DETECT_DEADLINE).await.is_some());
+        let mut pane = Pane::blocked(&tmp, &agent).await;
         pane.set_agent(11, br#"{"name":"claude","kind":"claude"}"#)
             .await;
         depart(tmp.path());

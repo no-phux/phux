@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use phux_client::attach::AttachError;
 use phux_client::global_metadata::{self, WriteError};
-use phux_server::runtime::default_socket_path;
+use phux_config::socket::default_socket_path;
 use phux_usage::{MAX_DOCUMENT_BYTES, Plan, REFRESH_KEY, Snapshot, USAGE_KEY};
 
 use crate::commands::json_err::{self, CliError, codes};

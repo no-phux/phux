@@ -269,9 +269,10 @@ fn org_command_samples() -> Vec<(Command, &'static Rule)> {
 
 #[allow(
     clippy::too_many_lines,
-    reason = "one sample per Command variant, kept as one flat table"
+    clippy::redundant_pub_crate,
+    reason = "one sample per Command variant, kept as one flat table; the wire schema's round-trip test, outside `kinds`, reads it"
 )]
-fn command_samples() -> Vec<(Command, &'static Rule)> {
+pub(crate) fn command_samples() -> Vec<(Command, &'static Rule)> {
     let focus = InputEvent::Focus(FocusEvent::Gained);
     vec![
         (
@@ -484,27 +485,6 @@ fn command_samples() -> Vec<(Command, &'static Rule)> {
             &C_CHECKOUT,
         ),
         (
-            Command::ServiceHttpOpen {
-                request: Box::new(crate::service_http::ServiceHttpRequest {
-                    host: None,
-                    service: "opencode".to_owned(),
-                    method: "GET".to_owned(),
-                    target: "/api/info".to_owned(),
-                    headers: Vec::new(),
-                    body: Vec::new(),
-                }),
-            },
-            &C_SERVICE_HTTP,
-        ),
-        (
-            Command::ServiceHttpRead {
-                exchange: 1,
-                max_bytes: 1,
-            },
-            &C_SERVICE_HTTP,
-        ),
-        (Command::ServiceHttpClose { exchange: 1 }, &C_SERVICE_HTTP),
-        (
             Command::ReportAsked {
                 terminal_id: terminal(),
                 id: "q".to_owned(),
@@ -606,5 +586,6 @@ fn command_samples() -> Vec<(Command, &'static Rule)> {
     .into_iter()
     .chain(org_command_samples())
     .chain(forward_samples())
+    .chain(service_http_samples())
     .collect()
 }

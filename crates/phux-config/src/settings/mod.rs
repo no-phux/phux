@@ -5,14 +5,13 @@
 //!    are composition, not knobs). A test pins it to the schema both ways.
 //! 2. [`SettingsSnapshot`]: the resolved layer stack, answering each key's
 //!    effective value, shipped default, and origin layer.
-//! 3. The writer ([`apply_edit`] / [`write_edit`]).
+//! 3. The writer ([`apply_edit`] / [`write_edit`] / [`write_edits`]).
 
 mod write;
 
 use std::path::Path;
 
-pub use write::replace_atomically;
-pub use write::{Edit, EditOutcome, apply_edit, write_edit};
+pub use write::{Edit, EditOutcome, apply_edit, write_edit, write_edits};
 
 use crate::{
     ConfigError, ConfigProvenance, LayerSource, MAX_AGENT_LOG_BYTES, MAX_EVENT_JOURNAL_BYTES,

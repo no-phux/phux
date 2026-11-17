@@ -140,7 +140,7 @@ fn tracked_pump_abort_fences_blocked_send_and_reclaims_churn() {
             assert!(tasks.len() <= 1, "completed JoinSet tasks accumulated");
             assert!(
                 state
-                    .with_mut(|s| s.stop_terminal_output_pumps(client, terminal))
+                    .with_mut(|s| s.resources_mut().stop_output_pumps(client, terminal))
                     .is_empty()
             );
         }

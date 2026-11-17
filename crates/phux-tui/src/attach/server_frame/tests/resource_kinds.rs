@@ -34,7 +34,7 @@ pub(super) fn document(h: &mut H, id: &ResourceId, profile: phux_protocol::Boots
         b"\x1b]52;c;bm90LXR0eQ==\x07untrusted document",
     ));
     h.send(ready_frame(id));
-    h.send(output_frame(id, 2, b"\x1b[2Juntrusted live document"));
+    h.send(output(id, 2, b"\x1b[2Juntrusted live document"));
 }
 
 #[test]
@@ -153,7 +153,7 @@ fn a_frame_off_the_current_generations_is_dropped_not_fatal() {
         .expect("a duplicate generation is dropped");
     assert!(!duplicate.resync_required);
     assert!(
-        h.try_send(output_frame(&tree, 2, b"{}")).is_err(),
+        h.try_send(output(&tree, 2, b"{}")).is_err(),
         "a live frame at or behind the last is still a protocol fault"
     );
 }

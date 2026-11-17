@@ -8,18 +8,18 @@ use std::marker::PhantomData;
 use std::os::fd::RawFd;
 use std::time::Duration;
 
+use super::engine::{DocumentActor, DocumentResource as _, SnapshotRequest};
 use base64::Engine as _;
 use bytes::Bytes;
 use futures_util::FutureExt as _;
 use futures_util::future::LocalBoxFuture;
-use futures_util::stream::{FuturesUnordered, StreamExt as _};
 use phux_core::ids::ResourceId;
 use phux_protocol::wire::frame::ControlClass;
-use phux_tree::{DocumentActor, DocumentResource as _, SnapshotRequest};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use super::{DocumentApi, with_control};
+use crate::runtime::apps::producer_stream::collect_within;
 use crate::runtime::apps::{KindResume, UpgradeCut};
 use crate::runtime::connections::pane_events::PaneEvents;
 use crate::runtime::upgrade::UpgradeError;
@@ -83,11 +83,12 @@ impl<A: DocumentApi> UpgradeCut for DocumentCut<A> {
 fn snapshot_senders<A: DocumentApi>(
     s: &ServerState,
 ) -> Vec<(ResourceId, mpsc::Sender<SnapshotRequest>)> {
-    s.resource_ids()
+    s.resources()
+        .resource_ids()
         .into_iter()
         .filter(|&id| s.resource_wire(id).is_some() && s.registry().resource(id).is_some())
         .filter_map(|id| {
-            let document = s.resource_handle(id)?.document::<A>().ok()?;
+            let document = s.resources().handle(id)?.document::<A>().ok()?;
             Some((id, document.snapshot.clone()))
         })
         .collect()
@@ -100,22 +101,12 @@ pub(crate) async fn collect_document_cuts(
     documents: Vec<(ResourceId, mpsc::Sender<SnapshotRequest>)>,
     deadline: Duration,
 ) -> HashMap<ResourceId, Option<Bytes>> {
-    let mut pending = documents
-        .into_iter()
-        .map(|(id, snapshot)| async move {
-            let (reply, rx) = oneshot::channel();
-            snapshot.send(SnapshotRequest { reply }).await.ok()?;
-            Some((id, rx.await.ok()?.document))
-        })
-        .collect::<FuturesUnordered<_>>();
-    let mut cuts = HashMap::new();
-    let _ = tokio::time::timeout(deadline, async {
-        while let Some(cut) = pending.next().await {
-            cuts.extend(cut);
-        }
+    collect_within(documents, deadline, |(id, snapshot)| async move {
+        let (reply, rx) = oneshot::channel();
+        snapshot.send(SnapshotRequest { reply }).await.ok()?;
+        Some((id, rx.await.ok()?.document))
     })
-    .await;
-    cuts
+    .await
 }
 
 /// One [`DocumentBlob`] per cut whose document is still registered under a

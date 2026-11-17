@@ -45,7 +45,7 @@ pub(crate) use plumbing::abort_output_pumps;
 pub(super) use session_create::detach_clients_of_killed_session;
 pub(crate) use socket::{handle_existing_socket, prepare_socket_dir, secure_socket_file};
 
-#[cfg(all(test, feature = "native-engine", not(target_arch = "wasm32")))]
+#[cfg(test)]
 #[allow(
     clippy::expect_used,
     clippy::panic,

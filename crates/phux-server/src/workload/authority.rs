@@ -6,8 +6,8 @@ use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyPair};
 use rustls::pki_types::CertificateDer;
 use rustls::pki_types::pem::PemObject;
 
-use super::store::{self, FileRole};
 use super::{WorkloadError, credential_id, scrub};
+use crate::secure_file::{self, FileRole};
 
 /// The workload authority after [`init_authority`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,7 +26,7 @@ pub struct AuthorityStatus {
 ///
 /// A partial or insecure pair, or any failure to mint or persist it.
 pub fn init_authority(cert_path: &Path, key_path: &Path) -> Result<AuthorityStatus, WorkloadError> {
-    let created = store::with_lock(key_path, |held| {
+    let created = secure_file::with_lock(key_path, |held| {
         create_authority_if_absent(cert_path, key_path, held)
     })?;
     Ok(AuthorityStatus {
@@ -47,10 +47,10 @@ pub fn ensure_ca(cert_path: &Path, key_path: &Path) -> Result<(), WorkloadError>
 fn create_authority_if_absent(
     cert_path: &Path,
     key_path: &Path,
-    held: &store::HeldLock<'_>,
+    held: &secure_file::HeldLock<'_>,
 ) -> Result<bool, WorkloadError> {
-    let cert = store::probe(cert_path, FileRole::CaCertificate)?.is_some();
-    let key = store::probe(key_path, FileRole::CaPrivateKey)?.is_some();
+    let cert = secure_file::probe(cert_path, FileRole::CaCertificate)?.is_some();
+    let key = secure_file::probe(key_path, FileRole::CaPrivateKey)?.is_some();
     match (cert, key) {
         (true, true) => Ok(false),
         (true, false) => Err(WorkloadError::PartialPair {
@@ -71,19 +71,20 @@ fn create_authority_if_absent(
 fn mint_authority(
     cert_path: &Path,
     key_path: &Path,
-    held: &store::HeldLock<'_>,
+    held: &secure_file::HeldLock<'_>,
 ) -> Result<(), WorkloadError> {
     let params = authority_params()?;
     let key = KeyPair::generate()?;
     let certificate = params.self_signed(&key)?;
-    store::open_owner_dir(cert_path)?;
+    secure_file::open_owner_dir(cert_path)?;
     // The key lands first: a crash before the certificate leaves a partial
     // pair, which refuses to start rather than minting a second authority.
     let mut key_pem = key.serialize_pem().into_bytes();
-    let written = store::atomic_replace(key_path, &key_pem, held);
+    let written = secure_file::atomic_replace(key_path, &key_pem, held);
     scrub(&mut key_pem);
     written?;
-    store::atomic_replace(cert_path, certificate.pem().as_bytes(), held)
+    secure_file::atomic_replace(cert_path, certificate.pem().as_bytes(), held)?;
+    Ok(())
 }
 
 /// The fields of every workload CA certificate.
@@ -122,7 +123,7 @@ pub fn authority_certificate(cert_path: &Path) -> Result<CertificateDer<'static>
 pub(super) fn load_authority_certificate(
     cert_path: &Path,
 ) -> Result<(CertificateDer<'static>, String), WorkloadError> {
-    let Some((_, raw)) = store::read_stable(cert_path, FileRole::CaCertificate)? else {
+    let Some((_, raw)) = secure_file::read_stable(cert_path, FileRole::CaCertificate)? else {
         return Err(WorkloadError::AuthorityMissing);
     };
     let pem = String::from_utf8(raw)
@@ -140,7 +141,7 @@ pub(super) fn load_authority_certificate(
 /// returns. rcgen decodes the key into buffers of its own, which this crate
 /// cannot reach, so scrubbing is best effort.
 pub(super) fn load_authority_key(key_path: &Path) -> Result<KeyPair, WorkloadError> {
-    let Some((_, mut raw)) = store::read_stable(key_path, FileRole::CaPrivateKey)? else {
+    let Some((_, mut raw)) = secure_file::read_stable(key_path, FileRole::CaPrivateKey)? else {
         return Err(WorkloadError::AuthorityMissing);
     };
     let key = std::str::from_utf8(&raw)

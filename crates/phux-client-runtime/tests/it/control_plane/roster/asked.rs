@@ -49,9 +49,7 @@ fn a_question_cleared_during_a_gap_is_retracted_by_recovery() {
     let _ = plane.take_events();
     // The clear's METADATA_CHANGED was lost with the gap.
     journal_gap(&mut plane);
-    let inventory = state_id(&outbound(&mut plane));
-    answer_state(&mut plane, inventory, snapshot());
-    let reread = asked_id(&outbound(&mut plane));
+    let reread = asked_id(&answer_queued_state(&mut plane, snapshot()));
     assert_ne!(reread, asked);
     answer_metadata(&mut plane, reread, None);
     assert_eq!(asked_levels(&mut plane), vec![false]);
@@ -66,9 +64,7 @@ fn reconnect_rereads_the_flag_and_ignores_the_previous_connection() {
     plane.connection_opened();
     let _ = outbound(&mut plane);
     plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
-    let request_id = state_id(&outbound(&mut plane));
-    answer_state(&mut plane, request_id, snapshot());
-    let asked = asked_id(&outbound(&mut plane));
+    let asked = asked_id(&answer_queued_state(&mut plane, snapshot()));
     // A late reply correlated by the old connection is not this one's read.
     answer_metadata(&mut plane, old_asked, Some(b"1"));
     answer_metadata(&mut plane, asked, None);

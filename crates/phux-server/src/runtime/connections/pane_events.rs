@@ -129,10 +129,10 @@ pub(crate) fn reap_pane_journaling_close(s: &mut ServerState, pane: CoreResource
     if s.registry().resource(pane).is_none() {
         return false;
     }
-    let wire = s.intern_resource_wire(pane);
+    let wire = s.idspace.intern_resource(pane);
     let parent = s
         .resource_parent(pane)
-        .map(|parent| s.intern_resource_wire(parent));
+        .map(|parent| s.idspace.intern_resource(parent));
     journal_pane_closed(
         s,
         &wire,
@@ -172,7 +172,7 @@ pub(super) fn journal_drained_event(
     // The registry's cwd is what GET_STATE reports; a client that joins or
     // refreshes after this event must see the move, not the ATTACH-time dir.
     if let AgentEvent::CwdChanged { cwd } = &event
-        && let Some(pane) = s.resource_from_wire(wire_terminal_id)
+        && let Some(pane) = s.idspace.resource_from_wire(wire_terminal_id)
         && let Some(desc) = s.registry_mut().terminal_mut(pane)
     {
         desc.cwd = std::path::PathBuf::from(cwd);
@@ -180,7 +180,7 @@ pub(super) fn journal_drained_event(
     // Likewise the program's title: GET_STATE reports it so a list can name
     // a pane before the client streams it (RESOURCE_PROGRAM_TITLE).
     if let AgentEvent::TitleChanged { title } = &event
-        && let Some(pane) = s.resource_from_wire(wire_terminal_id)
+        && let Some(pane) = s.idspace.resource_from_wire(wire_terminal_id)
         && let Some(desc) = s.registry_mut().terminal_mut(pane)
     {
         desc.program_title = Some(title.clone()).filter(|t| !t.is_empty());
@@ -212,7 +212,8 @@ pub(super) fn journal_source_gap(
 /// Whether the pane `wire_terminal_id` names is still registered. A reap
 /// retires the wire id, so a reaped pane no longer resolves.
 fn pane_is_live(s: &ServerState, wire_terminal_id: &WireResourceId) -> bool {
-    s.resource_from_wire(wire_terminal_id)
+    s.idspace
+        .resource_from_wire(wire_terminal_id)
         .is_some_and(|pane| s.registry().resource(pane).is_some())
 }
 

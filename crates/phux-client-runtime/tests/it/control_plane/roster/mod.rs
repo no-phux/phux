@@ -3,25 +3,8 @@ use phux_protocol::wire::frame::{
     AgentEvent, RESOURCE_AGENT_KEY, RESOURCE_ASKED_KEY, RESOURCE_NOTE_KEY, Scope,
 };
 
-fn outbound(plane: &mut ControlPlane) -> Vec<FrameKind> {
-    plane
-        .take_outbound()
-        .iter()
-        .map(|bytes| decode(bytes))
-        .collect()
-}
-
 fn state_id(frames: &[FrameKind]) -> u32 {
-    frames
-        .iter()
-        .find_map(|frame| match frame {
-            FrameKind::Command {
-                request_id,
-                command: Command::GetState { .. },
-            } => Some(*request_id),
-            _ => None,
-        })
-        .expect("topology read")
+    state_read(frames).expect("topology read")
 }
 
 fn metadata_id(frames: &[FrameKind]) -> u32 {
@@ -32,22 +15,6 @@ fn metadata_id(frames: &[FrameKind]) -> u32 {
             _ => None,
         })
         .expect("metadata read")
-}
-
-fn answer_state(plane: &mut ControlPlane, request_id: u32, snapshot: SessionSnapshot) {
-    plane.reply(
-        request_id,
-        CommandResult::OkWith(CommandValue::State(snapshot)),
-    );
-}
-
-fn answer_metadata(plane: &mut ControlPlane, request_id: u32, value: Option<&[u8]>) {
-    plane
-        .feed(FrameKind::MetadataValue {
-            request_id,
-            value: value.map(<[u8]>::to_vec),
-        })
-        .unwrap();
 }
 
 fn event(plane: &mut ControlPlane, terminal: Option<ResourceId>, event: AgentEvent) {
@@ -72,10 +39,7 @@ fn journal_gap(plane: &mut ControlPlane) {
 }
 
 fn browsing() -> (ControlPlane, u32) {
-    let mut plane = ControlPlane::new(ControlOptions::default());
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
+    let mut plane = opened(ControlOptions::default(), hello_ok(PROTOCOL_VERSION.patch));
     let frames = outbound(&mut plane);
     assert!(matches!(frames[0], FrameKind::SubscribeEvents { .. }));
     let request_id = state_id(&frames);
@@ -85,6 +49,13 @@ fn browsing() -> (ControlPlane, u32) {
 fn discovered() -> (ControlPlane, u32) {
     let (plane, agent, _) = discovered_both();
     (plane, agent)
+}
+
+/// [`discovered`] with the declaration read answered: nothing declared.
+fn settled() -> ControlPlane {
+    let (mut plane, read) = discovered();
+    answer_metadata(&mut plane, read, None);
+    plane
 }
 
 /// An inventoried terminal with both roster reads outstanding:
@@ -136,12 +107,74 @@ fn asked_levels(plane: &mut ControlPlane) -> Vec<bool> {
 }
 
 fn asked_changed(plane: &mut ControlPlane, value: Option<&[u8]>) {
+    metadata_changed(plane, RESOURCE_ASKED_KEY, value);
+}
+
+/// A live `METADATA_CHANGED` of the terminal's `key`.
+fn metadata_changed(plane: &mut ControlPlane, key: &str, value: Option<&[u8]>) {
     plane
         .feed(FrameKind::MetadataChanged {
             scope: Scope::Resource(terminal()),
-            key: RESOURCE_ASKED_KEY.to_owned(),
+            key: key.to_owned(),
             value: value.map(<[u8]>::to_vec),
             actor: None,
+        })
+        .unwrap();
+}
+
+fn title_changed(plane: &mut ControlPlane, title: &str) {
+    event(
+        plane,
+        Some(terminal()),
+        AgentEvent::TitleChanged {
+            title: title.into(),
+        },
+    );
+}
+
+/// Answer the queued topology read with `snapshot`; returns what follows.
+fn answer_queued_state(plane: &mut ControlPlane, snapshot: SessionSnapshot) -> Vec<FrameKind> {
+    let request_id = state_id(&outbound(plane));
+    answer_state(plane, request_id, snapshot);
+    outbound(plane)
+}
+
+/// The next queued declaration read, answered with `value`, publishes it.
+fn assert_reread_declares(plane: &mut ControlPlane, frames: &[FrameKind], value: Option<&[u8]>) {
+    answer_metadata(plane, metadata_id(frames), value);
+    assert_eq!(declarations(plane), vec![value.map(<[u8]>::to_vec)]);
+}
+
+fn refuse(plane: &mut ControlPlane, request_id: u32, code: ErrorCode, message: &str) {
+    plane
+        .feed(FrameKind::Error {
+            request_id: Some(request_id),
+            code,
+            message: message.into(),
+        })
+        .unwrap();
+}
+
+/// `snapshot()` with a second pane, `ResourceId::local(8)`.
+fn with_second_pane() -> SessionSnapshot {
+    let mut current = snapshot();
+    current.resources.push(ResourceInfo::new(
+        ResourceId::local(8),
+        WindowId::new(1),
+        20,
+        4,
+    ));
+    current
+}
+
+/// Spawn a terminal that the server answers as `ResourceId::local(8)`.
+fn spawn_second_pane(plane: &mut ControlPlane) {
+    let spawn = plane.spawn_terminal(SpawnRequest::default());
+    let _ = outbound(plane);
+    plane
+        .feed(FrameKind::ResourceSpawned {
+            request_id: spawn,
+            result: SpawnResult::Ok(ResourceId::local(8)),
         })
         .unwrap();
 }
@@ -176,14 +209,7 @@ fn declarations(plane: &mut ControlPlane) -> Vec<Option<Vec<u8>>> {
 #[test]
 fn subscribes_before_read_and_a_live_clear_fences_the_delayed_snapshot() {
     let (mut plane, read) = discovered();
-    plane
-        .feed(FrameKind::MetadataChanged {
-            scope: Scope::Resource(terminal()),
-            key: RESOURCE_AGENT_KEY.to_owned(),
-            value: None,
-            actor: None,
-        })
-        .unwrap();
+    metadata_changed(&mut plane, RESOURCE_AGENT_KEY, None);
     answer_metadata(&mut plane, read, Some(b"old declaration"));
     assert_eq!(declarations(&mut plane), vec![None]);
     assert!(outbound(&mut plane).is_empty());
@@ -192,14 +218,7 @@ fn subscribes_before_read_and_a_live_clear_fences_the_delayed_snapshot() {
 #[test]
 fn a_live_declaration_fences_a_delayed_absence_and_preserves_raw_consumers() {
     let (mut plane, read) = discovered();
-    plane
-        .feed(FrameKind::MetadataChanged {
-            scope: Scope::Resource(terminal()),
-            key: RESOURCE_AGENT_KEY.to_owned(),
-            value: Some(b"new".to_vec()),
-            actor: None,
-        })
-        .unwrap();
+    metadata_changed(&mut plane, RESOURCE_AGENT_KEY, Some(b"new"));
     answer_metadata(&mut plane, read, None);
     let events = plane.take_events();
     assert_eq!(events.iter().filter(|event| matches!(event, Event::AgentMetadata { value: Some(value), .. } if value == b"new")).count(), 1);
@@ -221,9 +240,8 @@ fn gap_bursts_coalesce_and_old_reads_cannot_publish_before_recovery() {
     answer_state(&mut plane, first, snapshot());
     let followup = state_id(&outbound(&mut plane));
     answer_state(&mut plane, followup, snapshot());
-    let final_read = metadata_id(&outbound(&mut plane));
-    answer_metadata(&mut plane, final_read, None);
-    assert_eq!(declarations(&mut plane), vec![None]);
+    let frames = outbound(&mut plane);
+    assert_reread_declares(&mut plane, &frames, None);
     assert!(outbound(&mut plane).is_empty());
 }
 
@@ -237,11 +255,8 @@ fn source_gap_recovers_even_without_an_attached_terminal() {
         Some(terminal()),
         AgentEvent::SourceGap { dropped: 12 },
     );
-    let request_id = state_id(&outbound(&mut plane));
-    answer_state(&mut plane, request_id, snapshot());
-    let read = metadata_id(&outbound(&mut plane));
-    answer_metadata(&mut plane, read, Some(b"recovered"));
-    assert_eq!(declarations(&mut plane), vec![Some(b"recovered".to_vec())]);
+    let frames = answer_queued_state(&mut plane, snapshot());
+    assert_reread_declares(&mut plane, &frames, Some(b"recovered"));
 }
 
 #[test]
@@ -251,9 +266,7 @@ fn reconnect_resubscribes_and_does_not_correlate_old_metadata() {
     plane.connection_opened();
     let _ = outbound(&mut plane);
     plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
-    let request_id = state_id(&outbound(&mut plane));
-    answer_state(&mut plane, request_id, snapshot());
-    let frames = outbound(&mut plane);
+    let frames = answer_queued_state(&mut plane, snapshot());
     assert!(matches!(frames[0], FrameKind::SubscribeMetadata { .. }));
     let read = metadata_id(&frames);
     assert_ne!(old_read, read);
@@ -264,17 +277,10 @@ fn reconnect_resubscribes_and_does_not_correlate_old_metadata() {
 
 #[test]
 fn live_label_changes_overlay_a_delayed_state_snapshot_without_a_retry() {
-    let (mut plane, read) = discovered();
-    answer_metadata(&mut plane, read, None);
+    let mut plane = settled();
     let request_id = plane.refresh_topology().unwrap();
     let _ = outbound(&mut plane);
-    event(
-        &mut plane,
-        Some(terminal()),
-        AgentEvent::TitleChanged {
-            title: "new title".into(),
-        },
-    );
+    title_changed(&mut plane, "new title");
     event(
         &mut plane,
         Some(terminal()),
@@ -294,52 +300,22 @@ fn live_label_changes_overlay_a_delayed_state_snapshot_without_a_retry() {
 /// the shell retitled the pane used to blank the label other clients saw.
 #[test]
 fn a_refresh_keeps_the_shell_title_the_snapshot_cannot_carry() {
-    let (mut plane, read) = discovered();
-    answer_metadata(&mut plane, read, None);
-    event(
-        &mut plane,
-        Some(terminal()),
-        AgentEvent::TitleChanged {
-            title: "opencode".into(),
-        },
-    );
-    let request_id = plane.refresh_topology().unwrap();
-    let _ = outbound(&mut plane);
-    answer_state(&mut plane, request_id, snapshot());
+    let mut plane = settled();
+    title_changed(&mut plane, "opencode");
+    let _ = refresh_after_settling(&mut plane, snapshot());
     let descriptor = plane.topology().unwrap().pane(&terminal()).unwrap();
     assert_eq!(descriptor.title.as_deref(), Some("opencode"));
 }
 
 #[test]
 fn an_animating_title_cannot_starve_a_spawn_out_of_the_inventory() {
-    let (mut plane, read) = discovered();
-    answer_metadata(&mut plane, read, None);
-    let spawn = plane.spawn_terminal(SpawnRequest::default());
-    let _ = outbound(&mut plane);
-    plane
-        .feed(FrameKind::ResourceSpawned {
-            request_id: spawn,
-            result: SpawnResult::Ok(ResourceId::local(8)),
-        })
-        .unwrap();
+    let mut plane = settled();
+    spawn_second_pane(&mut plane);
     let inventory = state_id(&outbound(&mut plane));
     for frame in ["⠋", "⠙", "⠹"] {
-        event(
-            &mut plane,
-            Some(terminal()),
-            AgentEvent::TitleChanged {
-                title: frame.into(),
-            },
-        );
+        title_changed(&mut plane, frame);
     }
-    let mut current = snapshot();
-    current.resources.push(ResourceInfo::new(
-        ResourceId::local(8),
-        WindowId::new(1),
-        20,
-        4,
-    ));
-    answer_state(&mut plane, inventory, current);
+    answer_state(&mut plane, inventory, with_second_pane());
     let topology = plane.topology().unwrap();
     assert!(topology.pane(&ResourceId::local(8)).is_some());
     assert_eq!(
@@ -374,20 +350,11 @@ fn unrelated_metadata_replies_remain_extension_frames() {
 #[test]
 fn metadata_refusal_releases_correlation_without_retracting_the_badge() {
     let (mut plane, read) = discovered();
-    plane
-        .feed(FrameKind::Error {
-            request_id: Some(read),
-            code: ErrorCode::InvalidCommand,
-            message: "denied".into(),
-        })
-        .unwrap();
+    refuse(&mut plane, read, ErrorCode::InvalidCommand, "denied");
     assert!(declarations(&mut plane).is_empty());
     journal_gap(&mut plane);
-    let request_id = state_id(&outbound(&mut plane));
-    answer_state(&mut plane, request_id, snapshot());
-    let retry = metadata_id(&outbound(&mut plane));
-    answer_metadata(&mut plane, retry, None);
-    assert_eq!(declarations(&mut plane), vec![None]);
+    let frames = answer_queued_state(&mut plane, snapshot());
+    assert_reread_declares(&mut plane, &frames, None);
 }
 
 #[test]
@@ -402,11 +369,8 @@ fn consumer_overflow_recovers_declarations_without_binding_side_requests() {
             .unwrap();
     }
     let _ = plane.take_events();
-    let request_id = state_id(&outbound(&mut plane));
-    answer_state(&mut plane, request_id, snapshot());
-    let read = metadata_id(&outbound(&mut plane));
-    answer_metadata(&mut plane, read, None);
-    assert_eq!(declarations(&mut plane), vec![None]);
+    let frames = answer_queued_state(&mut plane, snapshot());
+    assert_reread_declares(&mut plane, &frames, None);
 }
 
 #[test]
@@ -424,13 +388,12 @@ fn metadata_error_preserves_the_recovery_requested_while_read_was_pending() {
             FrameKind::SubscribeMetadata { .. }
         ]
     ));
-    plane
-        .feed(FrameKind::Error {
-            request_id: Some(old_read),
-            code: ErrorCode::InvalidCommand,
-            message: "old read failed".into(),
-        })
-        .unwrap();
+    refuse(
+        &mut plane,
+        old_read,
+        ErrorCode::InvalidCommand,
+        "old read failed",
+    );
     assert!(declarations(&mut plane).is_empty());
     let frames = outbound(&mut plane);
     assert_eq!(frames.len(), 1, "one coalesced retry, even on error");
@@ -443,31 +406,16 @@ fn metadata_error_preserves_the_recovery_requested_while_read_was_pending() {
 
 #[test]
 fn a_spawn_receipt_fences_an_older_inventory_even_before_its_broadcast() {
-    let (mut plane, read) = discovered();
-    answer_metadata(&mut plane, read, None);
+    let mut plane = settled();
     let old_inventory = plane.refresh_topology().unwrap();
-    let spawn = plane.spawn_terminal(SpawnRequest::default());
-    let _ = outbound(&mut plane);
-    plane
-        .feed(FrameKind::ResourceSpawned {
-            request_id: spawn,
-            result: SpawnResult::Ok(ResourceId::local(8)),
-        })
-        .unwrap();
+    spawn_second_pane(&mut plane);
     assert!(
         outbound(&mut plane).is_empty(),
         "one inventory read in flight"
     );
     answer_state(&mut plane, old_inventory, snapshot());
     let fresh = state_id(&outbound(&mut plane));
-    let mut current = snapshot();
-    current.resources.push(ResourceInfo::new(
-        ResourceId::local(8),
-        WindowId::new(1),
-        20,
-        4,
-    ));
-    answer_state(&mut plane, fresh, current);
+    answer_state(&mut plane, fresh, with_second_pane());
     assert_eq!(plane.topology().unwrap().panes.len(), 2);
 }
 
@@ -497,16 +445,8 @@ fn refresh_after_settling(plane: &mut ControlPlane, snapshot: SessionSnapshot) -
 
 #[test]
 fn an_inventory_subscribes_and_reads_only_terminals_new_to_it() {
-    let (mut plane, read) = discovered();
-    answer_metadata(&mut plane, read, None);
-    let mut current = snapshot();
-    current.resources.push(ResourceInfo::new(
-        ResourceId::local(8),
-        WindowId::new(1),
-        20,
-        4,
-    ));
-    let frames = refresh_after_settling(&mut plane, current);
+    let mut plane = settled();
+    let frames = refresh_after_settling(&mut plane, with_second_pane());
     assert_eq!(frames.len(), 8, "{frames:?}");
     for pair in frames.chunks(2) {
         assert!(
@@ -524,8 +464,7 @@ fn an_inventory_subscribes_and_reads_only_terminals_new_to_it() {
 
 #[test]
 fn a_detach_ends_the_subscriptions_so_the_next_inventory_renews_them() {
-    let (mut plane, read) = discovered();
-    answer_metadata(&mut plane, read, None);
+    let mut plane = settled();
     plane
         .feed(FrameKind::Detached {
             reason: Some(DetachReason::Requested),
@@ -551,13 +490,7 @@ fn a_detach_ends_the_subscriptions_so_the_next_inventory_renews_them() {
 #[test]
 fn a_failed_read_is_retried_by_the_next_inventory() {
     let (mut plane, read) = discovered();
-    plane
-        .feed(FrameKind::Error {
-            request_id: Some(read),
-            code: ErrorCode::InvalidCommand,
-            message: "busy".into(),
-        })
-        .unwrap();
+    refuse(&mut plane, read, ErrorCode::InvalidCommand, "busy");
     let frames = refresh_after_settling(&mut plane, snapshot());
     let retry = metadata_id(&frames);
     assert_ne!(retry, read);
@@ -569,23 +502,20 @@ fn a_failed_read_is_retried_by_the_next_inventory() {
 #[test]
 fn a_denied_read_is_a_stable_answer_that_recovery_does_not_repeat() {
     let (mut plane, read) = discovered();
-    plane
-        .feed(FrameKind::Error {
-            request_id: Some(read),
-            code: ErrorCode::PermissionDenied,
-            message: "policy denied".into(),
-        })
-        .unwrap();
+    refuse(
+        &mut plane,
+        read,
+        ErrorCode::PermissionDenied,
+        "policy denied",
+    );
     assert!(
         plane.take_events().is_empty(),
         "the grant's answer to the runtime's own read is not a consumer error"
     );
     for _ in 0..3 {
         journal_gap(&mut plane);
-        let request_id = state_id(&outbound(&mut plane));
-        answer_state(&mut plane, request_id, snapshot());
         assert!(
-            outbound(&mut plane).is_empty(),
+            answer_queued_state(&mut plane, snapshot()).is_empty(),
             "a grant does not change on a live connection, so neither does its refusal"
         );
     }
@@ -612,14 +542,7 @@ fn a_note_read_is_the_baseline_and_only_a_live_change_is_news() {
     let _ = plane.take_events();
     let note = br#"{"level":"warn","title":"deploy 90%"}"#;
     answer_metadata(&mut plane, read, Some(&note[..]));
-    plane
-        .feed(FrameKind::MetadataChanged {
-            scope: Scope::Resource(terminal()),
-            key: RESOURCE_NOTE_KEY.to_owned(),
-            value: Some(note.to_vec()),
-            actor: None,
-        })
-        .unwrap();
+    metadata_changed(&mut plane, RESOURCE_NOTE_KEY, Some(note));
     let notes: Vec<(bool, Option<String>)> = plane
         .take_events()
         .into_iter()

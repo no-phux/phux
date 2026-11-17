@@ -224,14 +224,14 @@ impl RelayedServer {
                 .expect("runtime");
             tokio::task::LocalSet::new().block_on(&runtime, async move {
                 let relay = phux_server_testkit::relay::RelayHarness::start_observing(
-                    phux_relay::RelayConfig {
+                    phux_dial::relay::RelayConfig {
                         max_conns: 16,
-                        ..phux_relay::config_in(SocketAddr::from(([127, 0, 0, 1], 0)), &state)
+                        ..phux_dial::relay::config_in(SocketAddr::from(([127, 0, 0, 1], 0)), &state)
                     },
                     relay_sni,
                 );
-                let pin =
-                    phux_relay::cert_fingerprint(&state.join("relay-cert.pem")).expect("relay pin");
+                let pin = phux_dial::relay::cert_fingerprint(&state.join("relay-cert.pem"))
+                    .expect("relay pin");
                 let connector = phux_config::ConnectorConfigEntry {
                     relay: relay.addr.to_string(),
                     token_file: Some(state.join("connector-token")),

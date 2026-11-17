@@ -16,6 +16,9 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::private_intra_doc_links)]
 
+// The agent projection behind `phux agent list|show|explain` and the MCP
+// agent reads: the detector replay and the level-read documents.
+pub mod agent;
 pub mod agent_meta;
 // `phux.agent/v1` wire round trips (ADR-0040); the record type is `agent_meta`.
 pub mod agent_record;
@@ -37,6 +40,8 @@ pub mod attach;
 pub mod checklist;
 // Conditional kills bound to the server's instance token (ADR-0109).
 pub mod conditional_kill;
+// The `--json` error contract every surface reports failures on.
+pub mod contract;
 pub mod credentials;
 pub mod deadline;
 // Delegated agent credentials (ADR-0163).
@@ -103,6 +108,8 @@ pub mod testkit;
 pub mod vcs;
 pub mod wait;
 pub mod watch;
+// `phux whoami` (ADR-0106): the connection's identity, as the server sees it.
+pub mod whoami;
 
 pub use phux_client_core::{layout, multi_pane, org_ops, predict, rename};
 // The `phux.transcript/v1` entry inside `provider_raw` records (ADR-0156).

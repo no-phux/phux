@@ -42,3 +42,8 @@ pub(crate) fn run_gen_reference_docs(out: Option<PathBuf>) -> ExitCode {
     }
     ExitCode::SUCCESS
 }
+
+/// Run the hidden `phux gen-reference-docs` as parsed.
+pub(crate) fn run(args: crate::commands::GenReferenceDocsArgs) -> ExitCode {
+    run_gen_reference_docs(args.out)
+}

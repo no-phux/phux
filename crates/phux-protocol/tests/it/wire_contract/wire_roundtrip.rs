@@ -14,6 +14,7 @@
 
 #![allow(clippy::unwrap_used)]
 
+use crate::common::Spawn;
 use bytes::BytesMut;
 use phux_protocol::caps::{
     BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ClientCapabilities, ColorSupport,
@@ -145,18 +146,13 @@ fn document_control_round_trips() {
             "page",
         )
         .with_control(control);
-        assert_round_trip(&FrameKind::SpawnResource {
-            request_id: 1,
-            group: phux_protocol::ids::GroupId::new(1),
-            command: None,
-            cwd: None,
-            env: None,
-            term: None,
-            satellite: None,
-            owner_terminal: None,
-            agent_session: None,
-            initial_size: None,
-            resource: Some(Box::new(resource)),
-        });
+        assert_round_trip(
+            &Spawn {
+                request_id: 1,
+                resource: Some(Box::new(resource)),
+                ..Spawn::default()
+            }
+            .frame(),
+        );
     }
 }

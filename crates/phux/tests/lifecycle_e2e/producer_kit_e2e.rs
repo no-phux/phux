@@ -11,22 +11,11 @@ use crate::common;
 
 use std::io::{BufReader, Write as _};
 use std::process::Stdio;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use common::ServerGuard;
 
 const SESSION: &str = "work";
-
-fn poll<F: FnMut() -> bool>(deadline: Duration, mut f: F) -> bool {
-    let end = Instant::now() + deadline;
-    while Instant::now() < end {
-        if f() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    false
-}
 
 fn ok(server: &ServerGuard, args: &[&str]) -> bool {
     server
@@ -57,7 +46,7 @@ fn started(name: &str) -> ServerGuard {
         .seed_command("exec sleep 600")
         .start();
     assert!(
-        poll(Duration::from_secs(10), || ok(&server, &["ls"])),
+        common::eventually(Duration::from_secs(10), || ok(&server, &["ls"])),
         "the server should accept connections"
     );
     server
@@ -91,7 +80,7 @@ fn serve_publishes_lines_relays_intents_and_readopts_across_upgrade() {
 
     writeln!(stdin, r#"{{"text": "first"}}"#).unwrap();
     assert!(
-        poll(Duration::from_secs(10), || snapshot(&server, &doc)
+        common::eventually(Duration::from_secs(10), || snapshot(&server, &doc)
             == "first\n"),
         "a stdin line replaces the document"
     );
@@ -106,13 +95,13 @@ fn serve_publishes_lines_relays_intents_and_readopts_across_upgrade() {
     let pid = server.pid();
     assert!(ok(&server, &["upgrade"]), "`phux upgrade` should ack");
     assert!(
-        poll(Duration::from_secs(15), || common::process_exists(pid)
+        common::eventually(Duration::from_secs(15), || common::process_exists(pid)
             && ok(&server, &["ls"])),
         "the resumed server should accept connections again"
     );
     writeln!(stdin, r#"{{"base64": "c2Vjb25k"}}"#).unwrap();
     assert!(
-        poll(Duration::from_secs(20), || snapshot(&server, &doc)
+        common::eventually(Duration::from_secs(20), || snapshot(&server, &doc)
             == "second\n"),
         "serve redialed and published to the same document"
     );
@@ -151,7 +140,7 @@ fn folder_lists_a_directory_and_navigates_into_a_subdirectory() {
     let opened = json_line(&mut BufReader::new(folder.stdout.take().unwrap()));
     let doc = opened["resource"].as_str().expect("resource").to_owned();
     assert!(
-        poll(Duration::from_secs(10), || {
+        common::eventually(Duration::from_secs(10), || {
             let listing = snapshot(&server, &doc);
             listing.contains("| inner/ |") && listing.contains("| top.txt | 2 B |")
         }),
@@ -160,7 +149,7 @@ fn folder_lists_a_directory_and_navigates_into_a_subdirectory() {
     std::fs::write(dir.path().join("inner/deep.txt"), b"x").unwrap();
     assert!(ok(&server, &["agent", "page", "navigate", &doc, "inner"]));
     assert!(
-        poll(Duration::from_secs(10), || snapshot(&server, &doc)
+        common::eventually(Duration::from_secs(10), || snapshot(&server, &doc)
             .contains("| deep.txt |")),
         "navigate opens the subdirectory"
     );

@@ -15,12 +15,12 @@
 use crate::{common, listeners};
 
 use std::path::{Path, PathBuf};
-use std::process::{Output, Stdio};
 use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 
-use crate::hermetic::{Server, hermetic_env, prepare_dirs};
+use crate::common::Out;
+use crate::hermetic::{self, Server, phux_with, prepare_dirs};
 
 /// How long the uplink has to come up after `join` or `host enable`; the
 /// satellite's redial backoff caps at 30 s.
@@ -30,79 +30,30 @@ fn socket(dir: &Path) -> PathBuf {
     dir.join("s.sock")
 }
 
-fn env(dir: &Path) -> Vec<(&'static str, PathBuf)> {
-    let mut env = hermetic_env(dir);
-    env.push(("PHUX_SOCKET", socket(dir)));
-    env
+/// `phux ARGS` in `dir` with `input` on stdin, dialing `dir`'s socket.
+fn phux_with_stdin(dir: &Path, args: &[&str], input: &str) -> Out {
+    phux_with(dir, args, input.as_bytes(), &[("PHUX_SOCKET", socket(dir))]).into()
 }
 
-fn phux(dir: &Path, args: &[&str]) -> Output {
-    common::phux_cmd(crate::runner::phux_bin())
-        .envs(env(dir))
-        .current_dir(dir)
-        .args(args)
-        .stdin(Stdio::null())
-        .output()
-        .expect("run phux")
-}
-
-/// `phux ARGS` with `input` on stdin.
-fn phux_with_stdin(dir: &Path, args: &[&str], input: &str) -> Output {
-    use std::io::Write as _;
-    let mut child = common::phux_cmd(crate::runner::phux_bin())
-        .envs(env(dir))
-        .current_dir(dir)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn phux");
-    child
-        .stdin
-        .take()
-        .expect("stdin")
-        .write_all(input.as_bytes())
-        .expect("write stdin");
-    child.wait_with_output().expect("run phux")
+fn phux(dir: &Path, args: &[&str]) -> Out {
+    phux_with_stdin(dir, args, "")
 }
 
 fn start_server(dir: &Path, extra: &[&str]) -> Server {
-    let child = common::phux_cmd(crate::runner::phux_bin())
-        .envs(env(dir))
-        .current_dir(dir)
-        .arg("server")
-        .args(extra)
-        .args(["--exit-after-idle", "120"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn phux server");
-    Server(child)
-}
-
-fn text(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).into_owned()
-}
-
-fn json_doc(out: &Output) -> serde_json::Value {
-    assert!(
-        out.status.success(),
-        "{}{}",
-        text(&out.stdout),
-        text(&out.stderr)
-    );
-    serde_json::from_slice(&out.stdout).expect("one JSON document")
+    let socket = socket(dir);
+    hermetic::start_server(
+        dir,
+        extra,
+        &[("PHUX_SOCKET", socket.to_str().expect("UTF-8 socket path"))],
+    )
 }
 
 /// Wait until the server at `dir` answers.
 fn await_server(dir: &Path) {
-    let start = Instant::now();
-    while !phux(dir, &["ls", "--json"]).status.success() {
-        assert!(start.elapsed() < LINK_DEADLINE, "the server never answered");
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    let answered = common::until(LINK_DEADLINE, || {
+        phux(dir, &["ls", "--json"]).success().then_some(())
+    });
+    assert!(answered.is_some(), "the server never answered");
 }
 
 /// Start a `paired` hub with a CA and a loopback QUIC listener in `dir`; the
@@ -114,7 +65,7 @@ fn start_paired_hub(dir: &Path) -> (Server, String) {
     )
     .expect("hub config");
     let init = phux(dir, &["workload", "authority", "--init"]);
-    assert!(init.status.success(), "{}", text(&init.stderr));
+    assert!(init.success(), "{}", init.stderr);
     let server = start_server(dir, &["--quic", listeners::LOOPBACK_ANY_PORT]);
     let quic =
         listeners::bound_listener_addr(&socket(dir), listeners::RemoteListenerTransport::Quic);
@@ -123,22 +74,19 @@ fn start_paired_hub(dir: &Path) -> (Server, String) {
 
 /// `phux host ticket sat --hub QUIC --json` on the hub.
 fn ticket(hub: &Path, quic: &str) -> serde_json::Value {
-    json_doc(&phux(
-        hub,
-        &["host", "ticket", "sat", "--hub", quic, "--json"],
-    ))
+    phux(hub, &["host", "ticket", "sat", "--hub", quic, "--json"]).json()
 }
 
 /// Retry spawning on satellite `sat` until it fails (a reload is applied
 /// asynchronously); the failing output.
-fn spawn_refused(hub: &Path) -> Output {
+fn spawn_refused(hub: &Path) -> Out {
     let start = Instant::now();
     loop {
         let out = phux(
             hub,
             &["spawn", "--satellite", "sat", "--json", "--", "/bin/cat"],
         );
-        if !out.status.success() {
+        if !out.success() {
             return out;
         }
         assert!(
@@ -151,7 +99,7 @@ fn spawn_refused(hub: &Path) -> Output {
 
 /// Whether `host ls` on `dir` lists a host named `name`.
 fn host_listed(dir: &Path, name: &str) -> bool {
-    let listed = json_doc(&phux(dir, &["host", "ls", "--json"]));
+    let listed = phux(dir, &["host", "ls", "--json"]).json();
     listed["hosts"]
         .as_array()
         .expect("hosts")
@@ -168,13 +116,13 @@ fn spawn_on_satellite(hub: &Path) -> serde_json::Value {
             hub,
             &["spawn", "--satellite", "sat", "--json", "--", "/bin/cat"],
         );
-        if out.status.success() {
-            return serde_json::from_slice(&out.stdout).expect("json");
+        if out.success() {
+            return out.json();
         }
         assert!(
             start.elapsed() < LINK_DEADLINE,
             "the hub never reached the satellite: {}",
-            text(&out.stderr)
+            out.stderr
         );
         std::thread::sleep(Duration::from_millis(200));
     }
@@ -182,7 +130,7 @@ fn spawn_on_satellite(hub: &Path) -> serde_json::Value {
 
 /// Whether `workload list` on `hub` shows `credential` with `key` = `value`.
 fn credential_has(hub: &Path, credential: &str, key: &str, value: &str) -> bool {
-    let workloads = json_doc(&phux(hub, &["workload", "list", "--json"]));
+    let workloads = phux(hub, &["workload", "list", "--json"]).json();
     workloads["credentials"]
         .as_array()
         .expect("credentials")
@@ -204,7 +152,7 @@ fn bad_tickets_write_nothing(hub: &Path, quic: &str) {
             "--json",
         ],
     );
-    assert!(!bad_hub.status.success(), "a scheme in --hub is refused");
+    assert!(!bad_hub.success(), "a scheme in --hub is refused");
     assert!(!host_listed(hub, "other"), "nothing was registered");
     let dialed = phux(
         hub,
@@ -218,12 +166,9 @@ fn bad_tickets_write_nothing(hub: &Path, quic: &str) {
             "--json",
         ],
     );
-    assert!(dialed.status.success(), "{}", text(&dialed.stderr));
+    assert!(dialed.success(), "{}", dialed.stderr);
     let clobber = phux(hub, &["host", "ticket", "lab", "--hub", quic, "--json"]);
-    assert!(
-        !clobber.status.success(),
-        "a dialed satellite is not replaced"
-    );
+    assert!(!clobber.success(), "a dialed satellite is not replaced");
     let hub_config =
         std::fs::read_to_string(hub.join("config/phux/config.toml")).expect("hub config");
     assert!(hub_config.contains("quic://127.0.0.1:9"), "{hub_config}");
@@ -234,21 +179,18 @@ fn bad_tickets_write_nothing(hub: &Path, quic: &str) {
 fn manage_the_joined_satellite(hub: &Path, sat: &Path, sat_server: Server, credential: &str) {
     // The credential is bound to the name, so rename is refused.
     let renamed = phux(hub, &["host", "rename", "sat", "sat2", "--json"]);
-    assert!(
-        !renamed.status.success(),
-        "an inbound satellite is not renamed"
-    );
+    assert!(!renamed.success(), "an inbound satellite is not renamed");
     assert!(host_listed(hub, "sat"));
 
     // Disable drops the live link and refuses re-adoption; enable lets the
     // redialing satellite back in.
-    json_doc(&phux(hub, &["host", "disable", "sat", "--json"]));
+    phux(hub, &["host", "disable", "sat", "--json"]).json();
     let refused = spawn_refused(hub);
     assert!(
-        text(&refused.stdout).contains("satellite") || text(&refused.stderr).contains("satellite"),
+        refused.stdout.contains("satellite") || refused.stderr.contains("satellite"),
         "{}{}",
-        text(&refused.stdout),
-        text(&refused.stderr)
+        refused.stdout,
+        refused.stderr
     );
     std::thread::sleep(Duration::from_secs(2));
     assert!(
@@ -256,11 +198,10 @@ fn manage_the_joined_satellite(hub: &Path, sat: &Path, sat_server: Server, crede
             hub,
             &["spawn", "--satellite", "sat", "--json", "--", "/bin/cat"]
         )
-        .status
         .success(),
         "a disabled satellite is not re-adopted when it redials"
     );
-    json_doc(&phux(hub, &["host", "enable", "sat", "--json"]));
+    phux(hub, &["host", "enable", "sat", "--json"]).json();
     spawn_on_satellite(hub);
 
     // A satellite-side drop: the restarted server reads `[[uplink]]` and
@@ -271,7 +212,7 @@ fn manage_the_joined_satellite(hub: &Path, sat: &Path, sat_server: Server, crede
     spawn_on_satellite(hub);
 
     // Remove revokes the credential and ends the link.
-    let removed = json_doc(&phux(hub, &["host", "rm", "sat", "--json"]));
+    let removed = phux(hub, &["host", "rm", "sat", "--json"]).json();
     assert_eq!(removed["revoked_credentials"], 1, "{removed}");
     spawn_refused(hub);
     assert!(
@@ -296,23 +237,20 @@ fn a_satellite_joins_with_a_code_and_the_hub_spawns_on_it() {
         .as_str()
         .expect("ticket id")
         .to_owned();
-    let revoked = json_doc(&phux(
-        hub.path(),
-        &["workload", "revoke", &ticket_id, "--json"],
-    ));
+    let revoked = phux(hub.path(), &["workload", "revoke", &ticket_id, "--json"]).json();
     assert_eq!(revoked["newly_revoked"], true, "{revoked}");
 
     let sat_server = start_server(sat.path(), &[]);
     await_server(sat.path());
     let stale = withdrawn["join_code"].as_str().expect("join code");
     let refused = phux(sat.path(), &["host", "join", stale, "--json"]);
-    assert!(!refused.status.success(), "a revoked code enrolled");
+    assert!(!refused.success(), "a revoked code enrolled");
 
     let minted = ticket(hub.path(), &quic);
     assert_eq!(minted["satellite"], "sat");
     let code = minted["join_code"].as_str().expect("join code").to_owned();
     let ticket_secret = code.rsplit("enroll=").next().expect("ticket").to_owned();
-    let listed = json_doc(&phux(hub.path(), &["host", "ls", "--json"]));
+    let listed = phux(hub.path(), &["host", "ls", "--json"]).json();
     assert!(
         listed["hosts"]
             .as_array()
@@ -327,11 +265,10 @@ fn a_satellite_joins_with_a_code_and_the_hub_spawns_on_it() {
     // The code goes in on stdin, out of `ps` and shell history.
     let joined_out = phux_with_stdin(sat.path(), &["host", "join", "-", "--json"], &code);
     assert!(
-        !text(&joined_out.stdout).contains(&ticket_secret)
-            && !text(&joined_out.stderr).contains(&ticket_secret),
+        !joined_out.stdout.contains(&ticket_secret) && !joined_out.stderr.contains(&ticket_secret),
         "the ticket is never echoed"
     );
-    let joined = json_doc(&joined_out);
+    let joined = joined_out.json();
     assert_eq!(joined["server_reload"], "signalled", "{joined}");
     let config = std::fs::read_to_string(sat.path().join("config/phux/config.toml"))
         .expect("satellite config");
@@ -343,7 +280,7 @@ fn a_satellite_joins_with_a_code_and_the_hub_spawns_on_it() {
     assert_eq!(mode & 0o777, 0o600);
 
     let again = phux(sat.path(), &["host", "join", &code, "--json"]);
-    assert!(!again.status.success(), "a code enrolls once");
+    assert!(!again.success(), "a code enrolls once");
 
     // The satellite has no listener; the hub reaches it over the uplink.
     let spawned = spawn_on_satellite(hub.path());

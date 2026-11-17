@@ -79,3 +79,34 @@ pub(crate) fn kernel()
         phux_protocol::BootstrapProfile::SynthesizedVtRaw,
     )
 }
+
+/// An in-memory tracing sink: hand clones to a subscriber's writer and read
+/// what it logged with [`LogBuf::text`].
+#[derive(Clone, Default)]
+pub(crate) struct LogBuf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for LogBuf {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().expect("log lock").extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuf {
+    type Writer = Self;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+impl LogBuf {
+    /// Everything logged so far.
+    pub(crate) fn text(&self) -> String {
+        String::from_utf8(self.0.lock().expect("log lock").clone()).expect("utf8 log")
+    }
+}

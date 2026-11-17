@@ -102,7 +102,7 @@ fn bootstrap_adaptation_peak_includes_sources_scratch_and_outputs() {
 #[test]
 fn bootstrap_adaptation_restores_images_only_for_kitty_consumers() {
     let mut source = phux_terminal::vt::Terminal::new(10, 5).unwrap();
-    phux_protocol::kitty_replay::configure_terminal_for_kitty_graphics(&mut source).unwrap();
+    phux_vt::kitty_replay::configure_terminal_for_kitty_graphics(&mut source).unwrap();
     source.resize(10, 5, 8, 16).unwrap();
     source.vt_write(b"\x1b_Ga=T,f=32,s=1,v=1,c=1,r=1,i=9,p=1,C=1,q=2;AAECAw==\x1b\\\x1b_Ga=p,i=9,p=2,U=1,c=2,r=2,q=2;\x1b\\");
     source.vt_write(b"\x1b_Ga=t,f=32,s=1,v=1,i=10,q=2;BAUGBw==\x1b\\");
@@ -124,7 +124,7 @@ fn bootstrap_adaptation_restores_images_only_for_kitty_consumers() {
         // Enable storage even on the image-free receiver: this proves that
         // capability adaptation removed the payload, rather than relying on
         // its terminal to ignore it.
-        phux_protocol::kitty_replay::configure_terminal_for_kitty_graphics(&mut replica).unwrap();
+        phux_vt::kitty_replay::configure_terminal_for_kitty_graphics(&mut replica).unwrap();
         replica.resize(10, 5, 8, 16).unwrap();
         for payload in adapted.payloads {
             replica.vt_write(&payload);

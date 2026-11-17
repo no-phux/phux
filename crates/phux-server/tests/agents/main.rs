@@ -9,5 +9,6 @@
 )]
 
 mod agent_detect;
+mod fake_agent;
 mod program_status;
 mod push_on_block;

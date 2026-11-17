@@ -72,10 +72,10 @@ fn settle<T>(
     match decoded {
         Ok(value) => Ok(wrap(value)),
         Err(DecodeError::UnknownEnumValue { field, value }) => Ok(unknown_result(field, value)),
-        Err(error) if error.is_unsupported() => Ok(CommandResult::Error {
-            code: ErrorCode::UNREADABLE_REPLY,
-            message: format!("reply carried a value this build does not know: {error}"),
-        }),
+        Err(error) if error.is_unsupported() => Ok(CommandResult::error(
+            ErrorCode::UNREADABLE_REPLY,
+            format!("reply carried a value this build does not know: {error}"),
+        )),
         Err(error) => Err(error),
     }
 }
@@ -85,10 +85,10 @@ fn settle<T>(
 /// [`ErrorCode::UNREADABLE_REPLY`] error naming the field, never as
 /// `Unsupported`: the server answered, so the request may have taken effect.
 fn unknown_result(what: &str, tag: u32) -> CommandResult {
-    CommandResult::Error {
-        code: ErrorCode::UNREADABLE_REPLY,
-        message: format!("reply carried an unknown {what} tag {tag:#04x}"),
-    }
+    CommandResult::error(
+        ErrorCode::UNREADABLE_REPLY,
+        format!("reply carried an unknown {what} tag {tag:#04x}"),
+    )
 }
 
 pub(super) fn encode_command_value(value: &CommandValue, enc: &mut Encoder<'_>) {

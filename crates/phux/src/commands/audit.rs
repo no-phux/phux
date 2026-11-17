@@ -39,9 +39,9 @@ pub(crate) enum AuditAction {
     },
 }
 
-pub(crate) fn run(action: AuditAction) -> ExitCode {
+pub(crate) fn run(args: crate::commands::AuditArgs) -> ExitCode {
     let dir = audit::default_dir();
-    match action {
+    match args.action {
         AuditAction::Tail {
             lines,
             follow,

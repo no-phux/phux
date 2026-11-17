@@ -3,7 +3,7 @@
 use super::{
     Command, Encoder, LaunchMode, encode_filter, encode_launch, encode_live_target,
     encode_move_item, encode_pair, encode_pin, field, write_document, write_key, write_name,
-    write_operation, write_project, write_resource, write_session, write_u8, write_u32, write_u64,
+    write_operation, write_project, write_resource, write_session,
 };
 
 /// The nested tag of an organization command, or `None` for another
@@ -63,7 +63,7 @@ pub(in crate::wire) fn encode_org_command(command: &Command, enc: &mut Encoder<'
             cursor,
         } => {
             enc.write_field_with(field::org::FILTER, |e| encode_filter(*filter, e));
-            write_u32(enc, field::org::PAGE_SIZE, *page_size);
+            enc.write_u32_field(field::org::PAGE_SIZE, *page_size);
             if let Some(cursor) = cursor {
                 enc.write_field(field::org::CURSOR, cursor);
             }
@@ -77,7 +77,7 @@ pub(in crate::wire) fn encode_org_command(command: &Command, enc: &mut Encoder<'
         } => {
             write_operation(enc, operation);
             write_name(enc, name);
-            write_u8(enc, field::org::LIFETIME, lifetime.to_u8());
+            enc.write_u8_field(field::org::LIFETIME, lifetime.to_u8());
             for pair in attrs {
                 encode_pair(enc, field::org::ATTR, pair);
             }
@@ -110,7 +110,7 @@ pub(in crate::wire) fn encode_org_command(command: &Command, enc: &mut Encoder<'
         } => {
             write_operation(enc, operation);
             write_session(enc, field::org::SESSION, session);
-            write_u8(enc, field::org::LIFETIME, lifetime.to_u8());
+            enc.write_u8_field(field::org::LIFETIME, lifetime.to_u8());
         }
         Command::GetCreation { operation, session }
         | Command::SessionDelete { operation, session }
@@ -125,7 +125,7 @@ pub(in crate::wire) fn encode_org_command(command: &Command, enc: &mut Encoder<'
         } => {
             write_operation(enc, operation);
             write_session(enc, field::org::SESSION, session);
-            write_u64(enc, field::org::EXPECTED, expected.get());
+            enc.write_u64_field(field::org::EXPECTED, expected.get());
         }
         Command::ResourceCreate {
             operation,
@@ -150,10 +150,10 @@ pub(in crate::wire) fn encode_org_command(command: &Command, enc: &mut Encoder<'
                     super::placement::encode(placement, e);
                 });
             }
-            write_u8(enc, field::org::KIND, kind.as_wire());
-            write_u8(enc, field::org::ON_EXIT, on_exit.to_u8());
+            enc.write_u8_field(field::org::KIND, kind.as_wire());
+            enc.write_u8_field(field::org::ON_EXIT, on_exit.to_u8());
             if *launch_mode != LaunchMode::Immediate {
-                write_u8(enc, field::org::LAUNCH_MODE, launch_mode.to_u8());
+                enc.write_u8_field(field::org::LAUNCH_MODE, launch_mode.to_u8());
             }
         }
         Command::ResourceMove {
@@ -167,9 +167,9 @@ pub(in crate::wire) fn encode_org_command(command: &Command, enc: &mut Encoder<'
             write_operation(enc, operation);
             write_resource(enc, resource);
             write_session(enc, field::org::FROM, from);
-            write_u64(enc, field::org::FROM_REVISION, from_expected.get());
+            enc.write_u64_field(field::org::FROM_REVISION, from_expected.get());
             write_session(enc, field::org::TO, to);
-            write_u64(enc, field::org::TO_REVISION, to_expected.get());
+            enc.write_u64_field(field::org::TO_REVISION, to_expected.get());
         }
         Command::ResourceMoveMany {
             operation,
@@ -179,7 +179,7 @@ pub(in crate::wire) fn encode_org_command(command: &Command, enc: &mut Encoder<'
         } => {
             write_operation(enc, operation);
             write_session(enc, field::org::TO, to);
-            write_u64(enc, field::org::TO_REVISION, to_expected.get());
+            enc.write_u64_field(field::org::TO_REVISION, to_expected.get());
             for item in items {
                 encode_move_item(item, enc);
             }
@@ -202,7 +202,7 @@ pub(in crate::wire) fn encode_org_command(command: &Command, enc: &mut Encoder<'
         } => {
             write_operation(enc, operation);
             enc.write_field_with(field::org::TARGET, |e| encode_live_target(target, e));
-            write_u8(enc, field::org::MODE, mode.to_u8());
+            enc.write_u8_field(field::org::MODE, mode.to_u8());
         }
         Command::ResourceRemove {
             operation,
@@ -218,7 +218,7 @@ pub(in crate::wire) fn encode_org_command(command: &Command, enc: &mut Encoder<'
         } => {
             write_operation(enc, operation);
             write_resource(enc, resource);
-            write_u64(enc, field::org::EXPECTED, expected.get());
+            enc.write_u64_field(field::org::EXPECTED, expected.get());
         }
         Command::OrganizationUndo {
             operation,
@@ -242,11 +242,11 @@ pub(in crate::wire) fn encode_org_command(command: &Command, enc: &mut Encoder<'
             slot_tabs,
         } => {
             write_operation(enc, operation);
-            write_u64(enc, field::org::EXPECTED, expected.get());
+            enc.write_u64_field(field::org::EXPECTED, expected.get());
             write_key(enc, field::org::ARRANGEMENT, arrangement.as_bytes());
             write_document(enc, document);
             if *slot_tabs {
-                write_u8(enc, field::org::SLOT_TABS, 1);
+                enc.write_u8_field(field::org::SLOT_TABS, 1);
             }
         }
         Command::ArrangementLock {
@@ -258,7 +258,7 @@ pub(in crate::wire) fn encode_org_command(command: &Command, enc: &mut Encoder<'
             write_operation(enc, operation);
             write_key(enc, field::org::ARRANGEMENT, arrangement.as_bytes());
             write_key(enc, field::org::GROUP, group);
-            write_u8(enc, field::org::LOCKED, u8::from(*locked));
+            enc.write_u8_field(field::org::LOCKED, u8::from(*locked));
         }
         Command::DelegateAgent {
             operation,
@@ -267,7 +267,7 @@ pub(in crate::wire) fn encode_org_command(command: &Command, enc: &mut Encoder<'
         } => {
             write_operation(enc, operation);
             write_session(enc, field::org::SESSION, session);
-            write_u32(enc, field::org::TTL_SECS, *ttl_secs);
+            enc.write_u32_field(field::org::TTL_SECS, *ttl_secs);
         }
         Command::RevokeDelegation {
             operation,

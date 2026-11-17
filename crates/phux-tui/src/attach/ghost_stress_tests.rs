@@ -11,9 +11,8 @@ use phux_client_core::engine::ghostty::GhosttyAdapter;
 use phux_client_core::session::{EffectBuffer as KernelEffectBuffer, KernelInput, SessionKernel};
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::FrameKind;
-use phux_protocol::{
-    BootstrapId, BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, StreamId,
-};
+use phux_protocol::{BootstrapId, BootstrapLimits, BootstrapProfile};
+use phux_wire_fixtures::{BootstrapOptions, bootstrap_frames_with, output_on};
 
 use super::paint::{SidebarEdge, SidebarReservation, content_rect, paint_full_frame};
 use super::pane_state::PaneSlot;
@@ -127,42 +126,22 @@ impl Rig {
         *seq += 1;
         let seq = *seq;
         let bootstrap_id = *self.bootstraps.get(pane).expect("published bootstrap");
-        self.drive(FrameKind::ResourceOutput {
-            terminal_id: pane.clone(),
-            stream_id: StreamId::new(1).expect("stream"),
-            bootstrap_id,
-            seq,
-            bytes: bytes::Bytes::copy_from_slice(bytes),
-        });
+        self.drive(output_on(pane, [1, bootstrap_id.get()], seq, bytes));
     }
 
     /// Negotiated synthesized-VT replacement bootstrap for one pane.
     fn snapshot(&mut self, pane: &ResourceId, cols: u16, rows: u16, replay: &[u8]) {
         let bootstrap_id = BootstrapId::new(self.next_bootstrap).expect("bootstrap");
         self.next_bootstrap += 1;
-        let stream_id = StreamId::new(1).expect("stream");
-        self.drive(FrameKind::BootstrapBegin {
-            terminal_id: pane.clone(),
-            stream_id,
-            bootstrap_id,
-            profile: BootstrapStreamProfile::SynthesizedVtRaw,
-            cols,
-            rows,
+        let options = BootstrapOptions {
             base_seq: self.seq.get(pane).copied().unwrap_or(0),
-        });
-        self.drive(FrameKind::BootstrapChunk {
-            terminal_id: pane.clone(),
-            stream_id,
-            bootstrap_id,
-            chunk_seq: 0,
-            payload: bytes::Bytes::copy_from_slice(replay),
-        });
-        let outcome = self.drive(FrameKind::BootstrapReady {
-            terminal_id: pane.clone(),
-            stream_id,
-            bootstrap_id,
-            history_cursor: None,
-        });
+            ..BootstrapOptions::default()
+        };
+        let [begin, chunk, ready] =
+            bootstrap_frames_with(pane, [1, bootstrap_id.get()], [cols, rows], replay, options);
+        self.drive(begin);
+        self.drive(chunk);
+        let outcome = self.drive(ready);
         if outcome.layout_replaced {
             self.full_repaint();
         }
@@ -182,15 +161,12 @@ impl Rig {
             .workspace
             .render_group(self.mirror.zoomed.as_ref())
         {
-            let theme = crate::render::theme::Theme::default();
             let mut chrome = crate::attach::chrome_ctx::ChromeCtx {
-                viewport: self.viewport,
                 sidebar: self.sidebar,
-                status_bar: None,
-                sidebar_painter: None,
-                session_name: &self.mirror.session_name,
-                theme: &theme,
-                leaves: &crate::attach::surface_leaf::LeafBook::default(),
+                ..crate::attach::chrome_ctx::ChromeCtx::bare(
+                    self.viewport,
+                    &self.mirror.session_name,
+                )
             };
             paint_full_frame(
                 &mut out,

@@ -8,33 +8,21 @@ use std::sync::atomic::AtomicBool;
 use phux_client_runtime::approvals::{Decision, DecisionOutcome};
 use phux_client_runtime::session::{Dial, Session, control_caps};
 use phux_protocol::ids::ApprovalId;
-use phux_protocol::policy::PeerIdentity;
-use phux_protocol::scope::TerminalScopeSet;
 use phux_protocol::wire::frame::{Command, CommandResult};
-use phux_server::auth::AuthenticatedCredential;
-use phux_server::policy::{ConnectionGrant, GrantFuture, PolicyEngine};
+use phux_server::policy::{ConnectionGrant, PolicyEngine};
+use phux_server_testkit::{FnPolicy, parse_scopes};
 
-/// The owner's grant until armed; a held-`signal` grant for every later HELLO.
-#[derive(Debug, Default)]
-struct HeldSignal(AtomicBool);
-
-impl PolicyEngine for HeldSignal {
-    fn authorize_hello<'a>(
-        &'a self,
-        _peer_identity: &'a PeerIdentity,
-        _credential: Option<&'a AuthenticatedCredential>,
-    ) -> GrantFuture<'a> {
-        let held = self.0.load(Ordering::SeqCst);
-        Box::pin(async move {
-            Ok(if held {
-                let set = TerminalScopeSet::parse_all(&["observe,bind,?signal@global".to_owned()])
-                    .unwrap();
-                ConnectionGrant::scoped(set, None).unwrap()
-            } else {
-                ConnectionGrant::owner()
-            })
+/// The owner's grant until `held` is set; a held-`signal` grant for every
+/// later HELLO.
+fn held_signal(held: Arc<AtomicBool>) -> FnPolicy {
+    let set = parse_scopes(&["observe,bind,?signal@global"]);
+    FnPolicy::new(move |_, _| {
+        Ok(if held.load(Ordering::SeqCst) {
+            ConnectionGrant::scoped(set.clone(), None).unwrap()
+        } else {
+            ConnectionGrant::owner()
         })
-    }
+    })
 }
 
 async fn decision_outcome(client: &Client, id: ApprovalId) -> DecisionOutcome {
@@ -54,8 +42,8 @@ fn a_held_kill_is_listed_approved_once_and_a_second_decision_is_stale() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let socket = tmp.path().join("phux.sock");
-        let policy = Arc::new(HeldSignal::default());
-        let engine: Arc<dyn PolicyEngine> = policy.clone();
+        let held = Arc::new(AtomicBool::new(false));
+        let engine: Arc<dyn PolicyEngine> = Arc::new(held_signal(Arc::clone(&held)));
         let (shutdown, server) =
             phux_server_testkit::spawn_server_with(socket.clone(), Some("main"), move |cfg| {
                 cfg.policy_engine = Some(engine);
@@ -67,7 +55,7 @@ fn a_held_kill_is_listed_approved_once_and_a_second_decision_is_stale() {
         assert!(owner.approvals_supported());
         assert!(owner.approvals().is_empty());
 
-        policy.0.store(true, Ordering::SeqCst);
+        held.store(true, Ordering::SeqCst);
         let mut requester = Session::connect(
             &Dial::uds(&socket),
             "held-requester".to_owned(),

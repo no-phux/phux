@@ -11,12 +11,11 @@
 use phux_protocol::ids::ResourceId;
 
 use crate::creature::Work;
+pub use crate::playground::{AMBER, MINT};
 use crate::playground::{Mood, Pt, Rgb, Rng, Species, hash, lerp};
 
 mod sim;
 
-pub const AMBER: Rgb = [255.0, 181.0, 71.0];
-pub const MINT: Rgb = [98.0, 230.0, 180.0];
 pub const GOLD: Rgb = [255.0, 206.0, 84.0];
 /// The prototype's ranks, by creature tier.
 pub const RANKS: [&str; 5] = ["Rookie", "Regular", "Veteran", "Star", "Legend"];

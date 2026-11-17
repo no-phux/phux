@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use phux_server::runtime::default_socket_path;
+use phux_config::socket::default_socket_path;
 
 use crate::commands::{WorktreeAction, cli_runtime};
 
@@ -531,6 +531,15 @@ pub(crate) fn live_session_names(socket: Option<&Path>) -> Option<Vec<String>> {
             .map(|session| session.name.clone())
             .collect(),
     )
+}
+
+/// Run `phux worktree` as parsed.
+pub(crate) fn run(
+    args: crate::commands::WorktreeArgs,
+    socket: Option<std::path::PathBuf>,
+) -> ExitCode {
+    let crate::commands::WorktreeArgs { action } = args;
+    run_worktree(&action, socket)
 }
 
 #[cfg(test)]

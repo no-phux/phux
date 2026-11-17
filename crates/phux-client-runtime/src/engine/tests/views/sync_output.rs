@@ -1,11 +1,28 @@
 use super::super::*;
 use std::time::{Duration, Instant};
 
-#[test]
-fn synchronized_redraw_keeps_committed_default_and_view_frames() {
+/// Terminal 1 attached showing `committed`.
+fn committed() -> (EngineHandle, Arc<Publication>, ResourceId) {
     let (owner, publication) = owner();
     let terminal = id(1);
     attach(&owner, &terminal, b"committed");
+    (owner, publication, terminal)
+}
+
+/// [`committed`], read, then a DEC 2026 hold whose watchdog already
+/// expired; returns the frame that expiry published.
+fn expired_hold() -> (EngineHandle, Arc<Publication>, ResourceId, Arc<GridFrame>) {
+    let (owner, publication, terminal) = committed();
+    publication.acquire(&terminal).unwrap();
+    apply_ok(&owner, output(&terminal, 1, b"\x1b[?2026h"));
+    owner.expire_sync_output(owner.sync_output_deadline().unwrap());
+    let committed = publication.acquire(&terminal).unwrap();
+    (owner, publication, terminal, committed)
+}
+
+#[test]
+fn synchronized_redraw_keeps_committed_default_and_view_frames() {
+    let (owner, publication, terminal) = committed();
     let view = owner.create_view(&terminal).unwrap();
     let first = publication.acquire(&terminal).unwrap();
     let view_first = publication.acquire_view(view).unwrap();
@@ -39,9 +56,7 @@ fn synchronized_redraw_keeps_committed_default_and_view_frames() {
 
 #[test]
 fn unread_catch_up_cannot_publish_an_incomplete_redraw() {
-    let (owner, publication) = owner();
-    let terminal = id(1);
-    attach(&owner, &terminal, b"committed");
+    let (owner, publication, terminal) = committed();
     let view = owner.create_view(&terminal).unwrap();
     // First defer a normal update, leaving a stale slot before DEC 2026.
     apply_ok(&owner, output(&terminal, 1, b"!"));
@@ -56,13 +71,7 @@ fn unread_catch_up_cannot_publish_an_incomplete_redraw() {
 
 #[test]
 fn a_batched_end_and_new_begin_rearms_an_expired_watchdog() {
-    let (owner, publication) = owner();
-    let terminal = id(1);
-    attach(&owner, &terminal, b"committed");
-    publication.acquire(&terminal).unwrap();
-    apply_ok(&owner, output(&terminal, 1, b"\x1b[?2026h"));
-    owner.expire_sync_output(owner.sync_output_deadline().unwrap());
-    let committed = publication.acquire(&terminal).unwrap();
+    let (owner, publication, terminal, committed) = expired_hold();
     apply_batch_ok(
         &owner,
         vec![
@@ -81,13 +90,7 @@ fn a_batched_end_and_new_begin_rearms_an_expired_watchdog() {
 
 #[test]
 fn end_and_new_begin_inside_one_payload_rearm_an_expired_watchdog() {
-    let (owner, publication) = owner();
-    let terminal = id(1);
-    attach(&owner, &terminal, b"committed");
-    publication.acquire(&terminal).unwrap();
-    apply_ok(&owner, output(&terminal, 1, b"\x1b[?2026h"));
-    owner.expire_sync_output(owner.sync_output_deadline().unwrap());
-    let committed = publication.acquire(&terminal).unwrap();
+    let (owner, publication, terminal, committed) = expired_hold();
     apply_ok(
         &owner,
         output(&terminal, 2, b"\x1b[?2026l\x1b[?2026h\x1b[2J"),
@@ -101,9 +104,7 @@ fn end_and_new_begin_inside_one_payload_rearm_an_expired_watchdog() {
 
 #[test]
 fn uncommitted_batched_transactions_cannot_postpone_the_watchdog() {
-    let (owner, publication) = owner();
-    let terminal = id(1);
-    attach(&owner, &terminal, b"committed");
+    let (owner, publication, terminal) = committed();
     publication.acquire(&terminal).unwrap();
     apply_ok(&owner, output(&terminal, 1, b"\x1b[?2026h\x1b[2J"));
     let deadline = owner.sync_output_deadline().unwrap();
@@ -124,9 +125,7 @@ fn uncommitted_batched_transactions_cannot_postpone_the_watchdog() {
 
 #[test]
 fn missing_end_is_released_by_the_deadline_lane_without_more_output() {
-    let (owner, publication) = owner();
-    let terminal = id(1);
-    attach(&owner, &terminal, b"committed");
+    let (owner, publication, terminal) = committed();
     publication.acquire(&terminal).unwrap();
     apply_ok(
         &owner,
@@ -190,9 +189,7 @@ fn synchronization_does_not_hold_other_terminals_or_survive_reset() {
 
 #[test]
 fn replacement_generation_gets_a_fresh_watchdog_and_close_releases_it() {
-    let (owner, publication) = owner();
-    let terminal = id(1);
-    attach(&owner, &terminal, b"committed");
+    let (owner, publication, terminal) = committed();
     owner.set_cell_pixels(&terminal, 9, 18).unwrap();
     let view = owner.create_view(&terminal).unwrap();
     publication.acquire_view(view).unwrap();
@@ -200,32 +197,7 @@ fn replacement_generation_gets_a_fresh_watchdog_and_close_releases_it() {
     apply_ok(&owner, output(&terminal, 1, b"\x1b[?2026h"));
     let old_deadline = owner.sync_output_deadline().unwrap();
     owner.expire_sync_output(old_deadline);
-    for event in [
-        EngineEvent::BootstrapBegin {
-            terminal_id: terminal.clone(),
-            stream_id: stream(1),
-            bootstrap_id: bootstrap(2),
-            profile: BootstrapStreamProfile::SynthesizedVtRaw,
-            cols: 20,
-            rows: 4,
-            base_seq: 0,
-        },
-        EngineEvent::BootstrapChunk {
-            terminal_id: terminal.clone(),
-            stream_id: stream(1),
-            bootstrap_id: bootstrap(2),
-            chunk_seq: 0,
-            payload: b"\x1b[?2026hnew".to_vec().into(),
-        },
-        EngineEvent::BootstrapReady {
-            terminal_id: terminal.clone(),
-            stream_id: stream(1),
-            bootstrap_id: bootstrap(2),
-            history_cursor: None,
-        },
-    ] {
-        apply_ok(&owner, event);
-    }
+    rebootstrap(&owner, &terminal, 2, b"\x1b[?2026hnew");
     assert!(owner.sync_output_deadline().is_some());
     assert_eq!(publication.acquire(&terminal).unwrap().text(), "committed");
     assert_eq!(publication.acquire_view(view).unwrap().text(), "committed");
@@ -242,9 +214,7 @@ fn replacement_generation_gets_a_fresh_watchdog_and_close_releases_it() {
 
 #[test]
 fn a_nonretained_close_drops_held_frames_and_deadlines() {
-    let (owner, publication) = owner();
-    let terminal = id(1);
-    attach(&owner, &terminal, b"committed");
+    let (owner, publication, terminal) = committed();
     let view = owner.create_view(&terminal).unwrap();
     apply_ok(&owner, output(&terminal, 1, b"\x1b[?2026h\x1b[2J"));
     apply_ok(&owner, EngineEvent::closed_unknown(terminal.clone()));

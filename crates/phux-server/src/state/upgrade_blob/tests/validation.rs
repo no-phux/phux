@@ -126,7 +126,7 @@ async fn rebuild_from_a_complete_blob_is_transactional() {
                     "main".to_owned()
                 ]
             );
-            let main = state.session_by_name("main").expect("main").clone();
+            let main = state.sessions().by_name("main").expect("main").clone();
             assert!(
                 main.awaiting_organization,
                 "imported work awaits organization"
@@ -134,6 +134,7 @@ async fn rebuild_from_a_complete_blob_is_transactional() {
             assert_eq!(main.lifetime, phux_core::SessionLifetime::Ephemeral);
             assert_eq!(main.members.len(), 1);
             let pane = state
+                .idspace
                 .resource_from_wire(&WireResourceId::local(3))
                 .expect("pane under its wire id");
             let record = state.registry().record(pane).expect("record");
@@ -152,7 +153,7 @@ async fn rebuild_from_a_complete_blob_is_transactional() {
             );
             // phux-lv57: a resumed tree has served no client in this
             // process, so it must not arm last-session self-exit.
-            assert!(!state.has_served_client());
+            assert!(!state.lifecycle().has_served_client());
         })
         .await;
 }
@@ -183,9 +184,9 @@ async fn import_keeps_empty_sessions_and_clamps_edge_ratios() {
             );
             crate::runtime::apps::terminal::test_support::rebuild_unwired(&mut state, &handoff)
                 .expect("an old image with an emptied window imports");
-            let empty = state.session_by_name("empty").expect("empty kept");
+            let empty = state.sessions().by_name("empty").expect("empty kept");
             assert_eq!(empty.lifetime, phux_core::SessionLifetime::Persistent);
-            let main = state.session_by_name("main").expect("main").clone();
+            let main = state.sessions().by_name("main").expect("main").clone();
             let arrangement = state
                 .org()
                 .arrangement(&main.arrangement.expect("arranged"))
@@ -294,10 +295,11 @@ async fn an_agent_session_without_its_parent_pane_is_dropped() {
                     .expect("rebuild")
                     .exit_watchers;
             assert_eq!(watchers.len(), 2, "the pane and its one session");
-            let kept = state.resource_from_wire(&WireResourceId::local(4));
+            let kept = state.idspace.resource_from_wire(&WireResourceId::local(4));
             assert!(kept.is_some(), "the bound session resumes under its id");
             assert!(
                 state
+                    .idspace
                     .resource_from_wire(&WireResourceId::local(5))
                     .is_none(),
                 "the orphaned session is dropped"

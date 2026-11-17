@@ -3,24 +3,15 @@ use super::*;
 
 #[test]
 fn the_resource_listing_takes_live_titles_and_drops_a_closed_resource() {
-    let (mut plane, read) = discovered();
-    answer_metadata(&mut plane, read, None);
+    let mut plane = settled();
     let listed_title = |plane: &ControlPlane| {
         let topology = plane.topology().unwrap();
         let resource = topology.resources.iter().find(|r| r.id == terminal());
         resource.and_then(|resource| resource.title.clone())
     };
-    event(
-        &mut plane,
-        Some(terminal()),
-        AgentEvent::TitleChanged {
-            title: "opencode".into(),
-        },
-    );
+    title_changed(&mut plane, "opencode");
     assert_eq!(listed_title(&plane).as_deref(), Some("opencode"));
-    let request_id = plane.refresh_topology().unwrap();
-    let _ = outbound(&mut plane);
-    answer_state(&mut plane, request_id, snapshot());
+    let _ = refresh_after_settling(&mut plane, snapshot());
     assert_eq!(
         listed_title(&plane).as_deref(),
         Some("opencode"),

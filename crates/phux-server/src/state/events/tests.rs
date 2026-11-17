@@ -67,7 +67,7 @@ fn gap(first_missing: u64, last_missing: u64) -> AgentEvent {
 #[test]
 fn a_client_subscribed_both_ways_receives_each_event_once() {
     let mut state = ServerState::new();
-    let client = state.new_client_id();
+    let client = state.clients_mut().new_client_id();
     let (tx, mut rx) = mpsc::channel(16);
     state.subscribe_events(client, Some(pane(1)), tx.clone());
     state.subscribe_resource_events(client, pane(1), EventFilter::all(), tx.clone());
@@ -79,7 +79,7 @@ fn a_client_subscribed_both_ways_receives_each_event_once() {
 #[test]
 fn resubscribing_a_scope_replaces_its_filter() {
     let mut state = ServerState::new();
-    let client = state.new_client_id();
+    let client = state.clients_mut().new_client_id();
     let (tx, mut rx) = mpsc::channel(16);
     let cwd_only = EventFilter::of(vec![ResourceEventType::CwdChanged]);
     state.subscribe_resource_events(client, pane(1), cwd_only, tx.clone());
@@ -93,7 +93,7 @@ fn resubscribing_a_scope_replaces_its_filter() {
 #[test]
 fn subscribe_events_resets_a_resource_events_filter() {
     let mut state = ServerState::new();
-    let client = state.new_client_id();
+    let client = state.clients_mut().new_client_id();
     let (tx, mut rx) = mpsc::channel(16);
     let cwd_only = EventFilter::of(vec![ResourceEventType::CwdChanged]);
     state.subscribe_resource_events(client, pane(1), cwd_only, tx.clone());
@@ -113,7 +113,7 @@ fn a_filter_never_hides_lifecycle_control_or_a_source_gap() {
 #[test]
 fn a_full_mailbox_owes_a_gap_the_pump_delivers_without_a_later_event() {
     let mut state = ServerState::new();
-    let client = state.new_client_id();
+    let client = state.clients_mut().new_client_id();
     let (tx, mut rx) = mpsc::channel(1);
     state.subscribe_events(client, None, tx);
     let _ = record(&mut state, 1, AgentEvent::Dirty);
@@ -137,7 +137,7 @@ fn a_cursor_replay_is_queued_in_the_installing_lock_and_goes_live_at_once() {
     let mut state = ServerState::new();
     let _ = record(&mut state, 1, AgentEvent::Bell);
     let _ = record(&mut state, 2, AgentEvent::Bell);
-    let client = state.new_client_id();
+    let client = state.clients_mut().new_client_id();
     let (tx, mut rx) = mpsc::channel(16);
     state.subscribe_events_after(client, Some(pane(1)), 0, tx);
     assert_eq!(
@@ -155,7 +155,7 @@ fn a_replay_larger_than_the_mailbox_is_pulled_in_order_as_room_frees() {
     for _ in 0..5 {
         let _ = record(&mut state, 1, AgentEvent::Bell);
     }
-    let client = state.new_client_id();
+    let client = state.clients_mut().new_client_id();
     let (tx, mut rx) = mpsc::channel(2);
     state.subscribe_events_after(client, None, 0, tx);
     assert_eq!(drain(&mut rx).len(), 2, "what fits is queued at once");
@@ -189,7 +189,7 @@ fn a_second_cursor_scope_never_redelivers_what_the_first_gave() {
     for terminal in [1, 2, 1] {
         let _ = record(&mut state, terminal, AgentEvent::Bell);
     }
-    let client = state.new_client_id();
+    let client = state.clients_mut().new_client_id();
     let (tx, mut rx) = mpsc::channel(16);
     state.subscribe_events_after(client, None, 0, tx.clone());
     assert_eq!(drain(&mut rx).len(), 3);
@@ -213,8 +213,8 @@ fn expired_reads_as_released_to_a_subscription_without_a_cursor() {
         actor: None,
     };
     let mut state = ServerState::new();
-    let legacy = state.new_client_id();
-    let aware = state.new_client_id();
+    let legacy = state.clients_mut().new_client_id();
+    let aware = state.clients_mut().new_client_id();
     let (legacy_tx, mut legacy_rx) = mpsc::channel(4);
     let (aware_tx, mut aware_rx) = mpsc::channel(4);
     state.subscribe_events(legacy, None, legacy_tx);
@@ -233,7 +233,7 @@ fn expired_reads_as_released_to_a_subscription_without_a_cursor() {
 #[test]
 fn events_carry_the_actors_hello_name() {
     let mut state = ServerState::new();
-    let client = state.new_client_id();
+    let client = state.clients_mut().new_client_id();
     state.set_client_name(client, "orchestrator".to_owned());
     let (tx, mut rx) = mpsc::channel(4);
     state.subscribe_events(client, None, tx);

@@ -1,6 +1,6 @@
 //! One styled line per row kind.
 
-use phux_config::widget::WindowInfo;
+use crate::render::chrome::status_bar::widgets::WindowInfo;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 

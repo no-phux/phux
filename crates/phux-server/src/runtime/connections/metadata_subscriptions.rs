@@ -28,7 +28,7 @@ pub(super) fn kick_satellite_metadata_mirror(
     let Some((host, id)) = crate::hub::relay::satellite_route(terminal) else {
         return false;
     };
-    let Some(relay) = state.hub_relay(&host) else {
+    let Some(relay) = state.federation().relay(&host) else {
         return false;
     };
     relay.mirror_terminal(id);
@@ -89,7 +89,7 @@ pub(super) fn handle_subscribe_metadata(
         return;
     }
     state.with_mut(|s| {
-        if !s.client_speaks_l3(client_id) {
+        if !s.clients().speaks_l3(client_id) {
             debug!(?client_id, ?scope, %key, "SUBSCRIBE_METADATA refused (non-L3)");
             return;
         }
@@ -151,7 +151,7 @@ fn subscribe_via_hub(
     after_seq: Option<u64>,
     out_tx: &mpsc::Sender<Outbound>,
 ) {
-    let Some(relay) = state.with(|s| s.hub_relay(&host)) else {
+    let Some(relay) = state.with(|s| s.federation().relay(&host)) else {
         warn!(
             ?client_id,
             satellite = %host,

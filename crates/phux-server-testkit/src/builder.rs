@@ -12,7 +12,7 @@
 use std::collections::HashSet;
 use std::future::Future;
 use std::io::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use bytes::BytesMut;
@@ -25,19 +25,15 @@ use phux_protocol::wire::frame::{
 };
 use phux_protocol::{ResourceId, wire::frame::MAX_FRAME_LEN};
 use phux_server::LaunchCommand;
-use tempfile::TempDir;
 use tokio::io::AsyncReadExt as _;
 use tokio::net::UnixStream;
-use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
-use tokio::time::{timeout, timeout_at};
+use tokio::time::timeout_at;
 
 use super::screen::Screen;
 use super::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, recv_typed, send_frame, spawn_server_with_seed_cmd,
+    SOCKET_CONNECT_DEADLINE, SpawnedServer, WIRE_RECV_TIMEOUT, recv_typed, send_frame,
     wait_for_socket,
 };
-use phux_server::ServerError;
 
 /// Default oracle viewport. Matches [`crate::attach_by_name`] (80x24) so the
 /// `Screen` dimensions line up with the `ATTACH` the harness sends.
@@ -130,31 +126,24 @@ impl E2eBuilder {
     /// Spin the server and attach clients without a closure, for tests that
     /// manage teardown or add clients mid-scenario.
     pub async fn spawn(self) -> Harness {
-        let tmp = TempDir::new().expect("tempdir");
-        let socket_path = tmp.path().join("phux.sock");
-
         let cmd = self
             .seed_cmd
             .unwrap_or_else(|| LaunchCommand::new("/bin/sh"));
-        let (shutdown_tx, server_handle) =
-            spawn_server_with_seed_cmd(socket_path.clone(), &self.session, cmd);
+        let server = SpawnedServer::builder()
+            .session(&self.session)
+            .seed(cmd)
+            .start();
 
         let mut clients = Vec::with_capacity(self.clients);
         for _ in 0..self.clients {
             clients.push(
-                ClientHandle::attach(&socket_path, &self.session, self.viewport)
+                ClientHandle::attach(&server.socket, &self.session, self.viewport)
                     .await
                     .expect("client attach"),
             );
         }
 
-        Harness {
-            clients,
-            shutdown_tx,
-            server_handle,
-            socket_path,
-            _tmp: tmp,
-        }
+        Harness { clients, server }
     }
 }
 
@@ -162,20 +151,14 @@ impl E2eBuilder {
 pub struct Harness {
     /// One handle per attached client, in attach order.
     pub clients: Vec<ClientHandle>,
-    /// Drives a clean server shutdown when sent.
-    pub shutdown_tx: oneshot::Sender<()>,
-    /// The server task; await it after shutdown to confirm a clean exit.
-    pub server_handle: JoinHandle<Result<(), ServerError>>,
-    /// The UDS path; assert `!exists()` after teardown to catch FD leaks.
-    pub socket_path: PathBuf,
-    /// Keeps the tempdir alive for the harness's lifetime.
-    _tmp: TempDir,
+    /// The server, its socket, and the temp dir that holds it.
+    pub server: SpawnedServer,
 }
 
 impl Harness {
     /// Attach an additional client to the same session mid-scenario.
     pub async fn attach_client(&self, viewport: ViewportInfo) -> ClientHandle {
-        ClientHandle::attach(&self.socket_path, &self.session_name(), viewport)
+        ClientHandle::attach(&self.server.socket, &self.session_name(), viewport)
             .await
             .expect("attach additional client")
     }
@@ -191,17 +174,7 @@ impl Harness {
     /// unlinked.
     pub async fn shutdown(self) {
         drop(self.clients);
-        self.shutdown_tx.send(()).ok();
-        timeout(super::SERVER_JOIN_DEADLINE, self.server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server task join")
-            .expect("server run_async returned an error");
-        assert!(
-            !self.socket_path.exists(),
-            "socket file leaked after shutdown: {} still on disk",
-            self.socket_path.display(),
-        );
+        self.server.stop().await;
     }
 }
 

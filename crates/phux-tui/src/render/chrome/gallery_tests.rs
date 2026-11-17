@@ -11,7 +11,6 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use phux_client::agent_meta::AgentMetaState;
-use phux_config::widget::WindowInfo;
 use phux_config::{StatusCfg, Widget, WidgetSpec};
 use phux_design::{Mode, Rgb8, Roles};
 use ratatui::buffer::Buffer;
@@ -19,6 +18,7 @@ use ratatui::layout::Rect as RataRect;
 use ratatui::style::{Color, Modifier};
 
 use super::sidebar::{AgentEntry, SessionRosterEntry, SidebarPainter, SidebarRule};
+use super::status_bar::widgets::{StatusBar, WidgetRegistry, WindowInfo};
 use super::status_bar::{BarInset, Position, StatusBarPainter, make_context};
 use crate::layout::Rect;
 use crate::render::overlay::RenderOverlay;
@@ -174,9 +174,7 @@ fn status_bar(theme: &Theme) -> Buffer {
         right: vec![Widget::Bare("session-name".into())],
         ..StatusCfg::default()
     };
-    let bar =
-        phux_config::StatusBar::build(&cfg, &phux_config::widget::WidgetRegistry::with_builtins())
-            .expect("bar builds");
+    let bar = StatusBar::build(&cfg, &WidgetRegistry::with_builtins()).expect("bar builds");
     let mut p = StatusBarPainter::new(bar, Position::Bottom);
     p.set_theme(theme);
     p.set_windows(vec![window("editor", true), window("review", false)]);

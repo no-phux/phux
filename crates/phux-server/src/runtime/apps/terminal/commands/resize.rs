@@ -62,7 +62,7 @@ fn resize_destination<'a>(
     handle: &'a ResourceHandle,
 ) -> Option<&'a TerminalHandle> {
     // ADR-0124: a retained pane's grid records how its process ended.
-    if s.retained_exit(resource).is_some() {
+    if s.retained().exit(resource).is_some() {
         return None;
     }
     match handle.terminal() {

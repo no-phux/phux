@@ -112,6 +112,7 @@ every_shortcut!(
     ChangeTheme,
     SwitchSession,
     InsertPath,
+    Screenshot,
     QuickLook,
     RenameSession,
     RenameTab,

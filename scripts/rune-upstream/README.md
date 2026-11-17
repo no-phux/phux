@@ -3,8 +3,9 @@
 An OpenCode agent whose only job is keeping [Phux Rune](../../clients/rune/README.md)
 on the newest [Rune](https://github.com/anomalyco/rune) `dev`: bump the pin,
 adapt to API and behavior changes, adopt new upstream features, prove it, and
-merge it. It runs twice a day in its own phux session, where anyone attached
-can watch and steer it.
+merge it. **Every tick ships one contained, evidence-based visual or UX
+improvement**, with each bump and on quiet runs too. It runs twice a day in
+its own phux session, where anyone attached can watch and steer it.
 
 | Piece | What it is |
 | --- | --- |
@@ -53,6 +54,46 @@ a session someone deleted, or a start worktree that went missing is rebuilt
 on the next tick, and a change worktree whose PR merged is removed. A tick that can't
 read the session's state leaves everything alone.
 
+An attached run resumed to apply new steering is the current tick's restart,
+not a reason to spawn a second live agent. Keep the twice-daily schedule and
+the existing busy-run guard.
+
+## Visual/UX work on every tick
+
+The follower rotates eight review categories: alignment/spacing; hierarchy/
+readability; density/responsive layout; navigation/discoverability; input/
+touch ergonomics; feedback/empty/error/loading; motion/responsiveness; and
+accessibility/contrast. Pick the strongest evidenced opportunity, recording
+why an urgent finding takes priority over the next category. Quiet ticks
+take a contained [MOBILE.md](../../clients/rune/MOBILE.md) piece or improve
+an existing flow. A current pin is not a no-work exemption.
+
+[Visual review](../../clients/rune/VISUAL_REVIEW.md) defines the maintained
+capture command, realistic scenario gallery, before/after judgment template
+and independent fresh-context review:
+
+```sh
+bash clients/rune/scripts/visual-review.sh /absolute/home/scratch/TICK/after
+```
+
+Run it from the change worktree; use separate before/after output directories
+outside Git. Its real Rune Runtime/GPU exporters cover Settings, phone
+navigation, resources and phone Inbox, producing PNGs, trees and a manifest.
+Review populated core screens plus the selected flow's constrained,
+interactive, light/dark and 2× cases. Capture the selected flow before editing,
+state what became easier and fix regressions before merge; unchanged pixels
+or a passing exporter are not a visual judgment. Do not retry captures into
+looking good or add a new AI dependency/scoring framework. Existing input
+ownership, literal pane arrangement and the good command palette stay intact.
+
+Bumps move all nine upstream manifest entries together: four direct Rune
+dependencies and five crates.io patches, not the removed `rune-mac` entry.
+The release policy follows the current patch-release train in
+[Releasing](../../docs/releasing.md#phux-rune), not the historic alpha sequence.
+Visual review supplements all existing check, packaged/native qualification
+and device-delivery gates; it cannot replace them. A truly blocked tick
+reports the evidence and exact remedy rather than calling maintenance shipped.
+
 ## Steering
 
 ```sh
@@ -81,6 +122,17 @@ opening its install link and any Apple prompts still require on-phone approval.
 Locked signing access or an unavailable phone is reported as pending, not success.
 The existing production Phux binary/server and shared Tailscale hosting are
 not replaced or reset to deliver an update.
+
+Every tick's private closing summary includes the **same existing permanent
+tailnet `/scheduled/` install page**, even after a verified device install.
+Verify it answers and discovers the latest qualified, signed, fully published
+phone build through the existing host; if publication is blocked, retain the
+last verified qualified build and say exactly what is pending. Immutable
+per-build URLs remain internal evidence/fallbacks, not replacement bookmarks.
+Do not change hosting or start a second daemon. Never put private tailnet
+links or signing/device configuration into a public PR. Page availability,
+signed publication and independently queried installation are separate facts.
+See [One permanent download page](../../clients/rune/ios/DELIVERY.md#one-permanent-download-page).
 
 ## Steering from another tailnet
 

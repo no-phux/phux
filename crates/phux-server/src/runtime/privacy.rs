@@ -18,17 +18,20 @@ use crate::state::{ClientId, ServerState, SharedState};
 pub(super) fn handle(state: &SharedState, client_id: ClientId) -> CommandResult {
     if !state.with(|s| from_local_socket(s, client_id)) {
         warn!(?client_id, "PRIVACY_STATUS refused: local socket only");
-        return CommandResult::Error {
-            code: ErrorCode::PermissionDenied,
-            message: "PRIVACY_STATUS is accepted on the local socket only".to_owned(),
-        };
+        return CommandResult::error(
+            ErrorCode::PermissionDenied,
+            "PRIVACY_STATUS is accepted on the local socket only",
+        );
     }
     CommandResult::OkWith(CommandValue::Json(report().to_string()))
 }
 
 fn from_local_socket(state: &ServerState, client_id: ClientId) -> bool {
     matches!(
-        state.peer_identity(client_id).map(|peer| peer.transport),
+        state
+            .clients()
+            .peer_identity(client_id)
+            .map(|peer| peer.transport),
         Some(TransportType::UnixSocket)
     )
 }
@@ -225,9 +228,15 @@ mod tests {
     fn only_the_unix_socket_may_ask() {
         let mut state = ServerState::new();
         let (local, quic, ws, unknown) = (ClientId(1), ClientId(2), ClientId(3), ClientId(4));
-        state.set_peer_identity(local, peer(TransportType::UnixSocket));
-        state.set_peer_identity(quic, peer(TransportType::Quic));
-        state.set_peer_identity(ws, peer(TransportType::WebSocket));
+        state
+            .clients_mut()
+            .set_peer_identity(local, peer(TransportType::UnixSocket));
+        state
+            .clients_mut()
+            .set_peer_identity(quic, peer(TransportType::Quic));
+        state
+            .clients_mut()
+            .set_peer_identity(ws, peer(TransportType::WebSocket));
         assert!(from_local_socket(&state, local));
         for client in [quic, ws, unknown] {
             assert!(!from_local_socket(&state, client), "{client:?}");

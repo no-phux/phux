@@ -375,11 +375,11 @@ async fn the_socket_is_owner_only_beside_the_servers_and_only_when_on() {
     for on in [false, true] {
         let state = SharedState::new();
         state.with_mut(|s| {
-            s.set_server_socket_path(dir.path().join("phux.sock"));
-            s.set_forward(phux_config::ForwardCfg {
+            s.config_mut().server_socket_path = Some(dir.path().join("phux.sock"));
+            s.config_mut().forward = phux_config::ForwardCfg {
                 agent: on,
                 ..phux_config::ForwardCfg::default()
-            });
+            };
         });
         let root = tokio_util::sync::CancellationToken::new();
         crate::runtime::test_support::local(async {

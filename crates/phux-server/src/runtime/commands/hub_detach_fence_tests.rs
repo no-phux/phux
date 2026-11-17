@@ -21,10 +21,7 @@ async fn cancellation_interrupts_a_blocked_satellite_reply() {
         9,
         &host,
         &command,
-        CommandResult::Error {
-            code: ErrorCode::SatelliteUnreachable,
-            message: "offline".to_owned(),
-        },
+        CommandResult::error(ErrorCode::SatelliteUnreachable, "offline"),
     );
     tokio::pin!(reply);
     assert!(futures_util::poll!(&mut reply).is_pending());
@@ -53,8 +50,9 @@ async fn timed_out_hub_detach_preserves_resumed_generation_with_shared_observer(
     let relays = HubRelays::default();
     relays.insert(handle);
     state.with_mut(|s| {
-        s.set_hub_relays(relays);
-        s.register_satellite_proxy_attach(ClientId(1), host.clone(), 7);
+        s.federation_mut().set_relays(relays);
+        s.federation_mut()
+            .register_satellite_proxy_attach(ClientId(1), host.clone(), 7);
     });
     let mut session = RelaySession::new(host.clone(), BootstrapLimits::default());
     let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(8);
@@ -103,7 +101,10 @@ async fn timed_out_hub_detach_preserves_resumed_generation_with_shared_observer(
             }
         }))
     ));
-    assert!(state.with(|s| s.has_satellite_proxy_attach(ClientId(1), &host, 7)));
+    assert!(state.with(|s| {
+        s.federation()
+            .has_satellite_proxy_attach(ClientId(1), &host, 7)
+    }));
     // The delayed link processes the withdrawal only after the refusal.
     assert!(
         session
@@ -140,7 +141,7 @@ async fn satellite_detach_reply_waits_for_proxy_withdrawal() {
     let (handle, mut mailbox) = RelayHandle::new(host.clone());
     let relays = HubRelays::default();
     relays.insert(handle);
-    state.with_mut(|s| s.set_hub_relays(relays));
+    state.with_mut(|s| s.federation_mut().set_relays(relays));
     let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(8);
     let ctx = CommandContext::for_test(&state, ClientId(1), &out_tx);
     let detach = handle_satellite_command(
@@ -181,7 +182,10 @@ async fn refused_hub_detach_preserves_the_newer_proxy_input_registration() {
     let state = SharedState::new();
     let host = phux_protocol::ids::SatelliteHost::from("sat");
     let (handle, mut mailbox) = RelayHandle::new(host.clone());
-    state.with_mut(|s| s.register_satellite_proxy_attach(ClientId(1), host.clone(), 7));
+    state.with_mut(|s| {
+        s.federation_mut()
+            .register_satellite_proxy_attach(ClientId(1), host.clone(), 7);
+    });
     let terminal = phux_protocol::ids::ResourceId::local(7);
     let detach = resolve_hub_detach_terminal(&state, &handle, ClientId(1), &host, &terminal);
     tokio::pin!(detach);
@@ -194,13 +198,13 @@ async fn refused_hub_detach_preserves_the_newer_proxy_input_registration() {
     };
     reply.apply(|| {
         (
-            CommandResult::Error {
-                code: ErrorCode::InvalidCommand,
-                message: "superseded".to_owned(),
-            },
+            CommandResult::error(ErrorCode::InvalidCommand, "superseded"),
             Vec::new(),
         )
     });
     assert!(matches!(detach.await, CommandResult::Error { .. }));
-    assert!(state.with(|s| s.has_satellite_proxy_attach(ClientId(1), &host, 7)));
+    assert!(state.with(|s| {
+        s.federation()
+            .has_satellite_proxy_attach(ClientId(1), &host, 7)
+    }));
 }

@@ -136,6 +136,7 @@ do about a bad release.
 | `features/changes` | checkout presentation, feature-owned state transitions, view and tests; `desk/changes` supplies focus and window effects |
 | `desk/fleet` | cross-machine agent projection, ordering, identity and navigation, independent of any scene |
 | `playground`, `ui/playground/*` | deterministic scene support and shared drawing; each scene keeps its own geometry and simulation |
+| `desk/scene_host` | the fleet scenes' (hive, kitchen, pitch, pit lane, reef) Desk state and ways in and out, written once; each sim states what differs through `FleetScene`. The galaxy stays apart |
 | `test_support` | isolated window preferences and configurable embedded clients, shared by feature tests and renderer budgets |
 | `links` | OSC 8 hyperlinks and written URLs under a cell |
 | `activity` | per-terminal agent state, questions, commands and bells, and what needs you |

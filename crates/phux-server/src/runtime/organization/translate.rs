@@ -297,6 +297,7 @@ fn terminate_op(
         return Err(Refusal::Stale { current: None });
     }
     let id = s
+        .idspace
         .resource_from_wire(&target.resource)
         .ok_or(Refusal::NotFound)?;
     let key = s.registry().resource_key(id).ok_or(Refusal::NotFound)?;
@@ -458,13 +459,13 @@ fn created_target(
     if created.entry.is_some()
         && (current.id != phux_core::ActivationId::FIRST
             || !current.state.is_current()
-            || s.resource_handle(id).is_none())
+            || s.resources().handle(id).is_none())
     {
         return None;
     }
     let activation = current.id;
     Some(LiveTarget {
-        resource: s.intern_resource_wire(id),
+        resource: s.idspace.intern_resource(id),
         instance: s.idspace.instance(),
         activation: ow::activation_id(activation),
     })

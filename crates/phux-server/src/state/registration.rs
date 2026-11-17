@@ -1,11 +1,10 @@
 use std::future::Future;
 
 use phux_core::ids::ResourceId;
-use phux_protocol::ids::{BootstrapId, ResourceId as WireResourceId};
+use phux_protocol::ids::ResourceId as WireResourceId;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::resource_table::AttachResourcePumpReplacement;
 use super::{ClientId, ServerState};
 use crate::mailbox::Outbound;
 use crate::resource::{ResourceHandle, ResourceKind};
@@ -34,10 +33,17 @@ pub enum ResourceRegistrationError {
 }
 
 impl ServerState {
-    /// Current subscribers of `pane`.
+    /// Everything keyed on a live pane: handles, tokens, subscriptions, and
+    /// output pumps. Registering an engine checks its kind and interns its
+    /// wire id, so it goes through [`Self::register_resource_handle`].
     #[must_use]
-    pub fn subscribers_for_resource(&self, terminal: ResourceId) -> &[ClientId] {
-        self.resources.subscribers_for(terminal)
+    pub(crate) const fn resources(&self) -> &super::ResourceTable {
+        &self.resources
+    }
+
+    /// Mutable [`Self::resources`].
+    pub(crate) const fn resources_mut(&mut self) -> &mut super::ResourceTable {
+        &mut self.resources
     }
 
     /// Subscribe `client` to `terminal` (deduplicated). Pass `mailbox` for
@@ -67,17 +73,11 @@ impl ServerState {
     /// `ATTACH_RESOURCE`-only. Closed mailboxes are skipped.
     #[must_use]
     pub fn terminal_fanout_targets(&self, terminal: ResourceId) -> Vec<mpsc::Sender<Outbound>> {
-        self.subscribers_for_resource(terminal)
+        self.resources
+            .subscribers_for(terminal)
             .iter()
             .filter_map(|client| self.clients.terminal_fanout_mailbox(*client).cloned())
             .collect()
-    }
-
-    /// Handles of every pane `client_id` subscribes to, gathered under the
-    /// lock so detach requests can be sent off it.
-    #[must_use]
-    pub fn subscribed_resource_handles(&self, client_id: ClientId) -> Vec<ResourceHandle> {
-        self.resources.subscribed_handles(client_id)
     }
 
     /// Record a spawned engine's handle and token and allocate its wire id
@@ -105,7 +105,7 @@ impl ServerState {
                 actual: handle.kind,
             });
         }
-        let wire = self.intern_resource_wire(terminal);
+        let wire = self.idspace.intern_resource(terminal);
         self.resources.register(terminal, handle, token);
         Ok(wire)
     }
@@ -132,90 +132,6 @@ impl ServerState {
         Ok(wire)
     }
 
-    /// Shutdown: cancel every engine and hand back all engine futures, so
-    /// the caller can let each finish its teardown before the `LocalSet`
-    /// drops.
-    pub(crate) fn retire_engines(&mut self) -> tokio::task::JoinSet<()> {
-        self.resources.retire_engines()
-    }
-
-    /// Cancel every output pump of `terminal`: a killed Terminal's process
-    /// outlives its close (the hangup grace), and nothing it prints then may
-    /// follow its `RESOURCE_CLOSED`.
-    pub(crate) fn cancel_terminal_pumps(&mut self, terminal: ResourceId) {
-        self.resources.cancel_pumps_for_terminal(terminal);
-    }
-
-    /// Cancel and forget `pane`'s actor token. Idempotent.
-    pub fn detach_resource_actor(&mut self, terminal: ResourceId) {
-        self.resources.detach_actor(terminal);
-    }
-
-    /// `terminal`'s handle, if registered.
-    #[must_use]
-    pub fn resource_handle(&self, terminal: ResourceId) -> Option<&ResourceHandle> {
-        self.resources.handle(terminal)
-    }
-
-    /// Every `(pane, handle)`, cloned for use off the lock.
-    pub(crate) fn all_resource_handles(&self) -> Vec<(ResourceId, ResourceHandle)> {
-        self.resources.all_handles()
-    }
-
-    /// Every registered resource id (no handle clones).
-    #[must_use]
-    pub fn resource_ids(&self) -> Vec<ResourceId> {
-        self.resources.resource_ids()
-    }
-
-    /// Install a new `ATTACH_RESOURCE` pump generation, displacing any live
-    /// one (see `ResourceTable::replace_pump`).
-    pub fn replace_attach_terminal_pump(
-        &mut self,
-        client: ClientId,
-        terminal: ResourceId,
-        bootstrap_id: BootstrapId,
-    ) -> AttachResourcePumpReplacement {
-        self.resources.replace_pump(client, terminal, bootstrap_id)
-    }
-
-    /// Relabel the current `ATTACH_RESOURCE` pump that owns `last_valid_seq`
-    /// for a replacement generation (see
-    /// `ResourceTable::advance_pump_generation`).
-    pub(crate) fn advance_attach_terminal_pump(
-        &mut self,
-        client: ClientId,
-        terminal: ResourceId,
-        last_valid_seq: &std::sync::Arc<std::sync::atomic::AtomicU64>,
-    ) -> Option<BootstrapId> {
-        self.resources
-            .advance_pump_generation(client, terminal, last_valid_seq)
-    }
-
-    /// The next per-terminal bootstrap id for `client`; `None` when
-    /// exhausted.
-    pub fn next_attach_terminal_bootstrap_id(&mut self, client: ClientId) -> Option<BootstrapId> {
-        self.resources.next_bootstrap_id(client)
-    }
-
-    /// Cancel the pump for `(client, terminal)`. Idempotent.
-    pub fn cancel_attach_terminal_pump(&mut self, client: ClientId, terminal: ResourceId) {
-        self.resources.cancel_pump(client, terminal);
-    }
-
-    /// Track a task from any of the three output subscription paths.
-    pub(crate) fn track_terminal_output_pump(
-        &mut self,
-        client: ClientId,
-        terminal: ResourceId,
-        abort: tokio::task::AbortHandle,
-        done: CancellationToken,
-        drain: Option<CancellationToken>,
-    ) {
-        self.resources
-            .track_output_pump(client, terminal, abort, done, drain);
-    }
-
     /// Signal natural-close drain and capture each client's completion fences.
     pub(crate) fn begin_terminal_output_drain(
         &mut self,
@@ -230,32 +146,6 @@ impl ServerState {
             .collect()
     }
 
-    pub(crate) fn draining_resource_from_wire(
-        &self,
-        wire: &phux_protocol::ids::ResourceId,
-    ) -> Option<ResourceId> {
-        self.resources.draining_terminal(wire)
-    }
-
-    pub(crate) fn finish_terminal_output_drain(&mut self, terminal: ResourceId) {
-        self.resources.finish_output_drain(terminal);
-    }
-
-    /// Abort this subscription's tasks; await the returned tokens off the
-    /// lock before acknowledging.
-    pub(crate) fn stop_terminal_output_pumps(
-        &mut self,
-        client: ClientId,
-        terminal: ResourceId,
-    ) -> Vec<CancellationToken> {
-        self.resources.stop_output_pumps(client, terminal)
-    }
-
-    /// Remove `client` from `terminal`'s subscribers.
-    pub fn unsubscribe_resource(&mut self, client: ClientId, terminal: ResourceId) {
-        self.resources.unsubscribe(client, terminal);
-    }
-
     /// The mailbox of the connection that spawned `resource`, a document's
     /// producer, while it is connected; `None` once it is gone.
     #[must_use]
@@ -264,12 +154,6 @@ impl ServerState {
             .spawner(resource)
             .and_then(|client| self.client_mailbox(client))
             .filter(|tx| !tx.is_closed())
-    }
-
-    /// The connection that spawned (produces) `resource`, when a client did.
-    #[must_use]
-    pub fn resource_spawner(&self, resource: ResourceId) -> Option<ClientId> {
-        self.resources.spawner(resource)
     }
 
     /// What input to `resource` controls, as its producer declared at spawn
@@ -281,14 +165,9 @@ impl ServerState {
         &self,
         resource: ResourceId,
     ) -> Option<phux_protocol::wire::frame::ControlClass> {
-        self.resource_handle(resource)?
+        self.resources
+            .handle(resource)?
             .companion::<phux_protocol::wire::frame::ControlClass>()
             .copied()
-    }
-
-    /// Record that `client` spawned `terminal` (ADR-0109), before anything
-    /// subscribes to it.
-    pub fn record_spawn(&mut self, terminal: ResourceId, client: ClientId) {
-        self.resources.record_spawn(terminal, client);
     }
 }

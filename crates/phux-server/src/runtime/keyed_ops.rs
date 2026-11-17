@@ -55,10 +55,10 @@ async fn admit_within(state: &SharedState, command: &Command, wait: Duration) ->
         Admission::Final(outcome) => replayed(&outcome),
         Admission::InFlight => in_flight(),
         Admission::Conflict => conflict(),
-        Admission::Full => CommandResult::Error {
-            code: ErrorCode::ResourceExhausted,
-            message: "the server's idempotency record is full; retry later".to_owned(),
-        },
+        Admission::Full => CommandResult::error(
+            ErrorCode::ResourceExhausted,
+            "the server's idempotency record is full; retry later",
+        ),
     };
     KeyedAdmission::Answer(answer)
 }
@@ -119,18 +119,18 @@ fn digest(command: &Command) -> [u8; 32] {
 fn replayed(outcome: &CachedOutcome) -> CommandResult {
     match outcome {
         CachedOutcome::Signal(result) => result.clone(),
-        _ => CommandResult::Error {
-            code: ErrorCode::InternalError,
-            message: "the idempotency record holds no supervisory result under this key".to_owned(),
-        },
+        _ => CommandResult::error(
+            ErrorCode::InternalError,
+            "the idempotency record holds no supervisory result under this key",
+        ),
     }
 }
 
 fn in_flight() -> CommandResult {
-    CommandResult::Error {
-        code: ErrorCode::ResourceExhausted,
-        message: "a command under this idempotency key is still in flight; retry".to_owned(),
-    }
+    CommandResult::error(
+        ErrorCode::ResourceExhausted,
+        "a command under this idempotency key is still in flight; retry",
+    )
 }
 
 /// The refusal for a key reused with another command: the same code
@@ -326,10 +326,7 @@ mod tests {
         };
         settle(
             Some(claim),
-            &CommandResult::Error {
-                code: ErrorCode::TerminalNotFound,
-                message: "gone".to_owned(),
-            },
+            &CommandResult::error(ErrorCode::TerminalNotFound, "gone"),
         );
         let KeyedAdmission::Owner(claim) = admit(&state, &kill(3, 7)).await else {
             panic!("a refused command's repeat runs again");

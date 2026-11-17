@@ -10,22 +10,10 @@ use tempfile::TempDir;
 
 /// Run `phux <args...>` and return `(exit_code, stdout, stderr)`.
 fn run(args: &[&str]) -> (i32, String, String) {
-    let out = crate::common::phux_cmd(crate::runner::phux_bin())
-        .args(args)
-        .output()
-        .expect("run phux binary");
-    (
-        out.status.code().expect("phux exited via code, not signal"),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        // An `--all-features` build carries the dhat profiler, whose Drop
-        // prints nondeterministic heap stats to stderr. Those are a build
-        // diagnostic, not CLI output.
-        String::from_utf8_lossy(&out.stderr)
-            .lines()
-            .filter(|line| !line.starts_with("dhat: "))
-            .collect::<Vec<_>>()
-            .join("\n"),
-    )
+    // An `--all-features` build carries the dhat profiler, whose Drop
+    // prints nondeterministic heap stats to stderr. Those are a build
+    // diagnostic, not CLI output.
+    crate::common::phux(args).without_dhat().into_parts()
 }
 
 /// Assert the shared `--json` failure contract: the expected exit code, empty

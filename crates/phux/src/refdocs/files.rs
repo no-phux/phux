@@ -148,15 +148,15 @@ pub(crate) fn page() -> Page {
            address phux advertises, and (`remote-cert-chain`) whether an auto-provisioned leaf still fails to chain to the workload CA, which blocks phone QR enrollment.\n\
          - `remote-tokens` is the versioned verifier-only credential store \
            the server reads and `phux pair`, `phux pair rotate`, and `phux \
-           pair revoke` update under the sibling \
-           `.remote-tokens.lock`. Writers first lock the owner-controlled, \
-           non-group/world-writable parent directory, then no-follow open and \
-           validate the owner-only regular lock file, preventing lock-path \
-           replacement from splitting concurrent writers. Store commits use \
-           a synced temporary file and atomic rename. The store must be a \
-           regular, non-symlink file owned by the effective user with no \
-           group/world permissions; an integrity failure denies \
-           authentication. `PHUX_WS_TOKENS` moves it without weakening those \
+           pair revoke` update under an exclusive lock on its \
+           owner-controlled, non-group/world-writable parent directory, \
+           re-checked after locking so a replaced directory cannot split \
+           concurrent writers (a `.remote-tokens.lock` left by an older \
+           binary is ignored). Store commits use a synced temporary file \
+           and atomic rename. The store must be a regular, non-symlink file \
+           of at most 4 MiB owned by the effective user with no \
+           group/world permissions, in a directory only that user can \
+           change; an integrity failure denies authentication. `PHUX_WS_TOKENS` moves it without weakening those \
            checks. A store of legacy anonymous token lines is refused: \
           remove it and pair again.\n\
          - `enrollment-tickets` holds the SHA-256 of each single-use \
@@ -264,7 +264,7 @@ mod tests {
             .into_owned();
 
         ends_with(
-            &phux_server::telemetry::server_log_path(),
+            &phux_config::instance::server_log_path(),
             &format!("{state_leaf}/server.log"),
         );
         ends_with(

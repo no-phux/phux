@@ -127,32 +127,11 @@ impl ClientCapabilities {
         }
     }
 
-    /// Builder setter for [`Self::platform`].
-    #[must_use]
-    pub const fn with_platform(mut self, platform: Option<ClientPlatform>) -> Self {
-        self.platform = platform;
-        self
-    }
-
-    /// Builder setter for [`Self::credential_approvals`].
-    #[must_use]
-    pub const fn with_credential_approvals(mut self, enabled: bool) -> Self {
-        self.credential_approvals = enabled;
-        self
-    }
-
-    /// Builder setter for [`Self::resource_kinds`].
-    #[must_use]
-    pub const fn with_resource_kinds(mut self, kinds: ResourceKindSet) -> Self {
-        self.resource_kinds = kinds;
-        self
-    }
-
-    /// Builder setter for [`Self::compression`].
-    #[must_use]
-    pub const fn with_compression(mut self, compression: CompressionSet) -> Self {
-        self.compression = compression;
-        self
+    builder_setters! {
+        const fn with_platform(platform: Option<ClientPlatform>) => platform;
+        const fn with_credential_approvals(enabled: bool) => credential_approvals;
+        const fn with_resource_kinds(kinds: ResourceKindSet) => resource_kinds;
+        const fn with_compression(compression: CompressionSet) => compression;
     }
 
     /// Builder setter for [`Self::ssh_origin`].
@@ -162,18 +141,9 @@ impl ClientCapabilities {
         self
     }
 
-    /// Builder setter for [`Self::quic_streams`].
-    #[must_use]
-    pub const fn with_quic_streams(mut self, enabled: bool) -> Self {
-        self.quic_streams = enabled;
-        self
-    }
-
-    /// Builder setter for [`Self::output_mode`].
-    #[must_use]
-    pub const fn with_output_mode(mut self, output_mode: OutputMode) -> Self {
-        self.output_mode = output_mode;
-        self
+    builder_setters! {
+        const fn with_quic_streams(enabled: bool) => quic_streams;
+        const fn with_output_mode(output_mode: OutputMode) => output_mode;
     }
 
     /// Builder setter for [`Self::default_colors`].
@@ -182,46 +152,13 @@ impl ClientCapabilities {
         self.default_colors = Some(colors);
         self
     }
-    /// Builder setter for [`Self::bootstrap`].
-    #[must_use]
-    pub const fn with_bootstrap(mut self, bootstrap: BootstrapCapabilities) -> Self {
-        self.bootstrap = bootstrap;
-        self
-    }
-
-    /// Builder setter for [`Self::color_support`].
-    #[must_use]
-    pub const fn with_color_support(mut self, color_support: ColorSupport) -> Self {
-        self.color_support = color_support;
-        self
-    }
-
-    /// Builder setter for [`Self::layers`].
-    #[must_use]
-    pub const fn with_layers(mut self, layers: LayerSet) -> Self {
-        self.layers = layers;
-        self
-    }
-
-    /// Builder setter for [`Self::image_protocols`].
-    #[must_use]
-    pub const fn with_image_protocols(mut self, image_protocols: ImageProtocolSet) -> Self {
-        self.image_protocols = image_protocols;
-        self
-    }
-
-    /// Builder setter for [`Self::kbd_protocols`].
-    #[must_use]
-    pub const fn with_kbd_protocols(mut self, kbd_protocols: KeyboardProtocolSet) -> Self {
-        self.kbd_protocols = kbd_protocols;
-        self
-    }
-
-    /// Builder setter for [`Self::hyperlinks`].
-    #[must_use]
-    pub const fn with_hyperlinks(mut self, hyperlinks: bool) -> Self {
-        self.hyperlinks = hyperlinks;
-        self
+    builder_setters! {
+        const fn with_bootstrap(bootstrap: BootstrapCapabilities) => bootstrap;
+        const fn with_color_support(color_support: ColorSupport) => color_support;
+        const fn with_layers(layers: LayerSet) => layers;
+        const fn with_image_protocols(image_protocols: ImageProtocolSet) => image_protocols;
+        const fn with_kbd_protocols(kbd_protocols: KeyboardProtocolSet) => kbd_protocols;
+        const fn with_hyperlinks(hyperlinks: bool) => hyperlinks;
     }
 }
 
@@ -259,32 +196,11 @@ impl ServerCapabilities {
         }
     }
 
-    /// Builder setter for [`Self::compression`].
-    #[must_use]
-    pub const fn with_compression(mut self, compression: Compression) -> Self {
-        self.compression = compression;
-        self
-    }
-
-    /// Builder setter for [`Self::layers`].
-    #[must_use]
-    pub const fn with_layers(mut self, layers: LayerSet) -> Self {
-        self.layers = layers;
-        self
-    }
-
-    /// Builder setter for [`Self::features`].
-    #[must_use]
-    pub const fn with_features(mut self, features: ServerFeatureSet) -> Self {
-        self.features = features;
-        self
-    }
-
-    /// Builder setter for [`Self::features_ext`].
-    #[must_use]
-    pub const fn with_features_ext(mut self, features: ServerFeatureExtSet) -> Self {
-        self.features_ext = features;
-        self
+    builder_setters! {
+        const fn with_compression(compression: Compression) => compression;
+        const fn with_layers(layers: LayerSet) => layers;
+        const fn with_features(features: ServerFeatureSet) => features;
+        const fn with_features_ext(features: ServerFeatureExtSet) => features_ext;
     }
 }
 

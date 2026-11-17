@@ -63,7 +63,7 @@ pub fn old_server_recovery_lines(socket: &Path, pid: Option<i32>) -> Vec<String>
     lines.push("stopping it closes only the panes it is running".to_owned());
     lines.push(format!(
         "selected-profile server log: {}",
-        server_log_path().display()
+        phux_config::instance::server_log_path().display()
     ));
     lines
 }
@@ -156,12 +156,6 @@ fn tokio_peer_pid(stream: std::os::unix::net::UnixStream) -> Option<i32> {
 #[cfg(unix)]
 fn our_uid() -> u32 {
     rustix::process::getuid().as_raw()
-}
-
-/// `<state>/server.log`, the same path `phux_server::telemetry::server_log_path`
-/// reports.
-fn server_log_path() -> std::path::PathBuf {
-    phux_config::instance::state_dir().join("server.log")
 }
 
 #[cfg(test)]

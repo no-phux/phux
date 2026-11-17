@@ -59,10 +59,10 @@ pub(super) fn handle(
         }
         other => {
             let Some((operation, op)) = state.with(|s| translate(s, other)) else {
-                return CommandResult::Error {
-                    code: phux_protocol::wire::frame::ErrorCode::InvalidCommand,
-                    message: "not an organization command".to_owned(),
-                };
+                return CommandResult::error(
+                    phux_protocol::wire::frame::ErrorCode::InvalidCommand,
+                    "not an organization command",
+                );
             };
             let op = match op {
                 Ok(op) => op,

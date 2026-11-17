@@ -304,7 +304,7 @@ pub enum Widget {
 impl Widget {
     /// The long form of this entry (a bare kind has no options).
     #[must_use]
-    pub(crate) fn to_spec(&self) -> WidgetSpec {
+    pub fn to_spec(&self) -> WidgetSpec {
         match self {
             Self::Bare(kind) => WidgetSpec {
                 kind: kind.clone(),
@@ -315,7 +315,8 @@ impl Widget {
     }
 }
 
-/// Long-form widget spec; options are validated per kind by the registry.
+/// Long-form widget spec; options are validated per kind by
+/// [`crate::widget::validate`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WidgetSpec {
     /// Widget kind (see `docs/reference/widgets.md`).

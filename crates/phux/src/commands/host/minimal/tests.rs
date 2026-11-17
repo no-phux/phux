@@ -147,10 +147,7 @@ fn the_box_registry_round_trips_and_starts_empty() {
     let dir = tempfile::tempdir().unwrap();
     let registry = BoxRegistry::at(dir.path().join("state/boxes.json"));
     assert_eq!(registry.load().unwrap(), Joined::default());
-    let joined = Joined {
-        boxes: BTreeMap::from([("01a1".to_owned(), "min-api".to_owned())]),
-        minted: BTreeSet::from(["min-api".to_owned()]),
-    };
+    let joined = joined_min_api();
     registry.save(&joined).unwrap();
     assert_eq!(registry.load().unwrap(), joined);
 }
@@ -193,6 +190,14 @@ fn a_cached_box_binary_is_reused_only_at_the_hub_version() {
     assert_eq!(std::fs::read(&got).unwrap(), b"fresh");
     assert_eq!(std::fs::read_to_string(&version).unwrap().trim(), "v9.9.9");
     assert!(!cached_box_binary(&dest, &version, "v1.2.3"));
+}
+
+/// One box, `01a1`, joined as the minted satellite `min-api`.
+fn joined_min_api() -> Joined {
+    Joined {
+        boxes: BTreeMap::from([("01a1".to_owned(), "min-api".to_owned())]),
+        minted: BTreeSet::from(["min-api".to_owned()]),
+    }
 }
 
 fn plan() -> WatchPlan {
@@ -371,10 +376,7 @@ fn a_failed_revoke_keeps_the_box_and_does_not_report_it_revoked() {
     write_paired(&files);
     register_satellite(&files, "min-api");
     let ctx = context(dir.path(), files.clone());
-    let joined = Joined {
-        boxes: BTreeMap::from([("01a1".to_owned(), "min-api".to_owned())]),
-        minted: BTreeSet::from(["min-api".to_owned()]),
-    };
+    let joined = joined_min_api();
     ctx.registry.save(&joined).unwrap();
     // Owner-only access is required to revoke; drop write so the revoke fails
     // and the recorded box has to stay.
@@ -404,10 +406,7 @@ fn a_registry_read_failure_still_revokes_and_returns_the_error() {
     std::fs::create_dir(&blocked).unwrap();
     files.config = blocked;
     let ctx = context(dir.path(), files.clone());
-    let joined = Joined {
-        boxes: BTreeMap::from([("01a1".to_owned(), "min-api".to_owned())]),
-        minted: BTreeSet::from(["min-api".to_owned()]),
-    };
+    let joined = joined_min_api();
     ctx.registry.save(&joined).unwrap();
     let mut recorded = joined.clone();
     let err = ctx.prune(&mut recorded, &BTreeSet::new()).unwrap_err();
@@ -471,10 +470,7 @@ fn remove_stops_when_the_watcher_cannot_be_uninstalled() {
     let files = hub_files(dir.path());
     register_satellite(&files, "min-api");
     let registry = BoxRegistry::at(dir.path().join("boxes.json"));
-    let joined = Joined {
-        boxes: BTreeMap::from([("01a1".to_owned(), "min-api".to_owned())]),
-        minted: BTreeSet::from(["min-api".to_owned()]),
-    };
+    let joined = joined_min_api();
     registry.save(&joined).unwrap();
     let loadout = dir.path().join("minimal");
     let err = super::finish_remove(

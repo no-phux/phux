@@ -32,6 +32,29 @@ fn nested_split_rewrites_only_the_target_leaf() {
 }
 
 #[test]
+fn for_each_ratio_mut_visits_every_split_depth_first() {
+    let mut tree = split(
+        LayoutNode::Leaf(1),
+        split(LayoutNode::Leaf(2), LayoutNode::Leaf(3), SplitDir::Vertical),
+        SplitDir::Horizontal,
+    );
+    let mut seen = 0.0;
+    tree.for_each_ratio_mut(&mut |ratio| {
+        seen += 1.0;
+        *ratio = seen / 10.0;
+    });
+    let LayoutNode::Split { ratio, right, .. } = &tree else {
+        panic!("root is a split");
+    };
+    assert!((ratio - 0.1).abs() < f32::EPSILON);
+    let LayoutNode::Split { ratio: inner, .. } = right.as_ref() else {
+        panic!("right is a split");
+    };
+    assert!((inner - 0.2).abs() < f32::EPSILON);
+    assert_eq!(tree.leaves(), vec![&1, &2, &3]);
+}
+
+#[test]
 fn split_rejects_bad_input_without_changing_layout() {
     let mut tree = LayoutNode::Leaf(1);
     let original = tree.clone();

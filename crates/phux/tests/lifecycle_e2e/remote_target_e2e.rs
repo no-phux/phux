@@ -9,12 +9,9 @@
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
 
-use std::io::Read as _;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use tempfile::TempDir;
 
 /// TEST-NET-3 (RFC 5737): never routed, so a probe cannot reach a real
@@ -73,85 +70,30 @@ impl RemoteHome {
     /// the attach after pairing would block forever. Reads happen on a thread
     /// so a quiet child cannot park the deadline.
     fn run_until(&self, args: &[&str], ssh: &Path, needle: &str) -> String {
-        let pty = native_pty_system()
-            .openpty(PtySize {
-                rows: 24,
-                cols: 80,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .expect("openpty");
-
-        let mut cmd = CommandBuilder::new(crate::runner::phux_bin());
-        cmd.args(args);
-        // No ambient `PHUX_*` from a live pane: rebuild the table.
-        cmd.env_clear();
-        if let Some(path) = std::env::var_os("PATH") {
-            cmd.env("PATH", path);
-        }
-        if let Some(tmp) = std::env::var_os("TMPDIR") {
-            cmd.env("TMPDIR", tmp);
-        }
-        cmd.env("HOME", self.dir.path());
-        cmd.env("XDG_CONFIG_HOME", self.dir.path().join("config"));
-        cmd.env("XDG_STATE_HOME", self.dir.path().join("state"));
-        // The released layout (`state/phux`), not the debug `dev` profile.
-        cmd.env("PHUX_PROFILE", "default");
-        cmd.env("PHUX_SSH", ssh);
-        cmd.env("PHUX_TAILSCALE", self.dir.path().join("no-such-tailscale"));
-        cmd.env("PHUX_TEST_SSH_CALLS", self.dir.path().join("ssh-calls"));
-        // The probe dials a TEST-NET address: fail it fast.
-        cmd.env("PHUX_DIRECT_PROBE_TIMEOUT_MS", "300");
-        cmd.env("TERM", "xterm-256color");
-        // The default profile would otherwise use the operator's socket and
-        // auto-bind the overlay port (ADR-0081).
-        cmd.env("PHUX_SOCKET", self.dir.path().join("phux.sock"));
-        cmd.env("PHUX_NO_AUTO_LISTEN", "1");
-        cmd.env("PHUX_NO_UPDATE_CHECK", "1");
-
-        let mut child = pty.slave.spawn_command(cmd).expect("spawn phux");
-        drop(pty.slave);
-        let mut reader = pty.master.try_clone_reader().expect("clone reader");
-
-        let (tx, rx) = mpsc::channel::<Vec<u8>>();
-        std::thread::spawn(move || {
-            let mut buf = [0_u8; 4096];
-            loop {
-                match reader.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        if tx.send(buf[..n].to_vec()).is_err() {
-                            break;
-                        }
-                    }
-                }
-            }
-        });
-
-        let start = Instant::now();
-        let mut seen = String::new();
-        let mut settle_until = None;
-        loop {
-            let budget = settle_until.map_or_else(
-                || DEADLINE.saturating_sub(start.elapsed()),
-                |until: Instant| until.saturating_duration_since(Instant::now()),
-            );
-            if budget.is_zero() {
-                break;
-            }
-            match rx.recv_timeout(budget) {
-                Ok(chunk) => {
-                    seen.push_str(&String::from_utf8_lossy(&chunk));
-                    if settle_until.is_none() && seen.contains(needle) {
-                        settle_until = Some(Instant::now() + SETTLE);
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-        let _ = child.kill();
-        let _ = child.wait();
-        seen
+        crate::common::pty_transcript(
+            args,
+            |cmd| {
+                // No ambient `PHUX_*` from a live pane: rebuild the table.
+                crate::common::clear_pty_env(cmd);
+                cmd.env("HOME", self.dir.path());
+                cmd.env("XDG_CONFIG_HOME", self.dir.path().join("config"));
+                cmd.env("XDG_STATE_HOME", self.dir.path().join("state"));
+                // The released layout (`state/phux`), not the debug `dev` profile.
+                cmd.env("PHUX_PROFILE", "default");
+                cmd.env("PHUX_SSH", ssh);
+                cmd.env("PHUX_TAILSCALE", self.dir.path().join("no-such-tailscale"));
+                cmd.env("PHUX_TEST_SSH_CALLS", self.dir.path().join("ssh-calls"));
+                // The probe dials a TEST-NET address: fail it fast.
+                cmd.env("PHUX_DIRECT_PROBE_TIMEOUT_MS", "300");
+                // The default profile would otherwise use the operator's
+                // socket and auto-bind the overlay port (ADR-0081).
+                cmd.env("PHUX_SOCKET", self.dir.path().join("phux.sock"));
+                cmd.env("PHUX_NO_AUTO_LISTEN", "1");
+            },
+            |seen| seen.contains(needle),
+            SETTLE,
+            DEADLINE,
+        )
     }
 
     fn config(&self) -> String {

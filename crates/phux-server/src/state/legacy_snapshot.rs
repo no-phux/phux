@@ -53,7 +53,7 @@ impl ServerState {
     /// Whether a legacy client sees `resource`: its engine is live, or its
     /// activation is current.
     pub(super) fn resource_is_visible(&self, resource: ResourceId) -> bool {
-        self.resource_handle(resource).is_some()
+        self.resources().handle(resource).is_some()
             || self
                 .sessions
                 .registry
@@ -96,11 +96,11 @@ impl ServerState {
                 continue;
             }
             let session_wire = self.idspace.intern_session(sid);
-            let window_wire = (!members.is_empty()).then(|| self.intern_window_wire(sid));
+            let window_wire = (!members.is_empty()).then(|| self.idspace.intern_window(sid));
             let created_at_unix_secs =
                 i64::try_from(record.created.as_millis() / 1000).unwrap_or(i64::MAX);
             let recent = self.recent_member(sid, &members);
-            let recent_input = recent.map(|p| self.intern_resource_wire(p));
+            let recent_input = recent.map(|p| self.idspace.intern_resource(p));
             sessions.push(
                 SessionInfo::new(session_wire, record.name.clone())
                     .with_active_window(window_wire)
@@ -116,7 +116,7 @@ impl ServerState {
             let Some(window_wire) = window_wire else {
                 continue;
             };
-            let active = active_pane(recent, &members).map(|p| self.intern_resource_wire(p));
+            let active = active_pane(recent, &members).map(|p| self.idspace.intern_resource(p));
             windows.push(
                 WindowInfo::new(window_wire, session_wire, "window-0".to_owned())
                     .with_index(0)
@@ -158,19 +158,20 @@ impl ServerState {
             let Some(terminal) = self.registry().terminal(pid).cloned() else {
                 continue;
             };
-            let wire = self.intern_resource_wire(pid);
+            let wire = self.idspace.intern_resource(pid);
             let cwd = Some(terminal.cwd.to_string_lossy().into_owned()).filter(|s| !s.is_empty());
-            let exit = self.retained_exit(pid);
+            let exit = self.retained().exit(pid);
             let lifecycle = if exit.is_some() {
                 phux_protocol::wire::frame::ResourceLifecycle::Exited
             } else {
                 phux_protocol::wire::frame::ResourceLifecycle::Running
             };
-            let input_holder = self.input_lease_holder(pid).map(|holder| {
+            let input_holder = self.leases().holder(pid).map(|holder| {
                 phux_protocol::ids::ClientId::new(u32::try_from(holder.0).unwrap_or(u32::MAX))
             });
             let viewers = self
-                .terminal_viewers(&wire)
+                .clients()
+                .viewers_of(&wire)
                 .into_iter()
                 .map(|viewer| {
                     phux_protocol::ids::ClientId::new(u32::try_from(viewer.0).unwrap_or(u32::MAX))
@@ -205,8 +206,8 @@ impl ServerState {
             if !self.resource_is_visible(id) {
                 continue;
             }
-            let wire = self.intern_resource_wire(id);
-            let parent = descriptor.parent.map(|p| self.intern_resource_wire(p));
+            let wire = self.idspace.intern_resource(id);
+            let parent = descriptor.parent.map(|p| self.idspace.intern_resource(p));
             let session = self
                 .sessions
                 .registry
@@ -264,11 +265,11 @@ impl ServerState {
             |pane| {
                 (
                     if self.registry().terminal(pane).is_some() {
-                        self.intern_window_wire(focus_session)
+                        self.idspace.intern_window(focus_session)
                     } else {
                         phux_protocol::ids::WindowId::new(0)
                     },
-                    self.intern_resource_wire(pane),
+                    self.idspace.intern_resource(pane),
                 )
             },
         )

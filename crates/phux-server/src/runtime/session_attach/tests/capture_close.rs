@@ -82,7 +82,7 @@ async fn close_from(producer: &mut Connection, wire: &phux_protocol::ids::Resour
 
 async fn wait_reaped(state: &SharedState, core: phux_core::ids::ResourceId) {
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while state.with(|s| s.resource_handle(core).is_some()) {
+        while state.with(|s| s.resources().handle(core).is_some()) {
             tokio::task::yield_now().await;
         }
     })
@@ -96,7 +96,7 @@ async fn close_during_capture(kill: bool, cancel: bool) {
     let (core, handle) = watched_tree(&state, parent, session);
     publish::<TreeDocument>(&handle, Bytes::from_static(b"{\"initial\":true}")).await;
     let (_, parked, actor) = parked_tree(&state, parent, session);
-    let wire = state.with_mut(|s| s.intern_resource_wire(core));
+    let wire = state.with_mut(|s| s.idspace.intern_resource(core));
     let mut viewer = Connection::start(&state, false).await;
     let mut producer = Connection::start(&state, false).await;
     viewer.attach(1).await;

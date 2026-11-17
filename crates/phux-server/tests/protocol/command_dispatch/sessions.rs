@@ -1,5 +1,8 @@
 //! `COMMAND` dispatch of the L3 session keys and verbs: create, rename, and detach-clients.
 
+use phux_server_testkit::{SOCKET_CONNECT_DEADLINE, spawn_server_seed_pty_no_cmd, wait_for_socket};
+use tempfile::TempDir;
+
 use super::*;
 
 /// `SESSION_CREATE_KEY` seeds a session (listed by `GET_STATE`), publishes its
@@ -9,10 +12,9 @@ use super::*;
 fn session_create_via_metadata_seeds_session_and_validates_cwd() {
     use std::os::unix::fs::PermissionsExt;
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-        let (shutdown, server) = spawn_server_seed_pty_no_cmd(socket_path.clone(), None);
-        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let server = SpawnedServer::pty(None);
+        let tmp = &server.tmp;
+        let mut stream = server.connect().await;
 
         let agent_session =
             br#"{"plugin_id":"com.phux.agents","integration_id":"codex","native_id":"session-42"}"#
@@ -80,7 +82,7 @@ fn session_create_via_metadata_seeds_session_and_validates_cwd() {
         }
 
         drop(stream);
-        join_after_shutdown(shutdown, server).await;
+        server.stop().await;
     });
 }
 

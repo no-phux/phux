@@ -14,7 +14,7 @@ use crate::ids::{
     ResourceKind, Revision, ServerInstance, SessionId, SessionKey, WorkspaceKey,
 };
 use crate::kinds::Verb;
-use crate::wire::decode::{Decoder, utf8_value};
+use crate::wire::decode::{Decoder, u8_value, u32_value, u64_value, utf8_value};
 use crate::wire::encode::Encoder;
 use crate::wire::error::DecodeError;
 use crate::wire::field;
@@ -57,8 +57,7 @@ use field_values::{
     bounded_dec_str, bounded_str, decode_filter, decode_launch, decode_live_target,
     decode_move_item, decode_outcome, decode_pair, decode_pin, encode_filter, encode_launch,
     encode_live_target, encode_move_item, encode_outcome, encode_pair, encode_pin, enum_byte,
-    key_bytes, push_bounded, read_key, read_operation, read_u8, read_u32, read_u64, req, write_key,
-    write_u8, write_u32, write_u64,
+    key_bytes, push_bounded, read_key, read_operation, req, write_key,
 };
 pub use model::{
     ArrangementDoc, ArrangementGroup, ArrangementNode, ArrangementOwner, CreatePlacement, EntryRef,

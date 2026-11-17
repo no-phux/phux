@@ -1,0 +1,38 @@
+{
+  "agents": [
+    {
+      "address": "%build",
+      "address_refusal": null,
+      "agent": {
+        "id": "codex",
+        "kind": "codex",
+        "label": "build"
+      },
+      "agent_session": null,
+      "attention": "normal",
+      "confidence": 1.0,
+      "cwd": null,
+      "explanation": "the phux.agent/v1 record for this pane (ADR-0040); nothing in the `codex` manifest matches this screen now (no state-bearing rule matched; the detector fails safe to idle, never blocked)",
+      "session": "work",
+      "sources": [
+        {
+          "confidence": 1.0,
+          "kind": "agent_record",
+          "observed": "{\"name\":\"build\",\"kind\":\"codex\",\"state\":\"working\"}",
+          "signal": "phux.agent/v1 record published for this pane"
+        },
+        {
+          "confidence": 0.3,
+          "kind": "detector_fallback",
+          "observed": "no state-bearing rule matched; the detector fails safe to idle, never blocked",
+          "signal": "no `codex` rule matches this screen"
+        }
+      ],
+      "state": "working",
+      "terminal": "@1",
+      "title": "zsh",
+      "window": "window-0"
+    }
+  ],
+  "schema_version": 1
+}

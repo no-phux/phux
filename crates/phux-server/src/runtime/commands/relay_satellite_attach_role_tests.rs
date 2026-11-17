@@ -22,7 +22,7 @@ impl Fixture {
         let client_id = ClientId(1);
         let token = CancellationToken::new();
         state.with_mut(|s| {
-            s.set_hub_relays(relays);
+            s.federation_mut().set_relays(relays);
             s.set_client_connection_cancellation(client_id, token);
         });
         let (out_tx, _out_rx) = tokio::sync::mpsc::channel(8);
@@ -44,10 +44,7 @@ impl Fixture {
         self.settle_attach(
             terminal,
             role,
-            CommandResult::Error {
-                code: ErrorCode::TerminalNotFound,
-                message: "no such terminal".to_owned(),
-            },
+            CommandResult::error(ErrorCode::TerminalNotFound, "no such terminal"),
         )
         .await
     }
@@ -92,9 +89,13 @@ async fn a_refused_first_satellite_viewer_attach_does_not_leave_a_tombstone() {
     assert!(
         !fixture
             .state
-            .with(|s| s.is_viewer(fixture.client_id, &wire))
+            .with(|s| s.clients().is_viewer(fixture.client_id, &wire))
     );
-    assert!(fixture.state.with(|s| s.terminal_viewers(&wire).is_empty()));
+    assert!(
+        fixture
+            .state
+            .with(|s| s.clients().viewers_of(&wire).is_empty())
+    );
 }
 
 /// A refused narrowing keeps a prior mark and a proxy-attached mark.
@@ -103,25 +104,29 @@ async fn a_refused_satellite_viewer_attach_keeps_a_prior_mark_or_proxy() {
     let mut fixture = Fixture::new();
     let prior = fixture.wire(3);
     fixture.state.with_mut(|s| {
-        s.set_viewer_mark(fixture.client_id, &prior, true);
+        s.clients_mut().mark_viewer(fixture.client_id, &prior, true);
     });
     let _ = fixture.refuse_attach(3, RolePolicy::VIEWER).await;
     assert!(
         fixture
             .state
-            .with(|s| s.is_viewer(fixture.client_id, &prior)),
+            .with(|s| s.clients().is_viewer(fixture.client_id, &prior)),
         "a refused re-attach must not shed a prior viewer tombstone"
     );
 
     let attached = fixture.wire(9);
     fixture.state.with_mut(|s| {
-        s.register_satellite_proxy_attach(fixture.client_id, fixture.host.clone(), 9);
+        s.federation_mut().register_satellite_proxy_attach(
+            fixture.client_id,
+            fixture.host.clone(),
+            9,
+        );
     });
     let _ = fixture.refuse_attach(9, RolePolicy::VIEWER).await;
     assert!(
         fixture
             .state
-            .with(|s| s.is_viewer(fixture.client_id, &attached)),
+            .with(|s| s.clients().is_viewer(fixture.client_id, &attached)),
         "a refused narrowing of an existing proxy attach keeps the mark"
     );
 }
@@ -137,11 +142,15 @@ async fn a_successful_satellite_viewer_attach_keeps_the_mark() {
     assert!(
         fixture
             .state
-            .with(|s| s.is_viewer(fixture.client_id, &wire))
+            .with(|s| s.clients().is_viewer(fixture.client_id, &wire))
     );
-    assert!(fixture.state.with(|s| s.has_satellite_proxy_attach(
-        fixture.client_id,
-        &fixture.host,
-        7
-    )));
+    assert!(
+        fixture
+            .state
+            .with(|s| s.federation().has_satellite_proxy_attach(
+                fixture.client_id,
+                &fixture.host,
+                7
+            ))
+    );
 }

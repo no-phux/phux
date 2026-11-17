@@ -10,22 +10,11 @@ use crate::common;
 
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::process::Stdio;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use common::ServerGuard;
 
 const SESSION: &str = "work";
-
-fn poll<F: FnMut() -> bool>(deadline: Duration, mut f: F) -> bool {
-    let end = Instant::now() + deadline;
-    while Instant::now() < end {
-        if f() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    false
-}
 
 fn ok(server: &ServerGuard, args: &[&str]) -> bool {
     server
@@ -50,7 +39,7 @@ fn upgrade(server: &ServerGuard) {
     let pid = server.pid();
     assert!(ok(server, &["upgrade"]), "`phux upgrade` should ack");
     assert!(
-        poll(Duration::from_secs(15), || common::process_exists(pid)
+        common::eventually(Duration::from_secs(15), || common::process_exists(pid)
             && ok(server, &["ls"])),
         "the resumed server should accept connections again"
     );
@@ -63,7 +52,7 @@ fn a_document_and_a_running_mirror_survive_graceful_upgrade() {
         .seed_command("exec sleep 600")
         .start();
     assert!(
-        poll(Duration::from_secs(10), || ok(&server, &["ls"])),
+        common::eventually(Duration::from_secs(10), || ok(&server, &["ls"])),
         "the server should accept connections"
     );
 
@@ -112,7 +101,7 @@ fn a_document_and_a_running_mirror_survive_graceful_upgrade() {
     let line: serde_json::Value = serde_json::from_str(&line).expect("JSON line");
     let surface = line["resource"].as_str().expect("resource").to_owned();
     assert!(
-        poll(Duration::from_secs(10), || producer(&server, &surface)
+        common::eventually(Duration::from_secs(10), || producer(&server, &surface)
             .as_deref()
             == Some("connected")),
         "the mirror produces its surface"
@@ -130,7 +119,7 @@ fn a_document_and_a_running_mirror_survive_graceful_upgrade() {
         "the document crossed with its id and newest document"
     );
     assert!(
-        poll(Duration::from_secs(20), || producer(&server, &surface)
+        common::eventually(Duration::from_secs(20), || producer(&server, &surface)
             .as_deref()
             == Some("connected")),
         "the mirror redialed and re-adopted the same surface"

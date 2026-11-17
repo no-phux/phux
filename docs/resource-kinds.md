@@ -162,6 +162,7 @@ A kind supplies:
 
 - its state and a codec for it (VT bytes, a record, a whole document);
 - the frames and commands it owns, through its `ResourceApp`;
+- an `InteractiveApp` (launch, `ATTACH`) only if a client drives it;
 - what of it crosses `phux upgrade`, which the same app writes into the
   upgrade blob at the cut and rebuilds on resume;
 - its row in the kind catalog (`KindSpec`): gate, methods, events,

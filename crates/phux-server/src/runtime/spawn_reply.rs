@@ -45,7 +45,7 @@ async fn relay_spawn_to_satellite(
     host: &phux_protocol::ids::SatelliteHost,
     spawn: SatelliteSpawn,
 ) -> SpawnResult {
-    let Some(relay) = state.with(|s| s.hub_relay(host)) else {
+    let Some(relay) = state.with(|s| s.federation().relay(host)) else {
         debug!(
             satellite = %host,
             "SPAWN_RESOURCE: no route to satellite (non-hub server, or host not in the registry)",
@@ -60,7 +60,10 @@ async fn relay_spawn_to_satellite(
 fn record_satellite_spawn(state: &SharedState, client_id: ClientId, result: &SpawnResult) {
     if let Some(phux_protocol::ids::ResourceId::Satellite { host, id }) = result.spawned_id() {
         let instance = result.instance();
-        state.with_mut(|s| s.hub_record_satellite_spawn(host.clone(), *id, instance, client_id));
+        state.with_mut(|s| {
+            s.federation_mut()
+                .record_satellite_spawn(host.clone(), *id, instance, client_id);
+        });
     }
 }
 

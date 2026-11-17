@@ -21,7 +21,7 @@ const APPLY_PASTE_OVERHEAD: usize = 34;
 /// The most one raw paste frame carries. Past the protocol's frame cap the
 /// server would drop the connection, so the frame is never built; the margin
 /// holds the frame's own fields.
-const MAX_RAW_PASTE: usize = MAX_FRAME_LEN as usize - 4096;
+pub(super) const MAX_RAW_PASTE: usize = MAX_FRAME_LEN as usize - 4096;
 
 /// One paste of `text`, the batch `apply_paste` and `apply_user_paste` send.
 fn paste(text: &str, trust: PasteTrust) -> Vec<InputEvent> {

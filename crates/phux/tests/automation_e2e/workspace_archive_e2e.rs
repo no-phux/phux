@@ -6,7 +6,7 @@ use phux_client::attach::connection::Connection;
 use phux_client::org::OrgInventory;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 fn start(session: &str) -> common::ServerGuard {
@@ -28,12 +28,7 @@ fn run_in(args: &[&str], xdg: Option<&Path>) -> (i32, String, String) {
 }
 
 fn output(cmd: &mut Command) -> (i32, String, String) {
-    let out = cmd.stdin(Stdio::null()).output().expect("run phux command");
-    (
-        out.status.code().expect("phux exited with code"),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-    )
+    common::Out::of(cmd).into_parts()
 }
 
 /// `run_in` that must exit 0; returns stdout.

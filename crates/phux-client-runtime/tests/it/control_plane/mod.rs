@@ -5,8 +5,6 @@
 #![allow(clippy::unwrap_used, reason = "test assertions")]
 #![allow(clippy::panic, reason = "test assertions")]
 
-#[cfg(feature = "engine")]
-use bytes::BytesMut;
 use phux_client_runtime::control::{
     ControlError, ControlOptions, ControlPlane, DeliveryOutcome, Event, FileUploadOutcome,
     MAX_PATH_ANSWERS, PathFailure, PathMatchKind, PathSearchStatus, SpawnRequest, Status,
@@ -32,6 +30,9 @@ use phux_protocol::wire::frame::{
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
 
 use crate::embedded::*;
+#[cfg(feature = "engine")]
+use phux_wire_fixtures::{BootstrapOptions, bootstrap_frames_with};
+use phux_wire_fixtures::{bootstrap_frames, command_err};
 
 mod agent_sessions;
 mod approvals;
@@ -107,27 +108,99 @@ fn dropping_client_retires_views_even_with_an_external_owner_clone() {
 }
 
 fn hello_ok_with(features: &[ServerFeature]) -> FrameKind {
-    let FrameKind::HelloOk {
-        protocol_major,
-        protocol_minor,
-        protocol_patch,
-        server_caps,
-        server_id,
-        selected_profile,
-        bootstrap_limits,
-    } = hello_ok(PROTOCOL_VERSION.patch)
-    else {
-        unreachable!()
-    };
-    FrameKind::HelloOk {
-        protocol_major,
-        protocol_minor,
-        protocol_patch,
-        server_caps: server_caps.with_features(ServerFeatureSet::with(features)),
-        server_id,
-        selected_profile,
-        bootstrap_limits,
-    }
+    server_hello()
+        .features(ServerFeatureSet::with(features))
+        .build()
+}
+
+fn hello_ok_ext(features: &[ServerFeatureExt]) -> FrameKind {
+    server_hello()
+        .features_ext(ServerFeatureExtSet::with(features))
+        .build()
+}
+
+/// A browsing plane past `HELLO_OK` from a server advertising `features`,
+/// its follow-ups drained.
+fn browsing_with_ext(features: &[ServerFeatureExt]) -> ControlPlane {
+    let mut plane = opened(ControlOptions::default(), hello_ok_ext(features));
+    let _ = plane.take_outbound();
+    plane
+}
+
+/// The `GET_STATE` among `frames`, if one was sent.
+fn state_read(frames: &[FrameKind]) -> Option<u32> {
+    frames.iter().find_map(|frame| match frame {
+        FrameKind::Command {
+            request_id,
+            command: Command::GetState { .. },
+        } => Some(*request_id),
+        _ => None,
+    })
+}
+
+/// Answer topology read `request_id` with `snapshot`.
+fn answer_state(plane: &mut ControlPlane, request_id: u32, snapshot: SessionSnapshot) {
+    plane.reply(
+        request_id,
+        CommandResult::OkWith(CommandValue::State(snapshot)),
+    );
+}
+
+/// Answer metadata read `request_id` with `value`.
+fn answer_metadata(plane: &mut ControlPlane, request_id: u32, value: Option<&[u8]>) {
+    plane
+        .feed(FrameKind::MetadataValue {
+            request_id,
+            value: value.map(<[u8]>::to_vec),
+        })
+        .unwrap();
+}
+
+/// A live `METADATA_CHANGED` of `Global` `key`.
+fn global_changed(plane: &mut ControlPlane, key: &str, value: Option<&[u8]>) {
+    plane
+        .feed(FrameKind::MetadataChanged {
+            scope: phux_protocol::wire::frame::Scope::Global,
+            key: key.to_owned(),
+            value: value.map(<[u8]>::to_vec),
+            actor: None,
+        })
+        .unwrap();
+}
+
+/// A plane attached to `main` on a `SPAWN_IDEMPOTENCY` server, drained.
+fn idempotent_home() -> ControlPlane {
+    let mut plane = ControlPlane::new(ControlOptions {
+        attach: Some(AttachTarget::ByName("main".to_owned())),
+        ..ControlOptions::default()
+    });
+    reopen(
+        &mut plane,
+        hello_ok_with(&[ServerFeature::SpawnIdempotency]),
+    );
+    let attach_id = outbound_attach_id(&mut plane);
+    attach(&mut plane, attach_id, b"home");
+    let _ = plane.take_outbound();
+    let _ = plane.take_events();
+    plane
+}
+
+/// [`negotiated`], attached to `main` showing `home`, drained.
+fn home() -> ControlPlane {
+    let (mut plane, attach_id) = negotiated();
+    attach(&mut plane, attach_id, b"home");
+    let _ = plane.take_events();
+    let _ = plane.take_outbound();
+    plane
+}
+
+/// Every queued outbound frame, decoded.
+fn outbound(plane: &mut ControlPlane) -> Vec<FrameKind> {
+    plane
+        .take_outbound()
+        .iter()
+        .map(|bytes| decode(bytes))
+        .collect()
 }
 
 fn two_session_snapshot(include_own_spawn: bool) -> SessionSnapshot {
@@ -155,46 +228,33 @@ fn two_session_snapshot(include_own_spawn: bool) -> SessionSnapshot {
 }
 
 #[cfg(feature = "engine")]
-fn encode(frame: &FrameKind) -> Vec<u8> {
-    let mut bytes = BytesMut::new();
-    frame.encode(&mut bytes);
-    bytes.to_vec()
-}
+use phux_wire_fixtures::encode;
 
 /// A plane past `HELLO_OK`, with the attach id its `ATTACH` carried.
 fn negotiated() -> (ControlPlane, u32) {
-    let mut plane = ControlPlane::new(ControlOptions {
+    let options = ControlOptions {
         attach: Some(AttachTarget::ByName("main".to_owned())),
         viewport: (20, 4),
         ..ControlOptions::default()
-    });
-    assert_eq!(plane.status(), Status::Idle);
-    plane.connection_opened();
-    let opening = plane.take_outbound();
-    assert_eq!(opening.len(), 1);
-    assert!(matches!(decode(&opening[0]), FrameKind::Hello { .. }));
-    assert_eq!(plane.status(), Status::Connecting);
-
-    plane
-        .feed(hello_ok(PROTOCOL_VERSION.patch))
-        .expect("HELLO_OK");
+    };
+    let (plane, followups) = negotiate(options, hello_ok(PROTOCOL_VERSION.patch), Some(2));
     assert_eq!(plane.status(), Status::Negotiated);
-    let followups = plane.take_outbound();
-    assert_eq!(followups.len(), 2, "SUBSCRIBE_EVENTS then ATTACH");
     assert!(matches!(
-        decode(&followups[0]),
+        followups[0],
         FrameKind::SubscribeEvents {
             terminal: None,
             after_seq: None
         }
     ));
     let FrameKind::Attach {
-        attach_id, target, ..
-    } = decode(&followups[1])
+        attach_id,
+        ref target,
+        ..
+    } = followups[1]
     else {
         panic!("second follow-up is ATTACH");
     };
-    assert_eq!(target, AttachTarget::ByName("main".to_owned()));
+    assert_eq!(*target, AttachTarget::ByName("main".to_owned()));
     (plane, attach_id)
 }
 
@@ -206,11 +266,7 @@ fn attach_reads_the_session_project_tag_into_an_event() {
 
     let (mut plane, attach_id) = negotiated();
     plane.attached(attach_id, two_session_snapshot(false));
-    let outbound: Vec<FrameKind> = plane
-        .take_outbound()
-        .iter()
-        .map(|frame| decode(frame))
-        .collect();
+    let outbound: Vec<FrameKind> = outbound(&mut plane);
     assert!(
         outbound.iter().any(|frame| matches!(
             frame,
@@ -230,12 +286,11 @@ fn attach_reads_the_session_project_tag_into_an_event() {
             _ => None,
         })
         .expect("attach GETs the project tag");
-    plane
-        .feed(FrameKind::MetadataValue {
-            request_id,
-            value: Some(encode_session_project("beta", "phux")),
-        })
-        .unwrap();
+    answer_metadata(
+        &mut plane,
+        request_id,
+        Some(&encode_session_project("beta", "phux")),
+    );
     assert!(
         plane.take_events().iter().any(|event| matches!(
             event,
@@ -244,14 +299,7 @@ fn attach_reads_the_session_project_tag_into_an_event() {
         )),
         "the GET value must surface as a session project event"
     );
-    plane
-        .feed(FrameKind::MetadataChanged {
-            scope: Scope::Global,
-            key: SESSION_PROJECT_KEY.to_owned(),
-            value: None,
-            actor: None,
-        })
-        .unwrap();
+    global_changed(&mut plane, SESSION_PROJECT_KEY, None);
     assert!(
         plane.take_events().iter().any(|event| matches!(
             event,
@@ -326,22 +374,13 @@ fn view_scrolling_routes_history_requests_through_control_plane() {
 fn refresh_to(plane: &mut ControlPlane, snapshot: SessionSnapshot) {
     let request_id = plane.refresh_topology().expect("negotiated topology read");
     let _ = plane.take_outbound();
-    plane.reply(
-        request_id,
-        CommandResult::OkWith(CommandValue::State(snapshot)),
-    );
+    answer_state(plane, request_id, snapshot);
     let _ = plane.take_events();
 }
 
 fn output(plane: &mut ControlPlane, seq: u64, bytes: &[u8]) {
     plane
-        .feed(FrameKind::ResourceOutput {
-            terminal_id: terminal(),
-            stream_id: StreamId::new(1).unwrap(),
-            bootstrap_id: BootstrapId::new(1).unwrap(),
-            seq,
-            bytes: bytes.to_vec().into(),
-        })
+        .feed(phux_wire_fixtures::output(&terminal(), seq, bytes))
         .expect("RESOURCE_OUTPUT");
 }
 
@@ -359,13 +398,11 @@ fn unknown_input_delivery(plane: &mut ControlPlane) -> u64 {
         })
         .expect("APPLY_INPUT attempt");
     plane
-        .feed(FrameKind::CommandResult {
-            request_id: request,
-            result: CommandResult::Error {
-                code: ErrorCode::InputDeliveryUnknown,
-                message: "ambiguous test delivery".into(),
-            },
-        })
+        .feed(command_err(
+            request,
+            ErrorCode::InputDeliveryUnknown,
+            "ambiguous test delivery",
+        ))
         .unwrap();
     assert!(plane.delivery_fenced(&terminal()));
     delivery
@@ -373,12 +410,10 @@ fn unknown_input_delivery(plane: &mut ControlPlane) -> u64 {
 
 #[test]
 fn conditional_projection_ack_rejects_a_newer_fence_without_reconnecting() {
-    let mut plane = ControlPlane::new(ControlOptions::default());
-    plane.connection_opened();
-    plane.take_outbound();
-    plane
-        .feed(hello_ok_with(&[ServerFeature::AcknowledgedInput]))
-        .unwrap();
+    let mut plane = opened(
+        ControlOptions::default(),
+        hello_ok_with(&[ServerFeature::AcknowledgedInput]),
+    );
     plane.take_outbound();
     let first_delivery = unknown_input_delivery(&mut plane);
     let first = plane.projection_fence(&terminal()).unwrap();
@@ -425,30 +460,18 @@ fn finish_reconnected_attach(plane: &mut ControlPlane) {
             initial_client_id: ClientId::new(2),
         })
         .unwrap();
-    let stream_id = StreamId::new(2).unwrap();
-    let bootstrap_id = BootstrapId::new(2).unwrap();
-    plane
-        .feed(FrameKind::BootstrapBegin {
-            terminal_id: terminal(),
-            stream_id,
-            bootstrap_id,
-            profile: BootstrapStreamProfile::SynthesizedVtRaw,
-            cols: 20,
-            rows: 4,
-            base_seq: 0,
-        })
-        .unwrap();
-    plane
-        .feed(FrameKind::BootstrapReady {
-            terminal_id: terminal(),
-            stream_id,
-            bootstrap_id,
-            history_cursor: None,
-        })
-        .unwrap();
+    empty_bootstrap(plane, &terminal(), [2, 2]);
     plane
         .feed(FrameKind::AttachReady {
             attach_id: next_attach,
         })
         .unwrap();
+}
+
+/// A 20x4 raw synthesized bootstrap of `id` on `[stream, bootstrap]` that
+/// carries no chunk: begin, then ready.
+fn empty_bootstrap(plane: &mut ControlPlane, id: &ResourceId, ids: [u64; 2]) {
+    let [begin, _, ready] = bootstrap_frames(id, ids, [20, 4], b"");
+    plane.feed(begin).expect("BOOTSTRAP_BEGIN");
+    plane.feed(ready).expect("BOOTSTRAP_READY");
 }

@@ -9,23 +9,17 @@ use std::path::{Path, PathBuf};
 
 use phux_protocol::caps::ClientCapabilities;
 use phux_protocol::ids::ResourceId;
-use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
+use phux_protocol::input::key::PhysicalKey;
 use phux_protocol::wire::frame::{AttachTarget, FrameKind, ViewportInfo};
 use phux_protocol::wire::info::SessionSnapshot;
-use phux_server::LaunchCommand as CommandBuilder;
 use phux_server_testkit::screen::Screen;
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, ascii_key, recv_typed, recv_until,
+    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, ascii_key, enter_key, recv_typed, recv_until,
     recv_until_deadline, send_frame, wait_for_raw_socket,
 };
 use tokio::net::UnixStream;
 
-/// `/bin/sh -c script`.
-pub(crate) fn sh(script: &str) -> CommandBuilder {
-    let mut cmd = CommandBuilder::new("/bin/sh");
-    cmd.args(["-c", script]);
-    cmd
-}
+pub(crate) use phux_server_testkit::sh;
 
 /// `ATTACH` with attach id 1 and no scrollback.
 pub(crate) const fn attach(target: AttachTarget, cols: u16, rows: u16) -> FrameKind {
@@ -93,19 +87,6 @@ pub(crate) async fn connect_with(path: &Path, caps: ClientCapabilities) -> UnixS
     stream
 }
 
-/// Enter with no text; the encoder synthesizes the CR.
-pub(crate) const fn enter_key() -> KeyEvent {
-    KeyEvent {
-        action: KeyAction::Press,
-        key: PhysicalKey::Enter,
-        mods: ModSet::empty(),
-        consumed_mods: ModSet::empty(),
-        composing: false,
-        text: None,
-        unshifted_codepoint: None,
-    }
-}
-
 /// Type `c` then Enter into `pane` (cooked-mode `cat` echoes on Enter).
 pub(crate) async fn type_line(
     stream: &mut UnixStream,
@@ -156,9 +137,7 @@ pub(crate) async fn output_until(stream: &mut UnixStream, needle: &[u8]) -> Vec<
     acc
 }
 
-pub(crate) fn contains(hay: &[u8], needle: &[u8]) -> bool {
-    hay.windows(needle.len()).any(|window| window == needle)
-}
+pub(crate) use phux_server_testkit::contains;
 
 /// The pane's reported cwd, canonicalized (macOS /var -> /private/var).
 pub(crate) fn canonical_cwd(snapshot: &SessionSnapshot, pane: usize) -> PathBuf {

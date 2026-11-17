@@ -202,24 +202,8 @@ mod tests {
         let frame = floating_box(rect(0, 0, 30, 10));
         paint_floating_frame(&mut out, frame, "Agent Board", &Theme::default()).expect("paint");
         let text = String::from_utf8(out).expect("utf8");
-        let glyphs: String = {
-            // Drop the SGR runs that colour the title apart from the rule.
-            let mut s = String::new();
-            let mut chars = text.chars().peekable();
-            while let Some(c) = chars.next() {
-                if c == '\x1b' && chars.peek() == Some(&'[') {
-                    chars.next();
-                    for n in chars.by_ref() {
-                        if ('@'..='~').contains(&n) {
-                            break;
-                        }
-                    }
-                } else {
-                    s.push(c);
-                }
-            }
-            s
-        };
+        // Drop the SGR runs that colour the title apart from the rule.
+        let glyphs = crate::test_util::strip_csi(&text);
         assert!(glyphs.contains("╭ Agent Board ─"), "{glyphs:?}");
         assert!(text.contains('╮') && text.contains('╰') && text.contains('╯'));
         assert_eq!(

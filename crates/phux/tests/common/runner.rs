@@ -27,6 +27,21 @@ pub fn phux_bin() -> &'static str {
     })
 }
 
+/// The `phux-mcp` binary: `$PHUX_TEST_MCP_BIN`, else the one a workspace
+/// build put beside `phux`.
+pub fn mcp_bin() -> std::path::PathBuf {
+    if let Some(path) = std::env::var_os("PHUX_TEST_MCP_BIN") {
+        return path.into();
+    }
+    let built = Path::new(phux_bin()).with_file_name("phux-mcp");
+    assert!(
+        built.exists(),
+        "{} is missing: build the workspace (`cargo nextest run --workspace`) or set PHUX_TEST_MCP_BIN",
+        built.display()
+    );
+    built
+}
+
 /// This crate's directory (`crates/phux`).
 pub fn manifest_dir() -> &'static Path {
     static DIR: OnceLock<String> = OnceLock::new();

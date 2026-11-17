@@ -72,11 +72,8 @@ impl SessionInfo {
         }
     }
 
-    /// Builder setter for [`Self::keep_empty`].
-    #[must_use]
-    pub const fn with_keep_empty(mut self, keep_empty: bool) -> Self {
-        self.keep_empty = keep_empty;
-        self
+    builder_setters! {
+        const fn with_keep_empty(keep_empty: bool) => keep_empty;
     }
 
     /// Builder setter for [`Self::lifetime`]. Also sets
@@ -91,11 +88,8 @@ impl SessionInfo {
         self
     }
 
-    /// Builder setter for [`Self::key`].
-    #[must_use]
-    pub const fn with_key(mut self, key: Option<SessionKey>) -> Self {
-        self.key = key;
-        self
+    builder_setters! {
+        const fn with_key(key: Option<SessionKey>) => key;
     }
 
     /// Builder setter for [`Self::attrs`].
@@ -105,18 +99,9 @@ impl SessionInfo {
         self
     }
 
-    /// Builder setter for [`Self::recent_input`].
-    #[must_use]
-    pub fn with_recent_input(mut self, recent_input: Option<ResourceId>) -> Self {
-        self.recent_input = recent_input;
-        self
-    }
-
-    /// Builder setter for [`Self::touched`].
-    #[must_use]
-    pub const fn with_touched(mut self, touched: Option<u64>) -> Self {
-        self.touched = touched;
-        self
+    builder_setters! {
+        fn with_recent_input(recent_input: Option<ResourceId>) => recent_input;
+        const fn with_touched(touched: Option<u64>) => touched;
     }
 
     /// Whether this session's extension-block `SESSION_STATE` has anything
@@ -136,32 +121,11 @@ impl SessionInfo {
         self.window_count == 0
     }
 
-    /// Builder setter for [`Self::active_window`].
-    #[must_use]
-    pub const fn with_active_window(mut self, active_window: Option<WindowId>) -> Self {
-        self.active_window = active_window;
-        self
-    }
-
-    /// Builder setter for [`Self::created_at_unix_secs`].
-    #[must_use]
-    pub const fn with_created_at_unix_secs(mut self, created_at_unix_secs: i64) -> Self {
-        self.created_at_unix_secs = created_at_unix_secs;
-        self
-    }
-
-    /// Builder setter for [`Self::window_count`].
-    #[must_use]
-    pub const fn with_window_count(mut self, window_count: u16) -> Self {
-        self.window_count = window_count;
-        self
-    }
-
-    /// Builder setter for [`Self::attached_client_count`].
-    #[must_use]
-    pub const fn with_attached_client_count(mut self, attached_client_count: u16) -> Self {
-        self.attached_client_count = attached_client_count;
-        self
+    builder_setters! {
+        const fn with_active_window(active_window: Option<WindowId>) => active_window;
+        const fn with_created_at_unix_secs(created_at_unix_secs: i64) => created_at_unix_secs;
+        const fn with_window_count(window_count: u16) => window_count;
+        const fn with_attached_client_count(attached_client_count: u16) => attached_client_count;
     }
 }
 
@@ -195,18 +159,9 @@ impl WindowInfo {
         }
     }
 
-    /// Builder setter for [`Self::index`].
-    #[must_use]
-    pub const fn with_index(mut self, index: u16) -> Self {
-        self.index = index;
-        self
-    }
-
-    /// Builder setter for [`Self::active_resource`].
-    #[must_use]
-    pub fn with_active_resource(mut self, active_resource: Option<ResourceId>) -> Self {
-        self.active_resource = active_resource;
-        self
+    builder_setters! {
+        const fn with_index(index: u16) => index;
+        fn with_active_resource(active_resource: Option<ResourceId>) => active_resource;
     }
 }
 
@@ -234,11 +189,8 @@ impl AgentFacet {
         }
     }
 
-    /// Builder setter for [`Self::native_id`].
-    #[must_use]
-    pub fn with_native_id(mut self, native_id: Option<String>) -> Self {
-        self.native_id = native_id;
-        self
+    builder_setters! {
+        fn with_native_id(native_id: Option<String>) => native_id;
     }
 }
 
@@ -272,25 +224,10 @@ impl ExitFacet {
         }
     }
 
-    /// Builder setter for [`Self::exit_status`].
-    #[must_use]
-    pub const fn with_exit_status(mut self, exit_status: Option<i32>) -> Self {
-        self.exit_status = exit_status;
-        self
-    }
-
-    /// Builder setter for [`Self::signal`].
-    #[must_use]
-    pub const fn with_signal(mut self, signal: Option<i32>) -> Self {
-        self.signal = signal;
-        self
-    }
-
-    /// Builder setter for [`Self::reason`].
-    #[must_use]
-    pub const fn with_reason(mut self, reason: CloseReason) -> Self {
-        self.reason = reason;
-        self
+    builder_setters! {
+        const fn with_exit_status(exit_status: Option<i32>) => exit_status;
+        const fn with_signal(signal: Option<i32>) => signal;
+        const fn with_reason(reason: CloseReason) => reason;
     }
 }
 
@@ -373,11 +310,8 @@ impl ResourceInfo {
         }
     }
 
-    /// Builder setter for [`Self::session`].
-    #[must_use]
-    pub const fn with_session(mut self, session: Option<SessionId>) -> Self {
-        self.session = session;
-        self
+    builder_setters! {
+        const fn with_session(session: Option<SessionId>) => session;
     }
 
     /// Construct the entry for a non-Terminal resource: no window
@@ -405,88 +339,19 @@ impl ResourceInfo {
         }
     }
 
-    /// Builder setter for [`Self::title`].
-    #[must_use]
-    pub fn with_title(mut self, title: Option<String>) -> Self {
-        self.title = title;
-        self
-    }
-
-    /// Builder setter for [`Self::program_title`].
-    #[must_use]
-    pub fn with_program_title(mut self, program_title: Option<String>) -> Self {
-        self.program_title = program_title;
-        self
-    }
-
-    /// Builder setter for [`Self::cwd`].
-    #[must_use]
-    pub fn with_cwd(mut self, cwd: Option<String>) -> Self {
-        self.cwd = cwd;
-        self
-    }
-
-    /// Builder setter for [`Self::kind`].
-    #[must_use]
-    pub const fn with_kind(mut self, kind: ResourceKind) -> Self {
-        self.kind = kind;
-        self
-    }
-
-    /// Builder setter for [`Self::parent`].
-    #[must_use]
-    pub fn with_parent(mut self, parent: Option<ResourceId>) -> Self {
-        self.parent = parent;
-        self
-    }
-
-    /// Builder setter for [`Self::agent`].
-    #[must_use]
-    pub fn with_agent(mut self, agent: Option<AgentFacet>) -> Self {
-        self.agent = agent;
-        self
-    }
-
-    /// Builder setter for [`Self::lifecycle`].
-    #[must_use]
-    pub const fn with_lifecycle(mut self, lifecycle: ResourceLifecycle) -> Self {
-        self.lifecycle = lifecycle;
-        self
-    }
-
-    /// Builder setter for [`Self::exit`].
-    #[must_use]
-    pub const fn with_exit(mut self, exit: Option<ExitFacet>) -> Self {
-        self.exit = exit;
-        self
-    }
-
-    /// Builder setter for [`Self::input_holder`].
-    #[must_use]
-    pub const fn with_input_holder(mut self, input_holder: Option<ClientId>) -> Self {
-        self.input_holder = input_holder;
-        self
-    }
-
-    /// Builder setter for [`Self::viewers`].
-    #[must_use]
-    pub fn with_viewers(mut self, viewers: Vec<ClientId>) -> Self {
-        self.viewers = viewers;
-        self
-    }
-
-    /// Builder setter for [`Self::control`].
-    #[must_use]
-    pub const fn with_control(mut self, control: Option<crate::wire::frame::ControlClass>) -> Self {
-        self.control = control;
-        self
-    }
-
-    /// Builder setter for [`Self::producer_connected`].
-    #[must_use]
-    pub const fn with_producer_connected(mut self, producer_connected: Option<bool>) -> Self {
-        self.producer_connected = producer_connected;
-        self
+    builder_setters! {
+        fn with_title(title: Option<String>) => title;
+        fn with_program_title(program_title: Option<String>) => program_title;
+        fn with_cwd(cwd: Option<String>) => cwd;
+        const fn with_kind(kind: ResourceKind) => kind;
+        fn with_parent(parent: Option<ResourceId>) => parent;
+        fn with_agent(agent: Option<AgentFacet>) => agent;
+        const fn with_lifecycle(lifecycle: ResourceLifecycle) => lifecycle;
+        const fn with_exit(exit: Option<ExitFacet>) => exit;
+        const fn with_input_holder(input_holder: Option<ClientId>) => input_holder;
+        fn with_viewers(viewers: Vec<ClientId>) => viewers;
+        const fn with_control(control: Option<crate::wire::frame::ControlClass>) => control;
+        const fn with_producer_connected(producer_connected: Option<bool>) => producer_connected;
     }
 
     /// Whether the trailing resource facet list needs a row for this entry.

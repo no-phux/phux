@@ -11,24 +11,19 @@
 //! - The default features expose the pure-Rust [`input`] and [`wire`] codec,
 //!   [`ids`], [`caps`], [`policy`], [`snapshot_framing`], and [`Version`],
 //!   including for browser clients.
-//! - **`render-pool`** (off by default): `render_pool`, the libghostty
-//!   render-trio pool. Enables `libghostty-vt` only, with no png, no kitty
-//!   graphics, and no input-atom conversions.
-//! - **`server`** (off by default): enables `render-pool`, then adds
-//!   conversions to `libghostty-vt` atoms and engine-dependent SGR and Kitty
-//!   replay helpers. Native terminal consumers enable it; decoding wire
-//!   messages does not require it.
+//! - libghostty glue (render pool, SGR and Kitty replay, conversions to
+//!   libghostty's input atoms) lives in the workspace's `phux-vt` crate, so
+//!   this crate never links a VT engine.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 #![deny(rustdoc::private_intra_doc_links)]
-#![cfg_attr(docsrs, feature(doc_cfg))]
 
 #[macro_use]
 mod macros;
 
 // The codec, input atoms, and policy vocabulary are pure Rust (ADR-0024), so
-// they build for wasm; libghostty conversions sit behind `server`.
+// they build for wasm; libghostty conversions live in `phux-vt`.
 pub mod input;
 pub mod wire;
 
@@ -45,15 +40,6 @@ pub mod policy;
 pub mod scope;
 pub mod service_http;
 pub mod snapshot_framing;
-
-#[cfg(feature = "server")]
-pub mod sgr;
-
-#[cfg(feature = "server")]
-pub mod kitty_replay;
-
-#[cfg(feature = "render-pool")]
-pub mod render_pool;
 
 pub use caps::{
     ACKNOWLEDGED_INPUT, BootstrapCapabilities, BootstrapCodec, BootstrapLimits, BootstrapProfile,

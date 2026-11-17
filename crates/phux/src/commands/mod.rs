@@ -13,8 +13,8 @@ mod targets;
 pub(crate) use cli::*;
 pub(crate) use diagnostics::{print_attach_error, report_no_server};
 pub(crate) use targets::{
-    parse_selector, report_agent_resolve_error, resolve_resource, resolve_target,
-    resolve_target_for_input, resolve_targets, resolve_terminal_target,
+    agent_refusal, parse_selector, parse_target, report_agent_resolve_error, resolve_resource,
+    resolve_target, resolve_target_for_input, resolve_targets, resolve_terminal_target,
 };
 
 /// The verb-scoped `--remote` this command carries, if any.
@@ -48,6 +48,7 @@ pub(crate) mod approvals;
 pub(crate) mod archive;
 pub(crate) mod ask;
 pub(crate) mod attach;
+pub(crate) mod attach_cli;
 pub(crate) mod audit;
 pub(crate) mod bootstrap;
 pub(crate) mod channel;
@@ -57,6 +58,7 @@ pub(crate) mod config_action;
 pub(crate) mod confirm;
 pub(crate) mod coord;
 pub(crate) mod credentials;
+pub(crate) mod ctx;
 pub(crate) mod detach;
 pub(crate) mod doctor;
 pub(crate) mod download;
@@ -255,7 +257,7 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
         // `start` / `add --start` dial it. `--socket` names that server.
         Command::Mission(..) => None,
         // Capture talks to the ideas endpoint, never the phux server socket.
-        Command::Idea { .. } => Some("idea"),
+        Command::Idea(..) => Some("idea"),
         _ => None,
     }
 }

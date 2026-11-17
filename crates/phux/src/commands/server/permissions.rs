@@ -7,7 +7,7 @@ use std::process::ExitCode;
 
 use phux_client::org::OrgError;
 use phux_config::server_bundle;
-use phux_server::runtime::default_socket_path;
+use phux_config::socket::default_socket_path;
 
 use crate::commands::cli_runtime;
 use crate::commands::json_err::{self, CliError, codes};

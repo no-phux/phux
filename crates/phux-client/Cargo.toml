@@ -16,11 +16,14 @@ workspace = true
 # Exposes `phux_client::testkit`, the scripted server client-side tests
 # speak to. Test scaffolding: downstream crates enable it from
 # dev-dependencies. There is no `tui` feature; the TUI is `phux-tui`.
-testkit = ["phux-client-runtime/testing"]
+testkit = ["phux-client-runtime/testing", "dep:phux-wire-fixtures"]
 
 [dependencies]
-phux-protocol = { workspace = true, features = ["server"] }
+phux-protocol.workspace = true
 phux-core.workspace = true
+# The detection manifests `agent::detect` replays to name the rule behind a
+# reported state (ADR-0046). ratatui-free.
+phux-agent-rules.workspace = true
 # Only the asciicast codec: `default-features = false` drops `render`. By
 # path because cargo will not let a member disable a workspace dependency's
 # default features, and the `phux` binary wants `render` on.
@@ -55,10 +58,17 @@ regex = "1"
 uuid = { workspace = true }
 # `download`: verify the whole-file digest `GET_FILE` returns.
 sha2 = "0.11"
+# The scripted server's frames; test scaffolding behind `testkit` only.
+phux-wire-fixtures = { workspace = true, optional = true }
 
 [dev-dependencies]
-phux-server.workspace = true
-phux-terminal = { workspace = true, features = ["native-engine"] }
+# `testkit` also compiles under `cfg(test)`, without the feature.
+phux-wire-fixtures.workspace = true
+# `testing`: the scripted `FnPolicy` HELLO engine.
+phux-server = { workspace = true, features = ["testing"] }
+phux-terminal.workspace = true
+# Wire-to-libghostty key conversions for the native encoder round trips.
+phux-vt.workspace = true
 tempfile.workspace = true
 # The scripted QUIC and WebSocket servers in `tests/connection`.
 quinn = { workspace = true }

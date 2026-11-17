@@ -7,26 +7,22 @@ use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, ControlAction, FrameKind, InputMode, ResourceEventType,
     SESSION_CREATE_KEY, SESSION_KEEP_EMPTY_KEY, SESSION_NAME_KEY, Scope,
 };
-use tempfile::TempDir;
 
-use phux_server_testkit::{Spawn, SpawnedServer, recv_until, run_local, send_frame};
+use phux_server_testkit::{Spawn, recv_until, run_local, send_frame};
 
 use super::{
     Seen, Server, asked_ids, command, drain_until_quiet, journal_contents, next_event,
     report_asked, spawn_pane, subscribe,
 };
-use crate::common::{attach_pane, connect_as, full_caps, gated_seed};
+use crate::common::{attach_pane, connect_as, full_caps, gated_server};
 
 /// Hundreds of OSC-133 marks in one write overflow the 64-event sink; the
 /// loss is journaled as a stamped `source_gap` scoped to that pane.
 #[test]
 fn sink_overflow_journals_source_gap_for_that_terminal() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let release = tmp.path().join("release");
         let marks = "\\033]133;C\\007\\033]133;D;0\\007".repeat(400);
-        let seed = gated_seed(&release, &format!("printf '{marks}'; sleep 600"));
-        let server = SpawnedServer::seeded_in(tmp, "demo", seed);
+        let (server, release) = gated_server(&format!("printf '{marks}'; sleep 600"));
         let (mut observer, _) = connect_as(&server.socket, "observer", full_caps()).await;
         let (mut attacher, _) = connect_as(&server.socket, "attacher", full_caps()).await;
         let pane = attach_pane(&mut attacher, "demo").await;
@@ -68,13 +64,7 @@ fn sink_overflow_journals_source_gap_for_that_terminal() {
 #[test]
 fn resource_event_filters_are_replaced_and_empty_admits_everything() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let release = tmp.path().join("release");
-        let seed = gated_seed(
-            &release,
-            "printf '\\007\\033]2;journal-title\\007'; sleep 600",
-        );
-        let server = SpawnedServer::seeded_in(tmp, "demo", seed);
+        let (server, release) = gated_server("printf '\\007\\033]2;journal-title\\007'; sleep 600");
         let (mut a, _) = connect_as(&server.socket, "filtered", full_caps()).await;
         let pane = attach_pane(&mut a, "demo").await;
         let filter = |types: Vec<ResourceEventType>| Command::SubscribeResourceEvents {

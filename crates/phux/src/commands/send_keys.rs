@@ -1,13 +1,14 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use phux_client::attach::AttachError;
 use phux_client::read::Verb;
 use phux_client::recovery::{EffectCertainty, NextAction, Recovery, ScopeKind};
 use phux_protocol::ids::ResourceId;
-use phux_server::runtime::default_socket_path;
 
-use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target_for_input};
+use crate::commands::ctx::{self, Ctx};
+use crate::commands::json_err::Refusal;
+use crate::commands::{parse_target, resolve_target_for_input};
 
 /// Version of the `send-keys --json` and `paste --json` receipts.
 pub(crate) const RECEIPT_SCHEMA_VERSION: u8 = 1;
@@ -20,33 +21,18 @@ pub(crate) fn run_send_keys(
     json: bool,
     socket: Option<PathBuf>,
 ) -> ExitCode {
-    let selector = match parse_selector(Some(target)) {
-        Ok(sel) => sel,
-        Err(code) => return code,
-    };
-    let socket_path = socket.unwrap_or_else(default_socket_path);
-    let rt = match cli_runtime() {
-        Ok(rt) => rt,
-        Err(code) => return code,
-    };
-    rt.block_on(async move {
-        // Keys reach a Terminal only; a document's input is typed intents.
-        let pane =
-            match resolve_target_for_input(&socket_path, &selector, Verb::SendKeys, json).await {
-                Ok(id) => id,
-                Err(code) => return code,
-            };
-        match phux_client::send_keys::send_counted(&socket_path, &pane, keys).await {
-            Ok(events) => report_receipt(json, &pane, events),
-            Err(failure) => report_input_failure(
-                json,
-                target,
-                "send-keys",
-                &socket_path,
-                failure.delivered,
-                &failure.error,
-            ),
-        }
+    ctx::run_local(socket, json, |ctx| {
+        let selector = parse_target(Some(target))?;
+        ctx.rt.block_on(async {
+            // Keys reach a Terminal only; a document's input is typed intents.
+            let pane = resolve_target_for_input(ctx.socket(), &selector, Verb::SendKeys).await?;
+            let events = phux_client::send_keys::send_counted(ctx.socket(), &pane, keys)
+                .await
+                .map_err(|failure| {
+                    input_failure(ctx, target, "send-keys", failure.delivered, &failure.error)
+                })?;
+            Ok(report_receipt(json, &pane, events))
+        })
     })
 }
 
@@ -64,57 +50,49 @@ pub(crate) fn report_receipt(json: bool, pane: &ResourceId, events: usize) -> Ex
     }))
 }
 
-/// A failed `ROUTE_INPUT`. Under `--json`, the error carries what reached
-/// the pane: nothing after a refusal of the first event, an unknown part
-/// once any event was acknowledged.
-pub(crate) fn report_input_failure(
-    json: bool,
+/// A failed `ROUTE_INPUT`, exit 1. Under `--json`, the error carries what
+/// reached the pane: nothing after a refusal of the first event, an unknown
+/// part once any event was acknowledged.
+pub(crate) fn input_failure(
+    ctx: &Ctx<PathBuf>,
     target: &str,
     verb: &str,
-    socket_path: &Path,
     delivered: usize,
     err: &AttachError,
-) -> ExitCode {
-    if !json {
-        return match err {
-            AttachError::Io(_) => crate::commands::report_no_server(err, socket_path, verb),
-            AttachError::Refused(msg) | AttachError::WrongResourceKind(msg) => {
-                error!("{verb} refused for '{target}': {msg} (try `phux ls`)");
-                ExitCode::FAILURE
-            }
-            other => {
-                error!("{verb} failed: {other}");
-                ExitCode::FAILURE
-            }
-        };
+) -> Refusal {
+    let refusal = ctx
+        .unreachable(err, verb)
+        .with_recovery(input_recovery(delivered, err));
+    match err {
+        AttachError::Io(_) => refusal,
+        AttachError::Refused(msg) | AttachError::WrongResourceKind(msg) => {
+            refusal.with_human(vec![format!(
+                "{verb} refused for '{target}': {msg} (try `phux ls`)"
+            )])
+        }
+        other => refusal.with_human(vec![format!("{verb} failed: {other}")]),
     }
-    json_err::emit(
-        true,
-        &failure_error(verb, socket_path, delivered, err),
-        crate::exit_codes::EXIT_FAILURE,
-    )
 }
 
-/// The `--json` error for a failed send. A refusal or a lost connection:
-/// the server's own reason is in the message; the stable part is what
-/// reached the pane.
-fn failure_error(
-    verb: &str,
-    socket_path: &Path,
-    delivered: usize,
-    err: &AttachError,
-) -> json_err::CliError {
+/// What a retry of a failed send may assume. A refusal or a lost
+/// connection: the server's own reason is in the message; the stable part
+/// is what reached the pane.
+const fn input_recovery(delivered: usize, err: &AttachError) -> Recovery {
     let (certainty, next) = if delivered == 0 && !matches!(err, AttachError::Disconnected) {
         (EffectCertainty::NotApplied, NextAction::RetryNewOperation)
     } else {
         (EffectCertainty::Unknown, NextAction::Reconcile)
     };
-    json_err::no_server_error(err, socket_path, verb).with_recovery(Recovery::new(
-        ScopeKind::InputServerIncarnation,
-        None,
-        certainty,
-        next,
-    ))
+    Recovery::new(ScopeKind::InputServerIncarnation, None, certainty, next)
+}
+
+/// Run `phux send-keys` as parsed.
+pub(crate) fn run(
+    args: crate::commands::SendKeysArgs,
+    socket: Option<std::path::PathBuf>,
+) -> ExitCode {
+    let crate::commands::SendKeysArgs { target, keys, json } = args;
+    run_send_keys(&target, &keys, json.json, socket)
 }
 
 #[cfg(test)]
@@ -126,7 +104,7 @@ mod tests {
     /// connection, has to be reconciled by reading the pane.
     #[test]
     fn a_failed_send_says_what_reached_the_pane() {
-        let socket = Path::new("/tmp/phux-test.sock");
+        let ctx = Ctx::local(Some(PathBuf::from("/tmp/phux-test.sock")), true).unwrap();
         for (delivered, err, certainty) in [
             (
                 0,
@@ -140,8 +118,8 @@ mod tests {
             ),
             (0, AttachError::Disconnected, EffectCertainty::Unknown),
         ] {
-            let doc =
-                json_err::error_document(&failure_error("send-keys", socket, delivered, &err), 1);
+            let refusal = input_failure(&ctx, "@1", "send-keys", delivered, &err);
+            let doc = crate::commands::json_err::error_document(&refusal.err, refusal.exit);
             assert_eq!(
                 doc["error"]["recovery"]["effect_certainty"],
                 serde_json::json!(certainty),

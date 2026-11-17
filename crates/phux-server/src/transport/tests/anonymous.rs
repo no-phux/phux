@@ -23,7 +23,7 @@ async fn the_anonymous_listener_caps_live_connections() {
             let state = crate::state::SharedState::new();
             // A transport test: an embedder engine admits the peer (ADR-0072).
             state.with_mut(|s| {
-                s.set_policy_engine(std::sync::Arc::new(crate::policy::OwnerForAll));
+                s.config_mut().policy_engine = std::sync::Arc::new(crate::policy::OwnerForAll);
             });
             let root_token = CancellationToken::new();
             let accept_state = state.clone();

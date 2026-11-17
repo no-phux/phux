@@ -34,16 +34,16 @@ fn settings_above_a_scene_owns_input_and_leaves_the_scene_on_dismissal() {
 }
 
 #[test]
+fn every_playground_row_is_in_the_enum_s_order() {
+    for (at, scene) in Playground::ALL.into_iter().enumerate() {
+        assert_eq!(scene.playground as usize, at);
+        assert_eq!(scene.playground.scene().modal, scene.modal);
+    }
+}
+
+#[test]
 fn every_playground_transition_has_one_owner() {
-    type Open = (Playground, fn(&mut Desk));
-    let open: [Open; 6] = [
-        (Playground::Galaxy, Desk::toggle_galaxy),
-        (Playground::Reef, Desk::toggle_reef),
-        (Playground::Pitch, Desk::toggle_pitch),
-        (Playground::Kitchen, Desk::toggle_kitchen),
-        (Playground::PitLane, Desk::toggle_pitlane),
-        (Playground::Hive, Desk::toggle_hive),
-    ];
+    let open = Playground::ALL.map(|scene| (scene.playground, scene.toggle));
     for (first, open_first) in open {
         for (second, open_second) in open {
             let mut rt = runtime(false);

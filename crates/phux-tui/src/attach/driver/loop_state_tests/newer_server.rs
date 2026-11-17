@@ -16,29 +16,13 @@ fn newer_server_raw(type_byte: u8, fields: &[(u8, &[u8])]) -> Vec<u8> {
 
 /// A bootstrapped attach loop whose server end is a raw socket.
 async fn newer_server_loop() -> (SessionLoop, Connection, tokio::net::UnixStream, Vec<u8>) {
-    let (a, b) = tokio::net::UnixStream::pair().unwrap();
-    let mut client = Connection::from_stream(a);
-    let negotiated = NegotiatedBootstrap {
-        profile: BootstrapProfile::SynthesizedVtRaw,
-        limits: BootstrapLimits::default(),
-        server_features: ServerFeatureSet::new(),
-        server_features_ext: phux_protocol::ServerFeatureExtSet::new(),
-    };
-    let mut state = SessionLoop::new(
-        negotiated,
-        PredictiveConfig::disabled(),
-        false,
-        None,
-        EntryPick::default(),
-        None,
-    )
-    .unwrap();
-    let mut out = Vec::new();
-    state
-        .bootstrap(&mut client, &mut out, initial_attached(), None)
-        .await
-        .unwrap();
-    (state, client, b, out)
+    let LoopRig {
+        state,
+        client,
+        server,
+        out,
+    } = Box::pin(LoopRig::plain().bootstrapped(initial_attached())).await;
+    (state, client, server, out)
 }
 
 #[tokio::test(flavor = "current_thread")]

@@ -115,13 +115,13 @@ pub(super) fn handle_delegate_agent(
     let key = crate::org_wire::core_session_key(session);
     let prior = state.with(|s| {
         let credential = s.delegation_minted_by(operation.as_bytes(), Utc::now())?;
-        let path = s.delegation_socket(&credential.id)?.to_path_buf();
+        let path = s.delegations().socket_path(&credential.id)?.to_path_buf();
         let same_session = s.registry().session_key(credential.session) == Some(key);
         Some((credential.clone(), path, same_session))
     });
     if let Some((credential, socket_path, same_session)) = prior {
         if !same_session {
-            return error(
+            return CommandResult::error(
                 ErrorCode::InvalidCommand,
                 "DELEGATE_AGENT: this operation already minted a credential for another session",
             );
@@ -135,7 +135,7 @@ pub(super) fn handle_delegate_agent(
         );
     }
     let Some(core_session) = state.with(|s| s.registry().session_id(&key)) else {
-        return error(
+        return CommandResult::error(
             ErrorCode::SessionNotFound,
             "DELEGATE_AGENT: no such session",
         );
@@ -172,7 +172,7 @@ pub(super) fn handle_delegate_agent(
                 DelegationError::Random(_) | DelegationError::Socket(_) => ErrorCode::InternalError,
             };
             warn!(error = %refusal, "DELEGATE_AGENT refused");
-            error(code, &format!("DELEGATE_AGENT: {refusal}"))
+            CommandResult::error(code, format!("DELEGATE_AGENT: {refusal}"))
         }
     }
 }
@@ -193,17 +193,10 @@ fn delegation_value(session: WireSessionKey, agent: &DelegatedAgent) -> CommandR
     ))))
 }
 
-fn error(code: ErrorCode, message: &str) -> CommandResult {
-    CommandResult::Error {
-        code,
-        message: message.to_owned(),
-    }
-}
-
 /// Withdraw delegated credential `id`: close its socket and revoke every
 /// live connection acting as it. `false` when `id` named nothing live.
 pub fn revoke_delegated_agent(state: &SharedState, id: &str) -> bool {
-    let live = state.with(|s| s.delegation(id, Utc::now()).is_some());
+    let live = state.with(|s| s.delegations().live(id, Utc::now()).is_some());
     let clients = state.with_mut(|s| s.withdraw_delegation(id));
     for client in clients {
         super::revocation::revoke_connection(state, client, Revocation::Revoked);

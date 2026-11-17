@@ -131,43 +131,32 @@ fn param(action: &str, args: &[(&str, toml::Value)]) -> Action {
 #[test]
 fn labels_read_as_phrases() {
     let s = |v: &str| toml::Value::String(v.to_owned());
-    assert_eq!(
-        action_label(&Action::Bare("kill-pane".to_owned())),
-        "Kill pane…"
-    );
-    assert_eq!(
-        action_label(&Action::Bare("take-input".to_owned())),
-        "Take the wheel"
-    );
-    assert_eq!(
-        action_label(&Action::Bare("window-picker".to_owned())),
-        "Go to tab…"
-    );
-    assert_eq!(
-        action_label(&param(
-            "resize-pane",
-            &[
-                ("direction", s("left")),
-                ("amount", toml::Value::Integer(5))
-            ]
-        )),
-        "Grow pane left"
-    );
-    assert_eq!(
-        action_label(&param(
-            "move-window",
-            &[("delta", toml::Value::Integer(-1))]
-        )),
-        "Move tab left"
-    );
-    assert_eq!(
-        action_label(&param("signal-terminal", &[("signal", s("freeze"))])),
-        "Freeze pane"
-    );
-    assert_eq!(
-        action_label(&param("plugin-action", &[("id", s("summarize"))])),
-        "Plugin action summarize"
-    );
+    let int = toml::Value::Integer;
+    let bare = |name: &str| Action::Bare(name.to_owned());
+    let cases = [
+        (bare("kill-pane"), "Kill pane…"),
+        (bare("take-input"), "Take the wheel"),
+        (bare("window-picker"), "Go to tab…"),
+        (
+            param(
+                "resize-pane",
+                &[("direction", s("left")), ("amount", int(5))],
+            ),
+            "Grow pane left",
+        ),
+        (param("move-window", &[("delta", int(-1))]), "Move tab left"),
+        (
+            param("signal-terminal", &[("signal", s("freeze"))]),
+            "Freeze pane",
+        ),
+        (
+            param("plugin-action", &[("id", s("summarize"))]),
+            "Plugin action summarize",
+        ),
+    ];
+    for (action, want) in cases {
+        assert_eq!(action_label(&action), want, "{action:?}");
+    }
 }
 
 /// On a roomy screen the grid shows every binding: nothing is cut off
@@ -226,12 +215,19 @@ fn assert_short_viewport_says_what_it_left_out(width: u16, height: u16) {
     let bounds = overlay.bounds(area).expect("bounds");
     assert!(
         bounds.height <= height && bounds.width <= width,
-        "{bounds:?}"
+        "{width}x{height}: {bounds:?}"
     );
     let text = render_to_string(&overlay, width, height);
     let hidden = unrendered(&overlay, area, &text);
-    assert!(hidden > 0, "viewport was meant to be too small:\n{text}");
-    assert_eq!(overflow_count(&text), Some(hidden), "{text}");
+    assert!(
+        hidden > 0,
+        "{width}x{height} was meant to be too small:\n{text}"
+    );
+    assert_eq!(
+        overflow_count(&text),
+        Some(hidden),
+        "{width}x{height}:\n{text}"
+    );
     let last_column = overlay
         .grid(area)
         .columns
@@ -240,25 +236,22 @@ fn assert_short_viewport_says_what_it_left_out(width: u16, height: u16) {
         .expect("a column");
     assert!(
         matches!(last_column.last(), Some(Cell::Overflow(_))),
-        "the note ends the last column"
+        "{width}x{height}: the note ends the last column"
     );
     assert!(
         matches!(
             last_column.get(last_column.len().wrapping_sub(2)),
             Some(Cell::Binding(_))
         ),
-        "no header or gap is stranded above the note: {last_column:?}"
+        "{width}x{height}: no header or gap above the note: {last_column:?}"
     );
 }
 
 #[test]
-fn short_viewport_80x24_says_what_it_left_out() {
-    assert_short_viewport_says_what_it_left_out(80, 24);
-}
-
-#[test]
-fn short_viewport_60x20_says_what_it_left_out() {
-    assert_short_viewport_says_what_it_left_out(60, 20);
+fn short_viewports_say_what_they_left_out() {
+    for (width, height) in [(80, 24), (60, 20)] {
+        assert_short_viewport_says_what_it_left_out(width, height);
+    }
 }
 
 #[test]
@@ -332,13 +325,7 @@ fn bindings_render_under_group_headers() {
 /// classic 80x24.
 #[test]
 fn shipped_table_fits_roomy_and_classic_screens() {
-    let cfg = phux_config::parse_str(
-        phux_config::DEFAULT_CONFIG_TOML,
-        std::path::Path::new("default.toml"),
-    )
-    .expect("shipped config parses")
-    .keybindings;
-    let overlay = WhichKeyOverlay::from_config(&cfg, &Theme::default());
+    let overlay = shipped_overlay();
     let roomy = overlay.grid(Rect::new(0, 0, 160, 45));
     assert_eq!(roomy.columns.len(), 4, "{roomy:?}");
     for (column, cells) in roomy.columns.iter().enumerate() {

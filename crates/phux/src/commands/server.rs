@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
-use phux_server::runtime::default_socket_path;
+use phux_config::socket::default_socket_path;
 
 pub(super) mod ensure;
 mod permissions;
@@ -83,7 +83,7 @@ fn ensure_document(socket_path: &Path, disposition: EnsureDisposition) -> serde_
         "socket": socket_path.display().to_string(),
         "disposition": disposition.as_str(),
         "cli_version": env!("CARGO_PKG_VERSION"),
-        "server_log": phux_server::telemetry::server_log_path(),
+        "server_log": phux_config::instance::server_log_path(),
     })
 }
 
@@ -98,7 +98,7 @@ fn report_ensure_failure(json: bool, socket_path: &Path, err: &std::io::Error) -
         std::io::ErrorKind::Interrupted => super::json_err::codes::SERVER_START_CANCELLED,
         _ => super::json_err::codes::SERVER_START_FAILED,
     };
-    let log_path = phux_server::telemetry::server_log_path();
+    let log_path = phux_config::instance::server_log_path();
     let error = super::json_err::CliError::new(
         code,
         format!(
@@ -155,6 +155,52 @@ fn ensure_accepting(socket_path: &Path, seed: bool) -> std::io::Result<EnsureDis
         drop(stream);
         disposition
     })
+}
+
+/// Run `phux server` as parsed. `--ensure` returned before tracing, in
+/// `crate::run`; `server permissions` needs no server.
+pub(crate) fn run(args: crate::commands::ServerArgs, socket: Option<PathBuf>) -> ExitCode {
+    if let Some(crate::commands::ServerAction::Permissions { json, open }) = args.action {
+        return run_permissions(socket, json.json, open);
+    }
+    let crate::commands::ServerArgs {
+        action: _,
+        // --ensure returns from run before tracing and this dispatch.
+        ensure: _,
+        json: _,
+        session,
+        listen,
+        quic,
+        webtransport,
+        connect,
+        hub,
+        exit_after_idle,
+        autosave,
+        daemonize,
+        seed_command,
+        resume,
+        no_seed,
+    } = args;
+    // An upgrade re-execs with the old argv; a supervised server takes the
+    // listeners its unit names now (`service install --adopt` rewrote it).
+    let (listen, quic) = match (resume, &socket) {
+        (Some(_), Some(path)) => crate::commands::service::listeners_on_resume(path, listen, quic),
+        _ => (listen, quic),
+    };
+    run_server(
+        (!no_seed).then_some(session.as_str()),
+        socket,
+        listen,
+        quic,
+        webtransport,
+        connect,
+        hub,
+        exit_after_idle,
+        autosave.as_deref(),
+        daemonize,
+        seed_command.as_deref(),
+        resume,
+    )
 }
 
 #[cfg(test)]

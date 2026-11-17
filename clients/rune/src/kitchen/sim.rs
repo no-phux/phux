@@ -8,12 +8,11 @@ use std::f32::consts::TAU;
 
 use super::{Chef, Cook, Goal, Kitchen};
 use crate::creature;
-use crate::playground::{Mood, Rgb, Rng, hash};
+use crate::playground::{MINT, Mood, Rgb, Rng, hash};
 
 /// One fixed step of scene time: the same scene whatever the frame rate.
 pub const STEP: f32 = 1.0 / 60.0;
 const MAX_PARTS: usize = 420;
-const MINT: Rgb = [98.0, 230.0, 180.0];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PartKind {

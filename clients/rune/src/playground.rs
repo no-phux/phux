@@ -8,6 +8,10 @@ use crate::activity::Mark;
 pub type Rgb = [f32; 3];
 pub type Pt = [f32; 2];
 
+/// The waiting and done accents every fleet scene marks agents with.
+pub const AMBER: Rgb = [255.0, 181.0, 71.0];
+pub const MINT: Rgb = [98.0, 230.0, 180.0];
+
 /// The action an agent's current activity represents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Mood {

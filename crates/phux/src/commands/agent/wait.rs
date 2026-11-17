@@ -15,12 +15,14 @@ use phux_client::agent_wait::{
     wait_for_agent_state, wait_for_any_agent_state,
 };
 use phux_client::attach::AttachError;
+use phux_config::socket::default_socket_path;
 use phux_protocol::ids::ResourceId;
-use phux_server::runtime::default_socket_path;
 
 use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target};
 
-use super::model::AgentStateReport;
+use phux_client::agent::detect::{
+    AgentStateReport, configured_agents, infer_agent_state, pane_evidence,
+};
 
 /// Version of the `agent wait` result document.
 const RESULT_SCHEMA_VERSION: u8 = 1;
@@ -105,9 +107,9 @@ pub(super) fn run_agent_wait(
                 Err(err) => report_wait_error(err, &socket_path, json),
             };
         }
-        let terminal = match resolve_target(&socket_path, &selector, "agent wait", json).await {
+        let terminal = match resolve_target(&socket_path, &selector, "agent wait").await {
             Ok(id) => id,
-            Err(code) => return code,
+            Err(refusal) => return refusal.emit(json),
         };
         if let Some(err) = satellite_refusal(&terminal) {
             return json_err::emit(json, &err, crate::exit_codes::EXIT_USAGE);
@@ -392,12 +394,9 @@ async fn provenance(
         .resources
         .iter()
         .find(|pane| pane.id == *terminal)?;
-    let mut evidence = super::pane_evidence(socket_path, &snapshot, pane).await;
+    let mut evidence = pane_evidence(socket_path, &snapshot, pane).await;
     evidence.record = record;
-    Some(super::detect::infer_agent_state(
-        &evidence,
-        &super::config::configured_agents(),
-    ))
+    Some(infer_agent_state(&evidence, &configured_agents()))
 }
 
 #[cfg(test)]

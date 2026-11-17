@@ -8,9 +8,10 @@ use std::path::Path;
 use chrono::Utc;
 
 use super::{PairedDeviceRepair, WorkloadRegistry};
+use crate::secure_file;
 use crate::workload::{
     EnrolledFor, LEGACY_PAIRED_DEVICE_SCOPE, PAIRED_DEVICE_SCOPE, PAIRED_DEVICE_WATCH_SCOPES,
-    WorkloadCredential, WorkloadError, is_canonical_credential_id, parse_ceiling, store,
+    WorkloadCredential, WorkloadError, is_canonical_credential_id, parse_ceiling,
 };
 
 impl WorkloadRegistry {
@@ -34,7 +35,7 @@ impl WorkloadRegistry {
         if !is_canonical_credential_id(id) {
             return Err(WorkloadError::InvalidCredentialId);
         }
-        store::with_lock(path, |held| {
+        secure_file::with_lock(path, |held| {
             let mut registry = Self::load(path)?;
             let credential = registry
                 .credentials
@@ -70,7 +71,7 @@ impl WorkloadRegistry {
         if marker.symlink_metadata().is_ok() || path.symlink_metadata().is_err() {
             return Ok(None);
         }
-        store::with_lock(path, |held| {
+        secure_file::with_lock(path, |held| {
             if marker.symlink_metadata().is_ok() {
                 return Ok(None);
             }
@@ -99,7 +100,7 @@ impl WorkloadRegistry {
             if !changed.is_empty() {
                 registry.commit(path, held)?;
             }
-            store::atomic_replace(
+            secure_file::atomic_replace(
                 &marker,
                 b"paired devices were given observe@display and observe@window once\n",
                 held,
@@ -115,7 +116,7 @@ fn watch_marker(path: &Path) -> std::path::PathBuf {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("workload-keys");
-    store::parent_of(path).join(format!("{name}.watch-grants"))
+    secure_file::parent_of(path).join(format!("{name}.watch-grants"))
 }
 
 /// `scopes` plus the watch grants a person's device paired with the

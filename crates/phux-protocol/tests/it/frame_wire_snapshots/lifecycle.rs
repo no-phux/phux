@@ -1,6 +1,7 @@
 //! L1 resource lifecycle, spawn/move/close, and command fixtures.
 
-use phux_protocol::ids::{GroupId, ResourceId, ResourceKind, SatelliteHost};
+use crate::common::Spawn;
+use phux_protocol::ids::{ResourceId, ResourceKind, SatelliteHost};
 use phux_protocol::wire::frame::{
     AgentEvent, CloseReason, Command, CommandResult, ErrorCode, FrameKind, MoveError, MoveResult,
     SpawnError, SpawnResource, SpawnResult,
@@ -15,82 +16,58 @@ pub(super) fn fixtures() -> Vec<(&'static str, FrameKind)> {
             // optional field absent. Reads as "spawn the server's default
             // shell in its default cwd, inheriting its env."
             "snap_spawn_terminal_minimal",
-            FrameKind::SpawnResource {
+            Spawn {
                 request_id: 0x0000_0001,
-                group: GroupId::new(1),
-                command: None,
-                cwd: None,
-                env: None,
-                term: None,
-                satellite: None,
-                owner_terminal: None,
-                agent_session: None,
-                initial_size: None,
-                resource: None,
-            },
+                ..Spawn::default()
+            }
+            .frame(),
         ),
         (
             // All optional fields populated; exercises the env-pair encoding
             // and length-prefixed command list.
             "snap_spawn_terminal_full",
-            FrameKind::SpawnResource {
+            Spawn {
                 request_id: 0x0000_0002,
-                group: GroupId::new(1),
                 command: Some(vec!["zsh".to_owned(), "-i".to_owned()]),
                 cwd: Some("/home/u/src".to_owned()),
                 env: Some(vec![
                     ("TERM".to_owned(), "xterm-256color".to_owned()),
                     ("LANG".to_owned(), "en_US.UTF-8".to_owned()),
                 ]),
-                term: None,
-                satellite: None,
                 owner_terminal: Some(ResourceId::local(42)),
                 agent_session: Some(
                     br#"{"plugin_id":"com.phux.agents","native_id":"session-42"}"#.to_vec(),
                 ),
                 initial_size: Some((132, 43)),
-                resource: None,
-            },
+                ..Spawn::default()
+            }
+            .frame(),
         ),
         (
             // The first-class `term` field (phux-ign): field id 6, a bare
             // UTF-8 string. Distinct from the `TERM` env pair above — this is
             // the typed per-spawn override.
             "snap_spawn_terminal_term_field",
-            FrameKind::SpawnResource {
+            Spawn {
                 request_id: 0x0000_0003,
-                group: GroupId::new(1),
-                command: None,
-                cwd: None,
-                env: None,
                 term: Some("ghostty".to_owned()),
-                satellite: None,
-                owner_terminal: None,
-                agent_session: None,
-                initial_size: None,
-                resource: None,
-            },
+                ..Spawn::default()
+            }
+            .frame(),
         ),
         (
             // An AgentSession spawn: fields 11 (kind), 12 (parent), 13
             // (provider), 14 (native_id) and none of the PTY-shape fields.
             "snap_spawn_terminal_agent_session",
-            FrameKind::SpawnResource {
+            Spawn {
                 request_id: 0x0000_0004,
-                group: GroupId::new(1),
-                command: None,
-                cwd: None,
-                env: None,
-                term: None,
-                satellite: None,
-                owner_terminal: None,
-                agent_session: None,
-                initial_size: None,
                 resource: Some(Box::new(
                     SpawnResource::agent_session(ResourceId::local(0x0000_002A), "claude")
                         .with_native_id(Some("session-42".to_owned())),
                 )),
-            },
+                ..Spawn::default()
+            }
+            .frame(),
         ),
         // pane_spawned events: a root Terminal keeps the empty body; an
         // AgentSession child carries its kind and parent as TLV fields.
@@ -158,19 +135,13 @@ pub(super) fn fixtures() -> Vec<(&'static str, FrameKind)> {
         ),
         (
             "snap_spawn_terminal_bind_instance",
-            FrameKind::SpawnResource {
+            Spawn {
                 request_id: 0x0000_0010,
-                group: GroupId::new(1),
-                command: None,
-                cwd: None,
-                env: None,
-                term: None,
                 satellite: Some(SatelliteHost::new("edge")),
-                owner_terminal: None,
-                agent_session: None,
-                initial_size: None,
                 resource: Some(Box::new(SpawnResource::default().with_bind_instance(true))),
-            },
+                ..Spawn::default()
+            }
+            .frame(),
         ),
         (
             "snap_command_kill_resource_if",
@@ -199,10 +170,7 @@ pub(super) fn fixtures() -> Vec<(&'static str, FrameKind)> {
             "snap_command_result_error_precondition_failed",
             FrameKind::CommandResult {
                 request_id: 0x0000_0011,
-                result: CommandResult::Error {
-                    code: ErrorCode::PreconditionFailed,
-                    message: "attached".to_owned(),
-                },
+                result: CommandResult::error(ErrorCode::PreconditionFailed, "attached"),
             },
         ),
         (

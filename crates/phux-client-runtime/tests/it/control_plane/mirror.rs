@@ -17,16 +17,7 @@ fn ready<T>(call: impl Future<Output = T>) -> T {
 }
 
 fn plane(features: &[ServerFeatureExt]) -> ControlPlane {
-    let mut plane = ControlPlane::new(ControlOptions::default());
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    let mut hello = hello_ok(PROTOCOL_VERSION.patch);
-    if let FrameKind::HelloOk { server_caps, .. } = &mut hello {
-        *server_caps = server_caps.with_features_ext(ServerFeatureExtSet::with(features));
-    }
-    plane.feed(hello).unwrap();
-    let _ = plane.take_outbound();
-    plane
+    browsing_with_ext(features)
 }
 
 #[test]
@@ -67,13 +58,7 @@ fn a_mirror_request_is_refused_by_an_older_server_and_answered_by_a_newer() {
         panic!("expected MIRROR");
     };
     plane
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::Error {
-                code: ErrorCode::Unavailable,
-                message: "open Rune".to_owned(),
-            },
-        })
+        .feed(command_err(request_id, ErrorCode::Unavailable, "open Rune"))
         .unwrap();
     assert!(matches!(
         ready(refused),

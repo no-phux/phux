@@ -18,7 +18,8 @@ use rcgen::{CertificateParams, DnType, KeyPair, PublicKeyData};
 use rustls::pki_types::pem::{PemObject, SectionKind};
 use rustls::pki_types::{CertificateDer, UnixTime};
 
-use super::{MAX_MATERIAL_BYTES, WorkloadError, credential_id, scrub, store};
+use super::{MAX_MATERIAL_BYTES, WorkloadError, credential_id, scrub};
+use crate::secure_file;
 
 /// Suffix of every PEM private-key label; a reply carrying one is refused.
 const PRIVATE_KEY_MARKER: &str = "PRIVATE KEY";
@@ -196,24 +197,27 @@ impl IssuedIdentity {
     /// user controls, [`WorkloadError::AlreadyStored`] if either file exists,
     /// or the I/O failure.
     pub fn store(&self, key_path: &Path, cert_path: &Path) -> Result<(), WorkloadError> {
-        if store::parent_of(key_path) != store::parent_of(cert_path) {
+        if secure_file::parent_of(key_path) != secure_file::parent_of(cert_path) {
             return Err(WorkloadError::Insecure {
                 file: "client identity",
                 reason: "must keep its key and certificate in one directory",
             });
         }
-        store::with_lock(key_path, |held| {
+        secure_file::with_lock(key_path, |held| {
             for path in [key_path, cert_path] {
                 if std::fs::symlink_metadata(path).is_ok() {
                     return Err(WorkloadError::AlreadyStored);
                 }
             }
-            let written = store::atomic_replace(key_path, &self.key_pem, held)
-                .and_then(|()| store::atomic_replace(cert_path, self.chain_pem.as_bytes(), held));
+            let written =
+                secure_file::atomic_replace(key_path, &self.key_pem, held).and_then(|_| {
+                    secure_file::atomic_replace(cert_path, self.chain_pem.as_bytes(), held)
+                });
             if written.is_err() {
                 remove_identity_files(key_path, cert_path);
             }
-            written
+            written?;
+            Ok(())
         })
     }
 }
@@ -231,7 +235,7 @@ pub fn remove_identity_files(key_path: &Path, cert_path: &Path) {
 /// terms as [`remove_identity_files`]: an entry that named only one half
 /// leaves only one file to remove.
 pub fn remove_owned_file(path: &Path) {
-    if store::is_owned_regular_file(path) {
+    if secure_file::is_owned_regular_file(path) {
         let _ = std::fs::remove_file(path);
     }
 }

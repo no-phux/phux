@@ -69,3 +69,15 @@ fn a_parent_kind_resumes_before_its_children() {
         }
     }
 }
+
+/// Exactly one kind is driven interactively: the `InteractiveApp` helpers
+/// ask the first app that answers, so a second would be silently ignored.
+#[test]
+fn exactly_one_app_is_interactive() {
+    let interactive = APP_KINDS
+        .iter()
+        .filter(|kind| app_for(**kind).interactive().is_some())
+        .count();
+    assert_eq!(interactive, 1, "one app runs the interactive half");
+    assert!(super::interactive().is_some());
+}

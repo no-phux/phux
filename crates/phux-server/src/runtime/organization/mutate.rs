@@ -58,7 +58,7 @@ pub(super) fn mutate(
         let detached: Vec<_> = s
             .take_killed_sessions()
             .into_iter()
-            .flat_map(|session| s.attached_clients_in_session(session))
+            .flat_map(|session| s.clients().attached_in_session(session))
             .collect();
         Ok::<_, Refusal>((commit.applied, detached))
     });
@@ -158,10 +158,8 @@ fn projection_relaunch_refusal(
 }
 
 fn unsupported_launch(kind: phux_core::ResourceKind, capability: &str) -> Option<Refusal> {
-    (!crate::runtime::apps::app_for(kind).supports_organization_launch()).then(|| {
-        Refusal::Unsupported {
-            capability: capability.to_owned(),
-        }
+    (!crate::runtime::apps::supports_organization_launch(kind)).then(|| Refusal::Unsupported {
+        capability: capability.to_owned(),
     })
 }
 
@@ -225,7 +223,7 @@ pub(super) fn session_kill(
                 .members
                 .iter()
                 .filter_map(|member| s.registry().resource_id(member))
-                .filter(|id| s.resource_handle(*id).is_some())
+                .filter(|id| s.resources().handle(*id).is_some())
                 .collect();
         }
         // Engines this kill will close. Their `pane_closed` records are
@@ -270,7 +268,7 @@ pub(super) fn session_kill(
         let detached: Vec<_> = s
             .take_killed_sessions()
             .into_iter()
-            .flat_map(|session| s.attached_clients_in_session(session))
+            .flat_map(|session| s.clients().attached_in_session(session))
             .collect();
         closed.extend_killed_clients(detached);
         let answer = match (answer(s, &commit.applied), members) {
@@ -314,7 +312,8 @@ fn relaunch_engine_held(s: &ServerState, op: &Op) -> Option<Refusal> {
         return None;
     };
     let id = s.registry().resource_id(resource)?;
-    s.resource_handle(id)
+    s.resources()
+        .handle(id)
         .is_some()
         .then(|| Refusal::InvalidArgument {
             field: "resource",

@@ -6,23 +6,11 @@ use super::{
     MAX_LAUNCH_RESTORE_BYTES, MoveItem, OUTCOME_EXITED, OUTCOME_SIGNALED, OUTCOME_UNOBSERVED,
     OperationId, OrgFilter, Outcome, RecordRevision, ResourceKey, Revision, SessionKey,
     WorkspaceKey, decode_server_instance, decode_terminal_id, encode_server_instance,
-    encode_terminal_id, field, utf8_value,
+    encode_terminal_id, field, u64_value, utf8_value,
 };
 
 pub(super) fn write_key(enc: &mut Encoder<'_>, field_id: u32, key: &[u8; 16]) {
     enc.write_field(field_id, key);
-}
-
-pub(super) fn write_u64(enc: &mut Encoder<'_>, field_id: u32, value: u64) {
-    enc.write_field(field_id, &value.to_be_bytes());
-}
-
-pub(super) fn write_u32(enc: &mut Encoder<'_>, field_id: u32, value: u32) {
-    enc.write_field(field_id, &value.to_be_bytes());
-}
-
-pub(super) fn write_u8(enc: &mut Encoder<'_>, field_id: u32, value: u8) {
-    enc.write_field(field_id, &[value]);
 }
 
 pub(super) fn key_bytes(value: &[u8]) -> Result<[u8; 16], DecodeError> {
@@ -37,18 +25,6 @@ pub(super) fn read_key<K>(value: &[u8], new: fn([u8; 16]) -> Option<K>) -> Resul
 
 pub(super) fn read_operation(value: &[u8]) -> Result<OperationId, DecodeError> {
     OperationId::new(key_bytes(value)?).ok_or(DecodeError::InvalidIdempotencyKey)
-}
-
-pub(super) fn read_u64(value: &[u8]) -> Result<u64, DecodeError> {
-    Decoder::new(value).read_u64_be()
-}
-
-pub(super) fn read_u32(value: &[u8]) -> Result<u32, DecodeError> {
-    Decoder::new(value).read_u32_be()
-}
-
-pub(super) fn read_u8(value: &[u8]) -> Result<u8, DecodeError> {
-    Decoder::new(value).read_u8()
 }
 
 /// A UTF-8 value of at most `max` bytes.
@@ -239,7 +215,7 @@ pub(super) fn decode_move_item(value: &[u8]) -> Result<MoveItem, DecodeError> {
     Ok(MoveItem {
         resource: read_key(resource, ResourceKey::new)?,
         from: read_key(from, SessionKey::new)?,
-        from_expected: Revision::new(read_u64(expected)?),
+        from_expected: Revision::new(u64_value(expected)?),
     })
 }
 
@@ -261,6 +237,6 @@ pub(super) fn decode_pin(value: &[u8]) -> Result<RecordRevision, DecodeError> {
     }
     Ok(RecordRevision {
         key,
-        revision: Revision::new(read_u64(revision)?),
+        revision: Revision::new(u64_value(revision)?),
     })
 }

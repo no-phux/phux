@@ -3,9 +3,10 @@
 //! The snapshot-to-cell projection exists in `phux-client`'s renderer (the
 //! human's glass, `snapshot --rendered`), `phux-server`'s synthesizer (what an
 //! agent reads, `snapshot --cells`), and `phux-record`'s replayer (what a
-//! recording exports). Hoisting it into `phux-core` would give the domain crate
-//! a libghostty dependency, so it stays triplicated and this file feeds one VT
-//! corpus through all three and compares cell for cell.
+//! recording exports). The style mapping is the shared `phux_vt::cell_style`
+//! (its unit tests pin palette identity); each crate keeps its own cell walk,
+//! so this file feeds one VT corpus through all three and compares cell for
+//! cell.
 //!
 //! `RenderState::update` consumes the terminal's dirty bits, so each
 //! projection gets its own private `Terminal` fed the same bytes; never point
@@ -22,7 +23,7 @@
 
 use libghostty_vt::Terminal as GhosttyTerminal;
 use phux_core::screen::{
-    CellColor, CellInfo, CellStyle, RenderedFrame, SCHEMA_VERSION, ScreenState, SemanticContent,
+    CellInfo, CellStyle, RenderedFrame, SCHEMA_VERSION, ScreenState, SemanticContent,
 };
 use phux_record::Replayer;
 use phux_terminal::grid::SnapshotSynthesizer;
@@ -281,56 +282,6 @@ fn replay_frame_matches_the_server_projection() {
             case.name
         );
     }
-}
-
-/// A 256-palette color stays a palette index in all three: re-themed
-/// terminals and per-theme exports depend on it, and flattening to RGB would
-/// still look plausible.
-#[test]
-fn palette_identity_survives_all_three() {
-    let case = CORPUS
-        .iter()
-        .find(|case| case.name == "sgr_palette_256")
-        .expect("the palette case is in the corpus");
-
-    let client = client_frame(case);
-    let replay = replay_frame(case);
-    let server = server_state(case);
-
-    // "PAL" is written with fg 196 / bg 21; the first cell is enough to pin
-    // both channels.
-    let client_cell = client.cell(0, 0).expect("client cell (0, 0)");
-    let replay_cell = replay.cell(0, 0).expect("replay cell (0, 0)");
-    for (which, style) in [("client", client_cell.style), ("replay", replay_cell.style)] {
-        assert_eq!(
-            style.fg,
-            CellColor::Palette { index: 196 },
-            "{which} flattened an SGR 38;5;196 foreground instead of keeping the index",
-        );
-        assert_eq!(
-            style.bg,
-            CellColor::Palette { index: 21 },
-            "{which} flattened an SGR 48;5;21 background instead of keeping the index",
-        );
-    }
-
-    let server_cell = server
-        .cells
-        .as_deref()
-        .expect("cells = true populates Some(..)")
-        .iter()
-        .find(|cell| (cell.row, cell.col) == (0, 0))
-        .expect("server cell (0, 0)");
-    assert_eq!(
-        server_cell.style.fg,
-        CellColor::Palette { index: 196 },
-        "server flattened an SGR 38;5;196 foreground instead of keeping the index",
-    );
-    assert_eq!(
-        server_cell.style.bg,
-        CellColor::Palette { index: 21 },
-        "server flattened an SGR 48;5;21 background instead of keeping the index",
-    );
 }
 
 /// A wide glyph's tail is `""` in dense projections (preserving

@@ -5,12 +5,10 @@
 use phux_protocol::input::key::PhysicalKey;
 use phux_protocol::wire::frame::{DetachReason, FrameKind};
 use phux_server::LaunchCommand as CommandBuilder;
-use tempfile::TempDir;
 
 use phux_server_testkit::screen::Screen;
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, attach_by_name, join_after_shutdown, recv_typed, recv_until_detached,
-    run_local, send_frame, spawn_server_with_seed_cmd, wait_for_socket,
+    SpawnedServer, attach_by_name, recv_typed, recv_until_detached, run_local, send_frame,
 };
 
 use super::common::{render_until, type_line};
@@ -18,12 +16,8 @@ use super::common::{render_until, type_line};
 #[test]
 fn reconnect_after_detach_replays_snapshot_and_resumes_output() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket = tmp.path().join("phux.sock");
-        let (shutdown, server) =
-            spawn_server_with_seed_cmd(socket.clone(), "default", CommandBuilder::new("/bin/cat"));
-
-        let mut a = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+        let server = SpawnedServer::seeded("default", CommandBuilder::new("/bin/cat"));
+        let mut a = server.connect().await;
         send_frame(&mut a, &attach_by_name("default")).await;
         let FrameKind::Attached {
             snapshot,
@@ -47,7 +41,7 @@ fn reconnect_after_detach_replays_snapshot_and_resumes_output() {
         ));
         drop(a);
 
-        let mut b = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+        let mut b = server.connect().await;
         send_frame(&mut b, &attach_by_name("default")).await;
         let FrameKind::Attached {
             snapshot,
@@ -89,7 +83,6 @@ fn reconnect_after_detach_replays_snapshot_and_resumes_output() {
         render_until(&mut b, &mut screen, "z").await;
 
         drop(b);
-        join_after_shutdown(shutdown, server).await;
-        assert!(!socket.exists(), "socket leaked after shutdown");
+        server.stop().await;
     });
 }

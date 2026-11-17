@@ -10,7 +10,6 @@ use phux_terminal_api::actor::TerminalResource as _;
 impl PaneCaptureContext<'_> {
     /// Capture one pane's native checkpoint against the remaining aggregate
     /// budget and record the cut its pump must resume from.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     async fn stage_native_bootstrap(
         &self,
         staging: &mut AttachStaging,
@@ -174,7 +173,6 @@ impl PaneCaptureContext<'_> {
                 "state-sync bootstrap",
             )?);
         }
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         if publishes_native_checkpoints(self.profile) {
             return self
                 .stage_native_bootstrap(staging, terminal_id, &wire_terminal_id, &terminal)

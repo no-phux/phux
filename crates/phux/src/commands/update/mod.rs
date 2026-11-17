@@ -526,5 +526,14 @@ fn live_handoff(
     }
 }
 
+/// Run `phux update` as parsed.
+pub(crate) fn run(
+    args: crate::commands::UpdateArgs,
+    socket: Option<std::path::PathBuf>,
+) -> ExitCode {
+    let crate::commands::UpdateArgs { opts } = args;
+    run_update(&opts, socket)
+}
+
 #[cfg(test)]
 mod tests;

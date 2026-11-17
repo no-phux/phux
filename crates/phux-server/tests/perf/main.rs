@@ -35,9 +35,7 @@ fn row_colored_burst() -> CommandBuilder {
         for r in $(seq 1 40); do \
         printf '\\033[38;5;%dmrow %02d g%d colored-chunk colored-chunk\\r\\n' $((16 + r % 200)) $r $g; \
         done; done; printf 'BURSTDONE'; sleep 30";
-    let mut cmd = CommandBuilder::new("/bin/sh");
-    cmd.args(["-c", script]);
-    cmd
+    phux_server_testkit::sh(script)
 }
 
 /// Two clients drain one burst concurrently; the slower one's settle is

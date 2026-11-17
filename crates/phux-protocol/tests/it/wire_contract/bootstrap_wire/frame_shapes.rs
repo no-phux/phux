@@ -2,12 +2,13 @@
 
 use super::{
     BootstrapLimits, BootstrapProfile, BootstrapProfileKind, BootstrapProfileSet,
-    BootstrapStreamProfile, Bytes, BytesMut, ClientCapabilities, DecodeError, EngineCodec,
-    EngineFeatureSet, FrameKind, HistoryRejectionReason, HistoryTombstoneReason, ResourceId,
-    ServerCapabilities, TYPE_ATTACH_READY, TYPE_BOOTSTRAP_BEGIN, TYPE_BOOTSTRAP_CHUNK,
-    TYPE_BOOTSTRAP_READY, TYPE_BOOTSTRAP_TOMBSTONE, TYPE_HISTORY_PAGE, TYPE_HISTORY_REJECTED,
-    TYPE_HISTORY_REQUEST, TYPE_HISTORY_TOMBSTONE, TombstoneReason, assert_round_trip, bootstrap,
-    encode_without_field, encoded_field_ids, framed, local_terminal, stream, tlv_field,
+    BootstrapStreamProfile, Bytes, ClientCapabilities, DecodeError, EngineCodec, EngineFeatureSet,
+    FrameKind, HistoryRejectionReason, HistoryTombstoneReason, ResourceId, ServerCapabilities,
+    TYPE_ATTACH_READY, TYPE_BOOTSTRAP_BEGIN, TYPE_BOOTSTRAP_CHUNK, TYPE_BOOTSTRAP_READY,
+    TYPE_BOOTSTRAP_TOMBSTONE, TYPE_HISTORY_PAGE, TYPE_HISTORY_REJECTED, TYPE_HISTORY_REQUEST,
+    TYPE_HISTORY_TOMBSTONE, TombstoneReason, assert_round_trip, bootstrap, chunk,
+    encode_without_field, encoded_field_ids, framed, history_page, history_rejected,
+    history_request, history_tombstone, local_terminal, stream, tlv_field,
 };
 
 #[test]
@@ -47,6 +48,23 @@ fn bootstrap_tombstone_and_attach_ready_round_trip() {
     assert_round_trip(&FrameKind::AttachReady { attach_id: 17 });
 }
 
+/// A protocol-0.7 `HELLO_OK`.
+fn hello_ok(
+    server_id: &[u8],
+    selected_profile: Option<BootstrapProfile>,
+    bootstrap_limits: BootstrapLimits,
+) -> FrameKind {
+    FrameKind::HelloOk {
+        protocol_major: 0,
+        protocol_minor: 7,
+        protocol_patch: 0,
+        server_caps: ServerCapabilities::new(),
+        server_id: server_id.to_vec(),
+        selected_profile,
+        bootstrap_limits,
+    }
+}
+
 #[test]
 fn hello_and_all_three_selected_profiles_round_trip() {
     assert_round_trip(&FrameKind::Hello {
@@ -57,35 +75,23 @@ fn hello_and_all_three_selected_profiles_round_trip() {
         client_caps: ClientCapabilities::new(),
     });
 
+    // `None` is no Terminal profile: the field is absent, and an absent
+    // field decodes as `None`.
     for selected_profile in [
-        BootstrapProfile::NativeState {
+        Some(BootstrapProfile::NativeState {
             codec: EngineCodec::LibghosttyCheckpointV2,
             features: EngineFeatureSet::required_native(),
-        },
-        BootstrapProfile::SynthesizedVtRaw,
-        BootstrapProfile::SynthesizedVtStateSync,
+        }),
+        Some(BootstrapProfile::SynthesizedVtRaw),
+        Some(BootstrapProfile::SynthesizedVtStateSync),
+        None,
     ] {
-        assert_round_trip(&FrameKind::HelloOk {
-            protocol_major: 0,
-            protocol_minor: 7,
-            protocol_patch: 0,
-            server_caps: ServerCapabilities::new(),
-            server_id: b"server-incarnation".to_vec(),
-            selected_profile: Some(selected_profile),
-            bootstrap_limits: BootstrapLimits::new(128 * 1024, 512 * 1024).unwrap(),
-        });
+        assert_round_trip(&hello_ok(
+            b"server-incarnation",
+            selected_profile,
+            BootstrapLimits::new(128 * 1024, 512 * 1024).unwrap(),
+        ));
     }
-    // No Terminal profile: the field is absent, and an absent field decodes
-    // as `None`.
-    assert_round_trip(&FrameKind::HelloOk {
-        protocol_major: 0,
-        protocol_minor: 7,
-        protocol_patch: 0,
-        server_caps: ServerCapabilities::new(),
-        server_id: b"server-incarnation".to_vec(),
-        selected_profile: None,
-        bootstrap_limits: BootstrapLimits::new(128 * 1024, 512 * 1024).unwrap(),
-    });
 }
 
 #[test]
@@ -108,15 +114,11 @@ fn hello_rejects_each_omitted_required_field() {
 
 #[test]
 fn hello_ok_rejects_each_omitted_required_field() {
-    let hello_ok = FrameKind::HelloOk {
-        protocol_major: 0,
-        protocol_minor: 7,
-        protocol_patch: 0,
-        server_caps: ServerCapabilities::new(),
-        server_id: Vec::new(),
-        selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
-        bootstrap_limits: BootstrapLimits::default(),
-    };
+    let hello_ok = hello_ok(
+        b"",
+        Some(BootstrapProfile::SynthesizedVtRaw),
+        BootstrapLimits::default(),
+    );
     // Field 6, `SELECTED_PROFILE`, is optional: absent means no Terminal
     // profile was selected.
     for omitted_id in (1..=8).filter(|id| *id != 6) {
@@ -144,17 +146,17 @@ fn every_new_frame_encodes_fields_in_allocated_order() {
     let terminal_id = ResourceId::local(1);
     let stream_id = stream(2);
     let bootstrap_id = bootstrap(3);
+    let mut page_with_next_cursor = history_page(Bytes::from_static(b"page"), 4);
+    if let FrameKind::HistoryPage { next_cursor, .. } = &mut page_with_next_cursor {
+        *next_cursor = Some(Bytes::from_static(b"next"));
+    }
     let cases = [
         (
-            FrameKind::HelloOk {
-                protocol_major: 0,
-                protocol_minor: 7,
-                protocol_patch: 0,
-                server_caps: ServerCapabilities::new(),
-                server_id: b"incarnation".to_vec(),
-                selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
-                bootstrap_limits: BootstrapLimits::default(),
-            },
+            hello_ok(
+                b"incarnation",
+                Some(BootstrapProfile::SynthesizedVtRaw),
+                BootstrapLimits::default(),
+            ),
             vec![1, 2, 3, 4, 5, 6, 7, 8],
         ),
         (FrameKind::AttachReady { attach_id: 4 }, vec![1]),
@@ -170,16 +172,7 @@ fn every_new_frame_encodes_fields_in_allocated_order() {
             },
             vec![1, 2, 3, 4, 5, 6, 7, 8],
         ),
-        (
-            FrameKind::BootstrapChunk {
-                terminal_id: terminal_id.clone(),
-                stream_id,
-                bootstrap_id,
-                chunk_seq: 0,
-                payload: Bytes::from_static(b"chunk"),
-            },
-            vec![1, 2, 3, 4, 5],
-        ),
+        (chunk(Bytes::from_static(b"chunk")), vec![1, 2, 3, 4, 5]),
         (
             FrameKind::BootstrapReady {
                 terminal_id: terminal_id.clone(),
@@ -190,29 +183,10 @@ fn every_new_frame_encodes_fields_in_allocated_order() {
             vec![1, 2, 3, 4],
         ),
         (
-            FrameKind::HistoryRequest {
-                terminal_id: terminal_id.clone(),
-                stream_id,
-                bootstrap_id,
-                cursor: Bytes::from_static(b"cursor"),
-                max_bytes: 4096,
-                max_rows: 1024,
-            },
+            history_request(b"cursor", 4096, 1024),
             vec![1, 2, 3, 4, 5, 6],
         ),
-        (
-            FrameKind::HistoryPage {
-                terminal_id: terminal_id.clone(),
-                stream_id,
-                bootstrap_id,
-                page_seq: 1,
-                cursor: Bytes::from_static(b"cursor"),
-                next_cursor: Some(Bytes::from_static(b"next")),
-                payload: Bytes::from_static(b"page"),
-                rows: 4,
-            },
-            vec![1, 2, 3, 4, 5, 6, 7, 8],
-        ),
+        (page_with_next_cursor, vec![1, 2, 3, 4, 5, 6, 7, 8]),
         (
             FrameKind::BootstrapTombstone {
                 terminal_id: terminal_id.clone(),
@@ -224,25 +198,11 @@ fn every_new_frame_encodes_fields_in_allocated_order() {
             vec![1, 2, 3, 4, 5],
         ),
         (
-            FrameKind::HistoryTombstone {
-                terminal_id: terminal_id.clone(),
-                stream_id,
-                bootstrap_id,
-                cursor: Bytes::from_static(b"cursor"),
-                reason: HistoryTombstoneReason::Expired,
-            },
+            history_tombstone(HistoryTombstoneReason::Expired),
             vec![1, 2, 3, 4, 5],
         ),
         (
-            FrameKind::HistoryRejected {
-                terminal_id: terminal_id.clone(),
-                stream_id,
-                bootstrap_id,
-                cursor: Bytes::from_static(b"cursor"),
-                reason: HistoryRejectionReason::Busy,
-                required_bytes: 4096,
-                required_rows: 256,
-            },
+            history_rejected(HistoryRejectionReason::Busy, 4096, 256),
             vec![1, 2, 3, 4, 5, 6, 7],
         ),
         (
@@ -257,29 +217,17 @@ fn every_new_frame_encodes_fields_in_allocated_order() {
         ),
     ];
     for (frame, expected) in cases {
-        assert_eq!(encoded_field_ids(&frame), expected);
+        assert_eq!(encoded_field_ids(&frame), expected, "{frame:?}");
     }
 }
 
 #[test]
 fn unknown_top_level_fields_are_skipped_without_touching_opaque_bytes() {
-    let frame = FrameKind::BootstrapChunk {
-        terminal_id: ResourceId::local(1),
-        stream_id: stream(2),
-        bootstrap_id: bootstrap(3),
-        chunk_seq: 4,
-        payload: Bytes::from_static(b"\x00\xffengine-owned\x1b[31m"),
-    };
-    let mut encoded = BytesMut::new();
-    frame.encode(&mut encoded);
-    let mut unknown = Vec::new();
-    tlv_field(&mut unknown, 99, b"future-field");
-    encoded.extend_from_slice(&unknown);
-    let new_length = u32::from_be_bytes(encoded[..4].try_into().unwrap())
-        .checked_add(u32::try_from(unknown.len()).unwrap())
-        .unwrap();
-    encoded[..4].copy_from_slice(&new_length.to_be_bytes());
-
+    let mut frame = chunk(Bytes::from_static(b"\x00\xffengine-owned\x1b[31m"));
+    if let FrameKind::BootstrapChunk { chunk_seq, .. } = &mut frame {
+        *chunk_seq = 4;
+    }
+    let encoded = crate::common::encode_with_unknown_field(&frame, 99, b"future-field");
     let (decoded, tail) = FrameKind::decode(&encoded).unwrap();
     assert_eq!(decoded, frame);
     assert!(tail.is_empty());

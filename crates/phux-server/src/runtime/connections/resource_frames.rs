@@ -3,7 +3,7 @@
 
 mod input;
 mod relay;
-#[cfg(all(test, feature = "native-engine", not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod tests;
 
 pub(in crate::runtime) use input::attached_input_resource;
@@ -69,10 +69,6 @@ fn note_activity(ctx: &ResourceFrame<'_>, frame: &FrameKind) {
 
 /// Preserve the no-resource outcomes without inventing a serving app.
 async fn unavailable(ctx: &ResourceFrame<'_>, frame: FrameKind) -> FrameFlow {
-    #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
-    if matches!(frame, FrameKind::HistoryRequest { .. }) {
-        return direction_invalid(ctx.client_id, &frame);
-    }
     match frame {
         FrameKind::InputTerminalReply { .. } => {}
         FrameKind::HistoryRequest { .. } => unavailable_history(ctx, frame).await,

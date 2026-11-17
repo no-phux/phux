@@ -16,7 +16,7 @@ pub(crate) struct DownloadArgs {
     pub json: bool,
 }
 
-pub(crate) fn run(args: DownloadArgs, spec: ServerSpec) -> ExitCode {
+pub(crate) fn run_request(args: DownloadArgs, spec: ServerSpec) -> ExitCode {
     let start = Instant::now();
     let DownloadArgs {
         source,
@@ -146,6 +146,34 @@ fn fail(json: bool, message: &str, status: u8) -> ExitCode {
             "check the source path, the local destination, and the server",
         ),
         status,
+    )
+}
+
+/// Run `phux download` as parsed.
+pub(crate) fn run(
+    args: crate::commands::DownloadArgs,
+    socket: Option<std::path::PathBuf>,
+) -> ExitCode {
+    let crate::commands::DownloadArgs {
+        source,
+        local,
+        force,
+        timeout,
+        json,
+        remote,
+    } = args;
+    run_request(
+        DownloadArgs {
+            source,
+            local,
+            force,
+            timeout,
+            json,
+        },
+        ServerSpec {
+            socket,
+            remote: remote.remote,
+        },
     )
 }
 

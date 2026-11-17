@@ -57,10 +57,8 @@ impl ServerGuard {
     }
 
     /// Run a verb whose stdout is one JSON document, and decode it.
-    fn json(&self, args: &[&str]) -> serde_json::Value {
-        let text = self.success_global(args);
-        serde_json::from_str(&text)
-            .unwrap_or_else(|err| panic!("phux {args:?} JSON ({err}): {text}"))
+    fn json_global(&self, args: &[&str]) -> serde_json::Value {
+        crate::common::Out::of(&mut self.cmd_global(args)).json()
     }
 
     /// Decode the `--json` error document a refusing verb prints on stderr;
@@ -98,7 +96,7 @@ impl ServerGuard {
 
     /// The `resources` array of `phux ls --json`.
     fn resources(&self) -> Vec<serde_json::Value> {
-        let listed = self.json(&["ls", "--json"]);
+        let listed = self.json_global(&["ls", "--json"]);
         listed["resources"]
             .as_array()
             .cloned()
@@ -167,7 +165,7 @@ impl ServerGuard {
             args.extend_from_slice(&["--native-id", native_id]);
         }
         args.push("--json");
-        let opened = self.json(&args);
+        let opened = self.json_global(&args);
         assert_eq!(opened["schema_version"], 1, "{opened}");
         assert_eq!(opened["parent"], parent, "{opened}");
         assert_eq!(opened["provider"], provider, "{opened}");
@@ -185,7 +183,7 @@ impl ServerGuard {
     /// `phux agent emit TARGET --type T --data D --json`, returning the
     /// stamped header the server echoed.
     fn emit(&self, target: &str, event_type: &str, data: &str) -> serde_json::Value {
-        let emitted = self.json(&[
+        let emitted = self.json_global(&[
             "agent", "emit", target, "--type", event_type, "--data", data, "--json",
         ]);
         assert_eq!(emitted["schema_version"], 1, "{emitted}");
@@ -308,7 +306,7 @@ fn an_agent_session_is_opened_streamed_replayed_and_inventoried() {
         "the stream's order must reach the consumer in order: {timeline:?}"
     );
     // The pane never painted, so no screen rule can account for either edge.
-    let painted = server.json(&["snapshot", &pane, "--json"]);
+    let painted = server.json_global(&["snapshot", &pane, "--json"]);
     let screen = painted["lines"]
         .as_array()
         .expect("snapshot lines")
@@ -321,7 +319,7 @@ fn an_agent_session_is_opened_streamed_replayed_and_inventoried() {
     );
 
     // --- 4. the log replays what the server stamped -----------------------
-    let log = server.json(&["agent", "log", &session, "--tail", "3", "--json"]);
+    let log = server.json_global(&["agent", "log", &session, "--tail", "3", "--json"]);
     assert_eq!(log["schema_version"], 1, "{log}");
     assert_eq!(log["resource"], session.as_str(), "{log}");
     assert_eq!(log["parent"], pane.as_str(), "{log}");
@@ -355,7 +353,7 @@ fn an_agent_session_is_opened_streamed_replayed_and_inventoried() {
     }
 
     // --- 5. the inventory ------------------------------------------------
-    let listed = server.json(&["ls", "--json"]);
+    let listed = server.json_global(&["ls", "--json"]);
     let resources = listed["resources"].as_array().expect("ls resources");
     let entry = resource_named(resources, &session)
         .unwrap_or_else(|| panic!("the session must be listed: {listed}"));
@@ -376,7 +374,7 @@ fn an_agent_session_is_opened_streamed_replayed_and_inventoried() {
     );
 
     // --- 6. the pane's own report ----------------------------------------
-    let shown = server.json(&["agent", "show", &pane, "--json"]);
+    let shown = server.json_global(&["agent", "show", &pane, "--json"]);
     let agent = &shown["agents"][0];
     assert_eq!(agent["terminal"], pane.as_str(), "{shown}");
     assert_eq!(
@@ -497,7 +495,7 @@ fn the_session_verbs_refuse_a_plain_pane_and_a_malformed_record() {
     // With a live session the next refusals are about the record, not the
     // target.
     let session = server.session_open(&pane, "claude", None);
-    let before = server.json(&["agent", "log", &session, "--json"]);
+    let before = server.json_global(&["agent", "log", &session, "--json"]);
     assert!(
         before["records"].as_array().expect("records").is_empty(),
         "a new session's stream starts empty: {before}"
@@ -554,7 +552,7 @@ fn the_session_verbs_refuse_a_plain_pane_and_a_malformed_record() {
     );
 
     // Nothing any of those refusals touched reached the stream.
-    let after = server.json(&["agent", "log", &session, "--json"]);
+    let after = server.json_global(&["agent", "log", &session, "--json"]);
     assert!(
         after["records"].as_array().expect("records").is_empty(),
         "a refused record must not reach the stream: {after}"

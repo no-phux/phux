@@ -8,7 +8,6 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::warn;
 
 /// The `HISTORY_REQUEST` frame's payload.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(in crate::runtime) struct HistoryPageRequest {
     pub(in crate::runtime) terminal_id: WireResourceId,
     pub(in crate::runtime) stream_id: phux_protocol::ids::StreamId,
@@ -18,7 +17,6 @@ pub(in crate::runtime) struct HistoryPageRequest {
     pub(in crate::runtime) max_rows: u32,
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 /// The Terminal facet a `HISTORY_REQUEST` pages against: `None` for an
 /// unknown terminal or a resource of another kind.
 fn history_terminal(
@@ -27,8 +25,9 @@ fn history_terminal(
 ) -> Option<phux_terminal_api::actor::TerminalHandle> {
     let handle = state.with(|server| {
         server
+            .idspace
             .resource_from_wire(terminal_id)
-            .and_then(|pane| server.resource_handle(pane).cloned())
+            .and_then(|pane| server.resources().handle(pane).cloned())
     });
     let Some(handle) = handle else {
         warn!(?terminal_id, "HISTORY_REQUEST for an unknown terminal");
@@ -45,7 +44,6 @@ fn history_terminal(
 
 /// Answer one `HISTORY_REQUEST` from the pane's replica. SPEC L1 §4.5: every
 /// failure tombstones the cursor rather than sending an uncorrelated `ERROR`.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(in crate::runtime) async fn serve_history_request(
     state: &SharedState,
     client_id: ClientId,

@@ -23,7 +23,7 @@ fn press(rt: &mut Runtime<Desk>, key: &str) {
 #[test]
 fn the_quick_terminal_has_a_switch_and_a_live_recorder() {
     let gpu = rune::render::Gpu::headless();
-    let mut renderer = rune::render::Renderer::new(&gpu.device, rune::render::OFFSCREEN_FORMAT);
+    let mut camera = Camera::new(&gpu, (1100, 720), "quick");
     let mut rt = runtime((1100.0, 720.0), false);
     rt.update(|d, tx| {
         tx.instant();
@@ -34,7 +34,7 @@ fn the_quick_terminal_has_a_switch_and_a_live_recorder() {
     rt.update(|d, _| d.quick_fixture(true));
     rt.frame(0.0);
     assert!(rt.find("set-quick-terminal").is_some());
-    render(&gpu, &mut renderer, &mut rt, (1100, 720), "quick-terminal");
+    camera.shoot(&mut rt, "-terminal");
 
     // A recorded chord is registered at once. This panel never ran, so it's
     // refused: the old chord stays, and the row says why.
@@ -56,7 +56,7 @@ fn the_quick_terminal_has_a_switch_and_a_live_recorder() {
     let kept = recorder.shortcut().map(ToString::to_string);
     assert_eq!(kept.as_deref(), Some("ctrl+backquote"));
     assert!(shows(&rt, "couldn't be registered"));
-    render(&gpu, &mut renderer, &mut rt, (1100, 720), "quick-refused");
+    camera.shoot(&mut rt, "-refused");
 
     // Off, the recorder takes no clicks; set in the file, both rows say so.
     rt.update(|d, _| {

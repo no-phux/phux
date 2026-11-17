@@ -2,8 +2,8 @@
 //!
 //! The `wss://` acceptor and the QUIC / WebTransport server configs, all on
 //! rustls with the `ring` provider selected explicitly. Certificate generation and PEM loading are
-//! [`phux_dial::cert`]'s (shared with `phux-relay`, ADR-0051); what stays here
-//! is the server's configs plus the ADR-0091 name-coverage *reporting*
+//! [`phux_dial::cert`]'s (shared with `phux_dial::relay`, ADR-0051); what
+//! stays here is the server's configs plus the ADR-0091 name-coverage *reporting*
 //! surface. An existing certificate is never widened: a new SAN means a new
 //! fingerprint, which un-pairs every device.
 

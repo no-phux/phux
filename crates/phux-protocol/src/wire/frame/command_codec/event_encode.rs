@@ -90,20 +90,12 @@ pub(in crate::wire) fn encode_agent_event(event: &AgentEvent, enc: &mut Encoder<
                 first_missing,
                 last_missing,
             } => {
-                write_u64_field(
-                    &mut body_enc,
-                    field::event_journal_gap::FIRST_MISSING,
-                    *first_missing,
-                );
-                write_u64_field(
-                    &mut body_enc,
-                    field::event_journal_gap::LAST_MISSING,
-                    *last_missing,
-                );
+                body_enc.write_u64_field(field::event_journal_gap::FIRST_MISSING, *first_missing);
+                body_enc.write_u64_field(field::event_journal_gap::LAST_MISSING, *last_missing);
                 EVENT_TAG_JOURNAL_GAP
             }
             AgentEvent::SourceGap { dropped } => {
-                write_u64_field(&mut body_enc, field::event_source_gap::DROPPED, *dropped);
+                body_enc.write_u64_field(field::event_source_gap::DROPPED, *dropped);
                 EVENT_TAG_SOURCE_GAP
             }
             AgentEvent::ApprovalRequested { id } => {
@@ -173,11 +165,6 @@ pub(super) fn decode_approval_event(
     Ok(id
         .zip(outcome)
         .map(|(id, outcome)| AgentEvent::ApprovalDecided { id, outcome }))
-}
-
-/// Write one field-tagged `u64` inside an event body.
-pub(super) fn write_u64_field(enc: &mut Encoder<'_>, field_id: u32, value: u64) {
-    enc.write_field_with(field_id, |e| e.write_u64_be(value));
 }
 
 pub(super) fn encode_asked_fields(

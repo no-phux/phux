@@ -10,13 +10,16 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use phux_client::read::Verb;
-use phux_client::signal::LeaseOutcome;
+use phux_client::signal::{LeaseOutcome, SignalError};
 use phux_protocol::ids::IdempotencyKey;
 use phux_protocol::wire::frame::TerminalSignal;
-use phux_server::runtime::default_socket_path;
 
-use crate::commands::json_err::{self, CliError};
-use crate::commands::{SignalArg, parse_selector, request_command, resolve_target_for_input};
+use crate::commands::ctx::{self, Ctx};
+use crate::commands::json_err::{CliError, Refusal};
+use crate::commands::{
+    SignalArg, parse_target, partial, read_kind, request_command, resolve_target_for_input,
+};
+use crate::exit_codes::EXIT_USAGE;
 
 /// Version of the `take`, `give`, and `signal` `--json` documents.
 pub(crate) const SUPERVISE_SCHEMA_VERSION: u8 = 1;
@@ -55,59 +58,47 @@ fn run_lease(target: &str, json: bool, socket: Option<PathBuf>, take: Option<u32
     } else {
         Verb::Give
     };
-    let selector = match parse_selector(Some(target)) {
-        Ok(sel) => sel,
-        Err(code) => return code,
-    };
-    let socket_path = socket.unwrap_or_else(default_socket_path);
-    let rt = match crate::commands::cli_runtime() {
-        Ok(rt) => rt,
-        Err(code) => return code,
-    };
-    rt.block_on(async move {
-        let terminal_id = match resolve_target_for_input(&socket_path, &selector, verb, json).await
-        {
-            Ok(id) => id,
-            Err(code) => return code,
-        };
-        let terminal = terminal_id.local_id();
-        let command = if let Some(ttl_ms) = take {
-            phux_client::signal::take_command(terminal_id, ttl_ms)
-        } else {
-            phux_client::signal::give_command(terminal_id)
-        };
-        match request_command(&socket_path, command)
-            .await
-            .map(LeaseOutcome::from_result)
-        {
-            Ok(LeaseOutcome::Ok) if json => crate::output::json(&serde_json::json!({
-                "schema_version": SUPERVISE_SCHEMA_VERSION,
-                "terminal_id": terminal,
-                "held": take.is_some(),
-                "ttl_secs": take.filter(|ms| *ms > 0).map(|ms| ms / 1000),
-            })),
-            Ok(LeaseOutcome::Ok) => {
-                match take {
-                    Some(0) => outln!("phux: took the wheel of {target}"),
-                    Some(ttl_ms) => outln!(
-                        "phux: took the wheel of {target} (expires in {}s)",
-                        ttl_ms / 1000
-                    ),
-                    None => outln!("phux: released the wheel of {target}"),
-                }
-                ExitCode::SUCCESS
+    ctx::run_local(socket, json, |ctx| {
+        let selector = parse_target(Some(target))?;
+        ctx.rt.block_on(async {
+            let terminal_id = resolve_target_for_input(ctx.socket(), &selector, verb).await?;
+            let terminal = terminal_id.local_id();
+            let command = if let Some(ttl_ms) = take {
+                phux_client::signal::take_command(terminal_id, ttl_ms)
+            } else {
+                phux_client::signal::give_command(terminal_id)
+            };
+            let outcome = request_command(ctx.socket(), command)
+                .await
+                .map(LeaseOutcome::from_result)
+                .map_err(|err| ctx.unreachable(&err, verb.name()))?;
+            check_applied(verb.name(), target, outcome)?;
+            if json {
+                return Ok(crate::output::json(&serde_json::json!({
+                    "schema_version": SUPERVISE_SCHEMA_VERSION,
+                    "terminal_id": terminal,
+                    "held": take.is_some(),
+                    "ttl_secs": take.filter(|ms| *ms > 0).map(|ms| ms / 1000),
+                })));
             }
-            Ok(outcome) => report_refusal(json, verb.name(), target, outcome),
-            Err(err) => json_err::report_no_server(json, &err, &socket_path, verb.name()),
-        }
+            match take {
+                Some(0) => outln!("phux: took the wheel of {target}"),
+                Some(ttl_ms) => outln!(
+                    "phux: took the wheel of {target} (expires in {}s)",
+                    ttl_ms / 1000
+                ),
+                None => outln!("phux: released the wheel of {target}"),
+            }
+            Ok(ExitCode::SUCCESS)
+        })
     })
 }
 
-/// A lease or signal the server did not apply: `server_error` for a
+/// Refuse a lease or signal the server did not apply: `server_error` for a
 /// refusal, `unexpected_reply` for an answer this client cannot read. Exit 2.
-fn report_refusal(json: bool, verb: &str, target: &str, outcome: LeaseOutcome) -> ExitCode {
+fn check_applied(verb: &str, target: &str, outcome: LeaseOutcome) -> Result<(), Refusal> {
     let err = match outcome {
-        LeaseOutcome::Ok => return ExitCode::SUCCESS,
+        LeaseOutcome::Ok => return Ok(()),
         LeaseOutcome::Refused(message) => CliError::new(
             "server_error",
             format!("{verb} refused for {target}: {message}"),
@@ -122,7 +113,7 @@ fn report_refusal(json: bool, verb: &str, target: &str, outcome: LeaseOutcome) -
             "upgrade the client or the server so they agree on the reply",
         ),
     };
-    json_err::emit(json, &err, 2)
+    Err(Refusal::from_error(err, EXIT_USAGE))
 }
 
 /// `phux signal TARGET SIGNAL` — deliver a POSIX signal to the resolved pane's
@@ -137,73 +128,62 @@ pub(crate) fn run_signal(
     json: bool,
     socket: Option<PathBuf>,
 ) -> ExitCode {
-    let selector = match parse_selector(Some(target)) {
-        Ok(sel) => sel,
-        Err(code) => return code,
-    };
-    let wire_signal = TerminalSignal::from(signal);
-    let socket_path = socket.unwrap_or_else(default_socket_path);
-    let rt = match crate::commands::cli_runtime() {
-        Ok(rt) => rt,
-        Err(code) => return code,
-    };
-    if phux_client::signal::is_dangerous(wire_signal) && !yes {
-        if let Err(code) = rt.block_on(refuse_kind_before_asking(&socket_path, &selector, json)) {
-            return code;
-        }
-        if let Err(code) = crate::commands::confirm::confirmed_for(
-            json,
-            yes,
-            &format!("signal {target} ({signal:?})"),
-        ) {
-            return code;
-        }
-    }
-    rt.block_on(async move {
-        let mut notices = Vec::new();
-        let result =
-            phux_client::signal::deliver(&socket_path, &selector, wire_signal, key, &mut notices)
-                .await;
-        for notice in &notices {
-            warn!("{} saw only part of the fleet — {notice}", "signal");
-        }
-        match result {
-            Ok(delivered) => {
-                for message in delivered.interleaved {
-                    warn!("partial results — {message}");
-                }
-                match delivered.outcome {
-                    LeaseOutcome::Ok if json => crate::output::json(&serde_json::json!({
-                        "schema_version": SUPERVISE_SCHEMA_VERSION,
-                        "target": target,
-                        "signal": format!("{signal:?}").to_lowercase(),
-                        "delivered": true,
-                    })),
-                    LeaseOutcome::Ok => {
-                        outln!("phux: signalled {target} ({signal:?})");
-                        ExitCode::SUCCESS
-                    }
-                    outcome => report_refusal(json, "signal", target, outcome),
-                }
-            }
-            Err(phux_client::signal::SignalError::Miss { degradation }) => {
-                crate::commands::partial::report_target_miss_keeping_status_for(
-                    json,
-                    Some(target),
-                    &degradation,
-                )
-            }
-            Err(phux_client::signal::SignalError::Agent(err)) => {
-                crate::commands::report_agent_resolve_error(json, &err, true)
-            }
-            Err(phux_client::signal::SignalError::WrongKind(err)) => {
-                crate::commands::read_kind::wrong_kind(json, &err)
-            }
-            Err(phux_client::signal::SignalError::Attach(err)) => {
-                json_err::report_no_server(json, &err, &socket_path, "signal")
+    ctx::run_local(socket, json, |ctx| {
+        let selector = parse_target(Some(target))?;
+        let wire_signal = TerminalSignal::from(signal);
+        if phux_client::signal::is_dangerous(wire_signal) && !yes {
+            ctx.rt
+                .block_on(refuse_kind_before_asking(ctx.socket(), &selector))?;
+            let action = format!("signal {target} ({signal:?})");
+            if let Err(code) = crate::commands::confirm::confirmed_for(json, yes, &action) {
+                // Declining has already been reported.
+                return Ok(code);
             }
         }
+        ctx.rt.block_on(async {
+            let mut notices = Vec::new();
+            let result = phux_client::signal::deliver(
+                ctx.socket(),
+                &selector,
+                wire_signal,
+                key,
+                &mut notices,
+            )
+            .await;
+            for notice in &notices {
+                warn!("{} saw only part of the fleet — {notice}", "signal");
+            }
+            let delivered = result.map_err(|err| signal_refusal(ctx, target, err))?;
+            for message in delivered.interleaved {
+                warn!("partial results — {message}");
+            }
+            check_applied("signal", target, delivered.outcome)?;
+            if json {
+                return Ok(crate::output::json(&serde_json::json!({
+                    "schema_version": SUPERVISE_SCHEMA_VERSION,
+                    "target": target,
+                    "signal": format!("{signal:?}").to_lowercase(),
+                    "delivered": true,
+                })));
+            }
+            outln!("phux: signalled {target} ({signal:?})");
+            Ok(ExitCode::SUCCESS)
+        })
     })
+}
+
+/// A signal that never reached the server's decision. A miss keeps status
+/// 1 like every single-pane verb, and still never claims absence on a
+/// partial view.
+fn signal_refusal(ctx: &Ctx<PathBuf>, target: &str, err: SignalError) -> Refusal {
+    match err {
+        SignalError::Miss { degradation } => {
+            partial::target_miss_keeping_status(Some(target), &degradation)
+        }
+        SignalError::Agent(err) => crate::commands::agent_refusal(&err, true),
+        SignalError::WrongKind(err) => read_kind::wrong_kind_refusal(&err),
+        SignalError::Attach(err) => ctx.unreachable(&err, "signal"),
+    }
 }
 
 /// A dangerous signal asks first, so a target that is not a Terminal is
@@ -213,8 +193,7 @@ pub(crate) fn run_signal(
 async fn refuse_kind_before_asking(
     socket: &std::path::Path,
     selector: &phux_client::selector::Selector,
-    json: bool,
-) -> Result<(), ExitCode> {
+) -> Result<(), Refusal> {
     let Some(id) = selector.explicit_id() else {
         return Ok(());
     };
@@ -223,5 +202,32 @@ async fn refuse_kind_before_asking(
     };
     let resolved = phux_client::read::Resolved::in_snapshot(view.snapshot(), id);
     phux_client::read::require_terminal(Verb::Signal, &resolved)
-        .map_err(|err| crate::commands::read_kind::wrong_kind(json, &err))
+        .map_err(|err| read_kind::wrong_kind_refusal(&err))
+}
+
+/// Run `phux take` as parsed.
+pub(crate) fn take(args: crate::commands::TakeArgs, socket: Option<PathBuf>) -> ExitCode {
+    let crate::commands::TakeArgs { target, ttl, json } = args;
+    run_take(&target, ttl, json.json, socket)
+}
+
+/// Run `phux give` as parsed.
+pub(crate) fn give(args: crate::commands::GiveArgs, socket: Option<PathBuf>) -> ExitCode {
+    let crate::commands::GiveArgs { target, json } = args;
+    run_give(&target, json.json, socket)
+}
+
+/// Run `phux signal` as parsed: resolve `--idempotency-key`, then signal.
+pub(crate) fn signal(args: crate::commands::SignalArgs, socket: Option<PathBuf>) -> ExitCode {
+    let crate::commands::SignalArgs {
+        target,
+        signal,
+        idempotency_key,
+        yes,
+        json,
+    } = args;
+    match crate::commands::spawn::parse_key_arg(idempotency_key.as_deref(), json.json) {
+        Ok(key) => run_signal(&target, signal, key, yes, json.json, socket),
+        Err(code) => code,
+    }
 }

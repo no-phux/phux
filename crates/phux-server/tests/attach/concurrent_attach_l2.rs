@@ -6,13 +6,12 @@ use phux_protocol::ids::ResourceId;
 use phux_protocol::input::key::PhysicalKey;
 use phux_protocol::wire::frame::FrameKind;
 use phux_server::LaunchCommand as CommandBuilder;
-use tempfile::TempDir;
 use tokio::net::UnixStream;
 
 use phux_server_testkit::screen::Screen;
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, attach_by_name, join_after_shutdown, recv_typed, run_local,
-    send_frame, spawn_server_with_seed_cmd, wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, SpawnedServer, attach_by_name, recv_typed, run_local, send_frame,
+    wait_for_socket,
 };
 
 use super::common::{render_until, type_line};
@@ -57,15 +56,11 @@ async fn attach_default(socket: std::path::PathBuf) -> Attached {
 #[test]
 fn concurrent_attaches_see_identical_state_and_fanout() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket = tmp.path().join("phux.sock");
         // `cat` stays quiet until typed into, so two concurrent captures of
         // the grid are well-defined and must be byte-identical.
-        let (shutdown, server) =
-            spawn_server_with_seed_cmd(socket.clone(), "default", CommandBuilder::new("/bin/cat"));
-
-        let a = tokio::task::spawn_local(attach_default(socket.clone()));
-        let b = tokio::task::spawn_local(attach_default(socket.clone()));
+        let server = SpawnedServer::seeded("default", CommandBuilder::new("/bin/cat"));
+        let a = tokio::task::spawn_local(attach_default(server.socket.clone()));
+        let b = tokio::task::spawn_local(attach_default(server.socket.clone()));
         let (mut a, mut b) = (a.await.unwrap(), b.await.unwrap());
         assert_ne!(a.client_id, b.client_id, "client ids must not collide");
         assert_eq!(a.pane, b.pane);
@@ -80,7 +75,6 @@ fn concurrent_attaches_see_identical_state_and_fanout() {
         );
 
         drop((a, b));
-        join_after_shutdown(shutdown, server).await;
-        assert!(!socket.exists(), "socket leaked after shutdown");
+        server.stop().await;
     });
 }

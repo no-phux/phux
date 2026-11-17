@@ -323,54 +323,50 @@ async fn blocked_session(cancel: CancellationToken) -> Blocked {
 
 #[tokio::test]
 async fn blocked_outbound_write_does_not_stall_inbound_fanout() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let cancel = CancellationToken::new();
-            let mut blocked = blocked_session(cancel.clone()).await;
-            let mut encoded = bytes::BytesMut::new();
-            FrameKind::Event {
-                terminal: Some(phux_protocol::ResourceId::local(9)),
-                event: phux_protocol::wire::frame::AgentEvent::CommandStarted,
-                stamp: None,
-            }
-            .encode(&mut encoded);
-            blocked
-                .inbound
-                .send(encoded.to_vec())
+    on_local(async {
+        let cancel = CancellationToken::new();
+        let mut blocked = blocked_session(cancel.clone()).await;
+        let mut encoded = bytes::BytesMut::new();
+        FrameKind::Event {
+            terminal: Some(phux_protocol::ResourceId::local(9)),
+            event: phux_protocol::wire::frame::AgentEvent::CommandStarted,
+            stamp: None,
+        }
+        .encode(&mut encoded);
+        blocked
+            .inbound
+            .send(encoded.to_vec())
+            .await
+            .expect("inject inbound event");
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_millis(250), blocked.out_rx.recv())
                 .await
-                .expect("inject inbound event");
-            assert!(matches!(
-                tokio::time::timeout(Duration::from_millis(250), blocked.out_rx.recv())
-                    .await
-                    .expect("inbound fanout must not wait for the write")
-                    .expect("subscriber remains live"),
-                crate::mailbox::Outbound::Frame(FrameKind::Event { .. })
-            ));
-            cancel.cancel();
-            blocked.release_write.notify_waiters();
-            let _ = blocked.session.await;
-        })
-        .await;
+                .expect("inbound fanout must not wait for the write")
+                .expect("subscriber remains live"),
+            crate::mailbox::Outbound::Frame(FrameKind::Event { .. })
+        ));
+        cancel.cancel();
+        blocked.release_write.notify_waiters();
+        let _ = blocked.session.await;
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn aborting_session_cancels_a_blocked_transport_writer() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let blocked = blocked_session(CancellationToken::new()).await;
-            blocked.session.abort();
-            for _ in 0..10 {
-                tokio::task::yield_now().await;
-                if blocked
-                    .writer_dropped
-                    .load(std::sync::atomic::Ordering::SeqCst)
-                {
-                    return;
-                }
+    on_local(async {
+        let blocked = blocked_session(CancellationToken::new()).await;
+        blocked.session.abort();
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+            if blocked
+                .writer_dropped
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                return;
             }
-            panic!("blocked transport writer survived session cancellation");
-        })
-        .await;
+        }
+        panic!("blocked transport writer survived session cancellation");
+    })
+    .await;
 }

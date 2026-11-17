@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use phux_server::runtime::default_socket_path;
+use phux_config::socket::default_socket_path;
 
 use crate::commands::{cli_runtime, plugin::valid_manifest_count};
 
@@ -341,8 +341,8 @@ fn check_plugins() -> Check {
 /// state dir warns; the probe is read-only.
 fn check_logs() -> Check {
     check_logs_at(
-        &phux_server::telemetry::state_dir(),
-        &phux_server::telemetry::server_log_path(),
+        &phux_config::instance::state_dir(),
+        &phux_config::instance::server_log_path(),
     )
 }
 
@@ -486,6 +486,22 @@ fn report_json(checks: &[Check], checklist: &[checklist::Item]) -> ExitCode {
             ),
             1,
         ),
+    }
+}
+
+/// Run `phux doctor` as parsed.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "every verb entry point takes its parsed Args by value, as dispatch hands them over"
+)]
+pub(crate) fn run(
+    args: crate::commands::DoctorArgs,
+    socket: Option<std::path::PathBuf>,
+) -> ExitCode {
+    let crate::commands::DoctorArgs { json, remote } = args;
+    match remote.remote {
+        Some(_) => other_host::run(json, remote.with_socket(socket)),
+        None => run_doctor(json, socket),
     }
 }
 

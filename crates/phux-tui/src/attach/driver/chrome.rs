@@ -138,7 +138,7 @@ pub(super) fn refresh_window_chrome(
 /// Push the window tabs and the focused pane's badges into the bar.
 fn feed_status_bar(
     sb: &mut StatusBarPainter,
-    windows: Vec<phux_config::widget::WindowInfo>,
+    windows: Vec<crate::render::chrome::status_bar::widgets::WindowInfo>,
     scene: PaneScene<'_>,
     own_client_id: Option<ClientId>,
 ) -> bool {
@@ -157,7 +157,7 @@ fn feed_status_bar(
 /// sidebar strip.
 fn feed_sidebar(
     sidebar_painter: &mut SidebarPainter,
-    windows: Vec<phux_config::widget::WindowInfo>,
+    windows: Vec<crate::render::chrome::status_bar::widgets::WindowInfo>,
     local: &[AgentEntry],
     agents: Vec<AgentEntry>,
     peers: &crate::attach::sidebar_zones::PeerInputs<'_>,
@@ -194,7 +194,7 @@ pub(super) fn agent_queue(
 /// same [`agent_entries`] rows the sidebar paints, so tab, row, and title
 /// agree.
 pub(super) fn badge_windows(
-    windows: &mut [phux_config::widget::WindowInfo],
+    windows: &mut [crate::render::chrome::status_bar::widgets::WindowInfo],
     workspace: &ArrangementDoc,
     agents: &[AgentEntry],
     theme: &crate::render::Theme,
@@ -216,12 +216,12 @@ pub(super) fn badge_windows(
         };
         let badge =
             crate::render::chrome::agent_badge(theme, entry.state, entry.attention, entry.seen);
-        info.badge = Some(phux_config::widget::WindowBadge {
+        info.badge = Some(crate::render::chrome::status_bar::widgets::WindowBadge {
             glyph: badge.glyph.to_owned(),
-            style: phux_config::widget::CellStyle {
+            style: crate::render::chrome::status_bar::widgets::CellStyle {
                 fg: Some(crate::render::theme::color_to_string(badge.color)),
                 bold: badge.emphatic,
-                ..phux_config::widget::CellStyle::default()
+                ..crate::render::chrome::status_bar::widgets::CellStyle::default()
             },
         });
     }
@@ -240,7 +240,7 @@ pub(super) fn window_infos(
     // Pane-cwd index + branch memo. The window's branch line is
     // its focused leaf's VCS branch (mut only for the memo).
     vcs: &mut VcsIndex,
-) -> Vec<phux_config::widget::WindowInfo> {
+) -> Vec<crate::render::chrome::status_bar::widgets::WindowInfo> {
     workspace
         .groups
         .iter()
@@ -262,7 +262,7 @@ pub(super) fn window_infos(
             // leaf's cwd resolved to its VCS branch (cached file read).
             let branch = focus.and_then(|fid| vcs.branch_for_pane(fid));
             let name = display_window_name(&w.name, focus, panes, agent_meta);
-            phux_config::widget::WindowInfo {
+            crate::render::chrome::status_bar::widgets::WindowInfo {
                 // A locked tab (`lock-window`) wears a lock.
                 name: if w.locked {
                     format!("\u{1f512}{name}")

@@ -5,13 +5,7 @@ async fn kitty_image_loop() -> (SessionLoop, Connection, Connection, Vec<u8>, Re
     state.viewport_dims = (20, 6);
     let a = ResourceId::local(1);
     let image: &[u8] = b"\x1b_Ga=T,f=32,s=1,v=1,i=77,q=2;/wAA/w==\x1b\\";
-    let (kernel, _effects, panes) =
-        crate::attach::pane_state::published_test_state(&[(&a, 20, 5, image)]);
-    state.mirror.engine_kernel = kernel;
-    state.mirror.panes = panes;
-    state.mirror.workspace = ArrangementDoc::single(a.clone());
-    state.mirror.focused_resource = Some(a.clone());
-    state.layout_read_complete = true;
+    show_alone(&mut state, &a, (20, 5), image);
     let sidebar = state.sidebar();
     state.repaint_view(&mut out, sidebar, RepaintLevel::Full);
     assert_eq!(kitty_transmits(&out), 1, "the first paint sends the image");

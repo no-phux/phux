@@ -1,8 +1,8 @@
 #![allow(clippy::expect_used, reason = "tests")]
 
-use std::path::PathBuf;
+use crate::common::Out;
+use crate::support::{PLUGIN_ID, demo_xdg, repo_root};
 
-const PLUGIN_ID: &str = "com.phux.demo.agent-tools";
 const INSPECT_ACTION: &str = "inspect";
 const LIST_ACTION: &str = "list-integrations";
 const VALIDATE_ACTION: &str = "validate-integrations";
@@ -10,34 +10,19 @@ const DETECT_ACTION: &str = "detect-agents";
 const LAUNCH_BENCH_ACTION: &str = "launch-bench";
 const SMOKE_AGENT_WRAP_ACTION: &str = "smoke-agent-wrap";
 
-fn repo_root() -> PathBuf {
-    crate::runner::manifest_dir()
-        .join("../..")
-        .canonicalize()
-        .expect("canonical repo root")
-}
-
-fn demo_xdg() -> PathBuf {
-    repo_root().join("plugins/agent-tools/config")
-}
-
 fn run_demo(args: &[&str]) -> (i32, String, String) {
     run_demo_with_env(args, &[])
 }
 
 fn run_demo_with_env(args: &[&str], envs: &[(&str, &str)]) -> (i32, String, String) {
-    let out = crate::common::phux_cmd(crate::runner::phux_bin())
-        .env("XDG_CONFIG_HOME", demo_xdg())
-        .env("PHUX_BIN", crate::runner::phux_bin())
-        .envs(envs.iter().copied())
-        .args(args)
-        .output()
-        .expect("run phux binary");
-    (
-        out.status.code().expect("phux exited via code"),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
+    Out::of(
+        crate::common::phux_cmd(crate::runner::phux_bin())
+            .env("XDG_CONFIG_HOME", demo_xdg())
+            .env("PHUX_BIN", crate::runner::phux_bin())
+            .envs(envs.iter().copied())
+            .args(args),
     )
+    .into_parts()
 }
 
 fn stdout_from_json(output: &serde_json::Value) -> &str {

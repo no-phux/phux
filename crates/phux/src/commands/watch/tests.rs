@@ -13,6 +13,15 @@ fn pane(selector: &str) -> phux_protocol::ids::ResourceId {
     phux_protocol::ids::ResourceId::local(selector.trim_start_matches('@').parse().unwrap())
 }
 
+/// An event on no terminal, outside the journal.
+fn unstamped(event: AgentEvent) -> WatchEvent {
+    WatchEvent {
+        terminal: None,
+        event,
+        stamp: None,
+    }
+}
+
 /// Build an event's JSON line and parse it back.
 fn json_of(event: AgentEvent, terminal: Option<&str>) -> serde_json::Value {
     let ev = WatchEvent {
@@ -257,11 +266,7 @@ fn event_vocabulary_is_sorted_and_free_of_duplicates() {
 #[test]
 fn until_matches_exactly_the_name_the_json_line_carries() {
     for event in every_event() {
-        let ev = WatchEvent {
-            terminal: None,
-            event,
-            stamp: None,
-        };
+        let ev = unstamped(event);
         let name = watch_item_event(&WatchItem::Event(ev.clone()));
         let line = watch_event_json(&ev).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
@@ -414,30 +419,16 @@ fn the_frozen_gate_names_are_adr_0071_point_6() {
 fn until_unknown_keeps_matching_events_named_after_1_0() {
     use super::gate_matches;
 
-    let item = |event: AgentEvent| {
-        WatchItem::Event(WatchEvent {
-            terminal: None,
+    let item = |event| WatchItem::Event(unstamped(event));
+    let named_later = every_event().into_iter().filter(|event| {
+        matches!(
             event,
-            stamp: None,
-        })
-    };
-    let named_later = [
-        AgentEvent::CwdChanged {
-            cwd: "/tmp".to_owned(),
-        },
-        AgentEvent::TerminalControl {
-            lifecycle: phux_protocol::wire::frame::ResourceLifecycle::Exited,
-            exit_status: Some(0),
-            input_holder: None,
-            action: phux_protocol::wire::frame::ControlAction::Exited,
-            actor: None,
-        },
-        AgentEvent::JournalGap {
-            first_missing: 1,
-            last_missing: 2,
-        },
-        AgentEvent::SourceGap { dropped: 1 },
-    ];
+            AgentEvent::CwdChanged { .. }
+                | AgentEvent::TerminalControl { .. }
+                | AgentEvent::JournalGap { .. }
+                | AgentEvent::SourceGap { .. }
+        )
+    });
     for event in named_later {
         let item = item(event);
         let name = watch_item_event(&item);

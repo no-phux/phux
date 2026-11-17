@@ -11,10 +11,14 @@ fn terminal(id: u32) -> WireResourceId {
 /// A pane no explicit writer has touched.
 const DETECTOR: IdentityOwnership = IdentityOwnership::DETECTOR;
 
+/// A fresh arbiter and the terminal the single-pane tests write to.
+fn fresh() -> (AgentRecordArbiter, WireResourceId) {
+    (AgentRecordArbiter::default(), terminal(1))
+}
+
 /// The ownership an arbiter reports after `value` is explicitly written.
 fn ownership_after(value: &[u8]) -> IdentityOwnership {
-    let mut arb = AgentRecordArbiter::default();
-    let t = terminal(1);
+    let (mut arb, t) = fresh();
     arb.note_explicit_set(&t, value);
     arb.identity_ownership(&t)
 }
@@ -30,8 +34,7 @@ fn only_a_real_state_declares() {
         (b"not json at all", false),
     ];
     for (value, declared) in cases {
-        let mut arb = AgentRecordArbiter::default();
-        let t = terminal(1);
+        let (mut arb, t) = fresh();
         assert!(!arb.is_declared(&t));
         arb.note_explicit_set(&t, value);
         assert_eq!(arb.is_declared(&t), *declared, "{value:?}");
@@ -40,8 +43,7 @@ fn only_a_real_state_declares() {
 
 #[test]
 fn a_delete_withdraws_the_declaration_and_the_detector_resumes() {
-    let mut arb = AgentRecordArbiter::default();
-    let t = terminal(1);
+    let (mut arb, t) = fresh();
     arb.note_explicit_set(&t, br#"{"name":"me","state":"done"}"#);
     assert!(arb.is_declared(&t));
     arb.note_explicit_delete(&t);
@@ -51,8 +53,7 @@ fn a_delete_withdraws_the_declaration_and_the_detector_resumes() {
 /// The detector deletes only what it wrote.
 #[test]
 fn the_detector_only_owns_records_it_wrote() {
-    let mut arb = AgentRecordArbiter::default();
-    let t = terminal(1);
+    let (mut arb, t) = fresh();
     assert!(!arb.detector_owns(&t));
     arb.note_detector_write(&t);
     assert!(arb.detector_owns(&t));
@@ -63,8 +64,7 @@ fn the_detector_only_owns_records_it_wrote() {
 /// An explicit write over a detector record transfers ownership away.
 #[test]
 fn an_explicit_set_takes_ownership_from_the_detector() {
-    let mut arb = AgentRecordArbiter::default();
-    let t = terminal(1);
+    let (mut arb, t) = fresh();
     arb.note_detector_write(&t);
     arb.note_explicit_set(&t, br#"{"name":"mine","kind":"claude"}"#);
     assert!(!arb.detector_owns(&t), "the detector must not delete this");
@@ -75,8 +75,7 @@ fn an_explicit_set_takes_ownership_from_the_detector() {
 /// ownership: retraction must not delete the human's name.
 #[test]
 fn a_detector_write_over_a_humans_name_does_not_make_the_record_deletable() {
-    let mut arb = AgentRecordArbiter::default();
-    let t = terminal(1);
+    let (mut arb, t) = fresh();
     arb.note_explicit_set(
         &t,
         br#"{"name":"reviewer","kind":"claude","session":"fleet-7"}"#,
@@ -96,8 +95,7 @@ fn a_detector_write_over_a_humans_name_does_not_make_the_record_deletable() {
 /// A later write dropping identity fields drops the mark.
 #[test]
 fn an_explicit_set_without_identity_fields_clears_the_mark() {
-    let mut arb = AgentRecordArbiter::default();
-    let t = terminal(1);
+    let (mut arb, t) = fresh();
     arb.note_explicit_set(&t, br#"{"name":"reviewer"}"#);
     assert!(arb.has_explicit_identity(&t));
     arb.note_explicit_set(&t, br#"{"name":"","state":"done"}"#);
@@ -110,16 +108,14 @@ fn an_explicit_set_without_identity_fields_clears_the_mark() {
 /// A bare `kind` is not identity.
 #[test]
 fn a_bare_kind_is_not_human_authored_identity() {
-    let mut arb = AgentRecordArbiter::default();
-    let t = terminal(1);
+    let (mut arb, t) = fresh();
     arb.note_explicit_set(&t, br#"{"name":"","kind":"claude"}"#);
     assert!(!arb.has_explicit_identity(&t));
 }
 
 #[test]
 fn a_delete_drops_the_human_authored_identity_mark() {
-    let mut arb = AgentRecordArbiter::default();
-    let t = terminal(1);
+    let (mut arb, t) = fresh();
     arb.note_explicit_set(&t, br#"{"name":"reviewer"}"#);
     arb.note_explicit_delete(&t);
     assert!(
@@ -154,8 +150,7 @@ fn terminals_are_tracked_independently() {
 /// An explicit `kind` is preserved even though it is not identity.
 #[test]
 fn an_explicit_kind_is_tracked_even_though_it_is_not_identity() {
-    let mut arb = AgentRecordArbiter::default();
-    let t = terminal(1);
+    let (mut arb, t) = fresh();
     arb.note_explicit_set(&t, br#"{"name":"","kind":"my-agent"}"#);
     assert!(
         !arb.has_explicit_identity(&t),
@@ -169,8 +164,7 @@ fn an_explicit_kind_is_tracked_even_though_it_is_not_identity() {
 
 #[test]
 fn a_record_with_no_kind_leaves_the_kind_to_the_detector() {
-    let mut arb = AgentRecordArbiter::default();
-    let t = terminal(1);
+    let (mut arb, t) = fresh();
     arb.note_explicit_set(&t, br#"{"name":"reviewer"}"#);
     assert!(!arb.has_explicit_kind(&t));
     arb.note_explicit_set(&t, br#"{"name":"reviewer","kind":""}"#);
@@ -179,8 +173,7 @@ fn a_record_with_no_kind_leaves_the_kind_to_the_detector() {
 
 #[test]
 fn a_delete_and_a_reap_drop_the_explicit_kind() {
-    let mut arb = AgentRecordArbiter::default();
-    let t = terminal(1);
+    let (mut arb, t) = fresh();
     arb.note_explicit_set(&t, br#"{"kind":"my-agent"}"#);
     arb.note_explicit_delete(&t);
     assert!(!arb.has_explicit_kind(&t));
@@ -196,8 +189,7 @@ fn a_delete_and_a_reap_drop_the_explicit_kind() {
 /// not grant the detector delete rights.
 #[test]
 fn withdrawing_a_declaration_clears_only_the_declaration() {
-    let mut arb = AgentRecordArbiter::default();
-    let t = terminal(1);
+    let (mut arb, t) = fresh();
     arb.note_explicit_set(
         &t,
         br#"{"name":"me","kind":"claude","session":"fleet-7","state":"working"}"#,
@@ -221,8 +213,7 @@ fn withdrawing_a_declaration_clears_only_the_declaration() {
 /// The detector's next write makes the record its own.
 #[test]
 fn after_a_withdrawal_the_detector_reacquires_by_writing() {
-    let mut arb = AgentRecordArbiter::default();
-    let t = terminal(1);
+    let (mut arb, t) = fresh();
     arb.note_explicit_set(&t, br#"{"name":"me","state":"working"}"#);
     arb.note_declaration_withdrawn(&t);
     arb.note_detector_write(&t);

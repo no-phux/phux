@@ -218,7 +218,7 @@ fn synthesized_replica(
     pending: &Rc<PendingEffects>,
 ) -> Result<ReplicaState, GhosttyEngineError> {
     let mut terminal = GhosttyTerminal::new(geometry.cols, geometry.rows)?;
-    phux_protocol::kitty_replay::configure_terminal_for_kitty_graphics(&mut terminal)?;
+    phux_vt::kitty_replay::configure_terminal_for_kitty_graphics(&mut terminal)?;
     terminal.resize(geometry.cols, geometry.rows, 8, 16)?;
     terminal.set_scrollback_max_lines(Some(SYNTH_SCROLLBACK_ROWS))?;
     terminal.set_continuation_max_bytes(CONTINUATION_LIMIT)?;

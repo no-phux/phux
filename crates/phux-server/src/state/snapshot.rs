@@ -8,11 +8,11 @@ impl ServerState {
     pub fn attach_snapshot_panes(&mut self, session: SessionId) -> Vec<AttachSnapshotPane> {
         let mut panes = Vec::new();
         for pid in self.session_resources(session) {
-            if let Some(handle) = self.resource_handle(pid).cloned() {
+            if let Some(handle) = self.resources().handle(pid).cloned() {
                 panes.push(AttachSnapshotPane {
                     terminal_id: pid,
                     handle,
-                    wire_terminal_id: self.intern_resource_wire(pid),
+                    wire_terminal_id: self.idspace.intern_resource(pid),
                 });
             }
         }

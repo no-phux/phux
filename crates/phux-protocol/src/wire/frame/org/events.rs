@@ -6,7 +6,7 @@ use super::{
     EVENT_TAG_RESOURCE_CREATED, EVENT_TAG_RESOURCE_REMOVED, EVENT_TAG_RESOURCE_RENAMED,
     EVENT_TAG_SESSION_CREATED, EVENT_TAG_SESSION_DELETED, EVENT_TAG_SESSION_LIFETIME_CHANGED,
     EVENT_TAG_SESSION_RENAMED, Encoder, Fields, encode_outcome, field, req, write_actor, write_key,
-    write_name, write_owner, write_project, write_resource, write_session, write_u8, write_u64,
+    write_name, write_owner, write_project, write_resource, write_session,
 };
 
 /// Write an organization event's field-tagged body and return its tag, or
@@ -25,8 +25,8 @@ pub(in crate::wire) fn encode_org_event(event: &AgentEvent, enc: &mut Encoder<'_
         } => {
             write_session(enc, field::org::SESSION, session);
             write_name(enc, name);
-            write_u8(enc, field::org::LIFETIME, lifetime.to_u8());
-            write_u64(enc, field::org::REVISION, revision.get());
+            enc.write_u8_field(field::org::LIFETIME, lifetime.to_u8());
+            enc.write_u64_field(field::org::REVISION, revision.get());
             EVENT_TAG_SESSION_CREATED
         }
         AgentEvent::SessionRenamed {
@@ -36,7 +36,7 @@ pub(in crate::wire) fn encode_org_event(event: &AgentEvent, enc: &mut Encoder<'_
         } => {
             write_session(enc, field::org::SESSION, session);
             write_name(enc, name);
-            write_u64(enc, field::org::REVISION, revision.get());
+            enc.write_u64_field(field::org::REVISION, revision.get());
             EVENT_TAG_SESSION_RENAMED
         }
         AgentEvent::SessionProjectSet {
@@ -46,7 +46,7 @@ pub(in crate::wire) fn encode_org_event(event: &AgentEvent, enc: &mut Encoder<'_
         } => {
             write_session(enc, field::org::SESSION, session);
             write_project(enc, project.as_deref());
-            write_u64(enc, field::org::REVISION, revision.get());
+            enc.write_u64_field(field::org::REVISION, revision.get());
             crate::wire::frame::EVENT_TAG_SESSION_PROJECT_SET
         }
         AgentEvent::SessionDeleted {
@@ -56,7 +56,7 @@ pub(in crate::wire) fn encode_org_event(event: &AgentEvent, enc: &mut Encoder<'_
         } => {
             write_session(enc, field::org::SESSION, session);
             write_name(enc, name);
-            write_u64(enc, field::org::REVISION, revision.get());
+            enc.write_u64_field(field::org::REVISION, revision.get());
             EVENT_TAG_SESSION_DELETED
         }
         AgentEvent::SessionLifetimeChanged {
@@ -65,8 +65,8 @@ pub(in crate::wire) fn encode_org_event(event: &AgentEvent, enc: &mut Encoder<'_
             revision,
         } => {
             write_session(enc, field::org::SESSION, session);
-            write_u8(enc, field::org::LIFETIME, lifetime.to_u8());
-            write_u64(enc, field::org::REVISION, revision.get());
+            enc.write_u8_field(field::org::LIFETIME, lifetime.to_u8());
+            enc.write_u64_field(field::org::REVISION, revision.get());
             EVENT_TAG_SESSION_LIFETIME_CHANGED
         }
         AgentEvent::MembershipChanged {
@@ -78,9 +78,9 @@ pub(in crate::wire) fn encode_org_event(event: &AgentEvent, enc: &mut Encoder<'_
         } => {
             write_resource(enc, resource);
             write_session(enc, field::org::FROM, from);
-            write_u64(enc, field::org::FROM_REVISION, from_revision.get());
+            enc.write_u64_field(field::org::FROM_REVISION, from_revision.get());
             write_session(enc, field::org::TO, to);
-            write_u64(enc, field::org::TO_REVISION, to_revision.get());
+            enc.write_u64_field(field::org::TO_REVISION, to_revision.get());
             EVENT_TAG_MEMBERSHIP_CHANGED
         }
         AgentEvent::ResourceCreated {
@@ -90,7 +90,7 @@ pub(in crate::wire) fn encode_org_event(event: &AgentEvent, enc: &mut Encoder<'_
         } => {
             write_session(enc, field::org::SESSION, session);
             write_resource(enc, resource);
-            write_u8(enc, field::org::KIND, kind.as_wire());
+            enc.write_u8_field(field::org::KIND, kind.as_wire());
             EVENT_TAG_RESOURCE_CREATED
         }
         AgentEvent::ResourceRemoved {
@@ -100,7 +100,7 @@ pub(in crate::wire) fn encode_org_event(event: &AgentEvent, enc: &mut Encoder<'_
         } => {
             write_session(enc, field::org::SESSION, session);
             write_resource(enc, resource);
-            write_u8(enc, field::org::KIND, kind.as_wire());
+            enc.write_u8_field(field::org::KIND, kind.as_wire());
             EVENT_TAG_RESOURCE_REMOVED
         }
         AgentEvent::ActivationChanged {
@@ -110,8 +110,8 @@ pub(in crate::wire) fn encode_org_event(event: &AgentEvent, enc: &mut Encoder<'_
             outcome,
         } => {
             write_resource(enc, resource);
-            write_u64(enc, field::org::ACTIVATION, activation.get());
-            write_u8(enc, field::org::STATE, state.to_u8());
+            enc.write_u64_field(field::org::ACTIVATION, activation.get());
+            enc.write_u8_field(field::org::STATE, state.to_u8());
             if let Some(outcome) = outcome {
                 enc.write_field_with(field::org::OUTCOME, |e| encode_outcome(*outcome, e));
             }
@@ -125,7 +125,7 @@ pub(in crate::wire) fn encode_org_event(event: &AgentEvent, enc: &mut Encoder<'_
             write_owner(enc, *owner);
             write_key(enc, field::org::ARRANGEMENT, arrangement.as_bytes());
             if let Some(revision) = revision {
-                write_u64(enc, field::org::REVISION, revision.get());
+                enc.write_u64_field(field::org::REVISION, revision.get());
             }
             EVENT_TAG_ARRANGEMENT_CHANGED
         }
@@ -138,7 +138,7 @@ pub(in crate::wire) fn encode_org_event(event: &AgentEvent, enc: &mut Encoder<'_
             if let Some(name) = name {
                 write_name(enc, name);
             }
-            write_u64(enc, field::org::REVISION, revision.get());
+            enc.write_u64_field(field::org::REVISION, revision.get());
             EVENT_TAG_RESOURCE_RENAMED
         }
         AgentEvent::LeaseChanged {
@@ -147,7 +147,7 @@ pub(in crate::wire) fn encode_org_event(event: &AgentEvent, enc: &mut Encoder<'_
             holder,
         } => {
             write_resource(enc, resource);
-            write_u64(enc, field::org::EPOCH, epoch.get());
+            enc.write_u64_field(field::org::EPOCH, epoch.get());
             if let Some(holder) = holder {
                 write_actor(enc, field::org::HOLDER, holder);
             }
@@ -159,8 +159,8 @@ pub(in crate::wire) fn encode_org_event(event: &AgentEvent, enc: &mut Encoder<'_
             revision,
         } => {
             write_session(enc, field::org::SESSION, session);
-            write_u64(enc, field::org::REVISION, revision.get());
-            write_u8(enc, field::org::AWAITING, u8::from(*awaiting_organization));
+            enc.write_u64_field(field::org::REVISION, revision.get());
+            enc.write_u8_field(field::org::AWAITING, u8::from(*awaiting_organization));
             EVENT_TAG_INTAKE_CHANGED
         }
         _ => return None,

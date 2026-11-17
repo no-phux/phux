@@ -17,11 +17,7 @@ fn no_arrangement_or_document_admission(client: &Client, closed: &[ResourceId]) 
 #[test]
 fn document_wire_closures_skip_dead_siblings_in_either_order_before_organization_catches_up() {
     for order in [[2, 3], [3, 2]] {
-        let records = [
-            record(1, ResourceKind::Terminal),
-            record(2, ResourceKind::AccessibilityTree),
-            record(3, ResourceKind::PixelSurface),
-        ];
+        let records = mirrors([Terminal, AccessibilityTree, PixelSurface]);
         let (client, mut rt) = phone_fixture(&records, &doc(three()));
         rt.update(|d, _| d.focus_pane(&id(3)));
         let before = stored(&client);
@@ -59,10 +55,7 @@ fn document_wire_closures_skip_dead_siblings_in_either_order_before_organization
 #[test]
 fn closing_every_document_cannot_reopen_one_from_the_stale_organization() {
     for order in [[1, 2], [2, 1]] {
-        let records = [
-            record(1, ResourceKind::AccessibilityTree),
-            record(2, ResourceKind::PixelSurface),
-        ];
+        let records = mirrors([AccessibilityTree, PixelSurface]);
         let (client, mut rt) = phone_fixture(&records, &doc(split(1, 2)));
         let before = stored(&client);
         for n in order {
@@ -94,11 +87,7 @@ fn closing_every_document_cannot_reopen_one_from_the_stale_organization() {
 #[test]
 fn a_closed_execution_fence_allows_a_new_execution_of_the_same_key() {
     for handle in [2, 9] {
-        let records = [
-            record(1, ResourceKind::Terminal),
-            record(2, ResourceKind::AccessibilityTree),
-            record(3, ResourceKind::Terminal),
-        ];
+        let records = mirrors([Terminal, AccessibilityTree, Terminal]);
         let (client, mut rt) = phone_fixture(&records, &doc(three()));
         rt.update(|d, _| d.focus_pane(&id(2)));
         close(&client, 2);
@@ -127,10 +116,7 @@ fn a_closed_execution_fence_allows_a_new_execution_of_the_same_key() {
 
 #[test]
 fn document_close_fences_are_reclaimed_by_inventory_and_connection_retirement() {
-    let records = [
-        record(1, ResourceKind::Terminal),
-        record(2, ResourceKind::AccessibilityTree),
-    ];
+    let records = mirrors([Terminal, AccessibilityTree]);
     let (client, mut rt) = phone_fixture(&records, &doc(split(1, 2)));
     close(&client, 2);
     step(&mut rt);
@@ -150,10 +136,7 @@ fn document_close_fences_are_reclaimed_by_inventory_and_connection_retirement() 
 
 #[test]
 fn a_closed_pending_target_cannot_drop_a_different_live_shown_view() {
-    let records = [
-        record(1, ResourceKind::Terminal),
-        record(2, ResourceKind::AccessibilityTree),
-    ];
+    let records = mirrors([Terminal, AccessibilityTree]);
     let (client, mut rt) = phone_fixture(&records, &doc(split(1, 2)));
     let shown = rt.state.connection.shown.as_ref().unwrap().view;
     rt.update(|d, _| d.want(id(2)));

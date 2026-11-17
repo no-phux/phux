@@ -158,26 +158,17 @@ pub(super) fn unsupported_satellite_route() -> CommandResult {
 }
 
 pub(super) fn invalid_command(message: &str) -> CommandResult {
-    CommandResult::Error {
-        code: ErrorCode::InvalidCommand,
-        message: message.to_owned(),
-    }
+    CommandResult::error(ErrorCode::InvalidCommand, message)
 }
 
 pub(super) fn acknowledged_resource_exhausted(message: &str) -> CommandResult {
-    CommandResult::Error {
-        code: ErrorCode::ResourceExhausted,
-        message: message.to_owned(),
-    }
+    CommandResult::error(ErrorCode::ResourceExhausted, message)
 }
 
 /// An `APPLY_INPUT` refused or abandoned before it reached any pane actor's
 /// mailbox: provably nothing was written, so any retry is safe.
 pub(super) fn acknowledged_not_written(message: &str) -> CommandResult {
-    CommandResult::Error {
-        code: ErrorCode::InputNotWritten,
-        message: message.to_owned(),
-    }
+    CommandResult::error(ErrorCode::InputNotWritten, message)
 }
 
 /// An acknowledged batch that passed every pre-handoff gate: authority, dedupe
@@ -219,10 +210,10 @@ fn prepare_acknowledged_batch(
 
 fn batch_encode_error(error: phux_terminal_api::input::InputError) -> CommandResult {
     match error {
-        phux_terminal_api::input::InputError::UnsafePaste => CommandResult::Error {
-            code: ErrorCode::UnsafePaste,
-            message: "APPLY_INPUT batch contains an unsafe paste".into(),
-        },
+        phux_terminal_api::input::InputError::UnsafePaste => CommandResult::error(
+            ErrorCode::UnsafePaste,
+            "APPLY_INPUT batch contains an unsafe paste",
+        ),
         phux_terminal_api::input::InputError::LimitExceeded => {
             invalid_command("APPLY_INPUT encoded PTY bytes exceed 64 KiB")
         }

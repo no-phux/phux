@@ -77,11 +77,12 @@ impl UploadLimits {
 /// one credential, so they share one principal there.
 pub(in crate::runtime) fn upload_principal(server: &ServerState, client_id: ClientId) -> String {
     use phux_protocol::policy::TransportType;
-    let socket_peer = || match server.peer_identity(client_id) {
+    let socket_peer = || match server.clients().peer_identity(client_id) {
         Some(peer) if peer.transport == TransportType::UnixSocket => format!("uid:{}", peer.uid),
         _ => "anonymous".to_owned(),
     };
     let principal = server
+        .clients()
         .authenticated_credential(client_id)
         .map_or_else(socket_peer, |credential| {
             format!("credential:{}", credential.id)
@@ -126,7 +127,7 @@ impl UploadBudget {
 }
 
 fn upload_busy() -> CommandResult {
-    error(
+    CommandResult::error(
         ErrorCode::ResourceExhausted,
         "file upload worker budget exhausted; retry this chunk",
     )
@@ -152,20 +153,24 @@ pub(in crate::runtime) async fn handle_put_file(
     // upload lands beside a PTY's working directory, which an
     // `AgentSession` does not have.
     match state.with(|server| {
-        server.resource_from_wire(&chunk.terminal_id).map(|core| {
-            server
-                .resource_handle(core)
-                .is_some_and(|h| h.terminal().is_ok())
-        })
+        server
+            .idspace
+            .resource_from_wire(&chunk.terminal_id)
+            .map(|core| {
+                server
+                    .resources()
+                    .handle(core)
+                    .is_some_and(|h| h.terminal().is_ok())
+            })
     }) {
         None => {
-            return error(
+            return CommandResult::error(
                 ErrorCode::TerminalNotFound,
                 format!("no such terminal: {}", chunk.terminal_id),
             );
         }
         Some(false) => {
-            return error(
+            return CommandResult::error(
                 ErrorCode::WrongResourceKind,
                 format!("not a Terminal: {}", chunk.terminal_id),
             );
@@ -173,10 +178,10 @@ pub(in crate::runtime) async fn handle_put_file(
         Some(true) => {}
     }
 
-    let env = state.with(ServerState::server_env);
+    let env = state.with(|s| s.config().server_env.clone());
     let root = match upload_dir(&env) {
         Ok(root) => root,
-        Err(message) => return error(ErrorCode::InternalError, message),
+        Err(message) => return CommandResult::error(ErrorCode::InternalError, message),
     };
     run_upload(root, UploadLimits::from_env(&env), chunk).await
 }
@@ -202,8 +207,8 @@ async fn run_upload(root: PathBuf, limits: UploadLimits, chunk: PutFileChunk) ->
     .await
     {
         Ok(Ok(ack)) => CommandResult::OkWith(CommandValue::FileUpload(ack)),
-        Ok(Err((code, message))) => error(code, message),
-        Err(join_error) => error(
+        Ok(Err((code, message))) => CommandResult::error(code, message),
+        Err(join_error) => CommandResult::error(
             ErrorCode::InternalError,
             format!("file upload worker failed: {join_error}"),
         ),
@@ -224,13 +229,6 @@ fn hold_admitted_upload_for_tests() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     while !release.exists() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-}
-
-fn error(code: ErrorCode, message: impl Into<String>) -> CommandResult {
-    CommandResult::Error {
-        code,
-        message: message.into(),
     }
 }
 

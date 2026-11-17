@@ -24,6 +24,10 @@ use crate::projection::{agent, grid, id, status, topology};
 
 use super::keymap::{self, KeyMods, KeyPress};
 
+// Before every mirror module: the `From` macros are textually scoped.
+#[macro_use]
+mod mirror;
+
 mod checkout;
 mod client;
 mod global_metadata;

@@ -4,14 +4,16 @@
 //! Edits go through `toml_edit`: an existing value is replaced in place
 //! (trailing comment intact), a missing key or table is appended. Every edit
 //! is validated (it must load, and `phux config check` must report nothing at
-//! the key) before [`write_edit`] touches disk.
+//! the key) before [`write_edit`] touches disk. Writes go through the
+//! shared [`ConfigDocument`] transaction, so a settings edit and a
+//! concurrent `phux host add` cannot drop each other's change.
 
-use std::io::Write as _;
 use std::path::Path;
 
 use toml_edit::{DocumentMut, Item, Table, TableLike};
 
 use crate::ConfigError;
+use crate::document::{ConfigDocument, DocumentError, Guard, SymlinkPolicy};
 
 /// What to do to one key.
 #[derive(Debug, Clone, PartialEq)]
@@ -53,6 +55,50 @@ pub fn apply_edit(
     edit: Edit,
     path: &Path,
 ) -> Result<EditOutcome, ConfigError> {
+    split_key(key)?;
+    let mut doc = parse_document(user_toml, path)?;
+    let outcome = apply_edit_doc(&mut doc, key, edit, path)?;
+    validate(&outcome.text, &[key], path)?;
+    Ok(outcome)
+}
+
+/// Apply `edit` to `key` in `doc`, without validating the result. The
+/// outcome's `text` is the whole document after the edit.
+fn apply_edit_doc(
+    doc: &mut DocumentMut,
+    key: &str,
+    edit: Edit,
+    path: &Path,
+) -> Result<EditOutcome, ConfigError> {
+    let (table_path, leaf) = split_key(key)?;
+    let previous = previous_value(&doc.to_string(), key, path)?;
+
+    let line = match edit {
+        Edit::Set(value) => {
+            let new_value = to_edit_value(&value, key)?;
+            let document_was_empty = doc.as_table().is_empty();
+            let table = table_for_set(doc, table_path, key, document_was_empty)?;
+            set_leaf(table, leaf, key, new_value)?;
+            table
+                .get_key_value(leaf)
+                .map(|(k, item)| render_line(k, item))
+        }
+        Edit::Unset => {
+            unset_leaf(doc, table_path, leaf, key)?;
+            None
+        }
+    };
+
+    Ok(EditOutcome {
+        text: doc.to_string(),
+        previous,
+        line,
+    })
+}
+
+/// Split `key` into its table path and leaf, refusing a top-level key and
+/// an empty segment.
+fn split_key(key: &str) -> Result<(&str, &str), ConfigError> {
     let (table_path, leaf) = key.rsplit_once('.').ok_or_else(|| {
         edit_error(
             key,
@@ -63,62 +109,83 @@ pub fn apply_edit(
     if key.split('.').any(str::is_empty) {
         return Err(edit_error(key, "empty path segment"));
     }
-
-    let mut doc = parse_document(user_toml, path)?;
-    let previous = previous_value(user_toml, key, path)?;
-
-    let line = match edit {
-        Edit::Set(value) => {
-            let new_value = to_edit_value(&value, key)?;
-            let document_was_empty = doc.as_table().is_empty();
-            let table = table_for_set(&mut doc, table_path, key, document_was_empty)?;
-            set_leaf(table, leaf, key, new_value)?;
-            table
-                .get_key_value(leaf)
-                .map(|(k, item)| render_line(k, item))
-        }
-        Edit::Unset => {
-            unset_leaf(&mut doc, table_path, leaf, key)?;
-            None
-        }
-    };
-
-    let text = doc.to_string();
-    validate(&text, key, path)?;
-    Ok(EditOutcome {
-        text,
-        previous,
-        line,
-    })
+    Ok((table_path, leaf))
 }
 
 /// Read `path` (missing is empty), apply `edit`, and replace the file.
 ///
-/// The write goes through an fsynced sibling temp file and a rename. A
-/// symlink is followed so the link survives, the target's permissions are
-/// kept, and a no-op edit does not touch the file.
+/// The edit is one [`ConfigDocument`] transaction: settings are shared by
+/// every profile ([`Guard::SharedSettings`]), and a symlink is followed so
+/// the link survives ([`SymlinkPolicy::FollowExisting`]). The write goes
+/// through an fsynced sibling temp file and a rename, the target's
+/// permissions are kept, and a no-op edit does not touch the file. Another
+/// phux holding the lock is waited for at most
+/// [`crate::document::LOCK_WAIT`], then reported as busy.
 ///
 /// # Errors
 ///
 /// Everything [`apply_edit`] returns (the file is untouched);
-/// [`ConfigError::Io`] when the file cannot be read; [`ConfigError::Write`]
-/// when the temp file or rename fails.
+/// [`ConfigError::Write`] when the file cannot be locked, read, or
+/// replaced, or changed on disk since it was read.
 pub fn write_edit(path: &Path, key: &str, edit: Edit) -> Result<EditOutcome, ConfigError> {
-    let current = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(err) => return Err(ConfigError::Io(err)),
-    };
-    let outcome = apply_edit(&current, key, edit, path)?;
-    if outcome.text != current {
-        replace_atomically(path, &outcome.text, || Ok(())).map_err(|source| {
-            ConfigError::Write {
-                path: path.to_path_buf(),
-                source,
-            }
-        })?;
-    }
+    let mut doc = open_settings(path)?;
+    let outcome = apply_edit_doc(&mut doc, key, edit, path)?;
+    validate(&outcome.text, &[key], path)?;
+    publish_if_changed(doc, path)?;
     Ok(outcome)
+}
+
+/// Apply every edit in order and publish them as one transaction.
+///
+/// Either all of them land or none does. Only the final file is validated,
+/// so an intermediate state (one theme key unset before the other is set)
+/// never has to load on its own.
+///
+/// # Errors
+///
+/// As [`write_edit`], for any of the edits.
+pub fn write_edits(path: &Path, edits: Vec<(&str, Edit)>) -> Result<(), ConfigError> {
+    let mut doc = open_settings(path)?;
+    let mut keys = Vec::with_capacity(edits.len());
+    for (key, edit) in edits {
+        apply_edit_doc(&mut doc, key, edit, path)?;
+        keys.push(key);
+    }
+    validate(&doc.to_string(), &keys, path)?;
+    publish_if_changed(doc, path)
+}
+
+/// Open the settings transaction on `path`.
+fn open_settings(path: &Path) -> Result<ConfigDocument, ConfigError> {
+    ConfigDocument::open(path, Guard::SharedSettings, SymlinkPolicy::FollowExisting).map_err(
+        |err| match err {
+            DocumentError::Parse(failure) => ConfigError::parse(
+                path,
+                &failure.text,
+                failure.error.span(),
+                failure.error.message(),
+            ),
+            DocumentError::Unavailable(message) => {
+                write_error(path, std::io::Error::other(message))
+            }
+        },
+    )
+}
+
+/// Publish `doc` unless the edits left its text as it was read.
+fn publish_if_changed(doc: ConfigDocument, path: &Path) -> Result<(), ConfigError> {
+    if !doc.is_changed() {
+        return Ok(());
+    }
+    doc.publish().map_err(|source| write_error(path, source))
+}
+
+/// A [`ConfigError::Write`] for `path`.
+fn write_error(path: &Path, source: std::io::Error) -> ConfigError {
+    ConfigError::Write {
+        path: path.to_path_buf(),
+        source,
+    }
 }
 
 /// A [`ConfigError::Edit`] for `key`.
@@ -295,14 +362,18 @@ fn unset_leaf(
     Ok(())
 }
 
-/// The gate every edit passes: a `phux config check` finding at the key
-/// blocks it (findings elsewhere do not), and the whole file must still
+/// The gate every edit passes: a `phux config check` finding at an edited
+/// key blocks it (findings elsewhere do not), and the whole file must still
 /// load.
-fn validate(text: &str, key: &str, path: &Path) -> Result<(), ConfigError> {
+fn validate(text: &str, keys: &[&str], path: &Path) -> Result<(), ConfigError> {
     let report = crate::check::check(text, path)?;
-    if let Some(finding) = report.findings.iter().find(|f| f.path == key) {
+    if let Some(finding) = report
+        .findings
+        .iter()
+        .find(|f| keys.contains(&f.path.as_str()))
+    {
         return Err(edit_error(
-            key,
+            &finding.path,
             format!("{}: {}", finding.fault.label(), finding.message),
         ));
     }
@@ -310,407 +381,5 @@ fn validate(text: &str, key: &str, path: &Path) -> Result<(), ConfigError> {
     Ok(())
 }
 
-/// Replace `path` with `text` via an exclusive, fsynced sibling temp file
-/// and a rename, so an interrupted write never truncates the config.
-///
-/// A symlink is followed (the link survives) and the target's permissions
-/// are copied. `before_rename` runs after the fsync and may veto the
-/// publication; the temp file is removed on any failure. Every writer of a
-/// user config file goes through here: settings edits, the machine
-/// registries, and the CLI's plugin registry.
-///
-/// # Errors
-///
-/// Any filesystem failure, or the error `before_rename` returns.
-pub fn replace_atomically(
-    path: &Path,
-    text: &str,
-    before_rename: impl FnOnce() -> std::io::Result<()>,
-) -> std::io::Result<()> {
-    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let parent = target
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .map_or_else(|| Path::new("."), Path::new);
-    std::fs::create_dir_all(parent)?;
-    let file_name = target
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no file name")
-        })?;
-    let tmp = parent.join(format!(
-        ".{file_name}.tmp-{}-{}",
-        std::process::id(),
-        temp_nonce()
-    ));
-    let publish = || -> std::io::Result<()> {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)?;
-        if let Ok(metadata) = std::fs::metadata(&target) {
-            file.set_permissions(metadata.permissions())?;
-        }
-        file.write_all(text.as_bytes())?;
-        file.sync_all()?;
-        before_rename()?;
-        std::fs::rename(&tmp, &target)
-    };
-    publish().inspect_err(|_| {
-        let _ = std::fs::remove_file(&tmp);
-    })
-}
-
-/// A temp-path suffix so concurrent writers do not collide.
-fn temp_nonce() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_nanos())
-}
-
 #[cfg(test)]
-fn temp_files_in(dir: &Path) -> Vec<std::path::PathBuf> {
-    std::fs::read_dir(dir)
-        .map(|entries| {
-            entries
-                .filter_map(Result::ok)
-                .map(|entry| entry.path())
-                .filter(|p| {
-                    p.file_name()
-                        .and_then(|n| n.to_str())
-                        .is_some_and(|n| n.contains(".tmp-"))
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-#[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
-mod tests {
-    use super::*;
-
-    const PATH: &str = "/nonexistent/config.toml";
-
-    fn apply(text: &str, key: &str, edit: Edit) -> Result<EditOutcome, ConfigError> {
-        apply_edit(text, key, edit, Path::new(PATH))
-    }
-
-    fn set(text: &str, key: &str, value: impl Into<toml::Value>) -> EditOutcome {
-        apply(text, key, Edit::Set(value.into())).expect("edit applies")
-    }
-
-    /// (a) Untouched lines survive byte-for-byte: comments, blank lines,
-    /// odd spacing, the trailing newline.
-    #[test]
-    fn unrelated_comments_and_blank_lines_survive_byte_for_byte() {
-        let text = "# my config\n\n\n[defaults]\n# keep this\nterm   =   \"xterm-256color\"  # spaced\n\n\n[sidebar]\nwidth = 28\n";
-        let out = set(text, "sidebar.width", 32);
-        assert_eq!(
-            out.text,
-            "# my config\n\n\n[defaults]\n# keep this\nterm   =   \"xterm-256color\"  # spaced\n\n\n[sidebar]\nwidth = 32\n"
-        );
-        assert_eq!(out.previous, Some(toml::Value::Integer(28)));
-        assert_eq!(out.line.as_deref(), Some("width = 32"));
-    }
-
-    /// (b) An existing key is replaced on its own line, trailing comment
-    /// and position intact.
-    #[test]
-    fn setting_an_existing_key_replaces_in_place_and_keeps_its_comment() {
-        let text = "[sidebar]\nenabled = true\nwidth = 28  # narrow\nposition = \"left\"\n";
-        let out = set(text, "sidebar.width", 32);
-        assert_eq!(
-            out.text,
-            "[sidebar]\nenabled = true\nwidth = 32  # narrow\nposition = \"left\"\n"
-        );
-        assert_eq!(out.line.as_deref(), Some("width = 32  # narrow"));
-    }
-
-    /// (c) A missing table is appended, separated from the previous block
-    /// by a blank line; a missing key in an existing table is appended to
-    /// that table.
-    #[test]
-    fn setting_a_key_whose_table_is_absent_appends_the_table() {
-        let text = "[sidebar]\nwidth = 28\n";
-        let out = set(text, "theme.accent", "#ff0000");
-        assert_eq!(
-            out.text,
-            "[sidebar]\nwidth = 28\n\n[theme]\naccent = \"#ff0000\"\n"
-        );
-        assert_eq!(out.previous, None);
-        assert_eq!(out.line.as_deref(), Some("accent = \"#ff0000\""));
-
-        let out = set(&out.text, "sidebar.position", "right");
-        assert_eq!(
-            out.text,
-            "[sidebar]\nwidth = 28\nposition = \"right\"\n\n[theme]\naccent = \"#ff0000\"\n"
-        );
-
-        // An empty document gets no leading blank line.
-        let out = set("", "sidebar.width", 40);
-        assert_eq!(out.text, "[sidebar]\nwidth = 40\n");
-    }
-
-    /// The scaffold-shaped file: a sub-table exists but its parent has no
-    /// header of its own. Setting a parent key must still produce a file
-    /// that loads with the value in effect.
-    #[test]
-    fn setting_a_key_in_an_implicit_parent_table_loads_correctly() {
-        let text = "[keybindings.prefix-table]\n\"x\" = \"kill-pane\"\n";
-        let out = set(text, "keybindings.prefix", "C-b");
-        let cfg = crate::parse_with_defaults(&out.text, Path::new(PATH)).expect("loads");
-        assert_eq!(cfg.keybindings.prefix, "C-b");
-        assert_eq!(
-            cfg.keybindings.prefix_table.get("x"),
-            Some(&crate::Action::Bare("kill-pane".to_owned()))
-        );
-        assert!(out.text.contains("\"x\" = \"kill-pane\""), "{}", out.text);
-    }
-
-    /// A key written in dotted form at the root is still found and
-    /// replaced in place.
-    #[test]
-    fn dotted_root_keys_are_edited_in_place() {
-        let out = set("sidebar.width = 28 # d\n", "sidebar.width", 30);
-        assert_eq!(out.text, "sidebar.width = 30 # d\n");
-        assert_eq!(out.previous, Some(toml::Value::Integer(28)));
-    }
-
-    /// (d) Unset removes the leaf and reports what it held; the table stays.
-    #[test]
-    fn unset_removes_the_leaf_and_reports_previous() {
-        let text = "[sidebar]\nwidth = 32  # gone\nposition = \"right\"\n";
-        let out = apply(text, "sidebar.width", Edit::Unset).expect("unset");
-        assert_eq!(out.text, "[sidebar]\nposition = \"right\"\n");
-        assert_eq!(out.previous, Some(toml::Value::Integer(32)));
-        assert_eq!(out.line, None);
-
-        let out = apply(&out.text, "sidebar.position", Edit::Unset).expect("unset");
-        assert_eq!(out.text, "[sidebar]\n");
-
-        // Unsetting what is not there is a no-op success.
-        let out = apply("[defaults]\nterm = \"a\"\n", "sidebar.width", Edit::Unset).expect("noop");
-        assert_eq!(out.text, "[defaults]\nterm = \"a\"\n");
-        assert_eq!(out.previous, None);
-        let out = apply("", "sidebar.width", Edit::Unset).expect("noop on empty");
-        assert_eq!(out.text, "");
-    }
-
-    /// (e) Invalid values are rejected with an error naming the problem.
-    #[test]
-    fn invalid_values_are_rejected_and_the_error_names_the_problem() {
-        let err = apply("", "sidebar.width", Edit::Set("wide".into())).expect_err("wrong type");
-        let text = err.to_string();
-        assert!(
-            text.contains("sidebar.width") && text.contains("bad value"),
-            "{text}"
-        );
-
-        let err = apply("", "keybindings.prefix", Edit::Set("not a chord".into()))
-            .expect_err("bad chord");
-        let text = err.to_string();
-        assert!(
-            text.contains("keybindings.prefix") && text.contains("bad chord"),
-            "{text}"
-        );
-
-        let over = i64::from(crate::MAX_HISTORY_BYTES) + 1;
-        let err = apply("", "defaults.history-bytes", Edit::Set(over.into())).expect_err("cap");
-        let text = err.to_string();
-        assert!(
-            text.contains("defaults.history-bytes") && text.contains("67108864"),
-            "{text}"
-        );
-
-        let err = apply("", "sidebar.position", Edit::Set("middle".into())).expect_err("variant");
-        assert!(err.to_string().contains("sidebar.position"), "{err}");
-
-        // An unknown key is a schema finding at that key.
-        let err = apply("", "sidebar.widht", Edit::Set(1.into())).expect_err("typo");
-        let text = err.to_string();
-        assert!(
-            text.contains("sidebar.widht") && text.contains("unknown key"),
-            "{text}"
-        );
-    }
-
-    #[test]
-    fn malformed_paths_and_shapes_are_rejected() {
-        assert!(matches!(
-            apply("", "width", Edit::Set(1.into())),
-            Err(ConfigError::Edit { .. })
-        ));
-        assert!(matches!(
-            apply("", "sidebar..width", Edit::Set(1.into())),
-            Err(ConfigError::Edit { .. })
-        ));
-        assert!(matches!(
-            apply("", ".width", Edit::Set(1.into())),
-            Err(ConfigError::Edit { .. })
-        ));
-        // Path through a scalar.
-        let err = apply(
-            "[sidebar]\nwidth = 1\n",
-            "sidebar.width.x",
-            Edit::Set(1.into()),
-        )
-        .expect_err("through scalar");
-        assert!(err.to_string().contains("not a table"), "{err}");
-        // The leaf is a table.
-        let err = apply(
-            "[keybindings.prefix-table]\n",
-            "keybindings.prefix-table",
-            Edit::Unset,
-        )
-        .expect_err("table leaf");
-        assert!(err.to_string().contains("holds a table"), "{err}");
-        // Date-times are refused before the schema even sees them.
-        let dt: toml::Value = toml::from_str::<toml::Table>("v = 1979-05-27T07:32:00Z")
-            .unwrap()
-            .remove("v")
-            .unwrap();
-        assert!(matches!(
-            apply("", "defaults.term", Edit::Set(dt)),
-            Err(ConfigError::Edit { .. })
-        ));
-        // Broken input surfaces as a parse error with a position.
-        assert!(matches!(
-            apply("[sidebar\n", "sidebar.width", Edit::Set(1.into())),
-            Err(ConfigError::Parse {
-                position: Some(_),
-                ..
-            })
-        ));
-    }
-
-    /// An argv lands as a TOML array and reads back through the schema.
-    #[test]
-    fn argv_values_round_trip() {
-        let argv = toml::Value::Array(vec!["curl".into(), "-F".into(), "file=@{path}".into()]);
-        let out = set("", "voice.transcriber", argv);
-        assert_eq!(
-            out.text,
-            "[voice]\ntranscriber = [\"curl\", \"-F\", \"file=@{path}\"]\n"
-        );
-        let cfg = crate::parse_with_defaults(&out.text, Path::new(PATH)).expect("loads");
-        assert!(cfg.voice.is_configured());
-        let out = set(&out.text, "voice.timeout-secs", 5);
-        let cfg = crate::parse_with_defaults(&out.text, Path::new(PATH)).expect("loads");
-        assert_eq!(cfg.voice.timeout_secs, Some(5));
-        let out = set("", "experimental.predictive-echo", false);
-        let cfg = crate::parse_with_defaults(&out.text, Path::new(PATH)).expect("loads");
-        assert_eq!(cfg.experimental.predictive_echo, Some(false));
-    }
-
-    /// (f) A missing file is created along with its parent directory.
-    #[test]
-    fn write_edit_creates_a_missing_file_and_its_parent() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("nested").join("deeper").join("config.toml");
-        let out = write_edit(&path, "sidebar.width", Edit::Set(32.into())).expect("write");
-        assert_eq!(out.previous, None);
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            "[sidebar]\nwidth = 32\n"
-        );
-        assert!(temp_files_in(path.parent().unwrap()).is_empty());
-
-        // A second edit reads the file back and edits it in place.
-        let out = write_edit(&path, "sidebar.width", Edit::Set(40.into())).expect("write");
-        assert_eq!(out.previous, Some(toml::Value::Integer(32)));
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            "[sidebar]\nwidth = 40\n"
-        );
-    }
-
-    /// (g) When the edit is rejected the file is byte-for-byte untouched.
-    #[test]
-    fn the_file_is_untouched_when_the_edit_is_rejected() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("config.toml");
-        let original = "# precious\n[sidebar]\nwidth = 28\n";
-        std::fs::write(&path, original).unwrap();
-        let before = std::fs::metadata(&path).unwrap().modified().unwrap();
-
-        let err = write_edit(&path, "sidebar.width", Edit::Set("wide".into())).expect_err("bad");
-        assert!(matches!(err, ConfigError::Edit { .. }), "{err}");
-        assert_eq!(std::fs::read(&path).unwrap(), original.as_bytes());
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().modified().unwrap(),
-            before
-        );
-        assert!(temp_files_in(dir.path()).is_empty());
-
-        // A no-op unset does not rewrite the file either.
-        write_edit(&path, "chrome.compact-cols", Edit::Unset).expect("noop");
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().modified().unwrap(),
-            before
-        );
-    }
-
-    /// A user with a pre-existing problem elsewhere still cannot write,
-    /// because the result would not load; the error names the real fault.
-    #[test]
-    fn a_file_that_does_not_load_blocks_unrelated_edits() {
-        let err = apply(
-            "[sidebar]\nwidht = 1\n",
-            "chrome.compact-cols",
-            Edit::Set(70.into()),
-        )
-        .expect_err("unknown key elsewhere");
-        assert!(matches!(err, ConfigError::Parse { .. }), "{err}");
-        assert!(err.to_string().contains("widht"), "{err}");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_symlinked_config_is_edited_through_the_link_and_keeps_its_mode() {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let real = dir.path().join("dotfiles").join("phux.toml");
-        std::fs::create_dir_all(real.parent().unwrap()).unwrap();
-        std::fs::write(&real, "[sidebar]\nwidth = 28\n").unwrap();
-        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let link = dir.path().join("config.toml");
-        std::os::unix::fs::symlink(&real, &link).unwrap();
-
-        write_edit(&link, "sidebar.width", Edit::Set(32.into())).expect("write");
-        assert!(
-            std::fs::symlink_metadata(&link)
-                .unwrap()
-                .file_type()
-                .is_symlink()
-        );
-        assert_eq!(
-            std::fs::read_to_string(&real).unwrap(),
-            "[sidebar]\nwidth = 32\n"
-        );
-        assert_eq!(
-            std::fs::metadata(&real).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-    }
-
-    #[test]
-    fn a_comment_only_scaffold_keeps_its_comments_above_the_first_table() {
-        // `phux config init` writes a file where every line is a comment;
-        // the first edit must not push that whole scaffold beneath itself.
-        let scaffold = "# phux config\n# [sidebar]\n# width = 28\n";
-        let out = apply_edit(
-            scaffold,
-            "sidebar.width",
-            Edit::Set(toml::Value::Integer(32)),
-            Path::new("config.toml"),
-        )
-        .expect("edit applies");
-        assert_eq!(
-            out.text,
-            "# phux config\n# [sidebar]\n# width = 28\n[sidebar]\nwidth = 32\n"
-        );
-    }
-}
+mod tests;

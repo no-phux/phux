@@ -103,9 +103,9 @@ changed under a build: check `rustc -V`, `cargo -V`, `mbx doctor`, then
 `bash scripts/doctor.sh <area>` works before `just` is installed. It checks
 and prints remedies; it installs nothing.
 
-`phux-protocol`'s codec is pure Rust; its `server` feature adds the
-libghostty conversions. `just crate-check phux-protocol` needs no Zig;
-`just crate-check phux-protocol server` runs the engine-dependent tests too.
+`phux-protocol`'s codec is pure Rust and `just crate-check phux-protocol`
+needs no Zig. The libghostty glue lives in `phux-vt`;
+`just crate-check phux-vt kitty` runs its engine-dependent tests.
 
 ## Platform packages
 

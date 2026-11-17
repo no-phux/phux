@@ -2,7 +2,6 @@ use std::path::Path;
 use std::time::Duration;
 
 use phux_protocol::ResourceId;
-use tokio::net::UnixListener;
 use tokio::time::Instant;
 
 use phux_core::screen::ScreenState;
@@ -53,9 +52,7 @@ fn assert_timed_out(
 #[tokio::test]
 async fn a_peer_that_never_answers_hello_ends_the_run_on_time() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let socket = dir.path().join("silent.sock");
-    let listener = UnixListener::bind(&socket).expect("bind");
-    let peer = tokio::spawn(testkit::hold_silent(listener));
+    let (socket, peer) = testkit::spawn_hold_silent(dir.path());
 
     let (outcome, elapsed) = run_with_budget(&socket).await;
     assert_timed_out(outcome, elapsed, BUDGET, Submission::NotSent);
@@ -65,11 +62,8 @@ async fn a_peer_that_never_answers_hello_ends_the_run_on_time() {
 #[tokio::test]
 async fn a_peer_that_never_answers_get_screen_ends_the_run_on_time() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let socket = dir.path().join("wedged.sock");
-    let listener = UnixListener::bind(&socket).expect("bind");
-    let peer = tokio::spawn(testkit::serve_every(listener, || {
-        ScriptSpec::new().wedge_screen_reads()
-    }));
+    let (socket, peer) =
+        testkit::spawn_serve_every(dir.path(), || ScriptSpec::new().wedge_screen_reads());
 
     let (outcome, elapsed) = run_with_budget(&socket).await;
     let screen = assert_timed_out(outcome, elapsed, BUDGET, Submission::Complete);
@@ -84,11 +78,8 @@ async fn a_peer_that_never_answers_get_screen_ends_the_run_on_time() {
 async fn a_peer_that_acks_the_line_but_never_the_enter_reports_partial_input() {
     // The line is acked but its Enter never is: partial, after the grace.
     let dir = tempfile::tempdir().expect("tempdir");
-    let socket = dir.path().join("half.sock");
-    let listener = UnixListener::bind(&socket).expect("bind");
-    let peer = tokio::spawn(testkit::serve_every(listener, || {
-        ScriptSpec::new().wedge_input_after(1)
-    }));
+    let (socket, peer) =
+        testkit::spawn_serve_every(dir.path(), || ScriptSpec::new().wedge_input_after(1));
 
     let (outcome, elapsed) = run_with_budget(&socket).await;
     assert_timed_out(outcome, elapsed, BUDGET + SUBMIT_GRACE, Submission::Partial);

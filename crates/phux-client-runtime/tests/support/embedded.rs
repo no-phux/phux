@@ -11,36 +11,29 @@
     reason = "shared test support; each binary uses a different part"
 )]
 
+use phux_client_runtime::control::{ControlOptions, ControlPlane, Status};
 #[cfg(feature = "engine")]
-use phux_client_runtime::control::ControlOptions;
-use phux_client_runtime::control::ControlPlane;
 use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::{
-    BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, Layer, LayerSet, ServerCapabilities,
-    ServerFeatureSet,
-};
-use phux_protocol::ids::{BootstrapId, ClientId, ResourceId, SessionId, StreamId, WindowId};
+use phux_protocol::ids::{ResourceId, SessionId, WindowId};
 #[cfg(feature = "engine")]
 use phux_protocol::wire::frame::AttachTarget;
-use phux_protocol::wire::frame::{CommandResult, FrameKind};
+use phux_protocol::wire::frame::{Command, CommandResult, FrameKind};
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
+use phux_wire_fixtures::{BootstrapOptions, HelloOk, bootstrap_frames_with, l3_caps};
+
+pub use phux_wire_fixtures::decode_one as decode;
 
 pub const fn terminal() -> ResourceId {
     ResourceId::local(7)
 }
 
+/// The fixture server's `HELLO_OK`, to adjust: server `[0xAB; 16]`, layer 3.
+pub fn server_hello() -> HelloOk {
+    HelloOk::new([0xAB; 16], l3_caps())
+}
+
 pub fn hello_ok(patch: u16) -> FrameKind {
-    FrameKind::HelloOk {
-        protocol_major: PROTOCOL_VERSION.major,
-        protocol_minor: PROTOCOL_VERSION.minor,
-        protocol_patch: patch,
-        server_caps: ServerCapabilities::new()
-            .with_layers(LayerSet::with(&[Layer::L3]))
-            .with_features(ServerFeatureSet::new()),
-        server_id: vec![0xAB; 16],
-        selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
-        bootstrap_limits: BootstrapLimits::default(),
-    }
+    server_hello().patch(patch).build()
 }
 
 pub fn snapshot() -> SessionSnapshot {
@@ -54,55 +47,20 @@ pub fn snapshot() -> SessionSnapshot {
         .with_resources(vec![ResourceInfo::new(terminal(), WindowId::new(1), 20, 4)])
 }
 
-pub fn decode(frame: &[u8]) -> FrameKind {
-    let (decoded, rest) = FrameKind::decode(frame).expect("outbound frame decodes");
-    assert!(rest.is_empty());
-    decoded
-}
-
 pub fn attach_with_history(
     plane: &mut ControlPlane,
     attach_id: u32,
     bytes: &[u8],
     history_cursor: Option<Vec<u8>>,
 ) {
-    plane
-        .feed(FrameKind::Attached {
-            attach_id,
-            snapshot: snapshot(),
-            initial_client_id: ClientId::new(1),
-        })
-        .expect("ATTACHED");
-    let stream_id = StreamId::new(1).unwrap();
-    let bootstrap_id = BootstrapId::new(1).unwrap();
-    plane
-        .feed(FrameKind::BootstrapBegin {
-            terminal_id: terminal(),
-            stream_id,
-            bootstrap_id,
-            profile: BootstrapStreamProfile::SynthesizedVtRaw,
-            cols: 20,
-            rows: 4,
-            base_seq: 0,
-        })
-        .expect("BOOTSTRAP_BEGIN");
-    plane
-        .feed(FrameKind::BootstrapChunk {
-            terminal_id: terminal(),
-            stream_id,
-            bootstrap_id,
-            chunk_seq: 0,
-            payload: bytes.to_vec().into(),
-        })
-        .expect("BOOTSTRAP_CHUNK");
-    plane
-        .feed(FrameKind::BootstrapReady {
-            terminal_id: terminal(),
-            stream_id,
-            bootstrap_id,
-            history_cursor: history_cursor.map(Into::into),
-        })
-        .expect("BOOTSTRAP_READY");
+    plane.attached(attach_id, snapshot());
+    let options = BootstrapOptions {
+        history_cursor,
+        ..BootstrapOptions::default()
+    };
+    for frame in bootstrap_frames_with(&terminal(), [1, 1], [20, 4], bytes, options) {
+        plane.feed(frame).expect("bootstrap frame");
+    }
     plane
         .feed(FrameKind::AttachReady { attach_id })
         .expect("ATTACH_READY");
@@ -150,8 +108,7 @@ pub trait PlaneExt {
 
 impl PlaneExt for ControlPlane {
     fn reply(&mut self, request_id: u32, result: CommandResult) {
-        self.feed(FrameKind::CommandResult { request_id, result })
-            .expect("COMMAND_RESULT");
+        answer(self, request_id, result);
     }
 
     fn queued_attach_id(&mut self) -> u32 {
@@ -165,12 +122,8 @@ impl PlaneExt for ControlPlane {
     }
 
     fn attached(&mut self, attach_id: u32, snapshot: SessionSnapshot) {
-        self.feed(FrameKind::Attached {
-            attach_id,
-            snapshot,
-            initial_client_id: ClientId::new(1),
-        })
-        .expect("ATTACHED");
+        self.feed(phux_wire_fixtures::attached(attach_id, snapshot, 1))
+            .expect("ATTACHED");
     }
 }
 
@@ -185,11 +138,67 @@ impl PlaneExt for phux_client_runtime::Client {
     }
 
     fn attached(&mut self, attach_id: u32, snapshot: SessionSnapshot) {
-        self.feed(FrameKind::Attached {
-            attach_id,
-            snapshot,
-            initial_client_id: ClientId::new(1),
-        })
-        .expect("ATTACHED");
+        self.feed(phux_wire_fixtures::attached(attach_id, snapshot, 1))
+            .expect("ATTACHED");
     }
+}
+
+/// Open a fresh connection and answer its `HELLO` with `hello`, dropping
+/// the opening frames.
+pub fn reopen(plane: &mut ControlPlane, hello: FrameKind) {
+    plane.connection_opened();
+    let _ = plane.take_outbound();
+    plane.feed(hello).expect("HELLO_OK");
+}
+
+/// A plane with `options`, connected and answered with `hello`.
+pub fn opened(options: ControlOptions, hello: FrameKind) -> ControlPlane {
+    let mut plane = ControlPlane::new(options);
+    reopen(&mut plane, hello);
+    plane
+}
+
+/// Answer `request_id` with `result`.
+pub fn answer(plane: &mut ControlPlane, request_id: u32, result: CommandResult) {
+    plane
+        .feed(FrameKind::CommandResult { request_id, result })
+        .expect("COMMAND_RESULT");
+}
+
+/// Every outbound `COMMAND`, with its request id.
+pub fn commands(plane: &mut ControlPlane) -> Vec<(u32, Command)> {
+    plane
+        .take_outbound()
+        .iter()
+        .filter_map(|bytes| match decode(bytes) {
+            FrameKind::Command {
+                request_id,
+                command,
+            } => Some((request_id, command)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A plane opened with `options` and fed `hello`, with the follow-up
+/// frames that queued, decoded. The opening must be exactly one `HELLO`, and
+/// `expected_followups`, when given, the number of follow-ups.
+pub fn negotiate(
+    options: ControlOptions,
+    hello: FrameKind,
+    expected_followups: Option<usize>,
+) -> (ControlPlane, Vec<FrameKind>) {
+    let mut plane = ControlPlane::new(options);
+    assert_eq!(plane.status(), Status::Idle);
+    plane.connection_opened();
+    assert_eq!(plane.status(), Status::Connecting);
+    let opening = plane.take_outbound();
+    assert_eq!(opening.len(), 1, "the opening is one HELLO");
+    assert!(matches!(decode(&opening[0]), FrameKind::Hello { .. }));
+    plane.feed(hello).expect("HELLO_OK");
+    let followups: Vec<FrameKind> = plane.take_outbound().iter().map(|b| decode(b)).collect();
+    if let Some(expected) = expected_followups {
+        assert_eq!(followups.len(), expected, "{followups:?}");
+    }
+    (plane, followups)
 }

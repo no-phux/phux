@@ -45,10 +45,10 @@ pub(crate) fn fail_fast(request: RelayRequest, host: &SatelliteHost, why: &str) 
     match request {
         // Nothing was registered; failing the oneshot is enough.
         RelayRequest::Command { reply, .. } | RelayRequest::Keyed { reply, .. } => {
-            let _ = reply.send(CommandResult::Error {
-                code: ErrorCode::SatelliteUnreachable,
-                message: format!("satellite {host} is unreachable: {why}"),
-            });
+            let _ = reply.send(CommandResult::error(
+                ErrorCode::SatelliteUnreachable,
+                format!("satellite {host} is unreachable: {why}"),
+            ));
         }
         RelayRequest::Spawn { reply, .. } => {
             let _ = reply.send(SpawnResult::Err(SpawnError::SatelliteUnreachable(format!(

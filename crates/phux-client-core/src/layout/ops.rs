@@ -44,11 +44,9 @@ pub fn split_at(
     dir: SplitDir,
     ratio: f32,
 ) -> Result<LayoutNode, LayoutError> {
-    validate_ratio(ratio)?;
-    if !contains(tree, target) {
-        return Err(LayoutError::PaneNotInLayout(target.clone()));
-    }
-    Ok(split_inner(tree, target, new_pane, dir, ratio))
+    let mut out = tree.clone();
+    out.split(target, new_pane.clone(), dir, ratio)?;
+    Ok(out)
 }
 
 /// Replace the `ratio` of the split addressed by `path` (callers clamp).
@@ -98,48 +96,9 @@ fn set_ratio_inner(node: &LayoutNode, steps: &[NodeStep], ratio: f32) -> Option<
     }
 }
 
-fn split_inner(
-    node: &LayoutNode,
-    target: &ResourceId,
-    new_pane: &ResourceId,
-    dir: SplitDir,
-    ratio: f32,
-) -> LayoutNode {
-    match node {
-        LayoutNode::Leaf(p) if p == target => LayoutNode::Split {
-            dir,
-            ratio,
-            left: Box::new(LayoutNode::Leaf(target.clone())),
-            right: Box::new(LayoutNode::Leaf(new_pane.clone())),
-        },
-        LayoutNode::Leaf(p) => LayoutNode::Leaf(p.clone()),
-        LayoutNode::Split {
-            dir: sd,
-            ratio: r,
-            left,
-            right,
-        } => {
-            if contains(left, target) {
-                LayoutNode::Split {
-                    dir: *sd,
-                    ratio: *r,
-                    left: Box::new(split_inner(left, target, new_pane, dir, ratio)),
-                    right: right.clone(),
-                }
-            } else {
-                LayoutNode::Split {
-                    dir: *sd,
-                    ratio: *r,
-                    left: left.clone(),
-                    right: Box::new(split_inner(right, target, new_pane, dir, ratio)),
-                }
-            }
-        }
-    }
-}
-
 /// Remove the leaf for `target`, collapsing its parent split. `Ok(None)`
-/// when it was the last leaf.
+/// when it was the last leaf. Trees hold each pane once; were `target`
+/// duplicated, every copy would go.
 ///
 /// # Errors
 /// [`LayoutError::PaneNotInLayout`] if `target` is not present.
@@ -147,63 +106,9 @@ pub fn kill_pane(
     tree: &LayoutNode,
     target: &ResourceId,
 ) -> Result<Option<LayoutNode>, LayoutError> {
-    match tree {
-        LayoutNode::Leaf(p) if p == target => Ok(None),
-        LayoutNode::Leaf(_) => Err(LayoutError::PaneNotInLayout(target.clone())),
-        LayoutNode::Split { .. } => {
-            let (new_root, found) = collapse(tree, target);
-            if found {
-                Ok(Some(new_root))
-            } else {
-                Err(LayoutError::PaneNotInLayout(target.clone()))
-            }
-        }
-    }
-}
-
-fn collapse(node: &LayoutNode, target: &ResourceId) -> (LayoutNode, bool) {
-    match node {
-        LayoutNode::Leaf(p) => (LayoutNode::Leaf(p.clone()), false),
-        LayoutNode::Split {
-            dir,
-            ratio,
-            left,
-            right,
-        } => {
-            if let LayoutNode::Leaf(p) = left.as_ref()
-                && p == target
-            {
-                return ((**right).clone(), true);
-            }
-            if let LayoutNode::Leaf(p) = right.as_ref()
-                && p == target
-            {
-                return ((**left).clone(), true);
-            }
-            let (new_left, found_l) = collapse(left, target);
-            if found_l {
-                return (
-                    LayoutNode::Split {
-                        dir: *dir,
-                        ratio: *ratio,
-                        left: Box::new(new_left),
-                        right: right.clone(),
-                    },
-                    true,
-                );
-            }
-            let (new_right, found_r) = collapse(right, target);
-            (
-                LayoutNode::Split {
-                    dir: *dir,
-                    ratio: *ratio,
-                    left: Box::new(new_left),
-                    right: Box::new(new_right),
-                },
-                found_r,
-            )
-        }
-    }
+    let mut slot = Some(tree.clone());
+    phux_core::arrangement::remove(&mut slot, target)?;
+    Ok(slot)
 }
 
 /// The neighbour of `current` in direction `dir`, if any.
@@ -227,37 +132,16 @@ pub fn focus_direction(
     None
 }
 
-fn contains(node: &LayoutNode, target: &ResourceId) -> bool {
-    match node {
-        LayoutNode::Leaf(p) => p == target,
-        LayoutNode::Split { left, right, .. } => contains(left, target) || contains(right, target),
-    }
+/// Whether `node` holds a leaf for `target`.
+#[must_use]
+pub fn contains(node: &LayoutNode, target: &ResourceId) -> bool {
+    node.contains(target)
 }
 
 /// Every leaf of `node` in left-to-right depth-first order.
 #[must_use]
 pub fn leaves(node: &LayoutNode) -> Vec<ResourceId> {
-    let mut out = Vec::new();
-    collect_leaves(node, &mut out);
-    out
-}
-
-fn collect_leaves(node: &LayoutNode, out: &mut Vec<ResourceId>) {
-    match node {
-        LayoutNode::Leaf(p) => out.push(p.clone()),
-        LayoutNode::Split { left, right, .. } => {
-            collect_leaves(left, out);
-            collect_leaves(right, out);
-        }
-    }
-}
-
-fn validate_ratio(ratio: f32) -> Result<(), LayoutError> {
-    if ratio.is_nan() || ratio <= 0.0 || ratio >= 1.0 {
-        Err(LayoutError::InvalidRatio(ratio))
-    } else {
-        Ok(())
-    }
+    node.leaves().into_iter().cloned().collect()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

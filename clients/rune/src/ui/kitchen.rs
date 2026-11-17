@@ -59,7 +59,7 @@ pub(super) fn view(desk: &Desk, p: &Tokens, cx: &mut Cx<Desk>) -> El {
         return root.child(foot(k, waiting, t));
     }
     let room = {
-        let mut cache = desk.kitchen.room.borrow_mut();
+        let mut cache = desk.kitchen.backdrop.room.borrow_mut();
         if cache.0 != k.generation {
             *cache = (k.generation, room::room(k));
         }
@@ -71,11 +71,11 @@ pub(super) fn view(desk: &Desk, p: &Tokens, cx: &mut Cx<Desk>) -> El {
     glows(&mut over, k);
     let dark = (k.nt > 0.02).then(|| {
         let (w, h, rgba) = night(k);
-        desk.kitchen.mask.set(w, h, rgba);
+        desk.kitchen.backdrop.mask.set(w, h, rgba);
         el().absolute(0.0, 0.0)
             .w_full()
             .h_full()
-            .pixels(&desk.kitchen.mask)
+            .pixels(&desk.kitchen.backdrop.mask)
     });
     let targets = k.chefs.iter().map(|c| {
         let (at, r) = k.hit(c);

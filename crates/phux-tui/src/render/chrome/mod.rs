@@ -30,9 +30,6 @@ pub struct AgentBadge {
     pub emphatic: bool,
 }
 
-/// Filled dot: needs you (tests pin badges to the Unicode column).
-#[cfg(test)]
-pub(crate) const AGENT_BLOCKED_GLYPH: &str = "●";
 /// Half-filled ring: actively working, not waiting.
 #[cfg(test)]
 pub(crate) const AGENT_WORKING_GLYPH: &str = "◐";

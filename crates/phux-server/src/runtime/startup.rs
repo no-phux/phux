@@ -1,6 +1,6 @@
 //! Validate and install persistent server state before the accept loops run.
 
-use crate::runtime::config::{ServerConfig, ServerError, validate_socket_path_len};
+use crate::runtime::config::{ServerError, validate_socket_path_len};
 use crate::runtime::connections::{
     handle_existing_socket, prepare_socket_dir, secure_socket_file, spawn_resource_exit_watcher,
 };
@@ -9,7 +9,6 @@ use crate::state::SharedState;
 use crate::upgrade::blob::StateBlob;
 use std::os::fd::RawFd;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 use tokio::net::UnixListener;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
@@ -30,7 +29,7 @@ pub(in crate::runtime) fn install_hub_table(
         for (host, entry) in table.iter() {
             info!(satellite = %host, target = %entry.target, "hub satellite registered");
         }
-        state.with_mut(|s| s.set_hub_table(table.clone()));
+        state.with_mut(|s| s.federation_mut().set_table(table.clone()));
     }
     Ok(table)
 }
@@ -104,55 +103,6 @@ pub(in crate::runtime) async fn adopt_or_bind_listener(
     let listener = crate::transport::UdsListener::new(listener);
     info!(path = %socket_path.display(), "phux-server listening on UDS");
     Ok(listener)
-}
-
-/// Mirror the configured defaults into shared state, so every pane spawn
-/// site resolves them from one place.
-pub(in crate::runtime) fn mirror_config_into_state(
-    cfg: &ServerConfig,
-    socket_path: &Path,
-    state: &SharedState,
-) {
-    // A zero TTL would expire every hold before anyone could see it.
-    let approval_ttl = Duration::from_secs(u64::from(cfg.approval_ttl_secs.max(1)));
-    state
-        .with(crate::state::ServerState::satellite_adopter)
-        .set_work_store(cfg.work_store.as_deref().cloned());
-    state.with_mut(|s| {
-        s.set_pre_seeded_session(cfg.pre_seeded_session.clone());
-        // Only the PTY mode is mirrored: a `CreateIfMissing` session runs its
-        // own wire command, never the pre-seeded session's `seed_command`.
-        s.set_attach_create_pty(cfg.seed_with_pty);
-        // Injected as `PHUX_SOCKET` into every pane.
-        s.set_server_socket_path(socket_path.to_path_buf());
-        s.set_scrollback_limits(cfg.scrollback);
-        s.set_agent_log_bytes(cfg.agent_log_bytes);
-        s.set_native_host_executable(cfg.native_host_executable.clone());
-        s.set_event_journal_bounds(
-            usize::try_from(cfg.event_journal_entries).unwrap_or(usize::MAX),
-            usize::try_from(cfg.event_journal_bytes).unwrap_or(usize::MAX),
-        );
-        s.set_retain_policy(cfg.retain);
-        s.set_cwd_inheritance(cfg.cwd_inheritance);
-        s.set_term(cfg.term.clone());
-        s.set_shell(cfg.shell.clone());
-        s.set_login_shell(cfg.login_shell);
-        s.set_window_size(cfg.window_size);
-        s.set_keep_awake(cfg.keep_awake);
-        s.set_voice(cfg.voice.clone());
-        s.set_restore(cfg.restore.clone());
-        s.set_forward(cfg.forward.clone());
-        s.set_metadata_value_bytes(cfg.metadata_value_bytes);
-        s.set_approval_limits(
-            approval_ttl,
-            cfg.approval_max_pending,
-            cfg.approval_max_pending_total,
-        );
-        if let Some(engine) = cfg.policy_engine.clone() {
-            s.set_policy_engine(engine);
-        }
-        s.set_server_env(cfg.env.clone());
-    });
 }
 
 /// Open the organization store and install its records; a store that was

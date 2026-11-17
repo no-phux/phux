@@ -1,8 +1,6 @@
-//! The loaded credential store and the checks a store file must pass.
+//! The loaded credential store and the checks its contents must pass.
 
-use std::fs::{self, OpenOptions};
-use std::io::{self, Read};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::io;
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
@@ -13,6 +11,8 @@ use super::{
     AuthError, AuthenticatedCredential, CredentialFile, STORE_VERSION, Standing, TOKEN_LEN,
     VERIFIER_PREFIX,
 };
+use crate::secure_file::{self, FileRole};
+use crate::workload::scrub;
 
 /// A parsed snapshot of the current structured credential store.
 #[derive(Clone, Default)]
@@ -32,7 +32,7 @@ impl TokenStore {
     /// Load a versioned store. Missing files are empty; a store of legacy
     /// token lines is refused as [`AuthError::LegacyStore`].
     pub fn load(path: &Path) -> Result<Self, AuthError> {
-        let raw = read_secure_store(path)?.unwrap_or_default();
+        let raw = read_store(path)?;
         if raw.trim().is_empty() {
             return Ok(Self {
                 file: CredentialFile::default(),
@@ -131,70 +131,18 @@ impl TokenStore {
     }
 }
 
-pub(super) fn validate_store_metadata(
-    path: &Path,
-    metadata: &fs::Metadata,
-) -> Result<(), AuthError> {
-    validate_store_metadata_for_uid(path, metadata, rustix::process::geteuid().as_raw())
-}
-
-pub(super) fn validate_store_metadata_for_uid(
-    path: &Path,
-    metadata: &fs::Metadata,
-    expected_uid: u32,
-) -> Result<(), AuthError> {
-    if !metadata.file_type().is_file() {
-        return Err(AuthError::InsecureStore(format!(
-            "{} is not a regular file",
-            path.display()
-        )));
-    }
-    if metadata.uid() != expected_uid {
-        return Err(AuthError::InsecureStore(format!(
-            "{} is owned by uid {}, expected effective uid {expected_uid}",
-            path.display(),
-            metadata.uid()
-        )));
-    }
-    if metadata.mode() & 0o077 != 0 {
-        return Err(AuthError::InsecureStore(format!(
-            "{} has mode {:04o}; group and world permissions must be zero",
-            path.display(),
-            metadata.mode() & 0o777
-        )));
-    }
-    if metadata.mode() & 0o400 == 0 {
-        return Err(AuthError::InsecureStore(format!(
-            "{} has mode {:04o}; owner read permission is required",
-            path.display(),
-            metadata.mode() & 0o777
-        )));
-    }
-    Ok(())
-}
-
-fn read_secure_store(path: &Path) -> Result<Option<String>, AuthError> {
-    let path_metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
+/// The store's bytes as text: empty when the file is absent.
+fn read_store(path: &Path) -> Result<String, AuthError> {
+    let Some((_, raw)) = secure_file::read_stable(path, FileRole::BearerStore)? else {
+        return Ok(String::new());
     };
-    if path_metadata.file_type().is_symlink() {
-        return Err(AuthError::InsecureStore(format!(
-            "{} is a symbolic link",
-            path.display()
-        )));
-    }
-    validate_store_metadata(path, &path_metadata)?;
-
-    let mut input = OpenOptions::new()
-        .read(true)
-        .custom_flags(nix::libc::O_NOFOLLOW)
-        .open(path)?;
-    validate_store_metadata(path, &input.metadata()?)?;
-    let mut raw = String::new();
-    input.read_to_string(&mut raw)?;
-    Ok(Some(raw))
+    String::from_utf8(raw).map_err(|error| {
+        scrub(&mut error.into_bytes());
+        AuthError::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "credential store is not valid UTF-8",
+        ))
+    })
 }
 
 fn validate_file(file: &CredentialFile) -> Result<(), AuthError> {

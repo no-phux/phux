@@ -188,7 +188,8 @@ final class RuneView: UIView {
             scheduleFrame(frame)
             if let requests = frame["requests"] as? [String: Any] { serve(requests) }
             updateGround(frame)
-            try qualification?.observe(bridge: bridge, input: editor, surfaceAtScale: showsPixelsAtScale)
+            try qualification?.observe(bridge: bridge, input: editor, surfaceAtScale: showsPixelsAtScale,
+                                       didPresent: frame["drew"] as? Bool == true)
         } catch { fail(error) }
     }
 

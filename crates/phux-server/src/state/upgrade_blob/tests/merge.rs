@@ -8,6 +8,7 @@
 use super::*;
 
 use super::validation::*;
+use crate::runtime::apps::document::engine::{DocumentActor, TreeDocument};
 
 #[test]
 fn layout_leaf_must_name_a_pane_in_the_blob() {
@@ -78,7 +79,7 @@ async fn wrong_kind_rebuild_rolls_back_prior_panes_without_running_the_rejected_
             state.set_org_store(Box::new(SqliteOrgStore::open(&path).unwrap()));
             let (_, original) = state.seed_session("already-here");
             state.persist_first_start().unwrap();
-            let original_wire = state.intern_resource_wire(original);
+            let original_wire = state.idspace.intern_resource(original);
             let before = SqliteOrgStore::open(&path)
                 .unwrap()
                 .load()
@@ -98,7 +99,7 @@ async fn wrong_kind_rebuild_rolls_back_prior_panes_without_running_the_rejected_
                     let mut rebuilt =
                         crate::runtime::apps::terminal::upgrade::unwired(core, pane, scrollback)?;
                     if pane.wire_id == 4 {
-                        rebuilt.handle = phux_tree::TreeActor::build(
+                        rebuilt.handle = DocumentActor::<TreeDocument>::build(
                             core,
                             "test-app",
                             tokio_util::sync::CancellationToken::new(),
@@ -115,13 +116,19 @@ async fn wrong_kind_rebuild_rolls_back_prior_panes_without_running_the_rejected_
             assert!(matches!(result, Err(RebuildError::Registration(_))));
             tokio::task::yield_now().await;
             assert!(!rejected_ran.get());
-            assert_eq!(state.resource_from_wire(&original_wire), Some(original));
-            assert_eq!(state.resource_wire_of(original), Some(original_wire));
+            assert_eq!(
+                state.idspace.resource_from_wire(&original_wire),
+                Some(original)
+            );
+            assert_eq!(
+                state.idspace.resource_wire(original).cloned(),
+                Some(original_wire)
+            );
             assert_eq!(
                 session_names(&state),
                 vec!["already-here".to_owned(), "intake".to_owned()]
             );
-            assert!(state.resource_ids().is_empty());
+            assert!(state.resources().resource_ids().is_empty());
             let after = SqliteOrgStore::open(&path)
                 .unwrap()
                 .load()
@@ -253,7 +260,7 @@ async fn blob_that_disagrees_with_the_store(
 
     let mut source = ServerState::new();
     source.seed_empty_session("kept").expect("seed");
-    let kept = source.session_by_name("kept").expect("kept").clone();
+    let kept = source.sessions().by_name("kept").expect("kept").clone();
     let mut store = SqliteOrgStore::open(path).unwrap();
     store
         .import(source.org(), None, crate::state::now_stamp())
@@ -330,12 +337,13 @@ async fn a_populated_sqlite_store_wins_a_hot_upgrade_merge() {
             install_loaded_sqlite(&mut resumed, &path);
             crate::runtime::apps::terminal::test_support::rebuild_unwired(&mut resumed, &blob)
                 .expect("merge");
-            let kept = resumed.session_by_name("kept").expect("store name");
+            let kept = resumed.sessions().by_name("kept").expect("store name");
             assert_eq!(kept.key, kept_key);
             assert_eq!(kept.revision, kept_revision);
-            assert!(resumed.session_by_name("carried").is_none());
+            assert!(resumed.sessions().by_name("carried").is_none());
             let arrived = resumed
-                .session_by_name("arrived")
+                .sessions()
+                .by_name("arrived")
                 .expect("a carried session the store lacks is added")
                 .clone();
             let arrangement = arrived

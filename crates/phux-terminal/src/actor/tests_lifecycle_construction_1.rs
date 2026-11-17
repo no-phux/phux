@@ -176,15 +176,7 @@ async fn upgrade_handle_no_pty_has_snapshot_but_no_descriptors() {
         let _token = bundle.token;
         tokio::task::spawn_local(bundle.actor.run());
 
-        let (reply_tx, reply_rx) = oneshot::channel();
-        handle
-            .terminal()
-            .expect("terminal facet")
-            .upgrade
-            .send(UpgradeHandleRequest { reply: reply_tx })
-            .await
-            .expect("send upgrade request");
-        let h = reply_rx.await.expect("upgrade reply");
+        let h = request_upgrade(&handle).await;
         assert!(h.master_fd.is_none());
         assert_eq!(h.child_pid, None);
         assert_eq!((h.cols, h.rows), (20, 5));
@@ -207,15 +199,7 @@ async fn upgrade_handle_with_pty_exposes_fd_and_pid() {
         let token = bundle.token.clone();
         tokio::task::spawn_local(bundle.actor.run());
 
-        let (reply_tx, reply_rx) = oneshot::channel();
-        handle
-            .terminal()
-            .expect("terminal facet")
-            .upgrade
-            .send(UpgradeHandleRequest { reply: reply_tx })
-            .await
-            .expect("send upgrade request");
-        let h = reply_rx.await.expect("upgrade reply");
+        let h = request_upgrade(&handle).await;
         assert!(h.master_fd.is_some(), "PTY actor should expose a master fd");
         assert!(h.child_pid.is_some(), "PTY actor should expose a child pid");
 

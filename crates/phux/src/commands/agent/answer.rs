@@ -23,8 +23,8 @@ use phux_client::agent_prompt::ApplyVerdict;
 use phux_client::ask::{AskMarker, MAX_ANSWER_BYTES, deliver_answer, parse_ask_title};
 use phux_client::attach::connection::Connection;
 use phux_client::read::Verb;
+use phux_config::socket::default_socket_path;
 use phux_protocol::ids::InputOperationId;
-use phux_server::runtime::default_socket_path;
 
 use crate::commands::json_err::{Refusal, codes};
 use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target_for_input};
@@ -294,11 +294,10 @@ pub(super) fn run_agent_answer(
     };
 
     rt.block_on(async move {
-        let pane = match resolve_target_for_input(&socket_path, &selector, Verb::AgentAnswer, json)
-            .await
+        let pane = match resolve_target_for_input(&socket_path, &selector, Verb::AgentAnswer).await
         {
             Ok(pane) => pane,
-            Err(code) => return code,
+            Err(refusal) => return refusal.emit(json),
         };
         let label = phux_client::selector::format_terminal_id(&pane);
         if !pane.is_local() {

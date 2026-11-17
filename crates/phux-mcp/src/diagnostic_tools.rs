@@ -1,7 +1,8 @@
 //! The read-only diagnostic tools `phux_status`, `phux_doctor`, and
-//! `phux_whoami`: separate tools (ADR-0071 point 7(b)), each a transport for
-//! the canonical CLI's versioned document, so there is one implementation of
-//! every check.
+//! `phux_whoami`: separate tools (ADR-0071 point 7(b)), each the canonical
+//! CLI's versioned document, so there is one implementation of every check.
+//! `status` and `doctor` run the CLI; `whoami` calls the
+//! `phux_client::whoami` read the CLI verb calls.
 //!
 //! `status` and `doctor` spend exit 1 on their interesting answer (a stopped
 //! server, a failed check) and still print the document, so exit 1 is
@@ -15,11 +16,19 @@
     reason = "argv and parsed args are deliberately adjacent in thin CLI wrappers"
 )]
 
+use std::path::Path;
+
+use phux_client::attach::connection::Connection;
+use phux_client::whoami::{Fetched, WhoamiError, fetch_on};
 use serde_json::{Value, json};
 
 use crate::cli_adapter::{CliAdapter, DEFAULT_CALL_TIMEOUT, push_socket};
 use crate::cli_tools::schema;
-use crate::tools::{ToolError, strict_object};
+#[cfg(test)]
+use crate::tools::call_with_adapter;
+use crate::tools::{
+    ToolError, ToolSpec, cli_refusal_error, socket_arg, strict_object, transport_refusal_at,
+};
 
 /// The exit `status` and `doctor` spend on a result (see the module docs).
 const EXIT_ANSWERED: i32 = 1;
@@ -28,40 +37,18 @@ const EXIT_ANSWERED: i32 = 1;
 const SOCKET_DESC: &str = "Override the UDS path of the server to diagnose. \
     Defaults to PHUX_SOCKET or the daemon default.";
 
-/// Every schema in this family, in catalog order.
-#[must_use]
-pub(crate) fn schemas() -> Vec<Value> {
-    vec![status_schema(), doctor_schema(), whoami_schema()]
-}
-
-/// Whether `name` belongs to this family (used by `tools/call` dispatch).
-#[must_use]
-pub(crate) fn owns(name: &str) -> bool {
-    matches!(name, "phux_status" | "phux_doctor" | "phux_whoami")
-}
-
-/// Dispatch one diagnostic call.
-///
-/// # Errors
-///
-/// Returns [`ToolError`] for an unknown name, a malformed argument, or a
-/// canonical-CLI failure that produced no document.
-pub(crate) async fn call(name: &str, args: &Value) -> Result<Value, ToolError> {
-    call_with_adapter(name, args, &CliAdapter::for_residue(name)?).await
-}
-
-async fn call_with_adapter(
-    name: &str,
-    args: &Value,
-    adapter: &CliAdapter,
-) -> Result<Value, ToolError> {
-    match name {
-        "phux_status" => run_diagnostic("status", args, adapter).await,
-        "phux_doctor" => run_diagnostic("doctor", args, adapter).await,
-        "phux_whoami" => run_whoami(args, adapter).await,
-        other => Err(ToolError::new(format!("unknown diagnostic tool: {other}"))),
-    }
-}
+/// The diagnostic tools, in catalog order.
+pub(crate) const SPECS: &[ToolSpec] = &[
+    ToolSpec::cli("phux_status", status_schema, |args, adapter| {
+        Box::pin(run_diagnostic("status", args, adapter))
+    }),
+    ToolSpec::cli("phux_doctor", doctor_schema, |args, adapter| {
+        Box::pin(run_diagnostic("doctor", args, adapter))
+    }),
+    ToolSpec::in_process("phux_whoami", whoami_schema, |args| {
+        Box::pin(run_whoami(args))
+    }),
+];
 
 fn status_schema() -> Value {
     schema(
@@ -142,12 +129,23 @@ fn socket_properties() -> Value {
     json!({ "socket": { "type": "string", "minLength": 1, "maxLength": 4096, "description": SOCKET_DESC } })
 }
 
-/// Execute `phux whoami --json`; any non-zero exit is the tool error.
-async fn run_whoami(args: &Value, adapter: &CliAdapter) -> Result<Value, ToolError> {
+/// `phux whoami --json`'s record, or the error line that verb prints.
+async fn run_whoami(args: &Value) -> Result<Value, ToolError> {
     strict_object(args, &["socket"], &[])?;
-    let mut argv = vec!["whoami".to_owned(), "--json".to_owned()];
-    push_socket(&mut argv, args)?;
-    adapter.run_json(argv, DEFAULT_CALL_TIMEOUT).await
+    let socket = socket_arg(args)?;
+    let fetched = fetch_whoami(&socket).await.map_err(|err| {
+        let refusal = match &err {
+            WhoamiError::Transport(err) => transport_refusal_at(err, &socket, "whoami"),
+            other => other.refusal(),
+        };
+        cli_refusal_error(&refusal, 1)
+    })?;
+    Ok(fetched.raw)
+}
+
+async fn fetch_whoami(socket: &Path) -> Result<Fetched, WhoamiError> {
+    let mut conn = Connection::connect(socket).await?;
+    fetch_on(&mut conn).await
 }
 
 /// Execute `phux <verb> --json` and return its document.
@@ -182,7 +180,7 @@ async fn run_diagnostic(
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     use phux_protocol::wire::frame::{ServingUser, WhoamiRecord};
     use tempfile::TempDir;
@@ -204,17 +202,6 @@ esac
         )
     }
 
-    /// A fake `phux` that prints `stdout` and `stderr` verbatim and exits
-    /// `code`.
-    fn scripted_cli(stdout: &str, stderr: &str, code: i32) -> (TempDir, CliAdapter, PathBuf) {
-        let made = fake::cli(&format!(
-            "cat '{{dir}}/stdout'\ncat '{{dir}}/stderr' >&2\nexit {code}\n"
-        ));
-        std::fs::write(made.0.path().join("stdout"), stdout).unwrap();
-        std::fs::write(made.0.path().join("stderr"), stderr).unwrap();
-        made
-    }
-
     fn bearer_record() -> WhoamiRecord {
         WhoamiRecord {
             schema_version: 1,
@@ -232,54 +219,29 @@ esac
         }
     }
 
-    /// `phux_whoami` returns the CLI's `--json` document unchanged: the
-    /// shared protocol record, plus any field a newer server adds.
+    /// `phux_whoami` returns the server's record unchanged: the shared
+    /// protocol record, plus any field a newer server adds.
     #[tokio::test]
-    async fn whoami_returns_the_cli_record_verbatim() {
+    async fn whoami_returns_the_record_verbatim() {
+        use phux_client::testkit::{self, ScriptSpec};
+        use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
+        use phux_protocol::wire::frame::{Scope, WHOAMI_KEY};
+
         let mut raw = serde_json::to_value(bearer_record()).unwrap();
         raw["later"] = json!(true);
-        let (_temp, adapter, log) = scripted_cli(&format!("{raw}\n"), "", 0);
-
-        let result = assert_argv(
-            &adapter,
-            &log,
-            "phux_whoami",
-            json!({ "socket": "/sock" }),
-            &["whoami", "--json", "--socket", "/sock"],
-        )
-        .await;
+        let bytes = raw.to_string().into_bytes();
+        let dir = tempfile::tempdir().unwrap();
+        let (socket, server) = testkit::spawn_serve_every(dir.path(), move || {
+            ScriptSpec::new()
+                .server_features(ServerFeatureSet::with(&[ServerFeature::Whoami]))
+                .stored_metadata(Scope::Global, WHOAMI_KEY, bytes.clone())
+        });
+        let result = run_whoami(&json!({ "socket": socket.to_string_lossy() })).await;
+        server.abort();
+        let result = result.expect("the record is read");
         assert_eq!(result, raw, "the record must pass through unchanged");
         let record: WhoamiRecord = serde_json::from_value(result).unwrap();
         assert_eq!(record, bearer_record());
-    }
-
-    /// A server without the `WHOAMI` bit: the CLI exits 1 with the
-    /// `server_too_old` contract on stderr, and the tool refuses with that
-    /// line rather than returning an empty identity.
-    #[tokio::test]
-    async fn whoami_against_an_older_server_is_refused() {
-        let contract = r#"{"schema_version":1,"error":{"code":"server_too_old","message":"the server does not report connection identity (it predates `phux whoami`)"}}"#;
-        let (_temp, adapter, _log) = scripted_cli("", &format!("{contract}\n"), 1);
-        let err = call_with_adapter("phux_whoami", &json!({}), &adapter)
-            .await
-            .expect_err("an older server is refused");
-        assert!(err.0.contains("server_too_old"), "{err:?}");
-        assert!(err.0.contains("predates `phux whoami`"), "{err:?}");
-        assert!(!err.0.contains("malformed JSON"), "{err:?}");
-    }
-
-    async fn assert_argv(
-        adapter: &CliAdapter,
-        log: &Path,
-        name: &str,
-        args: Value,
-        expected: &[&str],
-    ) -> Value {
-        let result = call_with_adapter(name, &args, adapter)
-            .await
-            .unwrap_or_else(|err| panic!("{name} failed: {err:?}"));
-        assert_eq!(fake::logged(log), expected, "{name}");
-        result
     }
 
     /// The descriptions carry the rules that make results readable: a
@@ -331,7 +293,7 @@ esac
     async fn each_tool_executes_canonical_argv_and_keeps_the_document() {
         let (_temp, adapter, log) = fake_cli();
 
-        let status = assert_argv(
+        let status = fake::assert_argv(
             &adapter,
             &log,
             "phux_status",
@@ -346,7 +308,7 @@ esac
         );
         assert_eq!(status["error"]["code"], json!("no_server"));
 
-        let doctor = assert_argv(
+        let doctor = fake::assert_argv(
             &adapter,
             &log,
             "phux_doctor",
@@ -366,7 +328,7 @@ esac
     /// caller gets that contract line, not a malformed-JSON complaint.
     #[tokio::test]
     async fn a_document_less_failure_reports_the_cli_error_contract() {
-        let (_temp, adapter, _log) = scripted_cli(
+        let (_temp, adapter, _log) = fake::scripted(
             "",
             "{\"schema_version\":1,\"error\":{\"code\":\"server_disconnected\"}}\n",
             1,
@@ -397,14 +359,18 @@ esac
             // No multiplexer to address.
             ("phux_status", json!({ "action": "status" })),
             ("phux_doctor", json!({ "socket": 7 })),
-            // `--remote` is a CLI flag, not an MCP argument.
-            ("phux_whoami", json!({ "remote": "me@mini" })),
-            ("phux_whoami", json!({ "socket": "" })),
             ("phux_diagnose", json!({})),
         ] {
             assert!(
                 call_with_adapter(name, &args, &adapter).await.is_err(),
                 "{name} accepted {args}",
+            );
+        }
+        // `--remote` is a CLI flag, not an MCP argument.
+        for args in [json!({ "remote": "me@mini" }), json!({ "socket": 7 })] {
+            assert!(
+                run_whoami(&args).await.is_err(),
+                "phux_whoami accepted {args}"
             );
         }
     }

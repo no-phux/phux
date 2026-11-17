@@ -12,13 +12,14 @@ use phux_client_core::session::EffectBuffer;
 use phux_protocol::ResourceKind;
 use phux_protocol::ids::{ClientId, ResourceId, SatelliteHost, SessionId, WindowId};
 use phux_protocol::wire::frame::{
-    AgentEvent, CloseReason, CommandResult, DetachReason, ErrorCode, FrameKind, Scope, SpawnResult,
+    AgentEvent, CloseReason, DetachReason, ErrorCode, FrameKind, Scope, SpawnResult,
 };
 use phux_protocol::wire::info::{
     AgentFacet, ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo,
 };
 
 use crate::layout::{LayoutNode, SplitDir};
+use phux_wire_fixtures::{closed, command_err, command_ok, output};
 
 use crate::attach::actions::{
     Adopt, ParkedAdopt, PendingSplit, PendingWindow, SpawnedPane, SplitHost,
@@ -107,16 +108,6 @@ fn ready_frame(terminal_id: &ResourceId) -> FrameKind {
     }
 }
 
-fn output_frame(terminal_id: &ResourceId, seq: u64, bytes: &[u8]) -> FrameKind {
-    FrameKind::ResourceOutput {
-        terminal_id: terminal_id.clone(),
-        stream_id: stream(),
-        bootstrap_id: bootstrap(),
-        seq,
-        bytes: bytes::Bytes::copy_from_slice(bytes),
-    }
-}
-
 fn history_page(terminal_id: &ResourceId, cursor: &'static [u8]) -> FrameKind {
     FrameKind::HistoryPage {
         terminal_id: terminal_id.clone(),
@@ -147,15 +138,6 @@ fn meta_changed(scope: Scope, key: &str, value: Option<Vec<u8>>) -> FrameKind {
     }
 }
 
-fn closed(terminal_id: &ResourceId, exit_status: Option<i32>) -> FrameKind {
-    FrameKind::ResourceClosed {
-        terminal_id: terminal_id.clone(),
-        exit_status,
-        reason: CloseReason::Unknown,
-        signal: None,
-    }
-}
-
 fn event(terminal_id: &ResourceId, event: AgentEvent) -> FrameKind {
     FrameKind::Event {
         terminal: Some(terminal_id.clone()),
@@ -173,23 +155,6 @@ fn asked() -> AgentEvent {
     }
 }
 
-fn command_ok(request_id: u32) -> FrameKind {
-    FrameKind::CommandResult {
-        request_id,
-        result: CommandResult::Ok,
-    }
-}
-
-fn command_err(request_id: u32, code: ErrorCode, message: &str) -> FrameKind {
-    FrameKind::CommandResult {
-        request_id,
-        result: CommandResult::Error {
-            code,
-            message: message.to_owned(),
-        },
-    }
-}
-
 fn unreachable_refusal(request_id: u32) -> FrameKind {
     command_err(
         request_id,
@@ -204,11 +169,7 @@ fn reachable_refusal() -> FrameKind {
 }
 
 fn attached(snapshot: SessionSnapshot, client: u32) -> FrameKind {
-    FrameKind::Attached {
-        attach_id: 1,
-        snapshot,
-        initial_client_id: ClientId::new(client),
-    }
+    phux_wire_fixtures::attached(1, snapshot, client)
 }
 
 fn split2(a: u32, b: u32, focus: u32) -> LayoutState {
@@ -300,6 +261,19 @@ impl H {
         h
     }
 
+    /// One published empty 80x24 pane, alone and focused.
+    fn single(pane: &ResourceId) -> Self {
+        Self::published(ArrangementDoc::single(pane.clone()), &[(pane, 80, 24, b"")])
+    }
+
+    /// Published empty panes 1 | 2, focused on 1.
+    fn side_by_side() -> Self {
+        Self::published(
+            ws1(split2(1, 2, 1)),
+            &[(&tid(1), 80, 24, b""), (&tid(2), 80, 24, b"")],
+        )
+    }
+
     fn with_viewport(mut self, viewport: (u16, u16)) -> Self {
         self.viewport = viewport;
         self.mirror.predict =
@@ -336,7 +310,7 @@ impl H {
     /// Live output at the pane's next sequence.
     fn output(&mut self, id: &ResourceId, bytes: &[u8]) -> FrameOutcome {
         let seq = self.next_seq(id);
-        self.send(output_frame(id, seq, bytes))
+        self.send(output(id, seq, bytes))
     }
 
     /// A replacement bootstrap (BEGIN/CHUNK/READY) of `bytes` at `cols x
@@ -357,45 +331,26 @@ impl H {
                 .expect("id"),
         )
         .expect("next bootstrap");
-        let base_seq = published.last_seq();
-        self.send(FrameKind::BootstrapBegin {
-            terminal_id: id.clone(),
-            stream_id,
-            bootstrap_id,
-            profile: phux_protocol::BootstrapStreamProfile::SynthesizedVtRaw,
-            cols,
-            rows,
-            base_seq,
-        });
-        self.send(FrameKind::BootstrapChunk {
-            terminal_id: id.clone(),
-            stream_id,
-            bootstrap_id,
-            chunk_seq: 0,
-            payload: bytes::Bytes::copy_from_slice(bytes),
-        });
-        let outcome = self.send(FrameKind::BootstrapReady {
-            terminal_id: id.clone(),
-            stream_id,
-            bootstrap_id,
-            history_cursor: None,
-        });
+        let options = phux_wire_fixtures::BootstrapOptions {
+            base_seq: published.last_seq(),
+            ..phux_wire_fixtures::BootstrapOptions::default()
+        };
+        let ids = [stream_id.get(), bootstrap_id.get()];
+        let [begin, chunk, ready] =
+            phux_wire_fixtures::bootstrap_frames_with(id, ids, [cols, rows], bytes, options);
+        self.send(begin);
+        self.send(chunk);
+        let outcome = self.send(ready);
         if outcome.layout_replaced
             && let Some(active) = self
                 .mirror
                 .workspace
                 .render_group(self.mirror.zoomed.as_ref())
         {
-            let theme = crate::render::theme::Theme::default();
-            let mut chrome = crate::attach::chrome_ctx::ChromeCtx {
-                viewport: self.viewport,
-                sidebar: None,
-                status_bar: None,
-                sidebar_painter: None,
-                session_name: &self.mirror.session_name,
-                theme: &theme,
-                leaves: &crate::attach::surface_leaf::LeafBook::default(),
-            };
+            let mut chrome = crate::attach::chrome_ctx::ChromeCtx::bare(
+                self.viewport,
+                &self.mirror.session_name,
+            );
             crate::attach::paint::paint_full_frame(
                 &mut self.out,
                 active.as_ref(),
@@ -482,13 +437,11 @@ fn engine_damage_obeys_attach_barrier_and_ready_publication() {
         "publication damage stays behind ATTACH_READY"
     );
     assert!(
-        route(output_frame(&id, 1, b"before-barrier"))
-            .damaged
-            .is_empty(),
+        route(output(&id, 1, b"before-barrier")).damaged.is_empty(),
         "pre-barrier live output must not paint directly"
     );
     assert!(route(FrameKind::AttachReady { attach_id: 7 }).damaged(&id));
-    assert!(route(output_frame(&id, 2, b"after-barrier")).damaged(&id));
+    assert!(route(output(&id, 2, b"after-barrier")).damaged(&id));
 }
 
 #[test]
@@ -595,12 +548,9 @@ fn bootstrap_ready_surfaces_publication_damage_without_attach_barrier() {
 #[test]
 fn terminal_output_seq_zero_is_rejected() {
     let pane = tid(1);
-    let mut h = H::published(
-        ArrangementDoc::single(pane.clone()),
-        &[(&pane, 80, 24, b"")],
-    );
+    let mut h = H::single(&pane);
     let route = route_engine_frame(
-        &output_frame(&pane, 0, b"hi"),
+        &output(&pane, 0, b"hi"),
         &mut h.mirror.engine_kernel,
         &mut h.mirror.kernel_effects,
     );
@@ -624,7 +574,7 @@ fn pre_barrier_output_refreshes_title_cache_before_attach_ready() {
     assert_eq!(h.mirror.panes[&ready].last_title, "shell");
     h.send(begin_frame(&pending));
 
-    let pre_barrier = h.send(output_frame(&ready, 1, b"\x1b]2;vim\x07"));
+    let pre_barrier = h.send(output(&ready, 1, b"\x1b]2;vim\x07"));
     assert!(!pre_barrier.chrome_dirty);
     assert_eq!(
         h.mirror.panes[&ready].last_title, "vim",
@@ -1072,7 +1022,7 @@ fn output_before_snapshot_uses_current_viewport_width() {
         &[(&pane, 120, 30, b"")],
     )
     .with_viewport((120, 30));
-    h.send(output_frame(&pane, 1, b"\x1b[1;100HX"));
+    h.send(output(&pane, 1, b"\x1b[1;100HX"));
     let terminal =
         crate::attach::pane_state::published_terminal(&h.mirror.engine_kernel, &pane).unwrap();
     assert_eq!(
@@ -1085,10 +1035,7 @@ fn output_before_snapshot_uses_current_viewport_width() {
 #[test]
 fn synchronized_output_paints_only_after_end_across_frames() {
     let pane = tid(1);
-    let mut h = H::published(
-        ArrangementDoc::single(pane.clone()),
-        &[(&pane, 80, 24, b"")],
-    );
+    let mut h = H::single(&pane);
     h.output(&pane, b"\x1b[?2026hhalf-drawn");
     assert!(h.out.is_empty(), "begin/body must update only the mirror");
     assert!(h.mirror.panes[&pane].sync_output_since.is_some());
@@ -1103,10 +1050,7 @@ fn synchronized_output_paints_only_after_end_across_frames() {
 #[test]
 fn an_incremental_output_paint_is_one_synchronized_block() {
     let pane = tid(1);
-    let mut h = H::published(
-        ArrangementDoc::single(pane.clone()),
-        &[(&pane, 80, 24, b"")],
-    );
+    let mut h = H::single(&pane);
     h.output(&pane, b"hello frame");
     let s = h.out_str();
     assert_eq!(s.matches("\x1b[?2026h").count(), 1, "{s:?}");
@@ -1128,10 +1072,7 @@ fn an_incremental_output_paint_is_one_synchronized_block() {
 #[test]
 fn a_deferred_output_frame_emits_nothing_but_still_applies() {
     let pane = tid(1);
-    let mut h = H::published(
-        ArrangementDoc::single(pane.clone()),
-        &[(&pane, 80, 24, b"")],
-    );
+    let mut h = H::single(&pane);
     h.defer_paint = true;
     let outcome = h.output(&pane, b"deferred glyphs");
     assert!(h.out.is_empty(), "{:?}", h.out);
@@ -1148,10 +1089,7 @@ fn a_deferred_output_frame_emits_nothing_but_still_applies() {
 #[test]
 fn a_frame_that_changes_nothing_writes_nothing() {
     let pane = tid(1);
-    let mut h = H::published(
-        ArrangementDoc::single(pane.clone()),
-        &[(&pane, 80, 24, b"")],
-    );
+    let mut h = H::single(&pane);
     h.output(&pane, b"steady");
     assert!(!h.out.is_empty());
     h.out.clear();
@@ -1164,10 +1102,7 @@ fn a_frame_that_changes_nothing_writes_nothing() {
 #[test]
 fn title_changes_mark_chrome_dirty() {
     let pane = tid(1);
-    let mut h = H::published(
-        ArrangementDoc::single(pane.clone()),
-        &[(&pane, 80, 24, b"")],
-    );
+    let mut h = H::single(&pane);
     for (bytes, dirty) in [
         (&b"just glyphs, no title"[..], false),
         (b"\x1b]2;\xe2\x9c\xb3 claude\x07", true),
@@ -1189,10 +1124,7 @@ fn title_changes_mark_chrome_dirty() {
 #[test]
 fn snapshot_during_synchronized_output_waits_for_live_end() {
     let pane = tid(1);
-    let mut h = H::published(
-        ArrangementDoc::single(pane.clone()),
-        &[(&pane, 80, 24, b"")],
-    );
+    let mut h = H::single(&pane);
     h.output(&pane, b"\x1b[?2026hpartial");
     h.snapshot(&pane, 80, 24, b"\x1b[!p\x1b[2J\x1b[Hstable snapshot");
     assert!(
@@ -1224,12 +1156,8 @@ fn attached_seeds_pane_slots_from_snapshot_dimensions() {
 /// Cumulative frame ACKs belong to state-sync streams, not raw output.
 #[test]
 fn synthesized_raw_output_does_not_yield_frame_ack() {
-    let (left, right) = (tid(1), tid(2));
-    let mut h = H::published(
-        ws1(split2(1, 2, 1)),
-        &[(&left, 80, 24, b""), (&right, 80, 24, b"")],
-    );
-    assert_eq!(h.send(output_frame(&right, 1, b"hi")).ack, None);
+    let mut h = H::side_by_side();
+    assert_eq!(h.send(output(&tid(2), 1, b"hi")).ack, None);
 }
 
 /// Every withheld pane settles in ONE synchronized frame, including a pane
@@ -1237,10 +1165,7 @@ fn synthesized_raw_output_does_not_yield_frame_ack() {
 #[test]
 fn a_settle_paints_every_withheld_pane_in_one_frame() {
     let (left, right) = (tid(1), tid(2));
-    let mut h = H::published(
-        ws1(split2(1, 2, 1)),
-        &[(&left, 80, 24, b""), (&right, 80, 24, b"")],
-    );
+    let mut h = H::side_by_side();
     h.defer_paint = true;
     h.output(&left, b"LEFTSIDE");
     h.output(&right, b"RIGHTSIDE");
@@ -1324,30 +1249,10 @@ fn output_for_inactive_window_pane_warms_mirror_but_does_not_paint() {
 /// `vt_apply` and `paint_trigger` child spans under `handle_server_frame`.
 #[test]
 fn output_emits_separate_apply_and_paint_spans() {
-    use std::sync::{Arc, Mutex};
-    use tracing_subscriber::fmt::MakeWriter;
     use tracing_subscriber::layer::SubscriberExt as _;
     use tracing_subscriber::{Registry, fmt};
 
-    #[derive(Clone, Default)]
-    struct Buf(Arc<Mutex<Vec<u8>>>);
-    impl std::io::Write for Buf {
-        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().expect("lock").extend_from_slice(b);
-            Ok(b.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-    impl<'a> MakeWriter<'a> for Buf {
-        type Writer = Self;
-        fn make_writer(&'a self) -> Self::Writer {
-            self.clone()
-        }
-    }
-
-    let buf = Buf::default();
+    let buf = crate::test_util::LogBuf::default();
     let layer = fmt::layer()
         .with_ansi(false)
         .with_writer(buf.clone())
@@ -1355,14 +1260,10 @@ fn output_emits_separate_apply_and_paint_spans() {
     tracing::subscriber::set_global_default(Registry::default().with(layer))
         .expect("install test tracing subscriber");
     tracing_core::callsite::rebuild_interest_cache();
-    let (left, right) = (tid(1), tid(2));
-    let mut h = H::published(
-        ws1(split2(1, 2, 1)),
-        &[(&left, 80, 24, b""), (&right, 80, 24, b"")],
-    );
-    h.output(&left, b"hi");
+    let mut h = H::side_by_side();
+    h.output(&tid(1), b"hi");
 
-    let log = String::from_utf8(buf.0.lock().expect("lock").clone()).expect("utf8");
+    let log = buf.text();
     for span in ["vt_apply", "paint_trigger", "handle_server_frame"] {
         assert!(log.contains(span), "{span} span missing; log:\n{log}");
     }
@@ -1373,31 +1274,11 @@ fn output_emits_separate_apply_and_paint_spans() {
 /// line per agent spinner frame and printed on `phux snapshot --rendered`.
 #[test]
 fn routine_kernel_statuses_do_not_log_at_warn() {
-    use std::sync::{Arc, Mutex};
     use tracing_subscriber::Layer as _;
-    use tracing_subscriber::fmt::MakeWriter;
     use tracing_subscriber::layer::SubscriberExt as _;
     use tracing_subscriber::{Registry, filter::LevelFilter, fmt};
 
-    #[derive(Clone, Default)]
-    struct Buf(Arc<Mutex<Vec<u8>>>);
-    impl std::io::Write for Buf {
-        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().expect("lock").extend_from_slice(b);
-            Ok(b.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-    impl<'a> MakeWriter<'a> for Buf {
-        type Writer = Self;
-        fn make_writer(&'a self) -> Self::Writer {
-            self.clone()
-        }
-    }
-
-    let buf = Buf::default();
+    let buf = crate::test_util::LogBuf::default();
     let layer = fmt::layer()
         .with_ansi(false)
         .with_writer(buf.clone())
@@ -1406,14 +1287,11 @@ fn routine_kernel_statuses_do_not_log_at_warn() {
     tracing::subscriber::with_default(subscriber, || {
         tracing_core::callsite::rebuild_interest_cache();
         let pane = tid(1);
-        let mut h = H::published(
-            ArrangementDoc::single(pane.clone()),
-            &[(&pane, 80, 24, b"")],
-        );
+        let mut h = H::single(&pane);
         h.output(&pane, b"\x1b]2;working\x07\x07");
     });
 
-    let log = String::from_utf8(buf.0.lock().expect("lock").clone()).expect("utf8");
+    let log = buf.text();
     assert!(
         !log.contains("session kernel status"),
         "routine statuses logged at WARN:\n{log}"

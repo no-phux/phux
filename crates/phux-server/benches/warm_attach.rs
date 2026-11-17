@@ -130,11 +130,11 @@ fn checked_warm_uds_and_resync_gate() {
             .spawn()
             .await;
         for _ in 0..WARMUP_SAMPLES {
-            black_box(native_warm_attach(&harness.socket_path).await);
+            black_box(native_warm_attach(&harness.server.socket).await);
         }
         let mut samples = Vec::with_capacity(MEASURED_SAMPLES);
         for _ in 0..MEASURED_SAMPLES {
-            samples.push(native_warm_attach(&harness.socket_path).await);
+            samples.push(native_warm_attach(&harness.server.socket).await);
         }
         let p95 = percentile(&mut samples.clone(), 95);
         let p99 = percentile(&mut samples, 99);

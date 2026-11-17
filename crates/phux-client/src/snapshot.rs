@@ -342,7 +342,6 @@ pub fn bounded_document(
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests {
-    use tokio::net::UnixListener;
 
     use phux_protocol::ResourceId;
 
@@ -470,15 +469,12 @@ mod tests {
     #[tokio::test]
     async fn a_missing_rendered_capture_is_refused_only_when_one_was_asked_for() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let socket = dir.path().join("old-peer.sock");
-        let listener = UnixListener::bind(&socket).expect("bind");
         let screen = ScreenState {
             lines: vec!["hi".to_owned()],
             ..ScreenState::default()
         };
-        let peer = tokio::spawn(testkit::serve_every(listener, move || {
-            ScriptSpec::new().screen(&screen)
-        }));
+        let (socket, peer) =
+            testkit::spawn_serve_every(dir.path(), move || ScriptSpec::new().screen(&screen));
         let read = |format| {
             get_screen_scrollback_format(&socket, ResourceId::local(1), None, false, format)
         };

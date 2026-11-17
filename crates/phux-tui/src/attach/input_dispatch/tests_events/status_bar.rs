@@ -4,7 +4,7 @@
 /// columns 0..=5, the separator on 6, window 1 on 7..=11) and painted once
 /// so its hit-test cache is populated.
 fn painted_windows_bar(position: Position) -> StatusBarPainter {
-    use phux_config::widget::{StatusBar, WidgetRegistry, WindowInfo};
+    use crate::render::chrome::status_bar::widgets::{StatusBar, WidgetRegistry, WindowInfo};
     let cfg = phux_config::StatusCfg {
         left: vec![phux_config::Widget::Bare("windows".into())],
         ..Default::default()
@@ -175,7 +175,7 @@ async fn dragging_a_tab_reorders_windows() {
 /// missing painter commit nothing; every painted navigation hint dispatches.
 #[test]
 fn bar_click_action_maps_tabs_and_hints_to_dispatched_actions() {
-    use phux_config::widget::{CellHit, StatusBar, WidgetRegistry};
+    use crate::render::chrome::status_bar::widgets::{CellHit, StatusBar, WidgetRegistry};
     let painter = painted_windows_bar(Position::Bottom);
     let resolved = bar_click_action(Some(&painter), 8).expect("tab column hits");
     assert_eq!(

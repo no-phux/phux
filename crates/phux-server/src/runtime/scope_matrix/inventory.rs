@@ -125,7 +125,7 @@ async fn the_owner_socket_keeps_todays_behaviour() {
             // owner's grant: a wrong-direction frame still closes the
             // connection, as it did before the guard existed.
             let state = SharedState::new();
-            state.with_mut(|s| s.set_peer_identity(CLIENT, owner_peer()));
+            state.with_mut(|s| s.clients_mut().set_peer_identity(CLIENT, owner_peer()));
             let outcome = exchange(
                 &state,
                 script(&[hello("scope-matrix"), FrameKind::Pong { nonce: 1 }]),
@@ -217,7 +217,7 @@ fn an_attach_snapshot_holds_only_observable_terminals() {
         .with_mut(|s| s.set_connection_grant(CLIENT, grant));
     let alpha = fixture
         .state
-        .with(|s| s.find_session_by_name("alpha"))
+        .with(|s| s.sessions().find_by_name("alpha"))
         .unwrap();
     let (tx, _rx) = tokio::sync::mpsc::channel(8);
     let (snapshot, ..) = super::super::session_attach::prepare::prepare_attach(
@@ -260,7 +260,10 @@ fn a_pinned_attach_follows_the_session_id_through_a_rename_race() {
         let _ = s.rename_session("work", "tmp");
         let _ = s.rename_session("secret", "work");
     });
-    assert_eq!(state.with(|s| s.find_session_by_name("work")), Some(secret));
+    assert_eq!(
+        state.with(|s| s.sessions().find_by_name("work")),
+        Some(secret)
+    );
 
     let (tx, _rx) = tokio::sync::mpsc::channel(8);
     super::super::session_attach::prepare::prepare_attach(

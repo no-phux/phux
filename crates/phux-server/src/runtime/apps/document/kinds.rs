@@ -1,8 +1,8 @@
 //! The three document kinds the generic app serves.
 
+use super::engine::{DocumentKind, SurfaceDocument, TreeDocument, TypedDocument};
 use bytes::Bytes;
 use phux_protocol::caps::BootstrapStreamProfile;
-use phux_tree::{DocumentKind, SurfaceDocument, TreeDocument, TypedDocument};
 
 use super::DocumentApi;
 use crate::state::ServerState;
@@ -55,7 +55,7 @@ impl DocumentApi for TreeDocument {
 
 impl DocumentApi for SurfaceDocument {
     fn validate_bootstrap(_target: &str, bytes: &[u8]) -> Result<(), String> {
-        phux_tree::image_size(bytes).map(|_| ())
+        phux_core::image::image_size(bytes).map(|_| ())
     }
 
     const PROFILE: BootstrapStreamProfile = BootstrapStreamProfile::PixelSurfacePngV1;

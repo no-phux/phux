@@ -335,15 +335,14 @@ async fn eof_returns_a_loan_before_final_output_and_resumes_queued_capture() {
                 queued_reply,
             ),
         ] {
+            let ids = (
+                phux_protocol::ids::StreamId::new(owner).expect("stream"),
+                phux_protocol::ids::BootstrapId::new(1).expect("bootstrap"),
+            );
+            let local = phux_protocol::ids::ResourceId::local(1);
             actor.handle_native_bootstrap(NativeBootstrapRequest {
-                owner,
-                terminal_id: phux_protocol::ids::ResourceId::local(1),
-                stream_id: phux_protocol::ids::StreamId::new(owner).expect("stream"),
-                bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("bootstrap"),
-                limits: phux_protocol::caps::BootstrapLimits::default(),
                 max_bytes,
-                max_frames: crate::native_state::MAX_NATIVE_BOOTSTRAP_FRAMES,
-                reply,
+                ..native_request(owner, local, ids, reply)
             });
         }
         let (pty, _writer) = actor.install_test_pty_channels();

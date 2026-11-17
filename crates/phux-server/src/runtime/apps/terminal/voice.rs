@@ -11,7 +11,7 @@ use tracing::{debug, warn};
 
 use super::commands::handle_route_input;
 use super::input_lane::InputLaneHandle;
-use crate::state::{ClientId, ServerState, SharedState};
+use crate::state::{ClientId, SharedState};
 
 /// Largest transcript the server will paste, in bytes. A transcriber that
 /// prints a whole log file by mistake must not become a pane's input.
@@ -25,13 +25,13 @@ pub(in crate::runtime) async fn handle_transcribe(
     input_lane: Option<&InputLaneHandle>,
 ) -> CommandResult {
     if terminal_id.host().is_some() {
-        return refuse(
+        return CommandResult::error(
             ErrorCode::UnsupportedSatelliteRoute,
             "TRANSCRIBE pastes locally; a satellite-routed Terminal has no route",
         );
     }
-    let voice = state.with(ServerState::voice);
-    let env = state.with(ServerState::server_env);
+    let voice = state.with(|s| s.config().voice.clone());
+    let env = state.with(|s| s.config().server_env.clone());
     let principal =
         state.with(|s| crate::runtime::apps::terminal::upload::upload_principal(s, client_id));
     let started = std::time::Instant::now();
@@ -50,7 +50,7 @@ pub(in crate::runtime) async fn handle_transcribe(
     match paste_transcript(state, client_id, terminal_id, input_lane, &text).await {
         CommandResult::Ok | CommandResult::OkWith(_) => ok(&text, true, transcribe_ms, started),
         error @ CommandResult::Error { .. } => error,
-        _ => refuse(
+        _ => CommandResult::error(
             ErrorCode::InternalError,
             "paste returned an unexpected result",
         ),
@@ -71,7 +71,7 @@ async fn run_transcriber(
     client_id: ClientId,
 ) -> Result<(String, u64), CommandResult> {
     if !voice.is_configured() {
-        return Err(refuse(
+        return Err(CommandResult::error(
             ErrorCode::InvalidCommand,
             "no transcriber configured on this server: set `[voice] transcriber = [...]` \
              in the server's config.toml (an argv; `{path}` is replaced by the clip)",
@@ -79,7 +79,7 @@ async fn run_transcriber(
     }
     let clip = resolve_clip(env, request)?;
     let Some(argv) = voice.transcriber_argv(&clip) else {
-        return Err(refuse(
+        return Err(CommandResult::error(
             ErrorCode::InvalidCommand,
             "transcriber argv is empty",
         ));
@@ -92,17 +92,17 @@ async fn run_transcriber(
     })
     .await
     .map_err(|err| {
-        refuse(
+        CommandResult::error(
             ErrorCode::InternalError,
-            &format!("transcriber could not be started: {err}"),
+            format!("transcriber could not be started: {err}"),
         )
     })?;
     let duration_ms = u64::try_from(output.duration_ms).unwrap_or(u64::MAX);
     if output.outcome == phux_plugin::PluginActionOutcome::TimedOut {
         warn!(?client_id, duration_ms, "transcriber timed out");
-        return Err(refuse(
+        return Err(CommandResult::error(
             ErrorCode::ResourceExhausted,
-            &format!(
+            format!(
                 "transcriber exceeded its {}s deadline (`[voice] timeout-secs`)",
                 voice.timeout().as_secs()
             ),
@@ -119,14 +119,14 @@ async fn run_transcriber(
         } else {
             stderr
         };
-        return Err(refuse(
+        return Err(CommandResult::error(
             ErrorCode::InternalError,
-            &format!("transcriber exited with {exit}: {detail}"),
+            format!("transcriber exited with {exit}: {detail}"),
         ));
     }
     let text = output.stdout.trim().to_owned();
     if text.len() > MAX_TRANSCRIPT_BYTES {
-        return Err(refuse(
+        return Err(CommandResult::error(
             ErrorCode::ResourceExhausted,
             "transcript exceeds the 64 KiB paste ceiling",
         ));
@@ -164,22 +164,22 @@ fn resolve_clip(
     ) {
         Ok(Some(path)) => path,
         Ok(None) => {
-            return Err(refuse(
+            return Err(CommandResult::error(
                 ErrorCode::InvalidCommand,
                 "no completed upload with that id: send the clip with PUT_FILE \
                      (final_chunk = true) first",
             ));
         }
-        Err(message) => return Err(refuse(ErrorCode::InternalError, &message)),
+        Err(message) => return Err(CommandResult::error(ErrorCode::InternalError, &message)),
     };
     let extension = clip
         .extension()
         .and_then(std::ffi::OsStr::to_str)
         .unwrap_or_default();
     if !TRANSCRIBE_EXTENSIONS.contains(&extension) {
-        return Err(refuse(
+        return Err(CommandResult::error(
             ErrorCode::InvalidCommand,
-            &format!(
+            format!(
                 "TRANSCRIBE takes an audio upload ({}); this upload's extension is `{extension}`",
                 TRANSCRIBE_EXTENSIONS.join(", ")
             ),
@@ -247,11 +247,4 @@ fn ok(text: &str, pasted: bool, transcribe_ms: u64, started: std::time::Instant)
         "total_ms": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
     });
     CommandResult::OkWith(CommandValue::Json(body.to_string()))
-}
-
-fn refuse(code: ErrorCode, message: &str) -> CommandResult {
-    CommandResult::Error {
-        code,
-        message: message.to_owned(),
-    }
 }

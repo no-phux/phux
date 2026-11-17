@@ -3,10 +3,11 @@ use std::process::ExitCode;
 use phux_client::attach::AttachError;
 use phux_client::detach::DetachOutcome;
 
-use crate::commands::confirm;
-use crate::commands::json_err::{self, CliError, codes};
+use crate::commands::ctx::{self, Ctx};
+use crate::commands::json_err::{Refusal, codes};
 use crate::commands::server_target::ServerSpec;
-use crate::commands::warn_interleaved_degradation;
+use crate::commands::{confirm, warn_interleaved_degradation};
+use crate::exit_codes::{EXIT_FAILURE, EXIT_USAGE};
 
 /// `phux detach [SESSION]` — force-detach every client of `SESSION` (or of
 /// the server) from outside the attach UI; each receives `DETACHED` and exits.
@@ -19,105 +20,105 @@ pub(crate) fn run_detach(
     json: bool,
     server: ServerSpec,
 ) -> ExitCode {
-    let (rt, target) = match server.prepare("detach", json) {
-        Ok(prepared) => prepared,
-        Err(code) => return code,
-    };
-    let action = session.as_deref().map_or_else(
-        || "detach every attached client".to_owned(),
-        |name| format!("detach every client from session {name:?}"),
-    );
-    if let Err(code) = confirm::confirmed_for(json, yes, &action) {
-        return code;
-    }
-
-    rt.block_on(async move {
-        let mut conn = match target.connect().await {
-            Ok(conn) => conn,
-            Err(err) => return target.report_unreachable(json, &err, "detach"),
-        };
-
-        match phux_client::detach::detach_clients(&mut conn, 1, session.clone()).await {
-            Ok((DetachOutcome::Detached(n), degradation)) if json => {
-                warn_interleaved_degradation(&degradation);
-                crate::output::json(&serde_json::json!({
-                    "schema_version": 1,
-                    "session": session,
-                    "detached": n,
-                }))
-            }
-            Ok((DetachOutcome::Detached(n), degradation)) => {
-                warn_interleaved_degradation(&degradation);
-                match session.as_deref() {
-                    Some(name) => {
-                        outln!("phux: detached {n} client(s) from session {name:?}");
-                    }
-                    None => outln!("phux: detached {n} client(s)"),
-                }
-                ExitCode::SUCCESS
-            }
-            Ok((DetachOutcome::NoSuchSession, degradation)) => {
-                warn_interleaved_degradation(&degradation);
-                let name = session.as_deref().unwrap_or_default();
-                fail(
-                    json,
-                    codes::NO_SUCH_TARGET,
-                    format!("no such session: {name}"),
-                    1,
-                )
-            }
-            Ok((DetachOutcome::Malformed(count), degradation)) => {
-                warn_interleaved_degradation(&degradation);
-                fail(
-                    json,
-                    "unexpected_reply",
-                    format!("malformed detach reply (expected a count): {count:?}"),
-                    2,
-                )
-            }
-            Ok((DetachOutcome::Refused(message), degradation)) => {
-                warn_interleaved_degradation(&degradation);
-                fail(
-                    json,
-                    "server_error",
-                    format!("detach refused: {message}"),
-                    2,
-                )
-            }
-            // The reply contract is `OkWith(Json(count))`; a bare `Ok` (or any
-            // other shape) means we cannot confirm what happened.
-            Ok((DetachOutcome::Unexpected(other), degradation)) => {
-                warn_interleaved_degradation(&degradation);
-                fail(
-                    json,
-                    "unexpected_reply",
-                    phux_client::explain::explain_unexpected("detach", &other),
-                    2,
-                )
-            }
-            // Detaching clients never tears the server down (sessions persist
-            // detached), so a disconnect before the reply is a failure to
-            // confirm, not an implicit success.
-            Err(AttachError::Disconnected) => fail(
-                json,
-                codes::SERVER_DISCONNECTED,
-                "connection closed before the detach reply".to_owned(),
-                1,
-            ),
-            Err(err) => target.report_unreachable(json, &err, "detach"),
+    ctx::run(server, "detach", json, |ctx| {
+        let action = session.as_deref().map_or_else(
+            || "detach every attached client".to_owned(),
+            |name| format!("detach every client from session {name:?}"),
+        );
+        if let Err(code) = confirm::confirmed_for(json, yes, &action) {
+            // Declining has already been reported.
+            return Ok(code);
         }
+        ctx.rt.block_on(detach(ctx, session))
     })
 }
 
-/// A detach that did not confirm, on the verb's own channel.
-fn fail(json: bool, code: &'static str, message: String, exit: u8) -> ExitCode {
-    json_err::emit(
-        json,
-        &CliError::new(
-            code,
-            message,
-            "run `phux ls` to see sessions and who is attached",
+/// Force-detach and report the count; see [`run_detach`].
+async fn detach(ctx: &Ctx, session: Option<String>) -> Result<ExitCode, Refusal> {
+    let mut conn = ctx
+        .target
+        .connect()
+        .await
+        .map_err(|err| ctx.unreachable(&err, "detach"))?;
+    let (outcome, degradation) = phux_client::detach::detach_clients(&mut conn, 1, session.clone())
+        .await
+        .map_err(|err| match err {
+            // Detaching clients never tears the server down (sessions persist
+            // detached), so a disconnect before the reply is a failure to
+            // confirm, not an implicit success.
+            AttachError::Disconnected => fail(
+                codes::SERVER_DISCONNECTED,
+                "connection closed before the detach reply".to_owned(),
+                EXIT_FAILURE,
+            ),
+            err => ctx.unreachable(&err, "detach"),
+        })?;
+    warn_interleaved_degradation(&degradation);
+    let n = detached_count(session.as_deref(), outcome)?;
+    if ctx.json {
+        return Ok(crate::output::json(&serde_json::json!({
+            "schema_version": 1,
+            "session": session,
+            "detached": n,
+        })));
+    }
+    match session.as_deref() {
+        Some(name) => outln!("phux: detached {n} client(s) from session {name:?}"),
+        None => outln!("phux: detached {n} client(s)"),
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// How many clients the reply says were detached, or why it does not
+/// confirm a detach.
+fn detached_count(session: Option<&str>, outcome: DetachOutcome) -> Result<u64, Refusal> {
+    Err(match outcome {
+        DetachOutcome::Detached(n) => return Ok(n),
+        DetachOutcome::NoSuchSession => fail(
+            codes::NO_SUCH_TARGET,
+            format!("no such session: {}", session.unwrap_or_default()),
+            EXIT_FAILURE,
         ),
+        DetachOutcome::Malformed(count) => fail(
+            "unexpected_reply",
+            format!("malformed detach reply (expected a count): {count:?}"),
+            EXIT_USAGE,
+        ),
+        DetachOutcome::Refused(message) => fail(
+            "server_error",
+            format!("detach refused: {message}"),
+            EXIT_USAGE,
+        ),
+        // The reply contract is `OkWith(Json(count))`; a bare `Ok` (or any
+        // other shape) means we cannot confirm what happened.
+        DetachOutcome::Unexpected(other) => fail(
+            "unexpected_reply",
+            phux_client::explain::explain_unexpected("detach", &other),
+            EXIT_USAGE,
+        ),
+    })
+}
+
+/// A detach that did not confirm.
+fn fail(code: &'static str, message: String, exit: u8) -> Refusal {
+    Refusal::new(
+        code,
+        message,
+        "run `phux ls` to see sessions and who is attached",
         exit,
     )
+}
+
+/// Run `phux detach` as parsed.
+pub(crate) fn run(
+    args: crate::commands::DetachArgs,
+    socket: Option<std::path::PathBuf>,
+) -> ExitCode {
+    let crate::commands::DetachArgs {
+        session,
+        yes,
+        json,
+        remote,
+    } = args;
+    run_detach(session, yes, json.json, remote.with_socket(socket))
 }

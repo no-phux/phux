@@ -1,10 +1,10 @@
 //! Byte goldens for `FORWARD_OPEN`, `FORWARD_READ`, `FORWARD_WRITE`,
 //! `FORWARD_CLOSE`, and their `FORWARD_OPENED` / `FORWARD_CHUNK` replies, in
-//! the `xxd` style of `file_transfer_snapshots.rs`.
+//! the `xxd` style of `file_transfer_snapshots.rs`, checked by
+//! `wire_snapshots.rs`.
 
 #![allow(clippy::unwrap_used)]
 
-use crate::common::dump_frame;
 use phux_protocol::forward::{ForwardChunk, ForwardOp};
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, FrameKind};
 
@@ -22,7 +22,11 @@ const fn reply(request_id: u32, value: CommandValue) -> FrameKind {
     }
 }
 
-fn fixtures() -> Vec<(&'static str, FrameKind)> {
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "`pub` alone trips `unreachable_pub`; `wire_snapshots.rs` checks these"
+)]
+pub(crate) fn fixtures() -> Vec<(&'static str, FrameKind)> {
     vec![
         // FORWARD_OPEN (tag 0x44).
         (
@@ -108,13 +112,4 @@ fn fixtures() -> Vec<(&'static str, FrameKind)> {
             ),
         ),
     ]
-}
-
-/// Every fixture's hex dump matches its committed golden byte-for-byte, and
-/// decodes back to itself.
-#[test]
-fn forward_frames_match_goldens() {
-    for (name, frame) in fixtures() {
-        insta::assert_snapshot!(name, dump_frame(&frame));
-    }
 }

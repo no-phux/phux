@@ -18,8 +18,8 @@ use tokio::time::timeout;
 use phux_server_testkit::tracing_capture::TracingCapture;
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, ServerHandles, WIRE_RECV_TIMEOUT, ascii_key, attach_by_name, command,
-    join_after_shutdown, recv_until, run_local, send_frame, spawn_server_with_seed_cmd,
-    try_recv_typed, try_recv_typed_before, wait_for_socket,
+    join_after_shutdown, recv_until, run_local, send_command, send_frame,
+    spawn_server_with_seed_cmd, try_recv_typed, try_recv_typed_before, wait_for_socket,
 };
 
 use super::common::{focused_resource, named_key, poll_screen, sh};
@@ -58,6 +58,18 @@ fn key(terminal_id: &ResourceId, c: char, k: PhysicalKey) -> FrameKind {
     phux_server_testkit::input_key(terminal_id.clone(), ascii_key(c, k))
 }
 
+fn enter(terminal_id: &ResourceId) -> FrameKind {
+    phux_server_testkit::input_key(terminal_id.clone(), named_key(PhysicalKey::Enter))
+}
+
+fn apply_key(operation: u8, terminal_id: ResourceId, c: char, k: PhysicalKey) -> Command {
+    Command::ApplyInput {
+        operation_id: InputOperationId::new([operation; 16]).expect("non-zero id"),
+        terminal_id,
+        events: vec![InputEvent::Key(ascii_key(c, k))],
+    }
+}
+
 /// `INPUT_KEY`, `ROUTE_INPUT`, `INPUT_KEY` sent back to back share one FIFO
 /// into the pane, and plain letters reach a default-mode pane as legacy
 /// ASCII (phux-7vx: never kitty CSI-u unless the app opts in), so `cat`
@@ -70,37 +82,12 @@ fn mixed_input_key_and_route_input_preserve_wire_order() {
         let pane = attach(&mut stream).await;
 
         send_frame(&mut stream, &key(&pane, 'a', PhysicalKey::A)).await;
-        let route_b = phux_server_testkit::route_input(
-            pane.clone(),
-            InputEvent::Key(ascii_key('b', PhysicalKey::B)),
-        );
-        let request = FrameKind::Command {
-            request_id: 7,
-            command: route_b,
-        };
-        send_frame(&mut stream, &request).await;
+        let route_b = route_key(&pane, 'b', PhysicalKey::B);
+        send_command(&mut stream, 7, route_b).await;
         send_frame(&mut stream, &key(&pane, 'c', PhysicalKey::C)).await;
-        let enter = phux_server_testkit::input_key(pane.clone(), named_key(PhysicalKey::Enter));
-        send_frame(&mut stream, &enter).await;
+        send_frame(&mut stream, &enter(&pane)).await;
 
-        let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
-        let (mut acc, mut acked) = (Vec::new(), false);
-        while !(acked && acc.windows(3).any(|w| w == b"abc")) {
-            let Ok(Some((_, frame))) = try_recv_typed_before(&mut stream, deadline).await else {
-                panic!("no ordered `abc` echo (acked={acked}): {acc:?}");
-            };
-            match frame {
-                FrameKind::ResourceOutput { bytes, .. } => acc.extend_from_slice(&bytes),
-                FrameKind::CommandResult {
-                    request_id: 7,
-                    result,
-                } => {
-                    assert_eq!(result, CommandResult::Ok);
-                    acked = true;
-                }
-                _ => {}
-            }
-        }
+        let acc = expect_echo(&mut stream, b"abc", &[7]).await;
         assert!(
             !acc.windows(3).any(|w| w == b"[97"),
             "kitty CSI-u leaked: {acc:?}"
@@ -123,50 +110,20 @@ fn later_keys_wait_behind_routed_and_acknowledged_input() {
         let pane = attach(&mut stream).await;
 
         // `ROUTE_INPUT` then `INPUT_KEY`.
-        send_frame(
-            &mut stream,
-            &FrameKind::Command {
-                request_id: 11,
-                command: phux_server_testkit::route_input(
-                    pane.clone(),
-                    InputEvent::Key(ascii_key('r', PhysicalKey::R)),
-                ),
-            },
-        )
-        .await;
+        send_command(&mut stream, 11, route_key(&pane, 'r', PhysicalKey::R)).await;
         send_frame(&mut stream, &key(&pane, 'k', PhysicalKey::K)).await;
         expect_echo(&mut stream, b"rk", &[11]).await;
 
         // `APPLY_INPUT` then `INPUT_KEY`.
-        send_frame(
-            &mut stream,
-            &FrameKind::Command {
-                request_id: 12,
-                command: Command::ApplyInput {
-                    operation_id: InputOperationId::new([0x21; 16]).expect("non-zero id"),
-                    terminal_id: pane.clone(),
-                    events: vec![InputEvent::Key(ascii_key('p', PhysicalKey::P))],
-                },
-            },
-        )
-        .await;
+        let apply_p = apply_key(0x21, pane.clone(), 'p', PhysicalKey::P);
+        send_command(&mut stream, 12, apply_p).await;
         send_frame(&mut stream, &key(&pane, 'q', PhysicalKey::Q)).await;
         expect_echo(&mut stream, b"pq", &[12]).await;
 
         // `INPUT_KEY`, `APPLY_INPUT`, `INPUT_KEY`.
         send_frame(&mut stream, &key(&pane, 'a', PhysicalKey::A)).await;
-        send_frame(
-            &mut stream,
-            &FrameKind::Command {
-                request_id: 13,
-                command: Command::ApplyInput {
-                    operation_id: InputOperationId::new([0x22; 16]).expect("non-zero id"),
-                    terminal_id: pane.clone(),
-                    events: vec![InputEvent::Key(ascii_key('m', PhysicalKey::M))],
-                },
-            },
-        )
-        .await;
+        let apply_m = apply_key(0x22, pane.clone(), 'm', PhysicalKey::M);
+        send_command(&mut stream, 13, apply_m).await;
         send_frame(&mut stream, &key(&pane, 'z', PhysicalKey::Z)).await;
         expect_echo(&mut stream, b"amz", &[13]).await;
 
@@ -175,14 +132,19 @@ fn later_keys_wait_behind_routed_and_acknowledged_input() {
     });
 }
 
-/// Read until `needle` has been echoed and every `acks` request has succeeded.
-async fn expect_echo(stream: &mut UnixStream, needle: &[u8], acks: &[u32]) {
+fn route_key(terminal_id: &ResourceId, c: char, k: PhysicalKey) -> Command {
+    phux_server_testkit::route_input(terminal_id.clone(), InputEvent::Key(ascii_key(c, k)))
+}
+
+/// Read until `needle` has been echoed and every `acks` request has
+/// succeeded (in any order against the output); returns every output byte.
+async fn expect_echo(stream: &mut UnixStream, needle: &[u8], acks: &[u32]) -> Vec<u8> {
     let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
     let (mut acc, mut seen) = (Vec::new(), 0usize);
     while seen < acks.len() || !acc.windows(needle.len()).any(|window| window == needle) {
         let Ok(Some((_, frame))) = try_recv_typed_before(stream, deadline).await else {
             panic!(
-                "mixed sources reordered or dropped waiting for {:?} (acks {seen}/{}): {:?}",
+                "output reordered or dropped waiting for {:?} (acks {seen}/{}): {:?}",
                 String::from_utf8_lossy(needle),
                 acks.len(),
                 String::from_utf8_lossy(&acc)
@@ -197,6 +159,7 @@ async fn expect_echo(stream: &mut UnixStream, needle: &[u8], acks: &[u32]) {
             _ => {}
         }
     }
+    acc
 }
 
 /// A burst of `INPUT_KEY` frames that lands in one socket read reaches the
@@ -224,8 +187,7 @@ fn a_buffered_input_key_burst_reaches_the_pty_whole() {
             let (c, k) = LETTERS[i % LETTERS.len()];
             burst.extend_from_slice(&phux_server_testkit::encode_frame(&key(&pane, c, k)));
         }
-        let enter = phux_server_testkit::input_key(pane.clone(), named_key(PhysicalKey::Enter));
-        burst.extend_from_slice(&phux_server_testkit::encode_frame(&enter));
+        burst.extend_from_slice(&phux_server_testkit::encode_frame(&enter(&pane)));
         tokio::io::AsyncWriteExt::write_all(&mut stream, &burst)
             .await
             .unwrap();
@@ -372,19 +334,9 @@ fn a_clipboard_reply_reaches_the_program_as_one_osc_52_answer() {
             text: phux_protocol::input::paste::ClipboardData("hi".to_owned()),
         };
         send_frame(&mut stream, &reply).await;
-        let enter = phux_server_testkit::input_key(pane.clone(), named_key(PhysicalKey::Enter));
-        send_frame(&mut stream, &enter).await;
-        let want = b"^[]52;c;aGk=^[\\";
-        let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
-        let mut acc = Vec::new();
-        while !acc.windows(want.len()).any(|w| w == want) {
-            let Ok(Some((_, frame))) = try_recv_typed_before(&mut stream, deadline).await else {
-                panic!("no OSC 52 answer reached the program: {acc:?}");
-            };
-            if let FrameKind::ResourceOutput { bytes, .. } = frame {
-                acc.extend_from_slice(&bytes);
-            }
-        }
+        send_frame(&mut stream, &enter(&pane)).await;
+        // The OSC 52 answer, as `cat -v` echoes it.
+        expect_echo(&mut stream, b"^[]52;c;aGk=^[\\", &[]).await;
         drop(stream);
         join_after_shutdown(shutdown, server).await;
     });

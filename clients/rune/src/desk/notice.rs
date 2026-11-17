@@ -522,7 +522,9 @@ mod tests {
     #[test]
     fn an_info_toast_waits_out_an_upload_then_goes() {
         let mut desk = desk();
-        desk.connection.uploads.push((2, ResourceId::local(1)));
+        desk.connection
+            .uploads
+            .push((2, ResourceId::local(1), None));
         desk.say(NoticeKind::Info, "Uploading image…");
         desk.say(NoticeKind::Error, "Rename failed");
         assert!(tick(&mut desk, 12.0), "the error's time is up");

@@ -47,11 +47,11 @@ assert_is_empty = "allow"
 # Internal.
 phux-protocol = { path = "crates/phux-protocol" }
 phux-record = { path = "crates/phux-record" }
+phux-vt = { path = "crates/phux-vt" }
 phux-core = { path = "crates/phux-core" }
 phux-agent-rules = { path = "crates/phux-agent-rules" }
 phux-agent-host = { path = "crates/phux-agent-host" }
 phux-agent-session = { path = "crates/phux-agent-session" }
-phux-tree = { path = "crates/phux-tree" }
 phux-server = { path = "crates/phux-server" }
 phux-resource = { path = "crates/phux-resource" }
 phux-terminal = { path = "crates/phux-terminal", default-features = false }
@@ -64,12 +64,10 @@ phux-client-runtime = { path = "crates/phux-client-runtime" }
 phux-config = { path = "crates/phux-config" }
 phux-config-core = { path = "crates/phux-config-core" }
 phux-design = { path = "crates/phux-design" }
-phux-mission = { path = "crates/phux-mission" }
 phux-work = { path = "crates/phux-work" }
 phux-dial = { path = "crates/phux-dial" }
 phux-perf = { path = "crates/phux-perf" }
 phux-git = { path = "crates/phux-git" }
-phux-relay = { path = "crates/phux-relay" }
 # The relay is independent of phux; members opt into its features.
 quictun = { path = "crates/quictun", default-features = false }
 phux-plugin = { path = "crates/phux-plugin" }
@@ -79,6 +77,8 @@ phux-frozen = { path = "crates/phux-frozen" }
 phux-crash = { path = "crates/phux-crash" }
 # Dev-only scaffolding, compiled once for the server integration tests.
 phux-server-testkit = { path = "crates/phux-server-testkit" }
+# Dev-only frame builders for client-side tests; wasm-safe.
+phux-wire-fixtures = { path = "crates/phux-wire-fixtures" }
 portable-pty-adopt = { path = "crates/portable-pty-adopt" }
 
 # External.

@@ -29,8 +29,10 @@ pub(super) async fn handle(state: &SharedState) -> CommandResult {
 async fn run(state: &SharedState) -> Result<serde_json::Value, String> {
     let (exe, socket) = state.with(|s| {
         (
-            s.native_host_executable(),
-            s.server_socket_path().map(std::path::Path::to_path_buf),
+            s.config().native_host_executable(),
+            s.config()
+                .server_socket_path()
+                .map(std::path::Path::to_path_buf),
         )
     });
     let exe = exe.map_err(|err| format!("could not find this host's phux: {err}"))?;

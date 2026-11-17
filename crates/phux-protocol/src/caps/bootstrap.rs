@@ -307,32 +307,15 @@ impl BootstrapCapabilities {
         self
     }
 
-    /// Replace the profile set.
-    #[must_use]
-    pub const fn with_profiles(mut self, profiles: BootstrapProfileSet) -> Self {
-        self.profiles = profiles;
-        self
-    }
-
-    /// Replace the exact native codec set.
-    #[must_use]
-    pub const fn with_native_codecs(mut self, codecs: EngineCodecSet) -> Self {
-        self.native_codecs = codecs;
-        self
-    }
-
-    /// Replace the native feature set.
-    #[must_use]
-    pub const fn with_native_features(mut self, features: EngineFeatureSet) -> Self {
-        self.native_features = features;
-        self
-    }
-
-    /// Replace payload limits.
-    #[must_use]
-    pub const fn with_limits(mut self, limits: BootstrapLimits) -> Self {
-        self.limits = limits;
-        self
+    builder_setters! {
+        /// Replace the profile set.
+        const fn with_profiles(profiles: BootstrapProfileSet) => profiles;
+        /// Replace the exact native codec set.
+        const fn with_native_codecs(codecs: EngineCodecSet) => native_codecs;
+        /// Replace the native feature set.
+        const fn with_native_features(features: EngineFeatureSet) => native_features;
+        /// Replace payload limits.
+        const fn with_limits(limits: BootstrapLimits) => limits;
     }
 }
 

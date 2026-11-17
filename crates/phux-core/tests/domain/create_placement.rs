@@ -26,35 +26,24 @@ const fn beside(resource: phux_core::ResourceKey, entry: [u8; 16]) -> CreatePlac
         ratio: 0.5,
     }
 }
-#[test]
-fn placed_remove_does_not_record_a_durable_result() {
-    let mut h = Harness::new();
-    let session = h.create_session("work", SessionLifetime::Persistent);
-    let applied = h
-        .create(Some(session), shell(), Some(CreatePlacement::NewGroup))
-        .unwrap();
-    let key = created(&applied).1.unwrap();
-    assert!(
-        !h.resource(key).durable_result,
-        "a placed Remove resource is not a durable result"
-    );
-}
-
+/// Only a placed Retain resource records a durable result: a placed Remove
+/// resource and an unplaced Retain resource do not.
 #[test]
 fn placed_retain_records_a_durable_result() {
-    let mut h = Harness::new();
-    let session = h.create_session("work", SessionLifetime::Persistent);
-    let applied = h
-        .create(
-            Some(session),
-            crate::support::job(),
-            Some(CreatePlacement::NewGroup),
-        )
-        .unwrap();
-    let key = created(&applied).1.unwrap();
-    assert!(h.resource(key).durable_result);
-    let plain = h.create_resource(session, crate::support::job());
-    assert!(!h.resource(plain).durable_result);
+    for (what, spec, durable) in [
+        ("placed remove", shell(), false),
+        ("placed retain", crate::support::job(), true),
+    ] {
+        let mut h = Harness::new();
+        let session = h.create_session("work", SessionLifetime::Persistent);
+        let applied = h
+            .create(Some(session), spec, Some(CreatePlacement::NewGroup))
+            .unwrap();
+        let key = created(&applied).1.unwrap();
+        assert_eq!(h.resource(key).durable_result, durable, "{what}");
+        let plain = h.create_resource(session, crate::support::job());
+        assert!(!h.resource(plain).durable_result, "{what}: unplaced retain");
+    }
 }
 
 #[test]
@@ -241,29 +230,15 @@ fn invalid_missing_moved_and_replaced_anchors_refuse_without_launch_or_records()
 }
 #[test]
 fn receipt_env_values_are_hashed_and_retries_still_match() {
-    use phux_core::{Actor, Command, LaunchSpec, TerminalLaunch};
     let mut h = Harness::new();
     let session = h.create_session("work", SessionLifetime::Persistent);
-    let mut spec = shell();
-    spec.launch = Some(LaunchSpec::Terminal(TerminalLaunch {
-        env: vec![("SECRET".to_owned(), "super-secret-value".to_owned())],
-        ..TerminalLaunch::default()
-    }));
     let op = Op::ResourceCreate {
         session: Some(session),
-        resource: spec,
+        resource: secret_shell(&[("SECRET", "super-secret-value")]),
         placement: None,
     };
     let operation = h.next_op();
-    let applied = h
-        .run_cmd(
-            &Actor::owner(),
-            &Command {
-                operation,
-                op: op.clone(),
-            },
-        )
-        .unwrap();
+    let applied = h.run_op(operation, op.clone()).unwrap();
     assert!(!applied.replayed);
     let receipt = h.reg.org().receipt(&operation).unwrap();
     let stored = serde_json::to_string(receipt).unwrap();
@@ -274,9 +249,7 @@ fn receipt_env_values_are_hashed_and_retries_still_match() {
         panic!("terminal launch")
     };
     assert_eq!(launch.env[0].1, "super-secret-value");
-    let replay = h
-        .run_cmd(&Actor::owner(), &Command { operation, op })
-        .unwrap();
+    let replay = h.run_op(operation, op).unwrap();
     assert!(replay.replayed);
 }
 
@@ -335,9 +308,7 @@ fn session_create_receipt_hashes_every_env_value() {
         attrs: phux_core::Attrs::default(),
         resource: Some(spec),
     };
-    let applied = h
-        .run_cmd(&Actor::owner(), &Command { operation, op })
-        .unwrap();
+    let applied = h.run_op(operation, op).unwrap();
     let key = created(&applied).1.unwrap();
     let LaunchSpec::Terminal(live) = h.resource(key).launch.unwrap() else {
         panic!("terminal launch")
@@ -371,16 +342,13 @@ fn resource_relaunch_receipt_hashes_every_env_value() {
     let op = Op::ResourceRelaunch {
         resource: created_key,
         expected,
-        launch: Some(LaunchSpec::Terminal(TerminalLaunch {
-            env: vec![
-                ("SECRET".to_owned(), "alpha-secret-value".to_owned()),
-                ("TOKEN".to_owned(), "beta-secret-value".to_owned()),
-            ],
-            ..TerminalLaunch::default()
-        })),
+        launch: secret_shell(&[
+            ("SECRET", "alpha-secret-value"),
+            ("TOKEN", "beta-secret-value"),
+        ])
+        .launch,
     };
-    h.run_cmd(&Actor::owner(), &Command { operation, op })
-        .unwrap();
+    h.run_op(operation, op).unwrap();
     let LaunchSpec::Terminal(live) = h.resource(created_key).launch.unwrap() else {
         panic!("terminal launch")
     };
@@ -403,19 +371,9 @@ fn same_operation_with_a_different_env_value_is_a_duplicate() {
         resource: secret_shell(&[("SECRET", "value-one"), ("OTHER", "value-two")]),
         placement: None,
     };
-    let applied = h
-        .run_cmd(
-            &Actor::owner(),
-            &Command {
-                operation,
-                op: op.clone(),
-            },
-        )
-        .unwrap();
+    let applied = h.run_op(operation, op.clone()).unwrap();
     assert!(!applied.replayed);
-    let replay = h
-        .run_cmd(&Actor::owner(), &Command { operation, op })
-        .unwrap();
+    let replay = h.run_op(operation, op).unwrap();
     assert!(replay.replayed);
     let changed = Op::ResourceCreate {
         session: Some(session),
@@ -423,13 +381,7 @@ fn same_operation_with_a_different_env_value_is_a_duplicate() {
         placement: None,
     };
     assert_eq!(
-        h.run_cmd(
-            &Actor::owner(),
-            &Command {
-                operation,
-                op: changed
-            }
-        ),
+        h.run_op(operation, changed),
         Err(Refusal::DuplicateOperation)
     );
 }

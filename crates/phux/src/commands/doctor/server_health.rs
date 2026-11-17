@@ -78,7 +78,7 @@ pub(super) fn server_health_checks(
             ),
             format!(
                 "something is killing the server on startup; the reason is in {}",
-                phux_server::telemetry::server_log_path().display()
+                phux_config::instance::server_log_path().display()
             ),
         ));
     }

@@ -5,8 +5,8 @@ use phux_client::ask::AskedPayload;
 use phux_client::attach::AttachError;
 use phux_client::read::Verb;
 use phux_client::selector::format_terminal_id;
+use phux_config::socket::default_socket_path;
 use phux_protocol::ResourceId;
-use phux_server::runtime::default_socket_path;
 
 use crate::commands::{cli_runtime, json_err, parse_selector, resolve_terminal_target};
 
@@ -29,9 +29,9 @@ pub(crate) fn run_ask(
         Err(code) => return code,
     };
     rt.block_on(async move {
-        let pane = match resolve_terminal_target(&socket_path, &selector, Verb::Ask, json).await {
+        let pane = match resolve_terminal_target(&socket_path, &selector, Verb::Ask).await {
             Ok(id) => id,
-            Err(code) => return code,
+            Err(refusal) => return refusal.emit(json),
         };
         let payload = AskedPayload {
             id,
@@ -88,6 +88,27 @@ fn success_text(pane: &ResourceId, payload: &AskedPayload) -> String {
         "reported ask {} to {}",
         payload.id,
         format_terminal_id(pane)
+    )
+}
+
+/// Run `phux ask` as parsed.
+pub(crate) fn run(args: crate::commands::AskArgs, socket: Option<PathBuf>) -> ExitCode {
+    let crate::commands::AskArgs {
+        target,
+        id,
+        suggestions,
+        elapsed_seconds,
+        json,
+        question,
+    } = args;
+    run_ask(
+        &target,
+        id,
+        suggestions,
+        elapsed_seconds,
+        json.json,
+        question,
+        socket,
     )
 }
 

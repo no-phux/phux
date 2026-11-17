@@ -180,22 +180,39 @@ mod tests {
         String::from_utf8(out).expect("utf8")
     }
 
+    /// Indexed colours keep their palette index (the buffer path flattens
+    /// them to a gray; this helper exists to emit the real index). RGB emits
+    /// truecolor; reset emits nothing.
     #[test]
-    fn indexed_color_is_preserved_not_flattened() {
-        assert_eq!(sgr(Color::Indexed(240), false), "\x1b[48;5;240m");
-        assert_eq!(sgr(Color::Indexed(12), true), "\x1b[38;5;12m");
+    fn colors_emit_their_sgr_form() {
+        #[rustfmt::skip] // a case table, one row per case
+        let cases = [
+            (Color::Indexed(240), false, "\x1b[48;5;240m"),
+            (Color::Indexed(12), true, "\x1b[38;5;12m"),
+            (Color::Rgb(10, 20, 30), false, "\x1b[48;2;10;20;30m"),
+            (Color::Reset, true, ""),
+            (Color::Reset, false, ""),
+        ];
+        for (color, fg, want) in cases {
+            assert_eq!(sgr(color, fg), want, "{color:?} fg={fg}");
+        }
     }
 
     /// The 16-colour theme speaks the user's own palette, so a named colour
     /// is an ANSI index on both paths, never a fixed 24-bit guess.
     #[test]
-    fn named_colors_stay_ansi_and_rgb_stays_truecolor() {
-        assert_eq!(sgr(Color::Rgb(10, 20, 30), false), "\x1b[48;2;10;20;30m");
-        assert_eq!(sgr(Color::White, true), "\x1b[97m");
-        assert_eq!(sgr(Color::Cyan, true), "\x1b[36m");
-        assert_eq!(sgr(Color::Gray, false), "\x1b[47m");
-        assert_eq!(sgr(Color::LightBlue, true), "\x1b[94m");
-        assert_eq!(sgr(Color::DarkGray, false), "\x1b[100m");
+    fn named_colors_stay_ansi() {
+        #[rustfmt::skip] // a case table, one row per case
+        let cases = [
+            (Color::White, true, "\x1b[97m"),
+            (Color::Cyan, true, "\x1b[36m"),
+            (Color::Gray, false, "\x1b[47m"),
+            (Color::LightBlue, true, "\x1b[94m"),
+            (Color::DarkGray, false, "\x1b[100m"),
+        ];
+        for (color, fg, want) in cases {
+            assert_eq!(sgr(color, fg), want, "{color:?} fg={fg}");
+        }
         let mut cell = ratatui::buffer::Cell::default();
         cell.set_style(
             ratatui::style::Style::default()
@@ -206,12 +223,6 @@ mod tests {
         let mut out = Vec::new();
         emit_cell_sgr(&mut out, &cell, &mut None).expect("emit");
         assert_eq!(out, b"\x1b[0m\x1b[1;33;48;5;236m");
-    }
-
-    #[test]
-    fn reset_emits_nothing() {
-        assert_eq!(sgr(Color::Reset, true), "");
-        assert_eq!(sgr(Color::Reset, false), "");
     }
 
     #[test]

@@ -8,11 +8,10 @@ use std::f32::consts::{PI, TAU};
 
 use super::room::{BLACK, WHITE, hex, rr};
 use crate::kitchen::{Chef, Goal, HAT, Kitchen, Line, Part, PartKind};
+pub use crate::playground::{AMBER, MINT};
 use crate::playground::{Mood, Pt, Rgb, mix};
 use crate::ui::playground::pen::Pen;
 
-pub const AMBER: Rgb = [255.0, 181.0, 71.0];
-pub const MINT: Rgb = [98.0, 230.0, 180.0];
 const SKIN: [Rgb; 5] = [
     [241.0, 200.0, 166.0],
     [224.0, 172.0, 128.0],

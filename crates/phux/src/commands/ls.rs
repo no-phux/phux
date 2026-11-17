@@ -13,6 +13,26 @@ mod all_hosts;
 mod glance_rows;
 mod lines;
 mod session_view;
+/// Run `phux ls` as parsed.
+pub(crate) fn run(args: crate::commands::LsArgs, socket: Option<std::path::PathBuf>) -> ExitCode {
+    match args {
+        crate::commands::LsArgs {
+            json, all: true, ..
+        } => run_ls_all(json.json, socket),
+        crate::commands::LsArgs {
+            json,
+            remote,
+            session,
+            detail,
+            ..
+        } => run_ls(
+            json.json,
+            &Depth::of(session, detail),
+            remote.with_socket(socket),
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

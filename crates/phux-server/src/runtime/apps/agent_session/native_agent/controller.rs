@@ -22,22 +22,13 @@ use subtle::ConstantTimeEq as _;
 
 use phux_agent_session::session::AgentSessionResource as _;
 pub(super) fn refusal(message: impl Into<String>) -> CommandResult {
-    CommandResult::Error {
-        code: ErrorCode::InvalidCommand,
-        message: message.into(),
-    }
+    CommandResult::error(ErrorCode::InvalidCommand, message)
 }
 pub(super) fn denied(message: impl Into<String>) -> CommandResult {
-    CommandResult::Error {
-        code: ErrorCode::PermissionDenied,
-        message: message.into(),
-    }
+    CommandResult::error(ErrorCode::PermissionDenied, message)
 }
 pub(super) fn closed(message: impl Into<String>) -> CommandResult {
-    CommandResult::Error {
-        code: ErrorCode::TerminalNotFound,
-        message: message.into(),
-    }
+    CommandResult::error(ErrorCode::TerminalNotFound, message)
 }
 pub(super) fn json<T: Serialize>(value: &T) -> CommandResult {
     match serde_json::to_string(value) {
@@ -68,10 +59,10 @@ pub(super) fn authenticated_host_binding<'a>(
         ));
     }
     if generation.is_some_and(|generation| generation != binding.generation) {
-        return Err(CommandResult::Error {
-            code: ErrorCode::PreconditionFailed,
-            message: "native controller generation is fenced".into(),
-        });
+        return Err(CommandResult::error(
+            ErrorCode::PreconditionFailed,
+            "native controller generation is fenced",
+        ));
     }
     binding.host_pid = Some(pid);
     Ok(binding)
@@ -82,9 +73,10 @@ fn verify_guardian_process(
     pid: u32,
 ) -> Result<(), CommandResult> {
     let core = s
+        .idspace
         .resource_from_wire(agent)
         .ok_or_else(|| closed("native agent session is gone"))?;
-    if s.resource_handle(core).is_none() {
+    if s.resources().handle(core).is_none() {
         return Err(closed("native agent session is closed"));
     }
     let parent = s
@@ -231,30 +223,39 @@ pub(crate) async fn handle(ctx: &CommandContext, request: NativeRequest) -> Comm
 
 fn sealed_request(state: &SharedState, request: &NativeRequest) -> Option<CommandResult> {
     match request {
-        NativeRequest::Command { agent_session_id, command } => {
+        NativeRequest::Command {
+            agent_session_id,
+            command,
+        } => {
             let prior = state.with(|s| {
-                s.native_agents().bindings.get(agent_session_id)
+                s.native_agents()
+                    .bindings
+                    .get(agent_session_id)
                     .and_then(|binding| binding.operations.get(&command.operation_id))
                     .filter(|operation| operation.command == *command)
                     .map(|operation| operation.result.clone())
             });
-            Some(json(&prior.unwrap_or_else(|| refused_command(
-                command.operation_id,
-                "daemon upgrade cut is sealed; no model input was dispatched",
-            ))))
+            Some(json(&prior.unwrap_or_else(|| {
+                refused_command(
+                    command.operation_id,
+                    "daemon upgrade cut is sealed; no model input was dispatched",
+                )
+            })))
         }
-        NativeRequest::Spawn { .. } | NativeRequest::LaunchIntegration { .. } => Some(CommandResult::Error {
-            code: ErrorCode::Overflow,
-            message: "daemon upgrade is in progress; no agent was started; reconnect before launching again".into(),
-        }),
+        NativeRequest::Spawn { .. } | NativeRequest::LaunchIntegration { .. } => {
+            Some(CommandResult::error(
+                ErrorCode::Overflow,
+                "daemon upgrade is in progress; no agent was started; reconnect before launching again",
+            ))
+        }
         NativeRequest::Complete { .. }
-        | NativeRequest::Publish { .. } | NativeRequest::Close { .. } => {
-            Some(CommandResult::Error {
-                code: ErrorCode::Overflow,
-                message: "native broker upgrade cut is sealed; retry the identical publication/receipt after reconnect".into(),
-            })
-        }
-        NativeRequest::Register { .. } | NativeRequest::Receive { .. }
+        | NativeRequest::Publish { .. }
+        | NativeRequest::Close { .. } => Some(CommandResult::error(
+            ErrorCode::Overflow,
+            "native broker upgrade cut is sealed; retry the identical publication/receipt after reconnect",
+        )),
+        NativeRequest::Register { .. }
+        | NativeRequest::Receive { .. }
         | NativeRequest::ListIntegrations {} => None,
     }
 }
@@ -277,7 +278,8 @@ fn submit_command(
     let Some(binding) = s.native_agents().bindings.get(agent) else {
         return refused_command(operation_id, "resource has no native controller");
     };
-    if s.authenticated_credential(client)
+    if s.clients()
+        .authenticated_credential(client)
         .is_some_and(|credential| credential.id == binding.credential)
     {
         return refused_command(
@@ -296,7 +298,7 @@ fn submit_command(
         };
     }
     let parent = binding.parent.clone();
-    let Some(core_parent) = s.resource_from_wire(&parent) else {
+    let Some(core_parent) = s.idspace.resource_from_wire(&parent) else {
         return refused_command(operation_id, "native guardian is closed");
     };
     if !native_source_live(s, agent, core_parent) {
@@ -336,8 +338,9 @@ fn native_source_live(
     core_parent: phux_core::ids::ResourceId,
 ) -> bool {
     let source_live = s
+        .idspace
         .resource_from_wire(agent)
-        .and_then(|core| s.resource_handle(core))
+        .and_then(|core| s.resources().handle(core))
         .and_then(|handle| handle.agent_session().ok())
         .is_some_and(|session| !session.ended.load(std::sync::atomic::Ordering::Relaxed));
     let guardian_live = s
@@ -357,9 +360,9 @@ fn native_input_blocked(
     answer_requires_human: bool,
 ) -> bool {
     s.connection_revoked(client)
-        || s.input_blocked(core_parent, client)
-        || s.is_viewer(client, parent)
-        || s.is_viewer(client, agent)
+        || s.leases().blocked(core_parent, client)
+        || s.clients().is_viewer(client, parent)
+        || s.clients().is_viewer(client, agent)
         || (answer_requires_human
             && !s
                 .connection_grant(client)

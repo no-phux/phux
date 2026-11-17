@@ -14,8 +14,8 @@ use phux_client::resource::cursor::Cursor;
 use phux_client::resource::methods::ResourceMethods;
 use phux_client::resource::show::ResourceDetails;
 use phux_client::resource::wait::{ResourceWait, ResourceWaitError, WaitFailure, WaitOutcome};
+use phux_config::socket::default_socket_path;
 use phux_protocol::ids::ResourceId;
-use phux_server::runtime::default_socket_path;
 
 use crate::commands::json_err::{self, CliError, codes};
 use crate::commands::{ResourceAction, cli_runtime, parse_selector, resolve_target};
@@ -55,7 +55,9 @@ async fn resolve(
     if let Some(id) = selector.explicit_id() {
         return Ok(id);
     }
-    resolve_target(socket, &selector, verb, json).await
+    resolve_target(socket, &selector, verb)
+        .await
+        .map_err(|refusal| refusal.emit(json))
 }
 
 fn run_show(socket: &Path, target: Option<&str>, json: bool) -> ExitCode {
@@ -382,6 +384,15 @@ fn report_wait_failure(json: bool, socket: &Path, err: &ResourceWaitError) -> Ex
         failure.remedy = format!("{}; resume with --after {cursor}", failure.remedy);
     }
     json_err::emit(json, &failure, code)
+}
+
+/// Run `phux resource` as parsed.
+pub(crate) fn run(
+    args: crate::commands::ResourceArgs,
+    socket: Option<std::path::PathBuf>,
+) -> ExitCode {
+    let crate::commands::ResourceArgs { action } = args;
+    run_resource(&action, socket)
 }
 
 #[cfg(test)]

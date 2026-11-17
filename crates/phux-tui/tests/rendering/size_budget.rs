@@ -21,7 +21,15 @@ const TOO_MANY_ARGUMENTS: &[(&str, &str, usize)] = &[
 ];
 
 /// `(file, fn)`: the functions still allowed past clippy's 100-line limit.
-const TOO_MANY_LINES: &[(&str, &str)] = &[("attach/driver/loop_state/mod.rs", "new")];
+const TOO_MANY_LINES: &[(&str, &str)] = &[
+    ("attach/driver/loop_state/mod.rs", "new"),
+    // One layout-policy case table, moved in with the status-bar composer
+    // from phux-config.
+    (
+        "render/chrome/status_bar/widgets/bar/tests.rs",
+        "rows_compose_per_the_layout_policy",
+    ),
+];
 
 const RULE: &str = "\
 Budget exceeded. Before raising a number here, give the state an owner

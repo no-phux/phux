@@ -18,10 +18,10 @@ use std::process::ExitCode;
 use phux_client::attach::AttachError;
 use phux_client::attach::connection::Connection;
 use phux_client::state::Degradation;
+use phux_config::socket::default_socket_path;
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
 use phux_protocol::wire::info::{SessionInfo, SessionSnapshot};
-use phux_server::runtime::default_socket_path;
 
 use crate::commands::{cli_runtime, json_err, ls};
 // Feature bits by their `snake_case` name (the `docs/protocol.md` constant
@@ -156,8 +156,8 @@ fn build_report(
         sessions,
         satellite_terminals,
         unreachable: degradation.notices().to_vec(),
-        server_log: phux_server::telemetry::server_log_path(),
-        client_log_dir: phux_server::telemetry::state_dir(),
+        server_log: phux_config::instance::server_log_path(),
+        client_log_dir: phux_config::instance::state_dir(),
         keep_awake: None,
     }
 }
@@ -375,6 +375,15 @@ fn report_failure(json: bool, err: &AttachError, socket_path: &Path) -> ExitCode
         return ExitCode::from(1);
     }
     json_err::report_no_server(json, err, socket_path, "status")
+}
+
+/// Run `phux status` as parsed.
+pub(crate) fn run(
+    args: crate::commands::StatusArgs,
+    socket: Option<std::path::PathBuf>,
+) -> ExitCode {
+    let crate::commands::StatusArgs { json } = args;
+    run_status(json.json, socket)
 }
 
 #[cfg(test)]

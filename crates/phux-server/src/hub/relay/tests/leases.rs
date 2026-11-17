@@ -5,7 +5,7 @@ use super::*;
 #[test]
 fn relayed_events_go_through_the_hub_registry_with_the_hubs_seq() {
     let journal = crate::state::SharedState::new();
-    let consumer = journal.with_mut(crate::state::ServerState::new_client_id);
+    let consumer = journal.with_mut(|s| s.clients_mut().new_client_id());
     let (registry_tx, mut registry_rx) = mpsc::channel(8);
     journal.with_mut(|s| {
         s.subscribe_satellite_events(
@@ -78,133 +78,106 @@ fn relayed_events_go_through_the_hub_registry_with_the_hubs_seq() {
 
 // --- lease TTL mirror (ADR-0033) ---
 
-/// A satellite `EXPIRED`/`RELEASED` frees the hub's ledger entry.
-#[test]
-fn a_satellite_expiry_or_release_clears_the_hubs_satellite_lease() {
-    for action in [ControlAction::Expired, ControlAction::Released] {
-        let journal = crate::state::SharedState::new();
-        let holder = journal.with_mut(crate::state::ServerState::new_client_id);
-        let (mailbox_tx, _mailbox_rx) = mpsc::channel(1);
-        journal.with_mut(|s| {
-            s.set_satellite_lease(host(), 9, holder, mailbox_tx.clone());
-        });
-        assert_eq!(
-            journal.with(|s| s.satellite_lease_holder(&host(), 9)),
-            Some(holder),
-            "{action:?}: precondition"
-        );
-        let mut session = RelaySession::new(host(), BootstrapLimits::default());
-        session.set_journal(Some(journal.clone()));
-        session.feed(&FrameKind::Event {
-            terminal: Some(ResourceId::local(9)),
-            event: AgentEvent::TerminalControl {
-                lifecycle: phux_protocol::wire::frame::ResourceLifecycle::Running,
-                exit_status: None,
-                input_holder: None,
-                action,
-                actor: None,
-            },
-            stamp: None,
-        });
-        assert_eq!(
-            journal.with(|s| s.satellite_lease_holder(&host(), 9)),
-            None,
-            "{action:?}: the hub ledger must follow the satellite"
-        );
-    }
-}
-
-/// A `SEIZED` is not a free lease; the ledger is left alone.
-#[test]
-fn a_satellite_seize_does_not_clear_the_hubs_satellite_lease() {
-    let journal = crate::state::SharedState::new();
-    let holder = journal.with_mut(crate::state::ServerState::new_client_id);
-    let (mailbox_tx, _mailbox_rx) = mpsc::channel(1);
-    journal.with_mut(|s| {
-        s.set_satellite_lease(host(), 9, holder, mailbox_tx);
-    });
-    let mut session = RelaySession::new(host(), BootstrapLimits::default());
-    session.set_journal(Some(journal.clone()));
-    session.feed(&FrameKind::Event {
+/// A satellite `TERMINAL_CONTROL` event for Terminal 9.
+fn control(action: ControlAction, input_holder: Option<u32>) -> FrameKind {
+    FrameKind::Event {
         terminal: Some(ResourceId::local(9)),
         event: AgentEvent::TerminalControl {
             lifecycle: phux_protocol::wire::frame::ResourceLifecycle::Running,
             exit_status: None,
-            input_holder: Some(phux_protocol::ids::ClientId::new(99)),
-            action: ControlAction::Seized,
+            input_holder: input_holder.map(phux_protocol::ids::ClientId::new),
+            action,
             actor: None,
         },
         stamp: None,
-    });
-    assert_eq!(
-        journal.with(|s| s.satellite_lease_holder(&host(), 9)),
-        Some(holder),
-        "a SEIZED mirror must not evict the hub ledger"
-    );
+    }
+}
+
+/// A hub journal, and a relay session that mirrors into it.
+fn journaled() -> (crate::state::SharedState, RelaySession) {
+    let journal = crate::state::SharedState::new();
+    let mut session = RelaySession::new(host(), BootstrapLimits::default());
+    session.set_journal(Some(journal.clone()));
+    (journal, session)
+}
+
+/// The hub ledger's holder of the satellite lease on Terminal 9.
+fn lease_holder(journal: &crate::state::SharedState) -> Option<ClientId> {
+    journal.with(|s| s.federation().satellite_lease_holder(&host(), 9))
+}
+
+/// A satellite `EXPIRED`/`RELEASED` frees the hub's ledger entry; a
+/// `SEIZED` is not a free lease, so the ledger is left alone.
+#[test]
+fn a_satellite_expiry_or_release_clears_the_hubs_satellite_lease() {
+    for (action, input_holder, cleared) in [
+        (ControlAction::Expired, None, true),
+        (ControlAction::Released, None, true),
+        (ControlAction::Seized, Some(99), false),
+    ] {
+        let (journal, mut session) = journaled();
+        let holder = journal.with_mut(|s| s.clients_mut().new_client_id());
+        let (mailbox_tx, _mailbox_rx) = mpsc::channel(1);
+        journal.with_mut(|s| {
+            s.federation_mut()
+                .set_satellite_lease(host(), 9, holder, mailbox_tx);
+        });
+        assert_eq!(
+            lease_holder(&journal),
+            Some(holder),
+            "{action:?}: precondition"
+        );
+        session.feed(&control(action, input_holder));
+        assert_eq!(
+            lease_holder(&journal),
+            (!cleared).then_some(holder),
+            "{action:?}: the hub ledger must follow the satellite, and a SEIZED must not evict it"
+        );
+    }
 }
 
 /// A stale Released that arrives after a newer acquire's reply must not
 /// evict the new holder.
 #[test]
 fn a_stale_released_arriving_after_a_newer_acquires_reply_does_not_evict_it() {
-    let journal = crate::state::SharedState::new();
-    let a = journal.with_mut(crate::state::ServerState::new_client_id);
-    let b = journal.with_mut(crate::state::ServerState::new_client_id);
+    let (journal, mut session) = journaled();
+    let a = journal.with_mut(|s| s.clients_mut().new_client_id());
+    let b = journal.with_mut(|s| s.clients_mut().new_client_id());
     let (a_tx, _a_rx) = mpsc::channel(1);
     let (b_tx, _b_rx) = mpsc::channel(1);
 
     // A held the lease.
     journal.with_mut(|s| {
-        s.set_satellite_lease(host(), 9, a, a_tx);
+        s.federation_mut().set_satellite_lease(host(), 9, a, a_tx);
     });
 
     // B's acquire relay marks pending...
-    journal.with_mut(|s| s.mark_satellite_lease_acquire_pending(host(), 9));
+    journal.with_mut(|s| {
+        s.federation_mut()
+            .mark_satellite_lease_acquire_pending(host(), 9);
+    });
     // ...and its reply lands first; only the event mirror clears the mark.
     journal.with_mut(|s| {
-        s.set_satellite_lease(host(), 9, b, b_tx);
+        s.federation_mut().set_satellite_lease(host(), 9, b, b_tx);
     });
     assert_eq!(
-        journal.with(|s| s.satellite_lease_holder(&host(), 9)),
+        lease_holder(&journal),
         Some(b),
         "precondition: the reply already installed B"
     );
 
     // A's delayed Released arrives.
-    let mut session = RelaySession::new(host(), BootstrapLimits::default());
-    session.set_journal(Some(journal.clone()));
-    session.feed(&FrameKind::Event {
-        terminal: Some(ResourceId::local(9)),
-        event: AgentEvent::TerminalControl {
-            lifecycle: phux_protocol::wire::frame::ResourceLifecycle::Running,
-            exit_status: None,
-            input_holder: None,
-            action: ControlAction::Released,
-            actor: None,
-        },
-        stamp: None,
-    });
-
+    session.feed(&control(ControlAction::Released, None));
     assert_eq!(
-        journal.with(|s| s.satellite_lease_holder(&host(), 9)),
+        lease_holder(&journal),
         Some(b),
         "a stale Released arriving after a newer reply must not evict the holder it installed"
     );
 
     // The mark is consumed; a later Released applies normally.
-    session.feed(&FrameKind::Event {
-        terminal: Some(ResourceId::local(9)),
-        event: AgentEvent::TerminalControl {
-            lifecycle: phux_protocol::wire::frame::ResourceLifecycle::Running,
-            exit_status: None,
-            input_holder: None,
-            action: ControlAction::Released,
-            actor: None,
-        },
-        stamp: None,
-    });
+    session.feed(&control(ControlAction::Released, None));
     assert_eq!(
-        journal.with(|s| s.satellite_lease_holder(&host(), 9)),
+        lease_holder(&journal),
         None,
         "a later, non-racing Released is honored normally"
     );
@@ -244,5 +217,3 @@ fn the_link_subscribes_events_with_journal_semantics_when_the_satellite_speaks_t
         );
     }
 }
-
-// --- session: return-leg re-tagging ----------------------------------

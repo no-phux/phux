@@ -19,7 +19,6 @@ impl OutputPumpContext {
     /// Tombstone the live generation, publish its native replacement, and
     /// adopt the post-cut receiver the actor fenced it behind. `false` means
     /// the actor invalidated the capture: the generation stays retired.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     async fn republish_native_generation(
         &self,
         generation: &mut PumpGeneration,
@@ -46,7 +45,6 @@ impl OutputPumpContext {
             .await
     }
 
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     async fn publish_captured_native_generation(
         &self,
         generation: &mut PumpGeneration,
@@ -100,7 +98,6 @@ impl OutputPumpContext {
         output_rx: &mut tokio::sync::broadcast::Receiver<ResourceOutput>,
     ) -> Result<(), PumpFault> {
         const CAPTURE_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         if publishes_native_checkpoints(self.profile) {
             let bootstrap_id = next_bootstrap_id(generation.bootstrap_id());
             let capture = request_native_checkpoint(&self.terminal, |reply| {
@@ -246,7 +243,6 @@ impl OutputPumpContext {
         output_rx: &mut tokio::sync::broadcast::Receiver<ResourceOutput>,
         resync: &PaneResync,
     ) -> ControlFlow<Option<PumpFault>> {
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         if publishes_native_checkpoints(self.profile) {
             let prior_bootstrap_id = generation.bootstrap_id();
             return match self
@@ -323,7 +319,6 @@ impl OutputPumpContext {
     /// already tombstoned. Stay fenced and ask for the resync, under the gap
     /// retry budget, so a lost broadcast cannot freeze the client; a closing
     /// pane ends the pump quietly instead.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     async fn await_superseded_resync(
         &self,
         generation: &mut PumpGeneration,

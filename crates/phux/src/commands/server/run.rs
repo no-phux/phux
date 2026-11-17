@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use phux_config::loader as config_loader;
-use phux_server::runtime::default_socket_path;
+use phux_config::socket::default_socket_path;
 use phux_server::{ServerConfig, ServerRuntime};
 
 use crate::print_banner;

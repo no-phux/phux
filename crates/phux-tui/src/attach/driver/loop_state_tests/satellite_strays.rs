@@ -218,7 +218,7 @@ async fn kill_commands(client: &mut Connection, server: &mut Connection) -> Vec<
 /// `PRECONDITION_FAILED` is consumed and forgets the stray.
 #[tokio::test(flavor = "current_thread")]
 async fn a_bound_unreachable_stray_is_retried_conditionally_once_reachable() {
-    use phux_protocol::wire::frame::{CommandResult, ErrorCode};
+    use phux_protocol::wire::frame::ErrorCode;
 
     let (mut state, mut client, mut server, mut out) =
         Box::pin(loop_with_window_on(conditional_kill(), Some(edge_token()))).await;
@@ -243,13 +243,7 @@ async fn a_bound_unreachable_stray_is_retried_conditionally_once_reachable() {
             .collect::<Vec<_>>(),
         vec![conditional_edge_kill()]
     );
-    let refused = FrameKind::CommandResult {
-        request_id: sent[0].0,
-        result: CommandResult::Error {
-            code: ErrorCode::PreconditionFailed,
-            message: "resource was attached by another connection".to_owned(),
-        },
-    };
+    let refused = phux_wire_fixtures::command_err(sent[0].0, ErrorCode::PreconditionFailed, "resource was attached by another connection");
     assert_eq!(state.orphan_kills.observe(refused), None, "consumed");
 
     answer_inventory(&mut state, &mut client, vec![edge_row(true)]).await;

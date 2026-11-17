@@ -22,13 +22,16 @@ pub mod embedder;
 mod frames;
 mod framing;
 pub use frames::*;
+mod poll;
+pub use poll::{eventually, eventually_async};
 pub mod relay;
 pub mod screen;
 mod server;
 pub mod tracing_capture;
+pub use phux_server::policy::testing::{FnPolicy, parse_scopes, scoped_grant};
 pub use server::{
-    ServerHandles, SpawnedServer, hangup_proof_script, seed_pty, spawn_server,
-    spawn_server_connected, spawn_server_seed_pty_no_cmd, spawn_server_with,
+    ServerBuilder, ServerHandles, SpawnedServer, contains, hangup_proof_script, seed_pty, sh,
+    spawn_server, spawn_server_connected, spawn_server_seed_pty_no_cmd, spawn_server_with,
     spawn_server_with_seed_cmd, terminal_server,
 };
 
@@ -407,6 +410,20 @@ pub fn ascii_key(c: char, key: PhysicalKey) -> KeyEvent {
     }
 }
 
+/// An unmodified Enter press with no text (the encoder synthesizes the CR).
+#[must_use]
+pub const fn enter_key() -> KeyEvent {
+    KeyEvent {
+        action: KeyAction::Press,
+        key: PhysicalKey::Enter,
+        mods: ModSet::empty(),
+        consumed_mods: ModSet::empty(),
+        composing: false,
+        text: None,
+        unshifted_codepoint: None,
+    }
+}
+
 /// The optional fields of a `SPAWN_RESOURCE` in group 1. `Default` is a
 /// plain default-shell Terminal spawn on the receiving server.
 #[derive(Debug, Clone, Default)]
@@ -471,6 +488,16 @@ pub async fn spawn_resource(stream: &mut UnixStream, request_id: u32, spawn: Spa
 #[must_use]
 pub fn attach_by_name(name: &str) -> FrameKind {
     attach_by_name_with_id(name, 1)
+}
+
+/// Send [`attach_by_name`] and return the attached session's focused resource.
+pub async fn attach_focused(stream: &mut UnixStream, name: &str) -> ResourceId {
+    send_frame(stream, &attach_by_name(name)).await;
+    recv_until(stream, |_, frame| match frame {
+        FrameKind::Attached { snapshot, .. } => Some(snapshot.focused_resource),
+        _ => None,
+    })
+    .await
 }
 
 /// Build an `ATTACH` with an explicit connection-unique correlation id.

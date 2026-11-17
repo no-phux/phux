@@ -18,7 +18,7 @@ pub(crate) fn handle_subscribe_terminal_events(
 ) -> CommandResult {
     let filter = crate::state::EventFilter::of(event_types);
     let registered = state.with_mut(|s| {
-        s.resource_from_wire(terminal_id)?;
+        s.idspace.resource_from_wire(terminal_id)?;
         s.subscribe_resource_events(client_id, terminal_id.clone(), filter, out_tx.clone());
         Some(())
     });

@@ -81,27 +81,14 @@ fn route_input_delivers_keys_without_resizing_the_pane() {
         let dims = |s: &phux_core::screen::ScreenState| (s.cols, s.rows) == (120, 40);
         assert!(dims(&poll_screen(&mut headless, &pane, dims).await));
 
-        route(
-            &mut headless,
-            2,
-            &pane,
-            InputEvent::Key(ascii_key('q', PhysicalKey::Q)),
-        )
-        .await;
-        route(
-            &mut attached,
-            3,
-            &pane,
-            InputEvent::Key(ascii_key('z', PhysicalKey::Z)),
-        )
-        .await;
-        route(
-            &mut attached,
-            4,
-            &pane,
-            InputEvent::Key(named_key(PhysicalKey::Enter)),
-        )
-        .await;
+        let q = ascii_key('q', PhysicalKey::Q);
+        route(&mut headless, 2, &pane, InputEvent::Key(q)).await;
+        for (request_id, key) in [
+            (3, ascii_key('z', PhysicalKey::Z)),
+            (4, named_key(PhysicalKey::Enter)),
+        ] {
+            route(&mut attached, request_id, &pane, InputEvent::Key(key)).await;
+        }
 
         let after = poll_screen(&mut headless, &pane, |s| {
             dims(s) && s.lines.concat().contains("qz")
@@ -138,13 +125,8 @@ fn routed_paste_honors_dec_2004_and_trust() {
         let (_server, mut stream) = seeded(&tmp, sh("printf '\\033[?2004hREADY\\n'; cat")).await;
         let pane = focused_resource(&mut stream, 1).await;
         poll_screen(&mut stream, &pane, |s| s.lines.concat().contains("READY")).await;
-        route(
-            &mut stream,
-            2,
-            &pane,
-            paste(PasteTrust::Trusted, b"bpayload"),
-        )
-        .await;
+        let bracketed = paste(PasteTrust::Trusted, b"bpayload");
+        route(&mut stream, 2, &pane, bracketed).await;
         let text = poll_screen(&mut stream, &pane, |s| s.lines.concat().contains("201~")).await;
         assert!(
             text.lines.concat().contains("^[[200~bpayload^[[201~"),
@@ -157,13 +139,8 @@ fn routed_paste_honors_dec_2004_and_trust() {
         let (_server, mut stream) = seeded(&tmp, sh("printf 'READY\\n'; cat")).await;
         let pane = focused_resource(&mut stream, 1).await;
         poll_screen(&mut stream, &pane, |s| s.lines.concat().contains("READY")).await;
-        route(
-            &mut stream,
-            2,
-            &pane,
-            paste(PasteTrust::Untrusted, b"evilpayload\nsecond"),
-        )
-        .await;
+        let evil = paste(PasteTrust::Untrusted, b"evilpayload\nsecond");
+        route(&mut stream, 2, &pane, evil).await;
         route(
             &mut stream,
             3,

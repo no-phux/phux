@@ -15,28 +15,22 @@ use serde_json::{Value, json};
 
 use crate::cli_tools::{schema, string_schema};
 use crate::tools::{
-    ToolError, parse_selector, required_str, resolve_one, socket_or_default, strict_object,
+    ToolError, ToolSpec, parse_selector, required_str, resolve_one, socket_or_default,
+    strict_object,
 };
 
-pub(crate) fn schemas() -> Vec<Value> {
-    vec![show_schema(), wait_schema(), methods_schema()]
-}
-
-pub(crate) fn owns(name: &str) -> bool {
-    matches!(
-        name,
-        "phux_resource_show" | "phux_resource_wait" | "phux_resource_methods"
-    )
-}
-
-pub(crate) async fn call(name: &str, args: &Value) -> Result<Value, ToolError> {
-    match name {
-        "phux_resource_show" => show(args).await,
-        "phux_resource_wait" => wait(args).await,
-        "phux_resource_methods" => methods(args).await,
-        other => Err(ToolError::new(format!("unknown resource tool: {other}"))),
-    }
-}
+/// The resource tools, in catalog order.
+pub(crate) const SPECS: &[ToolSpec] = &[
+    ToolSpec::in_process("phux_resource_show", show_schema, |args| {
+        Box::pin(show(args))
+    }),
+    ToolSpec::in_process("phux_resource_wait", wait_schema, |args| {
+        Box::pin(wait(args))
+    }),
+    ToolSpec::in_process("phux_resource_methods", methods_schema, |args| {
+        Box::pin(methods(args))
+    }),
+];
 
 fn target_schema() -> Value {
     json!({
@@ -204,7 +198,7 @@ mod tests {
         let listener = UnixListener::bind(&socket).expect("bind");
         let spec = ScriptSpec::new().state(retained());
         let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
-        let doc = call(
+        let doc = crate::tools::call_registered(
             "phux_resource_wait",
             &json!({ "target": "@7", "timeout_secs": 20, "socket": socket.to_str().unwrap() }),
         )

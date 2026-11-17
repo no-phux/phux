@@ -1,41 +1,23 @@
 use super::*;
 
+/// The directory `flock` is the store lock: a `.<name>.lock` file left by
+/// an older binary (even a hostile one) neither blocks nor diverts a write.
 #[test]
-fn hostile_precreated_lock_and_untrusted_parent_are_rejected() {
+fn a_leftover_lock_file_is_ignored() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("credentials");
-    let lock_path = credential_lock_path(&path);
     let target = dir.path().join("attacker-lock-target");
-    OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .mode(0o600)
-        .open(&target)
-        .unwrap();
-    std::os::unix::fs::symlink(&target, &lock_path).unwrap();
-    assert!(matches!(
-        mint_token(&path),
-        Err(AuthError::InsecureStore(_))
-    ));
-
-    fs::remove_file(&lock_path).unwrap();
-    fs::write(&lock_path, b"hostile").unwrap();
-    fs::set_permissions(&lock_path, fs::Permissions::from_mode(0o644)).unwrap();
-    assert!(matches!(
-        mint_token(&path),
-        Err(AuthError::InsecureStore(_))
-    ));
-
-    fs::remove_file(&lock_path).unwrap();
-    fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o770)).unwrap();
-    assert!(matches!(
-        mint_token(&path),
-        Err(AuthError::InsecureStore(_))
-    ));
+    fs::write(&target, b"untouched").unwrap();
+    std::os::unix::fs::symlink(&target, dir.path().join(".credentials.lock")).unwrap();
+    mint_token(&path).unwrap();
+    assert_eq!(fs::read(&target).unwrap(), b"untouched");
+    assert_eq!(TokenStore::load(&path).unwrap().len(), 1);
 }
 
+/// A writer holding the directory lock blocks a concurrent writer until it
+/// commits; both mutations survive.
 #[test]
-fn replacing_lock_path_cannot_split_concurrent_mutations() {
+fn a_held_lock_serializes_concurrent_mutations() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("credentials");
     mint_token(&path).unwrap();
@@ -46,7 +28,7 @@ fn replacing_lock_path_cannot_split_concurrent_mutations() {
     let first_acquired = acquired.clone();
     let first_release = release.clone();
     let first = std::thread::spawn(move || {
-        with_store_lock(&first_path, || {
+        with_lock(&first_path, |held| {
             first_acquired.wait();
             first_release.wait();
             mint_credential_unlocked(
@@ -54,20 +36,11 @@ fn replacing_lock_path_cannot_split_concurrent_mutations() {
                 None,
                 &[TERMINAL_CONTROL_SCOPE.to_owned()],
                 None,
+                held,
             )
         })
     });
     acquired.wait();
-
-    let lock_path = credential_lock_path(&path);
-    fs::rename(&lock_path, dir.path().join("displaced-lock")).unwrap();
-    OpenOptions::new()
-        .create_new(true)
-        .read(true)
-        .write(true)
-        .mode(0o600)
-        .open(&lock_path)
-        .unwrap();
 
     let (completed_tx, completed_rx) = std::sync::mpsc::channel();
     let second_path = path.clone();
@@ -80,7 +53,7 @@ fn replacing_lock_path_cannot_split_concurrent_mutations() {
         completed_rx
             .recv_timeout(std::time::Duration::from_millis(100))
             .is_err(),
-        "replacement lock inode must not admit a concurrent writer"
+        "a held lock must not admit a concurrent writer"
     );
 
     release.wait();
@@ -89,7 +62,7 @@ fn replacing_lock_path_cannot_split_concurrent_mutations() {
     assert_eq!(
         TokenStore::load(&path).unwrap().len(),
         3,
-        "both serialized mutations survive lock-path replacement"
+        "both serialized mutations survive"
     );
 }
 

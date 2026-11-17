@@ -1,11 +1,8 @@
 use super::*;
 mod native;
 use phux_client_runtime::engine::{EngineDocumentPoint, Scroll};
-use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::{
-    BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ServerCapabilities,
-};
-use phux_protocol::ids::{BootstrapId, ClientId, SessionId, StreamId, WindowId};
+use phux_protocol::caps::ServerCapabilities;
+use phux_protocol::ids::{BootstrapId, SessionId, StreamId, WindowId};
 use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
 
 async fn bootstrap(socket: &mut UnixStream, terminal: &ResourceId) {
@@ -13,79 +10,50 @@ async fn bootstrap(socket: &mut UnixStream, terminal: &ResourceId) {
         matches!(frame, FrameKind::Hello { .. }).then_some(())
     })
     .await;
-    send_frame(
-        socket,
-        &FrameKind::HelloOk {
-            protocol_major: PROTOCOL_VERSION.major,
-            protocol_minor: PROTOCOL_VERSION.minor,
-            protocol_patch: PROTOCOL_VERSION.patch,
-            server_caps: ServerCapabilities::new(),
-            server_id: vec![1; 16],
-            selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
-            bootstrap_limits: BootstrapLimits::default(),
-        },
-    )
-    .await;
+    let hello = phux_wire_fixtures::HelloOk::new([1; 16], ServerCapabilities::new());
+    send_frame(socket, &hello.build()).await;
     let attach_id = recv_until(socket, |_, frame| match frame {
         FrameKind::Attach { attach_id, .. } => Some(attach_id),
         _ => None,
     })
     .await;
     let window = WindowId::new(1);
+    let snapshot = SessionSnapshot::new(SessionId::new(1), window, terminal.clone())
+        .with_resources(vec![ResourceInfo::new(terminal.clone(), window, 20, 4)]);
     send_frame(
         socket,
-        &FrameKind::Attached {
-            attach_id,
-            initial_client_id: ClientId::new(1),
-            snapshot: SessionSnapshot::new(SessionId::new(1), window, terminal.clone())
-                .with_resources(vec![ResourceInfo::new(terminal.clone(), window, 20, 4)]),
-        },
+        &phux_wire_fixtures::attached(attach_id, snapshot, 1),
     )
     .await;
-    let stream_id = StreamId::new(1).unwrap();
-    let bootstrap_id = BootstrapId::new(1).unwrap();
-    send_frame(
-        socket,
-        &FrameKind::BootstrapBegin {
-            terminal_id: terminal.clone(),
-            stream_id,
-            bootstrap_id,
-            profile: BootstrapStreamProfile::SynthesizedVtRaw,
-            cols: 20,
-            rows: 4,
-            base_seq: 0,
-        },
-    )
-    .await;
-    send_frame(
-        socket,
-        &FrameKind::BootstrapChunk {
-            terminal_id: terminal.clone(),
-            stream_id,
-            bootstrap_id,
-            chunk_seq: 0,
-            payload: b"zero\r\none\r\ntwo\r\nthree\r\nfour\r\nfive"
-                .to_vec()
-                .into(),
-        },
-    )
-    .await;
-    send_frame(
-        socket,
-        &FrameKind::BootstrapReady {
-            terminal_id: terminal.clone(),
-            stream_id,
-            bootstrap_id,
-            history_cursor: Some(b"older".to_vec().into()),
-        },
-    )
-    .await;
+    let options = phux_wire_fixtures::BootstrapOptions {
+        history_cursor: Some(b"older".to_vec()),
+        ..phux_wire_fixtures::BootstrapOptions::default()
+    };
+    let payload = b"zero\r\none\r\ntwo\r\nthree\r\nfour\r\nfive";
+    for frame in
+        phux_wire_fixtures::bootstrap_frames_with(terminal, [1, 1], [20, 4], payload, options)
+    {
+        send_frame(socket, &frame).await;
+    }
     send_frame(socket, &FrameKind::AttachReady { attach_id }).await;
     // This subscription is emitted at attach release, after the bootstrap ACK.
     recv_until(socket, |_, frame| {
         matches!(frame, FrameKind::SubscribeEvents { .. }).then_some(())
     })
     .await;
+}
+
+/// A runtime client attached to a fake server on a raw socket: terminal 1,
+/// bootstrapped by [`bootstrap`].
+async fn fake_server() -> (TempDir, Client, UnixStream, ResourceId) {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("fake.sock");
+    let listener = UnixListener::bind(&path).unwrap();
+    let client = Runtime::connect(Target::uds(&path), options()).unwrap();
+    let (mut socket, _) = listener.accept().await.unwrap();
+    let terminal = ResourceId::local(1);
+    bootstrap(&mut socket, &terminal).await;
+    (tmp, client, socket, terminal)
 }
 
 async fn clear_prefetch(socket: &mut UnixStream, terminal: &ResourceId) {
@@ -131,13 +99,7 @@ fn synchronized_output_watchdog_publishes_and_wakes_an_idle_driver() {
         }
     }
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("sync.sock");
-        let listener = UnixListener::bind(&path).unwrap();
-        let client = Runtime::connect(Target::uds(&path), options()).unwrap();
-        let (mut socket, _) = listener.accept().await.unwrap();
-        let terminal = ResourceId::local(1);
-        bootstrap(&mut socket, &terminal).await;
+        let (_tmp, client, mut socket, terminal) = fake_server().await;
         clear_prefetch(&mut socket, &terminal).await;
         wait_for_status(&client, Status::Attached).await;
         let committed = client.acquire(&terminal).unwrap();
@@ -149,17 +111,8 @@ fn synchronized_output_watchdog_publishes_and_wakes_an_idle_driver() {
         });
         client.set_listener(wakes.clone());
         let _ = client.take_events();
-        send_frame(
-            &mut socket,
-            &FrameKind::ResourceOutput {
-                terminal_id: terminal.clone(),
-                stream_id: StreamId::new(1).unwrap(),
-                bootstrap_id: BootstrapId::new(1).unwrap(),
-                seq: 1,
-                bytes: b"\x1b[?2026h\x1b[2J\x1b[Hwaiting".to_vec().into(),
-            },
-        )
-        .await;
+        let held = phux_wire_fixtures::output(&terminal, 1, b"\x1b[?2026h\x1b[2J\x1b[Hwaiting");
+        send_frame(&mut socket, &held).await;
         wait_for_event(&client, "held output", |event| {
             matches!(event, Event::TerminalChanged { .. }).then_some(())
         })
@@ -185,13 +138,7 @@ fn synchronized_output_watchdog_publishes_and_wakes_an_idle_driver() {
 fn view_scroll_and_pin_wake_an_idle_connected_driver_for_history() {
     run_local(async {
         for pin in [false, true] {
-            let tmp = TempDir::new().unwrap();
-            let path = tmp.path().join("idle.sock");
-            let listener = UnixListener::bind(&path).unwrap();
-            let client = Runtime::connect(Target::uds(&path), options()).unwrap();
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let terminal = ResourceId::local(1);
-            bootstrap(&mut socket, &terminal).await;
+            let (_tmp, client, mut socket, terminal) = fake_server().await;
             clear_prefetch(&mut socket, &terminal).await;
             wait_for_status(&client, Status::Attached).await;
             let view = client.create_view(&terminal).unwrap();

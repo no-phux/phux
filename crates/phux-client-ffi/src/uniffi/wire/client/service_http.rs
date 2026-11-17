@@ -152,14 +152,7 @@ impl From<ServiceHttpHead> for WireServiceHttpHead {
     }
 }
 
-impl From<ServiceHttpChunk> for WireServiceHttpChunk {
-    fn from(chunk: ServiceHttpChunk) -> Self {
-        Self {
-            bytes: chunk.bytes,
-            end: chunk.end,
-        }
-    }
-}
+mirror_from!(ServiceHttpChunk => WireServiceHttpChunk { bytes, end });
 
 /// The most bytes one `service_http_read` may ask for.
 #[uniffi::export]

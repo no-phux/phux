@@ -38,6 +38,19 @@ fn session_browser_renders_realistic_dark_light_and_search_states() {
             );
             tap(&mut rt, "phone-session-query", 0.1);
             rt.update(|d, _| {
+                d.phone.as_mut().unwrap().query.replace_text("review");
+            });
+            rt.update(|d, tx| d.phone_search_edited(tx));
+            settle_for_snapshot(&mut rt);
+            assert!(rt.find("phone-session-pane-@2").is_some());
+            paint(
+                &gpu,
+                &mut renderer,
+                &mut rt,
+                size,
+                &format!("matching-{appearance}"),
+            );
+            rt.update(|d, _| {
                 d.phone
                     .as_mut()
                     .unwrap()
@@ -87,11 +100,8 @@ fn paint(
         "{name}: more than one blur on the phone"
     );
     if let Some(directory) = std::env::var_os("RUNE_NAVIGATION_SNAP") {
-        let directory = std::path::PathBuf::from(directory);
-        let path = directory.join(format!("{name}-{}.png", size.0));
-        rune::render::write_png(&path, size.0, size.1, &pixels).unwrap();
-        let json = serde_json::to_string_pretty(&tree).unwrap();
-        std::fs::write(directory.join(format!("{name}-{}.a11y.json", size.0)), json).unwrap();
+        let path = std::path::PathBuf::from(directory).join(format!("{name}-{}.png", size.0));
+        crate::test_support::visual::write(&path, rt, size, &pixels, name);
     }
     pixels
 }

@@ -50,7 +50,7 @@ mod document;
 mod native;
 mod projection;
 mod replica;
-pub mod snapshot;
+pub use phux_vt::snapshot;
 
 use document::enforce_history_budget;
 use native::{

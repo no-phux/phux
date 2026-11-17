@@ -7,7 +7,7 @@ fn image_source() -> GhosttyTerminal<'static, 'static> {
     let mut source = GhosttyTerminal::new(200, 3).unwrap();
     source.set_scrollback_max_bytes(Some(usize::MAX)).unwrap();
     source.set_scrollback_max_lines(Some(5000)).unwrap();
-    phux_protocol::kitty_replay::configure_terminal_for_kitty_graphics(&mut source).unwrap();
+    phux_vt::kitty_replay::configure_terminal_for_kitty_graphics(&mut source).unwrap();
     source.vt_write(b"\x1b_Ga=T,f=32,s=1,v=1,i=7,q=2;/wAA/w==\x1b\\");
     source.vt_write(&b"history\r\n".repeat(1200));
     source.vt_write(b"\x1b_Ga=T,f=32,s=1,v=1,i=8,q=2;/wAA/w==\x1b\\");
@@ -15,17 +15,8 @@ fn image_source() -> GhosttyTerminal<'static, 'static> {
 }
 
 fn publish(capture: &EncodedSnapshot) -> (GhosttyAdapter, GhosttyReplica, EngineEffectBuffer) {
-    let mut adapter = native_adapter();
-    let mut replica = adapter.start_replica(native_profile(), geometry()).unwrap();
-    let mut effects = EngineEffectBuffer::new();
     let prefix_end = capture.prefix_records.last().unwrap().end;
-    adapter
-        .apply_bootstrap_chunk(&mut replica, &capture.bytes[..prefix_end], &mut effects)
-        .unwrap();
-    adapter
-        .finish_bootstrap(&mut replica, &mut effects)
-        .unwrap();
-    (adapter, replica, effects)
+    published(native_profile(), &capture.bytes[..prefix_end])
 }
 
 fn placement_offset(unit: &[u8]) -> usize {

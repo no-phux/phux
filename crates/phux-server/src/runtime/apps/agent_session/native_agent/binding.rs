@@ -320,24 +320,24 @@ impl ServerState {
     pub(crate) fn native_owned_terminal(&self, parent: phux_core::ids::ResourceId) -> bool {
         self.registry().record(parent).is_some_and(|record| matches!(&record.launch,
             Some(phux_core::LaunchSpec::Terminal(launch)) if launch.env.iter().any(|(key, _)| key == NATIVE_HOST_SPEC_ENV)))
-            || self.resource_wire_of(parent).is_some_and(|wire| self.native_agents().bindings.values().any(|binding| binding.parent == wire))
+            || self.idspace.resource_wire(parent).cloned().is_some_and(|wire| self.native_agents().bindings.values().any(|binding| binding.parent == wire))
     }
     pub(crate) fn native_host_identity(&self, client: ClientId) -> Option<(String, u32)> {
-        let peer = self.peer_identity(client)?;
+        let peer = self.clients().peer_identity(client)?;
         if peer.transport != phux_protocol::policy::TransportType::UnixSocket
             || peer.uid != rustix::process::geteuid().as_raw()
         {
             return None;
         }
-        let credential = self.authenticated_credential(client)?;
+        let credential = self.clients().authenticated_credential(client)?;
         crate::runtime::delegation::delegated_credential(peer, Some(credential))?;
         Some((credential.id.clone(), peer.pid?))
     }
     pub(crate) fn restore_native_agents(&mut self, blob: &crate::upgrade::blob::StateBlob) {
         *self.native_agents_mut() = NativeAgents::default();
         for carried in &blob.native_agents {
-            if self.resource_from_wire(&carried.agent).is_none()
-                || self.resource_from_wire(&carried.parent).is_none()
+            if self.idspace.resource_from_wire(&carried.agent).is_none()
+                || self.idspace.resource_from_wire(&carried.parent).is_none()
             {
                 continue;
             }
@@ -379,7 +379,7 @@ impl ServerState {
             .ok_or(phux_core::Refusal::NotFound)?
             .clone();
         if record.kind != phux_core::ResourceKind::Terminal
-            || self.resource_handle(guardian).is_some()
+            || self.resources().handle(guardian).is_some()
             || record.activation.as_ref().is_some_and(|activation| {
                 activation.state.is_current() || activation.state == phux_core::ExecState::Lost
             })
@@ -419,6 +419,7 @@ impl ServerState {
         let mut recipe = binding.launch.clone();
         recipe.native_id = Some(native_id.clone());
         let parent = self
+            .idspace
             .resource_from_wire(&binding.parent)
             .ok_or(phux_core::Refusal::NotFound)?;
         let record = self

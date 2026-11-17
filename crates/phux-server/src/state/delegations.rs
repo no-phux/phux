@@ -8,8 +8,7 @@ use phux_protocol::kinds::{Verb, Verbs};
 
 use super::{ClientId, ServerState};
 use crate::delegation::{
-    AGENT_VERBS, CarriedDelegation, DelegatedCredential, DelegationError, DelegationRequest,
-    MAX_LIFETIME,
+    AGENT_VERBS, DelegatedCredential, DelegationError, DelegationRequest, MAX_LIFETIME,
 };
 use crate::policy::ConnectionGrant;
 use crate::upgrade::blob::DelegationBlob;
@@ -100,6 +99,14 @@ impl ServerState {
         Ok(credential)
     }
 
+    /// Live delegated agent credentials (ADR-0163 §5). Read-only: minting,
+    /// withdrawing, and restoring stay on `ServerState`, which validates
+    /// them and revokes the connections acting as them.
+    #[must_use]
+    pub(crate) const fn delegations(&self) -> &crate::delegation::DelegationTable {
+        &self.delegations
+    }
+
     /// The grant a connection presenting delegated credential `id` gets at
     /// `now`; `None` once it is withdrawn or lapsed.
     #[must_use]
@@ -112,12 +119,6 @@ impl ServerState {
             credential.expires_at,
         )
         .ok()
-    }
-
-    /// The live delegated credential `id`, if any.
-    #[must_use]
-    pub fn delegation(&self, id: &str, now: DateTime<Utc>) -> Option<&DelegatedCredential> {
-        self.delegations.live(id, now)
     }
 
     /// Withdraw delegated credential `id`. Returns every live connection
@@ -174,13 +175,6 @@ impl ServerState {
         close: tokio_util::sync::CancellationToken,
     ) -> bool {
         self.delegations.attach_listener(id, path, fd, close)
-    }
-
-    /// Every live delegated credential with an open socket, as a hot
-    /// upgrade carries it.
-    #[must_use]
-    pub fn carried_delegations(&self, now: DateTime<Utc>) -> Vec<CarriedDelegation> {
-        self.delegations.carried(now)
     }
 
     /// Reinstate a delegated credential a hot upgrade carried, if it still
@@ -256,16 +250,11 @@ impl ServerState {
                 self.delegations.live(id, now).is_some()
             }
             PrincipalId::Credential(id) => self
-                .policy_engine()
+                .config()
+                .policy_engine
                 .workload_registry()
                 .is_some_and(|registry| registry.current().lookup(id).is_some()),
         }
-    }
-
-    /// The socket delegated credential `id`'s connections arrive on.
-    #[must_use]
-    pub fn delegation_socket(&self, id: &str) -> Option<&std::path::Path> {
-        self.delegations.socket_path(id)
     }
 
     /// Remember that `operation` minted delegated credential `id`, so a

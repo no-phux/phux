@@ -1,18 +1,7 @@
 #[test]
 fn append_resource_output_is_admitted_through_the_parent_alone() {
     let mut world = world();
-    let child = world
-        .state
-        .new_agent_session(
-            world.alpha_core,
-            &phux_core::resource::AgentFacet {
-                provider: "claude".to_owned(),
-                native_id: None,
-                state: None,
-            },
-        )
-        .unwrap();
-    let child_wire = world.state.intern_resource_wire(child);
+    let child_wire = agent_child(&mut world);
     let append = Command::AppendResourceOutput {
         terminal_id: child_wire.clone(),
         bytes: b"{}\n".to_vec(),
@@ -100,7 +89,7 @@ fn viewport_resize_does_not_require_scope_for_foreign_resource_subscriptions() {
         viewport: ViewportInfo::new(100, 30),
     };
     let home = scoped(&[&format!("bind@group:{}", world.alpha_group)]);
-    let foreign = world.state.resource_from_wire(&world.beta).unwrap();
+    let foreign = world.state.idspace.resource_from_wire(&world.beta).unwrap();
     world.state.subscribe_resource(CLIENT, foreign, None);
     assert!(
         admits(&world, &home, &resize),

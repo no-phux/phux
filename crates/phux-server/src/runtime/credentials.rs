@@ -25,7 +25,7 @@ fn next(ctx: &CommandContext, provider: &str) -> CommandResult {
     ctx.state.with_mut(|s| {
         if let Err(message) = s.credentials.register(provider, ctx.client_id) { return invalid(message); }
         let Some((id, request, requester)) = s.credentials.claim(ctx.client_id, provider) else { return CommandResult::Ok; };
-        let actor = s.client_actor_ref(requester);
+        let actor = s.clients().actor_ref(requester);
         CommandResult::OkWith(CommandValue::Json(json!({
             "id": id, "request": request, "requester": {
                 "client": actor.client.get(), "credential_id": actor.credential_id, "client_name": actor.client_name,
@@ -153,15 +153,9 @@ impl Drop for Cleanup {
 }
 
 fn invalid(message: &str) -> CommandResult {
-    CommandResult::Error {
-        code: ErrorCode::InvalidCommand,
-        message: message.to_owned(),
-    }
+    CommandResult::error(ErrorCode::InvalidCommand, message)
 }
 
 fn denied(message: &str) -> CommandResult {
-    CommandResult::Error {
-        code: ErrorCode::PermissionDenied,
-        message: message.to_owned(),
-    }
+    CommandResult::error(ErrorCode::PermissionDenied, message)
 }

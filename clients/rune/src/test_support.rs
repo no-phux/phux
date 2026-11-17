@@ -10,6 +10,7 @@ use crate::desk::{Desk, Shown};
 use crate::launch::Resolved;
 
 pub mod terminal;
+pub mod visual;
 
 pub const SCALE: f32 = 2.0;
 pub const SIZE: (f32, f32) = (1100.0, 720.0);
@@ -49,4 +50,9 @@ pub fn input_fixture_showing(output: &str) -> (Arc<Client>, Runtime<Desk>) {
     let mut rt = Runtime::new(desk, crate::ui::view, SIZE, Env::new(true, SCALE));
     rt.on_key = Some(Desk::key);
     (replica.client, rt)
+}
+
+/// The text of the notice `desk` shows; panics when it shows none.
+pub fn notice(desk: &Desk) -> &str {
+    &desk.notice.as_ref().expect("a notice is showing").text
 }

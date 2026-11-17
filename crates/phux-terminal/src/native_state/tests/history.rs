@@ -6,7 +6,7 @@ fn image_payload_is_a_zero_row_history_unit_not_finish() {
     terminal
         .set_continuation_max_bytes(CONTINUATION_LIMIT)
         .unwrap();
-    phux_protocol::kitty_replay::configure_terminal_for_kitty_graphics(&mut terminal).unwrap();
+    phux_vt::kitty_replay::configure_terminal_for_kitty_graphics(&mut terminal).unwrap();
     terminal.resize(20, 4, 8, 16).unwrap();
     terminal.vt_write(b"\x1b_Ga=T,f=32,s=1,v=1,i=42,c=2,r=2,C=1;/wAA/w==\x1b\\");
     let mut manager = NativeTerminalManager::new(terminal, 2).unwrap();
@@ -29,7 +29,7 @@ fn image_payload_is_a_zero_row_history_unit_not_finish() {
 #[test]
 fn over_cap_image_snapshot_refuses_capture_without_poisoning_the_terminal() {
     let mut terminal = GhosttyTerminal::new(20, 4).unwrap();
-    phux_protocol::kitty_replay::configure_terminal_for_kitty_graphics(&mut terminal).unwrap();
+    phux_vt::kitty_replay::configure_terminal_for_kitty_graphics(&mut terminal).unwrap();
     // Fill almost the entire 64 MiB image budget using 48 KiB records. Their
     // metadata/envelopes make the encoded snapshot larger than 64 MiB even
     // though every individual unit fits the negotiated 1 MiB page limit.
@@ -65,7 +65,7 @@ fn over_cap_image_snapshot_refuses_capture_without_poisoning_the_terminal() {
 #[test]
 fn oversized_image_unit_is_refused_before_ready_without_losing_the_source() {
     let mut terminal = GhosttyTerminal::new(20, 4).unwrap();
-    phux_protocol::kitty_replay::configure_terminal_for_kitty_graphics(&mut terminal).unwrap();
+    phux_vt::kitty_replay::configure_terminal_for_kitty_graphics(&mut terminal).unwrap();
     let pixels = "A".repeat(4 * 1024 * 1024);
     terminal.vt_write(format!("\x1b_Ga=T,f=24,s=1024,v=1024,i=42,q=2;{pixels}\x1b\\").as_bytes());
     let mut manager = NativeTerminalManager::new(terminal, 1).unwrap();

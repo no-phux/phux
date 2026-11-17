@@ -99,15 +99,11 @@ pub enum WireInputDeliveryOutcome {
     Unknown,
 }
 
-impl From<DeliveryOutcome> for WireInputDeliveryOutcome {
-    fn from(value: DeliveryOutcome) -> Self {
-        match value {
-            DeliveryOutcome::Delivered => Self::Delivered,
-            DeliveryOutcome::Refused => Self::Refused,
-            DeliveryOutcome::Unknown => Self::Unknown,
-        }
-    }
-}
+mirror_enum_from!(DeliveryOutcome => WireInputDeliveryOutcome {
+    Delivered,
+    Refused,
+    Unknown,
+});
 
 /// The local disposition of one `resize_terminal`. Only `Queued` sent
 /// anything; the server's applied geometry arrives in frames.
@@ -155,15 +151,11 @@ pub enum WireFileUploadOutcome {
     Unknown,
 }
 
-impl From<FileUploadOutcome> for WireFileUploadOutcome {
-    fn from(value: FileUploadOutcome) -> Self {
-        match value {
-            FileUploadOutcome::Completed => Self::Completed,
-            FileUploadOutcome::Refused => Self::Refused,
-            FileUploadOutcome::Unknown => Self::Unknown,
-        }
-    }
-}
+mirror_enum_from!(FileUploadOutcome => WireFileUploadOutcome {
+    Completed,
+    Refused,
+    Unknown,
+});
 
 /// Terminal result for one bridge-managed file upload. `transfer_id` is local;
 /// the secret, retry-stable wire upload id never crosses FFI.
@@ -176,17 +168,13 @@ pub struct WireFileUploadReceipt {
     pub message: String,
 }
 
-impl From<FileUploadReceipt> for WireFileUploadReceipt {
-    fn from(value: FileUploadReceipt) -> Self {
-        Self {
-            transfer_id: value.transfer_id,
-            outcome: value.outcome.into(),
-            path: value.path,
-            code: value.code,
-            message: value.message,
-        }
-    }
-}
+mirror_from!(FileUploadReceipt => WireFileUploadReceipt {
+    transfer_id,
+    outcome: into,
+    path,
+    code,
+    message,
+});
 
 /// Product-facing outcome of one `TRANSCRIBE` request (phux-ctf).
 #[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -201,15 +189,11 @@ pub enum WireTranscribeOutcome {
     Unknown,
 }
 
-impl From<TranscribeOutcome> for WireTranscribeOutcome {
-    fn from(value: TranscribeOutcome) -> Self {
-        match value {
-            TranscribeOutcome::Completed => Self::Completed,
-            TranscribeOutcome::Refused => Self::Refused,
-            TranscribeOutcome::Unknown => Self::Unknown,
-        }
-    }
-}
+mirror_enum_from!(TranscribeOutcome => WireTranscribeOutcome {
+    Completed,
+    Refused,
+    Unknown,
+});
 
 /// Terminal result for one `TRANSCRIBE` request. `transfer_id` is the local
 /// upload handle the request was made for; `request_id` the wire correlation.
@@ -224,19 +208,15 @@ pub struct WireTranscribeReceipt {
     pub message: String,
 }
 
-impl From<TranscribeReceipt> for WireTranscribeReceipt {
-    fn from(value: TranscribeReceipt) -> Self {
-        Self {
-            request_id: value.request_id,
-            transfer_id: value.transfer_id,
-            outcome: value.outcome.into(),
-            text: value.text,
-            pasted: value.pasted,
-            code: value.code,
-            message: value.message,
-        }
-    }
-}
+mirror_from!(TranscribeReceipt => WireTranscribeReceipt {
+    request_id,
+    transfer_id,
+    outcome: into,
+    text,
+    pasted,
+    code,
+    message,
+});
 
 /// Touch-producible mouse actions, mirrored for FFI (ADR-0024: the wire owns
 /// the atoms; these are projections).

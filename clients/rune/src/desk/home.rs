@@ -187,54 +187,93 @@ mod tests {
     }
 
     #[test]
-    fn an_explicit_name_wins_and_is_never_replaced() {
-        let graph = topology(vec![session(1, "work", 10), session(2, "inbox", 5)]);
-        assert_eq!(
-            choose(Some("work"), &graph, Some("inbox")),
-            Home::Existing("work".into())
+    fn the_home_session_is_chosen_by_name_inbox_then_recency() {
+        let existing = |name: &str| Home::Existing(name.into());
+        let pair = [(1, "work", 10), (2, "inbox", 5)];
+        let three = [(1, "old", 10), (2, "recent", 30), (3, "inbox", 20)];
+        let quick = [(1, "work", 10), (2, "quick", 30)];
+        // (label, sessions as (id, name, created), named, inbox, expected)
+        type Case<'a> = (
+            &'a str,
+            &'a [(u32, &'a str, i64)],
+            Option<&'a str>,
+            Option<&'a str>,
+            Home,
         );
-        assert_eq!(
-            choose(Some("new"), &graph, Some("inbox")),
-            Home::Missing("new".into())
-        );
-    }
-
-    #[test]
-    fn untargeted_opens_the_inbox_then_the_most_recent_session() {
-        let graph = topology(vec![
-            session(1, "old", 10),
-            session(2, "recent", 30),
-            session(3, "inbox", 20),
-        ]);
-        assert_eq!(
-            choose(None, &graph, Some("inbox")),
-            Home::Existing("inbox".into())
-        );
-        assert_eq!(choose(None, &graph, None), Home::Existing("recent".into()));
-        assert_eq!(
-            choose(Some("  "), &graph, None),
-            Home::Existing("recent".into())
-        );
-    }
-
-    #[test]
-    fn an_unlisted_inbox_gives_way() {
-        let graph = topology(vec![session(1, "work", 10)]);
-        assert_eq!(
-            choose(None, &graph, Some("inbox")),
-            Home::Existing("work".into())
-        );
-    }
-
-    #[test]
-    fn the_main_window_never_falls_back_to_the_quick_session() {
-        let graph = topology(vec![session(1, "work", 10), session(2, "quick", 30)]);
-        assert_eq!(choose(None, &graph, None), Home::Existing("work".into()));
-        assert_eq!(
-            choose(Some("quick"), &graph, None),
-            Home::Existing("quick".into()),
-            "asked for by name, it opens"
-        );
+        let cases: &[Case] = &[
+            (
+                "an explicit name wins",
+                &pair,
+                Some("work"),
+                Some("inbox"),
+                existing("work"),
+            ),
+            (
+                "an explicit name is never replaced",
+                &pair,
+                Some("new"),
+                Some("inbox"),
+                Home::Missing("new".into()),
+            ),
+            (
+                "untargeted opens the inbox",
+                &three,
+                None,
+                Some("inbox"),
+                existing("inbox"),
+            ),
+            (
+                "then the most recent",
+                &three,
+                None,
+                None,
+                existing("recent"),
+            ),
+            (
+                "a blank name is untargeted",
+                &three,
+                Some("  "),
+                None,
+                existing("recent"),
+            ),
+            (
+                "an unlisted inbox gives way",
+                &pair[..1],
+                None,
+                Some("inbox"),
+                existing("work"),
+            ),
+            (
+                "never the quick session",
+                &quick,
+                None,
+                None,
+                existing("work"),
+            ),
+            (
+                "quick asked for by name opens",
+                &quick,
+                Some("quick"),
+                None,
+                existing("quick"),
+            ),
+            (
+                "nothing to open never invents a default",
+                &[],
+                None,
+                None,
+                Home::Nothing,
+            ),
+        ];
+        for (label, sessions, named, inbox, expected) in cases {
+            let graph = topology(
+                sessions
+                    .iter()
+                    .map(|&(id, name, created)| session(id, name, created))
+                    .collect(),
+            );
+            assert_eq!(choose(*named, &graph, *inbox), *expected, "{label}");
+        }
     }
 
     #[test]
@@ -251,11 +290,6 @@ mod tests {
             .map(|s| s.name.clone())
             .collect();
         assert_eq!(names, ["work"], "the sidebar and session stepping");
-    }
-
-    #[test]
-    fn nothing_to_open_never_invents_a_default() {
-        assert_eq!(choose(None, &topology(Vec::new()), None), Home::Nothing);
     }
 
     #[test]

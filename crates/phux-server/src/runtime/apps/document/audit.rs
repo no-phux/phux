@@ -255,7 +255,7 @@ mod tests {
         state.set_connection_grant(hub, scoped(&[crate::workload::PAIRED_DEVICE_SCOPE]));
         state.set_connection_grant(bot, scoped(&["input@display"]));
         state.set_connection_grant(owner, ConnectionGrant::owner());
-        state.set_peer_identity(
+        state.clients_mut().set_peer_identity(
             owner,
             PeerIdentity {
                 uid: 0,

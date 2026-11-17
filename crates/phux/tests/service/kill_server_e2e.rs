@@ -9,18 +9,10 @@ use crate::common;
 
 use std::path::Path;
 
-/// Backstop for a test that fails before it reaches its own stop (phux-whhd).
-struct Cleanup {
-    _server: common::AutoSpawnedServer,
-    _dir: tempfile::TempDir,
-}
+use crate::support::{LiveServer, phux_on};
 
 fn spawn_session(socket: &Path, session: &str) {
-    let out = common::phux_cmd(crate::runner::phux_bin())
-        .args(["new", "--session", session, "--json", "--socket"])
-        .arg(socket)
-        .output()
-        .expect("run phux new");
+    let out = phux_on(socket, &["new", "--session", session, "--json"]);
     assert!(
         out.status.success(),
         "phux new must start a server.\nstderr: {}",
@@ -29,21 +21,8 @@ fn spawn_session(socket: &Path, session: &str) {
     assert!(common::wait_until_accepting(socket), "server must be up");
 }
 
-fn start_server(socket: &Path, session: &str) -> common::AutoSpawnedServer {
-    // Arm before spawn: a panic in `phux new` or `wait_until_accepting` must
-    // still Drop a guard that can reap via the live socket (phux-e4qx).
-    let mut server = common::AutoSpawnedServer::new(crate::runner::phux_bin(), socket.to_owned());
-    spawn_session(socket, session);
-    server.capture_pid();
-    server
-}
-
 fn status_pid(socket: &Path) -> u32 {
-    let output = common::phux_cmd(crate::runner::phux_bin())
-        .args(["status", "--json", "--socket"])
-        .arg(socket)
-        .output()
-        .expect("run phux status --json");
+    let output = phux_on(socket, &["status", "--json"]);
     assert!(
         output.status.success(),
         "status --json must succeed.\nstderr: {}",
@@ -58,19 +37,10 @@ fn status_pid(socket: &Path) -> u32 {
 /// replacement can start immediately.
 #[test]
 fn kill_server_stops_the_server_and_frees_the_socket() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let socket = dir.path().join("phux.sock");
-    let server = start_server(&socket, "doomed");
-    let _cleanup = Cleanup {
-        _server: server,
-        _dir: dir,
-    };
+    let server = LiveServer::start("doomed");
+    let socket = &server.socket;
 
-    let killed = common::phux_cmd(crate::runner::phux_bin())
-        .args(["kill", "--server", "--socket"])
-        .arg(&socket)
-        .output()
-        .expect("run phux kill --server");
+    let killed = phux_on(socket, &["kill", "--server"]);
 
     assert!(
         killed.status.success(),
@@ -83,7 +53,7 @@ fn kill_server_stops_the_server_and_frees_the_socket() {
         "phux: ok: server stopped\n"
     );
     assert!(
-        std::os::unix::net::UnixStream::connect(&socket).is_err(),
+        std::os::unix::net::UnixStream::connect(socket).is_err(),
         "the server must be gone by the time the command returns, not merely \
          asked to go"
     );
@@ -98,20 +68,11 @@ fn kill_server_stops_the_server_and_frees_the_socket() {
 /// running").
 #[test]
 fn kill_server_is_idempotent() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let socket = dir.path().join("phux.sock");
-    let server = start_server(&socket, "doomed");
-    let _cleanup = Cleanup {
-        _server: server,
-        _dir: dir,
-    };
+    let server = LiveServer::start("doomed");
+    let socket = &server.socket;
 
     for attempt in 1..=2 {
-        let killed = common::phux_cmd(crate::runner::phux_bin())
-            .args(["kill", "--server", "--socket"])
-            .arg(&socket)
-            .output()
-            .expect("run phux kill --server");
+        let killed = phux_on(socket, &["kill", "--server"]);
         assert!(
             killed.status.success(),
             "attempt {attempt} must succeed.\nstderr: {}",
@@ -124,19 +85,14 @@ fn kill_server_is_idempotent() {
 /// the entry is reaped rather than left for the next client.
 #[test]
 fn kill_server_reaps_a_stale_socket() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let socket = dir.path().join("phux.sock");
+    let (_dir, ref socket) = LiveServer::cold();
 
     // Exactly what a SIGKILLed server leaves behind.
-    let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
+    let listener = std::os::unix::net::UnixListener::bind(socket).expect("bind");
     drop(listener);
     assert!(socket.exists());
 
-    let killed = common::phux_cmd(crate::runner::phux_bin())
-        .args(["kill", "--server", "--socket"])
-        .arg(&socket)
-        .output()
-        .expect("run phux kill --server");
+    let killed = phux_on(socket, &["kill", "--server"]);
 
     assert!(
         killed.status.success(),

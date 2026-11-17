@@ -3,6 +3,23 @@ fn dead_socket() -> String {
     format!("/tmp/phux-no-such-server-{}.sock", std::process::id())
 }
 
+/// A socket bound then dropped under `dir`: a clean `ECONNREFUSED`.
+fn abandoned_socket(dir: &std::path::Path) -> String {
+    let sock_file = dir.join("dead.sock");
+    drop(std::os::unix::net::UnixListener::bind(&sock_file).expect("bind then abandon socket"));
+    assert!(sock_file.exists(), "the abandoned socket file must persist");
+    sock_file.to_str().expect("utf-8 temp path").to_owned()
+}
+
+/// An `XDG_CONFIG_HOME` under `root` named `name` whose `phux/config.toml`
+/// holds `body`.
+fn xdg_with_config(root: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
+    let xdg = root.join(name);
+    std::fs::create_dir_all(xdg.join("phux")).expect("create config dir");
+    std::fs::write(xdg.join("phux").join("config.toml"), body).expect("write config");
+    xdg
+}
+
 /// A nonexistent `$PHUX_TAILSCALE` CLI: turns overlay detection (and the
 /// CGNAT heuristic) off, and a failed `execve` cannot be slow.
 const NO_OVERLAY_CLI: &str = "/nonexistent/phux-output-hygiene-no-overlay";
@@ -16,25 +33,11 @@ fn phux() -> Command {
 
 /// Run `phux <args...>` and return `(exit_code, stdout, stderr)`.
 fn run(args: &[&str]) -> (i32, String, String) {
-    let out = phux().args(args).output().expect("run phux binary");
-    (
-        out.status.code().expect("phux exited via code, not signal"),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-    )
+    Out::of(phux().args(args)).into_parts()
 }
 
 fn run_with_xdg(args: &[&str], xdg_config_home: &std::path::Path) -> (i32, String, String) {
-    let out = phux()
-        .env("XDG_CONFIG_HOME", xdg_config_home)
-        .args(args)
-        .output()
-        .expect("run phux binary");
-    (
-        out.status.code().expect("phux exited via code, not signal"),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-    )
+    Out::of(phux().env("XDG_CONFIG_HOME", xdg_config_home).args(args)).into_parts()
 }
 
 /// The build banner; no one-shot verb may print it.

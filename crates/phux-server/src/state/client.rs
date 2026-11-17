@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 
 use phux_core::ids::{ResourceId, SessionId};
-use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities, LayerSet};
+use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities};
 use phux_protocol::ids::ResourceId as WireResourceId;
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::ServerState;
+use super::{ClientTable, ServerState};
 use crate::mailbox::Outbound;
 use crate::resource::ResourceHandle;
 
@@ -80,12 +80,16 @@ pub enum AttachError {
 }
 
 impl ServerState {
-    /// The authenticated event identity of a live connection.
-    pub(crate) fn client_actor_ref(
-        &self,
-        client: ClientId,
-    ) -> phux_protocol::wire::frame::ActorRef {
-        self.clients.actor_ref(client)
+    /// Everything keyed on a connected client. Attaching and detaching span
+    /// several tables, so they stay on `ServerState`.
+    #[must_use]
+    pub(crate) const fn clients(&self) -> &ClientTable {
+        &self.clients
+    }
+
+    /// Mutable [`Self::clients`].
+    pub(crate) const fn clients_mut(&mut self) -> &mut ClientTable {
+        &mut self.clients
     }
 
     /// The attached clients, read-only (writes stay in `state`).
@@ -115,7 +119,8 @@ impl ServerState {
         &self,
         resource: ResourceId,
     ) -> Vec<(mpsc::Sender<Outbound>, Vec<CancellationToken>)> {
-        self.subscribers_for_resource(resource)
+        self.resources()
+            .subscribers_for(resource)
             .iter()
             .filter_map(|client| {
                 let gate = self
@@ -130,28 +135,6 @@ impl ServerState {
                 Some((self.client_mailbox(*client)?, vec![gate.clone()]))
             })
             .collect()
-    }
-
-    /// Record the HELLO layer set (latest wins).
-    pub fn set_client_layers(&mut self, client_id: ClientId, layers: LayerSet) {
-        self.clients.set_layers(client_id, layers);
-    }
-
-    /// The HELLO layer set; [`LayerSet::all`] if none was seen.
-    #[must_use]
-    pub fn client_layers(&self, client_id: ClientId) -> LayerSet {
-        self.clients.layers(client_id)
-    }
-
-    /// Whether `client_id` negotiated L3 (SPEC §16.4).
-    #[must_use]
-    pub fn client_speaks_l3(&self, client_id: ClientId) -> bool {
-        self.clients.speaks_l3(client_id)
-    }
-
-    /// Allocate the next monotonic [`ClientId`].
-    pub const fn new_client_id(&mut self) -> ClientId {
-        self.clients.new_client_id()
     }
 
     /// Register the transport's cancellation root (the relay uses it to end
@@ -192,9 +175,10 @@ impl ServerState {
         // switching sessions is refused; an unknown name stays
         // UnknownSession.
         let session_id = self
-            .find_session_by_name(session_name)
+            .sessions()
+            .find_by_name(session_name)
             .ok_or_else(|| AttachError::UnknownSession(session_name.to_owned()))?;
-        if bootstrap_profile.is_none() && !self.session_terminals(session_id).is_empty() {
+        if bootstrap_profile.is_none() && !self.sessions().terminal_members(session_id).is_empty() {
             return Err(AttachError::TerminalProfileUnavailable);
         }
         if let Some(existing) = self.clients.attached.get(&client_id) {
@@ -221,7 +205,7 @@ impl ServerState {
                 },
             );
             // Attaching arms tmux-model last-session self-exit (phux-60s).
-            self.arm_self_exit();
+            self.lifecycle_mut().arm_self_exit();
         }
 
         // Subscribe every pane, not just the active one: the input gate
@@ -333,7 +317,7 @@ impl ServerState {
         session: Option<&str>,
     ) -> Vec<(ClientId, mpsc::Sender<Outbound>)> {
         let target_session = match session {
-            Some(name) => match self.find_session_by_name(name) {
+            Some(name) => match self.sessions().find_by_name(name) {
                 Some(id) => Some(id),
                 None => return Vec::new(),
             },
@@ -345,16 +329,6 @@ impl ServerState {
             .filter(|c| target_session.is_none_or(|sid| c.session == sid))
             .map(|c| (c.id, c.tx.clone()))
             .collect()
-    }
-
-    /// Session-attached clients of `session` by stable id (works after the
-    /// session was reaped; per-terminal consumers excluded).
-    #[must_use]
-    pub fn attached_clients_in_session(
-        &self,
-        session: SessionId,
-    ) -> Vec<(ClientId, mpsc::Sender<Outbound>)> {
-        self.clients.attached_in_session(session)
     }
 
     /// Whether `client_id` holds an agent-event subscription.
@@ -384,7 +358,7 @@ mod connection_cancellation_tests {
     #[test]
     fn connection_cancellation_survives_detach_and_is_removed_on_forget() {
         let mut state = ServerState::new();
-        let client = state.new_client_id();
+        let client = state.clients_mut().new_client_id();
         let token = CancellationToken::new();
         state.set_client_connection_cancellation(client, token.clone());
 

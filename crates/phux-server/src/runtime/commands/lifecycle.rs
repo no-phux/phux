@@ -18,21 +18,20 @@ pub(crate) async fn handle_detach_terminal(
         s.unsubscribe_resource_events(client_id, terminal_id);
         // A declared `VIEWER` outlives the subscription (ADR-0127).
         let core = s
+            .idspace
             .resource_from_wire(terminal_id)
-            .or_else(|| s.draining_resource_from_wire(terminal_id))?;
-        s.unsubscribe_resource(client_id, core);
-        Some((core, s.resource_handle(core).cloned()))
+            .or_else(|| s.resources().draining_terminal(terminal_id))?;
+        s.resources_mut().unsubscribe(client_id, core);
+        Some((core, s.resources().handle(core).cloned()))
     });
     let Some((core, handle)) = handle else {
         return CommandResult::Ok;
     };
     pump::stop_output(state, client_id, core).await;
-    state.with_mut(|s| s.cancel_attach_terminal_pump(client_id, core));
+    state.with_mut(|s| s.resources_mut().cancel_pump(client_id, core));
     // Fence engine-emitted output before COMMAND_RESULT is queued.
     if let Some(handle) = &handle {
-        crate::runtime::apps::app_for(handle.kind)
-            .fence_consumer(handle, client_id)
-            .await;
+        crate::runtime::apps::fence_consumer(handle, client_id).await;
     }
     debug!(?client_id, ?terminal_id, "DETACH_RESOURCE unsubscribed");
     CommandResult::Ok
@@ -48,7 +47,11 @@ pub(super) async fn handle_shutdown(
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
     root_token: &CancellationToken,
 ) {
-    let transport = state.with(|s| s.peer_identity(client_id).map(|peer| peer.transport));
+    let transport = state.with(|s| {
+        s.clients()
+            .peer_identity(client_id)
+            .map(|peer| peer.transport)
+    });
     if !matches!(
         transport,
         Some(phux_protocol::policy::TransportType::UnixSocket)
@@ -58,11 +61,11 @@ pub(super) async fn handle_shutdown(
             ?transport,
             "SHUTDOWN refused: local socket only"
         );
-        let refusal = CommandResult::Error {
-            code: ErrorCode::PermissionDenied,
-            message: "SHUTDOWN is accepted on the local socket only".to_owned(),
-        };
-        send_result(out_tx, request_id, refusal).await;
+        let refusal = CommandResult::error(
+            ErrorCode::PermissionDenied,
+            "SHUTDOWN is accepted on the local socket only",
+        );
+        reply::send(out_tx, request_id, refusal).await;
         return;
     }
 
@@ -70,14 +73,14 @@ pub(super) async fn handle_shutdown(
     // ADR-0104 §4: record the close reason before the exit watchers run.
     state.with_mut(|s| {
         s.flush_reports_before_shutdown();
-        for resource in s.resource_ids() {
+        for resource in s.resources().resource_ids() {
             s.mark_resource_closing(
                 resource,
                 phux_protocol::wire::frame::CloseReason::ServerShutdown,
             );
         }
     });
-    send_result(out_tx, request_id, CommandResult::Ok).await;
+    reply::send(out_tx, request_id, CommandResult::Ok).await;
     // Let the ack reach the writer before the teardown races it.
     tokio::task::yield_now().await;
     root_token.cancel();
@@ -94,7 +97,7 @@ pub(super) async fn handle_upgrade(
     let result = match super::super::upgrade::prepare_upgrade(state).await {
         Ok(plan) => {
             // Best-effort ack flushed before exec; the client reconnects.
-            send_result(out_tx, request_id, CommandResult::Ok).await;
+            reply::send(out_tx, request_id, CommandResult::Ok).await;
             tokio::task::yield_now().await;
             info!("UPGRADE: re-exec'ing the new binary");
             let err = plan.exec().await;
@@ -106,13 +109,10 @@ pub(super) async fn handle_upgrade(
         }
         Err(err) => {
             warn!(error = %err, "UPGRADE preparation failed");
-            CommandResult::Error {
-                code: ErrorCode::InternalError,
-                message: format!("upgrade failed: {err}"),
-            }
+            CommandResult::error(ErrorCode::InternalError, format!("upgrade failed: {err}"))
         }
     };
-    send_result(out_tx, request_id, result).await;
+    reply::send(out_tx, request_id, result).await;
 }
 
 /// Force-detach the session-attached clients of `session` (all when `None`)
@@ -152,7 +152,7 @@ pub(crate) fn create_named_session(
     origin: SeedOrigin,
     root_token: &CancellationToken,
 ) -> Result<phux_protocol::ids::ResourceId, String> {
-    if state.with(|s| s.session_by_name(name).is_some()) {
+    if state.with(|s| s.sessions().by_name(name).is_some()) {
         return Err(format!("session {name:?} already exists"));
     }
 
@@ -162,8 +162,8 @@ pub(crate) fn create_named_session(
         Ok(core_terminal) => {
             // A headless create arms the last-session self-exit like an attach.
             let wire = state.with_mut(|s| {
-                s.arm_self_exit();
-                s.intern_resource_wire(core_terminal)
+                s.lifecycle_mut().arm_self_exit();
+                s.idspace.intern_resource(core_terminal)
             });
             Ok(wire)
         }
@@ -188,7 +188,7 @@ pub(crate) fn create_empty_session(
     actor: &phux_core::Actor,
 ) -> Result<(), String> {
     state.with_mut(|s| {
-        if s.session_by_name(name).is_some() {
+        if s.sessions().by_name(name).is_some() {
             return Err(format!("session {name:?} already exists"));
         }
         s.create_empty_session(name, phux_core::SessionLifetime::Persistent, actor)
@@ -236,8 +236,9 @@ mod tests {
                 "the refused end stays pending"
             );
             ServerState::reset_executor_persist_attempts();
-            let client = s.new_client_id();
-            s.set_peer_identity(client, crate::runtime::test_support::owner_peer());
+            let client = s.clients_mut().new_client_id();
+            s.clients_mut()
+                .set_peer_identity(client, crate::runtime::test_support::owner_peer());
             client
         });
 

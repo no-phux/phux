@@ -14,19 +14,6 @@ categories = ["command-line-interface", "network-programming", "encoding"]
 [lints]
 workspace = true
 
-[features]
-# The default wire codec and input atoms are pure Rust, with no git-only
-# dependencies, so browser consumers and crates.io need no native VT build.
-default = []
-# `render-pool` exposes `render_pool` and nothing else: libghostty-vt with
-# no kitty-graphics and no png. Walkers that pool a render trio without the
-# server's image or conversion surface (record and the testkit oracle) enable
-# this instead of `server`. See ADR-0086.
-render-pool = ["dep:libghostty-vt"]
-# `server` adds libghostty conversions and rendering/replay helpers. Native
-# terminal consumers enable it; the codec itself does not require it.
-server = ["render-pool", "dep:png", "libghostty-vt/kitty-graphics", "libghostty-vt/png"]
-
 [dependencies]
 thiserror.workspace = true
 bytes.workspace = true
@@ -45,16 +32,9 @@ int-enum = "1.3"
 # DEFLATE for the negotiated FRAME_COMPRESSED envelope; see the workspace
 # manifest for the justification and the measured ratio.
 flate2.workspace = true
-libghostty-vt = { workspace = true, optional = true }
-png = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest.workspace = true
 insta.workspace = true
 tempfile.workspace = true
 
-[package.metadata.docs.rs]
-# Render the full API on docs.rs, including the libghostty-backed surface,
-# with the "Available on feature ..." badge enabled via `--cfg docsrs`.
-all-features = true
-rustdoc-args = ["--cfg", "docsrs"]

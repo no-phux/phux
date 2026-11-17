@@ -1,6 +1,9 @@
 //! Consumer commands and outbound frame construction.
 
+mod outbound;
 mod spawn;
+
+pub(super) use outbound::OutboundFrame;
 
 use super::subscriptions::{KindPolicy, Origin, RIDES_SHARED_PUMP, STREAMED};
 use std::collections::HashSet;
@@ -9,16 +12,11 @@ use phux_protocol::wire::frame::InputMode;
 
 use super::{
     AttachTarget, Command, ControlPlane, Event, FrameKind, Observation, Pending, ResourceId,
-    Status, StreamRecovery, encode,
+    Status, StreamRecovery,
 };
 
 impl ControlPlane {
     // ----- frames out and events out --------------------------------------
-
-    /// Every encoded frame queued since the last take, in send order.
-    pub fn take_outbound(&mut self) -> Vec<Vec<u8>> {
-        std::mem::take(&mut self.outbound)
-    }
 
     /// Every event queued since the last drain, in order, preceded by one
     /// [`Event::TerminalChanged`] per terminal that changed.
@@ -449,10 +447,5 @@ impl ControlPlane {
         let id = self.request_seq;
         self.request_seq = self.request_seq.wrapping_add(1).max(1);
         id
-    }
-
-    /// Extension point: queue any frame, encoded.
-    pub fn queue_frame(&mut self, frame: &FrameKind) {
-        self.outbound.push(encode(frame));
     }
 }

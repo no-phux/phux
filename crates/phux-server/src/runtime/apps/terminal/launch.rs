@@ -61,8 +61,13 @@ pub(crate) fn named_session_command(
     cwd: Option<&str>,
     env: std::collections::BTreeMap<String, String>,
 ) -> LaunchCommand {
-    let (term, shell, login_shell) =
-        state.with(|s| (s.term().to_owned(), s.shell().to_owned(), s.login_shell()));
+    let (term, shell, login_shell) = state.with(|s| {
+        (
+            s.config().term.as_str().to_owned(),
+            s.config().shell.as_str().to_owned(),
+            s.config().login_shell,
+        )
+    });
     let mut seed_cmd = argv_command(command)
         .unwrap_or_else(|| engine_launch::default_shell_command(&shell, login_shell));
     engine_launch::apply_spawn_cwd(&mut seed_cmd, cwd, name);
@@ -80,10 +85,11 @@ pub(crate) fn seed_pane_command(
     configured: Option<LaunchCommand>,
 ) -> LaunchCommand {
     let mut cmd = configured.unwrap_or_else(|| {
-        let (shell, login_shell) = state.with(|s| (s.shell().to_owned(), s.login_shell()));
+        let (shell, login_shell) =
+            state.with(|s| (s.config().shell.as_str().to_owned(), s.config().login_shell));
         engine_launch::default_shell_command(&shell, login_shell)
     });
-    let term = state.with(|s| s.term().to_owned());
+    let term = state.with(|s| s.config().term.as_str().to_owned());
     engine_launch::apply_term(&mut cmd, &term);
     cmd
 }
@@ -100,7 +106,7 @@ pub(crate) fn seed_named_session(
     root_token: &tokio_util::sync::CancellationToken,
 ) -> Result<phux_core::ids::ResourceId, String> {
     let (with_pty, scrollback) =
-        state.with(|s| (s.attach_create_seeds_pty(), s.scrollback_limits()));
+        state.with(|s| (s.config().attach_create_seeds_pty, s.config().scrollback));
     let seed_cmd = with_pty.then(|| named_session_command(state, name, command, cwd, env));
     super::commands::seed::seed_session(state, name, seed_cmd, scrollback, root_token, None, origin)
         .map_err(|err| err.to_string())
@@ -132,8 +138,9 @@ pub(crate) fn spec_command(s: &ServerState, launch: &phux_core::TerminalLaunch) 
     // A program the user allowlisted picks up where it left off; it runs
     // as the pane's process, like any other recorded argv.
     let argv = super::resume::argv(s, &launch).unwrap_or(launch.argv);
-    let mut cmd = argv_command((!argv.is_empty()).then_some(argv))
-        .unwrap_or_else(|| engine_launch::default_shell_command(s.shell(), s.login_shell()));
+    let mut cmd = argv_command((!argv.is_empty()).then_some(argv)).unwrap_or_else(|| {
+        engine_launch::default_shell_command(s.config().shell.as_str(), s.config().login_shell)
+    });
     // A recorded launch directory is intent, not a hint. If it disappears
     // after validation, fail the activation rather than execute elsewhere.
     if let Some(cwd) = &launch.cwd {
@@ -142,7 +149,7 @@ pub(crate) fn spec_command(s: &ServerState, launch: &phux_core::TerminalLaunch) 
     for (key, value) in launch.env {
         cmd.env(key, value);
     }
-    engine_launch::apply_term(&mut cmd, s.term());
+    engine_launch::apply_term(&mut cmd, s.config().term.as_str());
     cmd
 }
 
@@ -159,10 +166,13 @@ pub(crate) fn execute(launch: super::super::ResourceLaunch<'_>) -> Result<(), St
         return Err("the Terminal app received another kind's launch spec".to_owned());
     };
     let (scrollback, cmd) = state.with_mut(|s| {
-        let cmd = s.attach_create_seeds_pty().then(|| spec_command(s, spec));
-        let wire = s.intern_resource_wire(resource);
+        let cmd = s
+            .config()
+            .attach_create_seeds_pty
+            .then(|| spec_command(s, spec));
+        let wire = s.idspace.intern_resource(resource);
         super::commands::set_agent_session(s, wire, spec.restore.clone());
-        (s.scrollback_limits(), cmd)
+        (s.config().scrollback, cmd)
     });
     let cmd = cmd.map(|mut cmd| {
         state.with_mut(|s| {

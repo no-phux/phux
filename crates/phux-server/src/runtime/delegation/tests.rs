@@ -27,7 +27,7 @@ fn server(dir: &Path, root: &CancellationToken) -> (SharedState, SessionId) {
     )
     .unwrap();
     let session = state.with_mut(|s| {
-        s.set_server_socket_path(dir.join("phux.sock"));
+        s.config_mut().server_socket_path = Some(dir.join("phux.sock"));
         s.set_connection_grant(LAUNCHER, ConnectionGrant::owner());
         s.intern_upgrade_wires();
         s.registry().session_of(pane).unwrap()
@@ -79,7 +79,7 @@ async fn a_hot_upgrade_carries_a_live_credential_and_its_socket() {
             1
         );
         let credential = new
-            .with(|s| s.delegation(&carried.id, Utc::now()).cloned())
+            .with(|s| s.delegations().live(&carried.id, Utc::now()).cloned())
             .expect("reinstated");
         assert_eq!(credential.on_behalf_of, phux_core::PrincipalId::Owner);
         assert_eq!(
@@ -91,7 +91,10 @@ async fn a_hot_upgrade_carries_a_live_credential_and_its_socket() {
             "a retry of the minting operation still answers it"
         );
         assert_eq!(
-            new.with(|s| s.delegation_socket(&carried.id).map(Path::to_path_buf)),
+            new.with(|s| s
+                .delegations()
+                .socket_path(&carried.id)
+                .map(Path::to_path_buf)),
             Some(path.clone())
         );
 
@@ -121,41 +124,37 @@ async fn a_hot_upgrade_carries_a_live_credential_and_its_socket() {
     .await;
 }
 
+/// A carried credential the new image can no longer honor is revoked
+/// and its socket file removed.
 #[tokio::test(flavor = "current_thread")]
-async fn a_carried_credential_whose_session_is_gone_is_revoked_and_its_socket_removed() {
+async fn a_carried_credential_no_longer_valid_is_revoked_and_its_socket_removed() {
     crate::runtime::test_support::local(async {
-        let dir = tempfile::tempdir().unwrap();
-        let (mut carried, path) = carried_by_old_image(dir.path());
-        carried.group += 100;
+        type Invalidate = fn(&mut DelegationBlob);
+        let cases: [(&str, Invalidate); 2] = [
+            ("its session is gone", |carried| carried.group += 100),
+            ("it expired meanwhile", |carried| {
+                carried.expires_at_ms = Utc::now().timestamp_millis() - 1;
+            }),
+        ];
+        for (label, invalidate) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let (mut carried, path) = carried_by_old_image(dir.path());
+            invalidate(&mut carried);
 
-        let root = CancellationToken::new();
-        let (new, _) = server(dir.path(), &root);
-        assert_eq!(
-            resume_delegations(&new, std::slice::from_ref(&carried), None, &root),
-            0
-        );
-        assert!(new.with(|s| s.delegation(&carried.id, Utc::now()).is_none()));
-        assert!(!path.exists(), "its socket file is removed");
-        root.cancel();
-    })
-    .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn a_carried_credential_that_expired_meanwhile_is_revoked() {
-    crate::runtime::test_support::local(async {
-        let dir = tempfile::tempdir().unwrap();
-        let (mut carried, path) = carried_by_old_image(dir.path());
-        carried.expires_at_ms = Utc::now().timestamp_millis() - 1;
-
-        let root = CancellationToken::new();
-        let (new, _) = server(dir.path(), &root);
-        assert_eq!(
-            resume_delegations(&new, std::slice::from_ref(&carried), None, &root),
-            0
-        );
-        assert!(!path.exists());
-        root.cancel();
+            let root = CancellationToken::new();
+            let (new, _) = server(dir.path(), &root);
+            assert_eq!(
+                resume_delegations(&new, std::slice::from_ref(&carried), None, &root),
+                0,
+                "{label}"
+            );
+            assert!(
+                new.with(|s| s.delegations().live(&carried.id, Utc::now()).is_none()),
+                "{label}"
+            );
+            assert!(!path.exists(), "{label}: its socket file is removed");
+            root.cancel();
+        }
     })
     .await;
 }
@@ -171,7 +170,7 @@ fn the_start_up_sweep_removes_only_unserved_delegated_sockets() {
     drop(std::os::unix::net::UnixListener::bind(&unrelated).unwrap());
 
     let state = SharedState::new();
-    state.with_mut(|s| s.set_server_socket_path(dir.path().join("phux.sock")));
+    state.with_mut(|s| s.config_mut().server_socket_path = Some(dir.path().join("phux.sock")));
     sweep_stale_sockets(&state);
     assert!(!unserved.exists(), "a socket nothing serves is removed");
     assert!(live_path.exists(), "a served socket is kept");

@@ -184,13 +184,14 @@ fn resolve_spawn_target(
     spec: &SpawnNativeAgent,
 ) -> Result<NativeSpawnTarget, CommandResult> {
     if s.native_agents().sealed {
-        return Err(CommandResult::Error {
-            code: ErrorCode::Overflow,
-            message: "native broker upgrade cut is sealed; no guardian was created".into(),
-        });
+        return Err(CommandResult::error(
+            ErrorCode::Overflow,
+            "native broker upgrade cut is sealed; no guardian was created",
+        ));
     }
     let session = s
-        .find_session_by_name(&spec.session)
+        .sessions()
+        .find_by_name(&spec.session)
         .ok_or_else(|| refusal("native launch requires an existing organization session"))?;
     let guardian = selected_guardian(s, spec)?;
     if let Some(guardian) = guardian {
@@ -211,6 +212,7 @@ fn selected_guardian(
             return Err(refusal("native insertion requires a local guardian"));
         }
         return s
+            .idspace
             .resource_from_wire(wire)
             .map(Some)
             .ok_or_else(|| refusal("guardian does not exist"));
@@ -241,7 +243,7 @@ fn validate_existing_guardian(
             "guardian must be a Terminal in the exact organization session",
         ));
     }
-    if s.resource_handle(guardian).is_some()
+    if s.resources().handle(guardian).is_some()
         || record.activation.as_ref().is_some_and(|activation| {
             activation.state.is_current() || activation.state == phux_core::ExecState::Lost
         })
@@ -267,7 +269,7 @@ fn prepare_native_host(
     spec: &SpawnNativeAgent,
 ) -> Result<PreparedNativeHost, CommandResult> {
     let executable = state
-        .with(crate::state::ServerState::native_host_executable)
+        .with(|s| s.config().native_host_executable())
         .map_err(|error| refusal(error.to_string()))?;
     // Host-only startup carries the real local runtime configuration. The
     // portable saved recipe carries no bootstrap destination or SDK credentials.
@@ -378,7 +380,7 @@ fn create_native_resources(
                 }
             };
         let parent_wire = terminal::register_pty_command(s, parent, command);
-        let agent_wire = s.intern_resource_wire(agent);
+        let agent_wire = s.idspace.intern_resource(agent);
         s.metadata_set(
             &phux_protocol::wire::frame::Scope::Resource(parent_wire.clone()),
             phux_protocol::wire::frame::RESOURCE_NATIVE_LAUNCH_KEY,
@@ -445,7 +447,7 @@ fn install_native_session(
         &spec.provider,
         spec.native_id.as_deref(),
         token.clone(),
-        state.with(crate::state::ServerState::agent_log_bytes),
+        state.with(|s| s.config().agent_log_bytes),
     );
     state.with_mut(|s| {
         s.spawn_resource_actor(
@@ -461,8 +463,10 @@ fn install_native_session(
         s.native_agents_mut()
             .wakes
             .insert(resources.agent_wire.clone(), Arc::new(Notify::new()));
-        s.record_spawn(resources.parent, ctx.client_id);
-        s.record_spawn(resources.agent, ctx.client_id);
+        s.resources_mut()
+            .record_spawn(resources.parent, ctx.client_id);
+        s.resources_mut()
+            .record_spawn(resources.agent, ctx.client_id);
         s.mark_if_viewer_session(ctx.client_id, &resources.parent_wire);
         s.mark_if_viewer_session(ctx.client_id, &resources.agent_wire);
         let announcement = crate::state::EventRecord::new(
@@ -502,7 +506,7 @@ fn launch_native_guardian(
         resources.parent,
         Some(command),
         terminal::DEFAULT_SPAWN_DIMS,
-        state.with(crate::state::ServerState::scrollback_limits),
+        state.with(|s| s.config().scrollback),
         &ctx.root_token,
         None,
         crate::runtime::commands::SpawnAttribution {

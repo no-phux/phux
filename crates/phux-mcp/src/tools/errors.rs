@@ -65,27 +65,49 @@ pub(crate) fn agent_resolve_error(err: &selector::AgentResolveError) -> ToolErro
 /// A refusal on the CLI's one-line `--json` error contract, so the tool
 /// error carries the stable `code` a caller branches on.
 pub(crate) fn contract_error(
-    code: &str,
+    code: &'static str,
     message: impl Into<String>,
     remedy: &str,
     exit_code: u8,
 ) -> ToolError {
-    let document = json!({
-        "schema_version": 1,
-        "error": { "code": code, "message": message.into() },
-        "remedy": remedy,
-        "exit_code": exit_code,
-    });
-    ToolError::new(document.to_string())
+    refusal_error(&Refusal::new(code, message, remedy), exit_code)
 }
 
-/// A transport failure on the `--json` error contract, with the codes the
-/// CLI uses for one: `no_server`, `server_disconnected`, or `transport`.
+/// `refusal` rendered as the shared [`error_document`], the tool error's
+/// text and its structured document alike.
+pub(crate) fn refusal_error(refusal: &Refusal, exit_code: u8) -> ToolError {
+    let document = error_document(refusal, exit_code);
+    ToolError::with_document(document.to_string(), document)
+}
+
+/// `refusal` as a tool that left the CLI residue reports it: the text is
+/// the CLI's own stderr line ([`phux_client::contract::error_line`]), so a
+/// caller that read the CLI's error text reads the same bytes.
+pub(crate) fn cli_refusal_error(refusal: &Refusal, exit_code: u8) -> ToolError {
+    ToolError::with_document(
+        phux_client::contract::error_line(refusal, exit_code),
+        error_document(refusal, exit_code),
+    )
+}
+
+/// A transport failure on the `--json` error contract, classified by the
+/// same [`transport_refusal`] as the CLI: `no_server`,
+/// `server_disconnected`, or `transport`.
 pub(crate) fn transport_error(err: &AttachError, socket: &Path, verb: &str) -> ToolError {
-    let pid = phux_client::attach::is_incompatible_protocol(err)
+    render_transport_error(err, socket, verb, recovery_pid(err, socket))
+}
+
+/// The [`transport_refusal`] the CLI builds for `err`, with the server pid
+/// its old-protocol recovery names.
+pub(crate) fn transport_refusal_at(err: &AttachError, socket: &Path, verb: &str) -> Refusal {
+    transport_refusal(err, socket, verb, recovery_pid(err, socket))
+}
+
+/// The socket owner's pid, looked up only for the old-protocol recovery.
+fn recovery_pid(err: &AttachError, socket: &Path) -> Option<i32> {
+    phux_client::attach::is_incompatible_protocol(err)
         .then(|| phux_client::explain::server_pid(socket))
-        .flatten();
-    render_transport_error(err, socket, verb, pid)
+        .flatten()
 }
 
 /// [`transport_error`] with the server pid already resolved, so tests can pin
@@ -96,34 +118,5 @@ pub(crate) fn render_transport_error(
     verb: &str,
     pid: Option<i32>,
 ) -> ToolError {
-    const DOCTOR: &str = "run `phux doctor` for a health check";
-    match err {
-        AttachError::Io(io)
-            if matches!(
-                io.kind(),
-                std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
-            ) =>
-        {
-            contract_error(
-                "no_server",
-                format!("no server running at {}", socket.display()),
-                "start one with `phux` (attaches, auto-starting a server) or `phux server`; \
-                 run `phux doctor` for a health check",
-                1,
-            )
-        }
-        AttachError::Disconnected => contract_error(
-            "server_disconnected",
-            format!("server closed the connection during {verb}"),
-            DOCTOR,
-            1,
-        ),
-        AttachError::IncompatibleProtocol(_) => contract_error(
-            "transport",
-            format!("{verb} failed: {err}"),
-            &phux_client::explain::old_server_recovery_lines(socket, pid).join("\n"),
-            1,
-        ),
-        other => contract_error("transport", format!("{verb} failed: {other}"), DOCTOR, 1),
-    }
+    refusal_error(&transport_refusal(err, socket, verb, pid), 1)
 }

@@ -45,7 +45,7 @@ pub(super) fn refuse_undeliverable(s: &mut crate::state::ServerState, agent: &Re
         return;
     };
     let parent = binding.parent.clone();
-    let Some(core_parent) = s.resource_from_wire(&parent) else {
+    let Some(core_parent) = s.idspace.resource_from_wire(&parent) else {
         return;
     };
     let candidates: Vec<_> = binding
@@ -62,8 +62,8 @@ pub(super) fn refuse_undeliverable(s: &mut crate::state::ServerState, agent: &Re
         })
         .map(|request| phux_protocol::wire::frame::Command::NativeAgent { request });
         if valid
-            && !s.input_blocked(core_parent, requester)
-            && !s.is_viewer(requester, &parent)
+            && !s.leases().blocked(core_parent, requester)
+            && !s.clients().is_viewer(requester, &parent)
             && wire_command.as_ref().is_ok_and(|wire_command| {
                 matches!(
                     crate::policy::authorize_command(s, requester, wire_command),
@@ -110,7 +110,7 @@ pub(super) fn refuse_undeliverable(s: &mut crate::state::ServerState, agent: &Re
 /// Publish unavailable controls while the readable stream is still alive.
 pub(crate) async fn source_exited(state: &SharedState, resource: phux_core::ids::ResourceId) {
     let agents = state.with_mut(|s| {
-        let Some(wire) = s.resource_wire_of(resource) else {
+        let Some(wire) = s.idspace.resource_wire(resource).cloned() else {
             return Vec::new();
         };
         let agents: Vec<_> = s

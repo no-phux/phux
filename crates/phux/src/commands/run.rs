@@ -7,7 +7,7 @@ use phux_client::attach::AttachError;
 use phux_client::deadline::Deadline;
 use phux_client::read::Verb;
 use phux_client::run::{RunOutcome, Submission};
-use phux_server::runtime::default_socket_path;
+use phux_config::socket::default_socket_path;
 
 use crate::commands::json_err::codes;
 use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target_for_input};
@@ -57,16 +57,11 @@ pub(crate) fn run_run(
     rt.block_on(async move {
         let deadline = Deadline::new(timeout);
         let pane = match deadline
-            .run(resolve_target_for_input(
-                &socket_path,
-                &selector,
-                Verb::Run,
-                json,
-            ))
+            .run(resolve_target_for_input(&socket_path, &selector, Verb::Run))
             .await
         {
             Some(Ok(id)) => id,
-            Some(Err(code)) => return code,
+            Some(Err(refusal)) => return refusal.emit(json),
             None => {
                 return json_err::emit(
                     json,
@@ -297,6 +292,18 @@ pub(crate) fn run_nonce() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
     format!("{}x{nanos}x{seq}", std::process::id())
+}
+
+/// Run `phux run` as parsed.
+pub(crate) fn run(args: crate::commands::RunArgs, socket: Option<PathBuf>) -> ExitCode {
+    let crate::commands::RunArgs {
+        target,
+        command,
+        timeout,
+        force,
+        json,
+    } = args;
+    run_run(&target, &command, timeout, force, json.json, socket)
 }
 
 #[cfg(test)]

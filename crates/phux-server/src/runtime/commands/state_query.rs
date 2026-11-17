@@ -42,7 +42,8 @@ pub(crate) fn handle_get_state(
         StateScope::Server => {
             let snapshot = state.with_mut(|s| {
                 let focus = s
-                    .most_recently_touched_session()
+                    .sessions()
+                    .most_recently_touched()
                     .or_else(|| s.fallback_session());
                 let mut snapshot = focus
                     .and_then(|sid| s.build_session_snapshot(sid))
@@ -67,10 +68,7 @@ pub(crate) fn handle_get_state(
             });
             CommandResult::OkWith(CommandValue::State(snapshot))
         }
-        _ => CommandResult::Error {
-            code: ErrorCode::InvalidCommand,
-            message: "unsupported GET_STATE scope".to_owned(),
-        },
+        _ => CommandResult::error(ErrorCode::InvalidCommand, "unsupported GET_STATE scope"),
     }
 }
 
@@ -94,7 +92,8 @@ pub(crate) async fn handle_get_state_federated(
     // workload-auth §6: only the satellites the viewer may inventory are
     // asked, so another host's name and health never reach it.
     let relays: Vec<_> = state.with(|s| {
-        s.hub_relays_all()
+        s.federation()
+            .relays_all()
             .into_iter()
             .filter(|relay| {
                 crate::policy::filter::admits_satellite(
@@ -156,7 +155,7 @@ fn mirror_federated_agent_metadata(
         let phux_protocol::ids::ResourceId::Satellite { host, id } = &resource.id else {
             continue;
         };
-        if let Some(relay) = state.with(|s| s.hub_relay(host)) {
+        if let Some(relay) = state.with(|s| s.federation().relay(host)) {
             relay.mirror_terminal(*id);
         }
     }
@@ -181,7 +180,8 @@ async fn fold_satellite_state(
                     .iter()
                     .filter_map(|pane| pane.id.local_id())
                     .filter_map(|id| {
-                        s.satellite_lease_holder(&host, id)
+                        s.federation()
+                            .satellite_lease_holder(&host, id)
                             .map(|holder| (id, holder))
                     })
                     .collect::<std::collections::HashMap<_, _>>()

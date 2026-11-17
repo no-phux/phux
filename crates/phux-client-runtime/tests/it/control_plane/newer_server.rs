@@ -70,34 +70,11 @@ fn unknown_frame_kinds_and_enum_values_are_skipped_on_every_feed_path() {
     ));
 }
 
-#[test]
-fn an_unknown_spawn_refusal_settles_the_spawn() {
-    let (mut plane, attach_id) = negotiated();
-    attach(&mut plane, attach_id, b"home");
-    let _ = plane.take_outbound();
-    let _ = plane.take_events();
-    let request_id = plane.spawn_terminal(SpawnRequest::default());
-    let _ = plane.take_outbound();
-    plane
-        .feed_bytes(&raw(
-            TYPE_RESOURCE_SPAWNED,
-            &[(1, &request_id.to_be_bytes()), (2, &[0x01, 0xFE])],
-        ))
-        .expect("an unknown spawn refusal decodes");
-    assert!(plane.take_events().iter().any(|event| matches!(
-        event,
-        Event::TerminalSpawned { request_id: id, terminal_id: None, error: Some(_) }
-            if *id == request_id
-    )));
-}
-
 fn acknowledged_plane() -> ControlPlane {
-    let mut plane = ControlPlane::new(ControlOptions::default());
-    plane.connection_opened();
-    plane.take_outbound();
-    plane
-        .feed(hello_ok_with(&[ServerFeature::AcknowledgedInput]))
-        .unwrap();
+    let mut plane = opened(
+        ControlOptions::default(),
+        hello_ok_with(&[ServerFeature::AcknowledgedInput]),
+    );
     plane.take_outbound();
     plane
 }
@@ -133,64 +110,6 @@ fn outcome(plane: &mut ControlPlane, delivery: u64) -> DeliveryOutcome {
         .expect("the delivery settles")
 }
 
-/// The server answered with a value this build cannot read, so the input
-/// may have landed: unknown, never a safe-to-retype refusal.
-#[test]
-fn an_unreadable_input_reply_settles_the_delivery_as_unknown() {
-    let mut plane = acknowledged_plane();
-    let (delivery, request) = apply_input_request(&mut plane);
-    plane
-        .feed_bytes(&raw(
-            TYPE_COMMAND_RESULT,
-            &[(1, &request.to_be_bytes()), (2, &[0x01, 0xEE, 1, 2])],
-        ))
-        .expect("an unknown value tag settles the request");
-    assert_eq!(outcome(&mut plane, delivery), DeliveryOutcome::Unknown);
-    assert!(plane.delivery_fenced(&terminal()));
-}
-
-/// `UNSUPPORTED` promises nothing happened, so a first attempt is refused.
-#[test]
-fn an_unsupported_input_reply_refuses_the_delivery() {
-    let mut plane = acknowledged_plane();
-    let (delivery, request) = apply_input_request(&mut plane);
-    plane
-        .feed(FrameKind::CommandResult {
-            request_id: request,
-            result: CommandResult::Error {
-                code: ErrorCode::Unsupported,
-                message: "unknown enum value".into(),
-            },
-        })
-        .unwrap();
-    assert_eq!(outcome(&mut plane, delivery), DeliveryOutcome::Refused);
-    assert!(!plane.delivery_fenced(&terminal()));
-}
-
-/// A spawn reply whose id has a shape this build does not know settles the
-/// spawn as failed instead of leaving it pending.
-#[test]
-fn an_unreadable_spawn_reply_settles_the_spawn() {
-    let (mut plane, attach_id) = negotiated();
-    attach(&mut plane, attach_id, b"home");
-    let _ = plane.take_outbound();
-    let _ = plane.take_events();
-    let request_id = plane.spawn_terminal(SpawnRequest::default());
-    let _ = plane.take_outbound();
-    plane
-        .feed_bytes(&raw(
-            TYPE_RESOURCE_SPAWNED,
-            &[(1, &request_id.to_be_bytes()), (2, &[0x00, 0xFF, 1])],
-        ))
-        .expect("an unreadable reply settles, not fails");
-    assert!(plane.take_events().iter().any(|event| matches!(
-        event,
-        Event::TerminalSpawned { request_id: id, terminal_id: None, error: Some(_) }
-            if *id == request_id
-    )));
-    assert_eq!(plane.status(), Status::Attached);
-}
-
 fn unsupported(request_id: u32) -> FrameKind {
     FrameKind::Error {
         request_id: Some(request_id),
@@ -199,35 +118,107 @@ fn unsupported(request_id: u32) -> FrameKind {
     }
 }
 
-/// A newer server refuses a request frame it cannot read with a correlated
-/// `ERROR UNSUPPORTED`: the spawn settles as refused, the session stays.
-#[test]
-fn a_spawn_answered_unsupported_settles_as_refused() {
-    let (mut plane, attach_id) = negotiated();
-    attach(&mut plane, attach_id, b"home");
-    let _ = plane.take_outbound();
-    let _ = plane.take_events();
+/// Feeds the server's answer to `request_id`.
+type Reply = fn(&mut ControlPlane, u32) -> Result<(), ControlError>;
+
+/// An attached plane with one spawn in flight; returns its request id.
+fn pending_spawn() -> (ControlPlane, u32) {
+    let mut plane = home();
     let request_id = plane.spawn_terminal(SpawnRequest::default());
     let _ = plane.take_outbound();
-    plane
-        .feed(unsupported(request_id))
-        .expect("a correlated UNSUPPORTED is not fatal");
-    assert!(plane.take_events().iter().any(|event| matches!(
-        event,
-        Event::TerminalSpawned { request_id: id, terminal_id: None, error: Some(_) }
-            if *id == request_id
-    )));
-    assert_eq!(plane.status(), Status::Attached);
+    (plane, request_id)
+}
+
+/// A spawn reply this build cannot read, or a correlated `ERROR
+/// UNSUPPORTED` from a newer server that cannot read the request, settles
+/// the spawn as failed instead of leaving it pending; the session stays.
+#[test]
+fn unreadable_or_unsupported_spawn_replies_settle_the_spawn() {
+    let cases: [(&str, Reply); 3] = [
+        // An unknown spawn refusal.
+        ("an_unknown_spawn_refusal_settles_the_spawn", |plane, id| {
+            plane.feed_bytes(&raw(
+                TYPE_RESOURCE_SPAWNED,
+                &[(1, &id.to_be_bytes()), (2, &[0x01, 0xFE])],
+            ))
+        }),
+        // A reply whose id has a shape this build does not know.
+        (
+            "an_unreadable_spawn_reply_settles_the_spawn",
+            |plane, id| {
+                plane.feed_bytes(&raw(
+                    TYPE_RESOURCE_SPAWNED,
+                    &[(1, &id.to_be_bytes()), (2, &[0x00, 0xFF, 1])],
+                ))
+            },
+        ),
+        (
+            "a_spawn_answered_unsupported_settles_as_refused",
+            |plane, id| plane.feed(unsupported(id)),
+        ),
+    ];
+    for (label, reply) in cases {
+        let (mut plane, request_id) = pending_spawn();
+        reply(&mut plane, request_id)
+            .unwrap_or_else(|error| panic!("{label}: the reply is not fatal: {error:?}"));
+        assert!(
+            plane.take_events().iter().any(|event| matches!(
+                event,
+                Event::TerminalSpawned { request_id: id, terminal_id: None, error: Some(_) }
+                    if *id == request_id
+            )),
+            "{label}: the spawn settles as failed"
+        );
+        assert_eq!(plane.status(), Status::Attached, "{label}");
+    }
+}
+
+/// A reply value this build cannot read may mean the input landed: unknown,
+/// never a safe-to-retype refusal. `UNSUPPORTED` promises nothing happened,
+/// so a first attempt is refused.
+#[test]
+fn input_replies_settle_the_delivery_by_what_they_promise() {
+    let cases: [(&str, Reply, DeliveryOutcome, bool); 2] = [
+        (
+            "an_unreadable_input_reply_settles_the_delivery_as_unknown",
+            |plane, request| {
+                plane.feed_bytes(&raw(
+                    TYPE_COMMAND_RESULT,
+                    &[(1, &request.to_be_bytes()), (2, &[0x01, 0xEE, 1, 2])],
+                ))
+            },
+            DeliveryOutcome::Unknown,
+            true,
+        ),
+        (
+            "an_unsupported_input_reply_refuses_the_delivery",
+            |plane, request| {
+                plane.feed(command_err(
+                    request,
+                    ErrorCode::Unsupported,
+                    "unknown enum value",
+                ))
+            },
+            DeliveryOutcome::Refused,
+            false,
+        ),
+    ];
+    for (label, reply, expected, fenced) in cases {
+        let mut plane = acknowledged_plane();
+        let (delivery, request) = apply_input_request(&mut plane);
+        reply(&mut plane, request)
+            .unwrap_or_else(|error| panic!("{label}: the reply settles: {error:?}"));
+        assert_eq!(outcome(&mut plane, delivery), expected, "{label}");
+        assert_eq!(plane.delivery_fenced(&terminal()), fenced, "{label}");
+    }
 }
 
 #[test]
 fn a_directory_listing_answered_unsupported_settles_as_failed() {
-    let mut plane = ControlPlane::new(ControlOptions::default());
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane
-        .feed(hello_ok_with(&[ServerFeature::ListDirectory]))
-        .unwrap();
+    let mut plane = opened(
+        ControlOptions::default(),
+        hello_ok_with(&[ServerFeature::ListDirectory]),
+    );
     let _ = plane.take_outbound();
     let request_id = plane.list_directory("/home".into());
     assert_ne!(request_id, 0);
@@ -304,12 +295,7 @@ fn an_unreadable_spawn_answer_is_an_unknown_outcome_not_a_refusal() {
             true,
         ),
     ] {
-        let (mut plane, attach_id) = negotiated();
-        attach(&mut plane, attach_id, b"home");
-        let _ = plane.take_outbound();
-        let _ = plane.take_events();
-        let request_id = plane.spawn_terminal(SpawnRequest::default());
-        let _ = plane.take_outbound();
+        let (mut plane, request_id) = pending_spawn();
         let frame = match frame {
             FrameKind::Error { code, message, .. } => FrameKind::Error {
                 request_id: Some(request_id),

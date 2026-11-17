@@ -82,8 +82,55 @@ fn apply_ops_from(ops: Vec<Op>, mut next_id: u32) -> (Option<LayoutNode>, Vec<Re
     (tree, alive)
 }
 
+/// `panes` with `new_pane` placed right after `target`.
+fn inserted_after(
+    panes: &[ResourceId],
+    target: &ResourceId,
+    new_pane: &ResourceId,
+) -> Vec<ResourceId> {
+    let mut out = Vec::with_capacity(panes.len() + 1);
+    for pane in panes {
+        out.push(pane.clone());
+        if pane == target {
+            out.push(new_pane.clone());
+        }
+    }
+    out
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
+
+    /// Invariant 0: on unique-leaf trees (all the clients build),
+    /// `kill_pane` drops exactly its target (`Ok(None)` for the last leaf)
+    /// and `split_at` places the new pane right after its target, both in
+    /// leaf order; an absent target is refused. These wrap phux-core's
+    /// `remove`/`split`; duplicate leaves are out of contract (core
+    /// `remove` drops every copy, the retired client walk dropped the
+    /// first).
+    #[test]
+    fn proptest_tree_edits_keep_leaf_order(ops in prop::collection::vec(arb_op(), 1..20)) {
+        let (tree, _) = apply_ops(ops);
+        let Some(tree) = tree else { return Ok(()) };
+        let panes = leaves(&tree);
+        let absent = t(9_999);
+        for target in &panes {
+            let kept: Vec<_> = panes.iter().filter(|p| *p != target).cloned().collect();
+            let after_kill = kill_pane(&tree, target).unwrap();
+            prop_assert_eq!(after_kill.as_ref().map_or_else(Vec::new, leaves), kept);
+            prop_assert_eq!(after_kill.is_none(), panes.len() == 1);
+            let split = split_at(&tree, target, &absent, SplitDir::Vertical, 0.5).unwrap();
+            prop_assert_eq!(leaves(&split), inserted_after(&panes, target, &absent));
+        }
+        prop_assert_eq!(
+            kill_pane(&tree, &absent),
+            Err(LayoutError::PaneNotInLayout(absent.clone()))
+        );
+        prop_assert_eq!(
+            split_at(&tree, &absent, &t(10_000), SplitDir::Horizontal, 0.5),
+            Err(LayoutError::PaneNotInLayout(absent))
+        );
+    }
 
     /// Invariant 1: every ResourceId appears as exactly one leaf.
     #[test]

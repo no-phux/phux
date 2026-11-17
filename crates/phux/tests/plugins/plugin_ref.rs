@@ -4,99 +4,7 @@
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
-
-use tempfile::TempDir;
-
-struct TestHome {
-    _tmp: TempDir,
-    xdg_config: PathBuf,
-    xdg_data: PathBuf,
-    scratch: PathBuf,
-}
-
-impl TestHome {
-    fn new() -> Self {
-        let tmp = TempDir::new().expect("tempdir");
-        let xdg_config = tmp.path().join("config");
-        let xdg_data = tmp.path().join("data");
-        let scratch = tmp.path().join("scratch");
-        std::fs::create_dir_all(&scratch).expect("create scratch dir");
-        Self {
-            _tmp: tmp,
-            xdg_config,
-            xdg_data,
-            scratch,
-        }
-    }
-
-    fn run_in(&self, cwd: &Path, args: &[&str]) -> (i32, String, String) {
-        let out = crate::common::phux_cmd(crate::runner::phux_bin())
-            .env("XDG_CONFIG_HOME", &self.xdg_config)
-            .env("XDG_DATA_HOME", &self.xdg_data)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .current_dir(cwd)
-            .args(args)
-            .output()
-            .expect("run phux binary");
-        (
-            out.status.code().expect("phux exited via code, not signal"),
-            String::from_utf8_lossy(&out.stdout).into_owned(),
-            String::from_utf8_lossy(&out.stderr).into_owned(),
-        )
-    }
-
-    fn run(&self, args: &[&str]) -> (i32, String, String) {
-        self.run_in(&self.scratch, args)
-    }
-
-    fn plugins_dir(&self) -> PathBuf {
-        self.xdg_data.join("phux").join("plugins")
-    }
-
-    fn lockfile(&self) -> PathBuf {
-        self.plugins_dir().join("plugins.lock")
-    }
-}
-
-fn write_plugin(dir: &Path, id: &str, version: &str) {
-    std::fs::create_dir_all(dir).expect("create plugin dir");
-    std::fs::write(
-        dir.join("phux-plugin.toml"),
-        format!(
-            r#"
-id = "{id}"
-name = "Install Fixture"
-version = "{version}"
-min_phux_version = "0.0.1"
-
-[[actions]]
-id = "open"
-title = "Open"
-command = ["true"]
-"#
-        ),
-    )
-    .expect("write manifest");
-    std::fs::write(dir.join("payload.txt"), "payload").expect("write payload");
-}
-
-fn git(repo: &Path, args: &[&str]) {
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args([
-            "-c",
-            "user.email=test@example.invalid",
-            "-c",
-            "user.name=Test",
-        ])
-        .args(args)
-        .status()
-        .expect("run git");
-    assert!(status.success(), "git {args:?} should succeed");
-}
+use crate::support::{TestHome, commit_all, git, init_repo, write_fixture_plugin};
 
 #[test]
 fn install_help_states_local_path_precedence() {
@@ -117,7 +25,7 @@ fn install_help_states_local_path_precedence() {
 fn existing_directory_wins_over_github_shorthand() {
     let home = TestHome::new();
     let plugin = home.scratch.join("acme").join("tools");
-    write_plugin(&plugin, "example.local-wins", "0.1.0");
+    write_fixture_plugin(&plugin, "example.local-wins", "0.1.0", "0.0.1", "");
 
     let (code, stdout, stderr) = home.run(&["plugin", "install", "acme/tools"]);
 
@@ -138,25 +46,25 @@ fn existing_directory_wins_over_github_shorthand() {
 fn install_git_subdir_records_rev_and_updates() {
     let home = TestHome::new();
     let repo = home.scratch.join("repo");
-    write_plugin(
+    write_fixture_plugin(
         &repo.join("plugins").join("demo"),
         "example.subdir",
         "0.1.0",
+        "0.0.1",
+        "",
     );
     std::fs::write(repo.join("README.md"), "not a plugin\n").unwrap();
-    git(&repo, &["init", "--quiet", "--initial-branch=main"]);
-    git(&repo, &["add", "."]);
-    git(&repo, &["commit", "--quiet", "-m", "fixture"]);
+    let url = init_repo(&repo, "fixture");
     git(&repo, &["checkout", "--quiet", "-b", "release"]);
-    write_plugin(
+    write_fixture_plugin(
         &repo.join("plugins").join("demo"),
         "example.subdir-rev",
         "0.2.0",
+        "0.0.1",
+        "",
     );
-    git(&repo, &["add", "."]);
-    git(&repo, &["commit", "--quiet", "-m", "release"]);
+    commit_all(&repo, "release");
     git(&repo, &["checkout", "--quiet", "main"]);
-    let url = format!("file://{}", repo.display());
 
     let (code, stdout, stderr) = home.run(&["plugin", "install", &url, "--json"]);
     assert_ne!(code, 0, "a repo with no root manifest must fail");
@@ -207,13 +115,14 @@ fn install_git_subdir_records_rev_and_updates() {
     assert_eq!(value["installed"]["branch"], "release");
     assert_eq!(value["installed"]["subdir"], "plugins/demo");
 
-    write_plugin(
+    write_fixture_plugin(
         &repo.join("plugins").join("demo"),
         "example.subdir",
         "0.1.1",
+        "0.0.1",
+        "",
     );
-    git(&repo, &["add", "."]);
-    git(&repo, &["commit", "--quiet", "-m", "bump"]);
+    commit_all(&repo, "bump");
     let (code, stdout, stderr) = home.run(&["plugin", "update", "example.subdir", "--json"]);
     assert_eq!(
         code, 0,

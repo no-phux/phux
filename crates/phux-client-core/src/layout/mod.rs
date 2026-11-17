@@ -12,36 +12,15 @@ use std::borrow::Cow;
 use phux_protocol::ResourceId;
 use thiserror::Error;
 
-/// Axis along which a [`LayoutNode::Split`] divides its rectangle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SplitDir {
-    /// Split side-by-side (a vertical bar between left and right).
-    Horizontal,
-    /// Split stacked (a horizontal bar between top and bottom).
-    Vertical,
-}
+pub use phux_core::arrangement::SplitDir;
 
-/// Binary split tree of a window's panes (ADR-0012); `Split` gives its
-/// left/top child `ratio` of the parent along [`SplitDir`]. It lives in L3
-/// metadata (docs/organization.md), never on the wire.
-#[derive(Debug, Clone, PartialEq)]
-pub enum LayoutNode {
-    /// A single pane — recursion base.
-    Leaf(ResourceId),
-    /// An interior node that splits its rectangle in two.
-    Split {
-        /// The axis the split is taken along.
-        dir: SplitDir,
-        /// Fraction given to `left`, in the closed interval `0.0..=1.0`; the
-        /// endpoints are admitted because clients bank unapplied resize
-        /// ratios (ADR-0048).
-        ratio: f32,
-        /// Left (for [`SplitDir::Horizontal`]) or top (for [`SplitDir::Vertical`]) child.
-        left: Box<Self>,
-        /// Right (for [`SplitDir::Horizontal`]) or bottom (for [`SplitDir::Vertical`]) child.
-        right: Box<Self>,
-    },
-}
+/// Binary split tree of a window's panes (ADR-0012) over live handles.
+///
+/// It is the generic [`phux_core::LayoutNode`] at [`ResourceId`] leaves and
+/// lives in L3 metadata (docs/organization.md), never on the wire. Client
+/// trees may hold the banked `0.0`/`1.0` ratios (ADR-0048), so never run
+/// `validate_ratios` on one.
+pub type LayoutNode = phux_core::LayoutNode<ResourceId>;
 
 /// Cardinal direction for [`focus_direction`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +70,24 @@ impl NodePath {
         Self(Vec::new())
     }
 
+    /// The path taking `true` for each `right` step and `false` for each
+    /// `left` one, root first.
+    #[must_use]
+    pub fn from_sides(right_steps: &[bool]) -> Self {
+        Self(
+            right_steps
+                .iter()
+                .map(|&right| {
+                    if right {
+                        NodeStep::Right
+                    } else {
+                        NodeStep::Left
+                    }
+                })
+                .collect(),
+        )
+    }
+
     /// Push a step onto the path (descend one level).
     pub(crate) fn push(&mut self, step: NodeStep) {
         self.0.push(step);
@@ -114,6 +111,15 @@ pub enum LayoutError {
     /// Closing this pane would leave the workspace with no panes.
     #[error("cannot close the final pane in a persisted layout")]
     LastPane,
+}
+
+impl From<phux_core::LayoutError<ResourceId>> for LayoutError {
+    fn from(error: phux_core::LayoutError<ResourceId>) -> Self {
+        match error {
+            phux_core::LayoutError::PaneNotInLayout(id) => Self::PaneNotInLayout(id),
+            phux_core::LayoutError::InvalidRatio(ratio) => Self::InvalidRatio(ratio),
+        }
+    }
 }
 
 /// One window's split tree plus this client's focused leaf. Focus is
@@ -209,7 +215,7 @@ mod slots;
 
 pub use arrangement::ArrangementDoc;
 pub use mutation::{LayoutMutation, MutationError, adopt_unarranged_groups, apply_mutation};
-pub use ops::{focus_direction, kill_pane, leaves, set_ratio_at, split_at};
+pub use ops::{contains, focus_direction, kill_pane, leaves, set_ratio_at, split_at};
 use ops::{repair_focus, shifted_index};
 pub use slots::Slot;
 

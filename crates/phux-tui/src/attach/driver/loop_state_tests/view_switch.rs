@@ -76,18 +76,10 @@ async fn dismissing_the_palette_clears_its_box() {
 /// layout read already settled: the view a held switch is waiting for.
 async fn published_single_pane_loop() -> (SessionLoop, Connection, Connection, ResourceId) {
     let (mut state, client, server, _out) = bootstrapped_loop_with(ServerFeatureSet::new()).await;
-    let config = phux_config::parse_with_defaults("", std::path::Path::new("t.toml"))
-        .expect("shipped defaults parse");
-    state.settings = crate::settings::TuiSettings::tolerant_from(&config);
+    use_shipped_settings(&mut state);
     state.viewport_dims = (80, 24);
     let a = ResourceId::local(1);
-    let (kernel, _effects, panes) =
-        crate::attach::pane_state::published_test_state(&[(&a, 80, 22, b"prompt$ ")]);
-    state.mirror.engine_kernel = kernel;
-    state.mirror.panes = panes;
-    state.mirror.workspace = ArrangementDoc::single(a.clone());
-    state.mirror.focused_resource = Some(a.clone());
-    state.layout_read_complete = true;
+    show_alone(&mut state, &a, (80, 22), b"prompt$ ");
     (state, client, server, a)
 }
 

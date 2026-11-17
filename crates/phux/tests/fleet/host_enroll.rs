@@ -131,7 +131,8 @@ impl EnrollHome {
     /// `LaunchAgents`), in the released `default` layout, with `$PHUX_SSH` at
     /// `ssh` (a missing path proves the run never sshed).
     fn run(&self, args: &[&str], ssh: &Path) -> (i32, String, String) {
-        let out = crate::common::phux_cmd(crate::runner::phux_bin())
+        crate::common::Out::of(
+            crate::common::phux_cmd(crate::runner::phux_bin())
             .env("HOME", self.dir.path())
             .env("XDG_CONFIG_HOME", self.dir.path().join("config"))
             .env("XDG_STATE_HOME", self.dir.path().join("state"))
@@ -141,14 +142,9 @@ impl EnrollHome {
             // The probe dials TEST-NET addresses: fail them fast.
             .env("PHUX_DIRECT_PROBE_TIMEOUT_MS", "300")
             .env("PATH", self.isolated_path())
-            .args(args)
-            .output()
-            .expect("run phux binary");
-        (
-            out.status.code().expect("phux exited via code, not signal"),
-            String::from_utf8_lossy(&out.stdout).into_owned(),
-            String::from_utf8_lossy(&out.stderr).into_owned(),
+            .args(args),
         )
+        .into_parts()
     }
 
     /// The one registry file both roles share.

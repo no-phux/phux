@@ -42,106 +42,97 @@ fn snapshot_reestablishes_alt_screen_1049() {
     );
 }
 
-/// Mouse-tracking modes survive the snapshot, checked on the replayed
-/// mirror's mode state.
+/// One snapshot round-trip: `writes` set up the source, whose modes are
+/// first checked against `source`; the snapshot bytes must contain every
+/// `emits`; and a mirror replaying them must match `mirror`.
+struct ModeCase {
+    label: &'static str,
+    writes: &'static [u8],
+    source: &'static [(Mode, &'static str, bool)],
+    emits: &'static [&'static str],
+    mirror: &'static [(Mode, &'static str, bool)],
+}
+
+/// Mouse tracking, alt scroll, and the alt-screen modes survive the
+/// snapshot; a mode the pane never set stays off.
 #[test]
-fn snapshot_reestablishes_mouse_tracking_modes() {
-    // The DECSET set opencode / Claude Code were probed to use.
-    let mut t = fresh(20, 4);
-    t.vt_write(b"\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h");
-    t.vt_write(b"tui body");
+fn snapshot_round_trips_terminal_modes() {
+    let cases = [
+        ModeCase {
+            // The DECSET set opencode / Claude Code were probed to use.
+            label: "mouse tracking",
+            writes: b"\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006htui body",
+            source: &[],
+            emits: &[],
+            mirror: &[
+                (Mode::NORMAL_MOUSE, "1000", true),
+                (Mode::BUTTON_MOUSE, "1002", true),
+                (Mode::ANY_MOUSE, "1003", true),
+                (Mode::SGR_MOUSE, "1006", true),
+            ],
+        },
+        ModeCase {
+            label: "plain pane never asked for the mouse",
+            writes: b"plain shell",
+            source: &[],
+            emits: &[],
+            mirror: &[
+                (Mode::X10_MOUSE, "9", false),
+                (Mode::NORMAL_MOUSE, "1000", false),
+                (Mode::BUTTON_MOUSE, "1002", false),
+                (Mode::ANY_MOUSE, "1003", false),
+            ],
+        },
+        ModeCase {
+            label: "alt-scroll opt-out",
+            writes: b"\x1b[?1049h\x1b[?1007l",
+            source: &[(Mode::ALT_SCROLL, "1007", false)],
+            emits: &[],
+            mirror: &[(Mode::ALT_SCROLL, "1007", false)],
+        },
+        ModeCase {
+            label: "legacy 47 alt screen",
+            writes: b"\x1b[?47hlegacy alt",
+            source: &[(Mode::ALT_SCREEN_LEGACY, "47", true)],
+            emits: &["?47h"],
+            mirror: &[],
+        },
+        ModeCase {
+            label: "primary screen reports every alt mode off",
+            writes: b"primary content",
+            source: &[],
+            emits: &["?47l", "?1047l", "?1049l"],
+            mirror: &[],
+        },
+    ];
+    for case in cases {
+        let label = case.label;
+        let mut t = fresh(20, 4);
+        t.vt_write(case.writes);
+        for &(mode, code, on) in case.source {
+            assert_eq!(
+                t.mode(mode).expect("source mode"),
+                on,
+                "{label}: source ?{code}"
+            );
+        }
 
-    let snap = synthesize(&t).expect("synth");
-    let mut mirror = fresh(snap.cols, snap.rows);
-    mirror.vt_write(&snap.bytes);
-
-    for (mode, code) in [
-        (Mode::NORMAL_MOUSE, "1000"),
-        (Mode::BUTTON_MOUSE, "1002"),
-        (Mode::ANY_MOUSE, "1003"),
-        (Mode::SGR_MOUSE, "1006"),
-    ] {
-        assert!(
-            mirror.mode(mode).expect("mirror mode"),
-            "mirror must have ?{code}h after replaying the snapshot",
-        );
+        let snap = synthesize(&t).expect("synth");
+        let bytes = String::from_utf8_lossy(&snap.bytes);
+        for needle in case.emits {
+            assert!(
+                bytes.contains(needle),
+                "{label}: must emit {needle}; bytes={bytes:?}"
+            );
+        }
+        let mut mirror = fresh(snap.cols, snap.rows);
+        mirror.vt_write(&snap.bytes);
+        for &(mode, code, on) in case.mirror {
+            assert_eq!(
+                mirror.mode(mode).expect("mirror mode"),
+                on,
+                "{label}: mirror ?{code} after replaying the snapshot",
+            );
+        }
     }
-}
-
-/// A pane that never asked for the mouse replays with tracking off.
-#[test]
-fn snapshot_leaves_mouse_tracking_off_for_a_plain_pane() {
-    let mut t = fresh(20, 4);
-    t.vt_write(b"plain shell");
-
-    let snap = synthesize(&t).expect("synth");
-    let mut mirror = fresh(snap.cols, snap.rows);
-    mirror.vt_write(&snap.bytes);
-
-    for (mode, code) in [
-        (Mode::X10_MOUSE, "9"),
-        (Mode::NORMAL_MOUSE, "1000"),
-        (Mode::BUTTON_MOUSE, "1002"),
-        (Mode::ANY_MOUSE, "1003"),
-    ] {
-        assert!(
-            !mirror.mode(mode).expect("mirror mode"),
-            "?{code} must stay off for a pane that never enabled the mouse",
-        );
-    }
-}
-
-/// An app's `?1007l` opt-out survives the snapshot.
-#[test]
-fn snapshot_preserves_an_alt_scroll_opt_out() {
-    let mut t = fresh(20, 4);
-    t.vt_write(b"\x1b[?1049h\x1b[?1007l");
-    assert!(
-        !t.mode(Mode::ALT_SCROLL).expect("mode 1007"),
-        "?1007l should clear ALT_SCROLL",
-    );
-
-    let snap = synthesize(&t).expect("synth");
-    let mut mirror = fresh(snap.cols, snap.rows);
-    mirror.vt_write(&snap.bytes);
-
-    assert!(
-        !mirror.mode(Mode::ALT_SCROLL).expect("mirror mode 1007"),
-        "the mirror must inherit the ?1007l opt-out",
-    );
-}
-
-/// Legacy `?47h` round-trips.
-#[test]
-fn snapshot_reestablishes_alt_screen_47_legacy() {
-    let mut t = fresh(20, 4);
-    t.vt_write(b"\x1b[?47h");
-    t.vt_write(b"legacy alt");
-    assert!(t.mode(Mode::ALT_SCREEN_LEGACY).expect("mode 47"));
-
-    let snap = synthesize(&t).expect("synth");
-    let bytes = String::from_utf8_lossy(&snap.bytes);
-    assert!(
-        bytes.contains("?47h"),
-        "snapshot must re-emit ?47h for a legacy alt-screen program; bytes={bytes:?}",
-    );
-}
-
-/// On the primary screen every alt-screen mode is reported off.
-#[test]
-fn snapshot_primary_screen_emits_all_alt_modes_off() {
-    let mut t = fresh(20, 4);
-    t.vt_write(b"primary content");
-
-    let snap = synthesize(&t).expect("synth");
-    let bytes = String::from_utf8_lossy(&snap.bytes);
-    assert!(bytes.contains("?47l"), "47 off on primary; bytes={bytes:?}");
-    assert!(
-        bytes.contains("?1047l"),
-        "1047 off on primary; bytes={bytes:?}",
-    );
-    assert!(
-        bytes.contains("?1049l"),
-        "1049 off on primary; bytes={bytes:?}",
-    );
 }

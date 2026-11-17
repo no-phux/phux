@@ -3,6 +3,7 @@
 //! Terminal, publish whole documents, bootstrap a late viewer onto the
 //! newest, publish their labels as names, and report producer liveness.
 
+use phux_core::image::{ImageFormat, image_size};
 use phux_protocol::caps::BootstrapStreamProfile;
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::typed_document::split_bootstrap;
@@ -15,6 +16,16 @@ use phux_server_testkit::{Spawn, assert_command_error, spawn_resource};
 use crate::common::{
     bootstrap, demo_parent, find, next_output, publish, send_command, spawn_kind, wait_for_state,
 };
+
+/// A publish the kind accepted (it takes a sequence).
+fn assert_taken(result: &CommandResult) {
+    assert!(matches!(result, CommandResult::OkWith(_)), "{result:?}");
+}
+
+/// A publish the kind refused as an invalid record.
+fn assert_invalid(result: &CommandResult) {
+    assert_command_error(result, ErrorCode::RecordInvalid);
+}
 
 #[test]
 fn a_tree_is_spawned_published_and_bootstrapped_at_its_newest_document() {
@@ -33,14 +44,12 @@ fn a_tree_is_spawned_published_and_bootstrapped_at_its_newest_document() {
         assert_eq!((base_seq, document.len()), (0, 0));
 
         // A broken document changes nothing; good ones take sequences.
-        let refused = publish(&mut owner, 10, &tree, "{not json").await;
-        assert_command_error(&refused, ErrorCode::RecordInvalid);
+        assert_invalid(&publish(&mut owner, 10, &tree, "{not json").await);
         for (request_id, doc) in [
             (11, r#"{"role":"window","v":1}"#),
             (12, r#"{"role":"window","v":2}"#),
         ] {
-            let taken = publish(&mut owner, request_id, &tree, doc).await;
-            assert!(matches!(taken, CommandResult::OkWith(_)), "{taken:?}");
+            assert_taken(&publish(&mut owner, request_id, &tree, doc).await);
         }
 
         // A late viewer gets the newest document only, at its sequence.
@@ -102,11 +111,9 @@ fn a_surface_takes_only_images_and_a_late_viewer_sees_the_newest() {
         assert_eq!((base_seq, image.len()), (0, 0));
 
         // JSON is a document, but not an image.
-        let refused = publish(&mut owner, 10, &surface, b"{\"role\":\"window\"}".to_vec()).await;
-        assert_command_error(&refused, ErrorCode::RecordInvalid);
+        assert_invalid(&publish(&mut owner, 10, &surface, b"{\"role\":\"window\"}".to_vec()).await);
         for (request_id, tag) in [(11, 1), (12, 2)] {
-            let taken = publish(&mut owner, request_id, &surface, png(640, 480, tag)).await;
-            assert!(matches!(taken, CommandResult::OkWith(_)), "{taken:?}");
+            assert_taken(&publish(&mut owner, request_id, &surface, png(640, 480, tag)).await);
         }
 
         let mut viewer = server.connect().await;
@@ -119,23 +126,16 @@ fn a_surface_takes_only_images_and_a_late_viewer_sees_the_newest() {
         let (_, profile, base_seq, image) = bootstrap(&mut viewer, &surface).await;
         assert_eq!(profile, BootstrapStreamProfile::PixelSurfacePngV1);
         assert_eq!((base_seq, image.clone()), (2, png(640, 480, 2)));
-        assert_eq!(
-            phux_tree::image_size(&image).map(|s| (s.1, s.2)),
-            Ok((640, 480))
-        );
+        assert_eq!(image_size(&image).map(|s| (s.1, s.2)), Ok((640, 480)));
 
         // A JPEG frame header for 800 x 600: the surface's newer image.
         let jpeg = vec![
             0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 0x02, 0x58, 0x03, 0x20, 1, 1, 0x11, 0,
         ];
-        let taken = publish(&mut owner, 13, &surface, jpeg).await;
-        assert!(matches!(taken, CommandResult::OkWith(_)), "{taken:?}");
+        assert_taken(&publish(&mut owner, 13, &surface, jpeg).await);
         let (seq, bytes) = next_output(&mut viewer, &surface).await;
         assert_eq!(seq, 3);
-        assert_eq!(
-            phux_tree::image_size(&bytes),
-            Ok((phux_tree::ImageFormat::Jpeg, 800, 600))
-        );
+        assert_eq!(image_size(&bytes), Ok((ImageFormat::Jpeg, 800, 600)));
 
         drop((owner, viewer));
         server.stop().await;
@@ -176,18 +176,15 @@ fn a_typed_document_carries_its_content_type_to_a_late_viewer() {
         };
         assert_eq!(typed_bootstrap(&mut owner, &doc).await, typed(0, b""));
         for (request_id, text) in [(10, "# one"), (11, "# two")] {
-            let taken = publish(&mut owner, request_id, &doc, text).await;
-            assert!(matches!(taken, CommandResult::OkWith(_)), "{taken:?}");
+            assert_taken(&publish(&mut owner, request_id, &doc, text).await);
         }
         // Markdown is text: bytes that are not UTF-8 are refused.
-        let refused = publish(&mut owner, 12, &doc, b"\xff\xfe".to_vec()).await;
-        assert_command_error(&refused, ErrorCode::RecordInvalid);
+        assert_invalid(&publish(&mut owner, 12, &doc, b"\xff\xfe".to_vec()).await);
 
         let mut viewer = server.connect().await;
         send_command(&mut viewer, 20, Command::attach_terminal(doc.clone(), None)).await;
         assert_eq!(typed_bootstrap(&mut viewer, &doc).await, typed(2, b"# two"));
-        let taken = publish(&mut owner, 13, &doc, "# three").await;
-        assert!(matches!(taken, CommandResult::OkWith(_)), "{taken:?}");
+        assert_taken(&publish(&mut owner, 13, &doc, "# three").await);
         assert_eq!(
             next_output(&mut viewer, &doc).await,
             (3, b"# three".to_vec())
@@ -196,10 +193,8 @@ fn a_typed_document_carries_its_content_type_to_a_late_viewer() {
         // A JSON document must parse.
         let json = spawn_kind(&mut owner, 3, document(&parent, "application/json")).await;
         let _ = bootstrap(&mut owner, &json).await;
-        let refused = publish(&mut owner, 30, &json, "{not json").await;
-        assert_command_error(&refused, ErrorCode::RecordInvalid);
-        let taken = publish(&mut owner, 31, &json, "{\"ok\":true}").await;
-        assert!(matches!(taken, CommandResult::OkWith(_)), "{taken:?}");
+        assert_invalid(&publish(&mut owner, 30, &json, "{not json").await);
+        assert_taken(&publish(&mut owner, 31, &json, "{\"ok\":true}").await);
 
         drop((owner, viewer));
         server.stop().await;
@@ -278,8 +273,7 @@ fn a_document_reports_its_producer_connected_then_gone() {
             SpawnResource::accessibility_tree(parent.clone(), "app:Test"),
         )
         .await;
-        let taken = publish(&mut owner, 3, &tree, DOC).await;
-        assert!(matches!(taken, CommandResult::OkWith(_)), "{taken:?}");
+        assert_taken(&publish(&mut owner, 3, &tree, DOC).await);
 
         let mut viewer = server.connect().await;
         let up = wait_for_state(&mut viewer, 10, "producer connected", |s| {
@@ -297,8 +291,7 @@ fn a_document_reports_its_producer_connected_then_gone() {
         // A producer that redials (a server upgrade closed its connection)
         // takes the same document back by publishing to it.
         let mut redialed = server.connect().await;
-        let taken = publish(&mut redialed, 4, &tree, DOC).await;
-        assert!(matches!(taken, CommandResult::OkWith(_)), "{taken:?}");
+        assert_taken(&publish(&mut redialed, 4, &tree, DOC).await);
         wait_for_state(&mut viewer, 200, "producer back", |s| {
             producer(s, &tree) == Some(true)
         })

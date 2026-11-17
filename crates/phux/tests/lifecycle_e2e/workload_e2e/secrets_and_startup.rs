@@ -1,62 +1,23 @@
 /// Run `phux ARGS` on a PTY with the hermetic environment until one of
 /// `needles` appears (or 30 s pass), then kill it; what it printed.
 fn run_in_pty(dir: &Path, args: &[&str], needles: &[&str]) -> String {
-    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
-    use std::io::Read as _;
-    let pty = native_pty_system()
-        .openpty(PtySize {
-            rows: 24,
-            cols: 80,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .expect("openpty");
-    let mut cmd = CommandBuilder::new(crate::runner::phux_bin());
-    cmd.args(args);
-    cmd.env_clear();
-    for var in ["PATH", "TMPDIR"] {
-        if let Some(value) = std::env::var_os(var) {
-            cmd.env(var, value);
-        }
-    }
-    for (name, value) in hermetic_env(dir) {
-        cmd.env(name, value);
-    }
-    cmd.env("HOME", dir);
-    cmd.env("TERM", "xterm-256color");
-    cmd.env("PHUX_SOCKET", dir.join("client.sock"));
-    cmd.env("PHUX_NO_AUTO_LISTEN", "1");
-    cmd.env("PHUX_NO_UPDATE_CHECK", "1");
-    cmd.cwd(dir);
-    let mut child = pty.slave.spawn_command(cmd).expect("spawn phux");
-    drop(pty.slave);
-    let mut reader = pty.master.try_clone_reader().expect("clone reader");
-    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
-    std::thread::spawn(move || {
-        let mut buf = [0_u8; 4096];
-        while let Ok(n) = reader.read(&mut buf) {
-            if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
-                break;
+    common::pty_transcript(
+        args,
+        |cmd| {
+            common::clear_pty_env(cmd);
+            for (name, value) in hermetic_env(dir) {
+                cmd.env(name, value);
             }
-        }
-    });
-    let deadline = Instant::now() + READY_DEADLINE;
-    let mut seen = String::new();
-    while !needles.iter().any(|needle| seen.contains(needle)) {
-        let left = deadline.saturating_duration_since(Instant::now());
-        match rx.recv_timeout(left) {
-            Ok(chunk) => seen.push_str(&String::from_utf8_lossy(&chunk)),
-            Err(_) => break,
-        }
-    }
-    // Let the line that matched finish.
-    std::thread::sleep(Duration::from_millis(200));
-    while let Ok(chunk) = rx.try_recv() {
-        seen.push_str(&String::from_utf8_lossy(&chunk));
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-    seen
+            cmd.env("HOME", dir);
+            cmd.env("PHUX_SOCKET", dir.join("client.sock"));
+            cmd.env("PHUX_NO_AUTO_LISTEN", "1");
+            cmd.cwd(dir);
+        },
+        |seen| needles.iter().any(|needle| seen.contains(needle)),
+        // Let the line that matched finish.
+        Duration::from_millis(200),
+        READY_DEADLINE,
+    )
 }
 
 /// `docs/remote.md#who-can-connect` secret sweep across an enrolled lifecycle,
@@ -98,7 +59,7 @@ fn no_key_nonce_or_signature_bytes_in_argv_env_stdout_stderr_or_trace() {
     .stderr(stderr)
     .spawn()
     .expect("spawn phux server");
-    let server = Server(server);
+    let server = Server::from_child(server, dir.path().join("s.sock"));
     register_loopback_remote(dir.path());
 
     let identity = [
@@ -173,21 +134,11 @@ fn an_unset_mode_beside_a_named_workload_registry_refuses_to_start() {
     prepare_dirs(dir.path());
     let registry = dir.path().join("elsewhere-workload-keys");
     let registry = registry.to_str().expect("utf-8 tempdir");
-    let out = server_command(
+    assert_start_refused(
         dir.path(),
         &["--exit-after-idle", "5"],
         &[("PHUX_WORKLOAD_KEYS", registry)],
-    )
-    .output()
-    .expect("run phux server");
-    let stderr = text(&out.stderr);
-    assert!(
-        !out.status.success(),
-        "an unset mode beside a named registry must refuse: {stderr}"
-    );
-    assert!(
-        stderr.contains("[policy] mode") && stderr.contains("PHUX_WORKLOAD_KEYS"),
-        "the refusal names the setting and the remedy: {stderr}"
+        &["[policy] mode", "PHUX_WORKLOAD_KEYS"],
     );
 }
 
@@ -199,7 +150,7 @@ fn an_unset_mode_beside_a_named_workload_registry_refuses_to_start() {
 fn an_unset_mode_beside_a_remote_listener_refuses_to_start() {
     let dir = TempDir::new().expect("tempdir");
     prepare_dirs(dir.path());
-    let out = server_command(
+    assert_start_refused(
         dir.path(),
         &[
             "--quic",
@@ -208,17 +159,7 @@ fn an_unset_mode_beside_a_remote_listener_refuses_to_start() {
             "5",
         ],
         &[],
-    )
-    .output()
-    .expect("run phux server");
-    let stderr = text(&out.stderr);
-    assert!(
-        !out.status.success(),
-        "an unset mode beside a listener must refuse: {stderr}"
-    );
-    assert!(
-        stderr.contains("[policy] mode") && stderr.contains("paired"),
-        "the refusal names the setting and the remedy: {stderr}"
+        &["[policy] mode", "paired"],
     );
 }
 
@@ -230,22 +171,31 @@ fn the_retired_workload_mtls_variable_refuses_to_start() {
     let dir = TempDir::new().expect("tempdir");
     prepare_dirs(dir.path());
     paired(dir.path());
-    let out = server_command(
+    assert_start_refused(
         dir.path(),
         &["--exit-after-idle", "5"],
         &[("PHUX_WORKLOAD_MTLS", "1")],
-    )
-    .output()
-    .expect("run phux server");
+        &["PHUX_WORKLOAD_MTLS is retired", "[policy] mode"],
+    );
+}
+
+/// `phux server ARGS` with `env` must fail to start, and its stderr must
+/// name every needle (the setting and its remedy or replacement).
+fn assert_start_refused(dir: &Path, args: &[&str], env: &[(&str, &str)], needles: &[&str]) {
+    let out = server_command(dir, args, env)
+        .output()
+        .expect("run phux server");
     let stderr = text(&out.stderr);
     assert!(
         !out.status.success(),
-        "the retired variable must refuse: {stderr}"
+        "{args:?} {env:?} must refuse to start: {stderr}"
     );
-    assert!(
-        stderr.contains("PHUX_WORKLOAD_MTLS is retired") && stderr.contains("[policy] mode"),
-        "the refusal names the replacement: {stderr}"
-    );
+    for needle in needles {
+        assert!(
+            stderr.contains(needle),
+            "the refusal names {needle:?}: {stderr}"
+        );
+    }
 }
 
 /// Poll `child` until it exits or `deadline` passes, then collect it.

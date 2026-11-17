@@ -9,6 +9,7 @@ use libghostty_vt::{
     },
 };
 use phux_protocol::input::mouse::{MouseButton, MouseEvent};
+use phux_vt::input::ToGhostty as _;
 
 /// libghostty takes `None` for the wire's `Unknown` "no button" sentinel.
 const fn option_for_encoder(button: MouseButton) -> Option<MouseButton> {
@@ -26,9 +27,9 @@ const fn option_for_encoder(button: MouseButton) -> Option<MouseButton> {
 )]
 fn mouse_event_to_libghostty(ev: &MouseEvent) -> Result<LgMouseEvent<'static>, Error> {
     let mut out = LgMouseEvent::new()?;
-    out.set_action(ev.action.into())
-        .set_button(option_for_encoder(ev.button).map(Into::into))
-        .set_mods(ev.mods.into())
+    out.set_action(ev.action.to_ghostty())
+        .set_button(option_for_encoder(ev.button).map(MouseButton::to_ghostty))
+        .set_mods(ev.mods.to_ghostty())
         .set_position(LgMousePosition {
             x: ev.x as f32,
             y: ev.y as f32,
@@ -122,9 +123,9 @@ mod tests {
             y: 34.25,
         };
         let lg = mouse_event_to_libghostty(&ev).expect("convert");
-        assert_eq!(lg.action(), MouseAction::Press.into());
-        assert_eq!(lg.button(), Some(MouseButton::Left.into()));
-        assert_eq!(lg.mods(), ModSet::SHIFT.into());
+        assert_eq!(lg.action(), MouseAction::Press.to_ghostty());
+        assert_eq!(lg.button(), Some(MouseButton::Left.to_ghostty()));
+        assert_eq!(lg.mods(), ModSet::SHIFT.to_ghostty());
         let pos = lg.position();
         assert!((pos.x - 12.5_f32).abs() < f32::EPSILON);
         assert!((pos.y - 34.25_f32).abs() < f32::EPSILON);

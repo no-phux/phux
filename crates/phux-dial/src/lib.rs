@@ -6,7 +6,8 @@
 //! stops at the byte stream; framing stays with the callers. The
 //! congestion-tracked QUIC send window ([`window`]) every phux writer shares,
 //! and with `provision` the [`cert`] and [`secret_file`] modules, are
-//! `quictun`'s, re-exported so phux names them in one place.
+//! `quictun`'s, re-exported so phux names them in one place. With `relay`,
+//! the `relay` module binds `quictun`'s relay to phux's wire for `phux relay`.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -16,6 +17,8 @@
 pub use quictun::cert;
 pub mod enroll;
 pub mod quic;
+#[cfg(feature = "relay")]
+pub mod relay;
 #[cfg(feature = "provision")]
 pub use quictun::secret_file;
 #[cfg(any(test, feature = "testing"))]

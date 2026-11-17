@@ -276,33 +276,45 @@ fn settings_ink_keeps_text_and_control_contrast_on_its_surfaces() {
     }
 }
 
-fn render(
-    gpu: &rune::render::Gpu,
-    renderer: &mut rune::render::Renderer,
-    rt: &mut Runtime<Desk>,
+/// Offscreen frames of one window size, named `{name}{suffix}`.
+struct Camera<'g> {
+    gpu: &'g rune::render::Gpu,
+    renderer: rune::render::Renderer,
     size: (u32, u32),
-    name: &str,
-) {
-    // A focus reveal commits its scroll after layout. Paint the following
-    // frame too, rather than exporting the previous frame's draw instances.
-    rt.frame(1.0);
-    rt.frame(1.0);
-    let pixels = crate::ui::offscreen(gpu, renderer, rt, size);
-    assert!(
-        pixels
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .any(|pixel| pixel[0] != pixel[1])
-    );
-    if let Some(directory) = std::env::var_os("RUNE_SETTINGS_SNAP") {
-        let path = std::path::PathBuf::from(directory).join(format!("{name}.png"));
-        rune::render::write_png(&path, size.0, size.1, &pixels).unwrap();
-        std::fs::write(
-            path.with_extension("json"),
-            rt.accessibility_json().to_string(),
-        )
-        .unwrap();
+    name: &'static str,
+}
+
+impl<'g> Camera<'g> {
+    fn new(gpu: &'g rune::render::Gpu, size: (u32, u32), name: &'static str) -> Self {
+        let renderer = rune::render::Renderer::new(&gpu.device, rune::render::OFFSCREEN_FORMAT);
+        Self {
+            gpu,
+            renderer,
+            size,
+            name,
+        }
+    }
+
+    /// Paint `rt`, assert the frame is not blank, and keep it under
+    /// `RUNE_SETTINGS_SNAP` when that is set.
+    fn shoot(&mut self, rt: &mut Runtime<Desk>, suffix: &str) {
+        let (size, name) = (self.size, format!("{}{suffix}", self.name));
+        // A focus reveal commits its scroll after layout. Paint the following
+        // frame too, rather than exporting the previous frame's draw instances.
+        rt.frame(1.0);
+        rt.frame(1.0);
+        let pixels = crate::ui::offscreen(self.gpu, &mut self.renderer, rt, size);
+        assert!(
+            pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .any(|pixel| pixel[0] != pixel[1])
+        );
+        if let Some(directory) = std::env::var_os("RUNE_SETTINGS_SNAP") {
+            let path = std::path::PathBuf::from(directory).join(format!("{name}.png"));
+            crate::test_support::visual::write(&path, rt, size, &pixels, &name);
+        }
     }
 }
 
@@ -316,45 +328,31 @@ fn settings_native_render_frames() {
         (true, (320, 568), "small"),
     ] {
         let mut rt = runtime((size.0 as f32, size.1 as f32), phone);
-        let mut renderer = rune::render::Renderer::new(&gpu.device, rune::render::OFFSCREEN_FORMAT);
-        render(&gpu, &mut renderer, &mut rt, size, name);
+        let mut camera = Camera::new(&gpu, size, name);
+        camera.shoot(&mut rt, "");
         rt.update(|d, tx| {
             tx.instant();
             d.settings_category(Category::Terminal);
         });
         rt.frame(0.0);
-        render(
-            &gpu,
-            &mut renderer,
-            &mut rt,
-            size,
-            &format!("{name}-terminal"),
-        );
+        camera.shoot(&mut rt, "-terminal");
         downloading(&mut rt);
-        render(
-            &gpu,
-            &mut renderer,
-            &mut rt,
-            size,
-            &format!("{name}-updates"),
-        );
+        camera.shoot(&mut rt, "-updates");
         rt.update(|d, tx| {
             tx.instant();
             d.settings_ui.category = None;
             d.settings.theme = crate::theme::find("catppuccin-mocha");
         });
         rt.frame(0.0);
-        render(&gpu, &mut renderer, &mut rt, size, &format!("{name}-dark"));
+        camera.shoot(&mut rt, "-dark");
         assert!(rt.accessibility_action("settings-query", Action::Focus, None));
         rt.key(crate::keys::plain(Key::Text("clipboard".into())));
         rt.frame(0.0);
-        render(
-            &gpu,
-            &mut renderer,
-            &mut rt,
-            size,
-            &format!("{name}-typed-search"),
-        );
+        camera.shoot(&mut rt, "-typed-search");
+        rt.update(|d, _| d.clear_settings_search());
+        rt.key(crate::keys::plain(Key::Text("no-such-setting".into())));
+        rt.frame(0.0);
+        camera.shoot(&mut rt, "-no-match");
         if !phone {
             rt.update(|d, tx| {
                 tx.instant();
@@ -372,13 +370,7 @@ fn settings_native_render_frames() {
             rt.key(crate::keys::plain(Key::Text(" ".into())));
             rt.frame(1.0);
             assert_eq!(rt.state.settings_ui.category, Some(Category::About));
-            render(
-                &gpu,
-                &mut renderer,
-                &mut rt,
-                size,
-                &format!("{name}-about-revealed"),
-            );
+            camera.shoot(&mut rt, "-about-revealed");
         }
     }
 }
@@ -388,7 +380,7 @@ fn pair_a_phone_shows_a_code_devices_and_the_explicit_choice() {
     let gpu = rune::render::Gpu::headless();
     for (size, name) in [((1100, 720), "pair"), ((640, 360), "pair-min")] {
         let mut rt = runtime((size.0 as f32, size.1 as f32), false);
-        let mut renderer = rune::render::Renderer::new(&gpu.device, rune::render::OFFSCREEN_FORMAT);
+        let mut camera = Camera::new(&gpu, size, name);
         rt.update(|d, tx| {
             tx.instant();
             d.connection.resources.images = Some(rune::ImageCache::new(std::sync::Arc::new(|| {})));
@@ -409,16 +401,10 @@ fn pair_a_phone_shows_a_code_devices_and_the_explicit_choice() {
         let expiry = rt.accessibility_json().to_string();
         assert!(expiry.contains("Expires in 9:0"), "counts down");
         assert!(expiry.contains("Over your tailnet"));
-        render(&gpu, &mut renderer, &mut rt, size, name);
+        camera.shoot(&mut rt, "");
         // Revealing the device list scrolls past the code.
         rt.update(|_, tx| tx.scroll_into_view("pair-revoke-1"));
-        render(
-            &gpu,
-            &mut renderer,
-            &mut rt,
-            size,
-            &format!("{name}-devices"),
-        );
+        camera.shoot(&mut rt, "-devices");
 
         // Remote access off: a code only after the explicit choice.
         rt.update(|d, tx| {
@@ -432,13 +418,7 @@ fn pair_a_phone_shows_a_code_devices_and_the_explicit_choice() {
         assert!(rt.find("pair-allow").is_some());
         assert!(rt.find("pair-qr").is_none());
         rt.update(|_, tx| tx.scroll_into_view("pair-allow"));
-        render(
-            &gpu,
-            &mut renderer,
-            &mut rt,
-            size,
-            &format!("{name}-enable"),
-        );
+        camera.shoot(&mut rt, "-enable");
     }
 }
 
@@ -489,47 +469,23 @@ fn mobile_appearance_and_real_theme_palette_render_accept_and_cancel() {
         );
         rt.on_key = Some(Desk::key);
         rt.frame(1.0);
-        let mut renderer = rune::render::Renderer::new(&gpu.device, rune::render::OFFSCREEN_FORMAT);
-        render(
-            &gpu,
-            &mut renderer,
-            &mut rt,
-            size,
-            &format!("{name}-appearance-before"),
-        );
+        let mut camera = Camera::new(&gpu, size, name);
+        camera.shoot(&mut rt, "-appearance-before");
         theme_query(&mut rt);
-        render(
-            &gpu,
-            &mut renderer,
-            &mut rt,
-            size,
-            &format!("{name}-appearance-chooser"),
-        );
+        camera.shoot(&mut rt, "-appearance-chooser");
         rt.key(crate::keys::plain(Key::Escape));
         rt.frame(1.0);
         assert!(rt.state.settings_open);
         assert!(!rt.state.palette_open);
         assert_eq!(rt.state.settings.theme, before);
-        render(
-            &gpu,
-            &mut renderer,
-            &mut rt,
-            size,
-            &format!("{name}-appearance-cancel"),
-        );
+        camera.shoot(&mut rt, "-appearance-cancel");
         theme_query(&mut rt);
         rt.key(crate::keys::plain(Key::Enter));
         rt.frame(1.0);
         assert!(rt.state.settings_open);
         assert!(!rt.state.palette_open);
         assert_eq!(rt.state.settings.theme, crate::theme::find("nord"));
-        render(
-            &gpu,
-            &mut renderer,
-            &mut rt,
-            size,
-            &format!("{name}-appearance-accepted"),
-        );
+        camera.shoot(&mut rt, "-appearance-accepted");
     }
 }
 

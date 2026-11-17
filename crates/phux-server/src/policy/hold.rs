@@ -109,7 +109,7 @@ pub(super) fn refuse_viewer_decision(
 
 /// Whether `client` is a `VIEWER` on `terminal`.
 fn decider_is_viewer_of(s: &ServerState, client: ClientId, terminal: &WireResourceId) -> bool {
-    s.is_viewer(client, terminal)
+    s.clients().is_viewer(client, terminal)
 }
 
 /// The pending approval a `phux.approval.decide/v1/<id>` write names.

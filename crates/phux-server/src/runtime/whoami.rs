@@ -36,11 +36,11 @@ pub(super) fn is_whoami_key(scope: &Scope, key: &str) -> bool {
 /// The record carries the asking connection's own grant and nobody else's
 /// (`docs/remote.md#who-can-do-what`: the key answers only the asking connection).
 pub(super) fn record_for(s: &ServerState, client_id: ClientId) -> Option<Vec<u8>> {
-    let peer = s.peer_identity(client_id)?;
+    let peer = s.clients().peer_identity(client_id)?;
     let record = build_record(
         peer,
-        s.authenticated_credential(client_id),
-        s.ssh_origin(client_id),
+        s.clients().authenticated_credential(client_id),
+        s.clients().ssh_origin(client_id),
         serving_host(),
     );
     let connection = s.connection_grant(client_id);
@@ -111,6 +111,7 @@ pub(super) fn admit_ssh_origin(
         return;
     };
     let admissible = s
+        .clients()
         .peer_identity(client_id)
         .is_some_and(|peer| may_announce_ssh(peer, serving_host().user.uid));
     if !admissible {
@@ -126,7 +127,7 @@ pub(super) fn admit_ssh_origin(
         ssh_server = ?origin.server,
         "ssh-bridged client announced by stdio-bridge"
     );
-    s.set_ssh_origin(client_id, origin);
+    s.clients_mut().set_ssh_origin(client_id, origin);
 }
 
 /// Whether `peer` may announce an ssh origin: a Unix-socket peer running as
@@ -218,11 +219,11 @@ const fn route_word(peer: &PeerIdentity, bearer: bool, ssh: bool) -> &'static st
     reason = "private module shared with the state layer; pub would violate unreachable_pub"
 )]
 pub(crate) fn route_for(s: &ServerState, client_id: ClientId) -> Option<&'static str> {
-    let peer = s.peer_identity(client_id)?;
+    let peer = s.clients().peer_identity(client_id)?;
     Some(route_word(
         peer,
-        s.authenticated_credential(client_id).is_some(),
-        s.ssh_origin(client_id).is_some(),
+        s.clients().authenticated_credential(client_id).is_some(),
+        s.clients().ssh_origin(client_id).is_some(),
     ))
 }
 

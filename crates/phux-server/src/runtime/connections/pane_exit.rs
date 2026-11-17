@@ -141,11 +141,11 @@ fn retain_exited_pane(
     let retention = s.retain_exited(pane, exit, crate::state::now_unix_ms())?;
     // The record keeps its outcome (`ExitPolicy::Retain`).
     s.activation_ended(pane, exit, false);
-    let wire_terminal_id = s.intern_resource_wire(pane);
+    let wire_terminal_id = s.idspace.intern_resource(pane);
     if let Some(events) = events {
         journal_pending_events(s, events);
     }
-    let input_holder = s.input_lease_holder(pane).map(crate::runtime::wire_client);
+    let input_holder = s.leases().holder(pane).map(crate::runtime::wire_client);
     let exited = AgentEvent::TerminalControl {
         lifecycle: phux_protocol::wire::frame::ResourceLifecycle::Exited,
         exit_status: exit.status,
@@ -157,12 +157,12 @@ fn retain_exited_pane(
         Some(wire_terminal_id.clone()),
         exited,
     ));
-    let handle = s.resource_handle(pane).cloned();
+    let handle = s.resources().handle(pane).cloned();
     let app_hook = s
         .registry()
         .resource(pane)
-        .map(|resource| crate::runtime::apps::app_for(resource.kind))
-        .and_then(|app| app.exit_retained(s, &wire_terminal_id));
+        .map(|resource| resource.kind)
+        .and_then(|kind| crate::runtime::apps::exit_retained(kind, s, &wire_terminal_id));
     Some(RetainedExit {
         retention,
         wire_terminal_id,
@@ -251,15 +251,15 @@ fn reap_exited_pane(
     // ADR-0104 §2: a cascading parent may already have reaped this child.
     let reason = s.begin_resource_close(pane)?;
     // ADR-0124: a retained pane's close reports the exit it was kept with.
-    let exit = s.retained_outcome(pane).unwrap_or(exit);
+    let exit = s.retained().outcome(pane).unwrap_or(exit);
     // Interned before the cascade and the reap, which retires the wire id.
-    let wire_terminal_id = s.intern_resource_wire(pane);
+    let wire_terminal_id = s.idspace.intern_resource(pane);
     if let Some(events) = events {
         journal_pending_events(s, events);
     }
     let parent = s
         .resource_parent(pane)
-        .map(|parent| s.intern_resource_wire(parent));
+        .map(|parent| s.idspace.intern_resource(parent));
     let cascaded = cascade_children(s, pane, &wire_terminal_id);
     // Every subscriber, including `ATTACH_RESOURCE`-only ones (L1 §3.1).
     let targets: Vec<mpsc::Sender<Outbound>> = s.terminal_fanout_targets(pane);
@@ -281,7 +281,7 @@ fn reap_exited_pane(
     let killed_clients: Vec<_> = s
         .take_killed_sessions()
         .into_iter()
-        .flat_map(|session| s.attached_clients_in_session(session))
+        .flat_map(|session| s.clients().attached_in_session(session))
         .collect();
     Some(ReapAndNotify {
         core_terminal_id: pane,
@@ -319,10 +319,10 @@ fn cascade_children(
         } else {
             recorded
         };
-        let wire_child_id = s.intern_resource_wire(child);
+        let wire_child_id = s.idspace.intern_resource(child);
         let child_targets = s.terminal_fanout_targets(child);
         let publication_fences = s.attach_publication_fences(child);
-        let child_exit = s.retained_outcome(child).unwrap_or(ExitOutcome::UNKNOWN);
+        let child_exit = s.retained().outcome(child).unwrap_or(ExitOutcome::UNKNOWN);
         let attribution = s.take_close_attribution(child);
         journal_pane_closed(
             s,
@@ -331,7 +331,7 @@ fn cascade_children(
             child_exit.status,
             attribution,
         );
-        s.cancel_terminal_pumps(child);
+        s.resources_mut().cancel_pumps_for_terminal(child);
         s.reap_resource(child);
         cascaded.push(CascadedClose {
             wire_terminal_id: wire_child_id,
@@ -381,7 +381,7 @@ async fn announce_close(
         .await;
     }
     broadcast_terminal_closed_after_drain(&wire_terminal_id, &targets, exit, reason, &drains).await;
-    state.with_mut(|s| s.finish_terminal_output_drain(core_terminal_id));
+    state.with_mut(|s| s.resources_mut().finish_output_drain(core_terminal_id));
     if let Some(token) = actor_token {
         token.cancel();
     }

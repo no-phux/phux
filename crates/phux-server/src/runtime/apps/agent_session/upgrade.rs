@@ -16,6 +16,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::resource::ResourceHandle;
+use crate::runtime::apps::producer_stream::collect_within;
 use crate::runtime::apps::{KindResume, UpgradeCut};
 use crate::runtime::connections::pane_events::PaneEvents;
 use crate::runtime::upgrade::UpgradeError;
@@ -141,7 +142,8 @@ fn uncarried(
         .values()
         .filter(|binding| !binding.closed)
         .find(|binding| {
-            s.resource_from_wire(&binding.agent)
+            s.idspace
+                .resource_from_wire(&binding.agent)
                 .is_none_or(|id| !cuts.contains_key(&id))
         })
         .map(|binding| binding.agent.clone())
@@ -204,11 +206,12 @@ pub(crate) fn carried_sessions(
 ) -> Vec<(ResourceId, mpsc::Sender<BootstrapRequest>)> {
     let parents: HashSet<ResourceId> = s.carried_panes().into_iter().map(|(id, _)| id).collect();
     let mut carried: Vec<(ResourceId, mpsc::Sender<BootstrapRequest>)> = s
+        .resources()
         .resource_ids()
         .into_iter()
         .filter(|id| s.registry().resource(*id).is_some())
         .filter_map(|id| {
-            let handle = s.resource_handle(id)?;
+            let handle = s.resources().handle(id)?;
             let session = handle.agent_session().ok()?;
             handle
                 .parent
@@ -285,7 +288,7 @@ impl KindRebuild for AgentSessionResume {
     /// `REPORT_AGENT_STATE` is re-bound to the stream (ADR-0103 §6). A
     /// session whose parent pane or record did not cross is dropped.
     fn rebuild(&mut self, cx: &mut ResumeCx<'_>) -> Result<(), RebuildError> {
-        let log_bytes = cx.state.agent_log_bytes();
+        let log_bytes = cx.state.config().agent_log_bytes;
         let blob = cx.blob;
         for carried in &blob.agent_sessions {
             let (wire, parent_wire) = (carried.wire_id, carried.parent_wire_id);
@@ -314,7 +317,7 @@ impl KindRebuild for AgentSessionResume {
                 log_bytes,
                 carried_cut(carried),
             );
-            bind_to_parent(cx.state.resource_handle(parent), &bundle.handle);
+            bind_to_parent(cx.state.resources().handle(parent), &bundle.handle);
             cx.spawn(
                 core,
                 carried.wire_id,
@@ -450,21 +453,10 @@ pub(crate) async fn collect_agent_session_cuts(
             .map(|(_, bootstrap)| bootstrap.clone())
             .collect(),
     };
-    let mut pending = sessions
-        .into_iter()
-        .map(|(session, bootstrap)| async move {
-            request_agent_session_cut(&bootstrap, true)
-                .await
-                .map(|cut| (session, stream_cut(cut)))
-        })
-        .collect::<FuturesUnordered<_>>();
-    let mut cuts = HashMap::with_capacity(wanted);
-    let _ = tokio::time::timeout(deadline, async {
-        while let Some(answer) = pending.next().await {
-            if let Some((session, cut)) = answer {
-                cuts.insert(session, cut);
-            }
-        }
+    let cuts = collect_within(sessions, deadline, |(session, bootstrap)| async move {
+        request_agent_session_cut(&bootstrap, true)
+            .await
+            .map(|cut| (session, stream_cut(cut)))
     })
     .await;
     if cuts.len() < wanted {

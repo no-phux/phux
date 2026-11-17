@@ -19,7 +19,6 @@ hand edits do not survive. Regenerate with `just docs-gen`.
 | [Exit codes](exit-codes.md) | Every exit code the binary uses and what each one means. |
 | [Environment variables](environment.md) | Every environment variable the binary reads and what each one does. |
 | [File locations](files.md) | The symbolic path rule for every file phux reads or writes: socket, config, logs, TLS material, tokens, bug reports, and the ideas spool. |
-| [Deprecations](deprecations.md) | Every deprecated spelling, its replacement, and its removal release. |
 | [Resource kinds](kinds.md) | Every resource kind, its methods and events, and the verb each frame and command needs. |
 | [CLI and MCP parity](parity.md) | Every MCP tool, the CLI verb it mirrors, how it runs, and its annotations. |
 

@@ -3,7 +3,7 @@ use phux_client_core::grid::GridProjector;
 
 fn terminal() -> Terminal<'static, 'static> {
     let mut terminal = Terminal::new(8, 3).unwrap();
-    phux_protocol::kitty_replay::configure_terminal_for_kitty_graphics(&mut terminal).unwrap();
+    phux_vt::kitty_replay::configure_terminal_for_kitty_graphics(&mut terminal).unwrap();
     terminal.resize(8, 3, 8, 16).unwrap();
     terminal
 }

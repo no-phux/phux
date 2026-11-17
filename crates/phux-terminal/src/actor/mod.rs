@@ -88,8 +88,11 @@ const DEFAULT_MAX_SCROLLBACK: u32 = 10_000;
 
 /// Scrollback bounds for the no-config constructors; the runtime passes the
 /// configured `defaults.history-limit`/`history-bytes` (ADR-0094).
-const DEFAULT_SCROLLBACK: phux_config::ScrollbackLimits =
-    phux_config::ScrollbackLimits::new(DEFAULT_MAX_SCROLLBACK, phux_config::DEFAULT_HISTORY_BYTES);
+const DEFAULT_SCROLLBACK: phux_config_core::limits::ScrollbackLimits =
+    phux_config_core::limits::ScrollbackLimits::new(
+        DEFAULT_MAX_SCROLLBACK,
+        phux_config_core::limits::DEFAULT_HISTORY_BYTES,
+    );
 
 /// Fallback cell size in pixels until a client reports real metrics, so
 /// `TIOCGWINSZ` and `CSI 14 t` never report `0x0` (pixel probes such as

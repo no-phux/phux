@@ -35,10 +35,7 @@ fn hello_placed(placed: bool) -> FrameKind {
 
 /// A seeded plane whose session 2 (`skey(2)`) has no members.
 fn with_empty_session(placed: bool) -> ControlPlane {
-    let mut plane = ControlPlane::new(ControlOptions::default());
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane.feed(hello_placed(placed)).expect("HELLO_OK");
+    let mut plane = opened(ControlOptions::default(), hello_placed(placed));
     let seed = commands(&mut plane)
         .into_iter()
         .find(|(_, c)| matches!(c, Command::GetOrganization { .. }))

@@ -12,7 +12,30 @@ use phux_client_runtime::target::AuthorityPin;
 use super::json_err::{self, CliError, codes};
 use super::server_target::ServerSpec;
 
-pub(crate) fn run(
+/// Run `phux upload` as parsed.
+pub(crate) fn run(args: crate::commands::UploadArgs, socket: Option<PathBuf>) -> ExitCode {
+    let crate::commands::UploadArgs {
+        target,
+        file,
+        extension,
+        timeout,
+        json,
+        remote,
+    } = args;
+    run_upload(
+        &target,
+        file,
+        extension,
+        timeout,
+        json,
+        ServerSpec {
+            socket,
+            remote: remote.remote,
+        },
+    )
+}
+
+fn run_upload(
     raw: &str,
     file: PathBuf,
     extension: Option<String>,

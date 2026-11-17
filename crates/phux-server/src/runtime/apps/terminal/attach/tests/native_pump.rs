@@ -7,7 +7,6 @@
 use super::*;
 use phux_terminal::actor::TerminalResource as _;
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(super) fn native_profile() -> BootstrapProfile {
     BootstrapProfile::NativeState {
         codec: phux_protocol::caps::EngineCodec::LibghosttySnapshotV1,
@@ -17,7 +16,6 @@ pub(super) fn native_profile() -> BootstrapProfile {
 
 /// Start a native-profile ATTACH pump on `terminal` whose published
 /// bootstrap covers nothing yet.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(super) fn spawn_native_pump(
     terminal: phux_terminal::actor::TerminalHandle,
     output: &tokio::sync::broadcast::Sender<ResourceOutput>,
@@ -38,7 +36,6 @@ pub(super) fn spawn_native_pump(
     TwoPumpConsumer { out_rx, task }
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 fn native_pump_context(
     out_tx: tokio::sync::mpsc::Sender<Outbound>,
     terminal: phux_terminal::actor::TerminalHandle,
@@ -66,7 +63,6 @@ fn native_pump_context(
     }
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(start_paused = true)]
 async fn final_drain_wins_over_expired_gap_and_ready_broadcasts() {
     let (handle, _, _, _) = native_attach_handle();
@@ -95,7 +91,6 @@ async fn final_drain_wins_over_expired_gap_and_ready_broadcasts() {
     ));
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(start_paused = true)]
 async fn invalidated_final_native_capture_is_a_failure_without_partial_publication() {
     let (handle, _, mut captures, _) = native_attach_handle();
@@ -127,7 +122,6 @@ async fn invalidated_final_native_capture_is_a_failure_without_partial_publicati
     );
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(start_paused = true)]
 async fn unanswered_final_native_capture_has_a_deadline() {
     let (handle, _, mut captures, _) = native_attach_handle();
@@ -153,7 +147,6 @@ async fn unanswered_final_native_capture_has_a_deadline() {
 }
 
 /// The actor's reply to `capture`: an empty checkpoint at sequence 0.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(super) fn empty_native_checkpoint(
     capture: &phux_terminal::actor::NativeBootstrapRequest,
 ) -> phux_terminal::actor::NativeBootstrapReply {

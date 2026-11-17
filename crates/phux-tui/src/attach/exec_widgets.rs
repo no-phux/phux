@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use phux_config::widget::ExecFeed;
+use crate::render::chrome::status_bar::widgets::ExecFeed;
 use phux_plugin::{CommandSpec, PluginActionOutcome, run_command_spec};
 
 /// Hard ceiling on one run's wall clock. A run is otherwise bounded by
@@ -95,8 +95,8 @@ pub(super) async fn run_once(feed: &ExecFeed) {
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::render::chrome::status_bar::widgets::{StatusWidget, WidgetContext, WidgetRegistry};
     use phux_config::WidgetSpec;
-    use phux_config::widget::{StatusWidget, WidgetContext, WidgetRegistry};
     use std::time::UNIX_EPOCH;
 
     fn exec_widget(cmd: &str) -> Box<dyn StatusWidget> {
@@ -140,7 +140,7 @@ mod tests {
         run_once(&feed).await;
         assert_eq!(rendered(widget.as_ref()), "ok");
         // A spawn failure: argv[0] does not exist (direct argv, no shell).
-        let missing = phux_config::widget::ExecWidget::new(
+        let missing = crate::render::chrome::status_bar::widgets::ExecWidget::new(
             vec!["/nonexistent/phux-widget".to_owned()],
             Duration::from_secs(1),
             true,

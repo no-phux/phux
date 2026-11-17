@@ -235,34 +235,17 @@ fn rename_refuses_only_inbound_satellites() {
 fn table_renders_role_state_and_auth_columns() {
     let rows = vec![
         HostRow {
-            name: "mini".to_owned(),
-            role: HostRole::Remote,
             endpoint: "quic://mini:8788".to_owned(),
-            enabled: None,
             token_file: Some(PathBuf::from("/tokens/mini")),
             cert_fingerprint: Some("ab".repeat(32)),
-            tls_server_name: None,
             session: Some("work".to_owned()),
             ssh: Some("me@mini".to_owned()),
-            direct: None,
-            client_cert: None,
-            client_key: None,
-            color: None,
+            ..row("mini", HostRole::Remote)
         },
         HostRow {
-            name: "edge".to_owned(),
-            role: HostRole::Satellite,
             endpoint: "ssh://edge".to_owned(),
             enabled: Some(false),
-            token_file: None,
-            cert_fingerprint: None,
-            tls_server_name: None,
-            session: None,
-            ssh: None,
-            direct: None,
-            client_cert: None,
-            client_key: None,
-            color: None,
+            ..row("edge", HostRole::Satellite)
         },
     ];
     let table = render_table(&rows);

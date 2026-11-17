@@ -29,8 +29,8 @@ fn reap_cascades_through_grandchildren() {
         .expect("live")
         .parent = Some(child);
 
-    let wire_grandparent = state.intern_resource_wire(grandparent);
-    let wire_grandchild = state.intern_resource_wire(grandchild);
+    let wire_grandparent = state.idspace.intern_resource(grandparent);
+    let wire_grandchild = state.idspace.intern_resource(grandchild);
     let reap = reap_exited_pane(&mut state, grandparent, ExitOutcome::exited(0), None)
         .expect("grandparent was live");
 

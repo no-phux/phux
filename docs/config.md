@@ -258,7 +258,9 @@ it, and when a change applies. Edits go straight into your
   shows through. <kbd>C-z</kbd> undoes.
 
 Each edit changes one line and keeps your comments. An edit that would
-make the file invalid is refused before it is written. A setting that
+make the file invalid is refused before it is written. If another `phux`
+command is writing the file at the same moment, the edit is refused as
+busy; press it again. A setting that
 comes from a file you extend can't be reset here; the page names that
 file so you can edit it.
 
@@ -369,9 +371,9 @@ The command names:
   `close-session`, `restore-sessions`, `machines`, `retry-connection`,
   `jump-to-attention`, `inbox`.
 - Text: `copy`, `paste`, `select-all`, `copy-mode`, `find`, `find-next`,
-  `find-previous`, `find-selection`, `insert-path`, `scroll-top`,
-  `scroll-bottom`, `prompt-up`, `prompt-down`, `zoom-in`, `zoom-out`,
-  `zoom-reset`.
+  `find-previous`, `find-selection`, `insert-path`, `screenshot`,
+  `scroll-top`, `scroll-bottom`, `prompt-up`, `prompt-down`, `zoom-in`,
+  `zoom-out`, `zoom-reset`.
 - The app: `palette`, `settings`, `change-theme`, `toggle-sidebar`,
   `toggle-full-screen`, `keyboard-shortcuts`, `essential-shortcuts`,
   `get-started`, `bare`, `copy-config`, `copy-diagnostics`,

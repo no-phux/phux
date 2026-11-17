@@ -15,13 +15,7 @@ fn run(root: &Path, args: &[&str]) -> std::process::Output {
 }
 
 fn document(root: &Path, args: &[&str]) -> serde_json::Value {
-    let output = run(root, args);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).expect("JSON")
+    crate::common::Out::from(run(root, args)).json()
 }
 
 #[test]

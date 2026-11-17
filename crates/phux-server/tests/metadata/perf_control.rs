@@ -3,15 +3,13 @@
 //! the heap-accounting switch answers with its state.
 
 use phux_protocol::caps::ServerFeatureExt;
-use phux_protocol::wire::frame::{
-    Command, CommandResult, CommandValue, ErrorCode, FrameKind, PerfOp,
-};
+use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode, PerfOp};
 use tempfile::TempDir;
 use tokio::net::UnixStream;
 
 use phux_server_testkit::{command, join_after_shutdown, run_local, spawn_server_with_seed_cmd};
 
-use crate::common::{connect_as, full_caps};
+use crate::common::{advertises, connect_as, full_caps};
 use crate::get_perf::get_perf;
 
 async fn perf_control(stream: &mut UnixStream, request_id: u32, op: PerfOp) -> CommandResult {
@@ -49,13 +47,8 @@ fn perf_control_writes_a_trace_and_switches_heap_accounting() {
             spawn_server_with_seed_cmd(socket_path.clone(), "perf-control", cmd);
 
         let (mut stream, hello) = connect_as(&socket_path, "perf-control", full_caps()).await;
-        let FrameKind::HelloOk { server_caps, .. } = hello else {
-            panic!("expected HELLO_OK: {hello:?}");
-        };
         assert!(
-            server_caps
-                .features_ext
-                .contains(ServerFeatureExt::PerfControl),
+            advertises(&hello, ServerFeatureExt::PerfControl),
             "the server advertises PERF_CONTROL"
         );
 

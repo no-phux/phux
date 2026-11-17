@@ -38,11 +38,11 @@ fn prepare_attach_reports_snapshot_seed_without_an_actor_as_closed() {
         });
         actors.push(bundle.actor);
     }
-    let client_id = state.with_mut(crate::state::ServerState::new_client_id);
+    let client_id = state.with_mut(|s| s.clients_mut().new_client_id());
     let (out_tx, _out_rx) = tokio::sync::mpsc::channel(crate::state::DEFAULT_CLIENT_MAILBOX);
 
     let working = state
-        .with(|s| s.find_session_by_name("working"))
+        .with(|s| s.sessions().find_by_name("working"))
         .expect("the seeded session");
     let (snapshot, _initial_client_id, bootstrapped, closed, _publication) = prepare_attach(
         &state,
@@ -89,10 +89,10 @@ fn prepare_attach_rejects_pane_source_count_before_registration() {
                 .expect("bounded test pane");
         }
     });
-    let client_id = state.with_mut(crate::state::ServerState::new_client_id);
+    let client_id = state.with_mut(|s| s.clients_mut().new_client_id());
     let (out_tx, _out_rx) = tokio::sync::mpsc::channel(crate::state::DEFAULT_CLIENT_MAILBOX);
     let bounded = state
-        .with(|s| s.find_session_by_name("bounded"))
+        .with(|s| s.sessions().find_by_name("bounded"))
         .expect("the seeded session");
     assert!(matches!(
         prepare_attach(

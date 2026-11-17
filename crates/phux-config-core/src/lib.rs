@@ -12,10 +12,12 @@
 
 mod clipboard;
 mod error;
+pub mod guard;
 pub mod host_color;
 pub mod instance;
 pub mod known_authorities;
 pub mod layer;
+pub mod limits;
 pub mod loader;
 mod organize;
 pub mod remote;

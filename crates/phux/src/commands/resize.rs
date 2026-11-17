@@ -5,9 +5,11 @@ use std::process::ExitCode;
 use phux_client::attach::AttachError;
 use phux_client::read::Verb;
 use phux_client::resize::{ResizeOutcome, resize_to};
-use phux_server::runtime::default_socket_path;
 
-use crate::commands::{cli_runtime, json_err, parse_selector, resolve_terminal_target};
+use crate::commands::ctx::{self, Ctx};
+use crate::commands::json_err::{Refusal, codes};
+use crate::commands::{parse_target, resolve_terminal_target};
+use crate::exit_codes::EXIT_FAILURE;
 
 /// A `COLSxROWS` geometry, both axes [`NonZeroU16`]. `x` and `X` are both
 /// accepted as the separator.
@@ -58,37 +60,37 @@ pub(crate) fn run_resize(
     json: bool,
     socket: Option<PathBuf>,
 ) -> ExitCode {
-    let selector = match parse_selector(Some(target)) {
-        Ok(sel) => sel,
-        Err(code) => return code,
-    };
-    let socket_path = socket.unwrap_or_else(default_socket_path);
-    let rt = match cli_runtime() {
-        Ok(rt) => rt,
-        Err(code) => return code,
-    };
-    rt.block_on(async move {
-        let pane = match resolve_terminal_target(&socket_path, &selector, Verb::Resize, json).await
-        {
-            Ok(id) => id,
-            Err(code) => return code,
-        };
-        let outcome = match resize_to(&socket_path, &pane, geometry.cols, geometry.rows).await {
-            Ok(outcome) => outcome,
-            Err(err @ AttachError::Io(_)) => {
-                return json_err::report_no_server(json, &err, &socket_path, "resize");
-            }
-            Err(AttachError::Refused(msg)) => {
-                error!("cannot resize '{target}': {msg} (try `phux ls`)");
-                return ExitCode::FAILURE;
-            }
-            Err(err) => {
-                error!("resize failed: {err}");
-                return ExitCode::FAILURE;
-            }
-        };
-        report(&pane, outcome, json)
+    ctx::run_local(socket, json, |ctx| {
+        let selector = parse_target(Some(target))?;
+        ctx.rt.block_on(async {
+            let pane = resolve_terminal_target(ctx.socket(), &selector, Verb::Resize).await?;
+            let outcome = resize_to(ctx.socket(), &pane, geometry.cols, geometry.rows)
+                .await
+                .map_err(|err| failure(ctx, &err, target))?;
+            Ok(report(&pane, outcome, json))
+        })
     })
+}
+
+/// A failed resize, exit 1. A refusal (the pane missing from the read-back)
+/// names the target; any other failure is the shared transport
+/// classification, worded as resize has always worded it for a human.
+fn failure(ctx: &Ctx<PathBuf>, err: &AttachError, target: &str) -> Refusal {
+    match err {
+        AttachError::Refused(msg) => Refusal::new(
+            codes::TRANSPORT,
+            format!("cannot resize '{target}': {msg}"),
+            "check the target with `phux ls`",
+            EXIT_FAILURE,
+        )
+        .with_human(vec![format!(
+            "cannot resize '{target}': {msg} (try `phux ls`)"
+        )]),
+        AttachError::Io(_) => ctx.unreachable(err, "resize"),
+        other => ctx
+            .unreachable(other, "resize")
+            .with_human(vec![format!("resize failed: {other}")]),
+    }
 }
 
 /// Emit the outcome and pick the exit code. The report prints on both paths:
@@ -119,6 +121,19 @@ fn report(pane: &phux_protocol::ids::ResourceId, outcome: ResizeOutcome, json: b
          to make explicit resizes authoritative."
     );
     ExitCode::FAILURE
+}
+
+/// Run `phux resize` as parsed.
+pub(crate) fn run(
+    args: crate::commands::ResizeArgs,
+    socket: Option<std::path::PathBuf>,
+) -> ExitCode {
+    let crate::commands::ResizeArgs {
+        target,
+        geometry,
+        json,
+    } = args;
+    run_resize(&target, geometry, json.json, socket)
 }
 
 #[cfg(test)]

@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use super::{Fault, Finding, array_entry_source, push_semantic, suggest};
 use crate::keybind::{KeybindError, Resolver, parse_chord, parse_chord_sequence};
-use crate::widget::{WidgetError, WidgetRegistry};
+use crate::widget::{BUILTIN_WIDGET_SPECS, WidgetError};
 use crate::{Config, ConfigProvenance, DefaultsCfg, HookEntry, KeybindingsCfg, theme_slots, vocab};
 
 pub(super) fn semantic_pass(
@@ -294,15 +294,14 @@ fn dead_hook_action_message(name: &str) -> String {
     )
 }
 
-/// Build every status-bar widget exactly as the TUI will, one at a time so
-/// every bad widget is reported in one pass.
+/// Validate every status-bar widget by the rules the TUI builds it with, one
+/// at a time so every bad widget is reported in one pass.
 fn status_widget_findings(
     status: &crate::StatusCfg,
     provenance: &ConfigProvenance,
     findings: &mut Vec<Finding>,
 ) {
-    let registry = WidgetRegistry::with_builtins();
-    let kinds = registry.kinds();
+    let kinds: Vec<&str> = BUILTIN_WIDGET_SPECS.iter().map(|spec| spec.kind).collect();
     for (slot, widgets) in [
         ("left", &status.left),
         ("center", &status.center),
@@ -310,7 +309,7 @@ fn status_widget_findings(
     ] {
         let table_path = format!("status.{slot}");
         for (index, entry) in widgets.iter().enumerate() {
-            let Err(error) = registry.build(&entry.to_spec()) else {
+            let Err(error) = crate::widget::validate(&entry.to_spec()) else {
                 continue;
             };
             let (fault, message) = match error {

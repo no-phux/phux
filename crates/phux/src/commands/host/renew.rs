@@ -45,7 +45,7 @@ pub(super) fn run_renew(name: &str, remote_phux: &str, hardware_key: bool, json:
         ssh_host: &ssh_host,
         remote_phux,
     };
-    let remotes_dir = phux_server::telemetry::state_dir().join("remotes");
+    let remotes_dir = phux_config::instance::state_dir().join("remotes");
     // An entry already on a hardware key stays on one.
     let workload = plan.held.replacement(&remotes_dir, name, hardware_key);
     let mut warnings = Vec::new();
@@ -126,7 +126,7 @@ impl RenewPlan {
                 format!("`{add}` sets the machine up and enrolls one"),
             );
         }
-        let remotes_dir = phux_server::telemetry::state_dir().join("remotes");
+        let remotes_dir = phux_config::instance::state_dir().join("remotes");
         let authority = held.authority(&remotes_dir, name);
         // With no issuing CA to compare against, only a destination the
         // entry recorded (or its ssh:// endpoint) says which host to ask.

@@ -71,9 +71,11 @@ fn move_local_terminal(
         return Err(MoveError::UnsupportedSatelliteRoute);
     }
     let moved = s
+        .idspace
         .resource_from_wire(terminal)
         .ok_or_else(|| failed("terminal was not found on this server"))?;
     let owner = s
+        .idspace
         .resource_from_wire(owner_terminal)
         .ok_or_else(|| failed("owner terminal was not found on this server"))?;
     let to = s
@@ -85,6 +87,6 @@ fn move_local_terminal(
     // A move that emptied an ephemeral source deleted it in the same commit.
     Ok(s.take_killed_sessions()
         .into_iter()
-        .flat_map(|session| s.attached_clients_in_session(session))
+        .flat_map(|session| s.clients().attached_in_session(session))
         .collect())
 }

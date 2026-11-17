@@ -33,7 +33,7 @@ required-features = ["dhat-heap"]
 # Native ANSI tokens only; already locked transitively. std::io::IsTerminal
 # owns stream detection and output.rs owns policy, avoiding a styling framework.
 anstyle = "1.0"
-phux-protocol = { workspace = true, features = ["server"] }
+phux-protocol.workspace = true
 phux-core.workspace = true
 # `snapshot --format vt` decodes the server's base64 rendered capture to
 # raw bytes for stdout (D9); already in the dep graph, see the workspace
@@ -45,9 +45,9 @@ futures-util = { version = "0.3", default-features = false, features = ["std", "
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 # Defaults are controlled by this executable's feature forwarding below.
 # Other workspace consumers can retain the server's own defaults.
-phux-server = { path = "../phux-server", default-features = false, features = ["native-engine"] }
+phux-server = { path = "../phux-server", default-features = false }
 # The Terminal app: this binary composes the server with what a pane runs.
-phux-terminal = { workspace = true, features = ["native-engine"] }
+phux-terminal.workspace = true
 phux-terminal-api.workspace = true
 # `phux agent explain` evaluates detection manifests with no daemon in the
 # loop (phux-w7z2.24). The rules crate is the same evaluator the server
@@ -76,7 +76,6 @@ phux-design.workspace = true
 phux-resource.workspace = true
 # `phux mission`: the mission documents, and the work store's keeper and
 # client. A client composition; no server or protocol type is involved.
-phux-mission.workspace = true
 phux-work.workspace = true
 phux-plugin.workspace = true
 # `phux agent usage`: the plan-usage collector. Its own crate so nothing in the
@@ -87,11 +86,9 @@ phux-usage.workspace = true
 # dial stack a real client uses is the whole point: a bespoke probe could
 # pass while the path clients take is blocked. Workspace crate, already in
 # the tree under phux-client; no new third-party dependency enters.
-phux-dial.workspace = true
-# `phux relay` fronts the reference relay: `run` drives its runtime in the
-# foreground and `pair` mints route-bound tunnel tokens (workspace crate;
-# no new third-party dependency enters).
-phux-relay.workspace = true
+# `relay`: `phux relay` fronts the reference relay. `run` drives its runtime
+# in the foreground and `pair` mints route-bound tunnel tokens.
+phux-dial = { workspace = true, features = ["relay"] }
 # `phux rec` and `phux --rec` export half: the asciicast codec, the offline
 # VT replayer, and the in-process GIF/APNG encoders. Taken with its default
 # `render` feature ON — the binary is the one consumer that must be able to
@@ -120,7 +117,7 @@ shell-words = "1.1"
 # computed in-process rather than by shelling out to `shasum`/`sha256sum` and
 # parsing their output — one fewer external program whose absence, version, or
 # output format could turn "verify" into "skip". `sha2` is already a direct
-# dependency of phux-server, phux-relay, phux-dial, and phux-client-core (cert
+# dependency of phux-server, phux-dial, and phux-client-core (cert
 # fingerprints, ADR-0031), so this adds no new row to Cargo.lock; it is the
 # RustCrypto reference implementation, pure-safe Rust, no C deps.
 sha2 = "0.11"
@@ -147,6 +144,8 @@ rustix = { version = "1.1", default-features = false, features = ["std", "proces
 
 [dev-dependencies]
 phux-frozen.workspace = true
+# `testing`: the scripted `FnPolicy` HELLO engine for the live-server tests.
+phux-server = { path = "../phux-server", default-features = false, features = ["testing"] }
 # The one scripted server (`phux_client::testkit`), where the reference
 # server's frame ORDER is written down once with a handler citation per
 # entry. The verb tests for partial-fleet reporting need a server that pushes

@@ -9,20 +9,17 @@ use crate::state::ClientId;
 /// The command-result shape of a Terminal-only request aimed at a resource
 /// of another kind.
 pub(crate) fn wrong_resource_kind(error: WrongResourceKind) -> CommandResult {
-    CommandResult::Error {
-        code: ErrorCode::WrongResourceKind,
-        message: error.to_string(),
-    }
+    CommandResult::error(ErrorCode::WrongResourceKind, error.to_string())
 }
 
 /// The `TERMINAL_NOT_FOUND` refusal for `terminal_id`.
 pub(in crate::runtime) fn terminal_not_found(
     terminal_id: &phux_protocol::ids::ResourceId,
 ) -> CommandResult {
-    CommandResult::Error {
-        code: ErrorCode::TerminalNotFound,
-        message: format!("no such terminal: {terminal_id}"),
-    }
+    CommandResult::error(
+        ErrorCode::TerminalNotFound,
+        format!("no such terminal: {terminal_id}"),
+    )
 }
 
 /// The command result of a pane actor's `Result<(), String>` reply; a
@@ -38,10 +35,10 @@ pub(in crate::runtime) fn actor_reply(
             code: refusal_code,
             message,
         },
-        Err(_) => CommandResult::Error {
-            code: ErrorCode::InternalError,
-            message: format!("pane actor dropped {verb} reply"),
-        },
+        Err(_) => CommandResult::error(
+            ErrorCode::InternalError,
+            format!("pane actor dropped {verb} reply"),
+        ),
     }
 }
 

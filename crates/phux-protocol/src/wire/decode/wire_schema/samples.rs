@@ -5,7 +5,8 @@ use super::{
     ActorRef, BootstrapId, BootstrapLimits, BootstrapProfile, Bytes, BytesMut, ClientId,
     Compression, DetachReason, ErrorCode, FRAME_COMPRESSED, FrameKind, IdempotencyKey, ResourceId,
     ServerCapabilities, SessionId, SessionSnapshot, StreamId, WindowId, decodes, frame_entry,
-    host_samples, lifecycle_samples, metadata_samples, spawn_samples, stream_samples,
+    host_samples, lifecycle_samples, metadata_samples, reply_samples, spawn_samples,
+    stream_samples,
 };
 
 pub(super) fn terminal() -> ResourceId {
@@ -47,6 +48,7 @@ pub(super) fn frame_samples() -> Vec<FrameKind> {
     samples.extend(host_samples());
     samples.extend(spawn_samples());
     samples.extend(lifecycle_samples());
+    samples.extend(reply_samples());
     samples
 }
 

@@ -134,7 +134,7 @@ pub(super) fn reconnect_failure_lines(
         ReconnectOutcome::Connectable(_) => Vec::new(),
         ReconnectOutcome::SocketGone => vec![
             "the server shut down (its socket is gone) and is not restarting".to_owned(),
-            "start a new one with `phux` (attaches, auto-starting a server) or `phux server`"
+            "start a new one with `phux` (attaches, auto-starting a server) or `phux server --ensure`"
                 .to_owned(),
             "run `phux doctor` for a health check".to_owned(),
         ],
@@ -145,7 +145,7 @@ pub(super) fn reconnect_failure_lines(
             ),
             format!(
                 "server log: {}",
-                phux_server::telemetry::server_log_path().display()
+                phux_config::instance::server_log_path().display()
             ),
             "run `phux doctor` for a health check".to_owned(),
         ],

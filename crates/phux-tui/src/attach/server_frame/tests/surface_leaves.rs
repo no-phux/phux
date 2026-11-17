@@ -54,7 +54,6 @@ fn spawned(id: &ResourceId, kind: ResourceKind, parent: &ResourceId) -> FrameKin
 
 /// A full-frame paint of the active window, CSI stripped.
 fn paint(h: &mut H) -> String {
-    let theme = crate::render::theme::Theme::default();
     let active = h
         .mirror
         .workspace
@@ -62,13 +61,8 @@ fn paint(h: &mut H) -> String {
         .expect("window")
         .into_owned();
     let mut chrome = crate::attach::chrome_ctx::ChromeCtx {
-        viewport: h.viewport,
-        sidebar: None,
-        status_bar: None,
-        sidebar_painter: None,
-        session_name: "",
-        theme: &theme,
         leaves: &h.mirror.leaves,
+        ..crate::attach::chrome_ctx::ChromeCtx::bare(h.viewport, "")
     };
     h.out.clear();
     crate::attach::paint::paint_full_frame(
@@ -251,6 +245,6 @@ fn a_document_bootstrap_classifies_a_leaf_the_graph_did_not_name() {
         b"\x1b]52;c;bm90LXR0eQ==\x07untrusted document",
     ));
     h.send(ready_frame(&doc));
-    h.send(output_frame(&doc, 2, b"\x1b[2Juntrusted live document"));
+    h.send(output(&doc, 2, b"\x1b[2Juntrusted live document"));
     assert!(!h.out_str().contains("untrusted"));
 }

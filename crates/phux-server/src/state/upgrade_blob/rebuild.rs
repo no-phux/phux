@@ -188,7 +188,10 @@ impl ServerState {
             .panes
             .iter()
             .filter(|pane| pane.retained_exit.is_some())
-            .filter_map(|pane| self.resource_from_wire(&WireResourceId::local(pane.wire_id)))
+            .filter_map(|pane| {
+                self.idspace
+                    .resource_from_wire(&WireResourceId::local(pane.wire_id))
+            })
             .collect();
         self.close_resources(
             &retained,

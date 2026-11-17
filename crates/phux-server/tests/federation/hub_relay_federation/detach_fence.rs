@@ -61,13 +61,7 @@ fn event_only_subscription_before_spawn_content_attach_keeps_link_and_events_liv
         get_screen_via_hub(&mut a, 4, pane.clone()).await;
 
         // The legacy subscription survives the internal content detach.
-        let ask = Command::ReportAsked {
-            terminal_id: pane.clone(),
-            id: "post-barrier".to_owned(),
-            question: "event preserved?".to_owned(),
-            suggestions: Vec::new(),
-            elapsed_seconds: None,
-        };
+        let ask = report_asked(&pane, "post-barrier", "event preserved?");
         assert_eq!(command_via_hub(&mut a, 6, ask).await.0, CommandResult::Ok);
         let asked = next_event(&mut legacy, |frame| {
             matches!(frame, FrameKind::Event { event: AgentEvent::Asked { id, .. }, .. } if id == "post-barrier")

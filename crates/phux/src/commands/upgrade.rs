@@ -12,8 +12,8 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use phux_client::attach::AttachError;
+use phux_config::socket::default_socket_path;
 use phux_protocol::ids::ResourceId;
-use phux_server::runtime::default_socket_path;
 
 use crate::commands::server_target::ServerTarget;
 use crate::commands::{cli_runtime, report_no_server, warn_interleaved_degradation};

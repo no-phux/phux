@@ -1,4 +1,4 @@
-"""Execute the shipped cadence policy, not a Python copy of its decisions."""
+"""Execute the shipped Swift frame/evidence policies, not Python copies."""
 from pathlib import Path
 import subprocess
 import sys
@@ -8,11 +8,12 @@ from test_ios_build import build
 
 
 @unittest.skipUnless(sys.platform == "darwin", "Swift host execution needs Xcode")
-class FrameCadenceTests(unittest.TestCase):
-    def test_failed_drawables_keep_retrying_and_preserve_earlier_deadlines(self):
+class NativeFramePolicyTests(unittest.TestCase):
+    def test_failed_drawables_and_unpresented_evidence_never_claim_success(self):
         source = Path(__file__).resolve().parents[1] / "ios/Sources/FrameCadence.swift"
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            evidence = source.with_name("QualificationEvidence.swift")
             main = root / "main.swift"
             main.write_text("""
 import Foundation
@@ -35,9 +36,68 @@ precondition(cadence.nextWake(drew: false, after: .infinity) == 0.05)
 precondition(cadence.nextWake(drew: true, after: .nan) == nil)
 precondition(cadence.nextWake(drew: true, after: -1) == 0.001)
 precondition(cadence.nextWake(drew: true, after: 2) == 2)
+
+let marker = "RUNE_IOS_INPUT_OK"
+let witness = "[[" + marker + "]]"
+let report: [String: Any] = ["marker_seen": true, "frames": UInt64(7), "terminal_id": "@1"]
+func tree(_ text: String, grid: String = "grid-@1") -> [String: Any] {
+    ["role": "window", "children": [
+        ["role": "group", "key": grid, "children": [["role": "label", "name": text]]]
+    ]]
+}
+@MainActor func publish(_ tree: [String: Any], drew: Bool = true,
+             source: [String: Any] = report) throws -> [(String, [String: Any])] {
+    var writes: [(String, [String: Any])] = []
+    _ = try QualificationEvidence.publish(report: source, tree: tree, marker: marker,
+        didPresent: drew, write: { value, name in writes.append((name, value)) })
+    return writes
+}
+// The live grid can be ahead of the frame that Rune actually presented.
+let stale = try publish(tree("sh-3.2$"))
+precondition(stale.isEmpty, "stale tree must not publish readiness")
+let undrawn = try publish(tree(witness), drew: false)
+precondition(undrawn.isEmpty, "undrawn frame is not proof")
+let wrongTerminal = try publish(tree(witness, grid: "grid-@2"))
+precondition(wrongTerminal.isEmpty, "wrong terminal is not proof")
+let wrongPhase = try publish(tree("[[" + marker + "_RESUMED]]"))
+precondition(wrongPhase.isEmpty, "phase prefix is not proof")
+let splitPhase: [String: Any] = ["role": "group", "key": "grid-@1", "children": [
+    ["role": "label", "name": "[[" + marker], ["role": "label", "name": "_RESUMED]]"]
+]]
+let splitWrongPhase = try publish(splitPhase)
+precondition(splitWrongPhase.isEmpty, "a wrapped phase suffix cannot make the initial phase ready")
+let bareMarker = try publish(tree(marker))
+precondition(bareMarker.isEmpty, "only the command's closed witness is proof")
+let metadataOnly = try publish(["name": witness, "children": []])
+precondition(metadataOnly.isEmpty, "metadata is not terminal text")
+let saved = try publish(tree(witness))
+precondition(saved.map { $0.0 } == ["rune-tree.json", "rune-qualification.json"],
+    "readiness must be published last")
+let treeEvidence = saved[0].1["qualification"] as! [String: Any]
+precondition(treeEvidence["marker"] as? String == marker)
+precondition(treeEvidence["frames"] as? UInt64 == 7)
+precondition(treeEvidence["terminal_id"] as? String == "@1")
+precondition(saved[1].1["tree_marker_seen"] as? Bool == true)
+precondition(saved[1].1["tree_frames"] as? UInt64 == 7)
+let wrapped: [String: Any] = ["role": "group", "key": "grid-@1", "children": [
+    ["role": "label", "name": "[[RUNE_IOS_"], ["role": "label", "name": "INPUT_OK]]"]
+]]
+let wrappedSaved = try publish(wrapped)
+precondition(wrappedSaved.count == 2, "soft-wrapped marker remains valid")
+enum WriteFailure: Error { case tree }
+var names: [String] = []
+do {
+    _ = try QualificationEvidence.publish(report: report, tree: tree(witness), marker: marker,
+        didPresent: true, write: { _, name in
+            names.append(name)
+            throw WriteFailure.tree
+        })
+    preconditionFailure("write failure must propagate")
+} catch WriteFailure.tree {}
+precondition(names == ["rune-tree.json"], "failed tree write cannot publish readiness")
 """)
             compiled = subprocess.run(["/usr/bin/xcrun", "--sdk", "macosx", "swiftc", "-swift-version", "6",
-                            "-warnings-as-errors", str(source), str(main), "-o", str(root / "cadence")],
+                            "-warnings-as-errors", str(source), str(evidence), str(main), "-o", str(root / "cadence")],
                            env=build.apple_environment(root), capture_output=True, text=True, timeout=120)
             self.assertEqual(compiled.returncode, 0, compiled.stderr)
             subprocess.run([str(root / "cadence")], check=True, timeout=10)

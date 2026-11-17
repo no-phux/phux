@@ -8,7 +8,7 @@ fn configured_history_bytes_decides_retained_scrollback() {
             200,
             50,
             None,
-            phux_config::ScrollbackLimits::new(500_000, bytes),
+            phux_config_core::limits::ScrollbackLimits::new(500_000, bytes),
             CancellationToken::new(),
         )
         .expect("actor");
@@ -30,7 +30,7 @@ fn configured_history_bytes_decides_retained_scrollback() {
     }
 
     let shallow = retained_rows(2 * 1024 * 1024);
-    let shipped = retained_rows(phux_config::DEFAULT_HISTORY_BYTES);
+    let shipped = retained_rows(phux_config_core::limits::DEFAULT_HISTORY_BYTES);
     assert!(
         shallow > 0,
         "a 2 MiB byte bound must still retain history, saw {shallow}",
@@ -245,16 +245,15 @@ async fn capture_host_allocation_failures_release_state_and_history_still_pages(
                 .terminal()
                 .expect("terminal facet")
                 .native_bootstrap
-                .send(NativeBootstrapRequest {
-                    owner: 11,
-                    terminal_id: phux_protocol::ids::ResourceId::local(2),
-                    stream_id: phux_protocol::ids::StreamId::new(2).expect("stream id"),
-                    bootstrap_id: phux_protocol::ids::BootstrapId::new(4).expect("bootstrap id"),
-                    limits: phux_protocol::caps::BootstrapLimits::default(),
-                    max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
-                    max_frames: crate::native_state::MAX_NATIVE_BOOTSTRAP_FRAMES,
+                .send(native_request(
+                    11,
+                    phux_protocol::ids::ResourceId::local(2),
+                    (
+                        phux_protocol::ids::StreamId::new(2).expect("stream id"),
+                        phux_protocol::ids::BootstrapId::new(4).expect("bootstrap id"),
+                    ),
                     reply,
-                })
+                ))
                 .await
                 .expect("send bootstrap");
             replied.await.expect("bootstrap reply")

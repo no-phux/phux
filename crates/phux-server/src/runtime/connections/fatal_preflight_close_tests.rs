@@ -1,5 +1,6 @@
 use super::dispatch::handle_client;
-use super::writer_close_tests::Script;
+use super::writer_close_tests::script;
+use crate::runtime::test_support::Feed;
 use crate::transport::FrameWriter;
 use phux_protocol::PROTOCOL_VERSION;
 use std::io;
@@ -64,8 +65,10 @@ async fn native_preflight_failure_flushes_error_then_duplex_eof() {
             server
                 .register_resource_handle(terminal, handle, CancellationToken::new())
                 .unwrap();
-            let client_id = server.new_client_id();
-            server.set_peer_identity(client_id, crate::runtime::test_support::owner_peer());
+            let client_id = server.clients_mut().new_client_id();
+            server
+                .clients_mut()
+                .set_peer_identity(client_id, crate::runtime::test_support::owner_peer());
             client_id
         });
 
@@ -73,7 +76,7 @@ async fn native_preflight_failure_flushes_error_then_duplex_eof() {
             EngineCodec::LibghosttySnapshotV1,
             EngineFeatureSet::required_native(),
         );
-        let reader = Script::new([
+        let reader = Feed::scripted(script([
             FrameKind::Hello {
                 client_name: "fatal-duplex-test".to_owned(),
                 protocol_major: PROTOCOL_VERSION.major,
@@ -89,7 +92,7 @@ async fn native_preflight_failure_flushes_error_then_duplex_eof() {
                 scrollback_limit_lines: 0,
                 role_policy: None,
             },
-        ]);
+        ]));
         let (server_io, peer_io) = tokio::io::duplex(64 * 1024);
         let (_server_read, server_write) = tokio::io::split(server_io);
         let (mut client_read, _client_write) = tokio::io::split(peer_io);

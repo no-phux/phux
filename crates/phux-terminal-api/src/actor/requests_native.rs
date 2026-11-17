@@ -4,7 +4,6 @@ use phux_protocol::wire::frame::FrameKind;
 use tokio::sync::broadcast;
 
 /// Fully-owned native prefix captured atomically by the terminal actor.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[derive(Debug)]
 pub struct NativeBootstrapReply {
     /// Bounded BEGIN/CHUNK/READY sequence for the per-client pump to publish.
@@ -20,7 +19,6 @@ pub struct NativeBootstrapReply {
 
 /// Live bytes after a native checkpoint fence, plus the receiver installed
 /// atomically after the replay cut.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[derive(Debug)]
 pub struct NativePublicationReply {
     pub replay: Vec<(u64, Bytes)>,
@@ -28,7 +26,6 @@ pub struct NativePublicationReply {
 }
 
 /// Complete the `READY`/`ATTACH_READY` publication fence for one owner.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[derive(Debug)]
 pub struct NativePublicationRequest {
     /// Server-local lease owner completing publication.
@@ -47,7 +44,6 @@ pub struct NativePublicationRequest {
 }
 
 /// Native checkpoint capture request serialized by the terminal actor.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[derive(Debug)]
 pub struct NativeBootstrapRequest {
     /// Server-local owner identity used for detach and TTL cleanup.
@@ -68,7 +64,6 @@ pub struct NativeBootstrapRequest {
     pub reply: oneshot::Sender<Result<NativeBootstrapReply, crate::native_state::NativeStateError>>,
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 impl NativeBootstrapRequest {
     /// A request granted the whole native budget: every prefix byte and
     /// chunk the engine may retain, plus the BEGIN and READY frames.
@@ -95,7 +90,6 @@ impl NativeBootstrapRequest {
 }
 
 /// Actor result paired with the caller's still-owned outbound permit.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[derive(Debug)]
 pub struct NativeHistoryReply {
     /// Permit proving mailbox capacity was reserved before actor advancement.
@@ -105,7 +99,6 @@ pub struct NativeHistoryReply {
 }
 
 /// One bounded native history step routed to the owning terminal actor.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[derive(Debug)]
 pub struct NativeHistoryRequest {
     /// Reserved client-mailbox capacity. The actor returns but never consumes it.
@@ -130,7 +123,6 @@ pub struct NativeHistoryRequest {
     pub reply: oneshot::Sender<NativeHistoryReply>,
 }
 /// Release every retained native history cut owned by one detached client.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[derive(Debug)]
 pub struct NativeReleaseRequest {
     /// Server-local owner identity.

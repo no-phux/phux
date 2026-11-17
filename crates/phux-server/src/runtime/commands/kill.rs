@@ -29,15 +29,15 @@ fn locked_tab_refusal(
     let tab = state.with(|s| {
         let keys: Vec<_> = ids
             .iter()
-            .filter_map(|id| s.resource_from_wire(id))
+            .filter_map(|id| s.idspace.resource_from_wire(id))
             .filter_map(|core| s.registry().resource_key(core))
             .collect();
         phux_core::arrangement::locked_tab_closed_by(s.org(), &keys)
     })?;
-    Some(CommandResult::Error {
-        code: ErrorCode::PreconditionFailed,
-        message: format!("{tab} is locked; unlock it first"),
-    })
+    Some(CommandResult::error(
+        ErrorCode::PreconditionFailed,
+        format!("{tab} is locked; unlock it first"),
+    ))
 }
 
 /// `KILL_RESOURCE`: close the pane through the same teardown a natural exit
@@ -51,7 +51,7 @@ pub(super) fn handle_kill_terminal(
         return refused;
     }
     state
-        .with(|s| s.resource_from_wire(terminal_id))
+        .with(|s| s.idspace.resource_from_wire(terminal_id))
         .map_or_else(
             || terminal_not_found(terminal_id),
             |core_id| {
@@ -107,10 +107,10 @@ fn kill_if_refusal(
 ) -> CommandResult {
     match refusal {
         crate::state::KillIfRefusal::NotFound => terminal_not_found(terminal_id),
-        crate::state::KillIfRefusal::Precondition(why) => CommandResult::Error {
-            code: ErrorCode::PreconditionFailed,
-            message: format!("{terminal_id} not killed: {why}"),
-        },
+        crate::state::KillIfRefusal::Precondition(why) => CommandResult::error(
+            ErrorCode::PreconditionFailed,
+            format!("{terminal_id} not killed: {why}"),
+        ),
     }
 }
 
@@ -216,7 +216,7 @@ fn kill_local_batch(
         let mut targets = Vec::with_capacity(ids.len());
         let (mut killed, mut not_found) = (Vec::new(), Vec::new());
         for wire_id in ids.iter().filter(|id| id.local_id().is_some()) {
-            if let Some(core_id) = s.resource_from_wire(wire_id) {
+            if let Some(core_id) = s.idspace.resource_from_wire(wire_id) {
                 targets.push(core_id);
                 killed.push(wire_id.clone());
             } else {
@@ -253,7 +253,7 @@ fn kill_local_batch(
         let detached: Vec<_> = s
             .take_killed_sessions()
             .into_iter()
-            .flat_map(|session| s.attached_clients_in_session(session))
+            .flat_map(|session| s.clients().attached_in_session(session))
             .collect();
         committed.extend_killed_clients(detached);
         debug!(
@@ -272,7 +272,7 @@ fn kill_local_batch(
 fn relay_close_tab_partitions(state: &SharedState, ids: &[phux_protocol::ids::ResourceId]) {
     for (host, wire_ids) in satellite_partitions(ids) {
         let local_ids = satellite_local_ids(&wire_ids);
-        match state.with(|s| s.hub_relay(&host)) {
+        match state.with(|s| s.federation().relay(&host)) {
             Some(relay) => {
                 debug!(
                     satellite = %host,
@@ -312,7 +312,7 @@ async fn relay_kill_partition(
         ids: satellite_local_ids(&ids),
         operation_id,
     };
-    let result = match state.with(|s| s.hub_relay(&host)) {
+    let result = match state.with(|s| s.federation().relay(&host)) {
         Some(relay) => relay.command_from(command, client_id).await,
         None => CommandResult::Error {
             code: ErrorCode::UnsupportedSatelliteRoute,

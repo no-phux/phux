@@ -30,12 +30,6 @@ fn demo_cast() -> PathBuf {
 }
 
 impl ServerGuard {
-    fn json(&self, args: &[&str]) -> serde_json::Value {
-        let stdout = self.success(args);
-        serde_json::from_str(&stdout)
-            .unwrap_or_else(|err| panic!("invalid JSON from phux {args:?}: {err}: {stdout}"))
-    }
-
     /// The recorded pane's current grid, read through the side-effect-free
     /// `snapshot` path (which, unlike `--rendered`, never attaches).
     fn pane_size(&self) -> (u64, u64) {

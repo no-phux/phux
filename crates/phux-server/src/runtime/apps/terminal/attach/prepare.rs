@@ -35,7 +35,7 @@ pub(crate) async fn apply_session_role(
                     role,
                     was_subscribed,
                 );
-                (pane, effects, s.input_lease_holder(pane.terminal_id))
+                (pane, effects, s.leases().holder(pane.terminal_id))
             })
             .collect()
     });

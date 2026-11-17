@@ -17,7 +17,7 @@ use serde_json::Value;
 use tempfile::TempDir;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, attach_by_name, recv_until, run_local, send_frame,
+    SOCKET_CONNECT_DEADLINE, attach_focused, recv_until, run_local, send_frame,
     spawn_server_with_seed_cmd, wait_for_socket,
 };
 
@@ -27,32 +27,11 @@ const PUSH_DEADLINE: Duration = Duration::from_secs(60);
 /// A fake `claude` that waits for `go`, then paints the permission dialog
 /// the `claude` rules match, then idles.
 fn write_gated_agent(dir: &Path) -> std::path::PathBuf {
-    use std::os::unix::fs::PermissionsExt;
-    let path = dir.join("claude");
-    let rule = "\\342\\224\\200".repeat(20);
-    let script = format!(
-        "#!/bin/sh\n\
-         while [ ! -f '{go}' ]; do sleep 0.1; done\n\
-         printf '\\033[2J\\033[H'\n\
-         echo 'some transcript output above the live chrome'\n\
-         echo ''\n\
-         printf '{rule}\\n'\n\
-         echo ' Bash command'\n\
-         echo ''\n\
-         echo '   touch /tmp/probe.txt'\n\
-         echo ''\n\
-         echo ' Do you want to proceed?'\n\
-         printf ' \\342\\235\\257 1. Yes\\n'\n\
-         echo '   2. Yes, and always allow access'\n\
-         echo '   3. No'\n\
-         echo ''\n\
-         echo ' Esc to cancel'\n\
-         sleep 60\n",
-        go = dir.join("go").display(),
+    let gate = format!(
+        "while [ ! -f '{}' ]; do sleep 0.1; done",
+        dir.join("go").display()
     );
-    std::fs::write(&path, script).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    path
+    crate::fake_agent::write_dialog_agent(dir, &gate, "sleep 60")
 }
 
 /// A loopback gateway: every JSON body posted to it, answered 202.
@@ -97,12 +76,7 @@ fn a_screen_detected_block_pushes_an_absent_phone() {
         // The phone: attach, write its grant, read it back as the barrier,
         // and leave.
         let mut phone = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
-        send_frame(&mut phone, &attach_by_name("demo")).await;
-        let terminal: ResourceId = recv_until(&mut phone, |_, frame| match frame {
-            FrameKind::Attached { snapshot, .. } => Some(snapshot.focused_resource),
-            _ => None,
-        })
-        .await;
+        let terminal = attach_focused(&mut phone, "demo").await;
         let key = "phux.push/v1/phone";
         let grant = format!(r#"{{"gateway":"{url}","grant":"0123456789abcdef","host":"fr"}}"#);
         send_frame(

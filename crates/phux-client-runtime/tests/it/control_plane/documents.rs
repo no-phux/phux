@@ -13,34 +13,18 @@ const fn tree() -> ResourceId {
     ResourceId::local(8)
 }
 
-fn bootstrap(client: &Client, id: ResourceId, profile: BootstrapStreamProfile, payload: &[u8]) {
-    let stream_id = StreamId::new(u64::from(id.local_id().unwrap())).unwrap();
-    let bootstrap_id = BootstrapId::new(1).unwrap();
-    let terminal = profile == BootstrapStreamProfile::SynthesizedVtRaw;
-    for frame in [
-        FrameKind::BootstrapBegin {
-            terminal_id: id.clone(),
-            stream_id,
-            bootstrap_id,
-            profile,
-            cols: if terminal { 20 } else { 0 },
-            rows: if terminal { 4 } else { 0 },
-            base_seq: 0,
-        },
-        FrameKind::BootstrapChunk {
-            terminal_id: id.clone(),
-            stream_id,
-            bootstrap_id,
-            chunk_seq: 0,
-            payload: payload.to_vec().into(),
-        },
-        FrameKind::BootstrapReady {
-            terminal_id: id,
-            stream_id,
-            bootstrap_id,
-            history_cursor: None,
-        },
-    ] {
+fn bootstrap(client: &Client, id: &ResourceId, profile: BootstrapStreamProfile, payload: &[u8]) {
+    let stream = u64::from(id.local_id().unwrap());
+    let size = if profile == BootstrapStreamProfile::SynthesizedVtRaw {
+        [20, 4]
+    } else {
+        [0, 0]
+    };
+    let options = BootstrapOptions {
+        profile,
+        ..BootstrapOptions::default()
+    };
+    for frame in bootstrap_frames_with(id, [stream, 1], size, payload, options) {
         client.feed(frame).unwrap();
     }
 }
@@ -76,13 +60,13 @@ fn attached_with_tree() -> Client {
     client.attached(attach_id, snapshot);
     bootstrap(
         &client,
-        terminal(),
+        &terminal(),
         BootstrapStreamProfile::SynthesizedVtRaw,
         b"ready",
     );
     bootstrap(
         &client,
-        tree(),
+        &tree(),
         BootstrapStreamProfile::AccessibilityTreeJsonV1,
         b"{\"cut\":0}",
     );

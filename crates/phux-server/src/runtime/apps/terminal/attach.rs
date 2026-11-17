@@ -55,7 +55,6 @@ mod spawn_plan;
 mod spawn_publication;
 mod target;
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 use bootstrap::publishes_native_checkpoints;
 pub(crate) use bootstrap::*;
 use bootstrap::{BootstrapStagingBudget, SnapshotGate};

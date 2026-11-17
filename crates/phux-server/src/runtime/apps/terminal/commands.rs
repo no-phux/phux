@@ -25,7 +25,6 @@ use tracing::{debug, error, info, trace, warn};
 use super::agent_state::spawn_agent_state_drain;
 use crate::resource::{ResourceHandle, WrongResourceKind};
 use crate::runtime::apps::terminal::input_lane::InputLaneHandle;
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 use crate::runtime::commands::attach_terminal::native_checkpoint_profile;
 #[allow(
     clippy::wildcard_imports,

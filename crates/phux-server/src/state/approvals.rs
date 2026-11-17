@@ -17,6 +17,7 @@ use phux_protocol::wire::frame::{
 use serde_json::{Map, Value, json};
 use tokio::sync::oneshot;
 
+use super::config::ApprovalLimits;
 use super::{ClientId, EventRecord, ServerState};
 
 /// A decision on one held action.
@@ -97,29 +98,36 @@ pub(super) struct ApprovalTable {
     /// How many of `pending` each requester holds, kept beside the table so
     /// the per-connection bound costs no scan.
     held: HashMap<ClientId, u32>,
-    ttl: Duration,
-    max_pending: u32,
-    max_total: u32,
+    /// The TTL and pending bounds, fixed at construction.
+    limits: ApprovalLimits,
 }
 
-impl Default for ApprovalTable {
-    fn default() -> Self {
+impl ApprovalTable {
+    /// An empty table bounded by `limits`.
+    pub(super) fn new(limits: ApprovalLimits) -> Self {
         Self {
             pending: HashMap::new(),
             held: HashMap::new(),
-            ttl: Duration::from_secs(u64::from(phux_config::DEFAULT_APPROVAL_TTL_SECS)),
-            max_pending: phux_config::DEFAULT_APPROVAL_MAX_PENDING,
-            max_total: phux_config::DEFAULT_APPROVAL_MAX_PENDING_TOTAL,
+            limits,
         }
     }
 }
 
 impl ServerState {
-    /// Set the approval bounds (TTL, per-connection and total pending).
-    pub const fn set_approval_limits(&mut self, ttl: Duration, max_pending: u32, max_total: u32) {
-        self.approvals.ttl = ttl;
-        self.approvals.max_pending = max_pending;
-        self.approvals.max_total = max_total;
+    /// Replace the approval bounds (TTL, per-connection and total pending)
+    /// after construction.
+    #[cfg(test)]
+    pub(crate) const fn set_approval_limits(
+        &mut self,
+        ttl: Duration,
+        max_pending: u32,
+        max_total: u32,
+    ) {
+        self.approvals.limits = ApprovalLimits {
+            ttl,
+            max_pending,
+            max_total,
+        };
     }
 
     /// The held action `id` names, while it awaits a decision.
@@ -147,17 +155,17 @@ impl ServerState {
         requester: ClientId,
         command: &Command,
     ) -> Result<OpenedApproval, HoldRefusal> {
-        if self.approvals.pending.len() >= self.approvals.max_total as usize {
+        if self.approvals.pending.len() >= self.approvals.limits.max_total as usize {
             return Err(HoldRefusal::ServerFull);
         }
-        if self.held_by(requester) >= self.approvals.max_pending {
+        if self.held_by(requester) >= self.approvals.limits.max_pending {
             return Err(HoldRefusal::TooManyPending);
         }
         let id = self.mint_approval_id()?;
         let ttl = if matches!(command, Command::Credentials { .. }) {
-            self.approvals.ttl.min(Duration::from_secs(120))
+            self.approvals.limits.ttl.min(Duration::from_secs(120))
         } else {
-            self.approvals.ttl
+            self.approvals.limits.ttl
         };
         let provider = match command {
             Command::Credentials {
@@ -218,7 +226,7 @@ impl ServerState {
             return Ok(None);
         }
         let held = self.held_by(requester);
-        let max_pending = self.approvals.max_pending;
+        let max_pending = self.approvals.limits.max_pending;
         let Some(pending) = self
             .approvals
             .pending

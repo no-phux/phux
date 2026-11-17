@@ -138,6 +138,12 @@ fn reply(client: &Client, request_id: u32, answer: CheckoutAnswer) {
         .expect("checkout reply");
 }
 
+/// The refusal an answered listing or diff shows.
+fn refusal<T>(answer: Option<&Result<T, String>>) -> &str {
+    let refused = answer.expect("answer").as_ref().err();
+    refused.expect("a refusal")
+}
+
 fn poll(rt: &mut Runtime<Desk>) {
     rt.update(|desk, tx| {
         desk.poll(0.0, tx);
@@ -226,16 +232,7 @@ fn the_panel_lists_files_follows_arrows_and_closes_on_escape() {
         }),
     );
     poll(&mut rt);
-    assert!(
-        rt.state
-            .connection
-            .changes
-            .diff
-            .as_ref()
-            .expect("answer")
-            .as_ref()
-            .is_err_and(|words| words.contains("could not read"))
-    );
+    assert!(refusal(rt.state.connection.changes.diff.as_ref()).contains("could not read"));
     press(&mut rt, Key::Escape);
     assert!(!rt.state.connection.changes.open);
     assert!(rt.find("changes").is_none());
@@ -347,14 +344,7 @@ fn unsupported_and_disconnected_clients_explain_why_nothing_was_sent() {
     let (client, mut rt) = fixture(false);
     open(&mut rt);
     assert!(
-        rt.state
-            .connection
-            .changes
-            .listing
-            .as_ref()
-            .expect("answer")
-            .as_ref()
-            .is_err_and(|words| words.contains("doesn't support changes"))
+        refusal(rt.state.connection.changes.listing.as_ref()).contains("doesn't support changes")
     );
     assert!(rt.find("changes-message").is_some());
     assert!(requests(&client).is_empty());
@@ -363,16 +353,7 @@ fn unsupported_and_disconnected_clients_explain_why_nothing_was_sent() {
         desk.connection.status = Status::Idle;
         desk.refresh_changes();
     });
-    assert!(
-        rt.state
-            .connection
-            .changes
-            .listing
-            .as_ref()
-            .expect("answer")
-            .as_ref()
-            .is_err_and(|words| words.contains("Not connected"))
-    );
+    assert!(refusal(rt.state.connection.changes.listing.as_ref()).contains("Not connected"));
 }
 
 #[test]
@@ -381,25 +362,14 @@ fn runtime_failures_and_unknown_areas_are_shown_without_an_invalid_diff_request(
     open(&mut rt);
     let id = request(&client, CheckoutRequest::Status);
     client
-        .feed(FrameKind::CommandResult {
-            request_id: id,
-            result: CommandResult::Error {
-                code: ErrorCode::PermissionDenied,
-                message: "denied".into(),
-            },
-        })
+        .feed(phux_wire_fixtures::command_err(
+            id,
+            ErrorCode::PermissionDenied,
+            "denied",
+        ))
         .expect("failed checkout");
     poll(&mut rt);
-    assert!(
-        rt.state
-            .connection
-            .changes
-            .listing
-            .as_ref()
-            .expect("answer")
-            .as_ref()
-            .is_err_and(|words| words.contains("Permission denied"))
-    );
+    assert!(refusal(rt.state.connection.changes.listing.as_ref()).contains("Permission denied"));
     assert!(requests(&client).is_empty());
     press(&mut rt, Key::Text("r".into()));
     let id = request(&client, CheckoutRequest::Status);
@@ -409,16 +379,7 @@ fn runtime_failures_and_unknown_areas_are_shown_without_an_invalid_diff_request(
         status(vec![entry("future", CheckoutArea::Unknown)]),
     );
     poll(&mut rt);
-    assert!(
-        rt.state
-            .connection
-            .changes
-            .diff
-            .as_ref()
-            .expect("answer")
-            .as_ref()
-            .is_err_and(|words| words.contains("can't show that kind"))
-    );
+    assert!(refusal(rt.state.connection.changes.diff.as_ref()).contains("can't show that kind"));
     assert!(requests(&client).is_empty());
     rt.update(|desk, tx| {
         desk.pick_change(0, tx);

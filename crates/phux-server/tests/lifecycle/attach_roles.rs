@@ -17,10 +17,10 @@ use phux_protocol::wire::frame::{
 use phux_protocol::wire::info::ResourceInfo;
 use phux_server_testkit::{attach_by_name, command, encode_frame_vec, recv_typed, send_frame};
 use tokio::net::UnixStream;
-use tokio::time::timeout;
 
 use crate::common::{
-    Seen, Server, attach, attach_frame, find, next_event, sh, spawned, state, subscribe, wait_frame,
+    Seen, Server, assert_no_control, attach, attach_frame, find, journaled_demo as start,
+    next_control, next_event, sh, spawned, state, subscribe, wait_frame,
 };
 
 const SESSION: &str = "demo";
@@ -81,16 +81,11 @@ async fn assert_ok(stream: &mut UnixStream, request_id: u32, cmd: Command) {
 
 /// The next `TERMINAL_CONTROL` with `action`: (holder, actor) client ids.
 async fn control(stream: &mut UnixStream, action: ControlAction) -> (Option<u32>, Option<u32>) {
-    let event = next_event(
-        stream,
-        |e: &Seen| matches!(e.event, AgentEvent::TerminalControl { action: a, .. } if a == action),
-    )
-    .await;
     let AgentEvent::TerminalControl {
         input_holder,
         actor,
         ..
-    } = event.event
+    } = next_control(stream, action).await
     else {
         unreachable!()
     };
@@ -98,31 +93,6 @@ async fn control(stream: &mut UnixStream, action: ControlAction) -> (Option<u32>
         input_holder.map(phux_protocol::ClientId::get),
         actor.map(phux_protocol::ClientId::get),
     )
-}
-
-/// No `TERMINAL_CONTROL` accepted by `pred` arrives within `quiet`.
-async fn assert_no_control(
-    stream: &mut UnixStream,
-    quiet: Duration,
-    pred: impl Fn(ControlAction) -> bool,
-) {
-    let found = timeout(quiet, async {
-        loop {
-            if let (
-                _,
-                FrameKind::Event {
-                    event: AgentEvent::TerminalControl { action, .. },
-                    ..
-                },
-            ) = recv_typed(stream).await
-                && pred(action)
-            {
-                return action;
-            }
-        }
-    })
-    .await;
-    assert!(found.is_err(), "unexpected TERMINAL_CONTROL: {found:?}");
 }
 
 async fn pane_state(stream: &mut UnixStream, request_id: u32, pane: &ResourceId) -> ResourceInfo {
@@ -141,17 +111,6 @@ async fn next_uncorrelated_error(stream: &mut UnixStream) -> ErrorCode {
         _ => None,
     })
     .await
-}
-
-/// A server with `owner` attached to the seed pane and a journal-aware
-/// `events` watcher.
-async fn start() -> (Server, UnixStream, ResourceId, UnixStream) {
-    let server = Server::start(Some(SESSION), |_| {});
-    let mut owner = server.connect().await;
-    let pane = attach(&mut owner, SESSION).await.focused_resource;
-    let mut events = server.connect().await;
-    subscribe(&mut events, 1, None, Some(u64::MAX)).await;
-    (server, owner, pane, events)
 }
 
 #[test]

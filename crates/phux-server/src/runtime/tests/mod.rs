@@ -16,9 +16,9 @@ use crate::runtime::listeners::remote::remote_token_store;
 use crate::runtime::listeners::{
     AutoOverlayPorts, auto_overlay_gate_open, serve_auto_overlay_listeners,
 };
-use crate::runtime::posture::{install_policy_posture, startup_policy};
+use crate::runtime::posture::startup_policy;
 use crate::runtime::server::ServerRuntime;
-use crate::runtime::startup::{mirror_config_into_state, open_org_store, resume_session_tree};
+use crate::runtime::startup::{open_org_store, resume_session_tree};
 use crate::state::{ClientId, Outbound, SharedState};
 use phux_protocol::caps::ClientCapabilities;
 use phux_protocol::wire::frame::{AttachTarget, ErrorCode, FrameKind, ViewportInfo};
@@ -64,8 +64,8 @@ fn old_image_with_retained_panes() -> (
     let (exited, exited_wire, exited_token) = register_seeded_pane(&mut old, sid);
     let (running, running_wire, running_token) = register_seeded_pane(&mut old, sid);
     let _ = old.build_session_snapshot(sid);
-    old.note_retain_request(running, 60);
-    old.note_retain_request(exited, 60);
+    old.retained_mut().note_request(running, 60);
+    old.retained_mut().note_request(exited, 60);
     let _retention = old
         .retain_exited(exited, phux_core::process::ExitOutcome::exited(5), 1)
         .expect("retained");
@@ -152,16 +152,9 @@ const MAILBOX_DEADLINE: Duration = Duration::from_secs(30);
 /// Register a [`stub_terminal`] for `pane` and return its receivers. The
 /// native channels are closed, so capture falls back to the VT path.
 fn register_stub(state: &SharedState, pane: phux_core::ids::ResourceId) -> StubRx {
-    #[cfg_attr(
-        not(all(feature = "native-engine", not(target_arch = "wasm32"))),
-        allow(unused_mut)
-    )]
     let (handle, mut rx) = stub_terminal();
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    {
-        rx.native_bootstrap.close();
-        rx.native_publication.close();
-    }
+    rx.native_bootstrap.close();
+    rx.native_publication.close();
     state.with_mut(|s| {
         s.register_resource_handle(pane, handle, CancellationToken::new())
             .unwrap();
@@ -171,7 +164,7 @@ fn register_stub(state: &SharedState, pane: phux_core::ids::ResourceId) -> StubR
 
 /// Attach `client_id` to `session` with default caps.
 fn attach_client(state: &SharedState, session: &str) -> ClientId {
-    let client_id = state.with_mut(crate::state::ServerState::new_client_id);
+    let client_id = state.with_mut(|s| s.clients_mut().new_client_id());
     let (tx, _rx) = tokio::sync::mpsc::channel(8);
     state
         .with_mut(|s| s.attach_default_caps(client_id, session, tx))

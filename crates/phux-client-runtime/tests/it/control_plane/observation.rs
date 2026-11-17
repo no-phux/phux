@@ -1,14 +1,14 @@
 use super::*;
 use phux_client_runtime::control::{EVENT_QUEUE_CAP, Observation};
+#[cfg(feature = "engine")]
+use phux_protocol::input::focus::FocusEvent;
 
 /// Drop the transport and complete a full reconnect to a server that hands
 /// back the same session, window and terminal ids.
 fn reconnect_with_reused_ids(plane: &mut ControlPlane) {
     let epoch = plane.connection_epoch();
     plane.connection_lost(Some("transport dropped".to_owned()));
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
+    reopen(plane, hello_ok(PROTOCOL_VERSION.patch));
     let attach_id = plane.queued_attach_id();
     reattach(plane, attach_id, epoch + 1);
     let _ = plane.take_outbound();
@@ -17,35 +17,10 @@ fn reconnect_with_reused_ids(plane: &mut ControlPlane) {
 /// `attach`, with the fresh bootstrap generation a new connection carries.
 fn reattach(plane: &mut ControlPlane, attach_id: u32, generation: u64) {
     plane.attached(attach_id, snapshot());
-    let stream_id = StreamId::new(1).unwrap();
-    let bootstrap_id = BootstrapId::new(generation).unwrap();
-    for frame in [
-        FrameKind::BootstrapBegin {
-            terminal_id: terminal(),
-            stream_id,
-            bootstrap_id,
-            profile: BootstrapStreamProfile::SynthesizedVtRaw,
-            cols: 20,
-            rows: 4,
-            base_seq: 0,
-        },
-        FrameKind::BootstrapChunk {
-            terminal_id: terminal(),
-            stream_id,
-            bootstrap_id,
-            chunk_seq: 0,
-            payload: b"again".to_vec().into(),
-        },
-        FrameKind::BootstrapReady {
-            terminal_id: terminal(),
-            stream_id,
-            bootstrap_id,
-            history_cursor: None,
-        },
-        FrameKind::AttachReady { attach_id },
-    ] {
+    for frame in bootstrap_frames(&terminal(), [1, generation], [20, 4], b"again") {
         plane.feed(frame).unwrap();
     }
+    plane.feed(FrameKind::AttachReady { attach_id }).unwrap();
 }
 
 fn attached() -> ControlPlane {
@@ -147,9 +122,7 @@ fn a_recovery_between_drain_and_status_sampling_stays_in_one_observation() {
     );
     assert_eq!(mid.connection_epoch, 1);
 
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
+    reopen(&mut plane, hello_ok(PROTOCOL_VERSION.patch));
     let attach_id = plane.queued_attach_id();
     reattach(&mut plane, attach_id, 2);
     let done = plane.take_observation();
@@ -258,10 +231,7 @@ fn an_ordinary_refresh_is_not_a_new_incarnation() {
     let before = plane.take_observation();
     let request_id = plane.refresh_topology().unwrap();
     let _ = plane.take_outbound();
-    plane.reply(
-        request_id,
-        CommandResult::OkWith(CommandValue::State(snapshot())),
-    );
+    answer_state(&mut plane, request_id, snapshot());
     let after = plane.take_observation();
     assert_eq!(after.connection_epoch, before.connection_epoch);
     assert!(boundaries(&after).is_empty());
@@ -331,7 +301,7 @@ fn osc52_live_output_reaches_the_focused_consumer_but_bootstrap_and_reads_do_not
     let (mut plane, attach_id) = negotiated();
     // Native hosts can report local focus before the terminal is ready,
     // without sending an INPUT_FOCUS for an unsubscribed resource.
-    assert!(!plane.send_focus(&terminal(), phux_protocol::input::focus::FocusEvent::Gained));
+    assert!(!plane.send_focus(&terminal(), FocusEvent::Gained));
     assert!(plane.take_outbound().is_empty());
     attach(&mut plane, attach_id, OSC52);
     assert!(clipboard_events(&plane.take_events()).is_empty());
@@ -366,26 +336,23 @@ fn osc52_live_output_reaches_the_focused_consumer_but_bootstrap_and_reads_do_not
 #[test]
 fn clipboard_requests_expire_on_focus_loss_change_and_connection_loss() {
     let mut plane = attached();
-    plane.send_focus(&terminal(), phux_protocol::input::focus::FocusEvent::Gained);
+    plane.send_focus(&terminal(), FocusEvent::Gained);
     let _ = plane.take_events();
     output(&mut plane, 1, OSC52);
-    plane.send_focus(&terminal(), phux_protocol::input::focus::FocusEvent::Lost);
+    plane.send_focus(&terminal(), FocusEvent::Lost);
     output(&mut plane, 2, OSC52);
-    plane.send_focus(&terminal(), phux_protocol::input::focus::FocusEvent::Gained);
+    plane.send_focus(&terminal(), FocusEvent::Gained);
     assert!(
         clipboard_events(&plane.take_events()).is_empty(),
         "no background catch-up"
     );
     output(&mut plane, 3, OSC52);
-    plane.send_focus(
-        &ResourceId::local(99),
-        phux_protocol::input::focus::FocusEvent::Gained,
-    );
+    plane.send_focus(&ResourceId::local(99), FocusEvent::Gained);
     assert!(
         clipboard_events(&plane.take_events()).is_empty(),
         "no old-focus delivery"
     );
-    plane.send_focus(&terminal(), phux_protocol::input::focus::FocusEvent::Gained);
+    plane.send_focus(&terminal(), FocusEvent::Gained);
     output(&mut plane, 4, OSC52);
     reconnect_with_reused_ids(&mut plane);
     assert!(
@@ -394,13 +361,7 @@ fn clipboard_requests_expire_on_focus_loss_change_and_connection_loss() {
     );
     // Desired host focus survives a reconnect, but the old request does not.
     plane
-        .feed(FrameKind::ResourceOutput {
-            terminal_id: terminal(),
-            stream_id: StreamId::new(1).unwrap(),
-            bootstrap_id: BootstrapId::new(2).unwrap(),
-            seq: 1,
-            bytes: OSC52.to_vec().into(),
-        })
+        .feed(phux_wire_fixtures::output_on(&terminal(), [1, 2], 1, OSC52))
         .unwrap();
     assert_eq!(
         clipboard_events(&plane.take_events()),
@@ -412,7 +373,7 @@ fn clipboard_requests_expire_on_focus_loss_change_and_connection_loss() {
 #[test]
 fn clipboard_requests_expire_on_terminal_retirement_and_close() {
     let mut plane = attached();
-    plane.send_focus(&terminal(), phux_protocol::input::focus::FocusEvent::Gained);
+    plane.send_focus(&terminal(), FocusEvent::Gained);
     let _ = plane.take_events();
     output(&mut plane, 1, OSC52);
     assert!(plane.release_terminal(&terminal()));
@@ -420,27 +381,15 @@ fn clipboard_requests_expire_on_terminal_retirement_and_close() {
     reconnect_with_reused_ids(&mut plane);
     let _ = plane.take_events();
     plane
-        .feed(FrameKind::ResourceOutput {
-            terminal_id: terminal(),
-            stream_id: StreamId::new(1).unwrap(),
-            bootstrap_id: BootstrapId::new(2).unwrap(),
-            seq: 1,
-            bytes: OSC52.to_vec().into(),
-        })
+        .feed(phux_wire_fixtures::output_on(&terminal(), [1, 2], 1, OSC52))
         .unwrap();
     assert!(
         clipboard_events(&plane.take_events()).is_empty(),
         "retired focus does not revive"
     );
-    plane.send_focus(&terminal(), phux_protocol::input::focus::FocusEvent::Gained);
+    plane.send_focus(&terminal(), FocusEvent::Gained);
     plane
-        .feed(FrameKind::ResourceOutput {
-            terminal_id: terminal(),
-            stream_id: StreamId::new(1).unwrap(),
-            bootstrap_id: BootstrapId::new(2).unwrap(),
-            seq: 2,
-            bytes: OSC52.to_vec().into(),
-        })
+        .feed(phux_wire_fixtures::output_on(&terminal(), [1, 2], 2, OSC52))
         .unwrap();
     plane.close();
     assert!(clipboard_events(&plane.take_events()).is_empty());
@@ -450,7 +399,7 @@ fn clipboard_requests_expire_on_terminal_retirement_and_close() {
 #[test]
 fn an_accepted_detach_expires_clipboard_requests_and_focus() {
     let mut plane = attached();
-    plane.send_focus(&terminal(), phux_protocol::input::focus::FocusEvent::Gained);
+    plane.send_focus(&terminal(), FocusEvent::Gained);
     let _ = plane.take_events();
     output(&mut plane, 1, OSC52);
     let request_id = plane.detach_terminal(&terminal());
@@ -459,13 +408,7 @@ fn an_accepted_detach_expires_clipboard_requests_and_focus() {
     reconnect_with_reused_ids(&mut plane);
     let _ = plane.take_events();
     plane
-        .feed(FrameKind::ResourceOutput {
-            terminal_id: terminal(),
-            stream_id: StreamId::new(1).unwrap(),
-            bootstrap_id: BootstrapId::new(2).unwrap(),
-            seq: 1,
-            bytes: OSC52.to_vec().into(),
-        })
+        .feed(phux_wire_fixtures::output_on(&terminal(), [1, 2], 1, OSC52))
         .unwrap();
     assert!(
         clipboard_events(&plane.take_events()).is_empty(),

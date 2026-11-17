@@ -23,21 +23,6 @@ impl ServerState {
     pub(crate) const fn standing_mirrors(&self) -> Option<&std::sync::Arc<tokio::sync::Notify>> {
         self.standing_mirrors.as_ref()
     }
-
-    /// The server's own executable, which native hosts and mirror listings
-    /// run; tests point it at a fixture.
-    pub(crate) fn set_native_host_executable(&mut self, executable: Option<std::path::PathBuf>) {
-        self.config.native_host_executable = executable;
-    }
-
-    /// [`Self::set_native_host_executable`], else the running binary's path
-    /// (the installed file, after `phux update` replaced it).
-    pub(crate) fn native_host_executable(&self) -> Result<std::path::PathBuf, std::io::Error> {
-        self.config
-            .native_host_executable
-            .clone()
-            .map_or_else(phux_config::instance::running_executable, Ok)
-    }
 }
 
 impl super::SharedState {

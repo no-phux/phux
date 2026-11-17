@@ -23,16 +23,16 @@ pub(crate) async fn resolve_create_if_missing(
         root_token,
         default_colors,
     } = seed;
-    if state.with(|s| s.session_by_name(&name).is_some()) {
+    if state.with(|s| s.sessions().by_name(&name).is_some()) {
         debug!(session = %name, "CreateIfMissing: session already exists, attaching");
         return Some(name);
     }
 
     let (with_pty, scrollback, term) = state.with(|s| {
         (
-            s.attach_create_seeds_pty(),
-            s.scrollback_limits(),
-            s.term().to_owned(),
+            s.config().attach_create_seeds_pty,
+            s.config().scrollback,
+            s.config().term.as_str().to_owned(),
         )
     });
 
@@ -89,7 +89,7 @@ pub(crate) async fn resolve_inherited_cwd(
     state: &SharedState,
     client_id: ClientId,
 ) -> Option<String> {
-    match state.with(crate::state::ServerState::cwd_inheritance) {
+    match state.with(|s| s.config().cwd_inheritance) {
         phux_config::CwdInheritance::InheritFocused => focused_pane_cwd(state, client_id).await,
         phux_config::CwdInheritance::Home => std::env::var("HOME").ok().filter(|h| !h.is_empty()),
         phux_config::CwdInheritance::SessionRoot => session_root_cwd(state, client_id).await,
@@ -101,8 +101,8 @@ pub(crate) async fn resolve_inherited_cwd(
 async fn focused_pane_cwd(state: &SharedState, client_id: ClientId) -> Option<String> {
     let handle = state.with(|s| {
         let session = s.attached().get(&client_id)?.session;
-        let focused = s.active_pane_of_session(session)?;
-        s.resource_handle(focused).cloned()
+        let focused = s.sessions().default_pane_of(session)?;
+        s.resources().handle(focused).cloned()
     })?;
     query_pane_cwd(handle).await
 }
@@ -112,11 +112,11 @@ async fn focused_pane_cwd(state: &SharedState, client_id: ClientId) -> Option<St
 async fn session_root_cwd(state: &SharedState, client_id: ClientId) -> Option<String> {
     let (session, handle) = state.with(|s| {
         let session = s.attached().get(&client_id)?.session;
-        if let Some(root) = s.session_root(session) {
+        if let Some(root) = s.sessions().root(session) {
             return Some((session, FrozenOrQuery::Frozen(path_to_string(root)?)));
         }
-        let seed = s.seed_pane_of_session(session)?;
-        let handle = s.resource_handle(seed).cloned()?;
+        let seed = s.sessions().seed_pane_of(session)?;
+        let handle = s.resources().handle(seed).cloned()?;
         Some((session, FrozenOrQuery::Query(handle)))
     })?;
     match handle {
@@ -138,8 +138,9 @@ async fn last_window_cwd(state: &SharedState, client_id: ClientId) -> Option<Str
     let (session, handle) = state.with(|s| {
         let session = s.attached().get(&client_id)?.session;
         let handle = s
-            .active_pane_of_session(session)
-            .and_then(|p| s.resource_handle(p).cloned());
+            .sessions()
+            .default_pane_of(session)
+            .and_then(|p| s.resources().handle(p).cloned());
         Some((session, handle))
     })?;
     let resolved = match handle {
@@ -152,7 +153,11 @@ async fn last_window_cwd(state: &SharedState, client_id: ClientId) -> Option<Str
         });
         return Some(cwd);
     }
-    state.with(|s| s.session_last_cwd(session).and_then(|p| path_to_string(p)))
+    state.with(|s| {
+        s.sessions()
+            .last_cwd(session)
+            .and_then(|p| path_to_string(p))
+    })
 }
 
 /// A frozen session root, or the handle to query for one off-lock.
@@ -182,8 +187,7 @@ pub(crate) async fn query_pane_cwd(handle: ResourceHandle) -> Option<String> {
 pub(crate) async fn refresh_registry_cwds(state: &SharedState) {
     const CWD_REFRESH_DEADLINE: std::time::Duration = std::time::Duration::from_millis(250);
 
-    let handles: Vec<(ResourceId, ResourceHandle)> =
-        state.with(crate::state::ServerState::all_resource_handles);
+    let handles: Vec<(ResourceId, ResourceHandle)> = state.with(|s| s.resources().all_handles());
     if handles.is_empty() {
         return;
     }

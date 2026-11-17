@@ -8,7 +8,7 @@ async fn rearming_a_lease_repeatedly_leaves_at_most_one_live_timer_task() {
     crate::runtime::test_support::local(async {
         let state = SharedState::new();
         let core = state.with_mut(|s| s.seed_session("default")).1;
-        let counter = state.with(crate::state::ServerState::input_lease_expiry_task_counter);
+        let counter = state.with(|s| s.leases().expiry_task_counter());
 
         for _ in 0..20 {
             let generation = state

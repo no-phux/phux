@@ -50,7 +50,7 @@ pub fn assert_valid(schema: &jsonschema::Validator, value: &Value) {
 }
 
 pub fn schema_validator() -> jsonschema::Validator {
-    let path = manifest_dir().join("../phux-mission/schema/phux.mission.v1.schema.json");
+    let path = manifest_dir().join("../phux-work/schema/phux.mission.v1.schema.json");
     let text =
         std::fs::read_to_string(&path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
     let schema: Value = serde_json::from_str(&text).expect("schema json");

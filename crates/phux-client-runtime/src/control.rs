@@ -71,6 +71,7 @@ mod native_agent;
 mod options;
 mod org_plane;
 pub mod organization;
+mod private_upload;
 mod responses;
 mod roster;
 mod service_http;
@@ -98,6 +99,7 @@ pub use mirror::{MirrorCall, MirrorError};
 pub use options::{ControlOptions, PredictionStyle, SessionRecovery};
 pub use org_plane::{ArrangementSubmitError, mint_operation};
 pub use organization::{IntakeView, OrganizationReplica, ReplicaAction, ReplicaState};
+pub use private_upload::PrivateUploadDestination;
 pub use service_http::{MAX_SERVICE_HTTP_IN_FLIGHT, ServiceHttpCall, ServiceHttpError};
 pub use topology::{
     AgentSessionDescriptor, DocumentDescriptor, PaneDescriptor, ResourceDescriptor,
@@ -281,7 +283,7 @@ pub struct ControlPlane {
     /// replica's marks answer instead; see [`ControlPlane::command_state`].
     command_states: HashMap<ResourceId, bool>,
     clock_origin: Instant,
-    outbound: Vec<Vec<u8>>,
+    outbound: Vec<commands::OutboundFrame>,
     events: Vec<Event>,
     clipboard_event_bytes: usize,
     clipboard_focus: Option<ResourceId>,

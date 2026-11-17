@@ -11,13 +11,13 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{
-    Command, CommandResult, CommandValue, FrameKind, RESOURCE_AGENT_KEY,
-    RESOURCE_PROGRAM_STATUS_KEY, RESOURCE_PROGRAM_STATUS_RECORD_PREFIX, ResourceLifecycle, Scope,
+    Command, CommandResult, FrameKind, RESOURCE_AGENT_KEY, RESOURCE_PROGRAM_STATUS_KEY,
+    RESOURCE_PROGRAM_STATUS_RECORD_PREFIX, ResourceLifecycle, Scope,
 };
 use phux_server::LaunchCommand as CommandBuilder;
 use phux_server::state::RetainPolicy;
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, ServerHandles, WIRE_RECV_TIMEOUT, attach_by_name, command,
+    SOCKET_CONNECT_DEADLINE, ServerHandles, WIRE_RECV_TIMEOUT, attach_focused, command,
     join_after_shutdown, recv_until, run_local, seed_pty, send_frame, spawn_server_with,
     wait_for_socket,
 };
@@ -122,12 +122,7 @@ impl Pane {
             };
         });
         let mut stream = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
-        send_frame(&mut stream, &attach_by_name("demo")).await;
-        let terminal = recv_until(&mut stream, |_, frame| match frame {
-            FrameKind::Attached { snapshot, .. } => Some(snapshot.focused_resource),
-            _ => None,
-        })
-        .await;
+        let terminal = attach_focused(&mut stream, "demo").await;
         Self {
             server,
             tmp,
@@ -200,6 +195,13 @@ impl Pane {
 
     async fn record(&mut self, id: &str) -> Value {
         self.get(&record_key(id)).await.expect("record must exist")
+    }
+
+    /// No record exists under any of `ids`.
+    async fn assert_absent(&mut self, ids: &[&str]) {
+        for id in ids {
+            assert_eq!(self.get(&record_key(id)).await, None, "record {id:?}");
+        }
     }
 
     async fn summary(&mut self) -> Value {

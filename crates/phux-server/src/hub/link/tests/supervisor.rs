@@ -38,279 +38,211 @@ pub(super) async fn wait_for_status(
 
 #[tokio::test(start_paused = true)]
 async fn supervisor_backs_off_exponentially_then_connects() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let transport = ScriptTransport::new(vec![
-                Err("boom-1".to_owned()),
-                Err("boom-2".to_owned()),
-                Ok(ScriptConn::open_forever()),
-            ]);
-            let Supervised {
-                statuses,
-                cancel,
-                host,
-                relay: _relay,
-                task: _task,
-            } = supervise(loopback_entry(), transport.clone());
+    on_local(async {
+        let transport = ScriptTransport::new(vec![
+            Err("boom-1".to_owned()),
+            Err("boom-2".to_owned()),
+            Ok(ScriptConn::open_forever()),
+        ]);
+        let link = supervise(loopback_entry(), transport.clone());
 
-            wait_for_status(&statuses, &host, |s| {
-                *s == LinkStatus::Backoff {
-                    attempt: 1,
-                    retry_in: Duration::from_millis(500),
-                    last_error: "boom-1".to_owned(),
-                }
-            })
+        link.reach(backoff(1, Duration::from_millis(500), "boom-1"))
             .await;
-            wait_for_status(&statuses, &host, |s| {
-                *s == LinkStatus::Backoff {
-                    attempt: 2,
-                    retry_in: Duration::from_secs(1),
-                    last_error: "boom-2".to_owned(),
-                }
-            })
+        link.reach(backoff(2, Duration::from_secs(1), "boom-2"))
             .await;
-            wait_for_status(&statuses, &host, |s| *s == LinkStatus::Connected).await;
-            assert_eq!(transport.calls.get(), 3);
+        link.reach(LinkStatus::Connected).await;
+        assert_eq!(transport.calls.get(), 3);
 
-            cancel.cancel();
-        })
-        .await;
+        link.cancel.cancel();
+    })
+    .await;
 }
 
 #[tokio::test(start_paused = true)]
 async fn supervisor_redials_after_a_lost_connection_with_reset_backoff() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let (close_tx, closable) = ScriptConn::closable();
-            let transport = ScriptTransport::new(vec![
-                // Fail once so the backoff has a streak to reset.
-                Err("boom-1".to_owned()),
-                Ok(closable),
-                Ok(ScriptConn::open_forever()),
-            ]);
-            let Supervised {
-                statuses,
-                cancel,
-                host,
-                relay: _relay,
-                task: _task,
-            } = supervise(loopback_entry(), transport.clone());
+    on_local(async {
+        let (close_tx, closable) = ScriptConn::closable();
+        let transport = ScriptTransport::new(vec![
+            // Fail once so the backoff has a streak to reset.
+            Err("boom-1".to_owned()),
+            Ok(closable),
+            Ok(ScriptConn::open_forever()),
+        ]);
+        let link = supervise(loopback_entry(), transport.clone());
 
-            wait_for_status(&statuses, &host, |s| *s == LinkStatus::Connected).await;
+        link.reach(LinkStatus::Connected).await;
 
-            // A connection that proved stable resets the streak.
-            tokio::time::sleep(LINK_STABLE_AFTER).await;
-            close_tx
-                .send("satellite went away".to_owned())
-                .await
-                .expect("send");
-            wait_for_status(&statuses, &host, |s| {
-                *s == LinkStatus::Backoff {
-                    attempt: 1,
-                    retry_in: Duration::from_millis(500),
-                    last_error: "satellite went away".to_owned(),
-                }
-            })
-            .await;
-            wait_for_status(&statuses, &host, |s| *s == LinkStatus::Connected).await;
-            assert_eq!(transport.calls.get(), 3);
-
-            cancel.cancel();
-        })
+        // A connection that proved stable resets the streak.
+        tokio::time::sleep(LINK_STABLE_AFTER).await;
+        close_tx
+            .send("satellite went away".to_owned())
+            .await
+            .expect("send");
+        link.reach(backoff(
+            1,
+            Duration::from_millis(500),
+            "satellite went away",
+        ))
         .await;
+        link.reach(LinkStatus::Connected).await;
+        assert_eq!(transport.calls.get(), 3);
+
+        link.cancel.cancel();
+    })
+    .await;
 }
 
 #[tokio::test(start_paused = true)]
 async fn supervisor_keeps_backing_off_when_connections_die_young() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            // An established connection that dies at once (a refused
-            // ssh auth) still grows the backoff.
-            let dead = || {
-                let (tx, rx) = tokio::sync::mpsc::channel::<String>(1);
-                drop(tx);
-                Ok(ScriptConn {
-                    closed: Some(rx),
-                    keepalive_error: None,
-                })
-            };
-            let transport =
-                ScriptTransport::new(vec![dead(), dead(), dead(), Ok(ScriptConn::open_forever())]);
-            let Supervised {
-                statuses,
-                cancel,
-                host,
-                relay: _relay,
-                task: _task,
-            } = supervise(loopback_entry(), transport.clone());
+    on_local(async {
+        // An established connection that dies at once (a refused
+        // ssh auth) still grows the backoff.
+        let dead = || {
+            let (tx, rx) = tokio::sync::mpsc::channel::<String>(1);
+            drop(tx);
+            Ok(ScriptConn {
+                closed: Some(rx),
+                keepalive_error: None,
+            })
+        };
+        let transport =
+            ScriptTransport::new(vec![dead(), dead(), dead(), Ok(ScriptConn::open_forever())]);
+        let link = supervise(loopback_entry(), transport.clone());
 
-            for (attempt, retry_in) in [
-                (1, Duration::from_millis(500)),
-                (2, Duration::from_secs(1)),
-                (3, Duration::from_secs(2)),
-            ] {
-                wait_for_status(&statuses, &host, |s| {
-                    *s == LinkStatus::Backoff {
-                        attempt,
-                        retry_in,
-                        last_error: "connection closed by satellite".to_owned(),
-                    }
-                })
+        for (attempt, retry_in) in [
+            (1, Duration::from_millis(500)),
+            (2, Duration::from_secs(1)),
+            (3, Duration::from_secs(2)),
+        ] {
+            link.reach(backoff(attempt, retry_in, "connection closed by satellite"))
                 .await;
-            }
-            wait_for_status(&statuses, &host, |s| *s == LinkStatus::Connected).await;
-            assert_eq!(transport.calls.get(), 4);
+        }
+        link.reach(LinkStatus::Connected).await;
+        assert_eq!(transport.calls.get(), 4);
 
-            cancel.cancel();
-        })
-        .await;
+        link.cancel.cancel();
+    })
+    .await;
 }
 
 #[tokio::test(start_paused = true)]
 async fn supervisor_fails_closed_without_dialing() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let transport = ScriptTransport::new(vec![Ok(ScriptConn::open_forever())]);
-            let statuses = HubLinkStatuses::default();
-            let host = host();
-            // Routable QUIC with no auth material: refused.
-            let (relay, relay_rx) = relay_pair(&host);
-            drop(relay);
-            run_link(
-                host.clone(),
-                entry("quic://devbox:8788", None, None),
-                transport.clone(),
-                statuses.clone(),
-                relay_rx,
-                CancellationToken::new(),
-            )
-            .await;
-            assert_eq!(transport.calls.get(), 0, "fail closed means no dial");
-            assert!(matches!(
-                statuses.get(&host),
-                Some(LinkStatus::Refused { reason }) if reason.contains("cert-fingerprint")
-            ));
-        })
+    on_local(async {
+        let transport = ScriptTransport::new(vec![Ok(ScriptConn::open_forever())]);
+        let statuses = HubLinkStatuses::default();
+        let host = host();
+        // Routable QUIC with no auth material: refused.
+        let (relay, relay_rx) = relay_pair(&host);
+        drop(relay);
+        run_link(
+            host.clone(),
+            entry("quic://devbox:8788", None, None),
+            transport.clone(),
+            statuses.clone(),
+            relay_rx,
+            CancellationToken::new(),
+        )
         .await;
+        assert_eq!(transport.calls.get(), 0, "fail closed means no dial");
+        assert!(matches!(
+            statuses.get(&host),
+            Some(LinkStatus::Refused { reason }) if reason.contains("cert-fingerprint")
+        ));
+    })
+    .await;
 }
 
 #[tokio::test(start_paused = true)]
 async fn refused_link_fails_relay_commands_fast() {
     use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode};
 
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let transport = ScriptTransport::new(vec![]);
-            let Supervised { cancel, relay, .. } =
-                supervise(entry("quic://devbox:8788", None, None), transport.clone());
+    on_local(async {
+        let transport = ScriptTransport::new(vec![]);
+        let link = supervise(entry("quic://devbox:8788", None, None), transport.clone());
 
-            // Commands through a refused link fail typed, no dial.
-            let result =
-                tokio::time::timeout(Duration::from_secs(5), relay.command(Command::Upgrade))
-                    .await
-                    .expect("fail fast, not hang");
-            assert!(matches!(
-                result,
-                CommandResult::Error {
-                    code: ErrorCode::SatelliteUnreachable,
-                    ..
-                }
-            ));
-            assert_eq!(transport.calls.get(), 0, "refused link never dials");
-            cancel.cancel();
-        })
-        .await;
+        // Commands through a refused link fail typed, no dial.
+        let result =
+            tokio::time::timeout(Duration::from_secs(5), link.relay.command(Command::Upgrade))
+                .await
+                .expect("fail fast, not hang");
+        assert!(matches!(
+            result,
+            CommandResult::Error {
+                code: ErrorCode::SatelliteUnreachable,
+                ..
+            }
+        ));
+        assert_eq!(transport.calls.get(), 0, "refused link never dials");
+        link.cancel.cancel();
+    })
+    .await;
 }
 
 #[tokio::test(start_paused = true)]
 async fn supervisor_rereads_the_token_file_every_attempt() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let dir = tempfile::tempdir().expect("tempdir");
-            let token_path = dir.path().join("sat.token");
-            std::fs::write(&token_path, "deadbeef\n").expect("write");
+    on_local(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let token_path = dir.path().join("sat.token");
+        std::fs::write(&token_path, "deadbeef\n").expect("write");
 
-            let (close_tx, closable) = ScriptConn::closable();
-            let transport =
-                ScriptTransport::new(vec![Ok(closable), Ok(ScriptConn::open_forever())]);
-            let Supervised {
-                statuses,
-                cancel,
-                host,
-                relay: _relay,
-                task: _task,
-            } = supervise(
-                entry(
-                    "wss://devbox:8787",
-                    Some(token_path.to_str().expect("utf8 path")),
-                    Some("AB:CD"),
-                ),
-                transport.clone(),
-            );
+        let (close_tx, closable) = ScriptConn::closable();
+        let transport = ScriptTransport::new(vec![Ok(closable), Ok(ScriptConn::open_forever())]);
+        let link = supervise(
+            entry(
+                "wss://devbox:8787",
+                Some(token_path.to_str().expect("utf8 path")),
+                Some("AB:CD"),
+            ),
+            transport.clone(),
+        );
 
-            wait_for_status(&statuses, &host, |s| *s == LinkStatus::Connected).await;
+        link.reach(LinkStatus::Connected).await;
 
-            // Rotate the token and drop the link: the redial uses the new
-            // token. Wait for Backoff first so Connected is the new one.
-            std::fs::write(&token_path, "c0ffee\n").expect("rotate");
-            close_tx.send("rotated".to_owned()).await.expect("send");
-            wait_for_status(
-                &statuses,
-                &host,
-                |s| matches!(s, LinkStatus::Backoff { last_error, .. } if last_error == "rotated"),
-            )
-            .await;
-            wait_for_status(&statuses, &host, |s| *s == LinkStatus::Connected).await;
-
-            assert_eq!(
-                *transport.seen_tokens.borrow(),
-                vec![Some("deadbeef".to_owned()), Some("c0ffee".to_owned())]
-            );
-
-            cancel.cancel();
-        })
+        // Rotate the token and drop the link: the redial uses the new
+        // token. Wait for Backoff first so Connected is the new one.
+        std::fs::write(&token_path, "c0ffee\n").expect("rotate");
+        close_tx.send("rotated".to_owned()).await.expect("send");
+        link.wait(
+            |s| matches!(s, LinkStatus::Backoff { last_error, .. } if last_error == "rotated"),
+        )
         .await;
+        link.reach(LinkStatus::Connected).await;
+
+        assert_eq!(
+            *transport.seen_tokens.borrow(),
+            vec![Some("deadbeef".to_owned()), Some("c0ffee".to_owned())]
+        );
+
+        link.cancel.cancel();
+    })
+    .await;
 }
 
 #[tokio::test(start_paused = true)]
 async fn supervisor_tears_down_a_link_whose_keepalive_fails() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            // A silent WS partition: readable forever, but keepalive
-            // fails, so the link must be torn down and redialed.
-            let transport = ScriptTransport::new(vec![
-                Ok(ScriptConn::keepalive_fails("satellite sent nothing")),
-                Ok(ScriptConn::open_forever()),
-            ]);
-            let Supervised {
-                statuses,
-                cancel,
-                host,
-                relay: _relay,
-                task: _task,
-            } = supervise(loopback_entry(), transport.clone());
+    on_local(async {
+        // A silent WS partition: readable forever, but keepalive
+        // fails, so the link must be torn down and redialed.
+        let transport = ScriptTransport::new(vec![
+            Ok(ScriptConn::keepalive_fails("satellite sent nothing")),
+            Ok(ScriptConn::open_forever()),
+        ]);
+        let link = supervise(loopback_entry(), transport.clone());
 
-            wait_for_status(&statuses, &host, |s| {
-                matches!(
-                    s,
-                    LinkStatus::Backoff { last_error, .. }
-                        if last_error == "satellite sent nothing"
-                )
-            })
-            .await;
-            wait_for_status(&statuses, &host, |s| *s == LinkStatus::Connected).await;
-            assert_eq!(transport.calls.get(), 2);
-
-            cancel.cancel();
+        link.wait(|s| {
+            matches!(
+                s,
+                LinkStatus::Backoff { last_error, .. }
+                    if last_error == "satellite sent nothing"
+            )
         })
         .await;
+        link.reach(LinkStatus::Connected).await;
+        assert_eq!(transport.calls.get(), 2);
+
+        link.cancel.cancel();
+    })
+    .await;
 }
 
 #[test]
@@ -331,26 +263,15 @@ fn ws_idle_error_trips_only_at_the_limit() {
 
 #[tokio::test(start_paused = true)]
 async fn supervisor_stops_on_cancellation() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let transport = ScriptTransport::new(vec![Err("boom".to_owned())]);
-            let Supervised {
-                statuses,
-                cancel,
-                host,
-                relay: _relay,
-                task,
-            } = supervise(loopback_entry(), transport);
-            wait_for_status(&statuses, &host, |s| {
-                matches!(s, LinkStatus::Backoff { .. })
-            })
-            .await;
-            cancel.cancel();
-            tokio::time::timeout(Duration::from_secs(5), task)
-                .await
-                .expect("supervisor exits on cancel")
-                .expect("no panic");
-        })
-        .await;
+    on_local(async {
+        let transport = ScriptTransport::new(vec![Err("boom".to_owned())]);
+        let link = supervise(loopback_entry(), transport);
+        link.wait(|s| matches!(s, LinkStatus::Backoff { .. })).await;
+        link.cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(5), link.task)
+            .await
+            .expect("supervisor exits on cancel")
+            .expect("no panic");
+    })
+    .await;
 }

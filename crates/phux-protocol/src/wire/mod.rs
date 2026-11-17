@@ -2,6 +2,10 @@
 //! (`docs/protocol.md#framing`). Terminal content is opaque VT bytes and
 //! bootstrap payloads (ADR-0013, ADR-0070).
 
+// First, so `tlv_body!` is in scope for the field modules.
+#[macro_use]
+mod tlv;
+
 pub mod compress;
 pub mod decode;
 pub mod encode;

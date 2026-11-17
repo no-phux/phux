@@ -38,10 +38,13 @@ fn an_injected_engine_survives_either_mode() {
             startup_policy(&cfg, false, false).expect("a mode with no listener starts");
         assert!(engine.is_none(), "{mode:?}: no posture engine replaces it");
         assert!(fallback.is_none());
-        let state = SharedState::new();
-        mirror_config_into_state(&cfg, &cfg.socket_path, &state);
-        install_policy_posture(&state, posture, engine, false);
-        let live = state.with(|s| s.policy_engine().clone());
+        let state = SharedState::with_config(crate::state::StateConfig::from_runtime(
+            &cfg,
+            &cfg.socket_path,
+            posture,
+            engine,
+        ));
+        let live = state.with(|s| s.config().policy_engine.clone());
         assert!(
             std::ptr::addr_eq(
                 std::sync::Arc::as_ptr(&live),
@@ -50,7 +53,7 @@ fn an_injected_engine_survives_either_mode() {
             "{mode:?}: the injected engine authorizes"
         );
         assert_eq!(
-            state.with(crate::state::ServerState::policy_posture),
+            state.with(|s| s.config().policy_posture),
             match mode {
                 phux_config::PolicyMode::Paired => crate::policy::PolicyPosture::Paired,
                 phux_config::PolicyMode::Local => crate::policy::PolicyPosture::Local,

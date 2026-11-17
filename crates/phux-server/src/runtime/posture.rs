@@ -114,24 +114,6 @@ pub(in crate::runtime) const fn remote_listener_configured(
     ws_addr.is_some() || quic_addr.is_some() || webtransport || connectors
 }
 
-/// Mirror the posture into shared state: whether TLS listeners require a
-/// workload certificate, whether they admit the owner's tailnet devices
-/// (`paired` only), and the engine that mints each connection's grant.
-pub(in crate::runtime) fn install_policy_posture(
-    state: &SharedState,
-    posture: crate::policy::PolicyPosture,
-    engine: Option<std::sync::Arc<dyn crate::policy::PolicyEngine>>,
-    tailnet_owner: bool,
-) {
-    state.with_mut(|s| {
-        s.set_policy_posture(posture);
-        s.set_tailnet_owner(tailnet_owner && posture.requires_workload_mtls());
-        if let Some(engine) = engine {
-            s.set_policy_engine(engine);
-        }
-    });
-}
-
 /// Whether the auto-bound overlay listener may run: some overlay port is
 /// unclaimed, its gate is open, and the posture admits a remote door, which
 /// `[policy] mode = "local"` never does (`docs/remote.md#who-can-connect`).
@@ -146,12 +128,10 @@ pub(in crate::runtime) fn auto_overlay_allowed(
 ) -> bool {
     let gate_open = ports.any()
         && auto_overlay_gate_open(
-            state.with(|s| s.server_env().no_auto_listen),
+            state.with(|s| s.config().server_env.no_auto_listen),
             phux_config::instance::is_default_profile(),
         );
-    let local_only = state
-        .with(crate::state::ServerState::policy_posture)
-        .is_local();
+    let local_only = state.with(|s| s.config().policy_posture.is_local());
     if gate_open && local_only && mode_unset {
         info!(
             "overlay listener not bound: no [policy] mode is set, so the server admits its \

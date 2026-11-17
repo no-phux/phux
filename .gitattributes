@@ -20,3 +20,4 @@ crates/phux-design/tokens/themes.json linguist-generated=true
 crates/phux-design/tokens/vocabulary.json linguist-generated=true
 clients/rune/ios/Assets/AccentColor.colorset/Contents.json linguist-generated=true
 
+crates/phux-mcp/tests/golden/catalog.json linguist-generated=true

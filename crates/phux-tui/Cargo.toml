@@ -35,15 +35,32 @@ phux-client.workspace = true
 # (ADR-0100). Wasm consumers depend on client-core directly and never
 # build phux-tui; a synthesis-profile fallback here was never compiled.
 phux-client-core = { workspace = true, features = ["native-engine"] }
-phux-protocol = { workspace = true, features = ["server"] }
+phux-protocol.workspace = true
+# Render pool, SGR and Kitty replay, and the shared cell-style projection.
+phux-vt = { workspace = true, features = ["kitty"] }
 phux-core.workspace = true
-# phux-nz4.5: status-bar composer (`StatusBar`) + widget contract live in
-# phux-config; this crate owns rendering the composed bar to VT.
+# The config schema and the status-bar widget specs and option validators.
+# The widget runtime (`render::chrome::status_bar::widgets`: the trait,
+# registry, composer, and renderers) lives here and builds from those
+# validators, so `phux config check` and the bar cannot disagree.
 phux-config.workspace = true
 # The phux design language: the house look's roles, the theme-to-roles
 # solver the chrome slots are filled from, and the status ladder. No
 # dependencies of its own (spec §4.2).
 phux-design.workspace = true
+# Status-bar `Cell::text` is built inline; matches phux-protocol's storage
+# type for `Cell::text` (see phux-x7a).
+smallvec.workspace = true
+# `WidgetCells::cells.len()` IS the status bar's width contract — the
+# fitting pass, the narrowing order, the elastic-spacer slack (ADR-0087)
+# and the click-target map all measure in cells. A window name is
+# arbitrary text, so that count is only true if a double-width character
+# occupies two cells: counting it as one made a CJK window name render
+# about twice as wide as the bar believed, overflow the row, and wrap
+# into the pane grid.
+unicode-width.workspace = true
+# strftime-style formatting for the `time` status-bar widget.
+chrono.workspace = true
 # phux-r82.5: the TUI executes plugin manifest actions through the same
 # child-process runtime `phux config run` uses -- workspace-internal crate,
 # no new external surface. The attach driver spawns the run off the input
@@ -116,6 +133,8 @@ phux-frozen.workspace = true
 # phux-h5hj.3: the one scripted server every client-side unit test speaks
 # to, so a fake cannot lie about the server's frame order.
 phux-client = { workspace = true, features = ["testkit"] }
+# Frame builders for the frame-handler and attach-loop tests.
+phux-wire-fixtures.workspace = true
 # `tests/sidebar_branch_e2e.rs` stands up a real `ServerRuntime` and waits for
 # its UDS, which is exactly what the server's own integration scaffolding
 # already does. Sharing it deletes a hand-copied server fixture, connect-poll,

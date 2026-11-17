@@ -135,7 +135,7 @@ pub(super) fn apply_session_keep_empty(
         let clients: Vec<_> = s
             .take_killed_sessions()
             .into_iter()
-            .flat_map(|session| s.attached_clients_in_session(session))
+            .flat_map(|session| s.clients().attached_in_session(session))
             .collect();
         let drained = outcome == KeepEmptyOutcome::Removed && s.self_exit_due();
         (outcome, clients, drained)
@@ -350,7 +350,9 @@ fn run_and_publish_session_create(
     let name = request.name.clone();
     let request_token = request.request_token.clone();
     let result_key = session_create_result_key(request_token.as_deref());
-    if request_token.is_some() && state.with(|s| s.session_create_result_is_pending(&result_key)) {
+    if request_token.is_some()
+        && state.with(|s| s.clients().session_create_result_is_pending(&result_key))
+    {
         warn!(
             ?client_id,
             request_id,
@@ -362,7 +364,8 @@ fn run_and_publish_session_create(
     if let Ok(wire) = &outcome {
         // Creation and this lookup run synchronously in the same server turn.
         let session_id = state.with_mut(|s| {
-            s.find_session_by_name(&name)
+            s.sessions()
+                .find_by_name(&name)
                 .map(|id| s.idspace.intern_session(id).get())
         });
         let payload =

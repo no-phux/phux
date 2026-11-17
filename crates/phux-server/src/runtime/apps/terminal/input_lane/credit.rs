@@ -40,10 +40,7 @@ impl InputStalled {
     }
 
     pub(crate) fn result(terminal_id: &WireResourceId) -> CommandResult {
-        CommandResult::Error {
-            code: ErrorCode::ResourceExhausted,
-            message: Self::message(terminal_id),
-        }
+        CommandResult::error(ErrorCode::ResourceExhausted, Self::message(terminal_id))
     }
 }
 
@@ -123,8 +120,8 @@ pub(crate) async fn acquire_credit(
 /// The credit pool of the local Terminal `terminal_id` names, if any.
 fn credit_pool(state: &SharedState, terminal_id: &WireResourceId) -> Option<InputCreditPool> {
     state.with(|s| {
-        let core = s.resource_from_wire(terminal_id)?;
-        let terminal = s.resource_handle(core)?.terminal().ok()?;
+        let core = s.idspace.resource_from_wire(terminal_id)?;
+        let terminal = s.resources().handle(core)?.terminal().ok()?;
         Some(terminal.ordered_input.credits())
     })
 }

@@ -218,11 +218,9 @@ impl RemoteListenersReport {
         }
     }
 
-    /// Builder: replace the listener rows.
-    #[must_use]
-    pub fn with_listeners(mut self, listeners: Vec<RemoteListenerSlot>) -> Self {
-        self.listeners = listeners;
-        self
+    builder_setters! {
+        /// Builder: replace the listener rows.
+        fn with_listeners(listeners: Vec<RemoteListenerSlot>) => listeners;
     }
 
     /// Upsert a slot by transport (later writes win for the same transport).

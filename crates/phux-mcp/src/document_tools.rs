@@ -20,7 +20,7 @@ use phux_protocol::ids::ResourceId;
 use serde_json::{Value, json};
 
 use crate::cli_tools::{schema, string_schema};
-use crate::tools::{ToolError, socket_arg, strict_object};
+use crate::tools::{ToolError, ToolFuture, ToolSpec, socket_arg, strict_object};
 
 /// The key a tool result carries an MCP content block under; `tool_content`
 /// moves it into `content` and out of `structuredContent`.
@@ -29,79 +29,102 @@ pub(crate) const IMAGE_CONTENT_KEY: &str = "_mcp_image_content";
 const SCHEMA_VERSION: u8 = 1;
 const WAIT_DEFAULT_SECS: u64 = 60;
 
-pub(crate) fn schemas() -> Vec<Value> {
-    let mut schemas = schemas_read();
-    schemas.extend(input::schemas());
-    schemas.push(element::schema_entry());
-    schemas
+/// The document tools, in catalog order: the reads, the input intents,
+/// then the element click.
+pub(crate) const SPECS: &[ToolSpec] = &[
+    ToolSpec::in_process("phux_documents", documents_schema, |args| {
+        Box::pin(documents(args))
+    }),
+    ToolSpec::in_process("phux_tree_snapshot", tree_snapshot_schema, |args| {
+        Box::pin(tree_snapshot(args))
+    }),
+    ToolSpec::in_process("phux_tree_wait", tree_wait_schema, |args| {
+        Box::pin(tree_wait(args))
+    }),
+    ToolSpec::in_process("phux_surface_snapshot", surface_snapshot_schema, |args| {
+        Box::pin(surface_snapshot(args))
+    }),
+    ToolSpec::by_name(
+        "phux_document_navigate",
+        input::navigate_schema,
+        boxed_input,
+    ),
+    ToolSpec::by_name("phux_document_click", input::click_schema, boxed_input),
+    ToolSpec::by_name("phux_document_type", input::type_schema, boxed_input),
+    ToolSpec::by_name("phux_document_key", input::key_schema, boxed_input),
+    ToolSpec::by_name("phux_document_scroll", input::scroll_schema, boxed_input),
+    ToolSpec::in_process(element::NAME, element::schema_entry, |args| {
+        Box::pin(element::call(args))
+    }),
+];
+
+/// [`input::call`], boxed for the registry.
+fn boxed_input<'a>(name: &'static str, args: &'a Value) -> ToolFuture<'a> {
+    Box::pin(input::call(name, args))
 }
 
-fn schemas_read() -> Vec<Value> {
-    let target = || json!({ "type": "string", "minLength": 1, "maxLength": 4096, "description": "The document resource, by the `@N` id phux_documents lists." });
-    vec![
-        schema(
-            "phux_documents",
-            "List the live document resources: accessibility trees (JSON) and pixel surfaces (PNG), each with its id, kind, parent pane, name, and `producer` (`connected`, or `gone` once the process feeding it disconnected; the last frame stays readable). Read them with phux_tree_snapshot, phux_tree_wait, or phux_surface_snapshot. Read-only.",
-            json!({ "socket": string_schema() }),
-            &[],
-        ),
-        schema(
-            "phux_tree_snapshot",
-            "Read an accessibility tree's newest JSON document and its `seq`; `seq` 0 with a null document means nothing is published yet. Reads through an attach, which the kind table counts as a binding, so it is not annotated read-only; the document `phux agent tree snapshot --json` prints.",
-            json!({ "target": target(), "socket": string_schema() }),
-            &["target"],
-        ),
-        schema(
-            "phux_tree_wait",
-            "Wait until an accessibility tree's document contains `until` (plain substring of the JSON text), as `phux agent tree follow --until`. Returns `outcome` matched with that document, closed when the tree ended first, or timed_out; a timeout is a result, not a tool error. Bounded: `timeout_secs` defaults to 60, at most 3600. Reads through an attach, which the kind table counts as a binding, so it is not annotated read-only.",
-            json!({
-                "target": target(),
-                "until": { "type": "string", "minLength": 1, "maxLength": 4096 },
-                "timeout_secs": { "type": "integer", "minimum": 1, "maximum": crate::tools::MAX_TIMEOUT_SECS },
-                "socket": string_schema(),
-            }),
-            &["target", "until"],
-        ),
-        schema(
-            "phux_surface_snapshot",
-            "Read a pixel surface's newest image. The PNG is returned as MCP image content; the structured result carries `seq`, byte count, `width`, and `height` (null before the first publish). Reads through an attach, which the kind table counts as a binding, so it is not annotated read-only; the facts `phux agent surface snapshot --json` prints.",
-            json!({ "target": target(), "socket": string_schema() }),
-            &["target"],
-        ),
-    ]
+/// The `target` property every read takes.
+fn document_target() -> Value {
+    json!({ "type": "string", "minLength": 1, "maxLength": 4096, "description": "The document resource, by the `@N` id phux_documents lists." })
 }
 
-pub(crate) fn owns(name: &str) -> bool {
-    matches!(
-        name,
-        "phux_documents" | "phux_tree_snapshot" | "phux_tree_wait" | "phux_surface_snapshot"
-    ) || input::owns(name)
-        || name == element::NAME
+fn documents_schema() -> Value {
+    schema(
+        "phux_documents",
+        "List the live document resources: accessibility trees (JSON) and pixel surfaces (PNG), each with its id, kind, parent pane, name, and `producer` (`connected`, or `gone` once the process feeding it disconnected; the last frame stays readable). Read them with phux_tree_snapshot, phux_tree_wait, or phux_surface_snapshot. Read-only.",
+        json!({ "socket": string_schema() }),
+        &[],
+    )
 }
 
-pub(crate) async fn call(name: &str, args: &Value) -> Result<Value, ToolError> {
-    match name {
-        "phux_documents" => documents(args).await,
-        "phux_tree_snapshot" => {
-            strict_object(args, &["target", "socket"], &["target"])?;
-            let (mut conn, id) = connect(args).await?;
-            let document = tree::snapshot(&mut conn, &id)
-                .await
-                .map_err(|err| tree_error(&err))?;
-            Ok(tree_json(&document))
-        }
-        "phux_tree_wait" => tree_wait(args).await,
-        "phux_surface_snapshot" => {
-            strict_object(args, &["target", "socket"], &["target"])?;
-            let (mut conn, id) = connect(args).await?;
-            let document = tree::snapshot(&mut conn, &id)
-                .await
-                .map_err(|err| tree_error(&err))?;
-            Ok(surface_json(&document))
-        }
-        element::NAME => element::call(args).await,
-        other => input::call(other, args).await,
-    }
+fn tree_snapshot_schema() -> Value {
+    schema(
+        "phux_tree_snapshot",
+        "Read an accessibility tree's newest JSON document and its `seq`; `seq` 0 with a null document means nothing is published yet. Reads through an attach, which the kind table counts as a binding, so it is not annotated read-only; the document `phux agent tree snapshot --json` prints.",
+        json!({ "target": document_target(), "socket": string_schema() }),
+        &["target"],
+    )
+}
+
+fn tree_wait_schema() -> Value {
+    schema(
+        "phux_tree_wait",
+        "Wait until an accessibility tree's document contains `until` (plain substring of the JSON text), as `phux agent tree follow --until`. Returns `outcome` matched with that document, closed when the tree ended first, or timed_out; a timeout is a result, not a tool error. Bounded: `timeout_secs` defaults to 60, at most 3600. Reads through an attach, which the kind table counts as a binding, so it is not annotated read-only.",
+        json!({
+            "target": document_target(),
+            "until": { "type": "string", "minLength": 1, "maxLength": 4096 },
+            "timeout_secs": { "type": "integer", "minimum": 1, "maximum": crate::tools::MAX_TIMEOUT_SECS },
+            "socket": string_schema(),
+        }),
+        &["target", "until"],
+    )
+}
+
+fn surface_snapshot_schema() -> Value {
+    schema(
+        "phux_surface_snapshot",
+        "Read a pixel surface's newest image. The PNG is returned as MCP image content; the structured result carries `seq`, byte count, `width`, and `height` (null before the first publish). Reads through an attach, which the kind table counts as a binding, so it is not annotated read-only; the facts `phux agent surface snapshot --json` prints.",
+        json!({ "target": document_target(), "socket": string_schema() }),
+        &["target"],
+    )
+}
+
+async fn tree_snapshot(args: &Value) -> Result<Value, ToolError> {
+    strict_object(args, &["target", "socket"], &["target"])?;
+    let (mut conn, id) = connect(args).await?;
+    let document = tree::snapshot(&mut conn, &id)
+        .await
+        .map_err(|err| tree_error(&err))?;
+    Ok(tree_json(&document))
+}
+
+async fn surface_snapshot(args: &Value) -> Result<Value, ToolError> {
+    strict_object(args, &["target", "socket"], &["target"])?;
+    let (mut conn, id) = connect(args).await?;
+    let document = tree::snapshot(&mut conn, &id)
+        .await
+        .map_err(|err| tree_error(&err))?;
+    Ok(surface_json(&document))
 }
 
 async fn documents(args: &Value) -> Result<Value, ToolError> {
@@ -242,7 +265,9 @@ mod tests {
 
     async fn invoke(name: &str, socket: &std::path::Path, mut args: Value) -> Value {
         args["socket"] = json!(socket);
-        let mut result = call(name, &args).await.expect(name);
+        let mut result = crate::tools::call_registered(name, &args)
+            .await
+            .expect(name);
         let image = result.as_object_mut().unwrap().remove(IMAGE_CONTENT_KEY);
         crate::contract_tests::validate_output(name, &result);
         if let Some(image) = image {

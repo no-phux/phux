@@ -73,6 +73,15 @@ impl Feed {
             _script: Some(tx),
         }
     }
+
+    /// `frames`, then the peer's EOF.
+    pub(super) fn scripted_then_eof(frames: Vec<BytesMut>) -> Self {
+        let (tx, rx) = mpsc::unbounded_channel();
+        for frame in frames {
+            tx.send(frame).expect("receiver alive");
+        }
+        Self::eof_on_close(rx)
+    }
 }
 
 impl FrameReader for Feed {
@@ -107,6 +116,14 @@ impl FrameWriter for Wire {
     async fn close(&mut self) -> io::Result<()> {
         self.closed.set(true);
         Ok(())
+    }
+}
+
+/// `COMMAND { request_id, command }`.
+pub(super) const fn command(request_id: u32, command: Command) -> FrameKind {
+    FrameKind::Command {
+        request_id,
+        command,
     }
 }
 
@@ -372,8 +389,8 @@ pub(super) fn alpha_world(
     )
     .unwrap();
     let alpha = state.with_mut(|s| {
-        s.set_policy_engine(engine);
-        s.intern_resource_wire(alpha_core)
+        s.config_mut().policy_engine = engine;
+        s.idspace.intern_resource(alpha_core)
     });
     (state, alpha, alpha_core)
 }

@@ -5,7 +5,6 @@
 use std::time::Duration;
 
 use phux_protocol::wire::frame::ViewportInfo;
-use phux_server::LaunchCommand as CommandBuilder;
 
 use phux_server_testkit::builder::E2eBuilder;
 use phux_server_testkit::tracing_capture::TracingCapture;
@@ -14,11 +13,7 @@ use phux_server_testkit::{
     try_recv_typed,
 };
 
-fn sh(script: &str) -> CommandBuilder {
-    let mut cmd = CommandBuilder::new("/bin/sh");
-    cmd.args(["-c", script]);
-    cmd
-}
+use phux_server_testkit::sh;
 
 /// Twelve attach/observe/drop rounds: each fresh client must rebuild a
 /// once-printed marker from its snapshot, and the anchor keeps the pane.
@@ -114,7 +109,7 @@ fn attach_racing_pty_eof_does_not_panic() {
             .seed_cmd(sh("printf RACEEOF; sleep 0.15"))
             .spawn()
             .await;
-        let socket_path = harness.socket_path.clone();
+        let socket_path = harness.server.socket.clone();
         harness.clients.remove(0).detach();
 
         for _ in 0..8 {

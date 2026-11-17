@@ -156,7 +156,7 @@ impl RelaySession {
                 actor,
             } => {
                 let holder = self.journal.as_ref().and_then(|journal| {
-                    journal.with(|s| s.satellite_lease_holder(&self.host, terminal))
+                    journal.with(|s| s.federation().satellite_lease_holder(&self.host, terminal))
                 });
                 Some(AgentEvent::TerminalControl {
                     lifecycle,
@@ -223,7 +223,10 @@ impl RelaySession {
             } => true,
             _ => return,
         };
-        journal.with_mut(|s| s.mirror_satellite_lease_event(&self.host, id, is_end, seq));
+        journal.with_mut(|s| {
+            s.federation_mut()
+                .mirror_satellite_lease_event(&self.host, id, is_end, seq)
+        });
     }
 
     /// Report a satellite's link-level `journal_gap` as a `source_gap` to

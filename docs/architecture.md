@@ -61,50 +61,49 @@ and gets the server's view, which is what `phux snapshot` does.
 ## Crates
 
 All under `crates/`. Every crate is `publish = false` except
-`phux-protocol`. Rows describe responsibilities, not a dependency ordering;
-Cargo manifests define the actual edges.
+`phux-protocol`. Rows are responsibilities; Cargo manifests define the
+dependency edges.
 
 | Crate | Role |
 | --- | --- |
-| `phux-protocol` | wire format, message catalog, codec, capabilities, the kind catalog that doubles as the authorization classifier; pure Rust, no libghostty by default |
+| `phux-protocol` | wire format, message catalog, codec, capabilities, the kind catalog (also the authorization classifier); pure Rust, no libghostty |
+| `phux-vt` | libghostty glue for native crates |
 | `phux-core` | domain records: sessions, resources, arrangements, and the pure `apply()` that organizes them; no I/O |
 | `phux-config-core` | config file location, `extends` layering, `[[remote]]`, `[organize]`, profile and socket paths |
-| `phux-design` | [design tokens](./design-language.md), solver |
+| `phux-design` | [design tokens](./design-language.md) |
 | `phux-perf` | lock-free histograms and counters behind `GET_PERF` and `phux perf` |
 | `phux-git` | the user's own `git` (and `gh`) for a checkout: status, diffs, history, branches, files, staging, and the branch's pull request; behind the server's `CHECKOUT` methods |
 | `phux-agent-rules` | agent detection manifests: regions, rules, `phux agent explain` |
 | `phux-crash` | fatal-signal handler that restores the terminal before re-raising |
 | `portable-pty-adopt` | rebuild portable-pty handles from inherited fds after `execve` |
 | `quictun` | blind QUIC relay; knows nothing about phux |
-| `phux-work` | SQLite work store with a single-writer keeper process |
-| `phux-config` | the TUI `config.toml` schema, loader, widget contract |
-| `phux-dial` | outbound QUIC and WebSocket dialing: TLS pinning, bearer token |
+| `phux-work` | SQLite work store with a single-writer keeper process, and the `phux.mission/v1` mission documents over it |
+| `phux-config` | the TUI `config.toml` schema, loader, widget specs and validators |
+| `phux-dial` | outbound QUIC and WebSocket dialing: TLS pinning, bearer token; with `relay`, quictun bound to phux's ALPNs and state directory |
 | `phux-client-core` | sans-IO session kernel, engine adapter, layout, multi-pane, predictive echo; no tokio, no ratatui, compiles to wasm |
 | `phux-record` | asciicast codec, VT replay, GIF/APNG export |
-| `phux-mission` | mission documents over the work store |
 | `phux-plugin` | plugin action runtime contracts |
 | `phux-usage` | plan-usage collector behind `phux agent usage`: vendor limit sources and the `phux.usage/v1` document; no wire |
 | `phux-frozen` | test support: frozen fixtures that hold persisted formats to what released images wrote |
-| `phux-relay` | quictun bound to phux's ALPNs and state directory |
-| `phux-client-runtime` | the one client orchestration layer: dial planning, reconnect, relay tunnel, control plane, engine owner thread, grid publication |
+| `phux-client-runtime` | the one client orchestration layer: dial planning, reconnect, control plane, engine owner thread, grid publication |
 | `phux-client` | headless client: the connection facade and the verbs behind the CLI and MCP |
 | `phux-client-ffi` | the one binding crate: the UniFFI Swift and Kotlin surface the phone apps link |
 | `phux-resource` | the kind-neutral substrate: output stream, lifecycle, opaque facets and companions, and per-consumer replicated-state delivery; names no kind's concepts (`tests/substrate_boundary.rs` enforces it) |
 | `phux-agent-session` | the `AgentSession` record-stream engine, the `phux.agent/v1` state, asked, and record authority, and the mailbox of a resource that hosts an agent |
-| `phux-tree` | the replicated-document engine behind `AccessibilityTree`, `PixelSurface` and `Document`: one document a producer replaces whole, and the newest for every viewer |
 | `phux-terminal` | the Terminal kind: PTY child, libghostty engine actor, grid and replay, input encoding, native checkpoints, agent detection; never depends on the host |
 | `phux-terminal-api` | engine-independent Terminal contracts: launch intent, factory, input and presentation ports, opaque captures and report types; no VT or PTY implementation |
-| `phux-server` | the daemon: hosts resources and serves them to clients; links no VT library and no PTY directly |
+| `phux-server` | the daemon: hosts resources and serves them to clients, including the replicated-document engine behind `AccessibilityTree`, `PixelSurface` and `Document`; links no VT library and no PTY directly |
 | `phux-agent-host` | guardian process for native agent sessions over ACP |
-| `phux-tui` | the terminal UI: attach driver, ratatui chrome, overlays; also the native VT driver sharing terminal restoration; the only crate that links ratatui |
+| `phux-tui` | the terminal UI: attach driver, ratatui chrome, widget runtime, overlays; also the native VT driver sharing terminal restoration; the only crate that links ratatui |
 | `phux-mcp` | the `phux-mcp` binary: MCP over stdio |
 | `phux-server-testkit` | fixtures for server wire tests; dev-only |
+| `phux-wire-fixtures` | frame builders for client-side tests; wasm-safe; dev-only |
 | `phux` | the `phux` binary: argument parsing and dispatch |
 
 `phux-core` and `phux-protocol` do not depend on each other; the server
 bridges their id spaces through [IdBridge](../crates/phux-server/src/id_bridge.rs):
 core generational keys are not wire ids; wire ids are monotonically allocated
-and retired, not recycled within an incarnation. Where both are in scope, import the protocol type
+and retired, not recycled within an incarnation. Where both are in scope, alias the protocol type
 with a `Wire` prefix (`use phux_protocol::ids::ResourceId as WireResourceId`).
 
 Outside the root workspace: `clients/rune` (Phux Rune, the desktop client,
@@ -127,9 +126,8 @@ that takes wire frames in and produces effects (paint this, send that),
 with no I/O of its own. `phux-client-runtime` wraps it with the async
 parts: dialing, reconnecting, the engine thread that owns libghostty
 replicas, and one publication table for terminal grids and whole
-documents. The TUI, the desktop app, and the FFI bindings all sit on the
-runtime; the browser client sits on the core alone and does its own I/O in
-the page.
+documents. The TUI, the desktop app, and the FFI bindings sit on the
+runtime; the browser client sits on the core alone, doing its own I/O.
 
 The TUI paints pane interiors from libghostty through a cell-diffed front
 buffer and paints chrome with ratatui in disjoint regions. Phux Rune paints the
@@ -164,7 +162,7 @@ either has space held for it or floats over the content:
   layout adoption seeds display preferences; navigation restores destination
   tabs/splits without replacing the current window's display preferences.
 
-Regression tests assert bounds are identical across the interaction.
+Regression tests assert identical bounds across the interaction.
 
 ## Frames, wakes, and input
 
@@ -217,8 +215,8 @@ ownership recommendation. No keeper bootload service exists today.
 | organization | `phux-core/src/apply.rs`, `phux-server/src/state/org.rs`, `org_store.rs`; [durability and execution](./organization.md) |
 | input handling | `phux-server/src/runtime/apps/terminal/input_lane/` |
 | TUI rendering | `phux-tui/src/attach/render.rs`, `attach/paint.rs`, `render/chrome`, `render/overlay` |
-| the wire | `phux-protocol/src/wire/frame/mod.rs` (type bytes), `wire/frame/{tags,command_tags}.rs` (sub-tags), `wire/field/` (field ids), `caps/server_features.rs` (feature bits), `kinds.rs` (classification); then regenerate `docs/spec/wire-schema.json` and `just docs-gen` |
-| a CLI verb | `crates/phux/src/commands/cli.rs` (`enum Command`) and `commands/cli/` (each verb's `Args`), `src/dispatch.rs`, `commands/<verb>.rs`, wire logic in `phux-client/src/<verb>.rs`; then `just docs-gen` |
+| the wire | `phux-protocol/src/wire/frame/catalog.rs` (type bytes), `wire/frame/{tags,command_tags}.rs` (sub-tags), `wire/field/` (field ids), `caps/server_features.rs` (feature bits), `kinds.rs` (classification); then regenerate `docs/spec/wire-schema.json` and `just docs-gen` |
+| a CLI verb | `phux/src/commands/cli.rs` (`enum Command`), `commands/cli/` (verb `Args`), `commands/<verb>.rs` (`run(args, socket)`), one `src/dispatch.rs` arm, wire logic in `phux-client/src/<verb>.rs`; then `just docs-gen` |
 | config | `phux-config/src/schema.rs`, `default/*.toml`; then `just docs-gen` |
 | agent detection | `phux-agent-rules/rules/*.toml`, `phux-terminal/src/agent_detect/` |
 | authorization | `phux-server/src/policy.rs`, `workload.rs`, `phux-protocol/src/kinds.rs` |
@@ -230,8 +228,8 @@ host method an app serves, by the catalog rows authorization uses, and
 `app_for` answers per-kind questions such as how a stream bootstraps. `state/` sits below the apps and never names
 them: it asks any resource only for its lifecycle (`ResourceOps`), and holds
 each app's own state in a typed slot it cannot read (`state/app_slots.rs`).
-A new kind does not compile until `app_for` names its app, and neither
-`ResourceApp` nor `ResourceOps` has a default method to inherit; a new kind
+A new kind does not compile until `app_for` names its app, and no
+`ResourceApp`, `InteractiveApp` or `ResourceOps` method has a default; a new kind
 also takes one `APP_KINDS` row, which a test holds to the catalog. A graceful
 upgrade goes through the apps too: at the cut each app writes the upgrade-blob
 fields its kind owns, and on resume it rebuilds them, in `APP_KINDS` order so

@@ -261,7 +261,7 @@ fn require_paired(config: &Path) -> Result<(), CliError> {
 }
 
 fn live_hub_endpoint() -> Result<String, CliError> {
-    let socket = phux_server::runtime::default_socket_path();
+    let socket = phux_config::socket::default_socket_path();
     let no_route = |detail: String| {
         CliError::new(
             codes::NO_SERVER,
@@ -371,7 +371,7 @@ pub(super) fn run_join(code: &str, mail_only: bool, json: bool) -> ExitCode {
             return json_err::emit(json, &err, 2);
         }
     };
-    let dir = phux_server::telemetry::state_dir().join("uplinks");
+    let dir = phux_config::instance::state_dir().join("uplinks");
     let joined = match super::super::cli_runtime() {
         Ok(rt) => rt.block_on(phux_server::uplink::join(&code, &dir)),
         Err(exit) => return exit,

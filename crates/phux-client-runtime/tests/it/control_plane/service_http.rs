@@ -7,18 +7,7 @@ use phux_client_runtime::control::{MAX_SERVICE_HTTP_IN_FLIGHT, ServiceHttpError}
 use phux_protocol::service_http::{ServiceHttpChunk, ServiceHttpHead, ServiceHttpRequest};
 
 fn plane_with_service_http() -> ControlPlane {
-    let mut plane = ControlPlane::new(ControlOptions::default());
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    let mut hello = hello_ok(PROTOCOL_VERSION.patch);
-    if let FrameKind::HelloOk { server_caps, .. } = &mut hello {
-        *server_caps = server_caps.with_features_ext(ServerFeatureExtSet::with(&[
-            ServerFeatureExt::HostServiceHttp,
-        ]));
-    }
-    plane.feed(hello).unwrap();
-    let _ = plane.take_outbound();
-    plane
+    browsing_with_ext(&[ServerFeatureExt::HostServiceHttp])
 }
 
 fn info() -> ServiceHttpRequest {
@@ -58,9 +47,7 @@ fn an_older_server_is_never_asked() {
         plane.service_http_open(info()).unwrap_err(),
         ServiceHttpError::NotConnected
     );
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
+    reopen(&mut plane, hello_ok(PROTOCOL_VERSION.patch));
     let _ = plane.take_outbound();
     assert_eq!(
         plane.service_http_open(info()).unwrap_err(),
@@ -108,13 +95,11 @@ fn open_read_and_close_resolve_their_calls() {
     let close = plane.service_http_close(9).unwrap();
     let (request_id, _) = sent_request_id(&mut plane);
     plane
-        .feed(FrameKind::CommandResult {
+        .feed(command_err(
             request_id,
-            result: CommandResult::Error {
-                code: ErrorCode::Unavailable,
-                message: "OpenCode is not installed".to_owned(),
-            },
-        })
+            ErrorCode::Unavailable,
+            "OpenCode is not installed",
+        ))
         .unwrap();
     assert!(matches!(
         ready(close),

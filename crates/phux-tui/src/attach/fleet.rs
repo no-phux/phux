@@ -151,6 +151,22 @@ pub(super) fn fleet_items(
     items
 }
 
+/// [`fleet_items`] for `workspace` alone: no session graph and no foreign
+/// state.
+#[cfg(test)]
+pub(super) fn local_fleet_items(
+    workspace: &ArrangementDoc,
+    agents: &HashMap<ResourceId, AgentRecord>,
+    meta: &HashMap<ResourceId, FleetPaneMeta>,
+) -> Vec<SelectItem> {
+    let foreign = ForeignSessions {
+        layouts: &HashMap::new(),
+        agents: &HashMap::new(),
+        terminals: &HashMap::new(),
+    };
+    fleet_items(workspace, &[], None, agents, meta, foreign, &[])
+}
+
 /// The live fleet dashboard's rows: every session's panes from
 /// [`fleet_items`], then the satellite agents not already open here.
 pub(super) fn live_fleet_items(

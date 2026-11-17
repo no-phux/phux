@@ -334,7 +334,7 @@ async fn a_consumer_lagged_past_eviction_gets_a_tombstone_and_a_full_replacement
 
         // A later re-attach tombstones the replacement, not the retired one.
         let (_, _, _, prior) = stalled.state.with_mut(|s| {
-            s.replace_attach_terminal_pump(
+            s.resources_mut().replace_pump(
                 stalled.client,
                 stalled.core,
                 phux_protocol::ids::BootstrapId::new(u64::MAX).unwrap(),

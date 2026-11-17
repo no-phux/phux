@@ -38,10 +38,10 @@ impl Lane for InputLaneHandle {
                 } => self.begin_apply(on.state, on.client_id, operation_id, terminal_id, events),
                 Command::RouteInput { terminal_id, event } => {
                     let Some(credits) = on.connection.downcast_mut::<InputCredits>() else {
-                        return Err(CommandResult::Error {
-                            code: ErrorCode::InternalError,
-                            message: "input lane connection state unavailable".to_owned(),
-                        });
+                        return Err(CommandResult::error(
+                            ErrorCode::InternalError,
+                            "input lane connection state unavailable",
+                        ));
                     };
                     // Same FIFO and the same wait as `INPUT_*` (ADR-0144).
                     let Ok(credit) = credits.acquire(on.state, &terminal_id).await else {

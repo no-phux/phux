@@ -5,7 +5,8 @@ fn delayed_parent(fx: &Fixture, capacity: usize) -> mpsc::Receiver<AgentParentRe
     let (control, receive) = mpsc::channel(capacity);
     fx.state.with_mut(|s| {
         let handle = s
-            .resource_handle(fx.parent)
+            .resources()
+            .handle(fx.parent)
             .unwrap()
             .clone()
             .with_companion(AgentParent { mailbox: control });
@@ -39,7 +40,7 @@ fn assert_not_asked(fx: &Fixture) {
         assert!(binding.closed);
         assert!(!binding.view.connected);
         assert!(binding.view.questions.is_empty());
-        let core = s.resource_from_wire(&fx.agent).unwrap();
+        let core = s.idspace.resource_from_wire(&fx.agent).unwrap();
         assert_eq!(
             s.registry()
                 .resource(core)
@@ -98,7 +99,8 @@ async fn mailbox_capacity_wait_rechecks_native_closure_before_enqueuing_evidence
         let generation = fx.ready().await;
         let mut parent = delayed_parent(&fx, 1);
         let sender = fx.state.with(|s| {
-            s.resource_handle(fx.parent)
+            s.resources()
+                .handle(fx.parent)
                 .unwrap()
                 .companion::<AgentParent>()
                 .unwrap()

@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use libghostty_vt::Terminal as GhosttyTerminal;
-use phux_client_core::engine::ghostty::snapshot::{EncodedSnapshot, SnapshotCaptureLimits};
 use phux_terminal::grid::{SCROLLBACK_ALL, SnapshotSynthesizer};
+use phux_vt::snapshot::{EncodedSnapshot, SnapshotCaptureLimits};
 
 use crate::support::{Corpus, deterministic_line};
 

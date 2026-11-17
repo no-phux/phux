@@ -39,6 +39,12 @@ mod list;
 mod manage;
 mod minimal;
 mod renew;
+/// Run `phux host` as parsed.
+pub(crate) fn run(args: crate::commands::HostArgs) -> ExitCode {
+    let crate::commands::HostArgs { action } = args;
+    run_host(&action)
+}
+
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

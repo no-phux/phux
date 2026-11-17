@@ -5,10 +5,9 @@ use crate::ids::{
     BootstrapId, GroupId, RESOURCE_ID_TAG_LOCAL, RESOURCE_ID_TAG_SATELLITE, ResourceId,
     SatelliteHost, SessionId, StreamId,
 };
-use crate::wire::decode::{Decoder, utf8_value};
+use crate::wire::decode::Decoder;
 use crate::wire::encode::Encoder;
 use crate::wire::error::DecodeError;
-use crate::wire::field;
 use crate::wire::info::{decode_option_str, encode_option_str};
 
 use super::{
@@ -271,26 +270,6 @@ pub(in crate::wire) fn decode_scope(dec: &mut Decoder<'_>) -> Result<Scope, Deco
         SCOPE_TAG_GLOBAL => Ok(Scope::Global),
         other => Err(DecodeError::unknown_enum("Scope", other)),
     }
-}
-
-/// Decode the shared `{request_id, scope, key}` body of `GET_METADATA` and
-/// `DELETE_METADATA` (`docs/protocol.md#commands-events-resources`).
-pub(in crate::wire) fn decode_metadata_scope_key(
-    dec: &mut Decoder<'_>,
-) -> Result<(u32, Scope, String), DecodeError> {
-    let mut request_id = 0u32;
-    let mut scope: Option<Scope> = None;
-    let mut key: Option<String> = None;
-    for_each_field!(dec, value, {
-        field::get_metadata::REQUEST_ID => request_id = Decoder::new(value).read_u32_be()?,
-        field::get_metadata::SCOPE => scope = Some(decode_scope(&mut Decoder::new(value))?),
-        field::get_metadata::KEY => key = Some(utf8_value(value)?),
-    });
-    Ok((
-        request_id,
-        scope.ok_or(DecodeError::UnexpectedEof)?,
-        key.ok_or(DecodeError::UnexpectedEof)?,
-    ))
 }
 
 /// Write an [`ActorRef`] positionally: `client: u32 || credential_id:

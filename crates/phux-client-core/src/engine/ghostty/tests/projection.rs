@@ -5,17 +5,7 @@ use super::*;
 #[test]
 fn native_history_stays_bounded_under_page_granular_storage() {
     let captured = capture_snapshot();
-    let mut adapter = native_adapter();
-    let mut replica = adapter
-        .start_replica(native_profile(), geometry())
-        .expect("native replica");
-    let mut effects = EngineEffectBuffer::new();
-    adapter
-        .apply_bootstrap_chunk(&mut replica, &captured.ready, &mut effects)
-        .expect("checkpoint through READY");
-    adapter
-        .finish_bootstrap(&mut replica, &mut effects)
-        .expect("protocol READY");
+    let (mut adapter, mut replica, mut effects) = published(native_profile(), &captured.ready);
     adapter
         .configure_history_budget(&mut replica, 64 * 1024, 2)
         .expect("engine history limits");
@@ -88,17 +78,7 @@ fn search_keeps_sparse_cells_at_soft_wraps_but_not_hard_line_padding() {
 #[allow(clippy::too_many_lines)]
 fn native_search_and_anchors_remain_engine_owned() {
     let captured = capture_snapshot();
-    let mut adapter = native_adapter();
-    let mut replica = adapter
-        .start_replica(native_profile(), geometry())
-        .expect("native replica");
-    let mut effects = EngineEffectBuffer::new();
-    adapter
-        .apply_bootstrap_chunk(&mut replica, &captured.ready, &mut effects)
-        .expect("checkpoint through READY");
-    adapter
-        .finish_bootstrap(&mut replica, &mut effects)
-        .expect("protocol READY");
+    let (mut adapter, mut replica, mut effects) = published(native_profile(), &captured.ready);
     apply_history(&mut adapter, &mut replica, &captured, &mut effects);
 
     let found = adapter

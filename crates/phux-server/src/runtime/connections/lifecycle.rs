@@ -82,8 +82,8 @@ fn attached_session_name(s: &ServerState, client_id: ClientId) -> Option<Detache
 /// subscribes to allocated for it. `try_send` is non-blocking and
 /// best-effort, so this is safe under the state lock.
 fn release_actor_consumers(s: &ServerState, client_id: ClientId) {
-    for handle in s.subscribed_resource_handles(client_id) {
-        crate::runtime::apps::app_for(handle.kind).release_consumer(&handle, client_id);
+    for handle in s.resources().subscribed_handles(client_id) {
+        crate::runtime::apps::release_consumer(&handle, client_id);
     }
 }
 
@@ -95,9 +95,10 @@ fn announce_lease_releases(
     client_id: ClientId,
     actor: Option<phux_protocol::ids::ClientId>,
 ) {
-    for pane in s.leases_held_by(client_id) {
+    for pane in s.leases().held_by(client_id) {
         let Some(lease) = s
-            .resource_handle(pane)
+            .resources()
+            .handle(pane)
             .and_then(|handle| handle.companion::<crate::resource::companions::Leasable>())
         else {
             continue;
@@ -115,12 +116,12 @@ fn announce_lease_releases(
 fn release_relay_state(s: &ServerState, client_id: ClientId) {
     // Rides an unbounded channel, so a saturated relay cannot keep a stale
     // subscriber alive.
-    for relay in s.hub_relays_all() {
+    for relay in s.federation().relays_all() {
         relay.unsubscribe_client(client_id);
     }
     // Relay a RELEASE_INPUT per satellite lease this client held.
-    for (host, terminal) in s.satellite_leases_held_by(client_id) {
-        if let Some(relay) = s.hub_relay(&host) {
+    for (host, terminal) in s.federation().satellite_leases_held_by(client_id) {
+        if let Some(relay) = s.federation().relay(&host) {
             relay.command_detached(phux_protocol::wire::frame::Command::ReleaseInput {
                 terminal_id: WireResourceId::local(terminal),
             });
@@ -244,9 +245,9 @@ pub(crate) async fn accept_loop<L: Incoming>(
                         debug!(transport = listener.kind(), "client connected");
                         // Counted before the task exists so the idle watchdog
                         // never sees an unattended gap.
-                        state.with_mut(ServerState::note_connection_opened);
-                        let client_id = state.with_mut(ServerState::new_client_id);
-                        state.with_mut(|s| s.set_connection_identity(client_id, connection_identity));
+                        state.with_mut(|s| s.lifecycle_mut().note_connection_opened());
+                        let client_id = state.with_mut(|s| s.clients_mut().new_client_id());
+                        state.with_mut(|s| s.clients_mut().set_connection_identity(client_id, connection_identity));
                         state.with(|s| s.audit_connection(client_id, crate::audit::Kind::ConnectionOpen));
                         let task_state = state.clone();
                         let client_token = root_token.child_token();
@@ -265,7 +266,7 @@ pub(crate) async fn accept_loop<L: Incoming>(
                             // R13: the last connection closing on a server
                             // that runs nothing ends it.
                             let due = task_state.with_mut(|s| {
-                                s.note_connection_closed();
+                                s.lifecycle_mut().note_connection_closed();
                                 s.self_exit_due()
                             });
                             if due && !task_root_token.is_cancelled() {

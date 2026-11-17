@@ -29,8 +29,7 @@ fn a_shell_prompt_expires_live_work_but_preserves_results() {
         let failure = pane.record("failure").await;
         pane.stage(1).await;
         pane.assert_ids(&["success", "failure"]).await;
-        assert_eq!(pane.get(&record_key("running")).await, None);
-        assert_eq!(pane.get(&record_key("waiting")).await, None);
+        pane.assert_absent(&["running", "waiting"]).await;
         assert_eq!(pane.record("success").await, success);
         assert_eq!(pane.record("failure").await, failure);
         assert_eq!(pane.summary().await["active"], failure);
@@ -70,8 +69,7 @@ fn soft_reset_and_alternate_screens_preserve_records_but_ris_clears_them() {
             None
         );
         assert_eq!(pane.get(RESOURCE_PROGRAM_STATUS_KEY).await, None);
-        assert_eq!(pane.get(&record_key("")).await, None);
-        assert_eq!(pane.get(&record_key("child")).await, None);
+        pane.assert_absent(&["", "child"]).await;
         drop(watcher);
         pane.stop().await;
     });
@@ -100,15 +98,8 @@ fn a_retained_terminal_expires_work_at_exit_and_keeps_done_and_error_records() {
         timeout(WIRE_RECV_TIMEOUT, async {
             loop {
                 let request_id = pane.next_request();
-                let result = command(
-                    &mut pane.stream,
-                    request_id,
-                    phux_server_testkit::get_state(),
-                )
-                .await;
-                let CommandResult::OkWith(CommandValue::State(snapshot)) = result else {
-                    panic!("GET_STATE failed: {result:?}");
-                };
+                let snapshot =
+                    phux_server_testkit::server_state(&mut pane.stream, request_id).await;
                 if snapshot.resources.iter().any(|resource| {
                     resource.id == pane.terminal && resource.lifecycle == ResourceLifecycle::Exited
                 }) {
@@ -121,7 +112,7 @@ fn a_retained_terminal_expires_work_at_exit_and_keeps_done_and_error_records() {
         .expect("pane must remain in inventory after exit");
         pane.wait_value(&record_key("running"), Option::is_none)
             .await;
-        assert_eq!(pane.get(&record_key("waiting")).await, None);
+        pane.assert_absent(&["waiting"]).await;
         assert_eq!(pane.record("success").await, success);
         assert_eq!(pane.record("failure").await, failure);
         assert_eq!(pane.summary().await["active"], failure);

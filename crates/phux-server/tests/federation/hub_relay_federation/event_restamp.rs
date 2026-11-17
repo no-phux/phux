@@ -5,13 +5,7 @@
 use super::*;
 
 fn ask(terminal: &ResourceId, id: &str) -> Command {
-    Command::ReportAsked {
-        terminal_id: terminal.clone(),
-        id: id.to_owned(),
-        question: format!("{id}?"),
-        suggestions: Vec::new(),
-        elapsed_seconds: None,
-    }
+    report_asked(terminal, id, &format!("{id}?"))
 }
 
 /// Report an `asked` with `id` and return its stamped `EVENT`.
@@ -52,12 +46,7 @@ fn relayed_satellite_events_are_restamped_in_hub_order() {
         let fed = Fed::boot_with(None, Some("local")).await;
         let sat_id = fed.sat_id();
         let mut hub = fed.linked_hub().await;
-        send_frame(&mut hub, &phux_server_testkit::attach_by_name("local")).await;
-        let local_pane = phux_server_testkit::recv_until(&mut hub, |_, frame| match frame {
-            FrameKind::Attached { snapshot, .. } => Some(snapshot.focused_resource),
-            _ => None,
-        })
-        .await;
+        let local_pane = phux_server_testkit::attach_focused(&mut hub, "local").await;
         for terminal in [None, Some(sat_id.clone())] {
             send_frame(
                 &mut hub,

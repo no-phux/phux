@@ -4,12 +4,10 @@ use super::*;
 
 /// A plane that negotiated acknowledged input, with nothing queued.
 fn acknowledging() -> ControlPlane {
-    let mut plane = ControlPlane::new(ControlOptions::default());
-    plane.connection_opened();
-    plane.take_outbound();
-    plane
-        .feed(hello_ok_with(&[ServerFeature::AcknowledgedInput]))
-        .unwrap();
+    let mut plane = opened(
+        ControlOptions::default(),
+        hello_ok_with(&[ServerFeature::AcknowledgedInput]),
+    );
     plane.take_outbound();
     plane
 }

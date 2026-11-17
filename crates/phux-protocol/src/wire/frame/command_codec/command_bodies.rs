@@ -6,16 +6,12 @@ use super::{
     STATE_SCOPE_TAG_SERVER, StateScope, TerminalSignal, decode_asked_event, decode_client_id,
     decode_optional_key, decode_terminal_id,
 };
+use crate::wire::info::decode_u16_list;
 
 pub(super) fn decode_resource_ids(
     dec: &mut Decoder<'_>,
 ) -> Result<Vec<crate::ids::ResourceId>, DecodeError> {
-    let count = dec.read_u16_be()? as usize;
-    let mut ids = Vec::with_capacity(count);
-    for _ in 0..count {
-        ids.push(decode_terminal_id(dec)?);
-    }
-    Ok(ids)
+    decode_u16_list(dec, decode_terminal_id)
 }
 
 pub(super) fn decode_detach_clients_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {
@@ -42,8 +38,8 @@ pub(super) fn decode_subscribe_terminal_events_command(
     dec: &mut Decoder<'_>,
 ) -> Result<Command, DecodeError> {
     let terminal_id = decode_terminal_id(dec)?;
-    let count = dec.read_u16_be()? as usize;
-    let mut event_types = Vec::with_capacity(count);
+    let count = usize::from(dec.read_u16_be()?);
+    let mut event_types = dec.bounded_capacity(count);
     for _ in 0..count {
         if let Some(et) = ResourceEventType::from_u8(dec.read_u8()?) {
             event_types.push(et);

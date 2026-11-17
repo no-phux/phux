@@ -1,10 +1,10 @@
-//! Encoded samples of the server's stream, metadata, host, spawn, and
-//! lifecycle frames.
+//! Encoded samples of the server's stream, metadata, host, spawn,
+//! lifecycle, and forwarding-reply frames.
 
 use super::{
-    AgentEvent, BootstrapStreamProfile, Bytes, CloseReason, CommandResult, DirectoryEntry,
-    DirectoryErrorCode, DirectoryListing, DirectoryListingError, EventStamp, FrameKind,
-    HistoryRejectionReason, HistoryTombstoneReason, MoveResult, PathErrorCode, PathKind,
+    AgentEvent, BootstrapStreamProfile, Bytes, CloseReason, CommandResult, CommandValue,
+    DirectoryEntry, DirectoryErrorCode, DirectoryListing, DirectoryListingError, EventStamp,
+    FrameKind, HistoryRejectionReason, HistoryTombstoneReason, MoveResult, PathErrorCode, PathKind,
     PathQueryError, PathRow, PathStatus, Scope, ServerInstance, SpawnResult, TombstoneReason,
     actor, generation, key, stream, terminal,
 };
@@ -264,5 +264,51 @@ pub(super) fn lifecycle_samples() -> Vec<FrameKind> {
             event: AgentEvent::SourceGap { dropped: 3 },
             stamp: Some(Box::new(stamp)),
         },
+    ]
+}
+
+const fn ok_with(value: CommandValue) -> FrameKind {
+    FrameKind::CommandResult {
+        request_id: 1,
+        result: CommandResult::OkWith(value),
+    }
+}
+
+/// The port-forward, ssh-agent, and service-HTTP replies, each chunk both
+/// mid-stream at its largest accepted size and as the empty last one.
+pub(super) fn reply_samples() -> Vec<FrameKind> {
+    use crate::forward::{ForwardChunk, MAX_AGENT_MESSAGE_BYTES, MAX_FORWARD_CHUNK_BYTES};
+    use crate::service_http::{MAX_SERVICE_HTTP_READ_BYTES, ServiceHttpChunk, ServiceHttpHead};
+    vec![
+        ok_with(CommandValue::ForwardOpened(u64::MAX)),
+        ok_with(CommandValue::ForwardChunk(ForwardChunk {
+            bytes: vec![0x5a; MAX_FORWARD_CHUNK_BYTES],
+            eof: false,
+        })),
+        ok_with(CommandValue::ForwardChunk(ForwardChunk {
+            bytes: Vec::new(),
+            eof: true,
+        })),
+        FrameKind::Event {
+            terminal: None,
+            event: AgentEvent::SshAgentRequest {
+                id: u64::MAX,
+                message: vec![13; MAX_AGENT_MESSAGE_BYTES],
+            },
+            stamp: None,
+        },
+        ok_with(CommandValue::ServiceHttpHead(ServiceHttpHead {
+            exchange: 9,
+            status: 401,
+            headers: vec![("www-authenticate".to_owned(), "Basic".to_owned())],
+        })),
+        ok_with(CommandValue::ServiceHttpChunk(ServiceHttpChunk {
+            bytes: vec![0x5a; MAX_SERVICE_HTTP_READ_BYTES],
+            end: false,
+        })),
+        ok_with(CommandValue::ServiceHttpChunk(ServiceHttpChunk {
+            bytes: Vec::new(),
+            end: true,
+        })),
     ]
 }

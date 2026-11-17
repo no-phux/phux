@@ -53,7 +53,6 @@ pub(super) fn spawn_two_pump_consumer(
         drain: None,
         snapshot: None,
         last_seq: None,
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         terminal: native_attach_handle()
             .0
             .terminal()

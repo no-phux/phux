@@ -39,23 +39,10 @@ pub enum WireSplitDir {
     Stacked,
 }
 
-impl From<SplitDir> for WireSplitDir {
-    fn from(value: SplitDir) -> Self {
-        match value {
-            SplitDir::Horizontal => Self::SideBySide,
-            SplitDir::Vertical => Self::Stacked,
-        }
-    }
-}
-
-impl From<WireSplitDir> for SplitDir {
-    fn from(value: WireSplitDir) -> Self {
-        match value {
-            WireSplitDir::SideBySide => Self::Horizontal,
-            WireSplitDir::Stacked => Self::Vertical,
-        }
-    }
-}
+mirror_enum_from!(SplitDir <=> WireSplitDir {
+    Horizontal => SideBySide,
+    Vertical => Stacked,
+});
 
 /// One node of a group's split tree.
 #[derive(uniffi::Enum, Clone, Debug, PartialEq)]

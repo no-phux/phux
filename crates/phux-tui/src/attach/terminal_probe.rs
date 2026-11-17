@@ -499,69 +499,39 @@ mod tests {
         assert_eq!(PROBE_QUERY, b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b[c");
     }
 
-    /// A terminal that ignores OSC 10/11 still answers DA1. That reply ends
-    /// the exchange; the probe budget is not spent.
-    #[test]
-    fn da1_only_reply_ends_before_the_deadline() {
-        let budget = Duration::from_millis(25);
-        let scripted = drive(&[b"\x1b[?64;1;2;6;9;15;18;21;22c"], budget);
-        assert_eq!(scripted.outcome, ProbeRead::Unsupported);
-        assert_eq!(scripted.elapsed, Duration::ZERO);
-        assert_eq!(scripted.polls.len(), 1);
-    }
+    type ExchangeCase<'a> = (&'a str, &'a [&'a [u8]], ProbeRead, Option<usize>);
 
-    /// Colours followed by DA1 in the same read still yield the palette.
+    /// How a reply ends the exchange early, without spending the budget. A
+    /// terminal that ignores OSC 10/11 still answers DA1, and that reply ends
+    /// it. Colours (with or without a trailing DA1) yield the palette as soon
+    /// as both arrive. Replies arrive in order, so DA1 before both colours
+    /// means the rest is unanswered. A short read inside `CSI ? Ps` and an
+    /// echoed `CSI c` query are not yet a DA1 reply.
     #[test]
-    fn colour_then_da1_returns_the_palette() {
-        let budget = Duration::from_millis(25);
-        let reply = b"\x1b]10;rgb:d0d0/d0d0/d0d0\x1b\\\x1b]11;#12181b\x07\x1b[?1;2c";
-        let scripted = drive(&[reply], budget);
-        assert_eq!(scripted.outcome, ProbeRead::Colors(sample_palette()));
-        assert_eq!(scripted.elapsed, Duration::ZERO);
-    }
-
-    /// Answering terminals return as soon as both colours arrive. They do
-    /// not wait for the DA1 reply that follows.
-    #[test]
-    fn colour_replies_do_not_wait_for_da1() {
-        let budget = Duration::from_millis(25);
-        let fg = b"\x1b]10;rgb:d0d0/d0d0/d0d0\x1b\\";
-        let bg = b"\x1b]11;#12181b\x07";
-        let scripted = drive(&[fg, bg, b"\x1b[?6c"], budget);
-        assert_eq!(scripted.outcome, ProbeRead::Colors(sample_palette()));
-        assert_eq!(scripted.elapsed, Duration::ZERO);
-        assert_eq!(scripted.polls.len(), 2);
-    }
-
-    /// Replies arrive in order, so DA1 with only the foreground means the
-    /// background query will not be answered.
-    #[test]
-    fn da1_before_both_colours_is_unsupported() {
-        let budget = Duration::from_millis(25);
-        let reply = b"\x1b]10;rgb:ff/00/00\x1b\\\x1b[?6c\x1b]11;rgb:00/00/00\x1b\\";
-        let scripted = drive(&[reply], budget);
-        assert_eq!(scripted.outcome, ProbeRead::Unsupported);
-        assert_eq!(scripted.elapsed, Duration::ZERO);
-    }
-
-    /// A short read that stops inside `CSI ? Ps` is not yet a DA1 reply.
-    #[test]
-    fn partial_da1_does_not_decide() {
-        let budget = Duration::from_millis(25);
-        let scripted = drive(&[b"\x1b[?64;1;2", b"c"], budget);
-        assert_eq!(scripted.outcome, ProbeRead::Unsupported);
-        assert_eq!(scripted.elapsed, Duration::ZERO);
-        assert_eq!(scripted.polls.len(), 2);
-    }
-
-    /// `CSI c` is the query, not the reply. An echo of it must not end early.
-    #[test]
-    fn echoed_da1_query_is_not_a_reply() {
-        let budget = Duration::from_millis(25);
-        let scripted = drive(&[b"\x1b[c", b"\x1b[?6c"], budget);
-        assert_eq!(scripted.outcome, ProbeRead::Unsupported);
-        assert_eq!(scripted.elapsed, Duration::ZERO);
-        assert_eq!(scripted.polls.len(), 2);
+    fn a_reply_ends_the_exchange_before_the_deadline() {
+        use ProbeRead::Unsupported;
+        const FG: &[u8] = b"\x1b]10;rgb:d0d0/d0d0/d0d0\x1b\\";
+        const BG: &[u8] = b"\x1b]11;#12181b\x07";
+        const BOTH_DA1: &[u8] = b"\x1b]10;rgb:d0d0/d0d0/d0d0\x1b\\\x1b]11;#12181b\x07\x1b[?1;2c";
+        const FG_DA1_BG: &[u8] = b"\x1b]10;rgb:ff/00/00\x1b\\\x1b[?6c\x1b]11;rgb:00/00/00\x1b\\";
+        let colors = ProbeRead::Colors(sample_palette());
+        #[rustfmt::skip] // a case table, one row per case
+        let cases: [ExchangeCase<'_>; 6] = [
+            ("da1 only", &[b"\x1b[?64;1;2;6;9;15;18;21;22c"], Unsupported, Some(1)),
+            ("colours then da1 in one read", &[BOTH_DA1], colors, None),
+            ("colours do not wait for da1", &[FG, BG, b"\x1b[?6c"], colors, Some(2)),
+            ("da1 before both colours", &[FG_DA1_BG], Unsupported, None),
+            ("partial da1", &[b"\x1b[?64;1;2", b"c"], Unsupported, Some(2)),
+            ("echoed da1 query", &[b"\x1b[c", b"\x1b[?6c"], Unsupported, Some(2)),
+        ];
+        for (case, chunks, outcome, polls) in cases {
+            let scripted = drive(chunks, Duration::from_millis(25));
+            assert_eq!(scripted.outcome, outcome, "{case}");
+            assert_eq!(scripted.elapsed, Duration::ZERO, "{case}");
+            if let Some(polls) = polls {
+                assert_eq!(scripted.polls.len(), polls, "{case}");
+            }
+        }
     }
 
     /// No bytes at all: one poll, and the clock advances by the budget.
@@ -574,26 +544,25 @@ mod tests {
         assert_eq!(scripted.polls, [budget]);
     }
 
+    /// DA1 (`Unsupported`) skips the late-reply attempt; a timeout still
+    /// reads a late colour reply.
     #[test]
-    fn unsupported_da1_skips_the_late_reply_budget() {
-        let calls = Cell::new(0_u8);
-        let colors = palette_from_attempts(ProbeRead::Unsupported, || {
-            calls.set(calls.get() + 1);
-            ProbeRead::TimedOut
-        });
-        assert_eq!(colors, None);
-        assert_eq!(calls.get(), 0);
-    }
-
-    #[test]
-    fn timeout_still_reads_a_late_colour_reply() {
-        let calls = Cell::new(0_u8);
-        let colors = palette_from_attempts(ProbeRead::TimedOut, || {
-            calls.set(calls.get() + 1);
-            ProbeRead::Colors(sample_palette())
-        });
-        assert_eq!(colors, Some(sample_palette()));
-        assert_eq!(calls.get(), 1);
+    fn only_a_timeout_spends_the_late_reply_budget() {
+        let palette = Some(sample_palette());
+        #[rustfmt::skip] // a case table, one row per case
+        let cases = [
+            ("unsupported da1 skips the late budget", ProbeRead::Unsupported, None, 0),
+            ("a timeout reads a late colour reply", ProbeRead::TimedOut, palette, 1),
+        ];
+        for (case, first, want, attempts) in cases {
+            let calls = Cell::new(0_u8);
+            let colors = palette_from_attempts(first, || {
+                calls.set(calls.get() + 1);
+                want.map_or(ProbeRead::TimedOut, ProbeRead::Colors)
+            });
+            assert_eq!(colors, want, "{case}");
+            assert_eq!(calls.get(), attempts, "{case}");
+        }
     }
 
     /// A silent source costs one remaining-time poll, not a restarted budget

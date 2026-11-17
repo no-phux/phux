@@ -88,50 +88,46 @@ fn refuses_a_document_with_no_token() {
     assert!(PairReport::parse("Welcome to Ubuntu\n").is_err());
 }
 
+/// The dial list for an ssh `host` whose pair report has pin `fp` and
+/// `overlay` addresses, with an optional operator `endpoint` override.
+fn dial(host: &str, fp: Option<&str>, overlay: &[&str], endpoint: Option<&str>) -> Vec<String> {
+    candidate_endpoints(host, &report(fp, overlay), endpoint, 8788)
+}
+
 #[test]
 fn candidates_are_overlay_addresses_then_the_ssh_host_when_pinned() {
+    let overlay = &["100.64.0.2"];
     assert_eq!(
-        candidate_endpoints("mini.lan", &report(Some("AB"), &["100.64.0.2"]), None, 8788),
-        vec![
-            "quic://100.64.0.2:8788".to_owned(),
-            "quic://mini.lan:8788".to_owned()
-        ]
+        dial("mini.lan", Some("AB"), overlay, None),
+        ["quic://100.64.0.2:8788", "quic://mini.lan:8788"]
     );
     // The ssh host is not listed twice when it is the overlay address.
     assert_eq!(
-        candidate_endpoints(
-            "100.64.0.2",
-            &report(Some("AB"), &["100.64.0.2"]),
-            None,
-            8788
-        ),
-        vec!["quic://100.64.0.2:8788".to_owned()]
+        dial("100.64.0.2", Some("AB"), overlay, None),
+        ["quic://100.64.0.2:8788"]
     );
     // No overlay address: the ssh host alone is still worth a dial.
-    assert_eq!(
-        candidate_endpoints("mini", &report(Some("AB"), &[]), None, 8788),
-        vec!["quic://mini:8788".to_owned()]
-    );
+    assert_eq!(dial("mini", Some("AB"), &[], None), ["quic://mini:8788"]);
 }
 
 #[test]
 fn nothing_is_dialable_without_a_pin() {
     // ADR-0031 would refuse the dial, so registering it would only move
     // the failure later.
-    assert!(candidate_endpoints("mini", &report(None, &["100.64.0.2"]), None, 8788).is_empty());
+    assert!(dial("mini", None, &["100.64.0.2"], None).is_empty());
 }
 
 #[test]
 fn operator_endpoint_override_is_the_only_candidate() {
-    let report = report(Some("AB"), &["100.64.0.2"]);
+    let overlay = &["100.64.0.2"];
     assert_eq!(
-        candidate_endpoints("mini", &report, Some("mini.ts.net:9999"), 8788),
-        vec!["quic://mini.ts.net:9999".to_owned()]
+        dial("mini", Some("AB"), overlay, Some("mini.ts.net:9999")),
+        ["quic://mini.ts.net:9999"]
     );
     // A full URI passes through, so wss:// is reachable this way.
     assert_eq!(
-        candidate_endpoints("mini", &report, Some("wss://mini.ts.net:8787"), 8788),
-        vec!["wss://mini.ts.net:8787".to_owned()]
+        dial("mini", Some("AB"), overlay, Some("wss://mini.ts.net:8787")),
+        ["wss://mini.ts.net:8787"]
     );
 }
 
@@ -139,8 +135,8 @@ fn operator_endpoint_override_is_the_only_candidate() {
 fn ipv6_overlay_address_is_bracketed() {
     // Without brackets the result would not parse as HOST:PORT.
     assert_eq!(
-        candidate_endpoints("", &report(Some("AB"), &["fd7a::1"]), None, 8788),
-        vec!["quic://[fd7a::1]:8788".to_owned()]
+        dial("", Some("AB"), &["fd7a::1"], None),
+        ["quic://[fd7a::1]:8788"]
     );
 }
 

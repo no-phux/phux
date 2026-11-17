@@ -12,35 +12,19 @@ use std::time::Duration;
 
 use phux_protocol::ids::{BootstrapId, ResourceId, StreamId};
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
-use phux_protocol::policy::{PeerIdentity, TransportType};
-use phux_protocol::scope::TerminalScopeSet;
+use phux_protocol::policy::TransportType;
 use phux_protocol::wire::frame::{FrameKind, HistoryTombstoneReason};
 use tokio::task::LocalSet;
 use tokio_util::sync::CancellationToken;
 
-use crate::auth::AuthenticatedCredential;
 use crate::hub::relay::{HubRelays, RelayHandle, RelayRequest};
-use crate::policy::{ConnectionGrant, GrantFuture, PolicyEngine};
+use crate::policy::testing::FnPolicy;
 use crate::runtime::connections::dispatch::handle_client;
 use crate::runtime::test_support::{Feed, Wire, encode, hello, owner_peer};
 use crate::state::{ClientId, SharedState};
 
 const CLIENT: ClientId = ClientId(21);
 const DESKTOP: ClientId = ClientId(20);
-
-#[derive(Debug)]
-struct FixedGrant(TerminalScopeSet);
-
-impl PolicyEngine for FixedGrant {
-    fn authorize_hello<'a>(
-        &'a self,
-        _peer: &'a PeerIdentity,
-        _credential: Option<&'a AuthenticatedCredential>,
-    ) -> GrantFuture<'a> {
-        let grant = ConnectionGrant::scoped(self.0.clone(), None).unwrap();
-        Box::pin(async move { Ok(grant) })
-    }
-}
 
 fn frames(id: ResourceId) -> Vec<FrameKind> {
     vec![
@@ -156,11 +140,11 @@ async fn local_focus_activity_case(leased: bool, retained: bool, authorized: boo
             .register_resource_handle(pane, handle, CancellationToken::new())
             .unwrap();
         for client in [DESKTOP, CLIENT] {
-            s.set_peer_identity(client, owner_peer());
+            s.clients_mut().set_peer_identity(client, owner_peer());
             let (out, _rx) = tokio::sync::mpsc::channel(8);
             s.attach_default_caps(client, "active-views", out).unwrap();
         }
-        s.set_window_size(phux_config::WindowSize::Active);
+        s.config_mut().window_size = phux_config::WindowSize::Active;
         s.set_client_viewport(CLIENT, ViewportInfo::new(60, 20));
         s.set_client_viewport(DESKTOP, ViewportInfo::new(120, 48));
         s.registry_mut().terminal_mut(pane).unwrap().dims = (120, 48);
@@ -183,7 +167,7 @@ async fn local_focus_activity_case(leased: bool, retained: bool, authorized: boo
                 (120, 48)
             };
             assert_eq!(s.registry().terminal(pane).unwrap().dims, expected);
-            assert_eq!(s.input_lease_holder(pane), leased.then_some(DESKTOP));
+            assert_eq!(s.leases().holder(pane), leased.then_some(DESKTOP));
         });
         let delivered = authorized && !leased && !retained;
         assert_eq!(
@@ -217,12 +201,11 @@ fn configure_focus_admission(
         s.set_input_lease(pane, DESKTOP);
     }
     if retained {
-        s.restore_retained_exit(pane, phux_protocol::wire::info::ExitFacet::new(0, 1));
+        s.retained_mut()
+            .restore_exit(pane, phux_protocol::wire::info::ExitFacet::new(0, 1));
     }
     if !authorized {
-        s.set_policy_engine(Arc::new(FixedGrant(
-            TerminalScopeSet::parse_all(&["observe@global".to_owned()]).unwrap(),
-        )));
+        s.config_mut().policy_engine = Arc::new(FnPolicy::scoped(&["observe@global"]));
     }
 }
 
@@ -245,17 +228,17 @@ async fn satellite_frames_keep_scope_proxy_and_lease_gates_before_relay() {
                 let relays = HubRelays::default();
                 relays.insert(handle);
                 state.with_mut(|s| {
-                    s.set_peer_identity(CLIENT, owner_peer());
-                    s.set_policy_engine(Arc::new(FixedGrant(
-                        TerminalScopeSet::parse_all(&[scope.to_owned()]).unwrap(),
-                    )));
-                    s.set_hub_relays(relays);
+                    s.clients_mut().set_peer_identity(CLIENT, owner_peer());
+                    s.config_mut().policy_engine = Arc::new(FnPolicy::scoped(&[scope]));
+                    s.federation_mut().set_relays(relays);
                     if proxy {
-                        s.register_satellite_proxy_attach(CLIENT, host.clone(), 7);
+                        s.federation_mut()
+                            .register_satellite_proxy_attach(CLIENT, host.clone(), 7);
                     }
                     if let Some(holder) = lease_holder {
                         let (out, _rx) = tokio::sync::mpsc::channel(8);
-                        s.set_satellite_lease(host.clone(), 7, holder, out);
+                        s.federation_mut()
+                            .set_satellite_lease(host.clone(), 7, holder, out);
                     }
                 });
                 let output = exchange(
@@ -349,7 +332,7 @@ async fn unavailable_history_preserves_the_negotiated_codec_first_outcome() {
                 ),
             ] {
                 let state = crate::runtime::apps::terminal::test_support::terminal_state();
-                state.with_mut(|s| s.set_peer_identity(CLIENT, owner_peer()));
+                state.with_mut(|s| s.clients_mut().set_peer_identity(CLIENT, owner_peer()));
                 let mut hello = hello("history-no-app");
                 if let FrameKind::Hello { client_caps, .. } = &mut hello {
                     *client_caps = caps;
@@ -408,7 +391,7 @@ async fn clipboard_reply_case(leased: bool, authorized: bool, selection: u8, del
             .register_resource_handle(pane, handle, CancellationToken::new())
             .unwrap();
         for client in [DESKTOP, CLIENT] {
-            s.set_peer_identity(client, owner_peer());
+            s.clients_mut().set_peer_identity(client, owner_peer());
             let (out, _rx) = tokio::sync::mpsc::channel(8);
             s.attach_default_caps(client, "clipboard", out).unwrap();
         }

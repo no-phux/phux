@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use phux_client::attach::AttachError;
 use phux_client::attach::connection::Connection;
+use phux_client::contract::{Refusal, error_document, transport_refusal};
 use phux_client::detach::DetachOutcome;
 use phux_client::read::{self, Resolved, Route, Verb};
 use phux_client::selector::{self, Selector};
@@ -40,7 +41,9 @@ include!("tools/kinds.rs");
 #[path = "tools/signals.rs"]
 pub(crate) mod signals;
 include!("tools/tests.rs");
+include!("tools/error_tests.rs");
 include!("tools/upload_tests.rs");
+include!("tools/registry_tests.rs");
 
 /// Longest `timeout_secs` any bounded tool accepts. A tool call that never
 /// returns wedges its host, so no bounded tool has an unbounded mode.

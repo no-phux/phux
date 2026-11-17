@@ -13,3 +13,13 @@ pub(crate) fn run_completion(shell: usage::complete::Shell) -> ExitCode {
     crate::output::bytes(Cli::completion_script(shell).as_bytes());
     ExitCode::SUCCESS
 }
+
+/// Run `phux completion` as parsed.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "every verb entry point takes its parsed Args by value, as dispatch hands them over"
+)]
+pub(crate) fn run(args: crate::commands::CompletionArgs) -> ExitCode {
+    let crate::commands::CompletionArgs { shell } = args;
+    run_completion(shell.into())
+}

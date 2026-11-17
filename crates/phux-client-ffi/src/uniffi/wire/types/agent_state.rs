@@ -57,17 +57,13 @@ pub enum AgentState {
     Done,
 }
 
-impl From<agent::AgentState> for AgentState {
-    fn from(value: agent::AgentState) -> Self {
-        match value {
-            agent::AgentState::Unknown => Self::Unknown,
-            agent::AgentState::Idle => Self::Idle,
-            agent::AgentState::Working => Self::Working,
-            agent::AgentState::Blocked => Self::Blocked,
-            agent::AgentState::Done => Self::Done,
-        }
-    }
-}
+mirror_enum_from!(agent::AgentState => AgentState {
+    Unknown,
+    Idle,
+    Working,
+    Blocked,
+    Done,
+});
 
 /// Attention priority for a `phux.agent/v1` record. OPEN enum on the wire:
 /// an unrecognized word projects as `Normal`, mirroring the reference
@@ -80,16 +76,12 @@ pub enum AgentAttention {
     High,
 }
 
-impl From<agent::AgentAttention> for AgentAttention {
-    fn from(value: agent::AgentAttention) -> Self {
-        match value {
-            agent::AgentAttention::None => Self::None,
-            agent::AgentAttention::Low => Self::Low,
-            agent::AgentAttention::Normal => Self::Normal,
-            agent::AgentAttention::High => Self::High,
-        }
-    }
-}
+mirror_enum_from!(agent::AgentAttention => AgentAttention {
+    None,
+    Low,
+    Normal,
+    High,
+});
 
 /// How an `AgentStateChanged`'s `state` was read (`projection::agent`).
 /// Provenance only: every case but `Recognized` carries `state: Unknown`.
@@ -107,17 +99,13 @@ pub enum AgentStateReading {
     Unsupported { raw: String },
 }
 
-impl From<agent::StateReading> for AgentStateReading {
-    fn from(value: agent::StateReading) -> Self {
-        match value {
-            agent::StateReading::NoRecord => Self::NoRecord,
-            agent::StateReading::Undeclared => Self::Undeclared,
-            agent::StateReading::Indeterminate => Self::Indeterminate,
-            agent::StateReading::Recognized => Self::Recognized,
-            agent::StateReading::Unsupported(raw) => Self::Unsupported { raw },
-        }
-    }
-}
+mirror_enum_from!(agent::StateReading => AgentStateReading {
+    NoRecord,
+    Undeclared,
+    Indeterminate,
+    Recognized,
+    Unsupported(raw) => Unsupported { raw },
+});
 
 /// How an `AgentStateChanged`'s effective `attention` was arrived at.
 #[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq)]
@@ -130,12 +118,8 @@ pub enum AgentAttentionReading {
     Unsupported { raw: String },
 }
 
-impl From<agent::AttentionReading> for AgentAttentionReading {
-    fn from(value: agent::AttentionReading) -> Self {
-        match value {
-            agent::AttentionReading::Derived => Self::Derived,
-            agent::AttentionReading::Declared => Self::Declared,
-            agent::AttentionReading::Unsupported(raw) => Self::Unsupported { raw },
-        }
-    }
-}
+mirror_enum_from!(agent::AttentionReading => AgentAttentionReading {
+    Derived,
+    Declared,
+    Unsupported(raw) => Unsupported { raw },
+});

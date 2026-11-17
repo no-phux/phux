@@ -7,8 +7,8 @@ use super::*;
 #[test]
 fn input_activity_is_unjournaled_and_not_echoed() {
     let mut state = ServerState::new();
-    let sender = state.new_client_id();
-    let peer = state.new_client_id();
+    let sender = state.clients_mut().new_client_id();
+    let peer = state.clients_mut().new_client_id();
     state.set_client_name(sender, "ada".to_owned());
     let (sender_tx, mut sender_rx) = mpsc::channel(8);
     let (peer_tx, mut peer_rx) = mpsc::channel(8);
@@ -33,7 +33,7 @@ fn input_activity_is_unjournaled_and_not_echoed() {
     let seq = record(&mut state, 1, AgentEvent::Bell);
     assert_eq!(seq, 1, "the next journaled event still takes seq 1");
     let (late_tx, _late_rx) = mpsc::channel(8);
-    let late = state.new_client_id();
+    let late = state.clients_mut().new_client_id();
     state.subscribe_events_after(late, Some(pane(1)), seq, late_tx);
     let replayed = pump_all(&mut state, late);
     assert!(
@@ -49,8 +49,8 @@ fn input_activity_is_unjournaled_and_not_echoed() {
 #[test]
 fn input_activity_uses_a_fallback_label_and_drops_when_full() {
     let mut state = ServerState::new();
-    let sender = state.new_client_id();
-    let peer = state.new_client_id();
+    let sender = state.clients_mut().new_client_id();
+    let peer = state.clients_mut().new_client_id();
     state.clients.set_connection_identity(
         sender,
         crate::auth::ConnectionIdentity {
@@ -77,7 +77,7 @@ fn input_activity_uses_a_fallback_label_and_drops_when_full() {
     );
 
     let (room_tx, mut room_rx) = mpsc::channel(4);
-    let room = state.new_client_id();
+    let room = state.clients_mut().new_client_id();
     state.subscribe_events(room, Some(pane(4)), room_tx);
     state.offer_input_activity(&pane(4), sender);
     let (stamp, event) = drain_stamped(&mut room_rx)

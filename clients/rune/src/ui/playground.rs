@@ -17,20 +17,22 @@ pub(super) mod pen;
 #[cfg(test)]
 mod tests;
 
-/// A playground view: whether it is open, how it draws, how it closes.
-type View = (fn(&Desk, &Tokens, &mut Cx<Desk>) -> El, fn(&mut Desk));
+/// How a playground view draws; how it closes is its `Playground::ALL` row.
+type View = fn(&Desk, &Tokens, &mut Cx<Desk>) -> El;
 
 /// The open playground view, if any, with the way out every one of them
-/// shows. A new view is one more row here.
+/// shows.
 pub(super) fn open(desk: &Desk, p: &Tokens, cx: &mut Cx<Desk>) -> Option<El> {
-    let (view, close): View = match desk.playground? {
-        Playground::Galaxy => (galaxy::view, Desk::close_galaxy),
-        Playground::Reef => (reef::view, Desk::close_reef),
-        Playground::Pitch => (pitch::view, Desk::close_pitch),
-        Playground::Kitchen => (kitchen::view, Desk::close_kitchen),
-        Playground::PitLane => (pitlane::view, Desk::close_pitlane),
-        Playground::Hive => (hive::view, Desk::close_hive),
+    let scene = desk.playground?;
+    let view: View = match scene {
+        Playground::Galaxy => galaxy::view,
+        Playground::Reef => reef::view,
+        Playground::Pitch => pitch::view,
+        Playground::Kitchen => kitchen::view,
+        Playground::PitLane => pitlane::view,
+        Playground::Hive => hive::view,
     };
+    let close = scene.scene().close;
     // A child of the view: the view is modal, so anything beside it is inert.
     let right = cx.chrome_insets().trailing;
     Some(view(desk, p, cx).child(hud::esc_chip(p, close, right)))

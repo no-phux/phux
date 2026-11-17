@@ -3,6 +3,13 @@ use super::*;
 
 static TERMINAL_RESET_TEST_LOCK: Mutex<()> = Mutex::new(());
 
+/// Serialize the tests that drive the process-global terminal mode flags.
+fn reset_lock() -> std::sync::MutexGuard<'static, ()> {
+    TERMINAL_RESET_TEST_LOCK
+        .lock()
+        .expect("terminal reset test lock")
+}
+
 /// A real `Termios` from `/dev/tty`, or `None` without a controlling TTY.
 fn try_borrow_real_termios() -> Option<Termios> {
     let tty = std::fs::OpenOptions::new()
@@ -40,9 +47,7 @@ fn saved_termios_round_trip() {
 /// mouse capture; the reset undoes them before leaving the alt screen.
 #[test]
 fn outer_terminal_modes_enable_and_disable_bytes() {
-    let _guard = TERMINAL_RESET_TEST_LOCK
-        .lock()
-        .expect("terminal reset test lock");
+    let _guard = reset_lock();
     MOUSE_CAPTURE_ACTIVE.store(false, Ordering::SeqCst);
     ALT_SCREEN_ACTIVE.store(false, Ordering::SeqCst);
 
@@ -100,9 +105,7 @@ fn outer_terminal_modes_enable_and_disable_bytes() {
 /// active pops nothing, so it never eats a stack entry phux did not push.
 #[test]
 fn host_kitty_keyboard_is_pushed_on_entry_and_popped_on_reset() {
-    let _guard = TERMINAL_RESET_TEST_LOCK
-        .lock()
-        .expect("terminal reset test lock");
+    let _guard = reset_lock();
     let pos = |hay: &[u8], needle: &[u8]| hay.windows(needle.len()).position(|w| w == needle);
 
     let mut entry = Vec::new();
@@ -123,9 +126,7 @@ fn host_kitty_keyboard_is_pushed_on_entry_and_popped_on_reset() {
 
 #[test]
 fn clean_detach_records_the_complete_reset_before_finalizing() {
-    let _guard = TERMINAL_RESET_TEST_LOCK
-        .lock()
-        .expect("terminal reset test lock");
+    let _guard = reset_lock();
     HOVER_TRACKING_ACTIVE.store(true, Ordering::SeqCst);
     MOUSE_CAPTURE_ACTIVE.store(true, Ordering::SeqCst);
     ALT_SCREEN_ACTIVE.store(true, Ordering::SeqCst);
@@ -162,9 +163,7 @@ fn clean_detach_records_the_complete_reset_before_finalizing() {
 /// `mouse = false` skips mouse DECSET but keeps bracketed paste.
 #[test]
 fn mouse_capture_disabled_emits_no_decset() {
-    let _guard = TERMINAL_RESET_TEST_LOCK
-        .lock()
-        .expect("terminal reset test lock");
+    let _guard = reset_lock();
     MOUSE_CAPTURE_ACTIVE.store(false, Ordering::SeqCst);
     ALT_SCREEN_ACTIVE.store(false, Ordering::SeqCst);
 
@@ -203,9 +202,7 @@ fn mouse_capture_disabled_emits_no_decset() {
 /// unchanged.
 #[test]
 fn sync_mouse_capture_emits_transitions_only() {
-    let _guard = TERMINAL_RESET_TEST_LOCK
-        .lock()
-        .expect("terminal reset test lock");
+    let _guard = reset_lock();
     MOUSE_CAPTURE_ACTIVE.store(true, Ordering::SeqCst);
 
     // Already on ⇒ no bytes.
@@ -234,9 +231,7 @@ fn sync_mouse_capture_emits_transitions_only() {
 /// Hover is raised only on top of live capture and always unwound.
 #[test]
 fn sync_hover_tracking_rides_on_top_of_capture() {
-    let _guard = TERMINAL_RESET_TEST_LOCK
-        .lock()
-        .expect("terminal reset test lock");
+    let _guard = reset_lock();
     MOUSE_CAPTURE_ACTIVE.store(false, Ordering::SeqCst);
     HOVER_TRACKING_ACTIVE.store(false, Ordering::SeqCst);
 

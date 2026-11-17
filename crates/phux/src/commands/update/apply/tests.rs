@@ -131,6 +131,17 @@ fn a_release_shaped_archive_unpacks_and_an_unexpected_member_is_refused() {
     );
 }
 
+/// A scratch directory holding an empty `bin` directory.
+fn scratch_bin() -> (tempfile::TempDir, PathBuf) {
+    let scratch = tempfile::tempdir().unwrap();
+    let bin = scratch.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    (scratch, bin)
+}
+
+const OLD_PAIR: (&[u8], &[u8]) = (b"#!/bin/sh\nold phux\n", b"#!/bin/sh\nold mcp\n");
+const NEW_PAIR: (&[u8], &[u8]) = (b"#!/bin/sh\nnew phux\n", b"#!/bin/sh\nnew mcp\n");
+
 /// Seed a bin directory with a "current" install at a chosen mode.
 fn seed_bin_dir(dir: &Path, mode: u32) {
     fs::write(dir.join("phux"), b"#!/bin/sh\nold phux\n").unwrap();
@@ -141,28 +152,16 @@ fn seed_bin_dir(dir: &Path, mode: u32) {
 
 #[test]
 fn replacement_is_atomic_preserves_permissions_and_is_reversible() {
-    let scratch = tempfile::tempdir().unwrap();
-    let bin = scratch.path().join("bin");
-    fs::create_dir(&bin).unwrap();
+    let (scratch, bin) = scratch_bin();
     seed_bin_dir(&bin, 0o700);
 
-    let stage = "phux-v1.0.0-aarch64-apple-darwin";
-    let archive = build_archive(scratch.path(), stage, None);
-    let staging = Staging::create(&bin).unwrap();
-    let staged = unpack_verified(&archive, stage, staging.path()).unwrap();
+    let (_staging, staged) = staged_release(&scratch, &bin);
 
     let replaced = replace_binaries(&bin, &staged, "0.12.1").unwrap();
     assert_eq!(replaced.binaries, vec!["phux-mcp", "phux"]);
     assert_eq!(replaced.backup, bin.join(BACKUP_DIR));
 
-    assert_eq!(
-        fs::read(bin.join("phux")).unwrap(),
-        b"#!/bin/sh\nnew phux\n"
-    );
-    assert_eq!(
-        fs::read(bin.join("phux-mcp")).unwrap(),
-        b"#!/bin/sh\nnew mcp\n"
-    );
+    assert_pair(&bin, NEW_PAIR);
     for name in ["phux", "phux-mcp"] {
         let mode = fs::metadata(bin.join(name)).unwrap().permissions().mode() & 0o7777;
         assert_eq!(mode, 0o700, "{name} kept the wrong mode");
@@ -171,14 +170,7 @@ fn replacement_is_atomic_preserves_permissions_and_is_reversible() {
 
     let back = rollback(&bin).unwrap();
     assert_eq!(back.version, "0.12.1");
-    assert_eq!(
-        fs::read(bin.join("phux")).unwrap(),
-        b"#!/bin/sh\nold phux\n"
-    );
-    assert_eq!(
-        fs::read(bin.join("phux-mcp")).unwrap(),
-        b"#!/bin/sh\nold mcp\n"
-    );
+    assert_pair(&bin, OLD_PAIR);
     assert!(!bin.join(BACKUP_DIR).exists());
 }
 
@@ -190,7 +182,7 @@ fn staged_release(scratch: &tempfile::TempDir, bin: &Path) -> (Staging, PathBuf)
     (staging, staged)
 }
 
-fn assert_pair(bin: &Path, phux: &[u8], mcp: &[u8]) {
+fn assert_pair(bin: &Path, (phux, mcp): (&[u8], &[u8])) {
     assert_eq!(fs::read(bin.join("phux")).unwrap(), phux);
     assert_eq!(fs::read(bin.join("phux-mcp")).unwrap(), mcp);
 }
@@ -210,9 +202,7 @@ fn interrupted_install_recovers_old_pair_until_the_durable_commit() {
     ];
 
     for fault in checkpoints {
-        let scratch = tempfile::tempdir().unwrap();
-        let bin = scratch.path().join("bin");
-        fs::create_dir(&bin).unwrap();
+        let (scratch, bin) = scratch_bin();
         seed_bin_dir(&bin, 0o755);
 
         // The older backup generation must survive until the new commit.
@@ -242,9 +232,9 @@ fn interrupted_install_recovers_old_pair_until_the_durable_commit() {
             fault,
             InstallCheckpoint::CommitVisible | InstallCheckpoint::Commit
         ) {
-            assert_pair(&bin, b"#!/bin/sh\nnew phux\n", b"#!/bin/sh\nnew mcp\n");
+            assert_pair(&bin, NEW_PAIR);
         } else {
-            assert_pair(&bin, b"#!/bin/sh\nold phux\n", b"#!/bin/sh\nold mcp\n");
+            assert_pair(&bin, OLD_PAIR);
         }
         assert!(
             !bin.join(TRANSACTION_DIR).exists(),
@@ -266,9 +256,7 @@ fn interrupted_rollback_recovers_new_pair_until_the_durable_commit() {
     ];
 
     for fault in checkpoints {
-        let scratch = tempfile::tempdir().unwrap();
-        let bin = scratch.path().join("bin");
-        fs::create_dir(&bin).unwrap();
+        let (scratch, bin) = scratch_bin();
         seed_bin_dir(&bin, 0o755);
         let (_staging, staged) = staged_release(&scratch, &bin);
         replace_binaries(&bin, &staged, "0.12.1").unwrap();
@@ -285,10 +273,10 @@ fn interrupted_rollback_recovers_new_pair_until_the_durable_commit() {
             fault,
             RollbackCheckpoint::CommitVisible | RollbackCheckpoint::Commit
         ) {
-            assert_pair(&bin, b"#!/bin/sh\nold phux\n", b"#!/bin/sh\nold mcp\n");
+            assert_pair(&bin, OLD_PAIR);
             assert!(!bin.join(BACKUP_DIR).exists());
         } else {
-            assert_pair(&bin, b"#!/bin/sh\nnew phux\n", b"#!/bin/sh\nnew mcp\n");
+            assert_pair(&bin, NEW_PAIR);
             assert!(bin.join(BACKUP_DIR).exists());
         }
         assert!(!bin.join(TRANSACTION_DIR).exists());
@@ -299,13 +287,10 @@ fn interrupted_rollback_recovers_new_pair_until_the_durable_commit() {
 /// newer format, since they cannot know what it lists.
 #[test]
 fn a_newer_manifest_stops_recovery_and_rollback() {
-    let scratch = tempfile::tempdir().unwrap();
-    let bin = scratch.path().join("bin");
-    fs::create_dir(&bin).unwrap();
+    let (scratch, bin) = scratch_bin();
     seed_bin_dir(&bin, 0o755);
     let (_staging, staged) = staged_release(&scratch, &bin);
     replace_binaries(&bin, &staged, "0.12.1").unwrap();
-    let new_pair = (b"#!/bin/sh\nnew phux\n", b"#!/bin/sh\nnew mcp\n");
 
     let backup = bin.join(BACKUP_DIR);
     let manifest_path = backup.join("manifest.json");
@@ -315,7 +300,7 @@ fn a_newer_manifest_stops_recovery_and_rollback() {
     fs::write(&manifest_path, manifest.to_string()).unwrap();
     let err = rollback(&bin).unwrap_err();
     assert!(err.to_string().contains("newer phux"), "{err}");
-    assert_pair(&bin, new_pair.0, new_pair.1);
+    assert_pair(&bin, NEW_PAIR);
 
     let journal = bin.join(TRANSACTION_DIR);
     fs::create_dir(&journal).unwrap();
@@ -324,14 +309,12 @@ fn a_newer_manifest_stops_recovery_and_rollback() {
         panic!("recovery ran on a newer journal");
     };
     assert!(err.to_string().contains("newer phux"), "{err}");
-    assert_pair(&bin, new_pair.0, new_pair.1);
+    assert_pair(&bin, NEW_PAIR);
 }
 
 #[test]
 fn update_lock_serializes_publishers() {
-    let scratch = tempfile::tempdir().unwrap();
-    let bin = scratch.path().join("bin");
-    fs::create_dir(&bin).unwrap();
+    let (_scratch, bin) = scratch_bin();
     let first = UpdateLock::acquire(&bin).unwrap();
     let second_bin = bin;
     let (sent, received) = mpsc::channel();
@@ -354,9 +337,7 @@ fn update_lock_serializes_publishers() {
 
 #[test]
 fn an_interrupted_journal_build_is_discarded_before_publication() {
-    let scratch = tempfile::tempdir().unwrap();
-    let bin = scratch.path().join("bin");
-    fs::create_dir(&bin).unwrap();
+    let (_scratch, bin) = scratch_bin();
     seed_bin_dir(&bin, 0o755);
     let preparing = bin.join(PREPARING_DIR);
     fs::create_dir(&preparing).unwrap();
@@ -365,21 +346,16 @@ fn an_interrupted_journal_build_is_discarded_before_publication() {
     drop(UpdateLock::acquire(&bin).unwrap());
 
     assert!(!preparing.exists());
-    assert_pair(&bin, b"#!/bin/sh\nold phux\n", b"#!/bin/sh\nold mcp\n");
+    assert_pair(&bin, OLD_PAIR);
 }
 
 #[test]
 fn a_lone_phux_install_does_not_grow_a_phux_mcp() {
-    let scratch = tempfile::tempdir().unwrap();
-    let bin = scratch.path().join("bin");
-    fs::create_dir(&bin).unwrap();
+    let (scratch, bin) = scratch_bin();
     fs::write(bin.join("phux"), b"old").unwrap();
     fs::set_permissions(bin.join("phux"), fs::Permissions::from_mode(0o755)).unwrap();
 
-    let stage = "phux-v1.0.0-aarch64-apple-darwin";
-    let archive = build_archive(scratch.path(), stage, None);
-    let staging = Staging::create(&bin).unwrap();
-    let staged = unpack_verified(&archive, stage, staging.path()).unwrap();
+    let (_staging, staged) = staged_release(&scratch, &bin);
 
     let replaced = replace_binaries(&bin, &staged, "0.12.1").unwrap();
     assert_eq!(replaced.binaries, vec!["phux"]);
@@ -391,9 +367,7 @@ fn a_lone_phux_install_does_not_grow_a_phux_mcp() {
 
 #[test]
 fn rollback_without_a_backup_is_an_error_not_a_no_op() {
-    let scratch = tempfile::tempdir().unwrap();
-    let bin = scratch.path().join("bin");
-    fs::create_dir(&bin).unwrap();
+    let (_scratch, bin) = scratch_bin();
     seed_bin_dir(&bin, 0o755);
     let err = rollback(&bin).unwrap_err();
     assert!(matches!(err, UpdateError::NoBackup(_)), "{err:?}");
@@ -405,9 +379,7 @@ fn rollback_without_a_backup_is_an_error_not_a_no_op() {
 
 #[test]
 fn staging_is_a_sibling_of_the_target_and_is_cleaned_up() {
-    let scratch = tempfile::tempdir().unwrap();
-    let bin = scratch.path().join("bin");
-    fs::create_dir(&bin).unwrap();
+    let (_scratch, bin) = scratch_bin();
     let path = {
         let staging = Staging::create(&bin).unwrap();
         assert_eq!(staging.path().parent(), Some(bin.as_path()));
@@ -418,9 +390,7 @@ fn staging_is_a_sibling_of_the_target_and_is_cleaned_up() {
 
 #[test]
 fn staging_refuses_an_unwritable_bin_directory() {
-    let scratch = tempfile::tempdir().unwrap();
-    let bin = scratch.path().join("bin");
-    fs::create_dir(&bin).unwrap();
+    let (_scratch, bin) = scratch_bin();
     fs::set_permissions(&bin, fs::Permissions::from_mode(0o500)).unwrap();
     let result = Staging::create(&bin);
     // Restore the mode so the scratch guard can clean up.

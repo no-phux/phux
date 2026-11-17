@@ -13,4 +13,5 @@ mod plugin_launch;
 mod plugin_lifecycle;
 mod plugin_ref;
 mod plugin_startup;
+mod support;
 mod update_e2e;

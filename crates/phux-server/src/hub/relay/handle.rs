@@ -78,12 +78,14 @@ impl RelayHandle {
             })
             .await
         {
-            CommandResult::OkWith(phux_protocol::wire::frame::CommandValue::State(_)) => self
-                .known_resource_kind(terminal)
-                .ok_or_else(|| CommandResult::Error {
-                    code: ErrorCode::TerminalNotFound,
-                    message: format!("unknown satellite resource: {terminal}"),
-                }),
+            CommandResult::OkWith(phux_protocol::wire::frame::CommandValue::State(_)) => {
+                self.known_resource_kind(terminal).ok_or_else(|| {
+                    CommandResult::error(
+                        ErrorCode::TerminalNotFound,
+                        format!("unknown satellite resource: {terminal}"),
+                    )
+                })
+            }
             refusal => Err(refusal),
         }
     }
@@ -190,24 +192,24 @@ impl RelayHandle {
         match self.tx.try_send(request) {
             Ok(()) => {}
             Err(mpsc::error::TrySendError::Full(_)) => {
-                return CommandResult::Error {
-                    code: ErrorCode::ResourceExhausted,
-                    message: format!("satellite {} link is saturated; retry", self.host),
-                };
+                return CommandResult::error(
+                    ErrorCode::ResourceExhausted,
+                    format!("satellite {} link is saturated; retry", self.host),
+                );
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
-                return CommandResult::Error {
-                    code: ErrorCode::SatelliteUnreachable,
-                    message: format!("satellite {} link is down", self.host),
-                };
+                return CommandResult::error(
+                    ErrorCode::SatelliteUnreachable,
+                    format!("satellite {} link is down", self.host),
+                );
             }
         }
         match tokio::time::timeout(RELAY_COMMAND_TIMEOUT, rx).await {
             Ok(Ok(result)) => result,
-            Ok(Err(_)) => CommandResult::Error {
-                code: ErrorCode::SatelliteUnreachable,
-                message: format!("satellite {} link dropped before the reply", self.host),
-            },
+            Ok(Err(_)) => CommandResult::error(
+                ErrorCode::SatelliteUnreachable,
+                format!("satellite {} link dropped before the reply", self.host),
+            ),
             Err(_) => CommandResult::Error {
                 code: ErrorCode::SatelliteUnreachable,
                 message: format!(

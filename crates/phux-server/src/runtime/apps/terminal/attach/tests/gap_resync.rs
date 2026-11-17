@@ -32,21 +32,33 @@ async fn poll_pending<F: std::future::Future>(mut future: std::pin::Pin<&mut F>)
     .await;
 }
 
-#[tokio::test(start_paused = true)]
-async fn gap_resync_waits_for_the_entire_replacement_batch() {
-    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+/// An eight-slot mailbox already full of `PONG`s.
+fn full_mailbox() -> (
+    tokio::sync::mpsc::Sender<Outbound>,
+    tokio::sync::mpsc::Receiver<Outbound>,
+) {
+    let (tx, rx) = tokio::sync::mpsc::channel(8);
     for nonce in 0..8 {
         tx.try_send(Outbound::Frame(FrameKind::Pong { nonce }))
             .unwrap();
     }
+    (tx, rx)
+}
+
+/// An outbound-gap resync of `frames`.
+fn gap_resync(
+    tx: &tokio::sync::mpsc::Sender<Outbound>,
+    frames: Vec<FrameKind>,
+) -> impl std::future::Future<Output = SnapshotQueue> + '_ {
+    queue_resync_bootstrap(tx, crate::resource::ResyncReason::OutboundGap, frames, true)
+}
+
+#[tokio::test(start_paused = true)]
+async fn gap_resync_waits_for_the_entire_replacement_batch() {
+    let (tx, mut rx) = full_mailbox();
     let frames = final_screen_frames(&phux_protocol::ids::ResourceId::local(1));
     let count = frames.len();
-    let mut queued = Box::pin(queue_resync_bootstrap(
-        &tx,
-        crate::resource::ResyncReason::OutboundGap,
-        frames.clone(),
-        true,
-    ));
+    let mut queued = Box::pin(gap_resync(&tx, frames.clone()));
     poll_pending(queued.as_mut()).await;
     for _ in 0..count - 1 {
         rx.recv().await.unwrap();
@@ -70,18 +82,9 @@ async fn gap_resync_waits_for_the_entire_replacement_batch() {
 
 #[tokio::test(start_paused = true)]
 async fn a_gap_timeout_publishes_no_partial_generation() {
-    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
-    for nonce in 0..8 {
-        tx.try_send(Outbound::Frame(FrameKind::Pong { nonce }))
-            .unwrap();
-    }
+    let (tx, mut rx) = full_mailbox();
     let frames = final_screen_frames(&phux_protocol::ids::ResourceId::local(1));
-    let mut queued = Box::pin(queue_resync_bootstrap(
-        &tx,
-        crate::resource::ResyncReason::OutboundGap,
-        frames,
-        true,
-    ));
+    let mut queued = Box::pin(gap_resync(&tx, frames));
     poll_pending(queued.as_mut()).await;
     rx.recv().await.unwrap();
     tokio::time::advance(GAP_RESYNC_QUEUE_WAIT).await;
@@ -98,18 +101,9 @@ async fn a_gap_timeout_publishes_no_partial_generation() {
 
 #[tokio::test(start_paused = true)]
 async fn cancelling_a_gap_wait_returns_its_partial_reservation() {
-    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
-    for nonce in 0..8 {
-        tx.try_send(Outbound::Frame(FrameKind::Pong { nonce }))
-            .unwrap();
-    }
+    let (tx, mut rx) = full_mailbox();
     let frames = final_screen_frames(&phux_protocol::ids::ResourceId::local(1));
-    let mut queued = Box::pin(queue_resync_bootstrap(
-        &tx,
-        crate::resource::ResyncReason::OutboundGap,
-        frames,
-        true,
-    ));
+    let mut queued = Box::pin(gap_resync(&tx, frames));
     poll_pending(queued.as_mut()).await;
     rx.recv().await.unwrap();
     poll_pending(queued.as_mut()).await;

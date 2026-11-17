@@ -3,8 +3,8 @@ use std::process::ExitCode;
 
 use phux_client::attach::AttachError;
 use phux_client::kill::{KillError, ShutdownOutcome};
+use phux_config::socket::default_socket_path;
 use phux_protocol::ids::IdempotencyKey;
-use phux_server::runtime::default_socket_path;
 
 use crate::commands::json_err::{self, CliError, codes};
 use crate::commands::server_target::{ServerSpec, ServerTarget};
@@ -22,7 +22,7 @@ const REMOTE_SHUTDOWN_REFUSAL: &str = "`kill --server` is local-socket only: the
 /// `phux kill` as parsed: a selector or `--server`. `key` is
 /// `--idempotency-key` (L1 §5.1.1). A selector kill is dangerous (ADR-0128) and
 /// needs `yes` or a typed "y"; `--server` never asks.
-pub(crate) fn run(
+pub(crate) fn run_request(
     target: Option<String>,
     stop_server: bool,
     key: Option<IdempotencyKey>,
@@ -348,9 +348,25 @@ fn summary_line(killed: u32, target: &str) -> String {
     }
 }
 
+/// Run `phux kill` as parsed: resolve `--idempotency-key`, then kill.
+pub(crate) fn run(args: crate::commands::KillArgs, socket: Option<std::path::PathBuf>) -> ExitCode {
+    let crate::commands::KillArgs {
+        target,
+        server,
+        idempotency_key,
+        yes,
+        json,
+        remote,
+    } = args;
+    match crate::commands::spawn::parse_key_arg(idempotency_key.as_deref(), json) {
+        Ok(key) => run_request(target, server, key, yes, json, remote.with_socket(socket)),
+        Err(code) => code,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{REMOTE_SHUTDOWN_REFUSAL, run, run_kill, summary_line};
+    use super::{REMOTE_SHUTDOWN_REFUSAL, run_kill, run_request, summary_line};
     use crate::commands::confirm;
     use crate::commands::server_target::ServerSpec;
 
@@ -363,7 +379,7 @@ mod tests {
             remote: Some("mini".to_owned()),
         };
         assert_eq!(
-            run(None, true, None, false, false, spec),
+            run_request(None, true, None, false, false, spec),
             std::process::ExitCode::from(2)
         );
         assert!(REMOTE_SHUTDOWN_REFUSAL.contains("local-socket only"));

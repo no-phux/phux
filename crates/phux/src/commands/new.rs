@@ -14,6 +14,39 @@ use crate::commands::{
 mod create;
 mod empty;
 mod naming;
+/// Run `phux new` as parsed.
+pub(crate) fn run(args: crate::commands::NewArgs, socket: Option<std::path::PathBuf>) -> ExitCode {
+    let crate::commands::NewArgs {
+        name,
+        session,
+        cwd,
+        json,
+        env,
+        idempotency_key,
+        remote,
+        empty,
+        ephemeral,
+        command,
+    } = args;
+    match crate::commands::spawn::parse_key_arg(idempotency_key.as_deref(), json) {
+        Ok(idempotency_key) => run_new(
+            name,
+            session,
+            cwd,
+            remote.with_socket(socket),
+            NewMode {
+                json,
+                empty,
+                ephemeral,
+                idempotency_key,
+            },
+            command,
+            env.into_iter().map(|item| (item.key, item.value)).collect(),
+        ),
+        Err(code) => code,
+    }
+}
+
 #[cfg(test)]
 mod tests;
 

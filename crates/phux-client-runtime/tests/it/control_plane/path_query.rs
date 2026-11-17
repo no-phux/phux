@@ -64,10 +64,7 @@ fn ordinary_runtime_admission_matches_catalog_for_each_extended_bit() {
 
 #[test]
 fn path_query_requires_extended_capability_and_correlates_typed_results() {
-    let mut plane = ControlPlane::new(ControlOptions::default());
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
+    let mut plane = opened(ControlOptions::default(), hello_ok(PROTOCOL_VERSION.patch));
     let _ = plane.take_outbound();
     assert_eq!(plane.path_query("/home".into(), "a".into(), true, None), 0);
     assert!(
@@ -75,14 +72,7 @@ fn path_query_requires_extended_capability_and_correlates_typed_results() {
         "older server must not hang picker"
     );
 
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    let mut hello = hello_ok(PROTOCOL_VERSION.patch);
-    if let FrameKind::HelloOk { server_caps, .. } = &mut hello {
-        *server_caps = server_caps
-            .with_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::PathQuery]));
-    }
-    plane.feed(hello).unwrap();
+    reopen(&mut plane, hello_ok_ext(&[ServerFeatureExt::PathQuery]));
     let _ = plane.take_outbound();
     let id = plane.path_query(
         "/home".into(),
@@ -135,16 +125,7 @@ fn path_query_requires_extended_capability_and_correlates_typed_results() {
 
 #[test]
 fn path_queries_are_bounded_and_connection_scoped() {
-    let mut plane = ControlPlane::new(ControlOptions::default());
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    let mut hello = hello_ok(PROTOCOL_VERSION.patch);
-    if let FrameKind::HelloOk { server_caps, .. } = &mut hello {
-        *server_caps = server_caps
-            .with_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::PathQuery]));
-    }
-    plane.feed(hello).unwrap();
-    let _ = plane.take_outbound();
+    let mut plane = browsing_with_ext(&[ServerFeatureExt::PathQuery]);
     let ids: Vec<_> = (0..MAX_PATH_ANSWERS)
         .map(|_| plane.path_query("/tmp".into(), String::new(), false, None))
         .collect();

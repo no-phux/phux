@@ -17,7 +17,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::os::fd::RawFd;
-use std::path::PathBuf;
 
 use phux_core::ids::{ResourceId, SessionId};
 use phux_core::terminal::TerminalFacet;
@@ -109,33 +108,14 @@ impl ServerState {
         for sid in sessions {
             let _ = self.idspace.intern_session(sid);
             if !self.legacy_panes_of(sid).is_empty() {
-                let _ = self.intern_window_wire(sid);
+                let _ = self.idspace.intern_window(sid);
             }
         }
-        for id in self.resource_ids() {
+        for id in self.resources().resource_ids() {
             if self.sessions.registry.resource(id).is_some() {
-                let _ = self.intern_resource_wire(id);
+                let _ = self.idspace.intern_resource(id);
             }
         }
-    }
-
-    /// Record the upgrade context (listener fd, path, runtime flags).
-    pub(crate) fn set_upgrade_context(
-        &mut self,
-        listener_fd: RawFd,
-        socket_path: PathBuf,
-        flags: crate::runtime::RuntimeFlags,
-    ) {
-        self.lifecycle
-            .set_upgrade_context(listener_fd, socket_path, flags);
-    }
-
-    /// The upgrade context `(listener_fd, socket_path, runtime_flags)`, if
-    /// serving has begun.
-    pub(crate) fn upgrade_context(
-        &self,
-    ) -> Option<(RawFd, &std::path::Path, crate::runtime::RuntimeFlags)> {
-        self.lifecycle.upgrade_context()
     }
 
     /// The live tree panes a re-exec carries, with their handles: Terminal
@@ -164,8 +144,10 @@ impl ServerState {
             .into_iter()
             .filter(|sid| self.session_wire(*sid).is_some())
             .flat_map(|sid| self.legacy_panes_of(sid))
-            .filter(|tid| self.resource_wire(*tid).is_some() && self.retained_exit(*tid).is_none())
-            .filter_map(|tid| Some((tid, self.resource_handle(tid)?.clone())))
+            .filter(|tid| {
+                self.resource_wire(*tid).is_some() && self.retained().exit(*tid).is_none()
+            })
+            .filter_map(|tid| Some((tid, self.resources().handle(tid)?.clone())))
             .collect()
     }
 
@@ -173,7 +155,7 @@ impl ServerState {
     /// unreachable through the tree and nothing will reap it. Name each one
     /// so a leak path shows up in the log instead of in a failed upgrade.
     fn warn_orphan_resource_handles(&self) {
-        for tid in self.resource_ids() {
+        for tid in self.resources().resource_ids() {
             if self.sessions.registry.resource(tid).is_none() {
                 tracing::warn!(
                     resource = ?tid,

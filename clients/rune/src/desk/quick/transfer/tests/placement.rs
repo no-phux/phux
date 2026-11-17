@@ -68,13 +68,7 @@ fn switching_after_the_move_receipt_cancels_the_wait_for_its_original_arrangemen
         desk.connection.wanted.is_none(),
         "no fallback may focus the A terminal from B"
     );
-    assert!(
-        desk.notice
-            .as_ref()
-            .unwrap()
-            .text
-            .contains("selected session changed")
-    );
+    assert!(crate::test_support::notice(&desk).contains("selected session changed"));
     install_arrangement(&client, 1);
     desk.place_pending_splits(&client);
     no_layout_write(&client);
@@ -111,13 +105,7 @@ fn ordinary_queued_tabs_and_splits_also_cancel_instead_of_following_selection() 
         no_layout_write(&client);
         assert!(!desk.splits_waiting());
         assert!(desk.connection.wanted.is_none());
-        assert!(
-            desk.notice
-                .as_ref()
-                .unwrap()
-                .text
-                .contains("selected session changed")
-        );
+        assert!(crate::test_support::notice(&desk).contains("selected session changed"));
     }
 }
 
@@ -162,13 +150,7 @@ fn tab_split_and_mirror_spawns_keep_the_destination_from_before_the_spawn_receip
         assert!(desk.connection.pending_splits.is_empty());
         assert!(!desk.splits_waiting());
         assert!(desk.connection.wanted.is_none());
-        assert!(
-            desk.notice
-                .as_ref()
-                .unwrap()
-                .text
-                .contains("selected session changed")
-        );
+        assert!(crate::test_support::notice(&desk).contains("selected session changed"));
     }
 }
 
@@ -195,13 +177,7 @@ fn a_refused_in_flight_a_write_never_retries_or_falls_back_in_b() {
         desk.connection.wanted.is_none(),
         "neither retry nor fallback focuses A in B"
     );
-    assert!(
-        desk.notice
-            .as_ref()
-            .unwrap()
-            .text
-            .contains("selected session changed")
-    );
+    assert!(crate::test_support::notice(&desk).contains("selected session changed"));
 }
 
 #[test]
@@ -237,12 +213,6 @@ fn a_cancelled_in_flight_write_ignores_late_success_and_refusal_receipts() {
         desk.place_pending_splits(&client);
         no_layout_write(&client);
         assert!(desk.connection.wanted.is_none());
-        assert!(
-            desk.notice
-                .as_ref()
-                .unwrap()
-                .text
-                .contains("selected session changed")
-        );
+        assert!(crate::test_support::notice(&desk).contains("selected session changed"));
     }
 }

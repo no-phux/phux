@@ -1,4 +1,4 @@
-//! Alias parity, completions, and the deprecation table.
+//! Alias parity, completions, and the hidden-surface guard.
 
 use super::*;
 
@@ -160,14 +160,13 @@ fn completions_still_carry_socket() {
     );
 }
 
-/// Every hidden subcommand or long flag outside the internal allowlist
-/// must be a `deprecations::DEPRECATED` row, and every row must still be
-/// hidden in the parser, so neither side can drift.
+/// No hidden subcommand or long flag exists outside the internal
+/// allowlist, and every allowlisted entry is still hidden. No CLI spelling
+/// is deprecated today, so any other hidden surface is unregistered (see
+/// "Deprecating a CLI spelling" in `docs/compatibility.md`).
 #[test]
-fn deprecation_table_matches_the_clap_tree_bidirectionally() {
+fn no_unregistered_hidden_cli_surface() {
     use std::collections::BTreeSet;
-
-    use crate::deprecations::DEPRECATED;
 
     /// Hidden surfaces that are machine plumbing, not deprecations:
     /// each is hidden because no human should type it, and none has a
@@ -204,7 +203,7 @@ fn deprecation_table_matches_the_clap_tree_bidirectionally() {
 
     /// Collect every hidden row of the tree under `path`: hidden long
     /// flags as `<path> --<flag>`, and each hidden subcommand as one
-    /// row, its actions included (matching the table's `old` spellings).
+    /// row, its actions included.
     fn walk(meta: &usage::spec::CommandMeta<'_>, path: &str, rows: &mut BTreeSet<String>) {
         for flag in meta.flags {
             if flag.hide {
@@ -216,7 +215,7 @@ fn deprecation_table_matches_the_clap_tree_bidirectionally() {
         for sub in meta.subcommands {
             let sub_path = format!("{path} {}", sub.cmd.name);
             if sub.hide {
-                // A hidden verb is deprecated whole, its actions with it.
+                // A hidden verb is hidden whole, its actions with it.
                 rows.insert(sub_path);
             } else {
                 walk(sub, &sub_path, rows);
@@ -234,61 +233,11 @@ fn deprecation_table_matches_the_clap_tree_bidirectionally() {
         );
     }
 
-    let table_rows: BTreeSet<String> = DEPRECATED.iter().map(|row| row.old.to_owned()).collect();
-    assert_eq!(
-        table_rows.len(),
-        DEPRECATED.len(),
-        "duplicate `old` spellings in the deprecation table"
+    assert!(
+        tree_rows.is_empty(),
+        "unregistered hidden clap surface: {tree_rows:?}. Allowlist new \
+         internal plumbing in INTERNAL above, or, for a deprecated \
+         spelling, restore the deprecation table, its reference page, and \
+         its audit from `git show d4d856229^` (see docs/compatibility.md)"
     );
-    assert_eq!(
-        tree_rows, table_rows,
-        "hidden clap surface and the deprecation table must agree: a \
-             row only in the tree is an unregistered hidden alias (add it \
-             to deprecations::DEPRECATED); a row only in the table is \
-             stale (the alias is gone — delete the row and regenerate \
-             docs/reference/deprecations.md)"
-    );
-}
-
-/// Every verb row's stderr line is the alias table's exact rendering of
-/// its own `old`/`new` columns, and every flag row's line names the
-/// deprecated flag and its `--split` replacement — so the generated
-/// deprecations page, the warning, and the audit test all say the same
-/// thing.
-#[test]
-fn deprecation_rows_render_their_own_notes() {
-    use crate::deprecations::{DEPRECATED, DeprecatedSurface};
-
-    for row in DEPRECATED {
-        match row.surface {
-            DeprecatedSurface::Verb => assert_eq!(
-                row.note,
-                format!(
-                    "phux: warn: `{}` is deprecated and will be removed; use `{}`",
-                    row.old, row.new
-                ),
-                "verb row {} must render its note from its own columns",
-                row.old
-            ),
-            DeprecatedSurface::Flag => {
-                let flag = row.old_flag().expect("flag rows end in a long flag");
-                let axis = flag.trim_start_matches("--");
-                assert_eq!(
-                    row.note,
-                    format!(
-                        "phux: warn: {flag} is deprecated and will be removed; \
-                             use `--split {axis}` (or `--split {short}`)",
-                        short = &axis[..1]
-                    ),
-                    "flag row {} must warn toward its --split replacement",
-                    row.old
-                );
-                assert!(
-                    row.new.ends_with(&format!("--split {axis}")),
-                    "flag row {} must advertise the --split spelling",
-                    row.old
-                );
-            }
-        }
-    }
 }

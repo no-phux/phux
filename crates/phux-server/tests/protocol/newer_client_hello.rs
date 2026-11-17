@@ -4,8 +4,6 @@
 //! documented defaults, over-large limits clamp, and the connection is
 //! admitted.
 
-use std::time::Duration;
-
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
     ClientCapabilities, LayerSet, MAX_BOOTSTRAP_CHUNK_BYTES, MAX_HISTORY_PAGE_BYTES,
@@ -14,9 +12,7 @@ use phux_protocol::wire::decode::Decoder;
 use phux_protocol::wire::field;
 use phux_protocol::wire::frame::{CommandResult, CommandValue, FrameKind, TYPE_HELLO};
 
-use phux_server_testkit::{
-    command, encode_frame, recv_typed, run_local, spawn_server, wait_for_raw_socket,
-};
+use phux_server_testkit::{SpawnedServer, command, encode_frame, recv_typed, run_local};
 
 use crate::newer_client::{raw_frame, send_raw};
 
@@ -57,10 +53,8 @@ fn newer_hello() -> Vec<u8> {
 #[test]
 fn a_hello_with_unknown_capability_values_is_admitted() {
     run_local(async {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let socket = tmp.path().join("phux.sock");
-        let _server = spawn_server(socket.clone(), None);
-        let mut stream = wait_for_raw_socket(&socket, Duration::from_secs(10)).await;
+        let server = SpawnedServer::start(None, |_| {});
+        let mut stream = server.connect_raw().await;
         send_raw(&mut stream, &newer_hello()).await;
         let (_, hello_ok) = recv_typed(&mut stream).await;
         let FrameKind::HelloOk {

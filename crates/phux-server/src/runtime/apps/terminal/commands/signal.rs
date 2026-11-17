@@ -20,9 +20,9 @@ pub(crate) async fn handle_signal_terminal(
     let resolved = state.with(|s| {
         let resolved = s.resolve_resource(terminal_id).into_owned();
         let holder = match &resolved {
-            ResolvedOwned::Local(local) => s
-                .input_lease_holder(local.id)
-                .map(crate::runtime::wire_client),
+            ResolvedOwned::Local(local) => {
+                s.leases().holder(local.id).map(crate::runtime::wire_client)
+            }
             ResolvedOwned::Remote(_) | ResolvedOwned::Unknown => None,
         };
         (resolved, holder)
@@ -34,13 +34,14 @@ pub(crate) async fn handle_signal_terminal(
     };
     // ADR-0124: a retained pane's child is already reaped.
     if state.with(|s| {
-        s.resource_from_wire(terminal_id)
-            .is_some_and(|pane| s.retained_exit(pane).is_some())
+        s.idspace
+            .resource_from_wire(terminal_id)
+            .is_some_and(|pane| s.retained().exit(pane).is_some())
     }) {
-        return CommandResult::Error {
-            code: ErrorCode::InvalidCommand,
-            message: format!("{terminal_id} exited; its process cannot be signalled"),
-        };
+        return CommandResult::error(
+            ErrorCode::InvalidCommand,
+            format!("{terminal_id} exited; its process cannot be signalled"),
+        );
     }
     let (reply_tx, reply_rx) = oneshot::channel();
     let request = ControlRequest::Signal {
@@ -51,16 +52,16 @@ pub(crate) async fn handle_signal_terminal(
         reply: reply_tx,
     };
     let Ok(terminal) = handle.terminal() else {
-        return CommandResult::Error {
-            code: ErrorCode::InternalError,
-            message: "pane actor unavailable for SIGNAL_TERMINAL".to_owned(),
-        };
+        return CommandResult::error(
+            ErrorCode::InternalError,
+            "pane actor unavailable for SIGNAL_TERMINAL",
+        );
     };
     if !commit_signal(&terminal.control, request, commit).await {
-        return CommandResult::Error {
-            code: ErrorCode::InternalError,
-            message: "pane actor unavailable for SIGNAL_TERMINAL".to_owned(),
-        };
+        return CommandResult::error(
+            ErrorCode::InternalError,
+            "pane actor unavailable for SIGNAL_TERMINAL",
+        );
     }
     let result = actor_reply(reply_rx.await, ErrorCode::InternalError, "SIGNAL_TERMINAL");
     record_signal_failure(commit, &result);
@@ -79,10 +80,10 @@ pub(in crate::runtime) fn local_terminal(
             local.handle.terminal().map_err(wrong_resource_kind)?;
             Ok((local.id, local.handle))
         }
-        ResolvedOwned::Remote(_) => Err(CommandResult::Error {
-            code: ErrorCode::UnsupportedSatelliteRoute,
-            message: format!("{verb} on satellite route unsupported: {terminal_id}"),
-        }),
+        ResolvedOwned::Remote(_) => Err(CommandResult::error(
+            ErrorCode::UnsupportedSatelliteRoute,
+            format!("{verb} on satellite route unsupported: {terminal_id}"),
+        )),
         ResolvedOwned::Unknown => Err(terminal_not_found(terminal_id)),
     }
 }

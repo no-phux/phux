@@ -15,7 +15,7 @@ async fn bearer_revoke_now_terminates_live_sessions() {
             let state = crate::runtime::apps::terminal::test_support::terminal_state();
             // A transport test: an embedder engine admits the peer (ADR-0072).
             state.with_mut(|s| {
-                s.set_policy_engine(std::sync::Arc::new(crate::policy::OwnerForAll));
+                s.config_mut().policy_engine = std::sync::Arc::new(crate::policy::OwnerForAll);
             });
             let root_token = CancellationToken::new();
             crate::runtime::apps::terminal::commands::seed::seed_session_with_actor(
@@ -90,11 +90,12 @@ async fn bearer_revoke_now_terminates_live_sessions() {
 
             let client_id = state.with(|server| {
                 assert_eq!(server.attached().len(), 1);
-                assert!(server.idle_since().is_none());
+                assert!(server.lifecycle().idle_since().is_none());
                 *server.attached().keys().next().unwrap()
             });
             let credential = state.with(|server| {
                 server
+                    .clients()
                     .authenticated_credential(client_id)
                     .cloned()
                     .expect("accept loop retains credential attestation")
@@ -150,9 +151,12 @@ async fn bearer_revoke_now_terminates_live_sessions() {
                 loop {
                     let cleaned = state.with(|server| {
                         !server.attached().contains_key(&client_id)
-                            && server.peer_identity(client_id).is_none()
-                            && server.authenticated_credential(client_id).is_none()
-                            && server.idle_since().is_some()
+                            && server.clients().peer_identity(client_id).is_none()
+                            && server
+                                .clients()
+                                .authenticated_credential(client_id)
+                                .is_none()
+                            && server.lifecycle().idle_since().is_some()
                     });
                     if cleaned {
                         break;

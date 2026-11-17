@@ -13,7 +13,7 @@ async fn delegate_agent_over_the_wire_mints_once_per_operation_and_revokes() {
         let fx = Fixture::new();
         let dir = tempfile::tempdir().unwrap();
         fx.state
-            .with_mut(|s| s.set_server_socket_path(dir.path().join("phux.sock")));
+            .with_mut(|s| s.config_mut().server_socket_path = Some(dir.path().join("phux.sock")));
         let session = fx
             .state
             .with(|s| s.registry().session_key(fx.alpha_session))
@@ -157,7 +157,7 @@ async fn deleting_a_session_revokes_its_delegated_credentials_at_once() {
         let fx = Fixture::new();
         let dir = tempfile::tempdir().unwrap();
         fx.state
-            .with_mut(|s| s.set_server_socket_path(dir.path().join("phux.sock")));
+            .with_mut(|s| s.config_mut().server_socket_path = Some(dir.path().join("phux.sock")));
         let human = fx.human().await;
         let beta = fx.state.with_mut(|s| s.seed_empty_session("beta")).unwrap();
         let on_beta = delegate_agent(
@@ -191,7 +191,7 @@ async fn deleting_a_session_revokes_its_delegated_credentials_at_once() {
         let now = Utc::now();
         assert!(
             fx.state
-                .with(|s| s.delegation(&on_beta.credential.id, now).is_none()),
+                .with(|s| s.delegations().live(&on_beta.credential.id, now).is_none()),
             "the credential is gone with its session"
         );
         assert!(fx.state.with(|s| s.connection_revoked(agent.client)));
@@ -215,7 +215,7 @@ async fn deleting_a_session_revokes_its_delegated_credentials_at_once() {
 
         assert!(
             fx.state
-                .with(|s| s.delegation(&on_alpha.credential.id, now).is_some()),
+                .with(|s| s.delegations().live(&on_alpha.credential.id, now).is_some()),
             "another session's credential stands"
         );
         assert!(!fx.state.with(|s| s.connection_revoked(bystander.client)));
@@ -233,7 +233,7 @@ async fn a_minted_credentials_socket_admits_connections_as_it_until_withdrawn() 
         let fx = Fixture::new();
         let dir = tempfile::tempdir().unwrap();
         fx.state
-            .with_mut(|s| s.set_server_socket_path(dir.path().join("phux.sock")));
+            .with_mut(|s| s.config_mut().server_socket_path = Some(dir.path().join("phux.sock")));
         let human = fx.human().await;
 
         let delegated = delegate_agent(

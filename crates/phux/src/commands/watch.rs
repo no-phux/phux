@@ -5,11 +5,30 @@ use std::time::Duration;
 use phux_client::attach::AttachError;
 use phux_client::resource::cursor::{Cursor, ResumeState};
 use phux_client::watch::{WatchItem, WatchOutcome};
-use phux_server::runtime::default_socket_path;
+use phux_config::socket::default_socket_path;
 
 use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target};
 
 mod render;
+/// Run `phux watch` as parsed.
+pub(crate) fn run(args: crate::commands::WatchArgs, socket: Option<PathBuf>) -> ExitCode {
+    let crate::commands::WatchArgs {
+        session,
+        until,
+        timeout,
+        after,
+        json,
+    } = args;
+    run_watch(WatchArgs {
+        session: session.as_deref(),
+        until: &until,
+        timeout,
+        after: after.as_deref(),
+        json: json.json,
+        socket,
+    })
+}
+
 #[cfg(test)]
 mod tests;
 
@@ -136,9 +155,9 @@ pub(crate) fn run_watch(args: WatchArgs<'_>) -> ExitCode {
         let direct = after.is_some().then(|| selector.explicit_id()).flatten();
         let terminal_id = match direct {
             Some(id) => id,
-            None => match resolve_target(&socket_path, &selector, "watch", json).await {
+            None => match resolve_target(&socket_path, &selector, "watch").await {
                 Ok(id) => id,
-                Err(code) => return code,
+                Err(refusal) => return refusal.emit(json),
             },
         };
 
