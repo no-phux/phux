@@ -1,5 +1,7 @@
 //! The bar a held action waits in, and the question it asks.
 
+use rune_kit::{Button, ButtonVariant};
+
 use super::*;
 
 /// What a held action would do, and the word for doing it. A keyboard is
@@ -54,6 +56,15 @@ pub(super) fn question(pending: &Pending, touch: bool) -> (String, &'static str)
     }
 }
 
+/// Whether confirming `pending` ends something: the destructive verbs
+/// (Close, End session) draw as the danger button (§1.10).
+pub(super) const fn destructive(pending: &Pending) -> bool {
+    matches!(
+        pending,
+        Pending::Close(_) | Pending::CloseTab(_) | Pending::CloseSession(..)
+    )
+}
+
 /// The action waiting on Return or Escape, floating over the terminals so
 /// asking never resizes them.
 pub fn confirm_bar(desk: &Desk, p: &Ink) -> Option<El> {
@@ -64,45 +75,54 @@ pub fn confirm_bar(desk: &Desk, p: &Ink) -> Option<El> {
     question_bar(desk, p)
 }
 
-/// [`confirm_bar`], wherever its parent puts it.
+/// [`confirm_bar`], wherever its parent puts it: an opaque floating
+/// surface (it is past the blur budget, §1.9), Cancel outlined and the verb
+/// the view's one primary action, or the danger button when it ends
+/// something.
 pub(in crate::ui) fn question_bar(desk: &Desk, p: &Ink) -> Option<El> {
+    let t: &Tokens = p.as_ref();
+    let s = &t.space;
+    let pending = desk.pending.as_ref()?;
     let touch = desk.phone.is_some();
-    let (message, verb) = question(desk.pending.as_ref()?, touch);
+    let (message, verb) = question(pending, touch);
     let cancel = if touch { "Cancel" } else { "Cancel (Esc)" };
-    let press = |button: El| touchable(desk, button.grow(0.0).px(10.0));
-    Some(
-        row()
-            .key("confirm-bar")
-            .on_drag(keep_from_pane)
-            .pin(Some(0.0), Some(0.0), Some(0.0), None)
-            .px(12.0)
-            .py(8.0)
-            .gap(8.0)
-            .items_center()
-            .radius(crate::ui::CARD_RADIUS)
-            .continuous_corners()
-            .backdrop_blur(crate::ui::FROST)
-            .fill(p.raised.alpha(0.82))
-            .border(1.0, p.edge)
-            .shadow(6.0, 18.0, Color::BLACK.alpha(0.35))
-            .transition(rune::Transition::opacity())
-            .child(
-                text(message)
-                    .font(LABEL)
-                    .color(p.text)
-                    .wrap()
-                    .grow(1.0)
-                    .min_w(0.0),
-            )
-            .child(press(button(
-                cancel,
-                "confirm-cancel",
-                p,
-                Desk::cancel_pending,
-            )))
-            .child(press(
-                button(verb, "confirm-ok", p, Desk::confirm_pending)
-                    .on_press_tx(Desk::confirm_pending_tx),
-            )),
-    )
+    let verb_look = if destructive(pending) {
+        ButtonVariant::Danger
+    } else {
+        ButtonVariant::Submit
+    };
+    let cancel = Button::new(cancel)
+        .variant(ButtonVariant::Outline)
+        .on_press(Desk::cancel_pending)
+        .build(&t.kit)
+        .key("confirm-cancel");
+    let ok = Button::new(verb)
+        .variant(verb_look)
+        .on_press_tx(Desk::confirm_pending_tx)
+        .build(&t.kit)
+        .key("confirm-ok");
+    let surface = row()
+        .key("confirm-bar")
+        .on_drag(keep_from_pane)
+        .pin(Some(0.0), Some(0.0), Some(0.0), None)
+        .px(s.card_inset)
+        .py(s.s2)
+        .gap(s.s2)
+        .items_center()
+        .radius(t.radius.lg)
+        .continuous_corners()
+        .fill(t.roles.layer.raised.paint())
+        .border(s.hairline, t.roles.border.base.paint())
+        .transition(rune::Transition::opacity())
+        .child(
+            text(message)
+                .font(t.ty.label)
+                .color(t.roles.text.text.paint())
+                .wrap()
+                .grow(1.0)
+                .min_w(0.0),
+        )
+        .child(touchable(desk, cancel))
+        .child(touchable(desk, ok));
+    Some(t.elevate(surface, Tier::Floating))
 }
