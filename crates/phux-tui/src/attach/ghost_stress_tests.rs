@@ -315,6 +315,7 @@ fn two_window_workspace(p: &ResourceId, q: &ResourceId, r: &ResourceId) -> Arran
             Group::new("two".to_owned(), split(q, r)),
         ],
         active: 0,
+        slots: Vec::new(),
     }
 }
 
@@ -339,6 +340,7 @@ fn every_paint_path_letterboxes_an_undersized_mirror_like_the_full_frame() {
     let one = |layout| ArrangementDoc {
         groups: vec![Group::new("w".to_owned(), layout)],
         active: 0,
+        slots: Vec::new(),
     };
     // Server grid smaller than the client rect: a resize handshake in flight.
     let mut rig = Rig::new(one(LayoutState::single(p.clone())), (80, 24));

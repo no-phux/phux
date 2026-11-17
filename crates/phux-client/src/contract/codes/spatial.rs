@@ -31,3 +31,7 @@ pub const SOURCE_LAYOUT_FAILED: &str = "source_layout_failed";
 pub const PROJECTION_INVALID: &str = "projection_invalid";
 /// The wrong number of `projection` keys for the edit.
 pub const PROJECTION_ARITY: &str = "projection_arity";
+/// A slot tab edit named a pane that is no tab.
+pub const NOT_A_TAB: &str = "not_a_tab";
+/// The server does not keep slot tabs (`features_ext.SLOT_TABS`).
+pub const SLOT_TABS_UNSUPPORTED: &str = "slot_tabs_unsupported";

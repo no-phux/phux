@@ -23,7 +23,7 @@ async fn resize_pane_resizes_the_panes_whose_tiles_moved() {
                 focus: Some(right.clone()),
             },
         )],
-        active: 0,
+        active: 0, slots: Vec::new(), 
     };
     state.mirror.focused_resource = Some(right.clone());
     drop(frames_sent(&mut client, &mut server).await);

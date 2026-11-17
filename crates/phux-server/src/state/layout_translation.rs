@@ -87,6 +87,7 @@ impl ServerState {
                 owner: ArrangementOwner::Session(record.key),
                 expected,
                 groups,
+                slot_tabs: false,
             },
             actor,
         )
@@ -106,10 +107,7 @@ impl ServerState {
         use phux_core::FreshKeys as _;
         let entries = node.map(&mut |id| {
             let target = self.entry_target(id, members)?;
-            Some(EntryRef {
-                entry: fresh.fresh(),
-                target,
-            })
+            Some(EntryRef::new(fresh.fresh(), target))
         });
         let mut tree = present_leaves(entries)?;
         tree.for_each_ratio_mut(&mut |ratio| *ratio = arrangement_ratio(*ratio));
@@ -166,7 +164,11 @@ impl ServerState {
                 ))
             })
             .collect();
-        let doc = ArrangementDoc { groups, active: 0 };
+        let doc = ArrangementDoc {
+            groups,
+            active: 0,
+            slots: Vec::new(),
+        };
         let Ok(bytes) = doc.encode_topology_cbor() else {
             return;
         };
@@ -254,6 +256,7 @@ mod tests {
                 },
             )],
             active: 0,
+            slots: Vec::new(),
         };
         state
             .translate_layout_write(session, &doc.encode_cbor().unwrap(), &Actor::owner())

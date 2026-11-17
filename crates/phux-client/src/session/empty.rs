@@ -198,10 +198,10 @@ async fn arrange_legacy_directory_shell(
                 id: crate::layout::fresh_id(),
                 name: None,
                 tree: phux_protocol::wire::frame::ArrangementNode::Leaf(
-                    phux_protocol::wire::frame::EntryRef {
-                        entry: crate::layout::fresh_id(),
-                        target: phux_protocol::wire::frame::EntryTarget::Member(resource),
-                    },
+                    phux_protocol::wire::frame::EntryRef::new(
+                        crate::layout::fresh_id(),
+                        phux_protocol::wire::frame::EntryTarget::Member(resource),
+                    ),
                 ),
             });
         crate::org::commit(
@@ -212,6 +212,7 @@ async fn arrange_legacy_directory_shell(
                 arrangement,
                 expected: value.revision,
                 document,
+                slot_tabs: false,
             },
         )
         .await

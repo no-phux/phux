@@ -254,6 +254,7 @@ fn mutation_error(error: MutationError) -> WireError {
         | MutationError::ForeignTarget(_) => "foreign_target",
         MutationError::DuplicatePane(_) => "duplicate_pane",
         MutationError::SamePane => "same_pane",
+        MutationError::NotATab(_) => "not_a_tab",
     })
 }
 

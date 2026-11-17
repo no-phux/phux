@@ -37,10 +37,10 @@ fn arrangements_read_and_replace_by_revision() {
                 id: [1; 16],
                 name: None,
                 tree: phux_protocol::wire::frame::ArrangementNode::Leaf(
-                    phux_protocol::wire::frame::EntryRef {
-                        entry: [2; 16],
-                        target: phux_protocol::wire::frame::EntryTarget::Member(resource),
-                    },
+                    phux_protocol::wire::frame::EntryRef::new(
+                        [2; 16],
+                        phux_protocol::wire::frame::EntryTarget::Member(resource),
+                    ),
                 ),
             }],
         };
@@ -49,6 +49,7 @@ fn arrangements_read_and_replace_by_revision() {
             arrangement: key,
             expected: Revision::new(expected),
             document: document.clone(),
+            slot_tabs: false,
         };
         assert_eq!(
             committed(handle(&state, CLIENT, replace(1, 1), &root))

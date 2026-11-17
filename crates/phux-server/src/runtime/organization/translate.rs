@@ -242,6 +242,7 @@ pub(super) fn translate(
             arrangement,
             expected,
             document,
+            slot_tabs,
         } => {
             let key = ow::core_arrangement_key(&arrangement);
             let op = match (
@@ -257,6 +258,7 @@ pub(super) fn translate(
                     owner,
                     expected: rev(expected),
                     groups,
+                    slot_tabs,
                 }),
             };
             (ow::core_operation(&operation), op)

@@ -41,6 +41,7 @@ fn document() -> ArrangementDoc {
             Group::with_id([2; 16], "logs".to_owned(), LayoutState::single(tid(4))),
         ],
         active: 0,
+        slots: Vec::new(),
     }
 }
 

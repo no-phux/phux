@@ -714,16 +714,13 @@ mod tests {
             left: Box::new(LayoutNode::Leaf(ResourceId::local(4))),
             right: Box::new(LayoutNode::Leaf(ResourceId::local(3))),
         };
-        let layout = ArrangementDoc {
-            groups: vec![Group::new(
-                "main".to_owned(),
-                LayoutState {
-                    focus: Some(ResourceId::local(3)),
-                    tree: Some(tree),
-                },
-            )],
-            active: 0,
-        };
+        let layout = ArrangementDoc::from_groups(vec![Group::new(
+            "main".to_owned(),
+            LayoutState {
+                focus: Some(ResourceId::local(3)),
+                tree: Some(tree),
+            },
+        )]);
         let layouts = HashMap::from([(SessionId::new(1), layout)]);
 
         let (archive, warnings) = export(&facet_only_snapshot(), &layouts);
@@ -741,16 +738,13 @@ mod tests {
     /// dropped, and this session's own panes are reported unplaced.
     #[test]
     fn a_layout_keeps_only_its_own_sessions_panes() {
-        let layout = ArrangementDoc {
-            groups: vec![Group::new(
-                "main".to_owned(),
-                LayoutState {
-                    focus: None,
-                    tree: Some(LayoutNode::Leaf(ResourceId::local(5))),
-                },
-            )],
-            active: 0,
-        };
+        let layout = ArrangementDoc::from_groups(vec![Group::new(
+            "main".to_owned(),
+            LayoutState {
+                focus: None,
+                tree: Some(LayoutNode::Leaf(ResourceId::local(5))),
+            },
+        )]);
         let layouts = HashMap::from([(SessionId::new(1), layout)]);
 
         let (archive, warnings) = export(&facet_only_snapshot(), &layouts);

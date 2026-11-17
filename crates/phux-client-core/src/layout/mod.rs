@@ -211,11 +211,13 @@ pub use projection::{LAYOUT_KEY, LAYOUT_METADATA_GROUP, layout_key, projection_k
 mod arrangement;
 mod mutation;
 mod ops;
+mod slots;
 
 pub use arrangement::ArrangementDoc;
 pub use mutation::{LayoutMutation, MutationError, adopt_unarranged_groups, apply_mutation};
 pub use ops::{contains, focus_direction, kill_pane, leaves, set_ratio_at, split_at};
 use ops::{repair_focus, shifted_index};
+pub use slots::Slot;
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp)]

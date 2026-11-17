@@ -101,6 +101,13 @@ records explain history; [look them up deliberately](./architecture.md#historica
   Missing/expired receipts leave the original outcome unknown; never infer that
   it is safe to start again. Dispatch-time authorization remains authoritative.
 
+- A layout slot holds several terminals as slot tabs on the leaf record, not
+  as a new node kind: the leaf's entry is the default tab and the others are a
+  trailing list that older peers skip, carried over by the server on every
+  replace as locks are. A new kind would make older clients' arrangement
+  reads fail and an older server refuse its store
+  ([slot tabs](./organization.md#slot-tabs)).
+
 **Clients**
 
 - `phux-client-core` is sans-IO and dependency-light so it compiles to wasm.

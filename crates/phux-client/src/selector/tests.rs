@@ -339,6 +339,7 @@ fn group_forms_resolve_against_the_arrangement() {
             ),
         ],
         active: 0,
+        slots: Vec::new(),
     };
     let arrangements = Arrangements::from([(SessionId::new(1), arrangement)]);
     let context = ResolveContext {

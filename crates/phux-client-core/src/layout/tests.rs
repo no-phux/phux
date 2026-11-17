@@ -25,6 +25,7 @@ fn encode_state(state: &LayoutState) -> Vec<u8> {
     ArrangementDoc {
         groups: vec![Group::new("1".into(), state.clone())],
         active: 0,
+        slots: Vec::new(),
     }
     .encode_cbor()
     .unwrap()
@@ -41,5 +42,6 @@ fn ws_split(a: u32, b: u32, focus: u32) -> ArrangementDoc {
             },
         )],
         active: 0,
+        slots: Vec::new(),
     }
 }

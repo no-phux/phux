@@ -19,6 +19,7 @@ use crate::pane_move;
 
 mod plan;
 mod refusal;
+mod slot;
 
 use plan::{build_plan, read_snapshot, validate_ratio};
 use refusal::{layout_error, move_error};
@@ -31,10 +32,10 @@ const JSON_SCHEMA_VERSION: u8 = 1;
 pub mod codes {
     pub use crate::contract::codes::{
         CROSS_SESSION, DESTINATION_CHANGED, DESTINATION_LAYOUT_FAILED, INTERNAL_ERROR,
-        INVALID_RATIO, INVALID_SELECTOR, LAYOUT_MISSING, LAYOUT_REJECTED, MOVE_REFUSED,
+        INVALID_RATIO, INVALID_SELECTOR, LAYOUT_MISSING, LAYOUT_REJECTED, MOVE_REFUSED, NOT_A_TAB,
         PANE_ALREADY_IN_LAYOUT, PANE_NOT_IN_LAYOUT, POST_MOVE_STATE_FAILED, PROJECTION_ARITY,
         PROJECTION_INVALID, SAME_PANE, SATELLITE_TARGET, SELECTOR_MISS, SELECTOR_NOT_SINGLE,
-        SOURCE_LAYOUT_FAILED, TRANSPORT, UNKNOWN_TERMINAL_SESSION,
+        SLOT_TABS_UNSUPPORTED, SOURCE_LAYOUT_FAILED, TRANSPORT, UNKNOWN_TERMINAL_SESSION,
     };
 }
 
@@ -107,6 +108,30 @@ pub enum SpatialOp {
         second: String,
         /// Named projection keys (ADR-0129); at most one.
         projection: Vec<String>,
+    },
+    /// Make `pane` a tab of the slot showing `to`
+    /// (`docs/organization.md#slot-tabs`).
+    SlotAdd {
+        /// The pane to make a tab.
+        pane: String,
+        /// Any tab of the slot it joins.
+        to: String,
+    },
+    /// Give the tab `pane` a leaf of its own beside its slot.
+    SlotOut {
+        /// The tab.
+        pane: String,
+        /// Divider direction.
+        direction: Direction,
+        /// Split ratio left to the slot, strictly inside `(0, 1)`.
+        ratio: f32,
+    },
+    /// Move the stored default of `pane`'s slot `delta` places.
+    SlotStep {
+        /// Any tab of the slot.
+        pane: String,
+        /// `1` for next, `-1` for previous.
+        delta: isize,
     },
 }
 
@@ -210,6 +235,13 @@ pub async fn run(
     let mut conn = Connection::connect(socket)
         .await
         .map_err(SpatialError::Transport)?;
+    if operation.is_slot()
+        && !conn
+            .server_features_ext()
+            .contains(phux_protocol::caps::ServerFeatureExt::SlotTabs)
+    {
+        return Err(SpatialError::Refused(slot::unsupported()));
+    }
     let snapshot = read_snapshot(&mut conn, 0, notices)
         .await
         .map_err(SpatialError::Transport)?;

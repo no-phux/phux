@@ -140,10 +140,7 @@ async fn arrangement(
 }
 
 const fn leaf(n: u8, target: EntryTarget) -> ArrangementNode {
-    ArrangementNode::Leaf(EntryRef {
-        entry: [n; 16],
-        target,
-    })
+    ArrangementNode::Leaf(EntryRef::new([n; 16], target))
 }
 
 fn satellite_target(id: &ResourceId) -> EntryTarget {
@@ -212,6 +209,7 @@ async fn arrange_mixed_window(
         arrangement: key,
         expected: current.revision,
         document: document.clone(),
+        slot_tabs: false,
     };
     let (result, _) = command_via_hub(hub, 102, replace).await;
     assert!(

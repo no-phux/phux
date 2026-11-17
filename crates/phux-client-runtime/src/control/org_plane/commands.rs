@@ -315,6 +315,7 @@ impl ControlPlane {
             arrangement: key,
             expected: revision,
             document: wire,
+            slot_tabs: false,
         })?)
     }
 

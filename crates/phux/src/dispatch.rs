@@ -44,6 +44,7 @@ pub(crate) fn dispatch(
         }
         Some(Command::Organize(args)) => commands::organize::run(args, socket),
         Some(Command::SwapPane(args)) => commands::spatial::swap_pane(args, socket),
+        Some(Command::Slot(args)) => commands::spatial::slot(args, socket),
         Some(Command::Resize(args)) => commands::resize::run(args, socket),
         Some(Command::Take(args)) => commands::supervise::take(args, socket),
         Some(Command::Give(args)) => commands::supervise::give(args, socket),

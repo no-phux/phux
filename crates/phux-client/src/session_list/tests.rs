@@ -30,10 +30,7 @@ async fn listing_counts_windows_from_each_arrangement_with_one_inventory() {
         locked: false,
         id: [n; 16],
         name: None,
-        tree: ArrangementNode::Leaf(EntryRef {
-            entry: [n; 16],
-            target: EntryTarget::Member(key),
-        }),
+        tree: ArrangementNode::Leaf(EntryRef::new([n; 16], EntryTarget::Member(key))),
     };
     fixture.arrangement(
         tabbed,

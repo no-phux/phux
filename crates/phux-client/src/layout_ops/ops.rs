@@ -137,6 +137,12 @@ impl<'a> LayoutOps<'a> {
             arrangement: read.key,
             expected: read.revision,
             document: wire,
+            // An older server would drop tabs written to it; one that knows
+            // them keeps the document's tabs as written.
+            slot_tabs: self
+                .conn
+                .server_features_ext()
+                .contains(phux_protocol::caps::ServerFeatureExt::SlotTabs),
         };
         debug!(
             arrangement = %read.key,

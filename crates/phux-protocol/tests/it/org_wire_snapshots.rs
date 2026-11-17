@@ -84,17 +84,17 @@ fn document() -> ArrangementDoc {
             tree: ArrangementNode::Split {
                 dir: SplitDirection::Horizontal,
                 ratio: 0.5,
-                first: Box::new(ArrangementNode::Leaf(EntryRef {
-                    entry: [0xE1; 16],
-                    target: EntryTarget::Member(resource()),
-                })),
-                second: Box::new(ArrangementNode::Leaf(EntryRef {
-                    entry: [0xE2; 16],
-                    target: EntryTarget::Satellite {
+                first: Box::new(ArrangementNode::Leaf(EntryRef::new(
+                    [0xE1; 16],
+                    EntryTarget::Member(resource()),
+                ))),
+                second: Box::new(ArrangementNode::Leaf(EntryRef::new(
+                    [0xE2; 16],
+                    EntryTarget::Satellite {
                         host: SatelliteHost::new("edge"),
                         id: 9,
                     },
-                })),
+                ))),
             },
         }],
     }

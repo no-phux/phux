@@ -56,6 +56,7 @@ impl From<MutationError> for LayoutOpsError {
             MutationError::DuplicatePane(id) => Self::DuplicatePane(id),
             MutationError::SamePane => Self::SamePane,
             MutationError::LastPane => Self::LastPane,
+            MutationError::NotATab(id) => Self::NotATab(id),
         }
     }
 }
@@ -132,6 +133,9 @@ pub enum LayoutOpsError {
     /// A two-target operation named the same pane twice.
     #[error("layout operation requires two distinct panes")]
     SamePane,
+    /// A slot tab edit named a pane that is no tab of any slot.
+    #[error("pane is not a tab of a slot: {0:?}")]
+    NotATab(ResourceId),
     /// Closing the final pane would produce an unencodable empty workspace.
     #[error("cannot close the final pane in a persisted layout")]
     LastPane,

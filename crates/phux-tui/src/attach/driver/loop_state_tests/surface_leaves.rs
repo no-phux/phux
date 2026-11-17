@@ -40,7 +40,7 @@ async fn a_document_placed_live_is_never_attached_or_resized() {
                 focus: Some(pane.clone()),
             },
         )],
-        active: 0,
+        active: 0, slots: Vec::new(), 
     };
     let placed = FrameKind::MetadataChanged {
         scope: Scope::Group(DEFAULT_GROUP_ID),

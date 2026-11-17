@@ -119,6 +119,11 @@ pub(crate) fn run_swap_pane(
     )
 }
 
+/// `phux slot add|out|next|prev`: a slot tab edit through the same path.
+pub(crate) fn run_slot(operation: SpatialOp, json: bool, socket: Option<PathBuf>) -> ExitCode {
+    run(operation, json, socket)
+}
+
 fn run(operation: SpatialOp, json: bool, socket: Option<PathBuf>) -> ExitCode {
     let socket_path = socket.unwrap_or_else(default_socket_path);
     let rt = match cli_runtime() {
@@ -209,6 +214,30 @@ pub(crate) fn swap_pane(args: crate::commands::SwapPaneArgs, socket: Option<Path
         json,
     } = args;
     run_swap_pane(&first, &second, projection, json, socket)
+}
+
+/// Run `phux slot` as parsed.
+pub(crate) fn slot(args: crate::commands::SlotArgs, socket: Option<PathBuf>) -> ExitCode {
+    use crate::commands::SlotAction;
+    let (operation, json) = match args.action {
+        SlotAction::Add { pane, to, json } => (SpatialOp::SlotAdd { pane, to }, json),
+        SlotAction::Out {
+            pane,
+            split,
+            ratio,
+            json,
+        } => (
+            SpatialOp::SlotOut {
+                pane,
+                direction: split.into(),
+                ratio,
+            },
+            json,
+        ),
+        SlotAction::Next { pane, json } => (SpatialOp::SlotStep { pane, delta: 1 }, json),
+        SlotAction::Prev { pane, json } => (SpatialOp::SlotStep { pane, delta: -1 }, json),
+    };
+    run_slot(operation, json, socket)
 }
 
 #[cfg(test)]
