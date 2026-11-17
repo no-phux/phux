@@ -145,6 +145,13 @@ simulator qualification. It never substitutes for them. Screenshots and
 simulator keyboard tests do not qualify physical-phone accessibility, OS IME,
 scroll feel or device installation.
 
+Native qualification publishes its tree before its readiness report, only
+after a drawn frame contains the selected terminal's closed `[[phase-marker]]`
+witness. The collector requires that actual tree text and matching phase,
+terminal and frame metadata. A live-grid report or correct later screenshot
+cannot make an earlier stale tree pass. Keep failed evidence; fix the binding,
+not the expected marker or the capture until it looks acceptable.
+
 Scheduled delivery still follows [DELIVERY.md](./ios/DELIVERY.md): exact
 qualified main revision, native gates, signed ad-hoc bundle, complete HTTPS
 artifact verification, in-place install and independent marketing/build query.

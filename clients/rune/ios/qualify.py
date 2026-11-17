@@ -28,6 +28,7 @@ SESSION = _reports.SESSION
 INPUT_CONTRACTS = _reports.INPUT_CONTRACTS
 validate_report = _reports.validate_report
 validate_input_contracts = _reports.validate_input_contracts
+validate_tree = _reports.validate_tree
 _settle_spec = importlib.util.spec_from_file_location("rune_simulator_settle", Path(__file__).with_name("simulator_settle.py"))
 _settle = importlib.util.module_from_spec(_settle_spec)
 _settle_spec.loader.exec_module(_settle)
@@ -65,8 +66,8 @@ def simulator_pair(runtimes, device_types):
 
 
 def marker_command(marker=MARKER):
-    # Literal marker must not appear in the terminal's command echo.
-    escaped = "".join(f"\\{byte:03o}" for byte in (marker + "\n").encode())
+    # The complete closed witness must not appear in the command echo.
+    escaped = "".join(f"\\{byte:03o}" for byte in ("[[" + marker + "]]\n").encode())
     return f"printf '{escaped}'"
 
 
@@ -252,8 +253,8 @@ class Qualification:
         validate_report(report, self.transport, resumed)
         tree = documents / "rune-tree.json"
         shutil.copy2(tree, self.out / (prefix + tree.name))
-        if SESSION not in json.dumps(json.loads((self.out / (prefix + tree.name)).read_text())):
-            raise ValueError("native view tree does not show the qualification session")
+        marker = MARKER + "_RESUMED" if resumed else MARKER
+        validate_tree(json.loads((self.out / (prefix + tree.name)).read_text()), report, marker)
         self.require_alive(pid)
         self.simctl("io", self.udid, "screenshot", self.out / (prefix + "ios-system-keyboard.png"))
         self.cycle_scene(documents, pid, prefix)
