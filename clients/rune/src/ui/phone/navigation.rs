@@ -1,58 +1,66 @@
 //! Touch-first session browsing and contextual actions, separate from search
 //! commands. Keep chrome fixed while only the inventory scrolls.
+//!
+//! One inset and rhythm for the page, cards and their touch rows, all from
+//! the phone's tokens: the page margin, `xl` cards with rows nested inside
+//! them, touch-height rows and the session dock, the phone's one pane of
+//! glass (§1.9).
 
-use rune::{El, Key, TextStyle, Tx, col, el, row, text, text_input};
+use phux_design::State;
+use rune::{Color, El, Key, Tx, col, el, row, text, text_input};
 
-use super::{CAP_WORD, Desk, Ink, ROUND, SUBTITLE, TITLE};
+use super::{Desk, Look, medium, strong};
 use crate::addressable::Addressable;
 use crate::desk::phone::navigation::Page;
 use crate::keys::{self, Shortcut};
-use crate::ui::{icons, pressable};
+use crate::ui::tokens::{Paint, Tier};
+use crate::ui::{Ink, badge, icons, pressable};
 
 mod resource;
 use crate::ui::Cover;
 use resource::resource_row;
 
-// One inset and rhythm for the page, cards and their touch rows. Colors and
-// type come from the phone's existing theme, never a parallel palette.
-const MARGIN: f32 = 16.0;
-const GAP: f32 = 12.0;
-const RADIUS: f32 = 12.0;
-const INSET: f32 = 4.0;
-const ROW_HEIGHT: f32 = 60.0;
-const COLUMN_MAX: f32 = 600.0;
-const PAGE_TITLE: TextStyle = TextStyle::new(24.0, 600.0);
-const SESSION_TITLE: TextStyle = TextStyle::new(15.0, 600.0);
-
-pub(in crate::ui) fn view(desk: &Desk, p: &Ink, top: f32) -> Option<El> {
+pub(in crate::ui) fn view(desk: &Desk, ink: &Ink, top: f32) -> Option<El> {
     let page = desk.phone_page()?;
+    let p = &Look::of(ink);
+    let s = &p.space;
     let title = match page {
         Page::Sessions => "Sessions",
         Page::Actions => "Terminal actions",
     };
     let header = row()
         .w_full()
-        .max_w(COLUMN_MAX)
-        .h(64.0)
-        .pl(MARGIN)
-        .pr(INSET)
-        .gap(8.0)
+        .max_w(column_max())
+        .min_h(s.s16)
+        .pl(crate::ui::tokens::phone::page_margin())
+        .pr(s.s1)
+        .gap(s.s2)
         .items_center()
         .child(
             text(title)
-                .font(if page == Page::Sessions {
-                    PAGE_TITLE
+                .font(strong(if page == Page::Sessions {
+                    p.ty.title
                 } else {
-                    TITLE
-                })
-                .color(p.text),
+                    p.ty.lead
+                }))
+                .color(p.roles.text.text.paint())
+                // At the largest text sizes the title wraps; Done stays.
+                .wrap()
+                .min_w(0.0)
+                .shrink(),
         )
         .child(el().grow(1.0))
         .child(
             control("phone-navigation-close", "Done", p, |d, _| {
                 d.close_phone_navigation()
             })
-            .child(text("Done").font(CAP_WORD).color(p.accent).a11y_hidden()),
+            .radius(p.radius.full)
+            .child(
+                text("Done")
+                    .font(medium(p.ty.label))
+                    .color(p.roles.accent.accent_text.paint())
+                    .a11y_hidden(),
+            ),
         );
     let body = match page {
         Page::Sessions => sessions(desk, p),
@@ -64,28 +72,43 @@ pub(in crate::ui) fn view(desk: &Desk, p: &Ink, top: f32) -> Option<El> {
             .cover()
             .items_center()
             .pt(top)
-            .fill(p.bg)
+            .fill(p.roles.layer.ground.paint())
             .modal(true, Desk::close_phone_navigation)
             .on_key(|d: &mut Desk, event, _| d.phone_navigation_key(event))
             .on_paste(|_: &mut Desk, _, _| {})
             .label(title)
             .child(header)
-            .child(body.max_w(COLUMN_MAX)),
+            .child(body.max_w(column_max())),
     )
+}
+
+/// The widest a phone column grows (an iPad's is centred).
+fn column_max() -> f32 {
+    phux_design::tokens::LAYOUT.content_max.phone_column
+}
+
+/// A row nested in a card: the card's radius less its inset (§1.5).
+fn nested(p: &Look) -> f32 {
+    (p.radius.xl - p.space.s1).max(p.radius.xs)
+}
+
+/// Two lines of text in a touch row.
+fn row_h(p: &Look) -> f32 {
+    p.space.row_h_touch + p.space.s4
 }
 
 fn control(
     key: &str,
     label: &str,
-    p: &Ink,
+    p: &Look,
     action: impl Fn(&mut Desk, &mut Tx) + Clone + 'static,
 ) -> El {
     let pressed = action.clone();
     pressable(key, p)
-        .min_h(ROUND)
-        .min_w(ROUND)
-        .px(12.0)
-        .radius(RADIUS)
+        .min_h(p.space.touch_min)
+        .min_w(p.space.touch_min)
+        .px(p.space.s3)
+        .radius(p.radius.md)
         .items_center()
         .label(label.to_owned())
         .focusable(true)
@@ -103,49 +126,86 @@ fn control(
 fn button(
     key: &str,
     label: &str,
-    p: &Ink,
+    p: &Look,
     action: impl Fn(&mut Desk, &mut Tx) + Clone + 'static,
 ) -> El {
     control(key, label, p, action).child(
         text(label.to_owned())
-            .font(CAP_WORD)
-            .color(p.text)
+            .font(medium(p.ty.label))
+            .color(p.roles.text.text.paint())
             .truncate()
             .a11y_hidden(),
     )
 }
 
-fn note(words: impl Into<String>, p: &Ink) -> El {
-    el().w_full()
-        .px(12.0)
-        .py(12.0)
-        .child(text(words.into()).font(SUBTITLE).color(p.dim))
+fn note(words: impl Into<String>, p: &Look) -> El {
+    el().w_full().px(p.space.s3).py(p.space.s3).child(
+        text(words.into())
+            .font(p.ty.body)
+            .color(p.roles.text.dim.paint()),
+    )
 }
 
-fn sessions(desk: &Desk, p: &Ink) -> El {
+/// The session dock: glass over the scrolling list, the phone's one
+/// backdrop blur (§1.9). Opaque under increased contrast, Reduce
+/// Transparency and forced colours.
+fn dock(e: El, p: &Look) -> El {
+    let glass = phux_design::tokens::MATERIAL.glass;
+    let e = if p.glass_allowed() {
+        let tint = if p.dark() {
+            glass.tint.dark
+        } else {
+            glass.tint.light
+        };
+        let layer = match tint.layer {
+            "ground" => p.roles.layer.ground,
+            "raised" => p.roles.layer.raised,
+            "overlay" => p.roles.layer.overlay,
+            _ => p.roles.layer.sidebar,
+        };
+        e.backdrop_blur(glass.blur.phone_bar).fill(Color {
+            a: tint.alpha,
+            ..layer.paint()
+        })
+    } else {
+        e.fill(p.roles.layer.raised.paint())
+    };
+    p.elevate(e.continuous_corners(), Tier::Floating)
+}
+
+fn sessions(desk: &Desk, p: &Look) -> El {
+    let s = &p.space;
     let phone = desk.phone.as_ref().expect("phone navigation");
-    let search = text_input(&phone.query, TextStyle::new(16.0, 400.0))
+    let dim = p.roles.text.dim.paint();
+    let ink = p.roles.text.text.paint();
+    // The lead role: an iOS field under 16 points zooms the page.
+    let search = text_input(&phone.query, p.ty.lead)
         .key("phone-session-query")
         .single_line()
         .grow(1.0)
         .min_w(0.0)
-        .h(ROUND)
-        .py(12.0)
+        .min_h(s.touch_min)
+        .py(s.s2)
         .label("Search sessions, panes, agents, and folders")
-        .color(p.text)
-        .placeholder("Search sessions or panes", p.dim)
+        .color(ink)
+        .placeholder("Search sessions or panes", dim)
         .on_edit(|d: &mut Desk| &mut d.phone.as_mut().expect("phone").query)
         .on_input_change(Desk::phone_search_edited)
         .on_input_key(|d: &mut Desk, event, _| d.phone_navigation_key(event))
         .on_submit(|d: &mut Desk, tx| d.blur_phone_search(tx));
     let search = row()
         .w_full()
-        .px(GAP)
-        .gap(8.0)
+        .px(s.s3)
+        .gap(s.s2)
         .items_center()
-        .radius(RADIUS)
-        .fill(p.raised)
-        .child(rune::icon(&icons::SEARCH, 16.0).color(p.dim).a11y_hidden())
+        .radius(p.radius.md)
+        .fill(p.roles.layer.raised.paint())
+        .border(s.hairline, p.roles.border.control.paint())
+        .child(
+            rune::icon(&icons::SEARCH, p.icon.grid)
+                .color(dim)
+                .a11y_hidden(),
+        )
         .child(search);
     let list = session_list(desk, p);
     let name = phone.query.text.trim();
@@ -158,10 +218,14 @@ fn sessions(desk: &Desk, p: &Ink) -> El {
         d.phone_create_session()
     })
     .w_full()
-    .gap(8.0)
+    .gap(s.s2)
     .center()
-    .radius(ROUND / 2.0)
-    .child(rune::icon(&icons::PLUS, 18.0).color(p.text).a11y_hidden())
+    .radius(p.radius.full)
+    .child(
+        rune::icon(&icons::PLUS, p.icon.size.lg)
+            .color(ink)
+            .a11y_hidden(),
+    )
     .child(
         text(if name.is_empty() {
             "New session"
@@ -169,17 +233,12 @@ fn sessions(desk: &Desk, p: &Ink) -> El {
             "Open or create session"
         })
         .key("phone-session-new-label")
-        .font(CAP_WORD)
-        .color(p.text)
+        .font(medium(p.ty.label))
+        .color(ink)
         .truncate()
         .a11y_hidden(),
     );
-    let footer = super::glass(
-        footer
-            .backdrop_blur(crate::ui::FROST)
-            .fill(p.bg.alpha(0.82)),
-        p,
-    );
+    let footer = dock(footer, p);
     let footer = if desk.connection.client.is_some() {
         footer
     } else {
@@ -189,9 +248,9 @@ fn sessions(desk: &Desk, p: &Ink) -> El {
         .w_full()
         .grow(1.0)
         .min_h(0.0)
-        .px(MARGIN)
-        .gap(GAP)
-        .pb(GAP)
+        .px(crate::ui::tokens::phone::page_margin())
+        .gap(s.s3)
+        .pb(s.s3)
         .child(search)
         // Search borrows the machine row's room so even a 320×568 phone
         // can show a complete result above the keyboard and floating dock.
@@ -209,13 +268,14 @@ fn sessions(desk: &Desk, p: &Ink) -> El {
                         .scroll(rune::ScrollSpec { stick_bottom: false })
                         // A real scroll tail: the last row can clear the
                         // floating dock, also when the search keyboard is up.
-                        .child(list.pb(ROUND + GAP)),
+                        .child(list.pb(s.touch_min + s.s3)),
                 )
                 .child(footer.pin(Some(0.0), None, Some(0.0), Some(0.0))),
         )
 }
 
-fn connections(desk: &Desk, p: &Ink) -> El {
+fn connections(desk: &Desk, p: &Look) -> El {
+    let dim = p.roles.text.dim.paint();
     let label = format!(
         "Connections · {} · {}",
         desk.machines.label(),
@@ -225,24 +285,25 @@ fn connections(desk: &Desk, p: &Ink) -> El {
         d.phone_action(Shortcut::Machines, tx)
     })
     .w_full()
-    .gap(8.0)
+    .gap(p.space.s2)
+    .fill(p.roles.layer.raised.paint())
     .child(
         text(desk.machines.label().to_owned())
-            .font(SUBTITLE)
-            .color(p.dim)
+            .font(p.ty.mono)
+            .color(dim)
             .truncate()
             .a11y_hidden(),
     )
     .child(el().grow(1.0))
     .child(
         text(desk.link_word())
-            .font(SUBTITLE)
-            .color(p.dim)
+            .font(p.ty.caption)
+            .color(dim)
             .a11y_hidden(),
     )
     .child(
-        rune::icon(&icons::CHEVRON_RIGHT, 14.0)
-            .color(p.dim)
+        rune::icon(&icons::CHEVRON_RIGHT, p.icon.size.md)
+            .color(dim)
             .a11y_hidden(),
     )
 }
@@ -277,10 +338,10 @@ fn resource_matches(desk: &Desk, resource: &Addressable, query: &str) -> bool {
     )
 }
 
-fn session_list(desk: &Desk, p: &Ink) -> El {
+fn session_list(desk: &Desk, p: &Look) -> El {
     let query = &desk.phone.as_ref().expect("phone").query.text;
     let all = desk.addressable();
-    let mut list = col().w_full().gap(GAP);
+    let mut list = col().w_full().gap(p.space.s3);
     let mut count = 0;
     for session in desk.ordered_sessions() {
         let members: Vec<_> = all.iter().filter(|r| r.session_id == session.id).collect();
@@ -309,7 +370,7 @@ fn session_list(desk: &Desk, p: &Ink) -> El {
     other_hosts(list, desk, query, p)
 }
 
-fn empty_state(desk: &Desk, query: &str, p: &Ink) -> El {
+fn empty_state(desk: &Desk, query: &str, p: &Look) -> El {
     let (title, detail) = if desk.connection.topology.is_none() {
         (
             "Loading sessions",
@@ -322,10 +383,19 @@ fn empty_state(desk: &Desk, query: &str, p: &Ink) -> El {
     };
     col()
         .w_full()
-        .padding(GAP)
-        .gap(8.0)
-        .child(text(title).font(TITLE).color(p.text))
-        .child(text(detail).font(SUBTITLE).color(p.dim).wrap())
+        .padding(p.space.s3)
+        .gap(p.space.s2)
+        .child(
+            text(title)
+                .font(strong(p.ty.lead))
+                .color(p.roles.text.text.paint()),
+        )
+        .child(
+            text(detail)
+                .font(p.ty.body)
+                .color(p.roles.text.dim.paint())
+                .wrap(),
+        )
 }
 
 fn session_card(
@@ -333,8 +403,10 @@ fn session_card(
     session: &phux_client_runtime::control::SessionDescriptor,
     members: &[&Addressable],
     filtered: &[&Addressable],
-    p: &Ink,
+    p: &Look,
 ) -> El {
+    let s = &p.space;
+    let dim = p.roles.text.dim.paint();
     let waiting = members
         .iter()
         .filter(|r| desk.activities.mark(&r.id).needs_you())
@@ -345,11 +417,7 @@ fn session_card(
     };
     let name = session.name.clone();
     let current = desk.selected_session_name().as_deref() == Some(&session.name);
-    let attention = if waiting == 1 {
-        "1 needs you".to_owned()
-    } else {
-        format!("{waiting} need you")
-    };
+    let attention = phux_design::plural("count.needs_you", waiting as u64).unwrap_or_default();
     let label = format!(
         "{} · {panes}{} · {attention}",
         session.name,
@@ -362,48 +430,43 @@ fn session_card(
         move |d, _| d.phone_session(&name),
     )
     .w_full()
-    .min_h(ROW_HEIGHT)
-    .gap(8.0)
+    .min_h(row_h(p))
+    .gap(s.s2)
+    .radius(nested(p))
     .child(
         col()
             .grow(1.0)
             .min_w(0.0)
-            .gap(INSET)
+            .gap(s.s1)
             .child(
                 row()
                     .min_w(0.0)
-                    .gap(6.0)
+                    .gap(s.icon_gap)
                     .items_center()
                     .child(
                         text(session.name.clone())
-                            .font(SESSION_TITLE)
-                            .color(p.text)
+                            .font(strong(p.ty.lead))
+                            .color(p.roles.text.text.paint())
                             .truncate()
                             .a11y_hidden(),
                     )
-                    .children(
-                        current.then(|| rune::icon(&icons::CHECK, 14.0).color(p.dim).a11y_hidden()),
-                    ),
+                    .children(current.then(|| {
+                        rune::icon(&icons::CHECK, p.icon.size.md)
+                            .color(dim)
+                            .a11y_hidden()
+                    })),
             )
-            .child(text(panes).font(SUBTITLE).color(p.dim).a11y_hidden()),
+            .child(text(panes).font(p.ty.caption).color(dim).a11y_hidden()),
     )
-    .children((waiting > 0).then(|| {
-        el().px(8.0)
-            .py(INSET)
-            .radius(8.0)
-            .fill(p.marks.alert.alpha(0.12))
-            .child(
-                text(attention)
-                    .font(SUBTITLE)
-                    .color(p.marks.alert)
-                    .a11y_hidden(),
-            )
-    }));
+    .children(
+        (waiting > 0).then(|| badge::tone_badge(p, State::NeedsYou, Some(attention)).a11y_hidden()),
+    );
     let mut card = col()
         .w_full()
-        .padding(INSET)
-        .radius(RADIUS + INSET)
-        .fill(p.raised)
+        .padding(s.s1)
+        .radius(p.radius.xl)
+        .continuous_corners()
+        .fill(p.roles.layer.raised.paint())
         .child(header);
     for resource in filtered {
         card = card.child(resource_row(desk, resource, p));
@@ -411,7 +474,7 @@ fn session_card(
     card
 }
 
-fn other_hosts(mut list: El, desk: &Desk, query: &str, p: &Ink) -> El {
+fn other_hosts(mut list: El, desk: &Desk, query: &str, p: &Look) -> El {
     // Native iOS has no local CLI or local server. Connections delegates to
     // UIKit; never offer a phantom “This Mac” whose listing cannot run.
     if desk.native.is_some() {
@@ -480,8 +543,12 @@ fn remote_key(host: &Option<String>, session: &str) -> String {
     )
 }
 
-fn actions(desk: &Desk, p: &Ink) -> El {
-    let mut list = col().w_full().padding(12.0).gap(4.0);
+fn actions(desk: &Desk, p: &Look) -> El {
+    let mut list = col()
+        .w_full()
+        .px(crate::ui::tokens::phone::page_margin())
+        .py(p.space.s3)
+        .gap(p.space.s1);
     for action in [
         Shortcut::NewTerminal,
         Shortcut::NewSession,

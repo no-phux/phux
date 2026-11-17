@@ -345,11 +345,18 @@ pub unsafe extern "C" fn phux_rune_ios_traits(
     pointer: *mut c_void,
     dark: bool,
     reduced_motion: bool,
+    increased_contrast: bool,
+    reduce_transparency: bool,
+    content_size: *const c_char,
 ) {
     attempt(|| {
+        // An unreadable category reads as the default size.
+        let content_size = unsafe { text(content_size) }.unwrap_or_default();
         let rt = unsafe { host(pointer)? }.layer.runtime_mut();
         rt.set_system_dark(dark);
         rt.set_system_reduced_motion(reduced_motion);
+        rt.set_system_increased_contrast(increased_contrast);
+        mobile::set_accessibility(rt, reduce_transparency, content_size);
         Ok(())
     });
 }

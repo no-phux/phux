@@ -16,8 +16,7 @@ fn session_browser_renders_realistic_dark_light_and_search_states() {
                 tx.instant();
             });
             settle_for_snapshot(&mut rt);
-            let mut renderer =
-                rune::render::Renderer::new(&gpu.device, rune::render::OFFSCREEN_FORMAT);
+            let mut renderer = app_renderer(&gpu);
             paint(
                 &gpu,
                 &mut renderer,
@@ -59,6 +58,7 @@ fn session_browser_renders_realistic_dark_light_and_search_states() {
 }
 
 fn settle_for_snapshot(rt: &mut Runtime<Desk>) {
+    rt.set_srgb_blend(true);
     rt.settle_all();
     rt.frame(1.0);
     rt.frame(1.0);
@@ -71,19 +71,87 @@ fn paint(
     size: (u32, u32),
     name: &str,
 ) -> Vec<u8> {
-    let pixels = crate::ui::offscreen(gpu, renderer, rt, size);
+    let pixels = as_app(gpu, renderer, rt, size);
+    // Painted something: the house look is neutral grey, so the test is
+    // more than one colour, not more than grey.
+    let all = pixels.as_chunks::<4>().0;
     assert!(
-        pixels
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .any(|pixel| pixel[0] != pixel[1])
+        all.iter().any(|pixel| *pixel != all[0]),
+        "{name} painted one flat colour"
     );
+    let tree = rt.accessibility_json();
+    touch_targets(&tree, name);
     if let Some(directory) = std::env::var_os("RUNE_NAVIGATION_SNAP") {
-        let path = std::path::PathBuf::from(directory).join(format!("{name}-{}.png", size.0));
+        let directory = std::path::PathBuf::from(directory);
+        let path = directory.join(format!("{name}-{}.png", size.0));
         rune::render::write_png(&path, size.0, size.1, &pixels).unwrap();
+        let json = serde_json::to_string_pretty(&tree).unwrap();
+        std::fs::write(directory.join(format!("{name}-{}.a11y.json", size.0)), json).unwrap();
     }
     pixels
+}
+
+/// A renderer that paints as the app does, so translucent washes land at
+/// the alpha the brand composited: into a target that does not encode
+/// sRGB, because it blends in sRGB itself (`App::srgb_blend`). One per
+/// runtime: its glyph atlas is uploaded once.
+fn app_renderer(gpu: &rune::render::Gpu) -> rune::render::Renderer {
+    let mut renderer = rune::render::Renderer::new(
+        &gpu.device,
+        rune::render::OFFSCREEN_FORMAT.remove_srgb_suffix(),
+    );
+    renderer.set_srgb_blend(true);
+    renderer
+}
+
+/// `rt`'s last frame, built with `set_srgb_blend(true)`, through `renderer`.
+fn as_app(
+    gpu: &rune::render::Gpu,
+    renderer: &mut rune::render::Renderer,
+    rt: &mut Runtime<Desk>,
+    size: (u32, u32),
+) -> Vec<u8> {
+    let target = rune::render::Offscreen::with_format(
+        &gpu.device,
+        size.0,
+        size.1,
+        rune::render::OFFSCREEN_FORMAT.remove_srgb_suffix(),
+    );
+    renderer.upload_images(&gpu.device, &gpu.queue, &mut rt.images);
+    renderer.prepare(
+        &gpu.device,
+        &gpu.queue,
+        &mut rt.text.atlas,
+        &rt.instances,
+        size,
+    );
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    renderer.draw(&mut encoder, &target.view, rt.clear_color());
+    target.copy(&mut encoder);
+    renderer.submit(&gpu.queue, encoder);
+    target.read(&gpu.device)
+}
+
+/// Every control the phone draws is a 44-point touch target in the
+/// accessibility tree (§1.6, audit row 29). The drawn keyboard's letters
+/// keep the system keyboard's width; they are 44 tall.
+fn touch_targets(node: &serde_json::Value, name: &str) {
+    let key = node["key"].as_str().unwrap_or_default();
+    let clicks = node["actions"]
+        .as_array()
+        .is_some_and(|a| a.iter().any(|a| a == "click"));
+    if key.starts_with("phone-") && clicks {
+        let b = node["bounds"].as_array().expect("bounds");
+        let (w, h) = (b[2].as_f64().unwrap(), b[3].as_f64().unwrap());
+        assert!(h >= 44.0, "{name}: {key} is {h} tall");
+        assert!(
+            w >= 44.0 || key.starts_with("phone-cap-"),
+            "{name}: {key} is {w} wide"
+        );
+    }
+    for child in node["children"].as_array().into_iter().flatten() {
+        touch_targets(child, name);
+    }
 }
 
 #[test]
@@ -108,7 +176,7 @@ fn the_floating_session_dock_blurs_actual_list_pixels_not_just_a_tint() {
         .filter(|i| i.params[1] == rune::render::KIND_BACKDROP_BLUR)
         .count();
     assert_eq!(blurs, 1, "only the floating dock needs a blur pass");
-    let mut renderer = rune::render::Renderer::new(&gpu.device, rune::render::OFFSCREEN_FORMAT);
+    let mut renderer = app_renderer(&gpu);
     let frosted = paint(&gpu, &mut renderer, &mut rt, (320, 568), "dock-frosted");
     rt.instances
         .retain(|i| i.params[1] != rune::render::KIND_BACKDROP_BLUR);
@@ -133,7 +201,7 @@ fn phone_navigation_native_render_frames() {
         let (_, mut rt) = fixture();
         inventory(&mut rt);
         rt.set_viewport((size.0 as f32, size.1 as f32), 1.0);
-        let mut renderer = rune::render::Renderer::new(&gpu.device, rune::render::OFFSCREEN_FORMAT);
+        let mut renderer = app_renderer(&gpu);
         for (page, name) in [(Page::Sessions, "sessions"), (Page::Actions, "actions")] {
             rt.update(|d, tx| {
                 d.close_phone_navigation();
@@ -143,6 +211,7 @@ fn phone_navigation_native_render_frames() {
                 }
                 tx.instant();
             });
+            rt.set_srgb_blend(true);
             rt.frame(1.0);
             rt.frame(1.0);
             paint(&gpu, &mut renderer, &mut rt, size, name);
@@ -185,7 +254,7 @@ fn retina_navigation_renders_in_native_safe_area_and_desktop_phone_viewports() {
         assert!(pane[1] >= list[1] && pane[1] + pane[3] <= dock[1]);
         assert!(dock[1] + dock[3] <= size.1 as f32);
         assert_eq!(rt.find("phone-keyboard").is_none(), native);
-        let mut renderer = rune::render::Renderer::new(&gpu.device, rune::render::OFFSCREEN_FORMAT);
+        let mut renderer = app_renderer(&gpu);
         let pixels = paint(
             &gpu,
             &mut renderer,
@@ -194,5 +263,74 @@ fn retina_navigation_renders_in_native_safe_area_and_desktop_phone_viewports() {
             &format!("retina-{scale}x-native-{native}"),
         );
         assert_eq!(pixels.len(), (size.0 * size.1 * scale * scale * 4) as usize);
+    }
+}
+
+/// The design fixture on the phone (§5.2): the house look and catalog
+/// themes, each standard, at increased contrast, with Reduce Transparency
+/// and at the largest text size, over the terminal and the session page.
+/// The dock is the phone's one glass, and only where glass may draw.
+#[test]
+fn the_phone_paints_the_design_fixture() {
+    use crate::ui::tokens::phone::{Traits, content_scale, set_traits};
+    let gpu = rune::render::Gpu::headless();
+    let themes = [
+        ("dark", None),
+        ("light", crate::theme::find("phux-light")),
+        ("solarized-light", crate::theme::find("solarized-light")),
+        ("windows-98", crate::theme::find("windows-98")),
+    ];
+    let largest = content_scale("UICTContentSizeCategoryAccessibilityXXXL");
+    for (tag, theme) in themes {
+        assert!(tag == "dark" || theme.is_some(), "{tag} is in the catalog");
+        for mode in [
+            "standard",
+            "contrast-more",
+            "reduce-transparency",
+            "largest-text",
+        ] {
+            let (_, mut rt) = fixture();
+            detailed_inventory(&mut rt);
+            let mut renderer = app_renderer(&gpu);
+            rt.set_viewport((393.0, 852.0), 1.0);
+            rt.set_system_increased_contrast(mode == "contrast-more");
+            set_traits(Traits {
+                scale: if mode == "largest-text" { largest } else { 1.0 },
+                reduce_transparency: mode == "reduce-transparency",
+            });
+            rt.update(|d, tx| {
+                d.settings.theme = theme;
+                tx.instant();
+            });
+            settle_for_snapshot(&mut rt);
+            let name = format!("fixture-{tag}-{mode}");
+            paint(
+                &gpu,
+                &mut renderer,
+                &mut rt,
+                (393, 852),
+                &format!("{name}-terminal"),
+            );
+            rt.update(|d, tx| {
+                d.open_phone_sessions();
+                tx.instant();
+            });
+            settle_for_snapshot(&mut rt);
+            let blurs = rt
+                .instances
+                .iter()
+                .filter(|i| i.params[1] == rune::render::KIND_BACKDROP_BLUR)
+                .count();
+            let glass = matches!(mode, "standard" | "largest-text");
+            assert_eq!(blurs, usize::from(glass), "{name}: the dock's glass");
+            paint(
+                &gpu,
+                &mut renderer,
+                &mut rt,
+                (393, 852),
+                &format!("{name}-sessions"),
+            );
+            set_traits(Traits::DEFAULT);
+        }
     }
 }

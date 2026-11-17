@@ -55,6 +55,24 @@ pub fn path_changed(rt: &mut rune::Runtime<State>) {
     rt.update(|state, _| state.resume_link(None));
 }
 
+/// The system's accessibility settings Rune has no API for (§4.1.6):
+/// Reduce Transparency and the text size, as a `UIContentSizeCategory`
+/// raw value. The phone's tokens read them; a change draws a frame.
+pub fn set_accessibility(
+    rt: &mut rune::Runtime<State>,
+    reduce_transparency: bool,
+    content_size: &str,
+) {
+    use crate::ui::tokens::phone::{Traits, content_scale, set_traits};
+    let changed = set_traits(Traits {
+        scale: content_scale(content_size),
+        reduce_transparency,
+    });
+    if changed {
+        rt.update(|_, tx| tx.instant());
+    }
+}
+
 /// One step of text size from the host's pinch, kept like any other.
 pub fn zoom(rt: &mut rune::Runtime<State>, larger: bool) {
     use crate::keys::Shortcut;
