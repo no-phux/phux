@@ -134,19 +134,30 @@ impl RelaySession {
             AgentEvent::ResourceSpawned { kind, parent } => {
                 let parent = match parent {
                     None => None,
-                    Some(ResourceId::Local { id }) => {
-                        Some(ResourceId::satellite(self.host.clone(), id))
-                    }
-                    Some(ResourceId::Satellite { .. }) => {
-                        warn!(
-                            satellite = %self.host,
-                            terminal,
-                            "satellite reported a Satellite-tagged parent; hub-and-spoke does not chain — dropping"
-                        );
-                        return None;
-                    }
+                    Some(parent) => Some(self.retag_resource(terminal, &parent)?),
                 };
                 Some(AgentEvent::ResourceSpawned { kind, parent })
+            }
+            // Every subscriber sees a native result, so it is kept, naming
+            // the satellite's agent session. The operation id stays: the hub
+            // forwards no native command, so no hub consumer owns it, and
+            // with the session re-tagged it cannot match a hub session's.
+            AgentEvent::NativeAgentResult {
+                agent_session_id,
+                operation_id,
+                disposition,
+                detail,
+            } => Some(AgentEvent::NativeAgentResult {
+                agent_session_id: self.retag_resource(terminal, &agent_session_id)?,
+                operation_id,
+                disposition,
+                detail,
+            }),
+            // An event this build cannot read cannot be re-tagged, and its
+            // body may carry satellite-local ids.
+            AgentEvent::Unknown { tag, .. } => {
+                warn!(satellite = %self.host, terminal, tag, "dropping an unknown satellite event");
+                None
             }
             AgentEvent::TerminalControl {
                 lifecycle,
@@ -185,6 +196,22 @@ impl RelaySession {
                 None
             }
             other => Some(other),
+        }
+    }
+
+    /// A satellite resource id in the hub's id space, or `None` for one the
+    /// satellite already tagged: hub-and-spoke does not chain.
+    fn retag_resource(&self, terminal: u32, id: &ResourceId) -> Option<ResourceId> {
+        match id {
+            ResourceId::Local { id } => Some(ResourceId::satellite(self.host.clone(), *id)),
+            ResourceId::Satellite { .. } => {
+                warn!(
+                    satellite = %self.host,
+                    terminal,
+                    "satellite reported a Satellite-tagged resource; hub-and-spoke does not chain — dropping"
+                );
+                None
+            }
         }
     }
 
