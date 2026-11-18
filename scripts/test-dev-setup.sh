@@ -254,10 +254,14 @@ expect_pass "$repo/scripts/install-zig.sh" "$scratch/toolchains"
 # builds only with the digest-verified Zig it installs, never a Zig on PATH,
 # and tolerates the compiler's occasional nondeterministic build.
 cp "$root/scripts/build-vt-wasm.sh" "$repo/scripts/"
+mkdir -p "$repo/scripts/zig-mirrors"
+cp "$root/scripts/zig-mirrors/"{build.zig,build.zig.zon} "$repo/scripts/zig-mirrors/"
 ln -s "$(command -v cmp)" "$bin/cmp"
 ln -s "$(command -v du)" "$bin/du"
 ln -s "$(command -v cut)" "$bin/cut"
 export PHUX_TOOLCHAIN_DIR="$scratch/toolchains"
+export SETUP_TEST_ZIG_CALLS="$scratch/zig-calls"
+export SETUP_TEST_ARO=aro-0.0.0-JSD1QtuBNwCASyBtNF3pqTl_W3oAJQGEVyFAtrBSE_Pa
 engine="$repo/clients/phux-vt-web/vendor/ghostty-vt.wasm"
 printf old >"$engine"
 printf corrupt >"$SETUP_TEST_ARCHIVE"
@@ -268,7 +272,9 @@ exit 1
 SH
 expect_fail 'source checksum mismatch' "$repo/scripts/build-vt-wasm.sh"
 [[ "$(cat "$engine")" = old ]]
-export GHOSTTY_SRC="$scratch/local-engine"
+[[ ! -s "$SETUP_TEST_ZIG_CALLS" ]]
+export GHOSTTY_SRC="$scratch/local engine"
+export SETUP_TEST_EXPECT_SOURCE="$GHOSTTY_SRC"
 mkdir -p "$GHOSTTY_SRC"
 touch "$GHOSTTY_SRC/build.zig"
 # Each build emits the next line of SETUP_TEST_BUILDS, or "rebuilt".
@@ -277,8 +283,41 @@ cat >"$PHUX_TOOLCHAIN_DIR/zig-aarch64-macos-$ZIG_VERSION/zig" <<SH
 #!/bin/sh
 if [ "\$1" = version ]; then echo '$ZIG_VERSION'; exit; fi
 test -n "\$ZIG_GLOBAL_CACHE_DIR" || exit 1
+option() {
+  key="\$1"
+  shift
+  while [ "\$#" -gt 1 ]; do
+    if [ "\$1" = "\$key" ]; then printf '%s' "\$2"; return; fi
+    shift
+  done
+  return 1
+}
+case " \$* " in
+  *' --fetch=needed '*)
+    echo fetch >>"\$SETUP_TEST_ZIG_CALLS"
+    if [ -n "\${SETUP_TEST_FETCH_FAIL:-}" ]; then echo 'fixture mirror rejected'; exit 23; fi
+    grep -Fq 'https://deps.files.ghostty.org/aro-d0c8c4d9c55daa7ef6e40cf0f630a5b5e900989b.tar.gz' build.zig.zon || exit 1
+    grep -Fq "\$SETUP_TEST_ARO" build.zig.zon || exit 1
+    package="\$(option --pkg-dir "\$@")" || exit 1
+    cache="\$(option --cache-dir "\$@")" || exit 1
+    test "\$package" = "\$SETUP_TEST_EXPECT_SOURCE/zig-pkg" || { echo 'wrong mirror package directory'; exit 1; }
+    test "\$ZIG_GLOBAL_CACHE_DIR" = "\$(dirname "\$cache")/zig-mirror-global" || exit 1
+    mkdir -p "\$package/\$SETUP_TEST_ARO"
+    exit 0 ;;
+esac
+echo compile >>"\$SETUP_TEST_ZIG_CALLS"
+test "\$PWD" = "\$SETUP_TEST_EXPECT_SOURCE" || exit 1
+test -d "zig-pkg/\$SETUP_TEST_ARO" || { echo 'mirror not materialized before compile'; exit 1; }
+test ! -e "\$ZIG_GLOBAL_CACHE_DIR/compiled" || { echo 'compiler cache was reused'; exit 1; }
+case "\$ZIG_GLOBAL_CACHE_DIR" in
+  */zig-global-1) mkdir -p "\$ZIG_GLOBAL_CACHE_DIR/p"; printf fetched >"\$ZIG_GLOBAL_CACHE_DIR/p/package" ;;
+  */zig-global-[23]) test -f "\$ZIG_GLOBAL_CACHE_DIR/p/package" || { echo 'fetched package cache was lost'; exit 1; } ;;
+  *) echo 'compile did not use an independent cache'; exit 1 ;;
+esac
+printf compiled >"\$ZIG_GLOBAL_CACHE_DIR/compiled"
 case " \$* " in *' -Doptimize=safe '*) ;; *) exit 1 ;; esac
 case " \$* " in *' --seed=0 '*) ;; *) exit 1 ;; esac
+case " \$* " in *' -j1 '*) ;; *) exit 1 ;; esac
 case " \$* " in *' --global-cache-dir '*|*' --seed '*) exit 1 ;; esac
 bytes=rebuilt
 if [ -s "\$SETUP_TEST_BUILDS" ]; then
@@ -296,28 +335,61 @@ while [ "\$#" -gt 0 ]; do
 done
 exit 1
 SH
+# A failed hash-checked bootstrap stops both modes before compilation, ABI
+# checks, consuming a deterministic-build result, or touching the vendor file.
+printf not-consumed >"$SETUP_TEST_BUILDS"
+for mode in build --check; do
+    : >"$SETUP_TEST_ZIG_CALLS"
+    SETUP_TEST_FETCH_FAIL=1 expect_fail 'fixture mirror rejected' "$repo/scripts/build-vt-wasm.sh" "$mode"
+    [[ "$(cat "$SETUP_TEST_ZIG_CALLS")" = fetch ]]
+    [[ "$(cat "$SETUP_TEST_BUILDS")" = not-consumed ]]
+    [[ "$(cat "$engine")" = old ]]
+done
+: >"$SETUP_TEST_BUILDS"
 cat >"$bin/node" <<'SH'
 #!/bin/sh
 echo 'fixture ABI rejected'
 exit 1
 SH
+: >"$SETUP_TEST_ZIG_CALLS"
 expect_fail 'ABI rejected' "$repo/scripts/build-vt-wasm.sh"
+[[ "$(cat "$SETUP_TEST_ZIG_CALLS")" = $'fetch\ncompile' ]]
 [[ "$(cat "$engine")" = old ]]
 cp "$bin/npm" "$bin/node"
+: >"$SETUP_TEST_ZIG_CALLS"
 expect_fail 'engine differs in 3 rebuilds' "$repo/scripts/build-vt-wasm.sh" --check
+[[ "$(cat "$SETUP_TEST_ZIG_CALLS")" = $'fetch\ncompile\ncompile\ncompile' ]]
 [[ "$(grep -c '^attempt [123]: rebuilt sha256' "$scratch/output")" = 3 ]]
 [[ "$(cat "$engine")" = old ]]
+: >"$SETUP_TEST_ZIG_CALLS"
 expect_pass "$repo/scripts/build-vt-wasm.sh"
+[[ "$(cat "$SETUP_TEST_ZIG_CALLS")" = $'fetch\ncompile\ncompile' ]]
 [[ "$(cat "$engine")" = rebuilt ]]
+: >"$SETUP_TEST_ZIG_CALLS"
 expect_pass "$repo/scripts/build-vt-wasm.sh" --check
+[[ "$(cat "$SETUP_TEST_ZIG_CALLS")" = $'fetch\ncompile' ]]
+# Resolve a relative development override (including spaces) before the fetch
+# changes cwd to the manifest shim.
+(
+    cd "$scratch"
+    export GHOSTTY_SRC="local engine"
+    : >"$SETUP_TEST_ZIG_CALLS"
+    expect_pass "$repo/scripts/build-vt-wasm.sh" --check
+    [[ "$(cat "$SETUP_TEST_ZIG_CALLS")" = $'fetch\ncompile' ]]
+)
 # One divergent build is retried from fresh caches; two that disagree never
 # become the committed engine.
 printf 'variant\nrebuilt\n' >"$SETUP_TEST_BUILDS"
 expect_pass "$repo/scripts/build-vt-wasm.sh" --check
 grep -Fq 'matches the verified source rebuild (attempt 2)' "$scratch/output"
+[[ "$(cat "$engine")" = rebuilt ]]
+printf 'variant-1\nvariant-2\nrebuilt\n' >"$SETUP_TEST_BUILDS"
+expect_pass "$repo/scripts/build-vt-wasm.sh" --check
+grep -Fq 'matches the verified source rebuild (attempt 3)' "$scratch/output"
+[[ "$(cat "$engine")" = rebuilt ]]
 printf 'variant\nrebuilt\n' >"$SETUP_TEST_BUILDS"
 expect_fail 'two rebuilds differ' "$repo/scripts/build-vt-wasm.sh"
 [[ "$(cat "$engine")" = rebuilt ]]
-unset GHOSTTY_SRC SETUP_TEST_BUILDS PHUX_TOOLCHAIN_DIR
+unset GHOSTTY_SRC SETUP_TEST_BUILDS PHUX_TOOLCHAIN_DIR SETUP_TEST_ZIG_CALLS SETUP_TEST_ARO SETUP_TEST_EXPECT_SOURCE
 bash "$root/scripts/check-ghostty-pin_test.sh"
 echo 'dev setup tests passed (scoped PATH, version/SDK errors, opt-in components, checksum rejection, idempotence)'
