@@ -186,6 +186,8 @@ describe("native setup and rust icount", () => {
       "scripts/doctor.sh",
       "scripts/check-docs.sh",
       "scripts/build-vt-wasm.sh",
+      "scripts/zig-mirrors/build.zig",
+      "scripts/zig-mirrors/build.zig.zon",
       "scripts/prepare-vt-wasm.mjs",
       "scripts/smoke-vt-wasm.mjs",
       "scripts/check-ghostty-pin.sh",
@@ -250,6 +252,18 @@ describe("native setup and rust icount", () => {
     expect(lanes(["scripts/setup-rust.sh"], "pull_request")).toContain("native");
     expect(lanes(["scripts/lib/dev-toolchain.sh"], "pull_request")).toContain("native");
   });
+
+  test.each(["scripts/zig-mirrors/build.zig", "scripts/zig-mirrors/build.zig.zon"])(
+    "a queue-verified pull request changing only %s runs native setup and the web engine",
+    (path) => {
+      const c = classifier.classify([path]);
+      const selected = plan(c, "pull_request", {
+        queueVerified: true,
+        scope: { kind: "diff", paths: [path] },
+      });
+      expect(planOutputs(selected, c)).toMatchObject({ native: true, web_engine: true });
+    },
+  );
 
   test("a pull request that changes a baseline, bench, or icount harness runs icount", () => {
     for (const path of [

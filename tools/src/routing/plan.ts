@@ -105,6 +105,8 @@ export const NATIVE_SETUP_PATHS = [
   "scripts/doctor.sh",
   "scripts/check-docs.sh",
   "scripts/build-vt-wasm.sh",
+  "scripts/zig-mirrors/build.zig",
+  "scripts/zig-mirrors/build.zig.zon",
   "scripts/prepare-vt-wasm.mjs",
   "scripts/smoke-vt-wasm.mjs",
   "scripts/check-ghostty-pin.sh",

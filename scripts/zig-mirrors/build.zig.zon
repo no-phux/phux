@@ -1,0 +1,12 @@
+.{
+    .name = .fetch_shim,
+    .version = "0.0.0",
+    .fingerprint = 0x5d559c7454d9543b,
+    .paths = .{""},
+    .dependencies = .{
+        .aro = .{
+            .url = "https://deps.files.ghostty.org/aro-d0c8c4d9c55daa7ef6e40cf0f630a5b5e900989b.tar.gz",
+            .hash = "aro-0.0.0-JSD1QtuBNwCASyBtNF3pqTl_W3oAJQGEVyFAtrBSE_Pa",
+        },
+    },
+}
