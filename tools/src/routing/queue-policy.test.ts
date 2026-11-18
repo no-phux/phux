@@ -295,6 +295,8 @@ test.each(RESPONSES)(
       rmSync(dir, { recursive: true, force: true });
     }
   },
+  // Each case launches both planners and all 16 aggregate subprocesses.
+  15_000,
 );
 
 test.each([
