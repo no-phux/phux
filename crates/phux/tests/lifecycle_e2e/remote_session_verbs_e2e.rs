@@ -164,6 +164,53 @@ fn stdout(out: &Output) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
+#[test]
+#[ignore = "spawns a real server with a QUIC listener; runs in the e2e lane"]
+fn public_api_discovers_creates_and_recovers_on_a_registered_remote() {
+    fn json(output: &Output) -> serde_json::Value {
+        assert!(output.status.success(), "{}", stderr(output));
+        serde_json::from_slice(&output.stdout).expect("JSON reply")
+    }
+
+    let remote = LoopbackRemote::start();
+    let description = json(&remote.phux(&["api", "--remote", REMOTE, "list"]));
+    assert_eq!(description["source"], "connected_server");
+    json(&remote.phux(&["new", "--remote", REMOTE, "-s", "api-test", "--json"]));
+    let inventory = json(&remote.phux(&["ls", "--remote", REMOTE, "--json"]));
+    let session = &inventory["sessions"]
+        .as_array()
+        .expect("session array")
+        .iter()
+        .find(|session| session["name"] == "api-test")
+        .expect("new session")["key"];
+    let lookup = serde_json::json!({
+        "session":session, "idempotency_key":"0123456789abcdef0123456789abcdef",
+    });
+    let mut request = lookup.clone();
+    request["argv"] = serde_json::json!(["/bin/true"]);
+    let created = json(&remote.phux(&[
+        "api",
+        "--remote",
+        REMOTE,
+        "call",
+        "terminal.create",
+        "--request-json",
+        &request.to_string(),
+    ]));
+    assert_eq!(created["authority"], description["authority"]);
+    let recovered = json(&remote.phux(&[
+        "api",
+        "--remote",
+        REMOTE,
+        "call",
+        "terminal.operation",
+        "--request-json",
+        &lookup.to_string(),
+    ]));
+    assert_eq!(recovered["authority"], created["authority"]);
+    assert_eq!(recovered["resource"], created["resource"]);
+}
+
 /// Create, list, rename, detach, and kill sessions on a remote from a local
 /// shell — the gap F15/F19 named: headless verbs that took `--socket` only.
 #[test]

@@ -11,7 +11,7 @@ phux api describe question.list
 | --- | --- | --- | --- |
 | Describe this server | `phux api list` / `phux api describe OPERATION` | `phux_api_describe` | `phux_client::terminal::describe` |
 | Create, place and start | `phux terminal create --request-json JSON` | `phux_terminal_create` | `phux_client::terminal::create` |
-| Recover a receipt, without effects | `phux terminal operation --session KEY --idempotency-key HEX32` | `phux_terminal_operation` | `phux_client::terminal::operation` |
+| Recover a receipt, without effects | `phux api call terminal.operation --request-json JSON` | `phux_terminal_operation` | `phux_client::terminal::operation` |
 | Reconcile a retained resource | `phux resource show --json ^FULL_RESOURCE_KEY` | `phux_resource_show` with `target: "^FULL_RESOURCE_KEY"` | `phux_client::resource::show::show_key` |
 | Read or wait for an exact execution | `phux api call execution.result --request-json JSON` | `phux_execution_result` | `phux_client::resource::execution::result` |
 | Read current questions | `phux api call question.list --request-json JSON` | `phux_agent_questions` | `phux_client::native_agent::questions::current_on` |
@@ -155,10 +155,14 @@ request and key. After timeout, transport failure or an unreadable mutation
 reply, the original outcome is unknown. Read its receipt first:
 
 ```sh
-phux terminal operation --session "$session" --idempotency-key "$key"
+jq -n --arg session "$session" --arg key "$key" \
+  '{session: $session, idempotency_key: $key}' |
+  phux api call terminal.operation --request-json -
 ```
 
-This lookup never launches or edits anything. A retained identical creation
+This lookup is also available as
+`phux terminal operation --session "$session" --idempotency-key "$key"`.
+It never launches or edits anything. A retained identical creation
 can also be explicitly replayed with the same key and identical payload; it
 returns the original resource and entry without running effects. Reusing the
 key for another payload is refused. Prefer lookup when recovering a lost
@@ -244,10 +248,14 @@ read exits 0 in the CLI; process status belongs in `observation.outcome`.
 workflows, complete nested input/output schemas, completion meanings and
 retry retention. `phux api describe OPERATION` selects one contract from that
 answer. `phux api call OPERATION --request-json -` reads its request from
-standard input and dispatches to that operation's typed client. Prefer
-standard input so launch arguments and environment aren't visible in the
-client's process argument list. List and describe can display operations a
-particular CLI build cannot call yet. These schemas derive from the same public DTOs
+standard input and dispatches to that operation's typed client. Requests must
+be UTF-8 and are limited to 1 MiB, including when passed as an argument.
+Prefer standard input so launch arguments and environment aren't visible in
+the client's process argument list. List and describe can display operations a
+particular CLI build cannot call yet; calling an unknown operation returns
+`unsupported`. Use `phux api --remote HOST ...` with an already registered
+host. The command neither enrolls a host nor starts a server.
+These schemas derive from the same public DTOs
 used by CLI, MCP and Rust callers. Representable list bounds, identities,
 absolute/NUL-free cwd, environment restrictions and placement numeric bounds
 are included. `semantic_validation` names checks requiring host facts, current
@@ -256,8 +264,16 @@ membership/authority or UTF-8 byte counts (JSON Schema counts characters).
 DTO and its code/outcome vocabulary. `not_sent` means this invocation sent no
 mutation; `refused` means the server refused it; `committed` requires receipt
 reconciliation; `unknown` never establishes that the original mutation failed.
-A missing receipt read is always `unknown`, even when that read itself was
-refused or could not connect. MCP wraps this document in its tool-error carrier. `phux --capabilities --json` continues to
+A failed lookup of a valid creation receipt identity is `unknown`, even
+when that read itself was refused or could not resolve or connect to the
+target. For terminal calls, target failures retain the `idempotency_key`
+when the request decoded successfully. A selector error such as combining
+`--socket` and `--remote` reports `invalid_argument`; an unavailable registry
+entry or failed dial reports `transport`. Parse failures may not carry a key.
+These are errors from the `api` command after CLI parsing; malformed CLI syntax
+uses the general CLI usage diagnostic. Question receipt failures instead
+carry the question `operation_id`. MCP wraps workflow errors in its
+tool-error carrier. `phux --capabilities --json` continues to
 describe the installed binary; it is not connected-server discovery.
 
 Supported is not authorized. Every invocation still crosses authenticated

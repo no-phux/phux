@@ -6,6 +6,8 @@ mod runner;
 use serde_json::{Value, json};
 use std::{io::Write, process::Stdio};
 
+#[path = "terminal_api/failures.rs"]
+mod failures;
 #[path = "terminal_api/hardening.rs"]
 mod hardening;
 
@@ -14,7 +16,7 @@ fn api_lookup_dial_failure_preserves_unknown_outcome() {
     let temp = tempfile::tempdir().unwrap();
     let socket = temp.path().join("missing.sock");
     let key = "abababababababababababababababab";
-    let request = json!({"session":"0123456789ABCDEFGHJKMNPQRS", "idempotency_key":key});
+    let request = json!({"session":failures::SESSION, "idempotency_key":key});
     let out = common::phux_cmd(runner::phux_bin())
         .args(["api", "--socket"])
         .arg(socket)
@@ -97,6 +99,16 @@ fn cli_describes_creates_and_recovers_without_caller_rollback() {
     assert_eq!(timed_out["observation"]["state"], "running");
     assert!(timed_out["observation"]["outcome"].is_null());
     let observed: Value = serde_json::from_str(&server.success(&[
+        "api",
+        "call",
+        "terminal.operation",
+        "--request-json",
+        &json!({"session":session, "idempotency_key":request["idempotency_key"]}).to_string(),
+    ]))
+    .unwrap();
+    assert_eq!(observed["resource"], created["resource"]);
+    assert_eq!(observed["placement"], created["placement"]);
+    let legacy: Value = serde_json::from_str(&server.success(&[
         "terminal",
         "operation",
         "--session",
@@ -105,8 +117,7 @@ fn cli_describes_creates_and_recovers_without_caller_rollback() {
         "abababababababababababababababab",
     ]))
     .unwrap();
-    assert_eq!(observed["resource"], created["resource"]);
-    assert_eq!(observed["placement"], created["placement"]);
+    assert_eq!(legacy, observed);
     let inspected: Value = serde_json::from_str(&server.success(&[
         "api",
         "call",

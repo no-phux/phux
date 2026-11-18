@@ -1781,7 +1781,8 @@ Global flags:
 Discover and call this server's public operations
 
 Results are JSON. Select a registered server with `--remote`, or use the local
-socket. This does not start a server or enroll a new host.
+socket. This does not start a server or enroll a new host. Discovery can display
+operations this CLI does not yet know how to call.
 
 Usage: phux api [--remote <HOST>] <SUBCOMMAND>
 
@@ -1813,7 +1814,8 @@ Arguments:
   <OPERATION>  Public operation name.
 
 Flags:
-      --request-json <JSON>  JSON input. Use `-` to read it from standard input.
+      --request-json <JSON>  UTF-8 JSON input, up to 1 MiB. Use `-` to read from
+                             standard input.
   -h, --help                 Print help
 
 Global flags:
