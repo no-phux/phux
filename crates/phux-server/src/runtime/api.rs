@@ -1,7 +1,7 @@
 //! Connected-server self-description, not a generic invocation dispatcher.
 use crate::state::SharedState;
 use phux_protocol::{
-    api,
+    api::{self, PublicOperation},
     wire::frame::{CommandResult, CommandValue},
 };
 
@@ -19,7 +19,7 @@ pub(super) fn describe(state: &SharedState) -> CommandResult {
         "instance": instance,
         "authorization": "support is not authorization; every invocation is checked at dispatch",
         "operations": [{
-            "name": "terminal.create", "supported": true,
+            "name": PublicOperation::TerminalCreate.name(), "supported": true,
             "required_features": ["organization", "create_placement"],
             "required_verbs": ["create", "organize"],
             "scope": "destination session; anchor must belong to the same session",
@@ -34,13 +34,13 @@ pub(super) fn describe(state: &SharedState) -> CommandResult {
                 "lost_reply": "outcome_unknown; query terminal.operation on the same authority before considering any identical replay" },
             "retention": "resource retained until explicit removal; failed/completed result survives engine retirement but explicit relaunch replaces it; not timed screen retention"
         }, {
-            "name":"terminal.operation", "supported":true, "required_verbs":["inventory"],
+            "name": PublicOperation::TerminalOperation.name(), "supported":true, "required_verbs":["inventory"],
             "input_schema":api::terminal_operation_schema(), "output_schema":api::terminal_created_schema(),
             "error_schema":api::error_schema(),
             "completion":"read-only retained receipt lookup; no effects",
             "retry":{"missing_receipt":"original outcome unknown; resource.show by saved full durable key, never blindly replay"}
         }, {
-            "name":"resource.show", "supported":true, "required_verbs":["inventory"],
+            "name": PublicOperation::ResourceShow.name(), "supported":true, "required_verbs":["inventory"],
             "required_features":["organization", "durable_resource_inspection"],
             "selector":"full ^<durable-resource-key>",
             "input_schema":api::resource_key_schema(),

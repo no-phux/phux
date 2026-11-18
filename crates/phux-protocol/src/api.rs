@@ -8,6 +8,41 @@ mod schemas;
 pub use errors::{ErrorCode, ErrorDocument, OperationError, OperationOutcome};
 pub use schemas::semantic_validation;
 
+/// Operations with a public request and response contract, independent of wire tags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublicOperation {
+    /// Commit a new terminal's placement and launch intent.
+    TerminalCreate,
+    /// Recover a retained creation receipt.
+    TerminalOperation,
+    /// Inspect a resource by exact durable key.
+    ResourceShow,
+}
+
+impl PublicOperation {
+    /// Name reported by connected-server discovery and accepted by public clients.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::TerminalCreate => "terminal.create",
+            Self::TerminalOperation => "terminal.operation",
+            Self::ResourceShow => "resource.show",
+        }
+    }
+
+    /// Find the typed operation named by a caller, never a raw wire method.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        [
+            Self::TerminalCreate,
+            Self::TerminalOperation,
+            Self::ResourceShow,
+        ]
+        .into_iter()
+        .find(|operation| operation.name() == name)
+    }
+}
+
 /// Shared public argv/environment item bound, enforced by schema and runtime.
 pub const MAX_TERMINAL_ITEMS: usize = crate::wire::frame::MAX_LAUNCH_LIST;
 /// Maximum resource label length in UTF-8 bytes (schema can bound characters).

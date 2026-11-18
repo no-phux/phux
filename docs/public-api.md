@@ -6,7 +6,7 @@ an implemented vertical slice, not a replacement for every existing verb.
 
 | Intention | CLI | MCP | Rust |
 | --- | --- | --- | --- |
-| Describe this server | `phux terminal describe` | `phux_api_describe` | `phux_client::terminal::describe` |
+| Describe this server | `phux api list` / `phux api describe OPERATION` | `phux_api_describe` | `phux_client::terminal::describe` |
 | Create, place and start | `phux terminal create --request-json JSON` | `phux_terminal_create` | `phux_client::terminal::create` |
 | Recover a receipt, without effects | `phux terminal operation --session KEY --idempotency-key HEX32` | `phux_terminal_operation` | `phux_client::terminal::operation` |
 | Reconcile a retained resource | `phux resource show --json ^FULL_RESOURCE_KEY` | `phux_resource_show` with `target: "^FULL_RESOURCE_KEY"` | `phux_client::resource::show::show_key` |
@@ -22,12 +22,12 @@ The server must already be running. Start from its description and the durable
 session keys in `phux ls --json`, not mutable names or a remembered `@N`:
 
 ```sh
-phux terminal describe
+phux api describe terminal.create
 session=$(phux ls --json | jq -r '.sessions[] | select(.name == "work") | .key')
 key=$(openssl rand -hex 16)
 request=$(jq -n --arg session "$session" --arg key "$key" \
   '{session: $session, idempotency_key: $key, argv: ["/bin/sleep", "30"]}')
-phux terminal create --request-json "$request"
+printf '%s' "$request" | phux api call terminal.create --request-json -
 ```
 
 The strict request has `idempotency_key` (nonzero 32 hex digits), `session`
@@ -177,14 +177,19 @@ replacement. Receipt expiry does not remove the resource's retained result.
 The MCP adapter also has its separate in-memory mutation ledger. It forwards
 the creation key to the server, but its pending operation receipt and
 `phux_operation_status` do not become durable. `phux_terminal_operation`
-queries the server, not that adapter ledger.
+queries the server, not that adapter ledger. Pending status names the tool
+without echoing its request arguments.
 
 ## Discovery, authorization and events
 
-`terminal describe` asks the **connected server** for supported public
+`phux api list` asks the **connected server** for supported public
 workflows, complete nested input/output schemas, completion meanings and
-retry retention. It does not enumerate new server methods from an old
-client's compiled catalog. These schemas derive from the same public DTOs
+retry retention. `phux api describe OPERATION` selects one contract from that
+answer. `phux api call OPERATION --request-json -` reads its request from
+standard input and dispatches to that operation's typed client. Prefer
+standard input so launch arguments and environment aren't visible in the
+client's process argument list. List and describe can display operations a
+particular CLI build cannot call yet. These schemas derive from the same public DTOs
 used by CLI, MCP and Rust callers. Representable list bounds, identities,
 absolute/NUL-free cwd, environment restrictions and placement numeric bounds
 are included. `semantic_validation` names checks requiring host facts, current
@@ -198,7 +203,9 @@ refused or could not connect. MCP wraps this document in its tool-error carrier.
 describe the installed binary; it is not connected-server discovery.
 
 Supported is not authorized. Every invocation still crosses authenticated
-server dispatch. Placed creation requires `CREATE` and `ORGANIZE` on the
+server dispatch. Discovery currently requires global `INVENTORY`; a
+session-scoped caller may be able to call an operation without being able to
+list it. Placed creation requires `CREATE` and `ORGANIZE` on the
 destination session. Lookup requires `INVENTORY` there and does not disclose
 another session's receipt. No new listener, generic invocation dispatcher,
 local-only bypass, input lease exception or approval bypass is introduced.

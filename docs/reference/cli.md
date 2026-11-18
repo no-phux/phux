@@ -50,7 +50,7 @@ Panes:
   insert-pane   Insert an existing pane into a layout
   mv            Move a pane into another session, or beside another pane
   swap-pane     Swap two panes in a layout
-  terminal      Create and place terminals; inspect API and receipts
+  terminal      Create and place terminals; inspect creation receipts
   resource      Inspect a resource or wait for its process to exit
   slot          Keep several panes in one layout slot, as tabs
 
@@ -101,6 +101,7 @@ More:
   perf          Show the server's performance telemetry
   whoami        Report who this connection is to the server
   runtime-info  Inspect this binary's protocol and capabilities
+  api           Discover and invoke the connected server's public operations
   archive       Export sessions to an archive file, or import one
   worktree      Manage git worktrees and their bound sessions
   idea          Capture an idea
@@ -1715,6 +1716,83 @@ Flags:
 
 Global flags:
       --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux api`
+
+```text
+Discover and invoke the connected server's public operations
+
+Results are JSON. Select a registered server with `--remote`, or use the local
+socket. This does not start a server or enroll a new host.
+
+Usage: phux api [--remote <HOST>] <SUBCOMMAND>
+
+Commands:
+  call      Call a typed public operation without resolving names or changing
+            focus.
+  describe  Read the full input, output, authorization and recovery contract for
+            one operation.
+  list      List the connected server's public operations and their contracts.
+  help      Print this message or the help of the given subcommand(s)
+
+Flags:
+      --remote <HOST>  Registered phux host to connect to instead of the local
+                       server.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux api call`
+
+```text
+Call a typed public operation without resolving names or changing focus.
+
+Usage: phux api call <--request-json <JSON>> <OPERATION>
+
+Arguments:
+  <OPERATION>  Public operation name.
+
+Flags:
+      --request-json <JSON>  JSON input. Use `-` to read it from standard input.
+  -h, --help                 Print help
+
+Global flags:
+      --socket <PATH>        Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux api describe`
+
+```text
+Read the full input, output, authorization and recovery contract for one
+operation.
+
+Usage: phux api describe <OPERATION>
+
+Arguments:
+  <OPERATION>  Public operation name.
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux api list`
+
+```text
+List the connected server's public operations and their contracts.
+
+Usage: phux api list
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux approvals`
@@ -7274,7 +7352,7 @@ Global flags:
 ## `phux terminal`
 
 ```text
-Create and place terminals; inspect API and receipts
+Create and place terminals; inspect creation receipts
 
 Always returns versioned JSON. Creation commits membership, placement and launch
 intent together; a receipt is not process or task completion.
@@ -7283,8 +7361,6 @@ Usage: phux terminal <SUBCOMMAND>
 
 Commands:
   create     Create, place and start a terminal from one strict JSON intention.
-  describe   Read the connected server's public workflow schemas and retry
-             contracts.
   operation  Recover a retained creation receipt without executing or retrying
              anything. A missing receipt means unknown, not that the original
              request was refused.
@@ -7302,8 +7378,8 @@ Global flags:
 ```text
 Create, place and start a terminal from one strict JSON intention.
 
-Use `terminal describe` for the complete nested request schema. Argv runs in a
-new process, never by typing into an existing shell. The resource and
+Use `api describe terminal.create` for the complete nested request schema. Argv
+runs in a new process, never by typing into an existing shell. The resource and
 failed/completed execution remain until explicit removal.
 
 Usage: phux terminal create <--request-json <JSON>>
@@ -7315,20 +7391,6 @@ Flags:
 
 Global flags:
       --socket <PATH>        Server socket to dial (default: `$PHUX_SOCKET`)
-```
-
-## `phux terminal describe`
-
-```text
-Read the connected server's public workflow schemas and retry contracts.
-
-Usage: phux terminal describe
-
-Flags:
-  -h, --help           Print help
-
-Global flags:
-      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux terminal operation`

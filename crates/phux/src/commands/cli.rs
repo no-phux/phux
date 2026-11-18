@@ -190,6 +190,9 @@ pub(crate) enum Command {
     #[usage(help_heading = "Panes", display_order = 31)]
     Terminal(TerminalArgs),
 
+    #[usage(help_heading = "More", display_order = 65)]
+    Api(ApiArgs),
+
     #[usage(help_heading = "More", display_order = 60)]
     Rec(RecArgs),
 

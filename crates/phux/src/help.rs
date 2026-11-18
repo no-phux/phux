@@ -56,6 +56,7 @@ Start here:\n  \
   phux send-keys TARGET K  Send input to a pane\n  \
   phux host add me@HOST    Reach another machine over ssh\n  \
   phux agent list          See agents and their current state\n  \
+  phux api list            Discover the connected server's public operations\n  \
   phux --skill             Teach an agent how to drive phux\n\n\
 Run `phux --help` for every command or `phux <command> --help` for details.\n";
 

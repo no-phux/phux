@@ -139,7 +139,7 @@ pub(crate) const TOOLS: &[Row] = &[
     ),
     cli(
         "phux_api_describe",
-        "terminal describe",
+        "api list",
         Touches::Wire(&["DESCRIBE_API"]),
     ),
     cli("phux_ls", "ls", Touches::Wire(&[RESOLVE])),

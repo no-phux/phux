@@ -73,7 +73,7 @@ fn cli_verbs() -> BTreeSet<String> {
 const AGENT_FACING: &[&str] = &[
     "terminal create",
     "terminal operation",
-    "terminal describe",
+    "api list",
     "agent answer",
     "agent prompt",
     "agent send-keys",

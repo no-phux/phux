@@ -420,7 +420,7 @@ lists them. The owner socket skips them, credentials aside. See
 
 ## Complete terminal creation
 
-Use `phux terminal describe` / `phux_api_describe` for the connected server's
+Use `phux api list` / `phux_api_describe` for the connected server's
 [terminal workflow](./public-api.md), nested schemas and retry rules.
 `terminal create` / `phux_terminal_create` execute argv in a new process and
 commit its placement; they do not type a shell command or submit an agent turn.
@@ -434,13 +434,13 @@ reference](./reference/cli.md) has their arguments, and the
 [parity reference](./reference/parity.md) names the MCP tool for each or
 says why it is command-line only.
 
-`agent answer`, `agent prompt`, `agent send-keys`, `agent wait`,
+`agent answer`, `agent prompt`, `agent send-keys`, `agent wait`, `api list`,
 `approvals`, `ask`, `channel`, `config agents`, `config run`, `host add`,
 `host discover`, `host ls`, `host renew`, `host upgrade`, `kill`, `launch`,
 `logs`, `ls`, `mcp`, `new`, `organize`, `play`, `rec mark`, `relaunch`, `resize`,
 `resource methods`, `resource show`, `resource wait`, `restore`, `rm`,
 `run`, `signal`, `snapshot`, `spawn`, `status`, `terminal create`,
-`terminal describe`, `terminal operation`, `update`, `wait`, `watch`,
+`terminal operation`, `update`, `wait`, `watch`,
 `whoami`, `mail send`, `mail read`, `mail ack`, `claim take`, `claim renew`,
 `claim release`, `claim list`.
 

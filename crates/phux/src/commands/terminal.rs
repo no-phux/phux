@@ -12,18 +12,6 @@ pub(crate) fn run(args: crate::commands::TerminalArgs, socket: Option<PathBuf>) 
         Err(code) => return code,
     };
     match action {
-        TerminalAction::Describe => {
-            match runtime.block_on(phux_client::terminal::describe_on(&socket)) {
-                Ok(document) => crate::output::json(&document),
-                Err(error) => {
-                    eprintln!(
-                        "{}",
-                        serde_json::json!({"schema_version":1,"error":{"code":error.code(),"message":error.to_string()}})
-                    );
-                    ExitCode::FAILURE
-                }
-            }
-        }
         TerminalAction::Operation {
             session,
             idempotency_key,

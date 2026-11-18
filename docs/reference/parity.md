@@ -15,7 +15,7 @@ Every tool the MCP adapter (`phux mcp`) serves, the `phux` verb it mirrors, and 
 | `phux_operation_status` | none (automation only) | in-process | yes | no |
 | `phux_terminal_operation` | `phux terminal operation` | in-process | yes | no |
 | `phux_terminal_create` | `phux terminal create` | in-process | no | no |
-| `phux_api_describe` | `phux terminal describe` | in-process | yes | no |
+| `phux_api_describe` | `phux api list` | in-process | yes | no |
 | `phux_ls` | `phux ls` | in-process | yes | no |
 | `phux_upload` | `phux upload` | in-process | no | yes |
 | `phux_snapshot` | `phux snapshot` | in-process | yes | no |

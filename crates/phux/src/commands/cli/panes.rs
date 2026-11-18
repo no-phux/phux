@@ -223,7 +223,7 @@ pub(crate) struct ResizeArgs {
     pub(crate) json: JsonOpt,
 }
 
-/// Create and place terminals; inspect API and receipts
+/// Create and place terminals; inspect creation receipts
 ///
 /// Always returns versioned JSON. Creation commits membership, placement and
 /// launch intent together; a receipt is not process or task completion.
@@ -231,6 +231,40 @@ pub(crate) struct ResizeArgs {
 pub(crate) struct TerminalArgs {
     #[usage(subcommand)]
     pub(crate) action: TerminalAction,
+}
+
+/// Discover and invoke the connected server's public operations
+///
+/// Results are JSON. Select a registered server with `--remote`, or use the
+/// local socket. This does not start a server or enroll a new host.
+#[derive(Debug, Args)]
+pub(crate) struct ApiArgs {
+    /// Registered phux host to connect to instead of the local server.
+    #[usage(long, value_name = "HOST")]
+    pub(crate) remote: Option<String>,
+    #[usage(subcommand)]
+    pub(crate) action: ApiAction,
+}
+
+#[derive(Debug, Subcommands)]
+pub(crate) enum ApiAction {
+    /// List the connected server's public operations and their contracts.
+    List,
+    /// Read the full input, output, authorization and recovery contract for one operation.
+    Describe {
+        /// Public operation name.
+        #[usage(value_name = "OPERATION")]
+        operation: String,
+    },
+    /// Call a typed public operation without resolving names or changing focus.
+    Call {
+        /// Public operation name.
+        #[usage(value_name = "OPERATION")]
+        operation: String,
+        /// JSON input. Use `-` to read it from standard input.
+        #[usage(long = "request-json", value_name = "JSON")]
+        request_json: String,
+    },
 }
 
 /// `phux terminal <action>` — the complete-intention terminal workflow.
@@ -246,11 +280,9 @@ pub(crate) enum TerminalAction {
         #[usage(long = "idempotency-key", value_name = "HEX32")]
         idempotency_key: String,
     },
-    /// Read the connected server's public workflow schemas and retry contracts.
-    Describe,
     /// Create, place and start a terminal from one strict JSON intention.
     ///
-    /// Use `terminal describe` for the complete nested request schema.
+    /// Use `api describe terminal.create` for the complete nested request schema.
     /// Argv runs in a new process, never by typing into an existing shell.
     /// The resource and failed/completed execution remain until explicit removal.
     Create {
