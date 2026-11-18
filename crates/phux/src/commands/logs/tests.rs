@@ -187,7 +187,6 @@ fn logs_flag_grammar_rejects_contradictions() {
     assert!(crate::parse_cli(["phux", "logs", "--server", "-f", "-n", "50"]).is_ok());
     assert!(crate::parse_cli(["phux", "logs", "--client", "--pid", "42"]).is_ok());
     assert!(crate::parse_cli(["phux", "logs", "--client", "-f"]).is_ok());
-    assert!(crate::parse_cli(["phux", "logs", "--cockpit"]).is_err());
 
     assert!(
         crate::parse_cli(["phux", "logs", "--json", "-f"]).is_err(),

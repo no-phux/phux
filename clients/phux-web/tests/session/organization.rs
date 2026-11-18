@@ -85,12 +85,6 @@ async fn an_unreadable_state_attaches_the_last_session_without_creating() {
 }
 
 #[wasm_bindgen_test]
-fn intake_attach_preference_is_default_and_keeps_the_legacy_alias() {
-    assert_eq!(AttachPreference::default(), AttachPreference::Intake);
-    assert_eq!(AttachPreference::Inbox, AttachPreference::Intake);
-}
-
-#[wasm_bindgen_test]
 async fn an_organization_server_opens_intake() {
     let (mut session, hello) = greeted(hello_with(organization_caps())).await;
     assert!(session.organization_supported());

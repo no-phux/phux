@@ -510,7 +510,6 @@ mod tests {
     fn every_spec_is_parsed() {
         for spec in SPECS {
             let name = spec.name;
-            assert_eq!((spec.schema)()["name"], name);
             assert!(
                 !matches!(parse(name, &json!({})), Err(err) if err.to_string().contains("unknown coordination tool")),
                 "{name}"

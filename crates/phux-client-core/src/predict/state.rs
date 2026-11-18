@@ -809,7 +809,7 @@ mod tests {
         let cells: Vec<_> = s.pending().map(|p| (p.row, p.col, p.kind)).collect();
         let want: Vec<_> = (0..5).map(|c| (0, c, PredictionKind::Insert)).collect();
         assert_eq!(cells, want);
-        assert_eq!(s.cursor_col, 5);
+        assert_eq!(s.cursor(), (0, 5));
     }
 
     #[test]
@@ -833,10 +833,10 @@ mod tests {
     fn backspace_after_insert_is_predicted_and_decrements_cursor() {
         let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
         assert_eq!(s.predict_key(&key_text("a")), PredictionOutcome::Predicted);
-        assert_eq!(s.cursor_col, 1);
+        assert_eq!(s.cursor(), (0, 1));
         let bs = key_named(PhysicalKey::Backspace, ModSet::empty());
         assert_eq!(s.predict_key(&bs), PredictionOutcome::Predicted);
-        assert_eq!(s.cursor_col, 0);
+        assert_eq!(s.cursor(), (0, 0));
         assert_eq!(s.pending_len(), 2);
         let last = s.pending().last().expect("two predictions");
         assert_eq!(last.kind, PredictionKind::BackspaceEol);
@@ -1040,16 +1040,15 @@ mod tests {
         assert_eq!(s.pending_len(), 2);
         s.set_viewport(100, 30);
         assert_eq!(s.pending_len(), 0);
-        assert_eq!(s.cols, 100);
-        assert_eq!(s.rows, 30);
+        s.set_cursor(50, 200);
+        assert_eq!(s.cursor(), (29, 99));
     }
 
     #[test]
     fn set_cursor_clamps_to_viewport() {
         let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
         s.set_cursor(50, 200);
-        assert_eq!(s.cursor_row, 23);
-        assert_eq!(s.cursor_col, 79);
+        assert_eq!(s.cursor(), (23, 79));
     }
 
     /// An arrow over a known grid cell moves the predicted cursor by that

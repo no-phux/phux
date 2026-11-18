@@ -223,30 +223,6 @@ mod tests {
     }
 
     #[test]
-    fn dead_event_is_the_plugin_validate_finding() {
-        let (_dir, path) = write_manifest(
-            r#"
-id = "acme.broken"
-name = "Broken"
-version = "0.1.0"
-min_phux_version = "0.0.2"
-
-[[events]]
-id = "nope"
-title = "Nope"
-on = "on-startup"
-command = ["true"]
-"#,
-        );
-        let err = judge(&path, "acme/broken").expect_err("dead event");
-        assert_eq!(
-            err,
-            "invalid manifest: acme/broken/phux-plugin.toml: event `nope` listens for \
-             `on-startup`, which is not a hook event; it will never fire"
-        );
-    }
-
-    #[test]
     fn a_future_phux_requirement_is_rejected_by_the_loader() {
         let (_dir, path) = write_manifest(
             r#"

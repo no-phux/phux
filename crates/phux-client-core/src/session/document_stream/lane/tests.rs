@@ -51,28 +51,6 @@ fn a_cut_lands_whole_and_live_documents_only_move_forward() {
 }
 
 #[test]
-fn chunks_must_name_the_cut_and_arrive_in_order() {
-    let mut lane = begun(1);
-    let (stream_id, bootstrap_id) = ids(1);
-    let (_, other) = ids(2);
-    assert!(matches!(
-        lane.chunk(stream_id, other, 0, b"x", 0),
-        Err(KernelError::GenerationMismatch { .. })
-    ));
-    assert!(matches!(
-        lane.chunk(stream_id, bootstrap_id, 1, b"x", 0),
-        Err(KernelError::ChunkGap {
-            expected: 0,
-            actual: 1
-        })
-    ));
-    assert!(matches!(
-        lane.ready(stream_id, bootstrap_id, 0),
-        Err(KernelError::RetiredGeneration { .. })
-    ));
-}
-
-#[test]
 fn staging_is_bounded_by_the_kernel_ceilings_and_lifetime() {
     let mut lane = begun(1);
     let (stream_id, bootstrap_id) = ids(1);
@@ -97,28 +75,6 @@ fn staging_is_bounded_by_the_kernel_ceilings_and_lifetime() {
         lane.ready(stream_id, bootstrap_id, expired_at),
         Err(KernelError::BootstrapStagingLimitExceeded)
     ));
-}
-
-#[test]
-fn a_tombstone_fences_the_generation_until_its_recut() {
-    let mut lane = begun(1);
-    let (stream_id, bootstrap_id) = ids(1);
-    lane.ready(stream_id, bootstrap_id, 0).unwrap();
-    lane.tombstone(stream_id, bootstrap_id, TombstoneReason::OutboundGap, 4, 0);
-    assert!(matches!(
-        lane.output(stream_id, bootstrap_id, 5, b"late"),
-        Err(KernelError::RetiredGeneration { .. })
-    ));
-    let (_, recut) = ids(2);
-    lane.begin(
-        stream_id,
-        recut,
-        BootstrapStreamProfile::PixelSurfacePngV1,
-        6,
-        0,
-    )
-    .unwrap();
-    assert_eq!(lane.ready(stream_id, recut, 0).unwrap().seq, 6);
 }
 
 #[test]

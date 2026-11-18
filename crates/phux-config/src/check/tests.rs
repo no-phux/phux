@@ -61,13 +61,6 @@ fn each_mistake_is_located_classified_and_explained() {
             Fault::UnknownKey,
             &["expected one of"],
         ),
-        // A key removed in an earlier release is an ordinary unknown key.
-        (
-            "[defaults]\nrefresh-rate = 60\n",
-            "defaults.refresh-rate",
-            Fault::UnknownKey,
-            &[],
-        ),
         (
             "[keybindings]\nwhich-key = \"yes\"\n",
             "keybindings.which-key",

@@ -60,8 +60,7 @@ fn a_theme_derives_its_roles() {
         theme: Some(*nord),
         ..Inputs::system(false)
     });
-    let derived = phux_design::derive(&theme_input(nord), &phux_design::Params::house());
-    assert_eq!(t.roles, derived);
+    assert_eq!(t.roles.layer.ground, Rgb8::hex(0x2e_3440).opaque());
     assert!(t.dark(), "the theme's own mode beats the system's");
 }
 

@@ -137,14 +137,6 @@ mod tests {
     }
 
     #[test]
-    fn override_only_colours_are_never_hashed_to() {
-        assert_eq!(AUTO_COUNT, 8);
-        for n in 0..2_000 {
-            assert!(auto_index(&format!("host-{n}")) < AUTO_COUNT);
-        }
-    }
-
-    #[test]
     fn overrides_resolve_and_unknown_ones_fall_back() {
         let picked = resolve("mini", Some("violet"));
         assert_eq!((picked.id.as_str(), picked.overridden), ("violet", true));

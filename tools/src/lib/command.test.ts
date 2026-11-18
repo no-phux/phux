@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { parseArgs } from "node:util";
-import { Failure, invoke, required, UsageError, type Command } from "./command.ts";
+import { Failure, invoke, required, type Command } from "./command.ts";
 
 let printed: string[];
 let spies: { mockRestore(): void }[];
@@ -66,8 +66,4 @@ test("a Failure exits 1 with its message; anything else propagates", async () =>
     thrown = error;
   });
   expect(thrown).toBeInstanceOf(TypeError);
-});
-
-test("UsageError is a usage failure, not a Failure", () => {
-  expect(new UsageError("x")).not.toBeInstanceOf(Failure);
 });

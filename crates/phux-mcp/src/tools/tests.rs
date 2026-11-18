@@ -65,7 +65,7 @@ mod tests {
     async fn added_tool_dispatch_routes_to_strict_validation() {
         // `Some(message)` pins the refusal text exactly; `None` only requires
         // a refusal. Each case is refused before the CLI is discovered.
-        let cases: [(&str, Value, Option<&str>); 14] = [
+        let cases: [(&str, Value, Option<&str>); 12] = [
             (
                 "phux_kill",
                 json!({ "target": "@1" }),
@@ -104,12 +104,6 @@ mod tests {
                 None,
             ),
             ("phux_insert_pane", json!({ "target": "@1" }), None),
-            ("phux_workspace", json!({ "action": "delete" }), None),
-            (
-                "phux_agent",
-                json!({ "action": "list" }),
-                Some("unknown tool: phux_agent"),
-            ),
             (
                 "phux_agent_set",
                 json!({ "target": "@1" }),

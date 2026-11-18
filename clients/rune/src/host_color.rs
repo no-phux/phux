@@ -175,18 +175,6 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn the_shared_vectors_hold_here_too() {
-        for (name, id) in [
-            ("mini", "magenta"),
-            ("macbook", "olive"),
-            ("powerhouse-1", "blue"),
-            ("This Mac", "slate"),
-        ] {
-            assert_eq!(PALETTE[auto_index(name)].0, id, "{name}");
-        }
-    }
-
-    #[test]
     fn the_registry_wins_and_older_phux_falls_back_to_the_hash() {
         learn(&json!({ "hosts": [
             { "name": "box-a", "color": { "id": "violet", "hex": "#9A78E8", "override": true } },

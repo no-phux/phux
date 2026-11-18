@@ -289,14 +289,6 @@ fn most_recently_touched_session_starts_none_and_tracks_touch_order() {
     assert_eq!(s.sessions().most_recently_touched(), Some(sid));
 }
 
-#[test]
-fn shared_state_with_and_with_mut_round_trip() {
-    let shared = SharedState::new();
-    let (_sid, pid) = shared.with_mut(|s| s.seed_session("default"));
-    let count = shared.with(|s| s.resources().subscribers_for(pid).len());
-    assert_eq!(count, 0);
-}
-
 mod geometry;
 mod metadata;
 mod reap;

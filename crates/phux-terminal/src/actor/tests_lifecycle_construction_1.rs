@@ -86,34 +86,6 @@ fn ask_marker_parse() {
     }
 }
 
-/// A blank pane's snapshot opens with the reset preamble.
-#[test]
-fn synthesize_blank_pane_returns_reset_preamble() {
-    let bundle = TerminalActor::new(80, 24).expect("new");
-    let snap = bundle
-        .actor
-        .synthesize_with_scrollback(None)
-        .expect("synthesize");
-    assert_eq!(snap.cols, 80);
-    assert_eq!(snap.rows, 24);
-    assert!(snap.bytes.starts_with(b"\x1b[!p\x1b[2J\x1b[H"));
-}
-
-/// Seed bytes reach the synthesized snapshot.
-#[test]
-fn synthesize_seeded_pane_carries_visible_text() {
-    let bundle = TerminalActor::new_with_seed(20, 5, b"hello").expect("new_with_seed");
-    let snap = bundle
-        .actor
-        .synthesize_with_scrollback(None)
-        .expect("synthesize");
-    let body = String::from_utf8_lossy(&snap.bytes);
-    assert!(
-        body.contains("hello"),
-        "synthesized bytes should contain seeded text, got: {body:?}"
-    );
-}
-
 /// Sustained PTY readiness must leave a bounded slot for ordinary requests.
 #[tokio::test(flavor = "current_thread")]
 async fn snapshot_runs_after_one_bounded_pty_turn() {

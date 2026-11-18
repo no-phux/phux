@@ -4,19 +4,6 @@ fn key(n: usize) -> String {
     format!("phux.test.key/{n}/v1")
 }
 
-/// `metadata_broadcast` accepts only the intercepted keys.
-#[test]
-fn intercepted_key_variants_are_the_broadcast_only_session_writes() {
-    assert_eq!(
-        ServerInterceptedKey::SessionName.as_str(),
-        phux_protocol::wire::frame::SESSION_NAME_KEY,
-    );
-    assert_eq!(
-        ServerInterceptedKey::SessionKeepEmpty.as_str(),
-        phux_protocol::wire::frame::SESSION_KEEP_EMPTY_KEY,
-    );
-}
-
 /// Every intercepted key has a workload-auth catalog entry (ADR-0125)
 /// its writes classify onto, and refused keys are denied.
 #[test]

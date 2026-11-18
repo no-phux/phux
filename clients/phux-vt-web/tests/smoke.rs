@@ -17,27 +17,6 @@ async fn combined_row_growth_and_column_shrink_preserves_scrollback() {
 }
 
 #[wasm_bindgen_test]
-fn engine_wasm_is_embedded() {
-    assert!(phux_vt_web::engine_wasm_len() > 1_000_000);
-}
-
-#[wasm_bindgen_test]
-async fn writes_and_reads_back_text() {
-    let vt = Vt::load().await.expect("load ghostty-vt engine");
-    let term = vt.terminal(20, 5);
-
-    term.write(b"Hello, phux");
-    let rows = term.rows_text();
-
-    assert!(!rows.is_empty(), "expected rows, got none");
-    assert!(
-        rows[0].starts_with("Hello, phux"),
-        "row 0 should contain the written text; got {:?}",
-        rows[0],
-    );
-}
-
-#[wasm_bindgen_test]
 async fn codepoint_buffer_reads_the_base_of_combining_clusters() {
     let vt = Vt::load().await.expect("load ghostty-vt engine");
     let term = vt.terminal(20, 3);

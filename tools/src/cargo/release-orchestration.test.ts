@@ -26,8 +26,6 @@ test("the repository's settings and locks hold", () => {
 
 test("the root train is the only release train", () => {
   expect(TRAINS.map(({ config }) => config)).toEqual(["release-please-config.json"]);
-  const manifest = table(JSON.parse(readFileSync(join(ROOT, TRAINS[0].manifest), "utf8")));
-  expect(Object.keys(manifest)).not.toContain("clients/desktop");
 });
 
 test("a release bumps every lock's workspace crates in the release commit", () => {

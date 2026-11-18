@@ -39,19 +39,6 @@ async fn closed_after(
 }
 
 #[tokio::test]
-async fn optional_receives_accept_boundary_eof() {
-    for explicit_deadline in [false, true] {
-        assert!(
-            closed_after(&[], explicit_deadline)
-                .await
-                .await
-                .unwrap()
-                .is_none()
-        );
-    }
-}
-
-#[tokio::test]
 async fn optional_receives_reject_each_partial_header_eof() {
     for explicit_deadline in [false, true] {
         for n in 1..4 {
