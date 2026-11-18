@@ -234,7 +234,7 @@ pub(crate) struct TerminalArgs {
     pub(crate) action: TerminalAction,
 }
 
-/// Discover and invoke the connected server's public operations
+/// Discover and call this server's public operations
 ///
 /// Results are JSON. Select a registered server with `--remote`, or use the
 /// local socket. This does not start a server or enroll a new host.

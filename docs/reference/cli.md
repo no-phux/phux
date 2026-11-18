@@ -16,8 +16,6 @@ One section per command, in the order `phux <command> --help` would print them. 
 phux
 A terminal multiplexer whose server you can drive from code.
 
-Run `phux` alone to attach to your session; every other verb is headless.
-
 Usage: phux [FLAGS] [SUBCOMMAND]
 
 Sessions:
@@ -102,7 +100,7 @@ More:
   perf          Show the server's performance telemetry
   whoami        Report who this connection is to the server
   runtime-info  Inspect this binary's protocol and capabilities
-  api           Discover and invoke the connected server's public operations
+  api           Discover and call this server's public operations
   archive       Export sessions to an archive file, or import one
   worktree      Manage git worktrees and their bound sessions
   idea          Capture an idea
@@ -1780,7 +1778,7 @@ Global flags:
 ## `phux api`
 
 ```text
-Discover and invoke the connected server's public operations
+Discover and call this server's public operations
 
 Results are JSON. Select a registered server with `--remote`, or use the local
 socket. This does not start a server or enroll a new host.
