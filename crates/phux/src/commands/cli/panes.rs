@@ -238,6 +238,7 @@ pub(crate) struct TerminalArgs {
 ///
 /// Results are JSON. Select a registered server with `--remote`, or use the
 /// local socket. This does not start a server or enroll a new host.
+/// Discovery can display operations this CLI does not yet know how to call.
 #[derive(Debug, Args)]
 pub(crate) struct ApiArgs {
     /// Registered phux host to connect to instead of the local server.
@@ -262,7 +263,7 @@ pub(crate) enum ApiAction {
         /// Public operation name.
         #[usage(value_name = "OPERATION")]
         operation: String,
-        /// JSON input. Use `-` to read it from standard input.
+        /// UTF-8 JSON input, up to 1 MiB. Use `-` to read from standard input.
         #[usage(long = "request-json", value_name = "JSON")]
         request_json: String,
     },

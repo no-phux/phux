@@ -289,13 +289,16 @@ pub(crate) fn ensure_socket_path_fits(socket_path: &Path) -> Result<(), ExitCode
 /// Build a current-thread tokio runtime, or print why and return the
 /// failure exit code.
 pub(crate) fn cli_runtime() -> Result<tokio::runtime::Runtime, ExitCode> {
+    build_cli_runtime().map_err(|err| {
+        error!("failed to build runtime: {err}");
+        ExitCode::FAILURE
+    })
+}
+
+fn build_cli_runtime() -> std::io::Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .map_err(|err| {
-            error!("failed to build runtime: {err}");
-            ExitCode::FAILURE
-        })
 }
 
 /// Send one command over `conn` and return the matching `COMMAND_RESULT`,
