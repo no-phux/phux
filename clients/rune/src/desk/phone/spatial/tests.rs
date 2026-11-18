@@ -3,6 +3,7 @@ use super::*;
 mod fixture;
 mod ime;
 mod input;
+mod motion;
 mod refit;
 mod touch;
 mod touch_ownership;

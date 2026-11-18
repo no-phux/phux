@@ -318,7 +318,9 @@ fn bare(desk: &Desk, p: &Tokens, lights: f32, band_h: f32, cx: &mut Cx<Desk>) ->
 mod test_support;
 
 #[cfg(test)]
-pub use test_support::{element, glass_panels, offscreen, offscreen_as_app};
+pub use test_support::{
+    element, glass_panels, offscreen, offscreen_as_app, offscreen_as_app_with_renderer,
+};
 
 #[cfg(test)]
 mod tests;
