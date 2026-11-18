@@ -230,7 +230,6 @@ function strings(value, path) {
     throw new SchemaValidationError(path, "an array of strings");
   return value.map((item, index) => string(item, `${path}[${index}]`));
 }
-
 // ../runtime/src/resources.ts
 var RESOURCE_KINDS = ["terminal", "agent_session", "accessibility_tree", "pixel_surface", "document", "unknown"];
 var DOCUMENT_KINDS = ["accessibility_tree", "pixel_surface", "document"];
@@ -323,6 +322,35 @@ function parseSurfaceFacts(value) {
     out: root.out === undefined ? null : nullableString(root.out, "$.out")
   };
 }
+// ../runtime/src/session-inventory.ts
+function parseSessionList(value) {
+  const root = record(value, "$ (phux ls --json CLI shape)");
+  const schema = root.schema_version;
+  if (schema !== 1 && schema !== 2 && schema !== 3 && schema !== 4) {
+    throw new SchemaValidationError("$.schema_version", "a supported value (1 through 4)");
+  }
+  if (!Array.isArray(root.sessions)) {
+    throw new SchemaValidationError("$.sessions", "an array");
+  }
+  const sessions = root.sessions.map((item, index) => parseSession(item, index, schema));
+  const terminals = schema === 1 && root.terminals === undefined ? [] : strings(root.terminals, "$.terminals");
+  const resources = root.resources === undefined ? [] : parseResources(root.resources, "$.resources");
+  const unreachable = root.unreachable === undefined ? [] : strings(root.unreachable, "$.unreachable");
+  return { schema_version: schema, sessions, terminals, resources, unreachable };
+}
+function parseSession(item, index, schema) {
+  const path = `$.sessions[${index}]`;
+  const row = record(item, path);
+  const name = string(row.name, `${path}.name`);
+  if (name.length === 0)
+    throw new SchemaValidationError(`${path}.name`, "non-empty");
+  return {
+    name,
+    windows: integer(row.windows, `${path}.windows`, 0),
+    attached: boolean(row.attached, `${path}.attached`),
+    ...schema === 4 && row.key !== undefined ? { key: nullableString(row.key, `${path}.key`) } : {}
+  };
+}
 
 // ../runtime/src/schemas.ts
 var AGENT_EVENT_TYPES = [
@@ -337,31 +365,6 @@ var AGENT_EVENT_TYPES = [
   "state",
   "provider_raw"
 ];
-function parseSessionList(value) {
-  const root = record(value, "$ (phux ls --json CLI shape)");
-  if (root.schema_version !== 1 && root.schema_version !== 2 && root.schema_version !== 3 && root.schema_version !== 4) {
-    throw new SchemaValidationError("$.schema_version", "a supported value (1 through 4)");
-  }
-  const schema = root.schema_version;
-  if (!Array.isArray(root.sessions)) {
-    throw new SchemaValidationError("$.sessions", "an array");
-  }
-  const sessions = root.sessions.map((item, index) => {
-    const row = record(item, `$.sessions[${index}]`);
-    const name = string(row.name, `$.sessions[${index}].name`);
-    if (name.length === 0)
-      throw new SchemaValidationError(`$.sessions[${index}].name`, "non-empty");
-    return {
-      name,
-      windows: integer(row.windows, `$.sessions[${index}].windows`, 0),
-      attached: boolean(row.attached, `$.sessions[${index}].attached`)
-    };
-  });
-  const terminals = schema === 1 && root.terminals === undefined ? [] : strings(root.terminals, "$.terminals");
-  const resources2 = root.resources === undefined ? [] : parseResources(root.resources, "$.resources");
-  const unreachable = root.unreachable === undefined ? [] : strings(root.unreachable, "$.unreachable");
-  return { schema_version: schema, sessions, terminals, resources: resources2, unreachable };
-}
 function parseColor(value, path) {
   const color = record(value, path);
   if (color.kind === "default")

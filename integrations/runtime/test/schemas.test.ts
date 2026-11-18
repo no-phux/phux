@@ -110,6 +110,17 @@ test("session-list v3 retains strict summary validation and rejects future schem
   }
 });
 
+test("session inventory preserves the server's durable destination key", () => {
+  const key = "0123456789ABCDEFGHJKMNPQRS";
+  const session = { name: "work", windows: 1, attached: false };
+  const inventory = { schema_version: 4, sessions: [{ ...session, key }, { ...session, key: null }], terminals: [] };
+  assert.deepEqual(parseSessionList(inventory).sessions, [{ ...session, key }, { ...session, key: null }]);
+  assert.throws(
+    () => parseSessionList({ ...inventory, sessions: [{ ...session, key: 7 }] }),
+    /\$\.sessions\[0\]\.key/,
+  );
+});
+
 test("phux_list renders the canonical v3 CLI fixture through the shared tool", async () => {
   const stdout = readFileSync(new URL("../../test/fixtures/session-list-v3.json", import.meta.url), "utf8");
   const cli = new PhuxCli({ runner: async () => ({ termination: "completed", stdout, stderr: "", exitCode: 0 }) });
