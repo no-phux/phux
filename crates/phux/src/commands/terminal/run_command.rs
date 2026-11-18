@@ -2,7 +2,7 @@
 use std::{path::PathBuf, process::ExitCode, time::Duration};
 
 use phux_client::{
-    attach::connection::{Connection, Dial},
+    attach::connection::Connection,
     org::{self, OrgError},
     resource::execution,
     terminal::{self, CreateError},
@@ -18,7 +18,10 @@ use phux_protocol::{
 };
 use serde_json::{Value, json};
 
-use crate::commands::{TerminalRunArgs, server_target::ServerSpec};
+use crate::commands::{
+    TerminalRunArgs,
+    server_target::{ServerSpec, ServerTarget},
+};
 use crate::exit_codes::{EXIT_FAILURE, EXIT_RUN_TIMEOUT, EXIT_USAGE};
 
 const LAUNCH_BUDGET: Duration = Duration::from_secs(30);
@@ -54,7 +57,7 @@ pub(super) fn run(
         Ok(target) => target,
         Err(code) => return code,
     };
-    let (document, code) = match runtime.block_on(execute(&target.dial(), args, key)) {
+    let (document, code) = match runtime.block_on(execute(&target, args, key)) {
         Ok(outcome) => outcome,
         Err(error) => return invocation_error(error.code(), &error.to_string(), EXIT_FAILURE),
     };
@@ -67,12 +70,12 @@ pub(super) fn run(
 }
 
 async fn execute(
-    dial: &Dial,
+    target: &ServerTarget,
     args: &TerminalRunArgs,
     key: String,
 ) -> Result<(Value, u8), OrgError> {
     let (mut conn, authority, request) =
-        tokio::time::timeout(RECOVERY_BUDGET, prepare(dial, args, key))
+        tokio::time::timeout(RECOVERY_BUDGET, prepare(target, args, key))
             .await
             .map_err(|_| {
                 OrgError::Unexpected(
@@ -87,7 +90,7 @@ async fn execute(
         "receipt": null,
         "result": null,
     });
-    let created = launch(dial, &mut conn, authority, &request).await;
+    let created = launch(target, &mut conn, authority, &request).await;
     drop(conn);
     let receipt = match created {
         Ok(receipt) => receipt,
@@ -106,7 +109,7 @@ async fn execute(
         execution: pin,
         timeout_secs: Some(args.timeout),
     };
-    let exact = match execution::result_on(dial, &query).await {
+    let exact = match execution::result_on(&target.dial(), &query).await {
         Ok(exact) => exact,
         Err(error) => {
             document["status"] = json!("execution_unknown");
@@ -121,13 +124,11 @@ async fn execute(
 }
 
 async fn prepare(
-    dial: &Dial,
+    target: &ServerTarget,
     args: &TerminalRunArgs,
     idempotency_key: String,
 ) -> Result<(Connection, AuthorityId, TerminalCreate), OrgError> {
-    let mut conn = Connection::connect_dial(dial)
-        .await
-        .map_err(OrgError::Attach)?;
+    let mut conn = target.connect().await.map_err(OrgError::Attach)?;
     let key = SessionKey::parse(args.session.strip_prefix('^').unwrap_or(&args.session));
     if key.is_none() && args.session.starts_with('^') {
         return Err(OrgError::NotFound(args.session.clone()));
@@ -158,7 +159,7 @@ struct LaunchFailure {
 }
 
 async fn launch(
-    dial: &Dial,
+    target: &ServerTarget,
     conn: &mut Connection,
     authority: AuthorityId,
     request: &TerminalCreate,
@@ -185,7 +186,7 @@ async fn launch(
         }
         _ => {}
     }
-    if let Some(receipt) = recover(dial, authority, request).await {
+    if let Some(receipt) = recover(target, authority, request).await {
         return Ok(receipt);
     }
     Err(LaunchFailure {
@@ -213,7 +214,7 @@ const fn unknown_create(error: &CreateError) -> bool {
 }
 
 async fn recover(
-    dial: &Dial,
+    target: &ServerTarget,
     authority: AuthorityId,
     request: &TerminalCreate,
 ) -> Option<TerminalCreated> {
@@ -222,7 +223,7 @@ async fn recover(
         idempotency_key: request.idempotency_key.clone(),
     };
     let receipt = tokio::time::timeout(RECOVERY_BUDGET, async {
-        let mut conn = Connection::connect_dial(dial).await.ok()?;
+        let mut conn = target.connect().await.ok()?;
         terminal::operation(&mut conn, &lookup).await.ok()
     })
     .await

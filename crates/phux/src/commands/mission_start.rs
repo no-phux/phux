@@ -494,7 +494,8 @@ fn ensure_owner(socket: &Path) -> Result<AuthorityId, String> {
 fn current_owner(socket: &Path) -> Result<AuthorityId, String> {
     let rt = super::cli_runtime().map_err(|_| "could not build a runtime".to_owned())?;
     rt.block_on(async {
-        let mut conn = Connection::connect(socket)
+        let mut conn = super::server_target::ServerTarget::local(socket)
+            .connect()
             .await
             .map_err(|error| error.to_string())?;
         owner_on(&mut conn).await

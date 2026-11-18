@@ -341,7 +341,10 @@ async fn project_hint(
         watch.forget(id);
         return;
     }
-    let Ok(mut conn) = Connection::connect(socket).await else {
+    let Ok(mut conn) = super::server_target::ServerTarget::local(socket)
+        .connect()
+        .await
+    else {
         return;
     };
     for run in matching {
@@ -393,7 +396,8 @@ async fn reconcile_once(
     socket: &Path,
     watch: &mut ProjectionWatch,
 ) -> Result<(), String> {
-    let mut conn = Connection::connect(socket)
+    let mut conn = super::server_target::ServerTarget::local(socket)
+        .connect()
         .await
         .map_err(|err| err.to_string())?;
     let authority = super::mission_start::owner_on(&mut conn).await?;
