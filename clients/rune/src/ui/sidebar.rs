@@ -136,7 +136,10 @@ fn session_header(session: &Header, t: &Tokens) -> El {
                 .cursor(rune::Cursor::Grab)
                 .label(format!("Open session {label}"))
                 .help("Drag to reorder session")
-                .on_press(move |d: &mut Desk| d.show_session(&name))
+                .on_press_tx(move |d: &mut Desk, tx| {
+                    d.show_session(&name);
+                    clicked(tx);
+                })
                 .on_key(move |d: &mut Desk, event, _| {
                     // A tree's Left folds and Right unfolds.
                     let fold = match event.key {
@@ -296,7 +299,10 @@ fn pane_row(pane: &Row, t: &Tokens) -> El {
     if disabled {
         return row;
     }
-    let row = row.on_press(move |d: &mut Desk| d.show(id.clone(), &session));
+    let row = row.on_press_tx(move |d: &mut Desk, tx| {
+        d.show(id.clone(), &session);
+        clicked(tx);
+    });
     match key {
         Some(key) => drag::resource(row, pane.id, key),
         None => row,
@@ -313,6 +319,14 @@ fn counts_by_session(desk: &Desk, topology: &Topology) -> HashMap<u32, Counts> {
         }
     }
     counts
+}
+
+/// A click on a row picks it and hands the keyboard back to the shown
+/// terminal; only keys keep focus in the list, where arrows walk it.
+fn clicked(tx: &mut rune::Tx) {
+    if !tx.by_keys() {
+        tx.blur();
+    }
 }
 
 /// The rows' source list (the kit `Sidebar`'s): one Tab stop that lands on
