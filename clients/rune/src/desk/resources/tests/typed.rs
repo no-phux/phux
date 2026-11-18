@@ -4,6 +4,8 @@
 use super::*;
 use phux_client_core::document_view::{MAX_TEXT, is_image};
 
+mod lines;
+
 /// A non-image publication's body and caption, through the one decode path.
 fn typed(content_type: &str, bytes: &[u8]) -> (Body, String) {
     let mut d = Document::new(record(1, ResourceKind::Document));

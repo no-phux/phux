@@ -169,7 +169,8 @@ fn body(body: &Body, area: [f32; 2], ink: &Tokens, id: &ResourceId) -> El {
 }
 
 fn source_text(words: &str, ink: &Tokens, id: &ResourceId) -> El {
-    el().w_full()
+    col()
+        .w_full()
         .h_full()
         .min_h(0.0)
         .scroll(rune::ScrollSpec {
@@ -180,6 +181,9 @@ fn source_text(words: &str, ink: &Tokens, id: &ResourceId) -> El {
                 .key(crate::desk::resources::text_key(id))
                 .selectable(true)
                 .wrap_anywhere()
+                .by_line()
+                .w_full()
+                .min_w(0.0)
                 .font(ink.ty.mono)
                 .color(ink.roles.text.text.paint()),
         )
@@ -206,6 +210,48 @@ pub(super) fn letterbox([w, h]: [u32; 2], [aw, ah]: [f32; 2]) -> [f32; 2] {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn source_blank_lines_keep_the_document_line_pitch() {
+        for scale in [1.0, 1.25, 1.875, 2.0] {
+            let rows = |source: &str| {
+                let mut desk = crate::test_support::window();
+                desk.settings_ui.query.replace_text(source);
+                let mut rt = rune::Runtime::new(
+                    desk,
+                    |desk, _| {
+                        let ink = crate::ui::tokens_for(true, None);
+                        source_text(&desk.settings_ui.query.text, &ink, &ResourceId::local(1))
+                    },
+                    (320.0, 340.0),
+                    rune::Env::new(true, scale),
+                );
+                rt.frame(0.0);
+                let mut rows: Vec<_> = rt
+                    .instances
+                    .iter()
+                    .filter(|instance| instance.params[1] == rune::render::KIND_GLYPH)
+                    .map(|instance| instance.rect[1] / scale)
+                    .collect();
+                rows.sort_by(f32::total_cmp);
+                rows
+            };
+            let adjacent = rows("X\nX");
+            assert_eq!(adjacent.len(), 2);
+            let pitch = adjacent[1] - adjacent[0];
+            assert!(pitch > 0.0);
+            for source in ["X\n\nX", "X\r\n\r\nX"] {
+                let blank = rows(source);
+                assert_eq!(blank.len(), 2);
+                assert!(
+                    (blank[1] - blank[0] - pitch * 2.0).abs() <= 1.0,
+                    "{source:?}, {scale}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn image_is_contained_not_cropped_or_stretched() {
         assert_eq!(super::letterbox([200, 100], [100.0, 100.0]), [100.0, 50.0]);

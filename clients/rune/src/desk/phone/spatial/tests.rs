@@ -1,8 +1,10 @@
 use super::*;
 
+mod axis;
 mod fixture;
 mod ime;
 mod input;
+mod motion;
 mod refit;
 mod touch;
 mod touch_ownership;
@@ -107,7 +109,7 @@ fn session_identity_change_resets_navigation_without_changing_the_tree() {
         Some(tree()),
         Some((SessionKey::new([1; 16]).unwrap(), [8; 16])),
     );
-    phone.navigation = Some((id(1), true));
+    phone.navigation = Some((id(1), Some(Axis::Horizontal)));
     phone.travel = [-80.0, 0.0];
     phone.picker = true;
     phone.reconcile(

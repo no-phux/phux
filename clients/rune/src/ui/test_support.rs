@@ -73,6 +73,18 @@ pub fn offscreen_as_app(
     let format = rune::render::OFFSCREEN_FORMAT.remove_srgb_suffix();
     let mut renderer = rune::render::Renderer::new(&gpu.device, format);
     renderer.set_srgb_blend(true);
+    offscreen_as_app_with_renderer(gpu, &mut renderer, rt, size)
+}
+
+/// Paint the current frame without advancing time. Retain this app-format
+/// renderer across staged frames: its uploaded glyph atlas belongs to `rt`.
+pub fn offscreen_as_app_with_renderer(
+    gpu: &rune::render::Gpu,
+    renderer: &mut rune::render::Renderer,
+    rt: &mut rune::Runtime<Desk>,
+    size: (u32, u32),
+) -> Vec<u8> {
+    let format = rune::render::OFFSCREEN_FORMAT.remove_srgb_suffix();
     let target = rune::render::Offscreen::with_format(&gpu.device, size.0, size.1, format);
     renderer.upload_images(&gpu.device, &gpu.queue, &mut rt.images);
     renderer.prepare(

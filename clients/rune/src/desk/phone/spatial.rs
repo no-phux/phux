@@ -15,6 +15,31 @@ const COMMIT: f32 = 28.0;
 /// enormous world can lose a pane's entire width when subtracting its edges.
 const MAX_CANVAS: f32 = 16_384.0;
 
+/// The first deliberate movement owns the gesture, but not its sign:
+/// the finger may reverse along that axis without drifting into another pane.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum Axis {
+    Horizontal,
+    Vertical,
+}
+
+impl Axis {
+    fn of(drag: &Drag) -> Self {
+        if drag.dx.abs() > drag.dy.abs() {
+            Self::Horizontal
+        } else {
+            Self::Vertical
+        }
+    }
+
+    fn project(self, drag: &Drag) -> [f32; 2] {
+        match self {
+            Self::Horizontal => [drag.dx, 0.0],
+            Self::Vertical => [0.0, drag.dy],
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rect {
     pub x: f32,
@@ -260,26 +285,34 @@ impl Desk {
             return;
         };
         if drag.phase == Phase::Down {
-            phone.navigation = Some((focus, false));
+            phone.navigation = Some((focus, None));
             return;
         }
-        let Some((started, moved)) = phone.navigation.as_mut() else {
+        let Some((started, axis)) = phone.navigation.as_mut() else {
             return;
         };
         if *started != focus {
             phone.reset_navigation();
             return;
         }
-        *moved |= drag.dx.hypot(drag.dy) > SLOP;
-        let moved = *moved;
+        if axis.is_none() && drag.dx.hypot(drag.dy) > SLOP {
+            *axis = Some(Axis::of(drag));
+        }
+        let moved = axis.is_some();
+        // Below slop the camera holds still. Once captured, both preview and
+        // commit use this axis; map taps keep their original hit coordinates.
+        let [dx, dy] = axis.map_or([0.0; 2], |axis| axis.project(drag));
+        let mut drag = *drag;
+        drag.dx = dx;
+        drag.dy = dy;
         if drag.phase == Phase::Move {
-            return self.phone_navigation_preview(drag);
+            return self.phone_navigation_preview(&drag);
         }
         phone.reset_navigation();
         if drag.cancelled() {
             return;
         }
-        self.phone_navigation_end(drag, map, moved);
+        self.phone_navigation_end(&drag, map, moved);
     }
 
     fn phone_navigation_preview(&mut self, drag: &Drag) {
