@@ -38,7 +38,7 @@ fn pinned_verifier_accepts_only_the_pinned_leaf() {
             UnixTime::now(),
         )
     };
-    assert!(verify(Some(pinned.clone())).is_ok());
+    assert!(verify(Some(pinned)).is_ok());
     assert!(verify(Some("00".repeat(32))).is_err());
     assert!(verify(None).is_ok(), "skip-verify accepts any leaf");
 }

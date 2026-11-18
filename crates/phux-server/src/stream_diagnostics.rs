@@ -712,7 +712,7 @@ mod tests {
     #[test]
     fn registration_is_bounded_and_raii_slot_is_reused() {
         let diagnostics = StreamDiagnostics::new();
-        let mut registrations: Vec<_> = (0..MAX_STREAMS)
+        let mut held: Vec<_> = (0..MAX_STREAMS)
             .map(|id| diagnostics.register(context(id as u64)))
             .collect();
         let suppressed = diagnostics.register(context(999));
@@ -723,7 +723,7 @@ mod tests {
         assert_eq!(snapshot.streams.len(), MAX_STREAMS);
         assert_eq!(snapshot.suppressed_streams, 1);
 
-        registrations.pop();
+        drop(held.pop());
         let _replacement = diagnostics.register(context(1_000));
         let snapshot = diagnostics.snapshot();
         assert_eq!(snapshot.streams.len(), MAX_STREAMS);
