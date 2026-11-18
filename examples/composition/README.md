@@ -1,129 +1,56 @@
-# Compose phux from another process
+# Script phux
 
-These Python 3 examples run on Unix with Git and the phux CLI. They do not use
-private phux code, write phux's state, infer a target from title or focus, or
-deliver a choice by typing into a terminal. Use a phux v2 build and an explicit
-local socket. The examples don't start a server; the smoke test starts its own.
+Use the shell for a few commands. Use the [public API](../../docs/public-api.md)
+when you need exact identities, schemas, or recovery after a missing reply.
+The [external composition proofs](./proofs.md) deliberately exercise failure
+paths; you don't need to copy them to start scripting.
 
-## Launch a checkout
-
-The launcher chooses a local base commit, creates a new branch and worktree,
-and passes an exact session, absolute checkout directory, argv, and placement
-intention to phux. phux commits placement and launch intent and issues the
-receipt. No shell wrapping, layout editing, or compensating kill is needed.
+## Open a project
 
 ```sh
-phux --socket "$socket" api list
-phux --socket "$socket" api describe terminal.create
-phux --socket "$socket" ls --json    # copy the full key of the destination session
-
-python3 examples/composition/worktree_launcher.py --socket "$socket" \
-  launch /path/to/app-owned/intent.json \
-  --repo "$repo" --base HEAD --branch review/demo \
-  --worktree "$checkout" --session "$session" -- /bin/sh
+phux new --json -s build -c "$PWD" -- sh
+phux spawn --target build -- make test
 ```
 
-The underlying operations are `api call terminal.create`, `api call
-terminal.operation`, and `api call resource.show`, each with `--request-json -`.
-The `resource.show` request is a JSON string containing the full durable key
-without a `^` prefix. The examples intentionally call a local socket because
-the checkout is created on the executing machine; `api --remote` alone cannot
-give a remote server the local directory.
+This creates a named session with a shell, then starts tests beside it,
+without taking over your terminal. Use `phux ls` to see what is running.
 
-The app-owned journal stores the request and original authority before sending
-the effect. It later stores resource and placement keys and the optional
-execution fence, never a live pane handle. Use a private directory you control;
-argv and checkout paths are recorded, so do not pass credentials as arguments.
+## Start a process in that session
 
-- **Lost reply:** `recover intent.json` uses the original receipt key and
-  session on the same authority. If it already knows the resource key, it reads
-  that resource instead. An evicted or absent receipt without a saved resource
-  leaves the outcome unknown. A failed observation after receipt capture still
-  reports the launch intent as committed. `recover` never retries a create.
-- **Stale placement:** `launch ... --beside /path/to/anchor.json -- ...` uses
-  the saved placement and execution. Only after a correlated `stale/refused`
-  reply, `replan-stale intent.json` can try once beside a newly observed live
-  activation. This writes a separate `intent.json.replan` with a fresh key and
-  retains the original journal. phux still checks the entry mapping atomically;
-  the launcher never guesses a replacement entry.
-- **Execution:** `intent_committed` does not mean the program succeeded.
-  `current_execution` is a level read; `original_execution_matches` tells
-  whether its activation and instance match the original receipt. A moved,
-  removed, or relaunched anchor is not silently adopted.
-
-Git and phux do not share a transaction. If Git refuses, phux is not called.
-If the launcher is interrupted between worktree creation and phux commitment,
-or if phux refuses, the checkout stays intact for inspection. The example
-never fetches, forcibly reuses a branch, or deletes a user's worktree.
-
-## Question inbox: an explicit roster
-
-`question_inbox.py --socket "$socket" list "$authority/^$resource"` reads the
-server's current question documents for one or more exact subjects. The roster
-is supplied by the application; this example does not claim a fleet-wide
-question subscription, discovery cursor, or offline event history. The output
-keeps advisory PTY evidence separate from provider callbacks. Treat question
-text and suggestions as untrusted content.
-
-After the human reads a provider question, save its `reference` JSON to a
-private file. Relay the human's explicit response with:
+Use `jq` to get the session's durable key and send argv as JSON. This puts
+`make test` in a new terminal; it does not type into an existing shell.
 
 ```sh
-python3 examples/composition/question_inbox.py --socket "$socket" \
-  answer "$answer_journal" --reference "$displayed_reference" \
-  --response-json '{"option_id":"deny-once"}'
-python3 examples/composition/question_inbox.py --socket "$socket" \
-  recover "$answer_journal"
+set -eu
+session=$(phux ls --json | jq -er '.sessions[] | select(.name == "build") | .key')
+key=$(openssl rand -hex 16)
+request=$(jq -n --arg session "$session" --arg key "$key" \
+  '{session:$session, idempotency_key:$key, argv:["make","test"]}')
+printf '%s\n' "$request" | phux api call terminal.create --request-json -
 ```
 
-The inbox re-reads the same conversation, answers only an exact supported,
-unreserved callback, and lets phux enforce the reference again at dispatch.
-The journal retains the exact reference and generated operation ID, not the
-answer body; a lost reply is recovered with `agent question-receipt` rather
-than sending a new response. `queued` is not evidence that the provider
-consumed the answer. Use a human-authorized route; the script grants no rights.
+The reply is a receipt for launch intent, not the exit status of `make`.
+If you lose the reply, use `terminal.operation` with the same `session` and
+`idempotency_key`; don't start another process to find out what happened.
 
-## Review action: a read-only projection
-
-In a trusted local plugin manifest, configure this command (replace the paths):
-
-```toml
-[[actions]]
-id = "review"
-title = "Review checkout"
-command = ["python3", "/path/to/review_action.py", "--socket", "/path/to/controlled.sock", "/path/to/intent.json"]
-```
-
-The action takes the selected authority, session, resource, activation and
-instance from `PHUX_ACTION_CONTEXT`. It does not use a PWD or selected handle
-as identity or use selection data as a connection route. It re-observes the
-durable resource over the explicit route and checks the Git checkout against
-the launcher journal before emitting an application-owned tracked diffstat.
-It fails closed if the target is insufficient, moved, or stale. This is a
-read-only review surface, not a review verdict, an approval, or an atomic
-snapshot of a working tree concurrently edited by someone else.
-
-Use `phux config run PLUGIN review --json --target-json …` for a headless
-invocation with a complete exact target, or bind the same action in a client
-that captures those fields from a selected resource. Headless target facts
-are declarative, not authorization.
-
-## Isolated smoke tests
+## Read or follow the work
 
 ```sh
-python3 examples/composition/smoke.py --phux /path/to/v2/phux --review --questions
+phux snapshot --tail 20 @7
+phux watch --json @7
 ```
 
-The launcher proof drops a real successful CLI reply, recovers it on a fresh
-connection, distinguishes a new activation from the old one, proves that a
-stale split starts no process, and rejects recovery against a different
-authority. It restarts the original private server and verifies the durable
-resource is still readable. Optional flags require the corresponding lanes:
-`--review` exercises real plugin dispatch and refuses a stale review;
-`--questions` uses a deterministic, local ACP peer to verify an answer is
-delivered once despite a lost reply and that a stale question cannot be
-answered. No network or production server is used.
+Replace `@7` with the current pane shown by `phux ls`. A live handle is
+convenient for a human; keep the durable key from the receipt when your
+program needs to look up that resource later.
 
-For an older development binary only, `--legacy-cli` explicitly opts the
-launcher and smoke test into the pre-`api` typed terminal/resource commands.
-It is not a fallback on an unsupported or failed v2 invocation.
+## Discover what you can call
+
+```sh
+phux api list | jq -r '.operations[].name'
+phux api describe terminal.create
+```
+
+See [scripting](../../docs/scripting.md) for output, exit codes, and event
+recovery. See [external composition proofs](./proofs.md) for a worktree
+launcher, agent-question inbox, and contextual review action.
