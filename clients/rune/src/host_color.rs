@@ -171,7 +171,6 @@ pub fn swatch(index: usize, ground: Color) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::color;
     use serde_json::json;
 
     #[test]

@@ -896,80 +896,8 @@ async fn modifier_click_opens_http_links_in_a_new_tab_and_nothing_else() {
     client.close();
 }
 
-#[wasm_bindgen_test]
-async fn the_bell_announces_itself_and_flashes_the_canvas() {
-    let canvas = mounted_canvas("bell-canvas");
-    let rung = Rc::new(Cell::new(0));
-    let count = Rc::clone(&rung);
-    let listener = Closure::<dyn FnMut()>::new(move || count.set(count.get() + 1));
-    canvas
-        .add_event_listener_with_callback(
-            phux_web::client::BELL_EVENT,
-            listener.as_ref().unchecked_ref(),
-        )
-        .unwrap();
-    let client = connect(&canvas).await;
-    canvas.focus().unwrap();
-    let surface = input_surface(&canvas);
-    sleep(Duration::from_millis(300)).await;
-    let background = cell_pixel(&canvas, 79, 23);
-    assert_eq!(rung.get(), 0, "attaching does not ring");
-
-    // Ctrl+G is BEL: the TTY echoes `^G`, then cat rings it.
-    fresh_line(&surface);
-    ctrl_key(&surface, "g", "KeyG");
-    enter(&surface);
-    let mut flashed = false;
-    for _ in 0..POLLS * 4 {
-        flashed |= rung.get() > 0 && cell_pixel(&canvas, 79, 23) != background;
-        if flashed {
-            break;
-        }
-        sleep(Duration::from_millis(10)).await;
-    }
-    assert_eq!(rung.get(), 1, "one phux-bell event");
-    assert!(flashed, "the canvas flashed");
-    sleep(Duration::from_millis(400)).await;
-    assert_eq!(cell_pixel(&canvas, 79, 23), background, "the flash ends");
-    client.close();
-}
-
-#[wasm_bindgen_test]
-async fn focus_changes_reach_a_program_that_asks_for_them() {
-    let (canvas, client, surface) = connected("focus-canvas").await;
-    canvas.focus().unwrap();
-    let surface: web_sys::HtmlElement = surface.dyn_into().unwrap();
-    program_prints(&client, &surface, &["[?1004h"], "FOCUS_ON", &[]).await;
-
-    // The server writes CSI O and CSI I to the pane; the TTY echoes them.
-    let reports = || (occurrences(&client, "^[[O"), occurrences(&client, "^[[I"));
-    let (lost, gained) = reports();
-    surface.blur().unwrap();
-    assert!(
-        wait_more(&client, "^[[O", lost).await,
-        "focus out: {}",
-        screen(&client)
-    );
-    surface.focus().unwrap();
-    assert!(
-        wait_more(&client, "^[[I", gained).await,
-        "focus in: {}",
-        screen(&client)
-    );
-
-    program_prints(&client, &surface, &["[?1004l"], "FOCUS_OFF", &[]).await;
-    let before = reports();
-    surface.blur().unwrap();
-    surface.focus().unwrap();
-    sleep(Duration::from_millis(300)).await;
-    assert_eq!(
-        reports(),
-        before,
-        "no reports once the program stops asking: {}",
-        screen(&client)
-    );
-    client.close();
-}
+#[path = "e2e_input/signals.rs"]
+mod signals;
 
 fn wheel(canvas: &HtmlCanvasElement, delta_y: f64) {
     let init = WheelEventInit::new();
