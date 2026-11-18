@@ -3,7 +3,6 @@ use phux_protocol::api::{ErrorCode, ErrorDocument, OperationOutcome};
 use std::process::Output;
 
 const KEY: &str = "abababababababababababababababab";
-pub(super) const SESSION: &str = "aebagbafaydqqcikbmga2dqpca";
 
 fn failure(
     output: &Output,
