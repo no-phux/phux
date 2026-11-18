@@ -40,6 +40,23 @@ pub extern "C" fn phux_rune_ios_prewarm() {
     });
 }
 
+/// Only a simulator qualification probe supplies this private output path.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_rune_ios_capture_connection_diagnostics(path: *const c_char) -> bool {
+    attempt(|| {
+        #[cfg(target_abi = "sim")]
+        {
+            super::diagnostics::start(std::path::Path::new(unsafe { text(path)? }))?;
+            Ok(true)
+        }
+        #[cfg(not(target_abi = "sim"))]
+        {
+            let _ = path;
+            Err("Connection diagnostics are available only to simulator qualification.".to_owned())
+        }
+    })
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_rune_ios_validate(configuration: *const c_char) -> *mut c_char {
     attempt(|| {

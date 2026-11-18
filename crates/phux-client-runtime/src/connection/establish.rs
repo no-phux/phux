@@ -142,7 +142,10 @@ pub(super) async fn dial(target: &Target, options: ConnectOptions) -> Result<Io,
         establish(&plan).await.map_err(|failure| failure.end(name))
     })
     .await
-    .map_err(|_| ConnectionEnd::Dropped(Some(timed_out(name))))?
+    .map_err(|_| {
+        super::trace::phase("dial_deadline");
+        ConnectionEnd::Dropped(Some(timed_out(name)))
+    })?
 }
 
 #[cfg(test)]

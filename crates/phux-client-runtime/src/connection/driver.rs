@@ -10,6 +10,7 @@ use tokio::time::Instant;
 
 use super::establish::dial;
 use super::io::{Io, LinkError};
+use super::trace::{self, AttemptTrace};
 use super::{ConnectOptions, ConnectionEnd, Shared, Signals, Target, Transport, Wake, lock};
 use crate::reconnect::{earned_immediate, ladder_for};
 
@@ -63,6 +64,7 @@ pub async fn run_session(
     let mut backoff = options.ladder.floor;
     let mut attempts: u32 = 0;
     let mut ladder_deadline = None;
+    let connection_id = AttemptTrace::connection();
     loop {
         attempts += 1;
         // A person's time, so before the budget below.
@@ -76,17 +78,21 @@ pub async fn run_session(
         // never attached, never how long an attached session may run.
         let ladder_deadline = *ladder_deadline
             .get_or_insert_with(|| tokio::time::Instant::now() + options.initial_budget);
-        let Some(tried) = run_attempt(
-            &target,
-            options,
-            &shared,
-            &mut signals,
-            &wake,
-            ladder_deadline,
-        )
-        .await
+        let trace = AttemptTrace::new(connection_id, attempts);
+        trace.record("attempt_started");
+        let Some(tried) = trace
+            .scope(run_attempt(
+                &target,
+                options,
+                &shared,
+                &mut signals,
+                &wake,
+                ladder_deadline,
+            ))
+            .await
         else {
             fail(&shared, None, &wake);
+            trace.record("session_ended");
             return;
         };
         // Attached at the moment the connection ended means it was
@@ -94,8 +100,10 @@ pub async fn run_session(
         if tried.was_attached {
             backoff = options.ladder.floor;
         }
+        trace.record(end_phase(&tried.end));
         match finish_attempt(&shared, tried.end, attempts, options.initial_attempts) {
             Decision::Stop => {
+                trace.record("session_ended");
                 wake();
                 return;
             }
@@ -108,11 +116,21 @@ pub async fn run_session(
             Decision::RetryBackoff => {
                 wake();
                 if wait_to_retry(backoff, &shared, &mut signals, &wake).await {
+                    trace.record("session_ended");
                     return;
                 }
                 backoff = options.ladder.next(backoff);
             }
         }
+    }
+}
+
+const fn end_phase(end: &ConnectionEnd) -> &'static str {
+    match end {
+        ConnectionEnd::Closed => "end_closed",
+        ConnectionEnd::Dropped(_) => "end_dropped",
+        ConnectionEnd::Refused(_) => "end_refused",
+        ConnectionEnd::Resync => "end_resync",
     }
 }
 
@@ -168,6 +186,14 @@ async fn run_attempt(
     ladder_deadline: tokio::time::Instant,
 ) -> Option<Attempt> {
     let connection = run_connection(target, options, shared, signals, wake);
+    within_initial_budget(connection, shared, ladder_deadline).await
+}
+
+async fn within_initial_budget(
+    connection: impl std::future::Future<Output = Attempt>,
+    shared: &Shared,
+    ladder_deadline: tokio::time::Instant,
+) -> Option<Attempt> {
     if lock(shared).attached_once() {
         return Some(connection.await);
     }
@@ -183,6 +209,7 @@ async fn run_attempt(
                     armed = false;
                     continue;
                 }
+                trace::phase("initial_deadline");
                 return None;
             }
         }
@@ -259,6 +286,7 @@ async fn run_connection(
 ) -> Attempt {
     let name = target.name.as_str();
     let started = std::time::Instant::now();
+    trace::phase("dial_started");
     tracing::info!(host = name, transport = target.transport.label(), "dialing");
     // A dial runs to `dial_timeout` against a host that accepts and then says
     // nothing. Racing the close signal is what keeps teardown bounded by the
@@ -274,6 +302,7 @@ async fn run_connection(
             return attempt(ConnectionEnd::Closed, false, started);
         }
     };
+    trace::phase("dial_connected");
     tracing::info!(
         host = name,
         transport = target.transport.label(),
@@ -352,6 +381,7 @@ impl<'a> Pump<'a> {
             control.take_outbound()
         };
         self.write_all(opening).await?;
+        trace::phase("hello_sent");
         // Signals raised while opening are satisfied by this dial and the
         // snapshots it is about to replay.
         self.signals.resync.mark_unchanged();
@@ -364,10 +394,20 @@ impl<'a> Pump<'a> {
         let expiry = self.expiry_wait();
         tokio::select! {
             () = self.signals.outbound.notified() => self.flush_outbound().await,
-            () = signal(&mut self.signals.resync) => Err(ConnectionEnd::Resync),
-            () = signal(&mut self.signals.nudge) => self.start_probe().await,
-            () = signal(&mut self.signals.rebind) => self.rebind().await,
+            () = signal(&mut self.signals.resync) => {
+                trace::phase("resync_requested");
+                Err(ConnectionEnd::Resync)
+            },
+            () = signal(&mut self.signals.nudge) => {
+                trace::phase("nudge_requested");
+                self.start_probe().await
+            },
+            () = signal(&mut self.signals.rebind) => {
+                trace::phase("path_changed");
+                self.rebind().await
+            },
             () = wait_for_probe(&mut self.probe_deadline), if self.probe_deadline.is_some() => {
+                trace::phase("probe_deadline");
                 Err(ConnectionEnd::Dropped(Some("liveness probe timed out".to_owned())))
             }
             () = tokio::time::sleep(expiry) => self.expire_inputs().await,

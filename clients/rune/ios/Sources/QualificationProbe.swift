@@ -10,8 +10,7 @@ final class QualificationProbe {
     private let session: String
     private let command: String
     private let marker: String
-    private var injected = false
-    private var finished = false
+    private var progress = QualificationProgress()
     private var backgroundFrames: UInt64?
     private var resumed = false
     private var inputContracts: [String] = []
@@ -21,6 +20,13 @@ final class QualificationProbe {
 
     func testInputContracts() async throws {
         #if targetEnvironment(simulator)
+        let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask,
+                                                     appropriateFor: nil, create: true)
+        let name = (resuming ? "resume-" : "") + "rune-connection-diagnostics.jsonl"
+        let captured = directory.appendingPathComponent(name).path.withCString {
+            phux_rune_ios_capture_connection_diagnostics($0)
+        }
+        if !captured { NSLog("Qualification connection diagnostics could not start.") }
         inputContracts = try InputContractTests.run()
         inputContracts += try await PairingContractTests.run()
         #endif
@@ -102,13 +108,13 @@ final class QualificationProbe {
     func observe(bridge: NativeBridge, input: RuneInput, surfaceAtScale: Bool, didPresent: Bool) throws {
         guard didPresent else { return }
         try recordResumedFrame(bridge)
-        guard !finished else { return }
+        guard !progress.finished else { return }
         var report = try bridge.report(marker: marker)
         if let message = report["error"] as? String, !message.isEmpty {
-            failure(message); finished = true; return
+            failure(message); return
         }
         injectInput(report, input: input)
-        guard injected, report["marker_seen"] as? Bool == true else { return }
+        guard progress.injected, report["marker_seen"] as? Bool == true else { return }
         report["input_through_native"] = true
         report["transport"] = connectedEndpoint?.hasPrefix("wss://") == true ? "paired-wss" : "paired-quic"
         report["onboarding_import"] = imported
@@ -118,8 +124,10 @@ final class QualificationProbe {
         report["key_id"] = keyID
         report["input_contracts"] = inputContracts
         report["input_evidence"] = "UIKit insertText entry; not physical OS typing or IME automation"
-        finished = try QualificationEvidence.publish(report: report, tree: bridge.tree(),
-            marker: marker, didPresent: didPresent, write: { try self.write($0, name: $1) })
+        try progress.publish {
+            try QualificationEvidence.publish(report: report, tree: bridge.tree(),
+                marker: marker, didPresent: didPresent, write: { try self.write($0, name: $1) })
+        }
     }
 
     private func recordResumedFrame(_ bridge: NativeBridge) throws {
@@ -133,13 +141,13 @@ final class QualificationProbe {
     }
 
     private func injectInput(_ report: [String: Any], input: RuneInput) {
-        guard !injected, report["connected"] as? Bool == true,
-              report["session"] as? String == session,
-              (report["frames"] as? UInt64 ?? 0) > 0,
-              input.context?.kind == "terminal", input.context?.wanted == true, input.isFirstResponder else { return }
+        let ready = report["connected"] as? Bool == true &&
+              report["session"] as? String == session &&
+              (report["frames"] as? UInt64 ?? 0) > 0 &&
+              input.context?.kind == "terminal" && input.context?.wanted == true && input.isFirstResponder
+        guard progress.claimInput(when: ready) else { return }
         // The same UIKit override used by the system keyboard; not an
         // OS-generated keystroke/IME qualification claim.
-        injected = true
         input.insertText(command)
         input.insertText("\n")
     }
@@ -156,6 +164,7 @@ final class QualificationProbe {
     }
 
     func failure(_ message: String) {
+        guard progress.claimFailure() else { return }
         try? write(["schema":1, "error":message], name:"rune-qualification.json")
     }
     private func write(_ object: [String: Any], name: String) throws {

@@ -269,6 +269,7 @@ pub(super) fn spawn_terminal_output_pump(
             let Some(fault) = run_output_pump(&ctx, gate_rx, output_rx).await else {
                 return;
             };
+            fault.record();
             match fault {
                 PumpFault::OutboundClosed
                 | PumpFault::TombstoneNotQueued

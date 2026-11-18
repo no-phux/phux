@@ -255,6 +255,7 @@ impl ControlPlane {
         &mut self,
         snapshot: &SessionSnapshot,
     ) -> Result<(), ControlError> {
+        crate::connection::trace::phase("topology_received");
         let closed = self.listings.relist(View::Inventory, snapshot);
         self.close_proven(closed)?;
         let mut topology = self.project_topology(snapshot);
@@ -286,6 +287,7 @@ impl ControlPlane {
         }
         self.error = None;
         self.topology = Some(topology);
+        crate::connection::trace::phase("topology_applied");
         self.push_event(Event::TopologySnapshot {
             attach_id: None,
             snapshot: snapshot.clone(),
