@@ -146,19 +146,7 @@ impl NativeRequestFailure {
     }
 }
 
-/// Fixed labels only; disabled in ordinary info-level server logging. Shared by
-/// session attach, spawn, `ATTACH_RESOURCE` and their replacement generations.
-pub(in crate::runtime) fn publication_phase(phase: &'static str, outcome: &'static str) {
-    // JSON formatting falls back to the current span even for a root event.
-    // A field-free root keeps caller identities out of every retained format.
-    let span = tracing::debug_span!(
-        target: "phux_server::publication_diagnostics",
-        parent: None,
-        "publication_diagnostic"
-    );
-    let _entered = span.enter();
-    tracing::debug!(target: "phux_server::publication_diagnostics", parent: &span, phase, outcome);
-}
+pub(in crate::runtime) use crate::runtime::session_attach::publication_phase;
 
 /// Send the native checkpoint request `make` builds and await its reply.
 pub(in crate::runtime) async fn request_native_checkpoint(

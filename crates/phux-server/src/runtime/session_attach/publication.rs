@@ -1,8 +1,20 @@
 //! The host's one ordered aggregate publication.
 
 use super::{ClientId, FrameKind, Outbound, SharedState};
-use crate::runtime::apps::terminal::attach::publication_phase;
 use tokio_util::sync::CancellationToken;
+
+/// Fixed, payload-free publication labels for the host and its apps.
+pub(in crate::runtime) fn publication_phase(phase: &'static str, outcome: &'static str) {
+    // JSON formatting falls back to the current span even for a root event.
+    // A field-free root keeps caller identities out of every retained format.
+    let span = tracing::debug_span!(
+        target: "phux_server::publication_diagnostics",
+        parent: None,
+        "publication_diagnostic"
+    );
+    let _entered = span.enter();
+    tracing::debug!(target: "phux_server::publication_diagnostics", parent: &span, phase, outcome);
+}
 
 pub(super) struct AttachPublication<'a> {
     pub(super) state: &'a SharedState,
