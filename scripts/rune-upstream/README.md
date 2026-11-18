@@ -88,6 +88,11 @@ ownership, literal pane arrangement and the good command palette stay intact.
 
 Bumps move all nine upstream manifest entries together: four direct Rune
 dependencies and five crates.io patches, not the removed `rune-mac` entry.
+The current `no-phux/rune` compatibility pin adds only the Linux IME cursor
+serial fix atop upstream `5329931`. Preserve that fix until upstream stops
+committing unchanged cursor rectangles. A pin bump must still pass the real
+Wayland Pinyin preedit, commit and terminal-echo qualification; a later
+passing run alone does not show that the serial race has been repaired.
 The release policy follows the current patch-release train in
 [Releasing](../../docs/releasing.md#phux-rune), not the historic alpha sequence.
 Visual review supplements all existing check, packaged/native qualification

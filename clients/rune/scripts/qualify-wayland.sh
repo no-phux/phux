@@ -168,23 +168,11 @@ if command -v fcitx5 >/dev/null && command -v dbus-run-session >/dev/null \
         '[GroupOrder]' '0=Default' >"$scratch/home/.config/fcitx5/profile"
     "${clean[@]}" "$phux" --socket "$socket" new --json -s "$ime_session" -- \
         /usr/bin/env LANG=C.UTF-8 PS1='$ ' bash --norc >/dev/null
-    # One bus for the input method and its switch; the app only needs Wayland.
-    # Control goes first here, not Shift: Shift alone switches pinyin to English.
-    cat >"$scratch/ime.sh" <<'IME'
-fcitx5 -d >"$1/wayland-fcitx5.log" 2>&1
-sleep 3
-"$2" --socket "$3" --session "$4" >"$1/wayland-ime-app.log" 2>&1 &
-app=$!
-sleep 6
-fcitx5-remote -o
-wtype -k Control_L -s 500 'nihao' -s 800 '1' -s 500 -k Return
-sleep 2
-kill "$app" 2>/dev/null
-IME
-    "${wl[@]}" dbus-run-session -- bash "$scratch/ime.sh" "$scratch" "$binary" "$socket" "$ime_session" \
-        || fail "the input method run failed: $(cat "$scratch/wayland-fcitx5.log")"
-    text="$("${clean[@]}" "$phux" --socket "$socket" snapshot "$ime_session" 2>/dev/null || true)"
-    grep -q '^│\$ 你好' <<<"$text" || fail "pinyin for 你好 did not reach the terminal: $(head -4 <<<"$text")"
+    # One bus for the input method and its switch. Observe focus, preedit and
+    # commit on the actual Wayland client, not a fixed delay after spawning it.
+    "${wl[@]}" dbus-run-session -- bash "$here/qualify-wayland-ime.sh" \
+        "$scratch" "$binary" "$phux" "$socket" "$ime_session" >"$scratch/wayland-ime.log" 2>&1 \
+        || fail "the input method run failed: $(cat "$scratch/wayland-ime.log")"
     ime=", an input method"
 fi
 echo "qualify: wayland: window, typing, clipboard${ime} and scaling hold on sway $(sway --version | awk '{print $3}')"
