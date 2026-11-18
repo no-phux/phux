@@ -159,6 +159,7 @@ The mouse is on by default:
 
 - Click a pane to focus it.
 - Drag a divider to resize panes.
+- Drag a pane by its title onto another pane to make it a tab of that pane's slot.
 - Drag across text to copy it.
 - Right-click for a menu of actions for that pane, tab, or session.
 - Click a tab to switch to it; drag it to reorder.

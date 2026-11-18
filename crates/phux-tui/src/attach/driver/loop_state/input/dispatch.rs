@@ -38,6 +38,7 @@ impl super::super::SessionLoop {
             cell_px: self.cell_px_dims,
             next_request_id: &mut self.next_request_id,
             organization_supported: self.organization_supported,
+            slot_tabs: self.slot_tabs_supported && self.arrangement.is_some(),
             pending_splits: &mut self.mirror.pending_splits,
             pending_windows: &mut self.mirror.pending_windows,
             pending_floating: &mut self.mirror.pending_floating,

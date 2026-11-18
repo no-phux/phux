@@ -83,7 +83,8 @@ and the rest keep running at the slot's size, so switching never reflows.
   Cmd+Shift+→ and Cmd+Shift+← on macOS (beside Cmd+← and Cmd+→, which walk
   terminals) and Ctrl+Shift+→ and Ctrl+Shift+← elsewhere. In Rune,
   dragging a terminal's sidebar row onto a pane of the same session makes
-  it that pane's slot's last tab. A slot with two
+  it that pane's slot's last tab. In the TUI, dragging a pane by its title
+  onto another pane does the same. A slot with two
   or more tabs shows a one-row strip of their titles and agent states.
 
 The pure [core apply function](../crates/phux-core/src/apply.rs) owns these

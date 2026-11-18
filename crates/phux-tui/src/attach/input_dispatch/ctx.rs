@@ -64,6 +64,9 @@ pub(in crate::attach) struct DispatchCtx<'a> {
         Option<&'a std::cell::RefCell<crate::attach::input_replay::InputReplayJournal>>,
     /// Whether the server advertises `ORGANIZATION` (ADR-0161).
     pub organization_supported: bool,
+    /// Whether a slot tab edit is kept: the arrangement is a record, on a
+    /// server that advertises `SLOT_TABS`.
+    pub slot_tabs: bool,
     /// Parked `split-pane`s awaiting `RESOURCE_SPAWNED`, by request id.
     pub pending_splits: &'a mut HashMap<u32, PendingSplit>,
     /// Parked `new-window`s awaiting `RESOURCE_SPAWNED`, same id space.
@@ -167,6 +170,9 @@ pub(in crate::attach) enum DragGrab {
     /// A window tab or sidebar window row: the release reorders the window
     /// to [`WindowGrab::drop_at`].
     Window(WindowGrab),
+    /// A pane picked up by its title: released on another pane, it becomes
+    /// the last tab of that pane's slot (`docs/organization.md#slot-tabs`).
+    Pane(phux_protocol::ResourceId),
 }
 
 impl DispatchCtx<'_> {
