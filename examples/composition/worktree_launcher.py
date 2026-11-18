@@ -184,11 +184,17 @@ def remember(path, record, reply):
 
 def report(phux, record):
     receipt = record["receipt"]
-    current = phux.call("resource.show", receipt["resource"])
-    if current["schema_version"] != 2 or (current["authority"], current["resource"]) != (
-        record["authority"], receipt["resource"]
-    ):
-        raise Fault("resource_mismatch", "cannot associate observation with the saved resource")
+    try:
+        current = phux.call("resource.show", receipt["resource"])
+    except Fault as error:
+        raise Fault(error.document["code"],
+                    "intent committed, but resource observation failed: " + str(error),
+                    "committed") from error
+    if not isinstance(current, dict) or (
+        current.get("schema_version"), current.get("authority"), current.get("resource")
+    ) != (2, record["authority"], receipt["resource"]):
+        raise Fault("resource_mismatch", "cannot associate observation with the saved resource",
+                    "committed")
     return {
         "status": "intent_committed",
         "resource": receipt["resource"],

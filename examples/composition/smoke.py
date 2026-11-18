@@ -96,6 +96,7 @@ def lost_reply_proxy(root, phux, effect):
     match = {
         "create": '[ "$4" = create ] || { [ "$4" = call ] && [ "$5" = terminal.create ]; }',
         "answer": '[ "$3 $4" = "agent respond-question" ]',
+        "observe": '[ "$3 $4" = "resource show" ] || [ "$4 $5" = "call resource.show" ]',
     }[effect]
     proxy.write_text(
         "#!/bin/sh\n"
@@ -205,6 +206,15 @@ class Proof:
         self.starts("split", 1)
         self.invoke("replan-stale", "split", ok=False)
         self.starts("split", 1)
+
+    def lost_observation(self):
+        proxy = lost_reply_proxy(self.root, self.phux, "observe")
+        result = self.launch("observe", executable=proxy, ok=False)
+        assert result["error"]["outcome"] == "committed", result
+        saved = read(self.root / "observe.json")
+        assert no_handle(saved), saved
+        assert self.committed("observe")["resource"] == saved["receipt"]["resource"]
+        self.starts("observe", 1)
 
     def wrong_authority(self, legacy):
         with server(self.root / "other", self.phux) as (route, _, env):
@@ -343,6 +353,7 @@ def main():
                 stale = json.loads(run(review, env, ok=False))
                 assert json.loads(stale["stderr"])["error"]["code"] == "stale", stale
                 print("review composition: exact action and stale execution refusal passed")
+            proof.lost_observation()
             proof.wrong_authority(args.legacy_cli)
         with server(root / "server", phux) as (_, _, _):
             restarted = proof.invoke("recover", "anchor")
@@ -351,7 +362,7 @@ def main():
         if args.questions:
             question_proof(root / "questions", phux)
             print("question composition: exact callback, lost reply, and stale question passed")
-    print("worktree composition: lost reply, stale placement, and authority isolation passed")
+    print("worktree composition: lost replies, stale placement, and authority isolation passed")
 
 
 if __name__ == "__main__":

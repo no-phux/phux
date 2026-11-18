@@ -38,7 +38,8 @@ argv and checkout paths are recorded, so do not pass credentials as arguments.
 - **Lost reply:** `recover intent.json` uses the original receipt key and
   session on the same authority. If it already knows the resource key, it reads
   that resource instead. An evicted or absent receipt without a saved resource
-  leaves the outcome unknown. The example never retries a create in `recover`.
+  leaves the outcome unknown. A failed observation after receipt capture still
+  reports the launch intent as committed. `recover` never retries a create.
 - **Stale placement:** `launch ... --beside /path/to/anchor.json -- ...` uses
   the saved placement and execution. Only after a correlated `stale/refused`
   reply, `replan-stale intent.json` can try once beside a newly observed live
