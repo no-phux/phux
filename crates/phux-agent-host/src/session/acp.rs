@@ -341,6 +341,11 @@ impl Session {
                 .callback
                 .sink
                 .result(self.callback.answer(id, &question_id, response)),
+            NativeIntent::AnswerExact { .. } => self.callback.sink.result(common::result(
+                id,
+                NativeDisposition::Refused,
+                "exact question references must be resolved by the broker",
+            )),
         }
     }
     fn prompt(&self, id: u64, text: String) -> Result<(), HostError> {

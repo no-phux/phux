@@ -9,6 +9,7 @@ import {
   closeSync,
   constants as fs,
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   openSync,
@@ -425,8 +426,6 @@ export function scratchBase(
   );
 }
 
-const LOGS = ["build.log", "chrome.log", "browser.log", "server.log", "auth-server.log"];
-
 export async function webBrowser(): Promise<number> {
   for (const name of ["SIGTERM", "SIGINT"] as const) {
     process.on(name, () => {
@@ -444,11 +443,11 @@ export async function webBrowser(): Promise<number> {
   }
   const target = resolve(env["CARGO_TARGET_DIR"] ?? join(ROOT, "target/web-native"));
   env["CARGO_TARGET_DIR"] = target;
-  const scratchParent = scratchBase(env["TMPDIR"]);
-  const logs = join(ROOT, "target/web-browser-logs");
-  mkdirSync(logs, { recursive: true });
-  for (const name of LOGS) rmSync(join(logs, name), { force: true });
+  const scratch = mkdtempSync(join(scratchBase(env["TMPDIR"]), "phux-browser-"));
+  // The build cache may evict target/ between Cargo invocations.
+  const logs = join(scratch, "logs");
   try {
+    mkdirSync(logs);
     // One Cargo schedule for both binaries, at opt-level 0: the dev profile's
     // opt-level 1 made this throwaway build the job's slowest step.
     const build = () =>
@@ -470,22 +469,23 @@ export async function webBrowser(): Promise<number> {
       console.error(`browser harness build failed, trying once more: ${error}`);
       return build();
     });
-    const scratch = mkdtempSync(join(scratchParent, "phux-browser-"));
-    try {
-      const paths = { logs, scratch, target };
-      await browserTests({ ...env, TMPDIR: scratch }, paths);
-      await fallbackTests({ ...env, TMPDIR: scratch }, paths);
-    } finally {
-      rmSync(scratch, { recursive: true, force: true });
-    }
+    const paths = { logs, scratch, target };
+    await browserTests({ ...env, TMPDIR: scratch }, paths);
+    await fallbackTests({ ...env, TMPDIR: scratch }, paths);
     return 0;
   } catch (error) {
     if (error instanceof Interrupted) return 128 + error.signum;
     throw error;
   } finally {
-    for (const name of readdirSync(logs).sort()) {
-      if (name.endsWith(".log"))
-        console.log(`\n${join(logs, name)}:\n${readFileSync(join(logs, name), "utf8")}`);
+    try {
+      if (existsSync(logs)) {
+        for (const name of readdirSync(logs).sort()) {
+          if (name.endsWith(".log"))
+            console.log(`\n${name}:\n${readFileSync(join(logs, name), "utf8")}`);
+        }
+      }
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
     }
   }
 }

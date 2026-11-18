@@ -10,27 +10,9 @@ import {
   string,
   strings,
 } from "./validate.js";
-import { parseResources, type ResourceEntry } from "./resources.js";
-
 export { SchemaValidationError } from "./validate.js";
 export * from "./resources.js";
-
-export interface SessionSummary {
-  readonly name: string;
-  readonly windows: number;
-  readonly attached: boolean;
-}
-
-export interface SessionList {
-  readonly schema_version: 1 | 2 | 3 | 4;
-  readonly sessions: readonly SessionSummary[];
-  /** Canonical selectors for every addressable terminal (v2+; empty for v1). */
-  readonly terminals: readonly string[];
-  /** Every addressable resource of every kind (v3+; empty when absent). */
-  readonly resources: readonly ResourceEntry[];
-  /** One diagnostic per unreachable federation satellite; empty when absent. */
-  readonly unreachable: readonly string[];
-}
+export * from "./session-inventory.js";
 
 export interface CursorState {
   readonly x: number;
@@ -270,35 +252,6 @@ export interface AgentEmitResult {
 export interface AgentSessionCloseResult {
   readonly resource: string;
   readonly closed: true;
-}
-
-export function parseSessionList(value: unknown): SessionList {
-  const root = record(value, "$ (phux ls --json CLI shape)");
-  if (root.schema_version !== 1 && root.schema_version !== 2 && root.schema_version !== 3 && root.schema_version !== 4) {
-    throw new SchemaValidationError("$.schema_version", "a supported value (1 through 4)");
-  }
-  const schema = root.schema_version;
-  if (!Array.isArray(root.sessions)) {
-    throw new SchemaValidationError("$.sessions", "an array");
-  }
-  const sessions = root.sessions.map((item, index): SessionSummary => {
-    const row = record(item, `$.sessions[${index}]`);
-    const name = string(row.name, `$.sessions[${index}].name`);
-    if (name.length === 0) throw new SchemaValidationError(`$.sessions[${index}].name`, "non-empty");
-    return {
-      name,
-      windows: integer(row.windows, `$.sessions[${index}].windows`, 0),
-      attached: boolean(row.attached, `$.sessions[${index}].attached`),
-    };
-  });
-  // v3/v4 preserve these v2 fields; v4 only adds per-session keys, and the
-  // resource inventory is additive (crates/phux-core/src/session_list.rs).
-  const terminals = schema === 1 && root.terminals === undefined
-    ? []
-    : strings(root.terminals, "$.terminals");
-  const resources = root.resources === undefined ? [] : parseResources(root.resources, "$.resources");
-  const unreachable = root.unreachable === undefined ? [] : strings(root.unreachable, "$.unreachable");
-  return { schema_version: schema, sessions, terminals, resources, unreachable };
 }
 
 function parseColor(value: unknown, path: string): CellColor {

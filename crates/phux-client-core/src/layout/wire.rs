@@ -220,6 +220,22 @@ pub fn wire_leaves(node: &WireNode) -> Vec<EntryRef> {
     out
 }
 
+/// The exact entry for a target if the group presents it once.
+/// For duplicate presentations a handle alone cannot identify the view.
+#[must_use]
+pub fn unique_entry_for_target(
+    group: &WireGroup,
+    target: &phux_protocol::wire::frame::EntryTarget,
+) -> Option<[u8; 16]> {
+    let leaves = wire_leaves(&group.tree);
+    let mut matching = leaves
+        .iter()
+        .flat_map(|leaf| std::iter::once(leaf).chain(&leaf.tabs))
+        .filter(|entry| &entry.target == target);
+    let entry = matching.next()?.entry;
+    matching.next().is_none().then_some(entry)
+}
+
 fn collect_wire_leaves(node: &WireNode, out: &mut Vec<EntryRef>) {
     match node {
         WireNode::Leaf(entry) => out.push(entry.clone()),

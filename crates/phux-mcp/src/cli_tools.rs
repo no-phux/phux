@@ -79,14 +79,14 @@ pub(crate) fn schema(name: &str, description: &str, properties: Value, required:
 fn launch_schema() -> Value {
     schema(
         "phux_launch",
-        "Launch a configured agent integration, optionally placing it beside an exact local pane.",
+        "Launch a configured agent integration, optionally creating it beside a split leaf in the shared arrangement.",
         json!({
             "integration": string_schema(),
             "list": { "type": "boolean" },
             "target": string_schema(),
             "split": { "type": "string", "enum": ["horizontal", "vertical"] },
             "ratio": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1 },
-            "projection": projection_key_schema(),
+            "projection": { "type": "string", "description": "Legacy option; placed launch refuses named projections." },
             "cwd": string_schema(),
             "extra": { "type": "array", "maxItems": 64, "items": string_schema() },
             "socket": string_schema(),
@@ -98,27 +98,27 @@ fn launch_schema() -> Value {
 fn spawn_schema() -> Value {
     schema(
         "phux_spawn",
-        "Spawn a Terminal without attaching; optional target/split/ratio performs explicit local placement.",
+        "Spawn a Terminal without attaching; target/split/ratio atomically creates it beside a split leaf in the shared arrangement.",
         json!({
             "target": string_schema(),
             "satellite": string_schema(),
             "split": { "type": "string", "enum": ["horizontal", "vertical"] },
             "ratio": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1 },
-            "projection": projection_key_schema(),
+            "projection": { "type": "string", "description": "Legacy option; placed spawn refuses named projections." },
             "cwd": string_schema(),
             "command": { "type": "array", "maxItems": 64, "items": string_schema() },
             "retain_secs": {
                 "type": "integer",
                 "minimum": 0,
                 "maximum": 86400,
-                "description": "Keep the pane inspectable this many seconds after its process exits (0: the server's default); read its exit with phux_resource_wait / phux_resource_show. Refused with unsupported_server when the server does not advertise retain_on_exit.",
+                "description": "Unplaced spawn only. Keep the pane inspectable this many seconds after its process exits (0: the server's default).",
             },
             "idempotency_key": {
                 "type": "string",
                 "minLength": 32,
                 "maxLength": 32,
                 "pattern": "^[0-9a-fA-F]{32}$",
-                "description": "Make the spawn safe to retry: a repeat with the same key and request returns the first pane (`replayed: true`) instead of spawning another. Refused with unsupported_server when the server does not advertise spawn_idempotency.",
+                "description": "Deduplicate an identical spawn. For an unknown placed spawn result, read the receipt with phux_terminal_operation rather than resolving the selector again.",
             },
             "socket": string_schema(),
         }),

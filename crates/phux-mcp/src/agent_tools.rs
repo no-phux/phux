@@ -17,6 +17,7 @@
 )]
 
 mod identity;
+mod questions;
 mod reads;
 mod resource_sessions;
 mod turn_driving;
@@ -76,6 +77,9 @@ pub(crate) const SPECS: &[ToolSpec] = &[
     }),
     ToolSpec::in_process("phux_agent_explain", reads::explain_schema, |args| {
         Box::pin(reads::projection(args))
+    }),
+    ToolSpec::in_process("phux_agent_questions", questions::schema, |args| {
+        Box::pin(questions::current(args))
     }),
     ToolSpec::in_process("phux_agent_set", identity::set_schema, |args| {
         Box::pin(identity::set(args))

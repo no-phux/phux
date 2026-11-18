@@ -311,7 +311,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("work").join("work-v1.sqlite");
         let store = Store::open(&path).unwrap();
-        assert_eq!(store.user_version().unwrap(), 2);
+        assert_eq!(store.user_version().unwrap(), crate::schema::USER_VERSION);
         drop(store);
         let conn = rusqlite::Connection::open(path).unwrap();
         let tables: Vec<String> = conn

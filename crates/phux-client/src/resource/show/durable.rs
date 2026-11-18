@@ -5,7 +5,10 @@ use crate::{
     org::{self, OrgError},
 };
 use phux_protocol::{
-    api::ResourceObserved, caps::ServerFeatureExt, ids::ResourceKey, wire::frame::OrgFilter,
+    api::{ExecutionRef, ResourceObserved},
+    caps::ServerFeatureExt,
+    ids::{AuthorityId, ResourceKey},
+    wire::frame::{OrgFilter, ResourceRecord},
 };
 use std::path::Path;
 
@@ -29,6 +32,50 @@ pub async fn show_key_on(
     conn: &mut Connection,
     key: ResourceKey,
 ) -> Result<ResourceObserved, OrgError> {
+    let (_, record) = show_key_level_on(conn, key).await?;
+    record.ok_or_else(|| OrgError::NotFound(format!("^{key}")))
+}
+
+/// Read a durable resource and the serving authority, even when it is absent.
+///
+/// # Errors
+///
+/// Transport, unsupported or refusal.
+pub async fn show_key_level_on(
+    conn: &mut Connection,
+    key: ResourceKey,
+) -> Result<(AuthorityId, Option<ResourceObserved>), OrgError> {
+    let (authority, record) = read_key_on(conn, key).await?;
+    Ok((authority, record.map(|record| project(authority, record))))
+}
+
+fn project(authority: AuthorityId, record: ResourceRecord) -> ResourceObserved {
+    let authority = authority.to_string();
+    let resource = record.key.to_string();
+    let execution = record.activation.map(crate::terminal::observation);
+    let execution_ref = execution
+        .as_ref()
+        .map(|observation| ExecutionRef::from_observation(&authority, &resource, observation));
+    ResourceObserved {
+        schema_version: 2,
+        authority,
+        resource,
+        session: record.session.to_string(),
+        name: record.name,
+        kind: super::super::kind_name(record.kind).to_owned(),
+        execution,
+        execution_ref,
+        terminal_id: record
+            .live
+            .as_ref()
+            .and_then(phux_protocol::ids::ResourceId::local_id),
+    }
+}
+
+pub(in crate::resource) async fn read_key_on(
+    conn: &mut Connection,
+    key: ResourceKey,
+) -> Result<(AuthorityId, Option<ResourceRecord>), OrgError> {
     if !conn
         .server_features_ext()
         .contains(ServerFeatureExt::DurableResourceInspection)
@@ -36,22 +83,6 @@ pub async fn show_key_on(
         return Err(OrgError::Unsupported);
     }
     let inventory = org::fetch(conn, OrgFilter::Resource(key), 1).await?;
-    let record = inventory
-        .resources
-        .into_iter()
-        .find(|r| r.key == key)
-        .ok_or_else(|| OrgError::NotFound(format!("^{key}")))?;
-    Ok(ResourceObserved {
-        schema_version: 2,
-        authority: inventory.authority.to_string(),
-        resource: record.key.to_string(),
-        session: record.session.to_string(),
-        name: record.name,
-        kind: super::super::kind_name(record.kind).to_owned(),
-        execution: record.activation.map(crate::terminal::observation),
-        terminal_id: record
-            .live
-            .as_ref()
-            .and_then(phux_protocol::ids::ResourceId::local_id),
-    })
+    let record = inventory.resources.into_iter().find(|r| r.key == key);
+    Ok((inventory.authority, record))
 }

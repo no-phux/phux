@@ -27,7 +27,16 @@ impl ServerInstance {
 /// Opaque federation host token for a [`ResourceId::Satellite`] (ADR-0007).
 /// A `Box<str>` keeps [`ResourceId`] at 24 bytes.
 #[derive(
-    Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
 )]
 pub struct SatelliteHost(Box<str>);
 
@@ -80,7 +89,16 @@ pub const RESOURCE_ID_TAG_SATELLITE: u8 = 1;
 ///
 /// [`UnsupportedSatelliteRoute`]: crate::wire::frame::ErrorCode::UnsupportedSatelliteRoute
 #[derive(
-    Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
 )]
 pub enum ResourceId {
     /// A resource owned by the receiving server (wire tag = 0).

@@ -1,3 +1,4 @@
+mod actions;
 mod bundled;
 mod config_json;
 mod distro;
@@ -8,7 +9,6 @@ mod show;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::Duration;
 
 use phux_config::loader as config_loader;
 use phux_config::plugin::{self, PluginManifest};
@@ -54,8 +54,18 @@ pub(crate) fn run_config(action: &ConfigAction, socket: Option<std::path::PathBu
             action,
             timeout,
             cwd,
+            target_json,
+            input_json,
             json,
-        } => run_config_action(plugin, action, *timeout, cwd.clone(), *json),
+        } => actions::run(
+            plugin,
+            action,
+            *timeout,
+            cwd.clone(),
+            target_json.as_deref(),
+            input_json.as_deref(),
+            *json,
+        ),
     }
 }
 
@@ -465,66 +475,6 @@ fn provenance_word(row: &AgentProjection) -> String {
     match (&row.source, &row.runtime) {
         (ProjectionSource::Runtime, Some(binding)) => format!("live {}", binding.terminal),
         _ => "declared".to_owned(),
-    }
-}
-
-fn run_config_action(
-    plugin: &str,
-    action: &str,
-    timeout: Option<u64>,
-    cwd: Option<PathBuf>,
-    json: bool,
-) -> ExitCode {
-    let path = config_loader::config_path();
-    let timeout = timeout.map(Duration::from_secs);
-    let request = phux_plugin::PluginActionRequest {
-        plugin_id: plugin.to_owned(),
-        action_id: action.to_owned(),
-        timeout,
-        cwd,
-    };
-    let rt = match crate::commands::cli_runtime() {
-        Ok(rt) => rt,
-        Err(code) => return code,
-    };
-    match rt.block_on(phux_plugin::run_configured_action_logged(&path, &request)) {
-        Ok(output) => print_action_output(&output, json),
-        Err(err) => {
-            error!("{err}");
-            ExitCode::FAILURE
-        }
-    }
-}
-
-fn print_action_output(output: &phux_plugin::PluginActionOutput, json: bool) -> ExitCode {
-    if json {
-        return match serde_json::to_string_pretty(output) {
-            Ok(rendered) => {
-                outln!("{rendered}");
-                action_exit_code(output)
-            }
-            Err(err) => {
-                error!("could not render plugin action JSON: {err}");
-                ExitCode::FAILURE
-            }
-        };
-    }
-    out!("{}", output.stdout);
-    // Plugin stderr is pass-through; do not rewrite another program's output.
-    eprint!("{}", output.stderr);
-    action_exit_code(output)
-}
-
-fn action_exit_code(output: &phux_plugin::PluginActionOutput) -> ExitCode {
-    match output.outcome {
-        phux_plugin::PluginActionOutcome::Completed => output
-            .exit_code
-            .and_then(|code| u8::try_from(code).ok())
-            .map_or(ExitCode::FAILURE, ExitCode::from),
-        phux_plugin::PluginActionOutcome::TimedOut => {
-            // `run`'s timeout convention (canonical table: exit_codes.rs).
-            ExitCode::from(crate::exit_codes::EXIT_RUN_TIMEOUT)
-        }
     }
 }
 

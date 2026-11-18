@@ -1,6 +1,36 @@
 //! Flag groups flattened into [`super::action::AgentAction`] variants.
 //! Each struct owns exactly its verb's flags.
 
+use std::path::PathBuf;
+
+/// `phux agent explain` options, including offline manifest inputs.
+#[derive(Debug, usage::Args)]
+pub(crate) struct ExplainFlags {
+    /// Target selector (resolves to one pane). Omit for the focused
+    /// pane. Not used in offline (`--file`) mode.
+    pub(crate) target: Option<String>,
+    /// Emit machine-readable JSON instead of the table.
+    #[usage(long)]
+    pub(crate) json: bool,
+    /// Evaluate a captured screen offline instead of querying the
+    /// server. `-` reads stdin.
+    #[usage(long, value_name = "PATH", conflicts("target"))]
+    pub(crate) file: Option<PathBuf>,
+    /// Agent kind whose manifest to evaluate, or one of its binary
+    /// aliases. Required with `--file`: offline there is no foreground
+    /// process group to identify the agent from.
+    #[usage(long, value_name = "KIND", requires("--file"))]
+    pub(crate) kind: Option<String>,
+    /// OSC 0/2 title to evaluate `title`-scoped rules against. Overrides
+    /// a JSON capture's own title; defaults to it, else to empty.
+    #[usage(long, value_name = "TEXT", requires("--file"))]
+    pub(crate) title: Option<String>,
+    /// How to read `--file`. `auto` picks JSON when the first
+    /// non-whitespace byte is `{`.
+    #[usage(long, choices("auto", "json", "text"), requires("--file"))]
+    pub(crate) format: Option<String>,
+}
+
 /// `phux agent list` filters, combined with AND.
 #[derive(Debug, Default, usage::Args)]
 pub(crate) struct ListFlags {

@@ -90,6 +90,8 @@ pub(crate) const METADATA_WRITE: &str = "SET_METADATA (ordinary key)";
 /// row the classifier gives one ([`phux_protocol::kinds::command_rule`]).
 pub(crate) const PERF_READ: &str = "GET_PERF (no reset)";
 
+pub(crate) const CURRENT_QUESTIONS: &str = "NATIVE_AGENT (current questions)";
+
 /// Why the `AgentSession` verbs stay on the CLI.
 const AGENT_SESSION: &str = "the Terminal-to-AgentSession resolution and the result documents \
      are assembled in the CLI command (`commands/agent/resource_session.rs`)";
@@ -138,8 +140,13 @@ pub(crate) const TOOLS: &[Row] = &[
         Touches::Wire(&["RESOURCE_CREATE"]),
     ),
     cli(
+        "phux_execution_result",
+        "resource execution",
+        Touches::Wire(&["GET_ORGANIZATION"]),
+    ),
+    cli(
         "phux_api_describe",
-        "terminal describe",
+        "api list",
         Touches::Wire(&["DESCRIBE_API"]),
     ),
     cli("phux_ls", "ls", Touches::Wire(&[RESOLVE])),
@@ -241,6 +248,9 @@ pub(crate) const TOOLS: &[Row] = &[
         Touches::Wire(&[
             RESOLVE,
             "SPAWN_RESOURCE",
+            "GET_ORGANIZATION",
+            "ARRANGEMENT_GET",
+            "RESOURCE_CREATE",
             METADATA_WRITE,
             "GET_METADATA",
             "KILL_RESOURCE",
@@ -252,9 +262,10 @@ pub(crate) const TOOLS: &[Row] = &[
         Touches::Wire(&[
             RESOLVE,
             "SPAWN_RESOURCE",
-            METADATA_WRITE,
             "GET_METADATA",
-            "KILL_RESOURCE",
+            "GET_ORGANIZATION",
+            "ARRANGEMENT_GET",
+            "RESOURCE_CREATE",
         ]),
     ),
     cli(
@@ -329,6 +340,11 @@ pub(crate) const TOOLS: &[Row] = &[
         "phux_agent_explain",
         "agent explain",
         Touches::Wire(&[RESOLVE, "GET_METADATA", "GET_SCREEN"]),
+    ),
+    cli(
+        "phux_agent_questions",
+        "agent questions",
+        Touches::Wire(&[CURRENT_QUESTIONS]),
     ),
     cli(
         "phux_agent_set",

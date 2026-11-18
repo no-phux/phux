@@ -1,28 +1,18 @@
-//! Wire primitives for `phux spawn` / `phux launch` (`SPAWN_RESOURCE`, SPEC
-//! L1 §3.1), plus the ownership-verify + `KILL_RESOURCE` rollback dance
-//! behind explicit placement.
-//!
-//! Explicit placement addresses an exact owning session and splices the new
-//! leaf into that session's shared arrangement ([`crate::layout_ops`]).
-//! Ownership is session membership: both panes must belong to the owner's
-//! session after the spawn. Selector
-//! resolution (which pane `--target` names) stays client-side (ADR-0021) and
-//! is the caller's job; this module starts from an already-resolved owner.
+//! Unplaced `SPAWN_RESOURCE` and canonical placed spawn for CLI and MCP.
 
 use std::path::Path;
 
 use phux_protocol::ids::{IdempotencyKey, ResourceId, SessionId};
 use phux_protocol::wire::UnreadableResult;
-use phux_protocol::wire::frame::{
-    Command, CommandResult, CommandValue, ErrorCode, FrameKind, SpawnError, SpawnResult, StateScope,
-};
+use phux_protocol::wire::frame::{ErrorCode, FrameKind, SpawnError, SpawnResult};
 use phux_protocol::wire::info::SessionSnapshot;
 
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
-use crate::layout::{ArrangementDoc, SplitDir};
-use crate::layout_ops::LayoutMutation;
 use crate::state::Degradation;
+
+mod placed;
+pub use placed::{PlacedSpawn, PlacedSpawnError};
 
 /// Send a `SPAWN_RESOURCE` frame over `conn` and return the matching
 /// `RESOURCE_SPAWNED` result with any interleaved notices.
@@ -155,221 +145,6 @@ pub fn ownership_for_terminal(
     terminal: &ResourceId,
 ) -> Option<SessionId> {
     crate::resource::session_of(snapshot, terminal)
-}
-
-/// An explicit spawn placement, already resolved by the caller: the
-/// Terminal the new pane was placed beside, and the pane the spawn just
-/// created. Selector resolution is not this module's job (ADR-0021).
-#[derive(Debug, Clone)]
-pub struct Placement {
-    /// The Terminal the new pane was placed beside.
-    pub owner: ResourceId,
-    /// `owner`'s session, from the caller's pre-spawn snapshot.
-    pub owner_session: SessionId,
-    /// The Terminal the spawn just created.
-    pub new_pane: ResourceId,
-}
-
-/// What [`verify_and_publish_placement`] did.
-#[derive(Debug)]
-pub enum RollbackOutcome {
-    /// Ownership held and the layout was published; nothing was rolled back.
-    Placed,
-    /// Placement failed and the rollback `KILL_RESOURCE` confirmed the
-    /// spawned pane was removed.
-    RolledBack {
-        /// Why placement failed.
-        reason: String,
-    },
-    /// Placement failed, and the rollback kill's own outcome could not
-    /// confirm the pane was removed (a refusal, an unexpected reply, or a
-    /// transport failure attempting it).
-    RollbackUnconfirmed {
-        /// Why placement failed.
-        reason: String,
-        /// What the rollback kill attempt itself reported.
-        cleanup_note: String,
-    },
-}
-
-/// Verify explicit ownership after a spawn, then publish the layout.
-///
-/// An older server may ignore `owner_terminal`, so both panes must still
-/// belong to the owner's session in a fresh `GET_STATE` before
-/// `new_pane` is spliced beside `owner` (into `projection`'s key when given,
-/// ADR-0129). Any failure, transport included, rolls the spawn back with
-/// `KILL_RESOURCE` and is reported in the outcome. Degradation notices are
-/// appended to `notices` in encounter order.
-pub async fn verify_and_publish_placement(
-    socket_path: &Path,
-    placement: &Placement,
-    dir: SplitDir,
-    ratio: f32,
-    projection: Option<&str>,
-    layout_request_id: u32,
-    notices: &mut Vec<String>,
-) -> RollbackOutcome {
-    let (verify_notices, ownership_error) = verify_ownership(socket_path, placement).await;
-    notices.extend(verify_notices);
-    if let Some(reason) = ownership_error {
-        return rollback_after_failure(socket_path, &placement.new_pane, reason, notices).await;
-    }
-
-    if let Err(reason) = publish_layout(
-        socket_path,
-        placement,
-        dir,
-        ratio,
-        projection,
-        layout_request_id,
-    )
-    .await
-    {
-        return rollback_after_failure(socket_path, &placement.new_pane, reason, notices).await;
-    }
-    RollbackOutcome::Placed
-}
-
-/// Roll `pane` back after `reason`, folding whatever the rollback kill
-/// itself reports into the returned [`RollbackOutcome`].
-async fn rollback_after_failure(
-    socket_path: &Path,
-    pane: &ResourceId,
-    reason: String,
-    notices: &mut Vec<String>,
-) -> RollbackOutcome {
-    let (cleanup_notices, cleanup) = rollback(socket_path, pane).await;
-    notices.extend(cleanup_notices);
-    match cleanup {
-        CleanupOutcome::Removed => RollbackOutcome::RolledBack { reason },
-        CleanupOutcome::Unconfirmed(cleanup_note) => RollbackOutcome::RollbackUnconfirmed {
-            reason,
-            cleanup_note,
-        },
-    }
-}
-
-/// Connect, send one command, and return its result with the interleaved
-/// degradation notices.
-async fn request_fresh(
-    socket_path: &Path,
-    command: Command,
-) -> Result<(CommandResult, Vec<String>), AttachError> {
-    let mut conn = Connection::connect(socket_path).await?;
-    let (result, interleaved) = conn.request(1, command).await?.into_parts();
-    drop(conn);
-    let notices = Degradation::from_interleaved(&interleaved)
-        .notices()
-        .to_vec();
-    Ok((result, notices))
-}
-
-/// Why both placed panes do not still belong to the owner's session, if they
-/// do not; a transport failure counts as unconfirmed.
-async fn verify_ownership(
-    socket_path: &Path,
-    placement: &Placement,
-) -> (Vec<String>, Option<String>) {
-    let scope = StateScope::Server;
-    let (result, notices) = match request_fresh(socket_path, Command::GetState { scope }).await {
-        Ok(reply) => reply,
-        Err(err) => {
-            return (
-                Vec::new(),
-                Some(format!("ownership verification failed: {err}")),
-            );
-        }
-    };
-    let expected = Some(placement.owner_session);
-    let reason = match result {
-        CommandResult::OkWith(CommandValue::State(state)) => {
-            let owner_after = ownership_for_terminal(&state, &placement.owner);
-            let spawned_after = ownership_for_terminal(&state, &placement.new_pane);
-            (owner_after != expected || spawned_after != expected).then_some(
-                "server did not honor explicit spawn ownership (unsupported or \
-                 ownership mismatch)"
-                    .to_owned(),
-            )
-        }
-        other => Some(crate::explain::explain_unexpected(
-            "ownership verification",
-            &other,
-        )),
-    };
-    (notices, reason)
-}
-
-/// Splice `placement.new_pane` beside `placement.owner` in the owner
-/// session's shared layout, or the validated `projection` key.
-async fn publish_layout(
-    socket_path: &Path,
-    placement: &Placement,
-    dir: SplitDir,
-    ratio: f32,
-    projection: Option<&str>,
-    request_id: u32,
-) -> Result<(), String> {
-    if let Some(key) = projection {
-        crate::layout_ops::validate_projection_key(key, placement.owner_session)
-            .map_err(|err| err.to_string())?;
-    }
-    let mut conn = Connection::connect(socket_path)
-        .await
-        .map_err(|err| err.to_string())?;
-    let mutation = LayoutMutation::SplitPreservingFocus {
-        target: placement.owner.clone(),
-        new_pane: placement.new_pane.clone(),
-        dir,
-        ratio,
-    };
-    let layout = match projection {
-        Some(key) => crate::layout_ops::LayoutOps::with_key(
-            &mut conn,
-            placement.owner_session,
-            key.to_owned(),
-            request_id,
-        ),
-        None => Ok(crate::layout_ops::LayoutOps::new(
-            &mut conn,
-            placement.owner_session,
-            request_id,
-        )),
-    };
-    let mut layout = layout.map_err(|err| err.to_string())?;
-    layout
-        .mutate_or_seed(ArrangementDoc::single(placement.owner.clone()), mutation)
-        .await
-        .map(|_workspace| ())
-        .map_err(|err| err.to_string())
-}
-
-/// What a rollback `KILL_RESOURCE` reported.
-enum CleanupOutcome {
-    /// The server confirmed the pane was killed.
-    Removed,
-    /// A refusal, an unexpected reply, or a transport failure — the raw
-    /// text for the caller's diagnostic.
-    Unconfirmed(String),
-}
-
-/// Kill `pane` (a rollback after a failed placement) and classify the
-/// outcome.
-async fn rollback(socket_path: &Path, pane: &ResourceId) -> (Vec<String>, CleanupOutcome) {
-    let kill = Command::KillResource {
-        terminal_id: pane.clone(),
-        operation_id: None,
-    };
-    match request_fresh(socket_path, kill).await {
-        Ok((CommandResult::Ok, notices)) => (notices, CleanupOutcome::Removed),
-        Ok((other, notices)) => (
-            notices,
-            CleanupOutcome::Unconfirmed(crate::explain::explain_unexpected("cleanup", &other)),
-        ),
-        Err(err) => (
-            Vec::new(),
-            CleanupOutcome::Unconfirmed(format!("cleanup failed: {err}")),
-        ),
-    }
 }
 
 #[cfg(test)]

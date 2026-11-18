@@ -83,7 +83,33 @@ pub async fn create(
     conn: &mut Connection,
     request: &TerminalCreate,
 ) -> Result<TerminalCreated, CreateError> {
-    let command = request.command().map_err(CreateError::Invalid)?;
+    create_with_provenance(conn, request, None).await
+}
+
+/// Create with inert, validated provider-session provenance from a prepared integration.
+///
+/// # Errors
+///
+/// As [`create`], plus provenance encoding failure before submission.
+pub async fn create_with_provenance(
+    conn: &mut Connection,
+    request: &TerminalCreate,
+    record: Option<&crate::agent_session_record::AgentSessionRecord>,
+) -> Result<TerminalCreated, CreateError> {
+    let mut command = request.command().map_err(CreateError::Invalid)?;
+    if let (
+        Command::ResourceCreate {
+            launch: Some(launch),
+            ..
+        },
+        Some(record),
+    ) = (&mut command, record)
+    {
+        use crate::agent_session_record::AgentSessionRecord;
+        let encoded = record.encode().map_err(CreateError::Invalid)?;
+        AgentSessionRecord::parse(&encoded).map_err(CreateError::Invalid)?;
+        launch.restore = Some(encoded);
+    }
     let receipt = org::commit(conn, 1, command).await?;
     project(&request.session, &request.idempotency_key, &receipt)
 }
@@ -114,18 +140,24 @@ fn project(session: &str, key: &str, receipt: &Committed) -> Result<TerminalCrea
             "missing {field}; reconcile the retained idempotency key"
         ))
     };
+    let authority = receipt
+        .authority
+        .ok_or_else(|| missing("authority"))?
+        .to_string();
+    let resource = receipt
+        .resource
+        .ok_or_else(|| missing("resource"))?
+        .to_string();
+    let execution = receipt.activation.map(observation);
+    let execution_ref = execution
+        .as_ref()
+        .map(|observation| api::ExecutionRef::from_observation(&authority, &resource, observation));
     Ok(TerminalCreated {
         schema_version: 1,
         idempotency_key: api::hex16(receipt.operation.as_bytes()),
-        authority: receipt
-            .authority
-            .ok_or_else(|| missing("authority"))?
-            .to_string(),
+        authority,
         session: session.to_ascii_lowercase(),
-        resource: receipt
-            .resource
-            .ok_or_else(|| missing("resource"))?
-            .to_string(),
+        resource,
         placement: CreatedPlacement {
             arrangement: receipt
                 .arrangement
@@ -133,7 +165,8 @@ fn project(session: &str, key: &str, receipt: &Committed) -> Result<TerminalCrea
                 .to_string(),
             entry: api::hex16(&receipt.entry.ok_or_else(|| missing("entry"))?),
         },
-        execution: receipt.activation.map(observation),
+        execution,
+        execution_ref,
         terminal_id: receipt
             .target
             .as_ref()

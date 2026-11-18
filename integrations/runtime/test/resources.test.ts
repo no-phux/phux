@@ -25,7 +25,7 @@ test("the v4 CLI fixture parses every kind with its parent, name, producer and c
   const fixture = JSON.parse(readFileSync(new URL("../../test/fixtures/session-list-v4.json", import.meta.url), "utf8"));
   const list = parseSessionList(fixture);
   assert.equal(list.schema_version, 4);
-  assert.deepEqual(list.sessions, [{ name: "fixture", windows: 1, attached: false }]);
+  assert.deepEqual(list.sessions, [{ name: "fixture", windows: 1, attached: false, key: "kpyripyvngx7fk72jbvu6iw77i" }]);
   assert.deepEqual(list.terminals, ["@1"]);
   assert.deepEqual(list.unreachable, []);
   assert.deepEqual(list.resources.map((row) => [row.id, row.kind, row.parent, row.name]), [

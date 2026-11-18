@@ -5,16 +5,17 @@
 //! at a time. `commit_start` rechecks the agent cap, so a launch that
 //! arrives after the cap filled is refused and nothing is written.
 
-use std::io::{BufRead, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use phux_client::attach::connection::Connection;
 use phux_config::socket::default_socket_path;
-use phux_protocol::ids::ResourceId;
+use phux_protocol::api::{TerminalCreate, TerminalCreated, TerminalOperation};
+use phux_protocol::ids::{AuthorityId, SessionKey};
 use phux_protocol::wire::frame::OrgFilter;
 use phux_work::mission::{
-    DEFAULT_MAX_AGENTS, DEFAULT_RULES, StartDocument, TaskPaths, brief_argv, brief_markdown,
-    build_env, default_target_dir, parse_agent, tab_title, task_paths,
+    StartDocument, TaskPaths, brief_argv, brief_markdown, build_env, parse_agent, tab_title,
+    task_paths,
 };
 use phux_work::{
     Alias, Client, LaunchQueued, Objective, OpenRun, OperationId, StartApplied, StartBinding,
@@ -23,6 +24,10 @@ use phux_work::{
 
 use super::json_err::codes;
 use super::mission::{self, OpOpt};
+
+mod settings;
+pub(super) use settings::configured_max_agents;
+use settings::{Settings, load_settings, origin_head, repo_root, write_brief};
 
 /// Tag mixed into the add operation id for the follow-up start.
 const START_TAG: u8 = 0xA5;
@@ -87,6 +92,7 @@ fn start_task(
     socket: Option<PathBuf>,
     added: bool,
 ) -> ExitCode {
+    let socket = socket.unwrap_or_else(default_socket_path);
     let root = match repo_root() {
         Ok(root) => root,
         Err(err) => return failed(json, added, &objective.alias, &err),
@@ -114,6 +120,10 @@ fn start_task(
         objective.alias.number,
         &objective.title,
     );
+    let authority = match ensure_owner(&socket) {
+        Ok(authority) => authority,
+        Err(error) => return failed(json, added, &objective.alias, &error),
+    };
     let request = StartRequest {
         alias: objective.alias.clone(),
         agent_kind: kind.clone(),
@@ -125,6 +135,7 @@ fn start_task(
         worktree_path: paths.worktree.display().to_string(),
         branch: paths.branch.clone(),
         repo_root: root.display().to_string(),
+        authority: Some(authority),
         launch: None,
     };
     match store.replay_start(&request) {
@@ -155,6 +166,7 @@ fn start_task(
             kind,
             model,
             socket,
+            authority,
         },
     )
 }
@@ -168,7 +180,8 @@ struct Place<'a> {
     paths: TaskPaths,
     kind: String,
     model: Option<String>,
-    socket: Option<PathBuf>,
+    socket: PathBuf,
+    authority: AuthorityId,
 }
 
 fn place_agent(store: &Client, mut request: StartRequest, place: Place<'_>) -> ExitCode {
@@ -182,8 +195,8 @@ fn place_agent(store: &Client, mut request: StartRequest, place: Place<'_>) -> E
         kind,
         model,
         socket,
+        authority,
     } = place;
-    let socket = socket.unwrap_or_else(default_socket_path);
     let binding = match prepare_worker(&Prepared {
         root,
         objective,
@@ -192,32 +205,25 @@ fn place_agent(store: &Client, mut request: StartRequest, place: Place<'_>) -> E
         kind: &kind,
         model: model.as_deref(),
         socket: &socket,
+        operation: request.operation_id,
+        authority,
     }) {
         Ok(binding) => binding,
         Err(PrepareError::Early(err)) => return failed(json, added, &objective.alias, &err),
         Err(PrepareError::Launched(err)) => {
-            return cleanup(
-                json,
-                added,
-                &objective.alias,
-                root,
-                &paths.worktree,
-                &paths.branch,
-                &err,
-            );
+            return keep_worktree(json, added, &objective.alias, &paths.worktree, &err);
         }
     };
     request.launch = Some(binding);
+    let operation = request.operation_id.to_hex();
     match store.commit_start(request) {
         Ok(applied) => emit(json, &applied),
-        Err(err) => cleanup(
+        Err(err) => keep_worktree(
             json,
             added,
             &objective.alias,
-            root,
             &paths.worktree,
-            &paths.branch,
-            &err.to_string(),
+            &format!("worker operation {operation}: keeper did not confirm the binding: {err}"),
         ),
     }
 }
@@ -230,6 +236,8 @@ struct Prepared<'a> {
     kind: &'a str,
     model: Option<&'a str>,
     socket: &'a Path,
+    operation: OperationId,
+    authority: AuthorityId,
 }
 
 enum PrepareError {
@@ -238,6 +246,15 @@ enum PrepareError {
 }
 
 fn prepare_worker(place: &Prepared<'_>) -> Result<StartBinding, PrepareError> {
+    match place.paths.worktree.symlink_metadata() {
+        Ok(_) => {
+            confirm_recovery_path(place).map_err(PrepareError::Launched)?;
+            let session = super::worktree::session_name_for(&place.paths.worktree);
+            return worker_binding(place, &session, false).map_err(PrepareError::Launched);
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(PrepareError::Early(error.to_string())),
+    }
     let from = origin_head(place.root).map_err(PrepareError::Early)?;
     std::fs::create_dir_all(&place.settings.target_dir).map_err(|err| {
         PrepareError::Early(format!(
@@ -261,30 +278,34 @@ fn prepare_worker(place: &Prepared<'_>) -> Result<StartBinding, PrepareError> {
         &from,
         place.socket,
         &place.objective.id.to_hex(),
+        place.authority,
     )
     .map_err(|_| PrepareError::Launched("could not create the worktree session".to_owned()))?;
-    worker_binding(
-        place.socket,
-        &created.session,
-        place.kind,
-        place.paths,
-        place.model,
-        &place.settings.target_dir,
-        place.settings.sccache.as_deref(),
-        place.objective,
-    )
-    .map_err(PrepareError::Launched)
+    worker_binding(place, &created.session, true).map_err(PrepareError::Launched)
 }
 
-/// The cap recorded in `.phux/mission.toml`, when that file names one.
-pub(crate) fn configured_max_agents(repo_root: &Path) -> Option<u32> {
-    if repo_root.as_os_str().is_empty() {
-        return None;
+fn confirm_recovery_path(place: &Prepared<'_>) -> Result<(), String> {
+    let input = super::git::git_bytes(place.root, &["worktree", "list", "--porcelain", "-z"])?;
+    let path = place
+        .paths
+        .worktree
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    let matches = super::git::parse_worktrees(&input, place.root)?
+        .into_iter()
+        .any(|entry| {
+            !entry.is_main
+                && entry.branch.as_deref() == Some(place.paths.branch.as_str())
+                && entry
+                    .path
+                    .canonicalize()
+                    .is_ok_and(|candidate| candidate == path)
+        });
+    if matches {
+        Ok(())
+    } else {
+        Err("existing path is not this mission's registered worktree and branch".to_owned())
     }
-    let state_dir = phux_config::instance::state_dir();
-    load_settings(repo_root, &state_dir)
-        .ok()
-        .map(|settings| settings.max_agents)
 }
 
 /// Launch the oldest queued run through the same worktree and brief path as
@@ -302,6 +323,10 @@ pub(crate) fn promote_queued(
         .is_some()
     {
         return Ok(());
+    }
+    let owner = run.authority.ok_or("queued run has no recorded owner")?;
+    if owner != current_owner(socket)? {
+        return Err(format!("queued run belongs to authority {owner}"));
     }
     let objective = store
         .show(run.alias.clone())
@@ -340,13 +365,11 @@ pub(crate) fn promote_queued(
         kind: &run.agent_kind,
         model,
         socket,
+        operation: operation_id,
+        authority: owner,
     }) {
         Ok(binding) => binding,
-        Err(PrepareError::Early(err)) => return Err(err),
-        Err(PrepareError::Launched(err)) => {
-            force_remove(&root, &paths.worktree, &paths.branch);
-            return Err(err);
-        }
+        Err(PrepareError::Early(err) | PrepareError::Launched(err)) => return Err(err),
     };
     let admitted = store.launch_queued(LaunchQueued {
         alias: run.alias.clone(),
@@ -356,54 +379,195 @@ pub(crate) fn promote_queued(
         max_agents,
         launch: binding,
     });
-    if let Err(err) = admitted {
-        force_remove(&root, &paths.worktree, &paths.branch);
-        return Err(err.to_string());
-    }
-    Ok(())
+    admitted.map(|_| ()).map_err(|err| {
+        format!(
+            "worker operation {}: keeper did not confirm the binding: {err}",
+            operation_id.to_hex()
+        )
+    })
 }
 
 const ACTOR_KEEPER: &str = "keeper";
 
-fn force_remove(repo: &Path, worktree: &Path, branch: &str) {
-    let dest = worktree.to_string_lossy().into_owned();
-    let _ = super::git::git_bytes(repo, &["worktree", "remove", "--force", &dest]);
-    let _ = super::git::git_bytes(repo, &["branch", "-D", branch]);
+fn worker_binding(
+    place: &Prepared<'_>,
+    session: &str,
+    may_launch: bool,
+) -> Result<StartBinding, String> {
+    let title = tab_title(place.objective.alias.number, &place.objective.title);
+    let rt = super::cli_runtime().map_err(|_| "could not build a runtime".to_owned())?;
+    let created = rt.block_on(launch_worker(place, session, &title, may_launch))?;
+    let execution = created.execution_ref.ok_or_else(|| {
+        "worker launch committed but exact execution is unavailable; reconcile its receipt"
+            .to_owned()
+    })?;
+    Ok(StartBinding {
+        session_key: created.session,
+        session: session.to_owned(),
+        terminal_id: created.terminal_id.map(|id| id.to_string()),
+        execution: Some(execution),
+        worktree_path: place.paths.worktree.display().to_string(),
+        branch: place.paths.branch.clone(),
+        tab_title: title,
+    })
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the worker binding is one value per launch input"
-)]
-fn worker_binding(
-    socket: &Path,
-    session: &str,
+fn worker_recipe(
     kind: &str,
     paths: &TaskPaths,
     model: Option<&str>,
-    target_dir: &Path,
-    sccache: Option<&str>,
-    objective: &Objective,
-) -> Result<StartBinding, String> {
-    let credential = mint_credential(socket, session)?;
-    let title = tab_title(objective.alias.number, &objective.title);
-    let launched = super::launch::launch_in_session(&super::launch::SessionLaunch {
-        kind: kind.to_owned(),
-        extra: brief_argv(kind, &paths.brief, model),
-        cwd: paths.worktree.clone(),
-        socket: socket.to_path_buf(),
-        session: session.to_owned(),
-        env: build_env(target_dir, sccache),
-        credential_socket: Some(credential),
-    })?;
-    let session_key = rename_worker(socket, session, launched.terminal_id, &title)?;
-    Ok(StartBinding {
-        session_key,
-        session: session.to_owned(),
-        terminal_id: launched.terminal_id.to_string(),
-        worktree_path: paths.worktree.display().to_string(),
-        branch: paths.branch.clone(),
-        tab_title: title,
+) -> Result<(Vec<String>, Option<super::agent::PreparedAgentSession>), String> {
+    let config = phux_config::loader::config_path();
+    let mut error = format!("no launch integration for {kind}");
+    for id in phux_work::mission::integration_ids(kind) {
+        let resolved = match phux_plugin::resolve_launch(
+            &config,
+            id,
+            &brief_argv(id, &paths.brief, model),
+            &paths.worktree,
+            phux_plugin::LaunchMode::Terminal,
+        ) {
+            Ok(resolved) => resolved,
+            Err(err) => {
+                error = err.to_string();
+                continue;
+            }
+        };
+        let prepared = super::agent::prepare_for_launch(&resolved)?;
+        let argv = prepared.as_ref().map_or(resolved.argv, |p| p.argv.clone());
+        return Ok((argv, prepared));
+    }
+    Err(error)
+}
+
+async fn launch_worker(
+    place: &Prepared<'_>,
+    name: &str,
+    label: &str,
+    may_launch: bool,
+) -> Result<TerminalCreated, String> {
+    let mut conn = super::server_target::ServerTarget::local(place.socket)
+        .connect()
+        .await
+        .map_err(|error| error.to_string())?;
+    let inventory = phux_client::org::fetch(&mut conn, OrgFilter::All, 1)
+        .await
+        .map_err(|error| error.to_string())?;
+    if inventory.authority != place.authority {
+        return Err(format!(
+            "worker launch belongs to authority {}",
+            place.authority
+        ));
+    }
+    let task = place.objective.id.to_hex();
+    let session = inventory
+        .session_named(name)
+        .filter(|session| {
+            session
+                .attrs
+                .iter()
+                .any(|(key, value)| key == "mission.task" && value == &task)
+        })
+        .ok_or_else(|| format!("no session {name} bound to objective {task}"))?;
+    let key = place.operation.to_hex();
+    let lookup = TerminalOperation {
+        session: session.key.to_string(),
+        idempotency_key: key.clone(),
+    };
+    match phux_client::terminal::operation(&mut conn, &lookup).await {
+        Ok(receipt) => Ok(receipt),
+        Err(phux_client::terminal::CreateError::NotRetained) if may_launch => {
+            submit_worker(&mut conn, place, session.key, label, key).await
+        }
+        Err(phux_client::terminal::CreateError::NotRetained) => Err(format!(
+            "worker receipt {key} is not retained for the existing worktree; recovery did not start another process"
+        )),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn ensure_owner(socket: &Path) -> Result<AuthorityId, String> {
+    super::server::ensure_server_unseeded(socket, false).map_err(|error| error.to_string())?;
+    current_owner(socket)
+}
+
+fn current_owner(socket: &Path) -> Result<AuthorityId, String> {
+    let rt = super::cli_runtime().map_err(|_| "could not build a runtime".to_owned())?;
+    rt.block_on(async {
+        let mut conn = super::server_target::ServerTarget::local(socket)
+            .connect()
+            .await
+            .map_err(|error| error.to_string())?;
+        owner_on(&mut conn).await
+    })
+}
+
+pub(super) async fn owner_on(conn: &mut Connection) -> Result<AuthorityId, String> {
+    // This exact organization read is bounded even on a large authority.
+    let key =
+        phux_protocol::ids::ResourceKey::new([0xff; 16]).ok_or("invalid authority probe key")?;
+    phux_client::resource::show::show_key_level_on(conn, key)
+        .await
+        .map(|(authority, _)| authority)
+        .map_err(|error| error.to_string())
+}
+
+async fn submit_worker(
+    conn: &mut Connection,
+    place: &Prepared<'_>,
+    session: SessionKey,
+    label: &str,
+    key: String,
+) -> Result<TerminalCreated, String> {
+    let (argv, provenance) = worker_recipe(place.kind, place.paths, place.model)?;
+    let cwd = place
+        .paths
+        .worktree
+        .to_str()
+        .ok_or("worktree path is not UTF-8")?;
+    let delegation = phux_client::delegation::delegate_agent(
+        conn,
+        2,
+        phux_client::org::mint_operation(),
+        session,
+        0,
+    )
+    .await
+    .map_err(|error| format!("could not mint an agent credential: {error}"))?;
+    let mut request = TerminalCreate::new(session.to_string(), key);
+    request.cwd = Some(cwd.to_owned());
+    request.name = Some(label.to_owned());
+    request.env.extend(build_env(
+        &place.settings.target_dir,
+        place.settings.sccache.as_deref(),
+    ));
+    // The public env map cannot override server routing. This existing
+    // delegated socket is injected into the worker argv, not the primary socket.
+    request.argv.extend([
+        "/usr/bin/env".to_owned(),
+        format!("PHUX_SOCKET={}", delegation.socket_path),
+    ]);
+    if let Some(provenance) = &provenance {
+        request.argv.extend(
+            provenance
+                .env
+                .iter()
+                .filter(|(name, _)| !request.env.contains_key(*name))
+                .map(|(name, value)| format!("{name}={value}")),
+        );
+    }
+    request.argv.extend(argv);
+    phux_client::terminal::create_with_provenance(
+        conn,
+        &request,
+        provenance.as_ref().map(|prepared| &prepared.record),
+    )
+    .await
+    .map_err(|error| {
+        format!(
+            "mission worker operation {}: {error}",
+            request.idempotency_key
+        )
     })
 }
 
@@ -438,49 +602,21 @@ fn failed(json: bool, added: bool, alias: &Alias, message: &str) -> ExitCode {
     )
 }
 
-fn cleanup(
+fn keep_worktree(
     json: bool,
     added: bool,
     alias: &Alias,
-    repo: &Path,
     worktree: &Path,
-    branch: &str,
     reason: &str,
 ) -> ExitCode {
     let message = prefixed(added, alias, reason);
-    if !confirm_remove(worktree) {
-        return mission::report_code(
-            json,
-            codes::MISSION_CONFIRMATION_REQUIRED,
-            &format!("{message}; worktree kept at {}", worktree.display()),
-            "remove the worktree from a terminal if it should go",
-            2,
-        );
-    }
-    let dest = worktree.to_string_lossy().into_owned();
-    let _ = super::git::git_bytes(repo, &["worktree", "remove", "--force", &dest]);
-    let _ = super::git::git_bytes(repo, &["branch", "-D", branch]);
     mission::report_code(
         json,
         codes::MISSION_START_FAILED,
-        &message,
-        "the worktree was removed; retry the start",
+        &format!("{message}; worktree kept at {}", worktree.display()),
+        "reconcile the original operation and inspect the worker before retrying",
         1,
     )
-}
-
-fn confirm_remove(worktree: &Path) -> bool {
-    let stdin = std::io::stdin();
-    if !stdin.is_terminal() {
-        return false;
-    }
-    eprint!(
-        "phux: remove the worktree at {}? [y/N] ",
-        worktree.display()
-    );
-    let mut line = String::new();
-    let read = stdin.lock().read_line(&mut line).unwrap_or(0);
-    read > 0 && matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
 fn prefixed(added: bool, alias: &Alias, message: &str) -> String {
@@ -489,157 +625,6 @@ fn prefixed(added: bool, alias: &Alias, message: &str) -> String {
     } else {
         message.to_owned()
     }
-}
-
-struct Settings {
-    max_agents: u32,
-    target_dir: PathBuf,
-    sccache: Option<String>,
-    agent: Option<String>,
-    rules: String,
-}
-
-fn load_settings(repo: &Path, state_dir: &Path) -> Result<Settings, String> {
-    let mut settings = Settings {
-        max_agents: DEFAULT_MAX_AGENTS,
-        target_dir: default_target_dir(state_dir),
-        sccache: None,
-        agent: None,
-        rules: DEFAULT_RULES.to_owned(),
-    };
-    let path = repo.join(".phux").join("mission.toml");
-    if !path.exists() {
-        return Ok(settings);
-    }
-    let text = std::fs::read_to_string(&path)
-        .map_err(|err| format!("could not read {}: {err}", path.display()))?;
-    let value: toml::Value = toml::from_str(&text)
-        .map_err(|err| format!("{} is not valid toml: {err}", path.display()))?;
-    let Some(mission) = value.get("mission") else {
-        return Ok(settings);
-    };
-    if let Some(max) = mission.get("max_agents") {
-        let Some(max) = max.as_integer().and_then(|max| u32::try_from(max).ok()) else {
-            return Err("[mission] max_agents must be an integer from 1 up".to_owned());
-        };
-        if max == 0 {
-            return Err("[mission] max_agents must be at least 1".to_owned());
-        }
-        settings.max_agents = max;
-    }
-    if let Some(dir) = mission
-        .get("shared_target_dir")
-        .and_then(toml::Value::as_str)
-    {
-        let dir = PathBuf::from(dir);
-        settings.target_dir = if dir.is_absolute() {
-            dir
-        } else {
-            repo.join(dir)
-        };
-    }
-    match mission.get("sccache") {
-        None | Some(toml::Value::Boolean(false)) => {}
-        Some(toml::Value::Boolean(true)) => settings.sccache = Some("sccache".to_owned()),
-        Some(toml::Value::String(bin)) if !bin.is_empty() => settings.sccache = Some(bin.clone()),
-        Some(_) => {
-            return Err("[mission] sccache must be true or a program name".to_owned());
-        }
-    }
-    if let Some(agent) = mission.get("agent").and_then(toml::Value::as_str) {
-        settings.agent = Some(agent.to_owned());
-    }
-    if let Some(rules) = mission.get("rules").and_then(toml::Value::as_str) {
-        settings.rules = if rules.ends_with('\n') {
-            rules.to_owned()
-        } else {
-            format!("{rules}\n")
-        };
-    }
-    Ok(settings)
-}
-
-fn repo_root() -> Result<PathBuf, String> {
-    let cwd = std::env::current_dir().map_err(|err| err.to_string())?;
-    let root = super::git::git_text(&cwd, &["rev-parse", "--show-toplevel"])?;
-    PathBuf::from(root.trim())
-        .canonicalize()
-        .map_err(|err| format!("could not canonicalize the git worktree: {err}"))
-}
-
-fn origin_head(root: &Path) -> Result<String, String> {
-    let text = super::git::git_text(root, &["rev-parse", "--abbrev-ref", "origin/HEAD"])?;
-    let text = text.trim();
-    if text.is_empty() || text == "origin/HEAD" {
-        return Err(
-            "origin has no default branch; set it with `git remote set-head origin <branch>`"
-                .to_owned(),
-        );
-    }
-    Ok(text.to_owned())
-}
-
-fn write_brief(path: &Path, body: &str) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|err| format!("could not create {}: {err}", parent.display()))?;
-    }
-    std::fs::write(path, body).map_err(|err| format!("could not write {}: {err}", path.display()))
-}
-
-fn mint_credential(socket: &Path, session: &str) -> Result<String, String> {
-    let rt = super::cli_runtime().map_err(|_| "could not build a runtime".to_owned())?;
-    rt.block_on(async {
-        let mut conn = super::server_target::ServerTarget::local(socket)
-            .connect()
-            .await
-            .map_err(|err| err.to_string())?;
-        let inventory = phux_client::org::fetch(&mut conn, OrgFilter::All, 1)
-            .await
-            .map_err(|err| err.to_string())?;
-        let record = inventory
-            .session_named(session)
-            .ok_or_else(|| format!("session {session} has no record"))?;
-        let delegation = phux_client::delegation::delegate_agent(
-            &mut conn,
-            2,
-            phux_client::org::mint_operation(),
-            record.key,
-            0,
-        )
-        .await
-        .map_err(|err| format!("could not mint an agent credential: {err}"))?;
-        drop(conn);
-        Ok(delegation.socket_path)
-    })
-}
-
-fn rename_worker(socket: &Path, session: &str, worker: u64, title: &str) -> Result<String, String> {
-    let id = u32::try_from(worker).map_err(|_| format!("pane id {worker} does not fit"))?;
-    let live = ResourceId::local(id);
-    let rt = super::cli_runtime().map_err(|_| "could not build a runtime".to_owned())?;
-    rt.block_on(async {
-        let mut conn = super::server_target::ServerTarget::local(socket)
-            .connect()
-            .await
-            .map_err(|err| err.to_string())?;
-        let inventory = phux_client::org::fetch(&mut conn, OrgFilter::All, 3)
-            .await
-            .map_err(|err| err.to_string())?;
-        let record = inventory
-            .session_named(session)
-            .ok_or_else(|| format!("session {session} has no record"))?;
-        let session_key = record.key.to_string();
-        let resource_key = inventory
-            .resource_by_live(&live)
-            .ok_or_else(|| format!("pane {worker} has no record to label"))?
-            .key;
-        phux_client::org::rename_resource(&mut conn, resource_key, Some(title))
-            .await
-            .map_err(|err| format!("could not title the worker pane: {err}"))?;
-        drop(conn);
-        Ok(session_key)
-    })
 }
 
 /// Child operation id for `add --start`.

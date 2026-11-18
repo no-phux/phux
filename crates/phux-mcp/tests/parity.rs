@@ -73,7 +73,7 @@ fn cli_verbs() -> BTreeSet<String> {
 const AGENT_FACING: &[&str] = &[
     "terminal create",
     "terminal operation",
-    "terminal describe",
+    "api list",
     "agent answer",
     "agent prompt",
     "agent send-keys",
@@ -283,6 +283,34 @@ fn tool_annotations_equal_the_kind_table() {
                             .mutates(),
                         "{name} is read-only but a plain GET_PERF mutates"
                     );
+                    continue;
+                }
+                if *method == tool_table::CURRENT_QUESTIONS {
+                    // The native carrier also handles mutations. Its two
+                    // current-question rows must independently remain reads.
+                    use phux_protocol::ids::{AuthorityId, ResourceId, ResourceKey};
+                    use phux_protocol::native_agent::questions::QuestionTarget;
+                    use phux_protocol::native_agent::{NativeRequest, NativeRequestPayload};
+                    use phux_protocol::wire::frame::Command;
+
+                    for target in [
+                        QuestionTarget::Handle {
+                            resource: ResourceId::local(1),
+                        },
+                        QuestionTarget::Key {
+                            authority: AuthorityId::new([1; 16]).unwrap(),
+                            resource: ResourceKey::new([2; 16]).unwrap(),
+                        },
+                    ] {
+                        let request =
+                            NativeRequestPayload::new(NativeRequest::CurrentQuestions { target })
+                                .unwrap();
+                        assert!(
+                            !phux_protocol::kinds::command_rule(&Command::NativeAgent { request })
+                                .verb_set()
+                                .mutates()
+                        );
+                    }
                     continue;
                 }
                 let spec = phux_protocol::kinds::method_named(method)

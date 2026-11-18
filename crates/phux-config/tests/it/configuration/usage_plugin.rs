@@ -26,6 +26,6 @@ fn the_usage_plugin_hooks_real_server_events() -> Result<(), Box<dyn std::error:
     );
     assert!(loaded.plugin_root.join("scripts/publish.sh").is_file());
     let actions: Vec<&str> = loaded.actions.iter().map(|a| a.id.as_str()).collect();
-    assert_eq!(actions, ["refresh", "show"]);
+    assert_eq!(actions, ["show"]);
     Ok(())
 }

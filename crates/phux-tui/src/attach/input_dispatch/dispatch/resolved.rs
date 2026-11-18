@@ -69,33 +69,38 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         &mut self,
         resolved: &phux_config::keybind::ResolvedAction,
     ) -> Result<bool, AttachError> {
-        // ADR-0147: any action first dismisses the floating overlay; for
-        // `kill-pane` that is the whole action.
-        let dismissed = self.dismiss_floating().await?;
+        self.run_resolved_from(resolved, phux_plugin::ActionSource::Tui)
+            .await
+    }
+
+    pub(super) async fn run_resolved_from(
+        &mut self,
+        resolved: &phux_config::keybind::ResolvedAction,
+        source: phux_plugin::ActionSource,
+    ) -> Result<bool, AttachError> {
+        // ADR-0147: built-in actions first dismiss the floating overlay; for
+        // `kill-pane` that is the whole action. An extension must not kill a
+        // floating terminal as an implicit side effect of invocation.
+        let extension = resolved.action == crate::attach::plugin_actions::PLUGIN_ACTION_NAME;
+        let dismissed = if extension || resolved.action == "command-palette" {
+            false
+        } else {
+            self.dismiss_floating().await?
+        };
         if dismissed && resolved.action == "kill-pane" {
             return Ok(true);
         }
-        if !self.ctx.layout_read_complete && edits_workspace(&resolved.action) {
-            tracing::info!(
-                action = %resolved.action,
-                reason = "layout read fence",
-                "arrangement save skipped"
-            );
+        if self.block_for_arrangement(&resolved.action) {
             return Ok(dismissed);
         }
-        // #1475: these two edit the arrangement but were not in the fence
-        // list, so they mutated the fallback layout and the save was then
-        // dropped. Hold them until the read adopts the stored arrangement.
-        if defers_for_layout_read(&resolved.action, self.ctx) {
-            self.defer_arrangement_edit(&resolved.action);
-            return Ok(dismissed);
-        }
-        let effects = run_action(
-            resolved,
-            self.ctx,
-            self.focused_resource.as_ref(),
-            self.panes,
-        );
+        self.ctx.plugin_action_source = source;
+        let focused = if extension {
+            crate::attach::floating::paint_focus(self.panes, self.focused_resource.as_ref())
+        } else {
+            self.focused_resource.as_ref()
+        };
+        let effects = run_action(resolved, self.ctx, focused, self.panes);
+        self.ctx.plugin_action_source = phux_plugin::ActionSource::Tui;
         Ok(apply_action_effects(
             effects,
             self.out,
@@ -107,6 +112,23 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         )
         .await?
             || dismissed)
+    }
+
+    fn block_for_arrangement(&mut self, action: &str) -> bool {
+        if !self.ctx.layout_read_complete && edits_workspace(action) {
+            tracing::info!(
+                action,
+                reason = "layout read fence",
+                "arrangement save skipped"
+            );
+            return true;
+        }
+        // #1475: hold hidden-view edits until the stored layout is adopted.
+        if defers_for_layout_read(action, self.ctx) {
+            self.defer_arrangement_edit(action);
+            return true;
+        }
+        false
     }
     /// Resolver intercept. Runs BEFORE the predict layer
     /// so a chord that resolves to e.g. `focus-direction` doesn't
@@ -126,7 +148,9 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             // sequence, or an exclusive key mode ate the key: absorb it.
             ChordOutcome::Partial | ChordOutcome::Swallowed => Ok(StageOutcome::CONSUMED),
             ChordOutcome::Resolved(resolved) => {
-                let layout_changed = self.run_resolved(&resolved).await?;
+                let layout_changed = self
+                    .run_resolved_from(&resolved, phux_plugin::ActionSource::TuiKey)
+                    .await?;
                 Ok(StageOutcome::consumed(layout_changed))
             }
         }

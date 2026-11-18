@@ -167,7 +167,10 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         outcome: OverlayOutcome,
     ) -> Result<bool, AttachError> {
         match outcome {
-            OverlayOutcome::RunAction(resolved) => self.run_resolved(&resolved).await,
+            OverlayOutcome::RunAction(resolved) => {
+                self.run_resolved_from(&resolved, phux_plugin::ActionSource::TuiPalette)
+                    .await
+            }
             OverlayOutcome::Copy(req) => {
                 // ADR-0030: resolve against the focused pane and copy via
                 // OSC 52; client-local.

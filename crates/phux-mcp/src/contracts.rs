@@ -67,7 +67,9 @@ pub(crate) fn enhance(catalog: &mut Value) {
             output["$defs"] = definitions;
         }
         entry["outputSchema"] = output;
-        add_resource_id(&mut entry["inputSchema"]);
+        if name != "phux_agent_questions" {
+            add_resource_id(&mut entry["inputSchema"]);
+        }
         drop_numeric_formats(entry);
     }
 }
@@ -126,8 +128,16 @@ pub(crate) fn output_schemas() -> Value {
         phux_protocol::api::terminal_created_schema(),
     );
     schemas.insert(
+        "phux_execution_result".into(),
+        phux_protocol::api::execution_result_schema(),
+    );
+    schemas.insert(
         "phux_api_describe".into(),
         crate::terminal_tools::description_schema(),
+    );
+    schemas.insert(
+        "phux_agent_questions".into(),
+        phux_protocol::native_agent::questions::current_questions_schema(),
     );
     schemas.insert("phux_operation_status".into(), operation_output());
     let mut durable = phux_protocol::api::resource_observed_schema();
@@ -226,6 +236,6 @@ pub(crate) fn operation_output() -> Value {
         "state": { "type": "string", "enum": ["pending", "completed", "failed"] },
         "result": {}, "error": { "type": "object" },
         "status_tool": { "type": "string" }, "approval_check": { "type": "object" },
-        "request": { "type": "object", "properties": { "tool": { "type": "string" }, "arguments": { "type": "object" } } }
+        "request": { "type": "object", "required": ["tool"], "properties": { "tool": { "type": "string" } }, "additionalProperties": false }
     } })
 }

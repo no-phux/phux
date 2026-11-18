@@ -96,6 +96,12 @@ pub fn frame_rule(frame: &FrameKind) -> &'static Rule {
 pub fn command_rule(command: &Command) -> &'static Rule {
     match command {
         Command::NativeAgent { request } => match request.request() {
+            crate::native_agent::NativeRequest::CurrentQuestions { target } => match target {
+                crate::native_agent::questions::QuestionTarget::Handle { .. } => &C_CURRENT_QUESTIONS,
+                crate::native_agent::questions::QuestionTarget::Key { .. } => &C_CURRENT_QUESTIONS_KEYED,
+            },
+            crate::native_agent::NativeRequest::RespondQuestion { .. } => &C_RESPOND_QUESTION,
+            crate::native_agent::NativeRequest::QuestionReceipt { .. } => &C_QUESTION_RECEIPT,
             crate::native_agent::NativeRequest::ListIntegrations {} => &C_NATIVE_LIST,
             crate::native_agent::NativeRequest::LaunchIntegration { .. } => &C_NATIVE_LAUNCH,
             crate::native_agent::NativeRequest::Spawn { .. } => &C_NATIVE_SPAWN,

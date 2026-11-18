@@ -1,7 +1,7 @@
 import { boolean, integer, nullableString, numberInRange, oneOf, record, SchemaValidationError, string, strings, } from "./validate.js";
-import { parseResources } from "./resources.js";
 export { SchemaValidationError } from "./validate.js";
 export * from "./resources.js";
+export * from "./session-inventory.js";
 /** Closed `AgentEventsJsonlV1` record types (`docs/spec/L1.md`). */
 export const AGENT_EVENT_TYPES = [
     "session_start",
@@ -15,35 +15,6 @@ export const AGENT_EVENT_TYPES = [
     "state",
     "provider_raw",
 ];
-export function parseSessionList(value) {
-    const root = record(value, "$ (phux ls --json CLI shape)");
-    if (root.schema_version !== 1 && root.schema_version !== 2 && root.schema_version !== 3 && root.schema_version !== 4) {
-        throw new SchemaValidationError("$.schema_version", "a supported value (1 through 4)");
-    }
-    const schema = root.schema_version;
-    if (!Array.isArray(root.sessions)) {
-        throw new SchemaValidationError("$.sessions", "an array");
-    }
-    const sessions = root.sessions.map((item, index) => {
-        const row = record(item, `$.sessions[${index}]`);
-        const name = string(row.name, `$.sessions[${index}].name`);
-        if (name.length === 0)
-            throw new SchemaValidationError(`$.sessions[${index}].name`, "non-empty");
-        return {
-            name,
-            windows: integer(row.windows, `$.sessions[${index}].windows`, 0),
-            attached: boolean(row.attached, `$.sessions[${index}].attached`),
-        };
-    });
-    // v3/v4 preserve these v2 fields; v4 only adds per-session keys, and the
-    // resource inventory is additive (crates/phux-core/src/session_list.rs).
-    const terminals = schema === 1 && root.terminals === undefined
-        ? []
-        : strings(root.terminals, "$.terminals");
-    const resources = root.resources === undefined ? [] : parseResources(root.resources, "$.resources");
-    const unreachable = root.unreachable === undefined ? [] : strings(root.unreachable, "$.unreachable");
-    return { schema_version: schema, sessions, terminals, resources, unreachable };
-}
 function parseColor(value, path) {
     const color = record(value, path);
     if (color.kind === "default")

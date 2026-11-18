@@ -132,6 +132,10 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     pub attention_navigation: &'a mut AttentionNavigation,
     /// Enabled plugins' manifest `[[actions]]`, listed in the palette.
     pub plugin_actions: &'a [PluginActionEntry],
+    /// Origin of the synchronous action currently being dispatched.
+    pub plugin_action_source: phux_plugin::ActionSource,
+    /// Last loaded key-space identity for the attached arrangement.
+    pub plugin_action_placement: Option<&'a crate::attach::arrangement_link::ActionPlacement>,
     /// Enabled plugins' hostable `[[panes]]`.
     pub plugin_panes: &'a [PluginPaneEntry],
     /// The background-job facility (ADR-0172).

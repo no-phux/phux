@@ -20,7 +20,9 @@ pub(crate) use targets::{
 /// The verb-scoped `--remote` this command carries, if any.
 pub(crate) fn verb_remote(command: &Command) -> Option<&str> {
     match command {
-        Command::Attach(AttachArgs { remote, .. }) => remote.as_deref(),
+        Command::Attach(AttachArgs { remote, .. }) | Command::Api(ApiArgs { remote, .. }) => {
+            remote.as_deref()
+        }
         Command::Ls(LsArgs { remote, .. })
         | Command::Whoami(WhoamiArgs { remote, .. })
         | Command::New(NewArgs { remote, .. })
@@ -92,6 +94,7 @@ pub(crate) mod plan_usage;
 pub(crate) mod play;
 pub(crate) mod plugin;
 pub(crate) mod project;
+pub(crate) mod public_api;
 pub(crate) mod read_kind;
 pub(crate) mod rec;
 pub(crate) mod relay;

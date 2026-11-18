@@ -58,6 +58,7 @@ async fn background_mutation_is_observable_and_retries_execute_once() {
         .unwrap();
     assert_eq!(observed["state"], "pending");
     assert_eq!(observed["approval_check"]["tool"], "phux_approvals");
+    assert_eq!(observed["request"], json!({"tool": "phux_paste"}));
     worker.release.notify_one();
     let result = ledger
         .call("phux_paste".into(), args(false), worker.execute.clone())

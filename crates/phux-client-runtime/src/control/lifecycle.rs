@@ -173,6 +173,16 @@ impl ControlPlane {
         self.selected_session
     }
 
+    /// The latest successful attach's client id, meaningful only while attached.
+    #[must_use]
+    pub const fn attached_client_id(&self) -> Option<phux_protocol::ids::ClientId> {
+        if matches!(self.status(), Status::Attached) {
+            self.own_client_id
+        } else {
+            None
+        }
+    }
+
     /// The engine host, once `HELLO_OK` selected a profile.
     #[must_use]
     pub const fn engine(&self) -> Option<&EngineHandle> {

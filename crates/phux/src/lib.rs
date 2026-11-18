@@ -74,8 +74,6 @@ pub fn set_checkout_distros(dir: &'static str) {
     // `--rec` and `--remote` belong to the naked attach; their scope is a
     // post-parse check because globals parse on either side of a verb.
     about = "A terminal multiplexer whose server you can drive from code.",
-    long_about = "A terminal multiplexer whose server you can drive from code.\n\n\
-        Run `phux` alone to attach to your session; every other verb is headless.",
     // The root page is laid out for 80 columns whatever the terminal is:
     // the groups read as one table, and the width test on it is exact.
     term_width = 80,
@@ -166,10 +164,12 @@ const fn is_interactive_client(cli: &Cli) -> bool {
 fn json_output_requested() -> bool {
     // usage-rs treats attached values as the same presence flag, even false
     // or an empty value. Match that grammar before parser/preflight errors.
-    std::env::args_os().any(|arg| {
-        let bytes = arg.as_encoded_bytes();
-        bytes == b"--json" || bytes.starts_with(b"--json=")
-    })
+    std::env::args_os()
+        .take_while(|arg| arg != "--")
+        .any(|arg| {
+            let bytes = arg.as_encoded_bytes();
+            bytes == b"--json" || bytes.starts_with(b"--json=")
+        })
 }
 
 /// Endpoints answered straight from argv, before clap parses anything.
@@ -181,8 +181,9 @@ fn preparse_endpoint(args: &[std::ffi::OsString]) -> Option<ExitCode> {
         return Some(commands::mcp::run(&args[1..]));
     }
 
-    let wants_capabilities = args.iter().any(|arg| arg == "--capabilities");
-    let wants_json = args.iter().any(|arg| arg == "--json");
+    let flags = || args.iter().take_while(|arg| arg.as_os_str() != "--");
+    let wants_capabilities = flags().any(|arg| arg == "--capabilities");
+    let wants_json = flags().any(|arg| arg == "--json");
     if wants_capabilities && wants_json {
         if args.len() != 2 {
             return Some(emit_usage_error("--capabilities --json is a standalone endpoint and cannot be combined with other arguments".to_owned()));

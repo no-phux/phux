@@ -38,10 +38,21 @@ fn exact_id_alias_satisfies_schema_without_selector_and_rejects_ambiguity() {
         if tool["inputSchema"]["properties"].get("target").is_none() {
             continue;
         }
+        if tool["name"] == "phux_agent_questions" {
+            // This target is already exact and has its own local-or-durable grammar.
+            assert!(
+                tool["inputSchema"]["properties"]
+                    .get("resource_id")
+                    .is_none()
+            );
+            continue;
+        }
         assert!(
             tool["inputSchema"]["properties"]
                 .get("resource_id")
-                .is_some()
+                .is_some(),
+            "{} is missing the exact ID alias",
+            tool["name"]
         );
     }
     let tool = catalog

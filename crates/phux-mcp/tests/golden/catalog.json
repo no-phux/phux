@@ -295,14 +295,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -473,14 +474,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -651,14 +653,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -845,14 +848,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -1080,14 +1084,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -1251,14 +1256,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -1403,14 +1409,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -1676,14 +1683,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -1734,7 +1742,7 @@
       "destructiveHint": true,
       "readOnlyHint": false
     },
-    "description": "Launch a configured agent integration, optionally placing it beside an exact local pane.",
+    "description": "Launch a configured agent integration, optionally creating it beside a split leaf in the shared arrangement.",
     "inputSchema": {
       "additionalProperties": false,
       "if": {
@@ -1788,9 +1796,7 @@
           "type": "boolean"
         },
         "projection": {
-          "description": "Named projection key (`<prefix>.layout/v1/<session-id>`) to place into instead of the shared default; requires `target`.",
-          "maxLength": 4096,
-          "minLength": 1,
+          "description": "Legacy option; placed launch refuses named projections.",
           "type": "string"
         },
         "ratio": {
@@ -1878,14 +1884,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -1933,10 +1940,10 @@
   },
   {
     "annotations": {
-      "destructiveHint": true,
+      "destructiveHint": false,
       "readOnlyHint": false
     },
-    "description": "Spawn a Terminal without attaching; optional target/split/ratio performs explicit local placement.",
+    "description": "Spawn a Terminal without attaching; target/split/ratio atomically creates it beside a split leaf in the shared arrangement.",
     "inputSchema": {
       "additionalProperties": false,
       "if": {
@@ -1975,16 +1982,14 @@
           "type": "string"
         },
         "idempotency_key": {
-          "description": "Make the spawn safe to retry: a repeat with the same key and request returns the first pane (`replayed: true`) instead of spawning another. Refused with unsupported_server when the server does not advertise spawn_idempotency.",
+          "description": "Deduplicate an identical spawn. For an unknown placed spawn result, read the receipt with phux_terminal_operation rather than resolving the selector again.",
           "maxLength": 32,
           "minLength": 32,
           "pattern": "^[0-9a-fA-F]{32}$",
           "type": "string"
         },
         "projection": {
-          "description": "Named projection key (`<prefix>.layout/v1/<session-id>`) to place into instead of the shared default; requires `target`.",
-          "maxLength": 4096,
-          "minLength": 1,
+          "description": "Legacy option; placed spawn refuses named projections.",
           "type": "string"
         },
         "ratio": {
@@ -2000,7 +2005,7 @@
           "type": "string"
         },
         "retain_secs": {
-          "description": "Keep the pane inspectable this many seconds after its process exits (0: the server's default); read its exit with phux_resource_wait / phux_resource_show. Refused with unsupported_server when the server does not advertise retain_on_exit.",
+          "description": "Unplaced spawn only. Keep the pane inspectable this many seconds after its process exits (0: the server's default).",
           "maximum": 86400,
           "minimum": 0,
           "type": "integer"
@@ -2086,14 +2091,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -2275,14 +2281,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -2466,14 +2473,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -2613,14 +2621,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -2826,14 +2835,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -3038,14 +3048,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -3208,14 +3219,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -3380,14 +3392,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -3510,8 +3523,9 @@
       "destructiveHint": true,
       "readOnlyHint": false
     },
-    "description": "Execute one action declared by a configured phux plugin manifest. Runs argv directly from the plugin root; no hidden shell expansion.",
+    "description": "Execute one locally configured plugin action on this machine. Runs argv directly from the plugin root; target facts never select a server or grant credentials.",
     "inputSchema": {
+      "additionalProperties": false,
       "if": {
         "properties": {
           "background": {
@@ -3527,17 +3541,63 @@
           "description": "Plugin-local action id.",
           "type": "string"
         },
+        "action_target": {
+          "additionalProperties": false,
+          "properties": {
+            "activation": {
+              "type": "integer"
+            },
+            "arrangement": {
+              "type": "string"
+            },
+            "authority": {
+              "type": "string"
+            },
+            "entry": {
+              "type": "string"
+            },
+            "group": {
+              "type": "string"
+            },
+            "host": {
+              "type": "string"
+            },
+            "instance": {
+              "type": "string"
+            },
+            "resource": {
+              "type": "string"
+            },
+            "resource_handle": {
+              "type": "string"
+            },
+            "route": {
+              "type": "string"
+            },
+            "satellite": {
+              "type": "string"
+            },
+            "session": {
+              "type": "string"
+            },
+            "session_handle": {
+              "type": "integer"
+            },
+            "session_name": {
+              "type": "string"
+            },
+            "transport": {
+              "type": "string"
+            },
+            "workspace": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
         "background": {
           "description": "Return an operation receipt immediately instead of waiting (including server approval holds). Requires idempotency_key. Observe with phux_operation_status; cancellation only ends observation. Adapter exit loses the ledger and cancels unfinished work; effects may already have happened.",
           "type": "boolean"
-        },
-        "config": {
-          "description": "Override config.toml path. Defaults to the normal phux config path.",
-          "type": "string"
-        },
-        "cwd": {
-          "description": "Override cwd. Relative paths resolve under the plugin root.",
-          "type": "string"
         },
         "idempotency_key": {
           "description": "Nonzero 32-hex-digit retry key. Same tool and arguments replay one invocation during this adapter's lifetime (128 keys, no eviction). Not durable across reconnect/restart. phux_new/spawn/kill/signal additionally forward server-backed keys. Reconcile state before retrying after a disconnect.",
@@ -3546,13 +3606,17 @@
           "pattern": "^[0-9a-fA-F]{32}$",
           "type": "string"
         },
+        "input": {
+          "description": "Application-specific JSON input."
+        },
         "plugin_id": {
           "description": "Configured plugin id.",
           "type": "string"
         },
         "timeout_secs": {
           "description": "Give up after this many seconds. Omit to wait indefinitely.",
-          "type": "number"
+          "minimum": 0,
+          "type": "integer"
         }
       },
       "required": [
@@ -3623,14 +3687,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -3853,14 +3918,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -4029,14 +4095,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -4193,14 +4260,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -4434,6 +4502,376 @@
   {
     "annotations": {
       "destructiveHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read the server's current questions for one exact resource. Structured callbacks and advisory PTY evidence are distinct. This tool cannot answer questions or grant approval.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "socket": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        },
+        "target": {
+          "description": "Exact local @N or AUTHORITY/^RESOURCE.",
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "type": "object"
+    },
+    "name": "phux_agent_questions",
+    "outputSchema": {
+      "$defs": {
+        "CurrentQuestion": {
+          "description": "One level observation. Evidence never implies capability or authority.",
+          "oneOf": [
+            {
+              "description": "A provider callback from an exclusive SDK controller.",
+              "properties": {
+                "question": {
+                  "$ref": "#/$defs/NativeQuestion",
+                  "description": "Untrusted content and offered response shape."
+                },
+                "reference": {
+                  "$ref": "#/$defs/QuestionRef",
+                  "description": "The exact reference to preserve across a user decision."
+                },
+                "response_reserved": {
+                  "description": "A response already holds this callback's reservation.",
+                  "type": "boolean"
+                },
+                "response_supported": {
+                  "description": "Whether the adapter offers structured responses.",
+                  "type": "boolean"
+                },
+                "type": {
+                  "const": "provider",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "reference",
+                "question",
+                "response_supported",
+                "response_reserved"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Evidence of a question in an ordinary pane; no exact answer is available.",
+              "properties": {
+                "id": {
+                  "description": "Producer's advisory id; empty for some terminal markers.",
+                  "type": "string"
+                },
+                "question": {
+                  "description": "Untrusted producer text.",
+                  "type": "string"
+                },
+                "source": {
+                  "$ref": "#/$defs/PtyQuestionSource",
+                  "description": "How the question was observed."
+                },
+                "suggestions": {
+                  "description": "Untrusted display suggestions, not provider option identities.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "pty_evidence",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "source",
+                "id",
+                "question",
+                "suggestions"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "NativeOption": {
+          "description": "A provider-supplied selectable option.",
+          "properties": {
+            "description": {
+              "description": "Optional provider explanation.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "description": "Opaque option identity, preserved in the response.",
+              "type": "string"
+            },
+            "label": {
+              "description": "Human-visible option label.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "label"
+          ],
+          "type": "object"
+        },
+        "NativeQuestion": {
+          "description": "One live provider request requiring an explicit human response.",
+          "properties": {
+            "fields": {
+              "description": "Provider constraints, initial editor value, or scalar form schema."
+            },
+            "id": {
+              "description": "Exact request identity within its activation.",
+              "type": "string"
+            },
+            "kind": {
+              "description": "Normalized dialog kind, such as `confirm`, `permission`, or `form`.",
+              "type": "string"
+            },
+            "message": {
+              "description": "Provider explanation, treated as untrusted content.",
+              "type": "string"
+            },
+            "options": {
+              "description": "Choices for a selection or permission request.",
+              "items": {
+                "$ref": "#/$defs/NativeOption"
+              },
+              "type": "array"
+            },
+            "questions": {
+              "description": "Items for a multi-question request.",
+              "items": {
+                "$ref": "#/$defs/NativeQuestionItem"
+              },
+              "type": "array"
+            },
+            "title": {
+              "description": "Provider title.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "title",
+            "message",
+            "options",
+            "questions",
+            "fields"
+          ],
+          "type": "object"
+        },
+        "NativeQuestionItem": {
+          "description": "One item in a structured multi-question request.",
+          "properties": {
+            "header": {
+              "description": "Short provider grouping label.",
+              "type": "string"
+            },
+            "id": {
+              "description": "Exact item identity.",
+              "type": "string"
+            },
+            "multi": {
+              "description": "Whether more than one option may be selected.",
+              "type": "boolean"
+            },
+            "options": {
+              "description": "The item's available choices.",
+              "items": {
+                "$ref": "#/$defs/NativeOption"
+              },
+              "type": "array"
+            },
+            "question": {
+              "description": "Provider question text.",
+              "type": "string"
+            },
+            "recommended": {
+              "description": "Optional suggested option identity; never an automatic selection.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "question",
+            "header",
+            "options",
+            "multi"
+          ],
+          "type": "object"
+        },
+        "PtyQuestionSource": {
+          "description": "Legacy PTY evidence, not a structured callback or permission grant.",
+          "oneOf": [
+            {
+              "const": "screen",
+              "description": "Inferred from the terminal screen.",
+              "type": "string"
+            },
+            {
+              "const": "sentinel",
+              "description": "Reported via a terminal title marker.",
+              "type": "string"
+            },
+            {
+              "const": "hook",
+              "description": "Reported by a local integration hook.",
+              "type": "string"
+            },
+            {
+              "const": "stream",
+              "description": "Reported as lifecycle evidence by an agent stream.",
+              "type": "string"
+            }
+          ]
+        },
+        "QuestionContext": {
+          "description": "An empty inventory may mean quiet, not connected, or no answering adapter.",
+          "oneOf": [
+            {
+              "description": "Exclusive SDK controller, whose open callbacks are listed.",
+              "properties": {
+                "connected": {
+                  "description": "Whether the controller has published a live view.",
+                  "type": "boolean"
+                },
+                "type": {
+                  "const": "provider",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "connected"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Advisory observations are available on this ordinary terminal.",
+              "properties": {
+                "type": {
+                  "const": "pty",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "No question owner on this resource (e.g. an SDK guardian pane).",
+              "properties": {
+                "type": {
+                  "const": "none",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "QuestionRef": {
+          "additionalProperties": false,
+          "description": "An exact structured question in one conversation activation.",
+          "properties": {
+            "activation": {
+              "description": "The exclusive controller activation, not the connection generation.",
+              "type": "string"
+            },
+            "authority": {
+              "description": "The organization that owns the conversation.",
+              "type": "string"
+            },
+            "conversation": {
+              "description": "The durable `AgentSession` resource key, never its guardian pane.",
+              "type": "string"
+            },
+            "id": {
+              "description": "The adapter's callback identity within this activation.",
+              "type": "string"
+            },
+            "revision": {
+              "description": "Opaque version of the callback's offered question and response constraints.",
+              "maxLength": 64,
+              "minLength": 64,
+              "pattern": "^[0-9a-fA-F]{64}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "authority",
+            "conversation",
+            "activation",
+            "id",
+            "revision"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "An authoritative level read for one resource, not a reconstructed event history.",
+      "properties": {
+        "authority": {
+          "description": "Organization that answered the query.",
+          "type": "string"
+        },
+        "context": {
+          "$ref": "#/$defs/QuestionContext",
+          "description": "What kind of question owner the server can currently observe."
+        },
+        "questions": {
+          "description": "All current questions for this resource.",
+          "items": {
+            "$ref": "#/$defs/CurrentQuestion"
+          },
+          "type": "array"
+        },
+        "resource": {
+          "description": "Exact queried resource.",
+          "type": "string"
+        },
+        "schema_version": {
+          "description": "JSON schema version.",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schema_version",
+        "authority",
+        "resource",
+        "context",
+        "questions"
+      ],
+      "title": "CurrentQuestions",
+      "type": "object"
+    }
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
       "readOnlyHint": false
     },
     "description": "Declare a pane's agent identity by writing its phux.agent/v1 L3 record. Only `name` is required; without `kind` the pane keeps its current kind. A declared `state` OUTRANKS the server's detector for the record's lifetime, so declare one only when the caller genuinely knows better than the detector does.",
@@ -4575,14 +5013,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -4736,14 +5175,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -5066,14 +5506,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -5316,14 +5757,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -5520,14 +5962,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -5750,14 +6193,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -5944,14 +6388,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -6113,14 +6558,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -6312,14 +6758,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -6508,14 +6955,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -6923,14 +7371,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -7160,14 +7609,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -7356,14 +7806,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -7539,14 +7990,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -7748,14 +8200,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -7928,14 +8381,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -8073,14 +8527,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -8196,6 +8651,418 @@
         "schema",
         "claims"
       ],
+      "type": "object"
+    }
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read or wait for one exact retained execution. Supply authority, resource key, activation and instance from its receipt. Never follows relaunches. A missing or superseded result is not proof that it never ran.",
+    "inputSchema": {
+      "$defs": {
+        "ExecutionRef": {
+          "additionalProperties": false,
+          "description": "The immutable identity of one activation on its owning authority.",
+          "properties": {
+            "activation": {
+              "description": "Monotonic activation number within the resource.",
+              "minimum": 1,
+              "type": "integer"
+            },
+            "authority": {
+              "description": "Durable owning authority, not a host alias.",
+              "not": {
+                "pattern": "^[aA]{26}$"
+              },
+              "pattern": "^[a-zA-Z2-7]{25}[aAeEiImMqQuUyY4]$",
+              "type": "string"
+            },
+            "instance": {
+              "description": "Incarnation recorded on the activation, not the current connection.",
+              "not": {
+                "const": "00000000000000000000000000000000"
+              },
+              "pattern": "^[0-9a-fA-F]{32}$",
+              "type": "string"
+            },
+            "resource": {
+              "description": "Full durable resource key, not a live `@N` handle.",
+              "not": {
+                "pattern": "^[aA]{26}$"
+              },
+              "pattern": "^[a-zA-Z2-7]{25}[aAeEiImMqQuUyY4]$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "authority",
+            "resource",
+            "activation",
+            "instance"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "Read once if `timeout_secs` is absent, or wait while this activation is active.",
+      "properties": {
+        "execution": {
+          "$ref": "#/$defs/ExecutionRef",
+          "description": "Exact execution identity, as reported by its launch or resource inspection."
+        },
+        "socket": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        },
+        "timeout_secs": {
+          "default": null,
+          "description": "Whole-operation wait budget in seconds, including reconnects.",
+          "maximum": 3600,
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "execution"
+      ],
+      "title": "ExecutionResultRequest",
+      "type": "object"
+    },
+    "name": "phux_execution_result",
+    "outputSchema": {
+      "$defs": {
+        "ExecutionObservation": {
+          "description": "A level observation, not a completion promise or a lossless event history.",
+          "properties": {
+            "activation": {
+              "description": "Monotonic execution identity within the resource.",
+              "minimum": 1,
+              "type": "integer"
+            },
+            "diagnostic": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/LaunchDiagnostic"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Safe launch failure evidence, absent for older records."
+            },
+            "instance": {
+              "description": "Incarnation token, 32 hex digits.",
+              "maxLength": 32,
+              "minLength": 32,
+              "pattern": "^[0-9a-fA-F]{32}$",
+              "type": "string"
+            },
+            "outcome": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ExecutionOutcome"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Observed end, when known. Failed launch never implies exit status zero."
+            },
+            "persistence_pending": {
+              "default": false,
+              "description": "Executor evidence is waiting for persistence; state above is last committed.",
+              "type": "boolean"
+            },
+            "state": {
+              "$ref": "#/$defs/ExecutionState",
+              "description": "Current state."
+            }
+          },
+          "required": [
+            "activation",
+            "instance",
+            "state"
+          ],
+          "type": "object"
+        },
+        "ExecutionOutcome": {
+          "description": "An execution's end, distinct from commitment of a creation intention.\n\nUnknown `type` tags deserialize as [`Self::Unknown`]. Adding a variant\ndoes not bump `schema_version`. Wire [`crate::wire::frame::ErrorCode`]\nalready decodes an unrecognized code as `Unknown`.",
+          "oneOf": [
+            {
+              "description": "Process exit status.",
+              "properties": {
+                "code": {
+                  "description": "Exit status.",
+                  "type": "integer"
+                },
+                "type": {
+                  "const": "exited",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "code"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Process ended by a signal.",
+              "properties": {
+                "signal": {
+                  "description": "Signal number.",
+                  "type": "integer"
+                },
+                "type": {
+                  "const": "signaled",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "signal"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "End not observed, including a launch that never produced an exit status.",
+              "properties": {
+                "type": {
+                  "const": "unobserved",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "An outcome this build does not name.",
+              "properties": {
+                "type": {
+                  "const": "unknown",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "ExecutionRef": {
+          "additionalProperties": false,
+          "description": "The immutable identity of one activation on its owning authority.",
+          "properties": {
+            "activation": {
+              "description": "Monotonic activation number within the resource.",
+              "minimum": 1,
+              "type": "integer"
+            },
+            "authority": {
+              "description": "Durable owning authority, not a host alias.",
+              "not": {
+                "pattern": "^[aA]{26}$"
+              },
+              "pattern": "^[a-zA-Z2-7]{25}[aAeEiImMqQuUyY4]$",
+              "type": "string"
+            },
+            "instance": {
+              "description": "Incarnation recorded on the activation, not the current connection.",
+              "not": {
+                "const": "00000000000000000000000000000000"
+              },
+              "pattern": "^[0-9a-fA-F]{32}$",
+              "type": "string"
+            },
+            "resource": {
+              "description": "Full durable resource key, not a live `@N` handle.",
+              "not": {
+                "pattern": "^[aA]{26}$"
+              },
+              "pattern": "^[a-zA-Z2-7]{25}[aAeEiImMqQuUyY4]$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "authority",
+            "resource",
+            "activation",
+            "instance"
+          ],
+          "type": "object"
+        },
+        "ExecutionResultStatus": {
+          "description": "Outcome of the read or wait, independent of the process exit status.",
+          "oneOf": [
+            {
+              "const": "observed",
+              "description": "Exact activation observed. Consult its state and outcome separately.",
+              "type": "string"
+            },
+            {
+              "const": "superseded",
+              "description": "The resource now has a newer activation; the old result is not retained.",
+              "type": "string"
+            },
+            {
+              "const": "unavailable",
+              "description": "No matching execution evidence is visible. This does not prove it never ran.",
+              "type": "string"
+            },
+            {
+              "const": "timed_out",
+              "description": "Wait expired before obtaining a settled observation.",
+              "type": "string"
+            }
+          ]
+        },
+        "ExecutionState": {
+          "description": "Execution lifecycle; loss is not completion.\n\nUnknown values deserialize as [`Self::Unknown`]. Adding a variant does\nnot bump `schema_version`.",
+          "oneOf": [
+            {
+              "const": "starting",
+              "description": "Intent committed, process not yet reported running.",
+              "type": "string"
+            },
+            {
+              "const": "running",
+              "description": "Process running.",
+              "type": "string"
+            },
+            {
+              "const": "stopping",
+              "description": "Termination requested.",
+              "type": "string"
+            },
+            {
+              "const": "completed",
+              "description": "Process ended.",
+              "type": "string"
+            },
+            {
+              "const": "failed",
+              "description": "Launch failed.",
+              "type": "string"
+            },
+            {
+              "const": "lost",
+              "description": "Owning engine lost; process may still run.",
+              "type": "string"
+            },
+            {
+              "const": "abandoned",
+              "description": "Historical released uncertain execution.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A state this build does not name. Preserved so a newer server stays readable.",
+              "type": "string"
+            }
+          ]
+        },
+        "LaunchDiagnostic": {
+          "description": "Safe, bounded launch failure evidence. No argv, paths, or environment.",
+          "properties": {
+            "errno": {
+              "description": "Platform errno, not the executed program's exit status.",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "stage": {
+              "$ref": "#/$defs/LaunchStage",
+              "description": "Stage that failed."
+            }
+          },
+          "required": [
+            "stage"
+          ],
+          "type": "object"
+        },
+        "LaunchStage": {
+          "description": "Launch stage; a failed handshake is uncertainty, not requested-exec success.",
+          "oneOf": [
+            {
+              "const": "pty",
+              "description": "PTY acquisition or bridge setup.",
+              "type": "string"
+            },
+            {
+              "const": "spawn",
+              "description": "Launcher spawn.",
+              "type": "string"
+            },
+            {
+              "const": "cwd",
+              "description": "Working directory.",
+              "type": "string"
+            },
+            {
+              "const": "exec",
+              "description": "Requested program or interpreter exec.",
+              "type": "string"
+            },
+            {
+              "const": "handshake",
+              "description": "Status handshake deadline or invalid status.",
+              "type": "string"
+            },
+            {
+              "const": "engine",
+              "description": "Terminal engine allocation.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Read-only exact execution result. Never carries another activation's outcome.",
+      "properties": {
+        "execution": {
+          "$ref": "#/$defs/ExecutionRef",
+          "description": "Requested exact execution identity."
+        },
+        "observation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExecutionObservation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Last exact observation, when available. `lost` is not a known exit."
+        },
+        "schema_version": {
+          "description": "Document revision.",
+          "maximum": 1,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "status": {
+          "$ref": "#/$defs/ExecutionResultStatus",
+          "description": "Result of observing, not whether the process succeeded."
+        }
+      },
+      "required": [
+        "schema_version",
+        "execution",
+        "status"
+      ],
+      "title": "ExecutionResult",
       "type": "object"
     }
   },
@@ -8372,6 +9239,48 @@
               "type": "object"
             }
           ]
+        },
+        "ExecutionRef": {
+          "additionalProperties": false,
+          "description": "The immutable identity of one activation on its owning authority.",
+          "properties": {
+            "activation": {
+              "description": "Monotonic activation number within the resource.",
+              "minimum": 1,
+              "type": "integer"
+            },
+            "authority": {
+              "description": "Durable owning authority, not a host alias.",
+              "not": {
+                "pattern": "^[aA]{26}$"
+              },
+              "pattern": "^[a-zA-Z2-7]{25}[aAeEiImMqQuUyY4]$",
+              "type": "string"
+            },
+            "instance": {
+              "description": "Incarnation recorded on the activation, not the current connection.",
+              "not": {
+                "const": "00000000000000000000000000000000"
+              },
+              "pattern": "^[0-9a-fA-F]{32}$",
+              "type": "string"
+            },
+            "resource": {
+              "description": "Full durable resource key, not a live `@N` handle.",
+              "not": {
+                "pattern": "^[aA]{26}$"
+              },
+              "pattern": "^[a-zA-Z2-7]{25}[aAeEiImMqQuUyY4]$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "authority",
+            "resource",
+            "activation",
+            "instance"
+          ],
+          "type": "object"
         },
         "ExecutionState": {
           "description": "Execution lifecycle; loss is not completion.\n\nUnknown values deserialize as [`Self::Unknown`]. Adding a variant does\nnot bump `schema_version`.",
@@ -8569,6 +9478,18 @@
                 }
               ],
               "description": "Current or latest retained activation, independent of a live engine."
+            },
+            "execution_ref": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ExecutionRef"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Exact identity to pass directly to `execution.result`."
             },
             "kind": {
               "description": "Resource kind.",
@@ -8997,14 +9918,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -9182,14 +10104,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -9374,14 +10297,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -9545,14 +10469,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -9723,14 +10648,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -9894,14 +10820,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -10072,14 +10999,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -10250,14 +11178,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -10463,14 +11392,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -10686,14 +11616,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -10836,14 +11767,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -11034,14 +11966,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -11275,6 +12208,48 @@
             }
           ]
         },
+        "ExecutionRef": {
+          "additionalProperties": false,
+          "description": "The immutable identity of one activation on its owning authority.",
+          "properties": {
+            "activation": {
+              "description": "Monotonic activation number within the resource.",
+              "minimum": 1,
+              "type": "integer"
+            },
+            "authority": {
+              "description": "Durable owning authority, not a host alias.",
+              "not": {
+                "pattern": "^[aA]{26}$"
+              },
+              "pattern": "^[a-zA-Z2-7]{25}[aAeEiImMqQuUyY4]$",
+              "type": "string"
+            },
+            "instance": {
+              "description": "Incarnation recorded on the activation, not the current connection.",
+              "not": {
+                "const": "00000000000000000000000000000000"
+              },
+              "pattern": "^[0-9a-fA-F]{32}$",
+              "type": "string"
+            },
+            "resource": {
+              "description": "Full durable resource key, not a live `@N` handle.",
+              "not": {
+                "pattern": "^[aA]{26}$"
+              },
+              "pattern": "^[a-zA-Z2-7]{25}[aAeEiImMqQuUyY4]$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "authority",
+            "resource",
+            "activation",
+            "instance"
+          ],
+          "type": "object"
+        },
         "ExecutionState": {
           "description": "Execution lifecycle; loss is not completion.\n\nUnknown values deserialize as [`Self::Unknown`]. Adding a variant does\nnot bump `schema_version`.",
           "oneOf": [
@@ -11397,6 +12372,18 @@
             }
           ],
           "description": "Current execution, if still recorded. Retained records make failures inspectable."
+        },
+        "execution_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExecutionRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Exact identity to pass directly to `execution.result`."
         },
         "idempotency_key": {
           "description": "Retry identity of the committed intention.",
@@ -11827,6 +12814,48 @@
             }
           ]
         },
+        "ExecutionRef": {
+          "additionalProperties": false,
+          "description": "The immutable identity of one activation on its owning authority.",
+          "properties": {
+            "activation": {
+              "description": "Monotonic activation number within the resource.",
+              "minimum": 1,
+              "type": "integer"
+            },
+            "authority": {
+              "description": "Durable owning authority, not a host alias.",
+              "not": {
+                "pattern": "^[aA]{26}$"
+              },
+              "pattern": "^[a-zA-Z2-7]{25}[aAeEiImMqQuUyY4]$",
+              "type": "string"
+            },
+            "instance": {
+              "description": "Incarnation recorded on the activation, not the current connection.",
+              "not": {
+                "const": "00000000000000000000000000000000"
+              },
+              "pattern": "^[0-9a-fA-F]{32}$",
+              "type": "string"
+            },
+            "resource": {
+              "description": "Full durable resource key, not a live `@N` handle.",
+              "not": {
+                "pattern": "^[aA]{26}$"
+              },
+              "pattern": "^[a-zA-Z2-7]{25}[aAeEiImMqQuUyY4]$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "authority",
+            "resource",
+            "activation",
+            "instance"
+          ],
+          "type": "object"
+        },
         "ExecutionState": {
           "description": "Execution lifecycle; loss is not completion.\n\nUnknown values deserialize as [`Self::Unknown`]. Adding a variant does\nnot bump `schema_version`.",
           "oneOf": [
@@ -11952,6 +12981,18 @@
               ],
               "description": "Current execution, if still recorded. Retained records make failures inspectable."
             },
+            "execution_ref": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ExecutionRef"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Exact identity to pass directly to `execution.result`."
+            },
             "idempotency_key": {
               "description": "Retry identity of the committed intention.",
               "not": {
@@ -12027,14 +13068,15 @@
               "type": "string"
             },
             "request": {
+              "additionalProperties": false,
               "properties": {
-                "arguments": {
-                  "type": "object"
-                },
                 "tool": {
                   "type": "string"
                 }
               },
+              "required": [
+                "tool"
+              ],
               "type": "object"
             },
             "result": {},
@@ -12194,14 +13236,15 @@
           "type": "string"
         },
         "request": {
+          "additionalProperties": false,
           "properties": {
-            "arguments": {
-              "type": "object"
-            },
             "tool": {
               "type": "string"
             }
           },
+          "required": [
+            "tool"
+          ],
           "type": "object"
         },
         "result": {},

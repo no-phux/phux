@@ -132,7 +132,9 @@ impl Operations {
                 // to this operation. The server remains the approval authority.
                 let socket = tools::socket_or_default(&operation.args);
                 doc["approval_check"] = json!({ "tool": "phux_approvals", "arguments": { "socket": socket }, "requires": "caller with inventory and observe on Global approval records; delegate if refused" });
-                doc["request"] = json!({ "tool": operation.tool, "arguments": operation.args });
+                // Arguments can contain credentials or private prompt text. The
+                // receipt identifies the operation, not a copy of its payload.
+                doc["request"] = json!({ "tool": operation.tool });
                 Ok(doc)
             }
         }

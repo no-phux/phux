@@ -73,6 +73,11 @@ impl super::super::SessionLoop {
             mouse_optout: &mut self.mouse_optout,
             attention_navigation: &mut self.attention_navigation,
             plugin_actions: &self.settings.plugin_actions,
+            plugin_action_source: phux_plugin::ActionSource::Tui,
+            plugin_action_placement: self
+                .arrangement
+                .as_ref()
+                .and_then(|arrangement| arrangement.action_placement(conn)),
             plugin_panes: &self.settings.plugin_panes,
             jobs: &self.jobs,
             reload_request: &mut self.reload_request,

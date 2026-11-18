@@ -5,8 +5,6 @@ use crate::common;
 use std::path::PathBuf;
 use std::process::Stdio;
 
-const PLUGIN_ID: &str = "com.phux.demo.agent-tools";
-
 fn repo_root() -> PathBuf {
     crate::runner::manifest_dir()
         .join("../..")
@@ -27,9 +25,15 @@ fn run_with_env(args: &[&str], envs: &[(&str, &str)]) -> (i32, String, String) {
     .into_parts()
 }
 
-fn action_stdout(stdout: &str) -> String {
-    let value: serde_json::Value = serde_json::from_str(stdout).expect("action JSON");
-    value["stdout"].as_str().expect("stdout field").to_owned()
+fn bench(script: &str, envs: &[(&str, &str)]) -> (i32, String, String) {
+    crate::common::Out::of(
+        std::process::Command::new("/bin/sh")
+            .arg(repo_root().join("plugins/agent-tools/scripts").join(script))
+            .env("PHUX_BIN", crate::runner::phux_bin())
+            .envs(envs.iter().copied())
+            .stdin(Stdio::null()),
+    )
+    .into_parts()
 }
 
 #[test]
@@ -55,19 +59,13 @@ fn agent_bench_launches_lists_and_drives_role_session() {
         ("PHUX_AGENT_BENCH_WORKSPACE", workspace.as_str()),
     ];
 
-    let (code, stdout, stderr) = run_with_env(
-        &["config", "run", PLUGIN_ID, "launch-bench", "--json"],
-        &envs,
-    );
+    let (code, launched, stderr) = bench("launch-bench.sh", &envs);
     assert_eq!(code, 0, "launch-bench failed: {stderr}");
-    let launched = action_stdout(&stdout);
     assert!(launched.contains("codex"));
     assert!(launched.contains("claude-code"));
 
-    let (code, stdout, stderr) =
-        run_with_env(&["config", "run", PLUGIN_ID, "list-bench", "--json"], &envs);
+    let (code, listed, stderr) = bench("list-bench.sh", &envs);
     assert_eq!(code, 0, "list-bench failed: {stderr}");
-    let listed = action_stdout(&stdout);
     assert!(listed.contains(&format!("{profile}-codex")));
     assert!(listed.contains(&format!("{profile}-claude-code")));
 
@@ -81,12 +79,9 @@ fn agent_bench_launches_lists_and_drives_role_session() {
         ("PHUX_AGENT_BENCH_ROLE", "codex"),
         ("PHUX_AGENT_BENCH_KEYS", keyed.as_str()),
     ];
-    let (code, stdout, stderr) = run_with_env(
-        &["config", "run", PLUGIN_ID, "drive-bench", "--json"],
-        &drive_envs,
-    );
+    let (code, stdout, stderr) = bench("drive-bench.sh", &drive_envs);
     assert_eq!(code, 0, "drive-bench failed: {stderr}");
-    assert!(action_stdout(&stdout).contains(&format!("target={profile}-codex")));
+    assert!(stdout.contains(&format!("target={profile}-codex")));
 
     let target = format!("{profile}-codex");
     let (code, _stdout, stderr) = run_with_env(

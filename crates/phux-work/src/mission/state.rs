@@ -28,8 +28,8 @@ pub enum TerminalFact {
         /// Process exit status.
         status: Option<i32>,
     },
-    /// A complete level read no longer lists the terminal.
-    Gone,
+    /// The exact result is unavailable or its ownership is uncertain.
+    Uncertain,
 }
 
 /// Whether the task's run is waiting, in progress, or finished.
@@ -88,13 +88,13 @@ pub fn project(input: &ProjectionInput) -> Projection {
     if !input.binding_present || input.run == RunPhase::Ended {
         return stay(input.current);
     }
-    if input.terminal == Some(TerminalFact::Gone)
-        && matches!(
-            input.current,
-            ObjectiveState::Working | ObjectiveState::NeedsYou
-        )
-    {
-        return change(input.current, ObjectiveState::Failed, "terminal_lost");
+    if input.terminal == Some(TerminalFact::Uncertain) {
+        return match input.current {
+            ObjectiveState::Working => {
+                change(input.current, ObjectiveState::NeedsYou, "binding_uncertain")
+            }
+            state => stay(state),
+        };
     }
     if let Some(TerminalFact::Exited { status }) = input.terminal {
         let clean = status == Some(0);
@@ -210,7 +210,7 @@ mod tests {
 
     use AgentReport::{Blocked, Done as AgentDone, Other, Working as AgentWorking};
     use ObjectiveState::{Done, DoneUnchecked, Failed, NeedsYou, Queued, Working};
-    use TerminalFact::{Exited, Gone, Running};
+    use TerminalFact::{Exited, Running, Uncertain};
 
     /// One projection case: label, stored state, observed agent report,
     /// terminal fact and credential loss, then the expected state and event.
@@ -272,13 +272,13 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_terminal_fails_only_work_in_progress() {
+    fn unavailable_evidence_only_requests_attention_for_work_in_progress() {
         #[rustfmt::skip]
         let cases: &[Case<'_>] = &[
-            ("working",        Working,       None, Gone, false, Failed,        Some("terminal_lost")),
-            ("needs you",      NeedsYou,      None, Gone, false, Failed,        Some("terminal_lost")),
-            ("done unchecked", DoneUnchecked, None, Gone, false, DoneUnchecked, None),
-            ("failed",         Failed,        None, Gone, false, Failed,        None),
+            ("working",        Working,       None, Uncertain, false, NeedsYou,      Some("binding_uncertain")),
+            ("needs you",      NeedsYou,      None, Uncertain, false, NeedsYou,      None),
+            ("done unchecked", DoneUnchecked, None, Uncertain, false, DoneUnchecked, None),
+            ("failed",         Failed,        None, Uncertain, false, Failed,        None),
         ];
         check(cases);
     }
@@ -289,7 +289,7 @@ mod tests {
         let cases: &[Case<'_>] = &[
             ("lost over a dirty exit", Working,       Some(AgentWorking), exited(Some(1)), true,  NeedsYou,      Some("needs_you")),
             ("lost while needing you", NeedsYou,      None,               Running,         true,  NeedsYou,      None),
-            ("lost reopens a failure", Failed,        None,               Gone,            true,  NeedsYou,      Some("needs_you")),
+            ("lost reopens a failure", Failed,        None,               Uncertain,       true,  NeedsYou,      Some("needs_you")),
             ("working after failure",  Failed,        Some(AgentWorking), Running,         false, Failed,        None),
             ("done after done",        DoneUnchecked, Some(AgentDone),    Running,         false, DoneUnchecked, None),
         ];

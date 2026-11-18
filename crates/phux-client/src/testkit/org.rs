@@ -277,22 +277,23 @@ impl OrgFixture {
         &self.resources
     }
 
-    /// The whole organization as one fetched inventory: every record, under
-    /// a fixed authority at revision 1, with no degradation.
-    ///
-    /// # Panics
-    ///
-    /// Never: the fixed authority id is non-zero.
+    /// The whole organization as one fetched inventory, with no degradation.
     #[must_use]
     pub fn inventory(&self) -> crate::org::OrgInventory {
         crate::org::OrgInventory {
-            authority: phux_protocol::ids::AuthorityId::new([1; 16]).expect("non-zero"),
-            inbox: None,
+            authority: self.authority,
+            inbox: self.inbox,
             sessions: self.sessions.clone(),
             resources: self.resources.clone(),
-            snapshot_revision: phux_protocol::ids::Revision::new(1),
+            snapshot_revision: Revision::new(self.revision),
             journal_seq: 0,
-            total_intake: 0,
+            total_intake: u32::try_from(
+                self.sessions
+                    .iter()
+                    .filter(|session| session.awaiting_organization)
+                    .count(),
+            )
+            .unwrap_or(u32::MAX),
             degradation: crate::state::Degradation::default(),
         }
     }

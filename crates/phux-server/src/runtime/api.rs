@@ -1,7 +1,8 @@
 //! Connected-server self-description, not a generic invocation dispatcher.
 use crate::state::SharedState;
 use phux_protocol::{
-    api,
+    api::{self, PublicOperation},
+    native_agent::questions,
     wire::frame::{CommandResult, CommandValue},
 };
 
@@ -19,7 +20,7 @@ pub(super) fn describe(state: &SharedState) -> CommandResult {
         "instance": instance,
         "authorization": "support is not authorization; every invocation is checked at dispatch",
         "operations": [{
-            "name": "terminal.create", "supported": true,
+            "name": PublicOperation::TerminalCreate.name(), "supported": true,
             "required_features": ["organization", "create_placement"],
             "required_verbs": ["create", "organize"],
             "scope": "destination session; anchor must belong to the same session",
@@ -34,19 +35,50 @@ pub(super) fn describe(state: &SharedState) -> CommandResult {
                 "lost_reply": "outcome_unknown; query terminal.operation on the same authority before considering any identical replay" },
             "retention": "resource retained until explicit removal; failed/completed result survives engine retirement but explicit relaunch replaces it; not timed screen retention"
         }, {
-            "name":"terminal.operation", "supported":true, "required_verbs":["inventory"],
+            "name": PublicOperation::TerminalOperation.name(), "supported":true, "required_verbs":["inventory"],
             "input_schema":api::terminal_operation_schema(), "output_schema":api::terminal_created_schema(),
             "error_schema":api::error_schema(),
             "completion":"read-only retained receipt lookup; no effects",
             "retry":{"missing_receipt":"original outcome unknown; resource.show by saved full durable key, never blindly replay"}
         }, {
-            "name":"resource.show", "supported":true, "required_verbs":["inventory"],
+            "name": PublicOperation::ResourceShow.name(), "supported":true, "required_verbs":["inventory"],
             "required_features":["organization", "durable_resource_inspection"],
             "selector":"full ^<durable-resource-key>",
             "input_schema":api::resource_key_schema(),
             "retry":{"read_only":true},
             "output_schema":api::resource_observed_schema(),
             "completion":"read current resource membership and latest activation without a live engine or creation receipt; removed/out-of-scope records are absent; live-handle selectors keep schema 1"
+        }, {
+            "name": PublicOperation::ExecutionResult.name(), "supported":true,
+            "required_features":["organization", "durable_resource_inspection"],
+            "required_verbs":["inventory"],
+            "input_schema":api::execution_result_request_schema(),
+            "output_schema":api::execution_result_schema(),
+            "error_schema":api::error_schema(),
+            "completion":"observe the exact activation; timeout, supersession and missing evidence do not establish process exit",
+            "retry":{"read_only":true,"scope":"original execution authority"}
+        }, {
+            "name": PublicOperation::QuestionList.name(), "supported":true,
+            "required_features":["current_questions"], "required_verbs":["observe"],
+            "input_schema":questions::question_target_schema(),
+            "output_schema":questions::current_questions_schema(),
+            "completion":"current provider callbacks or advisory PTY evidence; observation is not permission to respond",
+            "retry":{"read_only":true}
+        }, {
+            "name": PublicOperation::QuestionRespond.name(), "supported":true,
+            "required_features":["current_questions"], "required_verbs":["observe", "input"],
+            "scope":"human principal; exact live provider callback and current input authority",
+            "input_schema":questions::respond_question_schema(),
+            "output_schema":questions::question_receipt_schema(),
+            "completion":"queued is not provider consumption; PTY evidence cannot be answered",
+            "retry":{"lost_reply":"read question.receipt on the original authority; do not resend"}
+        }, {
+            "name": PublicOperation::QuestionReceipt.name(), "supported":true,
+            "required_features":["current_questions"], "required_verbs":["observe"],
+            "input_schema":questions::question_receipt_request_schema(),
+            "output_schema":questions::question_receipt_schema(),
+            "completion":"read a retained controller receipt; never submit an answer",
+            "retry":{"read_only":true,"missing_receipt":"original outcome unknown; do not resend"}
         }],
         "error_outcomes": api::outcome_schema(),
         "execution_contracts": {

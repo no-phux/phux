@@ -3,7 +3,8 @@
 use std::time::Duration;
 
 use phux_plugin::{
-    PluginActionError, PluginActionOutcome, PluginActionRequest, run_configured_action,
+    ActionContext, ActionSource, ActionTarget, PluginActionError, PluginActionOutcome,
+    PluginActionRequest, run_configured_action,
 };
 use tempfile::TempDir;
 
@@ -60,42 +61,17 @@ enabled = {enabled}
     Ok(config_path)
 }
 
-fn write_config_for_manifest(
-    tmp: &TempDir,
-    manifest: &std::path::Path,
-) -> Result<std::path::PathBuf, std::io::Error> {
-    let config_dir = tmp.path().join("xdg").join("phux");
-    std::fs::create_dir_all(&config_dir)?;
-    let config_path = config_dir.join("config.toml");
-    std::fs::write(
-        &config_path,
-        format!(
-            r#"
-[[plugins]]
-manifest = "{}"
-enabled = true
-"#,
-            manifest.display()
-        ),
-    )?;
-    Ok(config_path)
-}
-
 fn request(timeout: Option<Duration>) -> PluginActionRequest {
     PluginActionRequest {
         plugin_id: "example.actions".to_owned(),
         action_id: "probe".to_owned(),
         timeout,
         cwd: None,
-    }
-}
-
-fn continuum_request(action_id: &str, timeout: Option<Duration>) -> PluginActionRequest {
-    PluginActionRequest {
-        plugin_id: "com.phux.demo.continuum".to_owned(),
-        action_id: action_id.to_owned(),
-        timeout,
-        cwd: None,
+        context: ActionContext::supplied(
+            ActionSource::Cli,
+            ActionTarget::default(),
+            serde_json::Value::Null,
+        ),
     }
 }
 
@@ -171,21 +147,20 @@ async fn action_runtime_refuses_disabled_plugins() -> Result<(), Box<dyn std::er
 async fn checked_in_continuum_restore_missing_archive_is_structured()
 -> Result<(), Box<dyn std::error::Error>> {
     let tmp = TempDir::new()?;
-    let manifest = std::path::PathBuf::from(
+    let script = std::path::PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").expect("the test runner sets CARGO_MANIFEST_DIR"),
     )
     .join("../..")
-    .join("plugins/continuum/phux-plugin.toml");
-    let config = write_config_for_manifest(&tmp, &manifest)?;
+    .join("plugins/continuum/scripts/restore-latest.sh");
+    let missing = tmp.path().join("missing.json");
+    let command = format!(
+        "PHUX_CONTINUUM_ARCHIVE={} sh {}",
+        sh_quote(&missing),
+        sh_quote(&script)
+    );
+    let config = write_configured_plugin(&tmp, true, &command)?;
+    let output = run_configured_action(&config, &request(Some(HANG_GUARD))).await?;
 
-    let output = run_configured_action(
-        &config,
-        &continuum_request("restore-latest", Some(HANG_GUARD)),
-    )
-    .await?;
-
-    assert_eq!(output.plugin_id, "com.phux.demo.continuum");
-    assert_eq!(output.action_id, "restore-latest");
     assert_eq!(output.outcome, PluginActionOutcome::Completed);
     assert_eq!(output.exit_code, Some(66));
     assert!(output.stdout.is_empty());

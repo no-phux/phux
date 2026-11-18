@@ -224,6 +224,18 @@ rule_table! {
         "`NATIVE_AGENT { type: launch_integration }`", [Create, Bind, Input], KeyedSession
     );
     C_NATIVE_COMMAND = verbs("`NATIVE_AGENT { type: command }`", [Input], NamedTerminal);
+    C_CURRENT_QUESTIONS = verbs(
+        "`NATIVE_AGENT { type: current_questions }` with handle", [Observe], NamedTerminal
+    );
+    C_CURRENT_QUESTIONS_KEYED = verbs(
+        "`NATIVE_AGENT { type: current_questions }` with durable key", [Observe], KeyedResource
+    );
+    C_RESPOND_QUESTION = verbs(
+        "`NATIVE_AGENT { type: respond_question }`", [Observe, Input], KeyedResource
+    );
+    C_QUESTION_RECEIPT = verbs(
+        "`NATIVE_AGENT { type: question_receipt }`", [Observe], KeyedResource
+    );
     C_NATIVE_CONTROLLER = verbs(
         "`NATIVE_AGENT { type: register/receive/complete/publish/close }`", [Bind], ParentOfNamed
     );

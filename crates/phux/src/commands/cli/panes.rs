@@ -5,7 +5,8 @@ use usage::{Args, Subcommands};
 
 /// Create a pane without attaching
 ///
-/// With `--target`, the pane is inserted beside an exact local owner;
+/// With `--target`, the server creates and places the pane atomically beside
+/// a split leaf in the shared arrangement;
 /// otherwise it joins the server's most recently active session. The new
 /// pane's id prints to stdout. With `--satellite NAME` on a
 /// federation hub (`phux server --hub`), the spawn is routed over
@@ -40,9 +41,7 @@ pub(crate) struct SpawnArgs {
     )]
     pub(crate) ratio: f32,
 
-    /// Named projection to place into instead of the shared default
-    /// (requires `--target`). Must be
-    /// `<prefix>.layout/v1/<session-id>` for TARGET's session.
+    /// Legacy option; placed spawn refuses named projections.
     #[usage(long, value_name = "KEY", requires("--target"))]
     pub(crate) projection: Option<String>,
 
@@ -54,13 +53,15 @@ pub(crate) struct SpawnArgs {
     /// seconds (bare `--retain`: the server's default). Its screen,
     /// history, and exit status stay readable through `phux resource
     /// show` and `phux resource wait` until then, or until `phux kill`.
-    /// Write `--retain=SECS` when a command follows.
+    /// Unplaced spawn only. Write `--retain=SECS` when a command follows.
     #[usage(long, value_name = "SECS", num_args = 0..=1, default_missing = "0")]
     pub(crate) retain: Option<u32>,
 
     /// Make the spawn safe to retry: a repeat with the same key (32 hex
     /// digits) and the same request answers the first pane instead of
-    /// spawning another. Draw one key per spawn and reuse it on retry.
+    /// spawning another. Draw one key per spawn. For a placed spawn with
+    /// an unknown reply, use `phux terminal operation` to check its receipt
+    /// without resolving the selector again.
     #[usage(long = "idempotency-key", value_name = "HEX32")]
     pub(crate) idempotency_key: Option<String>,
 
@@ -223,7 +224,7 @@ pub(crate) struct ResizeArgs {
     pub(crate) json: JsonOpt,
 }
 
-/// Create and place terminals; inspect API and receipts
+/// Create and place terminals; inspect creation receipts
 ///
 /// Always returns versioned JSON. Creation commits membership, placement and
 /// launch intent together; a receipt is not process or task completion.
@@ -233,9 +234,45 @@ pub(crate) struct TerminalArgs {
     pub(crate) action: TerminalAction,
 }
 
+/// Discover and call this server's public operations
+///
+/// Results are JSON. Select a registered server with `--remote`, or use the
+/// local socket. This does not start a server or enroll a new host.
+#[derive(Debug, Args)]
+pub(crate) struct ApiArgs {
+    /// Registered phux host to connect to instead of the local server.
+    #[usage(long, value_name = "HOST")]
+    pub(crate) remote: Option<String>,
+    #[usage(subcommand)]
+    pub(crate) action: ApiAction,
+}
+
+#[derive(Debug, Subcommands)]
+pub(crate) enum ApiAction {
+    /// List the connected server's public operations and their contracts.
+    List,
+    /// Read the full input, output, authorization and recovery contract for one operation.
+    Describe {
+        /// Public operation name.
+        #[usage(value_name = "OPERATION")]
+        operation: String,
+    },
+    /// Call a typed public operation without resolving names or changing focus.
+    Call {
+        /// Public operation name.
+        #[usage(value_name = "OPERATION")]
+        operation: String,
+        /// JSON input. Use `-` to read it from standard input.
+        #[usage(long = "request-json", value_name = "JSON")]
+        request_json: String,
+    },
+}
+
 /// `phux terminal <action>` — the complete-intention terminal workflow.
 #[derive(Debug, Subcommands)]
 pub(crate) enum TerminalAction {
+    /// Start argv directly in a new terminal and wait for that exact execution.
+    Run(TerminalRunArgs),
     /// Recover a retained creation receipt without executing or retrying anything.
     /// A missing receipt means unknown, not that the original request was refused.
     Operation {
@@ -245,12 +282,13 @@ pub(crate) enum TerminalAction {
         /// Same key supplied to terminal create.
         #[usage(long = "idempotency-key", value_name = "HEX32")]
         idempotency_key: String,
+        /// Read the receipt on a registered remote owner.
+        #[usage(long, value_name = "HOST")]
+        remote: Option<String>,
     },
-    /// Read the connected server's public workflow schemas and retry contracts.
-    Describe,
     /// Create, place and start a terminal from one strict JSON intention.
     ///
-    /// Use `terminal describe` for the complete nested request schema.
+    /// Use `api describe terminal.create` for the complete nested request schema.
     /// Argv runs in a new process, never by typing into an existing shell.
     /// The resource and failed/completed execution remain until explicit removal.
     Create {
@@ -258,6 +296,38 @@ pub(crate) enum TerminalAction {
         #[usage(long = "request-json", value_name = "JSON")]
         request_json: String,
     },
+}
+
+/// Direct argv execution with no shell input or focus selection.
+///
+/// Waits by default. Prints a JSON result, then returns the child's exit status
+/// (128 plus signal if signaled). The JSON result distinguishes a child exit
+/// from a phux timeout, failed launch, or unknown outcome.
+#[derive(Debug, Args)]
+pub(crate) struct TerminalRunArgs {
+    /// Full durable session key (with optional ^), or an exact session name.
+    #[usage(long, value_name = "KEY_OR_NAME")]
+    pub(crate) session: String,
+
+    /// Use a registered remote owner instead of the local socket.
+    #[usage(long, value_name = "HOST")]
+    pub(crate) remote: Option<String>,
+
+    /// Absolute directory on the owner. Defaults to the session's recorded directory.
+    #[usage(long, short = 'c', value_name = "DIR")]
+    pub(crate) cwd: Option<String>,
+
+    /// Bound the wait after the creation receipt (1..=3600 seconds).
+    #[usage(long, value_name = "SECS", default = "600")]
+    pub(crate) timeout: u32,
+
+    /// Caller-generated operation key, or one generated and returned by phux.
+    #[usage(long, value_name = "HEX32")]
+    pub(crate) idempotency_key: Option<String>,
+
+    /// Program and literal arguments. Use `--` before the program.
+    #[usage(value_name = "ARGV", trailing_var_arg = true)]
+    pub(crate) argv: Vec<String>,
 }
 
 /// Inspect a resource or wait for its process to exit
@@ -290,6 +360,16 @@ pub(crate) struct TagArgs {
 /// resumable wait on its exit.
 #[derive(Debug, Subcommands)]
 pub(crate) enum ResourceAction {
+    /// Read or wait for one exact durable execution; outputs JSON.
+    Execution {
+        /// Exact execution identity and optional `timeout_secs` as a JSON object.
+        #[usage(long, value_name = "JSON")]
+        request_json: String,
+        /// Read from a registered remote host instead of the local socket.
+        #[usage(long, value_name = "HOST")]
+        remote: Option<String>,
+    },
+
     /// Show one resource: kind, lifecycle, exit, process, tags, agent.
     ///
     /// Prints `key: value` lines, or with `--json` the stable document.

@@ -51,8 +51,7 @@ fn settled(server: &common::ServerGuard, key: &str) -> Value {
 fn representable_invalid_requests_fail_schema_runtime_and_real_cli() {
     let server = common::ServerGuard::start("api-schema-negatives");
     let session = session(&server);
-    let description: Value =
-        serde_json::from_str(&server.success(&["terminal", "describe"])).unwrap();
+    let description: Value = serde_json::from_str(&server.success(&["api", "list"])).unwrap();
     let schema = &description["operations"][0];
     let validator = jsonschema::validator_for(&schema["input_schema"]).unwrap();
     let error_validator = jsonschema::validator_for(&schema["error_schema"]).unwrap();

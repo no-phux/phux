@@ -151,6 +151,7 @@ fn resource_key() -> crate::ids::ResourceKey {
 }
 
 include!("samples/command_samples.rs");
+include!("samples/native_samples.rs");
 include!("samples/frame_samples.rs");
 include!("samples/metadata_samples.rs");
 

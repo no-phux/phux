@@ -48,6 +48,7 @@ pub const MAX_NATIVE_QUESTIONS: usize = 32;
 
 include!("native_agent/contracts.rs");
 
+pub mod questions;
 mod strict;
 
 /// An immutable native request and its admitted canonical wire bytes.
@@ -160,7 +161,18 @@ impl NativeIntent {
             Self::Answer { question_id, .. } if question_id.is_empty() => {
                 Err("question id is empty".into())
             }
+            Self::AnswerExact { question, .. } => question.validate(),
             _ => Ok(()),
+        }
+    }
+
+    /// The callback identity for either answer form.
+    #[must_use]
+    pub fn question_id(&self) -> Option<&str> {
+        match self {
+            Self::Answer { question_id, .. } => Some(question_id),
+            Self::AnswerExact { question, .. } => Some(&question.id),
+            _ => None,
         }
     }
 }
@@ -232,11 +244,16 @@ pub fn validate_answer(
     question: &NativeQuestion,
     response: &serde_json::Value,
 ) -> Result<(), &'static str> {
+    const MISMATCH: &str = "response does not match the current provider question";
+    // Exactly one top-level action. For example, validating a selected
+    // option must never smuggle `cancelled: true` to the provider adapter.
+    if response.as_object().is_none_or(|object| object.len() != 1) {
+        return Err(MISMATCH);
+    }
     if response
         .get("cancelled")
         .and_then(serde_json::Value::as_bool)
         == Some(true)
-        && response.as_object().is_some_and(|object| object.len() == 1)
     {
         return Ok(());
     }
@@ -257,9 +274,5 @@ pub fn validate_answer(
         "ask" => valid_ask_answers(question, response),
         _ => false,
     };
-    if valid {
-        Ok(())
-    } else {
-        Err("response does not match the current provider question")
-    }
+    if valid { Ok(()) } else { Err(MISMATCH) }
 }

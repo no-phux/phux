@@ -2,22 +2,8 @@ id = "com.phux.demo.continuum"
 name = "phux Continuum"
 version = "0.1.0"
 min_phux_version = "0.0.2"
-description = "Workspace archive autosave and restore through external actions."
+description = "Workspace archive autosave through host event hooks."
 platforms = ["linux", "macos"]
-
-[[actions]]
-id = "autosave"
-title = "Autosave workspace"
-description = "Writes the current phux workspace archive for the configured profile."
-contexts = ["workspace"]
-command = ["sh", "scripts/autosave.sh"]
-
-[[actions]]
-id = "restore-latest"
-title = "Restore latest workspace"
-description = "Restores missing sessions from the latest saved profile archive."
-contexts = ["workspace"]
-command = ["sh", "scripts/restore-latest.sh"]
 
 [[events]]
 id = "idle-autosave"
@@ -34,7 +20,6 @@ command = ["sh", "scripts/autosave.sh"]
 [[profiles]]
 id = "continuum"
 title = "Continuum"
-description = "Surfaces autosave and restore actions for a durable phux workspace profile."
+description = "Autosaves archives for a durable phux workspace profile."
 contexts = ["workspace"]
-actions = ["autosave", "restore-latest"]
 events = ["idle-autosave", "session-autosave"]

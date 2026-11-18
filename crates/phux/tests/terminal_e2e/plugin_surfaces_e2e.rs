@@ -26,6 +26,12 @@ name = "E2E Surfaces"
 version = "0.1.0"
 min_phux_version = "0.0.2"
 
+[[actions]]
+id = "capture"
+title = "Context Evidence"
+keys = "Y"
+command = ["sh", "-c", 'printf "%s\n" "$PHUX_ACTION_CONTEXT" >> invocation.ndjson']
+
 [[panes]]
 id = "stay"
 title = "Stay Board"
@@ -81,6 +87,60 @@ fn overlay_running(client: &common::PtyAttach) -> bool {
         .args(["-c", &format!("kill -0 {}", pid.trim())])
         .status()
         .is_ok_and(|status| status.success())
+}
+
+fn invocation_contexts(client: &common::PtyAttach, count: usize) -> Vec<serde_json::Value> {
+    let path = client.config.path().join("phux/plugin/invocation.ndjson");
+    let deadline = Instant::now() + DEADLINE;
+    loop {
+        let body = std::fs::read_to_string(&path).unwrap_or_default();
+        let rows: Vec<serde_json::Value> = body
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect();
+        if rows.len() >= count {
+            return rows;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "missing action invocation: {body}"
+        );
+        std::thread::sleep(POLL);
+    }
+}
+
+#[test]
+#[ignore = "spawns a real server and attached PTY client; run in the e2e lane"]
+fn palette_and_key_capture_the_same_invoking_selection() {
+    let server = common::ServerGuard::builder("plugin-context")
+        .env("SHELL", "/bin/sh")
+        .start();
+    let mut client = attach(&server);
+    client.await_painted(&["E2E Panes", "Sessions"], DEADLINE);
+
+    client.send(PREFIX);
+    client.send(b"Y");
+    let _ = invocation_contexts(&client, 1);
+    client.send(PREFIX);
+    client.send(b" Context Evidence");
+    client.await_painted(&["Context Evidence"], DEADLINE);
+    client.send(b"\r");
+
+    let rows = invocation_contexts(&client, 2);
+    assert_eq!(rows[0]["source"], "tui_key");
+    assert_eq!(rows[1]["source"], "tui_palette");
+    assert_eq!(rows[0]["client"], rows[1]["client"]);
+    assert!(rows[0]["client"].is_number());
+    // Organization data can hydrate between two legitimate invocations;
+    // neither one may substitute a different connection or live selection.
+    for field in ["route", "transport", "session_handle", "resource_handle"] {
+        assert_eq!(
+            rows[0]["target"][field], rows[1]["target"][field],
+            "{field}"
+        );
+    }
+    assert_eq!(rows[0]["target"]["session_name"], SESSION);
+    assert!(rows[0]["target"]["resource_handle"].is_string());
 }
 
 #[test]

@@ -28,8 +28,14 @@ const fn frame_terminal(frame: &FrameKind) -> Option<&WireResourceId> {
 fn command_terminal(command: &Command) -> Option<&WireResourceId> {
     match command {
         Command::NativeAgent { request } => match request.request() {
+            phux_protocol::native_agent::NativeRequest::CurrentQuestions {
+                target: phux_protocol::native_agent::questions::QuestionTarget::Handle { resource },
+            } => Some(resource),
             phux_protocol::native_agent::NativeRequest::Spawn { .. }
             | phux_protocol::native_agent::NativeRequest::ListIntegrations {}
+            | phux_protocol::native_agent::NativeRequest::CurrentQuestions { .. }
+            | phux_protocol::native_agent::NativeRequest::RespondQuestion { .. }
+            | phux_protocol::native_agent::NativeRequest::QuestionReceipt { .. }
             | phux_protocol::native_agent::NativeRequest::LaunchIntegration { .. } => None,
             phux_protocol::native_agent::NativeRequest::Command {
                 agent_session_id, ..
@@ -210,6 +216,18 @@ fn keyed_resource(s: &ServerState, request: Request<'_>) -> Option<Point> {
         return None;
     };
     match command {
+        Command::NativeAgent { request } => match request.request() {
+            phux_protocol::native_agent::NativeRequest::CurrentQuestions {
+                target: phux_protocol::native_agent::questions::QuestionTarget::Key { resource, .. },
+            } => resource_key_point(s, resource),
+            phux_protocol::native_agent::NativeRequest::RespondQuestion { answer } => {
+                resource_key_point(s, &answer.question.conversation)
+            }
+            phux_protocol::native_agent::NativeRequest::QuestionReceipt { question, .. } => {
+                resource_key_point(s, &question.conversation)
+            }
+            _ => None,
+        },
         Command::ResourceRename { resource, .. }
         | Command::ResourceRemove { resource, .. }
         | Command::ResourceRelaunch { resource, .. } => resource_key_point(s, resource),

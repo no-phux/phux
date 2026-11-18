@@ -261,6 +261,7 @@ pub(crate) fn create_task_worktree(
     from: &str,
     socket: &Path,
     mission_task: &str,
+    authority: phux_protocol::ids::AuthorityId,
 ) -> Result<TaskSession, ExitCode> {
     if let Some(parent) = dest.parent()
         && let Err(err) = std::fs::create_dir_all(parent)
@@ -277,24 +278,60 @@ pub(crate) fn create_task_worktree(
     let socket_path = socket.to_path_buf();
     fire_worktree_created(dest, branch, repo, &name, &socket_path);
     let rt = cli_runtime()?;
-    if let Err(err) = server::ensure_server_unseeded(&socket_path, false) {
-        warn!("auto-spawn skipped ({err}). Start a server manually with `phux server`.");
-    }
-    let extra = vec![("mission.task".to_owned(), mission_task.to_owned())];
-    match rt.block_on(new::create_session_via_metadata(
-        &server_target::ServerTarget::local(&socket_path),
+    match rt.block_on(seed_mission_session(
+        &socket_path,
         &name,
-        None,
-        Some(dest.to_string_lossy().into_owned()),
-        BTreeMap::new(),
-        None,
-        false,
-        None,
-        phux_protocol::wire::frame::SessionLifetime::Persistent,
-        &extra,
+        dest,
+        mission_task,
+        authority,
     )) {
-        Ok(_terminal_id) => Ok(TaskSession { session: name }),
-        Err(code) => Err(code),
+        Ok(()) => Ok(TaskSession { session: name }),
+        Err(error) => {
+            error!("{error}");
+            Err(ExitCode::FAILURE)
+        }
+    }
+}
+
+async fn seed_mission_session(
+    socket: &Path,
+    name: &str,
+    dest: &Path,
+    mission_task: &str,
+    authority: phux_protocol::ids::AuthorityId,
+) -> Result<(), String> {
+    use phux_client::session::{CreateOutcome, CreateSessionRequest, create_session};
+    let mut conn = server_target::ServerTarget::local(socket)
+        .connect()
+        .await
+        .map_err(|error| error.to_string())?;
+    if super::super::mission_start::owner_on(&mut conn).await? != authority {
+        return Err(format!("mission session belongs to authority {authority}"));
+    }
+    let cwd = dest.to_str().ok_or("mission worktree path is not UTF-8")?;
+    let mut attrs = phux_client::project_identity::creation_attrs(
+        dest,
+        &super::super::ls::local_hostname(),
+        None,
+    );
+    attrs.push(("mission.task".to_owned(), mission_task.to_owned()));
+    let request = CreateSessionRequest {
+        name,
+        command: None,
+        cwd: Some(cwd),
+        env: &BTreeMap::new(),
+        agent_session: None,
+        idempotency_key: None,
+        lifetime: phux_protocol::wire::frame::SessionLifetime::Persistent,
+        attrs: &attrs,
+    };
+    let result = create_session(&mut conn, &request, &mut Vec::new())
+        .await
+        .map_err(|error| error.to_string())?;
+    if matches!(result, CreateOutcome::Created(_)) {
+        Ok(())
+    } else {
+        Err(format!("could not seed mission session: {result:?}"))
     }
 }
 

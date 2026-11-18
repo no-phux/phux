@@ -88,13 +88,27 @@ phux spawn --retain=600 -- make test
 | `--target PANE` | Places the new pane beside an existing one. |
 | `--split horizontal` / `vertical` | For `spawn` and `launch`, `horizontal` places the new pane to the right (the default); `vertical` stacks it below. Needs `--target`. |
 | `--ratio F` | The fraction of the split the target keeps. Needs `--target`. |
-| `--retain=SECS` | Keeps the exit status and last screen readable after the process exits. |
+| `--retain=SECS` | Keeps the exit status and last screen readable after an unplaced spawn exits. |
 | `--idempotency-key HEX32` | Makes a retry return the first pane instead of spawning another. |
 
 Existing-pane edits (`insert-pane` and `mv`) instead name the divider:
 `horizontal` stacks panes and `vertical` places them side by side. These
 existing spellings are retained for compatibility; check the command's help
 rather than transferring a split direction between the two command groups.
+
+With `--target`, `spawn` and `launch` create and place a pane in one server
+operation. The target must be a split leaf in the executing authority's
+shared arrangement. If supplied, the working directory must be absolute on
+that server. Older servers, named projections, and explicit timed screen
+retention are refused without creating a pane. Use an unplaced spawn for
+timed retention, including the server's retain-by-default policy. If a
+placed spawn's reply is lost, read the
+original receipt with `phux terminal operation` (MCP:
+`phux_terminal_operation`), using the session and operation key from the
+error instead of issuing another spawn against a newly resolved selector.
+Do not retry a placed spawn sent by an older client after upgrading: its
+legacy spawn receipt is not a placed-create receipt. Inspect the existing
+panes first.
 
 A pane normally disappears when its process exits. `--retain` keeps it
 around for `phux resource show` and `phux resource wait` until the time runs
@@ -271,6 +285,46 @@ phux resource wait --timeout 60 @7
 
 It exits 0 when the process exited, 1 when the pane is gone, and 124 on
 timeout.
+
+## Running a command when an event happens
+
+From one shell, listen for bells on pane `@7`. In another shell, use `phux run`
+to make that pane's shell ring its bell:
+
+```sh
+phux on bell --target @7 -- cat  # prints the event record; replace cat with ./notify
+# In another shell:
+phux run @7 'printf "\a"'
+```
+
+`on` accepts journal events, not the best-effort `agent_state` or
+`controller_changed` metadata notifications. It resolves one pane using
+the same selectors as `watch`; without `--target`, it picks the
+most-recently-focused session. It runs the handler
+on the machine running the CLI, not inside the watched pane. Connect to the
+server that owns the pane; it must support the event journal. To write a
+handler, read one `phux watch --json` line from stdin, including the same
+`terminal`, `seq`, and other fields where the event has them:
+
+```sh
+phux on command_finished --target @7 -- jq -r '"\(.terminal) exited \(.exit_code)"'
+```
+
+Arguments after `--` are literal argv: no shell expansion or event
+substitution. Handlers use your current directory and inherit only `PATH`
+from the environment, not phux socket settings or credential variables.
+This is not a sandbox: run only handlers you trust, and treat event fields
+as data. Handlers run serially with a 30-second limit. Ctrl-C, SIGTERM, or
+SIGHUP stops `on` and kills any in-flight handler process group. Handlers
+should not daemonize.
+
+This is a live subscription, not a durable job queue. It never runs
+history from a previous invocation, accepts no `--after`, and never
+reconnects or retries a handler. A `journal_gap` or `source_gap` is reported
+on stderr, not passed to a handler. Gaps, disconnects, and handler failures
+exit nonzero; seeing the pane close or its process exit ends the subscription
+normally. An interrupted handler may already have caused a side effect. For
+persistent server-side rules, use [hooks](./hooks.md).
 
 ## Organizing panes
 

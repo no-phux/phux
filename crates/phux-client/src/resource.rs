@@ -14,6 +14,7 @@ use crate::attach::connection::Connection;
 
 // The `phux resource` verbs: resumable exit wait, inspection, methods.
 pub mod cursor;
+pub mod execution;
 pub mod methods;
 pub mod show;
 pub mod wait;
