@@ -126,6 +126,78 @@ fn requested_exec_failures_are_not_exit_127() {
 }
 
 #[test]
+fn executable_text_requires_a_shebang_or_an_explicit_shell() {
+    let dir = tempfile::tempdir().unwrap();
+    let program = dir.path().join("plain-text");
+    let later = dir.path().join("later");
+    std::fs::create_dir(&later).unwrap();
+    std::fs::write(later.join("plain-text"), "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(
+        later.join("plain-text"),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    let marker = dir.path().join("ran");
+    std::fs::write(&program, "printf '%s' \"$2\" > \"$1\"\nexit 127\n").unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut direct = CommandBuilder::new(&program);
+    direct.args([marker.as_os_str(), OsStr::new("implicit")]);
+    let mut searched = CommandBuilder::new("plain-text");
+    searched.cwd(dir.path());
+    searched.env("PATH", ".:later");
+    searched.args([marker.as_os_str(), OsStr::new("implicit")]);
+    for command in [&direct, &searched] {
+        let error = match spawn(command) {
+            Err(error) => error,
+            Ok(mut child) => panic!("implicitly ran shell, status {}", child.wait().exit_code()),
+        };
+        assert_eq!(error.stage, LaunchStage::Exec);
+        assert_eq!(error.errno, Some(libc::ENOEXEC));
+        assert!(!marker.exists());
+    }
+
+    let mut explicit = CommandBuilder::new("/bin/sh");
+    explicit.args([
+        program.as_os_str(),
+        marker.as_os_str(),
+        OsStr::new("explicit"),
+    ]);
+    assert_eq!(spawn(&explicit).unwrap().wait().exit_code(), 127);
+    assert_eq!(std::fs::read_to_string(&marker).unwrap(), "explicit");
+}
+
+#[test]
+fn path_lookup_preserves_cwd_search_order_and_literal_shebang_arguments() {
+    let dir = tempfile::tempdir().unwrap();
+    let denied = dir.path().join("denied");
+    let later = dir.path().join("later");
+    std::fs::create_dir(&denied).unwrap();
+    std::fs::create_dir(&later).unwrap();
+    std::fs::write(denied.join("probe"), "#!/bin/sh\nexit 1\n").unwrap();
+    std::fs::set_permissions(denied.join("probe"), std::fs::Permissions::from_mode(0o600)).unwrap();
+    std::fs::write(later.join("probe"), "#!/bin/sh\nexit 2\n").unwrap();
+    std::fs::write(
+        dir.path().join("probe"),
+        "#!/bin/sh\nprintf '<%s>\\n' \"$2\" \"$3\" > \"$1\"\nexit 127\n",
+    )
+    .unwrap();
+    for script in [dir.path().join("probe"), later.join("probe")] {
+        std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let marker = dir.path().join("argv");
+    let mut cmd = strict_cwd_command(LaunchCommand::new("probe"), dir.path());
+    cmd.args([marker.as_os_str(), OsStr::new("a b; $HOME"), OsStr::new("")]);
+    cmd.env("PATH", "missing:denied::later");
+    assert_eq!(spawn(&cmd).unwrap().wait().exit_code(), 127);
+    assert_eq!(
+        std::fs::read_to_string(marker).unwrap(),
+        "<a b; $HOME>\n<>\n"
+    );
+    cmd.env("PATH", "missing:denied");
+    assert_eq!(spawn(&cmd).err().unwrap().errno, Some(libc::EACCES));
+}
+
+#[test]
 fn real_zero_nonzero_and_127_are_successful_execs() {
     for code in [0, 7, 127] {
         let mut cmd = CommandBuilder::new("/bin/sh");
