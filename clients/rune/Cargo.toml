@@ -59,6 +59,11 @@ phux-wire-fixtures = { path = "../../crates/phux-wire-fixtures" }
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 phux-plugin = { path = "../../crates/phux-plugin" }
 
+# Catching SIGXFSZ, so a write past RLIMIT_FSIZE fails instead of killing
+# the app (src/file_size.rs); already in the graph.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # The desktop's light or dark preference from the XDG portal (src/theme/portal.rs);
 # the same zbus, tokio and futures-util Rune's `dbus` feature already builds.
 [target.'cfg(target_os = "linux")'.dependencies]
