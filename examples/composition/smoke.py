@@ -95,7 +95,7 @@ def lost_reply_proxy(root, phux, effect):
     proxy = root / ("drop-" + effect)
     match = {
         "create": '[ "$4" = create ] || { [ "$4" = call ] && [ "$5" = terminal.create ]; }',
-        "answer": '[ "$3 $4" = "agent respond-question" ]',
+        "answer": '[ "$4 $5" = "call question.respond" ]',
         "observe": '[ "$3 $4" = "resource show" ] || [ "$4 $5" = "call resource.show" ]',
     }[effect]
     proxy.write_text(
@@ -255,7 +255,7 @@ def review_fixture(proof, route, legacy):
     with manifest.open("a") as file:
         file.write('\n[[actions]]\nid = "review"\ntitle = "Review checkout"\n'
                    f"command = {json.dumps(argv)}\n")
-    cmd = [*proof.cli, "config", "run", "example.composition", "review", "--json",
+    cmd = [proof.phux, "config", "run", "example.composition", "review", "--json",
            "--target-json", json.dumps(target), "--timeout", "5"]
     receipt = json.loads(run(cmd, proof.env))
     result = json.loads(receipt["stdout"])
@@ -307,8 +307,12 @@ def delivered_answers(ledger):
 
 
 def typed_questions(root, phux, route, cli, env, handle, ledger):
-    current = until(lambda: json.loads(run([*cli, "agent", "questions", handle], env)),
-                    lambda value: bool(value["questions"]))
+    request = json.dumps({"type": "handle", "resource": {"Local": {"id": int(handle[1:])}}})
+    current = until(
+        lambda: json.loads(run([*cli, "api", "call", "question.list",
+                                "--request-json", request], env)),
+        lambda value: bool(value["questions"]),
+    )
     exact = current["authority"] + "/^" + current["resource"]
     reference = current["questions"][0]["reference"]
     path, journal = root / "question.json", root / "answer.json"

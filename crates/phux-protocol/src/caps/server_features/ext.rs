@@ -104,6 +104,8 @@ pub enum ServerFeatureExt {
     /// Advertised only beside [`Self::Organization`]; a client MUST see the
     /// bit before writing tabs, since an older server drops them.
     SlotTabs = 0x0800_0000,
+    /// Current question reads, exact structured responses, and receipt lookup.
+    CurrentQuestions = 0x1000_0000,
 }
 
 impl ServerFeatureExt {
@@ -137,6 +139,7 @@ impl ServerFeatureExt {
         Self::ForwardTcp,
         Self::ForwardAgent,
         Self::SlotTabs,
+        Self::CurrentQuestions,
     ];
 
     /// The `docs/protocol.md#handshake` constant, e.g. `"PATH_QUERY"`.
@@ -171,6 +174,7 @@ impl ServerFeatureExt {
             Self::ForwardTcp => "FORWARD_TCP",
             Self::ForwardAgent => "FORWARD_AGENT",
             Self::SlotTabs => "SLOT_TABS",
+            Self::CurrentQuestions => "CURRENT_QUESTIONS",
         }
     }
 

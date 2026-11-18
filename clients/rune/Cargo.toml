@@ -56,6 +56,9 @@ qrcode = { version = "0.14", default-features = false }
 # Frame builders the tests feed the embedded client; pure Rust, no new graph.
 phux-wire-fixtures = { path = "../../crates/phux-wire-fixtures" }
 
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+phux-plugin = { path = "../../crates/phux-plugin" }
+
 # The desktop's light or dark preference from the XDG portal (src/theme/portal.rs);
 # the same zbus, tokio and futures-util Rune's `dbus` feature already builds.
 [target.'cfg(target_os = "linux")'.dependencies]

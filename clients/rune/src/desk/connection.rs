@@ -28,6 +28,9 @@ pub struct Connection {
     pub status: Status,
     pub topology: Option<Topology>,
     pub server: Option<String>,
+    /// Transport family of this desktop connection, never an endpoint.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(super) action_transport: Option<&'static str>,
     pub shown: Option<Shown>,
     pub resources: resources::Resources,
     /// The resource requested by the user, and when its opening began.
@@ -107,6 +110,8 @@ impl Default for Connection {
             status: Status::Idle,
             topology: None,
             server: None,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            action_transport: None,
             shown: None,
             resources: resources::Resources::default(),
             wanted: None,

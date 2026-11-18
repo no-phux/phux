@@ -14,6 +14,10 @@ fn sweep_args(tool: &str) -> Value {
         "phux_terminal_operation" | "phux_terminal_create" => {
             json!({"idempotency_key":"0123456789abcdef0123456789abcdef", "session":"aebagbafaydqqcikbmga2dqpca"})
         }
+        "phux_execution_result" => json!({"execution":{
+            "authority":"aebagbafaydqqcikbmga2dqpca", "resource":"aebagbafaydqqcikbmga2dqpca",
+            "activation":1, "instance":"0123456789abcdef0123456789abcdef"
+        }}),
         "phux_operation_status" => json!({ "idempotency_key": "0123456789abcdef0123456789abcdef" }),
         "phux_api_describe" | "phux_ls" | "phux_spawn" | "phux_agent_clear" | "phux_agent_list"
         | "phux_whoami" | "phux_approvals" => {
@@ -56,7 +60,12 @@ fn sweep_args(tool: &str) -> Value {
         "phux_approve" => json!({ "id": "0123456789abcdef0123456789abcdef", "decision": "deny" }),
         "phux_relaunch" => json!({ "target": "@1" }),
         "phux_organize" => json!({ "offline": true }),
-        "phux_plugin_action" | "phux_plugin_profile" => {
+        // A caller cannot choose an action runner's socket, config or cwd.
+        // Refuse before touching local config or starting any process.
+        "phux_plugin_action" => {
+            return json!({"plugin_id": "none", "action_id": "none", "socket": dead});
+        }
+        "phux_plugin_profile" => {
             return json!({
                 "plugin_id": "none", "action_id": "none",
                 "config": "/nonexistent/phux-mcp-sweep/config.toml",

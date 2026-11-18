@@ -1,33 +1,13 @@
 //! Opening, moving through, and running the command palette.
 
-use phux_client_runtime::Client;
-use phux_protocol::ids::ResourceId;
 use rune::{App, Key, KeyEvent, MenuItem, Tx};
 
 use super::{Desk, NoticeKind};
 use crate::keys::{self, Shortcut};
 use crate::palette::{self, Hit, Mode, Target};
 
-/// A path search on the focused pane's host.
-#[derive(Debug, Clone, PartialEq)]
-pub struct PathSearch {
-    /// The pane a picked path goes to.
-    pub terminal: ResourceId,
-    /// Its folder: the search's root, and what paths read relative to.
-    pub origin: String,
-    /// The request whose answer counts; later ones replace it.
-    pending: u32,
-    /// Absolute paths in the server's order, and whether each is a folder.
-    pub rows: Vec<(String, bool)>,
-    /// Why there is nothing to show, or what the answer left out.
-    pub note: Option<String>,
-}
-
-impl PathSearch {
-    pub const fn searching(&self) -> bool {
-        self.pending != 0
-    }
-}
+mod paths;
+pub use paths::PathSearch;
 
 /// What right-clicking a tab offers, in order.
 pub const TAB_MENU: [Shortcut; 3] = [Shortcut::LockTab, Shortcut::RenameTab, Shortcut::CloseTab];
@@ -180,6 +160,10 @@ impl Desk {
             return;
         }
         self.palette_open = true;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if self.phone.is_none() {
+            self.refresh_plugin_actions();
+        }
         self.palette_picked = 0;
         self.palette_query.clear();
         // Ask once; the runtime keeps the field's focus from here.
@@ -213,81 +197,6 @@ impl Desk {
         self.theme_before = Some(current);
         let at = crate::theme::all().position(|t| Some(t) == current);
         self.palette_picked = at.map_or(0, |i| i + 1);
-    }
-
-    /// Paths under the focused pane's folder, searched on its host.
-    pub(super) fn open_paths(&mut self) {
-        let Some(terminal) = self.connection.shown.as_ref().map(|s| s.resource.clone()) else {
-            return;
-        };
-        let Some(origin) = self.focused_cwd() else {
-            return self.say(
-                NoticeKind::Error,
-                "This terminal hasn't said which folder it is in.",
-            );
-        };
-        self.open_palette(Mode::Paths);
-        self.connection.paths = Some(PathSearch {
-            terminal,
-            origin,
-            pending: 0,
-            rows: Vec::new(),
-            note: None,
-        });
-        self.search_paths();
-    }
-
-    /// Ask the host for the paths the query names; an empty query lists the
-    /// folder itself.
-    fn search_paths(&mut self) {
-        let (Some(client), Some(search)) =
-            (&self.connection.client, self.connection.paths.as_mut())
-        else {
-            return;
-        };
-        let query = self.palette_query.text.trim().to_owned();
-        let host = search.terminal.host().cloned();
-        let recursive = !query.is_empty();
-        search.pending = client.path_query(search.origin.clone(), query, recursive, host);
-        search.rows.clear();
-        search.note =
-            (search.pending == 0).then(|| "Path search is unavailable on this server.".to_owned());
-    }
-
-    /// Answers to the path search. True when the list changed.
-    pub(super) fn take_paths(&mut self, client: &Client) -> bool {
-        let answers = client.take_path_answers();
-        let Some(search) = self.connection.paths.as_mut() else {
-            return false;
-        };
-        let Some(answer) = answers
-            .into_iter()
-            .rfind(|a| a.request_id == search.pending)
-        else {
-            return false;
-        };
-        search.pending = 0;
-        search.rows = answer
-            .rows
-            .iter()
-            .map(|row| {
-                let folder = row.kind == phux_client_runtime::control::PathMatchKind::Directory;
-                (row.path.clone(), folder)
-            })
-            .collect();
-        search.note = match (answer.failure, answer.status) {
-            (Some(_), _) if !answer.message.is_empty() => Some(answer.message),
-            (Some(_), _) => Some("The host couldn't search here.".to_owned()),
-            (None, Some(phux_client_runtime::control::PathSearchStatus::Truncated)) => {
-                Some("More match; keep typing to narrow them.".to_owned())
-            }
-            (None, Some(phux_client_runtime::control::PathSearchStatus::Warming)) => {
-                Some("The host is still indexing; try again shortly.".to_owned())
-            }
-            _ => None,
-        };
-        self.palette_picked = 0;
-        true
     }
 
     /// The query changed: back to the first row, and a new search or preview.
@@ -369,6 +278,8 @@ impl Desk {
                     &self.addressable(),
                     self.connection.reorder.order(),
                 ));
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                items.extend(self.plugin_actions.items());
                 palette::rank(items, query)
             }
             Mode::Mirror(source) => self.mirror_items(source, query),
@@ -468,14 +379,30 @@ impl Desk {
         let Some(hit) = hits.get(index.unwrap_or(picked)).cloned() else {
             return;
         };
-        if matches!(hit.item.target, Target::Theme(_)) {
+        self.commit_palette(hit.item.target, tx);
+    }
+
+    /// Pointer events name the row drawn, never the row at a now-stale index.
+    pub fn palette_run_target(&mut self, target: Target, tx: &mut Tx) {
+        if self.palette_open
+            && self
+                .palette_hits()
+                .iter()
+                .any(|hit| hit.item.target == target)
+        {
+            self.commit_palette(target, tx);
+        }
+    }
+
+    fn commit_palette(&mut self, target: Target, tx: &mut Tx) {
+        if matches!(target, Target::Theme(_)) {
             // Chosen, so closing doesn't put the old one back.
             self.theme_before = None;
         }
         let search = self.connection.paths.take();
         self.close_palette();
         tx.blur();
-        self.run_palette_target(hit.item.target, search, tx);
+        self.run_palette_target(target, search, tx);
     }
 
     fn run_palette_target(&mut self, target: Target, search: Option<PathSearch>, tx: &mut Tx) {
@@ -487,6 +414,8 @@ impl Desk {
             Target::Terminal { id, session } => self.show(id, &session),
             Target::Session(name) => self.show_session(&name),
             Target::Action(action) => self.shortcut(action, tx),
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            Target::Extension(action) => self.run_plugin_action(action),
             Target::MoveToTab => self.move_to_tab(),
             Target::Theme(id) => self.choose_theme(id.and_then(crate::theme::find)),
             Target::NewSession(name) => self.create_session(name),

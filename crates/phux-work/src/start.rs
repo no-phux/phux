@@ -4,6 +4,8 @@
 //! and the planned worktree. It does not cover the terminal id, so a retry
 //! of the same operation returns the first launch.
 
+use phux_protocol::api::ExecutionRef;
+use phux_protocol::ids::AuthorityId;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 use crate::error::Error;
@@ -13,6 +15,9 @@ use crate::store::{
     write_objective,
 };
 
+mod binding;
+use binding::{insert_binding, map_open_run, validate_binding_authority};
+
 /// What a started run is bound to. Absent when the task is only queued.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StartBinding {
@@ -20,8 +25,11 @@ pub struct StartBinding {
     pub session_key: String,
     /// Session name.
     pub session: String,
-    /// Worker pane id, decimal.
-    pub terminal_id: String,
+    /// Live pane at launch, if any; a display hint, never durable identity.
+    pub terminal_id: Option<String>,
+    /// Authority-qualified execution. Absent only on legacy receipts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<ExecutionRef>,
     /// Absolute worktree path.
     pub worktree_path: String,
     /// `mission/<n>-<slug>`.
@@ -56,6 +64,9 @@ pub struct StartRequest {
     /// run can be launched later without the keeper's working directory.
     #[serde(default)]
     pub repo_root: String,
+    /// Owning organization authority selected before creating a worker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority: Option<AuthorityId>,
     /// Present when the caller has launched a worker.
     pub launch: Option<StartBinding>,
 }
@@ -126,14 +137,19 @@ pub struct OpenRun {
     pub max_agents: u32,
     /// Git repository root. Empty when the run predates launch intent.
     pub repo_root: String,
+    /// Pinned owner of queued or running work. Legacy launch intents are unpinned.
+    pub authority: Option<AuthorityId>,
     /// Worktree path from the binding, or the path the queue would use.
     pub worktree_path: String,
     /// Branch from the binding, or the branch the queue would use.
     pub branch: String,
-    /// Bound terminal id, decimal. Absent while queued.
+    /// Pane observed at launch, retained only as an event wake-up hint.
     pub terminal_id: Option<String>,
     /// Organization session key. Absent while queued.
     pub session_key: Option<String>,
+    /// Exact execution accepted from the owner; old pane IDs are not evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<ExecutionRef>,
     /// An unresolved `credential_lost` signal is open.
     pub credential_lost: bool,
 }
@@ -193,7 +209,9 @@ impl Store {
         let digest = start_digest(request)?;
         match load_operation(&self.conn, &request.operation_id)? {
             None => Ok(None),
-            Some((stored, result)) if stored == digest => {
+            Some((stored, result))
+                if stored == digest || legacy_start_matches(request, &stored)? =>
+            {
                 let snapshot: StartSnapshot = serde_json::from_str(&result)?;
                 Ok(Some(applied_from(snapshot, request.operation_id, true)))
             }
@@ -223,7 +241,7 @@ impl Store {
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         if let Some((stored, result)) = load_operation(&tx, &request.operation_id)? {
-            if stored != digest {
+            if stored != digest && !legacy_start_matches(&request, &stored)? {
                 return Err(Error::OperationConflict {
                     operation_id: request.operation_id.to_hex(),
                 });
@@ -232,9 +250,18 @@ impl Store {
             return Ok(applied_from(snapshot, request.operation_id, true));
         }
         let current = load_checked(&tx, &request.alias, request.expected_revision)?;
+        if request.authority.is_none() {
+            return Err(Error::invalid_text(
+                "authority",
+                "start requires an owning authority",
+            ));
+        }
         refuse_unstartable(&tx, &current, &request.worktree_path, &request.branch)?;
         let running = count_runs(&tx, RunState::Running)?;
         let launching = request.launch.is_some();
+        if let Some(binding) = &request.launch {
+            validate_binding_authority(binding, request.authority)?;
+        }
         let limit = u64::from(request.max_agents);
         if launching && running >= limit {
             return Err(Error::AtCapacity { running, limit });
@@ -326,7 +353,8 @@ impl Store {
                     COALESCE(launch_intent.repo_root, ''),
                     COALESCE(binding.worktree_path, launch_intent.worktree_path, ''),
                     COALESCE(binding.branch, launch_intent.branch, ''),
-                    binding.terminal_id, binding.session_key,
+                    binding.terminal_id, binding.session_key, binding.execution,
+                    launch_intent.authority,
                     EXISTS (
                         SELECT 1 FROM signal
                         WHERE signal.objective_id = objective.id
@@ -393,6 +421,18 @@ impl Store {
         let Some((run_id, ordinal, agent_kind, model)) = queued else {
             return Err(Error::invalid_text("run", "is not queued"));
         };
+        let authority: Option<String> = tx
+            .query_row(
+                "SELECT authority FROM launch_intent WHERE run_id = ?1",
+                params![run_id.as_slice()],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        validate_binding_authority(
+            &request.launch,
+            authority.as_deref().and_then(AuthorityId::parse),
+        )?;
         if let Some((alias, taken)) = bound_holder(
             &tx,
             current.id,
@@ -498,9 +538,7 @@ fn applied_from(
 }
 
 fn start_digest(request: &StartRequest) -> Result<String, Error> {
-    digest(
-        "start",
-        &serde_json::json!({
+    let mut payload = serde_json::json!({
             "agent_kind": &request.agent_kind,
             "alias": request.alias.display(),
             "branch": &request.branch,
@@ -509,8 +547,20 @@ fn start_digest(request: &StartRequest) -> Result<String, Error> {
             "model": &request.model,
             "repo_root": &request.repo_root,
             "worktree_path": &request.worktree_path,
-        }),
-    )
+    });
+    if let Some(authority) = request.authority {
+        payload["authority"] = serde_json::json!(authority.to_string());
+    }
+    digest("start", &payload)
+}
+
+fn legacy_start_matches(request: &StartRequest, stored: &str) -> Result<bool, Error> {
+    if request.authority.is_none() {
+        return Ok(false);
+    }
+    let mut legacy = request.clone();
+    legacy.authority = None;
+    Ok(start_digest(&legacy)? == stored)
 }
 
 fn validate_start(request: &StartRequest) -> Result<(), Error> {
@@ -533,8 +583,8 @@ fn validate_start(request: &StartRequest) -> Result<(), Error> {
     }
     if let Some(binding) = &request.launch
         && (binding.session.is_empty()
-            || binding.worktree_path.is_empty()
-            || binding.branch.is_empty())
+            || binding.worktree_path != request.worktree_path
+            || binding.branch != request.branch)
     {
         return Err(Error::invalid_text("binding", "is incomplete"));
     }
@@ -691,8 +741,9 @@ fn insert_intent(
 ) -> Result<(), Error> {
     let max_agents = i64::from(request.max_agents);
     tx.execute(
-        "INSERT INTO launch_intent (run_id, model, max_agents, worktree_path, branch, repo_root)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO launch_intent
+            (run_id, model, max_agents, worktree_path, branch, repo_root, authority)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
             run_id.as_slice(),
             request.model,
@@ -700,6 +751,7 @@ fn insert_intent(
             request.worktree_path,
             request.branch,
             request.repo_root,
+            request.authority.map(|id| id.to_string()),
         ],
     )?;
     Ok(())
@@ -731,72 +783,6 @@ fn oldest_queued(
         agent_kind,
         model,
     )))
-}
-
-fn map_open_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<OpenRun> {
-    let alias: String = row.get(0)?;
-    let objective_id: Vec<u8> = row.get(1)?;
-    let revision: i64 = row.get(2)?;
-    let state: String = row.get(3)?;
-    let run_id: Vec<u8> = row.get(4)?;
-    let run_state: String = row.get(5)?;
-    let run_state = RunState::parse(&run_state)
-        .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?;
-    let ordinal: i64 = row.get(6)?;
-    let agent_kind: String = row.get(7)?;
-    let model: String = row.get(8)?;
-    let max_agents: i64 = row.get(9)?;
-    let repo_root: String = row.get(10)?;
-    let worktree_path: String = row.get(11)?;
-    let branch: String = row.get(12)?;
-    let terminal_id: Option<String> = row.get(13)?;
-    let session_key: Option<String> = row.get(14)?;
-    let credential_lost: i64 = row.get(15)?;
-    let stored = |err: Error| rusqlite::Error::ToSqlConversionFailure(Box::new(err));
-    Ok(OpenRun {
-        alias: Alias::parse(&alias).map_err(stored)?,
-        objective_id: OpaqueId::from_slice(&objective_id).map_err(stored)?,
-        revision: u64::try_from(revision).map_err(|_| {
-            rusqlite::Error::ToSqlConversionFailure(Box::new(Error::Corrupt("revision".to_owned())))
-        })?,
-        state: ObjectiveState::parse(&state).map_err(stored)?,
-        run_id: OpaqueId::from_slice(&run_id).map_err(stored)?,
-        run_state,
-        ordinal: u64::try_from(ordinal).map_err(|_| {
-            rusqlite::Error::ToSqlConversionFailure(Box::new(Error::Corrupt("ordinal".to_owned())))
-        })?,
-        agent_kind,
-        model,
-        max_agents: u32::try_from(max_agents).unwrap_or(0),
-        repo_root,
-        worktree_path,
-        branch,
-        terminal_id,
-        session_key,
-        credential_lost: credential_lost != 0,
-    })
-}
-
-fn insert_binding(
-    tx: &Transaction<'_>,
-    run_id: OpaqueId,
-    binding: &StartBinding,
-) -> Result<(), Error> {
-    let id = OpaqueId::generate()?;
-    tx.execute(
-        "INSERT INTO binding (
-            id, run_id, server_id, session_key, terminal_id, worktree_path, branch
-         ) VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6)",
-        params![
-            id.as_slice(),
-            run_id.as_slice(),
-            binding.session_key,
-            binding.terminal_id,
-            binding.worktree_path,
-            binding.branch,
-        ],
-    )?;
-    Ok(())
 }
 
 #[cfg(test)]

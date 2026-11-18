@@ -1,9 +1,9 @@
 # Script phux
 
 ```sh
-# Open a workspace and run tests beside the shell.
+# Open a workspace and return the test process's exit status.
 phux new --json -s build -c "$PWD" -- sh
-phux spawn --target build -- make test
+phux terminal run --session build -c "$PWD" -- make test
 phux ls
 ```
 
@@ -11,6 +11,11 @@ phux ls
 # Read or follow a pane. Use the ID from phux ls.
 phux snapshot --tail 20 @7
 phux watch --json @7
+```
+
+```sh
+# Run a local handler for each new bell. Event JSON arrives on stdin.
+phux on bell --target @7 -- cat
 ```
 
 ```sh

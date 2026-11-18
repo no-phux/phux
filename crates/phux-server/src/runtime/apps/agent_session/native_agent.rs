@@ -6,6 +6,7 @@ mod controller;
 mod integrations;
 mod launch;
 mod publication;
+mod questions;
 mod relaunch;
 mod source_dispatch;
 

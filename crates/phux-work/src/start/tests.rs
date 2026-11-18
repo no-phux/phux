@@ -33,6 +33,7 @@ fn start_req(alias: Alias, op: OperationId, launch: bool) -> StartRequest {
         worktree_path,
         branch,
         repo_root: "/tmp/repo".to_owned(),
+        authority: phux_protocol::ids::AuthorityId::parse("aebagbafaydqqcikbmga2dqpca"),
     }
 }
 
@@ -48,14 +49,90 @@ fn alias_of(alias: &Alias) -> String {
 }
 
 fn binding_for(alias: &Alias, worktree_path: &str, branch: &str) -> StartBinding {
+    let key = OperationId::derive_bytes(alias.display().as_bytes());
+    let resource =
+        phux_protocol::ids::ResourceKey::new(key.as_slice().try_into().expect("sixteen-byte id"))
+            .expect("nonzero resource");
     StartBinding {
-        session_key: "sessionkey".to_owned(),
+        session_key: "aebagbafaydqqcikbmga2dqpca".to_owned(),
         session: format!("{}-task", alias.number),
-        terminal_id: "7".to_owned(),
+        terminal_id: Some("7".to_owned()),
+        execution: Some(phux_protocol::api::ExecutionRef {
+            authority: "aebagbafaydqqcikbmga2dqpca".to_owned(),
+            resource: resource.to_string(),
+            activation: 1,
+            instance: "0123456789abcdef0123456789abcdef".to_owned(),
+        }),
         worktree_path: worktree_path.to_owned(),
         branch: branch.to_owned(),
         tab_title: format!("#{} Title", alias.number),
     }
+}
+
+#[test]
+fn exact_binding_survives_reopen_and_rejects_legacy_handle_only_writes() {
+    let (dir, mut store) = open();
+    let first = store.add(add("phux", "One")).expect("add");
+    let op = OperationId::generate().expect("operation");
+    let mut request = start_req(first.objective.alias, op, true);
+    request.launch.as_mut().expect("binding").execution = None;
+    assert!(store.commit_start(request.clone()).is_err());
+    assert!(store.open_runs().expect("open").is_empty());
+    let (path, branch) = paths_for(&request.alias);
+    request.launch = Some(binding_for(&request.alias, &path, &branch));
+    let receipt = store.commit_start(request.clone()).expect("exact start");
+    drop(store);
+    let reopened = Store::open(&dir.path().join("work-v1.sqlite")).expect("reopen");
+    let run = reopened.open_runs().expect("runs").remove(0);
+    assert_eq!(
+        run.execution,
+        receipt.binding.expect("receipt binding").execution
+    );
+    assert_eq!(run.terminal_id.as_deref(), Some("7"));
+    assert!(
+        reopened
+            .replay_start(&request)
+            .expect("lookup")
+            .expect("receipt")
+            .idempotent_replay
+    );
+}
+
+#[test]
+fn queued_authority_is_persisted_and_a_foreign_receipt_cannot_claim_it() {
+    let (_dir, mut store) = open();
+    let task = store.add(add("phux", "Pinned")).expect("add");
+    let request = start_req(
+        task.objective.alias.clone(),
+        OperationId::derive_bytes(b"queue"),
+        false,
+    );
+    let authority = request.authority;
+    let (path, branch) = paths_for(&request.alias);
+    let queued = store.commit_start(request).expect("queue");
+    let run = store.open_runs().expect("runs").remove(0);
+    assert_eq!(run.authority, authority);
+    let mut launch = binding_for(&task.objective.alias, &path, &branch);
+    launch.execution.as_mut().expect("pin").authority =
+        phux_protocol::ids::AuthorityId::new([9; 16])
+            .expect("other owner")
+            .to_string();
+    assert!(
+        store
+            .launch_queued(LaunchQueued {
+                alias: task.objective.alias,
+                expected_revision: queued.objective.revision,
+                operation_id: OperationId::derive_bytes(b"foreign"),
+                actor: "tester".to_owned(),
+                max_agents: 1,
+                launch,
+            })
+            .is_err()
+    );
+    assert_eq!(
+        store.open_runs().expect("runs")[0].run_state,
+        RunState::Queued
+    );
 }
 
 fn admit(store: &mut Store, alias: Alias, op: OperationId) -> super::StartApplied {
@@ -212,7 +289,7 @@ fn a_replayed_start_ignores_a_different_terminal_id() {
     let first = admit(&mut store, added.objective.alias.clone(), op);
     let mut retry = start_req(added.objective.alias, op, true);
     retry.expected_revision = 1;
-    retry.launch.as_mut().expect("binding").terminal_id = "99".to_owned();
+    retry.launch.as_mut().expect("binding").terminal_id = Some("99".to_owned());
     let again = store.commit_start(retry).expect("replay");
     assert!(again.idempotent_replay);
     assert_eq!(
@@ -301,7 +378,7 @@ fn launch_queued_admits_one_runner_and_a_replay_does_not_write() {
     assert!(replay.idempotent_replay);
     assert_eq!(store.event_kinds().expect("events"), kinds);
     let mut other = launch.clone();
-    other.terminal_id = "99".to_owned();
+    other.terminal_id = Some("99".to_owned());
     let again = store
         .launch_queued(LaunchQueued {
             alias: second.objective.alias,

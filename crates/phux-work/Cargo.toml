@@ -14,6 +14,7 @@ workspace = true
 
 [dependencies]
 jiff.workspace = true
+phux-protocol.workspace = true
 # Opaque 16-byte ids. `getrandom` 0.2 is already in Cargo.lock; this names
 # that line rather than pulling a new crate version.
 getrandom = "0.4"

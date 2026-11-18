@@ -61,9 +61,7 @@ pub(crate) struct LaunchArgs {
     )]
     pub(crate) ratio: f32,
 
-    /// Named projection to place into instead of the shared default
-    /// (requires `--target`). Must be
-    /// `<prefix>.layout/v1/<session-id>` for TARGET's session.
+    /// Legacy option; placed launch refuses named projections.
     #[usage(long, value_name = "KEY", requires("--target"))]
     pub(crate) projection: Option<String>,
 

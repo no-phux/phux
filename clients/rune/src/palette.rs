@@ -26,6 +26,8 @@ pub enum Target {
     },
     Session(String),
     Action(Shortcut),
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    Extension(phux_plugin::ConfiguredAction),
     MoveToTab,
     /// A theme by id; `None` is System.
     Theme(Option<&'static str>),

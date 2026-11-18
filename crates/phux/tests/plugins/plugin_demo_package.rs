@@ -7,7 +7,6 @@ const INSPECT_ACTION: &str = "inspect";
 const LIST_ACTION: &str = "list-integrations";
 const VALIDATE_ACTION: &str = "validate-integrations";
 const DETECT_ACTION: &str = "detect-agents";
-const LAUNCH_BENCH_ACTION: &str = "launch-bench";
 const SMOKE_AGENT_WRAP_ACTION: &str = "smoke-agent-wrap";
 
 fn run_demo(args: &[&str]) -> (i32, String, String) {
@@ -27,14 +26,6 @@ fn run_demo_with_env(args: &[&str], envs: &[(&str, &str)]) -> (i32, String, Stri
 
 fn stdout_from_json(output: &serde_json::Value) -> &str {
     output["stdout"].as_str().expect("stdout field")
-}
-
-fn without_dhat_footer(stderr: &str) -> String {
-    stderr
-        .lines()
-        .filter(|line| !line.starts_with("dhat: "))
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 #[test]
@@ -80,6 +71,31 @@ fn inspect_action_reports_runtime_context() {
 }
 
 #[test]
+fn inspect_action_receives_headless_target_and_input_without_a_client() {
+    let (code, stdout, stderr) = run_demo(&[
+        "config",
+        "run",
+        PLUGIN_ID,
+        INSPECT_ACTION,
+        "--target-json",
+        r#"{"host":"hub","satellite":"worker","resource_handle":"worker/@3"}"#,
+        "--input-json",
+        r#"{"message":"literal ; $HOME"}"#,
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let context = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("context="))
+        .expect("context");
+    let context: serde_json::Value = serde_json::from_str(context).expect("JSON context");
+    assert_eq!(context["source"], "cli");
+    assert_eq!(context["observed"], false);
+    assert_eq!(context["target"]["resource_handle"], "worker/@3");
+    assert_eq!(context["input"]["message"], "literal ; $HOME");
+    assert!(context.get("client").is_none());
+}
+
+#[test]
 fn integration_template_actions_are_local_and_validated() {
     let (code, stdout, stderr) = run_demo(&["config", "run", PLUGIN_ID, LIST_ACTION, "--json"]);
     assert_eq!(code, 0, "list integrations should succeed; stderr={stderr}");
@@ -107,11 +123,11 @@ fn integration_template_actions_are_local_and_validated() {
     let (code, stdout, stderr) = run_demo(&["config", "run", PLUGIN_ID, DETECT_ACTION, "--json"]);
     assert_eq!(
         code, 0,
-        "detection should be disabled by default; stderr={stderr}"
+        "explicit action invocation opts in; stderr={stderr}"
     );
     let output: serde_json::Value =
-        serde_json::from_str(&stdout).expect("disabled detection stdout is JSON");
-    assert!(stdout_from_json(&output).contains("agent detection disabled"));
+        serde_json::from_str(&stdout).expect("detection stdout is JSON");
+    assert!(stdout_from_json(&output).starts_with("id\tdisplay_name\tcommand\tstate\n"));
 }
 
 #[test]
@@ -130,19 +146,16 @@ fn agent_detection_is_opt_in_and_path_overridable() {
     std::fs::set_permissions(&codex, perms).expect("fake codex executable");
 
     let fake_path = tmp.path().to_str().expect("utf8 tempdir");
-    let (code, stdout, stderr) = run_demo_with_env(
-        &["config", "run", PLUGIN_ID, DETECT_ACTION, "--json"],
-        &[
-            ("PHUX_AGENT_TOOLS_DETECT", "1"),
-            ("PHUX_AGENT_TOOLS_PATH", fake_path),
-        ],
-    );
+    let (code, stdout, stderr) = Out::of(
+        std::process::Command::new("/bin/sh")
+            .arg(repo_root().join("plugins/agent-tools/scripts/detect-agents.sh"))
+            .env("PHUX_AGENT_TOOLS_DETECT", "1")
+            .env("PHUX_AGENT_TOOLS_PATH", fake_path),
+    )
+    .into_parts();
     assert_eq!(code, 0, "opt-in detection should succeed; stderr={stderr}");
-    let output: serde_json::Value =
-        serde_json::from_str(&stdout).expect("opt-in detection stdout is JSON");
-    let detected = stdout_from_json(&output);
-    assert!(detected.contains("codex\tCodex\tcodex\tavailable"));
-    assert!(detected.contains("claude-code\tClaude Code\tclaude\tmissing"));
+    assert!(stdout.contains("codex\tCodex\tcodex\tavailable"));
+    assert!(stdout.contains("claude-code\tClaude Code\tclaude\tmissing"));
 }
 
 /// The wrapper smoke covers identity cleanup plus complete one-turn stream
@@ -172,66 +185,13 @@ fn agent_wrap_writes_and_clears_the_identity_record() {
 }
 
 #[test]
-fn launch_bench_reports_no_server_as_action_failure() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let state = tmp.path().join("bench.tsv");
-    // A socket path whose parent is a regular file: no server can ever bind
-    // there, so the action's inner `phux new --json` fails no matter what.
-    //
-    // This used to be an abandoned socket file, which worked only because
-    // auto-spawn was gated on the path not existing — the bug ADR-0080 fixed.
-    // A stale entry is now reaped and a server started, so an abandoned
-    // socket would make this action *succeed*.
-    let blocker = tmp.path().join("not-a-dir");
-    std::fs::write(&blocker, b"").expect("write the blocking file");
-    let socket = blocker.join("phux.sock");
-    let state_text = state.to_str().expect("utf8 state path");
-    let socket_text = socket.to_str().expect("utf8 socket path");
+fn action_does_not_inherit_an_ambient_socket() {
     let (code, stdout, stderr) = run_demo_with_env(
-        &["config", "run", PLUGIN_ID, LAUNCH_BENCH_ACTION, "--json"],
-        &[
-            ("PHUX_SOCKET", socket_text),
-            ("PHUX_AGENT_BENCH_STATE", state_text),
-            ("PHUX_AGENT_BENCH_ROLES", "codex"),
-        ],
+        &["config", "run", PLUGIN_ID, INSPECT_ACTION, "--json"],
+        &[("PHUX_SOCKET", "/tmp/not-for-this-plugin.socket")],
     );
-
-    assert_ne!(code, 0, "an unreachable socket should fail the action");
-    let wrapper_stderr = without_dhat_footer(&stderr);
-    assert!(
-        wrapper_stderr.is_empty(),
-        "wrapper stderr should stay empty for JSON output: {stderr}"
-    );
-    let output: serde_json::Value = serde_json::from_str(&stdout).expect("action JSON");
-    assert_ne!(output["exit_code"], 0);
-    // The action's inner `phux new --json` fails per the stable JSON error
-    // contract: one JSON line on stderr with a closed error code.
-    let action_stderr = output["stderr"].as_str().expect("action stderr");
-    let json_line = action_stderr
-        .lines()
-        .next()
-        .expect("action stderr should carry the JSON error line");
-    let error_doc: serde_json::Value = serde_json::from_str(json_line).unwrap_or_else(|_| {
-        panic!("action stderr should start with the JSON error contract: {output}")
-    });
-    // A closed code, not a specific one: a spawning verb pointed somewhere a
-    // server cannot bind reports the bind failure (`transport`), where a
-    // dialling verb would report `no_server`. Both are contract documents;
-    // pinning the exact code here would pin which of the two `new` is.
-    let code_str = error_doc["error"]["code"]
-        .as_str()
-        .expect("the error code is a string");
-    assert!(
-        matches!(code_str, "no_server" | "transport"),
-        "action stderr should carry a closed error code: {output}"
-    );
-    assert!(
-        !error_doc["error"]["message"]
-            .as_str()
-            .expect("error message")
-            .is_empty(),
-        "action stderr should explain failure: {output}"
-    );
+    assert_eq!(code, 0, "{stderr}");
+    assert!(!stdout.contains("not-for-this-plugin.socket"));
 }
 
 /// ADR-0151: the template claiming each in-shell integration's `AgentSession`

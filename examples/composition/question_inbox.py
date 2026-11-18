@@ -16,10 +16,11 @@ def target(authority, resource):
     return f"{durable_key(authority)}/^{durable_key(resource)}"
 
 
-def invoke(args, *command):
+def invoke(args, operation, request):
     result = subprocess.run(
-        [args.phux, "--socket", str(args.socket.absolute()), "agent", *command],
-        stdin=subprocess.DEVNULL, text=True, capture_output=True, timeout=20,
+        [args.phux, "--socket", str(args.socket.absolute()),
+         "api", "call", operation, "--request-json", "-"],
+        input=json.dumps(request), text=True, capture_output=True, timeout=20,
     )
     try:
         document = json.loads(result.stdout)
@@ -32,7 +33,8 @@ def invoke(args, *command):
 
 def current(args, exact):
     authority, resource = exact.split("/^")
-    document = invoke(args, "questions", target(authority, resource))
+    document = invoke(args, "question.list", {"type": "key",
+                      "authority": durable_key(authority), "resource": durable_key(resource)})
     if (document["authority"], document["resource"]) != (authority, resource):
         raise Fault("wrong_subject", "question response did not name the requested subject")
     return document
@@ -69,8 +71,7 @@ def answer(args):
         os.fsync(directory)
     finally:
         os.close(directory)
-    return correlate(invoke(args, "respond-question", "--request-json",
-                            json.dumps(request)), operation_id)
+    return correlate(invoke(args, "question.respond", request), operation_id)
 
 
 def correlate(receipt, operation_id):
@@ -82,9 +83,7 @@ def correlate(receipt, operation_id):
 def recover(args):
     record = json.loads(args.journal.read_text())
     operation_id = record["operation_id"]
-    return correlate(invoke(args, "question-receipt", "--question-json",
-                            json.dumps(record["question"]), "--operation-id", operation_id),
-                     operation_id)
+    return correlate(invoke(args, "question.receipt", record), operation_id)
 
 
 def main():

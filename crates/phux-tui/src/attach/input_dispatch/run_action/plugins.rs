@@ -17,7 +17,11 @@ use super::ActionCall;
 /// `action` from callers that build the args directly.
 pub(in crate::attach) fn plugin_action(
     ActionCall {
-        resolved, effects, ..
+        resolved,
+        ctx,
+        focused,
+        effects,
+        ..
     }: ActionCall<'_, '_>,
 ) {
     let Some((plugin, action_id)) = plugin_actions::plugin_action_target(&resolved.args) else {
@@ -28,9 +32,18 @@ pub(in crate::attach) fn plugin_action(
         effects.bell = true;
         return;
     };
+    let mut context = plugin_actions::capture_context(ctx, focused);
+    if let Some(input) = resolved.args.get("input") {
+        let Ok(input) = serde_json::to_value(input) else {
+            effects.bell = true;
+            return;
+        };
+        context = context.with_input(input);
+    }
     effects.job = Some(plugin_actions::plugin_job(
         plugin.to_owned(),
         action_id.to_owned(),
+        context,
     ));
 }
 

@@ -30,6 +30,7 @@ use serde_json::{Value, json};
 use crate::cli_adapter::spawn_record;
 
 mod residue;
+mod spawn;
 mod sweep;
 
 const WORK: SessionId = SessionId::new(1);
@@ -193,17 +194,13 @@ const CASES: &[Case] = &[
         tool: "phux_spawn",
         args: || {
             json!({
-                "target": "@1",
+                "target": "@4",
                 "split": "vertical",
                 "ratio": 0.3,
-                "projection": PROJECTION,
+                "idempotency_key": "07070707070707070707070707070707",
             })
         },
-        spec: || {
-            ScriptSpec::new()
-                .state(state_with(&[1, 2, 7]))
-                .spawn_result(SpawnResult::Ok(ResourceId::local(7)))
-        },
+        spec: spawn::placed_spec,
     },
     Case {
         golden: "signal",

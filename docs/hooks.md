@@ -14,6 +14,9 @@ Hooks live in your [configuration file](./config.md). The server reads
 them when it starts, so after editing them run `phux config check`, then
 `phux upgrade` to restart the server in place without closing any pane.
 
+For a temporary listener that runs in your shell without a configuration
+change, see [running a command when an event happens](./scripting.md#running-a-command-when-an-event-happens).
+
 ## Writing a hook
 
 Each hook is one `[[hooks.<event>]]` entry with two keys:

@@ -19,7 +19,8 @@
 //! There is deliberately no headless focus mutation (ADR-0049). Use a
 //! dedicated, unsubscribed connection.
 
-use phux_protocol::ids::{ArrangementKey, GroupId, ResourceId, Revision, SessionId};
+use phux_protocol::ids::{ArrangementKey, AuthorityId, GroupId, ResourceId, Revision, SessionId};
+use phux_protocol::wire::frame::{ArrangementValue, ResourceRecord};
 use thiserror::Error;
 
 use crate::attach::AttachError;
@@ -180,6 +181,12 @@ pub struct ReadArrangement {
     pub handles: HandleMap,
     /// Entry ids and unplaceable entries, for the write-back.
     pub binding: EntryBinding,
+    /// Authority from the same organization inventory as the handle map.
+    pub authority: AuthorityId,
+    /// Observed members, including execution identities.
+    pub members: Vec<ResourceRecord>,
+    /// The observed key-space arrangement, including distinct entries of the same resource.
+    pub stored: ArrangementValue,
 }
 
 #[cfg(test)]

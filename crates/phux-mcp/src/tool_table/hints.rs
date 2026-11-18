@@ -5,7 +5,7 @@ use phux_protocol::ids::ResourceId;
 use phux_protocol::kinds::{self, Verb, Verbs};
 use phux_protocol::wire::frame::{Command, FrameKind, RESOURCE_TAGS_KEY, Scope};
 
-use super::{METADATA_WRITE, PERF_READ, Touches, row};
+use super::{CURRENT_QUESTIONS, METADATA_WRITE, PERF_READ, Touches, row};
 
 /// The two hints one tool carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +75,18 @@ fn method_facts(name: &str) -> Option<(Verbs, bool, bool)> {
     }
     if name == PERF_READ {
         let verbs = kinds::command_rule(&Command::GetPerf { reset: false }).verb_set();
+        return Some((verbs, verbs.is_empty() || verbs.mutates(), false));
+    }
+    if name == CURRENT_QUESTIONS {
+        let request = phux_protocol::native_agent::NativeRequestPayload::new(
+            phux_protocol::native_agent::NativeRequest::CurrentQuestions {
+                target: phux_protocol::native_agent::questions::QuestionTarget::Handle {
+                    resource: ResourceId::local(1),
+                },
+            },
+        )
+        .ok()?;
+        let verbs = kinds::command_rule(&Command::NativeAgent { request }).verb_set();
         return Some((verbs, verbs.is_empty() || verbs.mutates(), false));
     }
     let method = kinds::method_named(name)?;

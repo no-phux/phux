@@ -146,6 +146,58 @@ fn spawn_json_failures_keep_the_json_error_contract() {
 
 #[test]
 #[ignore = "spawns a real phux server; run via `just e2e`."]
+fn placed_spawn_commits_once_and_refuses_legacy_options() {
+    const KEY: &str = "1d9f63e8c5b3a2f1e0d9c8b1a8e9146d";
+    let server = Server::start();
+    let (listing, _) = server.json(&["ls", "--json"]);
+    let target = listing["terminals"][0].as_str().expect("the seed pane");
+    let session = listing["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|session| session["name"] == "work")
+        .unwrap()["key"]
+        .as_str()
+        .unwrap();
+    let args = [
+        "spawn",
+        "--json",
+        "--target",
+        target,
+        "--idempotency-key",
+        KEY,
+        "--",
+        "sleep",
+        "600",
+    ];
+    let (first, out) = server.json(&args);
+    assert!(out.status.success(), "{out:?}");
+    let (replay, out) = server.json(&args);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(first["terminal_id"], replay["terminal_id"]);
+    assert_eq!(replay["replayed"], true);
+    let (receipt, out) = server.json(&[
+        "terminal",
+        "operation",
+        "--session",
+        session,
+        "--idempotency-key",
+        KEY,
+    ]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(receipt["terminal_id"], first["terminal_id"]);
+    assert!(receipt["placement"]["entry"].is_string());
+
+    for option in ["--retain=30", "--projection=app.layout/v1/1"] {
+        let out = server.phux(&["spawn", "--json", "--target", target, option]);
+        assert_eq!(out.status.code(), Some(2), "{out:?}");
+        assert_eq!(last_stderr_json(&out)["error"]["code"], "usage_error");
+    }
+    assert_eq!(server.terminal_count(), 2);
+}
+
+#[test]
+#[ignore = "spawns a real phux server; run via `just e2e`."]
 fn new_with_idempotency_key_twice_replays_the_first_create() {
     const KEY: &str = "7a0b2e4c1d9f63e8c5b3a2f1e0d9c8b7";
     let server = Server::start();

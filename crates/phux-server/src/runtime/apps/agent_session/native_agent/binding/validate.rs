@@ -25,7 +25,7 @@ pub(super) fn restore_operations(binding: &mut NativeBinding) {
             operation.result.disposition = NativeDisposition::Refused;
             operation.result.detail =
                 Some("daemon upgraded before dispatch; original connection authority ended".into());
-            if let NativeIntent::Answer { question_id, .. } = &operation.command.intent {
+            if let Some(question_id) = operation.command.intent.question_id() {
                 binding.answered.remove(question_id);
             }
         }

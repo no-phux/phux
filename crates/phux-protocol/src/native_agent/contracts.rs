@@ -19,6 +19,13 @@ pub enum NativeIntent {
         /// The human-selected response in the request's normalized shape.
         response: serde_json::Value,
     },
+    /// Answer only the exact version of a callback returned by `CurrentQuestions`.
+    AnswerExact {
+        /// Authority, conversation and callback revision.
+        question: questions::QuestionRef,
+        /// The human-selected response in the request's normalized shape.
+        response: serde_json::Value,
+    },
 }
 /// An idempotent intent whose identity must not be reused with another payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,7 +40,7 @@ pub struct NativeCommand {
 }
 wire_enum! { to_u8 / from_u8;
 /// A factual operation stage; admission is distinct from model success.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum NativeDisposition {
     /// The provider accepted the operation.
@@ -109,7 +116,7 @@ pub struct NativeCapabilities {
     pub follow_up: NativeSupport,
 }
 /// A provider-supplied selectable option.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct NativeOption {
     /// Opaque option identity, preserved in the response.
     pub id: String,
@@ -119,7 +126,7 @@ pub struct NativeOption {
     pub description: Option<String>,
 }
 /// One item in a structured multi-question request.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct NativeQuestionItem {
     /// Exact item identity.
     pub id: String,
@@ -135,7 +142,7 @@ pub struct NativeQuestionItem {
     pub recommended: Option<String>,
 }
 /// One live provider request requiring an explicit human response.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct NativeQuestion {
     /// Exact request identity within its activation.
     pub id: String,
@@ -316,6 +323,23 @@ pub struct NativeIntegrationCatalog {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NativeRequest {
+    /// Observe current questions for one exact local resource.
+    CurrentQuestions {
+        /// Exact local handle or durable authority-qualified resource.
+        target: questions::QuestionTarget,
+    },
+    /// Answer an exact structured question as a human principal.
+    RespondQuestion {
+        /// Operation identity, exact question, and explicit response.
+        answer: questions::RespondQuestion,
+    },
+    /// Look up a retained exact-answer receipt without resubmitting it.
+    QuestionReceipt {
+        /// The original question reference, even if now closed.
+        question: questions::QuestionRef,
+        /// The original operation identity.
+        operation_id: questions::QuestionOperationId,
+    },
     /// Inventory native profiles on this authenticated connection's host.
     ListIntegrations {},
     /// Resolve a configured profile on the executing host and launch it.

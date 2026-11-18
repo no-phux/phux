@@ -21,6 +21,9 @@ use crate::tools::{
 
 /// The resource tools, in catalog order.
 pub(crate) const SPECS: &[ToolSpec] = &[
+    ToolSpec::in_process("phux_execution_result", execution_schema, |args| {
+        Box::pin(execution(args))
+    }),
     ToolSpec::in_process("phux_resource_show", show_schema, |args| {
         Box::pin(show(args))
     }),
@@ -31,6 +34,35 @@ pub(crate) const SPECS: &[ToolSpec] = &[
         Box::pin(methods(args))
     }),
 ];
+
+fn execution_schema() -> Value {
+    let mut input = phux_protocol::api::execution_result_request_schema();
+    input["properties"]["socket"] = string_schema();
+    json!({
+        "name": "phux_execution_result",
+        "description": "Read or wait for one exact retained execution. Supply authority, resource key, activation and instance from its receipt. Never follows relaunches. A missing or superseded result is not proof that it never ran.",
+        "inputSchema": input,
+    })
+}
+
+async fn execution(args: &Value) -> Result<Value, ToolError> {
+    use phux_client::resource::execution::{ExecutionError, result};
+    let socket = crate::tools::socket_arg(args)?;
+    let mut request = args.clone();
+    if let Some(object) = request.as_object_mut() {
+        object.remove("socket");
+    }
+    let request = serde_json::from_value(request)
+        .map_err(|error| execution_error(&ExecutionError::InvalidJson(error)))?;
+    result(&socket, &request)
+        .await
+        .map(|result| json!(result))
+        .map_err(|error| execution_error(&error))
+}
+
+fn execution_error(error: &phux_client::resource::execution::ExecutionError) -> ToolError {
+    ToolError::with_document(error.to_string(), json!(error.document()))
+}
 
 fn target_schema() -> Value {
     json!({

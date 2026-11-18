@@ -184,6 +184,9 @@ pub(crate) enum Command {
     #[usage(help_heading = "Panes", display_order = 26)]
     Watch(WatchArgs),
 
+    #[usage(help_heading = "Panes", display_order = 27)]
+    On(OnArgs),
+
     #[usage(help_heading = "Panes", display_order = 32)]
     Resource(ResourceArgs),
 

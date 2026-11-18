@@ -4,17 +4,13 @@ use std::process::ExitCode;
 use phux_client::layout::SplitDir;
 use phux_config::socket::default_socket_path;
 use phux_protocol::ids::{GroupId, IdempotencyKey, ResourceId, SatelliteHost};
-use phux_protocol::wire::frame::{
-    Command, CommandResult, CommandValue, FrameKind, SpawnError, SpawnResource, SpawnResult,
-    StateScope,
-};
+use phux_protocol::wire::frame::{FrameKind, SpawnError, SpawnResource, SpawnResult};
 
 use crate::commands::json_err::{CliError, codes};
-use crate::commands::{
-    SpawnSplit, cli_runtime, json_err, parse_selector, request_command, resolve_targets,
-};
+use crate::commands::{SpawnSplit, cli_runtime, json_err, parse_target};
 use crate::exit_codes::EXIT_USAGE;
 use phux_client::agent_session_record::{AgentSessionRecord, spawn_with_agent_session_on};
+use phux_client::spawn::{PlacedSpawn, PlacedSpawnError};
 
 /// What `phux spawn` asks the server to keep for it: the pane after its
 /// process exits (`--retain`, ADR-0124), and the answer to a retry
@@ -75,9 +71,8 @@ pub(crate) fn parse_key_arg(
         })
 }
 
-/// `phux spawn` — create a Terminal without attaching (`SPAWN_RESOURCE`, L1
-/// §3.1); never auto-starts a server. With placement the new leaf goes beside
-/// the target Terminal; without, it joins the most recently active session.
+/// `phux spawn` creates a Terminal without attaching or auto-starting a
+/// server. Use `RESOURCE_CREATE` with placement or `SPAWN_RESOURCE` without it.
 /// `--satellite NAME` routes the spawn through a hub (refused on a non-hub or
 /// for an unknown name). `--json` stdout is only
 /// `{"terminal_id": N, "satellite": "NAME" | null}`.
@@ -184,16 +179,14 @@ pub(crate) fn dispatch_spawn(
     .map_err(|err| json_err::report_no_server(json, &err, socket_path, verb))
 }
 
-/// Resolve an explicit local owner, spawn into its session, then insert the
-/// leaf via [`phux_client::spawn::verify_and_publish_placement`]. If layout
-/// publication fails, kill the new Terminal before returning failure.
+/// Resolve an explicit anchor and atomically create and place a Terminal.
 #[allow(
     clippy::too_many_arguments,
     reason = "shared spawn placement keeps the complete CLI operation explicit"
 )]
 pub(crate) fn dispatch_spawn_placed(
     socket_path: &Path,
-    mut frame: FrameKind,
+    frame: FrameKind,
     request_id: u32,
     verb: &str,
     target_text: &str,
@@ -203,137 +196,30 @@ pub(crate) fn dispatch_spawn_placed(
     agent_session: Option<&AgentSessionRecord>,
     json: bool,
 ) -> Result<SpawnResult, ExitCode> {
-    let selector = parse_selector(Some(target_text))?;
-    let rt = cli_runtime()?;
-    rt.block_on(async {
-        let snapshot = match request_command(
-            socket_path,
-            Command::GetState {
-                scope: StateScope::Server,
-            },
-        )
-        .await
-        {
-            Ok(CommandResult::OkWith(CommandValue::State(s))) => s,
-            Ok(other) => {
-                return Err(json_err::emit(
-                    json,
-                    &CliError::new(
-                        codes::TRANSPORT,
-                        phux_client::explain::explain_unexpected("GET_STATE", &other),
-                        "run `phux doctor` for a health check",
-                    ),
-                    1,
-                ));
-            }
-            Err(err) => return Err(json_err::report_no_server(json, &err, socket_path, verb)),
-        };
-        let candidates = resolve_targets(socket_path, &selector, &snapshot)
-            .await
-            .map_err(|err| crate::commands::report_agent_resolve_error(json, &err, false))?;
-        let (owner, session) = placement_owner(json, target_text, &snapshot, &candidates)?;
-        let FrameKind::SpawnResource { owner_terminal, .. } = &mut frame else {
-            return Err(json_err::emit(
-                json,
-                &CliError::new(
-                    codes::INTERNAL_ERROR,
-                    "internal spawn placement error",
-                    "report this with `phux report`",
-                ),
-                1,
-            ));
-        };
-        *owner_terminal = Some(owner.clone());
-        let spawned = spawn_with_agent_session_on(socket_path, &frame, agent_session)
-            .await
-            .map_err(|err| json_err::report_no_server(json, &err, socket_path, verb))?;
-        let SpawnResult::Ok(new_pane) = &spawned else {
-            return Ok(spawned);
-        };
-
-        let dir = match split {
-            SpawnSplit::Horizontal => SplitDir::Horizontal,
-            SpawnSplit::Vertical => SplitDir::Vertical,
-        };
-        let placement = phux_client::spawn::Placement {
-            owner: owner.clone(),
-            owner_session: session,
-            new_pane: new_pane.clone(),
-        };
-        let mut notices = Vec::new();
-        let rollback = phux_client::spawn::verify_and_publish_placement(
-            socket_path,
-            &placement,
-            dir,
-            ratio,
-            projection,
-            request_id.wrapping_add(1),
-            &mut notices,
-        )
-        .await;
-        // Warnings are prose; under --json stderr carries only the one
-        // error document a failure emits.
-        if !json {
-            for message in &notices {
-                warn!("partial results — {message}");
-            }
+    let report = |err: PlacedSpawnError| {
+        if let PlacedSpawnError::Attach(err) = &err {
+            json_err::report_no_server(json, err, socket_path, verb)
+        } else {
+            let (refusal, exit) = err.refusal(target_text);
+            json_err::emit(json, &refusal, exit)
         }
-        match rollback {
-            phux_client::spawn::RollbackOutcome::Placed => Ok(spawned),
-            phux_client::spawn::RollbackOutcome::RolledBack { reason } => Err(placement_failed(
-                json,
-                format!("{verb} placement failed; spawned pane was removed: {reason}"),
-            )),
-            phux_client::spawn::RollbackOutcome::RollbackUnconfirmed {
-                reason,
-                cleanup_note,
-            } => Err(placement_failed(
-                json,
-                format!("{verb} placement failed ({reason}); {cleanup_note}"),
-            )),
-        }
-    })
-}
-
-/// The local pane a placed spawn lands beside, with its session;
-/// every refusal is reported (as JSON under `json`) and returned in `Err`.
-fn placement_owner(
-    json: bool,
-    target_text: &str,
-    snapshot: &phux_protocol::wire::info::SessionSnapshot,
-    candidates: &[ResourceId],
-) -> Result<(ResourceId, phux_protocol::ids::SessionId), ExitCode> {
-    let Some(owner) =
-        phux_client::selector::pick_target_pane(candidates, &snapshot.focused_resource)
-    else {
-        return Err(json_err::emit(
-            json,
-            &CliError::new(
-                codes::NO_SUCH_TARGET,
-                format!("no such target: {target_text}"),
-                "run `phux ls` to see live sessions and panes",
-            ),
-            1,
-        ));
     };
-    if !matches!(owner, ResourceId::Local { .. }) {
-        return Err(json_err::emit(
-            json,
-            &CliError::new(
-                codes::SATELLITE_TARGET,
-                "explicit spawn placement is local-only",
-                "target a pane on this server, or run the verb on the satellite's host",
-            ),
-            1,
-        ));
+    let dir = match split {
+        SpawnSplit::Horizontal => SplitDir::Horizontal,
+        SpawnSplit::Vertical => SplitDir::Vertical,
+    };
+    let spawn = PlacedSpawn::from_spawn_frame(frame, dir, ratio, projection, agent_session)
+        .map_err(report)?;
+    let selector = parse_target(Some(target_text)).map_err(|refusal| refusal.emit(json))?;
+    let (result, degradation) = cli_runtime()?
+        .block_on(spawn.run(socket_path, &selector, request_id))
+        .map_err(report)?;
+    if !json {
+        for notice in degradation.notices() {
+            warn!("{}", phux_client::state::partial_view_warning(verb, notice));
+        }
     }
-    let Some(session) = phux_client::spawn::ownership_for_terminal(snapshot, &owner) else {
-        return Err(placement_failed(
-            json,
-            "target has no local session ownership".to_owned(),
-        ));
-    };
-    Ok((owner, session))
+    Ok(result)
 }
 
 /// Print the freshly spawned Terminal id — human line or the stable JSON
@@ -424,20 +310,6 @@ pub(crate) fn report_spawn_error(json: bool, err: &SpawnError) -> ExitCode {
             codes::SPAWN_FAILED,
             phux_client::spawn::spawn_error_message(err),
             "check the command and working directory; `phux logs` has the server's view",
-        ),
-        1,
-    )
-}
-
-/// A placed spawn that could not land where it was asked: exit 1,
-/// `spawn_failed` under `json`.
-fn placement_failed(json: bool, message: String) -> ExitCode {
-    json_err::emit(
-        json,
-        &CliError::new(
-            codes::SPAWN_FAILED,
-            message,
-            "run `phux ls` to check the target and the pane the spawn left behind",
         ),
         1,
     )

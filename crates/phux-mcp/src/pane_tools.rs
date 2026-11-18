@@ -6,19 +6,17 @@ use std::path::Path;
 
 use phux_client::attach::connection::Connection;
 use phux_client::layout::SplitDir;
-use phux_client::selector::{self, Selector, format_terminal_id};
+use phux_client::selector::format_terminal_id;
 use phux_client::spatial::{Direction, SpatialError, SpatialOp};
-use phux_client::spawn::{Placement, RollbackOutcome};
-use phux_client::state;
-use phux_protocol::ids::{GroupId, IdempotencyKey, ResourceId, SatelliteHost};
+use phux_client::spawn::{PlacedSpawn, PlacedSpawnError};
+use phux_protocol::ids::{GroupId, IdempotencyKey, SatelliteHost};
 use phux_protocol::wire::frame::{FrameKind, SpawnError, SpawnResource, SpawnResult};
-use phux_protocol::wire::info::SessionSnapshot;
 use serde_json::{Value, json};
 
 use crate::cli_adapter::{bounded_string, bounded_strings, enum_string, ratio};
 use crate::tools::{
-    ToolError, contract_error, incomplete_view_miss, parse_selector, socket_arg, strict_object,
-    transport_error,
+    ToolError, contract_error, incomplete_view_miss, parse_selector, refusal_error, socket_arg,
+    strict_object, transport_error, warn_partial_view,
 };
 
 mod signal;
@@ -153,8 +151,7 @@ pub(crate) fn idempotency_key(raw: &str) -> Result<IdempotencyKey, ToolError> {
     })
 }
 
-/// `phux_spawn` — `SPAWN_RESOURCE` through `phux_client::spawn`, with the
-/// ownership-verify and `KILL_RESOURCE` rollback behind explicit placement.
+/// `phux_spawn` — unplaced spawn or atomic organization create beside a target.
 pub(crate) async fn spawn(args: &Value) -> Result<Value, ToolError> {
     strict_object(
         args,
@@ -187,77 +184,32 @@ pub(crate) async fn spawn(args: &Value) -> Result<Value, ToolError> {
     spawn_document(result)
 }
 
-/// Resolve an explicit local owner, spawn into its exact window, then
-/// splice the new leaf into the shared layout beside it. A placement that
-/// fails after the spawn rolls the new Terminal back.
 async fn spawn_placed(
     socket: &Path,
-    mut frame: FrameKind,
+    frame: FrameKind,
     target: &str,
     request: &SpawnRequest,
 ) -> Result<SpawnResult, ToolError> {
-    let selector = parse_selector(target)?;
-    let (snapshot, _) = state::get_state(socket)
-        .await
-        .map_err(|err| transport_error(&err, socket, "spawn"))?
-        .into_parts();
-    let (owner, owner_session) = placement_owner(socket, &selector, &snapshot).await?;
-    if let FrameKind::SpawnResource { owner_terminal, .. } = &mut frame {
-        *owner_terminal = Some(owner.clone());
-    }
-    let (spawned, _) = phux_client::spawn::spawn_on(socket, &frame)
-        .await
-        .map_err(|err| transport_error(&err, socket, "spawn"))?;
-    let SpawnResult::Ok(new_pane) = &spawned else {
-        return Ok(spawned);
+    let report = |err: PlacedSpawnError| {
+        if let PlacedSpawnError::Attach(err) = &err {
+            transport_error(err, socket, "spawn")
+        } else {
+            let (refusal, exit) = err.refusal(target);
+            refusal_error(&refusal, exit)
+        }
     };
-    let placement = Placement {
-        owner,
-        owner_session,
-        new_pane: new_pane.clone(),
-    };
-    let mut notices = Vec::new();
-    match phux_client::spawn::verify_and_publish_placement(
-        socket,
-        &placement,
+    let placed = PlacedSpawn::from_spawn_frame(
+        frame,
         request.split,
         request.ratio,
         request.projection.as_deref(),
-        2,
-        &mut notices,
+        None,
     )
-    .await
-    {
-        RollbackOutcome::Placed => Ok(spawned),
-        RollbackOutcome::RolledBack { reason } => Err(ToolError::new(format!(
-            "spawn placement failed; spawned pane was removed: {reason}"
-        ))),
-        RollbackOutcome::RollbackUnconfirmed {
-            reason,
-            cleanup_note,
-        } => Err(ToolError::new(format!(
-            "spawn placement failed ({reason}); {cleanup_note}"
-        ))),
-    }
-}
-
-/// The local Terminal `selector` names, with its session.
-async fn placement_owner(
-    socket: &Path,
-    selector: &Selector,
-    snapshot: &SessionSnapshot,
-) -> Result<(ResourceId, phux_protocol::ids::SessionId), ToolError> {
-    let candidates = state::resolve_targets(socket, selector, snapshot)
-        .await
-        .map_err(|err| crate::tools::agent_resolve_error(&err))?;
-    let owner = selector::pick_target_pane(&candidates, &snapshot.focused_resource)
-        .ok_or_else(|| ToolError::new("no such target"))?;
-    if !matches!(owner, ResourceId::Local { .. }) {
-        return Err(ToolError::new("explicit spawn placement is local-only"));
-    }
-    let session = phux_client::spawn::ownership_for_terminal(snapshot, &owner)
-        .ok_or_else(|| ToolError::new("target has no local session ownership"))?;
-    Ok((owner, session))
+    .map_err(report)?;
+    let selector = parse_selector(target)?;
+    let (result, degradation) = placed.run(socket, &selector, 1).await.map_err(report)?;
+    warn_partial_view("spawn", degradation.notices());
+    Ok(result)
 }
 
 fn spawn_document(result: SpawnResult) -> Result<Value, ToolError> {
@@ -529,6 +481,26 @@ mod tests {
         let document: Value = serde_json::from_str(&err.0).expect("a JSON error line");
         assert_eq!(document["error"]["code"], "invalid_idempotency_key");
         assert_eq!(document["exit_code"], 2);
+    }
+
+    #[tokio::test]
+    async fn unsupported_placed_options_refuse_before_connecting() {
+        for (field, value, message) in [
+            ("projection", json!("app.layout/v1/1"), "named projections"),
+            ("retain_secs", json!(0), "timed screen retention"),
+        ] {
+            let mut args = json!({ "target": "@1", "socket": "/nonexistent/phux.sock" });
+            args[field] = value;
+            let error = spawn(&args).await.unwrap_err();
+            let document: Value = serde_json::from_str(&error.0).unwrap();
+            assert_eq!(document["error"]["code"], "usage_error");
+            assert!(
+                document["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains(message)
+            );
+        }
     }
 
     #[test]

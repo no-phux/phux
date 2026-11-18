@@ -169,16 +169,17 @@ filesystem enforcement or an authenticated execution identity; see
 
 The shipping [`mission start`](./reference/cli.md#phux-mission-start) creates
 a task worktree, brief, session and configured harness worker, with a bounded
-agent cap and a revision-checked keeper commit. Queued is not launched. Its
+agent cap and a revision-checked keeper commit. Queued work pins its owner
+before any worker effect; an unrelated authority cannot promote it. Its
 [CLI implementation](../crates/phux/src/commands/mission_start.rs),
 [pure launch planning](../crates/phux-work/src/mission/start.rs) and
 [keeper start transaction](../crates/phux-work/src/start.rs) own the sequence.
 
-The keeper projects each bound agent's state into the task. The binding's
-terminal id is the source of truth. On start, and after `journal_gap` or
-`source_gap`, the keeper re-reads level state and appends one event. The
-journal is a wake-up, not the task's history. Replaying the same derived
-operation id writes nothing.
+The keeper binds each started run to the execution in the host's placed-create
+receipt: owning authority, resource key, activation, and instance. A pane ID
+is an optional presentation hint and is never used to settle the run. The
+keeper reads the exact durable state on startup, on wakeups, and after a
+journal gap. Replaying the same derived observation ID writes nothing.
 
 | Observed fact | Task state |
 | --- | --- |
@@ -188,7 +189,8 @@ operation id writes nothing.
 | agent `done` | `done_unchecked` |
 | process exit 0 after `done` | `done_unchecked` |
 | process exit non-zero, or exit with no `done` | `failed` |
-| bound terminal missing from a complete level read | `failed` (`terminal_lost`) |
+| confirmed worker launch failure | `failed` |
+| exact execution missing, superseded, lost, or legacy pane-only binding | `needs_you` (`binding_uncertain`) |
 | unresolved `credential_lost` | `needs_you` |
 
 `done` is reserved for merge cleanup and is not written from agent state.
@@ -199,10 +201,14 @@ brief path as `mission start`. The keeper stays up while any task is
 that terminal's agent record before recording `failed`, so a `done` that
 lands in the same moment becomes `done_unchecked`.
 
-`done_unchecked`, `done`, and `failed` stamp the work store at
-`user_version` 2 and add no tables. An older binary refuses the file at
-open with an unsupported-schema error instead of failing on a task row
-in one of those states.
+The work store migrates to `user_version` 3 to preserve exact execution
+bindings and queued owners. Legacy work, receipts, and pane hints remain
+readable; no execution or owner is inferred from an old pane ID. Legacy
+unpinned queued runs are not automatically launched. Older keepers refuse the migrated
+store rather than observing it with obsolete identity rules. Failed or
+uncertain worker setup leaves the worktree in place. A retry for that same
+worktree checks the authorized session and reads the retained worker receipt;
+it does not launch again if the receipt is missing.
 
 The transition is pure in
 [state.rs](../crates/phux-work/src/mission/state.rs) and applied by

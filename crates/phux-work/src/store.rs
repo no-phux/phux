@@ -807,6 +807,7 @@ pub(crate) fn canonical_event_kind(kind: Option<&str>) -> Result<&'static str, E
         Some("done_unchecked") => Ok("done_unchecked"),
         Some("failed") => Ok("failed"),
         Some("terminal_lost") => Ok("terminal_lost"),
+        Some("binding_uncertain") => Ok("binding_uncertain"),
         Some(other) => Err(Error::invalid_text(
             "event",
             &format!("unknown event kind {other}"),
@@ -984,6 +985,10 @@ impl MissingObjective for rusqlite::Result<Objective> {
 }
 
 #[cfg(test)]
+#[path = "schema_migration_tests.rs"]
+mod schema_migration;
+
+#[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
     use std::path::Path;
@@ -1062,28 +1067,12 @@ mod tests {
         store.list(&filter).expect("list")
     }
 
-    fn catalog(conn: &rusqlite::Connection) -> Vec<String> {
-        let mut statement = conn
-            .prepare(
-                "SELECT name || ' ' || COALESCE(sql, '')
-                 FROM sqlite_master
-                 WHERE name NOT LIKE 'sqlite_%'
-                 ORDER BY 1",
-            )
-            .expect("catalog");
-        statement
-            .query_map([], |row| row.get(0))
-            .expect("query")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("rows")
-    }
-
     #[test]
-    fn schema_is_created_at_user_version_two_and_mode_0600() {
+    fn schema_is_created_at_user_version_three_and_mode_0600() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("work-v1.sqlite");
         let store = Store::open(&path).expect("open");
-        assert_eq!(store.user_version().expect("version"), 2);
+        assert_eq!(store.user_version().expect("version"), 3);
         let (journal, synchronous) = store.durability().expect("pragmas");
         assert_eq!(journal.to_ascii_lowercase(), "wal");
         assert_eq!(synchronous, 2);
@@ -1113,7 +1102,7 @@ mod tests {
         assert_eq!(mode(&lock), 0o600);
         drop(store);
         let again = Store::open(&path).expect("reopen");
-        assert_eq!(again.user_version().expect("version"), 2);
+        assert_eq!(again.user_version().expect("version"), 3);
     }
 
     #[test]
@@ -1122,13 +1111,13 @@ mod tests {
         let path = dir.path().join("work-v1.sqlite");
         {
             let conn = rusqlite::Connection::open(&path).expect("sqlite");
-            conn.pragma_update(None, "user_version", 3_i64)
+            conn.pragma_update(None, "user_version", 4_i64)
                 .expect("version");
         }
         match Store::open(&path) {
             Err(Error::UnsupportedSchema {
-                found: 3,
-                supported: 2,
+                found: 4,
+                supported: 3,
             }) => {}
             other => panic!("expected unsupported schema, got {other:?}"),
         }
@@ -1136,7 +1125,7 @@ mod tests {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("version");
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
     }
 
     #[test]
@@ -1144,7 +1133,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("work-v1.sqlite");
         {
-            let mut store = Store::open(&path).expect("open");
+            let mut store = Store::open_as(&path, 2).expect("open v2");
             let added = store.add(add("phux", "one")).expect("add");
             store
                 .record_state(StateEdit {
@@ -1167,44 +1156,11 @@ mod tests {
             other => panic!("a version-1 reader should refuse at open, got {other:?}"),
         }
         let again = Store::open(&path).expect("current binary still opens");
-        assert_eq!(again.user_version().expect("version"), 2);
+        assert_eq!(again.user_version().expect("version"), 3);
         let shown = again
             .show(&Alias::parse("phux/1").expect("alias"))
             .expect("show");
         assert_eq!(shown.state, ObjectiveState::Failed);
-    }
-
-    #[test]
-    fn a_version_1_store_migrates_to_2_without_ddl() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("work-v1.sqlite");
-        let before = {
-            let conn = rusqlite::Connection::open(&path).expect("sqlite");
-            schema::install_version_one(&conn).expect("v1");
-            let id = OpaqueId::generate().expect("id");
-            conn.execute(
-                "INSERT INTO objective (
-                    id, repo, alias_number, display_alias, title, description,
-                    state, revision, created_at, updated_at, archived
-                 ) VALUES (?1, 'phux', 1, 'phux/1', 'Billing', '', 'failed', 1, ?2, ?2, 0)",
-                params![id.as_slice(), "2020-01-01T00:00:00Z"],
-            )
-            .expect("row");
-            catalog(&conn)
-        };
-        let store = Store::open(&path).expect("migrate");
-        assert_eq!(store.user_version().expect("version"), 2);
-        let shown = store
-            .show(&Alias::parse("phux/1").expect("alias"))
-            .expect("show");
-        assert_eq!(shown.state, ObjectiveState::Failed);
-        drop(store);
-        let conn = rusqlite::Connection::open(&path).expect("sqlite");
-        assert_eq!(catalog(&conn), before);
-        let version: i64 = conn
-            .pragma_query_value(None, "user_version", |row| row.get(0))
-            .expect("version");
-        assert_eq!(version, 2);
     }
 
     #[test]

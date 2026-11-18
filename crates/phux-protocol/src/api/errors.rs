@@ -28,7 +28,8 @@ codes! {
     NotFound => "not_found", Conflict => "conflict", Stale => "stale", NotEmpty => "not_empty",
     NameTaken => "name_taken", ExecutionUncertain => "execution_uncertain",
     LeaseHeld => "lease_held", DuplicateOperation => "duplicate_operation",
-    StoreFailure => "store_failure", Unknown => "unknown",
+    StoreFailure => "store_failure", AuthorityMismatch => "authority_mismatch",
+    TimedOut => "timed_out", Unknown => "unknown",
 }
 impl ErrorCode {
     /// Refusal mapping also owns `Refusal::as_str`; no separate discovery registry.

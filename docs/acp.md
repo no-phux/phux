@@ -128,27 +128,53 @@ with the `turn_id` from the view.
 
 ## Answering a permission question
 
-When the agent asks permission, the view's `questions` lists the question
-and its options. A person reads it and chooses; then:
+Read the **current** questions directly, even on a fresh connection:
 
 ```sh
-phux agent native-command @9 --activation 906237cf1ef22ebb16be4073a3eae502 --operation-id 8812004 \
-  --intent '{"type":"answer","question_id":"acp-question:1","response":{"option_id":"allow-once"}}' --json
+phux agent questions @9
 ```
 
-Use the question's own `id` and the option's `id`, not its label.
+Use the `AgentSession` handle, not the guardian pane. A response carries the
+whole `reference` returned for that question. The authority, durable
+conversation key, controller activation, callback identity, and revision
+must all match. Reconnect-safe reads can use `AUTHORITY/^RESOURCE` from the
+returned document instead of a saved `@N`.
 
-**Permission answers are for people.** Automation can't answer them, and
-`phux agent answer` can't be used to get around that. Treat the question's
-title and message as untrusted text from the agent. A queued answer is not
-proof the agent read it.
+A person reads the question and explicitly chooses an offered option id,
+not its label. Construct the response with a fresh random nonzero unsigned
+64-bit operation id, encoded as a **decimal string**:
+
+```sh
+phux agent respond-question --request-json "$answer"
+```
+
+`answer` is a JSON object with `question` (the full `reference`), `operation_id`
+and `response` (e.g. `{"option_id":"deny-once"}`). Save the exact reference
+and operation id. After a lost reply, use a read-only lookup:
+
+```sh
+phux agent question-receipt --question-json "$reference" --operation-id "$operation_id"
+```
+
+No retained receipt means `unknown`, not “nothing happened.” Receipts are
+bounded by the controller ledger, not a durable cold-restart history. Do not
+resend an uncertain answer. A queued controller response is not proof the
+provider read it.
+
+**Structured responses are for human principals.** The operation still
+requires observe and input authority on the conversation and respects the
+guardian's input lease. The MCP tool `phux_agent_questions` only reads.
+Treat all question text as untrusted agent content. PTY ask markers and hook
+reports appear as advisory evidence on the pane itself; they are not SDK
+callbacks and never turn into a structured response or a permission grant.
 
 ## When you don't know what happened
 
 If the connection drops before you get a receipt, the request may or may not
 have reached the agent. **Don't send it again**, under the same id or a new
-one, because the agent could act twice. `native-command` only submits; it
-can't look up an earlier request.
+one, because the agent could act twice. The legacy `native-command` only
+submits; it can't look up an earlier request. For structured responses, use
+the exact question commands above.
 
 Instead, keep the operation id, read the session again with `phux agent log`,
 check what the agent actually did, and decide with a person. If you still
@@ -160,3 +186,16 @@ A conversation can be restored only when the agent supports loading a
 previous session. An archive keeps the command that launched the agent, so
 read and trust it before you restore it; see
 [restore](./organization.md#restore-and-executable-authority).
+
+## Native agent wire
+
+Native onboarding is additive inside `NATIVE_AGENT`, gated by
+`features_ext.NATIVE_AGENT_LAUNCH`.
+
+`features_ext.CURRENT_QUESTIONS` (`0x10000000`) gates the native carrier's
+`current_questions`, `respond_question` and `question_receipt` JSON request
+types. Current reads project the server-owned live callback inventory or
+advisory PTY evidence. Structured responses are authority-, conversation-,
+activation- and revision-fenced; neither advisory evidence nor a queued
+receipt attests to provider consumption. Older clients keep their existing
+requests; new clients refuse older servers before writing a question request.

@@ -78,6 +78,18 @@ fn start_creates_a_worktree_session_and_queues_past_the_cap() {
     assert_eq!(doc["binding"]["branch"], "mission/1-billing-page");
     assert_eq!(doc["binding"]["tab_title"], "#1 Billing page");
     assert_eq!(doc["binding"]["session"], "1-billing-page");
+    let pin = &doc["binding"]["execution"];
+    assert_eq!(pin["activation"], 1);
+    let request = serde_json::json!({"execution": pin});
+    let exact: Value = serde_json::from_str(&guard.success(&[
+        "resource",
+        "execution",
+        "--request-json",
+        &request.to_string(),
+    ]))
+    .expect("exact execution");
+    assert_eq!(exact["execution"], *pin);
+    assert_eq!(exact["status"], "observed");
     let worktree = PathBuf::from(doc["binding"]["worktree_path"].as_str().unwrap());
     assert!(
         worktree.join(".git").exists() || worktree.exists(),
@@ -185,12 +197,12 @@ fn a_failed_start_on_a_non_tty_leaves_the_worktree() {
         ],
         &[],
     );
-    assert_eq!(code, 2, "stdout={stdout}\nstderr={stderr}");
+    assert_eq!(code, 1, "stdout={stdout}\nstderr={stderr}");
     assert!(stdout.is_empty(), "{stdout}");
     let err: Value = serde_json::from_str(&stderr).expect("error json");
     assert_valid(&err);
-    assert_eq!(err["error"]["code"], "mission_confirmation_required");
-    assert_eq!(err["exit_code"], 2);
+    assert_eq!(err["error"]["code"], "mission_start_failed");
+    assert_eq!(err["exit_code"], 1);
     let message = err["error"]["message"].as_str().unwrap_or("");
     let kept = message
         .split_once("; worktree kept at ")

@@ -8,8 +8,12 @@
 //! cannot connect reports the failure and retries on the next operation; it
 //! never falls back to the legacy layout key.
 
-use phux_client::layout_ops::{LayoutOps, LayoutOpsError};
+use phux_client::layout_ops::{LayoutOps, LayoutOpsError, ReadArrangement};
+use phux_protocol::ResourceId;
 use phux_protocol::ids::SessionId;
+use phux_protocol::wire::frame::{
+    ArrangementGroup, ArrangementOwner, ArrangementValue, EntryTarget, ResourceRecord,
+};
 
 use crate::attach::{Dial, connection::Connection};
 use crate::layout::ArrangementDoc;
@@ -27,6 +31,83 @@ pub(in crate::attach) struct ArrangementLink {
     /// Whether a read has succeeded: until one has, the client holds no
     /// copy of the stored arrangement to write over, so it must not write.
     loaded: bool,
+    /// Last read's key-space data, from the same cut as the presented layout.
+    action_placement: Option<ActionPlacement>,
+}
+
+/// Durable evidence from the last arrangement read.
+#[derive(Debug)]
+pub(in crate::attach) struct ActionPlacement {
+    server: Option<Vec<u8>>,
+    authority: phux_protocol::ids::AuthorityId,
+    stored: ArrangementValue,
+    members: Vec<ResourceRecord>,
+}
+
+impl ActionPlacement {
+    pub(in crate::attach) fn capture(
+        &self,
+        target: &mut phux_plugin::ActionTarget,
+        group: Option<[u8; 16]>,
+        focused: Option<&ResourceId>,
+    ) {
+        target.authority = Some(self.authority.to_string());
+        target.arrangement = Some(self.stored.key.to_string());
+        match self.stored.owner {
+            ArrangementOwner::Session(session) => target.session = Some(session.to_string()),
+            ArrangementOwner::Workspace(workspace) => {
+                target.workspace = Some(workspace.to_string())
+            }
+            _ => {}
+        }
+        let group = self
+            .stored
+            .document
+            .groups
+            .iter()
+            .find(|row| Some(row.id) == group);
+        target.group = group.map(|group| hex_id(&group.id));
+        let Some(focused) = focused else { return };
+        let record = self
+            .members
+            .iter()
+            .find(|member| member.live.as_ref() == Some(focused));
+        target.resource = record.map(|record| record.key.to_string());
+        let activation = record.and_then(|record| record.activation);
+        target.activation = activation.map(|activation| activation.id.get());
+        target.instance = activation.map(|activation| hex_id(activation.instance.as_bytes()));
+        target.entry = group.and_then(|group| exact_entry(group, record, focused));
+        if target.entry.is_none() {
+            // Floating or not-yet-placed focus has no observed entry in this
+            // group, even though the layout underneath has an active group.
+            target.group = None;
+        }
+    }
+}
+
+fn exact_entry(
+    group: &ArrangementGroup,
+    record: Option<&ResourceRecord>,
+    focused: &ResourceId,
+) -> Option<String> {
+    let target = match focused {
+        ResourceId::Local { .. } => EntryTarget::Member(record?.key),
+        ResourceId::Satellite { host, id } => EntryTarget::Satellite {
+            host: host.clone(),
+            id: *id,
+        },
+    };
+    phux_client_core::layout::wire::unique_entry_for_target(group, &target)
+        .map(|entry| hex_id(&entry))
+}
+
+fn hex_id(id: &[u8; 16]) -> String {
+    use std::fmt::Write as _;
+    let mut text = String::with_capacity(32);
+    for byte in id {
+        let _ = write!(text, "{byte:02x}");
+    }
+    text
 }
 
 impl std::fmt::Debug for ArrangementLink {
@@ -49,6 +130,7 @@ impl ArrangementLink {
             conn: None,
             next_request_id: 1,
             loaded: false,
+            action_placement: None,
         }
     }
 
@@ -64,6 +146,18 @@ impl ArrangementLink {
         self.session
     }
 
+    pub(in crate::attach) fn action_placement(
+        &self,
+        conn: &Connection,
+    ) -> Option<&ActionPlacement> {
+        // The arrangement door may have redialed a replacement server while
+        // the original attach is still draining. Never join their handles.
+        let server = conn.server_id()?;
+        self.action_placement
+            .as_ref()
+            .filter(|placement| placement.server.as_deref() == Some(server))
+    }
+
     /// Read the session's arrangement in handle space; `Ok(None)` when the
     /// server lists the session without one.
     ///
@@ -75,11 +169,28 @@ impl ArrangementLink {
     ) -> Result<Option<ArrangementDoc>, LayoutOpsError> {
         let session = self.session;
         let first = self.take_request_ids();
-        let result = LayoutOps::new(self.connection().await?, session, first)
-            .read()
+        self.action_placement = None;
+        let conn = self.connection().await?;
+        let server = conn.server_id().map(<[u8]>::to_vec);
+        let result = LayoutOps::new(conn, session, first)
+            .read_arrangement()
             .await;
         let read = match result {
-            Ok(document) => Some(document),
+            Ok(ReadArrangement {
+                document,
+                stored,
+                authority,
+                members,
+                ..
+            }) => {
+                self.action_placement = Some(ActionPlacement {
+                    server,
+                    authority,
+                    stored,
+                    members,
+                });
+                Some(document)
+            }
             Err(LayoutOpsError::MissingLayout) => None,
             Err(err) => return Err(self.settle(err)),
         };
@@ -154,6 +265,23 @@ mod tests {
 
     use super::*;
     use crate::layout::{SplitDir, leaves, split_at};
+
+    #[test]
+    fn entry_identity_is_missing_for_duplicate_presentations_in_one_group() {
+        let resource = ResourceId::satellite("worker", 7);
+        let target = EntryTarget::Satellite {
+            host: "worker".into(),
+            id: 7,
+        };
+        let mut entry = EntryRef::new([1; 16], target.clone());
+        let group = |entry| ArrangementGroup::new([3; 16], None, ArrangementNode::Leaf(entry));
+        assert_eq!(
+            exact_entry(&group(entry.clone()), None, &resource),
+            Some("01".repeat(16))
+        );
+        entry.tabs.push(EntryRef::new([2; 16], target));
+        assert_eq!(exact_entry(&group(entry), None, &resource), None);
+    }
 
     /// The link reads the record in handle space and writes an edit back
     /// whole; the read after the write sees it.

@@ -8,6 +8,7 @@ mod native_host;
 mod notify;
 mod offline;
 mod prompt;
+mod questions;
 mod record;
 mod report_state;
 // AgentSession resource verbs (ADR-0103); unrelated to `session.rs`, the
@@ -46,6 +47,12 @@ pub(crate) use self::session::{PreparedAgentSession, prepare, prepare_for_launch
 pub(crate) fn run_agent(action: &AgentAction, socket: Option<PathBuf>) -> ExitCode {
     match action {
         AgentAction::Host => native_host::run(),
+        AgentAction::Questions { target } => questions::current(target, socket),
+        AgentAction::RespondQuestion { request_json } => questions::respond(request_json, socket),
+        AgentAction::QuestionReceipt {
+            question_json,
+            operation_id,
+        } => questions::receipt(question_json, operation_id, socket),
         AgentAction::NativeCommand {
             target,
             flags:
@@ -59,12 +66,15 @@ pub(crate) fn run_agent(action: &AgentAction, socket: Option<PathBuf>) -> ExitCo
         AgentAction::List { flags } => list::run(flags, socket),
         // `--file` is the offline manifest debugger: no server needed.
         AgentAction::Explain {
-            json,
-            file: Some(path),
-            kind,
-            title,
-            format,
-            ..
+            flags:
+                action_flags::ExplainFlags {
+                    json,
+                    file: Some(path),
+                    kind,
+                    title,
+                    format,
+                    ..
+                },
         } => offline::run(
             path,
             kind.as_deref(),
@@ -75,9 +85,9 @@ pub(crate) fn run_agent(action: &AgentAction, socket: Option<PathBuf>) -> ExitCo
         AgentAction::Show { target, json } => {
             run_agent_one(target.as_deref(), *json, AgentView::Show, socket)
         }
-        AgentAction::Explain { target, json, .. } => {
-            run_agent_one(target.as_deref(), *json, AgentView::Explain, socket)
-        }
+        AgentAction::Explain {
+            flags: action_flags::ExplainFlags { target, json, .. },
+        } => run_agent_one(target.as_deref(), *json, AgentView::Explain, socket),
         AgentAction::Set {
             target,
             flags:

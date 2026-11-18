@@ -78,6 +78,13 @@ impl ServerState {
         self.app_slot::<AgentState>()?.asked.current(terminal)
     }
 
+    pub(crate) fn asked_observation(
+        &self,
+        terminal: ResourceId,
+    ) -> Option<(AskedSource, &AskedPayload)> {
+        self.app_slot::<AgentState>()?.asked.observation(terminal)
+    }
+
     /// Whether any ask source still holds on `terminal` (ADR-0136).
     pub(crate) fn agent_is_asked(&self, terminal: ResourceId) -> bool {
         self.app_slot::<AgentState>()

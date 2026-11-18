@@ -9,6 +9,7 @@ use phux_config::socket::default_socket_path;
 
 use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target};
 
+pub(crate) mod on;
 mod render;
 /// Run `phux watch` as parsed.
 pub(crate) fn run(args: crate::commands::WatchArgs, socket: Option<PathBuf>) -> ExitCode {

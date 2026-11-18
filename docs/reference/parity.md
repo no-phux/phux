@@ -15,6 +15,7 @@ Every tool the MCP adapter (`phux mcp`) serves, the `phux` verb it mirrors, and 
 | `phux_operation_status` | none (automation only) | in-process | yes | no |
 | `phux_terminal_operation` | `phux terminal operation` | in-process | yes | no |
 | `phux_terminal_create` | `phux terminal create` | in-process | no | no |
+| `phux_execution_result` | `phux resource execution` | in-process | yes | no |
 | `phux_api_describe` | `phux api list` | in-process | yes | no |
 | `phux_ls` | `phux ls` | in-process | yes | no |
 | `phux_upload` | `phux upload` | in-process | no | yes |
@@ -32,7 +33,7 @@ Every tool the MCP adapter (`phux mcp`) serves, the `phux` verb it mirrors, and 
 | `phux_watch` | `phux watch` | in-process | yes | no |
 | `phux_ask` | `phux ask` | in-process | no | no |
 | `phux_launch` | `phux launch` | CLI | no | yes |
-| `phux_spawn` | `phux spawn` | in-process | no | yes |
+| `phux_spawn` | `phux spawn` | in-process | no | no |
 | `phux_signal` | `phux signal` | in-process | no | yes |
 | `phux_tag` | `phux tag` | in-process | no | no |
 | `phux_rename` | `phux rename` | in-process | no | no |
@@ -46,6 +47,7 @@ Every tool the MCP adapter (`phux mcp`) serves, the `phux` verb it mirrors, and 
 | `phux_agent_list` | `phux agent list` | in-process | yes | no |
 | `phux_agent_show` | `phux agent show` | in-process | yes | no |
 | `phux_agent_explain` | `phux agent explain` | in-process | yes | no |
+| `phux_agent_questions` | `phux agent questions` | in-process | yes | no |
 | `phux_agent_set` | `phux agent set` | in-process | no | no |
 | `phux_agent_clear` | `phux agent clear` | in-process | no | no |
 | `phux_agent_wait` | `phux agent wait` | CLI | yes | no |
@@ -135,6 +137,10 @@ Agent-facing verbs that have no MCP tool yet:
 - `phux host upgrade`: operator host-registry transport upgrade, not an agent action.
 - `phux pair`: mints a pairing secret; credential handling stays outside the model-facing set.
 - `phux mcp`: launches this adapter itself.
+- `phux agent respond-question`: structured responses require a human principal.
+- `phux agent question-receipt`: operator recovery for the structured response workflow.
+- `phux terminal run`: shell-facing composition returns the child's exit status; MCP uses `phux_terminal_create` and `phux_execution_result`.
+- `phux on`: foreground shell subscription invokes an explicit local program; MCP does not run event handlers.
 - `phux deny`: `phux_approve` decides both ways: `decision: deny` is `phux deny`.
 - `phux resize`: not exposed over MCP yet; a known parity gap.
 - `phux restore`: an operator's after-restart sweep; an agent relaunches the one pane it means with `phux_relaunch`.

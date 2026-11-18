@@ -180,7 +180,18 @@
       "properties": {
         "session": { "type": "string", "minLength": 1 },
         "session_key": { "type": "string", "minLength": 1 },
-        "terminal_id": { "type": "string", "pattern": "^[0-9]+$" },
+        "terminal_id": { "type": ["string", "null"], "pattern": "^[0-9]+$" },
+        "execution": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["authority", "resource", "activation", "instance"],
+          "properties": {
+            "authority": { "type": "string", "pattern": "^[a-zA-Z2-7]{25}[aAeEiImMqQuUyY4]$" },
+            "resource": { "type": "string", "pattern": "^[a-zA-Z2-7]{25}[aAeEiImMqQuUyY4]$" },
+            "activation": { "type": "integer", "minimum": 1 },
+            "instance": { "type": "string", "pattern": "^[0-9a-f]{32}$" }
+          }
+        },
         "worktree_path": { "type": "string", "minLength": 1 },
         "branch": { "type": "string", "minLength": 1 },
         "tab_title": { "type": "string", "minLength": 1 }

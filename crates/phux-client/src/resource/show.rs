@@ -18,7 +18,8 @@ use crate::selector::format_terminal_id;
 use crate::state::Degradation;
 
 mod durable;
-pub use durable::{show_key, show_key_on};
+pub(super) use durable::read_key_on;
+pub use durable::{show_key, show_key_level_on, show_key_on};
 
 /// `schema_version` of the `resource show --json` document.
 pub const SHOW_SCHEMA_VERSION: u32 = 1;

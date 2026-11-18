@@ -33,11 +33,7 @@ const ALLOWLIST: &[(&str, usize, &str)] = &[
         2,
         "the one real connect a `ServerSpec` resolves to",
     ),
-    (
-        "spawn.rs",
-        3,
-        "request-shaping for the placed spawn, not round trips",
-    ),
+    ("spawn.rs", 1, "builds its `SpawnResource` request literal"),
     ("launch.rs", 1, "builds its `SpawnResource` request literal"),
     (
         "migrate.rs",

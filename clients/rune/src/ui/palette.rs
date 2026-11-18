@@ -347,10 +347,11 @@ fn hit_row(hit: &Hit, index: usize, picked: bool, phone: bool, t: &Tokens) -> El
     } else {
         base
     };
+    let target = hit.item.target.clone();
     t.kit
         .interactive(base)
         .cursor(Cursor::Pointer)
-        .on_press_tx(move |d: &mut Desk, tx| d.palette_run(Some(index), tx))
+        .on_press_tx(move |d: &mut Desk, tx| d.palette_run_target(target.clone(), tx))
         .child(el().w(s.s6).center().child(mark(hit, picked, t)))
         .child(
             rich(title.clone(), spans)

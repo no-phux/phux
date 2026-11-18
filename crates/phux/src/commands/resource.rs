@@ -23,22 +23,88 @@ use crate::exit_codes::{EXIT_FAILURE, EXIT_PARTIAL_VIEW, EXIT_USAGE, EXIT_WAIT_T
 
 /// `phux resource <action>`.
 pub(crate) fn run_resource(action: &ResourceAction, socket: Option<PathBuf>) -> ExitCode {
-    let socket = socket.unwrap_or_else(default_socket_path);
+    let local_socket = || socket.clone().unwrap_or_else(default_socket_path);
     match action {
+        ResourceAction::Execution {
+            request_json,
+            remote,
+        } => run_execution(
+            super::server_target::ServerSpec {
+                socket: socket.clone(),
+                remote: remote.clone(),
+            },
+            request_json,
+        ),
         ResourceAction::Show { json, target } => {
             // Inside a pane the pane itself is the default target.
             let own = crate::environment::own_terminal_id().map(|id| format!("@{id}"));
             let target = target.clone().or(own);
-            run_show(&socket, target.as_deref(), json.json)
+            run_show(&local_socket(), target.as_deref(), json.json)
         }
         ResourceAction::Wait {
             timeout,
             after,
             json,
             target,
-        } => run_wait(&socket, target, *timeout, after.as_deref(), json.json),
-        ResourceAction::Methods { json, target } => run_methods(&socket, target, json.json),
+        } => run_wait(
+            &local_socket(),
+            target,
+            *timeout,
+            after.as_deref(),
+            json.json,
+        ),
+        ResourceAction::Methods { json, target } => run_methods(&local_socket(), target, json.json),
     }
+}
+
+fn run_execution(target: super::server_target::ServerSpec, request_json: &str) -> ExitCode {
+    use phux_client::resource::execution::ExecutionError;
+    use phux_protocol::api::ExecutionResultRequest;
+    let request = match serde_json::from_str::<ExecutionResultRequest>(request_json) {
+        Ok(request) => request,
+        Err(error) => {
+            return execution_error(&ExecutionError::InvalidJson(error), EXIT_USAGE);
+        }
+    };
+    let (rt, target) = match target.prepare("resource execution", true) {
+        Ok(prepared) => prepared,
+        Err(code) => return code,
+    };
+    rt.block_on(execution_result(&target.dial(), &request))
+}
+
+pub(super) async fn execution_result(
+    dial: &phux_client::attach::connection::Dial,
+    request: &phux_protocol::api::ExecutionResultRequest,
+) -> ExitCode {
+    use phux_client::resource::execution::{ExecutionError, result_on};
+    use phux_protocol::api::ExecutionResultStatus;
+
+    match result_on(dial, request).await {
+        Ok(result) => {
+            let code = crate::output::json(&result);
+            if code == ExitCode::SUCCESS && result.status == ExecutionResultStatus::TimedOut {
+                return ExitCode::from(EXIT_WAIT_TIMEOUT);
+            }
+            code
+        }
+        Err(error) => {
+            let code = if matches!(error, ExecutionError::Invalid(_)) {
+                EXIT_USAGE
+            } else {
+                EXIT_FAILURE
+            };
+            execution_error(&error, code)
+        }
+    }
+}
+
+fn execution_error(error: &phux_client::resource::execution::ExecutionError, exit: u8) -> ExitCode {
+    eprintln!(
+        "{}",
+        serde_json::to_value(error.document()).unwrap_or_default()
+    );
+    ExitCode::from(exit)
 }
 
 /// Resolve TARGET to one resource. A direct id (`@N`, `host/@N`) names

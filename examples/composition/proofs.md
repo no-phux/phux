@@ -81,7 +81,7 @@ python3 examples/composition/question_inbox.py --socket "$socket" \
 The inbox re-reads the same conversation, answers only an exact supported,
 unreserved callback, and lets phux enforce the reference again at dispatch.
 The journal retains the exact reference and generated operation ID, not the
-answer body; a lost reply is recovered with `agent question-receipt` rather
+answer body; a lost reply is recovered with `question.receipt` rather
 than sending a new response. `queued` is not evidence that the provider
 consumed the answer. Use a human-authorized route; the script grants no rights.
 

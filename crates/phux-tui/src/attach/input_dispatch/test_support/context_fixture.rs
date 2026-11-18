@@ -151,6 +151,8 @@ impl CtxFixture {
             .clone()
             .unwrap_or_else(|| targets(0, self.workspace.groups.len(), 0));
         DispatchCtx {
+            plugin_action_source: phux_plugin::ActionSource::Tui,
+            plugin_action_placement: None,
             control_dial: None,
             engine_kernel: &mut self.engine_kernel,
             leaves: &self.leaves,

@@ -169,7 +169,7 @@ pub(crate) enum ConfigAction {
     /// config file is never watched.
     Reload,
 
-    /// Execute one action declared by a configured plugin manifest.
+    /// Execute one locally configured plugin action on this machine.
     Run {
         /// Configured plugin id.
         plugin: String,
@@ -184,6 +184,14 @@ pub(crate) enum ConfigAction {
         /// Override the action cwd. Relative paths resolve under plugin root.
         #[usage(long, value_name = "PATH")]
         cwd: Option<std::path::PathBuf>,
+
+        /// Explicit target facts as a JSON object; never selects or dials a server.
+        #[usage(long, value_name = "JSON")]
+        target_json: Option<String>,
+
+        /// Application-specific action input as JSON.
+        #[usage(long, value_name = "JSON")]
+        input_json: Option<String>,
 
         /// Emit the structured action result as JSON.
         #[usage(long)]

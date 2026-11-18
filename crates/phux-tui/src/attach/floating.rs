@@ -1,9 +1,9 @@
 //! The floating plugin overlay pane (ADR-0147).
 //!
 //! A `placement = "overlay"` Terminal in no layout window, shown as a modal
-//! box over the pane area. It takes input inside its box; any resolved
-//! action dismisses it (killing its Terminal); it closes when its process
-//! exits.
+//! box over the pane area. It takes input inside its box; a resolved
+//! built-in action dismisses it (killing its Terminal), except the palette
+//! and extension actions that can observe its focus. It closes on exit.
 
 use std::collections::HashMap;
 use std::io::{self, Write};

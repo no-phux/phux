@@ -1,8 +1,15 @@
 //! Translating phux observations into the mission projection's inputs.
 
-use super::{
-    AgentEvent, AgentMetaState, AgentReport, OpenRun, ResourceId, ResourceInfo, ResourceKind,
-    ResourceLifecycle, RunPhase, RunState, TerminalFact, WatchItem, terminal_key,
+use super::{AgentReport, OpenRun, RunPhase, RunState, TerminalFact, WatchItem};
+use phux_client::{
+    agent_meta::AgentMetaState,
+    attach::connection::{Answer, Connection},
+    resource::show::show_key_level_on,
+};
+use phux_protocol::{
+    api::{ExecutionObservation, ExecutionOutcome, ExecutionRef, ExecutionState},
+    ids::{ResourceId, ResourceKind},
+    wire::frame::{AgentEvent, ResourceLifecycle},
 };
 
 pub(super) const fn phase(run: &OpenRun) -> RunPhase {
@@ -22,37 +29,18 @@ pub(super) const fn report_of(state: AgentMetaState) -> AgentReport {
     }
 }
 
-pub(super) fn fact_of(resource: &ResourceInfo) -> TerminalFact {
-    if resource.lifecycle == ResourceLifecycle::Exited {
-        TerminalFact::Exited {
-            status: resource.exit.as_ref().and_then(|exit| exit.exit_status),
-        }
-    } else {
-        TerminalFact::Running
-    }
-}
-
-struct SeenExit {
-    status: Option<i32>,
-}
-
-const fn seen_exit(event: &AgentEvent) -> Option<SeenExit> {
-    match event {
+fn seen_exit(event: &AgentEvent) -> bool {
+    matches!(
+        event,
         AgentEvent::TerminalControl {
             lifecycle: ResourceLifecycle::Exited,
-            exit_status,
             ..
-        }
-        | AgentEvent::ResourceClosed { exit_status } => Some(SeenExit {
-            status: *exit_status,
-        }),
-        _ => None,
-    }
+        } | AgentEvent::ResourceClosed { .. }
+    )
 }
 
 pub(super) struct ExitFact {
     pub(super) terminal: ResourceId,
-    pub(super) status: Option<i32>,
     pub(super) seq: u64,
 }
 
@@ -60,10 +48,11 @@ pub(super) fn exit_of(item: &WatchItem) -> Option<ExitFact> {
     let WatchItem::Event(event) = item else {
         return None;
     };
-    let exit = seen_exit(&event.event)?;
+    if !seen_exit(&event.event) {
+        return None;
+    }
     Some(ExitFact {
         terminal: event.terminal.clone()?,
-        status: exit.status,
         seq: event.stamp.as_ref().map_or(0, |stamp| stamp.seq),
     })
 }
@@ -91,18 +80,80 @@ pub(super) const fn is_spawn(item: &WatchItem) -> bool {
     )
 }
 
-pub(super) fn agent_is_done(item: &WatchItem, id: &str) -> bool {
-    let WatchItem::AgentState(update) = item else {
-        return false;
-    };
-    let Some(terminal) = update.terminal.as_ref() else {
-        return false;
-    };
-    if terminal_key(terminal).as_deref() != Some(id) {
-        return false;
+fn terminal_fact(observation: &ExecutionObservation) -> Option<TerminalFact> {
+    if observation.persistence_pending {
+        return None;
     }
-    update
-        .record
-        .as_ref()
-        .is_some_and(|record| report_of(record.state) == AgentReport::Done)
+    Some(match observation.state {
+        ExecutionState::Starting | ExecutionState::Running | ExecutionState::Stopping => {
+            TerminalFact::Running
+        }
+        ExecutionState::Completed => match observation.outcome {
+            Some(ExecutionOutcome::Exited { code }) => TerminalFact::Exited { status: Some(code) },
+            Some(ExecutionOutcome::Signaled { .. }) => TerminalFact::Exited { status: None },
+            _ => TerminalFact::Uncertain,
+        },
+        ExecutionState::Failed
+            if observation
+                .diagnostic
+                .is_some_and(|diagnostic| diagnostic.stage.before_requested_exec()) =>
+        {
+            TerminalFact::Exited { status: None }
+        }
+        ExecutionState::Failed => TerminalFact::Uncertain,
+        ExecutionState::Lost | ExecutionState::Abandoned | ExecutionState::Unknown => {
+            TerminalFact::Uncertain
+        }
+    })
+}
+
+/// Read through the exact binding, never through an event's restart-local
+/// handle. Agent metadata is only used while two reads bracket it with the
+/// same durable resource and activation on this authenticated connection.
+pub(super) async fn observe(
+    conn: &mut Connection,
+    pin: &ExecutionRef,
+) -> Result<Option<(Option<AgentReport>, TerminalFact)>, String> {
+    let (authority, key, _) = pin.validated().map_err(str::to_owned)?;
+    let (actual, first) = show_key_level_on(conn, key)
+        .await
+        .map_err(|error| error.to_string())?;
+    if actual != authority {
+        return Ok(None);
+    }
+    let Some(first) = first else {
+        return Ok(Some((None, TerminalFact::Uncertain)));
+    };
+    if first.execution_ref.as_ref() != Some(pin) {
+        return Ok(Some((None, TerminalFact::Uncertain)));
+    }
+    let Some(fact) = first.execution.as_ref().and_then(terminal_fact) else {
+        return Ok(None);
+    };
+    let Some(id) = first.terminal_id else {
+        return Ok(Some((None, fact)));
+    };
+    let (record, _) = phux_client::agent_record::get_record(conn, &ResourceId::local(id), 2)
+        .await
+        .map_err(|error| error.to_string())?;
+    let Answer::Ok(Some(record)) = record else {
+        return Ok(Some((None, fact)));
+    };
+    let (actual, latest) = show_key_level_on(conn, key)
+        .await
+        .map_err(|error| error.to_string())?;
+    if actual != authority {
+        return Ok(None);
+    }
+    let Some(latest) = latest else {
+        return Ok(Some((None, TerminalFact::Uncertain)));
+    };
+    if latest.execution_ref.as_ref() != Some(pin) {
+        return Ok(Some((None, TerminalFact::Uncertain)));
+    }
+    let Some(latest_fact) = latest.execution.as_ref().and_then(terminal_fact) else {
+        return Ok(None);
+    };
+    let report = (latest.terminal_id == Some(id)).then(|| report_of(record.state));
+    Ok(Some((report, latest_fact)))
 }

@@ -15,6 +15,8 @@ use super::{
     server_target::{SOCKET_REMOTE_CONFLICT, ServerSpec},
 };
 
+mod questions;
+
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 
 pub(crate) fn run(args: ApiArgs, socket: Option<PathBuf>) -> ExitCode {
@@ -34,18 +36,19 @@ pub(crate) fn run(args: ApiArgs, socket: Option<PathBuf>) -> ExitCode {
         Err(code) => return code,
     };
     runtime.block_on(async {
-        let mut conn = match server.connect().await {
-            Ok(conn) => conn,
-            Err(error) => {
-                return match action {
-                    Action::Invoke(request) => request.connection_error(error),
-                    Action::Catalog(_) => fail("transport", error, 1),
-                };
-            }
-        };
         match action {
-            Action::Invoke(request) => invoke(&mut conn, request).await,
-            Action::Catalog(operation) => catalog(&mut conn, operation.as_deref()).await,
+            Action::Questions(request) => request.run(&server.dial()).await,
+            Action::Execution(request) => {
+                super::resource::execution_result(&server.dial(), &request).await
+            }
+            Action::Invoke(request) => match server.connect().await {
+                Ok(mut conn) => invoke(&mut conn, request).await,
+                Err(error) => request.connection_error(error),
+            },
+            Action::Catalog(operation) => match server.connect().await {
+                Ok(mut conn) => catalog(&mut conn, operation.as_deref()).await,
+                Err(error) => fail("transport", error, 1),
+            },
         }
     })
 }
@@ -53,6 +56,8 @@ pub(crate) fn run(args: ApiArgs, socket: Option<PathBuf>) -> ExitCode {
 enum Action {
     Catalog(Option<String>),
     Invoke(Request),
+    Questions(questions::Request),
+    Execution(phux_protocol::api::ExecutionResultRequest),
 }
 
 impl Action {
@@ -70,9 +75,20 @@ impl Action {
                         format!("unknown public operation {operation:?}"),
                     )
                 })?;
-                parse_request(method, &request_json)
-                    .map(Self::Invoke)
-                    .map_err(|error| ("invalid_argument", error))
+                let input =
+                    request_input(&request_json).map_err(|error| ("invalid_argument", error))?;
+                let parsed = match method {
+                    PublicOperation::QuestionList
+                    | PublicOperation::QuestionRespond
+                    | PublicOperation::QuestionReceipt => {
+                        questions::Request::parse(method, &input).map(Self::Questions)
+                    }
+                    PublicOperation::ExecutionResult => serde_json::from_str(&input)
+                        .map(Self::Execution)
+                        .map_err(|error| error.to_string()),
+                    _ => parse_request(method, &input).map(Self::Invoke),
+                };
+                parsed.map_err(|error| ("invalid_argument", error))
             }
         }
     }
@@ -118,29 +134,30 @@ impl Request {
 }
 
 fn parse_request(operation: PublicOperation, input: &str) -> Result<Request, String> {
-    let stdin;
-    let text = if input == "-" {
-        stdin = read_limited(std::io::stdin().lock())?;
-        &stdin
-    } else {
-        input
-    };
-    check_request_size(text)?;
     match operation {
-        PublicOperation::TerminalCreate => serde_json::from_str(text)
+        PublicOperation::TerminalCreate => serde_json::from_str(input)
             .map(Request::Create)
             .map_err(|error| error.to_string()),
-        PublicOperation::TerminalOperation => serde_json::from_str(text)
+        PublicOperation::TerminalOperation => serde_json::from_str(input)
             .map(Request::Operation)
             .map_err(|error| error.to_string()),
-        PublicOperation::ResourceShow => serde_json::from_str::<String>(text)
+        PublicOperation::ResourceShow => serde_json::from_str::<String>(input)
             .map_err(|error| error.to_string())
             .and_then(|key| {
                 ResourceKey::parse(&key)
                     .map(Request::Show)
                     .ok_or_else(|| "resource.show requires a full durable key".to_owned())
             }),
+        _ => Err("not an organization operation".to_owned()),
     }
+}
+
+fn request_input(argument: &str) -> Result<std::borrow::Cow<'_, str>, String> {
+    if argument == "-" {
+        return read_limited(std::io::stdin().lock()).map(std::borrow::Cow::Owned);
+    }
+    check_request_size(argument)?;
+    Ok(std::borrow::Cow::Borrowed(argument))
 }
 
 fn read_limited(reader: impl Read) -> Result<String, String> {
