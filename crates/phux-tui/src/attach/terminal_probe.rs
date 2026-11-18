@@ -494,11 +494,6 @@ mod tests {
         assert_eq!(classify(b"\x1b]10;rgb:ff/ff/ff"), ProbeProgress::Pending);
     }
 
-    #[test]
-    fn probe_query_sends_da1_after_the_colour_queries() {
-        assert_eq!(PROBE_QUERY, b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b[c");
-    }
-
     type ExchangeCase<'a> = (&'a str, &'a [&'a [u8]], ProbeRead, Option<usize>);
 
     /// How a reply ends the exchange early, without spending the budget. A

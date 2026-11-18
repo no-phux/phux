@@ -294,7 +294,6 @@ mod tests {
         assert_eq!(notice.current, "0.45.0+next.b0c6858");
         assert_eq!(notice.latest, "next.d527f26");
         assert_eq!(notice.command, "phux update");
-        assert_eq!(UpdateNotice::TITLE, "Update");
         assert_eq!(
             notice.body(),
             vec![

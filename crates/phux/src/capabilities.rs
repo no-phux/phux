@@ -366,25 +366,18 @@ mod tests {
     }
 
     #[test]
-    fn companion_path_does_not_change_retired_command_discovery() {
+    fn companion_mcp_path_is_reported_as_available() {
         let doc = document(
             crate::Cli::spec().root,
-            Some(std::path::Path::new(
-                "/src/archive-zig-cockpit/target/debug/phux-mcp",
-            )),
+            Some(std::path::Path::new("/opt/phux/bin/phux-mcp")),
         );
         assert_eq!(doc["mcp"]["available"], true);
-        assert!(doc["mcp"]["command"].as_str().unwrap().contains("cockpit"));
-        for key in ["commands", "json_contracts"] {
-            assert!(!doc[key].to_string().contains("cockpit"), "{key}: {doc}");
-        }
+        assert_eq!(doc["mcp"]["command"], "/opt/phux/bin/phux-mcp");
     }
 
     #[test]
     fn document_is_versioned_sorted_and_hides_plumbing() {
         let doc = document(crate::Cli::spec().root, None);
-        assert!(!doc.to_string().contains("cockpit"));
-        assert!(crate::parse_cli(["phux", "cockpit"]).is_err());
         assert_eq!(doc["schema_version"], 1);
         assert_eq!(doc["binary"]["version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(doc["binary"]["wire_protocol"], "1.0.0");

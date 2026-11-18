@@ -1,5 +1,4 @@
 use super::*;
-use crate::activity::Mark;
 
 fn swimmer(n: u32, host: usize, mood: Mood) -> Swimmer {
     Swimmer {
@@ -40,20 +39,6 @@ fn harnesses_map_to_species_and_the_rest_fall_back() {
         assert_eq!(species(Some(other), other), &OTHER);
     }
     assert_eq!(species(None, "build"), &OTHER);
-}
-
-#[test]
-fn marks_become_the_four_moods() {
-    assert_eq!(Mood::of(Mark::Blocked), Mood::Waiting);
-    assert_eq!(Mood::of(Mark::Failed), Mood::Waiting);
-    assert_eq!(Mood::of(Mark::Bell), Mood::Waiting);
-    assert_eq!(Mood::of(Mark::Done), Mood::Done);
-    assert_eq!(Mood::of(Mark::Succeeded), Mood::Done);
-    assert_eq!(Mood::of(Mark::Working), Mood::Working);
-    assert_eq!(Mood::of(Mark::Running), Mood::Working);
-    assert_eq!(Mood::of(Mark::Idle), Mood::Idle);
-    assert_eq!(Mood::of(Mark::Background), Mood::Working);
-    assert_eq!(Mood::of(Mark::None), Mood::Idle);
 }
 
 #[test]

@@ -310,14 +310,16 @@ fn a_copy_is_copied_only_with_text() {
 }
 
 #[test]
-fn the_mapping_helpers_are_the_cores() {
+fn points_map_through_the_letterbox_and_scrolls_into_frame_pixels() {
     // 200x100 in a 100x200 pane: barred above and below, two pixels a point.
-    for point in [[0.0, 75.0], [50.0, 100.0], [99.9, 124.9], [50.0, 74.0]] {
-        assert_eq!(
-            document_frame_point(100.0, 200.0, 200, 100, point[0], point[1]).map(|p| [p.x, p.y]),
-            core_input::frame_point([0.0, 0.0, 100.0, 200.0], [200, 100], point),
-        );
-    }
+    assert_eq!(
+        document_frame_point(100.0, 200.0, 200, 100, 0.0, 75.0),
+        Some(WireFramePoint { x: 0, y: 0 })
+    );
+    assert_eq!(
+        document_frame_point(100.0, 200.0, 200, 100, 99.9, 124.9),
+        Some(WireFramePoint { x: 199, y: 99 })
+    );
     assert_eq!(
         document_frame_point(100.0, 200.0, 200, 100, 50.0, 100.0),
         Some(WireFramePoint { x: 100, y: 50 })

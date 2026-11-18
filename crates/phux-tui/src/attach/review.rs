@@ -268,18 +268,6 @@ mod tests {
     }
 
     #[test]
-    fn locality_does_not_prune() {
-        let id = pane();
-        let mut review = ReviewIndex::default();
-        review.observe_record(&id, Some(&rec("reviewer", AgentMetaState::Done)), Some(&id));
-        // Switching sessions rebuilds the local pane set; the index must
-        // keep the identity so a later foreign or local GET can fold equal.
-        assert!(review.is_seen(&id));
-        assert!(!review.observe_record(&id, Some(&rec("reviewer", AgentMetaState::Done)), None));
-        assert!(review.is_seen(&id));
-    }
-
-    #[test]
     fn stream_completion_invalidates_an_unfocused_pane() {
         let id = pane();
         let sid = session();

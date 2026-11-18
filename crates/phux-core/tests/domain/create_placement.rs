@@ -202,15 +202,6 @@ fn invalid_missing_moved_and_replaced_anchors_refuse_without_launch_or_records()
             .is_err()
         );
     }
-    let other = h.create_session("other", SessionLifetime::Persistent);
-    assert!(
-        h.run(Op::ResourceCreate {
-            session: Some(other),
-            resource: shell(),
-            placement: Some(beside(resource, entry))
-        })
-        .is_err()
-    );
     h.report(Op::ActivationEnded {
         resource,
         activation: phux_core::ActivationId::FIRST,

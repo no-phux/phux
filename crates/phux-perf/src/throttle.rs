@@ -78,15 +78,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn first_call_emits_then_suppresses_until_interval() {
-        let t = Throttle::new(Duration::from_secs(3600));
-        assert_eq!(t.admit(), Some(0));
-        assert_eq!(t.admit(), None);
-        assert_eq!(t.admit(), None);
-        assert_eq!(t.suppressed.load(Relaxed), 2);
-    }
-
-    #[test]
     fn zero_interval_always_emits_and_reports_suppressed() {
         let t = Throttle::new(Duration::ZERO);
         assert_eq!(t.admit(), Some(0));

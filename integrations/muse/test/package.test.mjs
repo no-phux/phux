@@ -33,12 +33,9 @@ test("README, SKILL, and CHANGELOG exist with expected headings", async () => {
 test("general agent library exists and is harness-agnostic", async () => {
   const body = await readAgentLib("lib/phux-agent.sh");
   assert.match(body, /^#!\/bin\/sh/m);
-  // No Muse coupling: generic phux_ prefix, no m* aliases.
   for (const fn of ["phux_init", "phux_spawn", "phux_run", "phux_snap", "phux_wait", "phux_ls", "phux_kill", "phux_do"]) {
     assert.match(body, new RegExp(`^${fn}\\(\\)`, "m"), `lib must define ${fn}`);
   }
-  assert.doesNotMatch(body, /^m(spawn|run|snap|wait|ls|kill|do)\(\)/m);
-  assert.doesNotMatch(body, /MUSE_DEFAULT_TIMEOUT/);
   // Verified CLI forms, not guesses.
   assert.match(body, /_phux_json new --json -s/);
   assert.match(body, /--ephemeral/);

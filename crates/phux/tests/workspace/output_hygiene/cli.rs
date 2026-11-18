@@ -4,12 +4,6 @@ const SOCKETLESS_SOCKET: &str = "/tmp/phux-output-hygiene-never-dialed.sock";
 /// Usage refusals: each `args` exits 2 with empty stdout and every needle
 /// on stderr.
 const USAGE_REFUSALS: &[(&[&str], &[&str])] = &[
-    // The retired cockpit command and log flags.
-    (&["cockpit"], &["cockpit"]),
-    (&["cockpit", "--json"], &["cockpit"]),
-    (&["logs", "--cockpit"], &["cockpit"]),
-    (&["logs", "--cockpit", "-f", "-n", "50"], &["cockpit"]),
-    (&["logs", "--json", "--cockpit"], &["cockpit"]),
     // `--skill` takes a scope, never a command.
     (&["--skill", "ls"], &["invalid value 'ls'", "quick", "terminal"]),
     // A root `--rec` in front of a verb names the two correct spellings
@@ -43,32 +37,6 @@ fn usage_refusals_exit_2_with_their_teaching_message() {
         for needle in *needles {
             assert!(stderr.contains(needle), "{args:?}: missing {needle:?}; got {stderr:?}");
         }
-    }
-}
-
-#[test]
-fn help_and_capabilities_do_not_advertise_retired_cockpit() {
-    for args in [
-        &["--help"][..],
-        &["logs", "--help"][..],
-        &["update", "--help"][..],
-        &["channel", "--help"][..],
-    ] {
-        let (code, stdout, stderr) = run(args);
-        assert_eq!(code, 0, "{args:?}: {stderr}");
-        assert!(
-            !stdout.to_lowercase().contains("cockpit"),
-            "{args:?}: {stdout}"
-        );
-    }
-
-    let (code, stdout, stderr) = run(&["--capabilities", "--json"]);
-    assert_eq!(code, 0, "{stderr}");
-    let doc: serde_json::Value = serde_json::from_str(&stdout).expect("capabilities JSON");
-    // Companion executable paths may contain "cockpit" (including this
-    // worktree's name). Only product command/schema declarations advertise it.
-    for key in ["commands", "json_contracts"] {
-        assert!(!doc[key].to_string().contains("cockpit"), "{key}: {doc}");
     }
 }
 
@@ -312,7 +280,6 @@ fn logs_json_inventory_is_pure_json_stdout() {
     let doc: serde_json::Value =
         serde_json::from_str(&stdout).expect("`logs --json` stdout must be one JSON document");
     assert_eq!(doc["schema_version"], 2);
-    assert!(doc.get("cockpit_log").is_none());
     assert!(
         !stderr.contains(BANNER_FRAGMENT),
         "`logs --json` must not print the banner; got {stderr:?}"

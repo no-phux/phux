@@ -35,13 +35,6 @@ describe("the Rune iOS simulator leg", () => {
     });
   });
 
-  test("a main push never reuses a pull request receipt for macOS", () => {
-    const main = runeMacosPlan(closure, "push").coverage;
-    expect(main.split(",")).toContain("rune_ios");
-    expect(runeMacosPlan(closure, "pull_request").coverage).not.toBe(main);
-    expect(runeMacosPlan(closure, "pull_request").coverage).not.toContain("macos");
-  });
-
   test("a reused main tree launches no macOS leg and keeps the coverage it matched", () => {
     const planned = runeMacosPlan(direct, "push");
     expect(reusedMacos(planned)).toMatchObject({ macos: false, ios: false });

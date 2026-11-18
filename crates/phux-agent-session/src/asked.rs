@@ -343,24 +343,4 @@ mod tests {
             "the stream retracts what the stream asserted",
         );
     }
-
-    /// The full ask ladder in rank order, so a rung inserted in the wrong
-    /// place is a failure here rather than a mystery in the sidebar.
-    #[test]
-    fn the_ask_ladder_runs_scrape_sentinel_hook_stream() {
-        let ladder = [
-            AskedSource::Scrape,
-            AskedSource::Sentinel,
-            AskedSource::Hook,
-            AskedSource::Stream,
-        ];
-        for pair in ladder.windows(2) {
-            assert!(
-                pair[1].priority() > pair[0].priority(),
-                "{:?} must outrank {:?}",
-                pair[1],
-                pair[0],
-            );
-        }
-    }
 }

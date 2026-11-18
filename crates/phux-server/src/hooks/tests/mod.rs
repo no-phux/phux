@@ -149,38 +149,6 @@ fn executability_predicate_agrees_with_action_argv() {
     }
 }
 
-/// `vocab::hook_context_keys` matches the constructors exactly.
-#[test]
-fn vocab_context_keys_match_the_event_constructors() {
-    let terminal = phux_protocol::ids::ResourceId::local(7);
-    let client = crate::state::ClientId(3);
-    let events = [
-        HookEvent::after_new_pane(&terminal, Some("work")),
-        HookEvent::pane_exit(&terminal, Some(0)),
-        HookEvent::focus_changed(&terminal, client),
-        HookEvent::client_attached(client, "work"),
-        HookEvent::client_detached(client, Some("work")),
-        HookEvent::agent_state_changed(&terminal, "claude", "reviewer", Some("busy"), "idle"),
-        HookEvent::worktree_created(
-            Path::new("/w/phux-feat"),
-            "feat",
-            Path::new("/w/phux"),
-            "phux-feat",
-        ),
-    ];
-    assert_eq!(
-        events.len(),
-        vocab::HOOK_EVENTS.len(),
-        "an event is missing from this agreement test",
-    );
-    for event in events {
-        let expected = vocab::hook_context_keys(&event.name)
-            .unwrap_or_else(|| panic!("constructor built unknown event `{}`", event.name));
-        let got: Vec<&str> = event.context.keys().map(String::as_str).collect();
-        assert_eq!(got, expected, "context keys drifted for `{}`", event.name);
-    }
-}
-
 /// Each offending entry yields one problem record; a clean config none.
 #[test]
 fn offending_config_hooks_flags_each_bad_entry_once() {

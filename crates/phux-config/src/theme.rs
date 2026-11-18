@@ -679,17 +679,11 @@ bright_blue = "#7da6ff"
         assert_eq!(theme.accent(), rgb("#7aa2f7"));
         assert_eq!(theme.cursor(), rgb("#c0caf5"));
         // Omitted bright colours blend 20% towards white, like Omarchy.
-        assert_eq!(
-            theme.get("bright_green"),
-            Some(rgb("#9ece6a").mix(WHITE, 0.2))
-        );
+        assert_eq!(theme.get("bright_green"), Some(rgb("#b1d888")));
         // Stated ones are kept verbatim.
         assert_eq!(theme.get("bright_red"), Some(rgb("#ff7a93")));
         assert_eq!(theme.get("orange"), Some(rgb("#e0af68")));
-        assert_eq!(
-            theme.get("darker_background"),
-            Some(rgb("#1a1b26").mix(BLACK, 0.5))
-        );
+        assert_eq!(theme.get("darker_background"), Some(rgb("#0d0e13")));
         let ansi = theme.ansi16();
         assert_eq!(ansi[0], theme.background());
         assert_eq!(ansi[7], theme.foreground());

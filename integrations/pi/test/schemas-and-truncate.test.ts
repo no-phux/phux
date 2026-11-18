@@ -9,12 +9,12 @@ test("truncation helpers bound output and retain newest lines", () => {
   assert.equal(text.truncated, true);
   assert.equal(text.omittedChars, 5);
 
-  const marked = truncateText("x".repeat(100), 50);
-  const match = /\.\.\. (\d+) characters omitted \.\.\./.exec(marked.text);
-  assert.notEqual(match, null);
-  const markerLength = Array.from(match?.[0] ?? "").length + 2; // surrounding newlines
-  assert.equal(marked.omittedChars, 100 - (50 - markerLength));
-  assert.equal(Number(match?.[1]), marked.omittedChars);
+  // The 31-character marker spends part of the budget, so 81 characters go.
+  assert.deepEqual(truncateText("x".repeat(100), 50), {
+    text: `${"x".repeat(10)}\n... 81 characters omitted ...\n${"x".repeat(9)}`,
+    truncated: true,
+    omittedChars: 81,
+  });
 
   assert.deepEqual(truncateLines(["old", "middle", "new"], 2), {
     lines: ["middle", "new"],

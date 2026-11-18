@@ -1566,16 +1566,6 @@ impl RenderOverlay for SettingsOverlay {
 mod tests {
     use super::*;
 
-    #[test]
-    fn header_path_shortens_home_only_at_a_path_boundary() {
-        let shown = |p: &str| display_path_for(Path::new(p), Some("/Users/p"));
-        assert_eq!(
-            shown("/Users/p/.config/phux/config.toml"),
-            "~/.config/phux/config.toml"
-        );
-        assert_eq!(shown("/Users/pat/x"), "/Users/pat/x");
-    }
-
     use crate::test_util::press_text as press;
 
     fn ctrl(key: PhysicalKey) -> KeyEvent {

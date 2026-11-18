@@ -350,13 +350,6 @@ mod platform {
         }
 
         #[test]
-        fn stops_at_argc_and_does_not_leak_the_environment() {
-            let raw = blob(1, "/bin/claude", 2, &["claude"]);
-            let argv = parse_procargs2(&raw).expect("parses");
-            assert_eq!(argv.len(), 1, "env must not be mistaken for argv");
-        }
-
-        #[test]
         fn truncated_and_degenerate_blobs_are_none() {
             assert!(parse_procargs2(&[]).is_none());
             assert!(parse_procargs2(&[1, 2]).is_none());

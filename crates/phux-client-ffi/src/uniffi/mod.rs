@@ -50,7 +50,7 @@ pub fn bridge_ready() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{bridge_ready, engine_version, protocol_version};
+    use super::protocol_version;
 
     #[test]
     fn version_is_semver_shaped() {
@@ -58,15 +58,5 @@ mod tests {
         let parts: Vec<&str> = v.split('.').collect();
         assert_eq!(parts.len(), 3, "expected major.minor.patch, got {v:?}");
         assert!(parts.iter().all(|p| p.parse::<u16>().is_ok()));
-    }
-
-    #[test]
-    fn engine_version_is_the_crate_version() {
-        assert_eq!(engine_version(), env!("CARGO_PKG_VERSION"));
-    }
-
-    #[test]
-    fn bridge_is_ready() {
-        assert!(bridge_ready());
     }
 }

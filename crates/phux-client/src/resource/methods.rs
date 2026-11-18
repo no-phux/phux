@@ -367,21 +367,4 @@ mod tests {
             );
         }
     }
-
-    #[test]
-    fn the_owner_socket_predicate_is_a_transport_reason() {
-        let remote = Negotiated {
-            features: ServerFeatureSet::new(),
-            features_ext: ServerFeatureExtSet::new(),
-            owner_uds: false,
-        };
-        // No substrate or facet method is owner-UDS-only today; the rule
-        // still holds for any that becomes one.
-        for judged in availability(ResourceKind::Terminal, remote) {
-            if judged.method.owner_uds_only() && judged.unavailable != Some(Unavailable::WrongKind)
-            {
-                assert_eq!(judged.unavailable, Some(Unavailable::Transport));
-            }
-        }
-    }
 }

@@ -28,12 +28,6 @@ static GHOSTTY_VT_WASM: &[u8] = include_bytes!(concat!(
     "/vendor/ghostty-vt.wasm"
 ));
 
-/// Size of the embedded engine module, in bytes.
-#[must_use]
-pub const fn engine_wasm_len() -> usize {
-    GHOSTTY_VT_WASM.len()
-}
-
 const TERMINAL_OPT_SCROLLBACK_MAX_BYTES: f64 = 28.0;
 const TERMINAL_OPT_SCROLLBACK_MAX_LINES: f64 = 29.0;
 const TERMINAL_DATA_SCROLLBACK_MAX_BYTES: f64 = 34.0;

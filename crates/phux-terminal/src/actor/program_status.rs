@@ -236,8 +236,14 @@ mod tests {
     #[test]
     fn every_engine_state_but_clear_has_a_record_name() {
         assert_eq!(state_name(ProgramStatusState::Clear), None);
-        for row in &STATES {
-            assert_eq!(state_name(row.state), Some(row.name));
+        for (state, name) in [
+            (ProgramStatusState::Blocked, "blocked"),
+            (ProgramStatusState::Error, "error"),
+            (ProgramStatusState::Done, "done"),
+            (ProgramStatusState::Working, "working"),
+            (ProgramStatusState::Idle, "idle"),
+        ] {
+            assert_eq!(state_name(state), Some(name));
         }
         assert_eq!(
             state_names(),
