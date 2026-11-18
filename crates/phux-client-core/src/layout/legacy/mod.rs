@@ -12,12 +12,14 @@ use std::io::Cursor;
 use phux_protocol::ResourceId;
 use thiserror::Error;
 
-use super::{ArrangementDoc, Group, LayoutState, identity};
+use super::{ArrangementDoc, Group, LayoutState, Slot, identity};
 
 /// CBOR shadow types + conversions for layout persistence (L3 metadata).
 pub(in crate::layout) mod serialize;
 
-use serialize::{CborLayoutNode, CborResourceId, CborWindow, CborWorkspaceEnvelope, VersionProbe};
+use serialize::{
+    CborLayoutNode, CborResourceId, CborSlot, CborWindow, CborWorkspaceEnvelope, VersionProbe,
+};
 
 /// Current layout envelope version; readers refuse any other.
 pub(crate) const LAYOUT_ENVELOPE_VERSION: u8 = 3;
@@ -92,6 +94,15 @@ impl ArrangementDoc {
             version: LAYOUT_ENVELOPE_VERSION,
             windows,
             focused_window_index: u32::try_from(self.active).unwrap_or(0),
+            slots: self
+                .slots
+                .iter()
+                .map(|slot| CborSlot {
+                    strip: slot.strip.iter().map(CborResourceId::from).collect(),
+                    default: u32::try_from(slot.default).unwrap_or(0),
+                    shown: u32::try_from(slot.shown).unwrap_or(0),
+                })
+                .collect(),
         };
         let mut buf = Vec::with_capacity(128);
         ciborium::ser::into_writer(&envelope, &mut buf)
@@ -138,10 +149,26 @@ impl ArrangementDoc {
         }
         identity::validate(&groups)?;
         let active = (envelope.focused_window_index as usize).min(groups.len().saturating_sub(1));
+        let slots = envelope
+            .slots
+            .into_iter()
+            .map(|slot| {
+                let strip: Vec<ResourceId> = slot.strip.into_iter().map(Into::into).collect();
+                let at = |i: u32| usize::try_from(i).ok().filter(|&i| i < strip.len());
+                match (at(slot.default), at(slot.shown)) {
+                    (Some(default), Some(shown)) if strip.len() > 1 => Ok(Slot {
+                        strip,
+                        default,
+                        shown,
+                    }),
+                    _ => Err(LayoutDecodeError::Cbor("malformed slot".to_owned())),
+                }
+            })
+            .collect::<Result<_, _>>()?;
         Ok(Self {
             groups,
             active,
-            slots: Vec::new(),
+            slots,
         })
     }
 }
