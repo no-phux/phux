@@ -1,6 +1,8 @@
 //! Paint the actual phone navigator through Rune's GPU renderer.
 use super::*;
 
+mod header;
+
 #[test]
 fn session_browser_renders_realistic_dark_light_and_search_states() {
     let gpu = rune::render::Gpu::headless();

@@ -4,7 +4,7 @@
 use crate::ui::tokens::Voice;
 use crate::ui::tokens::layout::PHONE;
 use phux_design::State;
-use rune::{Color, El, col, el, row, text};
+use rune::{Color, El, col, row, text};
 
 use super::{Look, badge, glyph, icons, mark_ink, news, round, spatial, surface, touchable};
 use crate::desk::Desk;
@@ -25,19 +25,14 @@ pub(super) fn top_bar(desk: &Desk, p: &Look) -> El {
     } else {
         desk.machines.label().to_owned()
     };
-    let tile = el()
-        .size(s.s8, s.s8)
-        .radius(p.radius.md)
-        .continuous_corners()
-        .center()
-        .fill(p.roles.wash.current.paint())
-        .child(glyph(&icons::PROMPT, p.icon.size.md, focused_tone(desk, p)));
+    // Spend the capsule's width on where the person is. A decorative terminal
+    // tile left both names as ellipses beside the small phone's split map.
     let capsule = row()
         .key("phone-place")
         .grow(1.0)
         .min_w(0.0)
         .min_h(s.s12)
-        .pl(s.s2)
+        .pl(s.s3)
         .pr(s.s4)
         .gap(s.s3)
         .radius(p.radius.full)
@@ -55,26 +50,29 @@ pub(super) fn top_bar(desk: &Desk, p: &Look) -> El {
                 d.toggle_machines();
             }
         })
-        .child(tile)
         .child(
             col()
                 .min_w(0.0)
-                .shrink()
+                .grow(1.0)
                 .child(
                     text(title)
+                        .w_full()
                         .font(p.ty.lead.semibold())
                         .color(p.roles.text.text.paint())
                         .truncate(),
                 )
                 .child(
                     row()
+                        .w_full()
                         .gap(s.s1)
                         .items_center()
                         .min_w(0.0)
                         .child(
                             text(place_detail(desk, &session))
+                                .min_w(0.0)
+                                .shrink()
                                 .font(p.ty.caption)
-                                .color(p.roles.text.dim.paint())
+                                .color(focused_tone(desk, p))
                                 .truncate(),
                         )
                         .child(glyph(

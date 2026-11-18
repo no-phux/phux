@@ -8,6 +8,7 @@ use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot};
 mod layout;
 mod render;
 mod review;
+mod wheel;
 
 fn inventory(rt: &mut Runtime<Desk>) {
     let session = SessionId::new(1);
