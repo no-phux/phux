@@ -102,6 +102,15 @@ code or draft lifetime. Prove existing dismissal/draft semantics, scrolling,
 keyboard clearance and no input leaking into the terminal. Do not force menu
 API adoption. This is not a standing instruction to churn Inbox afterward.
 
+Phone pane-motion cases exercise the actual Move handler over a retained,
+unequal split arrangement. They export idle, press, first-axis, mid-drag,
+release, release +100 ms and settled frames at a fixed 60 Hz. Matching
+`.motion.json` sidecars bind each case, frame and elapsed time into the
+manifest. Horizontal/vertical drift, reversal, boundary resistance,
+cancellation, reduced motion and keyboard-open cases supplement the small,
+light/dark and native-sized 2× matrix. They establish rendered trajectories
+and input semantics, not physical-device smoothness.
+
 Inspect full images and the changed region's surroundings. Explain upstream
 rendering changes too. Reproduce regressions, fix their cause and recapture.
 Never delete hard cases, weaken assertions or regenerate until it looks good.

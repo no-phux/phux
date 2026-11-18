@@ -1,6 +1,71 @@
 //! The app-owned editor survives Rune's range-based history and buffer reuse.
 use super::*;
-use rune::accesskit::{ActionData, TextPosition, TextSelection};
+use rune::accesskit::{ActionData, Node, NodeId, Role, TextPosition, TextSelection, TreeUpdate};
+
+fn node(tree: &TreeUpdate, id: NodeId) -> &Node {
+    &tree
+        .nodes
+        .iter()
+        .find(|(candidate, _)| *candidate == id)
+        .unwrap()
+        .1
+}
+
+fn assert_cluster_geometry(node: &Node, value: &str) {
+    let lengths = node.character_lengths();
+    let positions = node.character_positions().expect("drawn cluster positions");
+    let widths = node.character_widths().expect("drawn cluster widths");
+    assert!(!lengths.is_empty());
+    assert_eq!(positions.len(), lengths.len());
+    assert_eq!(widths.len(), lengths.len());
+    let mut byte = 0;
+    for &length in lengths {
+        byte += usize::from(length);
+        assert!(
+            value.is_char_boundary(byte),
+            "geometry must not split a scalar"
+        );
+    }
+    assert_eq!(byte, value.len());
+    assert!(positions.iter().all(|value| value.is_finite()));
+    assert!(
+        widths
+            .iter()
+            .all(|value| value.is_finite() && *value >= 0.0)
+    );
+}
+
+/// Large values keep field-addressed ranges; geometry is separate, not a
+/// second copy of the value in ordinary TextRuns.
+fn long_geometry(tree: &TreeUpdate, field: &Node, value: &str) -> NodeId {
+    assert_eq!(field.children().len(), 1);
+    let geometry_id = field.children()[0];
+    let geometry = node(tree, geometry_id);
+    assert_eq!(geometry.role(), Role::GenericContainer);
+    assert_eq!(geometry.class_name(), Some("\x1frune-lines"));
+    assert_eq!(geometry.value(), None);
+    assert_eq!(geometry.children().len(), 1, "search is one visual line");
+    let line = node(tree, geometry.children()[0]);
+    assert_eq!(line.role(), Role::GenericContainer);
+    assert_eq!(line.class_name(), Some("\x1frune-line"));
+    assert_eq!(
+        line.author_id(),
+        Some(format!("0:{}", value.len()).as_str())
+    );
+    assert_eq!(line.value(), None, "the field owns the complete value");
+    assert!(line.children().is_empty());
+    assert_cluster_geometry(line, value);
+    let bounds = line.bounds().expect("drawn visual-line bounds");
+    assert!(
+        [bounds.x0, bounds.y0, bounds.x1, bounds.y1]
+            .into_iter()
+            .all(f64::is_finite)
+    );
+    assert!(bounds.x1 > bounds.x0 && bounds.y1 > bounds.y0);
+    let field_bounds = field.bounds().unwrap();
+    assert!(bounds.y1 > field_bounds.y0 && bounds.y0 < field_bounds.y1);
+    geometry_id
+}
 
 fn shortcut(rt: &mut Runtime<Desk>, letter: char, shift: bool) {
     rt.key(KeyEvent {
@@ -65,7 +130,9 @@ fn a_search_past_64_kib_keeps_accessible_selection_and_replacement() {
             .find(|(_, node)| node.author_id() == Some("settings-query"))
             .unwrap();
         assert_eq!(field.value(), Some(pasted.as_str()));
-        assert!(field.children().is_empty(), "long fields use lazy ranges");
+        let geometry_id = long_geometry(&tree, field, &pasted);
+        assert_ne!(geometry_id, *id);
+        assert_eq!(tree.focus, *id);
         let selection = field.text_selection().unwrap();
         assert_eq!(selection.anchor.node, *id);
         assert_eq!(selection.focus.node, *id);
@@ -107,7 +174,22 @@ fn a_search_past_64_kib_keeps_accessible_selection_and_replacement() {
             !field.children().is_empty(),
             "short fields regain text runs"
         );
-        assert_ne!(field.text_selection().unwrap().focus.node, *id);
+        assert_eq!(field.value(), Some("font size"));
+        let mut shown = String::new();
+        for &run_id in field.children() {
+            let run = node(&tree, run_id);
+            assert_eq!(run.role(), Role::TextRun);
+            let value = run.value().unwrap();
+            assert_cluster_geometry(run, value);
+            shown.push_str(value);
+        }
+        assert_eq!(shown, "font size");
+        let selection = field.text_selection().unwrap();
+        assert!(field.children().contains(&selection.anchor.node));
+        assert!(field.children().contains(&selection.focus.node));
+        assert_eq!(selection.anchor, selection.focus);
+        assert_eq!(tree.focus, *id);
+        assert!(!tree.nodes.iter().any(|(id, _)| *id == geometry_id));
         assert!(rt.state.settings_search_focused());
         assert_eq!(rt.state.settings, before);
     }
