@@ -26,6 +26,7 @@ fn sweep_args(tool: &str) -> Value {
         "phux_snapshot"
         | "phux_agent_show"
         | "phux_agent_explain"
+        | "phux_agent_questions"
         | "phux_resource_methods"
         | "phux_resource_show"
         | "phux_tree_snapshot"
