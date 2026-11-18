@@ -3,8 +3,8 @@
 use super::{
     BootstrapCapabilities, BootstrapLimits, BootstrapProfile, BootstrapProfileKind,
     BootstrapProfileSet, ClientCapabilities, DecodeError, EngineCodec, EngineCodecSet,
-    EngineFeature, EngineFeatureSet, FrameKind, OutputMode, PROTOCOL_VERSION, TYPE_HELLO_OK,
-    framed, select_bootstrap_profile, tlv_field,
+    EngineFeature, EngineFeatureSet, FrameKind, OutputMode, TYPE_HELLO_OK, framed,
+    select_bootstrap_profile, tlv_field,
 };
 
 /// Bootstrap capabilities offering `codec` with every required native feature.
@@ -105,6 +105,7 @@ fn official_snapshot_v1_and_legacy_checkpoint_v2_fall_back_to_synthesis() {
     );
     assert_eq!(EngineCodec::LibghosttyCheckpointV2.as_wire(), 2);
     assert_eq!(EngineCodec::LibghosttySnapshotV1.as_wire(), 5);
+    assert_eq!(EngineCodec::LibghosttyPre1SnapshotV1.as_wire(), 4);
     assert_eq!(
         EngineCodec::from_wire(2),
         Some(EngineCodec::LibghosttyCheckpointV2),
@@ -112,49 +113,6 @@ fn official_snapshot_v1_and_legacy_checkpoint_v2_fall_back_to_synthesis() {
     );
 }
 
-#[test]
-fn pre1_and_vt1_snapshots_negotiate_synthesis_in_both_directions() {
-    assert_eq!(EngineCodec::LibghosttyPre1SnapshotV1.as_wire(), 4);
-    assert_eq!(
-        EngineCodec::from_wire(4),
-        Some(EngineCodec::LibghosttyPre1SnapshotV1)
-    );
-    assert_eq!(
-        EngineCodec::from_wire(5),
-        Some(EngineCodec::LibghosttySnapshotV1)
-    );
-    for (client_codec, server_codec) in [
-        (
-            EngineCodec::LibghosttyPre1SnapshotV1,
-            EngineCodec::LibghosttySnapshotV1,
-        ),
-        (
-            EngineCodec::LibghosttySnapshotV1,
-            EngineCodec::LibghosttyPre1SnapshotV1,
-        ),
-    ] {
-        let client = client_with(native(client_codec));
-        let server = native(server_codec);
-        assert_eq!(
-            selected(&client, &server),
-            BootstrapProfile::SynthesizedVtRaw,
-            "the unchanged snapshot envelope version must not imply codec compatibility"
-        );
-        let native_only = BootstrapProfileSet::with(&[BootstrapProfileKind::NativeState]);
-        assert!(
-            select_bootstrap_profile(
-                &client.with_bootstrap(client.bootstrap.with_profiles(native_only)),
-                &server.with_profiles(native_only),
-            )
-            .is_err(),
-            "native-only peers must refuse incompatible snapshot contracts"
-        );
-    }
-}
-
-/// Id 3 named the BLAKE3-checkpointed `GHOSTSNPv1` bytes that the current
-/// engine can neither produce nor decode. A peer that still advertises only
-/// id 3 must fall back to a synthesized profile, never select native.
 #[test]
 fn retired_snapshot_id_3_falls_back_to_synthesis() {
     assert_eq!(EngineCodec::from_wire(3), None);
@@ -322,13 +280,4 @@ fn old_engine_capabilities_fall_back_without_changing_protocol_version() {
         selected(&old_engine_client, &native_server),
         BootstrapProfile::SynthesizedVtRaw
     );
-    assert_eq!(
-        (
-            PROTOCOL_VERSION.major,
-            PROTOCOL_VERSION.minor,
-            PROTOCOL_VERSION.patch
-        ),
-        (1, 0, 0)
-    );
-    assert_eq!(EngineCodec::LibghosttyCheckpointV2.as_wire(), 2);
 }

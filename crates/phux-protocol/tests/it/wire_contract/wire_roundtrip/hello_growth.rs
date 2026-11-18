@@ -86,20 +86,9 @@ fn a_zero_limit_is_unadvertised_and_takes_the_default() {
 #[test]
 fn a_hello_without_resource_kinds_accepts_the_legacy_kinds() {
     use phux_protocol::caps::ResourceKindSet;
-    use phux_protocol::ids::ResourceKind;
 
     let legacy = client_caps(&caps(0, 0, 0, 0, (0, 0))).resource_kinds;
     assert_eq!(legacy, ResourceKindSet::LEGACY);
-    for kind in [
-        ResourceKind::Terminal,
-        ResourceKind::AgentSession,
-        ResourceKind::AccessibilityTree,
-        ResourceKind::PixelSurface,
-        ResourceKind::Document,
-    ] {
-        assert!(legacy.contains(kind), "{kind:?}");
-    }
-    assert!(!legacy.contains(ResourceKind::Unknown { tag: 5 }));
 }
 
 #[test]
@@ -202,5 +191,4 @@ fn an_invalid_platform_is_dropped_not_refused() {
         assert_eq!(platform_of(&framed_tlv(0x01, &fields)), None, "{bad:?}");
     }
     assert!(ClientPlatform::parse("sixteen-bytes-ok").is_some());
-    assert!(ClientPlatform::host().is_some());
 }

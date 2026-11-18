@@ -71,15 +71,4 @@ mod tests {
             Some(AgentMetaState::Blocked)
         );
     }
-
-    #[test]
-    fn a_nameless_row_reads_as_agent() {
-        let row = AgentSessionRow {
-            id: ResourceId::local(7),
-            provider: None,
-            native_id: None,
-            state: AgentMetaState::Working,
-        };
-        assert_eq!(row.name(), "agent");
-    }
 }

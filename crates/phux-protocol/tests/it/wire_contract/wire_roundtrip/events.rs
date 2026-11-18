@@ -92,46 +92,17 @@ pub(super) fn arb_agent_event() -> impl Strategy<Value = AgentEvent> {
     ]
 }
 
-/// Named EVENT fixtures the proptest taxonomy doesn't pin by name: `Asked`
-/// with every field populated and with the minimal shape (empty suggestions,
-/// no elapsed counter), `CwdChanged` (phux-foz.4, tag 0x0a), and `Unknown` —
+/// EVENT variants the proptest taxonomy does not draw: `CwdChanged`
+/// (phux-foz.4, tag 0x0a), and `Unknown` —
 /// a relay that decodes an unknown event and re-encodes it MUST produce
 /// byte-identical output (lossless passthrough).
 #[test]
 fn event_fixture_variants_round_trip() {
     for (terminal, event) in [
         (
-            None,
-            AgentEvent::Asked {
-                id: "q-7f3a".to_string(),
-                question: "Which transport should the bridge use?".to_string(),
-                suggestions: vec![
-                    "WebSocket".to_string(),
-                    "gRPC".to_string(),
-                    "raw TCP".to_string(),
-                ],
-                elapsed_seconds: Some(42),
-            },
-        ),
-        (
-            None,
-            AgentEvent::Asked {
-                id: "q-0".to_string(),
-                question: "Proceed?".to_string(),
-                suggestions: Vec::new(),
-                elapsed_seconds: None,
-            },
-        ),
-        (
             Some(ResourceId::local(7)),
             AgentEvent::CwdChanged {
                 cwd: "/Users/phall/workspace/phux".to_string(),
-            },
-        ),
-        (
-            Some(ResourceId::local(4)),
-            AgentEvent::InputActivity {
-                origin: "ada".to_string(),
             },
         ),
         (

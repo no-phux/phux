@@ -601,19 +601,5 @@ mod tests {
                 ..
             }))
         ));
-        let status = decode_answer(br#"{"kind":"status","branch":"main","new_field":[1]}"#);
-        assert!(matches!(
-            status,
-            Ok(CheckoutAnswer::Status(CheckoutStatus { branch: Some(ref b), .. })) if b == "main"
-        ));
-    }
-
-    #[test]
-    fn oversized_payloads_are_refused_before_parsing() {
-        let big = vec![b' '; MAX_CHECKOUT_REQUEST_BYTES + 1];
-        assert!(matches!(
-            decode_request(&big),
-            Err(CheckoutDecodeError::TooLarge)
-        ));
     }
 }

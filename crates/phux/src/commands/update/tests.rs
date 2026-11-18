@@ -486,18 +486,4 @@ fn fetch_build_downloads_that_build_not_the_channel_latest() {
     );
 }
 
-#[test]
-fn own_build_is_this_binary() {
-    let build = super::own_build().unwrap();
-    match channel::of_build() {
-        Channel::Stable | Channel::Lts => {
-            assert_eq!(build, Build::Stable(current_version().unwrap()));
-        }
-        Channel::Next => {
-            let sha = channel::build_sha().unwrap();
-            assert_eq!(build.tag(), format!("next.{sha}"));
-        }
-    }
-}
-
 mod releases;

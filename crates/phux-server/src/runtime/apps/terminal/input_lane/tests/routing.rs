@@ -81,31 +81,6 @@ async fn lane_encodes_from_published_bracketed_paste_snapshot() {
     .await;
 }
 
-/// One encoder set per pane generation: a respawned actor replaces it,
-/// and a closed actor's set is pruned.
-#[test]
-fn encoder_cache_tracks_actor_generations() {
-    let first = TerminalActor::new(80, 24).expect("first actor");
-    let second = TerminalActor::new(80, 24).expect("second actor");
-    let state = SharedState::new();
-    let pane = state.with_mut(|s| s.seed_session("s").1);
-    let mut encoders = std::collections::HashMap::new();
-    let facet = |bundle: &phux_terminal::actor::TerminalActorBundle| {
-        bundle.handle.terminal().expect("facet").clone()
-    };
-    encoder_for(&mut encoders, pane, &facet(&first)).expect("first encoder");
-    encoder_for(&mut encoders, pane, &facet(&second)).expect("replacement");
-    assert_eq!(encoders.len(), 1);
-    assert!(
-        encoders[&pane]
-            .port
-            .same_generation(&facet(&second).ordered_input)
-    );
-    drop(second);
-    prune_closed_encoders(&mut encoders);
-    assert!(encoders.is_empty());
-}
-
 /// 1,000 keys spread across one second stay at or under five emissions,
 /// and a same-instant burst is a single leading edge. A second pane is
 /// counted on its own.

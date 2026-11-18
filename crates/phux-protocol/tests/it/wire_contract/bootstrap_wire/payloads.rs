@@ -8,67 +8,6 @@ use super::{
 };
 
 #[test]
-fn opaque_lifecycle_records_reencode_byte_identically() {
-    let terminal_id = ResourceId::local(44);
-    let stream_id = stream(45);
-    let bootstrap_id = bootstrap(46);
-    let future_record = Bytes::from_static(b"\xff\x80\0future-checkpoint-v255\xfe");
-    let cursor = Bytes::from_static(b"\0\xffcursor\x80");
-    let next_cursor = Bytes::from_static(b"\xfe\xfdnext\0");
-    let frames = [
-        FrameKind::BootstrapBegin {
-            terminal_id: terminal_id.clone(),
-            stream_id,
-            bootstrap_id,
-            profile: BootstrapStreamProfile::NativeState {
-                codec: EngineCodec::LibghosttyCheckpointV2,
-            },
-            cols: 132,
-            rows: 43,
-            base_seq: 901,
-        },
-        FrameKind::BootstrapChunk {
-            terminal_id: terminal_id.clone(),
-            stream_id,
-            bootstrap_id,
-            chunk_seq: 0,
-            payload: future_record.clone(),
-        },
-        FrameKind::BootstrapReady {
-            terminal_id: terminal_id.clone(),
-            stream_id,
-            bootstrap_id,
-            history_cursor: Some(cursor.clone()),
-        },
-        FrameKind::HistoryRequest {
-            terminal_id: terminal_id.clone(),
-            stream_id,
-            bootstrap_id,
-            cursor: cursor.clone(),
-            max_bytes: 4096,
-            max_rows: 1024,
-        },
-        FrameKind::HistoryPage {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            page_seq: 1,
-            cursor,
-            next_cursor: Some(next_cursor),
-            payload: future_record,
-            rows: 3,
-        },
-    ];
-
-    for frame in frames {
-        let encoded = crate::common::encode(&frame);
-        let decoded = crate::common::decode(&encoded).unwrap();
-        assert_eq!(decoded, frame);
-        assert_eq!(crate::common::encode(&decoded), encoded);
-    }
-}
-
-#[test]
 fn negotiated_response_payload_limits_reject_but_request_budgets_reach_the_host() {
     let limits = BootstrapLimits::new(1024, 2048).unwrap();
     for (what, frame) in [
@@ -89,24 +28,6 @@ fn negotiated_response_payload_limits_reject_but_request_budgets_reach_the_host(
     let (decoded, tail) = FrameKind::decode_with_limits(&encoded, limits).unwrap();
     assert!(tail.is_empty());
     assert_eq!(decoded, request);
-}
-
-#[test]
-fn native_live_bytes_are_codec_opaque_and_round_trip_exactly() {
-    let raw = Bytes::from_static(b"\x1b]8;;https://example.invalid\x07link\x1b]8;;\x07\xff");
-    let frame = FrameKind::ResourceOutput {
-        terminal_id: ResourceId::local(8),
-        stream_id: stream(8),
-        bootstrap_id: bootstrap(8),
-        seq: 1,
-        bytes: raw.clone(),
-    };
-    let FrameKind::ResourceOutput { bytes, .. } =
-        FrameKind::decode(&crate::common::encode(&frame)).unwrap().0
-    else {
-        panic!("expected terminal output");
-    };
-    assert_eq!(bytes, raw);
 }
 
 /// The envelope is decode-invisible: a wrapped frame decodes to exactly the

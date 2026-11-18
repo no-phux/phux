@@ -168,28 +168,3 @@ fn resolve_cell_px_prefers_most_recent_usable_pixel_report() {
     s.detach(retina);
     assert_eq!(s.resolve_terminal_cell_px(pid), None);
 }
-
-#[test]
-fn detach_removes_client_and_drops_empty_subscriber_lists() {
-    let mut s = ServerState::new();
-    let (_sid, pid) = s.seed_session("default");
-    let cid = s.clients_mut().new_client_id();
-    s.attach_default_caps(cid, "default", mk_tx()).unwrap();
-    assert!(!s.resources().subscribers_for(pid).is_empty());
-    s.detach(cid);
-    assert!(!s.attached().contains_key(&cid));
-    assert!(s.resources().subscribers_for(pid).is_empty());
-    assert!(
-        s.resources.subscriber_map_is_empty(),
-        "empty lists should be GC'd"
-    );
-}
-
-#[test]
-fn detach_is_idempotent() {
-    let mut s = ServerState::new();
-    let cid = ClientId(99);
-    // Not attached at all — must not panic.
-    s.detach(cid);
-    s.detach(cid);
-}

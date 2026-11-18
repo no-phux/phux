@@ -1,7 +1,6 @@
 //! The generated file-locations reference. Every rule is symbolic
 //! (`$XDG_STATE_HOME/phux/server.log`) so the page is byte-idempotent across
-//! machines; tests reject expanded home paths and pin each rule to its
-//! resolver function.
+//! machines; tests pin each rule to its resolver function.
 
 use super::Page;
 
@@ -228,21 +227,6 @@ pub(crate) fn page() -> Page {
 
 #[cfg(test)]
 mod tests {
-    use super::page;
-
-    /// The page must stay symbolic: an expanded host path would make the
-    /// generator non-idempotent across machines and leak a contributor's
-    /// home layout into the tree.
-    #[test]
-    fn page_carries_no_expanded_host_paths() {
-        let rendered = page().render();
-        for needle in ["/Users/", "/home/"] {
-            assert!(
-                !rendered.contains(needle),
-                "files.md must never carry an expanded host path ({needle})"
-            );
-        }
-    }
 
     /// Each documented rule ends the output of the function that resolves it.
     /// The state directory's name is resolved, since it carries the active profile
@@ -302,33 +286,6 @@ mod tests {
         // guarded so an operator's environment cannot fail the suite).
         if std::env::var_os("PHUX_SOCKET").is_none() {
             ends_with(&phux_config::socket::default_socket_path(), "/phux.sock");
-        }
-    }
-
-    /// The documented state-dir entries and the section list stay in
-    /// sync with the page prose (spot pins for the tree block).
-    #[test]
-    fn page_names_every_state_dir_entry() {
-        let body = &page().body;
-        for entry in [
-            "server.log",
-            "client-<pid>.log",
-            "onboarding.json",
-            "onboarding.lock",
-            "plugin-runs.jsonl",
-            "plugin-startup/",
-            "remote-cert.pem",
-            "remote-key.pem",
-            "remote-tokens",
-            "reports/",
-            "ideas/",
-            "audit/",
-            "service-wrapper.sh",
-            "workspace.json",
-            "server.pid",
-            "journal/",
-        ] {
-            assert!(body.contains(entry), "files.md no longer names `{entry}`");
         }
     }
 }

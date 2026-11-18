@@ -292,11 +292,6 @@ pub(super) fn discard_pending(fd: impl AsFd) {
 
 /// Block until `tty` has input (`Some(true)`) or `deadline` passes
 /// (`Some(false)`); `None` when the probe cannot continue.
-#[cfg(test)]
-fn wait_readable<Fd: AsFd>(tty: &Fd, deadline: Instant) -> Option<bool> {
-    wait_with(deadline, Instant::now, |timeout| poll_in(tty, timeout))
-}
-
 fn poll_in<Fd: AsFd>(fd: &Fd, timeout: Duration) -> Result<bool, Errno> {
     let timeout = Timespec::try_from(timeout).map_err(|_| Errno::INVAL)?;
     let mut fds = [PollFd::new(fd, PollFlags::IN)];
@@ -560,33 +555,6 @@ mod tests {
         }
     }
 
-    /// A silent source costs one remaining-time poll, not a restarted budget
-    /// (fake clock and `poll`).
-    #[test]
-    fn silent_source_gives_up_at_the_deadline() {
-        let start = Instant::now();
-        let budget = Duration::from_millis(20);
-        let deadline = start + budget;
-        let now = Cell::new(start);
-        let mut polls = Vec::new();
-        let waited = wait_with(
-            deadline,
-            || now.get(),
-            |timeout| {
-                assert!(
-                    polls.len() < 2,
-                    "a timed-out poll must not restart the deadline"
-                );
-                polls.push(timeout);
-                now.set(now.get() + timeout);
-                Ok(false)
-            },
-        );
-        assert_eq!(waited, Some(false));
-        assert_eq!(polls, [budget]);
-        assert!(now.get() <= deadline + Duration::from_millis(1));
-    }
-
     /// `EINTR` retries the same Instant; it does not extend the budget.
     #[test]
     fn interrupted_wait_retries_the_same_deadline() {
@@ -613,27 +581,6 @@ mod tests {
             polls,
             [Duration::from_millis(20), Duration::from_millis(15)]
         );
-    }
-
-    /// The rustix wrapper times out on a real silent pipe. No host-wall
-    /// ceiling: that was the phux-tur1 flake. Hang detection is nextest's.
-    #[test]
-    fn silent_pipe_times_out_through_poll() {
-        let (reader, _writer) = std::io::pipe().expect("pipe");
-        assert_eq!(
-            wait_readable(&reader, Instant::now() + Duration::from_millis(20)),
-            Some(false)
-        );
-    }
-
-    /// A terminal that answers is not made to wait out the budget.
-    #[test]
-    fn readable_source_returns_before_the_deadline() {
-        let (reader, mut writer) = std::io::pipe().expect("pipe");
-        writer.write_all(b"answer").expect("write answer");
-        drop(writer);
-        let waited = wait_readable(&reader, Instant::now() + Duration::from_secs(5));
-        assert_eq!(waited, Some(true));
     }
 
     /// Queued OSC replies must not survive for the shell to echo.

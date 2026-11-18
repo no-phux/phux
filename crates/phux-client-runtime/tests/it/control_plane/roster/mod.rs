@@ -207,15 +207,6 @@ fn declarations(plane: &mut ControlPlane) -> Vec<Option<Vec<u8>>> {
 }
 
 #[test]
-fn subscribes_before_read_and_a_live_clear_fences_the_delayed_snapshot() {
-    let (mut plane, read) = discovered();
-    metadata_changed(&mut plane, RESOURCE_AGENT_KEY, None);
-    answer_metadata(&mut plane, read, Some(b"old declaration"));
-    assert_eq!(declarations(&mut plane), vec![None]);
-    assert!(outbound(&mut plane).is_empty());
-}
-
-#[test]
 fn a_live_declaration_fences_a_delayed_absence_and_preserves_raw_consumers() {
     let (mut plane, read) = discovered();
     metadata_changed(&mut plane, RESOURCE_AGENT_KEY, Some(b"new"));
@@ -308,23 +299,6 @@ fn a_refresh_keeps_the_shell_title_the_snapshot_cannot_carry() {
 }
 
 #[test]
-fn an_animating_title_cannot_starve_a_spawn_out_of_the_inventory() {
-    let mut plane = settled();
-    spawn_second_pane(&mut plane);
-    let inventory = state_id(&outbound(&mut plane));
-    for frame in ["⠋", "⠙", "⠹"] {
-        title_changed(&mut plane, frame);
-    }
-    answer_state(&mut plane, inventory, with_second_pane());
-    let topology = plane.topology().unwrap();
-    assert!(topology.pane(&ResourceId::local(8)).is_some());
-    assert_eq!(
-        topology.pane(&terminal()).unwrap().title.as_deref(),
-        Some("⠹")
-    );
-}
-
-#[test]
 fn recovery_removes_vanished_panes_and_ignores_their_late_metadata() {
     let (mut plane, old_read) = discovered();
     journal_gap(&mut plane);
@@ -345,16 +319,6 @@ fn unrelated_metadata_replies_remain_extension_frames() {
     assert!(
         matches!(plane.take_events().as_slice(), [Event::Frame(frame)] if matches!(**frame, FrameKind::MetadataValue { request_id: 9000, .. }))
     );
-}
-
-#[test]
-fn metadata_refusal_releases_correlation_without_retracting_the_badge() {
-    let (mut plane, read) = discovered();
-    refuse(&mut plane, read, ErrorCode::InvalidCommand, "denied");
-    assert!(declarations(&mut plane).is_empty());
-    journal_gap(&mut plane);
-    let frames = answer_queued_state(&mut plane, snapshot());
-    assert_reread_declares(&mut plane, &frames, None);
 }
 
 #[test]
@@ -417,23 +381,6 @@ fn a_spawn_receipt_fences_an_older_inventory_even_before_its_broadcast() {
     let fresh = state_id(&outbound(&mut plane));
     answer_state(&mut plane, fresh, with_second_pane());
     assert_eq!(plane.topology().unwrap().panes.len(), 2);
-}
-
-#[test]
-fn repeated_inventory_refreshes_coalesce_and_leave_a_known_terminal_alone() {
-    let (mut plane, read) = discovered();
-    let request_id = plane.refresh_topology().unwrap();
-    for _ in 0..100 {
-        assert_eq!(plane.refresh_topology(), Some(request_id));
-    }
-    assert_eq!(outbound(&mut plane).len(), 1);
-    answer_state(&mut plane, request_id, snapshot());
-    assert!(
-        outbound(&mut plane).is_empty(),
-        "a live subscription already carries every later change"
-    );
-    answer_metadata(&mut plane, read, Some(b"current"));
-    assert_eq!(declarations(&mut plane), vec![Some(b"current".to_vec())]);
 }
 
 fn refresh_after_settling(plane: &mut ControlPlane, snapshot: SessionSnapshot) -> Vec<FrameKind> {

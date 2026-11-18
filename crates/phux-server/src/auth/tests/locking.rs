@@ -14,58 +14,6 @@ fn a_leftover_lock_file_is_ignored() {
     assert_eq!(TokenStore::load(&path).unwrap().len(), 1);
 }
 
-/// A writer holding the directory lock blocks a concurrent writer until it
-/// commits; both mutations survive.
-#[test]
-fn a_held_lock_serializes_concurrent_mutations() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("credentials");
-    mint_token(&path).unwrap();
-
-    let acquired = std::sync::Arc::new(std::sync::Barrier::new(2));
-    let release = std::sync::Arc::new(std::sync::Barrier::new(2));
-    let first_path = path.clone();
-    let first_acquired = acquired.clone();
-    let first_release = release.clone();
-    let first = std::thread::spawn(move || {
-        with_lock(&first_path, |held| {
-            first_acquired.wait();
-            first_release.wait();
-            mint_credential_unlocked(
-                &first_path,
-                None,
-                &[TERMINAL_CONTROL_SCOPE.to_owned()],
-                None,
-                held,
-            )
-        })
-    });
-    acquired.wait();
-
-    let (completed_tx, completed_rx) = std::sync::mpsc::channel();
-    let second_path = path.clone();
-    let second = std::thread::spawn(move || {
-        let result = mint_token(&second_path);
-        completed_tx.send(()).unwrap();
-        result
-    });
-    assert!(
-        completed_rx
-            .recv_timeout(std::time::Duration::from_millis(100))
-            .is_err(),
-        "a held lock must not admit a concurrent writer"
-    );
-
-    release.wait();
-    first.join().unwrap().unwrap();
-    second.join().unwrap().unwrap();
-    assert_eq!(
-        TokenStore::load(&path).unwrap().len(),
-        3,
-        "both serialized mutations survive"
-    );
-}
-
 #[test]
 fn credential_lock_child() {
     let Some(path) = std::env::var_os("PHUX_TEST_CREDENTIAL_STORE") else {

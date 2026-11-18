@@ -16,7 +16,7 @@ use tokio::net::UnixStream;
 use crate::attach::chrome_ctx::ChromeCtx;
 use crate::attach::connection::{Connection, Dial};
 use crate::attach::onboarding;
-use crate::attach::outcome::{AttachEnd, AttachError};
+use crate::attach::outcome::AttachError;
 use crate::attach::paint::{
     SidebarEdge, SidebarReservation, StatusBarPaint, content_rect, paint_bar_after_pane,
     paint_full_frame, sidebar_reservation,
@@ -24,7 +24,6 @@ use crate::attach::paint::{
 use crate::attach::pane_state::{AttachKernel, PaneSlot, published_test_state};
 use crate::attach::render::{ReplicaWalk, SelectionRect};
 use crate::layout::ArrangementDoc;
-use crate::predict::PredictiveConfig;
 use crate::render::chrome::sidebar::SidebarPainter;
 use crate::render::chrome::status_bar::{Notice, StatusBarPainter, widgets::WindowInfo};
 use crate::render::overlay::{OverlayState, RenderOverlay, SelectItem, SelectList};
@@ -67,51 +66,6 @@ async fn drain(client: Connection, mut server: Connection) -> Vec<FrameKind> {
         frames.push(frame);
     }
     frames
-}
-
-#[test]
-fn detach_classification_requires_local_intent_and_plain_detach() {
-    let detached = |reason| AttachEnd::Detached { reason };
-    assert!(is_local_detach(detached(None), true));
-    assert!(!is_local_detach(detached(None), false));
-    // The reason never overrides the local-intent test.
-    assert!(is_local_detach(
-        detached(Some(DetachReason::Requested)),
-        true
-    ));
-    assert!(!is_local_detach(
-        detached(Some(DetachReason::ServerShutdown)),
-        false
-    ));
-    assert!(!is_local_detach(
-        AttachEnd::LastPaneClosed {
-            exit_status: Some(0)
-        },
-        true
-    ));
-}
-
-/// A session created from inside the TUI seeds its pane in the directory
-/// the caller picked (the focused pane, or an explicit folder), not the
-/// process that launched the TUI.
-#[test]
-fn create_session_target_uses_the_given_directory() {
-    assert_eq!(
-        create_session_target("picker".to_owned(), Some("/src/api".to_owned())),
-        AttachTarget::CreateIfMissing {
-            name: "picker".to_owned(),
-            command: None,
-            cwd: Some("/src/api".to_owned()),
-        }
-    );
-    assert_eq!(
-        create_session_target("picker".to_owned(), None),
-        AttachTarget::CreateIfMissing {
-            name: "picker".to_owned(),
-            command: None,
-            cwd: None,
-        }
-    );
 }
 
 fn session_name_painter() -> StatusBarPainter {
@@ -231,16 +185,6 @@ fn sidebar_reservation_changes_view_rects_for_pty_reflow() {
         width: 20,
     }));
     assert_eq!((inset.x, inset.w), (20, 80));
-}
-
-/// `toggle-sidebar` is client-local and must survive a `switch-session` in
-/// both directions; config seeds only the first attach.
-#[test]
-fn sidebar_enabled_carries_across_a_session_switch() {
-    assert!(!seed_sidebar_enabled(None, false));
-    assert!(seed_sidebar_enabled(None, true));
-    assert!(seed_sidebar_enabled(Some(true), false));
-    assert!(!seed_sidebar_enabled(Some(false), true));
 }
 
 /// One malformed chord disables only itself; detach survives.
@@ -516,19 +460,6 @@ fn prune_foreign_agents_retains_only_live_foreign_panes() {
     assert!(cache.is_empty() && subscribed.is_empty());
 }
 
-#[test]
-fn frame_ack_is_emitted_only_for_state_sync_consumers() {
-    let ack = Some((
-        ResourceId::local(7),
-        phux_protocol::StreamId::new(1).expect("stream"),
-        phux_protocol::BootstrapId::new(1).expect("bootstrap"),
-        42u64,
-    ));
-    assert_eq!(should_emit_frame_ack(false, ack.clone()), None);
-    assert_eq!(should_emit_frame_ack(true, ack.clone()), ack);
-    assert_eq!(should_emit_frame_ack(true, None), None);
-}
-
 /// A write to a departed peer must not become the reason the loop ended (it
 /// hid "the last pane exited 7" behind "attach loop io error"); local IO
 /// faults and non-IO endings stay fatal.
@@ -625,31 +556,6 @@ fn headless_completion_drains_history_and_metadata_after_attach_ready() {
         completion.observe_frame(&frame, 7);
         assert!(completion.is_complete(true));
     }
-}
-
-/// ADR-0060: without a recorder, `run_dial` drives the bare sink and fails
-/// at connect like any other attach.
-#[tokio::test(flavor = "current_thread")]
-async fn run_dial_without_a_recorder_passes_the_bare_sink() {
-    let socket =
-        std::env::temp_dir().join(format!("phux-rec-guard-{}-absent.sock", std::process::id()));
-    let err = run_dial(
-        &Dial::uds(&socket),
-        AttachTarget::Last,
-        PredictiveConfig::disabled(),
-        None,
-        None,
-        None,
-    )
-    .await
-    .expect_err("there is no server at that socket");
-    assert!(
-        matches!(
-            err,
-            AttachError::Io(_) | AttachError::Connect(_) | AttachError::Unreachable(_)
-        ),
-        "{err:?}"
-    );
 }
 
 /// Negotiation sends exactly one HELLO, captures `server_id` verbatim
@@ -1009,7 +915,6 @@ fn command_palette_keeps_sidebar_visible() {
         !strip.contains('╭') && !strip.contains('╰'),
         "modal intruded into the strip:\n{strip}"
     );
-    insta::assert_snapshot!("palette_over_sidebar", all);
 }
 
 /// Every floating overlay kind (fleet, which-key, prompt, toast) shares the

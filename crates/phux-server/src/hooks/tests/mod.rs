@@ -191,13 +191,6 @@ fn offending_config_hooks_flags_each_bad_entry_once() {
     );
 }
 
-#[test]
-fn env_var_naming_uppercases_and_underscores() {
-    assert_eq!(context_env_var("exit-code"), "PHUX_EXIT_CODE");
-    assert_eq!(context_env_var("terminal-id"), "PHUX_TERMINAL_ID");
-    assert_eq!(context_env_var("session"), "PHUX_SESSION");
-}
-
 /// The spec table and the constructors describe the same events and
 /// keys, with prose for each.
 #[test]

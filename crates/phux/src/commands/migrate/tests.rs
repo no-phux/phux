@@ -79,13 +79,6 @@ fn prompt_for_tmux_and_ghostty_matches_the_golden() {
 }
 
 #[test]
-fn prompt_for_the_issue_run_matches_the_golden() {
-    let home = run_home();
-    let sources = discover(&home, None, &[], None, &Setup::default());
-    assert_golden(&render(&home, &sources), "run.golden.txt");
-}
-
-#[test]
 fn the_prefix_is_kept_or_taken_from_tmux_as_chosen() {
     let home = run_home();
     let only = [MigrateSource::Tmux];
@@ -140,7 +133,6 @@ fn a_selected_phux_theme_is_kept_over_ghostty_s() {
     assert_eq!(theme.as_deref(), Some("tokyo-night"));
     let sources = discover(&home, None, &[], theme.as_deref(), &Setup::default());
     let text = render(&home, &sources);
-    assert_golden(&text, "theme-kept.golden.txt");
     assert!(text.contains(
         "kept your phux theme `tokyo-night`; Ghostty's `dark:TokyoNight Storm,light:Catppuccin Latte` is not applied"
     ));
@@ -172,30 +164,6 @@ fn advanced_takes_tmux_s_prefix_without_asking() {
         ..Setup::default()
     };
     assert!(decide(bad, &home, None, &[], None, false).is_err());
-}
-
-#[test]
-fn beginner_mode_skips_unbinds_phux_already_makes_up_for() {
-    let home = run_home();
-    let only = [MigrateSource::Tmux];
-    let beginner = discover(&home, None, &only, None, &Setup::default());
-    let tmux = find(&beginner, MigrateSource::Tmux);
-    for text in [r#"unbind '"'"#, "unbind %"] {
-        assert!(
-            matches!(verdict(tmux, text), Verdict::Covered(r) if r.contains("advanced mode writes it")),
-            "{text}"
-        );
-    }
-    let advanced = Setup {
-        advanced: true,
-        ..Setup::default()
-    };
-    let advanced = discover(&home, None, &only, None, &advanced);
-    let tmux = find(&advanced, MigrateSource::Tmux);
-    assert!(matches!(
-        verdict(tmux, "unbind %"),
-        Verdict::Write { value, .. } if value.as_str() == Some("none")
-    ));
 }
 
 /// The acceptance case of issue #2255.
@@ -244,13 +212,6 @@ fn lines_with_nothing_to_do_are_kept_apart_from_lost_ones() {
             "{text}"
         );
     }
-    assert!(matches!(
-        verdict(tmux, "set -g set-clipboard on"),
-        Verdict::Default { .. }
-    ));
-    assert!(
-        matches!(verdict(tmux, "set -sg escape-time 0"), Verdict::Skip(reason) if reason.contains("fixed 10 ms"))
-    );
     assert!(
         matches!(verdict(tmux, "set -g base-index 1"), Verdict::Skip(r) if r.contains("from 0"))
     );

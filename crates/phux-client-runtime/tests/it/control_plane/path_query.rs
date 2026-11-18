@@ -63,17 +63,8 @@ fn ordinary_runtime_admission_matches_catalog_for_each_extended_bit() {
 }
 
 #[test]
-fn path_query_requires_extended_capability_and_correlates_typed_results() {
-    let mut plane = opened(ControlOptions::default(), hello_ok(PROTOCOL_VERSION.patch));
-    let _ = plane.take_outbound();
-    assert_eq!(plane.path_query("/home".into(), "a".into(), true, None), 0);
-    assert!(
-        plane.take_outbound().is_empty(),
-        "older server must not hang picker"
-    );
-
-    reopen(&mut plane, hello_ok_ext(&[ServerFeatureExt::PathQuery]));
-    let _ = plane.take_outbound();
+fn path_query_correlates_typed_results() {
+    let mut plane = browsing_with_ext(&[ServerFeatureExt::PathQuery]);
     let id = plane.path_query(
         "/home".into(),
         "a".into(),

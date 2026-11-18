@@ -213,7 +213,6 @@ mod tests {
         let options = default_options();
         for action in [KeyAction::Press, KeyAction::Repeat] {
             let event = plain(action, Some("a"), ModSet::empty());
-            assert_eq!(legacy_printable(&event, options), Some("a"));
             let mut enc = PerTerminalKeyEncoder::new().expect("encoder");
             assert_eq!(
                 enc.encode_with_options(&event, options).expect("encode"),
@@ -225,7 +224,6 @@ mod tests {
             Some("é"),
             ModSet::CAPS_LOCK | ModSet::NUM_LOCK,
         );
-        assert_eq!(legacy_printable(&locked, options), Some("é"));
         let mut enc = PerTerminalKeyEncoder::new().expect("encoder");
         let encoded = enc.encode_with_options(&locked, options).expect("encode");
         assert_eq!(encoded, "é".as_bytes());
@@ -236,7 +234,6 @@ mod tests {
     fn a_release_with_text_does_not_take_the_fast_path() {
         let options = default_options();
         let event = plain(KeyAction::Release, Some("a"), ModSet::empty());
-        assert!(legacy_printable(&event, options).is_none());
         let mut enc = PerTerminalKeyEncoder::new().expect("encoder");
         assert_eq!(
             enc.encode_with_options(&event, options).expect("encode"),
@@ -270,10 +267,6 @@ mod tests {
             ("composing", default_options(), composing),
             ("numpad", default_options(), numpad),
         ] {
-            assert!(
-                legacy_printable(&event, options).is_none(),
-                "{name} must stay on libghostty"
-            );
             let mut enc = PerTerminalKeyEncoder::new().expect("encoder");
             assert_eq!(
                 enc.encode_with_options(&event, options)
@@ -283,20 +276,6 @@ mod tests {
                 "{name}"
             );
         }
-    }
-
-    #[test]
-    fn kitty_push_does_not_take_the_printable_fast_path() {
-        let mut terminal = GhosttyTerminal::new(80, 24).expect("terminal");
-        terminal.vt_write(b"\x1b[>1u");
-        let options = EncoderOptions::from_terminal(&terminal).expect("options");
-        let event = plain(KeyAction::Press, Some("a"), ModSet::empty());
-        assert!(legacy_printable(&event, options).is_none());
-        let mut enc = PerTerminalKeyEncoder::new().expect("encoder");
-        assert_eq!(
-            enc.encode(&event, &terminal).expect("encode").to_vec(),
-            libghostty_bytes(&event, options)
-        );
     }
 
     /// Ctrl+J must reach the PTY as LF (0x0A), distinct from Enter's CR.

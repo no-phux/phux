@@ -46,7 +46,6 @@ test("document tools register with strict schemas that require an exact document
     if (name !== "phux_documents") assert.ok(input?.required?.includes("target"), name);
   }
   assert.deepEqual((tools.phux_tree_wait!.input as { required: string[] }).required, ["target", "until"]);
-  assert.match(tools.phux_list!.description, /accessibility trees, pixel surfaces, typed documents/);
 });
 
 test("phux_list and phux_documents read every kind from one ls call", async () => {

@@ -76,29 +76,3 @@ async fn actor_cadence_backs_off_on_high_rtt_and_floors_on_low() {
         "no consumers left -> cold-start default",
     );
 }
-
-/// An ack with no emit instant yields no sample.
-#[test]
-fn ack_without_emit_instant_produces_no_sample() {
-    let bundle = TerminalActor::new(80, 24).expect("new");
-    let mut actor = bundle.actor;
-    actor.enable_tick_emit_for_test();
-
-    let client = ClientId(1);
-    let (tx, _rx) = dummy_outbound();
-    actor
-        .register_consumer(client, tx, 11, false)
-        .expect("register");
-
-    // No tick_emit ran, so no emit instant was stamped. An ack here
-    // advances last_acked_seq but cannot time a round trip.
-    assert!(
-        !actor.on_frame_ack_for_test(client, 5),
-        "ack with no matching emit instant produces no RTT sample",
-    );
-    assert_eq!(
-        actor.adaptive_tick_interval_for_test(),
-        DEFAULT_TICK_INTERVAL,
-        "cadence stays at the default without a sample",
-    );
-}

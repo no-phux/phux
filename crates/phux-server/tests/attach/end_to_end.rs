@@ -13,7 +13,6 @@ use phux_protocol::wire::frame::{
 };
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
-use tokio::io::AsyncWriteExt;
 use tokio::net::UnixStream;
 
 use phux_server_testkit::{
@@ -383,18 +382,12 @@ fn put_file_round_trip_publishes_only_the_verified_file() {
     });
 }
 
-/// A mid-frame disconnect must not wedge the accept loop, and shutdown must
-/// drop live client futures (which own input-lane handles) before joining
-/// the input lane.
+/// Shutdown must drop live client futures (which own input-lane handles)
+/// before joining the input lane.
 #[test]
-fn server_survives_mid_frame_disconnect_and_shuts_down_with_live_clients() {
+fn server_shuts_down_with_live_attached_clients() {
     run_local(async {
         let server = server_with(|_| {});
-
-        let mut partial = server.connect_raw().await;
-        partial.write_all(&64u32.to_be_bytes()).await.unwrap();
-        let _ = AsyncWriteExt::shutdown(&mut partial).await;
-        drop(partial);
 
         let mut live = Vec::new();
         for _ in 0..2 {

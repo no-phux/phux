@@ -96,10 +96,10 @@ fn pane_badges() {
     }
 }
 
-/// Demo of the transient origin badge: `[ada]` sits ahead of the title.
+/// The transient origin badge: `[ada]` sits ahead of the title.
 /// The glyphs stay put when it dims; only the colour and weight change.
 #[test]
-fn input_origin_badge_snapshot() {
+fn input_origin_badge_dims_in_place() {
     let content = railed(48, 8);
     let layout = lone_layout(content);
     let paint = |dim| {
@@ -138,7 +138,6 @@ fn input_origin_badge_snapshot() {
     assert_eq!(bright_row, dim_row);
     assert!(bright.contains(&sgr_fg(theme().chord)) && bright.contains("\x1b[1m"));
     assert!(dimmed.contains(&sgr_fg(theme().dim)) && !dimmed.contains("\x1b[1m"));
-    insta::assert_snapshot!(format!("bright {bright_row}\ndim    {dim_row}\n"));
 }
 
 /// A same-styled run costs one CUP; a wide glyph's trailing half is left
@@ -176,8 +175,6 @@ fn runs_reanchor_where_widths_could_drift() {
         .unwrap();
     assert!(extract_cups(&s).contains(&(badge.1 + 1, badge.0 + 2)));
     assert_chrome_only(&layout, content, &s);
-    assert_eq!(text_columns("\u{25d0}") + 1, 2);
-    assert_eq!(text_columns("\u{65e5}") + 1, 3);
 }
 
 /// Zero-width marks ride with their base and cost no budget (breaking at

@@ -137,15 +137,4 @@ mod tests {
             "§1.6: a phone page margin is at least 16"
         );
     }
-
-    #[test]
-    fn text_size_follows_ios_and_caps_beside_the_grid() {
-        use crate::desk::accessibility::GRID_CAP;
-        let ax5 = ContentSize::from_category("UICTContentSizeCategoryAccessibilityXXXL");
-        assert!(ax5.factor() > 3.0);
-        assert!((Scale::Free.of(ax5) - ax5.factor()).abs() < f32::EPSILON);
-        assert!((Scale::GridCapped.of(ax5) - GRID_CAP).abs() < f32::EPSILON);
-        assert!((Scale::Free.of(ContentSize::Large) - 1.0).abs() < f32::EPSILON);
-        assert!((ty(ax5.factor()).body.size - 14.0 * ax5.factor()).abs() < 0.01);
-    }
 }

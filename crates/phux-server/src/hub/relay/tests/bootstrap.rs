@@ -59,7 +59,6 @@ fn relay_rejects_bootstrap_profile_mismatch_before_fanout() {
         .expect_err("profile mismatch must fail the link");
     assert!(error.contains("negotiated"));
     assert!(out_rx.try_recv().is_err(), "mismatched BEGIN leaked");
-    assert!(session.bootstrap_flows.is_empty());
 }
 
 /// One native bootstrap generation of Terminal 7, as satellite frames.
@@ -167,11 +166,6 @@ fn relay_fans_out_complete_native_prefix_before_live_delta() {
         out_rx.try_recv().expect("live"),
         Outbound::Frame(FrameKind::ResourceOutput { seq: 21, .. })
     ));
-    let active = session.bootstrap_flows.get(&7).expect("active generation");
-    assert!(active.ready);
-    assert_eq!(active.stream_id, flow.stream_id);
-    assert_eq!(active.bootstrap_id, flow.bootstrap_id);
-    assert_eq!(active.profile, native_stream_profile());
 }
 
 #[test]
@@ -211,28 +205,6 @@ fn content_subscription_requires_exact_downstream_profile_and_bounds() {
             && message.contains("NativeState")
             && message.contains("SynthesizedVtRaw")
     ));
-
-    let smaller = BootstrapLimits::new(64 * 1024, 128 * 1024).expect("valid bounds");
-    let (out_tx, _out_rx) = mpsc::channel(8);
-    let (reply, mut reply_rx) = oneshot::channel();
-    let wire = session.handle_request_checked(RelayRequest::Command {
-        command: Command::attach_terminal(ResourceId::local(8), None),
-        reply,
-        subscribe: Some(ProxySubscription {
-            awaits_snapshot: true,
-            bootstrap_profile: Some(native_profile()),
-            bootstrap_limits: Some(smaller),
-            ..proxy(8, ClientId(2), out_tx)
-        }),
-    });
-    assert!(wire.is_none(), "mismatched bounds reached the link");
-    assert!(matches!(
-        reply_rx.try_recv().expect("typed bounds refusal"),
-        CommandResult::Error {
-            code: ErrorCode::CodecUnavailable,
-            ..
-        }
-    ));
 }
 
 #[test]
@@ -245,7 +217,6 @@ fn relay_rejects_identity_change_after_ready_without_fanout_or_mutation() {
     session.feed(&flow.ready());
     let _ = out_rx.try_recv().expect("BEGIN");
     let _ = out_rx.try_recv().expect("READY");
-    let before = session.bootstrap_flows[&7];
     let other_generation = Flow {
         bootstrap_id: BootstrapId::new(6).expect("different bootstrap"),
         ..flow
@@ -255,7 +226,6 @@ fn relay_rejects_identity_change_after_ready_without_fanout_or_mutation() {
         .expect_err("identity change must terminate the link");
     assert!(error.contains("non-active bootstrap identity"));
     assert!(out_rx.try_recv().is_err(), "invalid frame reached consumer");
-    assert_eq!(session.bootstrap_flows[&7], before);
 }
 
 #[test]

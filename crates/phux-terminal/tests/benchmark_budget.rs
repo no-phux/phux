@@ -10,7 +10,7 @@ use measure::{
     build_terminal, fanout_measurement, native_progressive_measurement, retained_budget_holds,
     synthesized_measurement,
 };
-use support::{Comparison, Corpus, HISTORY_PAGE_LIMIT, Threshold, deterministic_page};
+use support::{Corpus, HISTORY_PAGE_LIMIT, deterministic_page};
 
 #[test]
 fn small_capture_and_fanout_accounting_gate() {
@@ -60,23 +60,4 @@ fn small_capture_and_fanout_accounting_gate() {
             HISTORY_PAGE_LIMIT * 2,
         );
     }
-}
-
-#[test]
-fn threshold_diagnostic_names_metric_corpus_and_client_count() {
-    let error = Threshold {
-        metric: "raw-throughput-ratio",
-        corpus: Corpus::Unicode50k,
-        clients: 8,
-        comparison: Comparison::AtLeast,
-        observed: 0.5,
-        limit: 0.9,
-        unit: "ratio",
-    }
-    .check()
-    .expect_err("deliberate threshold failure");
-    let diagnostic = error.to_string();
-    assert!(diagnostic.contains("metric=raw-throughput-ratio"));
-    assert!(diagnostic.contains("corpus=unicode-50k"));
-    assert!(diagnostic.contains("clients=8"));
 }

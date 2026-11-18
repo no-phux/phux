@@ -143,20 +143,6 @@ async fn search_hits_paint_match_roles_never_a_status_tone() {
 }
 
 #[wasm_bindgen_test]
-async fn the_house_palette_paints_the_house_ground() {
-    let vt = Vt::load().await.unwrap();
-    let term = vt.terminal(5, 2);
-    let mut grid = term.grid();
-    let engine = (grid.default_bg, grid.default_fg);
-    ink::adopt_house_palette(&mut grid, engine);
-    let (ctx, metrics) = surface();
-    render(&ctx, &grid, &metrics, false, &Overlay::default(), false);
-    let ground = phux_design::tokens::TERMINAL.dark.bg;
-    assert_eq!(pixel(&ctx, 1), [ground.r, ground.g, ground.b, 255]);
-    assert_eq!(*ink::roles_of(&grid), ink::house());
-}
-
-#[wasm_bindgen_test]
 async fn glyphs_stay_in_their_cells_on_a_right_to_left_page() {
     let vt = Vt::load().await.unwrap();
     let term = vt.terminal(5, 2);

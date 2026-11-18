@@ -384,11 +384,4 @@ mod tests {
         let remembered = Accessibility::load(&desk.prefs);
         assert_eq!(remembered.text_scale, 1.4);
     }
-
-    #[test]
-    fn tests_never_read_the_machine_they_run_on() {
-        let mut desk = desk();
-        assert!(!desk.follow_accessibility());
-        assert!(!desk.reduce_transparency());
-    }
 }

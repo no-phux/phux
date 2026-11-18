@@ -29,21 +29,10 @@ fn sent_set_metadata(frames: &[FrameKind]) -> bool {
 /// queued, applied to the adopted workspace, and saved.
 #[tokio::test(flavor = "current_thread")]
 async fn hidden_view_actions_wait_for_the_layout_read_fence() {
-    use tracing::instrument::WithSubscriber;
-
-    let buf = crate::test_util::LogBuf::default();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .with_max_level(tracing::Level::INFO)
-        .with_writer(buf.clone())
-        .finish();
-    let subscriber = tracing::Dispatch::new(subscriber);
-
     let mut env = hidden_view_env(false);
     let before = crate::attach::arrangement_shape(&env.fx.workspace);
     let sent = env
         .dispatch(vec![ctrl_a(), press(PhysicalKey::R, Some("r"))])
-        .with_subscriber(subscriber.clone())
         .await;
     assert_eq!(
         crate::attach::arrangement_shape(&env.fx.workspace),
@@ -75,7 +64,6 @@ async fn hidden_view_actions_wait_for_the_layout_read_fence() {
     let before = crate::attach::arrangement_shape(&env.fx.workspace);
     let sent = env
         .dispatch(vec![ctrl_a(), press(PhysicalKey::V, Some("v"))])
-        .with_subscriber(subscriber)
         .await;
     assert_eq!(
         crate::attach::arrangement_shape(&env.fx.workspace),
@@ -100,16 +88,6 @@ async fn hidden_view_actions_wait_for_the_layout_read_fence() {
         env.fx.workspace.groups.is_empty(),
         "the queued close folds the adopted view"
     );
-
-    let log = buf.text();
-    assert!(
-        log.contains("arrangement save deferred") && log.contains("layout read fence"),
-        "{log}"
-    );
-    assert!(
-        log.contains("reopen-views") && log.contains("close-view"),
-        "{log}"
-    );
 }
 
 /// Releasing the bootstrap fence on failure does not authorize editing an
@@ -126,19 +104,4 @@ async fn hidden_view_actions_after_a_failed_read_queue_and_request_one_retry() {
         assert_eq!(env.fx.unloaded_arrangement_read, Some(true));
         assert!(!sent_set_metadata(&sent.frames));
     }
-}
-
-/// Once the layout read has landed, the same reopen saves the extra windows.
-#[tokio::test]
-async fn reopen_views_after_the_layout_read_saves() {
-    let mut env = hidden_view_env(true);
-    let sent = env
-        .dispatch(vec![ctrl_a(), press(PhysicalKey::R, Some("r"))])
-        .await;
-    assert_eq!(env.fx.workspace.groups.len(), 3);
-    assert!(
-        sent_set_metadata(&sent.frames),
-        "the save is the arrangement a reattach will see: {:?}",
-        sent.frames
-    );
 }

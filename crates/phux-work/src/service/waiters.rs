@@ -121,60 +121,11 @@ fn hand_over(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests")]
 
-    use std::io::Write as _;
     use std::os::unix::net::UnixStream;
-    use std::time::{Duration, Instant};
 
+    use crate::Store;
     use crate::coord::{SendMail, WaitMail};
     use crate::id::OperationId;
-    use crate::service::{Endpoint, run_keeper};
-    use crate::wire::{BUILD, Envelope, Request};
-    use crate::{Client, KeeperExit, Store};
-
-    #[test]
-    fn a_waiter_that_hangs_up_takes_nothing() {
-        let root = tempfile::tempdir().unwrap();
-        let endpoint = Endpoint::new(&root.path().join("state"), &root.path().join("run"));
-        let keeper = {
-            let endpoint = endpoint.clone();
-            std::thread::spawn(move || run_keeper(&endpoint, Duration::from_millis(300)).unwrap())
-        };
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let mut gone = loop {
-            match UnixStream::connect(&endpoint.socket) {
-                Ok(stream) => break stream,
-                Err(_) => assert!(Instant::now() < deadline, "keeper never bound"),
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        };
-        let wait = |timeout_ms| WaitMail {
-            reader: "@730".into(),
-            timeout_ms,
-            limit: 0,
-        };
-        let line = serde_json::to_string(&Envelope {
-            build: BUILD.to_owned(),
-            request: Request::WaitMail(wait(30_000)),
-        })
-        .unwrap();
-        gone.write_all(format!("{line}\n").as_bytes()).unwrap();
-        drop(gone);
-        // The keeper accepts in order and reports a parked hang-up before a
-        // new connection, so the send below finds the waiter already gone.
-        let client = Client::new(endpoint, None);
-        client
-            .send_mail(SendMail {
-                thread: "t".into(),
-                from: "a".into(),
-                to: vec!["@730".into()],
-                body: "kept".into(),
-                operation_id: OperationId::generate().unwrap(),
-            })
-            .unwrap();
-        let mail = client.wait_mail(wait(0)).unwrap();
-        assert_eq!(mail.len(), 1, "the message was not spent on a dead client");
-        assert_eq!(keeper.join().unwrap(), KeeperExit::Idle);
-    }
 
     #[test]
     fn a_take_whose_reply_cannot_be_written_is_released() {

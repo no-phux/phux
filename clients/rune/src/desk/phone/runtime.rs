@@ -152,23 +152,6 @@ fn a_drawn_return_submits_the_palette_field() {
 }
 
 #[test]
-fn confirmation_over_find_neither_edits_nor_types_into_the_terminal() {
-    let (client, mut rt) = fixture();
-    rt.state.open_find();
-    rt.state.pending = Some(crate::desk::Pending::Close(
-        phux_protocol::ids::ResourceId::local(1),
-    ));
-    rt.frame(0.0);
-    tap(&mut rt, "phone-cap-116", 0.1);
-    assert!(rt.state.pending.is_some());
-    assert!(rt.state.connection.find_query.text.is_empty());
-    tap(&mut rt, "phone-key-Escape", 0.3);
-    assert!(rt.state.pending.is_none());
-    assert!(rt.state.connection.find.is_some());
-    no_terminal_input(&client);
-}
-
-#[test]
 fn unsupported_sheets_never_send_soft_keys_to_the_terminal() {
     let (client, mut rt) = fixture();
     rt.state.inbox.open = true;

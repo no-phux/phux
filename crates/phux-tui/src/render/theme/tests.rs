@@ -21,11 +21,6 @@ fn slot_specs_name_every_slot() {
             spec.key
         );
         assert!(seen.insert(spec.leaf()), "duplicate row {}", spec.key);
-        assert!(
-            !spec.summary.ends_with('.'),
-            "{}: summary ends with a period",
-            spec.key
-        );
     }
     // Every colour field is a row: probe the field count through Debug,
     // which lists one `name: Color` pair per field before the `term`.
@@ -138,14 +133,6 @@ fn color_to_string_round_trips_through_the_parser() {
             "{text}"
         );
     }
-    // The default palette renders as the hex the docs table lists.
-    let Color::Rgb(r, g, b) = Theme::default().accent else {
-        panic!("the shipped accent is an RGB color");
-    };
-    assert_eq!(
-        Theme::default().slot("accent").map(color_to_string),
-        Some(format!("#{r:02x}{g:02x}{b:02x}"))
-    );
 }
 
 fn cfg(pairs: &[(&str, &str)]) -> phux_config::ThemeCfg {

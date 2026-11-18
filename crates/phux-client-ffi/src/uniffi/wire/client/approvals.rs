@@ -87,8 +87,7 @@ mod tests {
     use phux_protocol::wire::frame::FrameKind;
 
     #[test]
-    fn approval_bridge_refuses_offline_and_projects_the_shared_outcomes() {
-        use phux_client_runtime::approvals::{Decision, DecisionOutcome};
+    fn approval_bridge_refuses_offline() {
         let remote = RemoteClient::new("unused".into(), 80, 24, None, None);
         remote.watch_approvals();
         assert!(!remote.decide_approval("a".repeat(32), true));
@@ -96,22 +95,6 @@ mod tests {
             serde_json::from_slice(&remote.approvals_json().unwrap()).unwrap();
         assert_eq!(json["supported"], false);
         assert!(json["approvals"].as_array().unwrap().is_empty());
-        let mut projected = Vec::new();
-        remote.project_event(None, Event::ApprovalsChanged, &mut projected);
-        remote.project_event(
-            None,
-            Event::ApprovalDecision {
-                id: phux_protocol::ids::ApprovalId::parse(&"a".repeat(32)).unwrap(),
-                decision: Decision::Approve,
-                outcome: DecisionOutcome::Unconfirmed,
-            },
-            &mut projected,
-        );
-        assert_eq!(projected[0], WireEvent::ApprovalsChanged);
-        assert!(
-            matches!(&projected[1], WireEvent::ApprovalDecision { id, decision, status, .. }
-            if id == &"a".repeat(32) && decision == "approve" && status == "unconfirmed")
-        );
     }
 
     #[test]

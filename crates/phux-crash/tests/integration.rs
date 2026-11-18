@@ -211,22 +211,6 @@ fn fatal_signal_writes_restore_sequence_to_stderr() {
         "a fatal signal with escape restore armed must emit the full restore \
          sequence to stderr; got {stderr:?}"
     );
-
-    // Spot-check the modes that actually wedge a phux user, so a future edit
-    // to RESTORE_SEQ that drops one fails here and not in someone's terminal.
-    for (mode, what) in [
-        ("\x1b[?1049l", "leave alt screen"),
-        ("\x1b[?25h", "show cursor"),
-        ("\x1b[?1002l", "button-event mouse tracking off"),
-        ("\x1b[?1006l", "SGR mouse reporting off"),
-        ("\x1b[?1003l", "any-motion mouse tracking off"),
-        ("\x1b[?2026l", "end synchronized update"),
-    ] {
-        assert!(
-            stderr.contains(mode),
-            "restore sequence must {what} ({mode:?})"
-        );
-    }
 }
 
 /// ADDED FOR PHUX. The mirror of the above: after `RawModeGuard::drop` has

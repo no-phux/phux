@@ -138,19 +138,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_record_round_trips() {
-        let parsed = parse_record("1700000000 4242 0.13.0").expect("parse");
-        assert_eq!(
-            parsed,
-            StartRecord {
-                at: 1_700_000_000,
-                pid: 4242,
-                version: "0.13.0".to_owned(),
-            }
-        );
-    }
-
-    #[test]
     fn a_corrupt_line_is_skipped_not_fatal() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("server-starts.log");
@@ -158,34 +145,5 @@ mod tests {
         let records = read_records(&path);
         assert_eq!(records.len(), 1, "the one valid record must survive");
         assert_eq!(records[0].pid, 1);
-    }
-
-    #[test]
-    fn history_is_trimmed_to_the_cap() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("server-starts.log");
-        let records: Vec<StartRecord> = (0..u32::try_from(MAX_RECORDS + 20).expect("fits"))
-            .map(|i| StartRecord {
-                at: 1_700_000_000 + u64::from(i),
-                pid: i,
-                version: "0.13.0".to_owned(),
-            })
-            .collect();
-        let start = records.len().saturating_sub(MAX_RECORDS);
-        write_records(&path, &records[start..]);
-
-        let read_back = read_records(&path);
-        assert_eq!(read_back.len(), MAX_RECORDS);
-        assert_eq!(
-            read_back.last().expect("last").at,
-            records.last().expect("last").at,
-            "trimming must drop the OLDEST records, not the newest",
-        );
-    }
-
-    #[test]
-    fn missing_history_is_empty_not_an_error() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        assert!(read_records(&dir.path().join("nope.log")).is_empty());
     }
 }

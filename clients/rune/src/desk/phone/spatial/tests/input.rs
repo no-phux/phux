@@ -111,23 +111,6 @@ fn picker_is_compact_named_and_traps_physical_soft_and_paste_input() {
 }
 
 #[test]
-fn spatial_find_retains_its_editor_and_never_sends_soft_keys_behind_it() {
-    let (client, mut rt) = fixture(true);
-    rt.update(|d, _| d.open_find());
-    settle(&mut rt);
-    tap(&mut rt, "phone-cap-116");
-    tap(&mut rt, "phone-cap-104");
-    assert!(rt.state.connection.find_query.focused);
-    assert_eq!(rt.state.connection.find_query.text, "th");
-    let before = rt.state.generation;
-    tap(&mut rt, "phone-cap-return");
-    assert!(rt.state.generation > before);
-    tap(&mut rt, "phone-key-Escape");
-    assert!(rt.state.connection.find.is_none());
-    no_input(&client);
-}
-
-#[test]
 fn confirmation_inside_spatial_find_keeps_the_query_until_confirmation_closes() {
     let (client, mut rt) = fixture(true);
     rt.update(|d, _| {

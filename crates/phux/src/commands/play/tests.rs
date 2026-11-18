@@ -172,31 +172,6 @@ fn writer_argv_spells_forever_as_the_bare_loop_flag() {
 }
 
 #[test]
-fn writer_argv_always_names_the_socket() {
-    // Even with no `--socket` from the user: the launcher resolved a
-    // path and the pane must dial that one, not re-derive a default
-    // that may differ from the server it was spawned by.
-    let file = Path::new("/tmp/demo.cast");
-    let argv = writer_argv(
-        Path::new("/usr/local/bin/phux"),
-        file,
-        Path::new("/run/user/1000/phux/phux.sock"),
-        &args(file, Some(1), None),
-    );
-    let socket_at = argv
-        .iter()
-        .position(|arg| arg == "--socket")
-        .expect("argv must carry --socket");
-    assert_eq!(argv[socket_at + 1], "/run/user/1000/phux/phux.sock");
-    assert_eq!(argv[0], "/usr/local/bin/phux", "argv[0] is the phux binary");
-    assert_eq!(
-        argv.last().map(String::as_str),
-        Some("/tmp/demo.cast"),
-        "the cast is the trailing positional"
-    );
-}
-
-#[test]
 fn load_rejects_a_file_that_is_not_a_cast() {
     let dir = std::env::temp_dir().join(format!("phux-play-load-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");

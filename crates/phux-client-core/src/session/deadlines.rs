@@ -90,10 +90,6 @@ impl<E: EngineAdapter> SessionKernel<E> {
         skip: Option<&ResourceId>,
         effects: &mut EffectBuffer,
     ) -> usize {
-        #[cfg(test)]
-        {
-            self.deadline_sweeps += 1;
-        }
         let mut expired = Vec::new();
         let mut reported = 0;
         for (resource_id, lane) in self.lanes.iter_mut() {

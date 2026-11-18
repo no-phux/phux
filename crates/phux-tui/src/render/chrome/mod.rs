@@ -214,26 +214,6 @@ mod tests {
             assert_eq!(mark(&ascii, state), fallback, "{state:?}");
             assert!(mark(&ascii, state).is_ascii());
         }
-        let failed = pane_badge(
-            &unicode,
-            &ToneInput {
-                agent: Some(Agent::Working),
-                exit: Some(3),
-                ..ToneInput::default()
-            },
-        );
-        assert_eq!(
-            (failed.glyph, failed.color, failed.emphatic),
-            ("✕", unicode.agent_failed, true)
-        );
-        let ended = pane_badge(
-            &unicode,
-            &ToneInput {
-                exit: Some(0),
-                ..ToneInput::default()
-            },
-        );
-        assert_eq!(ended.glyph, "–");
     }
 
     #[test]

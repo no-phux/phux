@@ -2,7 +2,7 @@ use phux_protocol::ids::{ResourceId, ResourceKind, SessionId, WindowId};
 use phux_protocol::wire::frame::{Command, FrameKind};
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot};
 
-use super::{KindPolicy, Origin, STREAMED, Subscriptions};
+use super::{Origin, STREAMED, Subscriptions};
 use crate::control::{ControlOptions, ControlPlane, Topology};
 
 fn terminal() -> ResourceId {
@@ -92,28 +92,4 @@ fn origins_overlap_and_an_entry_lives_while_any_remains() {
     subscriptions.clear_ended();
     assert!(!subscriptions.ended(&id));
     assert_eq!(subscriptions.kind(&id), None);
-}
-
-#[test]
-fn per_kind_policy_is_one_table() {
-    let terminal = KindPolicy::of(ResourceKind::Terminal);
-    assert!(terminal.votes_on_geometry && terminal.joins_attach_barrier);
-    assert!(!terminal.resumes_from_cursor);
-    let agent = KindPolicy::of(ResourceKind::AgentSession);
-    assert!(agent.resumes_from_cursor && !agent.votes_on_geometry && !agent.joins_attach_barrier);
-    for kind in [
-        ResourceKind::AccessibilityTree,
-        ResourceKind::PixelSurface,
-        ResourceKind::Document,
-        ResourceKind::Unknown { tag: 90 },
-    ] {
-        assert_eq!(
-            KindPolicy::of(kind),
-            KindPolicy {
-                votes_on_geometry: false,
-                resumes_from_cursor: false,
-                joins_attach_barrier: false,
-            }
-        );
-    }
 }

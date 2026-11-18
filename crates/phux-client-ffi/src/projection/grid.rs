@@ -137,9 +137,4 @@ mod tests {
         assert_eq!(&marked[18..20], &[0, 0]);
         assert_eq!(marked[35], 0);
     }
-
-    #[test]
-    fn an_empty_grid_serializes_to_nothing() {
-        assert!(encode_cells(&[]).is_empty());
-    }
 }

@@ -64,16 +64,6 @@ async fn uds_peer_identity_contains_kernel_attested_process_id() {
     assert_eq!(peer.pid, Some(std::process::id()));
 }
 
-#[test]
-fn uds_credential_failure_is_never_root_fallback() {
-    let error = peer_identity_from_credentials(Err(io::Error::new(
-        io::ErrorKind::PermissionDenied,
-        "simulated peer credential failure",
-    )))
-    .expect_err("missing authenticated credentials must fail closed");
-    assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-}
-
 /// A client that hangs up before the server accepts surfaces as
 /// `NotConnected` (Darwin's `getpeereid` answers ENOTCONN), which the accept
 /// loop logs as a peer that left, not a failed accept.

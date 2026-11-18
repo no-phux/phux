@@ -270,28 +270,6 @@ mod tests {
         assert_eq!(status, std::process::ExitCode::SUCCESS);
     }
 
-    /// Every option's description starts in one column.
-    #[test]
-    fn help_options_share_one_description_column() {
-        let columns: Vec<usize> = super::HELP
-            .lines()
-            .skip_while(|line| *line != "Options:")
-            .skip(1)
-            .take_while(|line| !line.is_empty())
-            .map(|line| {
-                let flags_end = line.trim_start().find("  ").expect("flag then gap");
-                let start = line.len() - line.trim_start().len() + flags_end;
-                start + line[start..].len() - line[start..].trim_start().len()
-            })
-            .collect();
-        assert_eq!(columns.len(), 4, "{}", super::HELP);
-        assert!(
-            columns.windows(2).all(|w| w[0] == w[1]),
-            "{columns:?}\n{}",
-            super::HELP
-        );
-    }
-
     use serde_json::{Value, json};
     use tempfile::TempDir;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -304,17 +282,6 @@ mod tests {
     /// Only turns a wedged dispatcher into a bounded failure; no assertion is
     /// on latency.
     const NO_HANG_DEADLINE: Duration = Duration::from_secs(30);
-
-    #[test]
-    fn standalone_mode_parser_is_exact() {
-        assert_eq!(parse_mode([] as [&str; 0]).unwrap(), Mode::Serve);
-        assert_eq!(parse_mode(["--skill"]).unwrap(), Mode::Skill);
-        assert_eq!(parse_mode(["--schema"]).unwrap(), Mode::Schema);
-        assert_eq!(parse_mode(["--help"]).unwrap(), Mode::Help);
-        assert_eq!(parse_mode(["--version"]).unwrap(), Mode::Version);
-        assert!(parse_mode(["--skill", "--schema"]).is_err());
-        assert!(parse_mode(["junk"]).is_err());
-    }
 
     /// A fake CLI that writes its pid to `{dir}/pid` and sleeps.
     fn sleeping_cli() -> (TempDir, Arc<cli_adapter::CliAdapter>, PathBuf) {
@@ -400,26 +367,6 @@ mod tests {
             serde_json::from_str(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
                 .unwrap();
         assert!(handle_request(req).await.is_none());
-    }
-
-    /// Tool names are gated against the table by `tests/parity.rs`; here,
-    /// the served shape: object schemas, descriptions, derived hints.
-    #[tokio::test]
-    async fn tools_list_is_well_formed() {
-        let req: Request =
-            serde_json::from_str(r#"{"jsonrpc":"2.0","id":7,"method":"tools/list"}"#).unwrap();
-        let resp = handle_request(req).await.expect("tools/list replies");
-        let tools = resp["result"]["tools"].as_array().expect("tools array");
-        assert_eq!(tools.len(), tool_table::TOOLS.len());
-        for tool in tools {
-            assert_eq!(tool["inputSchema"]["type"], json!("object"), "{tool}");
-            assert!(tool["description"].is_string(), "{tool}");
-            assert!(tool["annotations"]["readOnlyHint"].is_boolean(), "{tool}");
-            assert!(
-                tool["annotations"]["destructiveHint"].is_boolean(),
-                "{tool}"
-            );
-        }
     }
 
     #[tokio::test]

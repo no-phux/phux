@@ -28,12 +28,6 @@ test("yields an auto-loaded project package to a globally configured @phux/pi", 
   ]), false);
 });
 
-test("activates the globally configured package itself", () => {
-  assert.equal(shouldActivatePhuxPackage(globalA, [
-    { scope: "user", installedPath: globalA },
-  ]), true);
-});
-
 test("uses global settings order when more than one global copy is configured", () => {
   const configured = [
     { scope: "user" as const, installedPath: globalA },

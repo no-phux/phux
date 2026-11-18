@@ -1,4 +1,4 @@
-use super::{Bootstrap, RemoteTarget, endpoint_host, parse_target, with_port_override};
+use super::{RemoteTarget, endpoint_host, parse_target, with_port_override};
 use crate::commands::remote::RemoteEntry;
 
 fn entry(name: &str, endpoint: &str) -> RemoteEntry {
@@ -174,9 +174,4 @@ fn no_explicit_port_leaves_the_entry_untouched() {
         untouched.endpoint, "quic://mini:9999",
         "a registered non-default port must survive a portless target"
     );
-}
-
-#[test]
-fn bootstrap_never_is_distinct_from_auto() {
-    assert_ne!(Bootstrap::Auto, Bootstrap::Never);
 }

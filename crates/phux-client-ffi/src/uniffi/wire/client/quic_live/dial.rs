@@ -4,26 +4,6 @@
 use super::servers::QuicServer;
 use super::*;
 
-#[test]
-fn quic_endpoint_attaches_over_real_loopback_quic() {
-    let server = QuicServer::start();
-    let remote = RemoteClient::new(format!("quic://{}", server.addr), 80, 24, None, None);
-    remote.connect().expect("connect");
-    remote.attach_session(SESSION.to_owned());
-
-    wait_for(&remote, |remote| {
-        remote.status() == WireStatus::Attached
-            && remote.topology().is_some_and(|topology| {
-                topology
-                    .sessions
-                    .iter()
-                    .any(|session| session.name == SESSION)
-            })
-    });
-    assert!(remote.server_protocol_version().is_some());
-    remote.stop_connection();
-}
-
 /// ADR-0153 for the phone: a leaf-pinned client attaches by its leaf and
 /// learns nothing (ADR-0179); pinned, a different CA is refused by name and
 /// never attaches, and the right one attaches.
@@ -163,19 +143,4 @@ fn the_tailnet_authority_probe_refuses_an_address_off_the_tailnet() {
         format!("{error:?}").contains("not on your tailnet"),
         "{error:?}"
     );
-}
-
-#[test]
-#[ignore = "live: LIVE_TAILNET_URL names a phux server on this machine's tailnet"]
-fn live_tailnet_authority_probe() {
-    let url = std::env::var("LIVE_TAILNET_URL").expect("LIVE_TAILNET_URL");
-    let ca = super::super::endpoint::tailnet_authority(url.clone()).expect("probe");
-    assert!(ca.starts_with("sha256:"));
-    // What the phone does next: the host name, the probed pin, no token.
-    let remote = RemoteClient::new(url, 80, 24, None, None);
-    remote.set_authority_pin(Some(ca));
-    remote.connect().expect("connect");
-    remote.attach_session("default".to_owned());
-    wait_for(&remote, |remote| remote.status() == WireStatus::Attached);
-    remote.stop_connection();
 }

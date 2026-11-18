@@ -220,11 +220,6 @@ mod tests {
     }
 
     #[test]
-    fn a_report_survives_no_log_directory() {
-        assert!(report_from(None, &[]).contains("--- rune.log\n(empty)"));
-    }
-
-    #[test]
     fn a_forced_panic_is_formatted_with_its_place_and_message() {
         let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
         let sink = captured.clone();

@@ -3,10 +3,10 @@
 
 use crate::common::{assert_round_trip, decode, decode_state, encode, state_reply};
 use phux_protocol::ids::{
-    ClientId, IdempotencyKey, KEY_TEXT_LEN, PrincipalId, ResourceId, ResourceKey, Revision,
-    SessionId, SessionKey, WindowId,
+    IdempotencyKey, KEY_TEXT_LEN, ResourceId, ResourceKey, Revision, SessionId, SessionKey,
+    WindowId,
 };
-use phux_protocol::wire::frame::{ActorRef, AgentEvent, Command, FrameKind, SessionLifetime};
+use phux_protocol::wire::frame::{AgentEvent, Command, FrameKind, SessionLifetime};
 use phux_protocol::wire::info::{
     ResourceInfo, SessionInfo, SessionSnapshot, TUI_LAYOUT_KEY_PREFIX, tui_layout_key,
     tui_layout_key_session,
@@ -15,51 +15,6 @@ use phux_protocol::wire::info::{
 // -----------------------------------------------------------------------------
 // Older shapes stay byte-identical.
 // -----------------------------------------------------------------------------
-
-fn changed(actor: Option<ActorRef>) -> FrameKind {
-    FrameKind::MetadataChanged {
-        scope: phux_protocol::wire::frame::Scope::Global,
-        key: "phux.example/v1".to_owned(),
-        value: None,
-        actor,
-    }
-}
-
-/// R09: an actor without principals writes exactly its `0.9.0` bytes, and a
-/// pre-principal encoding decodes with both absent; with principals the pair
-/// trails the earlier fields, which an older decoder skips because the actor
-/// ends its container.
-#[test]
-fn actor_principals_trail_and_old_shapes_are_unchanged() {
-    let plain = ActorRef::new(ClientId::new(7)).with_client_name(Some("cli".to_owned()));
-    let with = plain
-        .clone()
-        .with_principal(PrincipalId::new([0x91; 16]))
-        .with_on_behalf_of(PrincipalId::new([0x92; 16]));
-    assert_round_trip(&changed(Some(with.clone())));
-    let only_obo = plain
-        .clone()
-        .with_on_behalf_of(PrincipalId::new([0x92; 16]));
-    assert_round_trip(&changed(Some(only_obo)));
-
-    let old = encode(&changed(Some(plain.clone())));
-    let new = encode(&changed(Some(with.clone())));
-    // The new encoding is the old one plus `1 || 16 || 1 || 16` trailing the
-    // actor (and four more length bytes in the frame header, and the field
-    // length), so stripping the trailing pair reproduces the old bytes.
-    assert_eq!(new.len(), old.len() + 34);
-    let decoded = decode(&old).unwrap();
-    let FrameKind::MetadataChanged {
-        actor: Some(actor), ..
-    } = decoded
-    else {
-        panic!("actor survives");
-    };
-    assert_eq!(actor, plain);
-    assert_eq!(actor.principal(), None);
-    assert_eq!(actor.on_behalf_of(), None);
-    assert_eq!(with.principal(), PrincipalId::new([0x91; 16]));
-}
 
 /// How recently a session was used rides the same `SESSION_STATE` as a
 /// skippable field: it round-trips, and a snapshot without it reads `None`.

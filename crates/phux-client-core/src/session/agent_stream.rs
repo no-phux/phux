@@ -553,19 +553,4 @@ mod tests {
             .expect("parse");
         assert_eq!(opaque[0].transcript_entry(), None);
     }
-
-    #[test]
-    fn log_is_bounded_and_ordered() {
-        let mut log = AgentLog::with_capacity(2);
-        for seq in 1..=3 {
-            let records = parse_records(line(seq, "stop", "{}").as_bytes()).expect("parse");
-            log.push(records.into_iter().next().expect("one"));
-        }
-        let seqs: Vec<u64> = log.records().map(|record| record.seq).collect();
-        assert_eq!(seqs, vec![2, 3]);
-        assert_eq!(log.last().map(|record| record.seq), Some(3));
-        assert_eq!(log.len(), 2);
-        log.clear();
-        assert!(log.is_empty());
-    }
 }

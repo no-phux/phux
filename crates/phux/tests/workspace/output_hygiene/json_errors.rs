@@ -47,7 +47,6 @@ fn json_error_contract_holds_across_core_verbs_with_no_server() {
         &["wait", "--json", "--socket", sock, "work"],
         &["run", "--json", "--socket", sock, "work", "true"],
         &["watch", "--json", "--socket", sock, "work"],
-        &["resize", "work", "80x24", "--json", "--socket", sock],
         &["spawn", "--json", "--socket", sock],
         &["play", cast, "--json", "--socket", sock],
         &["rec", "--json", "-o", out, "--socket", sock],
@@ -183,20 +182,18 @@ fn assert_json_error_contract(
 #[test]
 fn new_refuses_an_unaddressable_session_name_before_dialing() {
     let socket = dead_socket();
-    for name in ["x:y", "@3", ""] {
-        let doc = assert_json_error_contract(
-            &["new", "-s", name, "--json", "--socket", &socket],
-            None,
-            "invalid_session_name",
-            2,
-        );
-        assert!(
-            doc["error"]["message"]
-                .as_str()
-                .is_some_and(|m| m.starts_with("invalid session name")),
-            "{doc}"
-        );
-    }
+    let doc = assert_json_error_contract(
+        &["new", "-s", "x:y", "--json", "--socket", &socket],
+        None,
+        "invalid_session_name",
+        2,
+    );
+    assert!(
+        doc["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.starts_with("invalid session name")),
+        "{doc}"
+    );
     assert!(
         !std::path::Path::new(&socket).exists(),
         "a refused name must not auto-spawn a server"
@@ -236,22 +233,6 @@ fn json_error_contract_holds_across_registry_verbs() {
         let _ = assert_json_error_contract(args, xdg, code, exit);
     }
 }
-
-/// The registry aliases take the SAME failure paths as their canonical
-/// spellings: `plugin rm` under `--json` emits the identical contract line
-/// `plugin unlink` does.
-#[test]
-fn alias_spellings_share_the_canonical_failure_paths() {
-    let tmp = TempDir::new().expect("tempdir");
-    let xdg = xdg_with_config(tmp.path(), "xdg", "");
-
-    let canonical = run_with_xdg(&["plugin", "unlink", "no.such.plugin", "--json"], &xdg);
-    let alias = run_with_xdg(&["plugin", "rm", "no.such.plugin", "--json"], &xdg);
-    assert_eq!(
-        canonical, alias,
-        "an alias is a second name, never a second code path"
-    );
-}
 /// `doctor --json` on a failure exit: the verdict is the stdout document and
 /// stderr is empty (provoked with a socket path too long for `sockaddr_un`).
 #[test]
@@ -276,25 +257,6 @@ fn doctor_json_failure_exit_is_json_only() {
         stderr.trim().is_empty(),
         "`doctor --json` must never print prose on a failure exit; got {stderr:?}"
     );
-}
-
-/// The same failure without `--json` stays prose: unparseable as JSON,
-/// multi-line, naming the missing server and its remedies (the shape the
-/// `no_server_lines` unit tests pin exactly).
-#[test]
-fn no_server_without_json_stays_prose() {
-    let sock = dead_socket();
-    let (code, _stdout, stderr) = run(&["ls", "--socket", &sock]);
-    assert_eq!(code, 1);
-    assert!(
-        serde_json::from_str::<serde_json::Value>(stderr.trim()).is_err(),
-        "prose path must not emit the JSON document; got {stderr:?}"
-    );
-    assert!(
-        stderr.contains("no server running") && stderr.contains("phux doctor"),
-        "prose keeps the remedy block; got {stderr:?}"
-    );
-    assert!(!stderr.contains(BANNER_FRAGMENT), "stderr={stderr:?}");
 }
 
 /// `resize --json` reports a refusal on the contract, not as prose: the

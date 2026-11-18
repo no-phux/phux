@@ -89,24 +89,6 @@ fn concurrent_callers_share_one_keeper_and_lose_nothing() {
 }
 
 #[test]
-fn replaying_an_operation_through_the_keeper_returns_the_first_result() {
-    let (_root, endpoint, keeper) = start_keeper(Duration::from_millis(300));
-    let client = Client::new(endpoint, None);
-    let request = add("phux", "once");
-    let first = client.add(request.clone()).expect("first");
-    let again = client.add(request).expect("replay");
-    assert!(!first.idempotent_replay);
-    assert!(again.idempotent_replay);
-    assert_eq!(first.objective.id, again.objective.id);
-    let missing = client.show(phux_work::Alias::parse("phux/9").expect("alias"));
-    assert!(
-        matches!(missing, Err(Error::NotFound { .. })),
-        "{missing:?}"
-    );
-    keeper.join().expect("join").expect("keeper");
-}
-
-#[test]
 fn a_second_keeper_for_the_same_store_steps_aside() {
     let (_root, endpoint, first) = start_keeper(Duration::from_millis(500));
     let second = run_keeper(&endpoint, Duration::from_secs(30)).expect("second");

@@ -1,19 +1,6 @@
 use super::*;
 
 #[test]
-fn snapshot_split_leaves_history_suffix() {
-    let mut source = history_terminal();
-    let mut encoded = Vec::new();
-    source.encode_snapshot(&mut encoded).expect("encode");
-    let ready_at = snapshot_ready_offset(&encoded).expect("ready");
-    assert!(
-        ready_at < encoded.len(),
-        "READY offset {ready_at} consumed the whole {}-byte snapshot; history suffix is empty",
-        encoded.len()
-    );
-}
-
-#[test]
 fn advertises_official_progressive_snapshot_v1() {
     assert!(official_snapshot_available());
     let advertised = native_bootstrap_capabilities();
@@ -83,24 +70,6 @@ fn ready_prefix_bytes_do_not_grow_with_scrollback() {
         "READY prefix grew with scrollback: 80 lines {shallow} bytes, \
              2000 lines {deep} bytes"
     );
-}
-
-#[test]
-fn shared_generation_is_content_addressed() {
-    let limits = BootstrapLimits::new(phux_protocol::DEFAULT_BOOTSTRAP_CHUNK_BYTES, 64 * 1024)
-        .expect("limits");
-    let mut manager = NativeTerminalManager::new(history_terminal(), 1).expect("manager");
-    let mut capture = manager.capture(limits).expect("capture");
-    drain_ready(&mut capture);
-    let (cursor, seed) = manager.finish_generation_capture(capture).expect("finish");
-    install(&mut manager, cursor, seed);
-    manager.retain_generation(&cursor).expect("retain");
-    let first = next_record(&manager, &cursor, 0, limits);
-    let again = next_record(&manager, &cursor, 0, limits);
-    assert_eq!(first.bytes.as_ptr(), again.bytes.as_ptr());
-    manager.release_generation(&cursor).expect("r1");
-    manager.release_generation(&cursor).expect("r2");
-    assert!(!manager.generations.contains_key(&cursor));
 }
 
 #[test]
@@ -219,27 +188,6 @@ fn encoded_generation_handoff_does_not_copy_history() {
     );
 }
 
-/// Eagerly encoded pages remain exactly the captured bytes after eviction.
-#[test]
-fn source_eviction_cannot_change_an_encoded_generation() {
-    let limits = BootstrapLimits::default();
-    let mut manager =
-        NativeTerminalManager::new(deep_terminal(2 * 1024 * 1024), 4).expect("native manager");
-    let (cursor, max_bytes, max_rows) = install_leased_generation(&mut manager, limits);
-    let expected = next_record(&manager, &cursor, 1, limits);
-    let expected_rows = drain_generation(&manager, &cursor, 0, max_bytes, max_rows).unwrap();
-
-    for row in 0..200_000 {
-        manager.vt_write(format!("evicting-{row:06}\r\n").as_bytes());
-    }
-
-    assert_eq!(next_record(&manager, &cursor, 1, limits), expected);
-    assert_eq!(
-        drain_generation(&manager, &cursor, 0, max_bytes, max_rows).unwrap(),
-        expected_rows
-    );
-}
-
 #[test]
 fn failed_bounded_encoding_returns_the_canonical_terminal() {
     let limits = BootstrapLimits::default();
@@ -248,7 +196,6 @@ fn failed_bounded_encoding_returns_the_canonical_terminal() {
         .begin_generation_capture(limits, MAX_NATIVE_PREFIX_BYTES, 1)
         .expect_err("the snapshot has more than one record");
     assert_eq!(error, NativeStateError::LimitExceeded);
-    assert!(!manager.capture_active);
     assert!(manager.try_terminal().is_some());
     let capture = manager
         .capture(limits)

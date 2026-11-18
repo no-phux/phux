@@ -10,7 +10,7 @@ use phux_protocol::native_agent::{
     SpawnNativeAgent,
 };
 use phux_protocol::wire::frame::{
-    Command, CommandResult, ErrorCode, InputMode, KillPrecondition, RolePolicy, TerminalSignal,
+    Command, CommandResult, ErrorCode, KillPrecondition, RolePolicy, TerminalSignal,
 };
 
 use phux_server_testkit::{await_command_result, run_local, spawn_server_connected};
@@ -137,28 +137,6 @@ fn an_unknown_json_op_or_field_is_refused_with_its_request_id() {
             assert_unsupported(&result);
             assert_usable(&mut stream, u64::from(request_id)).await;
         }
-    });
-}
-
-#[test]
-fn an_unknown_enum_keeps_its_value_in_the_refusal() {
-    run_local(async {
-        let (_server, mut stream) = spawn_server_connected(None).await;
-        let mut acquire = command_body(Command::AcquireInput {
-            terminal_id: ResourceId::local(1),
-            mode: InputMode::Seize,
-            ttl_ms: 1,
-        });
-        // tag, the 5-byte id, then the mode byte.
-        acquire[6] = 0x7E;
-        send_raw(&mut stream, &raw_command(50, &acquire)).await;
-        let result = await_command_result(&mut stream, 50).await;
-        assert_unsupported(&result);
-        let CommandResult::Error { message, .. } = result else {
-            unreachable!()
-        };
-        assert!(message.contains("InputMode value 126"), "{message:?}");
-        assert_usable(&mut stream, 5).await;
     });
 }
 

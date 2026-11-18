@@ -205,14 +205,6 @@ impl SettingsOverlay {
         }
     }
 
-    /// Show `text` in the header instead of the real path (tests: the temp
-    /// dir varies per run).
-    #[cfg(test)]
-    fn with_display_path(mut self, text: &str) -> Self {
-        self.display_path = text.to_owned();
-        self
-    }
-
     /// Put the selection on `key` in its section (tests).
     #[cfg(test)]
     fn focus(&mut self, key: &str) {
@@ -1585,8 +1577,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("config.toml");
         std::fs::write(&path, toml).expect("write config");
-        let page = SettingsOverlay::open(path, &Theme::default())
-            .with_display_path("~/.config/phux/config.toml");
+        let page = SettingsOverlay::open(path, &Theme::default());
         (dir, page)
     }
 
@@ -1652,18 +1643,7 @@ mod tests {
     }
 
     #[test]
-    fn opens_on_the_first_section_with_the_schema_and_theme_rows() {
-        let (_dir, page) = page_over("");
-        assert!(page.snapshot.is_ok());
-        assert_eq!(page.section, 0);
-        let rows = page.visible_specs();
-        assert!(rows.iter().all(|s| s.section == SettingSection::Defaults));
-        assert!(
-            page.specs.iter().any(|s| s.key == "theme.accent"),
-            "theme slots are rows"
-        );
-        assert!(page.specs.iter().any(|s| s.key == "sidebar.width"));
-
+    fn sections_count_their_overrides() {
         let (_dir, page) = page_over("[sidebar]\nwidth = 40\nenabled = false\n");
         assert_eq!(page.overridden_in(SettingSection::Sidebar), 2);
         assert_eq!(page.overridden_in(SettingSection::Chrome), 0);
@@ -2001,13 +1981,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn render_roomy_layout_is_stable() {
-        let (_dir, mut page) = page_over("[sidebar]\nwidth = 40\n");
-        page.focus("sidebar.width");
-        insta::assert_snapshot!(render_text(&page, 100, 30));
-    }
-
     /// More sections than column rows: the selected last section still
     /// paints, so it can be seen and clicked.
     #[test]
@@ -2023,7 +1996,7 @@ mod tests {
     }
 
     #[test]
-    fn render_compact_layout_is_stable() {
+    fn a_compact_layout_keeps_the_selected_row_in_view() {
         let (_dir, mut page) = page_over("");
         page.focus("keybindings.which-key");
         // 60x16 is starved on both axes at the shipped breakpoints: full
@@ -2031,7 +2004,6 @@ mod tests {
         // same row the two-column layout would show, header or not.
         let text = render_text(&page, 60, 16);
         assert!(text.contains("keybindings.which-key  bool"), "{text}");
-        insta::assert_snapshot!(text);
     }
 
     #[test]

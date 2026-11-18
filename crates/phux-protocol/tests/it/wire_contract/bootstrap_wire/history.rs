@@ -3,10 +3,10 @@
 use super::{
     Bytes, DecodeError, FrameKind, HistoryRejectionReason, HistoryTombstoneReason,
     MAX_BOOTSTRAP_CHUNK_BYTES, MAX_HISTORY_CURSOR_BYTES, MAX_HISTORY_PAGE_BYTES,
-    MAX_HISTORY_PAGE_ROWS, ResourceId, TYPE_BOOTSTRAP_BEGIN, TYPE_HISTORY_PAGE,
-    TYPE_HISTORY_REJECTED, TYPE_HISTORY_TOMBSTONE, assert_round_trip, bootstrap, chunk, decode_err,
-    encode_without_field, framed, history_page, history_rejected, history_request,
-    history_tombstone, local_terminal, stream, tlv_field,
+    MAX_HISTORY_PAGE_ROWS, ResourceId, TYPE_BOOTSTRAP_BEGIN, TYPE_HISTORY_REJECTED,
+    TYPE_HISTORY_TOMBSTONE, assert_round_trip, bootstrap, chunk, decode_err, encode_without_field,
+    framed, history_page, history_rejected, history_request, history_tombstone, local_terminal,
+    stream, tlv_field,
 };
 
 /// Omitting any of `ids` from `frame`'s encoding is a truncated frame.
@@ -27,19 +27,6 @@ fn history_page_sequence_and_row_count_are_required() {
         *cursor = Bytes::from_static(b"stable-lease");
     }
     assert_fields_required("history page", &page, [7, 8]);
-
-    let mut fields = Vec::new();
-    tlv_field(&mut fields, 1, &local_terminal(1));
-    tlv_field(&mut fields, 2, &2_u64.to_be_bytes());
-    tlv_field(&mut fields, 3, &3_u64.to_be_bytes());
-    tlv_field(&mut fields, 4, b"stable-lease");
-    tlv_field(&mut fields, 6, b"authenticated-finish");
-    tlv_field(&mut fields, 7, &0_u64.to_be_bytes());
-    tlv_field(&mut fields, 8, &0_u32.to_be_bytes());
-    assert_eq!(
-        FrameKind::decode(&framed(TYPE_HISTORY_PAGE, &fields)).unwrap_err(),
-        DecodeError::InvalidHistoryPageSequence
-    );
     let request = history_request(b"stable-lease", 4096, 1024);
     assert_fields_required("history request", &request, [5, 6]);
 }

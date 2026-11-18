@@ -254,17 +254,3 @@ fn main() {
     println!("└{bar}┘");
     println!("{cols}x{rows}  cursor={cursor:?}  (no tmux — raw PTY + libghostty)");
 }
-
-#[cfg(test)]
-mod tests {
-    use super::parse_args;
-
-    #[test]
-    fn dimensions_and_keystrokes_keep_their_existing_order() {
-        let input = ["echo hi\\r", "100x30", "\\x01", "-"];
-        let (cols, rows, keys) = parse_args(input.map(str::to_owned));
-        assert_eq!((cols, rows), (100, 30));
-        assert_eq!(keys, ["echo hi\\r", "\\x01", "-"]);
-        assert_eq!(parse_args(Vec::new()), (80, 24, Vec::new()));
-    }
-}

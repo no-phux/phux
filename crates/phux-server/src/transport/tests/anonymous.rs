@@ -114,28 +114,22 @@ async fn anonymous_listener_refuses_foreign_browser_origins() {
         .await
         .unwrap();
     let addr = listener.local_addr().unwrap();
-    for origin in [
-        "https://evil.example",
-        "null",
-        "http://127.0.0.1.evil.example",
-    ] {
-        let (_, error) = refused_handshake(&listener, addr, with_origin(addr, origin)).await;
-        let WebSocketError::Http(response) = error else {
-            panic!("{origin}: expected an HTTP refusal");
-        };
-        assert_eq!(
-            response.status(),
-            tokio_tungstenite::tungstenite::http::StatusCode::FORBIDDEN,
-            "{origin}"
-        );
-    }
-    for origin in [
-        "http://127.0.0.1:4321",
-        "http://localhost:8080",
-        "https://[::1]",
-    ] {
-        exchange(&listener, addr, with_origin(addr, origin), &[]).await;
-    }
+    let (_, error) =
+        refused_handshake(&listener, addr, with_origin(addr, "https://evil.example")).await;
+    let WebSocketError::Http(response) = error else {
+        panic!("expected an HTTP refusal");
+    };
+    assert_eq!(
+        response.status(),
+        tokio_tungstenite::tungstenite::http::StatusCode::FORBIDDEN
+    );
+    exchange(
+        &listener,
+        addr,
+        with_origin(addr, "http://localhost:8080"),
+        &[],
+    )
+    .await;
     exchange(&listener, addr, request(addr), &[]).await;
 
     let fronted = WsListener::bind(

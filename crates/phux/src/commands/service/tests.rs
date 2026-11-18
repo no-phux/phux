@@ -1,7 +1,7 @@
 use super::reconcile::tests::{LEGACY_PLIST, LEGACY_UNIT, patched};
 use super::unit::tests::plan;
 use super::{
-    HubEnsure, Manager, Reconcile, arm_unit, config_home_from, dry_run_text, ensure_hub_in_unit,
+    HubEnsure, Manager, Reconcile, config_home_from, dry_run_text, ensure_hub_in_unit,
     ensure_hub_in_wrapper, ensure_paired_policy, home_dir_from, render_launchd_plist, render_unit,
     render_wrapper_script, report_policy_reach_with, resolve_plan, rewrite_unit_binary,
     status_report, unit_socket_override, unit_supervises,
@@ -449,18 +449,4 @@ fn only_the_unit_that_owns_this_socket_completes_an_adoption() {
             "{manager:?}: a default-socket unit must not claim an overridden socket"
         );
     }
-}
-
-/// Arming never starts anything; on launchd it runs no command, and the
-/// written plist still carries `RunAtLoad`.
-#[test]
-fn arming_a_launchd_unit_runs_no_command() {
-    arm_unit(Manager::Launchd)
-        .expect("arming a launchd unit is writing the file, which the caller already did");
-
-    let plan = resolve_plan(None, None, false, None, false).expect("resolve_plan");
-    assert!(
-        render_launchd_plist(&plan).contains("<key>RunAtLoad</key>\n  <true/>"),
-        "an armed plist must still start the server at bootstrap"
-    );
 }

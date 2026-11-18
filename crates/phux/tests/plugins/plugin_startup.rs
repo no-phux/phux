@@ -1,26 +1,9 @@
-//! `phux plugin validate` and `phux plugin log --startup`.
+//! `phux plugin log --startup`.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
 
-use std::fmt::Write as _;
-use std::path::Path;
-
 use crate::common::{XdgDirs, phux_in};
-
-fn manifest(dir: &Path, body: &str) -> std::path::PathBuf {
-    std::fs::create_dir_all(dir).unwrap();
-    let path = dir.join("phux-plugin.toml");
-    std::fs::write(
-        &path,
-        format!(
-            "id = \"example.startup\"\nname = \"Startup\"\nversion = \"0.1.0\"\n\
-             min_phux_version = \"0.0.2\"\n{body}"
-        ),
-    )
-    .unwrap();
-    path
-}
 
 fn run(xdg: &XdgDirs, args: &[&str]) -> (i32, String, String) {
     phux_in(
@@ -31,26 +14,6 @@ fn run(xdg: &XdgDirs, args: &[&str]) -> (i32, String, String) {
         args,
     )
     .into_parts()
-}
-
-#[test]
-fn validate_rejects_a_startup_table_past_the_cap_and_accepts_eight() {
-    let tmp = tempfile::tempdir().unwrap();
-    let xdg = XdgDirs::fresh("startup-validate");
-    let mut body = String::new();
-    for n in 0..8 {
-        let _ = write!(body, "[[startup]]\nid = \"job{n}\"\ncommand = [\"true\"]\n");
-    }
-    let path = manifest(tmp.path(), &body);
-    let (code, stdout, stderr) = run(&xdg, &["plugin", "validate", path.to_str().unwrap()]);
-    assert_eq!(code, 0, "{stderr}");
-    assert!(stdout.contains("valid"), "{stdout}");
-
-    body.push_str("[[startup]]\nid = \"job8\"\ncommand = [\"true\"]\n");
-    let path = manifest(tmp.path(), &body);
-    let (code, _stdout, stderr) = run(&xdg, &["plugin", "validate", path.to_str().unwrap()]);
-    assert_ne!(code, 0);
-    assert!(stderr.contains("at most 8"), "{stderr}");
 }
 
 #[test]

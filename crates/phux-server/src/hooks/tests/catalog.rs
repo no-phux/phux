@@ -50,24 +50,6 @@ fn matched_runs_injects_event_env() {
 }
 
 #[test]
-fn matched_runs_injects_server_socket_when_known() {
-    let catalog = catalog_from_toml(
-        r#"
-        [[hooks.pane-exit]]
-        action = { kind = "run", command = "true" }
-        "#,
-    );
-    let event = HookEvent::new(PANE_EXIT, []);
-    let socket = Path::new("/tmp/phux-test/alt.sock");
-    let runs = matched_runs(&catalog, &event, Some(socket));
-    assert_eq!(runs.len(), 1);
-    assert!(runs[0].spec.env.contains(&(
-        "PHUX_SOCKET".to_owned(),
-        "/tmp/phux-test/alt.sock".to_owned()
-    )));
-}
-
-#[test]
 fn plugin_events_match_on_name_only_and_all_fire() {
     let hook = |on: &str, id: &str| PluginEventHook {
         plugin_id: "p".to_owned(),

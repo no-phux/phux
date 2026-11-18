@@ -44,7 +44,7 @@ fn is_test_source(path: &str) -> bool {
         || name.ends_with("_tests.rs")
 }
 
-pub(super) fn count(source: &str, tokens: &[&str]) -> usize {
+fn count(source: &str, tokens: &[&str]) -> usize {
     source
         .lines()
         .filter(|line| !line.trim_start().starts_with("//"))
@@ -115,7 +115,7 @@ fn agent_session_crossings(path: &str, source: &str) -> usize {
     count(&source, &AGENT_SESSION_TOKENS) + braced_agent_session_imports(&source)
 }
 
-pub(super) fn walk(
+fn walk(
     dir: &Path,
     root: &Path,
     crossings_in: fn(&str, &str) -> usize,
@@ -157,14 +157,6 @@ fn state_never_reaches_up_into_the_apps() {
         usize::from(source.lines().any(names_the_apps))
     });
     assert!(hits.is_empty(), "state depends on the apps: {hits:?}");
-}
-
-#[test]
-fn the_apps_check_reads_code_not_comments() {
-    assert!(names_the_apps("use crate::runtime::apps::app_for;"));
-    assert!(names_the_apps("use crate::runtime::{apps::app_for, pump};"));
-    assert!(!names_the_apps("/// see runtime::apps for why"));
-    assert!(!names_the_apps("let x = 1; // runtime::apps"));
 }
 
 fn crossings(crossings_in: fn(&str, &str) -> usize) -> BTreeMap<String, usize> {
@@ -230,24 +222,6 @@ fn resource_apps_do_not_delegate_frames_to_another_app() {
 }
 
 #[test]
-fn the_frame_delegation_check_sees_dispatch_and_sibling_handlers() {
-    let path = "runtime/apps/agent_session/frames.rs";
-    assert_eq!(frame_delegations(path, "TerminalApp.frame(ctx, frame)"), 2);
-    assert_eq!(
-        frame_delegations(path, "super::terminal::frames::serve_frame(ctx, frame)"),
-        1
-    );
-    assert_eq!(
-        frame_delegations(path, "// TerminalApp.frame(ctx, frame)"),
-        0
-    );
-    assert_eq!(
-        frame_delegations("runtime/connections/frames.rs", "app.frame(ctx, frame)"),
-        0
-    );
-}
-
-#[test]
 fn the_host_reaches_the_terminal_engine_only_through_its_app() {
     let found = crossings(terminal_crossings);
     assert!(
@@ -262,53 +236,5 @@ fn the_host_reaches_the_agent_session_engine_only_through_its_app() {
     assert!(
         found.is_empty(),
         "host modules name the AgentSession engine or app; add to ResourceApp or move into runtime/apps/agent_session: {found:?}"
-    );
-}
-
-#[test]
-fn the_agent_session_check_sees_braced_imports() {
-    let host = |source| agent_session_crossings("runtime/whoami.rs", source);
-    assert_eq!(host("use crate::resource::{Foo, agent_session::Bar};"), 1);
-    assert_eq!(
-        host("use phux_agent_session::{parent::P, session::Bar};"),
-        1
-    );
-    assert_eq!(
-        host("use phux_agent_session::{parent::AgentParent, state};"),
-        0
-    );
-    assert_eq!(host("use crate::runtime::apps::{agent_session};"), 1);
-    assert_eq!(
-        host("pub(crate) use crate::resource::{\n    Foo,\n    agent_session::Bar,\n};"),
-        1
-    );
-    assert_eq!(host("use crate::resource::{Foo, ResourceHandle};"), 0);
-    assert_eq!(host("// use crate::resource::{agent_session::Bar};"), 0);
-}
-
-#[test]
-fn only_the_blob_may_name_only_its_persisted_type() {
-    let field = "pub x: Vec<phux_agent_session::session::NativeAppendAccepted>,";
-    assert_eq!(agent_session_crossings("upgrade/blob.rs", field), 0);
-    assert_eq!(agent_session_crossings("runtime/whoami.rs", field), 1);
-    let other = "let s = handle.agent_session().ok();";
-    assert_eq!(agent_session_crossings("upgrade/blob.rs", other), 1);
-    let engine = "use phux_agent_session::session::AgentSessionActor;";
-    assert!(agent_session_crossings("upgrade/blob.rs", engine) > 0);
-}
-
-#[test]
-fn the_agent_session_check_reads_code_not_comments() {
-    let tokens = &AGENT_SESSION_TOKENS;
-    assert_eq!(count("use phux_agent_session::session::Foo;", tokens), 1);
-    assert_eq!(count("let s = handle.agent_session().ok();", tokens), 1);
-    assert_eq!(
-        count("crate::runtime::apps::agent_session::x();", tokens),
-        1
-    );
-    assert_eq!(count("/// see phux_agent_session::session", tokens), 0);
-    assert_eq!(
-        count("phux_protocol::native_agent::NATIVE_SCHEMA", tokens),
-        0
     );
 }

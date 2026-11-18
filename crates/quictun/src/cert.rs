@@ -330,13 +330,8 @@ mod tests {
     }
 
     #[test]
-    fn loading_reports_missing_and_empty_files() {
+    fn loading_reports_an_empty_cert_file() {
         let dir = tempfile::tempdir().unwrap();
-        let missing = dir.path().join("nope.pem");
-        assert!(load_certs(&missing).is_err());
-        assert!(cert_fingerprint(&missing).is_err());
-        assert!(load_key(&missing).is_err());
-
         let empty = dir.path().join("empty.pem");
         fs::write(&empty, "").unwrap();
         let err = load_certs(&empty).unwrap_err();

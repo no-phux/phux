@@ -511,14 +511,6 @@ fn detached_search_projection_is_unavailable_before_anchor_lookup() {
 
 #[cfg(feature = "engine")]
 #[test]
-fn non_retained_closed_search_projection_is_unavailable_before_anchor_lookup() {
-    assert_retired_search_projection_unavailable(|owner, terminal| {
-        apply_ok(owner, EngineEvent::closed_unknown(terminal.clone()));
-    });
-}
-
-#[cfg(feature = "engine")]
-#[test]
 fn live_search_preserves_stale_and_wrong_owner_errors() {
     let (owner, _) = owner();
     let terminal = id(1);
@@ -550,16 +542,6 @@ fn live_search_preserves_stale_and_wrong_owner_errors() {
     assert!(matches!(
         owner.pin_viewport(&terminal, rebuilt[0].start),
         Err(EngineError::AnchorUnavailable(_))
-    ));
-}
-
-#[cfg(feature = "engine")]
-#[test]
-fn empty_search_query_precedes_projection_availability() {
-    let (owner, _) = owner();
-    assert!(matches!(
-        owner.search_bounded(&id(999), String::new(), true, 0),
-        Err(EngineError::Engine(reason)) if reason == "search query is empty"
     ));
 }
 

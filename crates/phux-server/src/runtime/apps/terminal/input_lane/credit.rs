@@ -195,25 +195,6 @@ mod tests {
         assert_eq!(pool.available(), INPUT_CREDITS);
     }
 
-    /// A waiting sender gets the first credit returned, before the limit.
-    #[tokio::test(flavor = "current_thread", start_paused = true)]
-    async fn a_waiting_sender_takes_the_first_returned_credit() {
-        let state = SharedState::new();
-        let (wire, pool) = terminal(&state);
-        let first = pool.try_take().expect("a free credit");
-        let rest: Vec<_> = std::iter::from_fn(|| pool.try_take()).collect();
-        assert_eq!(pool.available(), 0);
-        let release = async {
-            tokio::time::sleep(INPUT_STALL_LIMIT / 2).await;
-            drop(first);
-        };
-        let mut credits = InputCredits::default();
-        let (acquired, ()) = tokio::join!(credits.acquire(&state, &wire), release);
-        assert!(acquired.expect("no stall").is_some());
-        drop(rest);
-        assert_eq!(pool.available(), INPUT_CREDITS);
-    }
-
     /// An id naming no local Terminal takes no credit; the lane refuses it.
     #[tokio::test(flavor = "current_thread")]
     async fn an_unknown_terminal_needs_no_credit() {

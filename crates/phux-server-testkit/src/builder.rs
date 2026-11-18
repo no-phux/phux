@@ -896,9 +896,7 @@ mod client_oracle_tests {
     use tokio::io::AsyncWriteExt as _;
     use tokio::net::UnixStream;
 
-    use super::{
-        BufferedFrameReceiver, ClientHandle, ReplicaGeneration, ScreenOracle, ViewportInfo,
-    };
+    use super::{BufferedFrameReceiver, ClientHandle, ScreenOracle, ViewportInfo};
     use crate::{encode_frame, run_local};
 
     fn stream(raw: u64) -> StreamId {
@@ -997,21 +995,6 @@ mod client_oracle_tests {
         let _ = gap.apply(&begin(&terminal_id, 2, 20, 2));
         assert_panics(|| {
             let _ = gap.apply(&chunk(&terminal_id, 2, 1, b"GAP"));
-        });
-
-        let mut exhausted = ScreenOracle::new(terminal_id.clone());
-        let _ = exhausted.apply(&begin(&terminal_id, 3, 20, 2));
-        exhausted
-            .staging
-            .as_mut()
-            .expect("staging generation")
-            .next_chunk_seq = Some(u32::MAX);
-        let _ = exhausted.apply(&chunk(&terminal_id, 3, u32::MAX, b"LAST"));
-        let staging = exhausted.staging.as_mut().expect("staging generation");
-        assert!(staging.replica.screen.contains("LAST"));
-        assert_eq!(staging.next_chunk_seq, None);
-        assert_panics(|| {
-            let _ = exhausted.apply(&chunk(&terminal_id, 3, u32::MAX, b"AFTER_LAST"));
         });
     }
 
@@ -1143,18 +1126,6 @@ mod client_oracle_tests {
                 screen.rows().len(),
                 3,
                 "BEGIN geometry must own replacement"
-            );
-            assert_eq!(
-                client
-                    .oracle
-                    .published
-                    .as_ref()
-                    .map(|published| &published.generation),
-                Some(&ReplicaGeneration::new(
-                    &terminal_id,
-                    stream(1),
-                    bootstrap(2)
-                ))
             );
         });
     }

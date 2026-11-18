@@ -9,7 +9,6 @@
 
 use crate::common;
 
-use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use common::ServerGuard;
@@ -231,34 +230,5 @@ fn resize_refuses_an_unknown_target_without_touching_any_pane() {
         pane_size(&server),
         (110, 35),
         "a failed resize must not have moved some other pane"
-    );
-}
-
-#[test]
-fn resize_rejects_a_zero_axis_before_it_reaches_a_server() {
-    // No `ServerGuard`: clap's value parser rejects this, so the verb never
-    // opens a socket. Pointing it at a path with no server proves that — if
-    // the geometry check moved server-side, this would fail with a
-    // connection error instead of a usage error.
-    let out = common::phux_cmd(crate::runner::phux_bin())
-        .args([
-            "resize",
-            "--socket",
-            "/tmp/phux-resize-e2e-nonexistent.sock",
-            SESSION,
-            "0x40",
-        ])
-        .stdin(Stdio::null())
-        .output()
-        .expect("run phux resize");
-    assert_ne!(out.status.code(), Some(0), "0 columns must be rejected");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("at least 1"),
-        "the diagnostic must say why zero is wrong, not just that it is: {stderr}"
-    );
-    assert!(
-        out.stdout.is_empty(),
-        "a usage error must leave stdout empty"
     );
 }

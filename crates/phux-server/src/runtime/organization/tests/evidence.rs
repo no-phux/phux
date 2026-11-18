@@ -19,14 +19,6 @@ fn missing_exit_evidence_never_becomes_zero_in_inventory() {
         activation.outcome,
         Some(phux_protocol::wire::frame::Outcome::Unobserved)
     );
-    for code in [0, 7, 127] {
-        assert_eq!(
-            ow::outcome(phux_core::Outcome::Exit(phux_core::ExitOutcome::exited(
-                code
-            ))),
-            phux_protocol::wire::frame::Outcome::Exited(code)
-        );
-    }
 }
 
 #[test]

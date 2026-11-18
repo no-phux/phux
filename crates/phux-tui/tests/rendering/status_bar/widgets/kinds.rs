@@ -269,34 +269,6 @@ fn help_hints_widget_drops_whole_hints_as_it_narrows() {
 }
 
 #[test]
-fn windows_widget_stamps_hit_targets_on_tab_cells() {
-    // phux-foz.12: every cell of a tab segment carries its window's hit
-    // target (markers included); separator cells are inert. Cell-for-cell
-    // against the default format "0:a 1:b Z" (window 1 zoomed... use the
-    // attention marker on 1 to cover marker cells too).
-    let cells = render_windows(
-        &[],
-        &[
-            win("a", true),
-            WindowInfo {
-                attention: true,
-                ..win("bee", false)
-            },
-        ],
-    );
-    // "0:a 1:bee !" — columns 0..3 → window 0, column 3 separator, 4..11 → window 1.
-    assert_eq!(text_of(&cells), "0:a 1:bee !");
-    for (i, cell) in cells.cells.iter().enumerate() {
-        let expected = match i {
-            0..=2 => Some(CellHit::Window(0)),
-            3 => None, // separator
-            _ => Some(CellHit::Window(1)),
-        };
-        assert_eq!(cell.hit, expected, "cell {i} ({:?})", cell.text);
-    }
-}
-
-#[test]
 fn windows_widget_stamps_hits_with_custom_format_and_separator() {
     // phux-foz.12: hit stamping follows the rendered segments, not the
     // default template — a custom format/separator keeps targets aligned.

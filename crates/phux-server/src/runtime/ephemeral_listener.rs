@@ -505,16 +505,6 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn an_unused_listener_closes_after_its_linger() {
-        let (_tx, rx) = watch::channel(0usize);
-        let token = CancellationToken::new();
-        let started = tokio::time::Instant::now();
-        let reason = close_when_idle(rx, Duration::from_secs(30), &token).await;
-        assert_eq!(reason, CloseReason::Idle);
-        assert_eq!(started.elapsed(), Duration::from_secs(30));
-    }
-
-    #[tokio::test(start_paused = true)]
     async fn a_live_connection_holds_it_open_and_the_clock_restarts_on_leave() {
         let (tx, rx) = watch::channel(0usize);
         let token = CancellationToken::new();

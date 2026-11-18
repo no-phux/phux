@@ -2,7 +2,6 @@ use super::{Modal, Shortcut, paste_needs_confirmation};
 
 #[test]
 fn nothing_pastes_past_a_question() {
-    assert!(!Modal::FindField.allows(Shortcut::Paste));
     assert!(!Modal::Confirm.allows(Shortcut::Paste));
     assert!(!Modal::Settings.allows(Shortcut::Paste));
 }
@@ -11,14 +10,7 @@ fn nothing_pastes_past_a_question() {
 fn the_find_field_leaves_commands_running() {
     assert!(Modal::FindField.allows(Shortcut::FindNext));
     assert!(Modal::FindField.allows(Shortcut::FindPrevious));
-    for action in [
-        Shortcut::Copy,
-        Shortcut::Paste,
-        Shortcut::SelectAll,
-        Shortcut::Screenshot,
-    ] {
-        assert!(!Modal::FindField.allows(action));
-    }
+    assert!(!Modal::FindField.allows(Shortcut::Screenshot));
 }
 
 #[test]

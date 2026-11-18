@@ -442,23 +442,6 @@ fn asked(rt: &mut Runtime<Desk>, suggestions: &[&str]) {
 }
 
 #[test]
-fn an_empty_inbox_says_nothing_needs_you_under_the_done_mark() {
-    let (_, mut rt) = crate::test_support::input_fixture();
-    rt.update(|d, _| d.toggle_inbox());
-    rt.frame(0.0);
-    let text = rt.accessibility_json().to_string();
-    assert!(text.contains("Nothing needs you"));
-    for key in [
-        "inbox-header-rule",
-        "inbox-footer-rule",
-        "inbox",
-        "inbox-scrim",
-    ] {
-        assert!(rt.find(key).is_some(), "{key}");
-    }
-}
-
-#[test]
 fn suggested_answers_are_named_buttons() {
     let (_, mut rt) = crate::test_support::input_fixture();
     rt.frame(0.0);

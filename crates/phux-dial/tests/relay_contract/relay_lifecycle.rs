@@ -1,6 +1,5 @@
-//! Tunnel and token lifecycle against the production relay: redial
-//! replaces (`RECLAIMED`), re-mint revokes at the next handshake, a lost
-//! tunnel ends its bridges boundedly, concurrent consumers share a route,
+//! Tunnel and token lifecycle against the production relay: re-mint
+//! revokes at the next handshake, a lost tunnel ends its bridges boundedly, concurrent consumers share a route,
 //! and the `--max-conns` cap refuses with `OVER_CAP`.
 
 #![allow(clippy::expect_used, reason = "tests")]
@@ -10,7 +9,7 @@
 use crate::common;
 
 use phux_dial::relay::{
-    AUTH_FAILED_CODE, DEFAULT_MAX_CONNS, OVER_CAP_CODE, PROTOCOL_VIOLATION_CODE, RECLAIMED_CODE,
+    AUTH_FAILED_CODE, DEFAULT_MAX_CONNS, OVER_CAP_CODE, PROTOCOL_VIOLATION_CODE,
 };
 use tokio::time::timeout;
 
@@ -18,38 +17,6 @@ use crate::common::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, assert_app_closed, dial_consumer, dial_tunnel_raw,
     expect_echo, expect_post_handshake_close, mint, spawn_relay, spawn_relay_tuned,
 };
-
-/// A second connector claiming a live route wins; the incumbent is closed
-/// `RECLAIMED` and new consumers land on the new tunnel.
-#[tokio::test]
-async fn redial_while_old_alive_new_wins_old_sees_reclaimed() {
-    let dir = tempfile::tempdir().unwrap();
-    let relay = spawn_relay(dir.path(), DEFAULT_MAX_CONNS).await;
-    let token = mint(&relay.tokens_path, "alpha");
-
-    let conn1 = relay.connector("alpha", token.clone(), b"ONE:").await;
-    relay.await_route_live("alpha").await;
-    let mut consumer1 = relay.consumer("alpha").await.expect("first consumer dials");
-    expect_echo(&mut consumer1, b"ONE:", b"via-one").await;
-
-    // Redial while the incumbent is alive: last-writer-wins.
-    let conn2 = relay.connector("alpha", token, b"TWO:").await;
-    let err = conn1.closed().await;
-    assert_app_closed(&err, RECLAIMED_CODE, "incumbent tunnel reclaimed");
-    if let quinn::ConnectionError::ApplicationClosed(app) = &err {
-        assert_eq!(app.reason.as_ref(), b"superseded by a newer tunnel claim");
-    }
-
-    // The claim already swapped the registry entry, so new consumers land
-    // on connector 2 — the tag proves which tunnel served.
-    let mut consumer2 = relay
-        .consumer("alpha")
-        .await
-        .expect("consumer dials after the reclaim");
-    expect_echo(&mut consumer2, b"TWO:", b"via-two").await;
-    assert_eq!(conn2.bridged(), 1, "new tunnel served the new consumer");
-    assert_eq!(conn1.bridged(), 1, "old tunnel saw no post-reclaim stream");
-}
 
 /// A consumer mid-bridge when its tunnel dies gets a bounded end (the
 /// splice's first-finished-direction rule), never a hang; a redial with

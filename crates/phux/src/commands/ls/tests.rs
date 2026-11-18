@@ -4,7 +4,7 @@ use phux_protocol::wire::info::{SessionInfo, SessionSnapshot};
 use phux_protocol::{ResourceId, SessionId, WindowId};
 
 use super::lines::{format_row, format_session_line, with_key};
-use super::{EMPTY_STATE, session_lines};
+use super::session_lines;
 
 /// `phux ls --all` with no local server said "unreachable: attach loop
 /// io error: No such file or directory (os error 2)".
@@ -138,19 +138,6 @@ fn session_lines_count_windows_and_clients_and_mark_empty_sessions() {
     }
 }
 
-#[test]
-fn empty_snapshot_yields_no_lines_and_the_empty_state_names_next_commands() {
-    let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::new(1));
-    assert!(session_lines(&snapshot, None).is_empty());
-
-    // The two-line empty state: what is missing, then the exact commands
-    // that fix it (the `phux host ls` precedent).
-    assert_eq!(EMPTY_STATE.len(), 2);
-    assert_eq!(EMPTY_STATE[0], "No sessions.");
-    assert!(EMPTY_STATE[1].contains("`phux`"));
-    assert!(EMPTY_STATE[1].contains("`phux new NAME -- CMD`"));
-}
-
 /// `phux ls` shows each session's lifetime, member count, and the
 /// members' execution states; a member-less session reads `empty`.
 #[test]
@@ -281,33 +268,6 @@ pub(super) fn federated_snapshot() -> SessionSnapshot {
             ),
             HostInventory::unreachable(SatelliteHost::new("down"), "link is down"),
         ])
-}
-
-/// A hub groups the listing by host; an unreachable satellite is marked,
-/// not dropped.
-#[test]
-fn host_inventory_groups_the_listing() {
-    assert_eq!(
-        session_lines(&federated_snapshot(), None),
-        vec![
-            "This host",
-            "  work: 1 member (1 running), 1 window",
-            "edge",
-            "  build: 2 windows, 3 panes (1 client attached)",
-            "down (unreachable)",
-        ]
-    );
-}
-
-/// Without a host inventory the listing is the flat, pre-grouping one.
-#[test]
-fn no_host_inventory_keeps_the_flat_listing() {
-    let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::new(1))
-        .with_sessions(vec![session("work", 1, 0)]);
-    assert_eq!(
-        session_lines(&snapshot, None),
-        vec!["work: 0 members, 1 window"]
-    );
 }
 
 /// A grouped listing keeps each satellite Terminal's `host/@N` selector

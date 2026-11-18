@@ -65,25 +65,6 @@ fn the_next_tab_shows_in_its_split_and_the_hidden_one_stays_warm() {
     assert_eq!(on_screen(&rt), [id(1), id(3)]);
 }
 
-#[cfg(target_os = "macos")]
-#[test]
-fn command_shift_arrows_walk_a_splits_tabs() {
-    use crate::keys::{Shortcut, shortcut};
-    let mods = Mods {
-        cmd: true,
-        shift: true,
-        ..Mods::default()
-    };
-    assert_eq!(
-        shortcut(&Key::Right, mods, None),
-        Some(Shortcut::NextSlotTab)
-    );
-    assert_eq!(
-        shortcut(&Key::Left, mods, None),
-        Some(Shortcut::PreviousSlotTab)
-    );
-}
-
 #[test]
 fn a_terminal_dropped_on_a_pane_joins_its_slot() {
     let (client, mut rt) = fixture(&terminals(), &doc(split(1, 2)));

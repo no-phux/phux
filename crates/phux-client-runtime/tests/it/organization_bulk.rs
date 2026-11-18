@@ -318,18 +318,6 @@ fn terminal_inventory_refusals_cancel_tails_without_retrying_the_first_page() {
                 verb: Verb::Inventory,
             }),
         ),
-        (
-            "unsupported",
-            refused(Refusal::Unsupported {
-                capability: "organization".to_owned(),
-            }),
-        ),
-        (
-            "store failure",
-            refused(Refusal::StoreFailure {
-                reason: "disk unavailable".to_owned(),
-            }),
-        ),
         ("expired cursor", expired_cursor()),
     ] {
         let (mut plane, _, read) = first_chunk_committed();

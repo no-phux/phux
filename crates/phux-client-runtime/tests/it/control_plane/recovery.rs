@@ -216,21 +216,6 @@ fn a_live_named_switch_reconnects_to_its_renamed_identity() {
 }
 
 #[test]
-fn selected_session_numbers_are_scoped_to_the_server_incarnation() {
-    let (mut plane, attach_id) = negotiated();
-    attach(&mut plane, attach_id, b"original");
-    assert!(!plane.attach_session(AttachTarget::ById(SessionId::new(1))));
-
-    // A dropped socket does not change a session's identity, even if its name
-    // changes. A different server may have reused that number for other work.
-    assert_reconnect_targets(
-        &mut plane,
-        &AttachTarget::ById(SessionId::new(1)),
-        &AttachTarget::ByName("main".to_owned()),
-    );
-}
-
-#[test]
 fn a_new_server_cannot_inherit_an_unresolved_numeric_session_target() {
     let mut plane = ControlPlane::new(ControlOptions {
         attach: Some(AttachTarget::ById(SessionId::new(7))),

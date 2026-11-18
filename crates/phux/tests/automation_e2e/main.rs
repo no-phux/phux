@@ -8,7 +8,6 @@ mod runner;
 
 mod acp_e2e;
 mod agent_list_e2e;
-mod agent_log_validation;
 mod agent_record_e2e;
 mod agent_session_e2e;
 mod controller_client_e2e;

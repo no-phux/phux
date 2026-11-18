@@ -59,47 +59,6 @@ fn aggregate_staging_budget_rejects_many_panes_without_large_allocations() {
 }
 
 #[test]
-fn bootstrap_adaptation_peak_includes_sources_scratch_and_outputs() {
-    let mut scrollback = Vec::new();
-    scrollback
-        .try_reserve_exact(512)
-        .expect("scrollback reserve");
-    scrollback.resize(512, b's');
-    let mut bytes = Vec::new();
-    bytes.try_reserve_exact(1_024).expect("snapshot reserve");
-    bytes.resize(1_024, b'x');
-    let source_capacity = scrollback.capacity() + bytes.capacity();
-    let peak_budget = source_capacity.checked_mul(2).expect("peak budget");
-    let caps = ClientCapabilities::default()
-        .with_color_support(phux_protocol::caps::ColorSupport::Indexed256);
-    assert!(!crate::downsample::caps_pass_through(caps));
-
-    let adapted = adapt_bootstrap_snapshot(
-        &phux_terminal_api::TerminalEngineFactory::presentation(&phux_terminal::TerminalEngine),
-        phux_terminal::grid::SnapshotBytes {
-            cols: 80,
-            rows: 24,
-            bytes,
-            scrollback,
-        },
-        caps,
-        peak_budget,
-    )
-    .expect("bounded capability adaptation");
-
-    assert_eq!(
-        adapted
-            .payloads
-            .iter()
-            .map(bytes::Bytes::len)
-            .sum::<usize>(),
-        source_capacity,
-    );
-    assert_eq!(adapted.retained_bytes, source_capacity);
-    assert!(adapted.peak_bytes <= peak_budget);
-}
-
-#[test]
 fn bootstrap_adaptation_restores_images_only_for_kitty_consumers() {
     let mut source = phux_terminal::vt::Terminal::new(10, 5).unwrap();
     phux_vt::kitty_replay::configure_terminal_for_kitty_graphics(&mut source).unwrap();

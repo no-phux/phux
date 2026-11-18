@@ -205,16 +205,6 @@ mod tests {
     }
 
     #[test]
-    fn nested_debug_never_contains_values() {
-        let op = CredentialOp::Complete {
-            id: "01010101010101010101010101010101".into(),
-            values: Some(SecretValues(vec!["canary-secret".into()])),
-        };
-        assert!(!format!("{op:?}").contains("canary-secret"));
-        assert!(SecretValues(vec!["bad\0value".into()]).validate().is_err());
-    }
-
-    #[test]
     fn every_operation_and_secret_reply_round_trips() {
         use crate::wire::frame::{Command, CommandResult, CommandValue, FrameKind};
         let request = CredentialRequest {
@@ -274,6 +264,12 @@ mod tests {
                 request_id: 1,
                 result: CommandResult::OkWith(CommandValue::CredentialSecrets(SecretValues(vec![
                     "x".repeat(MAX_SECRET_BYTES + 1),
+                ]))),
+            },
+            FrameKind::CommandResult {
+                request_id: 1,
+                result: CommandResult::OkWith(CommandValue::CredentialSecrets(SecretValues(vec![
+                    "bad\0value".into(),
                 ]))),
             },
         ];

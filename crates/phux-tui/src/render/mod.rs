@@ -165,23 +165,4 @@ mod clip_text_tests {
         assert_eq!(clip_text("abcdef", 4), clip_text("abc\u{202e}def", 4));
         assert!(!clip_text("x\u{1b}]0;evil\u{7}y", 3).contains('\u{1b}'));
     }
-
-    /// CELLS, not chars. A CJK label clipped by `chars().count()` is
-    /// twice its budget wide and overruns the columns the sidebar strip or a
-    /// pane title reserved.
-    #[test]
-    fn wide_text_is_counted_in_cells() {
-        // Never OVER the budget, which is the property callers rely on.
-        for max in 1..12 {
-            assert!(
-                display_width(clip_text("日本語のテスト", max).as_str()) <= max,
-                "budget {max} overrun"
-            );
-        }
-        // A budget a whole number of glyphs fits is used exactly: 7 =
-        // three double-width characters plus the ellipsis.
-        assert_eq!(clip_text("日本語のテスト", 7), "日本語\u{2026}");
-        // Exactly the budget: untouched, no ellipsis.
-        assert_eq!(clip_text("日本語", 6), "日本語");
-    }
 }

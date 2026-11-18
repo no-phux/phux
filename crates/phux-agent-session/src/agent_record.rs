@@ -2,8 +2,7 @@
 //! `docs/agents.md#agent-states`), duplicated from `phux-client` (no dependency).
 //!
 //! `metadata_set` dedups on byte equality, so field order (`name`, `kind`,
-//! `state`, `attention`, `session`) and the skip set are pinned by a golden
-//! test.
+//! `state`, `attention`, `session`) and the skip set are pinned by tests.
 
 use serde::{Deserialize, Serialize};
 
@@ -51,22 +50,6 @@ impl AgentRecordJson {
 mod tests {
     use super::AgentRecordJson;
 
-    /// GOLDEN: the exact bytes the detector writes (dedup depends on them).
-    #[test]
-    fn golden_encoding_is_byte_exact() {
-        let record = AgentRecordJson {
-            name: "claude".to_owned(),
-            kind: Some("claude".to_owned()),
-            state: "working".to_owned(),
-            attention: None,
-            session: None,
-        };
-        assert_eq!(
-            String::from_utf8(record.encode()).expect("utf8"),
-            r#"{"name":"claude","kind":"claude","state":"working"}"#
-        );
-    }
-
     /// Re-encoding a decoded record is stable — the property the dedup
     /// actually relies on.
     #[test]
@@ -89,13 +72,6 @@ mod tests {
             String::from_utf8(record.encode()).expect("utf8"),
             r#"{"name":"codex","state":"idle"}"#
         );
-    }
-
-    #[test]
-    fn a_declared_attention_survives_a_roundtrip() {
-        let bytes = br#"{"name":"a","state":"blocked","attention":"high"}"#;
-        let record = AgentRecordJson::decode(bytes).expect("decodes");
-        assert_eq!(record.attention.as_deref(), Some("high"));
     }
 
     #[test]

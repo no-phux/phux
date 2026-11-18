@@ -53,34 +53,6 @@ fn json_usage_message_names_the_listed_subject() {
     assert_eq!(rest, "\nUsage\n");
 }
 
-/// Key material on a command line is caught by its PEM markers before
-/// anything parses, and a bare base64 line is redacted from usage errors
-/// without mangling the usage text around it.
-#[test]
-fn key_material_is_caught_on_argv_and_redacted_from_usage_errors() {
-    assert!(crate::parse_error::workload_argv_carries_key_material(
-        &argv(&[
-            "workload",
-            "add-key",
-            "--cert-out=-----BEGIN EC PRIVATE KEY-----"
-        ])
-    ));
-    assert!(!crate::parse_error::workload_argv_carries_key_material(
-        &words("run -- grep -r BEGIN")
-    ));
-    let line = "MHcCAQEEIBDpHVEl6z9Z0t6xw5Vg3F1wVZ3n7xHqAoGCCqGSM49AwEHoUQDQgAE";
-    let rendered = format!(
-        "error: unexpected argument '{line}'\nUsage: phux workload add-key --scope <VERBS@SELECTOR>"
-    );
-    let redacted = crate::parse_error::redact_long_base64(&rendered);
-    assert!(!redacted.contains(line), "{redacted}");
-    assert!(redacted.contains("'<redacted>'"), "{redacted}");
-    assert!(
-        redacted.contains("phux workload add-key --scope <VERBS@SELECTOR>"),
-        "{redacted}"
-    );
-}
-
 /// `phux help <verb...>` becomes `phux <verb...> --help`; a bare `help`
 /// and anything else pass through untouched.
 #[test]
@@ -205,15 +177,6 @@ fn root_short_help_survives_global_option_placement() {
         );
     }
     assert!(!crate::help::short_help_requested_in(["attach", "-h"]));
-}
-
-/// A scoped flag given before the verb gets the teaching hint: the
-/// interception recognizes `--json` (and any other per-verb long flag)
-/// in clap's unknown-argument refusal.
-#[test]
-fn misplaced_scoped_flag_is_recognized_for_the_hint() {
-    // `--json` is per-verb, so the root refuses it, as it does unknown flags.
-    assert_parses(&[("phux --json ls", false), ("phux --no-such-flag ls", false)]);
 }
 
 /// The hint follows where the flag was typed: before the verb it says

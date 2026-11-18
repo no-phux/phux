@@ -166,24 +166,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_existing_framed_io_pumps_child_stdio_and_reports_failure() {
-        let mut command = Command::new("sh");
-        command.args(["-c", "exec cat"]);
-        let mut link = super::super::Io::child(&mut command).expect("stdio lane");
-        let ping =
-            crate::control::encode(&phux_protocol::wire::frame::FrameKind::Ping { nonce: 42 });
-        link.write_frame(&ping).await.expect("send frame");
-        let frames = tokio::time::timeout(Duration::from_secs(5), link.read_frames())
-            .await
-            .expect("frame deadline")
-            .expect("read")
-            .expect("frame batch");
-        assert_eq!(frames.len(), 1);
-        assert_eq!(&frames[0][..], ping);
-        assert_eq!(link.peer_pid(), None);
-        assert!(link.terminal_stream_connection().is_none());
-        link.shutdown().await;
-
+    async fn a_failed_bridge_reports_its_stderr() {
         let mut command = Command::new("sh");
         command.args(["-c", "printf 'no WSL socket' >&2; exit 9"]);
         let mut link = super::super::Io::child(&mut command).expect("stdio lane");

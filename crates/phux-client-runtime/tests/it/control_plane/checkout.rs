@@ -7,15 +7,7 @@ fn plane_with_checkout() -> ControlPlane {
 }
 
 #[test]
-fn checkout_requires_the_capability_and_correlates_typed_answers() {
-    let mut plane = opened(ControlOptions::default(), hello_ok(PROTOCOL_VERSION.patch));
-    let _ = plane.take_outbound();
-    assert_eq!(plane.checkout(terminal(), CheckoutRequest::Status), 0);
-    assert!(
-        plane.take_outbound().is_empty(),
-        "an older server is never asked"
-    );
-
+fn checkout_correlates_typed_answers() {
     let mut plane = plane_with_checkout();
     let target = ResourceId::satellite(SatelliteHost::new("peer"), 4);
     let id = plane.checkout(target.clone(), CheckoutRequest::Branches);

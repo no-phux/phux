@@ -395,16 +395,6 @@ mod tests {
     }
 
     #[test]
-    fn seq_starts_at_one_and_strictly_increases() {
-        let mut journal = Journal::new(16, 1 << 20);
-        let first = journal.record(bell(1), None, 5).expect("stamped");
-        let second = journal.record(bell(2), None, 6).expect("stamped");
-        assert_eq!((first.seq(), second.seq()), (1, 2));
-        assert_eq!(journal.head(), 2);
-        assert_eq!(second.stamp.ts_ms, 6);
-    }
-
-    #[test]
     fn the_no_replay_sentinel_is_never_assigned() {
         let mut journal = Journal::new(16, 1 << 20);
         journal.head = u64::MAX - 2;

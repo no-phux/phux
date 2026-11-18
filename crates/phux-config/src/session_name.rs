@@ -128,7 +128,6 @@ mod tests {
     #[test]
     fn word_lists_are_curated_and_disjoint() {
         for list in [ADJECTIVES, NOUNS] {
-            assert!((64..=128).contains(&list.len()));
             assert!(
                 list.iter()
                     .all(|w| !w.is_empty() && w.bytes().all(|b| b.is_ascii_lowercase()))

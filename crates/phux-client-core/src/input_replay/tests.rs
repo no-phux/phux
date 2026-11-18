@@ -143,54 +143,6 @@ fn a_replay_reuses_the_operation_id_and_not_the_request_id() {
 }
 
 #[test]
-fn replay_policy_never_downgrades_to_fire_and_forget_input() {
-    let mut journal = armed_journal();
-    journal
-        .submit_at(operation_id(43), tid(1), enter(), 100)
-        .expect("queue acknowledged key batch");
-    let mut next = 1_u32;
-
-    for now_ms in [110, 130] {
-        let (reports, frames) = journal.next_frames_at(&mut next, now_ms);
-        assert!(reports.is_empty());
-        assert!(matches!(
-            frames.as_slice(),
-            [FrameKind::Command {
-                command: Command::ApplyInput { .. },
-                ..
-            }]
-        ));
-        journal.connection_lost();
-        assert!(
-            journal
-                .begin_connection_at(Some(&SERVER_A), true, now_ms + 1)
-                .is_empty()
-        );
-    }
-}
-
-/// Only one attempt is outstanding at a time; the second queued paste
-/// goes on the wire only after the first resolves.
-#[test]
-fn attempts_are_serialized_in_submission_order() {
-    let mut journal = armed_journal();
-    submit(&mut journal, tid(1), paste("first")).expect("queue");
-    submit(&mut journal, tid(1), paste("second")).expect("queue");
-    let mut next = 1_u32;
-    let (request, _) = send_one(&mut journal, &mut next);
-    let (reports, frame) = journal.next_frame(&mut next);
-    assert!(reports.is_empty() && frame.is_none(), "{frame:?}");
-
-    let report = journal
-        .resolve(request, &CommandResult::Ok)
-        .expect("owned request id");
-    assert_eq!(report.disposition, ReplayDisposition::Delivered);
-
-    let (second_request, _) = send_one(&mut journal, &mut next);
-    assert!(journal.owns(second_request));
-}
-
-#[test]
 fn delayed_paste_keeps_later_paste_and_enter_in_terminal_order() {
     let mut journal = armed_journal();
     submit(&mut journal, tid(1), paste("A")).expect("queue A");

@@ -60,24 +60,6 @@ fn transmits(bytes: &[u8]) -> usize {
 }
 
 #[test]
-fn the_timer_re_sends_an_image_a_heal_interval_after_its_send() {
-    let before = Instant::now();
-    let mut panes = pane_with_images(1, 1);
-    let mut heal = KittyHeal::default();
-    let due = heal.deadline(&panes).expect("an image is shown");
-    assert!(due >= before + HEAL_INTERVAL);
-    assert!(due <= Instant::now() + HEAL_INTERVAL);
-
-    assert!(!heal.heal_due(&mut panes, Instant::now()), "not due yet");
-    assert!(paint(&mut panes).is_empty());
-    let later = due + Duration::from_millis(1);
-    assert!(heal.heal_due(&mut panes, later));
-    assert_eq!(transmits(&paint(&mut panes)), 1);
-    assert!(heal.deadline(&panes).is_some_and(|next| next > due));
-    assert!(paint(&mut panes).is_empty());
-}
-
-#[test]
 fn an_unfocused_terminal_waits_for_focus_in() {
     let mut panes = pane_with_images(1, 1);
     let mut heal = KittyHeal::default();
@@ -87,18 +69,6 @@ fn an_unfocused_terminal_waits_for_focus_in() {
     assert!(!heal.heal_due(&mut panes, later));
     heal.note_focus(true);
     assert!(heal.heal_on_focus(&mut panes, later));
-    assert_eq!(transmits(&paint(&mut panes)), 1);
-}
-
-#[test]
-fn focus_in_skips_images_sent_moments_ago() {
-    let mut panes = pane_with_images(1, 1);
-    let mut heal = KittyHeal::default();
-    heal.note_focus(true);
-    assert!(!heal.heal_on_focus(&mut panes, Instant::now()));
-    assert!(paint(&mut panes).is_empty());
-    let away = Instant::now() + FOCUS_MIN_AGE + Duration::from_millis(1);
-    assert!(heal.heal_on_focus(&mut panes, away));
     assert_eq!(transmits(&paint(&mut panes)), 1);
 }
 

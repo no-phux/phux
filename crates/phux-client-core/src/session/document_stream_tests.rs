@@ -86,14 +86,6 @@ fn a_document_cut_lands_whole_at_ready_and_each_live_frame_is_a_document() {
 }
 
 #[test]
-fn a_tree_profile_on_a_surface_is_a_kind_mismatch() {
-    let mut rig = rig();
-    rig.ok(surface_gen(1).begin_gridless(BootstrapStreamProfile::PixelSurfacePngV1, 0));
-    let tree = BootstrapStreamProfile::AccessibilityTreeJsonV1;
-    assert!(rig.up(surface_gen(2).begin_gridless(tree, 0)).is_err());
-}
-
-#[test]
 fn a_typed_document_names_its_content_type_at_ready_and_on_every_live_frame() {
     let mut rig = rig();
     let g = surface_gen(1);

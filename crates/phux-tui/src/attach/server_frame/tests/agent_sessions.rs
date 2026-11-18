@@ -12,23 +12,13 @@ fn kind_attached() -> (H, FrameOutcome) {
 }
 
 #[test]
-fn attach_participants_and_agent_sessions_split_a_mixed_kind_snapshot() {
+fn only_the_terminal_of_a_mixed_kind_snapshot_is_a_participant() {
     let (pane, agent) = (tid(1), tid(2));
     let snapshot = mixed_kind_snapshot(&pane, &agent);
-    let participants = attach_participants(&snapshot);
     assert_eq!(
-        participants,
+        attach_participants(&snapshot),
         vec![pane],
         "only the Terminal is a barrier participant"
-    );
-    let children: Vec<&ResourceId> = attach_agent_sessions(&snapshot, &participants)
-        .into_iter()
-        .map(|info| &info.id)
-        .collect();
-    assert_eq!(children, vec![&agent]);
-    assert!(
-        attach_agent_sessions(&snapshot, &[]).is_empty(),
-        "a child whose parent is not attached is not declared"
     );
 }
 

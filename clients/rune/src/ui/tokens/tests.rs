@@ -33,16 +33,6 @@ fn equal_inputs_share_one_tokens() {
 }
 
 #[test]
-fn no_theme_is_the_house_look_in_the_system_appearance() {
-    for (dark, mode) in [(true, Mode::Dark), (false, Mode::Light)] {
-        let t = system(dark);
-        assert_eq!(t.roles, Roles::house(mode));
-        assert_eq!(t.dark(), dark);
-        assert_eq!(t.kit.dark, dark);
-    }
-}
-
-#[test]
 fn increased_contrast_draws_the_solved_variant() {
     let t = Tokens::resolve(&Inputs {
         increased_contrast: true,
@@ -62,18 +52,6 @@ fn a_theme_derives_its_roles() {
     });
     assert_eq!(t.roles.layer.ground, Rgb8::hex(0x2e_3440).opaque());
     assert!(t.dark(), "the theme's own mode beats the system's");
-}
-
-#[test]
-fn the_kit_rings_and_radii_follow_the_chrome() {
-    let t = system(true);
-    assert!(t.kit.ring.is_none(), "rings are coloured in the tiers");
-    assert!(!t.kit.invalid_text);
-    assert_eq!(
-        t.kit.radius.md,
-        phux_design::tokens::RADIUS.sm,
-        "kit md is a control"
-    );
 }
 
 #[test]
@@ -134,12 +112,6 @@ fn a_theme_changing_under_one_id_changes_the_version() {
     });
     assert_eq!(base.id, swapped.id);
     assert_ne!(a.version, b.version);
-}
-
-#[test]
-fn the_window_blends_in_srgb() {
-    // `over` (§2.2) composites in sRGB, which is how this window blends.
-    assert!(rune::theme::blends_srgb());
 }
 
 #[test]

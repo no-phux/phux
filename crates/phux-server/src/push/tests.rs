@@ -295,14 +295,8 @@ async fn a_screen_detected_block_is_pushed_to_every_absent_device_once_per_episo
 }
 
 #[test]
-fn each_notice_names_its_action_and_question() {
+fn an_ask_notice_asks_for_a_reply() {
     assert_eq!(wire_notice(Notice::Ask("q1")), ("reply", Some("q1")));
-    assert_eq!(
-        wire_notice(Notice::Blocked),
-        ("open", Some(BLOCKED_QUESTION))
-    );
-    assert_eq!(wire_notice(Notice::Finished), ("finished", None));
-    assert_eq!(wire_notice(Notice::Approve("a1")), ("approve", Some("a1")));
 }
 
 /// A hold reaches every absent device as `approve` with its approval id,

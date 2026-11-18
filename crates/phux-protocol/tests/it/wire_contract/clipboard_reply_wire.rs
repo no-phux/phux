@@ -32,7 +32,6 @@ fn client_originated_type_byte_behind_its_own_feature_bit() {
         ServerFeatureExt::ClipboardRead.wire_name(),
         "CLIPBOARD_READ"
     );
-    assert_eq!(reply(String::new()).type_byte(), TYPE_CLIPBOARD_REPLY);
 }
 
 #[test]

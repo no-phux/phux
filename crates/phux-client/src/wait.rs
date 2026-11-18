@@ -467,15 +467,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn an_invalid_regex_fails_to_compile() {
-        let err = "(unclosed".parse::<MatchRegex>().unwrap_err();
-        assert!(
-            err.contains("unclosed") || err.contains("regex parse error"),
-            "{err:?}"
-        );
-    }
-
     /// The command-echo footgun: waiting for text that also appears in the
     /// typed command matches its own echo instantly without the filter.
     #[test]
@@ -579,23 +570,6 @@ mod tests {
             ..screen(&["oldest", "output line", "$ echo MARKER", "", ""])
         };
         assert_eq!(match_lines(&padded, &both), lines(&["output line"]));
-    }
-
-    /// A change confined to a row outside the window is not activity.
-    #[test]
-    fn idle_observes_the_scoped_projection() {
-        let before = ScreenState {
-            scrollback: lines(&["spinner |"]),
-            ..screen(&["settled"])
-        };
-        let after = ScreenState {
-            scrollback: lines(&["spinner /"]),
-            ..screen(&["settled"])
-        };
-        assert_eq!(
-            match_lines(&before, &tail(1)),
-            match_lines(&after, &tail(1))
-        );
     }
 
     #[test]

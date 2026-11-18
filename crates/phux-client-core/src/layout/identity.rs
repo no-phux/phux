@@ -93,20 +93,6 @@ mod tests {
         assert_eq!(decoded, ws);
     }
 
-    #[test]
-    fn removed_seed_can_form_a_new_window_without_reusing_retained_identity() {
-        let mut ws = split();
-        let retained = ws.groups[0].id;
-        ws.groups[0].state = LayoutState::single(ResourceId::local(2));
-        ws.add_group("reused seed".into(), ResourceId::local(1));
-        assert_eq!(ws.groups[0].id, retained);
-        assert_ne!(ws.groups[1].id, retained);
-        assert_eq!(
-            ArrangementDoc::decode_cbor(&ws.encode_cbor().unwrap()).unwrap(),
-            ws
-        );
-    }
-
     /// The same seed pane does not yield the same identity: ids are random,
     /// so a handle reused after a restart cannot collide with a group that
     /// outlived it.

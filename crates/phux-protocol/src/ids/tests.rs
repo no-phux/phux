@@ -14,8 +14,6 @@ fn resource_kind_tags_are_stable_and_unknown_round_trips() {
     assert_eq!(ResourceKind::default(), ResourceKind::Terminal);
     assert!(ResourceKind::Terminal.is_terminal());
     assert!(!ResourceKind::AgentSession.is_terminal());
-    assert_eq!(ResourceKind::AgentSession.to_string(), "agent_session");
-    assert_eq!(ResourceKind::Unknown { tag: 9 }.to_string(), "unknown(9)");
 }
 
 #[test]

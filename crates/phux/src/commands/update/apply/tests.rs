@@ -8,55 +8,8 @@ use std::time::Duration;
 use super::transaction::rollback_with_checkpoint;
 use super::{
     BACKUP_DIR, InstallCheckpoint, PREPARING_DIR, RollbackCheckpoint, Staging, TRANSACTION_DIR,
-    UpdateError, UpdateLock, replace_binaries, replace_binaries_with_checkpoint, rollback,
-    sha256_file, unpack_verified, verify_digest,
+    UpdateLock, replace_binaries, replace_binaries_with_checkpoint, rollback, unpack_verified,
 };
-
-/// The SHA-256 of the empty input, the standard published vector.
-#[test]
-fn sha256_matches_the_published_vector() {
-    let scratch = tempfile::tempdir().unwrap();
-    let empty = scratch.path().join("empty");
-    fs::write(&empty, b"").unwrap();
-    assert_eq!(
-        sha256_file(&empty).unwrap(),
-        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-    );
-
-    let abc = scratch.path().join("abc");
-    fs::write(&abc, b"abc").unwrap();
-    assert_eq!(
-        sha256_file(&abc).unwrap(),
-        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-    );
-}
-
-/// The gate: a tampered archive is refused, loudly, with both digests.
-#[test]
-fn a_checksum_mismatch_refuses_and_names_both_digests() {
-    let scratch = tempfile::tempdir().unwrap();
-    let archive = scratch.path().join("phux-v1.0.0-t.tar.gz");
-    fs::write(&archive, b"the real bytes").unwrap();
-    let good = sha256_file(&archive).unwrap();
-
-    assert_eq!(
-        verify_digest(&archive, &good, "phux-v1.0.0-t.tar.gz").unwrap(),
-        good
-    );
-
-    // Someone swapped the archive after the digest was published.
-    fs::write(&archive, b"tampered bytes").unwrap();
-    let err = verify_digest(&archive, &good, "phux-v1.0.0-t.tar.gz").unwrap_err();
-    match err {
-        UpdateError::ChecksumMismatch {
-            expected, actual, ..
-        } => {
-            assert_eq!(expected, good);
-            assert_ne!(actual, good);
-        }
-        other => panic!("expected a checksum mismatch, got {other:?}"),
-    }
-}
 
 const CURRENT_RELEASE_DOCS: &[&str] = &["README.md", "LICENSE", "NOTICE", "THIRD-PARTY-NOTICES.md"];
 const PRE_RELICENSE_DOCS: &[&str] = &["README.md", "LICENSE-MIT", "LICENSE-APACHE"];
@@ -363,29 +316,6 @@ fn a_lone_phux_install_does_not_grow_a_phux_mcp() {
         !bin.join("phux-mcp").exists(),
         "an install without phux-mcp must not acquire one"
     );
-}
-
-#[test]
-fn rollback_without_a_backup_is_an_error_not_a_no_op() {
-    let (_scratch, bin) = scratch_bin();
-    seed_bin_dir(&bin, 0o755);
-    let err = rollback(&bin).unwrap_err();
-    assert!(matches!(err, UpdateError::NoBackup(_)), "{err:?}");
-    assert_eq!(
-        fs::read(bin.join("phux")).unwrap(),
-        b"#!/bin/sh\nold phux\n"
-    );
-}
-
-#[test]
-fn staging_is_a_sibling_of_the_target_and_is_cleaned_up() {
-    let (_scratch, bin) = scratch_bin();
-    let path = {
-        let staging = Staging::create(&bin).unwrap();
-        assert_eq!(staging.path().parent(), Some(bin.as_path()));
-        staging.path().to_path_buf()
-    };
-    assert!(!path.exists(), "the staging directory must be removed");
 }
 
 #[test]

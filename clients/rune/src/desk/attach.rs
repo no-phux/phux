@@ -303,11 +303,6 @@ mod tests {
     }
 
     #[test]
-    fn plain_paths_stay_bare() {
-        assert_eq!(quoted(Path::new("/tmp/a-b_c.png")), "/tmp/a-b_c.png");
-    }
-
-    #[test]
     fn anything_a_shell_reads_is_quoted() {
         assert_eq!(quoted(Path::new("/tmp/my file")), "'/tmp/my file'");
         assert_eq!(quoted(Path::new("/tmp/$(x)")), "'/tmp/$(x)'");

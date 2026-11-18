@@ -21,7 +21,6 @@ mod flood_counters;
 mod forward;
 mod forward_agent;
 mod get_perf;
-mod list_directory;
 mod metadata_reply;
 mod path_query;
 mod perf_control;

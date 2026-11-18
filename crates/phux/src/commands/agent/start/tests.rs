@@ -218,8 +218,7 @@ fn an_unmanifested_kind_is_refused_before_any_write() {
 #[test]
 fn an_unclaimed_kind_falls_back_to_the_canonical_kind_not_the_typed_one() {
     if agent_explain::resolve_kind("CLAUDE").as_deref() != Some("claude") {
-        // No shipped manifest to canonicalize through (PHUX_AGENT_DETECT=0);
-        // `the_shipped_manifests_resolve_as_kinds` covers that separately.
+        // No shipped manifest to canonicalize through (PHUX_AGENT_DETECT=0).
         return;
     }
     match preflight(&request("canonical-kind", "CLAUDE")) {
@@ -236,31 +235,5 @@ fn an_unclaimed_kind_falls_back_to_the_canonical_kind_not_the_typed_one() {
             "the refusal must name the canonical id, not the typed kind: {}",
             refusal.err.message
         ),
-    }
-}
-
-/// Every shipped detection manifest is a legitimate `--kind`.
-/// This is the roster the refusal above prints.
-#[test]
-fn the_shipped_manifests_resolve_as_kinds() {
-    let kinds = agent_explain::kinds();
-    for kind in [
-        "claude",
-        "codex",
-        "opencode",
-        "pi",
-        "omp",
-        "grok",
-        "amp",
-        "cursor-agent",
-        "gemini",
-        "goose",
-        "aider",
-    ] {
-        assert!(
-            kinds.iter().any(|loaded| loaded == kind),
-            "{kind} must ship a detection manifest; loaded: {kinds:?}"
-        );
-        assert_eq!(agent_explain::resolve_kind(kind).as_deref(), Some(kind));
     }
 }

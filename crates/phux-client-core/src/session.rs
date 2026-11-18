@@ -237,10 +237,6 @@ pub struct SessionKernel<E: EngineAdapter> {
     frozen_now_ms: std::cell::Cell<Option<u64>>,
     /// Consecutive frames dropped off the current generations, per resource.
     benign_drops: HashMap<ResourceId, u32>,
-    #[cfg(test)]
-    clock_reads: std::cell::Cell<u32>,
-    #[cfg(test)]
-    deadline_sweeps: u32,
     /// Native default clock. Web hosts inject their own monotonic time because
     /// `std::time::Instant::now` panics on `wasm32-unknown-unknown`.
     #[cfg(not(target_arch = "wasm32"))]
@@ -304,10 +300,6 @@ impl<E: EngineAdapter> SessionKernel<E> {
             clock_frozen: false,
             frozen_now_ms: std::cell::Cell::new(None),
             benign_drops: HashMap::new(),
-            #[cfg(test)]
-            clock_reads: std::cell::Cell::new(0),
-            #[cfg(test)]
-            deadline_sweeps: 0,
             #[cfg(not(target_arch = "wasm32"))]
             monotonic_origin: Instant::now(),
         }
@@ -340,8 +332,6 @@ impl<E: EngineAdapter> SessionKernel<E> {
         if let Some(now_ms) = self.injected_now_ms.or_else(|| self.frozen_now_ms.get()) {
             return now_ms;
         }
-        #[cfg(test)]
-        self.clock_reads.set(self.clock_reads.get() + 1);
         #[cfg(not(target_arch = "wasm32"))]
         let now_ms = u64::try_from(self.monotonic_origin.elapsed().as_millis()).unwrap_or(u64::MAX);
         #[cfg(target_arch = "wasm32")]

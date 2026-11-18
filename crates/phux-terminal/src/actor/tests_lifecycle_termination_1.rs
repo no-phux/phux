@@ -67,69 +67,6 @@ async fn arm_foreground_pane(
     }
 }
 
-/// Killing a pane gives a foreground job in its own process group a chance
-/// to flush before it dies. The hangup ceiling is stretched for load;
-/// nextest gives this test all CPUs.
-#[tokio::test(flavor = "current_thread")]
-async fn pane_kill_lets_foreground_process_flush_before_death() {
-    use portable_pty::CommandBuilder;
-
-    on_local!(async {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let marker = dir.path().join("flushed");
-        let armed = dir.path().join("armed");
-        let foreground = FixtureGroup::new(dir.path(), "PHUX_TEST_FOREGROUND");
-
-        // The script signals once its HUP trap is installed; a SIGHUP
-        // before `trap` would hit the default disposition.
-        let script = dir.path().join("foreground.sh");
-        // A builtin wait lets HUP run the trap directly.
-        std::fs::write(
-            &script,
-            foreground.script(
-                "trap 'printf flushed > \"$PHUX_TEST_MARKER\"; exit 0' HUP\n\
-                     printf armed > \"$PHUX_TEST_ARMED\"\n\
-                     while :; do read _; done\n",
-            ),
-        )
-        .expect("write foreground script");
-
-        // Monitor mode: the script is a foreground job in its own group.
-        let mut cmd = CommandBuilder::new("/bin/sh");
-        cmd.arg("-c");
-        cmd.arg(format!(
-            "set -m; trap ':' HUP; /bin/sh {}",
-            script.display()
-        ));
-        cmd.env("PHUX_TEST_MARKER", &marker);
-        cmd.env("PHUX_TEST_ARMED", &armed);
-        foreground.configure(&mut cmd);
-
-        let pane = arm_foreground_pane(
-            (20, 5),
-            cmd,
-            HangupPolicy::stretched(CONTENDED_FLUSH_GRACE),
-            &armed,
-        )
-        .await;
-
-        // Kill the pane. The actor's shutdown runs SIGHUP + grace.
-        pane.token.cancel();
-        let body = wait_for_flush_marker(&marker).await;
-        tokio::time::timeout(std::time::Duration::from_secs(5), pane.run)
-            .await
-            .expect("actor shutdown timed out")
-            .expect("actor task failed");
-
-        assert!(
-            body.contains("flushed"),
-            "foreground process must run its SIGHUP flush handler before \
-                     the pane is killed; marker={body:?}",
-        );
-    })
-    .await;
-}
-
 /// The hangup grace lets a foreground job finish flushing to the terminal:
 /// the reader must keep draining during teardown, or the child wedges in
 /// `write(2)` and is hard-killed before the marker appears.

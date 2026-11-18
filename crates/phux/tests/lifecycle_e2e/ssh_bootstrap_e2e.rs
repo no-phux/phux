@@ -236,30 +236,6 @@ fn bootstrap_prints_one_line_that_is_enough_to_dial() {
     assert!(features.is_some_and(|caps| caps.contains(ServerFeature::OpenListener)));
 }
 
-/// The happy path: ssh bootstraps, and the attach rides QUIC to a real TUI.
-#[test]
-#[ignore = "spawns a PTY-backed binary; runs in the e2e lane"]
-fn attach_over_ssh_bootstraps_and_attaches_over_quic() {
-    let home = Home::new(Remote::Current, "127.0.0.1");
-    let seen = home.run_until(&["attach", "--ssh", "me@box"], "\u{1b}[?1049h");
-    assert!(
-        seen.contains("bootstrapping me@box over ssh"),
-        "the operator is told what is happening: {seen}"
-    );
-    assert!(
-        seen.contains("attaching over QUIC to 127.0.0.1:"),
-        "the dial goes to the host ssh -G named: {seen}"
-    );
-    assert!(
-        seen.contains("\u{1b}[?1049h"),
-        "the TUI came up over QUIC: {seen}"
-    );
-    assert!(
-        !seen.contains("falling back"),
-        "no fallback on the happy path: {seen}"
-    );
-}
-
 /// A host whose phux predates `bootstrap` still gets an attach, the old way.
 #[test]
 #[ignore = "spawns a PTY-backed binary; runs in the e2e lane"]

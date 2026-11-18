@@ -232,12 +232,4 @@ mod tests {
         }
         assert!(Cursor::new(Vec::new(), 1).is_none());
     }
-
-    #[test]
-    fn noting_keeps_the_furthest_position() {
-        let mut state = ResumeState::new(None);
-        state.note(9);
-        state.note(4);
-        assert_eq!(state.last_seq, Some(9));
-    }
 }

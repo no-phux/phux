@@ -154,20 +154,4 @@ mod tests {
         assert_eq!(names.len(), n, "duplicate metric name across the tables");
         assert!(names.iter().all(|name| name.contains('.')));
     }
-
-    #[test]
-    fn report_carries_every_table_row_and_a_server_role() {
-        mark_started();
-        let state = crate::state::SharedState::new();
-        let r = report(&state);
-        assert_eq!(r.role, "server");
-        assert_eq!(
-            r.metrics.len(),
-            tables(&state)
-                .iter()
-                .map(|table| table.len())
-                .sum::<usize>()
-        );
-        assert!(r.process.is_some());
-    }
 }

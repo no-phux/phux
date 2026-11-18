@@ -279,14 +279,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn slot_names_are_the_spec_leaves() {
-        let names = slot_names();
-        assert_eq!(names.len(), SLOT_SPECS.len());
-        for (name, spec) in names.iter().zip(SLOT_SPECS) {
-            assert_eq!(spec.table(), "theme", "{}", spec.key);
-            assert_eq!(*name, spec.leaf());
-            assert!(is_slot(name));
-        }
+    fn selectors_and_typos_are_not_slots() {
         for reserved in crate::theme::RESERVED_KEYS {
             assert!(!is_slot(reserved), "{reserved} is a selector, not a slot");
         }

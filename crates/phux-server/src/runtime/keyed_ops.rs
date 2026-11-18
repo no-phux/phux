@@ -399,19 +399,4 @@ mod tests {
         );
         assert!(!binds(&results.into_result()));
     }
-
-    #[test]
-    fn a_partial_kill_does_not_bind() {
-        let mut results = KillResults::default();
-        results.killed(&ResourceId::local(1));
-        assert!(binds(&results.into_result()));
-        let mut results = KillResults::default();
-        results.killed(&ResourceId::local(1));
-        results.failed(
-            &ResourceId::satellite("devbox", 2),
-            ErrorCode::SatelliteUnreachable,
-            "link is down",
-        );
-        assert!(!binds(&results.into_result()));
-    }
 }

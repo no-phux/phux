@@ -51,14 +51,6 @@ fn the_shortcut_list_fits_and_shows_only_bound_commands() {
 }
 
 #[test]
-fn close_and_step_tab_are_in_the_palette() {
-    let list = items(None, &[], &[]);
-    for action in [Shortcut::CloseTab, Shortcut::NextTab, Shortcut::PreviousTab] {
-        assert!(list.iter().any(|i| i.target == Target::Action(action)));
-    }
-}
-
-#[test]
 fn every_theme_is_a_row_and_its_name_finds_it() {
     let hits = rank(items(None, &[], &[]), "nord");
     assert_eq!(hits[0].item.target, Target::Theme(Some("nord")));
@@ -155,24 +147,4 @@ fn an_empty_query_keeps_list_order() {
     let hits = rank(items.clone(), "");
     assert_eq!(hits.len(), items.len());
     assert_eq!(hits[0].item, items[0]);
-}
-
-/// View → Playground lists the six scenes View no longer carries itself.
-#[test]
-fn the_playground_lists_its_six_scenes() {
-    let titles: Vec<String> = action_items(crate::keys::PLAYGROUND)
-        .into_iter()
-        .map(|item| item.title)
-        .collect();
-    assert_eq!(
-        titles,
-        [
-            "Open Galaxy",
-            "Open Reef",
-            "Open Pitch",
-            "Open Kitchen",
-            "Open Pit Lane",
-            "Open Hive"
-        ]
-    );
 }

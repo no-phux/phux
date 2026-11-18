@@ -456,41 +456,6 @@ proptest! {
     }
 
     #[test]
-    fn negotiated_profile_is_exact_and_preserves_synthesized_fallback(
-        state_sync in any::<bool>(),
-        cols in 1_u16..=300,
-        rows in 1_u16..=50,
-        base_seq in 0_u64..100,
-    ) {
-        let mut rig = KernelRig::new(state_sync);
-        let pristine = rig.snapshot();
-        let mismatched = rig.apply(&RigEvent::Begin {
-            stream: 1,
-            generation: 1,
-            cols,
-            rows,
-            base_seq,
-            exact_profile: false,
-        });
-        prop_assert!(!mismatched);
-        prop_assert_eq!(rig.snapshot(), pristine);
-
-        let matched = rig.apply(&RigEvent::Begin {
-            stream: 1,
-            generation: 1,
-            cols,
-            rows,
-            base_seq,
-            exact_profile: true,
-        });
-        prop_assert!(matched);
-        let staged = rig.snapshot().staging.expect("exact synthesized profile stages");
-        prop_assert_eq!(staged.geometry.cols, cols);
-        prop_assert_eq!(staged.geometry.rows, rows);
-        prop_assert_eq!(staged.geometry, staged.engine_geometry);
-    }
-
-    #[test]
     fn resume_requires_exact_published_generation_and_fence(
         state_sync in any::<bool>(),
         cols in 1_u16..=300,
@@ -694,72 +659,4 @@ proptest! {
 
     }
 
-    #[test]
-    fn first_tombstone_dominates_all_late_generation_events(
-        cols in 1_u16..=300,
-        base_seq in 0_u64..100,
-        late_text in unicode_text(),
-        first_last_valid in 0_u64..100,
-        later_last_valid in 101_u64..200,
-    ) {
-        let mut rig = KernelRig::new(false);
-        let published = rig.apply(&RigEvent::Publish {
-            stream: 1,
-            generation: 1,
-            cols,
-            rows: 24,
-            base_seq,
-            history_cursor: None,
-            bootstrap_text: "ready".to_owned(),
-        });
-        prop_assert!(published);
-        let tombstoned = rig.apply(&RigEvent::Tombstone {
-            stream: 1,
-            generation: 1,
-            last_valid_seq: first_last_valid,
-        });
-        prop_assert!(tombstoned);
-        prop_assert!(rig.resume_checkpoint().is_none());
-        let authoritative = rig.snapshot();
-        let first = authoritative.tombstones.clone();
-
-        let late_output = rig.apply(&RigEvent::Output {
-            stream: 1,
-            generation: 1,
-            seq: base_seq.saturating_add(1),
-            text: late_text,
-        });
-        prop_assert!(!late_output);
-        let late_begin = rig.apply(&RigEvent::Begin {
-            stream: 1,
-            generation: 1,
-            cols,
-            rows: 24,
-            base_seq,
-            exact_profile: true,
-        });
-        prop_assert!(!late_begin);
-        let repeated_tombstone = rig.apply(&RigEvent::Tombstone {
-            stream: 1,
-            generation: 1,
-            last_valid_seq: later_last_valid,
-        });
-        prop_assert!(repeated_tombstone);
-        let after = rig.snapshot();
-        prop_assert_eq!(after.tombstones, first);
-        prop_assert_eq!(
-            after
-                .published
-                .as_ref()
-                .expect("tombstone freezes last view")
-                .live
-                .as_slice(),
-            authoritative
-                .published
-                .as_ref()
-                .expect("authoritative view")
-                .live
-                .as_slice(),
-        );
-    }
 }

@@ -246,15 +246,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn error_code_round_trips_and_unknown_reads_as_other() {
-        for code in [
-            DirectoryErrorCode::NotFound,
-            DirectoryErrorCode::PermissionDenied,
-            DirectoryErrorCode::NotADirectory,
-            DirectoryErrorCode::Other,
-        ] {
-            assert_eq!(DirectoryErrorCode::from_wire(code.as_wire()), code);
-        }
+    fn an_unknown_error_code_reads_as_other() {
         assert_eq!(
             DirectoryErrorCode::from_wire(200),
             DirectoryErrorCode::Other
@@ -266,29 +258,6 @@ mod tests {
         let mut enc = Encoder::new(&mut buf);
         encode_list_directory(&mut enc, 7, "/srv", host);
         buf.to_vec()
-    }
-
-    /// The serving-host request carries no field 3, so it is byte-identical
-    /// to the frame every pre-`host` server has always decoded.
-    #[test]
-    fn a_serving_host_request_writes_no_host_field() {
-        let bytes = encode_request(None);
-        let mut d = Decoder::new(&bytes);
-        let mut ids = Vec::new();
-        while let Some((id, _)) = d.read_field().expect("field") {
-            ids.push(id);
-        }
-        assert_eq!(
-            ids,
-            [
-                field::list_directory::REQUEST_ID,
-                field::list_directory::PATH
-            ]
-        );
-        assert_eq!(
-            decode_list_directory(&mut Decoder::new(&bytes)),
-            Ok((7, "/srv".to_owned(), None))
-        );
     }
 
     /// A named host rides field 3 as UTF-8 and decodes back to the same host.

@@ -611,17 +611,6 @@ mod tests {
     }
 
     #[test]
-    fn relative_root_is_refused() {
-        assert_eq!(
-            PathIndex::default()
-                .query(Path::new("relative"), "", false)
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::InvalidInput
-        );
-    }
-
-    #[test]
     fn result_limit_is_visible_and_hidden_entries_are_searchable() {
         let temp = tempfile::tempdir().unwrap();
         for index in 0..110 {

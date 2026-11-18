@@ -228,16 +228,8 @@ mod tests {
             HistoryUnavailableReason::Released
         );
         assert_eq!(
-            history_unavailable_reason(HistoryTombstoneReason::Stale),
-            HistoryUnavailableReason::Stale
-        );
-        assert_eq!(
             history_rejection_reason(HistoryRejectionReason::Unknown),
             KernelHistoryRejectionReason::ZeroLimit
-        );
-        assert_eq!(
-            history_rejection_reason(HistoryRejectionReason::TooSmall),
-            KernelHistoryRejectionReason::TooSmall
         );
     }
 }

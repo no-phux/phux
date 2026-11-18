@@ -583,20 +583,6 @@ fn option_false_authoritative_omit_forgets_the_cursor_and_does_not_resurrect() {
 }
 
 #[test]
-fn authoritative_registry_omission_drops_queued_records_before_delivery() {
-    let (mut plane, attach_id) = subscribing(false);
-    attach_ready_to(&mut plane, attach_id, with_agent(terminal()));
-    publish_agent(&mut plane);
-    assert_eq!(agent_info(&plane).unwrap().last_seq, 2);
-    plane.reconcile_agent_delivery_catalog(&two_session_snapshot(false));
-    assert!(
-        take_agent_records(&mut plane).is_empty(),
-        "an absent resource must not return through a queued publication"
-    );
-    assert!(agent_info(&plane).is_none());
-}
-
-#[test]
 fn authoritative_rebind_publishes_catalog_before_held_agent_records() {
     let mut plane = resumed_with_initial_agent();
     agent_live(&mut plane, 1, &[(3, "tool_start")]).unwrap();

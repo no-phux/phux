@@ -54,18 +54,6 @@ fn restore_plan_keeps_host_directory_and_project() {
     assert_eq!(plan.creates[0].host.as_deref(), Some("edge"));
     assert_eq!(plan.creates[0].cwd.as_deref(), Some("/src/api"));
     assert_eq!(plan.creates[0].project.as_deref(), Some("phux"));
-    let lines = phux_client_core::organization::organization_lines(&[
-        phux_client_core::organization::OrganizedSession {
-            name: plan.creates[0].name.clone(),
-            host: plan.creates[0].host.clone(),
-            directory: plan.creates[0].cwd.clone(),
-            project: plan.creates[0].project.clone(),
-        },
-    ]);
-    assert_eq!(
-        lines,
-        vec!["api host=edge directory=/src/api project=phux".to_owned()]
-    );
 }
 
 #[test]

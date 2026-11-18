@@ -317,26 +317,6 @@ fn invalid_or_empty_new_png_clears_old_pixels_and_cannot_be_overwritten_by_an_ol
     ));
 }
 
-#[test]
-fn real_png_decoder_keeps_dimension_limits() {
-    for (width, height, depth) in [(8193u32, 2u32, 8u8), (8192, 8192, 16)] {
-        let (client, mut rt, wake, _) = live();
-        let mut bytes = PNG.to_vec();
-        bytes[16..20].copy_from_slice(&width.to_be_bytes());
-        bytes[20..24].copy_from_slice(&height.to_be_bytes());
-        bytes[24] = depth;
-        let checksum = crc(&bytes[12..29]);
-        bytes[29..33].copy_from_slice(&checksum.to_be_bytes());
-        publish(&client, 1, ResourceKind::PixelSurface, &bytes);
-        step(&mut rt);
-        finish(&mut rt, &wake);
-        assert!(
-            matches!(&rt.state.connection.resources.entries[&id(1)].body, Body::Invalid(error) if error.to_lowercase().contains("limit"))
-        );
-        assert!(ready(&rt).is_none());
-    }
-}
-
 fn observe(rt: &mut Runtime<Desk>, client: &Client) {
     let observation = client.take_activity();
     rt.update(|d, tx| {

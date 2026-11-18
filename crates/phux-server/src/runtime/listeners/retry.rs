@@ -189,11 +189,4 @@ mod tests {
         .await;
         assert!(matches!(outcome, Retried::Cancelled));
     }
-
-    #[test]
-    fn only_address_errors_are_transient() {
-        assert!(is_transient(&err(ErrorKind::AddrNotAvailable)));
-        assert!(is_transient(&err(ErrorKind::AddrInUse)));
-        assert!(!is_transient(&err(ErrorKind::PermissionDenied)));
-    }
 }

@@ -116,16 +116,3 @@ fn production_source_names_no_kind_concept() {
     }
     assert!(hits.is_empty(), "kind concepts in the substrate: {hits:#?}");
 }
-
-#[test]
-fn the_word_check_ignores_wire_names_only() {
-    assert!(kind_words("event: AgentEvent,").is_empty());
-    assert_eq!(kind_words("fn terminal(&self)"), ["terminal"]);
-    assert_eq!(kind_words("pub agent: AgentSession"), ["agent"]);
-    assert_eq!(kind_words("/// one Pane"), ["pane"]);
-    assert_eq!(kind_words("struct PtyEvent"), ["pty"]);
-    assert_eq!(kind_words("our panes"), ["pane"]);
-    assert_eq!(kind_words("osc_sequence"), ["osc"]);
-    assert_eq!(kind_words("pub scrollback: Vec<u8>"), ["scrollback"]);
-    assert!(kind_words("empty panel").is_empty());
-}

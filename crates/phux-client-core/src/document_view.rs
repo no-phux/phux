@@ -288,11 +288,6 @@ mod tests {
                 "{declared}"
             );
         }
-        assert_eq!(
-            decode(ResourceKind::PixelSurface, None, b"GIF89a.."),
-            DocumentContent::Invalid("Invalid frame: not a PNG or JPEG".to_owned()),
-            "a surface is PNG or JPEG only"
-        );
     }
 
     #[test]

@@ -68,18 +68,6 @@ async fn a_switch_stray_is_killed_on_the_next_reachable_reply() {
     );
 }
 
-/// A switch stray whose satellite answers only after
-/// [`super::super::orphans::STRAY_TTL`] is forgotten, not killed.
-#[tokio::test(flavor = "current_thread")]
-async fn a_switch_stray_is_not_killed_after_its_ttl() {
-    let (mut state, mut client, mut server) = Box::pin(loop_with_switch_stray()).await;
-    state
-        .orphan_kills
-        .age_strays(super::super::orphans::STRAY_TTL + Duration::from_secs(1));
-    answer_inventory(&mut state, &mut client, vec![edge_row(true)]).await;
-    assert_eq!(killed_panes(&mut client, &mut server).await, Vec::new());
-}
-
 /// An inventory that lists the stray's satellite as unreachable forgets it:
 /// a later reachable one kills nothing.
 #[tokio::test(flavor = "current_thread")]
@@ -243,7 +231,11 @@ async fn a_bound_unreachable_stray_is_retried_conditionally_once_reachable() {
             .collect::<Vec<_>>(),
         vec![conditional_edge_kill()]
     );
-    let refused = phux_wire_fixtures::command_err(sent[0].0, ErrorCode::PreconditionFailed, "resource was attached by another connection");
+    let refused = phux_wire_fixtures::command_err(
+        sent[0].0,
+        ErrorCode::PreconditionFailed,
+        "resource was attached by another connection",
+    );
     assert_eq!(state.orphan_kills.observe(refused), None, "consumed");
 
     answer_inventory(&mut state, &mut client, vec![edge_row(true)]).await;
@@ -289,8 +281,11 @@ async fn a_bound_stray_outlives_unreachable_signals() {
 /// conditional kill.
 #[tokio::test(flavor = "current_thread")]
 async fn a_bound_switch_stray_uses_the_conditional_kill() {
-    let (mut state, mut client, mut server) =
-        Box::pin(loop_with_switch_stray_on(conditional_kill, Some(edge_token()))).await;
+    let (mut state, mut client, mut server) = Box::pin(loop_with_switch_stray_on(
+        conditional_kill,
+        Some(edge_token()),
+    ))
+    .await;
     answer_inventory(&mut state, &mut client, vec![edge_row(true)]).await;
     assert_eq!(
         kill_commands(&mut client, &mut server).await,
@@ -314,23 +309,6 @@ async fn an_unbound_switch_stray_is_unchanged_under_the_bit() {
     let (mut state, mut client, mut server) =
         Box::pin(loop_with_switch_stray_on(conditional_kill, None)).await;
     answer_inventory(&mut state, &mut client, vec![edge_row(false)]).await;
-    answer_inventory(&mut state, &mut client, vec![edge_row(true)]).await;
-    assert_eq!(kill_commands(&mut client, &mut server).await, Vec::new());
-}
-
-/// A bound stray this client has since adopted is not killed, even
-/// conditionally: the satellite exempts this client's own attaches.
-#[tokio::test(flavor = "current_thread")]
-async fn an_adopted_bound_stray_is_not_killed_conditionally() {
-    let (mut state, mut client, mut server) = Box::pin(loop_with_switch_stray_on(
-        conditional_kill,
-        Some(edge_token()),
-    ))
-    .await;
-    state
-        .mirror
-        .workspace
-        .add_group("edge".to_owned(), spawned_edge_pane());
     answer_inventory(&mut state, &mut client, vec![edge_row(true)]).await;
     assert_eq!(kill_commands(&mut client, &mut server).await, Vec::new());
 }

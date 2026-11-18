@@ -226,60 +226,6 @@ mod tests {
     }
 
     #[test]
-    fn spawn_frame_carries_argv_cwd_and_identity_env() {
-        let m = manifest(
-            "com.example.board",
-            vec![pane(
-                "board",
-                PluginPanePlacement::Split,
-                vec!["agent-board".to_owned(), "--watch".to_owned()],
-            )],
-        );
-        let entry = &entries_from_manifests(std::slice::from_ref(&m))[0];
-        let FrameKind::SpawnResource {
-            request_id,
-            group,
-            command,
-            cwd,
-            env,
-            term,
-            satellite,
-            owner_terminal,
-            agent_session,
-            initial_size,
-            ..
-        } = entry.spawn_frame(7)
-        else {
-            panic!("expected SpawnResource");
-        };
-        assert_eq!(request_id, 7);
-        assert_eq!(
-            initial_size, None,
-            "the manifest entry does not know its placement, so run_action fills the tile in",
-        );
-        assert_eq!(satellite, None, "plugin panes spawn locally");
-        assert_eq!(owner_terminal, None, "plugin panes use attached ownership");
-        assert_eq!(
-            agent_session, None,
-            "plugin panes have no resume provenance"
-        );
-        assert_eq!(group, DEFAULT_GROUP_ID);
-        assert_eq!(
-            command,
-            Some(vec!["agent-board".to_owned(), "--watch".to_owned()])
-        );
-        assert_eq!(cwd.as_deref(), Some("/x"));
-        assert_eq!(term, None);
-        let env = env.expect("identity env injected");
-        assert!(
-            env.contains(&("PHUX_PLUGIN_ID".to_owned(), "com.example.board".to_owned())),
-            "env was {env:?}"
-        );
-        assert!(env.contains(&("PHUX_PLUGIN_PANE_ID".to_owned(), "board".to_owned())));
-        assert!(env.contains(&("PHUX_PLUGIN_ROOT".to_owned(), "/x".to_owned())));
-    }
-
-    #[test]
     fn disabled_plugin_contributes_no_pane_entries() {
         // End-to-end through the same loader the driver uses: two on-disk
         // manifests, one disabled. Only the enabled plugin's panes

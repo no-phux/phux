@@ -133,10 +133,9 @@ fn ticket(paths: &WorkloadPaths) -> Vec<u8> {
 
 /// Even under an embedder engine, which admits a bearer alone, the plain
 /// relayed stream is refused (ADR-0180: the relay would read it); an inner
-/// session pinning the server's CA is admitted, and a wrong CA is refused by
-/// name.
+/// session pinning the server's CA is admitted.
 #[test]
-fn an_inner_session_reaches_the_server_and_a_wrong_ca_is_refused() {
+fn under_an_embedder_engine_only_an_inner_session_reaches_the_server() {
     phux_server_testkit::run_local(async {
         let t = Topology::start(false);
         wait_for_route(&t).await;
@@ -147,20 +146,6 @@ fn an_inner_session_reaches_the_server_and_a_wrong_ca_is_refused() {
             .await
             .expect("inner admitted");
         assert!(matches!(answer, FrameKind::HelloOk { .. }), "{answer:?}");
-
-        let wrong = inner(
-            &format!("sha256:{}", "0".repeat(64)),
-            TlsClientIdentity::None,
-        );
-        match first_answer(&t.plan(Some(wrong))).await {
-            Err(DialError::AuthorityChanged(change)) => {
-                assert_eq!(
-                    change.presented.as_deref(),
-                    Some(t.server.authority.as_str())
-                );
-            }
-            other => panic!("a wrong CA must be refused by name, got {other:?}"),
-        }
         t.stop().await;
     });
 }

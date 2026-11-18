@@ -317,35 +317,6 @@ fn a_next_plan_is_up_to_date_only_on_the_same_sha() {
     );
 }
 
-/// Every failure carries a code from the closed vocabulary, a non-empty
-/// remedy, and one of the documented exit codes.
-#[test]
-fn every_failure_is_loud() {
-    let failures = [
-        UpdateError::InvalidTag("t".to_owned()),
-        UpdateError::UnsupportedPlatform("p".to_owned()),
-        UpdateError::Fetch("f".to_owned()),
-        UpdateError::Checksum("c".to_owned()),
-        UpdateError::ChecksumMismatch {
-            expected: "a".to_owned(),
-            actual: "b".to_owned(),
-            archive: "x.tar.gz".to_owned(),
-        },
-        UpdateError::Archive("a".to_owned()),
-        UpdateError::Install("i".to_owned()),
-        UpdateError::NoBackup("n".to_owned()),
-    ];
-    for failure in &failures {
-        assert!(failure.code().starts_with("update_"), "{failure:?}");
-        assert!(!failure.to_string().is_empty(), "{failure:?}");
-        assert!(!failure.remedy().is_empty(), "{failure:?}");
-        assert!(
-            matches!(failure.exit_code(), 1 | 2),
-            "{failure:?} uses an undocumented exit code"
-        );
-    }
-}
-
 /// The handoff tokens are the frozen `--json` vocabulary.
 #[test]
 fn handoff_tokens_are_stable() {

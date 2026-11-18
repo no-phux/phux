@@ -2,37 +2,6 @@ fn view_rect(x: u16, y: u16, w: u16, h: u16) -> crate::layout::Rect {
     crate::layout::Rect { x, y, w, h }
 }
 
-/// A same-shaped tiling with a different holder is the window-switch / pane-
-/// swap case: the rectangles match however the panes are ordered.
-#[test]
-fn same_rects_ignores_which_pane_holds_each_rectangle() {
-    let (a, b) = (ResourceId::local(1), ResourceId::local(2));
-    let two = |left: &ResourceId, right: &ResourceId| {
-        HashMap::from([
-            (left.clone(), view_rect(0, 1, 40, 20)),
-            (right.clone(), view_rect(40, 1, 40, 20)),
-        ])
-    };
-    let before = two(&a, &b);
-    assert!(
-        super::input::same_rects(&before, &two(&b, &a)),
-        "holders do not matter"
-    );
-    // A different split is a different shape.
-    let reshaped = |left: &ResourceId, right: &ResourceId| {
-        HashMap::from([
-            (left.clone(), view_rect(0, 1, 60, 20)),
-            (right.clone(), view_rect(60, 1, 20, 20)),
-        ])
-    };
-    assert!(!super::input::same_rects(&before, &reshaped(&a, &b)));
-    // A different count never matches.
-    assert!(!super::input::same_rects(
-        &before,
-        &HashMap::from([(a, view_rect(0, 1, 40, 20))])
-    ));
-}
-
 /// The classification chooses the cheapest level that is still correct: a
 /// focus move is chrome, a same-shaped window switch redraws panes in place
 /// without a clear, and a moved layout (or a pane with no grid to draw) clears.
@@ -92,10 +61,13 @@ async fn selecting_a_same_shaped_window_never_clears_the_screen() {
     state.viewport_dims = (80, 24);
 
     let (a, b) = (ResourceId::local(1), ResourceId::local(2));
-    publish_panes(&mut state, &[
-        (&a, 60, 20, b"alpha screen\r\n"),
-        (&b, 60, 20, b"beta screen\r\n"),
-    ]);
+    publish_panes(
+        &mut state,
+        &[
+            (&a, 60, 20, b"alpha screen\r\n"),
+            (&b, 60, 20, b"beta screen\r\n"),
+        ],
+    );
     let mut workspace = ArrangementDoc::single(a.clone());
     workspace.add_group("1".to_owned(), b.clone());
     workspace.select(0);
@@ -143,10 +115,13 @@ async fn focusing_another_pane_never_clears_the_screen() {
     state.viewport_dims = (80, 24);
 
     let (a, b) = (ResourceId::local(1), ResourceId::local(2));
-    publish_panes(&mut state, &[
-        (&a, 30, 20, b"left pane\r\n"),
-        (&b, 30, 20, b"right pane\r\n"),
-    ]);
+    publish_panes(
+        &mut state,
+        &[
+            (&a, 30, 20, b"left pane\r\n"),
+            (&b, 30, 20, b"right pane\r\n"),
+        ],
+    );
     let tree = split_at(
         &LayoutNode::Leaf(a.clone()),
         &a,

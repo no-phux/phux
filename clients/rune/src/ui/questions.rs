@@ -438,5 +438,3 @@ fn field(at: &At, draft: &Draft, id: &str, label: &str, multiline: bool, t: &Tok
 
 #[cfg(test)]
 mod phone_tests;
-#[cfg(test)]
-mod tests;

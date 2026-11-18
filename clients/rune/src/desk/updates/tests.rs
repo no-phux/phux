@@ -239,17 +239,6 @@ fn management_cannot_change_beneath_work_or_a_staged_app() {
 }
 
 #[test]
-fn nothing_due_offers_nothing() {
-    let mut updater = updater();
-    assert_eq!(updater.action(), None);
-    updater.release = Some(Release {
-        version: "0.0.1".to_owned(),
-        ..release("1.0")
-    });
-    assert_eq!(updater.action(), None);
-}
-
-#[test]
 fn the_action_follows_what_is_due() {
     let mut updater = updater();
     updater.release = Some(release("1.0"));

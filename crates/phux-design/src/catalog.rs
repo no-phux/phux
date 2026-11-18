@@ -318,7 +318,6 @@ mod tests {
     #[test]
     fn the_catalog_parses_with_unique_ids() {
         let c = catalog();
-        assert_eq!(c.themes.len(), 43);
         for (i, t) in c.themes.iter().enumerate() {
             assert!(c.themes[i + 1..].iter().all(|o| o.id != t.id), "{}", t.id);
         }

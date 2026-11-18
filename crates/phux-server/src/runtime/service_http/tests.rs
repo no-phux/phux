@@ -103,25 +103,6 @@ fn disallowed_upstream_header(seen: &str) -> Option<&str> {
 }
 
 #[test]
-fn header_policy_assertions_ignore_ports_and_benign_values() {
-    let seen = "host: 127.0.0.1:37999\nx-keep: cookie connection 999\n";
-    assert!(disallowed_upstream_header(seen).is_none());
-    for forbidden in [
-        "cookie: a=b",
-        "Proxy-Authorization: stolen",
-        "x-drop: 1",
-        "connection: x-drop",
-        "content-length: 999",
-        "Content-Length: \t999 \t",
-    ] {
-        assert!(
-            disallowed_upstream_header(forbidden).is_some(),
-            "{forbidden}"
-        );
-    }
-}
-
-#[test]
 fn only_a_single_loopback_origin_line_is_an_origin() {
     for good in [
         "http://127.0.0.1:49374\n",

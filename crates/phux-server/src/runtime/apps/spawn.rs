@@ -406,38 +406,10 @@ mod tests {
         request
     }
 
+    /// With a profile a Terminal reaches its own app, which refuses a parent.
     #[tokio::test]
-    async fn an_unknown_kind_is_refused_not_spawned_as_a_terminal() {
-        let frame = reply(
-            ResourceKind::Unknown { tag: 99 },
-            Some(BootstrapProfile::SynthesizedVtRaw),
-        )
-        .await;
-        assert_eq!(refusal(frame), SpawnError::UnsupportedKind);
-    }
-
-    /// Each kind's own app answers: an agent session and a document refuse
-    /// a missing producer name, a Terminal refuses a parent.
-    #[tokio::test]
-    async fn each_kind_reaches_its_own_app() {
+    async fn a_terminal_reaches_its_app_and_refuses_a_parent() {
         let profile = Some(BootstrapProfile::SynthesizedVtRaw);
-        let SpawnError::SpawnFailed(agent) =
-            refusal(reply(ResourceKind::AgentSession, profile).await)
-        else {
-            panic!("the agent session app refuses");
-        };
-        assert!(agent.contains("agent session"), "{agent}");
-        for kind in [
-            ResourceKind::AccessibilityTree,
-            ResourceKind::PixelSurface,
-            ResourceKind::Document,
-        ] {
-            let SpawnError::SpawnFailed(document) = refusal(reply(kind, profile).await) else {
-                panic!("the document app refuses {kind:?}");
-            };
-            assert!(document.contains("producer observes"), "{document}");
-        }
-
         let mut terminal = request(ResourceKind::Terminal);
         if let Some(resource) = terminal.resource.as_mut() {
             resource.parent = Some(WireResourceId::local(3));

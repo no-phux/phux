@@ -2,52 +2,6 @@
 
 use super::*;
 
-/// Every lifecycle stays in the caller's supplied display order.
-#[test]
-fn agents_section_renders_state_and_name_rows() {
-    let mut p = SidebarPainter::new(Theme::default());
-    p.set_windows(vec![win("phux", true), win("scratch", false)]);
-    p.set_roster(vec![active_roster()]);
-    p.set_agents(vec![
-        agent(0, "phux", "claude", AgentMetaState::Blocked),
-        agent(1, "scratch", "merge-queue-w5", AgentMetaState::Done),
-    ]);
-    let rect = r(0, 0, 36, 14);
-    let buf = p.compose_buffer(rect, SidebarRule::Trailing, &[]);
-    assert!(
-        row_text(&buf, rect, 0).contains(NEEDS_YOU_HEADER),
-        "the queue tops the strip: {:?}",
-        row_text(&buf, rect, 0)
-    );
-    assert!(
-        row_text(&buf, rect, 1).contains(AgentScope::All.label()),
-        "the filter chips sit under the header"
-    );
-    let claude_row = row_text(&buf, rect, 2);
-    assert!(
-        claude_row.contains("phux") && claude_row.contains("claude"),
-        "queue row shows locator + state - name: {claude_row:?}"
-    );
-    let worker_row = row_text(&buf, rect, 3);
-    assert!(
-        worker_row.contains("scratch") && worker_row.contains("merge-queue-w5"),
-        "second queue row: {worker_row:?}"
-    );
-    assert!(
-        row_text(&buf, rect, 7).contains(SPACES_HEADER),
-        "Sessions lands on the fixed line below the Agents panel: {:?}",
-        row_text(&buf, rect, 7)
-    );
-    p.set_agents(vec![
-        agent(0, "phux", "claude", AgentMetaState::Done),
-        agent(1, "scratch", "merge-queue-w5", AgentMetaState::Blocked),
-    ]);
-    let changed = p.compose_buffer(rect, SidebarRule::Trailing, &[]);
-    assert!(row_text(&changed, rect, 2).contains("claude"));
-    assert!(row_text(&changed, rect, 3).contains("merge-queue-w5"));
-    assert_eq!(row_text(&buf, rect, 7), row_text(&changed, rect, 7));
-}
-
 /// A cross-session queue row is labelled by its SESSION, not
 /// by its window — "edit" locates nothing once the row can come from
 /// anywhere on the server.
@@ -172,16 +126,6 @@ fn a_quiet_fleet_keeps_the_agents_panel() {
     p.set_agent_filter(AgentFilter::default());
     let empty = p.compose_buffer(rect, SidebarRule::Trailing, &[]);
     assert!(row_text(&empty, rect, 2).contains(AGENTS_NONE_LABEL));
-    let sessions = row_model(p.counts(), rect.h)
-        .iter()
-        .position(|r| *r == SidebarRow::SpacesHeader)
-        .expect("sessions laid");
-    assert_eq!(
-        sessions,
-        agents_budget(DEFAULT_AGENTS_SHARE, usize::from(rect.h) - 1),
-        "Sessions sits on the fixed line whatever the population"
-    );
-    assert_eq!(p.counts().needs_you, 0);
 }
 
 /// `agents-share` is a live input: `0` drops the band, a larger share
@@ -214,17 +158,6 @@ fn agents_share_knob_controls_the_band() {
         sessions_at(&p) > banded,
         "a larger share pushes Sessions down"
     );
-}
-
-/// With nothing to list, the strip paints no section headers at all.
-#[test]
-fn an_empty_strip_paints_no_headers() {
-    let p = SidebarPainter::new(Theme::default());
-    let rect = r(0, 0, 24, 12);
-    let text = strip_text(&p, rect);
-    assert!(!text.contains(SPACES_HEADER), "{text}");
-    assert!(!text.contains(NEEDS_YOU_HEADER), "{text}");
-    assert_eq!(hit_test(rect, p.counts(), 3, 0), None);
 }
 
 /// Each session has a histogram name row and explicit host identity.

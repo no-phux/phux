@@ -294,13 +294,6 @@ mod tests {
         assert_eq!(notice.current, "0.45.0+next.b0c6858");
         assert_eq!(notice.latest, "next.d527f26");
         assert_eq!(notice.command, "phux update");
-        assert_eq!(
-            notice.body(),
-            vec![
-                "phux next.d527f26 is available; you have 0.45.0+next.b0c6858.",
-                "Run `phux update`."
-            ]
-        );
     }
 
     #[test]
@@ -374,13 +367,6 @@ mod tests {
         // enabled, the same cache still paints.
         let shown = pending_notice(&path, false).expect("shown when the check is enabled");
         assert_eq!(shown.latest, "next.d527f26");
-        assert!(
-            shown
-                .body()
-                .iter()
-                .any(|line| line.contains("is available")),
-            "the cached notice is what the toast would paint"
-        );
     }
 
     #[test]

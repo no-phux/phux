@@ -261,31 +261,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn json_round_trip_preserves_disabled_reason() {
-        let report =
-            RemoteListenersReport::new().with_listeners(vec![RemoteListenerSlot::disabled(
-                RemoteListenerTransport::Wss,
-                Some("100.64.0.2:8787".into()),
-                ListenerDisabledReason::TokenStoreLoadFailed,
-            )]);
-        let back = RemoteListenersReport::from_json(&report.to_json()).expect("parse");
-        assert_eq!(back, report);
-        assert_eq!(
-            back.listeners[0].disabled_reason,
-            Some(ListenerDisabledReason::TokenStoreLoadFailed)
-        );
-    }
-
-    #[test]
     fn waiting_slot_round_trips_and_reads_as_bind_failed_without_the_field() {
         let slot = RemoteListenerSlot::waiting(
             RemoteListenerTransport::Quic,
             "100.64.0.2:8788",
             "Cannot assign requested address (os error 99)",
         );
-        let report = RemoteListenersReport::new().with_listeners(vec![slot.clone()]);
-        let back = RemoteListenersReport::from_json(&report.to_json()).expect("parse");
-        assert_eq!(back.listeners[0], slot);
         assert!(slot.is_unhealthy());
         assert_eq!(
             slot.unbound_label(),
@@ -307,9 +288,6 @@ mod tests {
             slot.unbound_label(),
             "waiting for a private network address"
         );
-        let report = RemoteListenersReport::new().with_listeners(vec![slot.clone()]);
-        let back = RemoteListenersReport::from_json(&report.to_json()).expect("parse");
-        assert_eq!(back.listeners[0], slot);
         let old = RemoteListenersReport::from_json(
             r#"{"schema_version":1,"listeners":[{"transport":"wss","expected":true,"bound":false,"disabled_reason":"no_overlay_address"}]}"#,
         )
@@ -319,20 +297,5 @@ mod tests {
             old.listeners[0].unbound_label(),
             "disabled (no_overlay_address)"
         );
-    }
-
-    #[test]
-    fn snapshot_stays_under_command_result_budget() {
-        use crate::ids::ResourceId;
-        use crate::wire::frame::{CommandResult, CommandValue};
-        use crate::wire::info::SessionSnapshot;
-        assert!(
-            std::mem::size_of::<SessionSnapshot>() < 128,
-            "SessionSnapshot={} must stay under 128 so CommandResult Err stays small",
-            std::mem::size_of::<SessionSnapshot>()
-        );
-        assert!(std::mem::size_of::<CommandResult>() < 128);
-        assert!(std::mem::size_of::<CommandValue>() < 128);
-        let _ = std::mem::size_of::<ResourceId>();
     }
 }

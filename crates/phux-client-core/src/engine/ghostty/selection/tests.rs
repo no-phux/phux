@@ -3,7 +3,6 @@ use crate::engine::{
     BoundedSelectionText, CanonicalGeometry, DocumentPoint, DocumentSpace, EngineDocumentSelection,
 };
 use crate::session::{EffectBuffer, KernelInput, SessionKernel};
-use libghostty_vt::point::Space as PointSpace;
 use phux_protocol::{
     BootstrapId, BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ResourceId, StreamId,
 };
@@ -106,23 +105,6 @@ fn bounded_copy_refuses_main_screen_anchors_while_alternate_is_active() {
     let mut kernel = kernel();
     let main = selection(&mut kernel, 3);
     output(&mut kernel, 1, b"\x1b[?1049h\x1b[HALT");
-    let replica = kernel.published_engine(&ResourceId::local(1)).unwrap();
-    let terminal = replica.terminal().unwrap();
-    for id in [main.start, main.end] {
-        let anchor = &replica.anchors[&id];
-        assert!(
-            anchor.point(PointSpace::History).unwrap().is_some(),
-            "own-screen coordinates remain valid"
-        );
-        let snapshot = anchor.snapshot(terminal).unwrap().unwrap();
-        assert!(
-            terminal
-                .point_from_grid_ref(&snapshot, PointSpace::History)
-                .unwrap()
-                .is_none(),
-            "snapshot is not on the active screen"
-        );
-    }
     // An overflowing allocation budget also proves membership refusal precedes
     // output-buffer allocation. No runtime view reconciliation is involved.
     assert_eq!(

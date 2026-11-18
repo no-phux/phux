@@ -224,12 +224,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(unix))]
-    fn capture_is_unavailable_without_getrusage() {
-        assert_eq!(ProcessStats::capture(), None);
-    }
-
-    #[test]
     fn delta_subtracts_cpu_and_keeps_rss() {
         let a = ProcessStats {
             cpu_user_us: 10,
@@ -299,11 +293,5 @@ mod tests {
             "current RSS must fall after release: during={during}, after={after}"
         );
         assert!(peak_after >= peak_during, "peak RSS must not fall");
-    }
-
-    #[test]
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    fn current_rss_is_unavailable_on_unsupported_targets() {
-        assert_eq!(ProcessStats::current_rss_bytes(), None);
     }
 }

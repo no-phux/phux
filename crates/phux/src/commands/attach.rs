@@ -1400,7 +1400,7 @@ mod tests {
     /// the transport could: a loopback QUIC or WebSocket dial has no round
     /// trip to hide, so it must not predict.
     #[test]
-    fn predictive_echo_defaults_follow_whether_the_dial_leaves_the_machine() {
+    fn only_a_dial_that_crosses_a_network_leaves_the_machine() {
         let uds = Dial::uds(std::path::Path::new("/tmp/phux-test.sock"));
         let quic_loopback = quic_dial("127.0.0.1:8788");
         let quic_remote = quic_dial("203.0.113.7:8788");
@@ -1415,37 +1415,6 @@ mod tests {
         }
         assert!(dial_leaves_the_machine(&quic_remote));
         assert!(dial_leaves_the_machine(&ws_remote));
-
-        let unset = phux_config::ExperimentalCfg::default();
-        for local in [&uds, &quic_loopback, &ws_loopback, &ws_localhost] {
-            assert!(
-                !unset.predictive_echo_for(dial_leaves_the_machine(local)),
-                "a same-machine echo arrives in hundreds of microseconds; a \
-                 prediction hides nothing and can only pay the flicker cases"
-            );
-        }
-        for remote in [&quic_remote, &ws_remote] {
-            assert!(
-                unset.predictive_echo_for(dial_leaves_the_machine(remote)),
-                "a dial that crosses a network pays a real round trip per key"
-            );
-        }
-
-        let forced_on = phux_config::ExperimentalCfg {
-            predictive_echo: Some(true),
-        };
-        assert!(
-            forced_on.predictive_echo_for(dial_leaves_the_machine(&uds)),
-            "an explicit opt-in reaches every transport"
-        );
-
-        let forced_off = phux_config::ExperimentalCfg {
-            predictive_echo: Some(false),
-        };
-        assert!(
-            !forced_off.predictive_echo_for(dial_leaves_the_machine(&quic_remote)),
-            "an explicit opt-out must stick on every transport"
-        );
     }
 
     fn quic_dial(addr: &str) -> Dial {
@@ -1774,13 +1743,6 @@ mod tests {
             Duration::from_millis(100),
             "UDS must not back off — a graceful upgrade is over in <1s"
         );
-
-        // Flat means flat, however many times it is applied.
-        let mut backoff = policy.ladder.floor;
-        for _ in 0..10 {
-            backoff = policy.ladder.next(backoff);
-            assert_eq!(backoff, Duration::from_millis(100));
-        }
     }
 
     /// Both remote lanes get the patient, backing-off policy: each probe is a

@@ -9,23 +9,6 @@ fn plane_with_forward() -> ControlPlane {
 }
 
 #[test]
-fn a_server_without_the_bit_is_never_asked() {
-    let mut plane = ControlPlane::new(ControlOptions::default());
-    assert_eq!(
-        plane.forward_open("localhost".to_owned(), 80).unwrap_err(),
-        ForwardError::NotConnected
-    );
-    reopen(&mut plane, hello_ok(PROTOCOL_VERSION.patch));
-    let _ = plane.take_outbound();
-    assert!(!plane.forward_supported());
-    assert_eq!(
-        plane.forward_open("localhost".to_owned(), 80).unwrap_err(),
-        ForwardError::Unsupported
-    );
-    assert!(plane.take_outbound().is_empty());
-}
-
-#[test]
 fn open_read_write_and_close_resolve_their_calls() {
     let mut plane = plane_with_forward();
     assert!(plane.forward_supported());

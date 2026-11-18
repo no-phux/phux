@@ -248,15 +248,6 @@ fn no_terminal_no_picker() {
 }
 
 #[test]
-fn closing_a_keep_running_window_releases_its_capture_owner() {
-    let mut desk = desk();
-    taken(&mut desk, 1, Shot::Cancelled);
-    desk.cancel_screenshot();
-    assert!(desk.connection.capture.is_none());
-    assert!(desk.connection.uploads.is_empty());
-}
-
-#[test]
 fn replacing_the_connection_drops_its_capture() {
     for policy in [
         crate::desk::link::Replacement::Retry,

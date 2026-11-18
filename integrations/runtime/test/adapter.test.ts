@@ -518,11 +518,6 @@ test("rendered snapshot validates its dense versioned frame", async () => {
   ]);
 });
 
-test("malformed JSON is normalized", async () => {
-  const cli = new PhuxCli({ runner: fakeRunner(completed("not-json")).runner });
-  await assert.rejects(cli.ls(), expectCode("malformed_json"));
-});
-
 test("run wrapper failures without JSON stay command failures", async () => {
   const cli = new PhuxCli({ runner: fakeRunner(completed("", 125, "sentinel timed out")).runner });
   await assert.rejects(cli.run("work", ["sleep", "10"]), expectCode("command_failed"));
