@@ -1,6 +1,6 @@
 # cargo-deny for this workspace's own lockfile (`just rune-deny`): the root
 # deny.toml's rules, plus the git source only Rune's graph uses. Rune has no
-# releases, and this client pins a `dev` revision.
+# releases, and this client pins an upstream revision plus a narrow IME fix.
 
 [graph]
 all-features = true
@@ -34,7 +34,7 @@ allow-wildcard-paths = true
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-git = [
-    "https://github.com/anomalyco/rune",
+    "https://github.com/no-phux/rune",
     "https://github.com/phall1/libghostty-rs",
 ]
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
