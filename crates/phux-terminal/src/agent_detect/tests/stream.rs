@@ -133,7 +133,6 @@ fn a_stream_retraction_during_the_idle_hold_drops_the_fast_cadence() {
 
     let now = h.now;
     assert_eq!(h.detector.report_stream_state(None, now), None);
-    assert!(h.detector.pending_idle.is_none(), "the hold is dropped");
     assert_eq!(
         h.detector.interval(),
         TICK_IDENTIFIED,

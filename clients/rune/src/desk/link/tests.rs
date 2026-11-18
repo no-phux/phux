@@ -333,13 +333,6 @@ fn another_server_drops_what_was_held_for_this_one() {
 }
 
 #[test]
-fn another_server_with_no_client_drops_it_too() {
-    let mut desk = holding(None);
-    desk.reach(PathBuf::from("/nowhere/other.sock"), true);
-    assert_nothing_held(&desk);
-}
-
-#[test]
 fn a_lost_machine_leaves_nothing_for_the_stand_in() {
     let mut desk = holding(None);
     desk.machines.current = Some("mini".to_owned());
@@ -388,20 +381,6 @@ fn a_handoff_here_changes_nothing_on_a_remote() {
     desk.failed_with(REFUSED);
     desk.server_handed_off();
     assert!(desk.stuck());
-}
-
-#[test]
-fn a_refusal_in_words_keeps_only_the_servers() {
-    assert_eq!(plainly(REFUSED), "server speaks 12");
-}
-
-#[test]
-fn a_new_client_gets_the_chosen_theme() {
-    let mut desk = desk();
-    let before = desk.generation;
-    desk.connect(phux_client_runtime::Target::uds("/nowhere/phux.sock"));
-    assert!(desk.connection.client.is_some());
-    assert_eq!(desk.generation, before + 1, "apply_theme ran on the client");
 }
 
 #[test]

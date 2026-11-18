@@ -75,27 +75,6 @@ fn a_new_incarnation_can_list_an_id_its_predecessor_listed() {
 }
 
 #[test]
-fn a_narrower_inventory_hides_an_observed_pane_without_closing_it() {
-    let (mut plane, attach_id) = negotiated();
-    attached(
-        &mut plane,
-        attach_id,
-        with_terminals(&[terminal(), sibling()]),
-    );
-    let _ = plane.take_events();
-
-    let events = inventory(&mut plane, with_terminals(&[terminal()]));
-    assert!(
-        !closed(&events, &sibling()),
-        "an INVENTORY view that omits an OBSERVE-listed pane is not its close"
-    );
-    assert!(!listed(&plane, &sibling()));
-
-    refresh_to(&mut plane, with_terminals(&[terminal(), sibling()]));
-    assert!(listed(&plane, &sibling()), "a hidden pane may reappear");
-}
-
-#[test]
 fn an_attach_that_omits_satellites_neither_closes_them_nor_hides_them_for_long() {
     let (mut plane, attach_id) = negotiated();
     attached(&mut plane, attach_id, with_terminals(&[terminal()]));

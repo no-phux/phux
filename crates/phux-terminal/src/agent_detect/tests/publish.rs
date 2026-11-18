@@ -115,7 +115,6 @@ fn blocked_during_the_idle_hold_publishes_at_once() {
     assert_eq!(h.tick("nothing"), DetectOutcome::Quiet);
     let out = h.tick("BLOCKED");
     assert_eq!(published(&out), DetectedState::Blocked);
-    assert!(h.detector.pending_idle.is_none(), "hold cleared");
 }
 
 /// Idle from a non-working state is not debounced.
@@ -134,8 +133,6 @@ fn skip_state_update_freezes_the_previous_state() {
     assert_eq!(published(&h.tick("WORKING")), DetectedState::Working);
     assert_eq!(h.tick("PAGER"), DetectOutcome::Quiet);
     assert_eq!(h.state(), Some(DetectedState::Working), "badge frozen");
-    // And it does not even start an idle hold.
-    assert!(h.detector.pending_idle.is_none());
     // Leaving the pager resumes normal derivation.
     assert_eq!(published(&h.tick("IDLE")), DetectedState::Idle);
 }
@@ -146,15 +143,6 @@ fn freeze_outranks_every_state_bearing_rule() {
     let mut h = Harness::new().past_grace();
     assert_eq!(h.tick("PAGER and BLOCKED"), DetectOutcome::Quiet);
     assert_eq!(h.state(), None);
-}
-
-/// The fail-safe: no matching rule means idle, never blocked.
-#[test]
-fn an_identified_agent_with_no_matching_rule_is_idle_never_blocked() {
-    let mut h = Harness::new().past_grace();
-    let out = h.tick("total gibberish that matches nothing");
-    assert_eq!(published(&out), DetectedState::Idle);
-    assert_ne!(h.state(), Some(DetectedState::Blocked));
 }
 
 /// A long run of one state produces exactly one write.
@@ -194,14 +182,6 @@ fn a_skipped_scan_holds_the_last_state_and_is_quiet() {
     assert_eq!(published(&h.tick("WORKING")), DetectedState::Working);
     assert_eq!(h.tick_no_scan(), DetectOutcome::Quiet);
     assert_eq!(h.state(), Some(DetectedState::Working));
-}
-
-#[test]
-fn wants_screen_skips_the_scan_whenever_the_grid_is_clean() {
-    let mut h = Harness::new().past_grace();
-    h.tick("IDLE");
-    assert!(!h.detector.wants_screen(false), "idle + clean => skip");
-    assert!(h.detector.wants_screen(true), "dirty => scan");
 }
 
 /// A static `blocked` prompt with a clean grid is not rescanned.

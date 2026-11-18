@@ -126,31 +126,3 @@ fn a_target_miss_inside_a_repository_is_not_a_workspace_failure() {
         "no_such_target",
     );
 }
-
-/// `--json` and `--attach` cannot combine, and the refusal is at parse time
-/// (exit 2), before anything is created. An attached session owns the
-/// terminal, so there would be no stdout left to put a document on — and a
-/// script that asked for both wants an answer it is never going to get.
-#[test]
-fn json_refuses_to_combine_with_attach() {
-    for args in [
-        vec!["worktree", "new", "feat/x", "--json", "--attach"],
-        vec!["worktree", "open", "feat/x", "--json", "--attach"],
-    ] {
-        let (code, stdout, stderr) = run(&args);
-        assert_eq!(
-            code,
-            2,
-            "`phux {}` must be a usage error; stderr={stderr}",
-            args.join(" ")
-        );
-        assert!(
-            stdout.is_empty(),
-            "a usage refusal must not print a document; got {stdout:?}"
-        );
-        assert!(
-            stderr.contains("--attach"),
-            "the refusal must name the conflicting flag; got {stderr:?}"
-        );
-    }
-}

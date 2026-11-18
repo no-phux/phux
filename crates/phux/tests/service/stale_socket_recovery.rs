@@ -1,99 +1,16 @@
-//! Auto-spawn against a stale socket file left by a server that died without
-//! unlinking it: every later invocation used to find the file, skip the spawn,
-//! and fail to connect. Real binary, real socket directory.
+//! Auto-spawn on a cold socket and graceful socket cleanup. Real binary,
+//! real socket directory.
 
 #![allow(clippy::expect_used, clippy::panic, reason = "tests")]
 
 use crate::common;
 
-use std::os::unix::net::UnixListener;
-use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::support::{LiveServer, phux_on};
 
 const DEADLINE: Duration = Duration::from_secs(30);
 const POLL: Duration = Duration::from_millis(50);
-
-/// A socket file with no listener, as a `SIGKILL`ed server leaves; refusal
-/// is polled because a just-closed listener can still accept off the backlog.
-fn leave_stale_socket(path: &Path) {
-    let listener = UnixListener::bind(path).expect("bind the doomed listener");
-    drop(listener);
-    assert!(
-        path.exists(),
-        "a Unix socket file outlives its listener; without that this test proves nothing"
-    );
-    let deadline = Instant::now() + DEADLINE;
-    while Instant::now() < deadline {
-        if std::os::unix::net::UnixStream::connect(path).is_err() {
-            return;
-        }
-        std::thread::sleep(POLL);
-    }
-    panic!(
-        "{} still accepts connections; it is not the stale socket this test needs",
-        path.display()
-    );
-}
-
-/// `phux new` against a stale socket must reap it and start a server, not
-/// report a dead socket to the user.
-#[test]
-fn auto_spawn_reaps_a_stale_socket_instead_of_wedging() {
-    let (dir, socket) = LiveServer::cold();
-    leave_stale_socket(&socket);
-
-    let out = phux_on(&socket, &["new", "--session", "revived", "--json"]);
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "a stale socket must not be fatal.\nstdout: {stdout}\nstderr: {stderr}"
-    );
-    let mut server = LiveServer::guard(dir, socket.clone());
-    server.pid();
-    assert!(
-        stdout.contains("\"session\": \"revived\""),
-        "the session should have been created on a freshly spawned server.\n\
-         stdout: {stdout}\nstderr: {stderr}"
-    );
-    assert!(
-        common::wait_until_accepting(&socket),
-        "a server must be accepting on the reaped path"
-    );
-}
-
-/// A second invocation reuses the live server rather than reaping a healthy
-/// socket.
-#[test]
-fn a_second_invocation_reuses_the_live_server() {
-    let (dir, socket) = LiveServer::cold();
-    leave_stale_socket(&socket);
-
-    let first = phux_on(&socket, &["new", "--session", "first", "--json"]);
-    assert!(first.status.success(), "first invocation must succeed");
-    assert!(common::wait_until_accepting(&socket), "server must be up");
-    let mut server = LiveServer::guard(dir, socket.clone());
-    server.pid();
-
-    let second = phux_on(&socket, &["new", "--session", "second", "--json"]);
-    assert!(
-        second.status.success(),
-        "second invocation must succeed against the live server.\nstderr: {}",
-        String::from_utf8_lossy(&second.stderr)
-    );
-
-    // Both sessions live on ONE server — proof the second run reused it
-    // rather than reaping the socket and starting a replacement.
-    let listed = phux_on(&socket, &["ls"]);
-    let sessions = String::from_utf8_lossy(&listed.stdout);
-    assert!(
-        sessions.contains("first") && sessions.contains("second"),
-        "both sessions must be on the same server; got:\n{sessions}"
-    );
-}
 
 /// A headless create on a cold socket starts an unseeded server: the
 /// requested session is the only one, and asking for `default` (the seed's

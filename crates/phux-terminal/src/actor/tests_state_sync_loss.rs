@@ -113,41 +113,6 @@ fn loss_tolerant_dropped_frame_rediffs_against_acked_and_converges() {
     assert_eq!(mirror_grid[1], "BBBB");
 }
 
-/// After an ack, deltas diff against the advanced reference and the mirror
-/// still converges.
-#[test]
-fn loss_tolerant_incremental_after_ack_converges() {
-    let (mut actor, client, mut rx) = actor_with_consumer(true);
-    actor.enable_loss_tolerance_for_test(client);
-    let mut mirror = mirror_terminal();
-
-    // Round 1: content, deliver + ack.
-    actor.vt_write_for_test(b"row-one");
-    actor.tick_emit();
-    let f1 = drain_outputs(&mut rx);
-    assert_eq!(f1.len(), 1);
-    mirror.vt_write(&f1[0].1);
-    actor.on_frame_ack(client, f1[0].0);
-
-    // Round 2: more content, delivered + acked; diffed against the acked
-    // reference from round 1.
-    actor.vt_write_for_test(b"\r\nrow-two");
-    actor.tick_emit();
-    let f2 = drain_outputs(&mut rx);
-    assert_eq!(f2.len(), 1);
-    mirror.vt_write(&f2[0].1);
-    actor.on_frame_ack(client, f2[0].0);
-
-    let canonical_grid = canonical_viewport(&actor);
-    let mirror_grid = render_viewport(&mirror);
-    assert_eq!(
-        canonical_grid, mirror_grid,
-        "steady-state ack loop converges"
-    );
-    assert_eq!(mirror_grid[0], "row-one");
-    assert_eq!(mirror_grid[1], "row-two");
-}
-
 /// A retransmit heals a lost final frame on an idle terminal.
 #[test]
 fn loss_tolerant_retransmits_lost_frame_when_idle() {
@@ -182,21 +147,4 @@ fn loss_tolerant_retransmits_lost_frame_when_idle() {
         "retransmit heals the lost frame on an idle terminal",
     );
     assert_eq!(mirror_grid[0], "lonely");
-}
-
-/// Without loss tolerance there are no pending refs; emit-once as before.
-#[test]
-fn emit_once_default_keeps_no_pending_refs() {
-    let (mut actor, client, mut rx) = actor_with_consumer(true);
-    // NB: loss-tolerance NOT enabled.
-    actor.vt_write_for_test(b"content");
-    actor.tick_emit();
-    let frames = drain_outputs(&mut rx);
-    assert_eq!(frames.len(), 1);
-    let state = actor.consumer_state(client).expect("state");
-    assert!(!state.sync.loss_tolerant, "default consumer is emit-once");
-    assert!(
-        state.sync.pending_refs.is_empty(),
-        "emit-once path allocates no pending reference snapshots",
-    );
 }

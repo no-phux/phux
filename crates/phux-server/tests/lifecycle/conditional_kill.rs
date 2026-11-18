@@ -1,18 +1,13 @@
-//! ADR-0109 `KILL_RESOURCE_IF` on one server: a late kill lands only on a
-//! bound pane that is still the caller's, meaning nobody else attached or
-//! drove it, it has no child the kill would take too, and its id still names
-//! the same incarnation.
+//! ADR-0109 `KILL_RESOURCE_IF` across a cold restart: a late kill lands only
+//! when its id still names the same incarnation. The other preconditions are
+//! unit-tested in `state::conditional_kill`.
 
 use phux_protocol::ids::{ResourceId, ServerInstance};
-use phux_protocol::input::InputEvent;
-use phux_protocol::input::key::PhysicalKey;
 use phux_protocol::wire::frame::{
-    Command, CommandResult, ErrorCode, KillConditions, KillPrecondition, SpawnResource, SpawnResult,
+    Command, CommandResult, ErrorCode, KillPrecondition, SpawnResource, SpawnResult,
 };
-use phux_server_testkit::{Spawn, ascii_key, command, spawn_resource};
+use phux_server_testkit::{Spawn, command, spawn_resource};
 use tokio::net::UnixStream;
-
-use crate::common::{Server, attach, wait_for_state};
 
 const SESSION: &str = "main";
 
@@ -57,95 +52,6 @@ fn assert_refused(result: &CommandResult, what: &str) {
         ),
         "{what}: {result:?}"
     );
-}
-
-#[test]
-fn conditional_kill_takes_only_panes_still_the_callers() {
-    phux_server_testkit::run_local(async {
-        let server = Server::start(Some(SESSION), |_| {});
-        let mut spawner = server.connect().await;
-
-        // Killed: only its spawner ever attached it.
-        let (own, instance) = spawn_bound(&mut spawner, 1).await;
-        let attach_own = Command::attach_terminal(own.clone(), None);
-        assert!(matches!(
-            command(&mut spawner, 2, attach_own).await,
-            CommandResult::Ok | CommandResult::OkWith(_)
-        ));
-        assert_eq!(
-            kill_if(&mut spawner, 3, &own, instance).await,
-            CommandResult::Ok
-        );
-        wait_for_state(&mut spawner, 100, "the pane to be reaped", |s| {
-            crate::common::find(s, &own).is_none()
-        })
-        .await;
-
-        // Refused: another client drove it with send-keys-style input.
-        let (driven, driven_instance) = spawn_bound(&mut spawner, 6).await;
-        let mut agent = server.connect().await;
-        let send_keys = phux_server_testkit::route_input(
-            driven.clone(),
-            InputEvent::Key(ascii_key('a', PhysicalKey::A)),
-        );
-        assert_eq!(command(&mut agent, 1, send_keys).await, CommandResult::Ok);
-        drop(agent);
-        assert_refused(
-            &kill_if(&mut spawner, 7, &driven, driven_instance).await,
-            "driven by another",
-        );
-
-        // Refused: the attachment condition without an instance token.
-        let (untokened, _) = spawn_bound(&mut spawner, 8).await;
-        let no_token = Command::KillResourceIf {
-            terminal_id: untokened.clone(),
-            precondition: KillPrecondition {
-                instance: None,
-                conditions: KillConditions::UNATTACHED_SINCE_SPAWN,
-            },
-            operation_id: None,
-        };
-        assert_refused(&command(&mut spawner, 9, no_token).await, "no instance");
-
-        // Refused: a child resource the kill would close too.
-        let (parent, parent_instance) = spawn_bound(&mut spawner, 10).await;
-        let child = Spawn {
-            resource: Some(Box::new(SpawnResource::agent_session(
-                parent.clone(),
-                "claude",
-            ))),
-            ..Spawn::default()
-        };
-        assert!(matches!(
-            spawn_resource(&mut spawner, 11, child).await,
-            SpawnResult::Ok(_)
-        ));
-        assert_refused(
-            &kill_if(&mut spawner, 12, &parent, parent_instance).await,
-            "has a child",
-        );
-
-        // Refused: another client attached the session it sits in, then left.
-        // Last, because a session attach counts against every pane in it.
-        let (seen, seen_instance) = spawn_bound(&mut spawner, 4).await;
-        let mut other = server.connect().await;
-        attach(&mut other, SESSION).await;
-        drop(other);
-        assert_refused(
-            &kill_if(&mut spawner, 5, &seen, seen_instance).await,
-            "attached by another",
-        );
-
-        for (request_id, pane) in (20..).zip([&seen, &driven, &untokened, &parent]) {
-            assert!(
-                is_alive(&mut spawner, request_id, pane).await,
-                "{pane:?} survives a refused kill"
-            );
-        }
-
-        drop(spawner);
-        server.stop().await;
-    });
 }
 
 /// A cold restart reissues pane ids under a new instance token, so a kill

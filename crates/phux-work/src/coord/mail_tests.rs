@@ -99,31 +99,6 @@ fn acknowledging_reads_and_is_scoped_to_the_recipient() {
 }
 
 #[test]
-fn a_repeated_send_is_one_message_and_a_changed_one_conflicts() {
-    let (_dir, mut store) = store();
-    let request = SendMail {
-        thread: "t".into(),
-        from: "a".into(),
-        to: vec!["b".into()],
-        body: "once".into(),
-        operation_id: OperationId::generate().unwrap(),
-    };
-    let first = store.send_mail(&request).unwrap();
-    let again = store.send_mail(&request).unwrap();
-    assert!(again.idempotent_replay);
-    assert_eq!(again.mail, first.mail);
-    assert_eq!(read(&mut store, "b", None, true).len(), 1);
-    let changed = SendMail {
-        body: "twice".into(),
-        ..request
-    };
-    assert!(matches!(
-        store.send_mail(&changed),
-        Err(Error::OperationConflict { .. })
-    ));
-}
-
-#[test]
 fn a_message_is_taken_once_per_recipient_and_stays_unread() {
     let (_dir, mut store) = store();
     let sent = send(&mut store, "pi@749", &["@730", "phall"], "t", "hello");

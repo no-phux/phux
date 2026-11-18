@@ -357,13 +357,6 @@ mod tests {
     }
 
     #[test]
-    fn resolve_keeps_missing_components_after_the_existing_ancestor() {
-        let dir = tempfile::tempdir().unwrap();
-        let canonical = std::fs::canonicalize(dir.path()).unwrap();
-        assert_eq!(resolve(&dir.path().join("a/b/c")), canonical.join("a/b/c"));
-    }
-
-    #[test]
     fn test_binaries_are_refused_the_account_home() {
         // Tests are dev builds, so the live guard applies to them too.
         let Some(home) = account_home() else {

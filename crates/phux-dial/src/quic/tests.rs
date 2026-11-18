@@ -160,12 +160,3 @@ async fn require_paired_refuses_a_quic_listener_that_did_not_ask() {
         "the server never completes the handshake"
     );
 }
-
-#[tokio::test]
-async fn graceful_close_is_not_credential_refusal() {
-    let classified = dial_and_get_closed(0, b"bye").await;
-    assert!(
-        !matches!(classified, DialError::AuthRefused(_)),
-        "got {classified:?}"
-    );
-}

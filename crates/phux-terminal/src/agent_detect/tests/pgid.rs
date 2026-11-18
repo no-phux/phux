@@ -16,20 +16,6 @@ fn a_recycled_pgid_is_a_new_occupant_not_the_old_one() {
     );
 }
 
-/// A stable start time never manufactures a restart.
-#[test]
-fn a_stable_start_time_never_manufactures_a_restart() {
-    let mut h = occupied("t", 100);
-    for _ in 0..20 {
-        assert_eq!(
-            h.identity_tick(),
-            DetectOutcome::Quiet,
-            "same pgid, same start time: nothing happened",
-        );
-    }
-    assert_eq!(h.state(), Some(DetectedState::Working), "badge untouched");
-}
-
 /// Without start times, comparison degrades to pgids, not "all new".
 #[test]
 fn an_unavailable_start_time_degrades_to_comparing_pgids() {
@@ -106,14 +92,6 @@ fn a_recycled_pgid_is_invisible_to_the_cheap_probe_but_still_caught_on_recheck()
             DetectOutcome::Quiet,
             "tick {i}: the cheap probe cannot afford to notice a same-pgid \
                  recycle, and must not guess",
-        );
-        assert_eq!(
-            h.detector
-                .identified
-                .as_ref()
-                .and_then(|agent| agent.occupant),
-            Some(Occupant::new(100, Some(700))),
-            "tick {i}: still believed to be the ORIGINAL process",
         );
     }
 

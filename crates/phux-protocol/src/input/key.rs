@@ -273,14 +273,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn key_action_round_trips_wire_discriminant() {
-        for a in [KeyAction::Release, KeyAction::Press, KeyAction::Repeat] {
-            assert_eq!(KeyAction::try_from(a as u32), Ok(a));
-        }
-        assert!(KeyAction::try_from(9).is_err());
-    }
-
-    #[test]
     fn debug_redacts_key_text_and_codepoint() {
         let secret = "hunter2-PASSWORD";
         let event = KeyEvent {

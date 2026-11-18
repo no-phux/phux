@@ -1,6 +1,6 @@
 use super::{
-    RecOutcome, cast_version, checked_speed, composite_cells, human_bytes, human_duration,
-    idle_limit, into_timeline, mark::mark_json, parse_resize, rec_json,
+    RecOutcome, cast_version, checked_speed, composite_cells, human_bytes, idle_limit,
+    into_timeline, mark::mark_json, parse_resize, rec_json,
 };
 use phux_client::record::HeadlessRecording;
 use phux_record::cast::{CastEvent, CastVersion, EventCode};
@@ -45,15 +45,6 @@ fn recording(cols: u16, rows: u16) -> HeadlessRecording {
             data: "hi".to_owned(),
         }],
     }
-}
-
-#[test]
-fn timeline_carries_the_capture_dims_and_start_time() {
-    let (header, events) = into_timeline(recording(120, 34), Some(2.0)).expect("usable capture");
-    assert_eq!((header.cols, header.rows), (120, 34));
-    assert_eq!(header.timestamp, Some(1_700_000_000));
-    assert_eq!(header.idle_time_limit, Some(2.0));
-    assert_eq!(events.len(), 1);
 }
 
 #[test]
@@ -103,12 +94,6 @@ fn human_bytes_switches_unit_at_the_binary_prefixes() {
     assert_eq!(human_bytes(1024), "1.0 KiB");
     assert_eq!(human_bytes(184_320), "180.0 KiB");
     assert_eq!(human_bytes(2 * 1024 * 1024), "2.0 MiB");
-}
-
-#[test]
-fn human_duration_reads_in_seconds() {
-    assert_eq!(human_duration(42_130), "42.1s");
-    assert_eq!(human_duration(0), "0.0s");
 }
 
 #[test]

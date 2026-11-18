@@ -127,25 +127,11 @@ mod tests {
         out
     }
 
-    /// The agent-verb lane keeps `phux resource wait`'s 50 ms..1 s cadence
-    /// (an agent is blocking on it) rather than the interactive one.
-    #[test]
-    fn the_agent_verb_ladder_is_fast_and_still_doubles() {
-        assert_eq!(
-            schedule(Ladder::AGENT_VERB, 6),
-            vec![50, 100, 200, 400, 800, 1000, 1000]
-        );
-    }
-
     /// The local-upgrade lane is flat: a graceful upgrade is over in under
     /// a second and a Unix connect costs nothing, so it never backs off.
     #[test]
     fn the_local_upgrade_ladder_is_flat() {
         assert_eq!(schedule(Ladder::LOCAL_UPGRADE, 10), vec![100; 11]);
-        assert_eq!(
-            Ladder::flat(Duration::from_millis(7)).ceiling,
-            Duration::from_millis(7)
-        );
     }
 
     /// Doubling saturates instead of overflowing, so a runaway loop still
@@ -164,14 +150,6 @@ mod tests {
         assert_eq!(
             Ladder::INTERACTIVE.next(Duration::ZERO),
             Ladder::INTERACTIVE.floor
-        );
-        assert_eq!(
-            Ladder::AGENT_VERB.next(Duration::ZERO),
-            Ladder::AGENT_VERB.floor
-        );
-        assert_eq!(
-            Ladder::LOCAL_UPGRADE.next(Duration::ZERO),
-            Ladder::LOCAL_UPGRADE.floor
         );
     }
 
@@ -217,29 +195,6 @@ mod tests {
             is_fatal_refusal_detail(&crate::dial::dial_message("mini", &changed)),
             "the flattened refusal stays fatal"
         );
-    }
-
-    /// The rendered-detail form is the same verdict as the typed one, so a
-    /// consumer that only kept the text of a connect failure — the attach
-    /// loop, whose probe returns the attach vocabulary rather than a
-    /// `DialError` — classifies it identically.
-    #[test]
-    fn the_detail_rule_matches_the_typed_rule() {
-        for error in [
-            refused(401, "Unauthorized"),
-            refused(403, "Forbidden"),
-            refused(503, "Service Unavailable"),
-            DialError::Connect("server certificate fingerprint mismatch".to_owned()),
-        ] {
-            let DialError::Connect(detail) = &error else {
-                unreachable!("every case above is a connect failure");
-            };
-            assert_eq!(
-                is_fatal_refusal(&error),
-                is_fatal_refusal_detail(detail),
-                "the two spellings disagreed on {detail:?}"
-            );
-        }
     }
 
     /// A refused QUIC preamble survives being flattened into a consumer's

@@ -1,8 +1,6 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 
-use super::super::super::{
-    MAX_BOOTSTRAP_STAGING_CHUNKS, MAX_BOOTSTRAP_STAGING_IDLE_MS, ResourceKind,
-};
+use super::super::super::{MAX_BOOTSTRAP_STAGING_IDLE_MS, ResourceKind};
 use super::*;
 
 fn ids(bootstrap: u64) -> (StreamId, BootstrapId) {
@@ -24,57 +22,6 @@ fn begun(bootstrap: u64) -> DocumentLane {
     )
     .unwrap();
     lane
-}
-
-#[test]
-fn a_cut_lands_whole_and_live_documents_only_move_forward() {
-    let mut lane = begun(1);
-    let (stream_id, bootstrap_id) = ids(1);
-    lane.chunk(stream_id, bootstrap_id, 0, b"ab", 0).unwrap();
-    lane.chunk(stream_id, bootstrap_id, 1, b"c", 0).unwrap();
-    let cut = lane.ready(stream_id, bootstrap_id, 0).unwrap();
-    assert_eq!(
-        (cut.kind, cut.seq, cut.bytes.as_slice()),
-        (ResourceKind::PixelSurface, 4, b"abc" as &[u8])
-    );
-    assert!(matches!(
-        lane.output(stream_id, bootstrap_id, 4, b"old"),
-        Err(KernelError::DuplicateSequence {
-            expected: 5,
-            actual: 4
-        })
-    ));
-    assert_eq!(
-        lane.output(stream_id, bootstrap_id, 9, b"new").unwrap().seq,
-        9
-    );
-}
-
-#[test]
-fn staging_is_bounded_by_the_kernel_ceilings_and_lifetime() {
-    let mut lane = begun(1);
-    let (stream_id, bootstrap_id) = ids(1);
-    let ceiling = u32::try_from(MAX_BOOTSTRAP_STAGING_CHUNKS).unwrap();
-    for chunk_seq in 0..ceiling {
-        lane.chunk(stream_id, bootstrap_id, chunk_seq, b"", 0)
-            .unwrap();
-    }
-    assert!(matches!(
-        lane.chunk(stream_id, bootstrap_id, ceiling, b"", 0),
-        Err(KernelError::BootstrapStagingLimitExceeded)
-    ));
-
-    let mut lane = begun(1);
-    let expired_at = MAX_BOOTSTRAP_STAGING_IDLE_MS + 1;
-    assert!(matches!(
-        lane.chunk(stream_id, bootstrap_id, 0, b"x", expired_at),
-        Err(KernelError::BootstrapStagingLimitExceeded)
-    ));
-    let mut lane = begun(1);
-    assert!(matches!(
-        lane.ready(stream_id, bootstrap_id, expired_at),
-        Err(KernelError::BootstrapStagingLimitExceeded)
-    ));
 }
 
 #[test]

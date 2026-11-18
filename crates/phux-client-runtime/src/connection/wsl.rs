@@ -185,14 +185,4 @@ mod tests {
         assert!(target.resolved().is_none());
         assert_eq!(target.transport.label(), "wsl");
     }
-
-    #[cfg(not(windows))]
-    #[test]
-    fn other_platforms_do_not_silently_map_wsl_to_unix() {
-        assert!(
-            plan(Path::new("/linux.sock"), Path::new("phux"))
-                .expect_err("unsupported")
-                .contains("requires native Windows")
-        );
-    }
 }

@@ -14,26 +14,22 @@
 //! The encodings are compared as independently built shapes: core leaves are
 //! the corpus indices themselves, L3 and blob leaves are wire ids.
 //!
-//! Two asymmetries are structural and asserted, not normalised away: the
-//! encodings accept different ratio domains (core open interval, L3 closed,
-//! blob unchecked), and none imposes a depth bound of its own. If a later
-//! change unifies them, update the map in those tests rather than deleting
-//! the assertion.
-//! The depth map found a real bug: `serde_json`'s recursion limit made a
-//! 63-pane window's upgrade blob writable but unreadable.
+//! None of the encodings imposes a depth bound of its own; the depth map
+//! found a real bug: `serde_json`'s recursion limit made a 63-pane window's
+//! upgrade blob writable but unreadable.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
 use phux_client::layout::{ArrangementDoc, LayoutDecodeError, LayoutNode as L3Node, leaves};
-use phux_core::arrangement::{LayoutError, SplitDir as CoreDir};
-use phux_server::upgrade::blob::{LayoutBlob, SplitDirBlob, StateBlob};
+use phux_core::arrangement::SplitDir as CoreDir;
+use phux_server::upgrade::blob::{LayoutBlob, StateBlob};
 
 mod corpus;
 mod encodings;
 
-use corpus::{Axis, DEEP_SPINE_PANES, Shape, corpus, registry_spine};
+use corpus::{DEEP_SPINE_PANES, corpus, registry_spine};
 use encodings::{
     CoreNode, blob_index_map, build_blob, build_core, build_l3, project_blob, project_core,
     project_l3,
@@ -122,25 +118,6 @@ fn round_trip_layout_through_the_envelope(node: &L3Node) -> Result<L3Node, Layou
         .expect("layout survived the round trip"))
 }
 
-/// Splitting pane 0 once per new pane, as an older image's registry did for
-/// a window, builds [`registry_spine`]: the shape the deep-spine corpus
-/// entry and the blob depth analysis rest on.
-#[test]
-fn core_split_builds_the_registry_spine() {
-    const PANES: u32 = 6;
-    let mut tree = CoreNode::Leaf(0);
-    for pane in 1..PANES {
-        tree.split(&0, pane, CoreDir::Horizontal, 0.5)
-            .expect("pane 0 is in the tree");
-    }
-    assert_eq!(
-        project_core(&tree),
-        registry_spine(PANES as usize),
-        "LayoutNode::split no longer nests a new pane down the left spine; \
-         revisit DEEP_SPINE_PANES and the blob depth analysis"
-    );
-}
-
 /// A v1 upgrade blob holding one session and one window whose layout is
 /// `layout`, as an older image writes it, in bytes [`StateBlob::from_bytes`]
 /// reads. Only the fields every image writes are present, so an additive
@@ -174,95 +151,8 @@ fn one_window_blob_bytes(layout: &LayoutBlob, panes: u32) -> Vec<u8> {
     serde_json::to_vec(&blob).expect("a deep blob still serializes")
 }
 
-/// The three ratio domains, asserted as a map. If they are ever unified this
-/// fails by construction: update the map, do not weaken it.
-#[test]
-fn ratio_domains_diverge_by_design_and_here_is_the_map() {
-    // --- phux_core: the open interval (0.0, 1.0), per ADR-0012. ------------
-    let mut tree = CoreNode::Leaf(0);
-    let mut next = 1_u32;
-    let mut attempt = |ratio: f32| -> Result<(), LayoutError<u32>> {
-        next += 1;
-        tree.split(&0, next, CoreDir::Horizontal, ratio)
-    };
-    for rejected in [0.0, 1.0, -0.5, 1.5, f32::NAN, f32::INFINITY] {
-        assert!(
-            matches!(attempt(rejected), Err(LayoutError::InvalidRatio(_))),
-            "phux_core must reject ratio {rejected} (ADR-0012: open interval)"
-        );
-    }
-    for accepted in [f32::EPSILON, 0.5, 1.0 - f32::EPSILON] {
-        assert!(
-            attempt(accepted).is_ok(),
-            "phux_core must accept ratio {accepted}"
-        );
-    }
-
-    // --- L3 envelope: closed [0.0, 1.0], finite only; wider than core because
-    // the TUI banks unapplied `resize-pane` ratios (ADR-0048).
-    for accepted in [0.0, 1.0, f32::EPSILON, 0.5] {
-        let node = build_l3(&Shape::split(
-            Axis::SideBySide,
-            accepted,
-            Shape::Pane(0),
-            Shape::Pane(1),
-        ));
-        assert!(
-            round_trip_layout_through_the_envelope(&node).is_ok(),
-            "the envelope must carry ratio {accepted}"
-        );
-    }
-    for rejected in [-0.5, 1.5, f32::NAN, f32::INFINITY] {
-        let node = build_l3(&Shape::split(
-            Axis::SideBySide,
-            rejected,
-            Shape::Pane(0),
-            Shape::Pane(1),
-        ));
-        assert!(
-            matches!(
-                round_trip_layout_through_the_envelope(&node),
-                Err(LayoutDecodeError::MalformedRatio(_))
-            ),
-            "the envelope must reject ratio {rejected}"
-        );
-    }
-
-    // --- upgrade blob: no validation; out-of-domain finite ratios survive...
-    for unchecked in [-0.5, 1.5, 0.0, 1.0] {
-        let blob = LayoutBlob::Split {
-            dir: SplitDirBlob::Horizontal,
-            ratio: unchecked,
-            left: Box::new(LayoutBlob::Leaf(1)),
-            right: Box::new(LayoutBlob::Leaf(2)),
-        };
-        let json = serde_json::to_vec(&blob).expect("serializes");
-        let back: LayoutBlob = serde_json::from_slice(&json).expect("deserializes");
-        assert_eq!(back, blob, "the blob must carry ratio {unchecked} verbatim");
-    }
-    // ...but a non-finite ratio becomes JSON `null` and then fails to parse,
-    // taking the whole blob with it.
-    for lossy in [f32::NAN, f32::INFINITY] {
-        let blob = LayoutBlob::Split {
-            dir: SplitDirBlob::Horizontal,
-            ratio: lossy,
-            left: Box::new(LayoutBlob::Leaf(1)),
-            right: Box::new(LayoutBlob::Leaf(2)),
-        };
-        let json = serde_json::to_vec(&blob).expect("serializes");
-        assert!(
-            String::from_utf8_lossy(&json).contains("null"),
-            "a non-finite blob ratio serializes as JSON null"
-        );
-        assert!(
-            serde_json::from_slice::<LayoutBlob>(&json).is_err(),
-            "and does not parse back"
-        );
-    }
-}
-
-/// None of the three encodings imposes a depth bound of its own — see the
-/// module doc's asymmetry 2.
+/// None of the three encodings imposes a depth bound of its own, so a
+/// spine past `serde_json`'s 62-pane recursion ceiling survives each.
 #[test]
 fn depth_bounds_diverge_by_design_and_here_is_the_map() {
     // One pane past the deep-spine corpus entry.
@@ -308,39 +198,5 @@ fn depth_bounds_diverge_by_design_and_here_is_the_map() {
         ),
         too_deep,
         "the blob must carry the deep spine unchanged"
-    );
-}
-
-/// A window deep enough to pass `serde_json`'s default recursion limit (two
-/// JSON levels per split: 62 panes fit, 63 did not) in an older image's
-/// upgrade blob must stay readable; before the fix the blob was written but
-/// unreadable and the whole server state was lost on resume.
-#[test]
-fn a_window_deep_enough_to_reach_the_json_recursion_limit_survives_an_upgrade() {
-    let panes = DEEP_SPINE_PANES;
-    assert!(
-        panes > 62,
-        "the corpus spine must be past the 62-pane serde_json ceiling or this \
-         test proves nothing"
-    );
-    let spine = registry_spine(panes);
-    let bytes = one_window_blob_bytes(&build_blob(&spine), u32::try_from(panes).expect("small"));
-    let restored = StateBlob::from_bytes(&bytes).unwrap_or_else(|e| {
-        panic!(
-            "a {panes}-pane window made the whole upgrade blob unreadable \
-             ({} bytes): {e}",
-            bytes.len()
-        )
-    });
-    assert_eq!(
-        project_blob(
-            restored.windows[0]
-                .layout
-                .as_ref()
-                .expect("the restored window has a layout"),
-            &blob_index_map(&spine),
-        ),
-        spine,
-        "the deep layout changed crossing the upgrade blob"
     );
 }

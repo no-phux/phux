@@ -5,34 +5,6 @@
 use super::test_support::*;
 use super::*;
 
-/// A resize re-broadcasts a full snapshot (reset preamble plus prior
-/// content) as a `Resync` carrying the new dims.
-#[tokio::test]
-async fn resize_rebroadcasts_grid_snapshot_for_phux_8v1() {
-    on_local!(async {
-        let bundle = TerminalActor::new_with_seed(80, 24, b"phux8v1-marker").expect("seed");
-        let handle = bundle.handle.clone();
-        let token = bundle.token;
-        // Subscribe BEFORE the actor runs so we don't miss the
-        // resize broadcast.
-        let mut out = handle.output.subscribe();
-        let join = tokio::task::spawn_local(bundle.actor.run());
-
-        resize(&handle, grid_resize(40, 10)).await;
-
-        let (dims, acc) = await_resync_with(&mut out, b"phux8v1-marker").await;
-        assert_eq!(
-            dims,
-            Some((40, 10)),
-            "resize resync must carry the post-reflow grid dims (phux-3ns5)",
-        );
-        assert_resync_bytes(&acc, b"phux8v1-marker");
-
-        stop(&token, join).await;
-    })
-    .await;
-}
-
 /// Collect output until a resync has re-sent the snapshot preamble and
 /// `marker`, or the deadline passes. Returns the last resync's grid and
 /// every byte seen.

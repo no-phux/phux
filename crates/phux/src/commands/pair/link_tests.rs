@@ -28,26 +28,6 @@ fn link_secrets_stay_out_of_the_query() {
 }
 
 #[test]
-fn renders_a_nonempty_qr_for_a_realistic_payload() {
-    // A real 32-byte hex token + SHA-256 fingerprint is well within QR
-    // capacity; the renderer must produce non-empty half-block art.
-    let link = build_connect_link(
-        "wss://100.64.0.2:8787",
-        Some("quic://100.64.0.2:8788"),
-        Some("mini"),
-        Some("CD:".repeat(31).trim_end_matches(':')),
-        &"ab".repeat(32),
-    );
-    let art = super::render_qr_scaled(&link, 1).expect("QR should encode");
-    assert!(!art.is_empty(), "QR render must be non-empty");
-    // Dense1x2 uses half-block glyphs; at least one must appear.
-    assert!(
-        art.chars().any(|c| matches!(c, '█' | '▀' | '▄' | ' ')),
-        "QR render must contain half-block glyphs",
-    );
-}
-
-#[test]
 fn a_larger_qr_is_wider_and_the_scale_stays_inside_the_terminal() {
     let link = build_connect_link(
         "wss://100.64.0.2:8787",

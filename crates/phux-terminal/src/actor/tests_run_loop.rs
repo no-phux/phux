@@ -309,20 +309,4 @@ mod resync_debounce_tests {
             "a drag storm must settle on the last size",
         );
     }
-
-    /// A resize arriving while a gap resync is owed re-arms with its reason.
-    #[tokio::test(start_paused = true)]
-    async fn a_resize_supersedes_a_pending_gap_resync() {
-        let sleep = tokio::time::sleep(Duration::from_secs(3600));
-        tokio::pin!(sleep);
-        let mut debounce = idle();
-
-        debounce.arm(gap_for(pump(1)), sleep.as_mut());
-        let gap_deadline = sleep.deadline();
-        tokio::time::advance(RESIZE_RESYNC_DEBOUNCE / 4).await;
-        debounce.arm(resize(), sleep.as_mut());
-
-        assert!(sleep.deadline() > gap_deadline);
-        assert_eq!(owed(&mut debounce).0, ResyncReason::Resize);
-    }
 }

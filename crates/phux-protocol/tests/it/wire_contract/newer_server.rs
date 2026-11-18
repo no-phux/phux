@@ -222,7 +222,6 @@ fn newer_values_are_classified_and_malformed_bytes_are_not() {
         let error = FrameKind::decode(&bytes).unwrap_err();
         assert!(!error.is_unsupported(), "{error:?}");
     }
-    assert!(!DecodeError::UnexpectedEof.is_unsupported());
 }
 
 /// A correlated reply whose body carries a value no `Unknown` variant covers

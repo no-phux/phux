@@ -193,31 +193,6 @@ match = { contains = "-- pager --" }
         }
     }
 
-    /// The shipped positive-idle sources are Claude's OSC 9;4 remove signal
-    /// and Gemini CLI's state-less `Ready` title, each from a single-payload
-    /// region; idle is otherwise the fail-safe reached by nothing matching.
-    #[test]
-    fn only_single_payload_captured_signals_set_visible_idle() {
-        let visible_idle: Vec<(&str, String)> = super::BUILTIN_MANIFESTS
-            .iter()
-            .flat_map(|(kind, text)| {
-                let spec: ManifestSpec = toml::from_str(text).expect("builtin parses");
-                spec.rules
-                    .into_iter()
-                    .filter(|rule| rule.visible_idle)
-                    .map(move |rule| (*kind, rule.id))
-                    .collect::<Vec<_>>()
-            })
-            .collect();
-        assert_eq!(
-            visible_idle,
-            [
-                ("claude", "osc-progress-idle".to_owned()),
-                ("gemini", "title-ready".to_owned()),
-            ]
-        );
-    }
-
     /// Gemini's `Ready` title arms the idle bypass without asserting a state,
     /// so the folder-trust dialog painted under that same title still wins.
     #[test]

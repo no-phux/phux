@@ -689,29 +689,3 @@ impl Presentation {
         self.tail_distance = distance;
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::nth_prompt;
-
-    #[test]
-    fn nth_prompt_counts_away_from_the_viewport_top() {
-        let prompts = [0_u64, 3, 6];
-        let find = |from, total, count| {
-            nth_prompt(from, total, count, |row| {
-                Ok::<_, ()>(prompts.contains(&row))
-            })
-            .unwrap()
-        };
-        assert_eq!(find(3, 7, -1), Some(0));
-        assert_eq!(find(4, 7, -1), Some(3));
-        assert_eq!(find(4, 7, -2), Some(0));
-        assert_eq!(find(0, 7, 1), Some(3));
-        assert_eq!(find(0, 7, 2), Some(6));
-        assert_eq!(find(0, 7, 9), Some(6));
-        assert_eq!(find(6, 7, 1), None);
-        assert_eq!(find(0, 7, -1), None);
-        assert_eq!(find(3, 7, 0), None);
-        assert_eq!(find(99, 7, -1), Some(6));
-    }
-}

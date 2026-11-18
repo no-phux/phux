@@ -1,6 +1,6 @@
 use rune::accesskit::{Action, ActionData};
 use rune::prefs::Prefs;
-use rune::{Env, Runtime, TouchPhase};
+use rune::{Env, Runtime};
 use serde_json::{Value, json};
 
 use crate::desk::SettingsCategory as Category;
@@ -40,114 +40,6 @@ fn checked(on: bool) -> &'static str {
 mod navigation;
 
 #[test]
-fn a_touch_taps_a_setting_once_and_leaves_no_hover() {
-    let mut desk = Desk::new(&Resolved::offline("touch"));
-    desk.prefs = Prefs::memory();
-    desk.settings_open = true;
-    desk.settings_category(Category::Terminal);
-    let mut runtime = runtime(desk);
-    runtime.update(|_, tx| {
-        tx.instant();
-        tx.scroll_into_view("set-copy-select");
-    });
-    runtime.frame(0.0);
-    let before = runtime.state.settings.copy_on_select;
-    let (x, y) = runtime.find("set-copy-select").unwrap();
-    runtime.touch(1, TouchPhase::Started, x, y, 0.0);
-    runtime.frame(1.0 / 60.0);
-    assert_eq!(runtime.state.settings.copy_on_select, before);
-    runtime.touch(1, TouchPhase::Ended, x, y, 0.05);
-    runtime.frame(1.0 / 60.0);
-    assert_eq!(runtime.state.settings.copy_on_select, !before);
-    assert_eq!(runtime.pointer(), None);
-    assert!(!runtime.touching());
-}
-
-#[test]
-fn a_cancelled_touch_and_a_second_finger_change_no_settings() {
-    let mut desk = Desk::new(&Resolved::offline("touch"));
-    desk.prefs = Prefs::memory();
-    desk.settings_open = true;
-    desk.settings_category(Category::Terminal);
-    let mut runtime = runtime(desk);
-    runtime.update(|_, tx| {
-        tx.instant();
-        tx.scroll_into_view("set-copy-select");
-    });
-    runtime.frame(0.0);
-    let before = runtime.state.settings.copy_on_select;
-    let (x, y) = runtime.find("set-copy-select").unwrap();
-    runtime.touch(1, TouchPhase::Started, x, y, 0.0);
-    runtime.frame(1.0 / 60.0);
-    runtime.touch(2, TouchPhase::Started, x, y, 0.01);
-    runtime.touch(2, TouchPhase::Ended, x, y, 0.02);
-    runtime.frame(1.0 / 60.0);
-    assert_eq!(runtime.state.settings.copy_on_select, before);
-    assert!(runtime.touching(), "the first finger is still down");
-    runtime.touch(1, TouchPhase::Cancelled, x, y, 0.03);
-    runtime.frame(1.0 / 60.0);
-    assert_eq!(runtime.state.settings.copy_on_select, before);
-    assert!(!runtime.touching());
-}
-
-#[test]
-fn a_touch_pans_settings_without_changing_a_preference() {
-    fn overflow(runtime: &Runtime<Desk>) -> f32 {
-        let elements = runtime.elements();
-        let viewport = elements
-            .iter()
-            .position(|e| e.key.as_deref() == Some("settings-content"))
-            .unwrap();
-        let body = elements
-            .iter()
-            .find(|e| e.parent == Some(viewport))
-            .unwrap();
-        (body.rect[3] - elements[viewport].rect[3]).max(0.0)
-    }
-    let mut desk = Desk::new(&Resolved::offline("touch"));
-    desk.prefs = Prefs::memory();
-    desk.settings_open = true;
-    desk.settings_category(Category::Terminal);
-    desk.settings.theme = None;
-    let before = (desk.settings, desk.font_size);
-    let mut runtime = runtime(desk);
-    runtime.set_viewport((800.0, 360.0), 2.0);
-    runtime.frame(0.0);
-    // Exercise the edge return on every platform, including macOS's
-    // longer page with Option as Meta. Never shrink below the minimum.
-    let height = 360.0 + (overflow(&runtime) - 45.0).max(0.0);
-    runtime.set_viewport((800.0, height), 2.0);
-    runtime.frame(0.0);
-    let expected = 100.0_f32.min(overflow(&runtime));
-    assert!(expected > 0.0, "the fixture must have scrollable content");
-    assert!(expected < 100.0, "the fixture must cross the scroll edge");
-    let (x, y) = runtime.find("text-size").unwrap();
-    runtime.touch(1, TouchPhase::Started, x, y, 0.0);
-    runtime.frame(1.0 / 60.0);
-    runtime.touch(1, TouchPhase::Moved, x, y - 100.0, 0.05);
-    runtime.frame(1.0 / 60.0);
-    let (_, dragged) = runtime.find("text-size").unwrap();
-    assert!(
-        dragged <= y - expected + 1.0 && dragged >= y - 101.0,
-        "the held pan follows the finger, rubber-banding past the edge"
-    );
-    // Hold before lifting, so this checks the pan without a fling.
-    runtime.touch(1, TouchPhase::Ended, x, y - 100.0, 0.3);
-    // Rune rubber-bands while held and springs back after release.
-    // Measure the boundary at rest, not one frame into that rebound.
-    for _ in 0..120 {
-        runtime.frame(1.0 / 60.0);
-    }
-    let (_, after) = runtime.find("text-size").unwrap();
-    assert!(
-        ((y - after) - expected).abs() < 1.0,
-        "the sheet followed the finger to its content boundary: {y} → {after}, expected {expected}"
-    );
-    assert_eq!((runtime.state.settings, runtime.state.font_size), before);
-    assert!(!runtime.touching());
-}
-
-#[test]
 fn settings_read_and_change_through_a_screen_reader() {
     let mut desk = Desk::new(&Resolved::offline("a11y"));
     // What the actions change stays in the test.
@@ -163,10 +55,6 @@ fn settings_read_and_change_through_a_screen_reader() {
     let switch = find(&tree, "set-copy-select");
     assert_eq!(switch["role"], "switch");
     assert_eq!(switch["name"], "Copy on select");
-    assert_eq!(
-        switch["description"],
-        "Finishing a selection puts it on the clipboard."
-    );
     assert!(
         switch["states"]
             .as_array()

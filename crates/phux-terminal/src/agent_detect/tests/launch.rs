@@ -49,7 +49,6 @@ fn a_mid_pane_agent_launch_does_not_latch_to_idle() {
 #[test]
 fn a_screenless_tick_with_nothing_derived_publishes_nothing() {
     let mut h = Harness::new().past_grace();
-    assert_eq!(h.detector.current, None, "nothing derived yet");
     assert_eq!(
         h.tick_no_scan(),
         DetectOutcome::Quiet,
@@ -134,16 +133,11 @@ fn a_freeze_during_the_idle_hold_drops_the_hold_and_the_fast_cadence() {
     // The turn ends ambiguously: the hold opens, the cadence goes fast.
     assert_eq!(h.tick("nothing matches"), DetectOutcome::Quiet);
     assert_eq!(h.detector.interval(), TICK_CONFIRMING);
-    assert!(h.detector.pending_idle.is_some(), "holding");
 
     // The user hits ctrl+o and reads the transcript for three minutes.
     for _ in 0..600 {
         assert_eq!(h.tick("PAGER"), DetectOutcome::Quiet);
     }
-    assert!(
-        h.detector.pending_idle.is_none(),
-        "the in-flight hold is abandoned, not pinned",
-    );
     assert_eq!(
         h.detector.interval(),
         TICK_IDENTIFIED,

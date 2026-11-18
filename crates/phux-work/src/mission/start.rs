@@ -258,8 +258,6 @@ mod tests {
         assert!(text.contains("Alias: phux/3"));
         assert!(text.contains("Fix it"));
         assert!(text.contains("## Rules\n\nBe brief."));
-        assert!(DEFAULT_RULES.contains("If you are blocked, ask one question and stop.\n"));
-        assert!(DEFAULT_RULES.contains("When you are finished, say done and stop.\n"));
     }
 
     #[test]

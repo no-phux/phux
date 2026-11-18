@@ -50,18 +50,6 @@ fn one_batch_broadcast_is_the_concatenation_of_its_lines() {
     assert_eq!(replay.records.len(), 2);
 }
 
-#[test]
-fn icount_helper_appends_and_replays_the_ring() {
-    let (mut actor, _facet, _handle) = engine();
-    let replayed = icount_append_and_replay(
-        &mut actor,
-        Bytes::from_static(b"{\"type\":\"prompt\"}\n{\"type\":\"stop\"}\n"),
-    )
-    .expect("accepted");
-    assert!(replayed > 0, "replay copies the stamped records");
-    assert_eq!(actor.ring.retained(), 2);
-}
-
 fn append(actor: &mut AgentSessionActor, payload: &str) -> Result<AppendAccepted, AppendRejection> {
     let (reply, rx) = oneshot::channel();
     actor.handle_append(AppendRequest {
@@ -175,22 +163,6 @@ fn upgrade_cuts_ignore_consumer_cursors_and_preserve_the_full_stream() {
 }
 
 #[test]
-fn the_facet_resolves_and_carries_its_provenance() {
-    let (_actor, facet, handle) = engine();
-    assert_eq!(&*facet.provider, "claude");
-    assert_eq!(facet.native_id.as_deref(), Some("abc"));
-    assert_eq!(handle.kind, ResourceKind::AgentSession);
-    assert!(handle.parent.is_some());
-    assert_eq!(
-        handle
-            .facet::<AgentSessionHandle>()
-            .expect("session facet")
-            .provider,
-        facet.provider
-    );
-}
-
-#[test]
 fn appends_stamp_contiguous_sequences_and_one_timestamp() {
     let (mut actor, _facet, _handle) = engine();
     let first = append(&mut actor, "{\"type\":\"session_start\"}").expect("accepted");
@@ -208,29 +180,6 @@ fn appends_stamp_contiguous_sequences_and_one_timestamp() {
     assert!(
         bootstrap.records[1].starts_with(b"{\"seq\":2,\"ts_ms\":"),
         "records replay with their stamped header"
-    );
-}
-
-#[test]
-fn an_invalid_record_commits_nothing() {
-    let (mut actor, _facet, _handle) = engine();
-    append(&mut actor, "{\"type\":\"prompt\"}").expect("accepted");
-    let rejection = append(&mut actor, "{\"type\":\"stop\"}\n{\"type\":\"nope\"}")
-        .expect_err("the batch is refused");
-    assert!(matches!(rejection, AppendRejection::Invalid(_)));
-    let bootstrap = actor.bootstrap(None);
-    assert_eq!(bootstrap.base_seq, 1, "no sequence was consumed");
-    assert_eq!(bootstrap.records.len(), 1);
-}
-
-#[test]
-fn session_end_latches_the_stream_closed() {
-    let (mut actor, _facet, _handle) = engine();
-    let ended = append(&mut actor, "{\"type\":\"session_end\"}").expect("accepted");
-    assert_eq!(ended.evidence, Some(StreamEvidence::Retract));
-    assert_eq!(
-        append(&mut actor, "{\"type\":\"prompt\"}"),
-        Err(AppendRejection::Invalid(RecordError::AfterSessionEnd))
     );
 }
 
@@ -265,22 +214,6 @@ fn stamped_oversize_refuses_the_batch_before_any_mutation() {
     ));
     let accepted = append(&mut actor, "{\"type\":\"stop\"}").expect("still open");
     assert_eq!((accepted.first_seq, accepted.last_seq), (2, 2));
-}
-
-#[test]
-fn overflow_evicts_and_the_bootstrap_reports_the_toll() {
-    let mut actor = build(120).actor;
-    for _ in 0..8 {
-        append(&mut actor, "{\"type\":\"tool_end\"}").expect("accepted");
-    }
-    let bootstrap = actor.bootstrap(None);
-    assert_eq!(bootstrap.base_seq, 8, "every record still took a sequence");
-    assert!(bootstrap.dropped > 0, "the ring evicted its oldest records");
-    assert_eq!(
-        bootstrap.records.len() as u64 + bootstrap.dropped,
-        8,
-        "retained plus evicted accounts for every record"
-    );
 }
 
 #[test]

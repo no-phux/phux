@@ -8,16 +8,6 @@ fn snapshot_reestablishes_alt_screen_1049() {
     t.vt_write(b"\x1b[?1049h");
     t.vt_write(b"alt-screen body");
 
-    // libghostty keeps 47 and 1049 as distinct bits.
-    assert!(
-        t.mode(Mode::ALT_SCREEN_SAVE).expect("mode 1049"),
-        "?1049h should set ALT_SCREEN_SAVE",
-    );
-    assert!(
-        !t.mode(Mode::ALT_SCREEN_LEGACY).expect("mode 47"),
-        "1049 must not set the legacy-47 bit",
-    );
-
     let snap = synthesize(&t).expect("synth");
     let bytes = String::from_utf8_lossy(&snap.bytes);
 

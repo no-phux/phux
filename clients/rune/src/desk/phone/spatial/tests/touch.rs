@@ -77,18 +77,6 @@ fn a_drag_scrolls_history_and_a_quick_lift_coasts_on_then_stops() {
 }
 
 #[test]
-fn a_finger_that_rests_before_lifting_throws_nothing() {
-    let (client, mut rt) = fixture(true);
-    let at = in_grid(&rt);
-    swipe(&mut rt, at, 80.0, 1.6);
-    let lifted = offset(&client, &rt);
-    assert!(!coasting(&rt));
-    tick(&mut rt, 1.7);
-    assert_eq!(offset(&client, &rt), lifted);
-    no_input(&client);
-}
-
-#[test]
 fn a_rest_forgets_the_drags_speed_whatever_the_lift_adds() {
     let (client, mut rt) = fixture(true);
     let (x, y) = in_grid(&rt);
@@ -262,22 +250,6 @@ fn a_hold_hands_a_tracking_program_its_drag_unless_shift_is_latched() {
     hold_and_drag(&mut rt, 2.0);
     assert!(mice(&outbound(&client)).is_empty());
     assert!(rt.copy_request.take().is_some());
-}
-
-#[test]
-fn a_stationary_long_hold_copies_on_lift_without_opening_a_menu() {
-    let (client, mut rt) = fixture(true);
-    let (x, y) = in_grid(&rt);
-    touch(&mut rt, Started, x, y);
-    tick(&mut rt, 1.4);
-    rt.frame(0.65);
-    tick(&mut rt, 1.7);
-    touch(&mut rt, Ended, x, y);
-    assert!(rt.copy_request.take().is_some(), "lifting copies the word");
-    assert!(rt.state.pointer.menu.is_none());
-    assert!(rt.state.phone.as_ref().unwrap().touch.is_none());
-    assert_eq!(rt.state.connection.gesture, 0);
-    no_input(&client);
 }
 
 #[test]

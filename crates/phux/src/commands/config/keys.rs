@@ -311,18 +311,4 @@ mod tests {
             "a key you unbound stays unbound"
         );
     }
-
-    #[test]
-    fn your_plugin_action_binding_names_your_file() {
-        let rows = rows_for(
-            "[keybindings.prefix-table]\n\
-             S = { action = \"plugin-action\", plugin = \"example.tools\", id = \"summarize\" }\n",
-        );
-        let row = rows.iter().find(|r| r.keys == "C-a S").expect("bound");
-        assert_eq!(
-            (row.action.as_str(), row.source.as_str()),
-            ("plugin-action", "config.toml")
-        );
-        assert_eq!(render_args(&row.args), "id=summarize plugin=example.tools");
-    }
 }

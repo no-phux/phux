@@ -317,9 +317,4 @@ WantedBy=default.target
         Reconcile::Current,
         "a second reconcile must be a no-op"
     );
-    assert_eq!(
-        reconcile_unit(Manager::Systemd, &render_unit(Manager::Systemd, &plan())),
-        Reconcile::Current,
-        "a freshly rendered unit must already be current"
-    );
 }

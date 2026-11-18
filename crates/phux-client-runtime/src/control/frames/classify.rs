@@ -239,16 +239,8 @@ mod tests {
             HistoryUnavailableReason::Released
         );
         assert_eq!(
-            history_unavailable_reason(WireTombstone::Pruned),
-            HistoryUnavailableReason::Pruned
-        );
-        assert_eq!(
             history_rejection_reason(WireRejection::Unknown),
             HistoryRejectionReason::ZeroLimit
-        );
-        assert_eq!(
-            history_rejection_reason(WireRejection::Busy),
-            HistoryRejectionReason::Busy
         );
     }
 }

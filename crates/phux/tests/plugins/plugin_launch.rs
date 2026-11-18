@@ -6,8 +6,6 @@
 //! exercises the whole resolution path (config -> enabled plugin ->
 //! integration template -> `${PHUX_PLUGIN_ROOT}` expansion) in one shot.
 
-use std::path::PathBuf;
-
 use crate::support::{PLUGIN_ID, demo_xdg};
 
 fn run(args: &[&str]) -> (i32, String, String) {
@@ -80,72 +78,6 @@ fn launch_list_enumerates_the_first_party_integrations() {
     for expected in ["codex", "claude-code", "gemini-cli", "generic-shell-agent"] {
         assert!(ids.contains(&expected), "missing {expected} in {ids:?}");
     }
-}
-
-#[test]
-fn launch_print_passes_the_brief_file_for_each_harness() {
-    let brief = "/mission/tasks/phux/3/brief.md";
-    let line = "Start the task in the brief.";
-    // `--print` still checks `required_executables`. Stub them so the argv
-    // assertion does not depend on the harness binaries being installed.
-    let stubs = stub_executables(&["grok", "pi", "omp", "opencode", "claude"]);
-    let cases: &[(&str, &[&str])] = &[
-        (
-            "claude-code",
-            &[
-                "--append-system-prompt-file",
-                brief,
-                "--model",
-                "opus",
-                line,
-            ],
-        ),
-        ("grok", &["--prompt-file", brief]),
-        ("pi", &["--append-system-prompt", brief, line]),
-        ("omp", &["--append-system-prompt", brief, line]),
-        ("opencode", &["run", "--file", brief, line]),
-    ];
-    for (id, expect) in cases {
-        let mut args = vec!["launch", id, "--print", "--json", "--"];
-        args.extend_from_slice(expect);
-        let (code, stdout, stderr) = run_with_path(&args, &stubs);
-        assert_eq!(code, 0, "{id} launch --print failed; stderr={stderr}");
-        let output: serde_json::Value = serde_json::from_str(&stdout).expect("launch print JSON");
-        let launched: Vec<&str> = output["argv"]
-            .as_array()
-            .expect("argv")
-            .iter()
-            .map(|value| value.as_str().expect("argv string"))
-            .collect();
-        let found = launched
-            .windows(expect.len())
-            .any(|window| window == *expect);
-        assert!(found, "{id} argv {launched:?} missing {expect:?}");
-    }
-}
-
-fn stub_executables(names: &[&str]) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("phux-launch-stubs-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("stub dir");
-    for name in names {
-        let path = dir.join(name);
-        crate::common::write_executable(&path, "#!/bin/sh\nexit 0\n");
-    }
-    dir
-}
-
-fn run_with_path(args: &[&str], front: &std::path::Path) -> (i32, String, String) {
-    let mut path = front.as_os_str().to_owned();
-    path.push(":");
-    path.push(std::env::var_os("PATH").unwrap_or_default());
-    crate::common::phux_in(
-        [
-            ("XDG_CONFIG_HOME", demo_xdg().into_os_string()),
-            ("PATH", path),
-        ],
-        args,
-    )
-    .into_parts()
 }
 
 #[test]

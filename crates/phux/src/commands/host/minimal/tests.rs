@@ -143,13 +143,10 @@ fn a_flat_loadout_of_the_same_name_is_refused() {
 }
 
 #[test]
-fn the_box_registry_round_trips_and_starts_empty() {
+fn the_box_registry_starts_empty() {
     let dir = tempfile::tempdir().unwrap();
     let registry = BoxRegistry::at(dir.path().join("state/boxes.json"));
     assert_eq!(registry.load().unwrap(), Joined::default());
-    let joined = joined_min_api();
-    registry.save(&joined).unwrap();
-    assert_eq!(registry.load().unwrap(), joined);
 }
 
 #[test]

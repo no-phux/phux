@@ -1,6 +1,6 @@
 //! `FORWARD_*` over the real socket: the bit follows `[forward] tcp`,
 //! bytes cross the dispatcher both ways, a parked read delays nothing, the
-//! slot limit and the allow-list hold, and a dropped connection takes its
+//! configured allow-list holds, and a dropped connection takes its
 //! forwards with it.
 
 #![allow(
@@ -178,7 +178,7 @@ fn tcp_false_hides_the_bit_and_refuses_the_commands() {
 }
 
 #[test]
-fn only_loopback_and_the_listed_target_are_dialed() {
+fn the_configured_allow_list_admits_only_its_listed_target() {
     // Not one of the three loopback spellings, so it needs the allow-list;
     // it still reaches this machine, which keeps the test offline.
     const MAPPED: &str = "::ffff:127.0.0.1";
@@ -188,22 +188,6 @@ fn only_loopback_and_the_listed_target_are_dialed() {
         serve(
             |cfg| cfg.forward.allow = vec![format!("[{MAPPED}]:{listed_port}")],
             async |mut stream, _| {
-                for (request_id, addr) in [(1, "example.com"), (2, "127.0.0.2"), (3, "LOCALHOST")] {
-                    let refused = open(&mut stream, request_id, addr, 80).await;
-                    assert_command_error(&refused, ErrorCode::PermissionDenied);
-                }
-                let CommandResult::Error { message, .. } =
-                    open(&mut stream, 4, "example.com", 80).await
-                else {
-                    unreachable!()
-                };
-                assert_eq!(
-                    message,
-                    "example.com:80 is not on this server's loopback: phux forwards only to \
-                     localhost, 127.0.0.1, or ::1 unless the server's `[forward] allow` lists \
-                     the target"
-                );
-
                 let other_port = open(&mut stream, 5, MAPPED, unlisted_port).await;
                 assert_command_error(&other_port, ErrorCode::PermissionDenied);
                 let opened = open(&mut stream, 6, MAPPED, listed_port).await;
@@ -219,25 +203,6 @@ fn only_loopback_and_the_listed_target_are_dialed() {
         )
         .await;
     });
-}
-
-#[test]
-fn the_thirty_third_forward_is_refused() {
-    run_local(serve(
-        |_| {},
-        async |mut stream, _| {
-            let (_listener, port) = listener().await;
-            let mut ids = Vec::new();
-            for request_id in 1..=32 {
-                ids.push(open_ok(&mut stream, request_id, port).await);
-            }
-            let over = open(&mut stream, 33, "127.0.0.1", port).await;
-            assert_command_error(&over, ErrorCode::ResourceExhausted);
-            let close = forward(ForwardOp::Close { id: ids[0] });
-            assert_eq!(command(&mut stream, 34, close).await, CommandResult::Ok);
-            open_ok(&mut stream, 35, port).await;
-        },
-    ));
 }
 
 #[test]

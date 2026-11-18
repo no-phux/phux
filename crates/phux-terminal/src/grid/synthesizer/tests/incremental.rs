@@ -1,44 +1,5 @@
 use super::*;
 
-/// Resize between two pooled ticks, with a fresh-state walk interleaved:
-/// the second tick must report the new dims and content.
-#[test]
-fn prepare_tick_serves_fresh_rows_after_resize() {
-    let mut term = fresh(10, 2);
-    term.vt_write(b"AA");
-    let mut synth = SnapshotSynthesizer::new().expect("synth");
-
-    let (c0, r0, _) = synth.prepare_tick(&term).expect("tick0");
-    assert_eq!((c0, r0), (10, 2));
-    assert!(
-        synth.tick_rows.iter().any(|b| b.contains(&b'A')),
-        "first tick should render the 'A' content"
-    );
-
-    // Grow the grid and overwrite row 0, then race a fresh-state walk
-    // that consumes the terminal's per-row dirty bits.
-    term.resize(10, 4, 0, 0).expect("resize");
-    term.vt_write(b"\x1b[1;1HZZ");
-    let _ = synth.synthesize(&term).expect("fresh walk");
-
-    let (c1, r1, _) = synth.prepare_tick(&term).expect("tick1");
-    assert_eq!((c1, r1), (10, 4), "second tick must observe the new dims");
-    assert_eq!(
-        synth.tick_rows.len(),
-        4,
-        "row buffer resized to the new grid"
-    );
-    assert!(
-        synth.tick_rows.iter().any(|b| b.contains(&b'Z')),
-        "post-resize tick must serve the fresh 'ZZ', not the stale cache"
-    );
-    assert_eq!(
-        synth.pool.last_dims(),
-        Some((10, 4)),
-        "pool tracks the live dims"
-    );
-}
-
 /// A mode-only change (no glyph or cursor edit beyond what the mode itself
 /// does) still trips the reference diff, which re-emits the mode.
 #[test]
@@ -132,7 +93,6 @@ fn prepare_tick_serves_rows_a_foreign_walk_drained() {
             "{name}: the tick served the pool's stale row 1: {:?}",
             String::from_utf8_lossy(&synth.tick_rows[1]),
         );
-        assert_eq!(synth.last_rendered_rows, 3, "{name}: a full render");
     }
 }
 

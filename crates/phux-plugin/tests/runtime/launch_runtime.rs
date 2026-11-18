@@ -274,23 +274,6 @@ fn disabled_plugin_ships_no_launchable_integrations() {
 }
 
 #[test]
-fn list_launchable_carries_each_agent_identity() {
-    let fx = Fixture::new(true);
-    let items = phux_plugin::list_launchable(&fx.config, LaunchMode::Terminal).expect("list");
-    let identity = |id: &str| {
-        items
-            .iter()
-            .find(|item| item.integration_id == id)
-            .expect("listed")
-            .agent_identity
-            .as_ref()
-            .and_then(|identity| identity.kind.clone())
-    };
-    assert_eq!(identity("codex").as_deref(), Some("codex"));
-    assert_eq!(identity("rooted"), None);
-}
-
-#[test]
 fn duplicate_enabled_plugin_and_integration_ids_fail_closed() {
     let fx = Fixture::new(true);
     fx.add_plugin(

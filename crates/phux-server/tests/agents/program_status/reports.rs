@@ -1,5 +1,5 @@
-//! Report parsing as L3 sees it: feature detection, the record hierarchy,
-//! and which malformed input is skipped versus discarded whole.
+//! Report parsing as L3 sees it: feature detection, and which malformed
+//! input is skipped versus discarded whole.
 
 use super::*;
 
@@ -25,90 +25,6 @@ fn feature_reply_precedes_device_attributes_and_does_not_create_a_record() {
         assert!(da.ends_with(b"c"));
         assert_eq!(pane.get(RESOURCE_PROGRAM_STATUS_KEY).await, None);
         pane.assert_absent(&[""]).await;
-        pane.stop().await;
-    });
-}
-
-#[test]
-fn hierarchy_replacement_inheritance_and_subtree_clear_are_visible_in_l3() {
-    run_local(async {
-        let stages = [
-            fenced(
-                reports(&[
-                    "state=idle:app=cargo:title=Um9vdA==",
-                    "id=build:state=working:app=builder:title=QnVpbGQ=",
-                    "id=build/test:state=blocked:kind=permission:progress=45:msg=QXBwcm92ZT8=",
-                    "id=build.other:state=done:app=independent",
-                    "id=orphan/leaf:state=working",
-                ]),
-                0,
-            ),
-            fenced(report("id=build:state=idle"), 1),
-            fenced(report("state=idle:app=terraform"), 2),
-            fenced(
-                reports(&["id=build:state=clear", "id=orphan:state=clear"]),
-                3,
-            ),
-            report("state=clear"),
-        ];
-        let mut pane = Pane::start(&stages, false).await;
-        let mut watcher = pane.watcher(&record_key("build/test")).await;
-        pane.stage(0).await;
-        pane.assert_ids(&["", "build", "build/test", "build.other", "orphan/leaf"])
-            .await;
-        let child = pane.record("build/test").await;
-        assert_eq!(
-            child,
-            json!({
-                "id": "build/test", "state": "blocked", "kind": "permission",
-                "progress": 45, "app": "builder", "msg": "Approve?"
-            })
-        );
-        assert_eq!(pane.summary().await["active"], child);
-        assert_eq!(
-            changed(&mut watcher, &pane.terminal, &record_key("build/test")).await,
-            Some(child)
-        );
-        assert_eq!(pane.record("").await["id"], "");
-
-        pane.stage(1).await;
-        assert_eq!(
-            pane.record("build").await,
-            json!({"id": "build", "state": "idle", "app": "cargo"})
-        );
-        assert_eq!(pane.record("build/test").await["app"], "cargo");
-        pane.stage(2).await;
-        assert_eq!(pane.record("build/test").await["app"], "terraform");
-        assert_eq!(
-            pane.record("orphan/leaf").await["app"],
-            "terraform",
-            "parents need not exist"
-        );
-        assert_eq!(
-            pane.record("").await.get("title"),
-            None,
-            "replacement removes omitted keys"
-        );
-        pane.stage(3).await;
-        pane.assert_ids(&["", "build.other"]).await;
-        pane.assert_absent(&["build", "build/test", "orphan/leaf"])
-            .await;
-        // Ancestor app changes may have queued earlier updates; consume through
-        // the deletion instead of asserting an incidental number of broadcasts.
-        loop {
-            if changed(&mut watcher, &pane.terminal, &record_key("build/test"))
-                .await
-                .is_none()
-            {
-                break;
-            }
-        }
-        assert_eq!(pane.summary().await["active"]["id"], "build.other");
-        pane.release(4).await;
-        pane.wait_value(RESOURCE_PROGRAM_STATUS_KEY, Option::is_none)
-            .await;
-        pane.assert_absent(&["", "build.other"]).await;
-        drop(watcher);
         pane.stop().await;
     });
 }

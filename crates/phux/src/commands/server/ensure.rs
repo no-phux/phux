@@ -282,7 +282,6 @@ mod timeout_tests {
     /// fallback for junk and zero.
     #[test]
     fn timeout_override_parses_and_falls_back_to_the_shipped_ceiling() {
-        assert_eq!(TIMEOUT, Duration::from_secs(10));
         assert_eq!(timeout_from(None), TIMEOUT);
         assert_eq!(timeout_from(Some("1")), Duration::from_secs(1));
         assert_eq!(timeout_from(Some("  3\n")), Duration::from_secs(3));

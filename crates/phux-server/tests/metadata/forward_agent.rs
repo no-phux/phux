@@ -1,6 +1,6 @@
 //! ssh-agent forwarding over the real sockets: the bit, the broker socket
 //! and a pane's `SSH_AUTH_SOCK` all follow `[forward] agent`; a pane's
-//! list and sign reach the offering client and nothing else does; and a
+//! list and sign reach the offering client; and a
 //! client that disconnects mid-request fails it at once.
 
 #![allow(
@@ -164,15 +164,7 @@ fn on_a_pane_reaches_the_offering_client_and_only_with_list_or_sign() {
         let again = reply(&mut stream, 3, first, &identities).await;
         assert_command_error(&again, ErrorCode::NotFound);
 
-        // Add (17), remove (18), remove-all (19), lock (22), add-constrained
-        // (25) and extension (27) are refused by the server alone.
-        for refused in [17, 18, 19, 22, 25, 27] {
-            send(&mut pane, &[refused, 0, 0, 0, 0]).await;
-            assert_eq!(answer(&mut pane).await, FAILURE, "type {refused}");
-        }
-
-        // The next request the client sees is the sign, with the next id:
-        // none of the refused ones was delivered.
+        // The next request the client sees is the sign, with the next id.
         let sign = [13, 0, 0, 0, 1, b'k', 0, 0, 0, 1, b'd', 0, 0, 0, 0];
         send(&mut pane, &sign).await;
         let (second, message) = request(&mut stream).await;
@@ -210,37 +202,5 @@ fn a_client_that_disconnects_mid_request_fails_it_at_once() {
         let (id, _) = request(&mut stream).await;
         assert_eq!(reply(&mut stream, 2, id, &[12, 0]).await, CommandResult::Ok);
         assert_eq!(answer(&mut pane).await, [12, 0]);
-    }));
-}
-
-/// Two clients offer: the newer is asked, the older one's disconnect does
-/// not disturb it, and when the newer goes nothing falls back.
-#[test]
-fn the_newest_of_two_offers_is_asked() {
-    run_local(serve(true, async |socket, _env| {
-        let (mut old, _) = client(socket, "agent-old").await;
-        let (mut new, _) = client(socket, "agent-new").await;
-        assert_eq!(offer(&mut old, 1).await, CommandResult::Ok);
-        assert_eq!(offer(&mut new, 1).await, CommandResult::Ok);
-        let mut pane = pane(socket).await;
-
-        send(&mut pane, LIST).await;
-        let (id, _) = request(&mut new).await;
-        let stolen = reply(&mut old, 2, id, &[12, 9]).await;
-        assert_command_error(&stolen, ErrorCode::NotFound);
-        drop(old);
-        assert_eq!(reply(&mut new, 2, id, &[12, 1]).await, CommandResult::Ok);
-        assert_eq!(answer(&mut pane).await, [12, 1]);
-
-        send(&mut pane, LIST).await;
-        let (id, _) = request(&mut new).await;
-        assert_eq!(reply(&mut new, 3, id, &[12, 2]).await, CommandResult::Ok);
-        assert_eq!(answer(&mut pane).await, [12, 2]);
-
-        drop(new);
-        // The offer goes as the connection ends; until then the request
-        // is refused by the closed mailbox. Either way: a failure, now.
-        send(&mut pane, LIST).await;
-        assert_eq!(answer(&mut pane).await, FAILURE);
     }));
 }

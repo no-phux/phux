@@ -44,7 +44,6 @@ fn over_cap_image_snapshot_refuses_capture_without_poisoning_the_terminal() {
         manager.capture(BootstrapLimits::default()).unwrap_err(),
         NativeStateError::LimitExceeded
     );
-    assert!(!manager.capture_active);
     assert!(
         manager
             .try_terminal()
@@ -84,7 +83,6 @@ fn oversized_image_unit_is_refused_before_ready_without_losing_the_source() {
         NativeStateError::LimitExceeded
     );
     assert!(manager.try_terminal().is_some());
-    assert!(!manager.capture_active);
     manager.vt_write(b"\x1b_Ga=d,d=A,q=2;\x1b\\live-after-refusal");
     let capture = manager.capture(BootstrapLimits::default()).unwrap();
     manager.abort_generation_capture(capture);

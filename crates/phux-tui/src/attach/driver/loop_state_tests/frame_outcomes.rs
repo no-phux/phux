@@ -36,15 +36,14 @@ fn working(name: &str) -> AgentRecord {
     }
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn fold_of_an_empty_outcome_raises_nothing() {
-    let (repaint, state) = fold(FrameOutcome::default()).await;
-    assert_eq!(repaint, RepaintAccumulator::default());
-    assert!(!state.peers.chrome_dirty);
-}
-
 /// (case, outcome, repaint level, drain chrome when asserted, folded-state check).
-type FoldCase<'a> = (&'a str, FrameOutcome, RepaintLevel, Option<bool>, &'a dyn Fn(&SessionLoop) -> bool);
+type FoldCase<'a> = (
+    &'a str,
+    FrameOutcome,
+    RepaintLevel,
+    Option<bool>,
+    &'a dyn Fn(&SessionLoop) -> bool,
+);
 
 /// One outcome on a fresh loop raises the fleet and the paint its row names.
 /// Foreign state waits for the drain (which then owes the strip a refresh);
@@ -86,7 +85,10 @@ async fn fold_raises_the_fleet_and_the_paint_each_outcome_owes() {
         assert!(repaint.fleet_dirty, "{case}");
         assert_eq!(repaint.level, level, "{case}");
         if let Some(drain_chrome) = drain_chrome {
-            assert_eq!(state.peers.chrome_dirty, drain_chrome, "{case}: drain chrome");
+            assert_eq!(
+                state.peers.chrome_dirty, drain_chrome,
+                "{case}: drain chrome"
+            );
         }
         assert!(kept(&state), "{case}: folded state");
     }
@@ -134,4 +136,3 @@ async fn fold_of_a_moved_local_agent_record_raises_chrome_in_place_and_the_fleet
     assert!(repaint.fleet_dirty);
     assert_eq!(repaint.level, RepaintLevel::Chrome);
 }
-

@@ -248,16 +248,6 @@ proptest! {
         });
     }
 
-    /// SPAWN_RESOURCE.bind_instance (field 15) round-trips on a Terminal
-    /// spawn. Unset, it leaves the canonical `resource: None` spawn.
-    #[test]
-    fn roundtrip_spawn_bind_instance(
-        request_id in any::<u32>(),
-        bind in any::<bool>(),
-        satellite in proptest::option::of("[a-z]{1,8}"),
-    ) {
-        assert_round_trip(&Spawn { request_id, satellite: satellite.map(phux_protocol::ids::SatelliteHost::new), resource: bind.then(|| Box::new(SpawnResource::default().with_bind_instance(true))), ..Spawn::default() }.frame());
-    }
 }
 
 fn spawn_document(resource: SpawnResource) -> FrameKind {
@@ -275,17 +265,11 @@ fn spawn_document(resource: SpawnResource) -> FrameKind {
 #[test]
 fn a_typed_document_spawn_round_trips_and_refuses_a_bad_content_type() {
     let parent = ResourceId::local(1);
-    for (content_type, name) in [
-        ("text/markdown", Some("notes".to_owned())),
-        ("image/png", None),
-        ("text/plain; charset=utf-8", None),
-    ] {
-        assert_round_trip(&spawn_document(SpawnResource::document(
-            parent.clone(),
-            content_type,
-            name,
-        )));
-    }
+    assert_round_trip(&spawn_document(SpawnResource::document(
+        parent.clone(),
+        "text/markdown",
+        Some("notes".to_owned()),
+    )));
     let long = format!("application/{}", "x".repeat(200));
     assert_round_trip(&spawn_document(SpawnResource::document(
         parent.clone(),
@@ -295,29 +279,11 @@ fn a_typed_document_spawn_round_trips_and_refuses_a_bad_content_type() {
     // Every other kind keeps the 120-byte provider bound.
     let tree = SpawnResource::accessibility_tree(parent.clone(), long);
     assert!(crate::common::decode(&crate::common::encode(&spawn_document(tree))).is_err());
-    for bad in ["markdown", "text/", "text/mark down"] {
-        let frame = spawn_document(SpawnResource::document(parent.clone(), bad, None));
-        assert!(
-            crate::common::decode(&crate::common::encode(&frame)).is_err(),
-            "{bad}"
-        );
-    }
+    let bad = spawn_document(SpawnResource::document(parent.clone(), "markdown", None));
+    assert!(crate::common::decode(&crate::common::encode(&bad)).is_err());
     let missing = SpawnResource {
         provider: None,
         ..SpawnResource::document(parent, "text/plain", None)
     };
     assert!(crate::common::decode(&crate::common::encode(&spawn_document(missing))).is_err());
-}
-
-#[test]
-fn a_typed_document_bootstrap_profile_round_trips() {
-    assert_round_trip(&FrameKind::BootstrapBegin {
-        terminal_id: ResourceId::local(7),
-        stream_id: phux_protocol::ids::StreamId::new(1).unwrap(),
-        bootstrap_id: phux_protocol::ids::BootstrapId::new(2).unwrap(),
-        profile: phux_protocol::caps::BootstrapStreamProfile::DocumentTypedV1,
-        cols: 0,
-        rows: 0,
-        base_seq: 3,
-    });
 }

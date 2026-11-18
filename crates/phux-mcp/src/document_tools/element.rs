@@ -91,14 +91,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_schema_names_a_tree_and_exactly_one_selector_is_checked_first() {
-        let entry = schema_entry();
-        assert_eq!(entry["name"], NAME);
-        let props = &entry["inputSchema"]["properties"];
-        for key in ["target", "node", "name", "role", "pixel", "socket"] {
-            assert!(props.get(key).is_some(), "{key}");
-        }
-        assert_eq!(entry["inputSchema"]["required"], json!(["target"]));
+    fn exactly_one_selector_is_checked_first() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();

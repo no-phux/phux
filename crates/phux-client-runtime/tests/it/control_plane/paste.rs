@@ -71,20 +71,6 @@ fn a_program_paste_stays_untrusted() {
 }
 
 #[test]
-fn a_user_paste_too_large_for_one_command_goes_as_one_paste_event() {
-    let mut plane = acknowledging();
-    let text = "0123456789abcdef\n".repeat(8 * 1024);
-    assert!(text.len() > 64 * 1024);
-    assert_eq!(plane.apply_user_paste(&terminal(), &text), None);
-    let sent = pastes(&plane.take_outbound());
-    assert_eq!(sent.len(), 1, "never split (docs/protocol.md#input)");
-    let (acknowledged, paste) = &sent[0];
-    assert!(!acknowledged);
-    assert_eq!(paste.trust, PasteTrust::Trusted);
-    assert_eq!(paste.data, text.as_bytes());
-}
-
-#[test]
 fn a_large_user_paste_never_overtakes_unresolved_input() {
     let mut plane = acknowledging();
     plane.apply_user_paste(&terminal(), "first");

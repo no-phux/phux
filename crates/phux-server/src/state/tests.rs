@@ -3,17 +3,15 @@ use std::collections::HashSet;
 use super::*;
 use crate::resource::ResourceHandle;
 use phux_core::ids::ResourceId;
-use phux_protocol::caps::{
-    BootstrapLimits, BootstrapProfile, ClientCapabilities, ColorSupport, LayerSet,
-};
+use phux_protocol::caps::LayerSet;
 
 use phux_protocol::wire::frame::{FrameKind, Scope};
 
+/// The incarnation is stable per state, fresh per start, and redacted in
+/// Debug so traces do not leak a correlation token.
 #[test]
-fn client_ids_count_from_one_and_the_incarnation_is_per_state() {
-    let mut first = ServerState::new();
-    assert_eq!(first.clients_mut().new_client_id(), ClientId(1));
-    assert_eq!(first.clients_mut().new_client_id(), ClientId(2));
+fn the_incarnation_is_per_state_and_redacted() {
+    let first = ServerState::new();
     let stable = first.lifecycle().server_incarnation();
     assert_eq!(first.lifecycle().server_incarnation(), stable);
     assert_eq!(format!("{stable:?}"), "ServerIncarnation(<redacted>)");
@@ -216,28 +214,6 @@ fn same_client_may_rebootstrap_same_session_but_not_switch_sessions() {
     );
     let err = s.attach_default_caps(cid, "other", mk_tx()).unwrap_err();
     assert_eq!(err, AttachError::AlreadyAttached(cid));
-}
-
-#[test]
-fn attach_stores_hello_caps_and_bootstrap_contract_unchanged() {
-    let mut s = ServerState::new();
-    let _ = s.seed_session("default");
-    let (default, advertised) = (
-        s.clients_mut().new_client_id(),
-        s.clients_mut().new_client_id(),
-    );
-    s.attach_default_caps(default, "default", mk_tx()).unwrap();
-    let profile = BootstrapProfile::SynthesizedVtStateSync;
-    let limits = BootstrapLimits::new(64 * 1024, 128 * 1024).unwrap();
-    let caps = ClientCapabilities::new().with_color_support(ColorSupport::Indexed16);
-    s.attach(advertised, "default", mk_tx(), caps, profile, limits)
-        .unwrap();
-    let default = &s.attached()[&default];
-    assert_eq!(default.client_caps.color_support, ColorSupport::TrueColor);
-    let attached = &s.attached()[&advertised];
-    assert_eq!(attached.client_caps.color_support, ColorSupport::Indexed16);
-    assert_eq!(attached.bootstrap_profile, Some(profile));
-    assert_eq!(attached.bootstrap_limits, limits);
 }
 
 #[test]

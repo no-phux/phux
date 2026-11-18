@@ -175,9 +175,7 @@ fn configuration_round_trips_public_identity_fields_and_rejects_tickets() {
         "key_id": "persistent-key-tag"
     }))
     .unwrap();
-    assert_eq!(configuration.chain_pem.as_deref(), Some("public chain"));
-    assert_eq!(configuration.key_id.as_deref(), Some("persistent-key-tag"));
-    assert!(configuration.enrollment_target().is_ok());
+    assert!(configuration.validate_connection().is_ok());
     assert!(
         serde_json::from_value::<Configuration>(json!({
             "endpoint": "quic://localhost:8788", "ticket": "not persisted"

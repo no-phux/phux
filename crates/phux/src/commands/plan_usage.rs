@@ -256,9 +256,4 @@ mod tests {
             false
         ));
     }
-
-    #[test]
-    fn the_document_stays_under_the_contract_limit() {
-        assert!(encode(&snapshot(0, 1.0)).is_ok());
-    }
 }

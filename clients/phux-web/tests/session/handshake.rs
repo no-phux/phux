@@ -18,17 +18,8 @@ async fn hello_ok_without_aggregate_ready_is_not_connection_ready() {
 }
 
 #[wasm_bindgen_test]
-async fn hello_ok_rejects_version_drift_and_oversized_limits_before_payload() {
+async fn hello_ok_rejects_profile_drift_and_oversized_limits_before_payload() {
     let vt = Vt::load().await.expect("load engine");
-
-    let mut wrong_version = synth_hello();
-    let FrameKind::HelloOk { protocol_major, .. } = &mut wrong_version else {
-        unreachable!();
-    };
-    *protocol_major = protocol_major.saturating_add(1);
-    let mut session = Connection::new(&vt, 80, 24);
-    assert!(session.on_frame(wrong_version).fatal.is_some());
-
     let mut synthesized_only = Connection::new_synthesized_compat(&vt, 80, 24);
     let drift = synthesized_only.on_frame(hello_ok(native_profile(), BootstrapLimits::default()));
     assert!(drift.fatal.is_some());
@@ -170,19 +161,5 @@ async fn a_protocol_major_refusal_stops_the_client_for_good() {
     let outcome = session.on_frame(hello_ok_version(PROTOCOL_VERSION.major + 1, 0, 0));
     let message = outcome.fatal.expect("another major is fatal");
     assert!(session.is_version_refused());
-    assert!(phux_web::session::is_version_refusal(&message), "{message}");
-
-    let mut session = Connection::new(&vt, 80, 24);
-    let outcome = session.on_frame(FrameKind::Error {
-        request_id: None,
-        code: ErrorCode::VersionIncompatible,
-        message: "client protocol 9.0 unsupported".to_owned(),
-    });
-    let message = outcome.fatal.expect("VERSION_INCOMPATIBLE is fatal");
-    assert!(session.is_version_refused());
-    assert!(
-        message.contains("client protocol 9.0 unsupported"),
-        "{message}"
-    );
     assert!(phux_web::session::is_version_refusal(&message), "{message}");
 }

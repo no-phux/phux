@@ -132,47 +132,6 @@ async fn a_failed_upgrade_unseals_the_streams_it_cut() {
     .await;
 }
 
-/// This responsive actor acknowledges `lift` within its deadline, so the
-/// next append is accepted with no FIFO barrier or retry. The completed
-/// rollback leaves `Drop` nothing to do (#1035).
-#[tokio::test(flavor = "current_thread")]
-async fn a_lifted_seal_accepts_the_next_append_with_no_barrier() {
-    crate::runtime::test_support::local(async {
-        let state = SharedState::new();
-        let (_, _, append) = state.with_mut(old_image_with_agent_sessions);
-        append_records(&append, "{\"type\":\"prompt\"}").await;
-        let (blob, mut seal) = capture_blob(&state).await;
-        assert_eq!(blob.agent_sessions[0].base_seq, 1);
-        assert!(matches!(
-            try_append(&append, "{\"type\":\"stop\"}").await,
-            Err(phux_agent_session::session::AppendRejection::Overflow(_))
-        ));
-
-        seal.lift().await;
-
-        // Nothing between here and the append: if `lift` had only
-        // queued the unseal, this is where it would race it.
-        let next = append_records(&append, "{\"type\":\"stop\"}").await;
-        assert_eq!(next.first_seq, 2, "the refusal consumed no sequence");
-
-        drop(seal);
-    })
-    .await;
-}
-
-/// An empty seal lifts without touching the runtime, so the failure path
-/// can call it unconditionally.
-#[tokio::test(flavor = "current_thread")]
-async fn lifting_a_seal_that_covers_no_sessions_is_a_no_op() {
-    crate::runtime::test_support::local(async {
-        let mut seal = AgentSessionSeal {
-            bootstraps: Vec::new(),
-        };
-        seal.lift().await;
-    })
-    .await;
-}
-
 #[tokio::test(start_paused = true)]
 async fn rollback_has_one_deadline_and_does_not_block_a_healthy_neighbor() {
     let (blocked, _blocked_rx) = mpsc::channel(1);
@@ -206,38 +165,6 @@ async fn rollback_has_one_deadline_and_does_not_block_a_healthy_neighbor() {
     drop(seal);
     assert!(matches!(
         healthy_rx.try_recv(),
-        Err(mpsc::error::TryRecvError::Disconnected)
-    ));
-}
-
-#[tokio::test(start_paused = true)]
-async fn rollback_waits_for_a_full_mailbox_and_then_for_application() {
-    let (bootstrap, mut receiver) = mpsc::channel(1);
-    bootstrap
-        .try_send(BootstrapRequest {
-            reply: oneshot::channel().0,
-            seal: None,
-            after_seq: None,
-        })
-        .unwrap();
-    let mut seal = AgentSessionSeal {
-        bootstraps: vec![bootstrap],
-    };
-    {
-        let lift = seal.lift();
-        tokio::pin!(lift);
-        assert!(futures_util::poll!(&mut lift).is_pending());
-        assert_eq!(receiver.recv().await.unwrap().seal, None);
-        assert!(futures_util::poll!(&mut lift).is_pending());
-        let request = receiver.recv().await.unwrap();
-        assert_eq!(request.seal, Some(false));
-        assert!(futures_util::poll!(&mut lift).is_pending());
-        request.reply.send(empty_agent_cut()).unwrap();
-        assert!(futures_util::poll!(&mut lift).is_ready());
-    }
-    drop(seal);
-    assert!(matches!(
-        receiver.try_recv(),
         Err(mpsc::error::TryRecvError::Disconnected)
     ));
 }

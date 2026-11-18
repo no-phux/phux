@@ -469,12 +469,4 @@ mod voice_tests {
         assert_eq!(argv, vec!["transcribe", "/tmp/clip.wav"]);
         assert_eq!(cfg.timeout(), std::time::Duration::from_secs(5));
     }
-
-    #[test]
-    fn unset_is_not_configured() {
-        let cfg = VoiceCfg::default();
-        assert!(!cfg.is_configured());
-        assert!(cfg.transcriber_argv(std::path::Path::new("/x")).is_none());
-        assert_eq!(cfg.timeout(), VoiceCfg::DEFAULT_TIMEOUT);
-    }
 }

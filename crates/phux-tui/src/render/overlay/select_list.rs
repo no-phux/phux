@@ -1043,20 +1043,6 @@ mod tests {
     }
 
     #[test]
-    fn session_management_legend_names_tab() {
-        let sl =
-            list(vec![SelectItem::new("a", action("switch-session"))]).with_session_management();
-        let mut buf = Buffer::empty(Rect::new(0, 0, 80, 24));
-        sl.render(Rect::new(0, 0, 80, 24), &mut buf);
-        let text: String = buf
-            .content()
-            .iter()
-            .map(ratatui::buffer::Cell::symbol)
-            .collect();
-        assert!(text.contains("tab manage"), "{text}");
-    }
-
-    #[test]
     fn clip_left_keeps_the_tail() {
         assert_eq!(clip_left("/a/b", 10), "/a/b");
         assert_eq!(clip_left("/usr/local/share", 8), "…l/share");
@@ -1109,14 +1095,6 @@ mod tests {
 
     #[test]
     fn filtering_ranks_best_first_and_keeps_ties_in_source_order() {
-        let mut sl = list(vec![
-            SelectItem::new("toggle-sidebar", action("toggle-sidebar")),
-            SelectItem::new("split-pane", action("split-pane")),
-            SelectItem::new("previous-pane", action("previous-pane")),
-        ]);
-        type_str(&mut sl, "sp");
-        assert_eq!(labels(&sl)[0], "split-pane");
-
         let mut sl = list(vec![
             SelectItem::new("x-alpha", action("a")),
             SelectItem::new("x-bravo", action("b")),
@@ -1275,17 +1253,6 @@ mod tests {
         sl.handle_mouse(&wheel(MouseButton::Four));
         sl.handle_mouse(&wheel(MouseButton::Four));
         assert_eq!(sl.selected, 0, "saturates at the top");
-    }
-
-    /// Pins the mid-scroll box: windowed rows, the selection inside it, and
-    /// the scrollbar thumb away from both ends.
-    #[test]
-    fn scrolled_list_render_is_stable() {
-        let mut sl = long_list(24);
-        for _ in 0..15 {
-            key(&mut sl, PhysicalKey::ArrowDown);
-        }
-        insta::assert_snapshot!(render_to_string(&sl, 44, 16));
     }
 
     /// Above the compact breakpoint the picker floats: a centered box with

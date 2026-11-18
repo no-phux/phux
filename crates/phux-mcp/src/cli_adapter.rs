@@ -501,16 +501,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn adapter_executes_argv_without_a_shell_and_parses_json() {
-        let adapter = CliAdapter::new("printf");
-        let value = adapter
-            .run_json([r#"{"schema_version":1,"ok":true}"#], DEFAULT_CALL_TIMEOUT)
-            .await
-            .unwrap();
-        assert_eq!(value, json!({ "schema_version": 1, "ok": true }));
-    }
-
-    #[tokio::test]
     async fn adapter_enforces_output_and_time_bounds() {
         let adapter = CliAdapter::new("dd");
         let err = adapter
@@ -524,28 +514,6 @@ mod tests {
 
         let sleeper = CliAdapter::new("sleep");
         assert!(sleeper.run(["1"], Duration::from_millis(10)).await.is_err());
-    }
-
-    /// The `agent wait` shape: a non-zero exit whose stdout is the answer.
-    /// An allowed code keeps the document and reports the code; the same
-    /// code un-allowed is still a failure.
-    #[tokio::test]
-    async fn an_allowed_nonzero_exit_keeps_stdout_instead_of_becoming_an_error() {
-        let adapter = CliAdapter::new("sh");
-        let script = r#"printf '{"satisfied":false}'; exit 124"#;
-        let output = adapter
-            .run_allowing(["-c", script], DEFAULT_CALL_TIMEOUT, &[124])
-            .await
-            .expect("124 is allowed here");
-        assert_eq!(output.stdout, r#"{"satisfied":false}"#);
-
-        assert!(
-            adapter
-                .run(["-c", script], DEFAULT_CALL_TIMEOUT)
-                .await
-                .is_err(),
-            "an un-allowed non-zero exit is still a failure",
-        );
     }
 
     /// A failing `phux run` command is a successful tool call carrying a

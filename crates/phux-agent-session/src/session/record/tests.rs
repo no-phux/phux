@@ -5,14 +5,6 @@ fn one(line: &str) -> Result<ValidRecord, RecordError> {
 }
 
 #[test]
-fn a_batch_splits_on_newlines_with_an_optional_trailing_one() {
-    let payload = "{\"type\":\"prompt\"}\n{\"type\":\"stop\",\"data\":{}}";
-    let records = validate(payload.as_bytes(), false).expect("two records");
-    assert_eq!(records.len(), 2);
-    assert_eq!(records[1].record_type, "stop");
-}
-
-#[test]
 fn blank_segments_are_skipped_and_an_empty_append_is_refused() {
     assert_eq!(
         validate(b"\n\n  \n", false),
@@ -115,36 +107,18 @@ fn state_derivation_follows_adr_0103() {
 #[test]
 fn stamping_is_canonical_and_ignores_producer_seq_and_time() {
     let record =
-        one("{\"seq\":99,\"ts_ms\":1,\"type\":\"prompt\",\"data\":{\"len\":4}}").expect("valid");
+        one(r#"{"seq":99,"ts_ms":1,"type":"prompt","data":{"len":4,"text":"say \"hi\"\n"}}"#)
+            .expect("valid");
     assert_eq!(
         record.stamp(7, 1_700_000_000_000),
         bytes::Bytes::from_static(
-            b"{\"seq\":7,\"ts_ms\":1700000000000,\"type\":\"prompt\",\"data\":{\"len\":4}}\n"
+            concat!(
+                r#"{"seq":7,"ts_ms":1700000000000,"type":"prompt","data":{"len":4,"text":"say \"hi\"\n"}}"#,
+                "\n"
+            )
+            .as_bytes()
         )
     );
-}
-
-/// The direct writer must stay byte-identical to `Value`'s serializer,
-/// including escape sequences and object key order.
-#[test]
-fn stamping_matches_the_value_serializer_including_escapes() {
-    let record = one(
-        r#"{"type":"provider_raw","data":{"text":"say \"hi\"\n","n":1,"flag":true,"empty":{}}}"#,
-    )
-    .expect("valid");
-    let seq = 3_u64;
-    let ts_ms = 9_u64;
-    let mut legacy = String::new();
-    legacy.push_str("{\"seq\":");
-    legacy.push_str(&seq.to_string());
-    legacy.push_str(",\"ts_ms\":");
-    legacy.push_str(&ts_ms.to_string());
-    legacy.push_str(",\"type\":");
-    legacy.push_str(&Value::String(record.record_type.clone()).to_string());
-    legacy.push_str(",\"data\":");
-    legacy.push_str(&Value::Object(record.data.clone()).to_string());
-    legacy.push_str("}\n");
-    assert_eq!(record.stamp(seq, ts_ms).as_ref(), legacy.as_bytes());
 }
 
 #[test]

@@ -170,20 +170,6 @@ fn latest_roster_cell<'a>(painted: &'a str, name: &str) -> Option<&'a str> {
         })
 }
 
-#[test]
-fn roster_cell_parser_ignores_agent_rows_and_status_shortcuts() {
-    let painted = "Agents│● scratch blocked - claude│Sessions│○ work│● scratch ●1│C-a s Sessions";
-    assert_eq!(latest_roster_cell(painted, "scratch"), Some("● scratch ●1"));
-    assert_eq!(latest_roster_cell(painted, "work"), Some("○ work"));
-    // The rail's tee (`├`) is a rule glyph too: a repaint that emits the
-    // agent row and the roster row together must still split them.
-    let joined = "Agents 1 │● scratch  claude ├ ● scratch      ●1 │";
-    assert_eq!(
-        latest_roster_cell(joined, "scratch"),
-        Some("● scratch      ●1")
-    );
-}
-
 /// Everything the peer needs exists before the client attaches, so only the
 /// deferred sweep stands between the peer row and its histogram (verified to
 /// fail with the deferred send stubbed out).

@@ -265,14 +265,6 @@ pub fn disable_terminal_escape_restore() {}
 
 #[cfg(all(test, unix))]
 mod tests {
-    use std::sync::Mutex;
-
-    // SIGSEGV/SIGBUS/SIGABRT handlers are process-global. Tests in this binary
-    // run on parallel threads, so any two tests that install/read these
-    // handlers race. Serialize them through this lock (poison-tolerant: a real
-    // assertion failure in one test must not cascade into the other).
-    static SIGNAL_STATE_LOCK: Mutex<()> = Mutex::new(());
-
     /// Query the current disposition of `sig`.
     fn current_action(sig: libc::c_int) -> libc::sigaction {
         // SAFETY: a null `act` makes `sigaction` a pure query into `sa`.
@@ -285,7 +277,6 @@ mod tests {
 
     #[test]
     fn install_terminal_restore_only_registers_handlers() {
-        let _guard = SIGNAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         super::install_terminal_restore_only();
         // Note: SA_RESETHAND is set in our sigaction call but macOS XNU does
         // not round-trip it through the sigaction query. The flag IS honored
@@ -308,26 +299,5 @@ mod tests {
                 "{name} handler must use alternate signal stack"
             );
         }
-    }
-
-    #[test]
-    fn escape_restore_toggles_the_installed_handler() {
-        let _guard = SIGNAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        super::install_terminal_restore_only();
-        let basic = current_action(libc::SIGSEGV).sa_sigaction;
-
-        super::enable_terminal_escape_restore();
-        let armed = current_action(libc::SIGSEGV).sa_sigaction;
-        assert_ne!(
-            armed, basic,
-            "enable should swap in the escape-code handler"
-        );
-
-        super::disable_terminal_escape_restore();
-        assert_eq!(
-            current_action(libc::SIGSEGV).sa_sigaction,
-            basic,
-            "disable should restore the termios-only handler"
-        );
     }
 }

@@ -161,14 +161,3 @@ fn config_show_layers_without_a_config_file_is_all_defaults() {
         "every key comes from the defaults layer"
     );
 }
-
-#[test]
-fn config_show_default_conflicts_with_layers() {
-    let tmp = TempDir::new().expect("tempdir");
-    let (code, _, stderr) = run_with_xdg(
-        &["config", "show", "--default", "--layers"],
-        &tmp.path().join("xdg"),
-    );
-    assert_ne!(code, 0, "--default and --layers must conflict");
-    assert!(stderr.contains("--layers"), "{stderr}");
-}

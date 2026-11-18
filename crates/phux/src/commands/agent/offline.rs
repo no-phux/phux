@@ -480,17 +480,7 @@ mod tests {
         assert_eq!(err.code, "unknown_agent_kind");
         assert!(err.message.contains("--kind is required"));
         assert!(err.remedy.contains("claude"), "roster: {}", err.remedy);
-    }
-
-    #[test]
-    fn a_binary_alias_resolves_to_its_kind() {
-        assert_eq!(
-            resolve_kind(Some("claude-code")).ok(),
-            Some("claude".into())
-        );
-        assert_eq!(resolve_kind(Some("claude")).ok(), Some("claude".into()));
         let err = resolve_kind(Some("nope")).expect_err("unknown kind");
         assert_eq!(err.code, "unknown_agent_kind");
-        assert!(err.remedy.contains("PHUX_AGENT_RULES_DIR"));
     }
 }

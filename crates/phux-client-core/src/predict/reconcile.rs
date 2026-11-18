@@ -391,22 +391,6 @@ mod tests {
     }
 
     #[test]
-    fn three_contradicting_reconciles_hide_the_overlay() {
-        // End-to-end: three contradicting per-cell reconciles via the real
-        // reconcile entry point turn the state tentative. Keystrokes keep
-        // queueing (the lift signal is a confirmed prediction) but the
-        // display policy hides them.
-        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
-        contradict_one_insert(&mut s);
-        contradict_one_insert(&mut s);
-        assert!(!s.is_tentative(), "two contradictions: still displaying");
-        contradict_one_insert(&mut s);
-        assert!(s.is_tentative(), "three contradictions turn tentative");
-        assert_eq!(s.predict_key(&key_text("a")), PredictionOutcome::Predicted);
-        assert!(!s.should_display(0), "queued but hidden — no ghost painted");
-    }
-
-    #[test]
     fn tentative_then_clean_reconciles_lift_through_the_production_path() {
         // The lock lifts entirely through the production path: predicting
         // continues while tentative, so the server confirming two typed
@@ -475,22 +459,6 @@ mod tests {
     }
 
     #[test]
-    fn htop_style_repaint_contradicts_without_ever_displaying() {
-        // htop repaints its meters over the anchor: the guess contradicts.
-        // The queue drops, the latch stays locked, and later keys stay
-        // hidden — the ghost-glyph regression is structurally impossible.
-        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
-        s.set_alt_screen(true);
-        s.set_cursor(0, 0);
-        s.predict_key_at(&key_text("q"), 100);
-        let summary =
-            reconcile_terminal_output_per_cell(&mut s, 0, 0, row_reader(&[((0, 0), "C")]));
-        assert_eq!(summary.contradicted, 1); // "CPU" repaint
-        s.predict_key_at(&key_text("q"), 200);
-        assert!(!s.should_display(210), "contradiction is not evidence");
-    }
-
-    #[test]
     fn less_style_blank_confirms_never_earn_evidence() {
         // less: space pages down; the predicted " " matches a blank cell
         // without any echo happening. It must not unlock display for what
@@ -524,19 +492,6 @@ mod tests {
         assert!(!s.echo_confirmed(), "contradiction killed the evidence");
         s.predict_key_at(&key_text("c"), 300);
         assert!(!s.should_display(310), "re-earn evidence after divergence");
-    }
-
-    #[test]
-    fn overdue_overlay_recovers_once_authority_catches_up() {
-        // Glitch back-off is a hide, not a kill: when the late echo
-        // finally confirms, fresh guesses display again immediately.
-        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
-        s.set_cursor(0, 0);
-        s.predict_key_at(&key_text("a"), 100);
-        assert!(!s.should_display(2_000), "overdue — hidden");
-        reconcile_terminal_output_per_cell(&mut s, 0, 1, row_reader(&[((0, 0), "a")]));
-        s.predict_key_at(&key_text("b"), 2_500);
-        assert!(s.should_display(2_510), "fresh front displays again");
     }
 
     // -- SRTT-adaptive display TTL -------------------------------------

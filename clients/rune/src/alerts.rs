@@ -279,19 +279,13 @@ mod tests {
     }
 
     #[test]
-    fn settings_never_promises_what_cannot_post() {
-        assert!(notifications_detail(false, false).contains("notify-send"));
-        assert!(notifications_detail(false, true).contains("installed app"));
-        assert!(notifications_detail(true, true).contains("elsewhere"));
-    }
-
-    #[test]
     fn posts_once_and_takes_it_back_when_gone() {
         let mut t = Tracker::default();
         let a = raised("a", terminal(1));
         let first = t.sync(vec![a.clone()], |_| false, false);
         assert_eq!(first.post, vec![a.clone()]);
         assert!(t.sync(vec![a], |_| false, false).post.is_empty());
+        assert_eq!(t.target("a"), Some(terminal(1)));
         let gone = t.sync(Vec::new(), |_| false, false);
         assert_eq!(gone.remove, vec!["a".to_owned()]);
         assert!(t.target("a").is_none());
@@ -330,12 +324,5 @@ mod tests {
         let next = t.sync(vec![raised("b", terminal(1))], |_| false, false);
         assert_eq!(next.post.len(), 1);
         assert_eq!(next.remove, vec!["a".to_owned()]);
-    }
-
-    #[test]
-    fn a_click_finds_its_target() {
-        let mut t = Tracker::default();
-        t.sync(vec![raised("a", Target::Inbox)], |_| false, false);
-        assert_eq!(t.target("a"), Some(Target::Inbox));
     }
 }

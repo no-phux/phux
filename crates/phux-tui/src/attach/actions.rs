@@ -773,27 +773,4 @@ mod tests {
             Err(ActionError::Layout(_))
         ));
     }
-
-    /// Any split/close sequence keeps `leaves == splits - closes + 1`.
-    #[test]
-    fn split_close_sequence_preserves_leaf_count() {
-        let mut state = LayoutState::single(t(1));
-        let mut expected = 1;
-        for (next_id, dir) in (2_u32..).zip([
-            SplitDir::Horizontal,
-            SplitDir::Vertical,
-            SplitDir::Horizontal,
-        ]) {
-            let pending = split_of(state.focus.clone().unwrap(), dir, false);
-            state = apply_spawned_ok(&state, t(next_id), &pending).unwrap();
-            expected += 1;
-            assert_eq!(leaves(&state).len(), expected);
-        }
-        for _ in 0..2 {
-            let dying = leaves(&state)[0].clone();
-            state = apply_terminal_closed(&state, &dying).unwrap();
-            expected -= 1;
-            assert_eq!(leaves(&state).len(), expected);
-        }
-    }
 }

@@ -201,24 +201,6 @@ mod tests {
     }
 
     #[test]
-    fn an_idle_apply_syncs_the_viewport_and_does_not_read_the_grid() {
-        let mut predictor = Predictor::new(2, 2);
-        let mut cursor = Cursor {
-            row: 1,
-            col: 1,
-            visible: false,
-            ..Cursor::default()
-        };
-        let mut buffer = GridBuffer::default();
-        predictor.apply(8, 4, true, &mut cursor, &mut buffer, 10);
-        assert_eq!(predictor.viewport, (8, 4));
-        assert_eq!(predictor.pending_len(), 0);
-        assert!(!cursor.visible);
-        assert!(buffer.cells.is_empty());
-        assert!(buffer.utf8.is_empty());
-    }
-
-    #[test]
     fn guesses_are_underlined_unless_a_client_asks_for_plain_text() {
         let guess = |underline: bool| {
             let mut predictor = Predictor::new(4, 2);

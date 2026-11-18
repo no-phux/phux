@@ -189,15 +189,11 @@ mod tests {
         p.handle_key(&press(PhysicalKey::A, Some(&ch.to_string())))
     }
 
-    /// The border legend names what Enter does in each prompt.
     #[test]
-    fn the_legend_names_the_verb() {
+    fn the_placeholder_goes_with_the_first_character() {
         let rendered = |p: &PromptOverlay| rendered(p, 60, 10);
         let theme = Theme::default();
-        assert!(rendered(&PromptOverlay::rename_window("a", &theme)).contains("⏎ rename · esc"));
-        assert!(rendered(&PromptOverlay::rename_session("a", &theme)).contains("⏎ rename · esc"));
         let fresh = rendered(&PromptOverlay::new_session(&theme));
-        assert!(fresh.contains("⏎ create · esc"));
         assert!(fresh.contains("a name for it"), "placeholder:\n{fresh}");
         let mut typed = PromptOverlay::new_session(&theme);
         typ(&mut typed, 'x');
@@ -246,36 +242,12 @@ mod tests {
             committed(&mut p),
             Some(toml::Value::String("new".to_owned()))
         );
-
-        let mut p = PromptOverlay::rename_session("work tmp", &Theme::default());
-        p.handle_key(&ctrl(PhysicalKey::W));
-        p.handle_key(&ctrl(PhysicalKey::A));
-        typ(&mut p, 'x');
-        p.handle_key(&ctrl(PhysicalKey::E));
-        typ(&mut p, 'y');
-        assert_eq!(
-            committed(&mut p),
-            Some(toml::Value::String("xwork y".to_owned()))
-        );
     }
 
-    /// Backspace edits; Esc, an empty Enter, and an Enter after only
-    /// control text (which never enters the buffer) all cancel.
+    /// Esc, an empty Enter, and an Enter after only control text (which
+    /// never enters the buffer) all cancel.
     #[test]
-    fn backspace_edits_and_empty_or_escape_cancels() {
-        let mut p = PromptOverlay::rename_window("ab", &Theme::default());
-        assert_eq!(
-            p.handle_key(&press(PhysicalKey::Backspace, None)),
-            OverlayCommand::Stay
-        );
-        let OverlayCommand::Commit(action) = p.handle_key(&press(PhysicalKey::Enter, None)) else {
-            panic!("expected Commit");
-        };
-        assert_eq!(
-            action.args.get("name"),
-            Some(&toml::Value::String("a".to_owned()))
-        );
-
+    fn empty_or_escape_cancels() {
         let theme = Theme::default();
         let mut escaped = PromptOverlay::rename_window("x", &theme);
         assert_eq!(

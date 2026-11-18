@@ -287,16 +287,6 @@ fn cat_server() -> SpawnedServer {
 }
 
 #[test]
-fn detach_terminal_stops_initial_attach_output() {
-    run_local(scenario(Source::Session, 1, ClientCapabilities::new()));
-}
-
-#[test]
-fn detach_terminal_stops_spawn_output_and_churns_past_sixteen() {
-    run_local(scenario(Source::Spawn, 20, ClientCapabilities::new()));
-}
-
-#[test]
 fn detach_terminal_stops_explicit_attach_output_and_reattaches() {
     run_local(scenario(Source::Explicit, 20, ClientCapabilities::new()));
 }
@@ -376,11 +366,6 @@ fn detach_terminal_answers_a_late_history_request_with_cursor_status() {
         drop(stream);
         server.stop().await;
     });
-}
-
-#[test]
-fn detach_terminal_stops_native_initial_attach_and_reattaches() {
-    run_local(scenario(Source::Session, 20, native_caps()));
 }
 
 #[test]

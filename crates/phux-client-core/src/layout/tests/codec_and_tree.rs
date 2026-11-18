@@ -26,25 +26,6 @@ fn render_group_self_heals_when_zoom_target_is_not_a_leaf() {
 }
 
 #[test]
-fn split_at_replaces_leaf_with_split() {
-    let tree = leaf(1);
-    let out = split_at(&tree, &t(1), &t(2), SplitDir::Horizontal, 0.5).unwrap();
-    let LayoutNode::Split {
-        dir,
-        ratio,
-        left,
-        right,
-    } = out
-    else {
-        panic!("expected Split");
-    };
-    assert_eq!(dir, SplitDir::Horizontal);
-    assert_eq!(ratio, 0.5);
-    assert!(matches!(*left, LayoutNode::Leaf(ref p) if *p == t(1)));
-    assert!(matches!(*right, LayoutNode::Leaf(ref p) if *p == t(2)));
-}
-
-#[test]
 fn split_at_rejects_missing_target() {
     let tree = leaf(1);
     let err = split_at(&tree, &t(99), &t(2), SplitDir::Horizontal, 0.5).unwrap_err();

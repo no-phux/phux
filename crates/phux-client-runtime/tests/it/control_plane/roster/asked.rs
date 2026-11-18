@@ -5,7 +5,8 @@ use super::*;
 fn the_asked_flag_is_subscribed_before_it_is_read_and_reports_the_level() {
     let (mut plane, agent, asked) = discovered_both();
     assert_ne!(agent, asked);
-    answer_metadata(&mut plane, asked, Some(b"1"));
+    // Any present value reads as asked, not only `1`.
+    answer_metadata(&mut plane, asked, Some(b"yes"));
     assert_eq!(asked_levels(&mut plane), vec![true]);
     let (mut plane, _, asked) = discovered_both();
     answer_metadata(&mut plane, asked, None);
@@ -39,57 +40,6 @@ fn a_live_clear_retracts_the_question_and_fences_the_delayed_read() {
             .count(),
         2
     );
-}
-
-#[test]
-fn a_question_cleared_during_a_gap_is_retracted_by_recovery() {
-    let (mut plane, _, asked) = discovered_both();
-    answer_metadata(&mut plane, asked, Some(b"1"));
-    asked_event(&mut plane, "q1");
-    let _ = plane.take_events();
-    // The clear's METADATA_CHANGED was lost with the gap.
-    journal_gap(&mut plane);
-    let reread = asked_id(&answer_queued_state(&mut plane, snapshot()));
-    assert_ne!(reread, asked);
-    answer_metadata(&mut plane, reread, None);
-    assert_eq!(asked_levels(&mut plane), vec![false]);
-}
-
-#[test]
-fn reconnect_rereads_the_flag_and_ignores_the_previous_connection() {
-    let (mut plane, _, old_asked) = discovered_both();
-    answer_metadata(&mut plane, old_asked, Some(b"1"));
-    let _ = plane.take_events();
-    plane.connection_lost(None);
-    plane.connection_opened();
-    let _ = outbound(&mut plane);
-    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
-    let asked = asked_id(&answer_queued_state(&mut plane, snapshot()));
-    // A late reply correlated by the old connection is not this one's read.
-    answer_metadata(&mut plane, old_asked, Some(b"1"));
-    answer_metadata(&mut plane, asked, None);
-    assert_eq!(asked_levels(&mut plane), vec![false]);
-}
-
-#[test]
-fn an_ordinary_refresh_leaves_a_pending_question_alone() {
-    let (mut plane, agent, asked) = discovered_both();
-    answer_metadata(&mut plane, agent, None);
-    answer_metadata(&mut plane, asked, Some(b"1"));
-    asked_event(&mut plane, "q1");
-    let _ = plane.take_events();
-    assert!(refresh_after_settling(&mut plane, snapshot()).is_empty());
-    assert!(
-        asked_levels(&mut plane).is_empty(),
-        "no level, so no retraction"
-    );
-}
-
-#[test]
-fn an_unexpected_flag_value_still_reads_as_asked() {
-    let (mut plane, _, asked) = discovered_both();
-    answer_metadata(&mut plane, asked, Some(b"yes"));
-    assert_eq!(asked_levels(&mut plane), vec![true]);
 }
 
 #[test]

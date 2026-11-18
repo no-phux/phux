@@ -14,9 +14,7 @@ fn browser_labels_fit_spawn_bounds_without_changing_source_identity() {
         url: format!("https://example.test/{}", "a".repeat(250)),
         ws: "ws://localhost/devtools/page/1".into(),
     };
-    let original = page.clone();
     assert_eq!(page_label(&page).len(), 120);
-    assert_eq!(page, original);
     page.title.clear();
     assert_eq!(page_label(&page).len(), 120);
     page.url.clear();

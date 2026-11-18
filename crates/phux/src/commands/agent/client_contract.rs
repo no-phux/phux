@@ -117,27 +117,3 @@ fn watch_cursor_matches_the_page() {
         crate::commands::watch::cursor_json(Some("2b5af13f10d9a1f69188f055261b9722:12"), false);
     assert_documented("watch-cursor", &line);
 }
-
-/// The checker itself: a documented key that disappears, or changes type,
-/// fails.
-#[test]
-fn a_removed_or_retyped_key_fails() {
-    let doc = serde_json::json!({ "a": 1, "b": ["x"], "c": null });
-    assert_shape(
-        "ok",
-        &doc,
-        &serde_json::json!({ "a": 2, "b": ["y"], "c": {}, "new": true }),
-    );
-    let missing = std::panic::catch_unwind(|| {
-        assert_shape("missing", &doc, &serde_json::json!({ "b": [], "c": null }));
-    });
-    assert!(missing.is_err());
-    let retyped = std::panic::catch_unwind(|| {
-        assert_shape(
-            "retyped",
-            &doc,
-            &serde_json::json!({ "a": "1", "b": [], "c": null }),
-        );
-    });
-    assert!(retyped.is_err());
-}

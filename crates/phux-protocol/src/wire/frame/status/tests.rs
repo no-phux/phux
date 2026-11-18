@@ -90,13 +90,5 @@ fn byte_255_is_reserved_for_unknown_reasons() {
             Some(HistoryRejectionReason::Unknown)
         );
     }
-    for reason in [
-        CloseReason::Exited,
-        CloseReason::Killed,
-        CloseReason::ParentClosed,
-        CloseReason::ServerShutdown,
-    ] {
-        assert_ne!(reason.as_wire(), 255, "{reason:?}");
-    }
     assert_eq!(CloseReason::Unknown.as_wire(), 255);
 }

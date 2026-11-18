@@ -278,13 +278,6 @@ impl ResourceTable {
             .collect()
     }
 
-    /// Whether no pane has a subscriber (tests the empty-list GC).
-    #[cfg(test)]
-    #[must_use]
-    pub(super) fn subscriber_map_is_empty(&self) -> bool {
-        self.subscribers.is_empty()
-    }
-
     // -- output task lifetimes and ATTACH_RESOURCE generations --------
 
     /// Track a task from any of the three output subscription paths.

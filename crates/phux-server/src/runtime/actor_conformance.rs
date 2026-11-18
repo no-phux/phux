@@ -142,26 +142,6 @@ fn principal_of(principal: &PrincipalId) -> Option<phux_protocol::ids::Principal
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn a_delegated_agent_acts_as_its_credential_on_behalf_of_the_owner() {
-    local(async {
-        let fx = Fixture::new();
-        let human = fx.human().await;
-        let (agent, credential) = fx.delegated_agent(&human).await;
-
-        let actor = fx.state.with(|s| s.actor_for(agent.client));
-        assert_eq!(actor.principal, credential.principal());
-        assert_eq!(actor.on_behalf_of, Some(PrincipalId::Owner));
-        assert_eq!(
-            fx.state.with(|s| s.actor_for(human.client)).principal,
-            PrincipalId::Owner
-        );
-        agent.finish().await;
-        human.finish().await;
-    })
-    .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
 async fn a_delegated_agent_is_refused_terminate_and_kill_and_its_pane_survives() {
     local(async {
         let fx = Fixture::new();

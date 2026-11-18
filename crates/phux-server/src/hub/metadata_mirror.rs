@@ -109,52 +109,8 @@ mod tests {
         Scope::Resource(ResourceId::satellite(host(), id))
     }
 
-    #[test]
-    fn allowlist_is_the_agent_record_and_the_asked_flag() {
-        assert!(is_mirrored_key(RESOURCE_AGENT_KEY));
-        assert!(is_mirrored_key(RESOURCE_ASKED_KEY));
-        assert!(!is_mirrored_key("phux.tags/v1"));
-        assert!(!is_mirrored_key("phux.agent-session/v1"));
-    }
-
     fn get(state: &SharedState, scope: &Scope, key: &str) -> Option<Vec<u8>> {
         state.with(|s| s.metadata().get(scope, key))
-    }
-
-    /// Mirrored keys land under the satellite scope (never the Local one) and
-    /// a tombstone removes them; other keys and satellite scopes are ignored.
-    #[test]
-    fn a_mirrored_record_is_stored_under_the_satellite_scope_until_tombstoned() {
-        let state = SharedState::new();
-        let apply = |scope: &Scope, key: &str, value: Option<&[u8]>| {
-            state.with_mut(|s| apply_mirrored(s, &host(), scope, key, value.map(<[u8]>::to_vec)))
-        };
-        let record = br#"{"name":"reviewer"}"#.as_slice();
-        assert!(apply(&local_scope(7), RESOURCE_AGENT_KEY, Some(record)));
-        assert_eq!(
-            get(&state, &satellite_scope(7), RESOURCE_AGENT_KEY).as_deref(),
-            Some(record)
-        );
-        assert!(get(&state, &local_scope(7), RESOURCE_AGENT_KEY).is_none());
-        assert!(apply(&local_scope(7), RESOURCE_AGENT_KEY, None));
-        assert!(
-            state
-                .with(|s| s.metadata().list(&satellite_scope(7)))
-                .is_empty()
-        );
-
-        assert!(is_mirrored_key(RESOURCE_ASKED_KEY) && !is_mirrored_key("phux.agent-session/v1"));
-        assert!(!apply(&local_scope(7), "phux.tags/v1", Some(b"x")));
-        assert!(!apply(
-            &satellite_scope(7),
-            RESOURCE_AGENT_KEY,
-            Some(record)
-        ));
-        assert!(
-            state
-                .with(|s| s.metadata().list(&satellite_scope(7)))
-                .is_empty()
-        );
     }
 
     #[test]

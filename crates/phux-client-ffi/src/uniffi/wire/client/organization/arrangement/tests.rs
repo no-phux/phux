@@ -253,13 +253,6 @@ fn closing_the_final_pane_is_refused() {
 }
 
 #[test]
-fn move_group_reorders_tabs() {
-    let mut doc = document();
-    apply_edit(&mut doc, &ArrangementEdit::MoveGroup { from: 1, to: 0 }).unwrap();
-    assert_eq!(describe(&doc)[0].id, group_id(2));
-}
-
-#[test]
 fn disconnected_clients_hold_no_arrangement_and_refuse_edits() {
     let remote = RemoteClient::new("unused".into(), 80, 24, None, None);
     let key = SessionKey::new([2; 16]).unwrap().to_string();

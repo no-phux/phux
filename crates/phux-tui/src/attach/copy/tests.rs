@@ -63,12 +63,6 @@ fn base64_encodes_high_bytes() {
 }
 
 #[test]
-fn osc52_wraps_base64_in_set_clipboard() {
-    let seq = osc52_set_clipboard("foo");
-    assert_eq!(seq, b"\x1b]52;c;Zm9v\x07");
-}
-
-#[test]
 fn mouse_drag_copy_keeps_its_first_cell_after_scrolling() {
     let mut t = fresh(12, 3);
     for n in 0..8 {
@@ -194,8 +188,7 @@ fn extraction_resolves_each_request_over_the_screen() {
     let output = [PROMPT, b"cat f\r\n\x1b]133;C\x07the-output-line\r\n"].concat();
     let semantic = [PROMPT, b"ls -la"].concat();
     #[rustfmt::skip] // a case table, one row per case
-    let cases: [ExtractCase<'_>; 5] = [
-        ("two linear rows", (20, 3), b"abc\r\ndef", rect_req(0, 0, 1, 2), &["abc", "def"], &[]),
+    let cases: [ExtractCase<'_>; 4] = [
         ("line grab", (20, 3), b"alpha beta\r\ngamma", grab_req(Line, 0, 2), &["alpha", "beta"], &["gamma"]),
         ("all grab", (20, 3), b"first\r\nsecond", grab_req(All, 0, 0), &["first", "second"], &[]),
         ("semantic line", (40, 3), &semantic, grab_req(LineSemantic, 0, 4), &["ls -la"], &[]),

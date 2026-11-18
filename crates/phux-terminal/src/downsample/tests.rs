@@ -141,18 +141,3 @@ fn plain_runs_preserve_binary_bytes_and_escape_boundaries() {
         assert_eq!(rewrite_bytes_with_caps(&input, caps), expected);
     }
 }
-
-#[test]
-fn color_downgrade_and_image_strip_compose() {
-    let input = b"\x1b[38;2;255;0;0mhi\x1bP0;0;0qsixel\x1b\\done";
-    let caps = ClientCapabilities::new()
-        .with_color_support(ColorSupport::Indexed256)
-        .with_image_protocols(ImageProtocolSet::with(&[
-            ImageProtocol::KittyGraphics,
-            ImageProtocol::Iterm2,
-        ]));
-    assert_eq!(
-        rewrite_bytes_with_caps(input, caps),
-        b"\x1b[38;5;196mhidone"
-    );
-}

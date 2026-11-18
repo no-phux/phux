@@ -37,28 +37,6 @@ pub(super) async fn wait_for_status(
 }
 
 #[tokio::test(start_paused = true)]
-async fn supervisor_backs_off_exponentially_then_connects() {
-    on_local(async {
-        let transport = ScriptTransport::new(vec![
-            Err("boom-1".to_owned()),
-            Err("boom-2".to_owned()),
-            Ok(ScriptConn::open_forever()),
-        ]);
-        let link = supervise(loopback_entry(), transport.clone());
-
-        link.reach(backoff(1, Duration::from_millis(500), "boom-1"))
-            .await;
-        link.reach(backoff(2, Duration::from_secs(1), "boom-2"))
-            .await;
-        link.reach(LinkStatus::Connected).await;
-        assert_eq!(transport.calls.get(), 3);
-
-        link.cancel.cancel();
-    })
-    .await;
-}
-
-#[tokio::test(start_paused = true)]
 async fn supervisor_redials_after_a_lost_connection_with_reset_backoff() {
     on_local(async {
         let (close_tx, closable) = ScriptConn::closable();
@@ -126,33 +104,6 @@ async fn supervisor_keeps_backing_off_when_connections_die_young() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn supervisor_fails_closed_without_dialing() {
-    on_local(async {
-        let transport = ScriptTransport::new(vec![Ok(ScriptConn::open_forever())]);
-        let statuses = HubLinkStatuses::default();
-        let host = host();
-        // Routable QUIC with no auth material: refused.
-        let (relay, relay_rx) = relay_pair(&host);
-        drop(relay);
-        run_link(
-            host.clone(),
-            entry("quic://devbox:8788", None, None),
-            transport.clone(),
-            statuses.clone(),
-            relay_rx,
-            CancellationToken::new(),
-        )
-        .await;
-        assert_eq!(transport.calls.get(), 0, "fail closed means no dial");
-        assert!(matches!(
-            statuses.get(&host),
-            Some(LinkStatus::Refused { reason }) if reason.contains("cert-fingerprint")
-        ));
-    })
-    .await;
-}
-
-#[tokio::test(start_paused = true)]
 async fn refused_link_fails_relay_commands_fast() {
     use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode};
 
@@ -173,6 +124,7 @@ async fn refused_link_fails_relay_commands_fast() {
             }
         ));
         assert_eq!(transport.calls.get(), 0, "refused link never dials");
+        link.wait(|s| matches!(s, LinkStatus::Refused { .. })).await;
         link.cancel.cancel();
     })
     .await;

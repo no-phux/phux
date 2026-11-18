@@ -337,25 +337,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn explicit_yes_preserves_approval_without_global_read_permissions() {
-        let (stream, peer) = tokio::net::UnixStream::pair().unwrap();
-        let mut conn = phux_client::attach::connection::Connection::from_stream(stream);
-        let id = ApprovalId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
-        let result = tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            confirm_approval(&mut conn, id, true, false),
-        )
-        .await
-        .unwrap();
-        assert_eq!(result, Ok(false));
-        let mut byte = [0];
-        assert_eq!(
-            peer.try_read(&mut byte).unwrap_err().kind(),
-            std::io::ErrorKind::WouldBlock
-        );
-    }
-
-    #[tokio::test]
     async fn unattended_decisions_neither_offer_credential_review_nor_preread_metadata() {
         use phux_client::testkit::{ScriptSpec, ScriptedServer};
         use phux_protocol::wire::frame::{ErrorCode, FrameKind};

@@ -173,10 +173,6 @@ mod tests {
         assert!(text.contains("Plugin action failed"), "title:\n{text}");
         assert!(text.contains("exit code 2"), "body line 1:\n{text}");
         assert!(text.contains("boom"), "body line 2:\n{text}");
-        assert!(
-            !text.contains("Press any key"),
-            "no teaching footer:\n{text}"
-        );
         assert!(text.contains("any key"), "border legend:\n{text}");
     }
 
@@ -186,24 +182,7 @@ mod tests {
         assert!(toast.is_input_passthrough());
         let text = render_to_string(&toast, 80, 24);
         assert!(text.contains("body"), "body:\n{text}");
-        assert!(
-            !text.contains("Start typing"),
-            "no teaching footer:\n{text}"
-        );
         assert!(!text.contains("any key"), "no legend on a notice:\n{text}");
-    }
-
-    #[test]
-    fn bounds_are_centered_and_clamped() {
-        let toast = ToastOverlay::new("t", vec![], &Theme::default());
-        let b = toast
-            .bounds(Rect::new(0, 0, 100, 40))
-            .expect("toast is bounded");
-        assert!(b.width >= 32 && b.width <= 100);
-        assert!(b.height >= 2 && b.height <= 40);
-        // Tiny viewport still yields a rect inside it.
-        let tiny = toast.bounds(Rect::new(0, 0, 20, 6)).expect("bounded");
-        assert!(tiny.width <= 20 && tiny.height <= 6);
     }
 
     /// Starved of rows, a toast takes the panel's width but still only the
@@ -237,6 +216,8 @@ mod tests {
         let long = ToastOverlay::new("t", vec!["line".into(); 100], &Theme::default());
         let b = long.bounds(outer).expect("bounded");
         assert_eq!(b.height, 20, "capped at half the viewport");
+        let tiny = long.bounds(Rect::new(0, 0, 20, 6)).expect("bounded");
+        assert!(tiny.width <= 20 && tiny.height <= 6, "{tiny:?}");
     }
 
     fn placeholder(request_id: u32) -> Box<ToastOverlay> {

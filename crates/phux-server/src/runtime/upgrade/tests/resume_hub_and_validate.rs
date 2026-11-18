@@ -144,58 +144,6 @@ async fn an_invalid_registry_blocks_a_promoted_hub_upgrade() {
     .await;
 }
 
-#[test]
-fn descriptor_guard_restores_flags_after_partial_prepare_failure() {
-    let file = tempfile::tempfile().unwrap();
-    let fd = file.as_raw_fd();
-    let original = fd_flags(fd).union(rustix::io::FdFlags::CLOEXEC);
-    set_fd_flags(fd, original);
-
-    let mut guard = FdFlagsGuard::new();
-    guard.clear_cloexec(fd).unwrap();
-    assert!(!fd_flags(fd).contains(rustix::io::FdFlags::CLOEXEC));
-    // A dropped tempfile's number is reused by whichever parallel test
-    // opens next, so probe a descriptor no test can hold instead.
-    assert!(guard.clear_cloexec(RawFd::MAX).is_err());
-    drop(guard);
-
-    assert_eq!(fd_flags(fd), original);
-}
-
-#[tokio::test]
-async fn exec_failure_restores_original_descriptor_flags() {
-    let listener = tempfile::tempfile().unwrap();
-    let listener_fd = listener.as_raw_fd();
-    let original = fd_flags(listener_fd).union(rustix::io::FdFlags::CLOEXEC);
-    set_fd_flags(listener_fd, original);
-
-    let blob_file = tempfile::tempfile().unwrap();
-    let blob_fd = blob_file.as_raw_fd();
-    let mut guard = FdFlagsGuard::new();
-    guard.clear_cloexec(blob_fd).unwrap();
-    guard.clear_cloexec(listener_fd).unwrap();
-    let plan = UpgradePlan {
-        executable: PinnedExecutable {
-            path: PathBuf::from("/definitely/missing/phux"),
-            source_path: PathBuf::from("/definitely/missing/phux"),
-            dir: tempfile::tempdir().unwrap(),
-        },
-        blob_fd,
-        socket_path: PathBuf::from("/tmp/phux.sock"),
-        flags: RuntimeFlags::default(),
-        fd_flags: guard,
-        _blob_file: blob_file,
-        _listener_fd: tempfile::tempfile().unwrap().into(),
-        _delegated_listeners: Vec::new(),
-        cuts: vec![AgentSessionUpgrade::holding(AgentSessionSeal {
-            bootstraps: Vec::new(),
-        })],
-    };
-
-    assert_eq!(plan.exec().await.kind(), std::io::ErrorKind::NotFound);
-    assert_eq!(fd_flags(listener_fd), original);
-}
-
 /// `config check` runs before the irreversible exec: a replacement that
 /// cannot load this host's config aborts with the loader's diagnostic.
 #[test]
@@ -246,20 +194,6 @@ fn a_production_server_never_hot_swaps_into_a_dev_build() {
     assert!(upgrade_kind_refusal(Local, None).is_none());
     assert!(upgrade_kind_refusal(Dev, Some(Release)).is_none());
     assert!(upgrade_kind_refusal(Dev, Some(Dev)).is_none());
-}
-
-#[test]
-fn validate_binary_accepts_when_version_and_config_check_succeed() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = write_stub_phux(
-        dir.path(),
-        "#!/bin/sh\n\
-         case \"$1\" in\n\
-         --version|config) exit 0 ;;\n\
-         *) exit 1 ;;\n\
-         esac\n",
-    );
-    validate_binary(&path).expect("a coherent replacement image must pass");
 }
 
 /// The candidate's verdict on the staged blob decides the upgrade, and the

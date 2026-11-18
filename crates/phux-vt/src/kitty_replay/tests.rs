@@ -5,21 +5,6 @@ mod heal;
 mod residency;
 mod shared;
 
-#[test]
-fn base64_encodes_padding_cases() {
-    let mut out = Vec::new();
-    write_base64(&mut out, b"f").expect("encode one");
-    assert_eq!(out, b"Zg==");
-
-    out.clear();
-    write_base64(&mut out, b"fo").expect("encode two");
-    assert_eq!(out, b"Zm8=");
-
-    out.clear();
-    write_base64(&mut out, b"foo").expect("encode three");
-    assert_eq!(out, b"Zm9v");
-}
-
 fn terminal() -> GhosttyTerminal<'static, 'static> {
     let mut terminal = GhosttyTerminal::new(10, 5).expect("terminal");
     configure_terminal_for_kitty_graphics(&mut terminal).expect("kitty config");

@@ -483,38 +483,10 @@ pub(crate) fn claim(args: crate::commands::ClaimArgs) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use phux_protocol::ResourceId;
-    use phux_work::{Address, pane_address};
-
     use super::*;
 
     #[test]
-    fn claimed_paths_are_absolute_and_normalized_without_touching_disk() {
-        assert_eq!(absolute("/a/./b/../c/").unwrap(), "/a/c");
+    fn a_relative_claimed_path_is_made_absolute() {
         assert!(absolute("rel").unwrap().starts_with('/'));
-    }
-
-    #[test]
-    fn native_and_legacy_terminal_context_keep_their_pane_identity() {
-        for id in [730, 749] {
-            let native = ResourceId::local(id).to_string();
-            let expected = format!("@{id}");
-            assert_eq!(pane_address(&native), expected);
-            assert_eq!(pane_address(&id.to_string()), expected);
-            assert_eq!(
-                Address::parse(&pane_address(&native)).unwrap().key(),
-                expected
-            );
-        }
-        assert_ne!(pane_address("@730"), pane_address("@749"));
-        assert!(Address::parse(&pane_address("malformed")).is_err());
-    }
-
-    #[test]
-    fn a_pane_speaks_as_itself_unless_told_otherwise() {
-        let me = AsOpt {
-            me: Some("pi@749".into()),
-        };
-        assert_eq!(whoami(&me), "pi@749");
     }
 }

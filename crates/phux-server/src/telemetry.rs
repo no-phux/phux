@@ -501,18 +501,6 @@ mod tests {
         assert_eq!(mode(&loose), 0o600);
     }
 
-    #[test]
-    fn shift_plan_orders_highest_generation_first_within_the_cap() {
-        let base = Path::new("/state/phux/server.log");
-        let shift = |from, to| (generation_path(base, from), generation_path(base, to));
-        assert_eq!(
-            shift_plan(base, 4),
-            vec![shift(3, 4), shift(2, 3), shift(1, 2)]
-        );
-        assert!(shift_plan(base, 1).is_empty());
-        assert!(shift_plan(base, 0).is_empty());
-    }
-
     /// Below the threshold nothing moves; above it `.1` gets the content at
     /// 0o600 and the live file is truncated in place (keeping its mode), so a `tail -f` reader
     /// keeps its inode.

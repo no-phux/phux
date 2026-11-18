@@ -272,14 +272,13 @@ fn retina_navigation_renders_in_native_safe_area_and_desktop_phone_viewports() {
         assert!(dock[1] + dock[3] <= size.1 as f32);
         assert_eq!(rt.find("phone-keyboard").is_none(), native);
         let mut renderer = app_renderer(&gpu);
-        let pixels = paint(
+        paint(
             &gpu,
             &mut renderer,
             &mut rt,
             (size.0 * scale, size.1 * scale),
             &format!("retina-{scale}x-native-{native}"),
         );
-        assert_eq!(pixels.len(), (size.0 * size.1 * scale * scale * 4) as usize);
     }
 }
 

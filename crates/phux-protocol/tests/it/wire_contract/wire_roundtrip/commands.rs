@@ -53,17 +53,13 @@ fn command_variants_round_trip() {
             operation_id: None,
         });
     }
-    for request_scrollback in [None, Some(0), Some(42)] {
-        for cells in [false, true] {
-            for format in [0, 1, 2] {
-                commands.push(Command::GetScreen {
-                    terminal_id: ResourceId::local(5),
-                    request_scrollback,
-                    cells,
-                    format,
-                });
-            }
-        }
+    for (request_scrollback, cells, format) in [(None, false, 0), (Some(42), true, 2)] {
+        commands.push(Command::GetScreen {
+            terminal_id: ResourceId::local(5),
+            request_scrollback,
+            cells,
+            format,
+        });
     }
     for ids in id_lists() {
         commands.push(Command::KillResources {

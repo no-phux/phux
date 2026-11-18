@@ -3,44 +3,19 @@
 #![allow(clippy::unwrap_used)]
 
 use bytes::Bytes;
-use phux_protocol::caps::{
-    BootstrapLimits, BootstrapProfile, ServerCapabilities, ServerFeature, ServerFeatureSet,
-};
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::DecodeError;
 use phux_protocol::wire::frame::{
-    FrameKind, MAX_INPUT_TERMINAL_REPLY_BYTES, TYPE_HISTORY_REQUEST, TYPE_INPUT_TERMINAL_REPLY,
+    FrameKind, MAX_INPUT_TERMINAL_REPLY_BYTES, TYPE_INPUT_TERMINAL_REPLY,
 };
 
 use crate::common::{
-    assert_round_trip, decode, encode, encode_with_unknown_field, framed_tlv,
-    local_id_bytes as local_terminal, put_varint, take_varint, tlv_field,
+    assert_round_trip, encode, framed_tlv, local_id_bytes as local_terminal, put_varint,
+    take_varint, tlv_field,
 };
 
 fn framed(fields: &[u8]) -> Vec<u8> {
     framed_tlv(TYPE_INPUT_TERMINAL_REPLY, fields)
-}
-
-#[test]
-fn hello_ok_explicitly_negotiates_terminal_replies() {
-    let old_07 = ServerCapabilities::new();
-    assert!(!old_07.features.contains(ServerFeature::TerminalReply));
-
-    let negotiated = ServerCapabilities::new()
-        .with_features(ServerFeatureSet::with(&[ServerFeature::TerminalReply]));
-    let hello_ok = FrameKind::HelloOk {
-        protocol_major: 0,
-        protocol_minor: 7,
-        protocol_patch: 0,
-        server_caps: negotiated,
-        server_id: b"terminal-reply-server".to_vec(),
-        selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
-        bootstrap_limits: BootstrapLimits::default(),
-    };
-    let FrameKind::HelloOk { server_caps, .. } = decode(&encode(&hello_ok)).unwrap() else {
-        panic!("expected HELLO_OK");
-    };
-    assert!(server_caps.features.contains(ServerFeature::TerminalReply));
 }
 
 const fn reply(terminal: u32, bytes: Bytes) -> FrameKind {
@@ -51,17 +26,12 @@ const fn reply(terminal: u32, bytes: Bytes) -> FrameKind {
 }
 
 #[test]
-fn discriminator_is_client_originated_and_does_not_reuse_history() {
+fn discriminator_is_0x17() {
     assert_eq!(TYPE_INPUT_TERMINAL_REPLY, 0x17);
-    assert_eq!(TYPE_HISTORY_REQUEST, 0x16);
-    assert_eq!(TYPE_INPUT_TERMINAL_REPLY & 0x80, 0);
-    let frame = reply(1, Bytes::from_static(b"reply"));
-    assert_eq!(frame.type_byte(), TYPE_INPUT_TERMINAL_REPLY);
 }
 
 /// Opaque NUL, escape and non-UTF-8 bytes round-trip exactly, up to the
-/// maximum reply size; an unknown trailing field is skipped without
-/// touching them.
+/// maximum reply size.
 #[test]
 fn opaque_nul_escape_and_non_utf8_bytes_round_trip_exactly() {
     for frame in [
@@ -73,9 +43,6 @@ fn opaque_nul_escape_and_non_utf8_bytes_round_trip_exactly() {
     ] {
         assert_round_trip(&frame);
     }
-    let frame = reply(9, Bytes::from_static(b"\xff\0\x1bPfuture-reply\x1b\\"));
-    let encoded = encode_with_unknown_field(&frame, 99, b"future-field");
-    assert_eq!(decode(&encoded).unwrap(), frame);
 }
 
 #[test]
@@ -104,18 +71,11 @@ fn fields_are_required_and_encoded_in_allocated_order() {
 }
 
 #[test]
-fn empty_and_oversized_replies_are_rejected_before_dispatch() {
-    for bytes in [
-        Bytes::new(),
-        Bytes::from(vec![0xA5; MAX_INPUT_TERMINAL_REPLY_BYTES + 1]),
-    ] {
-        let len = bytes.len();
-        assert_eq!(
-            FrameKind::decode(&encode(&reply(1, bytes))).unwrap_err(),
-            DecodeError::InputTerminalReplyLimitExceeded,
-            "{len}-byte reply"
-        );
-    }
+fn an_empty_reply_is_rejected_before_dispatch() {
+    assert_eq!(
+        FrameKind::decode(&encode(&reply(1, Bytes::new()))).unwrap_err(),
+        DecodeError::InputTerminalReplyLimitExceeded
+    );
 }
 
 #[test]

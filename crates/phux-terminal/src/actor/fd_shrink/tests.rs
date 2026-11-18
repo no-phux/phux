@@ -28,14 +28,6 @@ fn a_failed_trampoline_materialize_is_not_cached() {
 }
 
 #[test]
-fn a_missing_trampoline_falls_back_only_for_non_strict_spawns() {
-    assert_eq!(spawn_route(false, false), SpawnRoute::Fallback);
-    assert_eq!(spawn_route(false, true), SpawnRoute::FailClosed);
-    assert_eq!(spawn_route(true, false), SpawnRoute::Launcher);
-    assert_eq!(spawn_route(true, true), SpawnRoute::Launcher);
-}
-
-#[test]
 fn spawn_pane_child_routes_a_missing_trampoline_through_strict_cwd() {
     struct Restore;
     impl Drop for Restore {

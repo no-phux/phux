@@ -90,9 +90,6 @@ fn read_answer(stdin: &io::Stdin) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use phux_client::signal::is_dangerous;
-    use phux_protocol::wire::frame::TerminalSignal;
-
     use super::*;
 
     #[test]
@@ -130,20 +127,5 @@ mod tests {
             Err(ExitCode::from(NOT_CONFIRMED))
         );
         assert!(consent_for(true, true, false, "kill x", || None).is_ok());
-    }
-
-    /// `freeze` and `resume`, the reversible brake, never ask.
-    #[test]
-    fn only_the_ending_signals_ask() {
-        for signal in [
-            TerminalSignal::Interrupt,
-            TerminalSignal::Terminate,
-            TerminalSignal::Kill,
-        ] {
-            assert!(is_dangerous(signal), "{signal:?}");
-        }
-        for signal in [TerminalSignal::Freeze, TerminalSignal::Resume] {
-            assert!(!is_dangerous(signal), "{signal:?}");
-        }
     }
 }

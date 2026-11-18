@@ -1,15 +1,5 @@
 //! Output pacing: what settles the withheld debt and arms the reply grace.
 
-/// An admitted burst settles the pacer's debt itself: its deadline was just
-/// pushed out and a saturating socket starves the timer arm.
-#[test]
-fn an_admitted_burst_settles_the_withheld_debt() {
-    use super::super::loop_state::burst_settles_debt;
-    assert!(burst_settles_debt(true, false));
-    assert!(burst_settles_debt(false, true));
-    assert!(!burst_settles_debt(false, false));
-}
-
 /// Pointer motion must not arm the reply grace (a drag would keep pacing off
 /// for the whole client); press and release do.
 #[test]

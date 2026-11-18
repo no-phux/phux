@@ -98,27 +98,6 @@ fn collapsed_and_invalid_ratios_keep_finite_cameras_and_literal_zero_areas() {
     assert_eq!(hit(&tree, 0.5, 0.0), Some(id(2)));
 }
 
-#[test]
-fn session_identity_change_resets_navigation_without_changing_the_tree() {
-    use crate::desk::phone::Phone;
-    use phux_protocol::ids::SessionKey;
-    let mut phone = Phone::default();
-    phone.reconcile(
-        Some(tree()),
-        Some((SessionKey::new([1; 16]).unwrap(), [8; 16])),
-    );
-    phone.navigation = Some((id(1), true));
-    phone.travel = [-80.0, 0.0];
-    phone.picker = true;
-    phone.reconcile(
-        Some(tree()),
-        Some((SessionKey::new([2; 16]).unwrap(), [8; 16])),
-    );
-    assert!(!phone.navigating());
-    assert!(!phone.picker);
-    assert_eq!(phone.travel, [0.0; 2]);
-}
-
 use fixture::*;
 use rune::TouchPhase::{Cancelled, Ended, Moved, Started};
 

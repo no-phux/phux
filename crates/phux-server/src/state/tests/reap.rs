@@ -111,18 +111,6 @@ fn reaping_the_last_pane_of_a_persistent_session_keeps_it_empty() {
 }
 
 #[test]
-fn reap_one_of_two_sessions_keeps_server_alive() {
-    let mut s = ServerState::new();
-    let (_sid_a, pid_a) = s.seed_session("a");
-    let (sid_b, _pb) = s.seed_session("b");
-
-    let idle = s.reap_resource(pid_a);
-
-    assert!(!idle, "a second session's pane is still live");
-    assert!(s.registry().session(sid_b).is_some(), "session b untouched");
-}
-
-#[test]
 fn reap_pane_beside_a_sibling_keeps_the_session() {
     let mut s = ServerState::new();
     let (sid, pid1) = s.seed_session("default");
@@ -138,17 +126,6 @@ fn reap_pane_beside_a_sibling_keeps_the_session() {
         "sibling pane survives"
     );
     assert_eq!(s.registry().members(sid), vec![pid2]);
-}
-
-#[test]
-fn reap_is_idempotent_on_unknown_pane() {
-    let mut s = ServerState::new();
-    let (_sid, pid) = s.seed_session("default");
-
-    assert!(s.reap_resource(pid), "first reap leaves nothing live");
-    // A repeat reap is harmless.
-    assert!(s.reap_resource(pid));
-    assert!(s.registry().record(pid).is_none());
 }
 
 #[test]

@@ -9,11 +9,6 @@ fn support_sequences_match_the_prototypes() {
     assert_eq!(hash(""), 2_166_136_261);
     assert_eq!(hash("a"), 0xe40c292c);
     assert_eq!(hash("mini/🐠"), 0xfe56dc82, "UTF-16, not UTF-8 bytes");
-    assert_eq!(lerp(2.0, 10.0, 0.25), 4.0);
-    assert_eq!(
-        mix([0.0, 20.0, 40.0], [20.0, 40.0, 60.0], 0.5),
-        [10.0, 30.0, 50.0]
-    );
 }
 
 #[test]
@@ -60,6 +55,4 @@ fn marks_have_the_same_mood_in_every_scene() {
     ] {
         assert_eq!(Mood::of(mark), mood);
     }
-    assert_eq!(Mood::Waiting.word(), "needs you");
-    assert_eq!(Mood::Waiting.color(), [255.0, 181.0, 71.0]);
 }

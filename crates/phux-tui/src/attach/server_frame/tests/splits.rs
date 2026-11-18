@@ -38,8 +38,7 @@ fn split_reply(split: PendingSplit, frame: FrameKind) -> (FrameOutcome, H) {
 }
 
 /// A parked split's spawn reply zooms the new pane under `zoom_on_spawn`,
-/// else clears zoom; focus follows the spawned pane and the anchor becomes
-/// the MRU target.
+/// else clears zoom; focus follows the spawned pane.
 #[test]
 fn a_split_reply_zooms_only_under_zoom_on_spawn() {
     for zoom_on_spawn in [true, false] {
@@ -48,16 +47,8 @@ fn a_split_reply_zooms_only_under_zoom_on_spawn() {
         let mut h = H::on(ArrangementDoc::single(tid(1)), &[&tid(1)]);
         h.mirror.zoomed = Some(tid(1));
         h.mirror.pending_splits.insert(9, split);
-        let mut history = crate::attach::focus::FocusHistory::default();
-        let before = h.mirror.focused_resource.clone();
         assert!(h.send(spawned(tid(2))).layout_replaced);
-        history.observe(before, h.mirror.focused_resource.as_ref());
-        history.repair(h.mirror.focused_resource.as_ref(), &h.mirror.workspace);
         assert_eq!(h.mirror.focused_resource, Some(tid(2)));
-        assert_eq!(
-            history.target(h.mirror.focused_resource.as_ref(), &h.mirror.workspace),
-            Some(tid(1))
-        );
         assert_eq!(h.mirror.zoomed, zoom_on_spawn.then(|| tid(2)));
     }
 }

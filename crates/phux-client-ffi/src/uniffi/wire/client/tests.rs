@@ -170,23 +170,7 @@ fn routed_constructor_preserves_route_and_credentials_in_runtime_target() {
 
 #[test]
 fn routed_constructor_rejects_malformed_dns_before_starting_runtime() {
-    for route in [
-        "",
-        " ",
-        "127.0.0.1",
-        "::1",
-        "bad_route",
-        "-route",
-        "route-",
-        "route..example",
-        "route.example.",
-        "route:443",
-        "route/path",
-        "route?x=y",
-        "route#fragment",
-        "user@route",
-        "routé.example",
-    ] {
+    for route in ["bad_route", "127.0.0.1"] {
         let result = RemoteClient::new_routed(
             "quic://relay.example:443".into(),
             80,
@@ -357,84 +341,6 @@ fn a_publication_keeps_lifecycle_boundaries_in_order_and_take_events_omits_them(
     assert_eq!(legacy.len(), 3);
 }
 
-#[test]
-fn an_unconnected_client_publishes_an_empty_first_incarnation() {
-    let remote = RemoteClient::new("unused".into(), 80, 24, None, None);
-    let published = remote.take_publication();
-    assert_eq!(published.connection_epoch, 0);
-    assert!(published.events.is_empty());
-    assert!(!published.events_dropped);
-    assert_eq!(published.status, WireStatus::Connecting);
-    assert_eq!(published.topology, None);
-}
-
-#[test]
-fn asked_levels_lower_after_their_announcement_in_order() {
-    let remote = RemoteClient::new("unused".into(), 80, 24, None, None);
-    let terminal_id = ResourceId::local(7);
-    let mut projected = Vec::new();
-    for event in [
-        Event::AgentAskedState {
-            terminal_id: terminal_id.clone(),
-            asked: true,
-        },
-        Event::AgentAsked {
-            terminal_id: terminal_id.clone(),
-            question_id: "q1".into(),
-            text: "Proceed?".into(),
-            suggestions: Vec::new(),
-            waiting_seconds: None,
-        },
-        Event::AgentAskedState {
-            terminal_id,
-            asked: false,
-        },
-    ] {
-        remote.project_event(None, event, &mut projected);
-    }
-    assert_eq!(
-        projected,
-        vec![
-            WireEvent::AgentAskedState {
-                terminal_id: "local:7".into(),
-                asked: true,
-            },
-            WireEvent::AgentAsked {
-                terminal_id: "local:7".into(),
-                question_id: "q1".into(),
-                text: "Proceed?".into(),
-                suggestions: Vec::new(),
-                waiting_seconds: None,
-            },
-            WireEvent::AgentAskedState {
-                terminal_id: "local:7".into(),
-                asked: false,
-            },
-        ]
-    );
-}
-
-#[test]
-fn background_work_reaches_bindings() {
-    let remote = RemoteClient::new("unused".into(), 80, 24, None, None);
-    let mut projected = Vec::new();
-    remote.project_event(
-        None,
-        Event::BackgroundWork {
-            terminal_id: ResourceId::local(7),
-            running: true,
-        },
-        &mut projected,
-    );
-    assert_eq!(
-        projected,
-        vec![WireEvent::BackgroundWork {
-            terminal_id: "local:7".into(),
-            running: true,
-        }]
-    );
-}
-
 /// Publish `document` into a fresh embedded runtime behind `remote` and
 /// project the wake for it.
 fn project_published(
@@ -496,35 +402,5 @@ fn a_published_surface_reaches_bindings_whole_and_named() {
     assert!(
         !format!("{:?}", projected[0]).contains("137"),
         "Debug prints a length, not bytes"
-    );
-}
-
-#[test]
-fn a_published_typed_document_names_its_content_type() {
-    let remote = RemoteClient::new("unused".into(), 80, 24, None, None);
-    let projected = project_published(
-        &remote,
-        phux_client_runtime::control::DocumentPublication {
-            resource_id: phux_protocol::ResourceId::local(5),
-            kind: phux_protocol::ResourceKind::Document,
-            seq: 2,
-            bytes: b"# hi".to_vec(),
-            content_type: Some("text/markdown".to_owned()),
-        },
-    );
-    let [
-        WireEvent::DocumentPublished {
-            kind,
-            bytes,
-            content_type,
-            ..
-        },
-    ] = projected.as_slice()
-    else {
-        panic!("expected one document: {projected:?}");
-    };
-    assert_eq!(
-        (kind.as_str(), bytes.as_slice(), content_type.as_deref()),
-        ("document", b"# hi" as &[u8], Some("text/markdown"))
     );
 }

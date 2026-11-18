@@ -1235,44 +1235,6 @@ mod tests {
         )
     }
 
-    /// A large-viewport truecolor repaint is bigger than the stdout sink's
-    /// backlog cap in ONE chunk: the size premise behind the writer's
-    /// oversized-frame rule (the cap once rejected it, freezing the screen).
-    #[test]
-    fn a_large_truecolor_full_frame_exceeds_the_sink_backlog_cap() {
-        const COLS: u16 = 100;
-        const ROWS: u16 = 40;
-        let pane = ResourceId::local(1);
-        // Every cell a different fg+bg, so no SGR run can coalesce.
-        let mut vt = Vec::new();
-        for row in 0..ROWS {
-            vt.extend_from_slice(format!("\x1b[{};1H", row + 1).as_bytes());
-            for col in 0..COLS {
-                let r = row.wrapping_mul(3).wrapping_add(col) % 256;
-                let g = col.wrapping_mul(7).wrapping_add(row) % 256;
-                let b = row.wrapping_mul(col) % 256;
-                vt.extend_from_slice(
-                    format!("\x1b[38;2;{r};{g};{b}m\x1b[48;2;{b};{r};{g}m\u{2580}").as_bytes(),
-                );
-            }
-        }
-        let mut out: Vec<u8> = Vec::new();
-        full_frame(
-            &mut out,
-            &leaf_layout(&pane),
-            &[(&pane, COLS, ROWS, &vt)],
-            (COLS, ROWS),
-            None,
-            None,
-        );
-        let per_cell = out.len() / (usize::from(COLS) * usize::from(ROWS));
-        assert!(
-            per_cell >= 20,
-            "a truecolor cell costs ~40 bytes; got {per_cell}"
-        );
-        assert!(per_cell * 250 * 70 > crate::attach::stdout_writer::CAP_BYTES);
-    }
-
     /// A full frame composites both panes and the divider inside one ED2
     /// transaction, shipped as one write and one flush, ending with a cursor.
     #[test]

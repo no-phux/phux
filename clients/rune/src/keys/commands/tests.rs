@@ -175,14 +175,6 @@ fn option_semicolon_inserts_a_path_though_it_types_a_character() {
 }
 
 #[test]
-fn full_screen_is_a_macos_chord() {
-    let row = command(Shortcut::ToggleFullScreen).expect("a row");
-    assert_eq!(row.mac[0].mac_label(), "⌃⌘F");
-    assert_eq!(row.mac[0].accelerator(), "cmd+ctrl+f");
-    assert!(row.linux.is_empty());
-}
-
-#[test]
 fn no_chord_means_two_things() {
     let all: Vec<_> = COMMANDS.iter().flat_map(Command::chords).collect();
     for (at, chord) in all.iter().enumerate() {

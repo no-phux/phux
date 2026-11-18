@@ -41,54 +41,15 @@ fn rec_is_scoped_to_the_two_attaching_paths() {
     assert_eq!(session.as_deref(), Some("work"));
     assert_eq!(rec.rec.as_deref(), Some(std::path::Path::new("demo.cast")));
 
-    let cli = parse(
-        "phux rec --composited work --size 1920x1080 -o demo.cast --speed-marked 2 --marker-labels",
-    )
-    .expect("composited rec parses");
-    let Some(Command::Rec(crate::commands::RecArgs {
-        action,
-        target,
-        out,
-        composited,
-        size,
-        speed_marked,
-        marker_labels,
-        ..
-    })) = cli.command
-    else {
-        panic!("expected Rec");
-    };
-    assert!(action.is_none());
-    assert_eq!(target.as_deref(), Some("work"));
-    assert_eq!(out.as_deref(), Some(std::path::Path::new("demo.cast")));
-    assert!(composited);
-    assert_eq!(size.as_deref(), Some("1920x1080"));
-    assert_eq!(speed_marked, Some(2.0));
-    assert!(marker_labels);
-
-    let cli = crate::parse_cli(["phux", "rec", "mark", "intro", "--json"])
-        .expect("`phux rec mark` parses without --out");
-    let Some(Command::Rec(crate::commands::RecArgs {
-        action, out, json, ..
-    })) = cli.command
-    else {
-        panic!("expected Rec");
-    };
-    assert!(out.is_none());
-    let Some(crate::commands::rec::RecAction::Mark {
-        label,
-        json: mark_json,
-    }) = action
-    else {
-        panic!("expected mark");
-    };
-    assert_eq!(label, "intro");
-    assert!(mark_json.json);
-    assert!(!json.json);
-
-    // --size requires --composited, which conflicts with --from; --rec is
-    // only on the two attaching paths, and --rec-format needs a destination.
+    // --size requires --composited, which conflicts with --from; `rec mark`
+    // needs no --out; --rec is only on the two attaching paths, and
+    // --rec-format needs a destination.
     assert_parses(&[
+        (
+            "phux rec --composited work --size 1920x1080 -o demo.cast",
+            true,
+        ),
+        ("phux rec mark intro --json", true),
         ("phux rec --size 1920x1080 -o demo.cast", false),
         ("phux rec --composited --from demo.cast -o out.gif", false),
         ("phux ls --rec demo.gif", false),

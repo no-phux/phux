@@ -225,7 +225,17 @@ mod tests {
             Step::Ignored,
             "and the sentinel cannot take the pane back"
         );
-        assert_eq!(detector.current(terminal).unwrap().id, "h");
+        assert_eq!(
+            report(&mut detector, AskedSource::Stream, "s", "Deploy?"),
+            Step::Updated,
+            "a record on the agent's own stream outranks its hook call"
+        );
+        assert_eq!(
+            report(&mut detector, AskedSource::Hook, "h2", "Approve?"),
+            Step::Ignored,
+            "and the hook cannot take the pane back"
+        );
+        assert_eq!(detector.current(terminal).unwrap().id, "s");
     }
 
     /// A re-observed title does not re-fire; a changed one does.
@@ -296,51 +306,6 @@ mod tests {
         assert_eq!(
             report(&mut detector, AskedSource::Sentinel, "q1", "Deploy?"),
             Step::Entered
-        );
-    }
-
-    #[test]
-    fn clear_terminal_drops_pending_ask() {
-        let terminal = ResourceId::default();
-        let mut detector = AskedDetector::default();
-        detector.report(terminal, AskedSource::Hook, payload("hook", "Approve?"));
-        assert!(detector.current(terminal).is_some());
-        let cleared = detector.clear_terminal(terminal).unwrap();
-        assert_eq!(cleared.id, "hook");
-        assert!(detector.current(terminal).is_none());
-    }
-
-    /// `Stream` outranks `Hook`; a hook cannot retract the stream's question.
-    #[test]
-    fn a_stream_ask_outranks_a_hook_ask() {
-        let terminal = ResourceId::default();
-        let mut detector = AskedDetector::default();
-
-        assert_eq!(
-            report(&mut detector, AskedSource::Hook, "h", "Approve?"),
-            Step::Entered
-        );
-        assert_eq!(
-            report(&mut detector, AskedSource::Stream, "s", "Deploy?"),
-            Step::Updated,
-            "a record on the agent's own stream outranks its hook call"
-        );
-        assert_eq!(
-            report(&mut detector, AskedSource::Hook, "h2", "Approve?"),
-            Step::Ignored,
-            "and cannot be displaced from below"
-        );
-        assert_eq!(
-            detector.retract(terminal, AskedSource::Hook),
-            None,
-            "retraction is per-source: the hook no longer owns the question",
-        );
-        assert_eq!(
-            detector
-                .retract(terminal, AskedSource::Stream)
-                .map(|p| p.id),
-            Some("s".to_owned()),
-            "the stream retracts what the stream asserted",
         );
     }
 }

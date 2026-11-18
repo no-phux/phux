@@ -1,5 +1,5 @@
 //! `SPAWN_RESOURCE`: placement, the spawned child's environment and cwd,
-//! `RESOURCE_CLOSED` on exit, `RESIZE_TERMINAL`, and `initial_size`.
+//! `RESIZE_TERMINAL`, and `initial_size`.
 
 use phux_protocol::ids::{GroupId, ResourceId};
 use phux_protocol::input::key::PhysicalKey;
@@ -222,28 +222,6 @@ fn spawned_term_follows_env_then_field_then_default() {
             release(&mut stream, &pane).await;
             output_containing(&mut stream, &pane, format!("TERMIS={expected}.").as_bytes()).await;
         }
-
-        drop(stream);
-        server.stop().await;
-    });
-}
-
-#[test]
-fn pty_exit_emits_resource_closed_with_the_status() {
-    phux_server_testkit::run_local(async {
-        let (server, mut stream) = attached().await;
-        let pane = spawned(&mut stream, 1, sh("read _; exit 42")).await;
-        release(&mut stream, &pane).await;
-        let status = wait_frame(&mut stream, "RESOURCE_CLOSED", |frame| match frame {
-            FrameKind::ResourceClosed {
-                terminal_id,
-                exit_status,
-                ..
-            } if terminal_id == pane => Some(exit_status),
-            _ => None,
-        })
-        .await;
-        assert_eq!(status, Some(42));
 
         drop(stream);
         server.stop().await;

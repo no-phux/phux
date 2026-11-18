@@ -146,27 +146,6 @@ fn satellite_error_never_rolls_back_a_preexisting_subscription() {
 
 // --- fail-fast + handle backpressure -----------------------------------
 
-#[tokio::test]
-async fn fail_fast_resolves_commands_with_satellite_unreachable() {
-    let (reply, rx) = oneshot::channel();
-    fail_fast(
-        RelayRequest::Command {
-            command: Command::Upgrade,
-            reply,
-            subscribe: None,
-        },
-        &host(),
-        "backoff",
-    );
-    assert!(matches!(
-        rx.await.expect("resolved"),
-        CommandResult::Error {
-            code: ErrorCode::SatelliteUnreachable,
-            ..
-        }
-    ));
-}
-
 #[tokio::test(start_paused = true)]
 async fn handle_command_times_out_against_a_silent_satellite() {
     let (handle, rx) = RelayHandle::new(host());

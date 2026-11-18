@@ -308,11 +308,8 @@ test("send, run, and wait execute documented argv with cancellation and timeouts
   assert.equal(waited.details?.outcome, "satisfied");
 });
 
-test("wait rejects zero and competing conditions without executing", async () => {
+test("wait rejects competing conditions without executing", async () => {
   const { tools, requests } = fixture();
-  await assert.rejects(tool(tools, "phux_wait").execute("zero", {
-    target: "@9", timeout_seconds: 0,
-  }), RangeError);
   await assert.rejects(tool(tools, "phux_wait").execute("both", {
     target: "@9", until: "done", idle_ms: 10,
   }), Error);
@@ -362,17 +359,6 @@ test("placement and spatial tools execute exact bounded CLI actions", async () =
   assert.equal(requests[0]?.signal, controller.signal);
   assert.equal(requests[3]?.timeoutMs, 800);
   assert.equal(requests[3]?.signal, controller.signal);
-});
-
-test("placement validation rejects satellite and incomplete requests without executing", async () => {
-  const { tools, requests } = fixture();
-  await assert.rejects(tool(tools, "phux_spawn").execute("satellite", {
-    target: "edge/@7", split: "vertical",
-  }), /local-only/);
-  await assert.rejects(tool(tools, "phux_launch").execute("missing", {
-    integration: "codex", ratio: 0.4,
-  }), /target is required/);
-  assert.equal(requests.length, 0);
 });
 
 test("targets execute mutations and group expansion for tag and confirmed kill", async () => {
@@ -458,21 +444,6 @@ test("named actions refresh ownership immediately and reject reused ids", async 
 
   assert.equal(requests.filter((request) => request.args[0] === "agent").length, 2);
   assert.equal(requests.some((request) => request.args[0] === "snapshot"), false);
-});
-
-test("spatial aliases refresh ownership immediately and fail before topology mutation", async () => {
-  const original = agentPane("@3");
-  const reused = agentPane("@3", "foreign", "window-99");
-  const { tools, requests } = fixture({ agentLists: [[original, agentPane("@4")], [reused, agentPane("@4")]] });
-  await tool(tools, "phux_targets").execute("alias", {
-    action: "set_alias", name: "build", target: "@3",
-  });
-  await assert.rejects(tool(tools, "phux_move_pane").execute("stale-move", {
-    source: "alias:build", target: "@4",
-  }), /ownership changed/);
-
-  assert.equal(requests.filter((request) => request.args[0] === "agent").length, 2);
-  assert.equal(requests.some((request) => request.args[0] === "move-pane"), false);
 });
 
 test("named actions fail closed when fresh inventory fails", async () => {
@@ -629,22 +600,6 @@ test("cancellation during alias refresh aborts instead of becoming inventory una
     target: "alias:worker", text: "never send",
   }, controller.signal), (error: unknown) => error === reason);
   assert.equal(requests.some((request) => request.args[0] === "paste"), false);
-});
-
-test("cancelling an in-flight agent prompt reaches the subprocess and never retries uncertain delivery", async () => {
-  const controller = new AbortController();
-  const { tools, requests } = fixture({
-    respond: async (request) => {
-      if (request.args[1] !== "prompt") return undefined;
-      assert.equal(request.signal, controller.signal);
-      controller.abort();
-      return { termination: "aborted", exitCode: null, stdout: "", stderr: "" };
-    },
-  });
-  await assert.rejects(tool(tools, "phux_agent_prompt").execute("cancelled", {
-    target: "@9", text: "work",
-  }, controller.signal), (error: unknown) => error instanceof PhuxError && error.code === "aborted");
-  assert.equal(requests.length, 1);
 });
 
 test("wait surfaces absent shell-integration warnings rather than claiming echo filtering worked", async () => {

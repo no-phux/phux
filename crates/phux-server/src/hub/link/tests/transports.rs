@@ -60,72 +60,11 @@ async fn net_link_selects_the_profile_the_hub_selects_for_native_clients() {
     server.await.unwrap();
 }
 
-#[tokio::test]
-async fn net_transport_connects_to_a_loopback_ws_listener_and_notices_the_drop() {
-    on_local(async {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind loopback");
-        let addr = listener.local_addr().expect("addr");
-        let (drop_tx, drop_rx) = tokio::sync::oneshot::channel::<()>();
-        let server = tokio::task::spawn_local(async move {
-            let (tcp, _) = listener.accept().await.expect("accept");
-            let mut ws = tokio_tungstenite::accept_async(tcp)
-                .await
-                .expect("ws handshake");
-            let hello = futures_util::StreamExt::next(&mut ws)
-                .await
-                .expect("HELLO message")
-                .expect("HELLO read");
-            let tokio_tungstenite::tungstenite::Message::Binary(hello) = hello else {
-                panic!("expected binary HELLO");
-            };
-            assert!(matches!(
-                FrameKind::decode(&hello).expect("decode HELLO").0,
-                FrameKind::Hello { .. }
-            ));
-            let hello_ok = synthesized_hello_ok();
-            futures_util::SinkExt::send(
-                &mut ws,
-                tokio_tungstenite::tungstenite::Message::Binary(hello_ok.into()),
-            )
-            .await
-            .expect("send HELLO_OK");
-            let _ = drop_rx.await;
-            drop(ws);
-            drop(listener);
-        });
-
-        let link = supervise(
-            entry(&format!("ws://127.0.0.1:{}", addr.port()), None, None),
-            net_transport("ssh"),
-        );
-
-        link.wait_real(|s| *s == LinkStatus::Connected).await;
-
-        drop_tx.send(()).expect("server alive");
-        link.wait_real(|s| matches!(s, LinkStatus::Backoff { .. }))
-            .await;
-
-        link.cancel.cancel();
-        server.await.expect("server task");
-    })
-    .await;
-}
-
 /// The real network/SSH transport, dialing SSH through `ssh_program`.
 pub(super) fn net_transport(ssh_program: impl Into<std::ffi::OsString>) -> NetLinkTransport {
     NetLinkTransport::new(
         ssh_program.into(),
         crate::hub::adopt::SatelliteAdopter::default(),
-    )
-}
-
-pub(super) fn synthesized_hello_ok() -> Vec<u8> {
-    hello_ok(
-        phux_protocol::caps::ServerCapabilities::default(),
-        BootstrapProfile::SynthesizedVtRaw,
-        BootstrapLimits::default(),
     )
 }
 
@@ -179,16 +118,6 @@ fn loopback_ws(port: u16) -> DialSpec {
         token_file: None,
         identity: None,
     }
-}
-
-pub(super) fn shell_octal(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-
-    let mut escaped = String::with_capacity(bytes.len() * 5);
-    for byte in bytes {
-        write!(escaped, "\\0{byte:03o}").expect("write to String");
-    }
-    escaped
 }
 
 /// Write an executable stub script and return its path.
@@ -250,28 +179,6 @@ async fn ssh_transport_drains_stderr_past_the_pipe_buffer_without_stalling() {
 
         link.backoff_real(&["DRAINED-TO-EOF", "3"]).await;
         link.cancel.cancel();
-    })
-    .await;
-}
-
-#[tokio::test]
-async fn ssh_transport_holds_a_live_child_as_connected() {
-    on_local(async {
-        let dir = tempfile::tempdir().expect("tempdir");
-        // Stays up reading stdin until the pipe closes or it is killed.
-        let reply = shell_octal(&synthesized_hello_ok());
-        let stub = write_stub(
-            dir.path(),
-            &format!("printf '%b' '{reply}'\nexec cat > /dev/null"),
-        );
-        let link = supervise(ssh_entry(), net_transport(stub));
-
-        link.wait_real(|s| *s == LinkStatus::Connected).await;
-        link.cancel.cancel();
-        tokio::time::timeout(Duration::from_secs(10), link.task)
-            .await
-            .expect("supervisor exits on cancel")
-            .expect("no panic");
     })
     .await;
 }

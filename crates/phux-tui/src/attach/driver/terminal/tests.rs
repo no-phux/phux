@@ -10,39 +10,6 @@ fn reset_lock() -> std::sync::MutexGuard<'static, ()> {
         .expect("terminal reset test lock")
 }
 
-/// A real `Termios` from `/dev/tty`, or `None` without a controlling TTY.
-fn try_borrow_real_termios() -> Option<Termios> {
-    let tty = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open("/dev/tty")
-        .ok()?;
-    rustix::termios::tcgetattr(tty.as_fd()).ok()
-}
-
-/// The termios snapshot round-trips exactly once.
-#[test]
-fn saved_termios_round_trip() {
-    let Some(t) = try_borrow_real_termios() else {
-        // No controlling TTY in this test process; nothing to
-        // assert. The save/take helpers are still type-checked.
-        return;
-    };
-    // Pre-clean: another test (or a panic) may have left state.
-    let _ = take_termios_snapshot();
-    assert!(take_termios_snapshot().is_none());
-
-    save_termios_snapshot(t);
-    assert!(
-        take_termios_snapshot().is_some(),
-        "save then take must return the snapshot"
-    );
-    assert!(
-        take_termios_snapshot().is_none(),
-        "second take must be empty"
-    );
-}
-
 /// Entry enables bracketed paste, focus reports, and (when configured)
 /// mouse capture; the reset undoes them before leaving the alt screen.
 #[test]

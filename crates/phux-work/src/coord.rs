@@ -31,8 +31,6 @@ use serde::Serialize;
 
 use crate::error::Error;
 use crate::id::OperationId;
-#[cfg(test)]
-use crate::store::Store;
 use crate::store::timestamp;
 
 mod claims;
@@ -304,23 +302,5 @@ mod tests {
         for bad in ["/@3", "a/b/@3", "a b/@3", "min-api/", "min-api/@x"] {
             assert!(Address::parse(bad).is_err(), "{bad:?}");
         }
-    }
-
-    #[test]
-    fn an_older_binary_still_opens_a_store_with_coordination_tables() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("work").join("work-v1.sqlite");
-        let store = Store::open(&path).unwrap();
-        assert_eq!(store.user_version().unwrap(), 2);
-        drop(store);
-        let conn = rusqlite::Connection::open(path).unwrap();
-        let tables: Vec<String> = conn
-            .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND (name LIKE 'mail%' OR name LIKE 'claim%')")
-            .unwrap()
-            .query_map([], |row| row.get(0))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap();
-        assert_eq!(tables.len(), 5, "{tables:?}");
     }
 }

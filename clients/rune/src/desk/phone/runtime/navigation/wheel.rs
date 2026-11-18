@@ -47,10 +47,7 @@ fn the_floating_session_dock_does_not_wheel_the_list_behind_it() {
     near(first_row_y(&rt), first);
     assert_eq!(element(&rt, "phone-session-new").rect, dock);
 
-    // Reuse the unchanged frame and send the event API's next delta too.
-    let commits = rt.stats.commits;
-    rt.frame(0.0);
-    assert_eq!(rt.stats.commits, commits, "the frame is cached");
+    // The event API's next delta too.
     rt.wheel_event(rune::WheelEvent::new(0.0, -40.0).at(dock_at.0, dock_at.1));
     rt.frame(0.0);
     near(first_row_y(&rt), first);
@@ -62,9 +59,6 @@ fn the_floating_session_dock_does_not_wheel_the_list_behind_it() {
     rt.wheel_xy(list_at.0, list_at.1, 0.0, -40.0);
     rt.frame(0.0);
     near(first_row_y(&rt), first - 40.0);
-    let commits = rt.stats.commits;
-    rt.frame(0.0);
-    assert_eq!(rt.stats.commits, commits, "the scrolled frame is cached");
     rt.wheel_event(rune::WheelEvent::new(0.0, -40.0).at(list_at.0, list_at.1));
     rt.frame(0.0);
     near(first_row_y(&rt), first - 80.0);

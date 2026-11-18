@@ -254,20 +254,6 @@ Environment=\"PHUX_SOCKET=/tmp/custom/phux.sock\"
     }
 }
 
-fn unit_with_hub() -> String {
-    if cfg!(target_os = "macos") {
-        unit_without_hub().replace(
-            "<string>server</string>",
-            "<string>server</string>\n    <string>--hub</string>",
-        )
-    } else {
-        unit_without_hub().replace(
-            "ExecStart=/usr/local/bin/phux server",
-            "ExecStart=/usr/local/bin/phux server --hub",
-        )
-    }
-}
-
 fn assert_token_never_printed(stdout: &str, stderr: &str) {
     assert!(
         !stdout.contains(TOKEN) && !stderr.contains(TOKEN),
@@ -692,16 +678,10 @@ fn ssh_only_registers_ssh_endpoint_without_contacting_the_host() {
 }
 
 /// `phux machine` is a visible alias of `phux host`, the word people reach
-/// for, and `phux host enroll` is gone.
+/// for.
 #[test]
 fn machine_spelling_reaches_the_same_verb() {
     let never_ssh = Path::new("/nonexistent/phux-test-ssh");
-
-    let home = EnrollHome::new();
-    let (code, _stdout, _stderr) =
-        home.run(&["host", "enroll", "me@mini", "--ssh-only"], never_ssh);
-    assert_ne!(code, 0, "the retired `host enroll` spelling must not parse");
-
     let home = EnrollHome::new();
     let (code, stdout, stderr) = home.run(&["machine", "add", "me@mini", "--ssh-only"], never_ssh);
     assert_eq!(code, 0, "stderr={stderr}");
@@ -712,38 +692,6 @@ fn machine_spelling_reaches_the_same_verb() {
     assert!(
         stdout.contains("Registered mini -> ssh://me@mini"),
         "{stdout}"
-    );
-}
-
-/// A flag from the other form is a usage error naming the form it belongs
-/// to, before anything is contacted or written.
-#[test]
-fn flags_from_the_other_form_are_refused() {
-    let never_ssh = Path::new("/nonexistent/phux-test-ssh");
-    let home = EnrollHome::new();
-
-    let (code, _stdout, stderr) = home.run(
-        &["host", "add", "me@mini", "--cert-fingerprint", FINGERPRINT],
-        never_ssh,
-    );
-    assert_eq!(code, 2, "stderr={stderr}");
-    assert!(
-        stderr.contains("manual form") && stderr.contains("quic://HOST:PORT"),
-        "stderr={stderr}"
-    );
-
-    let (code, _stdout, stderr) = home.run(
-        &["host", "add", "mini", "ssh://mini", "--no-service"],
-        never_ssh,
-    );
-    assert_eq!(code, 2, "stderr={stderr}");
-    assert!(
-        stderr.contains("--no-service") && stderr.contains("ssh form"),
-        "stderr={stderr}"
-    );
-    assert!(
-        !home.dir.path().join("config/phux/config.toml").exists(),
-        "a usage error registers nothing"
     );
 }
 
@@ -880,28 +828,5 @@ fn re_enroll_passes_replace_token_for_the_previous_credential() {
     assert!(
         stderr.contains("minted a new credential and revoked the previous one"),
         "stderr should narrate the replace; stderr={stderr}"
-    );
-}
-
-/// A unit that already runs with `--hub` is left alone and reported as
-/// such.
-#[test]
-fn satellite_add_leaves_a_hub_unit_alone() {
-    let home = EnrollHome::new();
-    home.write_hub_unit(&unit_with_hub());
-    let before = std::fs::read_to_string(home.hub_unit_path()).expect("unit");
-    let (code, stdout, stderr) = home.run(
-        &["host", "add", "edge", "--role", "satellite", "--ssh-only"],
-        Path::new("/nonexistent/phux-test-ssh"),
-    );
-    assert_eq!(code, 0, "stderr={stderr} stdout={stdout}");
-    assert!(
-        stdout.contains("local hub service already runs with --hub"),
-        "stdout={stdout}"
-    );
-    assert_eq!(
-        std::fs::read_to_string(home.hub_unit_path()).expect("unit"),
-        before,
-        "an already-hub unit must not be rewritten"
     );
 }

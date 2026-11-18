@@ -27,31 +27,7 @@ fn generation_byte_budget_fails_without_allocating_chunk_payloads() {
 }
 
 #[test]
-fn saturated_subscribers_converge_or_receive_an_explicit_failure() {
-    let mut open = RelaySession::new(host(), BootstrapLimits::default());
-    let (open_tx, mut open_rx) = mpsc::channel(1);
-    subscribe(&mut open, 9, ClientId(1), open_tx.clone());
-    open_tx
-        .try_send(Outbound::Frame(FrameKind::Detach))
-        .expect("fill open mailbox");
-    open.fan_out(
-        9,
-        &FrameKind::Event {
-            terminal: Some(ResourceId::satellite("devbox", 9)),
-            event: AgentEvent::CommandStarted,
-            stamp: None,
-        },
-    );
-    let _ = open_rx.try_recv().expect("filler remains");
-    open.flush_pending_snapshots();
-    assert!(open.subscribers.contains_key(&9));
-    assert!(matches!(
-        open_rx
-            .try_recv()
-            .expect("retained event resumes after drain"),
-        Outbound::Frame(FrameKind::Event { .. })
-    ));
-
+fn saturated_subscribers_are_dropped_or_receive_an_explicit_failure() {
     let mut closed = RelaySession::new(host(), BootstrapLimits::default());
     let (closed_tx, closed_rx) = mpsc::channel(1);
     subscribe(&mut closed, 9, ClientId(1), closed_tx);

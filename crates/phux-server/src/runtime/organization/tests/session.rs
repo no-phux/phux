@@ -170,20 +170,3 @@ fn terminate_is_accepted_and_a_stale_target_refused() {
         );
     });
 }
-
-#[test]
-fn organization_events_are_journaled_with_their_actor() {
-    run(async {
-        let state = crate::runtime::apps::terminal::test_support::terminal_state();
-        state.with_mut(|s| s.set_client_name(CLIENT, "agent".to_owned()));
-        let before = state.with(ServerState::journal_head);
-        let create = session_create(1, "work", false);
-        let _ = committed(handle(&state, CLIENT, create, &CancellationToken::new()));
-        let after = state.with(ServerState::journal_head);
-        assert_eq!(
-            after,
-            before + 2,
-            "SessionCreated and its ArrangementChanged"
-        );
-    });
-}

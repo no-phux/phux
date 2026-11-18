@@ -23,7 +23,6 @@ use super::test_support::{
 use crate::auth::ConnectionIdentity;
 use crate::policy::testing::{FnPolicy, parse_scopes, scoped_grant};
 use crate::policy::{PolicyEngine, ScopedPolicy};
-use crate::runtime::apps::InputLane;
 use crate::state::{ClientId, SharedState};
 use crate::workload::{ReloadingWorkloadRegistry, WorkloadRegistry};
 
@@ -120,28 +119,24 @@ impl Fixture {
     }
 
     /// Start a connection stamped with `identity`, without its HELLO.
-    fn connect(&self, identity: ConnectionIdentity, lane: Option<InputLane>) -> Connection {
+    fn connect(&self, identity: ConnectionIdentity) -> Connection {
         let client = self.state.with_mut(|s| s.clients_mut().new_client_id());
         let transport = identity.peer.transport;
         self.state
             .with_mut(|s| s.clients_mut().set_connection_identity(client, identity));
-        spawn_connection(&self.state, client, transport, &self.root, lane, false)
+        spawn_connection(&self.state, client, transport, &self.root, None, false)
     }
 
     /// A workload connection past its HELLO.
     async fn workload(&self) -> Connection {
-        self.workload_with_lane(None).await
-    }
-
-    async fn workload_with_lane(&self, lane: Option<InputLane>) -> Connection {
-        let connection = self.connect(workload_identity(&self.credential_id, &["*@global"]), lane);
+        let connection = self.connect(workload_identity(&self.credential_id, &["*@global"]));
         connection.hello().await;
         connection
     }
 
     /// The owner's connection over its Unix socket, past its HELLO.
     async fn owner(&self) -> Connection {
-        let connection = self.connect(owner_peer().into(), None);
+        let connection = self.connect(owner_peer().into());
         connection.hello().await;
         connection
     }

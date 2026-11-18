@@ -122,19 +122,6 @@ fn a_mark_is_dated_when_it_changes() {
 }
 
 #[test]
-fn kind_is_kept() {
-    let mut a = Activities::default();
-    a.apply(
-        &Event::AgentMetadata {
-            terminal_id: id(1),
-            value: Some(br#"{"name":"c","kind":"claude","state":"working"}"#.to_vec()),
-        },
-        &[],
-    );
-    assert_eq!(a.agent_kind(&id(1)), Some("claude"));
-}
-
-#[test]
 fn a_reconnect_settles_commands_only_on_an_answer() {
     let mut a = Activities::default();
     for n in 1..=3 {

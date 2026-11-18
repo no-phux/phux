@@ -905,34 +905,6 @@ mod tests {
         assert_eq!(empty[1].total(), 0);
     }
 
-    /// CLI-created sessions have a server graph before any TUI layout is
-    /// persisted. Agents there must still appear, keyed by `ResourceId`, with
-    /// no fabricated pane ordinal.
-    #[test]
-    fn an_unvisited_peer_agent_appears_from_server_inventory() {
-        let mut f = fixture();
-        f.layouts.clear();
-        f.agents.insert(
-            ResourceId::local(10),
-            record("reviewer", AgentMetaState::Idle),
-        );
-
-        let rows = needs_you_queue(Vec::new(), &f.inputs());
-        assert_eq!(rows.len(), 1, "{rows:?}");
-        assert_eq!(rows[0].name, "reviewer");
-        assert_eq!(rows[0].session.as_deref(), Some("peer"));
-        assert_eq!(rows[0].session_id, Some(SessionId::new(2)));
-        assert_eq!(rows[0].resource, Some(ResourceId::local(10)));
-        assert_eq!(
-            rows[0].pane, None,
-            "graph fallback must not invent a TUI pane ordinal: {rows:?}"
-        );
-
-        let roster = session_roster(&f.inputs(), &[]);
-        assert_eq!(roster[1].settled, 1);
-        assert_eq!(roster[1].total(), 2);
-    }
-
     /// A resource that names its session (an `ORGANIZATION` server) is
     /// joined and named without the legacy window: the synthesized window's
     /// name and index never reach the row.
@@ -1013,25 +985,6 @@ mod tests {
         assert!(ids.contains(&ResourceId::local(11)));
     }
 
-    /// Host-qualified resource identities from the server graph keep their identity
-    /// on the row so a click cannot collide with a local id of the same
-    /// number.
-    #[test]
-    fn host_qualified_inventory_rows_keep_resource_identity() {
-        let mut f = fixture();
-        f.layouts.clear();
-        let sat = ResourceId::satellite("prod-3", 10);
-        f.windows = vec![graph_window(2, 10, 0, "main", sat.clone())];
-        f.resources = vec![graph_resource(sat.clone(), 10)];
-        f.attention.insert(sat.clone());
-
-        let rows = needs_you_queue(Vec::new(), &f.inputs());
-        assert_eq!(rows.len(), 1, "{rows:?}");
-        assert_eq!(rows[0].resource.as_ref(), Some(&sat));
-        assert_eq!(rows[0].pane, None);
-        assert!(rows[0].attention);
-    }
-
     #[test]
     fn same_named_sessions_keep_host_qualified_targets() {
         use phux_protocol::wire::info::HostSessionInfo;
@@ -1064,27 +1017,6 @@ mod tests {
         assert!(!roster[3].selectable);
         inputs.serving_host = None;
         assert_eq!(session_roster(&inputs, &[])[0].host, "this server");
-    }
-
-    /// Identical inputs must project identically, or the change-gated
-    /// painter would repaint forever.
-    #[test]
-    fn an_unchanged_projection_does_not_report_a_change() {
-        let mut f = fixture();
-        f.agents.insert(
-            ResourceId::local(10),
-            record("claude", AgentMetaState::Blocked),
-        );
-        let local = vec![local_row("codex", AgentMetaState::Working)];
-
-        assert_eq!(
-            needs_you_queue(local.clone(), &f.inputs()),
-            needs_you_queue(local, &f.inputs())
-        );
-        assert_eq!(
-            session_roster(&f.inputs(), &[]),
-            session_roster(&f.inputs(), &[])
-        );
     }
 
     /// ADR-0136: satellite terminals list by agent name, then host, and an

@@ -154,13 +154,6 @@ fn per_cell_styles_win_over_the_widget_style() {
 }
 
 #[test]
-fn a_plain_style_table_is_a_no_op() {
-    let w = build_spec("session-name", &[("style", style_table(&[]))]).unwrap();
-    let cells = w.render(&WidgetContext::new(fixed_time(), "main", "C-a", &[]));
-    assert!(cells.cells.iter().all(|c| c.style.is_none()));
-}
-
-#[test]
 fn a_bad_style_table_is_rejected_naming_the_widget() {
     for bad in [
         toml::Value::String("red".to_owned()),

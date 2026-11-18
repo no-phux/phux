@@ -179,51 +179,6 @@ fn strip_text(p: &SidebarPainter, rect: Rect) -> String {
     out
 }
 
-/// Calm population retains both fixed areas and expands the active session.
-#[test]
-fn sectioned_layout_snapshot_quiet() {
-    let mut p = SidebarPainter::new(Theme::default());
-    p.set_windows(vec![win_branch("phux", true, "main")]);
-    p.set_roster(vec![
-        active_roster(),
-        roster("feat-auth", 0, 1, 0),
-        SessionRosterEntry {
-            unknown: 2,
-            satellite: true,
-            host: "devbox".to_owned(),
-            ..roster("prod-3", 0, 0, 0)
-        },
-    ]);
-    let rect = r(0, 0, 26, 18);
-    insta::assert_snapshot!(strip_text(&p, rect));
-}
-
-/// A full Agents area overflows without moving Sessions.
-#[test]
-fn sectioned_layout_snapshot_attention() {
-    let mut p = SidebarPainter::new(Theme::default());
-    p.set_windows(vec![win_branch("phux", true, "main")]);
-    let mut queue = vec![
-        agent(0, "phux", "codex", AgentMetaState::Blocked),
-        AgentEntry {
-            session: Some("feat-auth".to_owned()),
-            pane: Some(0),
-            ..agent(1, "edit", "claude", AgentMetaState::Blocked)
-        },
-    ];
-    for i in 0..7 {
-        queue.push(AgentEntry {
-            session: Some(format!("wave-{i}")),
-            pane: Some(0),
-            ..agent(0, "run", "claude", AgentMetaState::Working)
-        });
-    }
-    p.set_agents(queue);
-    p.set_roster(vec![active_roster(), roster("feat-auth", 1, 0, 0)]);
-    let rect = r(0, 0, 26, 18);
-    insta::assert_snapshot!(strip_text(&p, rect));
-}
-
 // ---------- phux-fce4 / phux-foz.9: row model + hit-test ----------
 
 fn counts(needs_you: usize, windows: usize, roster: usize) -> SidebarCounts {

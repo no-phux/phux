@@ -275,22 +275,6 @@ async fn log_follow_streams_live_records_until_the_session_closes() {
     server.await.unwrap();
 }
 
-#[test]
-fn the_reader_reassembles_a_record_split_across_two_chunks() {
-    let mut reader = Reader::new(session());
-    let first = reader
-        .decode(br#"{"seq":1,"ts_ms":10,"type":"sta"#)
-        .unwrap();
-    assert!(first.is_empty(), "half a line is not a record");
-    let second = reader.decode(b"te\",\"data\":{}}\n").unwrap();
-    assert_eq!(second.len(), 1);
-    assert_eq!(second[0].kind, "state");
-    assert!(matches!(
-        reader.decode(b"not json\n"),
-        Err(AgentSessionError::Transport(AttachError::Protocol(_)))
-    ));
-}
-
 fn ready_frame() -> FrameKind {
     FrameKind::BootstrapReady {
         terminal_id: session(),

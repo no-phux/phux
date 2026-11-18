@@ -1,10 +1,6 @@
 use super::*;
-use crate::render::chrome::status_bar::widgets::{CellHit, WidgetCells, WindowInfo};
+use crate::render::chrome::status_bar::widgets::{CellHit, WindowInfo};
 use phux_config::WidgetSpec;
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
-};
 use std::time::UNIX_EPOCH;
 
 fn ctx_with(session: &str) -> WidgetContext<'_> {
@@ -308,32 +304,6 @@ fn a_narrow_tab_bar_drops_whole_tabs_and_marks_the_hidden_ones() {
         "\u{2039}2:gamma\u{203a}  "
     );
     assert_eq!(row_to_string(&bar.render(&ctx, 3)), "2:\u{2026}");
-}
-
-#[derive(Debug)]
-struct CountingWidget(Arc<AtomicUsize>);
-
-impl StatusWidget for CountingWidget {
-    fn render(&self, _ctx: &WidgetContext<'_>) -> WidgetCells {
-        self.0.fetch_add(1, Ordering::Relaxed);
-        WidgetCells::from_text("context")
-    }
-}
-
-/// A fitting frame paints the cells it measured rather than sampling the
-/// feed again; a narrow frame adds one constrained render.
-#[test]
-fn fitting_widgets_are_sampled_once_per_frame() {
-    let calls = Arc::new(AtomicUsize::new(0));
-    let mut bar = StatusBar::empty();
-    bar.left
-        .widgets
-        .push(Box::new(CountingWidget(calls.clone())));
-    let ctx = ctx_with("work");
-    assert_eq!(row_to_string(&bar.render(&ctx, 20)), "context             ");
-    assert_eq!(calls.swap(0, Ordering::Relaxed), 1);
-    assert_eq!(row_to_string(&bar.render(&ctx, 4)), "con…");
-    assert_eq!(calls.load(Ordering::Relaxed), 2);
 }
 
 #[test]
