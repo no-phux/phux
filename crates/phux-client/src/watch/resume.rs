@@ -77,9 +77,9 @@ where
     Ok(watch_outcome(finished.is_none(), stopped))
 }
 
-/// A live-only Terminal watch for journal events, not lossy metadata
-/// notifications, for a consumer with side effects. The start
-/// snapshot must still contain the Terminal and a journal head to cover
+/// Watch live Terminal journal events, not lossy metadata notifications.
+///
+/// The start snapshot must still contain the Terminal and a journal head to cover
 /// the race between that snapshot and subscribing. This
 /// never resumes a previous run, reconnects, or exposes a resume cursor.
 /// The sink is awaited before reading the next item.

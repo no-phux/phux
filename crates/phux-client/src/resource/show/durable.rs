@@ -72,7 +72,7 @@ fn project(authority: AuthorityId, record: ResourceRecord) -> ResourceObserved {
     }
 }
 
-pub(crate) async fn read_key_on(
+pub(in crate::resource) async fn read_key_on(
     conn: &mut Connection,
     key: ResourceKey,
 ) -> Result<(AuthorityId, Option<ResourceRecord>), OrgError> {

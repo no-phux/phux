@@ -44,7 +44,7 @@ pub(super) async fn invoke(
 
 fn spawn(program: &OsStr, args: &[OsString], stdin: &impl AsRawFd) -> io::Result<Handler> {
     let path = executable(program)?;
-    let argv = std::iter::once(program)
+    let command_line = std::iter::once(program)
         .chain(args.iter().map(OsString::as_os_str))
         .map(|arg| CString::new(arg.as_encoded_bytes()))
         .collect::<Result<Vec<_>, _>>()?;
@@ -68,7 +68,7 @@ fn spawn(program: &OsStr, args: &[OsString], stdin: &impl AsRawFd) -> io::Result
 
     // Unlike execvp or posix_spawnp, posix_spawn does not interpret ENOEXEC
     // as an instruction to pass an executable text file to a shell.
-    let pid = posix_spawn(&path, &files, &attrs, &argv, &envp)?;
+    let pid = posix_spawn(&path, &files, &attrs, &command_line, &envp)?;
     let pid = Pid::from_raw(pid.as_raw()).ok_or_else(|| io::Error::other("invalid handler PID"))?;
     Ok(Handler(Some(pid)))
 }
@@ -83,7 +83,10 @@ fn executable(program: &OsStr) -> io::Result<PathBuf> {
         .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
-                format!("executable {program:?} was not found on PATH"),
+                format!(
+                    "executable {} was not found on PATH",
+                    program.to_string_lossy()
+                ),
             )
         })
 }

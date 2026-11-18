@@ -994,14 +994,11 @@ mod tests {
     use std::path::Path;
     use std::process::Command;
 
-    use rusqlite::params;
-
     use super::{
         AddObjective, EditObjective, ListFilter, RaiseSignal, RevisionEdit, StateEdit, Store,
     };
     use crate::error::Error;
-    use crate::id::{Alias, OpaqueId};
-    use crate::schema;
+    use crate::id::Alias;
     use crate::{ObjectiveState, OperationId, SignalKind};
 
     fn open() -> (tempfile::TempDir, Store) {

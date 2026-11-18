@@ -102,14 +102,14 @@ async fn catalog(conn: &mut Connection, name: Option<&str>) -> ExitCode {
     let Some(name) = name else {
         return crate::output::json(&document);
     };
-    match describe(&document, name) {
-        Some(description) => crate::output::json(&description),
-        None => fail(
+    let Some(description) = describe(&document, name) else {
+        return fail(
             "unsupported",
             format!("server does not describe {name:?}"),
             1,
-        ),
-    }
+        );
+    };
+    crate::output::json(&description)
 }
 
 enum Request {

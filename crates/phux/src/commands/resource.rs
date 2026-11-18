@@ -30,7 +30,7 @@ pub(crate) fn run_resource(action: &ResourceAction, socket: Option<PathBuf>) -> 
             remote,
         } => run_execution(
             super::server_target::ServerSpec {
-                socket: socket.clone(),
+                socket,
                 remote: remote.clone(),
             },
             request_json,

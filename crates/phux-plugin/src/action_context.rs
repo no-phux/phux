@@ -21,9 +21,11 @@ pub enum ActionSource {
     RunePalette,
 }
 
-/// Host and selection facts captured by the invoking adapter or explicitly
-/// supplied by a headless caller. Missing facts are omitted: an action must
-/// not substitute process cwd, a default server, or the ambient pane.
+/// Host and selection facts for an action invocation.
+///
+/// The adapter captures these facts, or a headless caller supplies them.
+/// Actions must not fill in missing facts from the process cwd, a default
+/// server, or the ambient pane.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct ActionTarget {

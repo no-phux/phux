@@ -29,7 +29,7 @@ pub(super) const fn report_of(state: AgentMetaState) -> AgentReport {
     }
 }
 
-fn seen_exit(event: &AgentEvent) -> bool {
+const fn seen_exit(event: &AgentEvent) -> bool {
     matches!(
         event,
         AgentEvent::TerminalControl {

@@ -56,7 +56,7 @@ impl ActionPlacement {
         match self.stored.owner {
             ArrangementOwner::Session(session) => target.session = Some(session.to_string()),
             ArrangementOwner::Workspace(workspace) => {
-                target.workspace = Some(workspace.to_string())
+                target.workspace = Some(workspace.to_string());
             }
             _ => {}
         }

@@ -30,7 +30,7 @@ fn dispatchable(name: &str) -> bool {
     !GAPS.contains(&name) && ![AGENT_STATE_EVENT, CONTROLLER_EVENT].contains(&name)
 }
 
-pub(crate) fn run(args: OnArgs, socket: Option<PathBuf>) -> ExitCode {
+pub(crate) fn run(args: &OnArgs, socket: Option<PathBuf>) -> ExitCode {
     if !WATCH_EVENT_NAMES.contains(&args.event.as_str()) || !dispatchable(&args.event) {
         let names: Vec<_> = WATCH_EVENT_NAMES
             .iter()
@@ -52,7 +52,7 @@ pub(crate) fn run(args: OnArgs, socket: Option<PathBuf>) -> ExitCode {
         Err(code) => return code,
     };
     let socket = socket.unwrap_or_else(default_socket_path);
-    rt.block_on(supervise(&socket, &args))
+    rt.block_on(supervise(&socket, args))
 }
 
 async fn supervise(socket: &Path, args: &OnArgs) -> ExitCode {
@@ -154,11 +154,11 @@ async fn react(item: &WatchEvent, event: &str, argv: &[OsString]) -> Result<(), 
 }
 
 async fn handle(argv: &[OsString], mut line: String, timeout: Duration) -> Result<(), String> {
-    let Some((program, args)) = argv.split_first() else {
+    let Some((program, arguments)) = argv.split_first() else {
         return Err("missing handler executable".to_owned());
     };
     line.push('\n');
-    let result = tokio::time::timeout(timeout, handler::invoke(program, args, &line)).await;
+    let result = tokio::time::timeout(timeout, handler::invoke(program, arguments, &line)).await;
     match result {
         Ok(Ok(status)) if status.success() => Ok(()),
         Ok(Ok(status)) => Err(format!("handler failed: {status}")),

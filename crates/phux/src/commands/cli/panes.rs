@@ -362,7 +362,7 @@ pub(crate) struct TagArgs {
 pub(crate) enum ResourceAction {
     /// Read or wait for one exact durable execution; outputs JSON.
     Execution {
-        /// Exact execution identity and optional timeout_secs as a JSON object.
+        /// Exact execution identity and optional `timeout_secs` as a JSON object.
         #[usage(long, value_name = "JSON")]
         request_json: String,
         /// Read from a registered remote host instead of the local socket.

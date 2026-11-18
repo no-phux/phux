@@ -369,8 +369,7 @@ pub(crate) fn promote_queued(
         authority: owner,
     }) {
         Ok(binding) => binding,
-        Err(PrepareError::Early(err)) => return Err(err),
-        Err(PrepareError::Launched(err)) => return Err(err),
+        Err(PrepareError::Early(err) | PrepareError::Launched(err)) => return Err(err),
     };
     let admitted = store.launch_queued(LaunchQueued {
         alias: run.alias.clone(),
@@ -476,7 +475,7 @@ async fn launch_worker(
         idempotency_key: key.clone(),
     };
     match phux_client::terminal::operation(&mut conn, &lookup).await {
-        Ok(receipt) => return Ok(receipt),
+        Ok(receipt) => Ok(receipt),
         Err(phux_client::terminal::CreateError::NotRetained) if may_launch => {
             submit_worker(&mut conn, place, session.key, label, key).await
         }

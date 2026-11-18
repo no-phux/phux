@@ -466,10 +466,10 @@ fn write_projection(
         actor: ACTOR.to_owned(),
         event_kind: Some(kind.to_owned()),
     })?;
-    if applied.objective.state.frees_slot() {
-        if let Some(id) = &run.terminal_id {
-            watch.forget(id);
-        }
+    if applied.objective.state.frees_slot()
+        && let Some(id) = &run.terminal_id
+    {
+        watch.forget(id);
     }
     Ok(())
 }

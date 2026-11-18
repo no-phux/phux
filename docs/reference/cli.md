@@ -6286,8 +6286,8 @@ Read or wait for one exact durable execution; outputs JSON.
 Usage: phux resource execution <--request-json <JSON>> [--remote <HOST>]
 
 Flags:
-      --request-json <JSON>  Exact execution identity and optional timeout_secs
-                             as a JSON object.
+      --request-json <JSON>  Exact execution identity and optional
+                             `timeout_secs` as a JSON object.
       --remote <HOST>        Read from a registered remote host instead of the
                              local socket.
   -h, --help                 Print help

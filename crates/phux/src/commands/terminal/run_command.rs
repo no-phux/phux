@@ -199,7 +199,7 @@ async fn launch(
     })
 }
 
-fn unknown_create(error: &CreateError) -> bool {
+const fn unknown_create(error: &CreateError) -> bool {
     !matches!(
         error,
         CreateError::Invalid(_)

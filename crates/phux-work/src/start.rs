@@ -316,28 +316,14 @@ impl Store {
             queue_position,
             binding: request.launch,
         };
-        let result_json = serde_json::to_string(&snapshot)?;
-        tx.execute(
-            "INSERT INTO operation (id, kind, digest, objective_id, result_json, created_at)
-             VALUES (?1, 'start', ?2, ?3, ?4, ?5)",
-            params![
-                request.operation_id.as_slice(),
-                digest,
-                snapshot.objective.id.as_slice(),
-                &result_json,
-                now,
-            ],
-        )?;
-        tx.execute(
-            "INSERT INTO event (ts, actor, objective_id, operation_id, kind, json)
-             VALUES (?1, ?2, ?3, ?4, 'run_started', ?5)",
-            params![
-                now,
-                actor,
-                snapshot.objective.id.as_slice(),
-                request.operation_id.as_slice(),
-                &result_json,
-            ],
+        record_start(
+            &tx,
+            request.operation_id,
+            &digest,
+            &actor,
+            "start",
+            "run_started",
+            &snapshot,
         )?;
         tx.commit()?;
         Ok(applied_from(snapshot, request.operation_id, false))
@@ -446,7 +432,6 @@ impl Store {
         if running >= limit {
             return Err(Error::AtCapacity { running, limit });
         }
-        let now = timestamp();
         tx.execute(
             "UPDATE run SET state = 'running' WHERE id = ?1 AND state = 'queued' AND ended_at IS NULL",
             params![run_id.as_slice()],
@@ -457,7 +442,7 @@ impl Store {
         let mut updated = current;
         updated.state = projected;
         updated.revision = bump(previous)?;
-        now.clone_into(&mut updated.updated_at);
+        updated.updated_at = timestamp();
         write_objective(&tx, &updated, previous)?;
         let event_kind = if projected == ObjectiveState::NeedsYou {
             "needs_you"
@@ -475,33 +460,56 @@ impl Store {
             queue_position: None,
             binding: Some(request.launch),
         };
-        let result_json = serde_json::to_string(&snapshot)?;
-        tx.execute(
-            "INSERT INTO operation (id, kind, digest, objective_id, result_json, created_at)
-             VALUES (?1, 'launch', ?2, ?3, ?4, ?5)",
-            params![
-                request.operation_id.as_slice(),
-                digest,
-                snapshot.objective.id.as_slice(),
-                &result_json,
-                now,
-            ],
-        )?;
-        tx.execute(
-            "INSERT INTO event (ts, actor, objective_id, operation_id, kind, json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                now,
-                actor,
-                snapshot.objective.id.as_slice(),
-                request.operation_id.as_slice(),
-                event_kind,
-                &result_json,
-            ],
+        record_start(
+            &tx,
+            request.operation_id,
+            &digest,
+            &actor,
+            "launch",
+            event_kind,
+            &snapshot,
         )?;
         tx.commit()?;
         Ok(applied_from(snapshot, request.operation_id, false))
     }
+}
+
+fn record_start(
+    tx: &Transaction<'_>,
+    operation: OperationId,
+    digest: &str,
+    actor: &str,
+    operation_kind: &str,
+    event_kind: &str,
+    snapshot: &StartSnapshot,
+) -> Result<(), Error> {
+    let result = serde_json::to_string(snapshot)?;
+    let objective = &snapshot.objective;
+    tx.execute(
+        "INSERT INTO operation (id, kind, digest, objective_id, result_json, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            operation.as_slice(),
+            operation_kind,
+            digest,
+            objective.id.as_slice(),
+            result,
+            objective.updated_at
+        ],
+    )?;
+    tx.execute(
+        "INSERT INTO event (ts, actor, objective_id, operation_id, kind, json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            objective.updated_at,
+            actor,
+            objective.id.as_slice(),
+            operation.as_slice(),
+            event_kind,
+            result
+        ],
+    )?;
+    Ok(())
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
