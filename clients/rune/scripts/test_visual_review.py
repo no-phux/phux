@@ -56,10 +56,10 @@ class VisualReview(unittest.TestCase):
 
     def test_bundle_has_all_families_hashes_and_honest_status(self):
         manifest = self.produce()
-        self.assertEqual(len(manifest["cases"]), 255)
+        self.assertEqual(len(manifest["cases"]), 303)
         self.assertEqual({family: sum(case["family"] == family for case in manifest["cases"])
                           for family in review.FAMILIES},
-                         {"inbox": 192, "settings": 34, "navigation": 28, "resources": 1})
+                         {"inbox": 192, "settings": 34, "navigation": 76, "resources": 1})
         case = next(case for case in manifest["cases"] if case["png"] == self.subject)
         self.assertEqual(case["physical"], [320, 568])
         self.assertEqual(case["logical"], [320, 568])
@@ -80,6 +80,8 @@ class VisualReview(unittest.TestCase):
                          "mobile_appearance_and_real_theme_palette_render_accept_and_cancel")
         self.assertEqual(review.exporter_for("navigation", "retina-2x-native-false-640"),
                          "retina_navigation_renders_in_native_safe_area_and_desktop_phone_viewports")
+        self.assertEqual(review.exporter_for("navigation", "header-split-dark-native-true-2x-640"),
+                         "phone_header_visual_review_frames")
         self.assertEqual(review.exporter_for("settings", "desktop"),
                          "settings_native_render_frames")
         self.assertEqual(review.exporter_for("navigation", "inventory-light-393"),
@@ -116,6 +118,11 @@ class VisualReview(unittest.TestCase):
             "settings/small-no-match.png",
             "navigation/matching-light-320.png",
             "navigation/retina-2x-native-true-640.png",
+            "navigation/header-quiet-light-native-false-1x-320.png",
+            "navigation/header-split-dark-native-true-2x-640.png",
+            "navigation/header-keyboard-light-native-false-1x-393.png",
+            "navigation/header-large-text-light-native-true-2x-786.png",
+            "navigation/header-empty-dark-native-false-1x-320.png",
         )
         for name in names:
             with self.subTest(case=name):
@@ -321,6 +328,7 @@ filters = {
     "mobile_appearance_and_real_theme_palette_render_accept_and_cancel": "RUNE_SETTINGS_SNAP",
     "session_browser_renders_realistic_dark_light_and_search_states": "RUNE_NAVIGATION_SNAP",
     "retina_navigation_renders_in_native_safe_area_and_desktop_phone_viewports": "RUNE_NAVIGATION_SNAP",
+    "phone_header_visual_review_frames": "RUNE_NAVIGATION_SNAP",
     "native_png_headless_renderer_smoke": "RUNE_RESOURCE_SNAP",
 }
 filter = sys.argv[5]
@@ -354,10 +362,10 @@ print("test result: ok. 1 passed")
                                 env=environment, cwd=self.root, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         manifest = json.loads((out / "manifest.json").read_text())
-        self.assertEqual(len(manifest["cases"]), 255)
+        self.assertEqual(len(manifest["cases"]), 303)
         self.assertEqual(manifest["currentRunePin"], "test-pin")
         self.assertFalse(manifest["dirty"])
-        self.assertEqual(len(list((out / "logs").glob("*.log"))), 8)
+        self.assertEqual(len(list((out / "logs").glob("*.log"))), 9)
 
 
 if __name__ == "__main__":

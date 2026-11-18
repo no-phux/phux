@@ -47,6 +47,7 @@ render settings_native_render_frames
 render mobile_appearance_and_real_theme_palette_render_accept_and_cancel
 render session_browser_renders_realistic_dark_light_and_search_states
 render retina_navigation_renders_in_native_safe_area_and_desktop_phone_viewports
+render phone_header_visual_review_frames
 render native_png_headless_renderer_smoke
 python3 -B "$scripts/visual_review.py" "$out" --repo "$repo" >"$out/logs/manifest.log" 2>&1 || {
     cat "$out/logs/manifest.log" >&2
