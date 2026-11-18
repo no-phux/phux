@@ -127,6 +127,10 @@ fn cli_describes_creates_and_recovers_without_caller_rollback() {
     .unwrap();
     assert_eq!(inspected["authority"], created["authority"]);
     assert_eq!(inspected["execution"], created["execution"]);
+    assert_missing_legacy_receipt(&server, session);
+}
+
+fn assert_missing_legacy_receipt(server: &common::ServerGuard, session: &str) {
     let (code, _, error) = server.run(&[
         "terminal",
         "operation",
