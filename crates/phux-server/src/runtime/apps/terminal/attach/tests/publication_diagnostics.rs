@@ -167,3 +167,171 @@ async fn activation_success_and_dropped_reply_have_distinct_static_outcomes() {
     assert_event(&bytes, "native_activation", "activated");
     assert_event(&bytes, "native_activation", "actor_dropped");
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn initial_session_queue_reports_success_and_outbound_close() {
+    crate::runtime::test_support::local(async {
+        for close_outbound in [false, true] {
+            let (bytes, _guard) = capture();
+            let state = SharedState::new();
+            let (_, pane) = state.with_mut(|s| s.seed_session("queue-private-sentinel"));
+            let (handle, mut consumers, mut captures, mut activations) = native_attach_handle();
+            state.with_mut(|s| {
+                s.register_resource_handle(pane, handle.clone(), CancellationToken::new())
+                    .unwrap()
+            });
+            let client = state.with_mut(|s| s.clients_mut().new_client_id());
+            let (out_tx, mut out_rx) =
+                tokio::sync::mpsc::channel(if close_outbound { 1 } else { 32 });
+            let token = CancellationToken::new();
+            let mut pumps = JoinSet::new();
+            let publishing = attach(
+                &state,
+                client,
+                1,
+                "queue-private-sentinel",
+                None,
+                &out_tx,
+                native_profile(),
+                &mut pumps,
+                &token,
+                false,
+            );
+            tokio::pin!(publishing);
+            let consumer = tokio::select! {
+                () = &mut publishing => panic!("attach ended before registration"),
+                consumer = consumers.recv() => consumer.unwrap(),
+            };
+            consumer
+                .reply
+                .send(Ok(phux_terminal_api::actor::ConsumerAttachOutcome {
+                    tick_managed: false,
+                    state_sync_bootstrap: None,
+                }))
+                .unwrap();
+            let request = tokio::select! {
+                () = &mut publishing => panic!("attach ended before capture"),
+                request = captures.recv() => request.unwrap(),
+            };
+            let checkpoint = empty_native_checkpoint(&request);
+            request.reply.send(Ok(checkpoint)).unwrap();
+            if close_outbound {
+                let frame = tokio::select! {
+                    () = &mut publishing => panic!("attach ended before its reply"),
+                    frame = out_rx.recv() => frame.unwrap(),
+                };
+                assert!(matches!(frame, Outbound::Frame(FrameKind::Attached { .. })));
+                drop(out_rx);
+                publishing.await;
+            } else {
+                // ATTACH_READY releases the parked producer; activation
+                // happens after the aggregate publication returns.
+                publishing.await;
+                let request = activations.recv().await.unwrap();
+                request
+                    .reply
+                    .send(Ok(phux_terminal_api::actor::NativePublicationReply {
+                        replay: Vec::new(),
+                        live: handle.output.subscribe(),
+                    }))
+                    .unwrap();
+                tokio::task::yield_now().await;
+            }
+            assert_event(&bytes, "session_bootstrap_queue", "started");
+            assert_event(
+                &bytes,
+                "session_bootstrap_queue",
+                if close_outbound {
+                    "outbound_closed"
+                } else {
+                    "queued"
+                },
+            );
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn initial_spawn_queue_reports_success_and_outbound_close() {
+    crate::runtime::test_support::local(async {
+        for close_outbound in [false, true] {
+            let (bytes, _guard) = capture();
+            let state = SharedState::new();
+            let (_, pane) = state.with_mut(|s| s.seed_session("spawn-private-sentinel"));
+            let wire = state.with_mut(|s| s.idspace.intern_resource(pane));
+            let client = state.with_mut(|s| s.clients_mut().new_client_id());
+            let (handle, _, mut captures, mut activations) = native_attach_handle();
+            let terminal = handle.terminal().unwrap().clone();
+            state.with_mut(|s| {
+                s.register_resource_handle(pane, handle.clone(), CancellationToken::new())
+                    .unwrap()
+            });
+            let (out_tx, mut out_rx) =
+                tokio::sync::mpsc::channel(if close_outbound { 1 } else { 32 });
+            let publication = super::super::spawn_publication::SpawnPublication {
+                state: &state,
+                out_tx: &out_tx,
+                request_id: 1,
+                client_id: client,
+                core_terminal_id: pane,
+                wire_terminal_id: wire,
+                handle: handle.clone(),
+                terminal,
+                client_caps: ClientCapabilities::default(),
+                stream_id: two_pump_stream(),
+                profile: BootstrapStreamProfile::NativeState {
+                    codec: phux_protocol::caps::EngineCodec::LibghosttySnapshotV1,
+                },
+                limits: BootstrapLimits::default(),
+                bind_instance: false,
+                idempotency_key: None,
+            };
+            let token = CancellationToken::new();
+            let mut pumps = JoinSet::new();
+            let publishing = publication.publish(&mut pumps, &token, false);
+            tokio::pin!(publishing);
+            let request = tokio::select! {
+                () = &mut publishing => panic!("spawn ended before capture"),
+                request = captures.recv() => request.unwrap(),
+            };
+            let checkpoint = empty_native_checkpoint(&request);
+            request.reply.send(Ok(checkpoint)).unwrap();
+            if close_outbound {
+                let frame = tokio::select! {
+                    () = &mut publishing => panic!("spawn ended before its reply"),
+                    frame = out_rx.recv() => frame.unwrap(),
+                };
+                assert!(matches!(
+                    frame,
+                    Outbound::Frame(FrameKind::ResourceSpawned { .. })
+                ));
+                drop(out_rx);
+            } else {
+                let request = tokio::select! {
+                    () = &mut publishing => panic!("spawn ended before activation"),
+                    request = activations.recv() => request.unwrap(),
+                };
+                request
+                    .reply
+                    .send(Ok(phux_terminal_api::actor::NativePublicationReply {
+                        replay: Vec::new(),
+                        live: handle.output.subscribe(),
+                    }))
+                    .unwrap();
+            }
+            publishing.await;
+            assert_event(&bytes, "spawn_bootstrap_queue", "started");
+            assert_event(
+                &bytes,
+                "spawn_bootstrap_queue",
+                if close_outbound {
+                    "outbound_closed"
+                } else {
+                    "queued"
+                },
+            );
+        }
+    })
+    .await;
+}

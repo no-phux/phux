@@ -88,6 +88,44 @@ def validate_trace(data, require_ready=False):
             "initial_deadlines": deadlines, "ready_attempts": ready_attempts,
             "ready_after_initial_deadline": recovered_after_deadline}
 
+def validate_completion(data, events):
+    try:
+        status = json.loads(data, object_pairs_hook=unique_fields)
+    except (ValueError, TypeError):
+        raise ValueError("malformed capture completion") from None
+    if not isinstance(status, dict) or status.keys() != {"complete", "failed", "events"}:
+        raise ValueError("unexpected capture completion fields")
+    if status["complete"] is not True or status["failed"] is not False:
+        raise ValueError("connection capture unfinished or lost events")
+    if type(status["events"]) is not int or status["events"] != events:
+        raise ValueError("capture completion event count mismatch")
+
+
+def copy_private(path, data):
+    with open(path, "xb", opener=lambda path, flags: os.open(path, flags, 0o600)) as destination:
+        destination.write(data)
+
+
+def finish_connection_diagnostics(self):
+    if self.documents is None or self.diagnostic_pid is None or not self.diagnostic_prefixes:
+        return
+    prefix = self.diagnostic_prefixes[-1]
+    if prefix in self.diagnostic_sealed:
+        return
+    # One state-changing request, never retry an uncertain lifecycle operation.
+    self.diagnostic_sealed.add(prefix)
+    stem = prefix + "rune-connection-diagnostics"
+    # Same readiness policy as cycle_scene: the native callback writes this
+    # after sealing returns, so termination cannot interrupt receipt cleanup.
+    background = self.documents / "rune-background.json"
+    background.unlink(missing_ok=True)
+    copy_private(self.documents / (stem + ".finish"), b"")
+    self.simctl("launch", self.udid, "com.apple.springboard")
+    self.await_scene_report(self.documents / (stem + ".status.json"), self.diagnostic_pid,
+                            "no sealed connection capture receipt before termination")
+    self.await_scene_report(background, self.diagnostic_pid,
+                            "no post-seal native background acknowledgement")
+
 
 # Bound by Qualification as methods. Keep its existing callable seams (including
 # inert test doubles) while grouping diagnostic capture and owned teardown here.
@@ -102,10 +140,23 @@ def preserve_connection_diagnostics(self, prefixes=None, quiescent=True):
             if self.documents is None:
                 raise ValueError("diagnostic container unavailable")
             data = (self.documents / name).read_bytes()
-            with open(self.out / name, "xb", opener=lambda path, flags: os.open(path, flags, 0o600)) as destination:
-                destination.write(data)
+            copy_private(self.out / name, data)
+            pending_name = name.removesuffix(".jsonl") + ".status.pending"
+            pending_path = self.documents / pending_name
+            pending = pending_path.is_file()
+            if pending:
+                copy_private(self.out / pending_name, pending_path.read_bytes())
+                receipt["pending_completion_file"] = pending_name
+            completion_name = name.removesuffix(".jsonl") + ".status.json"
+            completion = (self.documents / completion_name).read_bytes()
+            copy_private(self.out / completion_name, completion)
+            receipt["completion_file"] = completion_name
+            receipt["completion_sha256"] = hashlib.sha256(completion).hexdigest()
             receipt["sha256"] = hashlib.sha256(data).hexdigest()
             receipt.update(validate_trace(data, require_ready=prefix in self.diagnostic_reports))
+            validate_completion(completion, receipt["events"])
+            if pending:
+                raise ValueError("capture completion still pending")
             if not quiescent:
                 raise ValueError("diagnostic producer not quiescent")
             receipt["status"] = "retained"
@@ -145,6 +196,10 @@ def failure_screenshot(self):
 def cleanup(self):
     errors = []
     try:
+        self.finish_connection_diagnostics()
+    except (ValueError, OSError, subprocess.SubprocessError):
+        errors.append("diagnostic finalization failed; see command and capture receipts")
+    try:
         self.stop_server()
     except (OSError, subprocess.SubprocessError) as error:
         errors.append(f"server cleanup: {error}")
@@ -171,3 +226,13 @@ def cleanup_simulator(self):
         except (OSError, subprocess.SubprocessError) as error:
             errors.append(f"delete {self.udid}: {error}")
     return errors
+
+
+def stop_server(self):
+    if self.server is not None and self.server.poll() is None:
+        self.server.terminate()  # Popen owns this exact PID, never a port/name.
+        try:
+            self.server.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            self.server.kill()
+            self.server.wait(timeout=10)

@@ -1,6 +1,7 @@
 //! The host's one ordered aggregate publication.
 
 use super::{ClientId, FrameKind, Outbound, SharedState};
+use crate::runtime::apps::terminal::attach::publication_phase;
 use tokio_util::sync::CancellationToken;
 
 pub(super) struct AttachPublication<'a> {
@@ -15,8 +16,13 @@ impl AttachPublication<'_> {
     async fn queue(&self, frame: FrameKind) -> bool {
         let sent = tokio::select! {
             biased;
-            () = self.cancellation.cancelled() => false,
-            result = self.out_tx.send(Outbound::Frame(frame)) => result.is_ok(),
+            () = self.cancellation.cancelled() => {
+                publication_phase("session_bootstrap_queue", "cancelled");
+                false
+            },
+            result = self.out_tx.send(Outbound::Frame(frame)) => result
+                .inspect_err(|_| publication_phase("session_bootstrap_queue", "outbound_closed"))
+                .is_ok(),
         };
         if sent {
             return true;
@@ -32,6 +38,7 @@ impl AttachPublication<'_> {
         frames: Vec<FrameKind>,
         session_name: &str,
     ) -> bool {
+        publication_phase("session_bootstrap_queue", "started");
         if !self
             .queue(FrameKind::Attached {
                 attach_id: self.attach_id,
@@ -51,9 +58,14 @@ impl AttachPublication<'_> {
                 return false;
             }
         }
-        self.queue(FrameKind::AttachReady {
-            attach_id: self.attach_id,
-        })
-        .await
+        let queued = self
+            .queue(FrameKind::AttachReady {
+                attach_id: self.attach_id,
+            })
+            .await;
+        if queued {
+            publication_phase("session_bootstrap_queue", "queued");
+        }
+        queued
     }
 }

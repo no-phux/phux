@@ -37,6 +37,8 @@ class ConnectionDiagnostics(unittest.TestCase):
     def seed(self, lane):
         for prefix in lane.diagnostic_prefixes:
             (lane.documents / (prefix + "rune-connection-diagnostics.jsonl")).write_bytes(trace_bytes())
+            (lane.documents / (prefix + "rune-connection-diagnostics.status.json")).write_text(
+                json.dumps({"complete": True, "failed": False, "events": 8}))
 
     def test_only_initial_and_resumed_traces_are_copied_once_and_receipted(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -46,7 +48,7 @@ class ConnectionDiagnostics(unittest.TestCase):
             status = lane.preserve_connection_diagnostics()
             lane.require_connection_diagnostics()
             self.assertEqual([row["status"] for row in status["files"]], ["retained", "retained"])
-            self.assertEqual(len(list(lane.out.iterdir())), 3)
+            self.assertEqual(len(list(lane.out.iterdir())), 5)
             for row in status["files"]:
                 self.assertEqual((lane.out / row["file"]).read_bytes(), trace_bytes())
                 self.assertEqual((lane.out / row["file"]).stat().st_mode & 0o777, 0o600)
@@ -80,6 +82,89 @@ class ConnectionDiagnostics(unittest.TestCase):
             self.assertEqual(retained.read_bytes(), b"original-sentinel")
             self.assertTrue(all(row["status"] == "invalid" for row in status["files"]))
             self.assertFalse(status["files"][1]["quiescent"])
+            with self.assertRaises(ValueError):
+                lane.require_connection_diagnostics()
+
+    def test_sticky_lost_write_receipt_rejects_valid_prefix_and_later_recovery(self):
+        for name in ("lost-deadline-then-recovery", "lost-tail-after-ready"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
+                lane = self.lane(Path(temporary))
+                self.seed(lane)
+                # Both remain syntactically valid, usable prefixes. Only the
+                # sealed producer receipt can expose a missing whole write.
+                events = 8
+                if name == "lost-deadline-then-recovery":
+                    first = trace_bytes().splitlines(keepends=True)[:6]
+                    later = [json.loads(row) for row in trace_bytes(2).splitlines()]
+                    for row in later:
+                        row["process_elapsed_ms"] += 6
+                    data = b"".join(first) + b"".join(
+                        json.dumps(row).encode() + b"\n" for row in later)
+                    (lane.documents / "rune-connection-diagnostics.jsonl").write_bytes(data)
+                    events = 14
+                (lane.documents / "rune-connection-diagnostics.status.json").write_text(
+                    json.dumps({"complete": True, "failed": True, "events": events}))
+                status = lane.preserve_connection_diagnostics()
+                self.assertEqual(status["files"][0]["status"], "invalid")
+                self.assertIn("lost events", status["files"][0]["error"])
+                self.assertTrue((lane.out / "rune-connection-diagnostics.status.json").is_file())
+                with self.assertRaises(ValueError):
+                    lane.require_connection_diagnostics()
+
+    def test_missing_malformed_duplicate_or_mismatched_completion_is_invalid(self):
+        for data in (None, b"", b"{}", b'{"complete":true,"failed":false,"events":7}',
+                     b'{"complete":true,"failed":false,"events":8,"events":8}'):
+            with self.subTest(data=data), tempfile.TemporaryDirectory() as temporary:
+                lane = self.lane(Path(temporary))
+                self.seed(lane)
+                path = lane.documents / "rune-connection-diagnostics.status.json"
+                path.unlink()
+                if data is not None:
+                    path.write_bytes(data)
+                status = lane.preserve_connection_diagnostics()
+                self.assertEqual(status["files"][0]["status"], "invalid")
+                with self.assertRaises(ValueError):
+                    lane.require_connection_diagnostics()
+
+    def test_final_background_handshake_is_once_before_owned_shutdown(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            lane = self.lane(Path(temporary))
+            self.seed(lane)
+            lane.diagnostic_pid = 123
+            lane.udid = "EXACT-OWNED-UDID"
+            seen = []
+            marker = lane.documents / "resume-rune-connection-diagnostics.finish"
+
+            def simctl(action, udid, *args, **kwargs):
+                self.assertEqual(udid, lane.udid)
+                seen.append(action)
+                if action == "launch":
+                    self.assertTrue(marker.is_file())
+                    self.assertEqual(args, ("com.apple.springboard",))
+                elif action == "shutdown":
+                    self.assertEqual(seen, ["launch", "shutdown"])
+
+            lane.simctl = Mock(side_effect=simctl)
+            lane.await_scene_report = Mock(return_value={"complete": True, "failed": False, "events": 8})
+            lane.finish_connection_diagnostics()
+            lane.finish_connection_diagnostics()
+            lane.cleanup()
+            self.assertEqual(seen, ["launch", "shutdown", "delete"])
+            self.assertEqual(lane.await_scene_report.call_count, 2)
+            self.assertEqual(lane.await_scene_report.call_args_list[-1].args[0],
+                             lane.documents / "rune-background.json")
+            lane.require_connection_diagnostics()
+
+    def test_pending_completion_is_retained_and_never_certifies_capture(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            lane = self.lane(Path(temporary))
+            self.seed(lane)
+            pending = "rune-connection-diagnostics.status.pending"
+            (lane.documents / pending).write_bytes(b'{"complete":')
+            status = lane.preserve_connection_diagnostics()
+            self.assertEqual((lane.out / pending).read_bytes(), b'{"complete":')
+            self.assertEqual(status["files"][0]["status"], "invalid")
+            self.assertEqual(status["files"][0]["pending_completion_file"], pending)
             with self.assertRaises(ValueError):
                 lane.require_connection_diagnostics()
 

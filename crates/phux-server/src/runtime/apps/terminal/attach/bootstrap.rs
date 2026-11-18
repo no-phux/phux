@@ -148,7 +148,7 @@ impl NativeRequestFailure {
 
 /// Fixed labels only; disabled in ordinary info-level server logging. Shared by
 /// session attach, spawn, `ATTACH_RESOURCE` and their replacement generations.
-pub(super) fn publication_phase(phase: &'static str, outcome: &'static str) {
+pub(in crate::runtime) fn publication_phase(phase: &'static str, outcome: &'static str) {
     // JSON formatting falls back to the current span even for a root event.
     // A field-free root keeps caller identities out of every retained format.
     let span = tracing::debug_span!(

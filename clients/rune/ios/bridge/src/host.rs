@@ -57,6 +57,20 @@ pub unsafe extern "C" fn phux_rune_ios_capture_connection_diagnostics(path: *con
     })
 }
 
+/// Simulator fixture only: stop capture and publish its sticky health receipt.
+#[unsafe(no_mangle)]
+pub extern "C" fn phux_rune_ios_finish_connection_diagnostics() -> bool {
+    attempt(|| {
+        #[cfg(target_abi = "sim")]
+        {
+            super::diagnostics::finish()?;
+            Ok(true)
+        }
+        #[cfg(not(target_abi = "sim"))]
+        Err("Connection diagnostics are available only to simulator qualification.".to_owned())
+    })
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_rune_ios_validate(configuration: *const c_char) -> *mut c_char {
     attempt(|| {

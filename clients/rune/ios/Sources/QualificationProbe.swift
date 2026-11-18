@@ -153,6 +153,7 @@ final class QualificationProbe {
     }
 
     func active(_ active:Bool, bridge:NativeBridge) {
+        if !active { finishConnectionDiagnosticsIfRequested() }
         if active { resumed = backgroundFrames != nil }
         else if let report = try? bridge.report(marker:marker) {
             backgroundFrames = report["frames"] as? UInt64
@@ -161,6 +162,20 @@ final class QualificationProbe {
                 catch { failure(error.localizedDescription) }
             }
         }
+    }
+
+    private func finishConnectionDiagnosticsIfRequested() {
+        #if targetEnvironment(simulator)
+        guard let directory = try? FileManager.default.url(for: .documentDirectory, in: .userDomainMask,
+                                                            appropriateFor: nil, create: false) else { return }
+        let name = (resuming ? "resume-" : "") + "rune-connection-diagnostics.finish"
+        guard FileManager.default.fileExists(atPath: directory.appendingPathComponent(name).path) else { return }
+        // Lifecycle only, never a frame poll. A failure is recorded separately
+        // from the authoritative first qualification report.
+        if !phux_rune_ios_finish_connection_diagnostics() {
+            NSLog("Qualification connection capture did not finish cleanly.")
+        }
+        #endif
     }
 
     func failure(_ message: String) {

@@ -105,6 +105,8 @@ class Qualification:
         self.diagnostic_prefixes = []
         self.diagnostic_reports = set()
         self.diagnostic_receipts = {}
+        self.diagnostic_pid = None
+        self.diagnostic_sealed = set()
 
     def run(self, command, timeout=30, env=None):
         self.sequence += 1
@@ -235,7 +237,8 @@ class Qualification:
         match = re.search(rf"^{re.escape(BUNDLE_ID)}: ([0-9]+)$", result, re.MULTILINE)
         if not match:
             raise ValueError(f"simctl returned no app PID: {result}")
-        return int(match[1])
+        self.diagnostic_pid = int(match[1])
+        return self.diagnostic_pid
 
     def require_alive(self, pid):
         listing = self.simctl("spawn", self.udid, "launchctl", "list", attempts=QUERY_ATTEMPTS)
@@ -305,6 +308,7 @@ class Qualification:
     def resume_identity(self, original):
         # New process, no ticket/configuration launch argument: only saved
         # public preferences plus Keychain token and held key may reconnect.
+        self.finish_connection_diagnostics()
         self.simctl("terminate", self.udid, BUNDLE_ID, timeout=60)
         self.preserve_connection_diagnostics(prefixes=("",))
         for name in ("rune-qualification.json", "rune-tree.json"):
@@ -317,22 +321,16 @@ class Qualification:
         match = re.search(rf"^{re.escape(BUNDLE_ID)}: ([0-9]+)$", launched, re.MULTILINE)
         if not match:
             raise ValueError("simulator did not report the resumed app PID")
-        report = self.collect_report(int(match[1]), resumed=True)
+        self.diagnostic_pid = int(match[1])
+        report = self.collect_report(self.diagnostic_pid, resumed=True)
         if report["key_id"] != original["key_id"]:
             raise ValueError("relaunch did not use the same saved device identity")
         return report
 
     preserve_connection_diagnostics = _trace.preserve_connection_diagnostics
     require_connection_diagnostics = _trace.require_connection_diagnostics
-
-    def stop_server(self):
-        if self.server is not None and self.server.poll() is None:
-            self.server.terminate()  # Popen owns this exact PID, never a port/name.
-            try:
-                self.server.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                self.server.kill()
-                self.server.wait(timeout=10)
+    finish_connection_diagnostics = _trace.finish_connection_diagnostics
+    stop_server = _trace.stop_server
 
     failure_screenshot = _trace.failure_screenshot
     cleanup = _trace.cleanup
