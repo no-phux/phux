@@ -11,6 +11,7 @@ mod editing;
 mod modes;
 mod overflow;
 mod quick;
+mod size_controls;
 
 fn surface(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     let ink = super::super::tokens_for(cx.system_dark(), desk.settings.theme);
