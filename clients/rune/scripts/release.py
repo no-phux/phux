@@ -88,12 +88,17 @@ def already_reported(logs, sha):
 
 
 def stuck_exit(age, sha, logs):
-    """Exit status once ci is not green. The six-hour comparison is unchanged."""
+    """Exit status once ci is not green. The six-hour comparison is unchanged.
+
+    `logs is None` means the run list or its failed-step logs could not be
+    read (including a 403). That still fails, so a permission error cannot
+    hide the alert.
+    """
     if age <= STUCK_SECONDS:
         return 0
-    if already_reported(logs, sha):
-        return 0
-    return 1
+    if logs is None or not already_reported(logs, sha):
+        return 1
+    return 0
 
 
 def record_summary(text):
@@ -128,15 +133,24 @@ def prior_failure_logs(sha):
     current = os.environ.get("GITHUB_RUN_ID", "")
     logs = []
     needle = f"ci is not green on {sha}"
+    unreadable = False
     for run_id in listed.stdout.split():
         if run_id == current:
             continue
         viewed = sh("gh", "run", "view", run_id, "--repo", repo, "--log-failed", check=False)
         if viewed.returncode != 0:
+            unreadable = True
+            detail = (viewed.stderr or viewed.stdout or "").strip()
+            if detail:
+                print(detail)
             continue
         logs.append(viewed.stdout)
         if needle in viewed.stdout:
             break
+    # A 403 (or any log-read failure) with no stuck line still alerts.
+    if unreadable and not already_reported(logs, sha):
+        print("could not read rune-auto-release failure logs; reporting this one")
+        return None
     return logs
 
 
@@ -156,7 +170,6 @@ def tag_step(version):
     logs = prior_failure_logs(sha)
     if logs is None:
         print("could not read earlier rune-auto-release failures; reporting this one")
-        logs = []
     if stuck_exit(age, sha, logs) == 0:
         print(f"{line}; already reported")
         record_summary(f"{line}. Already reported for this SHA; not failing again.")

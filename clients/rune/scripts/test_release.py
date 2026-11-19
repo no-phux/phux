@@ -67,6 +67,10 @@ class ReleaseTest(unittest.TestCase):
         log = f"CalledProcessError while pushing {SHA}\n"
         self.assertEqual(stuck_exit(STUCK_SECONDS + 1, SHA, [log]), 1)
 
+    def test_unreadable_history_still_fails(self):
+        self.assertEqual(stuck_exit(STUCK_SECONDS + 1, SHA, None), 1)
+        self.assertEqual(stuck_exit(STUCK_SECONDS, SHA, None), 0)
+
     def test_inside_the_six_hour_gate_still_waits(self):
         self.assertEqual(stuck_exit(STUCK_SECONDS, SHA, []), 0)
         self.assertEqual(stuck_exit(STUCK_SECONDS - 1, SHA, []), 0)
