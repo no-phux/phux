@@ -231,10 +231,16 @@ struct Stepper {
 /// A stepper on the control outline, its value in `tnum`.
 fn stepper(desk: &Desk, t: &Tokens, spec: Stepper) -> El {
     let s = &t.space;
+    let phone = desk.phone.is_some();
+    let button_h = if phone {
+        grown(t.ty.lead, s.s2).max(s.touch_min)
+    } else {
+        s.touch_min
+    };
     let button = |glyph: &'static str, name: String, key: String, by: i32| {
         let step = spec.step;
         pressable(key, t)
-            .size(s.touch_min, s.touch_min)
+            .size(s.touch_min, button_h)
             .focusable(true)
             .radius(t.radius.sm)
             .center()
@@ -250,7 +256,50 @@ fn stepper(desk: &Desk, t: &Tokens, spec: Stepper) -> El {
     };
     let lower = spec.title.to_lowercase();
     let (step, limit) = (spec.step, spec.limit);
-    row()
+    let title = text(spec.title)
+        .font(primary(desk, t).medium())
+        .color(t.roles.text.text.paint())
+        .a11y_hidden();
+    // Keep the requested text size. A wide label moves the whole stepper
+    // below it rather than pushing the plus action outside the card.
+    let title = if phone {
+        // `grow` uses a zero flex basis. The phone needs its preferred
+        // label width to participate in wrapping, not collapse beside it.
+        title
+            .w(super::GEOMETRY.phone_title_min * t.type_scale)
+            .min_w(0.0)
+            .shrink()
+            .wrap()
+    } else {
+        title.grow(1.0)
+    };
+    let value = el().min_w(t.icon.button.lg).center().child(
+        text(spec.shown.clone())
+            .font(if phone {
+                secondary(desk, t)
+            } else {
+                t.ty.micro
+            })
+            .color(t.roles.text.text.paint())
+            .a11y_hidden(),
+    );
+    let controls = row()
+        .gap(s.s1)
+        .items_center()
+        .child(button(
+            "−",
+            format!("Smaller {lower}").replace(" size", ""),
+            format!("{}-smaller", spec.key),
+            -1,
+        ))
+        .child(value)
+        .child(button(
+            "+",
+            format!("Larger {lower}").replace(" size", ""),
+            format!("{}-bigger", spec.key),
+            1,
+        ));
+    let row = row()
         .key(format!("{}-size", spec.key))
         .w_full()
         .min_h(s.touch_min)
@@ -265,33 +314,13 @@ fn stepper(desk: &Desk, t: &Tokens, spec: Stepper) -> El {
         .a11y_value(spec.shown.clone())
         .on_step(move |d: &mut Desk, steps, _| step(d, steps))
         .on_step_limit(move |d: &mut Desk, max, _| limit(d, max))
-        .child(
-            text(spec.title)
-                .font(primary(desk, t).medium())
-                .color(t.roles.text.text.paint())
-                .grow(1.0)
-                .a11y_hidden(),
-        )
-        .child(button(
-            "−",
-            format!("Smaller {lower}").replace(" size", ""),
-            format!("{}-smaller", spec.key),
-            -1,
-        ))
-        .child(
-            el().w(t.icon.button.lg).center().child(
-                text(spec.shown)
-                    .font(t.ty.micro)
-                    .color(t.roles.text.text.paint())
-                    .a11y_hidden(),
-            ),
-        )
-        .child(button(
-            "+",
-            format!("Larger {lower}").replace(" size", ""),
-            format!("{}-bigger", spec.key),
-            1,
-        ))
+        .child(title)
+        .child(controls);
+    if phone {
+        row.flex_wrap().justify_between()
+    } else {
+        row
+    }
 }
 
 /// The chosen theme as a terminal shows it: its own ground and ink (terminal
