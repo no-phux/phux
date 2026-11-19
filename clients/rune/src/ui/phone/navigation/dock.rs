@@ -1,0 +1,83 @@
+//! The Sessions page's floating New session dock: native Liquid Glass on
+//! the iOS host, Rune's frosted glass elsewhere.
+
+use rune::{Color, El, text};
+
+use super::{Desk, Look, control};
+use crate::ui::icons;
+use crate::ui::tokens::{GlassSurface, Tier, Voice};
+
+/// New session, or Open or create `name` while a search names one; inert
+/// until a connection can run it.
+pub(super) fn footer(desk: &Desk, name: &str, ink: Color, p: &Look) -> El {
+    let s = &p.space;
+    let create = if name.is_empty() {
+        "New session".to_owned()
+    } else {
+        format!("Open or create “{name}”")
+    };
+    let title = if name.is_empty() {
+        "New session"
+    } else {
+        "Open or create session"
+    };
+    let footer = control("phone-session-new", &create, p, |d, _| {
+        d.phone_create_session()
+    })
+    .w_full()
+    .radius(p.radius.full);
+    let footer = if super::super::native_glass(desk, p) {
+        let control = crate::mobile::Control {
+            key: "phone-session-new".to_owned(),
+            label: create,
+            title: Some(title.to_owned()),
+            subtitle: None,
+            leading: false,
+            symbol: "plus",
+            enabled: desk.connection.client.is_some(),
+            dark: p.dark(),
+            ink,
+            badge: None,
+        };
+        super::super::hosted(desk, footer, control)
+    } else {
+        frosted(
+            footer
+                .gap(s.s2)
+                .center()
+                .child(
+                    rune::icon(&icons::PLUS, p.icon.size.lg)
+                        .color(ink)
+                        .a11y_hidden(),
+                )
+                .child(
+                    text(title)
+                        .key("phone-session-new-label")
+                        .font(p.ty.label.medium())
+                        .color(ink)
+                        .truncate()
+                        .a11y_hidden(),
+                ),
+            p,
+        )
+    };
+    if desk.connection.client.is_some() {
+        footer
+    } else {
+        footer.inert()
+    }
+}
+
+/// The session dock: glass over the scrolling list, the phone's one
+/// backdrop blur (§1.9). Opaque under increased contrast, Reduce
+/// Transparency and forced colours. The native host draws it as the
+/// system's Liquid Glass instead ([`footer`]).
+fn frosted(e: El, p: &Look) -> El {
+    let e = p.glass_panel(
+        e,
+        GlassSurface::PhoneBar,
+        p.glass_tint_layer(),
+        p.roles.layer.raised,
+    );
+    p.elevate(e.continuous_corners(), Tier::Floating)
+}

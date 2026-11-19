@@ -21,20 +21,24 @@ import time
 import uuid
 import urllib.parse
 
-_spec = importlib.util.spec_from_file_location("rune_qualification_reports", Path(__file__).with_name("qualification_reports.py"))
-_reports = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_reports)
+
+def _sibling(name, module):
+    """A helper module beside this script, loaded without a package."""
+    spec = importlib.util.spec_from_file_location(name, Path(__file__).with_name(module + ".py"))
+    loaded = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(loaded)
+    return loaded
+
+
+_reports = _sibling("rune_qualification_reports", "qualification_reports")
 SESSION = _reports.SESSION
 INPUT_CONTRACTS = _reports.INPUT_CONTRACTS
 validate_report = _reports.validate_report
 validate_input_contracts = _reports.validate_input_contracts
 validate_tree = _reports.validate_tree
-_settle_spec = importlib.util.spec_from_file_location("rune_simulator_settle", Path(__file__).with_name("simulator_settle.py"))
-_settle = importlib.util.module_from_spec(_settle_spec)
-_settle_spec.loader.exec_module(_settle)
-_trace_spec = importlib.util.spec_from_file_location("rune_connection_diagnostics", Path(__file__).with_name("connection_diagnostics.py"))
-_trace = importlib.util.module_from_spec(_trace_spec)
-_trace_spec.loader.exec_module(_trace)
+_settle = _sibling("rune_simulator_settle", "simulator_settle")
+_trace = _sibling("rune_connection_diagnostics", "connection_diagnostics")
+_glass = _sibling("rune_liquid_glass", "liquid_glass")
 
 BUNDLE_ID = "sh.phux.rune.ios"
 MARKER = "RUNE_IOS_INPUT_OK"
@@ -280,6 +284,9 @@ class Qualification:
         self.diagnostic_reports.add(prefix)
         return report
 
+    def qualify_glass(self, pid):
+        return _glass.qualify(self, pid)
+
     def await_scene_report(self, source, pid, message):
         deadline = time.monotonic() + 30
         while not source.is_file():
@@ -357,6 +364,7 @@ def qualify(app, phux, out, transport="quic"):
             lane.create_simulator()
             pid = lane.launch(socket)
             report = lane.collect_report(pid)
+            lane.qualify_glass(pid)
             resumed = lane.resume_identity(report)
             (out / "evidence.json").write_text(json.dumps({
                 "schema": 1, "report": report, "resumed_report": resumed, "app_pid": pid,

@@ -7,6 +7,7 @@ use rune::{Runtime, TouchPhase};
 
 use super::*;
 
+mod native_glass;
 mod navigation;
 mod settings;
 mod sheets;

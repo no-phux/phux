@@ -14,9 +14,10 @@ use super::{Desk, Look};
 use crate::addressable::Addressable;
 use crate::desk::phone::navigation::Page;
 use crate::keys::{self, Shortcut};
-use crate::ui::tokens::{GlassSurface, Paint, Tier};
+use crate::ui::tokens::Paint;
 use crate::ui::{badge, icons, pressable};
 
+mod dock;
 mod resource;
 use crate::ui::Cover;
 use resource::resource_row;
@@ -159,19 +160,6 @@ fn note(words: impl Into<String>, p: &Look) -> El {
     )
 }
 
-/// The session dock: glass over the scrolling list, the phone's one
-/// backdrop blur (§1.9). Opaque under increased contrast, Reduce
-/// Transparency and forced colours.
-fn dock(e: El, p: &Look) -> El {
-    let e = p.glass_panel(
-        e,
-        GlassSurface::PhoneBar,
-        p.glass_tint_layer(),
-        p.roles.layer.raised,
-    );
-    p.elevate(e.continuous_corners(), Tier::Floating)
-}
-
 fn sessions(desk: &Desk, p: &Look) -> El {
     let s = &p.space;
     let phone = desk.phone.as_ref().expect("phone navigation");
@@ -207,42 +195,7 @@ fn sessions(desk: &Desk, p: &Look) -> El {
         )
         .child(search);
     let list = session_list(desk, p);
-    let name = phone.query.text.trim();
-    let create = if name.is_empty() {
-        "New session".to_owned()
-    } else {
-        format!("Open or create “{name}”")
-    };
-    let footer = control("phone-session-new", &create, p, |d, _| {
-        d.phone_create_session()
-    })
-    .w_full()
-    .gap(s.s2)
-    .center()
-    .radius(p.radius.full)
-    .child(
-        rune::icon(&icons::PLUS, p.icon.size.lg)
-            .color(ink)
-            .a11y_hidden(),
-    )
-    .child(
-        text(if name.is_empty() {
-            "New session"
-        } else {
-            "Open or create session"
-        })
-        .key("phone-session-new-label")
-        .font(p.ty.label.medium())
-        .color(ink)
-        .truncate()
-        .a11y_hidden(),
-    );
-    let footer = dock(footer, p);
-    let footer = if desk.connection.client.is_some() {
-        footer
-    } else {
-        footer.inert()
-    };
+    let footer = dock::footer(desk, phone.query.text.trim(), ink, p);
     col()
         .w_full()
         .grow(1.0)
