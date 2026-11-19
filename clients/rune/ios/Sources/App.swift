@@ -207,6 +207,7 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
         }
         let surface = RuneView(configuration:configuration)
         surface.qualification = probe
+        probe?.surface = surface
         surface.failed = { [weak self] message in
             self?.probe?.failure(message)
             self?.showFailure(message)

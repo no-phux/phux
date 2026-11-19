@@ -5,7 +5,9 @@
 //!
 //! Every control is a touch target of `space.touch_min` on an opaque
 //! surface: the phone spends its one backdrop blur on the session dock
-//! (§1.9), so nothing here fakes glass.
+//! (§1.9), so nothing here fakes glass. On the native iOS host the floating
+//! controls (the top bar's back, bell and more, and the session dock) are
+//! instead UIKit's own Liquid Glass ([`hosted`]).
 
 use std::ops::Deref;
 use std::rc::Rc;
@@ -66,6 +68,10 @@ pub(super) fn top_bar_height() -> f32 {
 
 pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     form::observe(cx);
+    // This run notes the native controls it lays out afresh.
+    if let Some(native) = &desk.native {
+        native.controls.borrow_mut().clear();
+    }
     let p = page_look(desk);
     let fallback = Phone::default();
     let phone = desk.phone.as_ref().unwrap_or(&fallback);
@@ -240,6 +246,67 @@ pub(super) fn surface(e: El, p: &Look) -> El {
 /// pointer.
 pub(super) fn touchable(e: El, p: &Look) -> El {
     p.kit.interactive(e).cursor(Cursor::Pointer)
+}
+
+/// Whether the floating controls are the system's Liquid Glass: on the
+/// native host, wherever glass may draw at all (§1.9). Under increased
+/// contrast, Reduce Transparency or forced colours Rune paints them opaque,
+/// as on every other host. The phone has no Glass slider (`Desk::glass`
+/// is the desktop's), so the setting is the system's.
+pub(super) fn native_glass(desk: &Desk, p: &Look) -> bool {
+    desk.native.is_some() && p.glass_allowed()
+}
+
+/// `placeholder`, an empty labelled box with the control's key and size,
+/// noted for the native host to draw as `control` (see
+/// [`crate::mobile::Control`]). The caller keeps its press and state on
+/// the box, so a native tap and Rune's accessibility press run the same
+/// handler. Rune's accessibility node stays: it is not iOS VoiceOver's
+/// (the UIKit control is), so nothing is announced twice.
+pub(super) fn hosted(desk: &Desk, placeholder: El, control: crate::mobile::Control) -> El {
+    if let Some(native) = &desk.native {
+        native.controls.borrow_mut().push(control);
+    }
+    placeholder
+}
+
+/// A floating round symbol button with an optional dot (`badge`): native
+/// Liquid Glass where [`native_glass`], else [`round`] with `badge` drawn
+/// on its upper trailing shoulder.
+fn floating_round(
+    desk: &Desk,
+    key: &'static str,
+    name: &'static str,
+    icon: &'static rune::Icon,
+    symbol: &'static str,
+    badge: Option<Color>,
+    p: &Look,
+) -> El {
+    let ink = p.roles.text.text.paint();
+    if !native_glass(desk, p) {
+        let dot = (p.round() - p.space.s4, p.space.s2);
+        return round(key, name, glyph(icon, p.icon.size.lg, ink), p)
+            .children(badge.map(|tone| news::dot(p, dot, p.space.s2, tone)));
+    }
+    let placeholder = el()
+        .key(key)
+        .size(p.round(), p.round())
+        .radius(p.radius.full)
+        .label(name);
+    let control = crate::mobile::Control {
+        key: key.to_owned(),
+        label: name.to_owned(),
+        title: None,
+        symbol,
+        subtitle: None,
+        leading: false,
+
+        enabled: true,
+        dark: p.dark(),
+        ink,
+        badge,
+    };
+    hosted(desk, placeholder, control)
 }
 
 /// A round control around `content`: the 44-point touch target.

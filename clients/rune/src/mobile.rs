@@ -5,6 +5,7 @@
 use phux_client_runtime::Target;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::cell::RefCell;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -24,6 +25,39 @@ pub struct Platform {
     /// When the app left the foreground. Wall time: a monotonic clock may
     /// stand still while the device sleeps.
     pub away_since: Option<SystemTime>,
+    /// The floating controls the last view run left for UIKit to draw as
+    /// Liquid Glass ([`Control`]). The view only has `&Desk`, so it notes
+    /// them here; the host reads where they landed after each frame.
+    pub(crate) controls: RefCell<Vec<Control>>,
+}
+
+/// A floating phone control that Rune lays out, names and acts for, and the
+/// native host draws: Liquid Glass must own its content, or it would blur
+/// Rune's own label beneath it. Rune keeps an empty, labelled box of the
+/// same size in its place, so layout, hit testing and its accessibility
+/// node are unchanged; a tap on the native control runs that node's press.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Control {
+    /// The Rune element's key, which the host's tap names back.
+    pub key: String,
+    /// The accessible name, which VoiceOver reads.
+    pub label: String,
+    /// Visible text beside the symbol; none for a round symbol button.
+    pub title: Option<String>,
+    /// A second, smaller line under the title, in its own colour.
+    pub subtitle: Option<(String, rune::Color)>,
+    /// Text starts at the leading edge with the symbol trailing, as a
+    /// navigation title does; otherwise symbol and title are centred.
+    pub leading: bool,
+    /// An SF Symbol name.
+    pub symbol: &'static str,
+    pub enabled: bool,
+    /// Whether the ground it sits on is dark, for the glass's appearance.
+    pub dark: bool,
+    /// Its symbol and title colour, linear.
+    pub ink: rune::Color,
+    /// A dot on its upper trailing shoulder (the bell's unread news).
+    pub badge: Option<rune::Color>,
 }
 
 impl Platform {
@@ -36,6 +70,7 @@ impl Platform {
             connection_requested: false,
             paste_requested: false,
             away_since: None,
+            controls: RefCell::default(),
         }
     }
 
@@ -343,6 +378,7 @@ fn with_target(target: Target, session: Option<String>) -> State {
         paste_requested: false,
         active: true,
         away_since: None,
+        controls: RefCell::default(),
     });
     state
 }
@@ -404,7 +440,8 @@ pub fn report(rt: &rune::Runtime<State>, frames: u64, marker: &str) -> Value {
 
 mod host;
 pub use host::{
-    edge_srgb, paste, path_changed, set_accessibility, take_requests, viewport_changed, zoom,
+    controls, edge_srgb, paste, path_changed, press, set_accessibility, take_requests,
+    viewport_changed, zoom,
 };
 
 #[cfg(test)]
