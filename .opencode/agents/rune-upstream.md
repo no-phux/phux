@@ -120,9 +120,9 @@ from evidence, state the assumption in the PR, and keep going.
    `examples/` changed for the same commits.
 5. **Bump and adapt.** `git worktree add -b rune-upstream/HEAD7
    ../worktrees/rune-upstream-HEAD7 origin/main`, and work there. Set the
-   new rev on **all nine** upstream entries in `clients/rune/Cargo.toml`:
-   `rune`, `rune-notify`, `rune-perf`, `rune-kit`, and all five
-   `[patch.crates-io]` entries (`winit`, `parley_engine`, `wgpu-hal`,
+   new rev on **all ten** upstream entries in `clients/rune/Cargo.toml`:
+   `rune`, `rune-notify`, `rune-perf`, `rune-kit`, and all six
+   `[patch.crates-io]` entries (`winit`, `sctk-adwaita`, `parley_engine`, `wgpu-hal`,
    `accesskit_windows`, `accesskit_macos`). Reinspect the manifest if upstream
    changes this set; never reintroduce the removed `rune-mac` pin.
    Then `cargo update --manifest-path clients/rune/Cargo.toml -p rune` and

@@ -71,10 +71,10 @@ class VisualReview(unittest.TestCase):
 
     def test_bundle_has_all_families_hashes_and_honest_status(self):
         manifest = self.produce()
-        self.assertEqual(len(manifest["cases"]), 443)
+        self.assertEqual(len(manifest["cases"]), 491)
         self.assertEqual({family: sum(case["family"] == family for case in manifest["cases"])
                           for family in review.FAMILIES},
-                          {"inbox": 192, "settings": 34, "navigation": 216, "resources": 1})
+                          {"inbox": 192, "settings": 82, "navigation": 216, "resources": 1})
         case = next(case for case in manifest["cases"] if case["png"] == self.subject)
         self.assertEqual(case["physical"], [320, 568])
         self.assertEqual(case["logical"], [320, 568])
@@ -101,6 +101,8 @@ class VisualReview(unittest.TestCase):
                          "phone_pane_motion_visual_review_frames")
         self.assertEqual(review.exporter_for("settings", "desktop"),
                          "settings_native_render_frames")
+        self.assertEqual(review.exporter_for("settings", "size-small-dark-ax5-text-bigger-1x"),
+                         "settings_size_visual_review_frames")
         self.assertEqual(review.exporter_for("navigation", "inventory-light-393"),
                          "session_browser_renders_realistic_dark_light_and_search_states")
         self.assertEqual(review.exporter_for("resources", "mixed"),
@@ -330,58 +332,8 @@ class VisualReview(unittest.TestCase):
         binaries = self.root / "bin"
         binaries.mkdir()
         cargo = binaries / "cargo"
-        cargo.write_text(f"#!{sys.executable}\n" + r'''
-import json, os
-from pathlib import Path
-import struct, sys
-sys.dont_write_bytecode = True
-sys.path.insert(0, str(Path.cwd() / "scripts"))
-import visual_review as review
-assert sys.argv[1:5] == ["test", "--release", "--locked", "--lib"]
-assert sys.argv[6:] == ["--", "--nocapture", "--test-threads=1"]
-assert not any(key.startswith(("PHUX_", "SIMCTL_CHILD_PHUX_")) for key in os.environ)
-assert Path.cwd().name == "rune"
-filters = {
-    "phone_inbox_visual_review_frames": "RUNE_INBOX_SNAP",
-    "phone_acp_visual_review_frames": "RUNE_INBOX_SNAP",
-    "settings_native_render_frames": "RUNE_SETTINGS_SNAP",
-    "mobile_appearance_and_real_theme_palette_render_accept_and_cancel": "RUNE_SETTINGS_SNAP",
-    "session_browser_renders_realistic_dark_light_and_search_states": "RUNE_NAVIGATION_SNAP",
-    "retina_navigation_renders_in_native_safe_area_and_desktop_phone_viewports": "RUNE_NAVIGATION_SNAP",
-    "phone_header_visual_review_frames": "RUNE_NAVIGATION_SNAP",
-    "phone_pane_motion_visual_review_frames": "RUNE_NAVIGATION_SNAP",
-    "native_png_headless_renderer_smoke": "RUNE_RESOURCE_SNAP",
-}
-filter = sys.argv[5]
-variable = filters[filter]
-for relative, (width, height, scale) in review.required_inventory().items():
-    case = Path(relative)
-    if review.exporter_for(case.parts[0], case.stem) != filter:
-        continue
-    path = Path(os.environ[variable])
-    if variable != "RUNE_RESOURCE_SNAP":
-        path = path / case.name
-    path.write_bytes(struct.pack(">8sI4sIIBBBBBI", b"\x89PNG\r\n\x1a\n",
-                                13, b"IHDR", width * scale, height * scale, 8, 6, 0, 0, 0, 0))
-    tree = {
-        "schema": 1, "projection": "test fixture", "viewport": [width, height],
-        "scale": scale, "pixels": [width * scale, height * scale],
-        "scenario": "exported fixture", "theme": "dark",
-        "elements": [{"path": "root"}], "accessibility": {},
-    }
-    if path.stem.startswith("pane-motion-"):
-        stage = next(stage for stage in review.MOTION_FRAMES if path.stem.endswith(f"-{stage}"))
-        scenario = path.stem[:-(len(stage) + 1)]
-        tree["scenario"] = scenario
-        frame = review.MOTION_FRAMES[stage]
-        path.with_suffix(".motion.json").write_text(json.dumps({
-            "schema": 1, "scenario": scenario, "stage": stage,
-            "frame": frame, "elapsed_ms": frame * 1000.0 / 60.0,
-        }))
-    path.with_suffix(".json").write_text(json.dumps(tree))
-print("running 1 test")
-print("test result: ok. 1 passed")
-''')
+        fixture = Path(__file__).with_name("visual_runner_fixture.py").read_text()
+        cargo.write_text(f"#!{sys.executable}\n{fixture}")
         cargo.chmod(0o755)
         out = self.root / "fresh review"
         environment = {
@@ -393,10 +345,10 @@ print("test result: ok. 1 passed")
                                 env=environment, cwd=self.root, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         manifest = json.loads((out / "manifest.json").read_text())
-        self.assertEqual(len(manifest["cases"]), 443)
+        self.assertEqual(len(manifest["cases"]), 491)
         self.assertEqual(manifest["currentRunePin"], "test-pin")
         self.assertFalse(manifest["dirty"])
-        self.assertEqual(len(list((out / "logs").glob("*.log"))), 10)
+        self.assertEqual(len(list((out / "logs").glob("*.log"))), 11)
 
 
 if __name__ == "__main__":

@@ -86,8 +86,9 @@ or a passing exporter are not a visual judgment. Do not retry captures into
 looking good or add a new AI dependency/scoring framework. Existing input
 ownership, literal pane arrangement and the good command palette stay intact.
 
-Bumps move all nine upstream manifest entries together: four direct Rune
-dependencies and five crates.io patches, not the removed `rune-mac` entry.
+Bumps move all ten upstream manifest entries together: four direct Rune
+dependencies and six crates.io patches, including `sctk-adwaita` for Wayland
+frame corners, not the removed `rune-mac` entry. Recheck upstream's patch set.
 The release policy follows the current patch-release train in
 [Releasing](../../docs/releasing.md#phux-rune), not the historic alpha sequence.
 Visual review supplements all existing check, packaged/native qualification
