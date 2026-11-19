@@ -24,7 +24,7 @@ const fn state(verdict: Verdict) -> (State, &'static str) {
     }
 }
 
-fn item(item: &Item, here: &str, copied: bool, t: &Tokens) -> El {
+fn item(item: &Item, here: &str, copied: bool, phone: bool, t: &Tokens) -> El {
     let s = &t.space;
     let r = &t.roles;
     let (state, word) = state(item.verdict);
@@ -85,6 +85,7 @@ fn item(item: &Item, here: &str, copied: bool, t: &Tokens) -> El {
             .child(row().gap(s.s1).child(copy).child(chip(
                 "Run in a new pane",
                 format!("check-run-{}", item.id),
+                phone,
                 t,
                 move |d: &mut Desk| d.run_fix(&run),
             )))
@@ -118,6 +119,7 @@ pub(super) fn checklist(machine: Option<&str>, desk: &Desk, t: &Tokens) -> Optio
         .child(chip(
             "Refresh",
             "check-refresh".to_owned(),
+            desk.phone.is_some(),
             t,
             move |d: &mut Desk| {
                 d.ask_checklist(held.clone());
@@ -142,7 +144,7 @@ pub(super) fn checklist(machine: Option<&str>, desk: &Desk, t: &Tokens) -> Optio
         Some(Ok(items)) if items.is_empty() => body.child(note("Nothing to report.".to_owned())),
         Some(Ok(items)) => items.iter().fold(body, |body, it| {
             let copied = shown.copied.as_deref() == Some(it.id.as_str());
-            body.child(item(it, here, copied, t))
+            body.child(item(it, here, copied, desk.phone.is_some(), t))
         }),
     })
 }

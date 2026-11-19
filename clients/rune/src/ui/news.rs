@@ -56,7 +56,7 @@ pub fn bell(desk: &Desk, p: &Tokens) -> El {
     )
 }
 
-pub fn view(_desk: &Desk, p: &Tokens) -> El {
+pub fn view(desk: &Desk, p: &Tokens) -> El {
     let t = p;
     let s = &t.space;
     let r = &t.roles;
@@ -90,7 +90,9 @@ pub fn view(_desk: &Desk, p: &Tokens) -> El {
         top: s.s12 + s.s12,
         close: Desk::close_news,
     };
-    sheet.build(None, body, key_hint("esc", "close", p), p)
+    // A phone has no Escape: its sheet closes from the header's button.
+    let foot = desk.phone.is_none().then(|| key_hint("esc", "close", p));
+    sheet.build(None, body, foot, p)
 }
 
 #[cfg(test)]
