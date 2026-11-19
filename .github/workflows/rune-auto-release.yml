@@ -47,14 +47,6 @@ jobs:
         with:
           client-id: ${{ vars.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-          # Any permission-* input replaces "inherit every installation
-          # permission". actions: read is what listing runs and failed-step
-          # logs need, and mint fails if the installation lacks it. contents
-          # and pull-requests stay so this token can still push the tag and
-          # open the bump PR.
-          permission-actions: read
-          permission-contents: write
-          permission-pull-requests: write
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
