@@ -105,7 +105,7 @@ fn depth_of(theme: &ratcn::Theme) -> Depth {
 ///
 /// - 256: every `Rgb` snaps to the nearest xterm entry (16–255).
 /// - 16 and none: an `Rgb` fill is a derived focus/hover/cursor state and
-///   becomes reverse video on the terminal's own pair; the [`GROUND`]
+///   becomes reverse video on the terminal's own pair; the ground
 ///   stand-in becomes `Reset`; an `Rgb` ink becomes `Reset`. At 16 colours
 ///   the theme's own ANSI slots (an error fill, an accent) stay.
 pub fn fit(buf: &mut Buffer, area: Rect, depth: Depth) {

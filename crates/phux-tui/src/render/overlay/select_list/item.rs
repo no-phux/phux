@@ -11,7 +11,7 @@ pub enum SelectKind {
     Header,
 }
 
-/// One row in a [`SelectList`] — either a selectable item or a header.
+/// One row in a [`SelectList`](super::SelectList) — either a selectable item or a header.
 #[derive(Debug, Clone)]
 pub struct SelectItem {
     /// Primary display label (left column).
