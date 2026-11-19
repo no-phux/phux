@@ -94,7 +94,7 @@ dependency edges.
 | `phux-terminal-api` | engine-independent Terminal contracts: launch intent, factory, input and presentation ports, opaque captures and report types; no VT or PTY implementation |
 | `phux-server` | the daemon: hosts resources and serves them to clients, including the replicated-document engine behind `AccessibilityTree`, `PixelSurface` and `Document`; links no VT library and no PTY directly |
 | `phux-agent-host` | guardian process for native agent sessions over ACP |
-| `phux-tui` | the terminal UI: attach driver, ratatui chrome, widget runtime, overlays; also the native VT driver sharing terminal restoration; the only crate that links ratatui |
+| `phux-tui` | the terminal UI: attach driver, ratatui chrome, ratcn widgets, overlays; also the native VT driver sharing terminal restoration; the only crate that links ratatui |
 | `phux-mcp` | the `phux-mcp` binary: MCP over stdio |
 | `phux-server-testkit` | fixtures for server wire tests; dev-only |
 | `phux-wire-fixtures` | frame builders for client-side tests; wasm-safe; dev-only |
