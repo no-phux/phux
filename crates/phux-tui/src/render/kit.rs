@@ -23,7 +23,7 @@ use ratcn::runtime::{
 };
 
 use crate::render::Theme;
-use crate::render::theme::{Depth, identity_256};
+use crate::render::theme::{Depth, identity_256, is_24_bit};
 
 /// The area an overlay is declared in before it has ever painted: the
 /// classic terminal size, so offscreen routing lays components out as a
@@ -126,13 +126,13 @@ fn fit_cell(cell: &mut ratatui::buffer::Cell, depth: Depth) {
         cell.bg = identity_256(cell.bg);
         return;
     }
-    if matches!(cell.bg, Color::Rgb(..)) {
+    if is_24_bit(cell.bg) {
         cell.modifier.insert(Modifier::REVERSED);
         cell.bg = Color::Reset;
     } else if cell.bg == GROUND || depth == Depth::Mono {
         cell.bg = Color::Reset;
     }
-    if matches!(cell.fg, Color::Rgb(..)) || cell.fg == GROUND || depth == Depth::Mono {
+    if is_24_bit(cell.fg) || cell.fg == GROUND || depth == Depth::Mono {
         cell.fg = Color::Reset;
     }
 }
