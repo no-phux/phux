@@ -155,6 +155,63 @@ class ConnectionDiagnostics(unittest.TestCase):
                              lane.documents / "rune-background.json")
             lane.require_connection_diagnostics()
 
+    def test_preparation_failure_report_acknowledges_the_seal_without_a_consumer(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            lane = self.lane(Path(temporary))
+            lane.diagnostic_prefixes = [""]
+            lane.diagnostic_reports = set()
+            lane.diagnostic_pid = 123
+            phases = ("attempt_started", "enroll_runtime", "enroll_validate", "enroll_plan",
+                      "enroll_prepare", "enroll_connect", "enroll_read", "enroll_deadline",
+                      "enroll_failed")
+            data = b"".join(json.dumps({
+                "connection": 1, "attempt": 1, "elapsed_ms": index,
+                "process_elapsed_ms": index, "phase": phase,
+            }).encode() + b"\n" for index, phase in enumerate(phases))
+            (lane.documents / "rune-connection-diagnostics.jsonl").write_bytes(data)
+            (lane.documents / "rune-connection-diagnostics.status.json").write_text(json.dumps(
+                {"complete": True, "failed": False, "events": len(phases)}))
+            (lane.out / "rune-qualification.json").write_text(json.dumps(
+                {"schema": 1, "error": "original sanitized failure", "preparation_failed": True}))
+            lane.simctl = Mock(side_effect=AssertionError("no competing background transition"))
+            lane.finish_connection_diagnostics()
+            status = lane.preserve_connection_diagnostics()
+            self.assertEqual(status["files"][0]["status"], "retained")
+            self.assertEqual(status["files"][0]["enrollment_failures"], 1)
+            self.assertEqual(status["files"][0]["enrollment_deadlines"], 1)
+            self.assertEqual(status["files"][0]["ready_attempts"], 0)
+            with self.assertRaisesRegex(ValueError, "missing usable inventory"):
+                diagnostics.validate_trace(data, require_ready=True)
+            with self.assertRaisesRegex(ValueError, "both fixture processes"):
+                lane.require_connection_diagnostics()
+
+    def test_preparation_shortcut_never_bypasses_success_or_invalid_completion(self):
+        for successful, pending, lost in ((True, False, False), (False, True, False),
+                                           (False, False, True)):
+            with self.subTest(successful=successful, pending=pending, lost=lost), \
+                    tempfile.TemporaryDirectory() as temporary:
+                lane = self.lane(Path(temporary))
+                self.seed(lane)
+                lane.diagnostic_prefixes = [""]
+                lane.diagnostic_reports = {""} if successful else set()
+                lane.diagnostic_pid = 123
+                (lane.out / "rune-qualification.json").write_text(json.dumps(
+                    {"schema": 1, "error": "original failure", "preparation_failed": True}))
+                stem = lane.documents / "rune-connection-diagnostics"
+                if pending:
+                    stem.with_suffix(".status.pending").write_bytes(b'{"complete":')
+                if lost:
+                    stem.with_suffix(".status.json").write_text(json.dumps(
+                        {"complete": True, "failed": True, "events": 8}))
+                lane.simctl = Mock()
+                lane.await_scene_report = Mock()
+                lane.finish_connection_diagnostics()
+                self.assertEqual(lane.simctl.call_count, int(successful))
+                self.assertEqual(lane.await_scene_report.call_count, 2 * int(successful))
+                if not successful:
+                    self.assertEqual(lane.preserve_connection_diagnostics()["files"][0]["status"],
+                                     "invalid")
+
     def test_pending_completion_is_retained_and_never_certifies_capture(self):
         with tempfile.TemporaryDirectory() as temporary:
             lane = self.lane(Path(temporary))

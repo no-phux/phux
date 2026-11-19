@@ -28,6 +28,13 @@ struct QualificationProgress {
 
 /// Qualification's readiness file must describe the frame whose tree was saved.
 enum QualificationEvidence {
+    /// A pre-consumer failure report also acknowledges that synchronous seal
+    /// cleanup returned. It is never rendered-input or lifecycle evidence.
+    static func preparationFailure(seal: () -> Void, publish: () -> Void) {
+        seal()
+        publish()
+    }
+
     static func publish(report: [String: Any], tree: [String: Any], marker: String,
                         didPresent: Bool, write: ([String: Any], String) throws -> Void) throws -> Bool {
         guard didPresent, report["marker_seen"] as? Bool == true,

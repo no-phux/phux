@@ -131,7 +131,7 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
                 let configuration = try await probe.prepareConnection()
                 guard !Task.isCancelled, let self else { return }
                 self.open(configuration)
-            } catch { probe.failure(error.localizedDescription); self?.show(error.localizedDescription) }
+            } catch { probe.preparationFailure(error.localizedDescription); self?.show(error.localizedDescription) }
         }
     }
     func importPairing(_ url: URL) {

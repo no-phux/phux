@@ -150,7 +150,8 @@ class Qualification:
         socket = self.scratch / "s"
         env = server_environment(self.scratch)
         # Extra server phases are opt-in for this isolated fixture only.
-        env["RUST_LOG"] = "phux=info,warn,phux_server::publication_diagnostics=debug"
+        env["RUST_LOG"] = ("phux=info,warn,phux_server::publication_diagnostics=debug,"
+                           "phux_server::enrollment_diagnostics=debug")
         policy = Path(env["XDG_CONFIG_HOME"]) / "phux/config.toml"
         policy.parent.mkdir(parents=True, exist_ok=True)
         policy.write_text('[policy]\nmode = "paired"\n')
@@ -199,7 +200,8 @@ class Qualification:
         (self.out / "simulator.json").write_text(json.dumps({
             "udid": self.udid, "runtime": runtime, "device_type": device,
         }, indent=2) + "\n")
-        self.simctl("boot", self.udid)
+        # -b boots and waits under the existing 240s readiness deadline,
+        # without a separate boot RPC's premature generic 30s cutoff.
         self.simctl("bootstatus", self.udid, "-b", timeout=240)
         self.settle()
 

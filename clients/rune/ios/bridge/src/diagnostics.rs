@@ -34,6 +34,28 @@ const PHASES: &[&str] = &[
     "nudge_requested",
     "path_changed",
     "probe_deadline",
+    "enroll_runtime",
+    "enroll_validate",
+    "enroll_plan",
+    "enroll_public_key",
+    "enroll_csr",
+    "enroll_prepare",
+    "enroll_connect",
+    "enroll_relay_connect",
+    "enroll_open_stream",
+    "enroll_write",
+    "enroll_read",
+    "enroll_drain",
+    "enroll_decode",
+    "enroll_chain",
+    "enroll_succeeded",
+    "enroll_failed",
+    "enroll_deadline",
+    "enroll_refused",
+    "enroll_authority_changed",
+    "enroll_unreachable",
+    "enroll_stalled",
+    "enroll_exchange_failed",
 ];
 
 struct Capture {
@@ -186,6 +208,9 @@ impl Subscriber for Capture {
     fn enter(&self, _: &Id) {}
     fn exit(&self, _: &Id) {}
 }
+
+#[cfg(test)]
+mod enrollment_tests;
 
 #[cfg(test)]
 mod tests {

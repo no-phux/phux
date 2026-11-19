@@ -114,6 +114,17 @@ connected.publish { true }
 precondition(connected.finished)
 precondition(connected.claimFailure(), "a post-success lifecycle failure must still be reported")
 connected.publish { preconditionFailure("lifecycle failure cannot become success") }
+
+// The failure report acknowledges seal cleanup, including a failed seal.
+// Neither callback fabricates frame counts or a rendered-input success.
+var preparation: [String] = []
+QualificationEvidence.preparationFailure(
+    seal: { preparation.append("seal-returned") },
+    publish: {
+        precondition(preparation == ["seal-returned"])
+        preparation.append("original-failure-published")
+    })
+precondition(preparation == ["seal-returned", "original-failure-published"])
 """)
             compiled = subprocess.run(["/usr/bin/xcrun", "--sdk", "macosx", "swiftc", "-swift-version", "6",
                             "-warnings-as-errors", str(source), str(evidence), str(main), "-o", str(root / "cadence")],
