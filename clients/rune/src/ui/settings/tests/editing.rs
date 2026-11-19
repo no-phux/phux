@@ -35,8 +35,8 @@ fn assert_cluster_geometry(node: &Node, value: &str) {
     );
 }
 
-/// Large values keep field-addressed ranges; geometry is separate, not a
-/// second copy of the value in ordinary TextRuns.
+/// Large values live on the field; geometry uses separate containers, not
+/// ordinary TextRuns. macOS/Windows also publish field-addressed selection.
 fn long_geometry(tree: &TreeUpdate, field: &Node, value: &str) -> NodeId {
     assert_eq!(field.children().len(), 1);
     let geometry_id = field.children()[0];
@@ -78,6 +78,52 @@ fn shortcut(rt: &mut Runtime<Desk>, letter: char, shift: bool) {
         },
     });
     rt.frame(0.0);
+}
+
+fn assert_short_search(rt: &Runtime<Desk>, expected: &str) {
+    let tree = rt.accessibility_tree();
+    let (id, field) = tree
+        .nodes
+        .iter()
+        .find(|(_, node)| node.author_id() == Some("settings-query"))
+        .unwrap();
+    assert_eq!(field.value(), Some(expected));
+    assert_eq!(tree.focus, *id);
+    assert!(
+        tree.nodes
+            .iter()
+            .all(|(_, node)| node.class_name() != Some("\x1frune-lines")),
+        "an empty or short search must not become a long-field geometry box",
+    );
+    #[cfg(target_os = "linux")]
+    for (_, item) in &tree.nodes {
+        if let Some(selection) = item.text_selection() {
+            assert_eq!(node(&tree, selection.anchor.node).role(), Role::TextRun);
+            assert_eq!(node(&tree, selection.focus.node).role(), Role::TextRun);
+        }
+    }
+    assert!(rt.state.settings_search_focused());
+    assert_eq!(rt.state.settings_ui.query.text, expected);
+}
+
+#[test]
+fn empty_search_first_unicode_character_clear_and_retype_keep_valid_accessibility() {
+    for (phone, size) in [(false, (1100.0, 720.0)), (true, (393.0, 852.0))] {
+        let mut rt = runtime(size, phone);
+        let before = rt.state.settings;
+        assert!(rt.accessibility_action("settings-query", Action::Focus, None));
+        rt.frame(0.0);
+        assert_short_search(&rt, "");
+        for input in ["🦀", "", "e\u{301}日本語"] {
+            rt.update(|d, _| d.clear_settings_search());
+            if !input.is_empty() {
+                rt.key(crate::keys::plain(Key::Text(input.into())));
+            }
+            rt.frame(0.0);
+            assert_short_search(&rt, input);
+        }
+        assert_eq!(rt.state.settings, before);
+    }
 }
 
 #[test]
@@ -133,10 +179,16 @@ fn a_search_past_64_kib_keeps_accessible_selection_and_replacement() {
         let geometry_id = long_geometry(&tree, field, &pasted);
         assert_ne!(geometry_id, *id);
         assert_eq!(tree.focus, *id);
-        let selection = field.text_selection().unwrap();
-        assert_eq!(selection.anchor.node, *id);
-        assert_eq!(selection.focus.node, *id);
-        assert_eq!(selection.focus.character_index, pasted.len());
+        if cfg!(any(target_os = "macos", target_os = "windows")) {
+            let selection = field.text_selection().unwrap();
+            assert_eq!(selection.anchor.node, *id);
+            assert_eq!(selection.focus.node, *id);
+            assert_eq!(selection.focus.character_index, pasted.len());
+        } else {
+            // AT-SPI only accepts TextRun endpoints. Long fields have
+            // geometry-only children, so they intentionally publish none.
+            assert!(field.text_selection().is_none());
+        }
 
         // The adapters address the field itself in UTF-8 bytes. A stale end
         // and a split scalar must clamp, not panic or edit another control.

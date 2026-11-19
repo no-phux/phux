@@ -85,6 +85,14 @@ Do not multiply every screen by every case. Cover the gallery and selected
 flow, explain inapplicable cases and extend the nearest exporter for gaps.
 Do not lower the requirement or build a giant screenshot framework.
 
+Settings size-control cases use the integrated app view, its actual text
+scale and explicit scroll reveal of the selected button. Compare standard
+and largest iOS accessibility text on both phone widths, including reduced
+native-sized 2× viewports; desktop controls use the desktop's largest 140%
+text scale, not an iOS setting. Check both buttons' complete visible bounds,
+label/value containment and non-overlap, real touch/keyboard activation and
+range limits. A 44-point visible fragment of a taller button is not a pass.
+
 ## Review behavior as well as pixels
 
 Use the trees and behavior tests to check focus/name/role, clipping/scroll
