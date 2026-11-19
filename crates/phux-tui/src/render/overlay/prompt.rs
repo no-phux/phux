@@ -1,40 +1,78 @@
-//! Prompt overlay: a [`LineEdit`] committing `action { arg_key: <text> }`
-//! on Enter; Esc cancels.
+//! Prompt overlay: a ratcn [`Input`] in a [`Dialog`], committing
+//! `action { arg_key: <text> }`.
+//!
+//! Enter in the field (or on the verb button) commits; an empty field
+//! cancels instead of committing a blank name. Esc, `Cancel`, and an empty
+//! commit dismiss. Tab moves between the field and the buttons, and the
+//! mouse clicks either.
+//!
+//! The field keeps the readline set (`C-a`/`C-e`/`C-b`/`C-f`, `C-h`/`C-d`,
+//! `C-k`, `C-w`), and the two edits ratcn's editor leaves out are made here:
+//! `C-u` kills to the start, and Ctrl+Backspace (the legacy BS byte) is a
+//! Backspace. Pastes and multi-character key text insert literally.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 
-use phux_config::keybind::ResolvedAction;
-use phux_protocol::input::key::{KeyAction, KeyEvent, PhysicalKey};
+use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
+use phux_protocol::input::mouse::MouseEvent;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
-use ratatui::text::{Line, Span};
+use ratcn::runtime::{DeclareCtx, Event, EventResult, FocusState, Ratcn};
+use ratcn::text_edit::Editor;
+use ratcn::{Button, Dialog, Input, InputState};
 
-use super::line_edit::LineEdit;
-use super::widgets::Modal;
+use super::widgets::centered_panel;
 use super::{OverlayCommand, RenderOverlay};
+use crate::render::kit::{self, Surface};
 use crate::render::{ChromeBreakpoints, Theme};
 
-/// A single-line text-input modal that commits to an action.
+const DIALOG: &str = "prompt";
+const INPUT: &str = "input";
+const CANCEL: &str = "cancel";
+const COMMIT: &str = "commit";
+
+/// Rows a one-field ratcn dialog takes: border and padding above and
+/// below, the field, the gap row, and the button row.
+const PROMPT_ROWS: u16 = 2 + 2 + 1 + 1 + 1;
+
+/// What the prompt's ratcn surface tracks between frames.
+#[derive(Debug)]
+struct Model {
+    focus: FocusState,
+    input: InputState,
+}
+
+/// What the field, the buttons, and focus traversal ask for.
 #[derive(Debug, Clone)]
+enum Msg {
+    Focus(FocusState),
+    Input(InputState),
+    Submit,
+    Cancel,
+}
+
+/// A single-line text-input modal that commits to an action.
+#[derive(Debug)]
 pub struct PromptOverlay {
-    /// Modal title (e.g. `"rename window"`).
+    /// Modal title (e.g. `"Rename tab"`).
     title: String,
     /// The action name to run on commit (e.g. `"rename-window"`).
     action: String,
-    /// What Enter does, for the border legend (`rename`, `create`).
+    /// The committing button's label, naming what Enter does (`Rename`).
     verb: &'static str,
     /// Dim text shown while the input is empty, saying what it wants.
     placeholder: &'static str,
     /// The arg key the typed text is bound to (e.g. `"name"`).
     arg_key: String,
-    /// Current input buffer and cursor.
-    input: LineEdit,
-    /// Color slots snapshotted from the active [`Theme`] at construction.
-    /// Captured (not borrowed) so the overlay stays `'static`.
+    /// Color slots snapshotted from the active [`Theme`].
     theme: Theme,
     /// `[chrome]` thresholds, stamped by `OverlayState::push`.
     breakpoints: ChromeBreakpoints,
+    model: Model,
+    ui: Surface<Model, Msg>,
+    /// The viewport of the last paint, which input is laid out against.
+    outer: Cell<Rect>,
 }
 
 impl PromptOverlay {
@@ -42,15 +80,21 @@ impl PromptOverlay {
     /// `initial`.
     #[must_use]
     pub fn new(title: &str, action: &str, arg_key: &str, initial: &str, theme: &Theme) -> Self {
+        let runtime = Ratcn::new().focus(|m: &Model| &m.focus, Msg::Focus);
         Self {
             title: title.to_owned(),
             action: action.to_owned(),
-            verb: "ok",
+            verb: "OK",
             placeholder: "",
             arg_key: arg_key.to_owned(),
-            input: LineEdit::new(initial),
             theme: *theme,
             breakpoints: ChromeBreakpoints::default(),
+            model: Model {
+                focus: FocusState::intent([DIALOG, INPUT]),
+                input: InputState::new(initial),
+            },
+            ui: Surface::new(runtime),
+            outer: Cell::new(Rect::new(0, 0, 80, 24)),
         }
     }
 
@@ -59,7 +103,7 @@ impl PromptOverlay {
     #[must_use]
     pub fn rename_window(current_name: &str, theme: &Theme) -> Self {
         Self {
-            verb: "rename",
+            verb: "Rename",
             placeholder: "a name for it",
             ..Self::new("Rename tab", "rename-window", "name", current_name, theme)
         }
@@ -69,7 +113,7 @@ impl PromptOverlay {
     #[must_use]
     pub fn rename_session(current_name: &str, theme: &Theme) -> Self {
         Self {
-            verb: "rename",
+            verb: "Rename",
             ..Self::new(
                 "Rename session",
                 "rename-session",
@@ -84,7 +128,7 @@ impl PromptOverlay {
     #[must_use]
     pub fn new_session(theme: &Theme) -> Self {
         Self {
-            verb: "create",
+            verb: "Create",
             placeholder: "a name for it",
             ..Self::new("New session", "new-session", "name", "", theme)
         }
@@ -94,7 +138,7 @@ impl PromptOverlay {
     #[must_use]
     pub fn popup(theme: &Theme) -> Self {
         Self {
-            verb: "run",
+            verb: "Run",
             placeholder: "a command",
             ..Self::new("Popup", "popup", "command", "", theme)
         }
@@ -105,52 +149,153 @@ impl PromptOverlay {
     #[must_use]
     pub fn new_worktree(theme: &Theme) -> Self {
         Self {
-            verb: "create",
+            verb: "Create",
             placeholder: "a branch name",
             ..Self::new("New worktree", "new-worktree", "branch", "", theme)
         }
     }
 
-    fn committed_action(&self) -> ResolvedAction {
-        let mut args = BTreeMap::new();
-        args.insert(
-            self.arg_key.clone(),
-            toml::Value::String(self.input.as_str().to_owned()),
-        );
-        crate::attach::resolved(&self.action, args)
+    /// The commit for the current text, or a dismissal when it is blank.
+    fn submit(&self) -> OverlayCommand {
+        let text = self.model.input.value();
+        if text.trim().is_empty() {
+            return OverlayCommand::Dismiss;
+        }
+        let args = BTreeMap::from([(self.arg_key.clone(), toml::Value::String(text.to_owned()))]);
+        OverlayCommand::Commit(crate::attach::resolved(&self.action, args))
     }
 
-    fn modal_area(outer: Rect, bp: ChromeBreakpoints) -> Rect {
-        super::confirm::lines_modal_area(outer, 1, bp)
+    fn modal_area(&self, outer: Rect) -> Rect {
+        let wide = centered_panel(outer, 5, 40, PROMPT_ROWS, self.breakpoints);
+        let h = PROMPT_ROWS.min(outer.height);
+        let y = outer.y + (outer.height.saturating_sub(h)) / 2;
+        Rect::new(wide.x, y, wide.width, h)
     }
+
+    /// Declare the dialog filling `area` (the modal rect).
+    fn declare(&self, area: Rect) -> impl FnMut(&mut DeclareCtx<'_, Model, Msg>) + use<> {
+        let title = self.title.clone();
+        let placeholder = self.placeholder;
+        let verb = self.verb;
+        move |ctx| {
+            let dialog = Dialog::new()
+                .title(title.clone())
+                .outer_width(area.width)
+                .outer_height(area.height)
+                .on_dismiss(|| Msg::Cancel)
+                .content(1, move |ctx| {
+                    let field = Input::new()
+                        .value(|m: &Model| &m.input, Msg::Input)
+                        .placeholder(placeholder)
+                        .on_submit(|| Msg::Submit);
+                    let row = ctx.area();
+                    ctx.component(INPUT, field, Rect::new(row.x, row.y, row.width, 1));
+                })
+                .action(
+                    CANCEL,
+                    Button::new("Cancel").secondary().on_press(|| Msg::Cancel),
+                )
+                .action(COMMIT, Button::new(verb).on_press(|| Msg::Submit));
+            ctx.component(DIALOG, dialog, area);
+        }
+    }
+
+    /// Route one ratcn event and fold its message into a command.
+    fn route(&mut self, event: Event) -> OverlayCommand {
+        let area = self.modal_area(self.outer.get());
+        let declare = self.declare(area);
+        let theme = kit::theme(&self.theme);
+        match self.ui.route(event, &self.model, &theme, declare) {
+            EventResult::Emit(Msg::Focus(focus)) => {
+                self.model.focus = focus;
+                OverlayCommand::Stay
+            }
+            EventResult::Emit(Msg::Input(input)) => {
+                self.model.input = input;
+                OverlayCommand::Stay
+            }
+            EventResult::Emit(Msg::Submit) => self.submit(),
+            EventResult::Emit(Msg::Cancel) => OverlayCommand::Dismiss,
+            EventResult::Consumed | EventResult::Ignored => OverlayCommand::Stay,
+        }
+    }
+}
+
+/// `text` inserted at the field's cursor exactly as given, minus control
+/// characters (a paste, or key text ratcn has no single key for).
+pub(super) fn insert_literal(input: &InputState, text: &str) -> InputState {
+    let clean: String = text.chars().filter(|c| !c.is_control()).collect();
+    edited(input, |editor| {
+        editor.insert_str(clean);
+    })
+}
+
+/// `input` after `edit` is applied to a copy of its editor.
+fn edited(input: &InputState, edit: impl FnOnce(&mut Editor<'static>)) -> InputState {
+    let mut editor = input.editor().clone();
+    edit(&mut editor);
+    InputState::from_editor(editor)
+}
+
+/// A key for a focused text field: either applied to `input` here (the
+/// readline edits ratcn's editor leaves out, and key text ratcn has no
+/// single key for), or the ratcn event to route.
+pub(super) fn field_key(input: &mut InputState, key: &KeyEvent) -> Option<Event> {
+    let ctrl = key.mods.contains(ModSet::CTRL);
+    if ctrl && key.key == PhysicalKey::U {
+        *input = edited(input, |editor| {
+            editor.delete_line_by_head();
+        });
+        return None;
+    }
+    if ctrl && matches!(key.key, PhysicalKey::Backspace) {
+        // BS (0x08) decodes as Ctrl+Backspace; it is a plain Backspace here.
+        let plain = KeyEvent {
+            mods: key.mods - ModSet::CTRL,
+            ..key.clone()
+        };
+        return kit::key(&plain);
+    }
+    let event = kit::key(key);
+    if event.is_none()
+        && !key.mods.intersects(ModSet::CTRL | ModSet::ALT)
+        && let Some(text) = key.text.as_deref()
+        && !text.is_empty()
+        && !text.chars().any(char::is_control)
+    {
+        *input = insert_literal(input, text);
+    }
+    event
 }
 
 impl RenderOverlay for PromptOverlay {
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        let modal_area = Self::modal_area(area, self.breakpoints);
-        let mut spans = self.input.spans(Style::default().fg(self.theme.text));
-        if self.input.as_str().is_empty() && !self.placeholder.is_empty() {
-            spans.push(Span::styled(
-                self.placeholder,
-                Style::default().fg(self.theme.dim),
-            ));
-        }
-        let line = Line::from(spans);
-        Modal::new(&self.theme, self.title.clone(), vec![line])
-            .footer("", format!("⏎ {} · esc", self.verb))
-            .render_into(modal_area, buf);
+        self.outer.set(area);
+        let modal = self.modal_area(area);
+        let theme = kit::theme(&self.theme);
+        self.ui
+            .paint(buf, modal, &self.model, &theme, self.declare(modal));
     }
 
     fn bounds(&self, area: Rect) -> Option<Rect> {
-        Some(Self::modal_area(area, self.breakpoints))
+        Some(self.modal_area(area))
     }
 
     fn set_breakpoints(&mut self, bp: ChromeBreakpoints) {
         self.breakpoints = bp;
+        self.ui.invalidate();
+    }
+
+    fn set_theme(&mut self, theme: &Theme) {
+        self.theme = *theme;
+    }
+
+    fn on_viewport_resize(&mut self, _pane_cols: u16, _pane_rows: u16) {
+        self.ui.invalidate();
     }
 
     fn handle_paste(&mut self, text: &str) {
-        self.input.insert(text);
+        self.model.input = insert_literal(&self.model.input, text);
     }
 
     fn handle_key(&mut self, key: &KeyEvent) -> OverlayCommand {
@@ -158,135 +303,20 @@ impl RenderOverlay for PromptOverlay {
         if key.action != KeyAction::Press {
             return OverlayCommand::Stay;
         }
-        match key.key {
-            PhysicalKey::Escape => OverlayCommand::Dismiss,
-            PhysicalKey::Enter => {
-                // Empty input cancels rather than committing a blank name.
-                if self.input.as_str().trim().is_empty() {
-                    OverlayCommand::Dismiss
-                } else {
-                    OverlayCommand::Commit(self.committed_action())
-                }
-            }
-            // Readline edits and typed text; any other key is absorbed.
-            _ => {
-                self.input.handle_key(key);
-                OverlayCommand::Stay
-            }
-        }
+        let on_field = self.model.focus.contains_path([DIALOG, INPUT]);
+        let event = if on_field {
+            field_key(&mut self.model.input, key)
+        } else {
+            kit::key(key)
+        };
+        event.map_or(OverlayCommand::Stay, |event| self.route(event))
+    }
+
+    fn handle_mouse(&mut self, mouse: &MouseEvent) -> OverlayCommand {
+        kit::mouse(mouse).map_or(OverlayCommand::Stay, |event| self.route(event))
     }
 }
 
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "tests")]
-mod tests {
-    use super::*;
-    use crate::test_util::{key_event, press_text as press, rendered};
-    use phux_protocol::input::key::ModSet;
-
-    fn typ(p: &mut PromptOverlay, ch: char) -> OverlayCommand {
-        // PhysicalKey is irrelevant for text input; the buffer reads `text`.
-        p.handle_key(&press(PhysicalKey::A, Some(&ch.to_string())))
-    }
-
-    /// The border legend names what Enter does in each prompt.
-    #[test]
-    fn the_legend_names_the_verb() {
-        let rendered = |p: &PromptOverlay| rendered(p, 60, 10);
-        let theme = Theme::default();
-        assert!(rendered(&PromptOverlay::rename_window("a", &theme)).contains("⏎ rename · esc"));
-        assert!(rendered(&PromptOverlay::rename_session("a", &theme)).contains("⏎ rename · esc"));
-        let fresh = rendered(&PromptOverlay::new_session(&theme));
-        assert!(fresh.contains("⏎ create · esc"));
-        assert!(fresh.contains("a name for it"), "placeholder:\n{fresh}");
-        let mut typed = PromptOverlay::new_session(&theme);
-        typ(&mut typed, 'x');
-        assert!(
-            !rendered(&typed).contains("a name for it"),
-            "the placeholder goes with the first character"
-        );
-    }
-
-    #[test]
-    fn typing_then_enter_commits_resolved_action() {
-        let mut p = PromptOverlay::rename_window("", &Theme::default());
-        for ch in ['b', 'u', 'i', 'l', 'd'] {
-            assert_eq!(typ(&mut p, ch), OverlayCommand::Stay);
-        }
-        let cmd = p.handle_key(&press(PhysicalKey::Enter, None));
-        let OverlayCommand::Commit(action) = cmd else {
-            panic!("expected Commit, got {cmd:?}");
-        };
-        assert_eq!(action.action, "rename-window");
-        assert_eq!(
-            action.args.get("name"),
-            Some(&toml::Value::String("build".to_owned()))
-        );
-    }
-
-    /// The session prompts ignored `C-u`, `C-w`, `C-a`/`C-e`: a pre-filled
-    /// name had to be erased one Backspace at a time.
-    #[test]
-    fn readline_keys_edit_the_prompt() {
-        let ctrl = |key| key_event(key, ModSet::CTRL, None);
-        let committed = |p: &mut PromptOverlay| {
-            let OverlayCommand::Commit(action) = p.handle_key(&press(PhysicalKey::Enter, None))
-            else {
-                panic!("expected Commit");
-            };
-            action.args.get("name").cloned()
-        };
-
-        let mut p = PromptOverlay::rename_session("old name", &Theme::default());
-        assert_eq!(p.handle_key(&ctrl(PhysicalKey::U)), OverlayCommand::Stay);
-        for ch in "new".chars() {
-            typ(&mut p, ch);
-        }
-        assert_eq!(
-            committed(&mut p),
-            Some(toml::Value::String("new".to_owned()))
-        );
-
-        let mut p = PromptOverlay::rename_session("work tmp", &Theme::default());
-        p.handle_key(&ctrl(PhysicalKey::W));
-        p.handle_key(&ctrl(PhysicalKey::A));
-        typ(&mut p, 'x');
-        p.handle_key(&ctrl(PhysicalKey::E));
-        typ(&mut p, 'y');
-        assert_eq!(
-            committed(&mut p),
-            Some(toml::Value::String("xwork y".to_owned()))
-        );
-    }
-
-    /// Backspace edits; Esc, an empty Enter, and an Enter after only
-    /// control text (which never enters the buffer) all cancel.
-    #[test]
-    fn backspace_edits_and_empty_or_escape_cancels() {
-        let mut p = PromptOverlay::rename_window("ab", &Theme::default());
-        assert_eq!(
-            p.handle_key(&press(PhysicalKey::Backspace, None)),
-            OverlayCommand::Stay
-        );
-        let OverlayCommand::Commit(action) = p.handle_key(&press(PhysicalKey::Enter, None)) else {
-            panic!("expected Commit");
-        };
-        assert_eq!(
-            action.args.get("name"),
-            Some(&toml::Value::String("a".to_owned()))
-        );
-
-        let theme = Theme::default();
-        let mut escaped = PromptOverlay::rename_window("x", &theme);
-        assert_eq!(
-            escaped.handle_key(&press(PhysicalKey::Escape, None)),
-            OverlayCommand::Dismiss
-        );
-        let mut empty = PromptOverlay::rename_window("", &theme);
-        assert_eq!(typ(&mut empty, '\t'), OverlayCommand::Stay);
-        assert_eq!(
-            empty.handle_key(&press(PhysicalKey::Enter, None)),
-            OverlayCommand::Dismiss
-        );
-    }
-}
+mod tests;

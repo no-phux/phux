@@ -301,16 +301,6 @@ impl ConfirmOverlay {
     }
 }
 
-/// A half-width modal exactly tall enough for `lines` lines, centered (the
-/// single-line modals that keep the classic box).
-pub(crate) fn lines_modal_area(outer: Rect, lines: usize, bp: ChromeBreakpoints) -> Rect {
-    let rows = u16::try_from(lines).unwrap_or(u16::MAX).saturating_add(2);
-    let wide = centered_panel(outer, 5, 20, rows, bp);
-    let h = rows.min(outer.height);
-    let y = outer.y + (outer.height.saturating_sub(h)) / 2;
-    Rect::new(wide.x, y, wide.width, h)
-}
-
 /// Rows a ratcn dialog adds around its description: border and padding
 /// above and below, the gap row, and the one-row action buttons.
 const DIALOG_CHROME_ROWS: u16 = 2 + 2 + 1 + 1;

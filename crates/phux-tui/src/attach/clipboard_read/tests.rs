@@ -169,3 +169,133 @@ fn a_late_answer_to_a_timed_out_prompt_leaves_the_next_read_alone() {
     );
     assert!(r.granted.contains(&pane(1)), "a pane grant still sticks");
 }
+
+fn prompt_for(shared: &SharedClipboardReads, armed: bool) -> ClipboardReadOverlay {
+    shared
+        .borrow_mut()
+        .on_read(&pane(1), C, true, ClipboardRead::Ask, Instant::now());
+    let mut prompt =
+        ClipboardReadOverlay::new(pane(1), C, "pane 1", Rc::clone(shared), &Theme::default());
+    if armed {
+        prompt.shown -= PROMPT_ARMING;
+    }
+    prompt
+}
+
+fn painted_rows(prompt: &ClipboardReadOverlay, area: Rect) -> Vec<String> {
+    let mut buf = Buffer::empty(area);
+    prompt.render(area, &mut buf);
+    (0..area.height)
+        .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol()).collect())
+        .collect()
+}
+
+/// The dialog paints its title, the message, and all three buttons, all
+/// inside its bounds.
+#[test]
+fn the_dialog_paints_its_message_and_buttons_within_bounds() {
+    let prompt = prompt_for(&reads(), true);
+    let area = Rect::new(0, 0, 80, 24);
+    let rows = painted_rows(&prompt, area);
+    let text = rows.join("\n");
+    for needle in [
+        "Clipboard read?",
+        "pane 1 wants to read your clipboard",
+        "Deny",
+        "Allow pane",
+        "Allow once",
+    ] {
+        assert!(text.contains(needle), "{needle} missing:\n{text}");
+    }
+    let bounds = prompt.bounds(area).expect("a modal");
+    for (y, row) in (0u16..).zip(&rows) {
+        for (x, ch) in (0u16..).zip(row.chars()) {
+            let at = ratatui::layout::Position::new(x, y);
+            assert!(
+                ch == ' ' || bounds.contains(at),
+                "{at:?} outside {bounds:?}"
+            );
+        }
+    }
+}
+
+/// Enter presses the focused button: `Allow once` first, `Deny` after
+/// Shift+Tab twice. Esc denies.
+#[test]
+fn enter_presses_the_focused_button_and_esc_denies() {
+    let shared = reads();
+    let mut prompt = prompt_for(&shared, true);
+    assert_eq!(
+        prompt.handle_key(&press(PhysicalKey::Enter)),
+        OverlayCommand::Dismiss
+    );
+    assert!(
+        shared.borrow_mut().take_query(Instant::now()).is_some(),
+        "allowed once"
+    );
+    assert!(!shared.borrow().granted.contains(&pane(1)));
+
+    let shared = reads();
+    let mut prompt = prompt_for(&shared, true);
+    let back = crate::test_util::key_event(
+        PhysicalKey::Tab,
+        phux_protocol::input::key::ModSet::SHIFT,
+        None,
+    );
+    for _ in 0..2 {
+        assert_eq!(prompt.handle_key(&back), OverlayCommand::Stay);
+    }
+    assert_eq!(
+        prompt.handle_key(&press(PhysicalKey::Enter)),
+        OverlayCommand::Dismiss
+    );
+    assert!(shared.borrow_mut().take_query(Instant::now()).is_none());
+
+    let shared = reads();
+    let mut prompt = prompt_for(&shared, false);
+    assert_eq!(
+        prompt.handle_key(&press(PhysicalKey::Escape)),
+        OverlayCommand::Dismiss,
+        "denying never waits"
+    );
+    assert!(shared.borrow_mut().take_query(Instant::now()).is_none());
+}
+
+/// Clicking `Allow pane` grants the pane, but not before the prompt arms;
+/// `Deny` answers at once.
+#[test]
+fn clicking_a_button_answers_and_allowing_waits_to_arm() {
+    use phux_protocol::input::key::ModSet;
+    use phux_protocol::input::mouse::{MouseAction, MouseButton};
+    let area = Rect::new(0, 0, 80, 24);
+    let click = |prompt: &mut ClipboardReadOverlay, label: &str| {
+        let (x, y) = (0u16..)
+            .zip(painted_rows(prompt, area))
+            .find_map(|(y, row)| row.find(label).map(|x| (x, y)))
+            .expect("the button is painted");
+        let at = |action| MouseEvent {
+            action,
+            button: MouseButton::Left,
+            mods: ModSet::empty(),
+            x: f64::from(u16::try_from(x).expect("fits") + 1),
+            y: f64::from(y),
+        };
+        assert_eq!(
+            prompt.handle_mouse(&at(MouseAction::Press)),
+            OverlayCommand::Stay
+        );
+        prompt.handle_mouse(&at(MouseAction::Release))
+    };
+
+    let shared = reads();
+    let mut prompt = prompt_for(&shared, false);
+    assert_eq!(click(&mut prompt, "Allow pane"), OverlayCommand::Stay);
+    prompt.shown -= PROMPT_ARMING;
+    assert_eq!(click(&mut prompt, "Allow pane"), OverlayCommand::Dismiss);
+    assert!(shared.borrow().granted.contains(&pane(1)));
+
+    let shared = reads();
+    let mut prompt = prompt_for(&shared, false);
+    assert_eq!(click(&mut prompt, "Deny"), OverlayCommand::Dismiss);
+    assert!(shared.borrow_mut().take_query(Instant::now()).is_none());
+}
