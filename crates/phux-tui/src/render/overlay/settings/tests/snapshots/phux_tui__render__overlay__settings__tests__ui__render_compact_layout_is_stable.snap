@@ -1,14 +1,14 @@
 ---
-source: crates/phux-tui/src/render/overlay/settings.rs
+source: crates/phux-tui/src/render/overlay/settings/tests/ui.rs
 expression: text
 ---
 ╭ Settings ────────────────────────────────────────────────╮
 │ >                             ~/.config/phux/config.toml │
-│                                                          │
-│ Keybindings                                              │
+│   Defaults      Keybindings      Status bar    ›         │
 │   prefix                                    C-a  default │
-│   which-key                                true  default │
+│   which-key                             ■ true   default │
 │   which-key-delay-ms                        400  default │
+│                                                          │
 │                                                          │
 │                                                          │
 │                                                          │

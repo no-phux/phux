@@ -71,6 +71,12 @@ const fn rgb_of(color: Color) -> Option<Rgb8> {
     }
 }
 
+/// Whether `color` is a 24-bit colour (one only truecolor terminals render).
+#[must_use]
+pub const fn is_24_bit(color: Color) -> bool {
+    rgb_of(color).is_some()
+}
+
 /// Every 24-bit slot of `theme` on the 256 palette. Fills snap to nearest;
 /// text and rules keep their bar on the snapped surface (and on the real
 /// background, when the roles were solved against it).

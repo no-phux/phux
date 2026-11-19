@@ -185,3 +185,61 @@ fn headers_count_and_secondary_text_share_one_right_edge() {
         .expect("window row");
     assert!(window.ends_with("main "), "branch flush right: {window:?}");
 }
+
+/// The strip's rows paint through ratcn's list, but never through its
+/// derived fills: `ListStyle::from_theme` blends toward black or white and
+/// would put 24-bit colour on a 16-colour terminal. The strip's style stays
+/// on the fitted slots, the bed is the selection pair, and where the depth
+/// has no safe fill the active row is reverse video edge to edge.
+#[test]
+fn the_ratcn_rows_keep_the_terminal_depth() {
+    use crate::render::theme::{Depth, Outer};
+    use ratatui::style::Color;
+
+    for depth in [Depth::Ansi16, Depth::Mono] {
+        let theme = Theme::house(&Outer {
+            depth,
+            ..Outer::default()
+        });
+        let derived = ratcn::ListStyle::from_theme(&crate::render::kit::theme(&theme));
+        assert!(
+            matches!(derived.focused_row_background, Color::Rgb(..)),
+            "{depth:?}: ratcn's own cursor fill is synthesised 24-bit colour"
+        );
+        let style = super::super::compose::list_style(&theme);
+        for c in [
+            style.background,
+            style.focused_row_background,
+            style.foreground,
+        ] {
+            assert!(!matches!(c, Color::Rgb(..)), "{depth:?}: {c:?}");
+        }
+
+        let mut p = SidebarPainter::new(theme);
+        p.set_roster(vec![active_roster()]);
+        p.set_windows(vec![win("one", false), win("two", true)]);
+        let rect = r(0, 0, 24, 12);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing, &[]);
+        for cell in buf.content() {
+            assert!(
+                !matches!(cell.fg, Color::Rgb(..)) && !matches!(cell.bg, Color::Rgb(..)),
+                "{depth:?}: 24-bit colour in {cell:?}"
+            );
+        }
+        let y = (0..rect.h)
+            .find(|y| row_text(&buf, rect, *y).contains("two"))
+            .expect("the active row paints");
+        for x in 0..rect.w - 1 {
+            let cell = &buf[(x, y)];
+            assert!(
+                cell.modifier.contains(Modifier::REVERSED),
+                "{depth:?}: the bed reverses column {x}"
+            );
+            assert_eq!(cell.bg, theme.selection_bg, "{depth:?}: column {x}");
+        }
+        assert!(
+            !buf[(rect.w - 1, y)].modifier.contains(Modifier::REVERSED),
+            "{depth:?}: the rule stays a rule"
+        );
+    }
+}
