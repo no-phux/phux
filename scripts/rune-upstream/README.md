@@ -95,6 +95,18 @@ Visual review supplements all existing check, packaged/native qualification
 and device-delivery gates; it cannot replace them. A truly blocked tick
 reports the evidence and exact remedy rather than calling maintenance shipped.
 
+## Ready is not CI qualification
+
+For feature **and release** PRs, use **Ready → genuine CI → auto-merge**.
+After local validation, mark Ready, then require successful normal CI on the
+current head, its plan/selected lanes, and `ci`/`commitlint` before enabling
+auto-squash. `gh pr checks --watch` can return only old draft-skipped checks
+before the new run registers. GitHub can count that skipped aggregate as passing
+and merge early; neither `SKIPPED` nor `MERGED` proves the normal run passed.
+If a PR nevertheless merges prematurely, record that gap and retain exact-main
+CI/full-native/tag/device gates. This job-level ordering does not fix the
+repository-wide draft-check race.
+
 ## Steering
 
 ```sh
