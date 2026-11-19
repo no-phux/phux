@@ -14,6 +14,7 @@ mod diag;
 mod dock;
 mod document_viewer;
 mod features;
+mod file_size;
 mod galaxy;
 #[allow(clippy::disallowed_methods)]
 // terminal content: SGR faint and underlines are the VT's, not chrome
@@ -73,6 +74,8 @@ const INSTANCE_ID: &str = if cfg!(debug_assertions) {
 };
 
 pub fn run_desktop() {
+    // Before any write: the log's first line can already be past the limit.
+    file_size::fail_writes_past_the_limit();
     // ssh runs this executable to ask for a password or 2FA code.
     if let Some(code) = askpass::answer() {
         std::process::exit(code);

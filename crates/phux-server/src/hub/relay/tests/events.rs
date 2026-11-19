@@ -341,3 +341,58 @@ fn prune_abandoned_covers_pending_spawns() {
 }
 
 // --- session: journal re-stamp (ADR-0123) -----------------------------
+
+/// phux-w8jp8.13: the catch-all relayed every other event verbatim, so a
+/// native result named the satellite's local agent session and an unknown
+/// event's body reached hub consumers unread.
+#[test]
+fn native_results_name_the_satellite_session_and_unknown_events_stay_there() {
+    let journal = crate::state::SharedState::new();
+    let consumer = journal.with_mut(|s| s.clients_mut().new_client_id());
+    let (registry_tx, mut registry_rx) = mpsc::channel(8);
+    journal.with_mut(|s| {
+        s.subscribe_satellite_events(
+            consumer,
+            ResourceId::satellite("devbox", 9),
+            crate::state::EventFilter::all(),
+            None,
+            registry_tx,
+        );
+    });
+    let fence = crate::hub::operation_fence::OperationFence::default();
+    let mut session = keyed_session(&[ServerFeature::KeyedSignal], [1; 16], &fence);
+    session.set_journal(Some(journal));
+    let (proxy_tx, _proxy_rx) = mpsc::channel(8);
+    subscribe(&mut session, 9, consumer, proxy_tx);
+    let mut relay = |event: AgentEvent| {
+        session.feed(&FrameKind::Event {
+            terminal: Some(ResourceId::local(9)),
+            event,
+            stamp: None,
+        });
+        std::iter::from_fn(|| registry_rx.try_recv().ok())
+            .filter_map(|out| match out {
+                Outbound::Frame(FrameKind::Event { event, .. }) => Some(event),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let result = |agent_session_id| AgentEvent::NativeAgentResult {
+        agent_session_id,
+        operation_id: 4,
+        disposition: phux_protocol::native_agent::NativeDisposition::Completed,
+        detail: None,
+    };
+
+    let got = relay(result(ResourceId::local(9)));
+    assert_eq!(got, [result(ResourceId::satellite(host(), 9))]);
+    assert!(
+        relay(result(ResourceId::satellite("elsewhere", 9))).is_empty(),
+        "hub-and-spoke does not chain"
+    );
+    let unknown = AgentEvent::Unknown {
+        tag: 0xee,
+        body: vec![9, 0, 0, 0],
+    };
+    assert!(relay(unknown).is_empty(), "an unread body is never relayed");
+}

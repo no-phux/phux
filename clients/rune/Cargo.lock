@@ -2841,6 +2841,7 @@ version = "0.1.41"
 dependencies = [
  "futures-util",
  "image",
+ "libc",
  "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-core-text",

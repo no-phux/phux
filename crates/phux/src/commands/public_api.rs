@@ -2,27 +2,23 @@
 use std::{io::Read, path::PathBuf, process::ExitCode};
 
 use phux_client::{
-    attach::{AttachError, connection::Connection},
-    org::OrgError,
+    attach::connection::Connection,
     resource::show,
     terminal::{self, CreateError},
 };
-use phux_protocol::{api::PublicOperation, ids::ResourceKey};
+use phux_protocol::{
+    api::{ErrorCode, ErrorDocument, OperationError, OperationOutcome, PublicOperation},
+    ids::ResourceKey,
+};
 use serde_json::{Value, json};
 
-use super::{
-    ApiAction, ApiArgs,
-    server_target::{SOCKET_REMOTE_CONFLICT, ServerSpec},
-};
+use super::{ApiAction, ApiArgs, server_target::ServerSpec};
 
 mod questions;
 
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 
 pub(crate) fn run(args: ApiArgs, socket: Option<PathBuf>) -> ExitCode {
-    if socket.is_some() && args.remote.is_some() {
-        return fail("invalid_argument", SOCKET_REMOTE_CONFLICT, 2);
-    }
     let action = match Action::prepare(args.action) {
         Ok(action) => action,
         Err((code, message)) => return fail(code, message, 2),
@@ -31,9 +27,13 @@ pub(crate) fn run(args: ApiArgs, socket: Option<PathBuf>) -> ExitCode {
         socket,
         remote: args.remote,
     };
-    let (runtime, server) = match spec.prepare("api", true) {
-        Ok(prepared) => prepared,
-        Err(code) => return code,
+    let runtime = match super::build_cli_runtime() {
+        Ok(runtime) => runtime,
+        Err(error) => return action.target_error(ErrorCode::Unknown, error, 1),
+    };
+    let server = match spec.resolve_quiet(&runtime, "api") {
+        Ok(server) => server,
+        Err(error) => return action.resolution_error(error),
     };
     runtime.block_on(async {
         match action {
@@ -43,11 +43,11 @@ pub(crate) fn run(args: ApiArgs, socket: Option<PathBuf>) -> ExitCode {
             }
             Action::Invoke(request) => match server.connect().await {
                 Ok(mut conn) => invoke(&mut conn, request).await,
-                Err(error) => request.connection_error(error),
+                Err(error) => request.target_error(ErrorCode::Transport, error, 1),
             },
             Action::Catalog(operation) => match server.connect().await {
                 Ok(mut conn) => catalog(&mut conn, operation.as_deref()).await,
-                Err(error) => fail("transport", error, 1),
+                Err(error) => fail(ErrorCode::Transport, error, 1),
             },
         }
     })
@@ -61,7 +61,7 @@ enum Action {
 }
 
 impl Action {
-    fn prepare(action: ApiAction) -> Result<Self, (&'static str, String)> {
+    fn prepare(action: ApiAction) -> Result<Self, (ErrorCode, String)> {
         match action {
             ApiAction::List => Ok(Self::Catalog(None)),
             ApiAction::Describe { operation } => Ok(Self::Catalog(Some(operation))),
@@ -71,12 +71,12 @@ impl Action {
             } => {
                 let method = PublicOperation::parse(&operation).ok_or_else(|| {
                     (
-                        "unsupported",
+                        ErrorCode::Unsupported,
                         format!("unknown public operation {operation:?}"),
                     )
                 })?;
-                let input =
-                    request_input(&request_json).map_err(|error| ("invalid_argument", error))?;
+                let input = request_input(&request_json)
+                    .map_err(|error| (ErrorCode::InvalidArgument, error))?;
                 let parsed = match method {
                     PublicOperation::QuestionList
                     | PublicOperation::QuestionRespond
@@ -88,23 +88,47 @@ impl Action {
                         .map_err(|error| error.to_string()),
                     _ => parse_request(method, &input).map(Self::Invoke),
                 };
-                parsed.map_err(|error| ("invalid_argument", error))
+                parsed.map_err(|error| (ErrorCode::InvalidArgument, error))
             }
         }
+    }
+
+    fn target_error(self, code: ErrorCode, error: impl std::fmt::Display, status: u8) -> ExitCode {
+        match self {
+            Self::Invoke(request) => request.target_error(code, error, status),
+            Self::Questions(questions::Request::Receipt(request)) => {
+                questions::receipt_unavailable(request.operation_id, error, status)
+            }
+            _ => fail(code, error, status),
+        }
+    }
+
+    fn resolution_error(self, error: super::json_err::Refusal) -> ExitCode {
+        let code = if error.exit == 2 {
+            ErrorCode::InvalidArgument
+        } else {
+            ErrorCode::Transport
+        };
+        let mut message = error.err.message;
+        if !error.err.remedy.is_empty() {
+            message.push('\n');
+            message.push_str(&error.err.remedy);
+        }
+        self.target_error(code, message, error.exit)
     }
 }
 
 async fn catalog(conn: &mut Connection, name: Option<&str>) -> ExitCode {
     let document = match terminal::describe(conn).await {
         Ok(document) => document,
-        Err(error) => return fail(error.code(), error, 1),
+        Err(error) => return fail(error.api_code(), error, 1),
     };
     let Some(name) = name else {
         return crate::output::json(&document);
     };
     let Some(description) = describe(&document, name) else {
         return fail(
-            "unsupported",
+            ErrorCode::Unsupported,
             format!("server does not describe {name:?}"),
             1,
         );
@@ -119,17 +143,29 @@ enum Request {
 }
 
 impl Request {
-    fn connection_error(self, error: AttachError) -> ExitCode {
-        let error = OrgError::Attach(error);
-        match self {
-            Self::Create(request) => {
-                receipt_error(&CreateError::Organization(error), &request.idempotency_key)
-            }
-            Self::Operation(request) => {
-                receipt_error(&CreateError::Lookup(error), &request.idempotency_key)
-            }
-            Self::Show(_) => fail(error.code(), error, 1),
+    fn validate(&self) -> Result<(), (String, &str)> {
+        let (command, key) = match self {
+            Self::Create(request) => (request.command(), request.idempotency_key.as_str()),
+            Self::Operation(request) => (request.command(), request.idempotency_key.as_str()),
+            Self::Show(_) => return Ok(()),
+        };
+        command.map(|_| ()).map_err(|error| (error, key))
+    }
+
+    fn target_error(self, code: ErrorCode, error: impl std::fmt::Display, status: u8) -> ExitCode {
+        // The connected client validates before sending. If we couldn't connect,
+        // distinguish invalid input from the failure to observe a valid receipt.
+        if code == ErrorCode::Transport
+            && let Err((error, key)) = self.validate()
+        {
+            return receipt_error(&CreateError::Invalid(error), key);
         }
+        let (outcome, key) = match self {
+            Self::Create(request) => (OperationOutcome::NotSent, Some(request.idempotency_key)),
+            Self::Operation(request) => (OperationOutcome::Unknown, Some(request.idempotency_key)),
+            Self::Show(_) => (OperationOutcome::NotSent, None),
+        };
+        report_error(code, error, outcome, key, status)
     }
 }
 
@@ -206,7 +242,7 @@ async fn invoke(conn: &mut Connection, request: Request) -> ExitCode {
         Request::Show(key) => {
             return match show::show_key_on(conn, key).await {
                 Ok(result) => crate::output::json(&result),
-                Err(error) => fail(error.code(), error, 1),
+                Err(error) => fail(error.api_code(), error, 1),
             };
         }
     };
@@ -221,13 +257,27 @@ fn receipt_error(error: &CreateError, key: &str) -> ExitCode {
     ExitCode::FAILURE
 }
 
-fn fail(code: &str, error: impl std::fmt::Display, status: u8) -> ExitCode {
-    eprintln!(
-        "{}",
-        json!({"schema_version": 1, "error": {
-            "code": code, "message": error.to_string(), "outcome": "not_sent"
-        }})
-    );
+fn fail(code: ErrorCode, error: impl std::fmt::Display, status: u8) -> ExitCode {
+    report_error(code, error, OperationOutcome::NotSent, None, status)
+}
+
+fn report_error(
+    code: ErrorCode,
+    error: impl std::fmt::Display,
+    outcome: OperationOutcome,
+    idempotency_key: Option<String>,
+    status: u8,
+) -> ExitCode {
+    let document = ErrorDocument {
+        schema_version: 1,
+        error: OperationError {
+            code,
+            message: error.to_string(),
+            outcome,
+            idempotency_key,
+        },
+    };
+    eprintln!("{}", serde_json::to_value(document).unwrap_or_default());
     ExitCode::from(status)
 }
 
@@ -252,5 +302,12 @@ mod tests {
     fn resource_call_refuses_live_handles_and_stdin_has_a_bound() {
         assert!(parse_request(PublicOperation::ResourceShow, "\"@7\"").is_err());
         assert!(read_limited(&vec![b'a'; MAX_REQUEST_BYTES + 1][..]).is_err());
+    }
+
+    #[test]
+    fn stdin_limit_counts_utf8_bytes_and_rejects_invalid_encoding() {
+        let input = "é".repeat(MAX_REQUEST_BYTES / 2);
+        assert_eq!(read_limited(input.as_bytes()).unwrap(), input);
+        assert!(read_limited([0xff].as_slice()).is_err());
     }
 }

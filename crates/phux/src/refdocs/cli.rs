@@ -82,6 +82,7 @@ mod tests {
         for heading in [
             "## `phux`\n",
             "## `phux agent set`\n",
+            "## `phux api call`\n",
             "## `phux config reload`\n",
             "## `phux worktree remove`\n",
         ] {
