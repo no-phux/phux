@@ -1,6 +1,9 @@
 import unittest
 
-from release import bump, next_version, notes, shippable
+from release import STUCK_SECONDS, already_reported, bump, next_version, notes, shippable, stuck_exit, stuck_line
+
+SHA = "3bbef2bd820c1c16118c96d0d2e6fa2c216149c6"
+OTHER = "e2f9f3d69e3dd5a45105761c55b23de160dfbef8"
 
 
 class ReleaseTest(unittest.TestCase):
@@ -34,6 +37,40 @@ class ReleaseTest(unittest.TestCase):
         self.assertIn('version = "1"', m)
         self.assertIn('name = "other"\nversion = "1.0"', l)
         self.assertIn('name = "phux-rune"\nversion = "0.1.0-alpha.20"', l)
+
+    def test_stuck_line_is_what_later_runs_recognize(self):
+        line = stuck_line("rune-v0.1.43", SHA, 7 * 3600)
+        self.assertEqual(
+            line,
+            f"rune-v0.1.43: ci is not green on {SHA} after 7h; fix main, then rerun",
+        )
+        self.assertTrue(already_reported([line], SHA))
+
+    def test_second_failure_on_the_same_sha_does_not_re_fail(self):
+        # The run head can move (main's tip) while the release SHA in the
+        # line stays put. The line is the marker, not the head SHA.
+        log = (
+            "step\tOne step of the Rune train\t"
+            f"rune-v0.1.43: ci is not green on {SHA} after 7h; fix main, then rerun\n"
+            f"head {OTHER}\n"
+        )
+        self.assertEqual(stuck_exit(STUCK_SECONDS + 1, SHA, [log]), 0)
+        self.assertEqual(stuck_exit(8 * 3600, SHA, [log]), 0)
+
+    def test_a_new_sha_still_fails(self):
+        prior = f"rune-v0.1.42: ci is not green on {OTHER} after 7h; fix main, then rerun\n"
+        self.assertFalse(already_reported([prior], SHA))
+        self.assertEqual(stuck_exit(STUCK_SECONDS + 1, SHA, [prior]), 1)
+        self.assertEqual(stuck_exit(STUCK_SECONDS + 1, SHA, []), 1)
+
+    def test_an_unrelated_failure_on_the_same_sha_still_alerts(self):
+        log = f"CalledProcessError while pushing {SHA}\n"
+        self.assertEqual(stuck_exit(STUCK_SECONDS + 1, SHA, [log]), 1)
+
+    def test_inside_the_six_hour_gate_still_waits(self):
+        self.assertEqual(stuck_exit(STUCK_SECONDS, SHA, []), 0)
+        self.assertEqual(stuck_exit(STUCK_SECONDS - 1, SHA, []), 0)
+        self.assertEqual(stuck_exit(STUCK_SECONDS + 1, SHA, []), 1)
 
 
 if __name__ == "__main__":

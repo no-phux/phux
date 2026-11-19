@@ -86,7 +86,11 @@ Rune releases never go through Release Please. `rune-auto-release.yml` cuts
 them on its own: every two hours it opens and auto-merges the next patch bump
 when feat/fix/perf commits touched `clients/rune` since the last tag, with notes
 generated from those subjects, and tags the merged bump after `ci-green`
-and a full native receipt are green (`clients/rune/scripts/release.py`). Set the repository variable
+and a full native receipt are green (`clients/rune/scripts/release.py`).
+While that SHA's ci is still in flight the run waits. Once the commit is
+more than six hours old and still not green, the run fails; if a previous
+failed run of this workflow already logged that SHA, it notes that in the
+step summary and exits 0. Set the repository variable
 `RUNE_AUTO_RELEASE=false` to stop it. To ship hand-written notes, merge your
 own bump first: the train then only tags it. Versions ran `0.1.0-alpha.N` to
 alpha.23, then `0.1.0`; the train now bumps the patch (`0.1.1`, `0.1.2`, ...).

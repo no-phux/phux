@@ -9,6 +9,11 @@ yet, it tags the commit that set it once that commit's push ci is green, and
 rune-client.yml takes it from there. Otherwise, if feat/fix/perf commits
 touched clients/rune since the last tag, it opens the next patch bump PR
 with generated notes and turns on auto-merge. Anything else is a no-op.
+
+A release SHA that is still not green after six hours fails the run once.
+A later run that already finds that line in this workflow's failed logs
+exits 0. The workflow's head SHA is main's tip and is not the marker: it
+moves while the release SHA stays put.
 """
 
 import os
@@ -28,6 +33,8 @@ BRANCH = "rune-release/next"
 # Rune builds from; route through tools/src/routing if that misses releases.
 PATHS = ["clients/rune"]
 STUCK_SECONDS = 6 * 3600
+PRIOR_FAILURES = 20
+WORKFLOW_FILE = "rune-auto-release.yml"
 SHIPPABLE = re.compile(r"^(feat|fix|perf)(\([^)]*\))?!?: (.+)$")
 
 
@@ -70,6 +77,69 @@ def sh(*args, check=True):
     return done.stdout.strip() if check else done
 
 
+def stuck_line(tag, sha, age):
+    return f"{tag}: ci is not green on {sha} after {age // 3600:.0f}h; fix main, then rerun"
+
+
+def already_reported(logs, sha):
+    """True when a failed-step log already contains the stuck line for `sha`."""
+    needle = f"ci is not green on {sha}"
+    return any(needle in log for log in logs)
+
+
+def stuck_exit(age, sha, logs):
+    """Exit status once ci is not green. The six-hour comparison is unchanged."""
+    if age <= STUCK_SECONDS:
+        return 0
+    if already_reported(logs, sha):
+        return 0
+    return 1
+
+
+def record_summary(text):
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not path:
+        return
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write(text if text.endswith("\n") else text + "\n")
+
+
+def prior_failure_logs(sha):
+    """Failed-step logs of recent rune-auto-release runs, newest first.
+
+    None when that list cannot be read, so the caller still alerts. The
+    marker is the stuck line: a run's head SHA is main's tip, which changes
+    while the release SHA in the line does not.
+    """
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    if not repo or not (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")):
+        return None
+    listed = sh(
+        "gh",
+        "api",
+        f"repos/{repo}/actions/workflows/{WORKFLOW_FILE}/runs?status=failure&per_page={PRIOR_FAILURES}",
+        "--jq",
+        ".workflow_runs[].id",
+        check=False,
+    )
+    if listed.returncode != 0:
+        print(listed.stderr.strip() or "could not list rune-auto-release runs")
+        return None
+    current = os.environ.get("GITHUB_RUN_ID", "")
+    logs = []
+    needle = f"ci is not green on {sha}"
+    for run_id in listed.stdout.split():
+        if run_id == current:
+            continue
+        viewed = sh("gh", "run", "view", run_id, "--repo", repo, "--log-failed", check=False)
+        if viewed.returncode != 0:
+            continue
+        logs.append(viewed.stdout)
+        if needle in viewed.stdout:
+            break
+    return logs
+
+
 def tag_step(version):
     tag = TAG_PREFIX + version
     sha = sh("git", "log", "-1", "--format=%H", "-G", "^version = ", "--", MANIFEST)
@@ -79,11 +149,20 @@ def tag_step(version):
         print(f"tagged {tag} at {sha}")
         return 0
     age = time.time() - int(sh("git", "show", "-s", "--format=%ct", sha))
-    if age > STUCK_SECONDS:
-        print(f"{tag}: ci is not green on {sha} after {age // 3600:.0f}h; fix main, then rerun")
-        return 1
-    print(f"{tag}: waiting for ci on {sha}")
-    return 0
+    if age <= STUCK_SECONDS:
+        print(f"{tag}: waiting for ci on {sha}")
+        return 0
+    line = stuck_line(tag, sha, age)
+    logs = prior_failure_logs(sha)
+    if logs is None:
+        print("could not read earlier rune-auto-release failures; reporting this one")
+        logs = []
+    if stuck_exit(age, sha, logs) == 0:
+        print(f"{line}; already reported")
+        record_summary(f"{line}. Already reported for this SHA; not failing again.")
+        return 0
+    print(line)
+    return 1
 
 
 def bump_step(version):
