@@ -94,6 +94,9 @@ base64.workspace = true
 # has no `ratatui` dependency, so the boundary (ADR-0020) is enforced by the
 # compiler rather than the retired grep guard. See epic phux-5ke.
 ratatui.workspace = true
+# Overlay components (dialogs, lists, inputs, tabs, toasts) and their
+# focus/event runtime, painted into the same ratatui Buffer as the chrome.
+ratcn.workspace = true
 # TUI action arguments and prompt values use TOML; status-bar tests construct
 # `WidgetSpec::opts` with the same vocabulary.
 toml.workspace = true

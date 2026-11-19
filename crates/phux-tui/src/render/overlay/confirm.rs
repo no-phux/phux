@@ -1,5 +1,8 @@
-//! Yes/no confirmation modals: Enter or `y` returns the held command, Esc or
-//! `n` drops it.
+//! Yes/no confirmation modals on ratcn's [`Dialog`].
+//!
+//! Enter presses the focused button (focus starts on the confirming one),
+//! `y` confirms and Esc or `n` drops the held command from anywhere; Tab,
+//! arrows, and the mouse move between and press the buttons.
 //!
 //! - Paste protection: a paste that would reach a pane as typed input.
 //! - Clipboard writes under `defaults.clipboard-write = "ask"` (ADR-0158).
@@ -7,19 +10,22 @@
 //!   also shown elsewhere, so closing a view is never mistaken for killing;
 //!   the commit kills the exact set shown.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 
 use phux_client_core::engine::ClipboardText;
 use phux_protocol::ResourceId;
 use phux_protocol::input::key::{KeyAction, KeyEvent, PhysicalKey};
+use phux_protocol::input::mouse::MouseEvent;
 use phux_protocol::input::paste::PasteEvent;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
-use ratatui::text::Line;
+use ratcn::runtime::{DeclareCtx, Event, EventResult, FocusState, Ratcn};
+use ratcn::{Button, Dialog};
 
-use super::widgets::{Modal, centered_panel};
+use super::widgets::centered_panel;
 use super::{OverlayCommand, RenderOverlay};
+use crate::render::kit::{self, Surface};
 use crate::render::{ChromeBreakpoints, Theme};
 
 /// The arg `kill-window` and `kill-pane` carry once confirmed: the selectors
@@ -38,32 +44,98 @@ pub struct SharedTarget {
     pub elsewhere: Vec<String>,
 }
 
-/// Holds one command until the user confirms or drops it.
+/// What a confirm's ratcn surface tracks between frames: which button has
+/// focus.
+#[derive(Debug)]
+struct Model {
+    focus: FocusState,
+}
+
+/// What the dialog's buttons and focus traversal ask for.
 #[derive(Debug, Clone)]
+enum Msg {
+    Focus(FocusState),
+    Yes,
+    No,
+}
+
+const DIALOG: &str = "confirm";
+const YES: &str = "yes";
+const NO: &str = "no";
+
+/// The two buttons: confirming label, declining label, and whether
+/// confirming destroys something (the button paints destructive).
+#[derive(Debug, Clone, Copy)]
+struct Buttons {
+    yes: &'static str,
+    no: &'static str,
+    destructive: bool,
+}
+
+/// Holds one command until the user confirms or drops it.
 pub struct ConfirmOverlay {
     title: &'static str,
     lines: Vec<String>,
-    legend: &'static str,
+    buttons: Buttons,
     on_yes: OverlayCommand,
     theme: Theme,
     breakpoints: ChromeBreakpoints,
+    model: Model,
+    ui: Surface<Model, Msg>,
+    /// The viewport of the last paint, which input is laid out against.
+    outer: Cell<Rect>,
+}
+
+impl std::fmt::Debug for ConfirmOverlay {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `on_yes` is elided: it can hold clipboard text.
+        f.debug_struct("ConfirmOverlay")
+            .field("title", &self.title)
+            .field("lines", &self.lines)
+            .field("buttons", &self.buttons)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Clone for ConfirmOverlay {
+    /// A fresh dialog holding the same command; ratcn's retained surface is
+    /// per instance and is rebuilt on the clone's first frame.
+    fn clone(&self) -> Self {
+        let mut out = Self::new(
+            self.title,
+            self.lines.clone(),
+            self.buttons,
+            self.on_yes.clone(),
+            &self.theme,
+        );
+        out.breakpoints = self.breakpoints;
+        out
+    }
 }
 
 impl ConfirmOverlay {
     fn new(
         title: &'static str,
         lines: Vec<String>,
-        legend: &'static str,
+        buttons: Buttons,
         on_yes: OverlayCommand,
         theme: &Theme,
     ) -> Self {
+        let runtime = Ratcn::new().focus(|m: &Model| &m.focus, Msg::Focus);
         Self {
             title,
             lines,
-            legend,
+            buttons,
             on_yes,
             theme: *theme,
             breakpoints: ChromeBreakpoints::default(),
+            // Focus starts on the confirming action, so Enter commits as it
+            // always has.
+            model: Model {
+                focus: FocusState::intent([DIALOG, YES]),
+            },
+            ui: Surface::new(runtime),
+            outer: Cell::new(Rect::new(0, 0, 80, 24)),
         }
     }
 
@@ -79,7 +151,12 @@ impl ConfirmOverlay {
             format!("{lines} lines will run as typed input")
         };
         let on_yes = OverlayCommand::Paste(paste);
-        Self::new("Paste?", vec![message], "⏎ paste · esc", on_yes, theme)
+        let buttons = Buttons {
+            yes: "Paste",
+            no: "Cancel",
+            destructive: false,
+        };
+        Self::new("Paste?", vec![message], buttons, on_yes, theme)
     }
 
     /// Ask before `source` (a pane label) sets the clipboard to `text`.
@@ -90,13 +167,12 @@ impl ConfirmOverlay {
             text.0.len()
         );
         let on_yes = OverlayCommand::SetClipboard(text);
-        Self::new(
-            "Clipboard?",
-            vec![message],
-            "⏎ allow · esc deny",
-            on_yes,
-            theme,
-        )
+        let buttons = Buttons {
+            yes: "Allow",
+            no: "Deny",
+            destructive: false,
+        };
+        Self::new("Clipboard?", vec![message], buttons, on_yes, theme)
     }
 
     /// Ask before terminating `targets`, the terminals of window `window`;
@@ -162,7 +238,12 @@ impl ConfirmOverlay {
             action,
             BTreeMap::from([(KILL_TARGETS_ARG.to_owned(), toml::Value::Array(selectors))]),
         ));
-        Self::new(title, lines, "⏎ kill · esc", on_yes, theme)
+        let buttons = Buttons {
+            yes: "Kill",
+            no: "Cancel",
+            destructive: true,
+        };
+        Self::new(title, lines, buttons, on_yes, theme)
     }
 
     /// The lines the modal shows, top to bottom.
@@ -172,14 +253,75 @@ impl ConfirmOverlay {
     }
 
     fn modal_area(&self, outer: Rect) -> Rect {
-        lines_modal_area(outer, self.lines.len(), self.breakpoints)
+        dialog_area(outer, &self.lines.join("\n"), self.breakpoints)
+    }
+
+    /// Declare the dialog filling `area` (the modal rect).
+    fn declare(&self, area: Rect) -> impl FnMut(&mut DeclareCtx<'_, Model, Msg>) + use<> {
+        let title = self.title;
+        let description = self.lines.join("\n");
+        let Buttons {
+            yes,
+            no,
+            destructive,
+        } = self.buttons;
+        move |ctx| {
+            let confirm = Button::new(yes).on_press(|| Msg::Yes);
+            let confirm = if destructive {
+                confirm.destructive()
+            } else {
+                confirm
+            };
+            let dialog = Dialog::new()
+                .title(title)
+                .description(description.clone())
+                .outer_width(area.width)
+                .outer_height(area.height)
+                .on_dismiss(|| Msg::No)
+                .action(NO, Button::new(no).secondary().on_press(|| Msg::No))
+                .action(YES, confirm);
+            ctx.component(DIALOG, dialog, area);
+        }
+    }
+
+    /// Route one ratcn event and fold its message into a command.
+    fn route(&mut self, event: Event) -> OverlayCommand {
+        let area = self.modal_area(self.outer.get());
+        let declare = self.declare(area);
+        let theme = kit::theme(&self.theme);
+        match self.ui.route(event, &self.model, &theme, declare) {
+            EventResult::Emit(Msg::Focus(focus)) => {
+                self.model.focus = focus;
+                OverlayCommand::Stay
+            }
+            EventResult::Emit(Msg::Yes) => self.on_yes.clone(),
+            EventResult::Emit(Msg::No) => OverlayCommand::Dismiss,
+            EventResult::Consumed | EventResult::Ignored => OverlayCommand::Stay,
+        }
     }
 }
 
-/// A half-width modal exactly tall enough for `lines` lines, centered.
+/// A half-width modal exactly tall enough for `lines` lines, centered (the
+/// single-line modals that keep the classic box).
 pub(crate) fn lines_modal_area(outer: Rect, lines: usize, bp: ChromeBreakpoints) -> Rect {
     let rows = u16::try_from(lines).unwrap_or(u16::MAX).saturating_add(2);
     let wide = centered_panel(outer, 5, 20, rows, bp);
+    let h = rows.min(outer.height);
+    let y = outer.y + (outer.height.saturating_sub(h)) / 2;
+    Rect::new(wide.x, y, wide.width, h)
+}
+
+/// Rows a ratcn dialog adds around its description: border and padding
+/// above and below, the gap row, and the one-row action buttons.
+const DIALOG_CHROME_ROWS: u16 = 2 + 2 + 1 + 1;
+
+/// A half-width ratcn dialog exactly tall enough for `description` wrapped
+/// to its inner width, centered.
+pub(crate) fn dialog_area(outer: Rect, description: &str, bp: ChromeBreakpoints) -> Rect {
+    let wide = centered_panel(outer, 5, 40, DIALOG_CHROME_ROWS + 1, bp);
+    let inner = wide.width.saturating_sub(4);
+    let rows =
+        ratcn::geometry::wrapped_height(description, inner).saturating_add(DIALOG_CHROME_ROWS);
     let h = rows.min(outer.height);
     let y = outer.y + (outer.height.saturating_sub(h)) / 2;
     Rect::new(wide.x, y, wide.width, h)
@@ -195,15 +337,11 @@ pub(crate) fn selector(id: &ResourceId) -> String {
 
 impl RenderOverlay for ConfirmOverlay {
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        let text = Style::default().fg(self.theme.text);
-        let lines = self
-            .lines
-            .iter()
-            .map(|line| Line::styled(line.clone(), text))
-            .collect();
-        Modal::new(&self.theme, self.title.to_owned(), lines)
-            .footer("", self.legend)
-            .render_into(self.modal_area(area), buf);
+        self.outer.set(area);
+        let modal = self.modal_area(area);
+        let theme = kit::theme(&self.theme);
+        self.ui
+            .paint(buf, modal, &self.model, &theme, self.declare(modal));
     }
 
     fn bounds(&self, area: Rect) -> Option<Rect> {
@@ -212,17 +350,32 @@ impl RenderOverlay for ConfirmOverlay {
 
     fn set_breakpoints(&mut self, bp: ChromeBreakpoints) {
         self.breakpoints = bp;
+        self.ui.invalidate();
+    }
+
+    fn set_theme(&mut self, theme: &Theme) {
+        self.theme = *theme;
+    }
+
+    fn on_viewport_resize(&mut self, _pane_cols: u16, _pane_rows: u16) {
+        self.ui.invalidate();
     }
 
     fn handle_key(&mut self, key: &KeyEvent) -> OverlayCommand {
         if key.action != KeyAction::Press {
             return OverlayCommand::Stay;
         }
+        // The letter shortcuts answer whichever button has focus.
         match key.key {
-            PhysicalKey::Enter | PhysicalKey::Y => self.on_yes.clone(),
-            PhysicalKey::Escape | PhysicalKey::N => OverlayCommand::Dismiss,
-            _ => OverlayCommand::Stay,
+            PhysicalKey::Y => return self.on_yes.clone(),
+            PhysicalKey::N => return OverlayCommand::Dismiss,
+            _ => {}
         }
+        kit::key(key).map_or(OverlayCommand::Stay, |event| self.route(event))
+    }
+
+    fn handle_mouse(&mut self, mouse: &MouseEvent) -> OverlayCommand {
+        kit::mouse(mouse).map_or(OverlayCommand::Stay, |event| self.route(event))
     }
 }
 
@@ -231,8 +384,61 @@ mod tests {
     use phux_protocol::ids::SatelliteHost;
     use phux_protocol::input::paste::PasteTrust;
 
+    use phux_protocol::input::key::ModSet;
+    use phux_protocol::input::mouse::{MouseAction, MouseButton};
+
     use super::*;
-    use crate::test_util::press;
+    use crate::test_util::{press, rendered};
+
+    #[test]
+    fn the_dialog_paints_its_title_message_and_both_buttons() {
+        let out = rendered(&clipboard(), 80, 24);
+        assert!(out.contains("Clipboard?"), "{out}");
+        assert!(out.contains("pane 3 wants to set the clipboard"), "{out}");
+        assert!(out.contains("Allow") && out.contains("Deny"), "{out}");
+    }
+
+    #[test]
+    fn tab_moves_focus_to_the_declining_button_and_enter_presses_it() {
+        let mut overlay = clipboard();
+        let area = Rect::new(0, 0, 80, 24);
+        overlay.render(area, &mut Buffer::empty(area));
+        let back = crate::test_util::key_event(PhysicalKey::Tab, ModSet::SHIFT, None);
+        assert_eq!(overlay.handle_key(&back), OverlayCommand::Stay);
+        assert_eq!(
+            overlay.handle_key(&press(PhysicalKey::Enter)),
+            OverlayCommand::Dismiss
+        );
+    }
+
+    #[test]
+    fn clicking_a_button_presses_it() {
+        let mut overlay = clipboard();
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::empty(area);
+        overlay.render(area, &mut buf);
+        let (x, y) = (0..area.height)
+            .find_map(|y| {
+                let row: String = (0..area.width).map(|x| buf[(x, y)].symbol()).collect();
+                row.find("Allow").map(|x| (x, y))
+            })
+            .expect("the Allow button is painted");
+        let at = |action| MouseEvent {
+            action,
+            button: MouseButton::Left,
+            mods: ModSet::empty(),
+            x: f64::from(u16::try_from(x).expect("fits") + 1),
+            y: f64::from(y),
+        };
+        assert_eq!(
+            overlay.handle_mouse(&at(MouseAction::Press)),
+            OverlayCommand::Stay
+        );
+        assert_eq!(
+            overlay.handle_mouse(&at(MouseAction::Release)),
+            OverlayCommand::SetClipboard(ClipboardText("secret".to_owned()))
+        );
+    }
 
     fn paste(data: &[u8]) -> PasteEvent {
         PasteEvent {
