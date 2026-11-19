@@ -263,6 +263,11 @@ impl OutputPumpContext {
         if !disposition.targets_pump {
             return ControlFlow::Continue(());
         }
+        // Supersession may already have retired the queued READY at its cut.
+        // The matching actor broadcast must not retire it a second time.
+        if disposition.ends_generation && !generation.is_active() {
+            return ControlFlow::Continue(());
+        }
         if self.out_tx.send(Outbound::Frame(frame)).await.is_err() {
             return ControlFlow::Break(Some(PumpFault::OutboundClosed));
         }

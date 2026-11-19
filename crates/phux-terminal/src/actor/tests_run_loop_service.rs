@@ -106,6 +106,8 @@ async fn native_cursor_expiry_runs_through_the_armed_loop_timer() {
     actor.native_cursor_owners.insert(
         NativeCursorKey::new(7, stream_id),
         NativeCursorOwner {
+            history_released: false,
+            superseded: false,
             cursor: [0; 32],
             record_index: 0,
             touched: tokio::time::Instant::now(),

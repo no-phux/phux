@@ -213,6 +213,7 @@ impl SpawnPublication<'_> {
             }
         }
         let mut start = OutputPumpStart {
+            superseded: false,
             published_cut: generation.cut,
             replay: Vec::new(),
             live: None,
@@ -231,8 +232,7 @@ impl SpawnPublication<'_> {
                 self.reap();
                 return;
             };
-            start.replay = publication.replay;
-            start.live = Some(publication.live);
+            start.adopt_native_publication(publication);
         }
         let _ = gate_tx.send(start);
     }

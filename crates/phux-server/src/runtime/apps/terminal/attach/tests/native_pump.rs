@@ -26,6 +26,7 @@ pub(super) fn spawn_native_pump(
     let (gate_tx, gate_rx) = oneshot::channel();
     gate_tx
         .send(OutputPumpStart {
+            superseded: false,
             published_cut: 0,
             replay: Vec::new(),
             live: None,
@@ -86,7 +87,7 @@ async fn final_drain_wins_over_expired_gap_and_ready_broadcasts() {
         .unwrap();
     drain.cancel();
     assert!(matches!(
-        next_wait(&ctx, &generation, &mut output).await,
+        next_wait(&ctx, &generation, &mut output, false).await,
         Some(pump::PumpWait::FinalDrain)
     ));
 }
@@ -144,6 +145,68 @@ async fn unanswered_final_native_capture_has_a_deadline() {
     ));
     assert!(held_reply.reply.is_closed());
     assert!(out_rx.try_recv().is_err());
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn a_superseded_final_publication_with_lost_resync_spends_the_existing_gap_budget() {
+    crate::runtime::test_support::local(async {
+        let (handle, _, mut captures, mut publications) = native_attach_handle();
+        let terminal = handle.terminal().unwrap().clone();
+        let (resize, mut requests) = ResizeSender::channel(8);
+        let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(32);
+        let mut ctx = native_pump_context(out_tx, terminal, resize);
+        let drain = CancellationToken::new();
+        drain.cancel();
+        ctx.drain = Some(drain);
+        let output = handle.output.subscribe();
+        let mut pump = tokio::task::spawn_local(async move {
+            run_started_output_pump(
+                &ctx,
+                OutputPumpStart {
+                    superseded: false,
+                    published_cut: 0,
+                    replay: Vec::new(),
+                    live: None,
+                },
+                output,
+            )
+            .await
+        });
+        let capture = captures.recv().await.expect("final capture");
+        let reply = empty_native_checkpoint(&capture);
+        capture.reply.send(Ok(reply)).expect("capture reply");
+        let publication = publications.recv().await.expect("final activation");
+        publication
+            .reply
+            .send(Err(
+                phux_terminal_api::native_state::NativeStateError::Resize,
+            ))
+            .expect("supersession reply");
+        let mut attempts = 0;
+        loop {
+            tokio::select! {
+                biased;
+                result = &mut pump => {
+                    assert!(matches!(result.expect("pump"), Some(PumpFault::GenerationLost)));
+                    break;
+                }
+                request = requests.recv() => {
+                    assert!(request.expect("gap request").resync_only);
+                    attempts += 1;
+                    assert!(attempts <= 5, "existing gap retry budget");
+                }
+            }
+        }
+        assert_eq!(attempts, 5);
+        let mut errors = 0;
+        while let Ok(frame) = out_rx.try_recv() {
+            if matches!(frame, Outbound::Frame(FrameKind::Error { .. })) {
+                errors += 1;
+            }
+        }
+        assert_eq!(errors, 1, "bounded failure, not false final-drain success");
+    })
+    .await;
 }
 
 /// The actor's reply to `capture`: an empty checkpoint at sequence 0.

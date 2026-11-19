@@ -9,6 +9,7 @@ use super::*;
 
 impl TerminalActor {
     pub(in crate::actor) fn handle_native_publication(&mut self, req: NativePublicationRequest) {
+        self.expire_native_cursors();
         let key = NativeCursorKey::new(req.owner, req.stream_id);
         let valid = self.native_cursor_owners.get(&key).is_some_and(|binding| {
             binding.cursor == req.cursor
@@ -20,6 +21,17 @@ impl TerminalActor {
             let _ = req
                 .reply
                 .send(Err(crate::native_state::NativeStateError::InvalidHandle));
+            return;
+        }
+        if self
+            .native_cursor_owners
+            .get(&key)
+            .is_some_and(|binding| binding.superseded)
+        {
+            self.unbind_native_cursor(key);
+            let _ = req
+                .reply
+                .send(Err(crate::native_state::NativeStateError::Resize));
             return;
         }
         let Some(publication) = self.native_publications.get_mut(&req.cursor) else {
@@ -39,6 +51,13 @@ impl TerminalActor {
         let remove = publication.waiting.is_empty();
         if remove {
             self.native_publications.remove(&req.cursor);
+        }
+        if self
+            .native_cursor_owners
+            .get(&key)
+            .is_some_and(|binding| binding.history_released)
+        {
+            self.native_cursor_owners.remove(&key);
         }
         let _ = req.reply.send(Ok(NativePublicationReply { replay, live }));
     }
@@ -211,7 +230,9 @@ impl TerminalActor {
         cursor: crate::native_state::OpaqueHistoryCursor,
     ) -> Option<(u64, usize)> {
         let binding = self.native_cursor_owners.get(&key)?;
-        if binding.cursor != cursor
+        if binding.history_released
+            || binding.superseded
+            || binding.cursor != cursor
             || binding.terminal_id != id.terminal_id
             || binding.stream_id != id.stream_id
             || binding.bootstrap_id != id.bootstrap_id
@@ -258,7 +279,7 @@ impl TerminalActor {
             return Err(crate::native_state::NativeStateError::LimitExceeded);
         };
         if record.finish {
-            self.release_native_binding(key);
+            self.finish_native_history(key);
         } else if let Some(binding) = self.native_cursor_owners.get_mut(&key) {
             binding.record_index += 1;
             binding.next_page_seq = next_page_seq;

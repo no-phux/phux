@@ -16,6 +16,7 @@ pub(super) async fn release_gates(
             continue;
         };
         let mut start = OutputPumpStart {
+            superseded: false,
             published_cut: cut,
             replay: Vec::new(),
             live: None,
@@ -43,8 +44,7 @@ pub(super) async fn release_gates(
                     return;
                 }
             };
-            start.replay = publication.replay;
-            start.live = Some(publication.live);
+            start.adopt_native_publication(publication);
         }
         let _ = gate.gate.send(start);
     }

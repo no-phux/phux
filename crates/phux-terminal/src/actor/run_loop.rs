@@ -37,6 +37,21 @@ mod tests;
 #[path = "tests_run_loop_service.rs"]
 mod tests_service;
 
+#[cfg(test)]
+impl TerminalActor {
+    #[allow(
+        clippy::future_not_send,
+        reason = "test fixture drives the LocalSet-only native actor"
+    )]
+    pub(in crate::actor) async fn ingest_pty_for_test(&mut self, chunk: Bytes) {
+        self.service_pty_event(Some(PtyEvent::Bytes {
+            chunk,
+            read_at: std::time::Instant::now(),
+        }))
+        .await;
+    }
+}
+
 /// What the `run` loop must do after one PTY-ingress turn.
 enum PtyTurn {
     /// Keep looping with `native_step_due` untouched (the EOF path).
