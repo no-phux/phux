@@ -54,7 +54,7 @@ test("the split preserves real native, trust, transport and signed-byte qualific
   const ios = steps(job(build, "ios-native")).map(run).join("\n");
   for (const command of [
     "aarch64-apple-ios-sim aarch64-apple-ios",
-    "test_ios*.py",
+    "test_*.py",
     "--target simulator",
     "--target device",
     "swift test",
@@ -98,6 +98,7 @@ test("the split preserves real native, trust, transport and signed-byte qualific
   const x86 = job(build, "linux-x86_64");
   const arm = job(build, "linux-aarch64");
   expect(str(x86["name"])).toBe("linux-x86_64");
+  expect(steps(x86).map(run).join("\n")).toContain("test_*.py");
   expect(str(arm["name"])).toBe("linux-aarch64");
   expect(str(arm["runs-on"])).toBe("ubuntu-24.04-arm");
   expect(str(arm["if"])).toContain("inputs.qualify");
