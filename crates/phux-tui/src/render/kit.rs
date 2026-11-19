@@ -174,6 +174,20 @@ fn key_code(key: &KeyEvent, shift: bool) -> Option<KeyCode> {
     Some(code)
 }
 
+/// `event` with the modifiers dropped from an Enter press: phux commits on
+/// any Enter (Shift/Ctrl/Alt included), while ratcn's lists and inputs
+/// answer only an unmodified one.
+#[must_use]
+pub fn plain_enter(event: Event) -> Event {
+    match event {
+        Event::Key(rt::KeyEvent {
+            code: KeyCode::Enter,
+            ..
+        }) => Event::Key(rt::KeyEvent::new(KeyCode::Enter)),
+        other => other,
+    }
+}
+
 /// `F1`..=`F25` as `F(n)`.
 fn function_key(key: PhysicalKey) -> Option<KeyCode> {
     let n = (key as u32).checked_sub(PhysicalKey::F1 as u32)?;
@@ -263,6 +277,8 @@ pub struct Surface<S, M> {
     /// The area of the last paint, so an offscreen declaration before the
     /// next one lays out the same geometry the user is looking at.
     area: Cell<Option<Rect>>,
+    /// Set by [`Self::invalidate`]; cleared by the next paint.
+    stale: Cell<bool>,
 }
 
 impl<S, M> std::fmt::Debug for Surface<S, M> {
@@ -280,6 +296,7 @@ impl<S: 'static, M: 'static> Surface<S, M> {
         Self {
             runtime: RefCell::new(runtime),
             area: Cell::new(None),
+            stale: Cell::new(false),
         }
     }
 
@@ -293,6 +310,7 @@ impl<S: 'static, M: 'static> Surface<S, M> {
         declare: impl FnMut(&mut DeclareCtx<'_, S, M>),
     ) {
         self.area.set(Some(area));
+        self.stale.set(false);
         self.runtime
             .borrow_mut()
             .render_into(buf, area, state, theme, declare);
@@ -309,18 +327,23 @@ impl<S: 'static, M: 'static> Surface<S, M> {
         theme: &ratcn::Theme,
         declare: impl FnMut(&mut DeclareCtx<'_, S, M>),
     ) -> EventResult<M> {
-        if self.area.get().is_none() {
-            let area = OFFSCREEN;
-            let mut scratch = Buffer::empty(area);
+        if self.stale.get() || self.area.get().is_none() {
+            let area = self.area.get().unwrap_or(OFFSCREEN);
+            // The overlay lays itself out against the last real viewport, so
+            // the scratch buffer spans everything from the origin to the far
+            // edge of what it last painted: some ratcn widgets (the input's
+            // placeholder and prefix) write without clipping to the buffer.
+            let span = area.union(OFFSCREEN);
+            let mut scratch = Buffer::empty(Rect::new(0, 0, span.right(), span.bottom()));
             self.paint(&mut scratch, area, state, theme, declare);
         }
         self.runtime.get_mut().handle_event(event, state)
     }
 
-    /// Forget the painted geometry (after a resize), so the next routed
-    /// event re-declares before it hit-tests.
+    /// Mark the retained surface stale (after a resize or a layout change),
+    /// so the next routed event re-declares before it hit-tests.
     pub fn invalidate(&self) {
-        self.area.set(None);
+        self.stale.set(true);
     }
 }
 

@@ -307,7 +307,9 @@ impl RenderOverlay for SelectList {
             };
         };
         if self.is_list_key(&event) {
-            self.route_rows(event)
+            // Any Enter commits, as it always has; ratcn's list answers only
+            // an unmodified one.
+            self.route_rows(kit::plain_enter(event))
         } else {
             self.route(event, QUERY)
         }

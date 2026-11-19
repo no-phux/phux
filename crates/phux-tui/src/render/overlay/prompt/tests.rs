@@ -214,34 +214,60 @@ fn pastes_and_multi_character_text_insert_literally() {
     );
 }
 
-/// Tab walks the field and both buttons; Enter on Cancel dismisses even
-/// with text in the field, and on the verb it commits.
+/// Tab is inert, as it always was: it never moves focus off the field, so
+/// the Enter after it still commits.
 #[test]
-fn tab_moves_focus_to_the_buttons() {
+fn tab_stays_inert_and_enter_still_commits() {
     let tab = press(PhysicalKey::Tab, Some("\t"));
     let mut p = PromptOverlay::rename_window("build", &Theme::default());
     assert_eq!(p.handle_key(&tab), OverlayCommand::Stay);
-    assert_eq!(
-        p.handle_key(&press(PhysicalKey::Enter, None)),
-        OverlayCommand::Dismiss,
-        "focus is on Cancel"
-    );
-    let mut p = PromptOverlay::rename_window("build", &Theme::default());
-    p.handle_key(&tab);
-    p.handle_key(&tab);
-    assert_eq!(
-        committed_name(&mut p),
-        Some(toml::Value::String("build".to_owned()))
-    );
-    // Typing on a button does not edit the field.
-    let mut p = PromptOverlay::rename_window("build", &Theme::default());
-    p.handle_key(&tab);
     typ(&mut p, 'x');
-    p.handle_key(&key_event(PhysicalKey::Tab, ModSet::SHIFT, Some("\t")));
     assert_eq!(
         committed_name(&mut p),
-        Some(toml::Value::String("build".to_owned()))
+        Some(toml::Value::String("buildx".to_owned()))
     );
+}
+
+/// Shift, Ctrl or Alt held on Enter still commits.
+#[test]
+fn a_modified_enter_commits() {
+    for mods in [ModSet::SHIFT, ModSet::CTRL, ModSet::ALT] {
+        let mut p = PromptOverlay::rename_window("build", &Theme::default());
+        let OverlayCommand::Commit(action) =
+            p.handle_key(&key_event(PhysicalKey::Enter, mods, None))
+        else {
+            panic!("{mods:?}+Enter commits");
+        };
+        assert_eq!(
+            action.args.get("name"),
+            Some(&toml::Value::String("build".to_owned()))
+        );
+    }
+}
+
+/// A layout change while the prompt is up marks its surface stale; the next
+/// key re-declares it offscreen at the real (large) viewport without
+/// writing outside the scratch buffer.
+#[test]
+fn a_key_after_a_layout_change_on_a_large_viewport_does_not_panic() {
+    let area = Rect::new(0, 0, 160, 60);
+    let mut p = PromptOverlay::new_session(&Theme::default());
+    p.render(area, &mut Buffer::empty(area));
+    p.on_viewport_resize(160, 58);
+    assert_eq!(typ(&mut p, 'a'), OverlayCommand::Stay);
+}
+
+/// A viewport too short for the field paints the frame and nothing past it.
+#[test]
+fn a_tiny_viewport_paints_without_panicking() {
+    for (w, h) in [(80, 3), (80, 1), (10, 3), (1, 1)] {
+        for y in 0..h {
+            let outer = Rect::new(0, y, w, h - y);
+            let buf_area = Rect::new(0, 0, w, h);
+            let p = PromptOverlay::new_session(&Theme::default());
+            p.render(outer, &mut Buffer::empty(buf_area));
+        }
+    }
 }
 
 #[test]

@@ -292,3 +292,50 @@ fn bounds_cover_the_painted_dialog_and_never_shrink() {
         "a one-row refresh keeps the frame"
     );
 }
+
+/// Home and End jump the highlight to the first and last row, as in every
+/// other picker.
+#[test]
+fn home_and_end_jump_the_highlight() {
+    let enter = || press_text(PhysicalKey::Enter, None);
+    let mut picker = PathPicker::new("/home".into(), &Theme::default());
+    browse_home(&mut picker);
+    picker.handle_key(&press_text(PhysicalKey::End, None));
+    let last = committed_path(picker.handle_key(&enter()));
+    let mut picker = PathPicker::new("/home".into(), &Theme::default());
+    browse_home(&mut picker);
+    picker.handle_key(&press_text(PhysicalKey::ArrowDown, None));
+    picker.handle_key(&press_text(PhysicalKey::Home, None));
+    let first = committed_path(picker.handle_key(&enter()));
+    assert!(
+        last.as_ref().is_some_and(|(_, path)| path.ends_with("f29")),
+        "{last:?}"
+    );
+    assert_ne!(first, last);
+}
+
+/// A key after a layout change re-declares the picker offscreen at the
+/// real viewport; the query prefix must not write past the scratch buffer.
+#[test]
+fn a_key_after_a_layout_change_on_a_large_viewport_does_not_panic() {
+    let area = Rect::new(0, 0, 160, 60);
+    let mut picker = PathPicker::new("/home".into(), &Theme::default());
+    painted(&picker, area);
+    picker.on_viewport_resize(160, 58);
+    assert_eq!(
+        picker.handle_key(&press_text(PhysicalKey::A, Some("a"))),
+        OverlayCommand::Stay
+    );
+}
+
+/// A viewport too short for the query row paints without panicking.
+#[test]
+fn a_tiny_viewport_paints_without_panicking() {
+    for (w, h) in [(80, 3), (80, 1), (10, 3), (1, 1)] {
+        for y in 0..h {
+            let picker = PathPicker::new("/home".into(), &Theme::default());
+            let mut buf = Buffer::empty(Rect::new(0, 0, w, h));
+            picker.render(Rect::new(0, y, w, h - y), &mut buf);
+        }
+    }
+}

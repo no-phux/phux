@@ -409,3 +409,16 @@ fn session_switch(name: &str, id: i64, host: Option<&str>, window: Option<i64>) 
 }
 
 mod render;
+
+/// Shift, Ctrl or Alt held on Enter still commits the highlighted row.
+#[test]
+fn a_modified_enter_commits() {
+    for mods in [ModSet::SHIFT, ModSet::CTRL, ModSet::ALT] {
+        let mut sl = sample();
+        let enter = crate::test_util::key_event(PhysicalKey::Enter, mods, None);
+        let OverlayCommand::Commit(a) = sl.handle_key(&enter) else {
+            panic!("{mods:?}+Enter commits");
+        };
+        assert_eq!(a.action, "split-pane");
+    }
+}

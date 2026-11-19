@@ -184,11 +184,16 @@ impl PromptOverlay {
                 .outer_height(area.height)
                 .on_dismiss(|| Msg::Cancel)
                 .content(1, move |ctx| {
+                    let row = ctx.area();
+                    // A viewport too short for the field: ratcn's input writes its
+                    // placeholder without clipping, so declare nothing.
+                    if row.height == 0 || row.width == 0 || row.y >= area.bottom() {
+                        return;
+                    }
                     let field = Input::new()
                         .value(|m: &Model| &m.input, Msg::Input)
                         .placeholder(placeholder)
                         .on_submit(|| Msg::Submit);
-                    let row = ctx.area();
                     ctx.component(INPUT, field, Rect::new(row.x, row.y, row.width, 1));
                 })
                 .action(
@@ -303,13 +308,21 @@ impl RenderOverlay for PromptOverlay {
         if key.action != KeyAction::Press {
             return OverlayCommand::Stay;
         }
+        // Tab stays inert, as it always was: focus never leaves the field by
+        // keyboard, so a Tab pressed out of shell habit cannot turn the
+        // next Enter into Cancel. The buttons remain clickable.
+        if key.key == PhysicalKey::Tab {
+            return OverlayCommand::Stay;
+        }
         let on_field = self.model.focus.contains_path([DIALOG, INPUT]);
         let event = if on_field {
             field_key(&mut self.model.input, key)
         } else {
             kit::key(key)
         };
-        event.map_or(OverlayCommand::Stay, |event| self.route(event))
+        event.map_or(OverlayCommand::Stay, |event| {
+            self.route(kit::plain_enter(event))
+        })
     }
 
     fn handle_mouse(&mut self, mouse: &MouseEvent) -> OverlayCommand {

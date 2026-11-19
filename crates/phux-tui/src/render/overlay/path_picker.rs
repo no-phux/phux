@@ -153,6 +153,11 @@ impl PathPicker {
                 .on_dismiss(|| Msg::Dismiss)
                 .content(1 + list_rows, move |ctx| {
                     let strip = ctx.area();
+                    // A viewport too short for the field: ratcn's input writes its
+                    // prefix and placeholder without clipping, so declare nothing.
+                    if strip.height == 0 || strip.width == 0 || strip.y >= area.bottom() {
+                        return;
+                    }
                     let field = Input::new()
                         .value(|m: &Model| &m.query, Msg::Query)
                         .prefix(">")
@@ -256,6 +261,9 @@ impl PathPicker {
             PhysicalKey::P if ctrl => -1,
             PhysicalKey::PageDown | PhysicalKey::NumpadPageDown => page,
             PhysicalKey::PageUp | PhysicalKey::NumpadPageUp => -page,
+            // Home/End jump the highlight, as in every other picker.
+            PhysicalKey::Home | PhysicalKey::NumpadHome => isize::MIN,
+            PhysicalKey::End | PhysicalKey::NumpadEnd => isize::MAX,
             _ => return None,
         })
     }

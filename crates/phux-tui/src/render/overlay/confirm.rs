@@ -359,6 +359,9 @@ impl RenderOverlay for ConfirmOverlay {
         match key.key {
             PhysicalKey::Y => return self.on_yes.clone(),
             PhysicalKey::N => return OverlayCommand::Dismiss,
+            // Only Enter or `y` confirms, as before: a stray Space typed
+            // into a held paste must not press the focused button.
+            PhysicalKey::Space => return OverlayCommand::Stay,
             _ => {}
         }
         kit::key(key).map_or(OverlayCommand::Stay, |event| self.route(event))
@@ -386,6 +389,13 @@ mod tests {
         assert!(out.contains("Clipboard?"), "{out}");
         assert!(out.contains("pane 3 wants to set the clipboard"), "{out}");
         assert!(out.contains("Allow") && out.contains("Deny"), "{out}");
+    }
+
+    #[test]
+    fn space_never_confirms_a_held_paste() {
+        let mut overlay = ConfirmOverlay::paste(paste(b"rm -rf ~\n"), 1, false, &Theme::default());
+        let space = crate::test_util::press_text(PhysicalKey::Space, Some(" "));
+        assert_eq!(overlay.handle_key(&space), OverlayCommand::Stay);
     }
 
     #[test]
