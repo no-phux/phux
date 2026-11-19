@@ -22,7 +22,7 @@ which are not on crates.io yet ([Not shipped](#not-shipped)).
 - [Server protocol](./protocol.md). Length-prefixed binary frames.
   [Compatibility](./compatibility.md) is the 1.x rule.
   [`wire-schema.json`](./spec/wire-schema.json) is generated from the codec.
-- [OSC 7501: report status from any program](./program-protocol.md).
+- [Program Status Protocol (OSC 7501): report status from any program](./program-protocol.md).
   [Any program can report status](./any-program-status.md) is a short
   emitter. A program writes one escape sequence. It needs no phux library
   and no socket.

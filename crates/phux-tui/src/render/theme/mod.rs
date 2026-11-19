@@ -26,7 +26,7 @@ pub use phux_config::theme_slots::SLOT_SPECS;
 use phux_design::{Mode, Rgb8, Rgba8, Roles};
 use ratatui::style::{Color, Modifier, Style};
 
-pub use depth::{identity_256, nearest_256, xterm_rgb};
+pub use depth::{identity_256, is_24_bit, nearest_256, xterm_rgb};
 pub use term::{Depth, Glyphs, Outer, Term, record_reported};
 
 /// Named color slots for chrome + overlay painting (ratatui [`Color`]s),

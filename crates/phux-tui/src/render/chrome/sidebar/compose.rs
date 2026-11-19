@@ -5,12 +5,13 @@ use std::io::{self, Write};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect as RataRect;
 use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Widget};
+use ratatui::text::{Line, Span, Text};
+use ratatui::widgets::Widget;
+use ratcn::{ListStyle, ListWidget};
 
 use crate::layout::Rect;
 use crate::render::Theme;
-use crate::render::{clip_text, display_width};
+use crate::render::{cell_width, clip_text, display_width};
 
 use super::agent_filter;
 use super::agent_filter::{AgentScope, FilterChip, HostFilter};
@@ -37,49 +38,47 @@ impl SidebarPainter {
         let counts = self.counts();
         let model = row_model(counts, rect.h);
         let hidden = hidden_counts(counts, &model);
-        if text_w > 0 {
-            let lines: Vec<Line<'static>> = model
+        // The active window's row is the list's cursor row: ratcn lays the
+        // selection bed edge to edge of the body (gutters included, the
+        // rule excluded), so the selected row is one band rather than a
+        // highlight hugging its glyphs.
+        let active = self.windows.iter().position(|w| w.active).and_then(|i| {
+            model
                 .iter()
-                .map(|row| self.row_line(*row, hidden, text_w))
-                .collect();
-            let content_x = rule.content_x();
-            Paragraph::new(lines).render(
-                RataRect::new(content_x + GUTTER, 0, text_w, rect.h),
+                .position(|row| *row == SidebarRow::WindowName(i))
+        });
+        let items: Vec<Text<'static>> = model
+            .iter()
+            .enumerate()
+            .map(|(y, row)| {
+                let mut line = if text_w > 0 {
+                    fit_line(self.row_line(*row, hidden, text_w), text_w)
+                } else {
+                    Line::default()
+                };
+                line.spans
+                    .insert(0, Span::raw(" ".repeat(usize::from(GUTTER))));
+                let text = Text::from(line);
+                // Where the depth has no safe bed fill, reverse video
+                // carries the band (ratcn rows are colour-only).
+                if active == Some(y) && self.theme.selection_reverses() {
+                    text.style(Style::default().add_modifier(Modifier::REVERSED))
+                } else {
+                    text
+                }
+            })
+            .collect();
+        ListWidget::new(&items)
+            .style(list_style(&self.theme))
+            .focused(true)
+            .focused_item(active)
+            .render(
+                RataRect::new(rule.content_x(), 0, rect.w.saturating_sub(1), rect.h),
                 &mut buf,
             );
-        }
-        self.paint_selection_bed(&mut buf, rect, rule, &model);
         paint_separator(&mut buf, rect, rule, &self.theme, junctions);
         self.paint_window_drop_marker(&mut buf, rect, rule);
         buf
-    }
-
-    /// Lay the selection bed under the active window's row, edge to edge
-    /// of the strip (gutters included, the rule excluded), so the selected
-    /// row is one band rather than a highlight hugging its glyphs.
-    fn paint_selection_bed(
-        &self,
-        buf: &mut Buffer,
-        rect: Rect,
-        rule: SidebarRule,
-        model: &[SidebarRow],
-    ) {
-        let Some(active) = self.windows.iter().position(|w| w.active) else {
-            return;
-        };
-        let Some(y) = model
-            .iter()
-            .position(|row| *row == SidebarRow::WindowName(active))
-            .and_then(|y| u16::try_from(y).ok())
-        else {
-            return;
-        };
-        let rule_x = rule.column(rect.w);
-        for x in (0..rect.w).filter(|x| *x != rule_x) {
-            if let Some(cell) = buf.cell_mut((x, y)) {
-                cell.set_style(self.theme.on_selection(Style::default()));
-            }
-        }
     }
 
     /// Reverse the window row under a live drag so the drop slot is
@@ -242,6 +241,61 @@ impl SidebarPainter {
         }
         self.affordance_line(&parts.join(", "), text_w)
     }
+}
+
+/// The strip's rows as a ratcn list, every colour an explicit phux theme
+/// slot. [`ListStyle::from_theme`] derives its focus and hover fills by
+/// blending toward black or white, which synthesises 24-bit colour on a
+/// 16-colour or `NO_COLOR` terminal; spelling the slots out keeps the strip
+/// at the depth [`Theme`] was fitted to. Only the cursor row (the active
+/// window) takes a fill: the selection bed.
+pub(super) const fn list_style(theme: &Theme) -> ListStyle {
+    ListStyle {
+        foreground: theme.text,
+        background: theme.surface,
+        focused_background: theme.surface,
+        hovered_background: theme.surface,
+        selected_foreground: theme.text,
+        focused_foreground: theme.text,
+        focused_row_background: theme.selection_bg,
+        selected_focused_foreground: theme.text,
+        selected_focused_background: theme.selection_bg,
+        selected_marker: theme.accent,
+        unselected_marker: theme.dim,
+        disabled_foreground: theme.dim,
+        disabled_background: theme.surface,
+    }
+}
+
+/// Cut `line` to `width` cells, as the strip's text column always has: a
+/// wide glyph straddling the edge is dropped whole, so nothing spills into
+/// the trailing gutter the list row now spans.
+fn fit_line(mut line: Line<'static>, width: u16) -> Line<'static> {
+    let width = usize::from(width);
+    let mut used = 0usize;
+    let mut keep = 0usize;
+    for span in &mut line.spans {
+        let w = display_width(&span.content);
+        if used + w <= width {
+            used += w;
+            keep += 1;
+            continue;
+        }
+        let mut cut = String::new();
+        for ch in span.content.chars() {
+            let cw = cell_width(ch).unwrap_or(0);
+            if used + cw > width {
+                break;
+            }
+            used += cw;
+            cut.push(ch);
+        }
+        span.content = cut.into();
+        keep += 1;
+        break;
+    }
+    line.spans.truncate(keep);
+    line
 }
 
 fn paint_separator(

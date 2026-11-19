@@ -1,5 +1,5 @@
 ---
-source: crates/phux-tui/src/render/overlay/settings.rs
+source: crates/phux-tui/src/render/overlay/settings/tests/ui.rs
 expression: "render_text(&page, 100, 30)"
 ---
 
@@ -8,17 +8,17 @@ expression: "render_text(&page, 100, 30)"
 
                ╭ Settings ──────────────────────────────────────────────────────────╮
                │ >                                       ~/.config/phux/config.toml │
+               │ ‹   Status bar      Sidebar•     Chrome      Notifications    ›    │
+               │   enabled                                         ■ true   default │
+               │ • width                                                40      you │
+               │   position                                          left   default │
+               │   agents-share                                         50  default │
+               │   hosts                                           ■ true   default │
+               │   recent-first                                    □ false  default │
+               │   hosts-refresh-secs                                   10  default │
                │                                                                    │
-               │  Defaults         │   enabled                        true  default │
-               │  Keybindings      │ • width                            40      you │
-               │  Status bar       │   position                       left  default │
-               │ ▸Sidebar        1 │   agents-share                     50  default │
-               │  Chrome           │   hosts                          true  default │
-               │  Notifications    │   recent-first                  false  default │
-               │  Theme            │   hosts-refresh-secs               10  default │
-               │  Experimental     │                                                │
-               │  Voice            │                                                │
-               │  Organize         │                                                │
+               │                                                                    │
+               │                                                                    │
                │ ────────────────────────────────────────────────────────────────── │
                │ sidebar.width  integer 0..65535                                    │
                │ Sidebar width in columns; 0 sizes it automatically                 │

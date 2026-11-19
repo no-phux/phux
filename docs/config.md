@@ -254,6 +254,8 @@ it, and when a change applies. Edits go straight into your
 - Type to filter across sections. <kbd>Tab</kbd> steps between sections.
 - <kbd>Enter</kbd> or <kbd>Space</kbd> toggles, cycles, or edits the row;
   <kbd>Left</kbd> and <kbd>Right</kbd> step a value.
+- Click a section's tab to show it, a checkbox or a cycling value to change
+  it, or any other part of a row to select it.
 - <kbd>Delete</kbd> or <kbd>C-r</kbd> removes your override so the default
   shows through. <kbd>C-z</kbd> undoes.
 

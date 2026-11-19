@@ -70,7 +70,7 @@
 00|╭ Sessions ────────────────────────────────────╮|
   0-0 gray/-, 1-10 cyan/-, 11-47 gray/-
 01|│ >                                            │|
-  0-0 gray/-, 2-3 gray/-, 4-4 -/cyan, 47-47 gray/-
+  0-0 gray/-, 2-2 gray/-, 4-4 -/cyan, 47-47 gray/-
 02|│ Local                                        │|
   0-0 gray/-, 2-6 gray/-, 47-47 gray/-
 03|│   development                    1 needs you │|
