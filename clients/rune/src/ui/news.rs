@@ -23,15 +23,23 @@ pub fn bell_name(desk: &Desk) -> &'static str {
 /// The bell's own dot while a note is unread, `size` across at `at`: the
 /// bell's tone, and no word, since the bell's name says it.
 pub fn unread_dot(desk: &Desk, p: &Tokens, at: (f32, f32), size: f32) -> Option<El> {
-    let t = p;
-    desk.news.unread.then(|| {
-        el().absolute(at.0, at.1)
-            .w(size)
-            .h(size)
-            .radius(t.radius.full)
-            .fill(t.status.tone(Tone::Bell).ink)
-            .a11y_hidden()
-    })
+    desk.news.unread.then(|| dot(p, at, size, unread_tone(p)))
+}
+
+/// The unread dot's colour: the bell's tone.
+pub fn unread_tone(p: &Tokens) -> rune::Color {
+    p.status.tone(Tone::Bell).ink
+}
+
+/// A `size` dot of `tone` at `at` over its parent, hidden from
+/// accessibility (the control's name says it).
+pub fn dot(p: &Tokens, at: (f32, f32), size: f32, tone: rune::Color) -> El {
+    el().absolute(at.0, at.1)
+        .w(size)
+        .h(size)
+        .radius(p.radius.full)
+        .fill(tone)
+        .a11y_hidden()
 }
 
 /// The title bar's bell.
@@ -56,7 +64,7 @@ pub fn bell(desk: &Desk, p: &Tokens) -> El {
     )
 }
 
-pub fn view(_desk: &Desk, p: &Tokens) -> El {
+pub fn view(desk: &Desk, p: &Tokens) -> El {
     let t = p;
     let s = &t.space;
     let r = &t.roles;
@@ -90,7 +98,9 @@ pub fn view(_desk: &Desk, p: &Tokens) -> El {
         top: s.s12 + s.s12,
         close: Desk::close_news,
     };
-    sheet.build(None, body, key_hint("esc", "close", p), p)
+    // A phone has no Escape: its sheet closes from the header's button.
+    let foot = desk.phone.is_none().then(|| key_hint("esc", "close", p));
+    sheet.build(None, body, foot, p)
 }
 
 #[cfg(test)]

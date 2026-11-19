@@ -114,7 +114,11 @@ saved settings and the same Keychain key, with no ticket or pairing payload.
 Backgrounding activates the simulator's already-running Home screen, not a
 cold Settings process. Fresh UIKit receipts and a later presented frame still
 prove the real OS transition; launch success alone never qualifies it.
-It never adopts a user's simulator
+After the first terminal screenshot the runner posts a Darwin notification
+inside its simulator; the probe records the top bar's UIKit Liquid Glass
+controls, taps the real glass back button, and reports once the Sessions
+page has removed the covered bar's glass and shown its own glass dock
+(`rune-glass.json`, `ios-glass-sessions.png`). It never adopts a user's simulator
 or production socket. Qualification-only socket/command launch arguments
 are compiled out on devices.
 

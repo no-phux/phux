@@ -13,13 +13,20 @@ use rune::{El, Key, Tx, col, el, row, text, text_input};
 use super::{Desk, Look};
 use crate::addressable::Addressable;
 use crate::desk::phone::navigation::Page;
-use crate::keys::{self, Shortcut};
-use crate::ui::tokens::{GlassSurface, Paint, Tier};
-use crate::ui::{badge, icons, pressable};
+use crate::keys::Shortcut;
+use crate::ui::tokens::Paint;
+use crate::ui::{icons, pressable};
 
+mod actions;
+mod card;
+mod dock;
 mod resource;
+mod states;
 use crate::ui::Cover;
+use actions::actions;
+use card::session_card;
 use resource::resource_row;
+use states::empty_state;
 
 pub(in crate::ui) fn view(desk: &Desk, top: f32) -> Option<El> {
     let page = desk.phone_page()?;
@@ -159,19 +166,6 @@ fn note(words: impl Into<String>, p: &Look) -> El {
     )
 }
 
-/// The session dock: glass over the scrolling list, the phone's one
-/// backdrop blur (§1.9). Opaque under increased contrast, Reduce
-/// Transparency and forced colours.
-fn dock(e: El, p: &Look) -> El {
-    let e = p.glass_panel(
-        e,
-        GlassSurface::PhoneBar,
-        p.glass_tint_layer(),
-        p.roles.layer.raised,
-    );
-    p.elevate(e.continuous_corners(), Tier::Floating)
-}
-
 fn sessions(desk: &Desk, p: &Look) -> El {
     let s = &p.space;
     let phone = desk.phone.as_ref().expect("phone navigation");
@@ -197,9 +191,19 @@ fn sessions(desk: &Desk, p: &Look) -> El {
         .px(s.s3)
         .gap(s.s2)
         .items_center()
-        .radius(p.radius.md)
+        .radius(p.radius.lg)
+        .continuous_corners()
         .fill(p.roles.layer.raised.paint())
-        .border(s.hairline, p.roles.border.control.paint())
+        // Increased contrast keeps the field's edge; otherwise the fill
+        // alone reads as a field, as a system search field does.
+        .border(
+            s.hairline,
+            if p.increased_contrast {
+                p.roles.border.control.paint()
+            } else {
+                p.roles.border.muted.paint()
+            },
+        )
         .child(
             rune::icon(&icons::SEARCH, p.icon.grid)
                 .color(dim)
@@ -207,53 +211,18 @@ fn sessions(desk: &Desk, p: &Look) -> El {
         )
         .child(search);
     let list = session_list(desk, p);
-    let name = phone.query.text.trim();
-    let create = if name.is_empty() {
-        "New session".to_owned()
-    } else {
-        format!("Open or create “{name}”")
-    };
-    let footer = control("phone-session-new", &create, p, |d, _| {
-        d.phone_create_session()
-    })
-    .w_full()
-    .gap(s.s2)
-    .center()
-    .radius(p.radius.full)
-    .child(
-        rune::icon(&icons::PLUS, p.icon.size.lg)
-            .color(ink)
-            .a11y_hidden(),
-    )
-    .child(
-        text(if name.is_empty() {
-            "New session"
-        } else {
-            "Open or create session"
-        })
-        .key("phone-session-new-label")
-        .font(p.ty.label.medium())
-        .color(ink)
-        .truncate()
-        .a11y_hidden(),
-    );
-    let footer = dock(footer, p);
-    let footer = if desk.connection.client.is_some() {
-        footer
-    } else {
-        footer.inert()
-    };
+    let footer = dock::footer(desk, phone.query.text.trim(), ink, p);
     col()
         .w_full()
         .grow(1.0)
         .min_h(0.0)
         .px(crate::ui::tokens::phone::page_margin())
-        .gap(s.s3)
+        .gap(s.s2)
         .pb(s.s3)
-        .child(search)
-        // Search borrows the machine row's room so even a 320×568 phone
+        // Search borrows the machine line's room so even a 320×568 phone
         // can show a complete result above the keyboard and floating dock.
         .children((!phone.query.focused).then(|| connections(desk, p)))
+        .child(search)
         .child(
             el().grow(1.0)
                 .min_h(0.0)
@@ -265,50 +234,75 @@ fn sessions(desk: &Desk, p: &Look) -> El {
                         .h_full()
                         .min_h(0.0)
                         .scroll(rune::ScrollSpec { stick_bottom: false })
+                        // Cards slide under the search field and the dock
+                        // instead of being cut by a hard edge.
+                        .scroll_edge_fade(s.s4)
+                        .scroll_margin(s.s4)
                         // A real scroll tail: the last row can clear the
                         // floating dock, also when the search keyboard is up
                         // and at the largest text sizes, where the dock's
                         // label line outgrows the touch minimum.
                         .child(
-                            list.pb(s.touch_min.max(p.ty.lead.line_px() + s.s4) + s.s3),
+                            list.pt(s.s2)
+                                .pb(s.touch_min.max(p.ty.lead.line_px() + s.s4) + s.s3),
                         ),
                 )
                 .child(footer.pin(Some(0.0), None, Some(0.0), Some(0.0))),
         )
 }
 
+/// The page's subtitle: which computer this is and whether it is reached,
+/// as a mark and a word (never colour alone). Tapping it opens Connections.
 fn connections(desk: &Desk, p: &Look) -> El {
+    let s = &p.space;
     let dim = p.roles.text.dim.paint();
-    let label = format!(
-        "Connections · {} · {}",
-        desk.machines.label(),
-        desk.link_word()
-    );
+    let word = desk.link_word();
+    let state = match word {
+        "connected" => State::Done,
+        "connecting" => State::Working,
+        _ => State::Failed,
+    };
+    let label = format!("Connections · {} · {word}", desk.machines.label());
     control("phone-session-connections", &label, p, |d, tx| {
         d.phone_action(Shortcut::Machines, tx)
     })
     .w_full()
-    .gap(p.space.s2)
-    .fill(p.roles.layer.raised.paint())
+    .gap(s.s2)
+    .px(s.s1)
+    .child(
+        el().size(p.icon.size.sm, p.icon.size.sm)
+            .radius(p.radius.full)
+            .fill(p.status.state(state).tone.ink)
+            .a11y_hidden(),
+    )
     .child(
         text(desk.machines.label().to_owned())
-            .font(p.ty.mono)
-            .color(dim)
+            .font(p.ty.label.medium())
+            .color(p.roles.text.text.paint())
+            .min_w(0.0)
+            .shrink()
             .truncate()
             .a11y_hidden(),
     )
-    .child(el().grow(1.0))
     .child(
-        text(desk.link_word())
+        text(capitalized(word))
             .font(p.ty.caption)
             .color(dim)
             .a11y_hidden(),
     )
+    .child(el().grow(1.0))
     .child(
         rune::icon(&icons::CHEVRON_RIGHT, p.icon.size.md)
             .color(dim)
             .a11y_hidden(),
     )
+}
+
+fn capitalized(word: &str) -> String {
+    let mut chars = word.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
 }
 
 /// Every query word may match a different inventory field; never screen text.
@@ -373,108 +367,18 @@ fn session_list(desk: &Desk, p: &Look) -> El {
     other_hosts(list, desk, query, p)
 }
 
-fn empty_state(desk: &Desk, query: &str, p: &Look) -> El {
-    let (title, detail) = if desk.connection.topology.is_none() {
-        (
-            "Loading sessions",
-            "Your sessions will appear when connected.",
-        )
-    } else if query.trim().is_empty() {
-        ("No sessions yet", "Create a session to start something.")
-    } else {
-        ("No matches", "Try a session, pane, agent, or folder.")
-    };
-    col()
-        .w_full()
-        .padding(p.space.s3)
-        .gap(p.space.s2)
-        .child(
-            text(title)
-                .font(p.ty.lead.semibold())
-                .color(p.roles.text.text.paint()),
-        )
-        .child(
-            text(detail)
-                .font(p.ty.body)
-                .color(p.roles.text.dim.paint())
-                .wrap(),
-        )
-}
-
-fn session_card(
-    desk: &Desk,
-    session: &phux_client_runtime::control::SessionDescriptor,
-    members: &[&Addressable],
-    filtered: &[&Addressable],
-    p: &Look,
-) -> El {
+/// An inset hairline between touch rows, starting at the text column.
+fn separator(p: &Look) -> El {
     let s = &p.space;
-    let dim = p.roles.text.dim.paint();
-    let waiting = members
-        .iter()
-        .filter(|r| desk.activities.mark(&r.id).needs_you())
-        .count();
-    let panes = match members.len() {
-        1 => "1 pane".to_owned(),
-        n => format!("{n} panes"),
-    };
-    let name = session.name.clone();
-    let current = desk.selected_session_name().as_deref() == Some(&session.name);
-    let attention = phux_design::plural("count.needs_you", waiting as u64).unwrap_or_default();
-    let label = format!(
-        "{} · {panes}{} · {attention}",
-        session.name,
-        if current { " · current session" } else { "" },
-    );
-    let header = control(
-        &format!("phone-session-{}", session.id),
-        &label,
-        p,
-        move |d, _| d.phone_session(&name),
-    )
-    .w_full()
-    .min_h(row_h(p))
-    .gap(s.s2)
-    .radius(nested(p))
-    .child(
-        col()
-            .grow(1.0)
-            .min_w(0.0)
-            .gap(s.s1)
-            .child(
-                row()
-                    .min_w(0.0)
-                    .gap(s.icon_gap)
-                    .items_center()
-                    .child(
-                        text(session.name.clone())
-                            .font(p.ty.lead.semibold())
-                            .color(p.roles.text.text.paint())
-                            .truncate()
-                            .a11y_hidden(),
-                    )
-                    .children(current.then(|| {
-                        rune::icon(&icons::CHECK, p.icon.size.md)
-                            .color(dim)
-                            .a11y_hidden()
-                    })),
-            )
-            .child(text(panes).font(p.ty.caption).color(dim).a11y_hidden()),
-    )
-    .children(
-        (waiting > 0).then(|| badge::tone_badge(p, State::NeedsYou, Some(attention)).a11y_hidden()),
-    );
-    let mut card = col()
-        .w_full()
-        .padding(s.s1)
-        .radius(p.radius.xl)
-        .continuous_corners()
-        .fill(p.roles.layer.raised.paint())
-        .child(header);
-    for resource in filtered {
-        card = card.child(resource_row(desk, resource, p));
-    }
-    card
+    el().w_full()
+        .pl(s.s3 + p.icon.grid + s.s2)
+        .pr(s.s3)
+        .child(
+            el().w_full()
+                .h(s.hairline)
+                .fill(p.roles.border.muted.paint()),
+        )
+        .a11y_hidden()
 }
 
 fn other_hosts(mut list: El, desk: &Desk, query: &str, p: &Look) -> El {
@@ -544,59 +448,6 @@ fn remote_key(host: &Option<String>, session: &str) -> String {
         "phone-remote-{}",
         serde_json::to_string(&(host, session)).expect("string tuple")
     )
-}
-
-fn actions(desk: &Desk, p: &Look) -> El {
-    let mut list = col()
-        .w_full()
-        .px(crate::ui::tokens::phone::page_margin())
-        .py(p.space.s3)
-        .gap(p.space.s1);
-    for action in [
-        Shortcut::NewTerminal,
-        Shortcut::NewSession,
-        Shortcut::Find,
-        Shortcut::SplitRight,
-        Shortcut::SplitDown,
-        Shortcut::RenameTab,
-        Shortcut::RenameSession,
-        Shortcut::Inbox,
-        Shortcut::Machines,
-        Shortcut::Settings,
-        Shortcut::CloseTerminal,
-    ] {
-        let Some(command) = keys::command(action) else {
-            continue;
-        };
-        let control = button(
-            &format!("phone-action-{action:?}"),
-            command.title,
-            p,
-            move |d, tx| d.phone_action(action, tx),
-        )
-        .w_full();
-        let needs_pane = matches!(
-            action,
-            Shortcut::Find
-                | Shortcut::SplitRight
-                | Shortcut::SplitDown
-                | Shortcut::RenameTab
-                | Shortcut::CloseTerminal
-        );
-        list = list.child(if needs_pane && desk.connection.shown.is_none() {
-            control.inert()
-        } else {
-            control
-        });
-    }
-    col()
-        .w_full()
-        .grow(1.0)
-        .min_h(0.0)
-        .scroll(rune::ScrollSpec {
-            stick_bottom: false,
-        })
-        .child(list)
 }
 
 #[cfg(test)]

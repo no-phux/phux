@@ -26,18 +26,29 @@ pub fn view(desk: &Desk, ink: &Tokens, cx: &mut Cx<Desk>) -> El {
         .w_full()
         .min_h(0.0)
         .min_w(0.0);
-    let Some(tree) = desk.connection.layout.clone() else {
-        let waiting = el()
-            .w_full()
+    let waiting = || {
+        el().w_full()
             .h_full()
             .center()
-            .child(placeholder(desk, ink));
+            .child(placeholder(desk, ink))
+    };
+    let Some(tree) = desk.connection.layout.clone() else {
         if desk.phone.is_some() {
-            return area.child(waiting);
+            return area.child(waiting());
         }
-        return area.child(card(waiting, t.roles.layer.ground.paint(), Lit::Resting, t));
+        return area.child(card(
+            waiting(),
+            t.roles.layer.ground.paint(),
+            Lit::Resting,
+            t,
+        ));
     };
     if let Some(phone) = &desk.phone {
+        // A phone shows one pane at a time: with none chosen yet, the stage
+        // says what is coming instead of standing blank.
+        if desk.connection.shown.is_none() {
+            return area.child(waiting());
+        }
         return super::spatial::view(desk, phone, ink, area);
     }
     let several = matches!(tree, LayoutNode::Split { .. });
@@ -328,11 +339,14 @@ fn terminal_pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Tokens) -> E
     let Some((frame, view)) = frame else {
         perf::ACQUIRE_REJECTED.incr();
         let ground = t.roles.layer.ground.paint();
-        let opening = host.fill(ground).center().child(
+        let words = if desk.phone.is_some() {
+            super::status::opening(t)
+        } else {
             rune::text("Opening…")
                 .font(t.ty.caption)
-                .color(t.roles.text.dim.paint()),
-        );
+                .color(t.roles.text.dim.paint())
+        };
+        let opening = host.fill(ground).center().child(words);
         return float(id, framed(desk, opening, ground, Lit::Resting, t), t);
     };
     if focused {

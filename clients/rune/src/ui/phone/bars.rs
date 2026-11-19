@@ -1,12 +1,16 @@
 //! The phone's top bar (back, the place capsule, news, more or the
-//! minimap) and its tab pills: 44-point touch targets on opaque surfaces.
+//! minimap) and its tab pills: 44-point touch targets on opaque surfaces,
+//! or the native host's Liquid Glass for the floating round buttons.
 
 use crate::ui::tokens::Voice;
 use crate::ui::tokens::layout::PHONE;
 use phux_design::State;
 use rune::{Color, El, col, row, text};
 
-use super::{Look, badge, glyph, icons, mark_ink, news, round, spatial, surface, touchable};
+use super::{
+    Look, badge, floating_round, glyph, hosted, icons, mark_ink, native_glass, news, round,
+    spatial, surface, touchable,
+};
 use crate::desk::Desk;
 use crate::ui::tokens::Paint;
 
@@ -37,72 +41,97 @@ pub(super) fn top_bar(desk: &Desk, p: &Look) -> El {
         .gap(s.s3)
         .radius(p.radius.full)
         .items_center();
-    let place = touchable(surface(capsule, p), p)
-        .label(if desk.connection.shown.is_some() {
-            "Choose pane"
+    let name = if desk.connection.shown.is_some() {
+        "Choose pane"
+    } else {
+        "Connections"
+    };
+    let detail = place_detail(desk, &session);
+    let tone = focused_tone(desk, p);
+    let pressed = |d: &mut Desk| {
+        if d.connection.shown.is_some() {
+            d.phone_picker();
         } else {
-            "Connections"
-        })
-        .on_press(|d: &mut Desk| {
-            if d.connection.shown.is_some() {
-                d.phone_picker();
-            } else {
-                d.toggle_machines();
-            }
-        })
-        .child(
-            col()
-                .min_w(0.0)
-                .grow(1.0)
-                .child(
-                    text(title)
-                        .w_full()
-                        .font(p.ty.lead.semibold())
-                        .color(p.roles.text.text.paint())
-                        .truncate(),
-                )
-                .child(
-                    row()
-                        .w_full()
-                        .gap(s.s1)
-                        .items_center()
-                        .min_w(0.0)
-                        .child(
-                            text(place_detail(desk, &session))
-                                .min_w(0.0)
-                                .shrink()
-                                .font(p.ty.caption)
-                                .color(focused_tone(desk, p))
-                                .truncate(),
-                        )
-                        .child(glyph(
-                            &icons::CHEVRON,
-                            p.icon.size.sm,
-                            p.roles.text.dim.paint(),
-                        )),
-                ),
-        );
-    let ink = p.roles.text.text.paint();
+            d.toggle_machines();
+        }
+    };
+    // The capsule is glass with the round buttons beside it, so the bar
+    // reads as one material on the native host.
+    let place = if native_glass(desk, p) {
+        let control = crate::mobile::Control {
+            key: "phone-place".to_owned(),
+            label: name.to_owned(),
+            title: Some(title),
+            subtitle: Some((detail, tone)),
+            leading: true,
+            symbol: "chevron.down",
+            enabled: true,
+            dark: p.dark(),
+            ink: p.roles.text.text.paint(),
+            badge: None,
+        };
+        hosted(desk, capsule.label(name), control).on_press(pressed)
+    } else {
+        touchable(surface(capsule, p), p)
+            .label(name)
+            .on_press(pressed)
+            .child(
+                col()
+                    .min_w(0.0)
+                    .grow(1.0)
+                    .child(
+                        text(title)
+                            .w_full()
+                            .font(p.ty.lead.semibold())
+                            .color(p.roles.text.text.paint())
+                            .truncate(),
+                    )
+                    .child(
+                        row()
+                            .w_full()
+                            .gap(s.s1)
+                            .items_center()
+                            .min_w(0.0)
+                            .child(
+                                text(detail)
+                                    .min_w(0.0)
+                                    .shrink()
+                                    .font(p.ty.caption)
+                                    .color(tone)
+                                    .truncate(),
+                            )
+                            .child(glyph(
+                                &icons::CHEVRON,
+                                p.icon.size.sm,
+                                p.roles.text.dim.paint(),
+                            )),
+                    ),
+            )
+    };
     let trailing = spatial::minimap(desk, p).unwrap_or_else(|| {
-        round(
+        floating_round(
+            desk,
             "phone-more",
             "Terminal actions",
-            glyph(&icons::MORE, p.icon.size.lg, ink),
+            &icons::MORE,
+            "ellipsis",
+            None,
             p,
         )
         .on_press(Desk::open_phone_actions)
     });
-    // The unread dot sits on the bell's upper trailing shoulder.
-    let dot = (p.round() - s.s4, s.s2);
-    let bell = round(
+    let unread = desk.news.unread.then(|| news::unread_tone(p));
+    let bell = floating_round(
+        desk,
         "phone-news",
         news::bell_name(desk),
-        glyph(&icons::BELL, p.icon.size.lg, ink),
+        &icons::BELL,
+        "bell",
+        unread,
         p,
     )
     .expanded(desk.news.open)
-    .on_press(Desk::toggle_news)
-    .children(news::unread_dot(desk, p, dot, s.s2));
+    .on_press(Desk::toggle_news);
     row()
         .key("phone-top")
         .w_full()
@@ -112,10 +141,13 @@ pub(super) fn top_bar(desk: &Desk, p: &Look) -> El {
         .items_center()
         .window_drag()
         .child(
-            round(
+            floating_round(
+                desk,
                 "phone-back",
                 "Sessions",
-                glyph(&icons::CHEVRON_LEFT, p.icon.size.lg, ink),
+                &icons::CHEVRON_LEFT,
+                "chevron.left",
+                None,
                 p,
             )
             .on_press(Desk::open_phone_sessions),

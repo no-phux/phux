@@ -159,8 +159,12 @@ fn editing_a_filter_resets_the_old_scroll_offset_to_the_first_result() {
     settle(&mut rt);
     let list = element(&rt, "phone-session-list").rect;
     let first = element(&rt, "phone-session-1").rect;
+    // The list's top inset (clear of the edge fade) and the card's own
+    // padding, and nothing of the old offset.
+    let space = phux_design::tokens::SPACE;
+    let inset = space.s2 + space.s1;
     assert!(
-        first[1] >= list[1] && first[1] - list[1] < 8.0,
+        first[1] >= list[1] && first[1] - list[1] < inset + 1.0,
         "{first:?} vs {list:?}"
     );
 }

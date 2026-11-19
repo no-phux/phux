@@ -26,6 +26,7 @@ final class RuneView: UIView {
     private var identities: [ObjectIdentifier: UInt64] = [:]
     private var nextIdentity: UInt64 = 0
     private var cadence = FrameCadence()
+    private var controls: NativeControls?
     private let path = NWPathMonitor()
     private var pathSettled = false
     private var pathWork: DispatchWorkItem?
@@ -185,6 +186,8 @@ final class RuneView: UIView {
         do {
             let frame = try bridge.frame()
             synchronizeInput(frame)
+            // Not on an undrawn frame: the controls stay where it last drew.
+            if let specs = frame["controls"] as? [[String: Any]] { nativeControls().update(specs) }
             scheduleFrame(frame)
             if let requests = frame["requests"] as? [String: Any] { serve(requests) }
             updateGround(frame)
@@ -242,6 +245,25 @@ final class RuneView: UIView {
         if requests["connection"] as? Bool == true { connectionRequested?() }
     }
 
+    private func nativeControls() -> NativeControls {
+        if let controls { return controls }
+        let made = NativeControls(host: self)
+        made.pressed = { [weak self] id in self?.press(id) }
+        controls = made
+        return made
+    }
+
+    /// Simulator qualification: the Liquid Glass controls on screen now.
+    var glassEvidence: [[String: Any]] { controls?.evidence ?? [] }
+    /// Simulator qualification: tap `id`'s real glass button.
+    func tapGlass(_ id: String) -> Bool { controls?.tap(id) ?? false }
+
+    /// A tap on a Liquid Glass control runs its Rune press in the next frame.
+    private func press(_ id: String) {
+        guard active, let bridge else { return }
+        if bridge.press(id) { wake() }
+    }
+
     private func send(_ operation: [String: Any], context: InputContext) -> [String: Any]? {
         guard active, let bridge else { return nil }
         do { let result = try bridge.input(operation, context: context); wake(); return result }
@@ -272,6 +294,7 @@ final class RuneView: UIView {
         displayLink?.invalidate(); displayLink = nil
         path.cancel(); pathWork?.cancel(); pathWork = nil
         editor.retire(); editor.resignFirstResponder()
+        controls?.removeAll()
         bridge?.close(); bridge = nil
     }
 

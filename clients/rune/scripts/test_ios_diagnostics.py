@@ -288,6 +288,7 @@ class ConnectionDiagnostics(unittest.TestCase):
             lane.create_simulator = Mock()
             lane.launch = Mock(return_value=123)
             lane.collect_report = Mock(return_value={"fixture": True})
+            lane.qualify_glass = Mock()
             lane.resume_identity = Mock(return_value={"fixture": True})
             with patch.object(qualify, "Qualification", return_value=lane):
                 with self.assertRaisesRegex(ValueError, "diagnostics incomplete"):
