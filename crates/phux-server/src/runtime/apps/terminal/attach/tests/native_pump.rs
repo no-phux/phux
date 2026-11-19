@@ -93,6 +93,7 @@ async fn final_drain_wins_over_expired_gap_and_ready_broadcasts() {
 
 #[tokio::test(start_paused = true)]
 async fn invalidated_final_native_capture_is_a_failure_without_partial_publication() {
+    let (diagnostics, _guard) = super::publication_diagnostics::capture();
     let (handle, _, mut captures, _) = native_attach_handle();
     let terminal = handle.terminal().unwrap().clone();
     let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(8);
@@ -120,10 +121,12 @@ async fn invalidated_final_native_capture_is_a_failure_without_partial_publicati
         out_rx.try_recv().is_err(),
         "failed capture published a partial generation"
     );
+    super::publication_diagnostics::assert_event(&diagnostics, "final_native_capture", "refused");
 }
 
 #[tokio::test(start_paused = true)]
 async fn unanswered_final_native_capture_has_a_deadline() {
+    let (diagnostics, _guard) = super::publication_diagnostics::capture();
     let (handle, _, mut captures, _) = native_attach_handle();
     let terminal = handle.terminal().unwrap().clone();
     let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(8);
@@ -144,6 +147,39 @@ async fn unanswered_final_native_capture_has_a_deadline() {
     ));
     assert!(held_reply.reply.is_closed());
     assert!(out_rx.try_recv().is_err());
+    super::publication_diagnostics::assert_event(&diagnostics, "final_native_capture", "deadline");
+}
+
+#[tokio::test(start_paused = true)]
+async fn unanswered_final_synthesized_capture_keeps_its_one_second_deadline() {
+    let (diagnostics, _guard) = super::publication_diagnostics::capture();
+    let (handle, _, _, _) = native_attach_handle();
+    let terminal = handle.terminal().unwrap().clone();
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(8);
+    let mut ctx = native_pump_context(out_tx, terminal.clone(), terminal.resize.clone());
+    let (snapshot, mut captures) = tokio::sync::mpsc::channel(1);
+    ctx.profile = BootstrapStreamProfile::SynthesizedVtRaw;
+    ctx.snapshot = Some(snapshot);
+    let mut output = handle.output.subscribe();
+    let mut generation = PumpGeneration::opened_at(0, two_pump_initial_generation());
+    let capture = ctx.publish_final_generation(&mut generation, &mut output);
+    tokio::pin!(capture);
+    let held_reply = tokio::select! {
+        result = &mut capture => panic!("capture finished before its deadline: {result:?}"),
+        request = captures.recv() => request.unwrap(),
+    };
+    tokio::time::advance(std::time::Duration::from_secs(1)).await;
+    assert!(matches!(
+        capture.await,
+        Err(PumpFault::PublicationNotActivated)
+    ));
+    assert!(held_reply.reply.is_closed());
+    assert!(out_rx.try_recv().is_err());
+    super::publication_diagnostics::assert_event(
+        &diagnostics,
+        "final_synthesized_capture",
+        "deadline",
+    );
 }
 
 /// The actor's reply to `capture`: an empty checkpoint at sequence 0.

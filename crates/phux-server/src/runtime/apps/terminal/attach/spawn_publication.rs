@@ -206,12 +206,15 @@ impl SpawnPublication<'_> {
             self.reap();
             return;
         }
+        super::bootstrap::publication_phase("spawn_bootstrap_queue", "started");
         for frame in generation.frames {
             if self.out_tx.send(Outbound::Frame(frame)).await.is_err() {
+                super::bootstrap::publication_phase("spawn_bootstrap_queue", "outbound_closed");
                 self.reap();
                 return;
             }
         }
+        super::bootstrap::publication_phase("spawn_bootstrap_queue", "queued");
         let mut start = OutputPumpStart {
             published_cut: generation.cut,
             replay: Vec::new(),

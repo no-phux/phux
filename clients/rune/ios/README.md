@@ -156,6 +156,10 @@ cannot be mistaken for an app-container path or JSON response.
 Report and tree validation reads the retained evidence copies, so the files
 uploaded by CI are the exact documents that passed qualification.
 
+Simulator qualification retains payload-free connection traces and sealed
+capture-health receipts. See [Connection diagnostics](./connection-diagnostics.md)
+for the capture boundary, retention checks and first-failure policy.
+
 **Evidence boundary:** calling the UIKit input override is not physical
 keyboard, autocorrect, dictation or CJK IME automation. A simulator screenshot
 and device link are not real-device GPU, battery, accessibility or TestFlight

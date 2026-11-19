@@ -14,6 +14,7 @@ mod tests;
 /// (`tools/src/web/browser.ts`), so it stays put when this module moves. It
 /// keeps the crate prefix so a `phux_server=debug` filter still shows it.
 const LOG_TARGET: &str = "phux_server::output_resync";
+const FINAL_CAPTURE_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 impl OutputPumpContext {
     /// Tombstone the live generation, publish its native replacement, and
@@ -70,8 +71,10 @@ impl OutputPumpContext {
             // replacement to a slow consumer: the pane ended, the client
             // did not.
             if failure.actor_gone() {
+                super::bootstrap::publication_phase("replacement_generation", "pane_gone");
                 PumpFault::PaneGone
             } else {
+                super::bootstrap::publication_phase("replacement_generation", "activation_refused");
                 PumpFault::PublicationNotActivated
             }
         })?;
@@ -97,46 +100,16 @@ impl OutputPumpContext {
         generation: &mut PumpGeneration,
         output_rx: &mut tokio::sync::broadcast::Receiver<ResourceOutput>,
     ) -> Result<(), PumpFault> {
-        const CAPTURE_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
         if publishes_native_checkpoints(self.profile) {
-            let bootstrap_id = next_bootstrap_id(generation.bootstrap_id());
-            let capture = request_native_checkpoint(&self.terminal, |reply| {
-                phux_terminal_api::actor::NativeBootstrapRequest::full_budget(
-                    self.client_id.0,
-                    self.wire_terminal_id.clone(),
-                    self.stream_id,
-                    bootstrap_id,
-                    self.limits,
-                    reply,
-                )
-            });
-            let reply = tokio::time::timeout(CAPTURE_WAIT, capture)
-                .await
-                .map_err(|_| PumpFault::PublicationNotActivated)?
-                .map_err(|failure| match failure {
-                    NativeRequestFailure::Unsent | NativeRequestFailure::Dropped => {
-                        PumpFault::PaneGone
-                    }
-                    NativeRequestFailure::Refused(_) => PumpFault::PublicationNotActivated,
-                })?;
-            if generation.is_active() {
-                self.out_tx
-                    .send(Outbound::Frame(self.tombstone_frame(
-                        generation,
-                        crate::resource::ResyncReason::Exit,
-                    )))
-                    .await
-                    .map_err(|_| PumpFault::TombstoneNotQueued)?;
-            }
-            self.publish_captured_native_generation(generation, output_rx, bootstrap_id, reply)
-                .await?;
-            return Ok(());
+            return self
+                .publish_final_native_generation(generation, output_rx)
+                .await;
         }
         let _ = output_rx;
-        let snapshot = self
-            .snapshot
-            .as_ref()
-            .ok_or(PumpFault::PublicationNotActivated)?;
+        let snapshot = self.snapshot.as_ref().ok_or_else(|| {
+            super::bootstrap::publication_phase("final_synthesized_capture", "unavailable");
+            PumpFault::PublicationNotActivated
+        })?;
         let capture = async {
             let (reply, receive) = oneshot::channel();
             snapshot
@@ -153,15 +126,33 @@ impl OutputPumpContext {
                     reply,
                 })
                 .await
-                .map_err(|_| PumpFault::PaneGone)?;
+                .map_err(|_| {
+                    super::bootstrap::publication_phase(
+                        "final_synthesized_capture",
+                        "actor_unsent",
+                    );
+                    PumpFault::PaneGone
+                })?;
             receive
                 .await
-                .map_err(|_| PumpFault::PaneGone)?
-                .map_err(|_| PumpFault::PublicationNotActivated)
+                .map_err(|_| {
+                    super::bootstrap::publication_phase(
+                        "final_synthesized_capture",
+                        "actor_dropped",
+                    );
+                    PumpFault::PaneGone
+                })?
+                .map_err(|_| {
+                    super::bootstrap::publication_phase("final_synthesized_capture", "refused");
+                    PumpFault::PublicationNotActivated
+                })
         };
-        let (snapshot, base_seq) = tokio::time::timeout(CAPTURE_WAIT, capture)
+        let (snapshot, base_seq) = tokio::time::timeout(FINAL_CAPTURE_WAIT, capture)
             .await
-            .map_err(|_| PumpFault::PublicationNotActivated)??;
+            .map_err(|_| {
+                super::bootstrap::publication_phase("final_synthesized_capture", "deadline");
+                PumpFault::PublicationNotActivated
+            })??;
         let resync = PaneResync {
             cols: snapshot.cols,
             rows: snapshot.rows,
@@ -176,6 +167,52 @@ impl OutputPumpContext {
             ControlFlow::Continue(()) => Ok(()),
             ControlFlow::Break(fault) => Err(fault.unwrap_or(PumpFault::PublicationNotActivated)),
         }
+    }
+
+    async fn publish_final_native_generation(
+        &self,
+        generation: &mut PumpGeneration,
+        output_rx: &mut tokio::sync::broadcast::Receiver<ResourceOutput>,
+    ) -> Result<(), PumpFault> {
+        let bootstrap_id = next_bootstrap_id(generation.bootstrap_id());
+        let capture = request_native_checkpoint(&self.terminal, |reply| {
+            phux_terminal_api::actor::NativeBootstrapRequest::full_budget(
+                self.client_id.0,
+                self.wire_terminal_id.clone(),
+                self.stream_id,
+                bootstrap_id,
+                self.limits,
+                reply,
+            )
+        });
+        let reply = tokio::time::timeout(FINAL_CAPTURE_WAIT, capture)
+            .await
+            .map_err(|_| {
+                super::bootstrap::publication_phase("final_native_capture", "deadline");
+                PumpFault::PublicationNotActivated
+            })?
+            .map_err(|failure| match failure {
+                NativeRequestFailure::Unsent | NativeRequestFailure::Dropped => {
+                    super::bootstrap::publication_phase("final_native_capture", "pane_gone");
+                    PumpFault::PaneGone
+                }
+                NativeRequestFailure::Refused(_) => {
+                    super::bootstrap::publication_phase("final_native_capture", "refused");
+                    PumpFault::PublicationNotActivated
+                }
+            })?;
+        if generation.is_active() {
+            self.out_tx
+                .send(Outbound::Frame(self.tombstone_frame(
+                    generation,
+                    crate::resource::ResyncReason::Exit,
+                )))
+                .await
+                .map_err(|_| PumpFault::TombstoneNotQueued)?;
+        }
+        self.publish_captured_native_generation(generation, output_rx, bootstrap_id, reply)
+            .await?;
+        Ok(())
     }
 
     /// `BOOTSTRAP_TOMBSTONE` retiring the generation this pump publishes.

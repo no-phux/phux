@@ -340,6 +340,7 @@ mod driver;
 mod establish;
 pub(crate) mod io;
 mod ssh;
+pub(crate) mod trace;
 mod wsl;
 
 pub(crate) use establish::{DialFailure, establish};
