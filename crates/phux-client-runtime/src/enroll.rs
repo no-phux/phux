@@ -10,13 +10,16 @@
 
 use std::sync::Arc;
 
-use phux_dial::enroll::{EnrollDial, check_issued_chain, enroll};
+use phux_dial::enroll::{EnrollDial, check_issued_chain};
 use phux_dial::{CertTrust, HeldIdentity};
 use phux_protocol::enroll::Request;
 use rustls::SignatureScheme;
 use rustls::pki_types::CertificateDer;
 
 use crate::connection::{Target, Transport};
+
+mod diagnostics;
+use diagnostics::EnrollmentTrace;
 
 /// A P-256 key held where this process cannot read it (Secure Enclave,
 /// `StrongBox`, a TPM).
@@ -70,12 +73,14 @@ pub fn held_identity(
 ///
 /// A target that is not QUIC, a refused ticket, or a reply that fails a
 /// check; the wording names the failure, never the ticket.
-pub(crate) async fn enroll_target(
+async fn enroll_target(
     target: &Target,
     ticket_hex: &str,
     signer: Arc<dyn DeviceSigner>,
+    trace: &EnrollmentTrace,
 ) -> Result<EnrolledDevice, String> {
     let name = target.name.as_str();
+    trace.record("enroll_validate");
     let Transport::Quic(authority) = &target.transport else {
         return Err(format!("{name}: enrollment needs a quic:// endpoint"));
     };
@@ -83,6 +88,7 @@ pub(crate) async fn enroll_target(
     let resolved = target
         .resolved()
         .ok_or_else(|| format!("{name}: not a remote target"))?;
+    trace.record("enroll_plan");
     let plan = crate::dial::plan_quic_with_token(&resolved, authority, None).await?;
     // The server's trust: inside the relayed session when there is one.
     let server_trust = plan
@@ -97,7 +103,9 @@ pub(crate) async fn enroll_target(
              `ca`); pair again with a link `phux pair --enroll` printed"
         ));
     };
+    trace.record("enroll_public_key");
     let key = DeviceKeyData::of(signer.as_ref())?;
+    trace.record("enroll_csr");
     let csr = device_csr(&key, Arc::clone(&signer))?;
     let request = Request { ticket, csr };
     let dial = EnrollDial {
@@ -106,10 +114,8 @@ pub(crate) async fn enroll_target(
         trust: plan.trust.clone(),
         inner: plan.inner.clone(),
     };
-    let chain_pem = tokio::time::timeout(crate::dial::DIAL_TIMEOUT, enroll(&dial, &request))
-        .await
-        .map_err(|_| crate::dial::timed_out(name))?
-        .map_err(|err| crate::dial::dial_message(name, &err))?;
+    let chain_pem = trace.exchange(name, &dial, &request).await?;
+    trace.record("enroll_chain");
     let spki = rcgen::PublicKeyData::subject_public_key_info(&key);
     let chain = check_issued_chain(&chain_pem, &spki, Some(pinned.as_str()))
         .map_err(|reason| format!("{name}: the issued certificate was refused: {reason}"))?;
@@ -123,7 +129,8 @@ pub(crate) async fn enroll_target(
 }
 
 /// `enroll_target` on a runtime of its own, for a binding calling from a
-/// thread it owns. Blocks for at most the dial timeout.
+/// thread it owns. The network exchange has the usual dial timeout; local
+/// preparation and runtime construction are outside that budget.
 ///
 /// # Errors
 ///
@@ -133,11 +140,18 @@ pub fn enroll_target_blocking(
     ticket_hex: &str,
     signer: Arc<dyn DeviceSigner>,
 ) -> Result<EnrolledDevice, String> {
-    tokio::runtime::Builder::new_current_thread()
+    let trace = EnrollmentTrace::new();
+    trace.record("enroll_runtime");
+    let result = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .map_err(|err| format!("enrollment runtime: {err}"))?
-        .block_on(enroll_target(target, ticket_hex, signer))
+        .map_err(|err| {
+            trace.finish(false);
+            format!("enrollment runtime: {err}")
+        })?
+        .block_on(enroll_target(target, ticket_hex, signer, &trace));
+    trace.finish(result.is_ok());
+    result
 }
 
 fn parse_ticket(ticket_hex: &str) -> Result<Vec<u8>, String> {

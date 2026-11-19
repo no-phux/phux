@@ -4,24 +4,20 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::time::Instant;
 
+pub(super) use super::AttemptTrace;
+
 static NEXT_CONNECTION: AtomicU64 = AtomicU64::new(1);
 
 tokio::task_local! {
     static CURRENT: AttemptTrace;
 }
 
-pub(super) struct AttemptTrace {
-    connection: u64,
-    attempt: u32,
-    started: Instant,
-}
-
 impl AttemptTrace {
-    pub(super) fn connection() -> u64 {
+    pub(crate) fn connection() -> u64 {
         NEXT_CONNECTION.fetch_add(1, Ordering::Relaxed)
     }
 
-    pub(super) fn new(connection: u64, attempt: u32) -> Self {
+    pub(crate) fn new(connection: u64, attempt: u32) -> Self {
         Self {
             connection,
             attempt,
@@ -38,7 +34,7 @@ impl AttemptTrace {
         CURRENT.scope(current, future).await
     }
 
-    pub(super) fn record(&self, phase: &'static str) {
+    pub(crate) fn record(&self, phase: &'static str) {
         tracing::debug!(
             target: "phux_client_runtime::connection_diagnostics",
             connection = self.connection,

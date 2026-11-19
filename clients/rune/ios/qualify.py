@@ -150,7 +150,8 @@ class Qualification:
         socket = self.scratch / "s"
         env = server_environment(self.scratch)
         # Extra server phases are opt-in for this isolated fixture only.
-        env["RUST_LOG"] = "phux=info,warn,phux_server::publication_diagnostics=debug"
+        env["RUST_LOG"] = ("phux=info,warn,phux_server::publication_diagnostics=debug,"
+                           "phux_server::enrollment_diagnostics=debug")
         policy = Path(env["XDG_CONFIG_HOME"]) / "phux/config.toml"
         policy.parent.mkdir(parents=True, exist_ok=True)
         policy.write_text('[policy]\nmode = "paired"\n')

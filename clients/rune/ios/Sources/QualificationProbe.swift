@@ -178,6 +178,22 @@ final class QualificationProbe {
         #endif
     }
 
+    func preparationFailure(_ message: String) {
+        guard progress.claimFailure() else { return }
+        #if targetEnvironment(simulator)
+        // The awaited enrollment operation has returned, and open() has never
+        // run. Publish the original failure only after seal cleanup returns:
+        // report visibility then acknowledges finalization without a surface,
+        // invented frame counts, or a second OS-lifecycle path.
+        QualificationEvidence.preparationFailure(
+            seal: { _ = phux_rune_ios_finish_connection_diagnostics() },
+            publish: {
+                try? self.write(["schema": 1, "error": message, "preparation_failed": true],
+                                name: "rune-qualification.json")
+            })
+        #endif
+    }
+
     func failure(_ message: String) {
         guard progress.claimFailure() else { return }
         try? write(["schema":1, "error":message], name:"rune-qualification.json")
