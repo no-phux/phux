@@ -23,16 +23,6 @@ icon!(
 );
 icon!(CLOSE, "phux-close", "M4.5 4.5l7 7M11.5 4.5l-7 7");
 icon!(
-    SPLIT_RIGHT,
-    "phux-split-right",
-    "M3 3.5h10a.5.5 0 0 1 .5.5v8a.5.5 0 0 1-.5.5H3a.5.5 0 0 1-.5-.5V4a.5.5 0 0 1 .5-.5zM8 3.5v9"
-);
-icon!(
-    SPLIT_DOWN,
-    "phux-split-down",
-    "M3 3.5h10a.5.5 0 0 1 .5.5v8a.5.5 0 0 1-.5.5H3a.5.5 0 0 1-.5-.5V4a.5.5 0 0 1 .5-.5zM2.5 8h11"
-);
-icon!(
     PENCIL,
     "phux-pencil",
     "M10.5 3l2.5 2.5-7 7H3.5V10zM9 4.5l2.5 2.5"
