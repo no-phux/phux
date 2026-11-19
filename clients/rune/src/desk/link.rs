@@ -129,6 +129,12 @@ impl Default for Link {
 }
 
 impl Link {
+    /// Render fixtures: the link went down `ago`.
+    #[cfg(test)]
+    pub(crate) fn down_for(&mut self, ago: Duration) {
+        self.down_since = Some(Instant::now() - ago);
+    }
+
     fn is_down_for(&self, wait: Duration) -> bool {
         self.down_since.is_some_and(|since| since.elapsed() >= wait)
     }

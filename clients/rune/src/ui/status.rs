@@ -18,6 +18,7 @@ use crate::launch::INSTALL;
 
 mod confirm;
 mod phone;
+pub(in crate::ui) use phone::empty as phone_empty;
 mod titlebar;
 pub use confirm::confirm_bar;
 #[cfg(test)]
@@ -156,6 +157,39 @@ fn action(label: &'static str, key: &'static str, p: &Tokens, press: fn(&mut Des
     button(label, key, p, press).grow(0.0).label(label)
 }
 
+/// Something the window offers to do about where it stands, before it is
+/// drawn: a desktop's outlined button, or a phone's full-width one.
+#[derive(Clone, Copy)]
+struct Act {
+    label: &'static str,
+    key: &'static str,
+    press: fn(&mut Desk),
+    /// The remedy itself, not a way elsewhere: a phone leads with it.
+    primary: bool,
+}
+
+impl Act {
+    const fn new(label: &'static str, key: &'static str, press: fn(&mut Desk)) -> Self {
+        Self {
+            label,
+            key,
+            press,
+            primary: true,
+        }
+    }
+
+    const fn secondary(self) -> Self {
+        Self {
+            primary: false,
+            ..self
+        }
+    }
+
+    fn button(self, p: &Tokens) -> El {
+        action(self.label, self.key, p, self.press)
+    }
+}
+
 /// The title and detail for `standing`, in this window's voice: the phone
 /// app has its own for what a desktop would answer with a command.
 fn said(desk: &Desk, standing: &Standing) -> (String, String) {
@@ -172,36 +206,33 @@ fn said(desk: &Desk, standing: &Standing) -> (String, String) {
 
 /// The one thing to do about `standing`, when there is one. `updates` is
 /// whether this computer's can fix it.
-fn remedy(standing: &Standing, updates: bool, p: &Tokens) -> Option<El> {
+fn remedy(standing: &Standing, updates: bool) -> Option<Act> {
     Some(match standing {
         Standing::Starting | Standing::Installing | Standing::Connecting(_) | Standing::Opening => {
             return None;
         }
         Standing::NoCli(None) => {
-            action("Install phux", "placeholder-install", p, Desk::install_phux)
+            Act::new("Install phux", "placeholder-install", Desk::install_phux)
         }
         Standing::NoCli(Some(_)) => {
-            action("Try again", "placeholder-install", p, Desk::install_phux)
+            Act::new("Try again", "placeholder-install", Desk::install_phux)
         }
-        Standing::NoSessions => action("New session", "placeholder-session", p, Desk::new_session),
-        Standing::NoTerminals => action(
-            "New terminal",
-            "placeholder-terminal",
-            p,
-            Desk::new_terminal,
-        ),
-        Standing::Ended(_) => action("Restore", "placeholder-restore", p, Desk::restore_session),
+        Standing::NoSessions => Act::new("New session", "placeholder-session", Desk::new_session),
+        Standing::NoTerminals => {
+            Act::new("New terminal", "placeholder-terminal", Desk::new_terminal)
+        }
+        Standing::Ended(_) => Act::new("Restore", "placeholder-restore", Desk::restore_session),
         Standing::Incompatible(_) if updates => {
-            action("Check for updates", "placeholder-update", p, |d| {
+            Act::new("Check for updates", "placeholder-update", |d| {
                 d.updater.check_now();
             })
         }
-        Standing::Incompatible(_) | Standing::Unreachable(_) | Standing::Closed(_) => retry(p),
+        Standing::Incompatible(_) | Standing::Unreachable(_) | Standing::Closed(_) => retry(),
     })
 }
 
-fn retry(p: &Tokens) -> El {
-    action("Retry", "placeholder-retry", p, Desk::reconnect)
+const fn retry() -> Act {
+    Act::new("Retry", "placeholder-retry", Desk::reconnect)
 }
 
 /// A placeholder's title: a failure leads with its mark and reads in the
@@ -231,6 +262,7 @@ fn title_line(title: String, failed: bool, t: &Tokens) -> El {
         )
 }
 
+/// What stands in for the terminal, and what can be done about it.
 pub fn placeholder(desk: &Desk, p: &Tokens) -> El {
     let t = p;
     let standing = desk.standing();
@@ -248,31 +280,42 @@ pub fn placeholder(desk: &Desk, p: &Tokens) -> El {
         standing,
         Standing::Unreachable(_) | Standing::Incompatible(_) | Standing::NoCli(Some(_))
     );
-    let actions = repair
-        .then(|| phone::pair_again("placeholder-pair", p))
+    let acts: Vec<Act> = repair
+        .then(|| phone::pair_again("placeholder-pair"))
         .into_iter()
-        .chain(remedy(&standing, updates, p))
+        .chain(remedy(&standing, updates))
         // Words under the phone's dial mean it has gone on long enough to
         // act on.
-        .chain(phone::slow_dial(desk, &standing).then(|| retry(p)))
+        .chain(phone::slow_dial(desk, &standing).then(retry))
         // A server updated from elsewhere never says so.
-        .chain(updates.then(|| retry(p)))
+        .chain(updates.then(retry))
         // Pairing again already goes where the phone's computers are.
         .chain((!repair).then(|| {
-            action(
-                elsewhere,
-                "placeholder-machines",
-                p,
-                Desk::toggle_machines,
-            )
-        }));
+            Act::new(elsewhere, "placeholder-machines", Desk::toggle_machines).secondary()
+        }))
+        .collect();
+    let extra = match standing {
+        Standing::Installing => Some(progress("Installing phux", t)),
+        Standing::Starting => Some(progress("Starting phux", t)),
+        Standing::NoCli(_) => Some(install_line(t)),
+        _ => None,
+    };
+    if desk.phone.is_some() {
+        let said = phone::Said {
+            standing: &standing,
+            title,
+            detail,
+            failed,
+        };
+        return phone::stage(&said, &acts, extra, t);
+    }
     let s = &t.space;
     let buttons = row()
         .w_full()
         .center()
         .gap(s.s2)
         .pt(s.icon_gap)
-        .children(actions.map(|button| touchable(desk, button)));
+        .children(acts.into_iter().map(|act| act.button(p)));
     // Inset from the pane's edge whatever its width, heading and body both
     // centred on one measure.
     col()
@@ -289,13 +332,20 @@ pub fn placeholder(desk: &Desk, p: &Tokens) -> El {
                 .align(rune::Align::Center)
                 .wrap(),
         )
-        .children(match standing {
-            Standing::Installing => Some(progress("Installing phux", t)),
-            Standing::Starting => Some(progress("Starting phux", t)),
-            _ => None,
-        })
-        .children(matches!(standing, Standing::NoCli(_)).then(|| install_line(t)))
+        .children(extra)
         .child(buttons)
+}
+
+/// A phone's pane whose first frame has not arrived: the stage's calm
+/// opening state, never drawn over terminal text.
+pub fn opening(p: &Tokens) -> El {
+    let said = phone::Said {
+        standing: &Standing::Opening,
+        title: "Opening terminal…".to_owned(),
+        detail: String::new(),
+        failed: false,
+    };
+    phone::stage(&said, &[], None, p)
 }
 
 /// Over panes that have stopped updating: what happened, and a way to act.
@@ -322,7 +372,7 @@ pub fn banner(desk: &Desk, p: &Tokens) -> Option<El> {
             })
         })
         .into_iter()
-        .chain(repair.then(|| phone::pair_again("banner-pair", p)))
+        .chain(repair.then(|| phone::pair_again("banner-pair").button(p)))
         .chain([action("Retry", "banner-retry", p, Desk::reconnect)]);
     let raised = t.roles.layer.raised.paint();
     let surface = row()

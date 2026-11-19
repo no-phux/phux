@@ -71,10 +71,10 @@ class VisualReview(unittest.TestCase):
 
     def test_bundle_has_all_families_hashes_and_honest_status(self):
         manifest = self.produce()
-        self.assertEqual(len(manifest["cases"]), 491)
+        self.assertEqual(len(manifest["cases"]), 533)
         self.assertEqual({family: sum(case["family"] == family for case in manifest["cases"])
                           for family in review.FAMILIES},
-                          {"inbox": 192, "settings": 82, "navigation": 216, "resources": 1})
+                          {"inbox": 192, "settings": 82, "navigation": 258, "resources": 1})
         case = next(case for case in manifest["cases"] if case["png"] == self.subject)
         self.assertEqual(case["physical"], [320, 568])
         self.assertEqual(case["logical"], [320, 568])
@@ -97,6 +97,8 @@ class VisualReview(unittest.TestCase):
                          "retina_navigation_renders_in_native_safe_area_and_desktop_phone_viewports")
         self.assertEqual(review.exporter_for("navigation", "header-split-dark-native-true-2x-640"),
                           "phone_header_visual_review_frames")
+        self.assertEqual(review.exporter_for("navigation", "states-slow-dark-native-true-2x-786"),
+                         "phone_states_visual_review_frames")
         self.assertEqual(review.exporter_for("navigation", "pane-motion-horizontal-dark"),
                          "phone_pane_motion_visual_review_frames")
         self.assertEqual(review.exporter_for("settings", "desktop"),
@@ -322,7 +324,7 @@ class VisualReview(unittest.TestCase):
         repo = self.root / "repo"
         scripts = repo / "clients/rune/scripts"
         scripts.mkdir(parents=True)
-        for name in ("visual-review.sh", "visual_review.py", "visual_motion.py"):
+        for name in ("visual-review.sh", "visual_review.py", "visual_motion.py", "visual_states.py"):
             shutil.copyfile(Path(__file__).with_name(name), scripts / name)
         (scripts.parent / "Cargo.toml").write_text('rune = { rev = "test-pin" }\n')
         for args in (["init", "-q"], ["add", "."],
@@ -345,10 +347,10 @@ class VisualReview(unittest.TestCase):
                                 env=environment, cwd=self.root, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         manifest = json.loads((out / "manifest.json").read_text())
-        self.assertEqual(len(manifest["cases"]), 491)
+        self.assertEqual(len(manifest["cases"]), 533)
         self.assertEqual(manifest["currentRunePin"], "test-pin")
         self.assertFalse(manifest["dirty"])
-        self.assertEqual(len(list((out / "logs").glob("*.log"))), 11)
+        self.assertEqual(len(list((out / "logs").glob("*.log"))), 12)
 
 
 if __name__ == "__main__":

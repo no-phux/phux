@@ -17,6 +17,7 @@ import subprocess
 from urllib.parse import quote
 
 from visual_motion import MOTION_FRAMES, pane_motion_inventory
+from visual_states import states_inventory
 
 
 FAMILIES = ("inbox", "settings", "navigation", "resources")
@@ -235,12 +236,13 @@ def navigation_inventory():
             ((393, 852, 1, "false"), (320, 568, 1, "false"),
              (393, 480, 2, "true"), (320, 340, 2, "true")))
     })
+    cases.update(states_inventory(THEMES))
     cases.update(pane_motion_inventory(THEMES))
     return cases
 
 
 def required_inventory():
-    """491 required cases: 192 Inbox, 82 Settings, 216 navigation, 1 resource.
+    """533 required cases: 192 Inbox, 82 Settings, 258 navigation, 1 resource.
 
     Values are (logical width, logical height, scale); additional cases are
     welcome, but cannot replace any maintained case.
@@ -276,6 +278,8 @@ def exporter_for(family, stem):
             return "phone_pane_motion_visual_review_frames"
         if stem.startswith("header-"):
             return "phone_header_visual_review_frames"
+        if stem.startswith("states-"):
+            return "phone_states_visual_review_frames"
         if stem.startswith("retina-"):
             return "retina_navigation_renders_in_native_safe_area_and_desktop_phone_viewports"
         return "session_browser_renders_realistic_dark_light_and_search_states"

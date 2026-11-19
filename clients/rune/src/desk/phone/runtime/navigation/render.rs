@@ -2,6 +2,7 @@
 use super::*;
 
 mod header;
+mod states;
 
 #[test]
 fn session_browser_renders_realistic_dark_light_and_search_states() {
