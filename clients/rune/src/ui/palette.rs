@@ -72,7 +72,10 @@ pub fn view(desk: &Desk, p: &Tokens, top: f32) -> El {
         }
         _ => "Nothing matches",
     };
-    if hits.is_empty() {
+    let query = desk.palette_query.text.trim();
+    if hits.is_empty() && phone && search.is_none() && !query.is_empty() {
+        results = results.child(no_results(query, t));
+    } else if hits.is_empty() {
         results = results.child(empty_note(empty, t));
     } else if let Some(note) = search.and_then(|s| s.note.clone()) {
         results = results.child(
@@ -186,6 +189,45 @@ pub fn view(desk: &Desk, p: &Tokens, top: f32) -> El {
     }
 }
 
+/// A phone's search that found nothing: what was looked for, quoted, and
+/// what the list holds, so the next try is a better one.
+fn no_results(query: &str, t: &Tokens) -> El {
+    let s = &t.space;
+    let r = &t.roles;
+    let ty = super::tokens::phone::ty(t.type_scale);
+    col()
+        .key("palette-no-results")
+        .role("status")
+        .w_full()
+        .px(s.s6)
+        .pt(s.s8)
+        .pb(s.s10)
+        .gap(s.s1)
+        .items_center()
+        .child(
+            rune::icon(&icons::SEARCH, t.icon.size.xl)
+                .color(r.text.faint.paint())
+                .a11y_hidden(),
+        )
+        .child(el().h(s.s2))
+        .child(
+            text("No Results")
+                .font(ty.lead.semibold())
+                .color(r.text.text.paint())
+                .align(rune::Align::Center),
+        )
+        .child(
+            text(format!(
+                "Nothing matches \u{201c}{query}\u{201d}. Try a command, session or terminal name."
+            ))
+            .font(ty.body)
+            .color(r.text.dim.paint())
+            .align(rune::Align::Center)
+            .wrap()
+            .w_full(),
+        )
+}
+
 /// `at` moved back so `size` fits in `window`, `gap` from its edge. A
 /// window not measured yet (zero) leaves it where the press was.
 fn fit(at: f32, size: f32, window: f32, gap: f32) -> f32 {
@@ -274,6 +316,36 @@ fn kind_mark(kind: &str) -> &'static rune::Icon {
     }
 }
 
+/// A command's own glyph, where one says it at a glance; the rest keep
+/// the generic action mark.
+fn action_mark(action: Shortcut) -> &'static rune::Icon {
+    match action {
+        Shortcut::NewTerminal | Shortcut::NewSession => &icons::PLUS,
+        Shortcut::Paste | Shortcut::Copy => &icons::CLIPBOARD,
+        Shortcut::Find | Shortcut::FindNext | Shortcut::FindPrevious => &icons::SEARCH,
+        Shortcut::SwitchSession | Shortcut::NextSession | Shortcut::PreviousSession => {
+            &icons::WINDOW
+        }
+        Shortcut::SplitRight => &icons::SPLIT_RIGHT,
+        Shortcut::SplitDown => &icons::SPLIT_DOWN,
+        Shortcut::ZoomIn
+        | Shortcut::ZoomOut
+        | Shortcut::ZoomReset
+        | Shortcut::InterfaceBigger
+        | Shortcut::InterfaceSmaller
+        | Shortcut::InterfaceReset => &icons::TEXT_SIZE,
+        Shortcut::Settings => &icons::SETTINGS,
+        Shortcut::Machines => &icons::MACHINES,
+        Shortcut::CloseTerminal | Shortcut::CloseTab => &icons::CLOSE,
+        Shortcut::ScrollBottom => &icons::ARROW_DOWN,
+        Shortcut::ScrollTop => &icons::ARROW_UP,
+        Shortcut::Inbox => &icons::INBOX,
+        Shortcut::ChangeTheme => &icons::PALETTE,
+        Shortcut::RenameSession | Shortcut::RenameTab => &icons::PROMPT,
+        _ => &icons::BOLT,
+    }
+}
+
 /// What a row is: an icon, or for a theme a swatch of its colours.
 fn mark(hit: &Hit, washed: bool, t: &Tokens) -> El {
     let size = t.icon.size.md;
@@ -283,9 +355,11 @@ fn mark(hit: &Hit, washed: bool, t: &Tokens) -> El {
         } else {
             t.roles.text.dim
         };
-        return rune::icon(kind_mark(hit.item.kind), size)
-            .color(ink.paint())
-            .a11y_hidden();
+        let glyph = match hit.item.target {
+            Target::Action(action) => action_mark(action),
+            _ => kind_mark(hit.item.kind),
+        };
+        return rune::icon(glyph, size).color(ink.paint()).a11y_hidden();
     };
     let theme = id.and_then(crate::theme::find);
     let (fill, ring) = theme.map_or(

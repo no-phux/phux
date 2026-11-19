@@ -145,6 +145,27 @@ icon!(
     "M4 11.5V7a4 4 0 0 1 8 0v4.5l1 1H3zM6.5 14h3"
 );
 
+icon!(
+    CLIPBOARD,
+    "phux-clipboard",
+    "M6 2.5h4v2H6zM10 3.5h1.5a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1v-8a1 1 0 0 1 1-1H6M6 8h4M6 10.5h2.5"
+);
+icon!(
+    SPLIT_RIGHT,
+    "phux-split-right",
+    "M3.5 2.5h9a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1zM8 2.5v11"
+);
+icon!(
+    SPLIT_DOWN,
+    "phux-split-down",
+    "M3.5 2.5h9a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1zM2.5 8h11"
+);
+icon!(
+    TEXT_SIZE,
+    "phux-text-size",
+    "M1.5 13l3.5-9 3.5 9M2.7 10h4.6M9 13l2.5-6 2.5 6M9.8 11h3.4"
+);
+
 /// A mark drawn from filled shapes rather than one stroke.
 macro_rules! shape {
     ($id:ident, $name:literal, $body:literal) => {

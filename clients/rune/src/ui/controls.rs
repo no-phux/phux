@@ -23,8 +23,9 @@ pub(crate) struct Sheet {
 
 impl Sheet {
     /// `body` scrolls when the window can't hold it; the header and `foot`
-    /// always show, down to the smallest window.
-    pub(crate) fn build(self, aside: Option<El>, body: El, foot: El, p: &Tokens) -> El {
+    /// always show, down to the smallest window. A phone has no keys for a
+    /// foot to teach, so it may have none.
+    pub(crate) fn build(self, aside: Option<El>, body: El, foot: Option<El>, p: &Tokens) -> El {
         let t = p;
         let s = &t.space;
         let line = || rune::rule(s.hairline, t.roles.border.base.paint()).w_full();
@@ -60,8 +61,12 @@ impl Sheet {
                     .scroll_edge_fade(s.s6)
                     .child(body),
             )
-            .child(line().key("sheet-footer-rule"))
-            .child(el().w_full().px(s.card_inset).py(s.s2).child(foot));
+            .children(foot.map(|foot| {
+                col()
+                    .w_full()
+                    .child(line().key("sheet-footer-rule"))
+                    .child(el().w_full().px(s.card_inset).py(s.s2).child(foot))
+            }));
         let panel = t.elevate(panel, Tier::Overlay);
         scrim(
             col()
