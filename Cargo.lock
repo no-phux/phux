@@ -2935,7 +2935,7 @@ dependencies = [
 
 [[package]]
 name = "phux"
-version = "0.159.0"
+version = "0.159.1"
 dependencies = [
  "accessibility",
  "accessibility-sys",
@@ -2997,7 +2997,7 @@ dependencies = [
 
 [[package]]
 name = "phux-agent-host"
-version = "0.159.0"
+version = "0.159.1"
 dependencies = [
  "agent-client-protocol",
  "parking_lot 0.13.0",
@@ -3013,7 +3013,7 @@ dependencies = [
 
 [[package]]
 name = "phux-agent-rules"
-version = "0.159.0"
+version = "0.159.1"
 dependencies = [
  "regex",
  "serde",
@@ -3024,7 +3024,7 @@ dependencies = [
 
 [[package]]
 name = "phux-agent-session"
-version = "0.159.0"
+version = "0.159.1"
 dependencies = [
  "bytes",
  "phux-agent-rules",
@@ -3041,7 +3041,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client"
-version = "0.159.0"
+version = "0.159.1"
 dependencies = [
  "bytes",
  "futures-util",
@@ -3077,7 +3077,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-core"
-version = "0.159.0"
+version = "0.159.1"
 dependencies = [
  "bytes",
  "ciborium",
@@ -3100,7 +3100,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-ffi"
-version = "0.159.0"
+version = "0.159.1"
 dependencies = [
  "libghostty-vt",
  "phux-client-core",
@@ -3121,7 +3121,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-runtime"
-version = "0.159.0"
+version = "0.159.1"
 dependencies = [
  "bytes",
  "core-foundation",
@@ -3155,7 +3155,7 @@ dependencies = [
 
 [[package]]
 name = "phux-config"
-version = "0.159.0"
+version = "0.159.1"
 dependencies = [
  "insta",
  "jiff",
@@ -3173,7 +3173,7 @@ dependencies = [
 
 [[package]]
 name = "phux-config-core"
-version = "0.159.0"
+version = "0.159.1"
 dependencies = [
  "nix 0.31.3",
  "serde",
@@ -3185,7 +3185,7 @@ dependencies = [
 
 [[package]]
 name = "phux-core"
-version = "0.159.0"
+version = "0.159.1"
 dependencies = [
  "phux-frozen",
  "proptest",
@@ -3198,7 +3198,7 @@ dependencies = [
 
 [[package]]
 name = "phux-crash"
-version = "0.159.0"
+version = "0.159.1"
 dependencies = [
  "libc",
  "tempfile",
@@ -3207,14 +3207,14 @@ dependencies = [
 
 [[package]]
 name = "phux-design"
-version = "0.159.0"
+version = "0.159.1"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "phux-dial"
-version = "0.159.0"
+version = "0.159.1"
 dependencies = [
  "futures-util",
  "hex",
@@ -3234,7 +3234,7 @@ dependencies = [
 
 [[package]]
 name = "phux-frozen"
-version = "0.159.0"
+version = "0.159.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -3243,7 +3243,7 @@ dependencies = [
 
 [[package]]
 name = "phux-git"
-version = "0.159.0"
+version = "0.159.1"
 dependencies = [
  "libc",
  "memchr",
@@ -3253,7 +3253,7 @@ dependencies = [
 
 [[package]]
 name = "phux-mcp"
-version = "0.159.0"
+version = "0.159.1"
 dependencies = [
  "base64 0.23.1",
  "jsonschema",
@@ -3273,7 +3273,7 @@ dependencies = [
 
 [[package]]
 name = "phux-perf"
-version = "0.159.0"
+version = "0.159.1"
 dependencies = [
  "libc",
  "nix 0.31.3",
@@ -3283,7 +3283,7 @@ dependencies = [
 
 [[package]]
 name = "phux-plugin"
-version = "0.159.0"
+version = "0.159.1"
 dependencies = [
  "phux-config",
  "phux-frozen",
@@ -3296,7 +3296,7 @@ dependencies = [
 
 [[package]]
 name = "phux-protocol"
-version = "0.159.0"
+version = "0.159.1"
 dependencies = [
  "bitflags 2.13.2",
  "bytes",
@@ -3314,7 +3314,7 @@ dependencies = [
 
 [[package]]
 name = "phux-record"
-version = "0.159.0"
+version = "0.159.1"
 dependencies = [
  "gif",
  "libghostty-vt",
@@ -3327,7 +3327,7 @@ dependencies = [
 
 [[package]]
 name = "phux-resource"
-version = "0.159.0"
+version = "0.159.1"
 dependencies = [
  "bytes",
  "libc",
@@ -3344,7 +3344,7 @@ dependencies = [
 
 [[package]]
 name = "phux-server"
-version = "0.159.0"
+version = "0.159.1"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -3406,7 +3406,7 @@ dependencies = [
 
 [[package]]
 name = "phux-server-testkit"
-version = "0.159.0"
+version = "0.159.1"
 dependencies = [
  "bytes",
  "libghostty-vt",
@@ -3424,7 +3424,7 @@ dependencies = [
 
 [[package]]
 name = "phux-terminal"
-version = "0.159.0"
+version = "0.159.1"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -3461,7 +3461,7 @@ dependencies = [
 
 [[package]]
 name = "phux-terminal-api"
-version = "0.159.0"
+version = "0.159.1"
 dependencies = [
  "bytes",
  "phux-agent-rules",
@@ -3481,7 +3481,7 @@ dependencies = [
 
 [[package]]
 name = "phux-tui"
-version = "0.159.0"
+version = "0.159.1"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -3520,7 +3520,7 @@ dependencies = [
 
 [[package]]
 name = "phux-usage"
-version = "0.159.0"
+version = "0.159.1"
 dependencies = [
  "base64 0.23.1",
  "hex",
@@ -3533,7 +3533,7 @@ dependencies = [
 
 [[package]]
 name = "phux-vt"
-version = "0.159.0"
+version = "0.159.1"
 dependencies = [
  "bytes",
  "flate2",
@@ -3546,7 +3546,7 @@ dependencies = [
 
 [[package]]
 name = "phux-wire-fixtures"
-version = "0.159.0"
+version = "0.159.1"
 dependencies = [
  "bytes",
  "phux-protocol",
@@ -3554,7 +3554,7 @@ dependencies = [
 
 [[package]]
 name = "phux-work"
-version = "0.159.0"
+version = "0.159.1"
 dependencies = [
  "getrandom 0.4.3",
  "jiff",
@@ -3657,7 +3657,7 @@ dependencies = [
 
 [[package]]
 name = "portable-pty-adopt"
-version = "0.159.0"
+version = "0.159.1"
 dependencies = [
  "anyhow",
  "libc",
@@ -3805,7 +3805,7 @@ checksum = "a1d01941d82fa2ab50be1e79e6714289dd7cde78eba4c074bc5a4374f650dfe0"
 
 [[package]]
 name = "quictun"
-version = "0.159.0"
+version = "0.159.1"
 dependencies = [
  "base64 0.23.1",
  "getrandom 0.4.3",
