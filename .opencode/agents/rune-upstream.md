@@ -169,15 +169,21 @@ from evidence, state the assumption in the PR, and keep going.
    data and private evidence out of the public PR. Run `just check` before
    making the PR ready. Open with `gh pr create --draft --title "SUBJECT"`
    and mark ready once validation passes (or open ready after full local
-   validation when enabling auto-merge immediately). The conventional PR
-   title becomes the squash subject. Enable
-   `gh pr merge --auto --squash`. `main` requires `ci` and
-   `commitlint` and no review. Watch with `gh pr checks --watch`; on red, read
-   `gh run view --log-failed`, fix, push, and repeat until it merges.
+   validation). The conventional PR title becomes the squash subject.
+   **Ready → genuine CI → auto-merge.** `gh pr checks --watch` can return only
+   earlier draft-skipped checks while the Ready run is still registering.
+   Require a normal CI run on the current head, its successful plan/selected
+   lanes, and `ci`/`commitlint` success before enabling
+   `gh pr merge --auto --squash`. A skipped draft aggregate is not qualification;
+   GitHub can otherwise count it as passing and merge before Ready CI finishes.
+   On red, read `gh run view --log-failed`, fix, push, and repeat. If a PR
+   nevertheless merges prematurely, record the missing proof, not a CI-pass claim;
+   require exact merged-main CI/full native gates before tagging or delivery.
 8. **Release, only when `STEERING.md` says `release: auto`.** After a merge
    that changes what users see or fixes something they hit, follow the current
    patch-release train in `docs/releasing.md` (Phux Rune), not the obsolete
-   alpha sequence. Reconcile the existing automatic release PR first; only
+   alpha sequence. Apply step 7's genuine-CI merge guard to release PRs too.
+   Reconcile the existing automatic release PR first; only
    use the documented hand-written bump path when needed, on a
    `rune-release/VERSION` branch in `../worktrees/rune-release-VERSION`: merge it, wait for a green `ci` on
    that `main` commit, push the tag, and watch `rune-client.yml` to the end. If
