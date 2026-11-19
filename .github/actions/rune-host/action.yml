@@ -35,6 +35,9 @@ runs:
       if: runner.os == 'Linux'
       shell: bash
       run: |
+        # Regional EC2 mirrors have exhausted the entire job in apt downloads.
+        # Keep Ubuntu's signing keys and package selection; change only the URI.
+        sudo python3 clients/rune/scripts/configure_ubuntu_archive.py
         sudo apt-get update
         sudo apt-get install -y build-essential pkg-config mold libxkbcommon-dev libwayland-dev \
           libxkbcommon-x11-0 mesa-vulkan-drivers xvfb xauth weston \
