@@ -16,17 +16,35 @@ use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::style::{Color, Modifier};
 use ratcn::runtime::{
     self as rt, DeclareCtx, Event, EventResult, KeyCode, Modifiers, MouseKind, Ratcn,
     ScrollDirection,
 };
 
 use crate::render::Theme;
+use crate::render::theme::{Depth, identity_256};
 
 /// The area an overlay is declared in before it has ever painted: the
 /// classic terminal size, so offscreen routing lays components out as a
 /// real frame would.
 const OFFSCREEN: Rect = Rect::new(0, 0, 80, 24);
+
+/// The ratcn theme names, one per phux colour depth: [`Surface::paint`]
+/// reads the depth back from the theme it is handed, so every overlay that
+/// paints through [`theme`] is fitted without threading [`Depth`] around.
+const NAME_TRUE: &str = "phux";
+const NAME_256: &str = "phux-256";
+const NAME_16: &str = "phux-16";
+const NAME_MONO: &str = "phux-mono";
+
+/// The ground ratcn's surface roles carry at 16 colours and none. ratcn
+/// derives focus and hover states by shifting a colour's channels, which
+/// `Reset` lacks; this named stand-in has channels, so every derived state
+/// comes out as `Rgb`, and [`fit`] turns exactly those cells into reverse
+/// video (the phux selection at these depths) and the stand-in back into
+/// `Reset`. It is never emitted.
+const GROUND: Color = Color::Black;
 
 /// The phux [`Theme`] expressed as ratcn roles.
 ///
@@ -36,7 +54,6 @@ const OFFSCREEN: Rect = Rect::new(0, 0, 80, 24);
 #[must_use]
 pub const fn theme(t: &Theme) -> ratcn::Theme {
     let mut out = ratcn::Theme::default_dark();
-    out.name = "phux";
     out.foreground = t.text;
     out.muted_foreground = t.dim;
     out.background = t.surface;
@@ -53,7 +70,71 @@ pub const fn theme(t: &Theme) -> ratcn::Theme {
     out.border = t.border;
     out.ring = t.accent;
     out.cursor = t.text;
+    out.name = match t.term.depth {
+        Depth::TrueColor => NAME_TRUE,
+        Depth::Ansi256 => NAME_256,
+        Depth::Ansi16 => NAME_16,
+        Depth::Mono => NAME_MONO,
+    };
+    if t.selection_reverses() {
+        out.background = GROUND;
+        out.surface = GROUND;
+        out.field = GROUND;
+        out.secondary = GROUND;
+        out.primary = GROUND;
+        // At 16 colours the alarm fill is real ANSI red; with none it is
+        // `Reset`, which ratcn cannot derive a focus state from.
+        if matches!(out.destructive, Color::Reset) {
+            out.destructive = GROUND;
+        }
+    }
     out
+}
+
+fn depth_of(theme: &ratcn::Theme) -> Depth {
+    match theme.name {
+        NAME_256 => Depth::Ansi256,
+        NAME_16 => Depth::Ansi16,
+        NAME_MONO => Depth::Mono,
+        _ => Depth::TrueColor,
+    }
+}
+
+/// Fit what ratcn painted into `area` to `depth`: its derived state colours
+/// are 24-bit whatever the terminal renders.
+///
+/// - 256: every `Rgb` snaps to the nearest xterm entry (16–255).
+/// - 16 and none: an `Rgb` fill is a derived focus/hover/cursor state and
+///   becomes reverse video on the terminal's own pair; the [`GROUND`]
+///   stand-in becomes `Reset`; an `Rgb` ink becomes `Reset`. At 16 colours
+///   the theme's own ANSI slots (an error fill, an accent) stay.
+pub fn fit(buf: &mut Buffer, area: Rect, depth: Depth) {
+    if depth == Depth::TrueColor {
+        return;
+    }
+    let area = area.intersection(buf.area);
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            fit_cell(&mut buf[(x, y)], depth);
+        }
+    }
+}
+
+fn fit_cell(cell: &mut ratatui::buffer::Cell, depth: Depth) {
+    if depth == Depth::Ansi256 {
+        cell.fg = identity_256(cell.fg);
+        cell.bg = identity_256(cell.bg);
+        return;
+    }
+    if matches!(cell.bg, Color::Rgb(..)) {
+        cell.modifier.insert(Modifier::REVERSED);
+        cell.bg = Color::Reset;
+    } else if cell.bg == GROUND || depth == Depth::Mono {
+        cell.bg = Color::Reset;
+    }
+    if matches!(cell.fg, Color::Rgb(..)) || cell.fg == GROUND || depth == Depth::Mono {
+        cell.fg = Color::Reset;
+    }
 }
 
 /// A protocol key press as a ratcn [`Event`], or `None` for a release, an
@@ -215,6 +296,7 @@ impl<S: 'static, M: 'static> Surface<S, M> {
         self.runtime
             .borrow_mut()
             .render_into(buf, area, state, theme, declare);
+        fit(buf, area, depth_of(theme));
     }
 
     /// Route `event` through the surface last declared. Before any paint the
@@ -292,6 +374,58 @@ mod tests {
         let mut composing = press_text(PhysicalKey::A, Some("a"));
         composing.composing = true;
         assert_eq!(key(&composing), None);
+    }
+
+    fn painted_at(depth: Depth) -> Buffer {
+        use crate::render::overlay::{ConfirmOverlay, RenderOverlay};
+        use crate::render::theme::Outer;
+        let theme = Theme::house(&Outer {
+            depth,
+            ..Outer::default()
+        });
+        let overlay =
+            ConfirmOverlay::kill_pane("pane 3", &phux_protocol::ResourceId::local(3), &[], &theme);
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::empty(area);
+        overlay.render(area, &mut buf);
+        buf
+    }
+
+    #[test]
+    fn below_truecolor_nothing_ratcn_paints_is_24_bit() {
+        for depth in [Depth::Ansi256, Depth::Ansi16, Depth::Mono] {
+            let buf = painted_at(depth);
+            for cell in &buf.content {
+                for color in [cell.fg, cell.bg] {
+                    assert!(
+                        !matches!(color, Color::Rgb(..)),
+                        "{depth:?} painted {color:?}"
+                    );
+                    assert!(
+                        !(depth == Depth::Mono && color != Color::Reset),
+                        "mono painted {color:?}"
+                    );
+                }
+                if depth != Depth::Ansi256 {
+                    assert_ne!(cell.bg, GROUND, "{depth:?}: the stand-in leaked");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn without_fills_the_focused_button_is_reverse_video() {
+        for depth in [Depth::Ansi16, Depth::Mono] {
+            let buf = painted_at(depth);
+            let reversed: String = buf
+                .content
+                .iter()
+                .filter(|c| c.modifier.contains(Modifier::REVERSED))
+                .map(ratatui::buffer::Cell::symbol)
+                .collect();
+            assert!(reversed.contains("Kill"), "{depth:?}: {reversed:?}");
+            assert!(!reversed.contains("Cancel"), "{depth:?}: {reversed:?}");
+        }
     }
 
     #[test]
