@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/no-phux/phux/compare/opencode-plugin-v0.10.0...opencode-plugin-v0.11.0) (2026-11-19)
+
+
+### Features
+
+* make phux a composable public runtime ([#2662](https://github.com/no-phux/phux/issues/2662)) ([c7cac8b](https://github.com/no-phux/phux/commit/c7cac8bb7b297b74c420f54a0bdff1f131e3b76c))
+
 ## [0.10.0](https://github.com/no-phux/phux/compare/opencode-plugin-v0.9.3...opencode-plugin-v0.10.0) (2026-11-14)
 
 
