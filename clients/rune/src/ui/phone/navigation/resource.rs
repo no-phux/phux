@@ -87,10 +87,12 @@ pub(super) fn resource_row(desk: &Desk, resource: &Addressable, p: &Look) -> El 
                     .a11y_hidden()
             })),
     ]);
-    if current {
-        crate::ui::lifted(row, p)
-    } else {
-        row
+    // The current pane: a quiet wash and the accent check. Increased
+    // contrast keeps the lifted edge and its leading accent bar.
+    match (current, p.increased_contrast) {
+        (false, _) => row,
+        (true, true) => crate::ui::lifted(row, p),
+        (true, false) => row.fill(p.roles.wash.current.paint()),
     }
 }
 

@@ -98,7 +98,14 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                 .then(|| tab_pills(desk, controls))
                 .flatten(),
         );
-    let bar = (!desk.settings_open || keyboard_visible).then(|| accessory(desk, phone, controls));
+    // Sessions and Actions are lists, not a terminal: no key bar, and their
+    // search keyboard's Return is its Done. Settings keeps the bar only for
+    // its search's Done.
+    let bar = if desk.phone_page().is_some() {
+        None
+    } else {
+        (!desk.settings_open || keyboard_visible).then(|| accessory(desk, phone, controls))
+    };
     let fill = edge_fill(desk, &p);
     // Both keyboards sit after every sheet and kit overlay, outside their
     // measured viewport. Rune treats post-modal controls as part of the
