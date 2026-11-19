@@ -95,6 +95,25 @@ do {
     preconditionFailure("write failure must propagate")
 } catch WriteFailure.tree {}
 precondition(names == ["rune-tree.json"], "failed tree write cannot publish readiness")
+
+// Execute the actual policy used before QualificationProbe injects UIKit input.
+// First connection expiry is terminal even if another connection later attaches.
+var expired = QualificationProgress()
+precondition(!expired.claimInput(when: false))
+precondition(expired.claimFailure())
+precondition(!expired.claimInput(when: true), "late recovery cannot inject the resumed witness")
+expired.publish { preconditionFailure("late ready cannot overwrite the failed report") }
+precondition(!expired.claimFailure(), "a later error cannot overwrite the first failure")
+precondition(expired.finished && !expired.injected, "failure is latched")
+var connected = QualificationProgress()
+precondition(connected.claimInput(when: true))
+precondition(!connected.claimInput(when: true), "a live connection injects only once")
+connected.publish { false }
+precondition(!connected.finished, "waiting for the rendered tree is not failure")
+connected.publish { true }
+precondition(connected.finished)
+precondition(connected.claimFailure(), "a post-success lifecycle failure must still be reported")
+connected.publish { preconditionFailure("lifecycle failure cannot become success") }
 """)
             compiled = subprocess.run(["/usr/bin/xcrun", "--sdk", "macosx", "swiftc", "-swift-version", "6",
                             "-warnings-as-errors", str(source), str(evidence), str(main), "-o", str(root / "cadence")],

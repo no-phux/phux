@@ -14,6 +14,7 @@ mod tests;
 /// (`tools/src/web/browser.ts`), so it stays put when this module moves. It
 /// keeps the crate prefix so a `phux_server=debug` filter still shows it.
 const LOG_TARGET: &str = "phux_server::output_resync";
+const FINAL_CAPTURE_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 impl OutputPumpContext {
     /// Tombstone the live generation, publish its native replacement, and
@@ -71,8 +72,10 @@ impl OutputPumpContext {
             // replacement to a slow consumer: the pane ended, the client
             // did not.
             if failure.actor_gone() {
+                super::bootstrap::publication_phase("replacement_generation", "pane_gone");
                 PumpFault::PaneGone
             } else {
+                super::bootstrap::publication_phase("replacement_generation", "activation_refused");
                 PumpFault::PublicationNotActivated
             }
         })?;
@@ -123,17 +126,16 @@ impl OutputPumpContext {
         generation: &mut PumpGeneration,
         output_rx: &mut tokio::sync::broadcast::Receiver<ResourceOutput>,
     ) -> Result<bool, PumpFault> {
-        const CAPTURE_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
         if publishes_native_checkpoints(self.profile) {
             return self
                 .publish_final_native_generation(generation, output_rx)
                 .await;
         }
         let _ = output_rx;
-        let snapshot = self
-            .snapshot
-            .as_ref()
-            .ok_or(PumpFault::PublicationNotActivated)?;
+        let snapshot = self.snapshot.as_ref().ok_or_else(|| {
+            super::bootstrap::publication_phase("final_synthesized_capture", "unavailable");
+            PumpFault::PublicationNotActivated
+        })?;
         let capture = async {
             let (reply, receive) = oneshot::channel();
             snapshot
@@ -150,15 +152,33 @@ impl OutputPumpContext {
                     reply,
                 })
                 .await
-                .map_err(|_| PumpFault::PaneGone)?;
+                .map_err(|_| {
+                    super::bootstrap::publication_phase(
+                        "final_synthesized_capture",
+                        "actor_unsent",
+                    );
+                    PumpFault::PaneGone
+                })?;
             receive
                 .await
-                .map_err(|_| PumpFault::PaneGone)?
-                .map_err(|_| PumpFault::PublicationNotActivated)
+                .map_err(|_| {
+                    super::bootstrap::publication_phase(
+                        "final_synthesized_capture",
+                        "actor_dropped",
+                    );
+                    PumpFault::PaneGone
+                })?
+                .map_err(|_| {
+                    super::bootstrap::publication_phase("final_synthesized_capture", "refused");
+                    PumpFault::PublicationNotActivated
+                })
         };
-        let (snapshot, base_seq) = tokio::time::timeout(CAPTURE_WAIT, capture)
+        let (snapshot, base_seq) = tokio::time::timeout(FINAL_CAPTURE_WAIT, capture)
             .await
-            .map_err(|_| PumpFault::PublicationNotActivated)??;
+            .map_err(|_| {
+                super::bootstrap::publication_phase("final_synthesized_capture", "deadline");
+                PumpFault::PublicationNotActivated
+            })??;
         let resync = PaneResync {
             cols: snapshot.cols,
             rows: snapshot.rows,
@@ -191,13 +211,19 @@ impl OutputPumpContext {
                 reply,
             )
         });
-        let reply = tokio::time::timeout(std::time::Duration::from_secs(1), capture)
+        let reply = tokio::time::timeout(FINAL_CAPTURE_WAIT, capture)
             .await
-            .map_err(|_| PumpFault::PublicationNotActivated)?
-            .map_err(|failure| {
-                if failure.actor_gone() {
+            .map_err(|_| {
+                super::bootstrap::publication_phase("final_native_capture", "deadline");
+                PumpFault::PublicationNotActivated
+            })?
+            .map_err(|failure| match failure {
+                NativeRequestFailure::Unsent | NativeRequestFailure::Dropped => {
+                    super::bootstrap::publication_phase("final_native_capture", "pane_gone");
                     PumpFault::PaneGone
-                } else {
+                }
+                NativeRequestFailure::Refused(_) => {
+                    super::bootstrap::publication_phase("final_native_capture", "refused");
                     PumpFault::PublicationNotActivated
                 }
             })?;

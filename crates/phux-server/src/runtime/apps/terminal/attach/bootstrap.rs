@@ -154,7 +154,19 @@ impl NativeRequestFailure {
     pub(super) const fn actor_gone(&self) -> bool {
         matches!(self, Self::Unsent | Self::Dropped)
     }
+
+    fn traced(self, phase: &'static str) -> Self {
+        let outcome = match &self {
+            Self::Unsent => "actor_unsent",
+            Self::Dropped => "actor_dropped",
+            Self::Refused(_) => "refused",
+        };
+        publication_phase(phase, outcome);
+        self
+    }
 }
+
+pub(in crate::runtime) use crate::runtime::session_attach::publication_phase;
 
 /// Send the native checkpoint request `make` builds and await its reply.
 pub(in crate::runtime) async fn request_native_checkpoint(
@@ -168,27 +180,34 @@ pub(in crate::runtime) async fn request_native_checkpoint(
         >,
     ) -> phux_terminal_api::actor::NativeBootstrapRequest,
 ) -> Result<phux_terminal_api::actor::NativeBootstrapReply, NativeRequestFailure> {
+    publication_phase("native_capture", "started");
     let (reply_tx, reply_rx) = oneshot::channel();
     terminal
         .native_bootstrap
         .send(make(reply_tx))
         .await
-        .map_err(|_| NativeRequestFailure::Unsent)?;
+        .map_err(|_| NativeRequestFailure::Unsent.traced("native_capture"))?;
     reply_rx
         .await
-        .map_err(|_| NativeRequestFailure::Dropped)?
+        .map_err(|_| NativeRequestFailure::Dropped.traced("native_capture"))?
         .map_err(NativeRequestFailure::Refused)
+        .inspect_err(|_| publication_phase("native_capture", "refused"))
+        .inspect(|_| publication_phase("native_capture", "ready"))
 }
 
 pub(crate) async fn publish_native_bootstrap(
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
     reply: phux_terminal_api::actor::NativeBootstrapReply,
 ) -> Result<(u64, phux_terminal_api::native_state::OpaqueHistoryCursor), ()> {
+    publication_phase("bootstrap_queue", "started");
     let cut = reply.base_seq;
     let cursor = reply.publication_cursor;
     for frame in reply.frames {
-        out_tx.send(Outbound::Frame(frame)).await.map_err(|_| ())?;
+        out_tx.send(Outbound::Frame(frame)).await.map_err(|_| {
+            publication_phase("bootstrap_queue", "outbound_closed");
+        })?;
     }
+    publication_phase("bootstrap_queue", "queued");
     Ok((cut, cursor))
 }
 
@@ -200,6 +219,7 @@ pub(crate) async fn activate_native_publication(
     bootstrap_id: BootstrapId,
     cursor: phux_terminal_api::native_state::OpaqueHistoryCursor,
 ) -> Result<NativePublication, NativeRequestFailure> {
+    publication_phase("native_activation", "started");
     let (reply, publication) = oneshot::channel();
     handle
         .native_publication
@@ -212,15 +232,22 @@ pub(crate) async fn activate_native_publication(
             reply,
         })
         .await
-        .map_err(|_| NativeRequestFailure::Unsent)?;
+        .map_err(|_| NativeRequestFailure::Unsent.traced("native_activation"))?;
     match publication
         .await
-        .map_err(|_| NativeRequestFailure::Dropped)?
+        .map_err(|_| NativeRequestFailure::Dropped.traced("native_activation"))?
     {
-        Ok(publication) => Ok(NativePublication::Activated(publication)),
+        Ok(publication) => {
+            publication_phase("native_activation", "activated");
+            Ok(NativePublication::Activated(publication))
+        }
         Err(phux_terminal_api::native_state::NativeStateError::Resize) => {
+            publication_phase("native_activation", "superseded");
             Ok(NativePublication::Superseded)
         }
-        Err(error) => Err(NativeRequestFailure::Refused(error)),
+        Err(error) => {
+            publication_phase("native_activation", "refused");
+            Err(NativeRequestFailure::Refused(error))
+        }
     }
 }

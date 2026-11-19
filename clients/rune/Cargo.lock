@@ -2878,6 +2878,7 @@ version = "0.1.0"
 dependencies = [
  "phux-rune",
  "serde_json",
+ "tracing",
 ]
 
 [[package]]

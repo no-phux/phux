@@ -6,6 +6,7 @@ mod native_capture;
 mod native_pump;
 mod prepare_attach;
 mod publication_client;
+mod publication_diagnostics;
 mod publication_recovery;
 mod publication_supersession;
 mod staging;

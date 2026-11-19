@@ -201,6 +201,7 @@ pub(crate) fn release_after_pump_fault(
     client_id: ClientId,
     connection_token: &CancellationToken,
 ) {
+    fault.record();
     match fault {
         PumpFault::OutboundClosed | PumpFault::ReplayAbandoned | PumpFault::PaneGone => {}
         PumpFault::TombstoneNotQueued | PumpFault::GenerationLost => {

@@ -18,6 +18,7 @@ impl ControlPlane {
     // ----- handshake --------------------------------------------------
 
     pub(super) fn hello_ok(&mut self, answer: HelloOk) -> Result<(), ControlError> {
+        crate::connection::trace::phase("hello_received");
         if self.handshake_ready {
             return Err(ControlError::Protocol(
                 "server sent duplicate HELLO_OK".to_owned(),
@@ -63,6 +64,7 @@ impl ControlPlane {
         self.server = Some(info);
         self.ensure_engine(profile, limits)?;
         self.handshake_ready = true;
+        crate::connection::trace::phase("hello_accepted");
         self.set_status(Status::Negotiated);
         let now_ms = self.now_ms();
         let reports = self
@@ -326,6 +328,7 @@ impl ControlPlane {
             )));
         }
         self.attached_once = true;
+        crate::connection::trace::phase("attach_ready");
         self.attach_ended = false;
         self.error = None;
         self.set_status(Status::Attached);
