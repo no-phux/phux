@@ -29,20 +29,17 @@ of writing escapes.
 phux reads OSC 7501 reports and shows them as the pane's state in the
 sidebar, the agents view, notifications, and `phux agent list`.
 
+- [Otty](https://docs.otty.sh/vt/osc/osc-7501) supports OSC 7501 and shows
+  a pane's most urgent status in the tab badge, the Dock icon, the Inbox,
+  tab previews, and notifications.
+- [Rex](https://www.superlogical.com/rex/docs/build/program-status) uses
+  OSC 7501 and shows task status in the session picker and unfocused tab
+  headers; Lua scripts can react to `terminal.program_status_changed`.
+- [Solo](https://soloterm.com/docs/terminal/program-status) uses OSC 7501
+  for agent activity indicators and attention alerts, and holds automated
+  messages while a program waits for you.
 - [TUIOS](https://tuios.dev/docs/program-status) reads OSC 7501 and shows
   the state in the rail, the Inbox, and the pane's title bar.
-- [Otty](https://docs.otty.sh/vt/osc/osc-7501) marks OSC 7501 as supported.
-  It shows a pane's most urgent record in the tab badge, the Dock icon,
-  Inbox and tab preview, and notifications.
-- [Solo](https://soloterm.com/docs/terminal/program-status) lets a program
-  report what it is doing with OSC 7501. Solo uses those reports for
-  agent activity indicators and attention alerts, and holds automated
-  messages while a program waits for you.
-- [Rex](https://www.superlogical.com/rex/docs/build/program-status) uses
-  the protocol. Sessions with completed or blocked tasks show an
-  indicator in the session picker. Unfocused tab headers show an
-  in-progress spinner and symbols for blocked states. Lua scripts can
-  react to `terminal.program_status_changed`.
 
 ## Conventions
 
