@@ -5,23 +5,21 @@ description: phux supports OSC 7501, the escape sequence a program writes to rep
 
 # Program Status Protocol (OSC 7501): report status from any program
 
-phux supports the Program Status Protocol, OSC 7501, the escape sequence a program writes to report its status: working, blocked, done, or error. Support shipped in v0.53.0. To report working, run `printf '\033]7501;state=working\033\\'`.
+phux supports the Program Status Protocol, OSC 7501, the escape sequence a program writes to report its status: working, blocked, done, or error. Support shipped in v0.53.0.
 
-This page is for people who write programs that run inside a phux pane: build tools, deploy scripts, coding agents. It specifies how such a program tells phux what it is doing, and what phux does with that.
+This page specifies how a program in a phux pane tells phux what it is doing, and what phux does with that.
 
-A program writes that sequence to its terminal. phux records it, ranks it, and shows it as the pane's state in the sidebar, the agents view, notifications, and `phux agent list`. It needs no phux library and no socket.
+A program writes that sequence to its terminal. phux records it and ranks it. It needs no phux library and no socket.
 
 ```sh
 printf '\033]7501;state=working:app=deploy\033\\'
 ```
 
 [Any program can report status](./any-program-status.md) is a short
-walkthrough: one shell function, a demo that needs no hooks, and the
-`phux agent list` and `phux agent explain` output from a real run.
+walkthrough.
 
 [Program sequences and agent reports](./program-sequences.md) covers the
-other sequences phux reads (titles, the `phux-ask` title, OSC 133, OSC 9;4,
-OSC 52, BEL), the agent record, and the commands a program can run instead
+other sequences phux reads, and the commands a program can run instead
 of writing escapes.
 
 ## Which programs support OSC 7501
@@ -353,8 +351,42 @@ controls the pane.
 
 ### Examples
 
-Shell reports, a function that encodes the message, and feature detection
-are in [Examples](./program-protocol/examples.md).
+Shell, with base64 values decoded in a trailing comment. Write to
+`/dev/tty` when standard output may be redirected.
+
+```sh
+# One program, root record
+printf '\033]7501;state=working:app=brew:msg=SW5zdGFsbGluZyB1cGRhdGVz\033\\'   # Installing updates
+printf '\033]7501;state=blocked:kind=auth:app=brew:msg=UGFzc3dvcmQgcmVxdWlyZWQ=\033\\'   # Password required
+printf '\033]7501;state=done:app=brew:msg=VXBncmFkZWQgMTIgcGFja2FnZXM=\033\\'   # Upgraded 12 packages
+
+# Several records, then clear one subtree and the rest
+printf '\033]7501;state=working:app=deploy\033\\'
+printf '\033]7501;state=working:id=us-east:progress=40\033\\'
+printf '\033]7501;state=blocked:kind=permission:id=eu-west:msg=QXBwcm92ZSBwcm9kdWN0aW9uPw==\033\\'   # Approve production?
+printf '\033]7501;state=clear:id=eu-west\033\\'
+printf '\033]7501;state=clear\033\\'
+```
+
+A function that encodes the message:
+
+```sh
+status() {
+  printf '\033]7501;state=%s:app=sync:msg=%s\033\\' "$1" \
+    "$(printf '%s' "$2" | base64 | tr -d '\n')" > /dev/tty
+}
+status working "Syncing photos"
+rsync -a ~/Photos backup:/photos && status done "Photos synced" || status error "rsync failed"
+```
+
+Ask for support, then fall back after a short wait:
+
+```sh
+printf '\033]7501;?\033\\\033[c' > /dev/tty
+```
+
+Read the reply from the terminal in raw mode; an answer starting
+`ESC ] 7501 ; ?` means supported.
 
 ### Relationship to other sequences
 
