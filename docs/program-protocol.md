@@ -1,11 +1,11 @@
 ---
-title: OSC 7501: report status from any program
+title: Program Status Protocol (OSC 7501): report status from any program
 description: phux supports OSC 7501, the escape sequence a program writes to report its status: working, blocked, done, or error.
 ---
 
-# OSC 7501: report status from any program
+# Program Status Protocol (OSC 7501): report status from any program
 
-phux supports OSC 7501, the escape sequence a program writes to report its status: working, blocked, done, or error. Support shipped in v0.53.0. To report working, run `printf '\033]7501;state=working\033\\'`.
+phux supports the Program Status Protocol, OSC 7501, the escape sequence a program writes to report its status: working, blocked, done, or error. Support shipped in v0.53.0. To report working, run `printf '\033]7501;state=working\033\\'`.
 
 This page is for people who write programs that run inside a phux pane: build tools, deploy scripts, coding agents. It specifies how such a program tells phux what it is doing, and what phux does with that.
 
@@ -23,6 +23,26 @@ walkthrough: one shell function, a demo that needs no hooks, and the
 other sequences phux reads (titles, the `phux-ask` title, OSC 133, OSC 9;4,
 OSC 52, BEL), the agent record, and the commands a program can run instead
 of writing escapes.
+
+## Which programs support OSC 7501
+
+phux reads OSC 7501 reports and shows them as the pane's state in the
+sidebar, the agents view, notifications, and `phux agent list`.
+
+- [TUIOS](https://tuios.dev/docs/program-status) reads OSC 7501 and shows
+  the state in the rail, the Inbox, and the pane's title bar.
+- [Otty](https://docs.otty.sh/vt/osc/osc-7501) marks OSC 7501 as supported.
+  It shows a pane's most urgent record in the tab badge, the Dock icon,
+  Inbox and tab preview, and notifications.
+- [Solo](https://soloterm.com/docs/terminal/program-status) lets a program
+  report what it is doing with OSC 7501. Solo uses those reports for
+  agent activity indicators and attention alerts, and holds automated
+  messages while a program waits for you.
+- [Rex](https://www.superlogical.com/rex/docs/build/program-status) uses
+  the protocol. Sessions with completed or blocked tasks show an
+  indicator in the session picker. Unfocused tab headers show an
+  in-progress spinner and symbols for blocked states. Lua scripts can
+  react to `terminal.program_status_changed`.
 
 ## Conventions
 
