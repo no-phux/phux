@@ -5,7 +5,8 @@ use rune::{Env, Key, KeyEvent, Mods, Runtime};
 fn runtime(phone: bool) -> Runtime<Desk> {
     let mut desk = crate::test_support::settings_window().with_phone(phone);
     desk.settings_open = false;
-    let mut rt = Runtime::new(desk, crate::ui::view, (900.0, 700.0), Env::new(true, 1.0));
+    let mut rt =
+        crate::test_support::runtime(desk, crate::ui::view, (900.0, 700.0), Env::new(true, 1.0));
     rt.on_key = Some(Desk::key);
     rt
 }

@@ -211,7 +211,7 @@ mod tests {
             view: phux_client_runtime::ViewId::from_raw(1),
         });
         desk.focused = true;
-        Runtime::new(desk, crate::ui::view, (800.0, 600.0), Env::new(true, 1.0))
+        crate::test_support::runtime(desk, crate::ui::view, (800.0, 600.0), Env::new(true, 1.0))
     }
 
     #[test]

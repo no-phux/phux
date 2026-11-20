@@ -81,7 +81,7 @@ fn the_histogram_counts_only_what_asks_for_you() {
 fn listed(dark: bool) -> rune::Runtime<Desk> {
     let mut desk = crate::test_support::settings_window();
     desk.settings_open = false;
-    let mut rt = rune::Runtime::new(
+    let mut rt = crate::test_support::runtime(
         desk,
         crate::ui::view,
         (1100.0, 720.0),

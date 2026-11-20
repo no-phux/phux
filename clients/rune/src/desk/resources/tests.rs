@@ -145,7 +145,8 @@ fn fixture(records: &[ResourceRecord], doc: &ArrangementDoc) -> (Arc<Client>, Ru
     desk.link.heard = true; // no first-run preferences write
     desk.connection.client = Some(Arc::clone(&client));
     desk.connection.resources.images = Some(rune::ImageCache::new(Arc::new(|| {})));
-    let mut rt = Runtime::new(desk, crate::ui::view, (800.0, 600.0), Env::new(true, 1.0));
+    let mut rt =
+        crate::test_support::runtime(desk, crate::ui::view, (800.0, 600.0), Env::new(true, 1.0));
     rt.on_key = Some(Desk::key);
     step(&mut rt);
     (client, rt)

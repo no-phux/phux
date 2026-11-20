@@ -35,7 +35,8 @@ fn failed(error: &str) -> Desk {
 }
 
 fn drawn(desk: Desk, size: (f32, f32)) -> rune::Runtime<Desk> {
-    let mut rt = rune::Runtime::new(desk, crate::ui::view, size, rune::Env::new(true, 2.0));
+    let mut rt =
+        crate::test_support::runtime(desk, crate::ui::view, size, rune::Env::new(true, 2.0));
     rt.frame(0.0);
     rt
 }

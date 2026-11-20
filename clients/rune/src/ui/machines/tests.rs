@@ -10,7 +10,8 @@ fn sheet(dark: bool) -> Runtime<Desk> {
     let mut desk = crate::test_support::window();
     desk.machines.open = true;
     desk.machines.picking = Some(LOCAL.to_owned());
-    let mut rt = Runtime::new(desk, crate::ui::view, (1100.0, 720.0), Env::new(dark, 1.0));
+    let mut rt =
+        crate::test_support::runtime(desk, crate::ui::view, (1100.0, 720.0), Env::new(dark, 1.0));
     rt.set_srgb_blend(true);
     rt.frame(0.0);
     rt.frame(1.0);

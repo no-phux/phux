@@ -14,7 +14,7 @@ fn house(step: Step, size: (f32, f32), dark: bool, more: bool, scale: f32) -> Ru
     desk.connection.resources.images = Some(rune::ImageCache::new(std::sync::Arc::new(|| {})));
     desk.settings_open = false;
     desk.settings.theme = None;
-    let mut rt = Runtime::new(desk, crate::ui::view, size, Env::new(dark, 1.0));
+    let mut rt = crate::test_support::runtime(desk, crate::ui::view, size, Env::new(dark, 1.0));
     rt.on_key = Some(Desk::key);
     rt.set_srgb_blend(true);
     rt.set_system_increased_contrast(more);

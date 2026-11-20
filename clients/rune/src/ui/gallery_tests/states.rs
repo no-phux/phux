@@ -185,7 +185,7 @@ pub(super) fn page(dark: bool, theme: Option<&'static Theme>) -> Runtime<Desk> {
     FORCE_RINGS.set(false);
     let mut desk = crate::test_support::window();
     desk.settings.theme = theme;
-    Runtime::new(desk, view, SIZE, Env::new(dark, SCALE))
+    crate::test_support::runtime(desk, view, SIZE, Env::new(dark, SCALE))
 }
 
 /// The page with every focusable control drawing its real focus ring.

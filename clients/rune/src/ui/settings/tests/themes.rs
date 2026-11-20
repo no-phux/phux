@@ -15,7 +15,7 @@ fn scene(phone: bool, size: (u32, u32), scale: u32, large: bool, dark: bool) -> 
             desk.set_text_scale(1.4);
         }
     }
-    let mut rt = Runtime::new(
+    let mut rt = crate::test_support::runtime(
         desk,
         crate::ui::view,
         (size.0 as f32, size.1 as f32),
@@ -196,7 +196,11 @@ fn large_phone_theme_names_wrap_below_the_title_without_a_narrow_value_column() 
             if theme == crate::theme::find("phux-light") {
                 assert!(
                     (value[3] - line).abs() < 0.5,
-                    "phux Light uses one natural line, not the old narrow column"
+                    "phux Light uses one natural line, not the old narrow column: \
+                     viewport={size:?}, value={value:?}, title={title:?}, \
+                     button={:?}, expected_line={line}, font_families={:?}",
+                    button.rect,
+                    rt.text.families()
                 );
             }
             assert!(

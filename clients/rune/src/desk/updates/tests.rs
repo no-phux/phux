@@ -140,7 +140,7 @@ fn settings_expose_the_local_cli_channel_and_external_ownership() {
     desk.updater = updater();
     desk.updater.cli = Some(cli("1.0"));
     desk.settings_category(crate::desk::SettingsCategory::About);
-    let mut rt = rune::Runtime::new(
+    let mut rt = crate::test_support::runtime(
         desk,
         crate::ui::view,
         (1100.0, 720.0),
@@ -180,7 +180,8 @@ fn channel_choices_fit_desktop_and_narrow_phone_settings() {
         let mut desk = crate::test_support::settings_window().with_phone(phone);
         desk.updater = updater();
         desk.settings_category(crate::desk::SettingsCategory::About);
-        let mut rt = rune::Runtime::new(desk, crate::ui::view, size, rune::Env::new(false, 1.0));
+        let mut rt =
+            crate::test_support::runtime(desk, crate::ui::view, size, rune::Env::new(false, 1.0));
         rt.frame(0.0);
         for key in [
             "phux-channel-installed",

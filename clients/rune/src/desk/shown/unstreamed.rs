@@ -25,7 +25,7 @@ fn showing_a_terminal_nothing_streams_asks_for_it() {
         rune::prefs::Prefs::memory(),
     );
     desk.connection.client = Some(Arc::clone(&client));
-    let mut rt = rune::Runtime::new(
+    let mut rt = crate::test_support::runtime(
         desk,
         crate::ui::view,
         (1100.0, 720.0),

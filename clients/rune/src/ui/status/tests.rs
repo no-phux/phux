@@ -11,7 +11,7 @@ fn settings_open_from_the_titlebar_with_or_without_the_sidebar() {
         let mut desk = crate::test_support::settings_window();
         desk.settings_open = false;
         desk.sidebar_open = sidebar_open;
-        let mut rt = rune::Runtime::new(
+        let mut rt = crate::test_support::runtime(
             desk,
             crate::ui::view,
             (1100.0, 720.0),
@@ -33,7 +33,7 @@ fn a_hover_toolbar_shows_at_the_top_edge_and_hides_off_it() {
     desk.sidebar_open = false;
     desk.settings.hover_toolbar = true;
     let env = rune::Env::new(false, 1.0);
-    let mut rt = rune::Runtime::new(desk, crate::ui::view, (1100.0, 720.0), env);
+    let mut rt = crate::test_support::runtime(desk, crate::ui::view, (1100.0, 720.0), env);
     let at = |rt: &mut rune::Runtime<Desk>, y| {
         rt.pointer_move(600.0, y);
         // The hover lands in one frame; the strip grows in the next.
@@ -157,7 +157,7 @@ fn a_narrow_window_folds_the_sidebar_and_the_toggle_peeks() {
     let mut desk = crate::test_support::settings_window();
     desk.settings_open = false;
     desk.sidebar_open = true;
-    let mut rt = rune::Runtime::new(
+    let mut rt = crate::test_support::runtime(
         desk,
         crate::ui::view,
         (500.0, 700.0),

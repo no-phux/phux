@@ -28,7 +28,7 @@ fn window(step: Step) -> Runtime<Desk> {
     desk.connection.resources.images = Some(rune::ImageCache::new(std::sync::Arc::new(|| {})));
     desk.settings_open = false;
     desk.settings.theme = theme::find("midnight");
-    let mut rt = Runtime::new(
+    let mut rt = crate::test_support::runtime(
         desk,
         crate::ui::view,
         SIZE,

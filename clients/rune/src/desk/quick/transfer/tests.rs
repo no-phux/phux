@@ -3,7 +3,7 @@ use crate::desk::{Shown, quick::Panel};
 use phux_client_runtime::control::Event;
 use phux_protocol::ids::Revision;
 use phux_protocol::wire::frame::{CommandResult, CommandValue, Committed, ErrorCode, Refusal};
-use rune::{Env, Runtime};
+use rune::Env;
 use std::sync::{
     Arc,
     mpsc::{self, Receiver},
@@ -222,7 +222,8 @@ fn the_panel_keeps_its_terminal_and_renders_a_visible_error_without_native_windo
         "the panel can try again"
     );
     assert_eq!(desk.notice.as_ref().unwrap().kind, NoticeKind::Error);
-    let mut runtime = Runtime::new(desk, crate::ui::view, (960.0, 440.0), Env::new(true, 1.0));
+    let mut runtime =
+        crate::test_support::runtime(desk, crate::ui::view, (960.0, 440.0), Env::new(true, 1.0));
     runtime.frame(0.0);
     assert!(runtime.find("toast").is_some());
     assert!(

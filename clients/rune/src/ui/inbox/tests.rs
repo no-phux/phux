@@ -29,7 +29,6 @@ fn fixture(size: (u32, u32), phone: bool, scale: f32) -> (Arc<Client>, Runtime<D
     let (client, mut rt) = crate::test_support::input_fixture_showing(
         "\x1b[2J\x1b[HRelease verification\r\n  tests: passed\r\n  native input: waiting for review\r\n",
     );
-    rt.text = rune::text::TextSystem::new(crate::grid::FONTS, crate::grid::FAMILIES);
     rt.state.phone = phone.then(crate::desk::phone::Phone::default);
     rt.state.connection.topology = client.with_control(|c| c.topology().cloned());
     rt.set_viewport((size.0 as f32, size.1 as f32), scale);

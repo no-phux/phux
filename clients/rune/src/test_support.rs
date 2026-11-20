@@ -16,6 +16,50 @@ pub mod visual;
 pub const SCALE: f32 = 2.0;
 pub const SIZE: (f32, f32) = (1100.0, 720.0);
 
+/// Shape fixtures with the same embedded fonts and family slots as `AppSpec`.
+pub fn runtime<S: 'static>(
+    state: S,
+    view: fn(&S, &mut rune::Cx<S>) -> rune::El,
+    viewport: (f32, f32),
+    env: rune::Env,
+) -> Runtime<S> {
+    Runtime::with_text(
+        state,
+        view,
+        viewport,
+        env,
+        rune::text::TextSystem::new(crate::grid::FONTS, crate::grid::FAMILIES),
+    )
+}
+
+#[test]
+fn runtime_shapes_with_the_app_families_and_embedded_inter() {
+    let style = crate::ui::Tokens::resolve(&crate::ui::tokens::Inputs::system(false))
+        .ty
+        .body;
+    let mut rt = runtime(
+        style,
+        |style, _| rune::text("Inter").font(*style),
+        (320.0, 240.0),
+        Env::new(false, 1.0),
+    );
+    assert_eq!(rt.text.families(), crate::grid::FAMILIES);
+    let layout = rt.text.layout_rich("Inter", &[], style, 1.0, None);
+    let line = layout.lines().next().expect("one line");
+    let run = line.runs().next().expect("one Inter run");
+    assert!(
+        run.font().data.as_ref() == crate::grid::FONTS[0],
+        "the sans slot uses the app's embedded Inter"
+    );
+    assert!(
+        run.clusters()
+            .flat_map(|cluster| cluster.glyphs())
+            .all(|glyph| glyph.id != 0),
+        "Inter shapes real glyphs, not missing-glyph boxes"
+    );
+    assert!(layout.width() > 0.0);
+}
+
 /// Exercise production preference-opening factories in a private child process.
 /// `full_test_name` is the exact libtest name, without the crate prefix.
 /// Call before constructing any fixture; the parent never changes its environment.
@@ -88,7 +132,7 @@ pub fn input_fixture_showing(output: &str) -> (Arc<Client>, Runtime<Desk>) {
         resource: replica.terminal,
         view: Some(replica.views[0]),
     });
-    let mut rt = Runtime::new(desk, crate::ui::view, SIZE, Env::new(true, SCALE));
+    let mut rt = crate::test_support::runtime(desk, crate::ui::view, SIZE, Env::new(true, SCALE));
     rt.on_key = Some(Desk::key);
     (replica.client, rt)
 }

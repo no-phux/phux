@@ -185,7 +185,8 @@ pub fn fixture(phone: bool) -> (Arc<Client>, Runtime<Desk>) {
     assert!(!desk.prefs.is_persistent());
     desk.link.heard = true;
     desk.connection.client = Some(Arc::clone(&client));
-    let mut rt = Runtime::new(desk, crate::ui::view, (393.0, 852.0), Env::new(true, 2.0));
+    let mut rt =
+        crate::test_support::runtime(desk, crate::ui::view, (393.0, 852.0), Env::new(true, 2.0));
     rt.on_key = Some(Desk::key);
     poll(&mut rt);
     settle(&mut rt);

@@ -158,8 +158,12 @@ mod tests {
                     crate::mobile::state(serde_json::from_value(configuration).expect("parses"))
                         .expect("a loopback host needs no pairing");
                 let size = (393.0, 852.0);
-                let mut rt =
-                    rune::Runtime::new(state, crate::ui::view, size, rune::Env::new(true, 2.0));
+                let mut rt = crate::test_support::runtime(
+                    state,
+                    crate::ui::view,
+                    size,
+                    rune::Env::new(true, 2.0),
+                );
                 rt.state.link.tries = 5;
                 crate::mobile::set_active(&mut rt, false);
                 assert!(!rt.state.focused);

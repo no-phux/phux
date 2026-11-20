@@ -449,7 +449,8 @@ mod tests {
         let mut desk = crate::test_support::settings_window();
         desk.settings_open = false;
         desk.connection.tabs.list = named(count, active);
-        let mut rt = rune::Runtime::new(desk, crate::ui::view, window, rune::Env::new(false, 1.0));
+        let mut rt =
+            crate::test_support::runtime(desk, crate::ui::view, window, rune::Env::new(false, 1.0));
         // The bar reports its room on the first frame; the tabs fit it after.
         for frame in 0..4 {
             rt.frame(f64::from(frame));

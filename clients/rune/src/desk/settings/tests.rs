@@ -27,7 +27,8 @@ fn find<'a>(node: &'a Value, key: &str) -> &'a Value {
 }
 
 fn runtime(desk: Desk) -> Runtime<Desk> {
-    let mut runtime = Runtime::new(desk, crate::ui::view, (1100.0, 720.0), Env::new(true, 2.0));
+    let mut runtime =
+        crate::test_support::runtime(desk, crate::ui::view, (1100.0, 720.0), Env::new(true, 2.0));
     runtime.on_key = Some(Desk::key);
     runtime.frame(0.0);
     runtime

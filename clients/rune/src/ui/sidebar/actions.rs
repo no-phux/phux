@@ -36,7 +36,7 @@ mod tests {
     use phux_client_runtime::control::Topology;
     use phux_protocol::ids::{ResourceId, SessionId, WindowId};
     use phux_protocol::wire::info::{SessionInfo, SessionSnapshot};
-    use rune::{Cx, Env, Runtime, row};
+    use rune::{Cx, Env, row};
 
     fn key() -> SessionKey {
         SessionKey::new([2; 16]).unwrap()
@@ -76,7 +76,7 @@ mod tests {
             .unwrap();
         desk.connection.topology = Some(Topology::from_snapshot(&snapshot));
         desk.connection.topology.as_mut().unwrap().sessions[1].key = Some(key());
-        let mut rt = Runtime::new(desk, header, (240.0, 80.0), Env::new(true, 1.0));
+        let mut rt = crate::test_support::runtime(desk, header, (240.0, 80.0), Env::new(true, 1.0));
         rt.frame(0.0);
         let button = format!("session-close-{}", key());
         let (x, y) = rt.find(&button).expect("an always-visible close control");
@@ -135,7 +135,8 @@ mod tests {
             session_controls(None, "satellite", ink.as_ref())
         }
         let desk = crate::test_support::window();
-        let mut rt = Runtime::new(desk, satellite, (80.0, 30.0), Env::new(true, 1.0));
+        let mut rt =
+            crate::test_support::runtime(desk, satellite, (80.0, 30.0), Env::new(true, 1.0));
         rt.frame(0.0);
         assert!(!rt.accessibility_action(
             &format!("session-close-{}", key()),

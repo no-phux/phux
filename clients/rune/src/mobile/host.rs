@@ -102,7 +102,7 @@ mod tests {
 
     fn runtime() -> rune::Runtime<State> {
         let target = phux_client_runtime::Target::uds("/tmp/not-used");
-        rune::Runtime::new(
+        crate::test_support::runtime(
             super::super::with_target(target, None),
             crate::ui::view,
             (393.0, 852.0),
@@ -134,7 +134,7 @@ mod tests {
     #[test]
     fn a_pinch_steps_the_text_size_both_ways() {
         // Its own preferences: a text size is saved as it changes.
-        let mut rt = rune::Runtime::new(
+        let mut rt = crate::test_support::runtime(
             crate::test_support::settings_window(),
             crate::ui::view,
             (393.0, 852.0),

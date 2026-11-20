@@ -491,7 +491,7 @@ fn an_install_shows_a_moving_bar_until_it_ends() {
     );
     desk.link.installing = true;
     desk.link.finding = true;
-    let mut rt = rune::Runtime::new(
+    let mut rt = crate::test_support::runtime(
         desk,
         crate::ui::view,
         (900.0, 600.0),

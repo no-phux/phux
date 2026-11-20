@@ -42,7 +42,8 @@ fn fixture(checkout: bool) -> (Arc<Client>, Runtime<Desk>) {
         view: Some(replica.views[0]),
         resource: terminal,
     });
-    let mut rt = Runtime::new(desk, crate::ui::view, (1100.0, 720.0), Env::new(true, 2.0));
+    let mut rt =
+        crate::test_support::runtime(desk, crate::ui::view, (1100.0, 720.0), Env::new(true, 2.0));
     rt.on_key = Some(Desk::key);
     rt.frame(0.0);
     poll(&mut rt);

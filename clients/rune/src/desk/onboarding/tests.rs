@@ -132,7 +132,7 @@ fn a_grant_coming_through_moves_on_to_the_next() {
             .to_vec(),
         ..Permissions::default()
     };
-    let mut rt = rune::Runtime::new(
+    let mut rt = crate::test_support::runtime(
         desk(Prefs::memory()),
         crate::ui::view,
         (1100.0, 720.0),

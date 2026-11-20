@@ -307,7 +307,7 @@ mod tests {
         );
         desk.updater.install = Ok("/not-an-installed-app".into());
         desk.updater.staged = Some("999.0.0".into());
-        let mut rt = rune::Runtime::new(
+        let mut rt = crate::test_support::runtime(
             desk,
             crate::ui::view,
             (1100.0, 720.0),

@@ -15,7 +15,7 @@ fn scene(phone: bool, size: (u32, u32), scale: u32, large: bool, dark: bool) -> 
             desk.set_text_scale(1.4);
         }
     }
-    let mut rt = Runtime::new(
+    let mut rt = crate::test_support::runtime(
         desk,
         crate::ui::view,
         (size.0 as f32, size.1 as f32),

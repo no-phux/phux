@@ -22,7 +22,7 @@ fn surface(desk: &Desk, cx: &mut Cx<Desk>) -> El {
 fn runtime(size: (f32, f32), phone: bool) -> Runtime<Desk> {
     let mut desk = crate::test_support::settings_window().with_phone(phone);
     desk.settings.theme = crate::theme::find("catppuccin-latte");
-    let mut rt = Runtime::new(desk, surface, size, Env::new(false, 1.0));
+    let mut rt = crate::test_support::runtime(desk, surface, size, Env::new(false, 1.0));
     rt.on_key = Some(Desk::key);
     rt.frame(0.0);
     rt
@@ -464,7 +464,7 @@ fn mobile_appearance_and_real_theme_palette_render_accept_and_cancel() {
         desk.settings_category(Category::Appearance);
         desk.settings.theme = crate::theme::find("catppuccin-latte");
         let before = desk.settings.theme;
-        let mut rt = Runtime::new(
+        let mut rt = crate::test_support::runtime(
             desk,
             theme_scene,
             (size.0 as f32, size.1 as f32),
