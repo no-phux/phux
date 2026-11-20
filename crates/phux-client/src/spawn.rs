@@ -147,6 +147,21 @@ pub fn ownership_for_terminal(
     crate::resource::session_of(snapshot, terminal)
 }
 
+/// The name of the session a Terminal belongs to, read out of a `GET_STATE`
+/// snapshot.
+#[must_use]
+pub fn session_name_for_terminal(
+    snapshot: &SessionSnapshot,
+    terminal: &ResourceId,
+) -> Option<String> {
+    let session = ownership_for_terminal(snapshot, terminal)?;
+    snapshot
+        .sessions
+        .iter()
+        .find(|candidate| candidate.id == session)
+        .map(|session| session.name.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -25,15 +25,8 @@ impl Desk {
     /// The selected session's key, and its arrangement when the replica
     /// holds it (fetching it once when it does not).
     pub(super) fn arrangement(&mut self, client: &Client) -> Option<(SessionKey, ArrangementDoc)> {
-        let selected = client.selected_session()?;
-        let session = self
-            .connection
-            .topology
-            .as_ref()?
-            .sessions
-            .iter()
-            .find(|s| s.id == selected)?;
-        let key = session.key?;
+        let session = self.selected_entry(client)?;
+        let (key, held) = (session.key?, session.arrangement);
         if let Some((_, _, mut doc, _)) = client.organization().arrangement_document(&key) {
             // Edits land on what this window shows: its tabs, not the
             // stored defaults, which the write keeps.
@@ -44,7 +37,7 @@ impl Desk {
             super::tabs::focus_group(&mut doc, shown);
             return Some((key, doc));
         }
-        if let Some(arrangement) = session.arrangement
+        if let Some(arrangement) = held
             && self.connection.fetched.insert(arrangement)
         {
             let _ = client.fetch_arrangement(arrangement);

@@ -129,10 +129,7 @@ fn run_relay_run(listen: SocketAddr, max_conns: usize) -> ExitCode {
 
     // Bind before the banner so it shows the resolved address (`:0` becomes the
     // real port).
-    let rt = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
+    let rt = match crate::commands::build_cli_runtime() {
         Ok(rt) => rt,
         Err(err) => {
             error!("relay failed: {err}");

@@ -245,21 +245,7 @@ fn emit_json(
         },
         "explain": explanation,
     });
-    match serde_json::to_string_pretty(&document) {
-        Ok(rendered) => {
-            outln!("{rendered}");
-            ExitCode::SUCCESS
-        }
-        Err(err) => json_err::emit(
-            true,
-            &CliError::new(
-                codes::JSON_SERIALIZE,
-                format!("could not render the explanation as JSON: {err}"),
-                "re-run without --json",
-            ),
-            EXIT_FAILURE,
-        ),
-    }
+    crate::output::json(&document)
 }
 
 fn emit_prose(

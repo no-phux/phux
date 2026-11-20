@@ -40,7 +40,7 @@ use crate::exit_codes::{EXIT_FAILURE, EXIT_USAGE};
 const SCHEMA_VERSION: u8 = 1;
 
 mod report;
-use report::{print_document, read_data, report_session_error};
+use report::{read_data, report_session_error};
 
 /// `phux agent session <open|close>`.
 #[derive(Debug, usage::Subcommands)]
@@ -138,7 +138,7 @@ pub(super) fn run_session_open(
                         "provider": provider,
                         "native_id": native_id,
                     });
-                    print_document(&document)
+                    crate::output::json(&document)
                 } else {
                     outln!("{resource}");
                     ExitCode::SUCCESS
@@ -249,7 +249,7 @@ pub(super) fn run_emit(
                         "ts_ms": emitted.ts_ms,
                         "type": record.kind(),
                     });
-                    print_document(&document)
+                    crate::output::json(&document)
                 } else {
                     ExitCode::SUCCESS
                 }
@@ -347,7 +347,7 @@ pub(super) fn run_log(
                 "native_id": facet.and_then(|facet| facet.native_id.clone()),
                 "records": buffered,
             });
-            return print_document(&document);
+            return crate::output::json(&document);
         }
         match outcome.end {
             LogEnd::Retained | LogEnd::SessionClosed | LogEnd::Stopped => ExitCode::SUCCESS,

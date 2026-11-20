@@ -154,17 +154,6 @@ struct ErrorBody<'a> {
 pub const START_SERVER_REMEDY: &str =
     "start one with `phux` (attaches, auto-starting a server) or `phux server --ensure`";
 
-/// `ConnectionRefused` or `NotFound`: nothing is listening at the socket.
-fn is_no_server(err: &AttachError) -> bool {
-    matches!(
-        err,
-        AttachError::Io(io) if matches!(
-            io.kind(),
-            std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound,
-        )
-    )
-}
-
 /// The refusal for a failed exchange with the local server at `socket`.
 ///
 /// `no_server` for a connect failure, `server_disconnected` for a dropped
@@ -182,7 +171,7 @@ pub fn transport_refusal(
         "server log: {}; run `phux doctor` for a health check",
         server_log.display()
     );
-    if is_no_server(err) {
+    if err.is_no_server() {
         return Refusal::new(
             codes::NO_SERVER,
             format!("no server running at {}", socket.display()),

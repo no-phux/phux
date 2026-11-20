@@ -468,25 +468,11 @@ fn report_json(checks: &[Check], checklist: &[checklist::Item]) -> ExitCode {
         "checks": rows,
         "checklist": checklist::to_json(checklist),
     });
-    match serde_json::to_string_pretty(&doc) {
-        Ok(rendered) => {
-            outln!("{rendered}");
-            if failed == 0 {
-                ExitCode::SUCCESS
-            } else {
-                ExitCode::FAILURE
-            }
-        }
-        Err(err) => crate::commands::json_err::emit(
-            true,
-            &crate::commands::json_err::CliError::new(
-                crate::commands::json_err::codes::JSON_SERIALIZE,
-                format!("could not render doctor JSON: {err}"),
-                "this is a phux bug worth filing",
-            ),
-            1,
-        ),
+    let code = crate::output::json(&doc);
+    if code == ExitCode::SUCCESS && failed > 0 {
+        return ExitCode::FAILURE;
     }
+    code
 }
 
 /// Run `phux doctor` as parsed.

@@ -292,14 +292,11 @@ enum ListenerQueryError {
 
 /// Ask the server on `socket` which remote listeners it has bound.
 fn query_live_listeners(socket: &Path) -> Result<LiveListeners, ListenerQueryError> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|err| {
-            ListenerQueryError::Unavailable(format!(
-                "could not build a runtime to ask the server: {err}"
-            ))
-        })?;
+    let runtime = crate::commands::build_cli_runtime().map_err(|err| {
+        ListenerQueryError::Unavailable(format!(
+            "could not build a runtime to ask the server: {err}"
+        ))
+    })?;
     query_listeners_with(&runtime, socket, None)
 }
 
@@ -331,12 +328,7 @@ fn query_listeners_with(
 /// The refusal when `GET_STATE` could not be asked at all.
 fn no_live_server(socket: &Path, err: &phux_client::attach::AttachError) -> String {
     let reason = match err {
-        phux_client::attach::AttachError::Io(io)
-            if matches!(
-                io.kind(),
-                std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
-            ) =>
-        {
+        err if err.is_no_server() => {
             format!("no server is running at {}", socket.display())
         }
         other => format!(
@@ -1045,9 +1037,7 @@ fn mint_relay_link(
 /// Ask the server on `socket` for its state, only to learn that it answers:
 /// a relay link minted for a server that is not running reaches nothing.
 fn server_answers(socket: &Path) -> Result<(), String> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
+    let runtime = crate::commands::build_cli_runtime()
         .map_err(|err| format!("could not build a runtime to ask the server: {err}"))?;
     runtime
         .block_on(phux_client::state::get_state(socket))

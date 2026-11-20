@@ -504,8 +504,6 @@ fn live_handoff(
     consent: super::upgrade::Consent,
     quiet: bool,
 ) -> Handoff {
-    use phux_client::attach::AttachError;
-
     let outcome = super::upgrade::LiveUpgrade::new(socket_path, quiet)
         .and_then(|mut env| super::upgrade::drive(&mut env, consent, socket));
     match outcome {
@@ -514,14 +512,7 @@ fn live_handoff(
             super::upgrade::UpgradeAck::Refused(message)
             | super::upgrade::UpgradeAck::Unexpected(message),
         ) => Handoff::Refused(message),
-        Err(AttachError::Io(err))
-            if matches!(
-                err.kind(),
-                std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
-            ) =>
-        {
-            Handoff::NoServer
-        }
+        Err(err) if err.is_no_server() => Handoff::NoServer,
         Err(err) => Handoff::Failed(err.to_string()),
     }
 }

@@ -11,7 +11,6 @@ use std::time::Duration;
 use rune::Tx;
 
 use super::super::{Desk, NoticeKind, SettingsCategory};
-use crate::launch::run_for;
 use crate::pair::{self, Code, Device};
 
 const QUICK: Duration = Duration::from_secs(15);
@@ -78,23 +77,7 @@ impl Desk {
         done: impl FnOnce(Result<Vec<u8>, String>) -> Done + Send + 'static,
     ) {
         let sender = self.settings_ui.pairing.done.0.clone();
-        let waker = self.waker.clone();
-        let Some(phux) = self.launch.phux.clone() else {
-            let _ = sender.send(done(Err("phux is not installed".to_owned())));
-            return;
-        };
-        let mut argv: Vec<String> = match &self.launch.socket {
-            Ok(socket) if server => vec!["--socket".to_owned(), socket.display().to_string()],
-            _ => Vec::new(),
-        };
-        argv.extend(args.iter().map(|a| (*a).to_owned()));
-        std::thread::spawn(move || {
-            let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
-            let _ = sender.send(done(run_for(&phux, &argv, timeout)));
-            if let Some(waker) = waker {
-                waker();
-            }
-        });
+        self.ask_phux(sender, server, args, timeout, done);
     }
 
     /// A fresh code. Never opens the server to anything new: that takes

@@ -131,6 +131,19 @@ impl AttachError {
         )
     }
 
+    /// Whether nothing is listening at the socket (`ConnectionRefused` or
+    /// `NotFound` on connect): the signature every "no server" path keys on.
+    #[must_use]
+    pub fn is_no_server(&self) -> bool {
+        matches!(
+            self,
+            Self::Io(io) if matches!(
+                io.kind(),
+                std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound,
+            )
+        )
+    }
+
     /// Whether this is a transport refusal no retry with the same credentials
     /// can change (a refused pairing token, ADR-0031). Applies the
     /// `phux-client-runtime::reconnect` rule to the flattened detail.

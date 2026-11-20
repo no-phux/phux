@@ -185,7 +185,7 @@ fn project(cwd: &str) -> Option<&str> {
 
 /// The project its session record names, as the desktop groups sessions.
 fn session_project(topology: &Topology, client: Option<&Client>, session: u32) -> Option<String> {
-    let key = topology.sessions.iter().find(|s| s.id == session)?.key?;
+    let key = topology.session(session)?.key?;
     let organization = client?.organization();
     let record = organization.session(&key)?;
     let attr = |name: &str| {

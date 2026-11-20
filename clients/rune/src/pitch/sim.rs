@@ -7,13 +7,10 @@ use std::f32::consts::{PI, TAU};
 
 use super::{Agent, Flash, Flight, GOLD, MINT, Mood, Part, Pitch, Player, Rng, hash, lerp, post};
 use crate::creature;
+use crate::playground::ease;
 
 /// One fixed step of scene time: the same scene whatever the frame rate.
 pub const STEP: f32 = 1.0 / 60.0;
-
-fn ease(dt: f32, rate: f32) -> f32 {
-    1.0 - (-dt * rate).exp()
-}
 
 impl Pitch {
     /// Players for exactly `agents`, keeping each one's place and motion.

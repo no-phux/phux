@@ -348,23 +348,11 @@ fn not_running_document(err: &AttachError, socket_path: &Path) -> serde_json::Va
     })
 }
 
-/// Whether `err` means "nobody is listening at the socket" — the connect-time
-/// signature the no-server family keys on.
-fn is_no_server(err: &AttachError) -> bool {
-    matches!(
-        err,
-        AttachError::Io(io_err) if matches!(
-            io_err.kind(),
-            std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound,
-        )
-    )
-}
-
 /// Route a collection failure: no server under `--json` is the
 /// `running: false` document, no server otherwise is the shared diagnostic, and
 /// anything else goes through the error contract. Exit 1 in all cases.
 fn report_failure(json: bool, err: &AttachError, socket_path: &Path) -> ExitCode {
-    if json && is_no_server(err) {
+    if json && err.is_no_server() {
         let doc = not_running_document(err, socket_path);
         match serde_json::to_string_pretty(&doc) {
             Ok(s) => outln!("{s}"),

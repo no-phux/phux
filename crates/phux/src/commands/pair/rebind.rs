@@ -49,9 +49,7 @@ impl Rebind {
 /// Poll until a listener is bound, or until the restarted server has been
 /// up long enough that overlay detection would have recorded one.
 pub(super) fn wait_for_rebind(socket: &Path) -> Result<(), String> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
+    let runtime = crate::commands::build_cli_runtime()
         .map_err(|err| format!("could not build a runtime to wait for the server: {err}"))?;
     let deadline = Instant::now() + REBIND_WAIT;
     let mut rebind = Rebind::AwaitingRestart;

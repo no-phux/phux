@@ -390,22 +390,7 @@ fn report_answered(
         outln!("answered {} on {label}: {answer}", marker.id);
         return ExitCode::SUCCESS;
     }
-    match serde_json::to_string_pretty(&answered_document(label, marker, answer, source, operation))
-    {
-        Ok(rendered) => {
-            outln!("{rendered}");
-            ExitCode::SUCCESS
-        }
-        Err(err) => json_err::emit(
-            true,
-            &json_err::CliError::new(
-                json_err::codes::JSON_SERIALIZE,
-                format!("could not render agent answer JSON: {err}"),
-                "report this: a document of strings cannot fail to serialize",
-            ),
-            crate::exit_codes::EXIT_FAILURE,
-        ),
-    }
+    crate::output::json(&answered_document(label, marker, answer, source, operation))
 }
 
 /// The `agent answer --json` success document. Its shape is documented in

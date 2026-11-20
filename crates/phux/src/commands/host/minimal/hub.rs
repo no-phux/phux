@@ -33,9 +33,7 @@ pub(super) fn endpoint(explicit: Option<&str>) -> Result<String, CliError> {
 
 /// The address the server on `socket` has its QUIC listener bound to.
 fn live_quic_bind(socket: &Path) -> Result<Option<SocketAddr>, String> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
+    let runtime = crate::commands::build_cli_runtime()
         .map_err(|err| format!("could not build a runtime to ask the server: {err}"))?;
     let view = runtime
         .block_on(phux_client::state::get_state(socket))

@@ -155,6 +155,12 @@ pub fn lerp(a: f32, b: f32, k: f32) -> f32 {
     a + (b - a) * k
 }
 
+/// The share of the way to its target a value closes over `dt` seconds,
+/// approaching at `rate` per second (frame-rate independent).
+pub fn ease(dt: f32, rate: f32) -> f32 {
+    1.0 - (-dt * rate).exp()
+}
+
 pub fn mix(a: Rgb, b: Rgb, k: f32) -> Rgb {
     [
         lerp(a[0], b[0], k),

@@ -19,7 +19,6 @@ use rune::{Key, KeyEvent, Tx};
 use super::{Desk, NoticeKind};
 
 mod fox;
-use crate::launch::run_for;
 use crate::onboarding::{
     self as words, AgentSkill, Grant, Migration, Permissions, Service, Step, unsupported,
 };
@@ -280,36 +279,17 @@ impl Desk {
         timeout: Duration,
         done: impl FnOnce(Result<Vec<u8>, String>) -> Done + Send + 'static,
     ) {
-        let sender = self.onboarding.done.0.clone();
-        let waker = self.waker.clone();
-        let Some(phux) = self.launch.phux.clone() else {
-            let _ = sender.send(done(Err("phux is not installed".to_owned())));
-            return;
-        };
         // ponytail: always this computer's server, even with the window on
         // another machine; a migration started then runs here, out of view.
         // `phux skill` never dials a server and refuses `--socket`.
         // Neither do `agent install-shim`'s files, nor `service`, which
         // supervises this computer's default server.
-        let mut argv: Vec<String> = match &self.launch.socket {
-            Ok(socket)
-                if !matches!(
-                    args,
-                    ["skill" | "service", ..] | ["agent", "install-shim", ..]
-                ) =>
-            {
-                vec!["--socket".to_owned(), socket.display().to_string()]
-            }
-            _ => Vec::new(),
-        };
-        argv.extend(args.iter().map(|a| (*a).to_owned()));
-        std::thread::spawn(move || {
-            let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
-            let _ = sender.send(done(run_for(&phux, &argv, timeout)));
-            if let Some(waker) = waker {
-                waker();
-            }
-        });
+        let server = !matches!(
+            args,
+            ["skill" | "service", ..] | ["agent", "install-shim", ..]
+        );
+        let sender = self.onboarding.done.0.clone();
+        self.ask_phux(sender, server, args, timeout, done);
     }
 
     fn ask_skills(&self) {

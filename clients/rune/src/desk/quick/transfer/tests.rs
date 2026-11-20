@@ -1,6 +1,6 @@
 use super::*;
 use crate::desk::{Shown, quick::Panel};
-use phux_client_runtime::control::Event;
+use phux_client_runtime::control::{Event, Status};
 use phux_protocol::ids::Revision;
 use phux_protocol::wire::frame::{CommandResult, CommandValue, Committed, ErrorCode, Refusal};
 use rune::Env;

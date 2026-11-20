@@ -83,10 +83,7 @@ fn supervise(socket: &Path) {
 }
 
 fn drive(socket: PathBuf) {
-    let runtime = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
+    let runtime = match crate::commands::build_cli_runtime() {
         Ok(runtime) => runtime,
         Err(err) => {
             error!("mission projector runtime: {err}");

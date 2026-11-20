@@ -92,10 +92,7 @@ pub(super) fn refresh_running(manager: Manager, plan: &ServicePlan) -> ExitCode 
 fn lacks_listener(plan: &ServicePlan) -> bool {
     use phux_protocol::wire::RemoteListenerTransport::{Quic, Wss};
 
-    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    else {
+    let Ok(runtime) = crate::commands::build_cli_runtime() else {
         return false;
     };
     let Ok(view) = runtime.block_on(phux_client::state::get_state(&plan.socket_path)) else {
