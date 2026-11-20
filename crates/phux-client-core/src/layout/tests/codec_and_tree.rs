@@ -96,6 +96,27 @@ fn cbor_round_trip_satellite_focus() {
     assert_eq!(decoded.groups[0].state, state);
 }
 
+/// Slot tabs survive the envelope, which carries an arrangement read to the
+/// TUI's layout handler: losing them there made the next write drop them.
+#[test]
+fn cbor_round_trip_keeps_slot_tabs() {
+    let mut doc = ws_split(1, 2, 1);
+    doc.slots.push(Slot {
+        strip: vec![t(2), t(3), t(4)],
+        default: 1,
+        shown: 2,
+    });
+    let decoded = ArrangementDoc::decode_cbor(&doc.encode_cbor().unwrap()).unwrap();
+    assert_eq!(decoded.slots, doc.slots);
+
+    let mut forged: CborWorkspaceEnvelope =
+        ciborium::de::from_reader(doc.encode_cbor().unwrap().as_slice()).unwrap();
+    forged.slots[0].shown = 3;
+    let mut buf = Vec::new();
+    ciborium::ser::into_writer(&forged, &mut buf).unwrap();
+    assert!(ArrangementDoc::decode_cbor(&buf).is_err());
+}
+
 #[test]
 fn cbor_rejects_malformed_ratio() {
     let bytes = ws_split(1, 2, 1).encode_cbor().unwrap();

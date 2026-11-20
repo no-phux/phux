@@ -22,6 +22,21 @@ pub(in crate::layout) struct CborWorkspaceEnvelope {
     pub windows: Vec<CborWindow>,
     /// Index into `windows` of the active window.
     pub focused_window_index: u32,
+    /// Slot tabs (`docs/organization.md#slot-tabs`); absent without any, and
+    /// skipped by an older reader.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub slots: Vec<CborSlot>,
+}
+
+/// One slot's tabs inside [`CborWorkspaceEnvelope`].
+#[derive(Debug, Serialize, Deserialize)]
+pub(in crate::layout) struct CborSlot {
+    /// Every tab, in strip order.
+    pub strip: Vec<CborResourceId>,
+    /// Index into `strip` of the stored default.
+    pub default: u32,
+    /// Index into `strip` of the tab this client shows.
+    pub shown: u32,
 }
 
 /// One window inside [`CborWorkspaceEnvelope`].
