@@ -200,20 +200,9 @@ fn report(label: &str, outcome: &PromptOutcome, elapsed_ms: u64, json: bool) -> 
             "waited_ms": outcome.wait.as_ref().map(|_| waited_ms),
             "degraded_to_polling": outcome.degraded_to_polling,
         });
-        match serde_json::to_string_pretty(&document) {
-            Ok(rendered) => outln!("{rendered}"),
-            Err(err) => {
-                return json_err::emit(
-                    true,
-                    &json_err::CliError::new(
-                        json_err::codes::JSON_SERIALIZE,
-                        format!("could not render agent prompt JSON: {err}"),
-                        "report this: a document of strings and numbers cannot fail to \
-                         serialize",
-                    ),
-                    crate::exit_codes::EXIT_FAILURE,
-                );
-            }
+        let code = crate::output::json(&document);
+        if code != ExitCode::SUCCESS {
+            return code;
         }
     } else if let Some(edge) = outcome.wait.as_ref().and_then(|wait| wait.edge) {
         outln!(

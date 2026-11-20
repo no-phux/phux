@@ -1133,7 +1133,7 @@ fn report_submitted(req: &StartRequest<'_>, plan: &Plan, terminal: &ResourceId) 
             "ready": false,
             "readiness": serde_json::Value::Null,
         });
-        return render(&document);
+        return crate::output::json(&document);
     }
     outln!("{label}\t{}\t{}\tsubmitted", req.name, plan.kind);
     ExitCode::from(EXIT_SUCCESS)
@@ -1199,7 +1199,7 @@ async fn report_ready(
                 latency,
             ),
         });
-        return render(&document);
+        return crate::output::json(&document);
     }
     outln!(
         "{label}\t{}\t{}\t{}\tready in {}ms",
@@ -1292,25 +1292,6 @@ fn report_timeout(
         EXIT_WAIT_TIMEOUT,
     )
     .emit(req.json)
-}
-
-/// Render one result document on stdout.
-fn render(document: &serde_json::Value) -> ExitCode {
-    match serde_json::to_string_pretty(document) {
-        Ok(rendered) => {
-            outln!("{rendered}");
-            ExitCode::from(EXIT_SUCCESS)
-        }
-        Err(err) => json_err::emit(
-            true,
-            &json_err::CliError::new(
-                json_err::codes::JSON_SERIALIZE,
-                format!("could not render agent start JSON: {err}"),
-                "report this: a document of strings and numbers cannot fail to serialize",
-            ),
-            EXIT_FAILURE,
-        ),
-    }
 }
 
 #[cfg(test)]

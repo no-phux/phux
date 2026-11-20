@@ -31,7 +31,7 @@ pub(crate) enum SocketFailure {
 pub(crate) fn socket_failure(socket: &Path, err: &AttachError, pid: Option<i32>) -> SocketFailure {
     if is_incompatible_protocol(err) {
         SocketFailure::Incompatible(old_server_recovery_lines(socket, pid))
-    } else if is_dead_socket(err) {
+    } else if err.is_no_server() {
         SocketFailure::Dead
     } else {
         SocketFailure::Other
@@ -56,16 +56,6 @@ pub(crate) fn recovery_pid(err: &AttachError, socket: &Path) -> Option<i32> {
 /// to another profile or a different process after pid reuse.
 pub(crate) fn server_pid(socket: &Path) -> Option<i32> {
     phux_client::explain::server_pid(socket)
-}
-
-fn is_dead_socket(err: &AttachError) -> bool {
-    matches!(
-        err,
-        AttachError::Io(io) if matches!(
-            io.kind(),
-            std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound,
-        )
-    )
 }
 
 /// Print a "no server" diagnostic for a connect-time error, or a generic
@@ -149,12 +139,7 @@ pub(super) fn attach_error_lines(
     pid: Option<i32>,
 ) -> Vec<String> {
     match err {
-        AttachError::Io(io_err)
-            if matches!(
-                io_err.kind(),
-                std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound,
-            ) =>
-        {
+        err if err.is_no_server() => {
             vec![format!(
                 "no server at {}. Start one with: phux server --ensure",
                 socket_path.display()

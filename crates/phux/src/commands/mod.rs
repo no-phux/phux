@@ -295,7 +295,9 @@ pub(crate) fn cli_runtime() -> Result<tokio::runtime::Runtime, ExitCode> {
     })
 }
 
-fn build_cli_runtime() -> std::io::Result<tokio::runtime::Runtime> {
+/// A current-thread tokio runtime with IO and time enabled, the one every
+/// blocking CLI path drives its async client calls on.
+pub(crate) fn build_cli_runtime() -> std::io::Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

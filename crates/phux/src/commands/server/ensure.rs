@@ -121,9 +121,7 @@ pub(super) fn with_deadline(
     socket_path: PathBuf,
     seed: bool,
 ) -> io::Result<super::EnsureDisposition> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
+    let runtime = crate::commands::build_cli_runtime()?;
     runtime.block_on(watch(socket_path, seed))
 }
 

@@ -249,9 +249,7 @@ impl phux_server::autosave::WorkspaceArchiver for AutosaveArchiver {
 
     fn capture(&mut self, socket: &Path) -> Result<Vec<u8>, String> {
         if self.runtime.is_none() {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
+            let runtime = crate::commands::build_cli_runtime()
                 .map_err(|err| format!("could not build the autosave runtime: {err}"))?;
             self.runtime = Some(runtime);
         }

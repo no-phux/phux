@@ -198,9 +198,7 @@ pub(crate) fn enroll_with_ticket(
         Ok(phux_server::workload::ClientMaterial::Request(der)) => der.as_ref().to_vec(),
         _ => return Err("could not encode the enrollment request".to_owned()),
     };
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
+    let rt = crate::commands::build_cli_runtime()
         .map_err(|err| format!("could not build a runtime: {err}"))?;
     let pin = phux_client_runtime::target::AuthorityPin {
         ca: Some(pinned.to_owned()),

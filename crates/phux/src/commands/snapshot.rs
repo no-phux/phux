@@ -261,26 +261,13 @@ async fn rendered_attach_target(
         .map_err(|err| json_err::report_no_server(json, &err, socket_path, "snapshot"))?
         // Only sessions and windows are read: they never aggregate.
         .into_snapshot_ignoring_degradation();
-    session_of_pane(&snapshot, &pane).map_or_else(
+    phux_client::spawn::session_name_for_terminal(&snapshot, &pane).map_or_else(
         || {
             error!("{raw} is not in a local session that can be attached");
             Err(ExitCode::FAILURE)
         },
         |name| Ok(AttachTarget::ByName(name)),
     )
-}
-
-/// The name of the session `pane` belongs to.
-fn session_of_pane(
-    snapshot: &phux_protocol::wire::info::SessionSnapshot,
-    pane: &phux_protocol::ids::ResourceId,
-) -> Option<String> {
-    let session = phux_client::spawn::ownership_for_terminal(snapshot, pane)?;
-    snapshot
-        .sessions
-        .iter()
-        .find(|candidate| candidate.id == session)
-        .map(|session| session.name.clone())
 }
 
 /// Boxed text view of a composited [`RenderedFrame`]; wide-glyph tails are
@@ -424,10 +411,14 @@ mod tests {
                 ResourceInfo::new(ResourceId::local(7), WindowId::new(2), 80, 24),
             ]);
         assert_eq!(
-            session_of_pane(&snapshot, &ResourceId::local(7)).as_deref(),
+            phux_client::spawn::session_name_for_terminal(&snapshot, &ResourceId::local(7))
+                .as_deref(),
             Some("play")
         );
-        assert_eq!(session_of_pane(&snapshot, &ResourceId::local(9)), None);
+        assert_eq!(
+            phux_client::spawn::session_name_for_terminal(&snapshot, &ResourceId::local(9)),
+            None
+        );
 
         let unused = std::path::Path::new("/nonexistent/phux-rendered.sock");
         assert_eq!(

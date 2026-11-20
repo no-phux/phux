@@ -211,18 +211,6 @@ pub(super) fn build_server_config(
     }
 }
 
-/// Build the current-thread tokio runtime, or report why it could not be
-/// built.
-fn build_runtime() -> Result<tokio::runtime::Runtime, ExitCode> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|err| {
-            error!("failed to build runtime: {err}");
-            ExitCode::FAILURE
-        })
-}
-
 /// The listener/feature suffix of the "phux server listening on ..." line:
 /// every remote listener startup bound (or failed to), at its bound address,
 /// and every mode this server was asked for.
@@ -391,7 +379,7 @@ pub(crate) fn run_server(
         &phux_config::instance::state_dir(),
     )));
 
-    let rt = match build_runtime() {
+    let rt = match crate::commands::cli_runtime() {
         Ok(rt) => rt,
         Err(code) => return code,
     };
