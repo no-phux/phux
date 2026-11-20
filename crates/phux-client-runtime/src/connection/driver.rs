@@ -378,6 +378,7 @@ impl<'a> Pump<'a> {
         let opening = {
             let mut control = lock(self.shared);
             control.connection_opened();
+            control.set_attempt_trace(AttemptTrace::current());
             control.take_outbound()
         };
         self.write_all(opening).await?;

@@ -9,7 +9,7 @@ PHASES = frozenset((
     "hello_sent", "hello_received", "hello_accepted", "topology_received", "topology_applied",
     "attach_ready", "initial_deadline", "end_closed", "end_dropped", "end_refused",
     "end_resync", "session_ended", "resync_requested", "nudge_requested",
-    "path_changed", "probe_deadline",
+    "path_changed", "probe_deadline", "input_injected", "input_refused",
     "enroll_runtime", "enroll_validate", "enroll_plan", "enroll_public_key", "enroll_csr",
     "enroll_prepare", "enroll_connect", "enroll_relay_connect", "enroll_open_stream",
     "enroll_write", "enroll_read", "enroll_drain", "enroll_decode", "enroll_chain",

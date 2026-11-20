@@ -34,6 +34,8 @@ const PHASES: &[&str] = &[
     "nudge_requested",
     "path_changed",
     "probe_deadline",
+    "input_injected",
+    "input_refused",
     "enroll_runtime",
     "enroll_validate",
     "enroll_plan",

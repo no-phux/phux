@@ -238,6 +238,22 @@ impl ControlPlane {
         self.command_states.get(terminal_id).copied()
     }
 
+    /// Record, payload-free, whether typed input reached the outbound queue
+    /// (`input_injected`) or was turned away (`input_refused`).
+    pub fn trace_input(&self, injected: bool) {
+        if let Some(trace) = &self.attempt_trace {
+            trace.record(if injected {
+                "input_injected"
+            } else {
+                "input_refused"
+            });
+        }
+    }
+
+    pub(crate) const fn set_attempt_trace(&mut self, trace: Option<crate::connection::AttemptTrace>) {
+        self.attempt_trace = trace;
+    }
+
     /// Whether raw input for the terminal would pass the server's gate
     /// right now: attached with no `DETACHED` since, a published replica, no
     /// delivery fence, and either the attached session's terminal or a

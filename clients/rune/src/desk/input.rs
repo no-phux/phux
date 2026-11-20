@@ -240,12 +240,15 @@ impl Desk {
         let behind = frame.as_ref().is_some_and(|f| !f.scrollbar.at_tail());
         let sent = client.with_control(|control| {
             if !control.input_ready(&terminal) {
+                control.trace_input(false);
                 return false;
             }
             if behind {
                 let _ = control.scroll_view(view, Scroll::Bottom);
             }
-            send(control, &terminal)
+            let sent = send(control, &terminal);
+            control.trace_input(sent);
+            sent
         });
         if !sent {
             return self.say(NoticeKind::Error, INPUT_PAUSED);
