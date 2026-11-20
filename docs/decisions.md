@@ -21,6 +21,11 @@ records explain history; [look them up deliberately](./architecture.md#historica
   owns commit and reconciliation rules.
 - Events are journaled and resumable; a reconnecting watcher gets what it
   missed or a gap marker, never silence.
+- The server plans the affected resources before committing a close. Local
+  kill and close-tab commands check tab locks against that plan, including
+  bound descendants, and commit it under the same state lock. Session kill
+  uses the plan to count and commit close events and can override tab locks.
+  Children are journaled and reaped before their parents.
 
 **Wire**
 

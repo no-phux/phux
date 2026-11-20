@@ -230,11 +230,11 @@ pub(super) fn session_kill(
         // journaled before the kill's own events, so the stored journal
         // position counts them. A `Terminate` for one of them would signal
         // the group again after the teardown, so those effects are dropped.
-        let closing = s.resources_closing_with(&live);
-        let leading = u64::try_from(closing.len()).unwrap_or(u64::MAX);
-        let closing_keys: HashSet<_> = closing
-            .iter()
-            .filter_map(|id| s.registry().resource_key(*id))
+        let plan = s.plan_close(&live, phux_protocol::wire::frame::CloseReason::Killed);
+        let leading = u64::try_from(plan.resources().len()).unwrap_or(u64::MAX);
+        let closing_keys: HashSet<_> = plan
+            .resources()
+            .filter_map(|id| s.registry().resource_key(id))
             .collect();
         let actor = s.actor_for(client_id);
         let command = phux_core::Command {
@@ -256,8 +256,7 @@ pub(super) fn session_kill(
         s.suppress_retirement(&member_keys);
         let mut closed = super::super::committed_close::commit_close(
             s,
-            &live,
-            phux_protocol::wire::frame::CloseReason::Killed,
+            plan,
             crate::state::CloseAttribution {
                 actor: Some(client_id),
                 operation_id: None,

@@ -7,10 +7,10 @@
 use phux_core::ids::ResourceId as CoreResourceId;
 use phux_core::process::ExitOutcome;
 use phux_protocol::ids::ResourceId as WireResourceId;
-use phux_protocol::wire::frame::CloseReason;
+use phux_protocol::wire::frame::{CloseReason, CommandResult, ErrorCode};
 use tokio::sync::mpsc;
 
-use crate::state::{ClientId, CloseAttribution, Outbound, ServerState, SharedState};
+use crate::state::{ClientId, CloseAttribution, ClosePlan, Outbound, ServerState, SharedState};
 
 /// One resource a kill closed, captured under the commit lock for its
 /// off-lock `RESOURCE_CLOSED`.
@@ -51,21 +51,35 @@ impl CommittedClose {
     }
 }
 
-/// Close `targets` and every descendant under the caller's lock: mark why,
-/// cancel each actor into its hangup grace, journal each `pane_closed`, and
-/// reap each record, deleting an ephemeral session it empties.
-pub(super) fn commit_close(
+/// Admit a user close against its complete cascade and commit that same set.
+pub(super) fn commit_user_close(
     s: &mut ServerState,
     targets: &[CoreResourceId],
-    reason: CloseReason,
+    attribution: CloseAttribution,
+) -> Result<CommittedClose, CommandResult> {
+    let plan = s.plan_close(targets, CloseReason::Killed);
+    let keys: Vec<_> = plan
+        .resources()
+        .filter_map(|id| s.registry().resource_key(id))
+        .collect();
+    if let Some(tab) = phux_core::arrangement::locked_tab_closed_by(s.org(), &keys) {
+        return Err(CommandResult::error(
+            ErrorCode::PreconditionFailed,
+            format!("{tab} is locked; unlock it first"),
+        ));
+    }
+    Ok(commit_close(s, plan, attribution))
+}
+
+/// Commit an admitted close. Session teardown can override tab locks.
+pub(super) fn commit_close(
+    s: &mut ServerState,
+    plan: ClosePlan,
     attribution: CloseAttribution,
 ) -> CommittedClose {
-    let closing = s.mark_and_cancel(targets, reason, attribution);
-    // Each resource follows its parent in `closing`; reversed, every child
-    // is journaled and reaped before the parent that names it.
-    let closes = closing
-        .into_iter()
-        .rev()
+    s.cancel_close_plan(&plan, attribution);
+    let closes = plan
+        .into_resources()
         .filter_map(|resource| close_one(s, resource))
         .collect();
     let killed_clients = s
