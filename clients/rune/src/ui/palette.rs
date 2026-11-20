@@ -265,17 +265,21 @@ fn context_item(action: Shortcut, locked: bool) -> Option<MenuItem> {
     })
 }
 
-fn kind_mark(kind: &str) -> &'static rune::Icon {
+/// The glyph for a kind of place. Actions have none: one glyph repeated
+/// down every command row says nothing, so their titles stand alone in
+/// the column the places' glyphs keep aligned.
+fn kind_mark(kind: &str) -> Option<&'static rune::Icon> {
     match kind {
-        "terminal" => &icons::PROMPT,
-        "session" => &icons::WINDOW,
-        "path" => &icons::FOLDER,
-        _ => &icons::BOLT,
+        "terminal" => Some(&icons::PROMPT),
+        "session" => Some(&icons::WINDOW),
+        "path" => Some(&icons::FOLDER),
+        _ => None,
     }
 }
 
-/// What a row is: an icon, or for a theme a swatch of its colours.
-fn mark(hit: &Hit, washed: bool, t: &Tokens) -> El {
+/// What a row is: an icon, for a theme a swatch of its colours, or for an
+/// action nothing.
+fn mark(hit: &Hit, washed: bool, t: &Tokens) -> Option<El> {
     let size = t.icon.size.md;
     let Target::Theme(id) = hit.item.target else {
         let ink = if washed {
@@ -283,9 +287,8 @@ fn mark(hit: &Hit, washed: bool, t: &Tokens) -> El {
         } else {
             t.roles.text.dim
         };
-        return rune::icon(kind_mark(hit.item.kind), size)
-            .color(ink.paint())
-            .a11y_hidden();
+        return kind_mark(hit.item.kind)
+            .map(|glyph| rune::icon(glyph, size).color(ink.paint()).a11y_hidden());
     };
     let theme = id.and_then(crate::theme::find);
     let (fill, ring) = theme.map_or(
@@ -297,12 +300,14 @@ fn mark(hit: &Hit, washed: bool, t: &Tokens) -> El {
             )
         },
     );
-    el().w(size)
-        .h(size)
-        .radius(t.radius.full)
-        .fill(fill)
-        .border(t.space.s0_5, ring)
-        .a11y_hidden()
+    Some(
+        el().w(size)
+            .h(size)
+            .radius(t.radius.full)
+            .fill(fill)
+            .border(t.space.s0_5, ring)
+            .a11y_hidden(),
+    )
 }
 
 /// One ranked result (§4.1.3 OWN): its kind or swatch, the title with the
@@ -352,7 +357,7 @@ fn hit_row(hit: &Hit, index: usize, picked: bool, phone: bool, t: &Tokens) -> El
         .interactive(base)
         .cursor(Cursor::Pointer)
         .on_press_tx(move |d: &mut Desk, tx| d.palette_run_target(target.clone(), tx))
-        .child(el().w(s.s6).center().child(mark(hit, picked, t)))
+        .child(el().w(s.s6).center().children(mark(hit, picked, t)))
         .child(
             rich(title.clone(), spans)
                 .font(t.ty.label)
