@@ -9,5 +9,6 @@ def theme_inventory(themes):
             (("desktop", 1100, 720, 1), ("desktop-min", 640, 360, 1),
              ("phone", 393, 852, 1), ("small", 320, 568, 1),
              ("native", 393, 480, 2), ("native-small", 320, 340, 2)),
-            themes, ("standard", "ax5"), ("revealed", "search", "chooser", "cancelled", "accepted"))
+            themes, ("standard", "ax5"),
+            ("revealed", "heading", "search", "chooser", "cancelled", "accepted"))
     }

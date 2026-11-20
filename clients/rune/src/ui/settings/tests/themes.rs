@@ -82,6 +82,19 @@ fn settings_theme_visual_review_frames() {
                     pixels,
                     &format!("{name}-revealed-{scale}x"),
                 );
+                // A row taller than the viewport reveals its bottom on focus.
+                // Also retain its heading where a user can scroll to read it.
+                rt.update(|_, tx| {
+                    tx.scroll_key_to("settings-theme", 24.0);
+                    tx.instant();
+                });
+                shoot(
+                    &mut rt,
+                    &gpu,
+                    &mut renderer,
+                    pixels,
+                    &format!("{name}-heading-{scale}x"),
+                );
                 assert!(rt.accessibility_action("settings-query", Action::Focus, None));
                 rt.key(crate::keys::plain(Key::Text("theme".into())));
                 rt.frame(1.0);

@@ -242,7 +242,7 @@ def navigation_inventory():
 
 
 def required_inventory():
-    """611 required cases: 192 Inbox, 202 Settings, 216 navigation, 1 resource.
+    """635 required cases: 192 Inbox, 226 Settings, 216 navigation, 1 resource.
 
     Values are (logical width, logical height, scale); additional cases are
     welcome, but cannot replace any maintained case.
