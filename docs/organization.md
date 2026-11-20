@@ -116,6 +116,12 @@ operation kind, does not stop the server. The row stays stored and its id is
 refused as a duplicate until it expires, because a missing receipt would let
 a retry run the operation twice.
 
+A replay of an activation-fenced terminate still needs its original live
+handle and server incarnation to resolve the target. After retirement or
+a cold restart, reconcile from the durable resource record if retained
+and from current inventory. Reusing an operation against a replacement
+activation is a different intent.
+
 The [server commit seam](../crates/phux-server/src/state/org.rs) separates
 `persist_command_from` from `mirror_persisted`; its
 `a_failed_store_write_refuses_and_leaves_memory_unchanged` test is the

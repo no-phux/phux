@@ -58,11 +58,7 @@ pub(super) fn commit_user_close(
     attribution: CloseAttribution,
 ) -> Result<CommittedClose, CommandResult> {
     let plan = s.plan_close(targets, CloseReason::Killed);
-    let keys: Vec<_> = plan
-        .resources()
-        .filter_map(|id| s.registry().resource_key(id))
-        .collect();
-    if let Some(tab) = phux_core::arrangement::locked_tab_closed_by(s.org(), &keys) {
+    if let Some(tab) = plan.locked_tab(s) {
         return Err(CommandResult::error(
             ErrorCode::PreconditionFailed,
             format!("{tab} is locked; unlock it first"),

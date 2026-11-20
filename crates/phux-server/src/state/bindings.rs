@@ -28,6 +28,14 @@ impl ClosePlan {
         self.0.iter().map(|(id, _)| *id)
     }
 
+    pub(crate) fn locked_tab(&self, state: &ServerState) -> Option<String> {
+        let keys: Vec<_> = self
+            .resources()
+            .filter_map(|id| state.registry().resource_key(id))
+            .collect();
+        phux_core::arrangement::locked_tab_closed_by(state.org(), &keys)
+    }
+
     pub(crate) fn into_resources(self) -> impl Iterator<Item = ResourceId> {
         self.0.into_iter().map(|(id, _)| id)
     }

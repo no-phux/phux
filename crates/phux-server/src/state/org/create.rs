@@ -110,6 +110,11 @@ impl ServerState {
         mut resource: NewResource,
         actor: &Actor,
     ) -> Result<ResourceId, Refusal> {
+        // An admitted close owns its existing cascade. Binding a child
+        // while the engine winds down would change that set.
+        if self.pending_close_reason(parent).is_some() {
+            return Err(Refusal::NotFound);
+        }
         let record = self
             .sessions
             .registry
