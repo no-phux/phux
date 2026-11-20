@@ -126,14 +126,49 @@ replacement check can catch the same oversized-file regressions. See
 [the plugin-key change](https://github.com/no-phux/phux/commit/33b04d1e0)
 and [the current gate](../scripts/check-file-tokens.sh).
 
+### What changed in the representative traces
+
+| Rule | Measured change | Boundary exercised |
+| --- | --- | --- |
+| Guarded host-local close | Four handlers checked the named targets separately from teardown. They now reach one admission over one child-first plan. Session kill takes its journal count from its own plan. Live durable terminate admits and runs a plan without dropping the state lock across persistence. | Parent with a locked child, overlapping parent and child requests, store refusal, exact activation and receipt replay. |
+| Plugin shortcut merge | The merge still has one implementation. Two CLI-to-TUI policy dependencies became zero, and platform filtering moved from separate presentation and execution implementations to one configuration predicate. | Both CLI key listings, the TUI palette and runtime execution, including when user configuration suppresses a default. |
+| Slot-tab arrangement write | Two assignments of the outgoing flag became one. An extension capability now has one declaration for its discriminant, name, inventory and known mask, in place of four. | Old-peer omission and modern explicit empty tabs on the wire, the spatial edit, and slot creation and removal over native QUIC. |
+
+The slot-tab trace starts at the extension word catalog and the server HELLO
+support list. The client reads the negotiated bit in
+`Command::replace_arrangement`. The headless and runtime writers call that
+constructor. The spatial edit checks support for its explicit operation. The
+server, which owns the write, validates and commits the arrangement, and
+narrower listener scopes still apply their own admission rules.
+
+The resource-kind rehearsal used `Document`. Its `KindSpec` supplies the
+MIME-bound spawn contract and whole-document stream. The server's app
+registry picks `DocumentApp<TypedDocument>`. The app owns validation and
+bootstrap bytes, while the common attach pipeline owns handle resolution
+and ordered delivery. A producer and a late viewer exercise that seam
+without opening a Terminal stream. The server's production graph also
+lost its dependency on the client kernel. The old layout codec sits at
+the metadata boundary and stays available to both client and server.
+
+These searches locate the new entry points and the production graph. As
+with the baseline, follow the calls to distinguish decisions from references.
+
+```sh
+git grep -n -e 'fn commit_user_close' -e 'fn plan_close' -- crates/phux-server/src
+git grep -n -e 'fn merge_plugin_bindings' -e 'fn platforms_allow' -- crates
+git grep -n -e 'Command::replace_arrangement(' -e 'slot_tabs: features.contains' -- crates
+cargo tree --locked -p phux-server -e normal
+```
+
 ## Delivery and proof
 
 The server close plan is the first proof that admission and teardown can share
 one affected set. Build on that proof for durable terminate and settle what
 each close intent promises before sharing client decisions. Plugin keys and
 the capability catalog can land independently. Establish the layout migration
-before removing its adapter. Compare locality against the original traces
-after the slices land. Beads holds their work and status.
+before removing its adapter. The current wire major retains that adapter.
+Compare locality against the original traces after the slices land. Beads
+holds their work and status.
 
 | Slice | Acceptance evidence |
 | --- | --- |
