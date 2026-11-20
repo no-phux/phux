@@ -171,3 +171,35 @@ fn an_unmatched_acceptance_leaves_the_close_unknown_under_its_own_request() {
         assert!(commands(&mut plane).is_empty());
     }
 }
+
+#[test]
+fn repeated_handles_send_one_terminate_in_first_occurrence_order() {
+    let mut plane = seeded();
+    let read = plane.refresh_organization().unwrap();
+    let _ = commands(&mut plane);
+    let local = ResourceId::local(1);
+    let satellite = ResourceId::satellite("worker", 1);
+    let inventory = page(6).with_resources(vec![
+        running(1, skey(1)),
+        running(2, skey(1)).with_live(Some(satellite.clone())),
+    ]);
+    answer(&mut plane, read, page_value(inventory));
+    let _ = commands(&mut plane);
+
+    plane
+        .close_terminals(vec![
+            satellite.clone(),
+            local.clone(),
+            satellite.clone(),
+            local.clone(),
+        ])
+        .unwrap();
+    let targets: Vec<_> = commands(&mut plane)
+        .into_iter()
+        .map(|(_, command)| match command {
+            Command::ResourceTerminate { target, .. } => target.resource,
+            other => panic!("expected a fenced terminate, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(targets, [satellite, local]);
+}

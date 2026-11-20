@@ -336,7 +336,8 @@ impl ControlPlane {
             operations: HashMap::new(),
             errors: Vec::new(),
         };
-        for id in ids {
+        let mut seen = HashSet::new();
+        for id in ids.iter().filter(|id| seen.insert(*id)) {
             let target = self.organization.resource_by_live(id).and_then(live_target);
             let Some(target) = target else {
                 batch
