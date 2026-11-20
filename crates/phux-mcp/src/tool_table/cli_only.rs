@@ -63,6 +63,22 @@ pub(crate) const CLI_ONLY: &[(&str, &str)] = &[
     ),
     ("mcp", "launches this adapter itself"),
     (
+        "agent respond-question",
+        "structured responses require a human principal",
+    ),
+    (
+        "agent question-receipt",
+        "operator recovery for the structured response workflow",
+    ),
+    (
+        "terminal run",
+        "shell-facing composition returns the child's exit status; MCP uses `phux_terminal_create` and `phux_execution_result`",
+    ),
+    (
+        "on",
+        "foreground shell subscription invokes an explicit local program; MCP does not run event handlers",
+    ),
+    (
         "deny",
         "`phux_approve` decides both ways: `decision: deny` is `phux deny`",
     ),

@@ -41,7 +41,7 @@ pub struct Phone {
     pub picker: bool,
     pub page: Option<navigation::Page>,
     pub query: rune::TextEdit,
-    navigation: Option<(phux_protocol::ids::ResourceId, bool)>,
+    navigation: Option<(phux_protocol::ids::ResourceId, Option<spatial::Axis>)>,
     /// The finger on the terminal, and the coast it left behind.
     touch: Option<touch::Touch>,
     fling: Option<touch::Fling>,

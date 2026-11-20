@@ -20,7 +20,9 @@ pub(crate) use targets::{
 /// The verb-scoped `--remote` this command carries, if any.
 pub(crate) fn verb_remote(command: &Command) -> Option<&str> {
     match command {
-        Command::Attach(AttachArgs { remote, .. }) => remote.as_deref(),
+        Command::Attach(AttachArgs { remote, .. }) | Command::Api(ApiArgs { remote, .. }) => {
+            remote.as_deref()
+        }
         Command::Ls(LsArgs { remote, .. })
         | Command::Whoami(WhoamiArgs { remote, .. })
         | Command::New(NewArgs { remote, .. })
@@ -92,6 +94,7 @@ pub(crate) mod plan_usage;
 pub(crate) mod play;
 pub(crate) mod plugin;
 pub(crate) mod project;
+pub(crate) mod public_api;
 pub(crate) mod read_kind;
 pub(crate) mod rec;
 pub(crate) mod relay;
@@ -286,13 +289,16 @@ pub(crate) fn ensure_socket_path_fits(socket_path: &Path) -> Result<(), ExitCode
 /// Build a current-thread tokio runtime, or print why and return the
 /// failure exit code.
 pub(crate) fn cli_runtime() -> Result<tokio::runtime::Runtime, ExitCode> {
+    build_cli_runtime().map_err(|err| {
+        error!("failed to build runtime: {err}");
+        ExitCode::FAILURE
+    })
+}
+
+fn build_cli_runtime() -> std::io::Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .map_err(|err| {
-            error!("failed to build runtime: {err}");
-            ExitCode::FAILURE
-        })
 }
 
 /// Send one command over `conn` and return the matching `COMMAND_RESULT`,

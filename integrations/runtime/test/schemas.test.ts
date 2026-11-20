@@ -108,6 +108,17 @@ test("session-list v3 retains strict summary validation and rejects future schem
   }
 });
 
+test("session inventory preserves the server's durable destination key", () => {
+  const key = "0123456789ABCDEFGHJKMNPQRS";
+  const session = { name: "work", windows: 1, attached: false };
+  const inventory = { schema_version: 4, sessions: [{ ...session, key }, { ...session, key: null }], terminals: [] };
+  assert.deepEqual(parseSessionList(inventory).sessions, [{ ...session, key }, { ...session, key: null }]);
+  assert.throws(
+    () => parseSessionList({ ...inventory, sessions: [{ ...session, key: 7 }] }),
+    /\$\.sessions\[0\]\.key/,
+  );
+});
+
 test("screen parser validates dimensions and normalizes additive fields", () => {
   const screen = parseScreenState({
     schema_version: 1,

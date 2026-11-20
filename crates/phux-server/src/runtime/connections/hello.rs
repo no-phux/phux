@@ -243,6 +243,7 @@ const fn runtime_server_features_ext() -> ServerFeatureExtSet {
         ServerFeatureExt::SessionKill,
         ServerFeatureExt::NativeAgent,
         ServerFeatureExt::NativeAgentLaunch,
+        ServerFeatureExt::CurrentQuestions,
         ServerFeatureExt::PerfControl,
         ServerFeatureExt::SessionProject,
         ServerFeatureExt::TabLock,

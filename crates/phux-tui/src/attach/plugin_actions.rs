@@ -11,6 +11,8 @@ use std::time::Duration;
 use phux_config::keybind::{ResolvedAction, Resolver, parse_chord_sequence};
 use phux_config::plugin::PluginManifest;
 use phux_config::{Action, KeybindingsCfg, ParamAction};
+use phux_plugin::{ActionContext, ActionTarget};
+use phux_protocol::ResourceId;
 
 use super::jobs::{Job, JobDone, JobKind, Toast};
 
@@ -108,14 +110,19 @@ pub fn plugin_action_target(args: &BTreeMap<String, toml::Value>) -> Option<(&st
 pub fn entries_from_manifests(manifests: &[PluginManifest]) -> Vec<PluginActionEntry> {
     manifests
         .iter()
+        .filter(|manifest| phux_plugin::platforms_allow(manifest.platforms.as_deref()))
         .flat_map(|manifest| {
-            manifest.actions.iter().map(|action| PluginActionEntry {
-                plugin_id: manifest.id.clone(),
-                plugin_name: manifest.name.clone(),
-                action_id: action.id.clone(),
-                title: action.title.clone(),
-                keys: action.keys.clone(),
-            })
+            manifest
+                .actions
+                .iter()
+                .filter(|action| phux_plugin::platforms_allow(action.platforms.as_deref()))
+                .map(|action| PluginActionEntry {
+                    plugin_id: manifest.id.clone(),
+                    plugin_name: manifest.name.clone(),
+                    action_id: action.id.clone(),
+                    title: action.title.clone(),
+                    keys: action.keys.clone(),
+                })
         })
         .collect()
 }
@@ -187,20 +194,29 @@ pub struct PluginRunResult {
 
 /// One plugin action as a background job (ADR-0172) through
 /// [`phux_plugin::run_configured_action_logged`]; a failure toasts.
-pub(in crate::attach) fn plugin_job(plugin_id: String, action_id: String) -> Job {
+pub(in crate::attach) fn plugin_job(
+    plugin_id: String,
+    action_id: String,
+    context: ActionContext,
+) -> Job {
     Job::new(
         JobKind::PluginAction,
-        run_plugin_action(plugin_id, action_id),
+        run_plugin_action(plugin_id, action_id, context),
     )
 }
 
-async fn run_plugin_action(plugin_id: String, action_id: String) -> JobDone {
+async fn run_plugin_action(
+    plugin_id: String,
+    action_id: String,
+    context: ActionContext,
+) -> JobDone {
     let config_path = phux_config::loader::config_path();
     let request = phux_plugin::PluginActionRequest {
         plugin_id: plugin_id.clone(),
         action_id: action_id.clone(),
         timeout: Some(PLUGIN_ACTION_TIMEOUT),
         cwd: None,
+        context,
     };
     let result = PluginRunResult {
         result: phux_plugin::run_configured_action_logged(&config_path, &request)
@@ -216,6 +232,59 @@ async fn run_plugin_action(plugin_id: String, action_id: String) -> JobDone {
         "plugin action finished",
     );
     failure_toast(&result).map_or_else(JobDone::quiet, JobDone::toast)
+}
+
+/// Capture presentation and route before the job can outlive focus or attach.
+pub(in crate::attach) fn capture_context(
+    ctx: &super::input_dispatch::DispatchCtx<'_>,
+    focused: Option<&ResourceId>,
+) -> ActionContext {
+    let session_id = ctx.peers.focused_session;
+    let session = ctx.peers.sessions.iter().find(|s| Some(s.id) == session_id);
+    let mut target = ActionTarget {
+        host: ctx.peers.serving_host.map(str::to_owned),
+        route: ctx
+            .peers
+            .origin
+            .map(super::hosts::AttachOrigin::host_name)
+            .map(str::to_owned),
+        transport: ctx.control_dial.map(transport_name).map(str::to_owned),
+        satellite: focused.and_then(ResourceId::host).map(ToString::to_string),
+        session: session.and_then(|s| s.key).map(|key| key.to_string()),
+        session_handle: session_id.map(phux_protocol::ids::SessionId::get),
+        session_name: (!ctx.session_name.is_empty()).then(|| ctx.session_name.clone()),
+        resource_handle: focused.map(ToString::to_string),
+        ..ActionTarget::default()
+    };
+    if let Some(placement) = ctx.plugin_action_placement {
+        let changed = ctx.arrangement_write_owed.as_deref().copied() == Some(true);
+        let group = (!changed)
+            .then(|| {
+                ctx.workspace
+                    .groups
+                    .get(ctx.workspace.active)
+                    .map(|group| group.id)
+            })
+            .flatten();
+        placement.capture(&mut target, group, focused);
+    }
+    ActionContext::observed(
+        ctx.plugin_action_source,
+        ctx.own_client_id.map(phux_protocol::ids::ClientId::get),
+        target,
+    )
+}
+
+const fn transport_name(dial: &crate::attach::Dial) -> &'static str {
+    use crate::attach::Dial;
+    match dial {
+        Dial::Uds(_) => "uds",
+        Dial::Ssh { .. } => "ssh",
+        Dial::Quic(_) => "quic",
+        Dial::Ws(_) => "websocket",
+        #[cfg(windows)]
+        Dial::Wsl { .. } => "wsl",
+    }
 }
 
 /// `true` when the run completed with exit code 0.

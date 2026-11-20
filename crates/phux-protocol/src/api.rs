@@ -4,8 +4,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 mod errors;
+mod execution;
+mod operations;
 mod schemas;
 pub use errors::{ErrorCode, ErrorDocument, OperationError, OperationOutcome};
+pub use execution::{
+    ExecutionRef, ExecutionResult, ExecutionResultRequest, ExecutionResultStatus,
+    MAX_EXECUTION_WAIT_SECS, execution_result_request_schema, execution_result_schema,
+};
+pub use operations::PublicOperation;
 pub use schemas::semantic_validation;
 
 /// Shared public argv/environment item bound, enforced by schema and runtime.
@@ -138,6 +145,9 @@ pub struct TerminalCreated {
     pub placement: CreatedPlacement,
     /// Current execution, if still recorded. Retained records make failures inspectable.
     pub execution: Option<ExecutionObservation>,
+    /// Exact identity to pass directly to `execution.result`.
+    #[serde(default)]
+    pub execution_ref: Option<ExecutionRef>,
     /// Current local live handle, not a durable selector.
     pub terminal_id: Option<u32>,
     /// True when the retained receipt was replayed without launch or placement effects.
@@ -169,6 +179,9 @@ pub struct ResourceObserved {
     pub kind: String,
     /// Current or latest retained activation, independent of a live engine.
     pub execution: Option<ExecutionObservation>,
+    /// Exact identity to pass directly to `execution.result`.
+    #[serde(default)]
+    pub execution_ref: Option<ExecutionRef>,
     /// Current local engine handle, if any; never a durable address.
     pub terminal_id: Option<u32>,
 }
@@ -230,6 +243,15 @@ pub enum LaunchStage {
     Handshake,
     /// Terminal engine allocation.
     Engine,
+}
+
+impl LaunchStage {
+    /// Whether this diagnostic proves the requested executable did not start.
+    /// A handshake or engine failure does not prove absence of child effects.
+    #[must_use]
+    pub const fn before_requested_exec(self) -> bool {
+        matches!(self, Self::Pty | Self::Spawn | Self::Cwd | Self::Exec)
+    }
 }
 
 /// Execution lifecycle; loss is not completion.
@@ -416,7 +438,7 @@ fn validate_environment_pair((key, value): &(String, String)) -> Result<(), Stri
 /// Parse an exact 16-byte hexadecimal identity, accepting either case.
 #[must_use]
 pub fn parse_hex16(text: &str) -> Option<[u8; 16]> {
-    if text.len() != 32 || !text.is_ascii() {
+    if text.len() != 32 || !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return None;
     }
     let mut bytes = [0; 16];

@@ -133,26 +133,11 @@ fn relocated_continuum_restores_an_archive_from_retained_state() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let mut restore = common::phux_cmd(crate::runner::phux_bin());
-    target.xdg.apply(&mut restore);
-    let output = restore
-        .args([
-            "config",
-            "run",
-            "com.phux.demo.continuum",
-            "restore-latest",
-            "--json",
-        ])
-        .env("PHUX_BIN", crate::runner::phux_bin())
-        .env("PHUX_SOCKET", &target.socket)
-        .env("PHUX_CONTINUUM_DIR", &new)
-        .output()
-        .expect("restore retained archive through relocated plugin");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    target.success(&[
+        "archive",
+        "import",
+        new.join("default.json").to_str().expect("archive path"),
+    ]);
     let inventory = target.success(&["ls", "--json"]);
     assert!(inventory.contains("retained-project"), "{inventory}");
     assert!(

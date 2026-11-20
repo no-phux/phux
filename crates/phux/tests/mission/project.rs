@@ -129,14 +129,14 @@ fn a_freed_slot_launches_the_oldest_queued_task_once() {
 }
 
 #[test]
-fn restart_reconciles_without_a_duplicate_launch_or_event() {
+fn restart_on_another_authority_cannot_settle_the_original_run() {
     let root = tempfile::tempdir().expect("temp");
     let repo = root.path().join("repo");
     let harness = Harness::new(root.path(), "sleep 60\n", None, false);
     let state = harness.guard.xdg.state.clone();
     let config = harness.guard.xdg.config.clone();
     let _stop = StopKeeper(state.clone());
-    let started = mission_json(
+    mission_json(
         &harness.guard,
         &repo,
         &[
@@ -144,9 +144,8 @@ fn restart_reconciles_without_a_duplicate_launch_or_event() {
         ],
         &[],
     );
-    let pane = started["binding"]["terminal_id"].as_str().unwrap();
-    report(&harness.guard, pane, "blocked");
-    wait_state(&harness.guard, &repo, "demo/1", "needs_you");
+    wait_for_launches(&harness.log_dir, 1);
+    wait_state(&harness.guard, &repo, "demo/1", "working");
     let before = event_rows(&state);
     let launches = launch_count(&harness.log_dir);
     kill_keeper(&state);
@@ -159,22 +158,12 @@ fn restart_reconciles_without_a_duplicate_launch_or_event() {
         .env("XDG_CONFIG_HOME", &config)
         .start();
     let _ = mission(&guard, &repo, &["mission", "show", "demo/1", "--json"], &[]);
-    wait_state(&guard, &repo, "demo/1", "failed");
+    wait_state(&guard, &repo, "demo/1", "working");
+    // This disposable server has a new socket and thus a new organization
+    // store. The work store is shared, but its binding is not transferable.
+    std::thread::sleep(Duration::from_millis(1_400));
     let after = event_rows(&state);
-    assert_eq!(
-        after
-            .iter()
-            .filter(|(_, kind)| kind == "terminal_lost")
-            .count(),
-        1,
-        "{after:?}"
-    );
-    assert!(
-        after.starts_with(&before),
-        "restart rewrote history\nbefore={before:?}\nafter={after:?}"
-    );
-    std::thread::sleep(Duration::from_millis(400));
-    assert_eq!(event_rows(&state), after);
+    assert_eq!(after, before, "the wrong authority wrote mission history");
     assert_eq!(launch_count(&harness.log_dir), launches);
 }
 

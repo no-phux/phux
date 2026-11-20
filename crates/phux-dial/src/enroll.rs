@@ -34,6 +34,27 @@ pub struct EnrollDial {
     pub inner: Option<crate::quic::InnerTls>,
 }
 
+/// Closed, payload-free milestones of one enrollment exchange.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnrollPhase {
+    /// Encode the request and prepare its endpoint and pinned TLS client.
+    Prepare,
+    /// Wait for the direct QUIC handshake.
+    Connect,
+    /// Wait for the relayed end-to-end session.
+    RelayConnect,
+    /// Open the direct enrollment stream.
+    OpenStream,
+    /// Write the request and finish/flush its sending side.
+    Write,
+    /// Read the complete bounded reply.
+    Read,
+    /// Drain the close under the existing one-second limit.
+    Drain,
+    /// Decode the reply.
+    Decode,
+}
+
 /// Send one enrollment request and return the issued PEM chain, unchecked;
 /// pass it to [`check_issued_chain`] before storing it.
 ///
@@ -42,12 +63,38 @@ pub struct EnrollDial {
 /// [`DialError::AuthRefused`] when the server refused (a consumed, expired,
 /// or unknown ticket, or a rejected request), and the usual dial errors.
 pub async fn enroll(d: &EnrollDial, request: &Request) -> Result<String, DialError> {
+    enroll_observed(d, request, |_| {}).await
+}
+
+/// [`enroll`] with synchronous, payload-free phase observations.
+///
+/// The observer must not block. It receives no request, reply, address or error.
+/// A phase is emitted immediately before its operation, so cancellation leaves
+/// the last active boundary visible without changing deadlines or wire behavior.
+///
+/// # Errors
+///
+/// The same errors as [`enroll`].
+pub async fn enroll_observed(
+    d: &EnrollDial,
+    request: &Request,
+    observe: impl Fn(EnrollPhase) + Sync,
+) -> Result<String, DialError> {
+    observe(EnrollPhase::Prepare);
     let encoded = request
         .encode()
         .map_err(|err| DialError::Connect(format!("enrollment request: {err}")))?;
     if let Some(inner) = &d.inner {
-        return enroll_relayed(d, inner, &encoded).await;
+        return enroll_relayed(d, inner, &encoded, &observe).await;
     }
+    enroll_direct(d, &encoded, &observe).await
+}
+
+async fn enroll_direct(
+    d: &EnrollDial,
+    encoded: &[u8],
+    observe: &(impl Fn(EnrollPhase) + Sync),
+) -> Result<String, DialError> {
     let bind = if d.addr.is_ipv6() {
         SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0)
     } else {
@@ -58,6 +105,7 @@ pub async fn enroll(d: &EnrollDial, request: &Request) -> Result<String, DialErr
     let (config, refusal) =
         crate::quic::client_config(&d.trust, Some(&TlsClientIdentity::None), ENROLL_ALPN)?;
     endpoint.set_default_client_config(config);
+    observe(EnrollPhase::Connect);
     let conn = endpoint
         .connect(d.addr, &d.server_name)
         .map_err(|err| DialError::Connect(format!("dial {}: {err}", d.addr)))?
@@ -66,13 +114,7 @@ pub async fn enroll(d: &EnrollDial, request: &Request) -> Result<String, DialErr
             crate::tls::authority_refusal(&refusal)
                 .unwrap_or_else(|| crate::quic::close_error(&err))
         })?;
-    let exchanged = async {
-        let (mut send, mut recv) = conn.open_bi().await.map_err(io_lost)?;
-        send.write_all(&encoded).await.map_err(io_lost)?;
-        send.finish().map_err(io_lost)?;
-        recv.read_to_end(MAX_REPLY).await.map_err(io_lost)
-    }
-    .await;
+    let exchanged = direct_request(&conn, encoded, observe).await;
     let reply = match exchanged {
         Ok(bytes) => bytes,
         Err(err) => {
@@ -81,9 +123,25 @@ pub async fn enroll(d: &EnrollDial, request: &Request) -> Result<String, DialErr
                 .map_or(err, |close| crate::quic::close_error(&close)));
         }
     };
+    observe(EnrollPhase::Drain);
     conn.close(0_u32.into(), b"done");
     let _ = tokio::time::timeout(CLOSE_DRAIN, endpoint.wait_idle()).await;
+    observe(EnrollPhase::Decode);
     decoded(&reply)
+}
+
+async fn direct_request(
+    conn: &quinn::Connection,
+    encoded: &[u8],
+    observe: &(impl Fn(EnrollPhase) + Sync),
+) -> Result<Vec<u8>, DialError> {
+    observe(EnrollPhase::OpenStream);
+    let (mut send, mut recv) = conn.open_bi().await.map_err(io_lost)?;
+    observe(EnrollPhase::Write);
+    send.write_all(encoded).await.map_err(io_lost)?;
+    send.finish().map_err(io_lost)?;
+    observe(EnrollPhase::Read);
+    recv.read_to_end(MAX_REPLY).await.map_err(io_lost)
 }
 
 /// The exchange inside the end-to-end session through a relay: the request
@@ -92,6 +150,7 @@ async fn enroll_relayed(
     d: &EnrollDial,
     inner: &crate::quic::InnerTls,
     encoded: &[u8],
+    observe: &(impl Fn(EnrollPhase) + Sync),
 ) -> Result<String, DialError> {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     let outer = crate::QuicDial {
@@ -102,13 +161,16 @@ async fn enroll_relayed(
         identity: Some(TlsClientIdentity::None),
         inner: None,
     };
+    observe(EnrollPhase::RelayConnect);
     let (endpoint, conn, mut stream) =
         crate::quic::dial_relayed(&outer, inner, ENROLL_ALPN).await?;
     // Both messages are self-delimiting: a relay ends the whole splice when
     // either side finishes, so nobody half-closes before the reply is read.
     let exchanged = async {
+        observe(EnrollPhase::Write);
         stream.write_all(encoded).await?;
         stream.flush().await?;
+        observe(EnrollPhase::Read);
         let mut head = [0_u8; 5];
         stream.read_exact(&mut head).await?;
         let len = usize::try_from(u32::from_be_bytes([head[1], head[2], head[3], head[4]]))
@@ -122,9 +184,11 @@ async fn enroll_relayed(
         Ok::<_, std::io::Error>(reply)
     }
     .await;
+    observe(EnrollPhase::Drain);
     conn.close(0_u32.into(), b"done");
     let _ = tokio::time::timeout(CLOSE_DRAIN, endpoint.wait_idle()).await;
     let reply = exchanged.map_err(io_lost)?;
+    observe(EnrollPhase::Decode);
     decoded(&reply)
 }
 
@@ -207,3 +271,6 @@ fn same_authority(a: &str, b: &str) -> bool {
     let (a, b) = (digits(a), digits(b));
     a.len() == 64 && a == b
 }
+
+#[cfg(test)]
+mod tests;

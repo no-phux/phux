@@ -15,18 +15,19 @@ cargo run -q -p phux --bin phux -- config run com.phux.demo.agent-tools inspect 
 `just plugin-demo` runs the same discover/validate/run sequence. Every action
 in `phux-plugin.toml` runs the same way: `list-integrations`,
 `validate-integrations`, `status-integrations`, `link-integration`,
-`unlink-integration`, `detect-agents`, `smoke-integrations`, `launch-bench`,
-`list-bench`, `drive-bench`, and `smoke-agent-wrap`. `--json` wraps an action's
+`unlink-integration`, `detect-agents`, `smoke-integrations`, and
+`smoke-agent-wrap`. `--json` wraps an action's
 stdout in the stable action result schema (argv, cwd, exit code, stderr,
 duration).
 
 ## Agent bench
 
-The `agent-bench` workspace profile composes the inspection actions with
-runnable bench actions across four roles. `launch-bench` creates one phux
-session per role and writes a role/session state table, `list-bench` prints
-it, and `drive-bench` sends keys to the selected role. Roles launch as plain
-shells, not real agent binaries. Customize with `PHUX_AGENT_BENCH_ROLES`,
+The `agent-bench` workspace profile composes inspection actions and shows
+four roles. The demo scripts that operate on a live server are not actions.
+Run `scripts/launch-bench.sh`, `scripts/list-bench.sh`, or
+`scripts/drive-bench.sh` with `sh` and an explicit `PHUX_SOCKET`. They create
+one session per role, list the role/session table, or send keys to one role.
+Roles launch as plain shells, not real agent binaries. Customize with `PHUX_AGENT_BENCH_ROLES`,
 `PHUX_AGENT_BENCH_PROFILE`, `PHUX_AGENT_BENCH_STATE`, `PHUX_AGENT_BENCH_ROLE`,
 and `PHUX_AGENT_BENCH_KEYS`.
 
@@ -47,13 +48,13 @@ and `phux archive import` resumes it through the template's `resume_args`.
 
 - `link-integration` / `unlink-integration` write only plugin-local state under
   `state/integrations`; they never install or run the agent. They default to
-  Codex and Claude Code; override with `PHUX_AGENT_PACKAGE` or
-  `PHUX_AGENT_PACKAGES`. `PHUX_CODEX_SESSION_ID` / `PHUX_CLAUDE_SESSION_ID`
-  record a native session identity; otherwise the phux target is recorded.
+  Codex and Claude Code. For the scripts' environment overrides, run them
+  directly rather than through the action runner.
 - `status-integrations` reports `missing`, `current`, or `outdated` against the
   checked-in template version.
-- `detect-agents` probes nothing unless `PHUX_AGENT_TOOLS_DETECT=1`;
-  `PHUX_AGENT_TOOLS_PATH` overrides the search path for tests.
+- Selecting `detect-agents` explicitly opts in to checking `PATH` for
+  configured CLI executables. Direct script use still requires
+  `PHUX_AGENT_TOOLS_DETECT=1` and accepts `PHUX_AGENT_TOOLS_PATH` for tests.
 - `list-integrations` and `validate-integrations` read the launch templates.
 - `smoke-integrations` exercises validate, list, link, status, fake-CLI
   detection, and unlink in a temporary state directory.

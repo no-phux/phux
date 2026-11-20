@@ -14,15 +14,13 @@
 //! debug-build test hooks. A release binary does not read them: a stale
 //! subscription cursor drops live agent events and projection stalls.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use phux_client::agent_meta::AgentMetaState;
+use phux_client::attach::connection::Connection;
 use phux_client::watch::{FleetSubscription, WatchItem, subscribe_fleet_after};
-use phux_protocol::ids::{ResourceId, ResourceKind};
-use phux_protocol::wire::frame::{AgentEvent, ResourceLifecycle};
-use phux_protocol::wire::info::ResourceInfo;
+use phux_protocol::ids::{AuthorityId, ResourceId};
 use phux_work::mission::{
     AgentReport, Projection, ProjectionInput, RunPhase, TerminalFact, observation_operation,
     project,
@@ -41,7 +39,7 @@ const BOUND_REFRESH: Duration = Duration::from_millis(200);
 const RECONCILE_ATTEMPTS: u32 = 4;
 
 mod facts;
-use facts::{ExitFact, agent_is_done, exit_of, fact_of, is_gap, is_spawn, phase, report_of};
+use facts::{ExitFact, exit_of, is_gap, is_spawn, observe, phase};
 
 /// Watch `server_socket` until the process exits. The socket is bound before
 /// this runs, and this thread does not open the store. A projector that
@@ -104,7 +102,6 @@ fn default_server_socket() -> PathBuf {
 }
 
 struct ProjectionWatch {
-    agents: HashMap<String, AgentReport>,
     bound: HashSet<String>,
     missed: HashSet<String>,
     refreshed_at: Option<Instant>,
@@ -113,7 +110,6 @@ struct ProjectionWatch {
 impl ProjectionWatch {
     fn new() -> Self {
         Self {
-            agents: HashMap::new(),
             bound: HashSet::new(),
             missed: HashSet::new(),
             refreshed_at: None,
@@ -123,12 +119,11 @@ impl ProjectionWatch {
     fn note_runs(&mut self, runs: &[OpenRun]) {
         self.bound.clear();
         for run in runs {
-            if let Some(id) = &run.terminal_id {
-                self.bound.insert(id.clone());
+            if let Some(id) = tracked_id(run) {
+                self.bound.insert(id.to_owned());
                 self.missed.remove(id);
             }
         }
-        self.agents.retain(|id, _| self.bound.contains(id));
         self.refreshed_at = Some(Instant::now());
     }
 
@@ -139,7 +134,6 @@ impl ProjectionWatch {
 
     fn forget(&mut self, id: &str) {
         self.bound.remove(id);
-        self.agents.remove(id);
         self.missed.remove(id);
     }
 
@@ -211,11 +205,24 @@ async fn follow(
     live: bool,
 ) -> bool {
     let mut pending = VecDeque::new();
+    let mut level = tokio::time::interval_at(
+        tokio::time::Instant::now() + Duration::from_secs(1),
+        Duration::from_secs(1),
+    );
+    level.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         let next = if let Some(item) = pending.pop_front() {
             Ok(Some(item))
         } else {
-            subscription.recv_item().await
+            tokio::select! {
+                result = subscription.recv_item() => result,
+                _ = level.tick() => {
+                    if let Err(error) = reconcile_once(client, socket, watch).await {
+                        error!("mission projector periodic reconcile: {error}");
+                    }
+                    continue;
+                },
+            }
         };
         match next {
             Ok(Some(item)) => {
@@ -237,7 +244,7 @@ async fn follow(
                         WatchStep::Ended => return false,
                     }
                 } else {
-                    apply_live(client, socket, watch, &item);
+                    apply_live(client, socket, watch, &item).await;
                 }
             }
             Ok(None) => return false,
@@ -266,7 +273,6 @@ async fn hold_exit(
     }
     info!("keeper holding an exit for a late done record");
     let deadline = tokio::time::Instant::now() + EXIT_GRACE;
-    let mut saw_done = watch.agents.get(&id).copied() == Some(AgentReport::Done);
     let mut step = WatchStep::Stay;
     loop {
         let rest = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -300,37 +306,26 @@ async fn hold_exit(
                     }
                     continue;
                 }
-                if agent_is_done(&item, &id) {
-                    saw_done = true;
+                // Keep this worker's late declaration for the verified level
+                // read below; all other workers can still project normally.
+                if agent_update_id(&item).as_deref() != Some(id.as_str()) {
+                    apply_live(client, socket, watch, &item).await;
                 }
-                apply_live(client, socket, watch, &item);
             }
         }
     }
-    match phux_client::agent_wait::fetch_agent_record(socket, &exit.terminal).await {
-        Ok(Some(record)) if report_of(record.state) == AgentReport::Done => {
-            saw_done = true;
-            info!("keeper read a late done record");
-        }
-        Ok(_) => {}
-        Err(err) => error!("mission projector agent record: {err}"),
-    }
-    if saw_done {
-        watch.agents.insert(id.clone(), AgentReport::Done);
-    }
-    commit_exit(client, socket, watch, &id, exit.status, exit.seq);
+    project_hint(client, socket, watch, &id, exit.seq).await;
     if matches!(step, WatchStep::Resubscribe) {
         reconcile(client, socket, watch).await;
     }
     step
 }
 
-fn commit_exit(
+async fn project_hint(
     client: &Client,
     socket: &Path,
     watch: &mut ProjectionWatch,
     id: &str,
-    status: Option<i32>,
     seq: u64,
 ) {
     let Ok(runs) = client.open_runs() else {
@@ -338,67 +333,45 @@ fn commit_exit(
         return;
     };
     watch.note_runs(&runs);
-    let Some(run) = runs
+    let mut matching = runs
         .iter()
-        .find(|run| run.terminal_id.as_deref() == Some(id))
-    else {
+        .filter(|run| tracked_id(run) == Some(id))
+        .peekable();
+    if matching.peek().is_none() {
         watch.forget(id);
         return;
+    }
+    let Ok(mut conn) = super::server_target::ServerTarget::local(socket)
+        .connect()
+        .await
+    else {
+        return;
     };
-    let observed = ProjectionInput {
-        current: run.state,
-        run: phase(run),
-        agent: watch.agents.get(id).copied(),
-        terminal: Some(TerminalFact::Exited { status }),
-        binding_present: true,
-        credential_lost: run.credential_lost,
-        launching: false,
-    };
-    if let Err(err) = write_projection(client, socket, watch, run, &project(&observed), seq) {
-        error!("mission projector state write: {err}");
+    for run in matching {
+        if let Err(err) = project_bound(client, watch, &mut conn, run, seq).await {
+            error!("mission projector exact observation: {err}");
+        }
     }
 }
 
-fn apply_live(client: &Client, socket: &Path, watch: &mut ProjectionWatch, item: &WatchItem) {
+fn tracked_id(run: &OpenRun) -> Option<&str> {
+    run.execution.as_ref()?;
+    run.terminal_id.as_deref()
+}
+
+fn agent_update_id(item: &WatchItem) -> Option<String> {
     let WatchItem::AgentState(update) = item else {
-        return;
+        return None;
     };
-    let Some(terminal) = update.terminal.as_ref() else {
-        return;
-    };
-    let Some(id) = terminal_key(terminal) else {
-        return;
-    };
-    if !watch.tracks(client, &id, false) {
-        return;
+    terminal_key(update.terminal.as_ref()?)
+}
+
+async fn apply_live(client: &Client, socket: &Path, watch: &mut ProjectionWatch, item: &WatchItem) {
+    if let Some(id) = agent_update_id(item)
+        && watch.tracks(client, &id, false)
+    {
+        project_hint(client, socket, watch, &id, 0).await;
     }
-    let Some(report) = update.record.as_ref().map(|record| report_of(record.state)) else {
-        return;
-    };
-    watch.agents.insert(id.clone(), report);
-    let Ok(runs) = client.open_runs() else {
-        error!("mission projector could not list open runs");
-        return;
-    };
-    let Some(run) = runs
-        .iter()
-        .find(|run| run.terminal_id.as_deref() == Some(id.as_str()))
-    else {
-        return;
-    };
-    let observed = ProjectionInput {
-        current: run.state,
-        run: phase(run),
-        agent: Some(report),
-        terminal: Some(TerminalFact::Running),
-        binding_present: true,
-        credential_lost: run.credential_lost,
-        launching: false,
-    };
-    if let Err(err) = write_projection(client, socket, watch, run, &project(&observed), 0) {
-        error!("mission projector state write: {err}");
-    }
-    drain_queue(client, socket, watch);
 }
 
 async fn reconcile(client: &Client, socket: &Path, watch: &mut ProjectionWatch) {
@@ -423,57 +396,56 @@ async fn reconcile_once(
     socket: &Path,
     watch: &mut ProjectionWatch,
 ) -> Result<(), String> {
-    let view = phux_client::state::get_state(socket)
+    let mut conn = super::server_target::ServerTarget::local(socket)
+        .connect()
         .await
-        .map_err(|err| format!("level state: {err}"))?;
-    let complete = view.is_complete();
-    let snapshot = view.snapshot().clone();
-    let mut notices = Vec::new();
-    let records = phux_client::agent_record::fetch_index(socket, &snapshot, &mut notices).await;
+        .map_err(|err| err.to_string())?;
+    let authority = super::mission_start::owner_on(&mut conn).await?;
     let runs = client
         .open_runs()
         .map_err(|err| format!("open runs: {err}"))?;
     watch.note_runs(&runs);
     for run in &runs {
-        let Some(bound) = run.terminal_id.as_deref() else {
-            continue;
-        };
-        let resource = snapshot
-            .resources
-            .iter()
-            .find(|resource| terminal_key(&resource.id).as_deref() == Some(bound));
-        let terminal = match resource {
-            Some(resource) => fact_of(resource),
-            None if complete => TerminalFact::Gone,
-            None => continue,
-        };
-        if let Some(resource) = resource
-            && let Some(record) = records.get(&resource.id)
-        {
-            watch
-                .agents
-                .insert(bound.to_owned(), report_of(record.state));
-        }
-        let observed = ProjectionInput {
-            current: run.state,
-            run: phase(run),
-            agent: watch.agents.get(bound).copied(),
-            terminal: Some(terminal),
-            binding_present: true,
-            credential_lost: run.credential_lost,
-            launching: false,
-        };
-        if let Err(err) = write_projection(client, socket, watch, run, &project(&observed), 0) {
-            error!("mission projector state write: {err}");
+        if let Err(err) = project_bound(client, watch, &mut conn, run, 0).await {
+            error!("mission projector reconcile: {err}");
         }
     }
-    drain_queue(client, socket, watch);
+    drain_queue(client, socket, watch, authority);
     Ok(())
+}
+
+async fn project_bound(
+    client: &Client,
+    watch: &mut ProjectionWatch,
+    conn: &mut Connection,
+    run: &OpenRun,
+    seq: u64,
+) -> Result<(), String> {
+    let (agent, terminal) = if let Some(pin) = &run.execution {
+        let Some(facts) = observe(conn, pin).await? else {
+            return Ok(());
+        };
+        facts
+    } else if run.session_key.is_some() {
+        // Legacy pane IDs are only hints and may refer to unrelated work.
+        (None, TerminalFact::Uncertain)
+    } else {
+        return Ok(());
+    };
+    let input = ProjectionInput {
+        current: run.state,
+        run: phase(run),
+        agent,
+        terminal: Some(terminal),
+        binding_present: true,
+        credential_lost: run.credential_lost,
+        launching: false,
+    };
+    write_projection(client, watch, run, &project(&input), seq).map_err(|err| err.to_string())
 }
 
 fn write_projection(
     client: &Client,
-    socket: &Path,
     watch: &mut ProjectionWatch,
     run: &OpenRun,
     projected: &Projection,
@@ -498,20 +470,27 @@ fn write_projection(
         actor: ACTOR.to_owned(),
         event_kind: Some(kind.to_owned()),
     })?;
-    if applied.objective.state.frees_slot() {
-        if let Some(id) = &run.terminal_id {
-            watch.forget(id);
-        }
-        drain_queue(client, socket, watch);
+    if applied.objective.state.frees_slot()
+        && let Some(id) = &run.terminal_id
+    {
+        watch.forget(id);
     }
     Ok(())
 }
 
-fn drain_queue(client: &Client, socket: &Path, watch: &mut ProjectionWatch) {
+fn drain_queue(
+    client: &Client,
+    socket: &Path,
+    watch: &mut ProjectionWatch,
+    authority: AuthorityId,
+) {
     let Ok(runs) = client.open_runs() else {
         return;
     };
-    let Some(queued) = runs.iter().find(|run| run.run_state == RunState::Queued) else {
+    let Some(queued) = runs
+        .iter()
+        .find(|run| run.run_state == RunState::Queued && run.authority == Some(authority))
+    else {
         return;
     };
     let running = runs

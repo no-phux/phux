@@ -6,13 +6,6 @@ description = "Publishes this host's AI plan limits (Claude Code, Codex, Grok Bu
 platforms = ["linux", "macos"]
 
 [[actions]]
-id = "refresh"
-title = "Refresh plan usage"
-description = "Asks every vendor now and republishes phux.usage/v1."
-contexts = ["workspace"]
-command = ["sh", "scripts/publish.sh", "--refresh"]
-
-[[actions]]
 id = "show"
 title = "Show plan usage"
 description = "Prints this host's plan limits without publishing."

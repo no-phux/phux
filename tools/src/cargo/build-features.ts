@@ -54,9 +54,11 @@ export function violations({ full, lean, mcp, server, terminalApi, config }: Gra
     !full.has("wtransport"),
     "wtransport is the test dialer; production uses wtransport-proto",
   );
+  // ratcn (the TUI overlay toolkit) enables ratatui's layout cache on its
+  // own ratatui dependency; nothing else may bring it back.
   expect.that(
-    !enables(full, "ratatui-core", "layout-cache", "full"),
-    "unused layout cache re-enabled",
+    !enables(full, "ratatui-core", "layout-cache", "full") || full.has("ratcn"),
+    "layout cache re-enabled without ratcn",
   );
   expect.that(
     !lean.has("wtransport-proto"),

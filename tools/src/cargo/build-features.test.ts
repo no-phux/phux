@@ -19,6 +19,12 @@ test("clean graphs hold every boundary", () => {
   expect(violations({ full: parseTree(CLEAN), lean, mcp: lean, ...HOST })).toEqual([]);
 });
 
+test("ratcn may bring the layout cache, and only ratcn", () => {
+  const lean = parseTree(CLEAN.replace(/^wtransport-proto.*\n/m, ""));
+  const full = parseTree(`${CLEAN.replace("default,std", "layout-cache")}ratcn v0.1.0|\n`);
+  expect(violations({ full, lean, mcp: lean, ...HOST })).toEqual([]);
+});
+
 test("each broken boundary is reported", () => {
   const full = parseTree(
     `${CLEAN.replace("default,std", "layout-cache")}wtransport v0.6.0|\nratatui-macros v0.1.0|\n`,
@@ -26,7 +32,7 @@ test("each broken boundary is reported", () => {
   const mcp = parseTree(`${CLEAN.replaceAll("ring,std", "tls12")}ratatui v0.30.0|\n`);
   expect(violations({ full, lean: parseTree(CLEAN), mcp, ...HOST })).toEqual([
     "wtransport is the test dialer; production uses wtransport-proto",
-    "unused layout cache re-enabled",
+    "layout cache re-enabled without ratcn",
     "the lean executable must not inherit server defaults",
     "headless MCP must not compile TUI chrome",
     "full: unused TUI macros",

@@ -3,6 +3,7 @@
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import platform
 import subprocess
@@ -66,9 +67,19 @@ def build_macos(data, binaries, notices):
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
             archive.extractall(temporary, filter="data")
         source = Path(temporary) / f"tmd-{SOURCE_REV}"
+        # translate_c's Codeberg git fetch fails (and can abort Zig 0.17) on
+        # cold runners. Ghostty mirrors the identical aro revision/package hash.
+        # A manifest fetch materializes it; raw `zig fetch` only caches an archive
+        # whose reload is broken in Zig 0.17. Keep both stages' caches private.
+        env = {**os.environ, "ZIG_GLOBAL_CACHE_DIR": str(Path(temporary) / "zig-global-cache")}
+        subprocess.run(
+            ["zig", "build", "--fetch=needed", "--pkg-dir", str(source / "zig-pkg"),
+             "--cache-dir", str(Path(temporary) / "zig-mirror-cache")],
+            cwd=repo / "scripts/zig-mirrors", env=env, check=True, timeout=120,
+        )
         subprocess.run(
             ["zig", "build", "--release=small", f"-Dtarget={MACOS_TARGET}"],
-            cwd=source, check=True, timeout=600,
+            cwd=source, env=env, check=True, timeout=600,
         )
         payload = {name: (source / name).read_bytes() for name in ("LICENSE", "THIRD_PARTY_NOTICES.md")}
         payload["tmd"] = (source / "zig-out/bin/tmd").read_bytes()

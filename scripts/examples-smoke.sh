@@ -19,6 +19,8 @@ echo "examples smoke: 06-client.sh"
 bash "$ROOT/examples/agents/06-client.sh"
 echo "examples smoke: agent_loop.py"
 python3 "$ROOT/examples/agents/agent_loop.py"
+echo "examples smoke: external worktree composition"
+python3 "$ROOT/examples/composition/smoke.py" --phux "$PHUX"
 
 # Example 03 proves an early wait misses the echoed command and a later wait
 # sees actual output. Also check a real target failure is not called a timeout.

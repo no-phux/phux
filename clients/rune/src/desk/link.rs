@@ -274,8 +274,14 @@ impl Desk {
         // The machine the person chose may ask for a password or 2FA code;
         // background watchers never get a dialog and ride its login.
         target.ssh_askpass = crate::askpass::program();
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let transport = target.transport.label();
         match sessions::connect(target) {
             Ok(client) => {
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                {
+                    self.connection.action_transport = Some(transport);
+                }
                 self.connection.client = Some(std::sync::Arc::new(client));
                 self.apply_theme();
                 if let Some(waker) = self.waker.clone() {

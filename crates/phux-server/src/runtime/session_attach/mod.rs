@@ -17,6 +17,7 @@ use crate::resource::ResourceHandle;
 use crate::state::{AttachSnapshotPane, ClientId, Outbound, SharedState};
 use prepare::{is_same_session_reattach, prepare_attach_or_refuse};
 use publication::AttachPublication;
+pub(in crate::runtime) use publication::publication_phase;
 use staging::{CaptureFailure, SessionStaging};
 use target::resolve_attach_target;
 

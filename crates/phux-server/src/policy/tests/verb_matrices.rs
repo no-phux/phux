@@ -1,3 +1,54 @@
+fn question_samples(world: &World) -> [FrameKind; 4] {
+    use phux_protocol::ids::AuthorityId;
+    use phux_protocol::native_agent::questions::{
+        QuestionOperationId, QuestionRef, QuestionTarget, RespondQuestion,
+    };
+    use phux_protocol::native_agent::{NativeRequest, NativeRequestPayload};
+
+    let authority = AuthorityId::new(*world.state.org().authority().id.as_bytes()).unwrap();
+    let resource = world.org.resource;
+    let question = QuestionRef {
+        authority,
+        conversation: resource,
+        activation: "activation".into(),
+        id: "callback".into(),
+        revision: "1".repeat(64),
+    };
+    let operation_id = QuestionOperationId::new(1).unwrap();
+    [
+        NativeRequest::CurrentQuestions {
+            target: QuestionTarget::Handle { resource: world.alpha.clone() },
+        },
+        NativeRequest::CurrentQuestions {
+            target: QuestionTarget::Key { authority, resource },
+        },
+        NativeRequest::RespondQuestion {
+            answer: RespondQuestion {
+                operation_id,
+                question: question.clone(),
+                response: serde_json::json!({"confirmed": false}),
+            },
+        },
+        NativeRequest::QuestionReceipt { operation_id, question },
+    ]
+    .map(|request| command(Command::NativeAgent {
+        request: NativeRequestPayload::new(request).unwrap(),
+    }))
+}
+
+fn question_rows(world: &World) -> [Row; 4] {
+    let [handle, keyed, respond, receipt] = question_samples(world);
+    let alpha = local_id(&world.alpha);
+    let beta = local_id(&world.beta);
+    let resource = world.org.resource;
+    [
+        row(handle, &[&[&format!("observe@terminal:{alpha}")]], &[&[&format!("observe@terminal:{beta}")]]),
+        row(keyed, &[&[&format!("observe@resource:{resource}")]], &[&[&format!("observe@terminal:{beta}")]]),
+        row(respond, &[&[&format!("observe,input@resource:{resource}")]], &[&[&format!("observe,input@terminal:{beta}")]]),
+        row(receipt, &[&[&format!("observe@resource:{resource}")]], &[&[&format!("observe@terminal:{beta}")]]),
+    ]
+}
+
 fn native_samples(world: &World, agent: &WireResourceId) -> [FrameKind; 5] {
     use phux_protocol::native_agent::{
         NativeCommand, NativeIntent, NativeRequest, NativeRequestPayload, SpawnNativeAgent,

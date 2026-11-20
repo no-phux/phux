@@ -22,8 +22,7 @@ fn continuum_plugin_loads() -> Result<(), Box<dyn std::error::Error>> {
     .join("../../plugins/continuum/phux-plugin.toml");
     let loaded = plugin::load_plugin_manifest(&manifest)?;
     assert_eq!(loaded.id, "com.phux.demo.continuum");
-    assert_eq!(loaded.actions[0].id, "autosave");
-    assert_eq!(loaded.actions[1].id, "restore-latest");
+    assert!(loaded.actions.is_empty());
     assert_eq!(loaded.events[0].id, "idle-autosave");
     assert_eq!(loaded.events[1].on, "pane-exit");
     for event in &loaded.events {
@@ -35,7 +34,7 @@ fn continuum_plugin_loads() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     assert_eq!(loaded.profiles[0].id, "continuum");
-    assert_eq!(loaded.profiles[0].actions, ["autosave", "restore-latest"]);
+    assert!(loaded.profiles[0].actions.is_empty());
     assert_eq!(
         loaded.profiles[0].events,
         ["idle-autosave", "session-autosave"]
@@ -51,6 +50,7 @@ fn agent_stats_plugin_hooks_real_server_events() -> Result<(), Box<dyn std::erro
     .join("../../plugins/agent-stats/phux-plugin.toml");
     let loaded = plugin::load_plugin_manifest(&manifest)?;
     assert_eq!(loaded.id, "com.phux.agent-stats");
+    assert!(loaded.actions.is_empty());
     let hooks: Vec<&str> = loaded.events.iter().map(|e| e.on.as_str()).collect();
     assert_eq!(
         hooks,

@@ -11,6 +11,12 @@
 typedef void (*PhuxRuneCallback)(void *context);
 // Warm the shared GPU device and renderer off the main thread; idempotent.
 void phux_rune_ios_prewarm(void);
+// Simulator qualification only. Creates a new private, payload-free JSONL trace;
+// refuses an existing subscriber/file. Ordinary/device launches never call it.
+bool phux_rune_ios_capture_connection_diagnostics(const char *path);
+// Final qualification background callback only. Seals capture and exclusively
+// publishes its completion/loss receipt before the collector terminates the app.
+bool phux_rune_ios_finish_connection_diagnostics(void);
 char *phux_rune_ios_validate(const char *configuration);
 // Parse a complete pairing link. Secrets remain transient; the result is
 // staged for explicit peer confirmation, not saved or dialed by this call.

@@ -9,6 +9,7 @@ use phux_protocol::native_agent::NativeDisposition;
 use phux_protocol::native_agent::NativeIntent;
 use phux_protocol::native_agent::NativeRequest;
 use phux_protocol::native_agent::NativeRequestPayload;
+use phux_protocol::native_agent::questions::{QuestionOperationId, RespondQuestion};
 use phux_protocol::wire::frame::AgentEvent;
 use phux_protocol::wire::frame::CommandResult;
 
@@ -27,17 +28,25 @@ fn dispatch_view_valid(
                 NativeIntent::Interrupt { turn_id } => {
                     binding.view.turn_id.as_ref() == Some(turn_id)
                 }
-                NativeIntent::Answer { question_id, .. } => {
-                    binding.view.questions.iter().any(|question| {
-                        &question.id == question_id
-                            && s.connection_grant(requester).is_some_and(|grant| {
-                                grant.kind() == phux_core::actor::PrincipalKind::Human
-                            })
-                    })
+                NativeIntent::Answer { question_id, .. } => binding
+                    .view
+                    .questions
+                    .iter()
+                    .any(|question| &question.id == question_id && human(s, requester)),
+                NativeIntent::AnswerExact { question, response } => {
+                    human(s, requester)
+                        && binding
+                            .validate_current_response(&question.id, response, Some(question))
+                            .is_ok()
                 }
                 NativeIntent::Prompt { .. } => true,
             }
     })
+}
+
+fn human(s: &crate::state::ServerState, requester: ClientId) -> bool {
+    s.connection_grant(requester)
+        .is_some_and(|grant| grant.kind() == phux_core::actor::PrincipalKind::Human)
 }
 
 pub(super) fn refuse_undeliverable(s: &mut crate::state::ServerState, agent: &ResourceId) {
@@ -56,19 +65,11 @@ pub(super) fn refuse_undeliverable(s: &mut crate::state::ServerState, agent: &Re
         .collect();
     for (command, requester) in candidates {
         let valid = dispatch_view_valid(s, agent, &command, requester);
-        let wire_command = NativeRequestPayload::new(NativeRequest::Command {
-            agent_session_id: agent.clone(),
-            command: command.clone(),
-        })
-        .map(|request| phux_protocol::wire::frame::Command::NativeAgent { request });
+        let wire_command = request_for_dispatch(agent, &command)
+            .map(|request| phux_protocol::wire::frame::Command::NativeAgent { request });
         if valid
-            && !s.leases().blocked(core_parent, requester)
-            && !s.clients().is_viewer(requester, &parent)
             && wire_command.as_ref().is_ok_and(|wire_command| {
-                matches!(
-                    crate::policy::authorize_command(s, requester, wire_command),
-                    Ok(crate::policy::Admission::Run)
-                )
+                dispatch_input_allowed(s, requester, core_parent, &parent, agent, wire_command)
             })
         {
             continue;
@@ -89,8 +90,8 @@ pub(super) fn refuse_undeliverable(s: &mut crate::state::ServerState, agent: &Re
             if let Some(operation) = binding.operations.get_mut(&command.operation_id) {
                 operation.result = result.clone();
             }
-            if let NativeIntent::Answer { question_id, .. } = command.intent {
-                binding.answered.remove(&question_id);
+            if let Some(question_id) = command.intent.question_id() {
+                binding.answered.remove(question_id);
             }
         }
         let event = AgentEvent::NativeAgentResult {
@@ -104,6 +105,44 @@ pub(super) fn refuse_undeliverable(s: &mut crate::state::ServerState, agent: &Re
                 .with_parent(Some(parent.clone())),
         );
     }
+}
+
+fn dispatch_input_allowed(
+    s: &crate::state::ServerState,
+    requester: ClientId,
+    core_parent: phux_core::ids::ResourceId,
+    parent: &ResourceId,
+    agent: &ResourceId,
+    wire_command: &phux_protocol::wire::frame::Command,
+) -> bool {
+    !s.leases().blocked(core_parent, requester)
+        && !s.clients().is_viewer(requester, parent)
+        && !s.clients().is_viewer(requester, agent)
+        && matches!(
+            crate::policy::authorize_command(s, requester, wire_command),
+            Ok(crate::policy::Admission::Run)
+        )
+}
+
+fn request_for_dispatch(
+    agent: &ResourceId,
+    command: &NativeCommand,
+) -> Result<NativeRequestPayload, String> {
+    let request = match &command.intent {
+        NativeIntent::AnswerExact { question, response } => NativeRequest::RespondQuestion {
+            answer: RespondQuestion {
+                operation_id: QuestionOperationId::new(command.operation_id)
+                    .ok_or_else(|| "operation identity must be nonzero".to_owned())?,
+                question: question.clone(),
+                response: response.clone(),
+            },
+        },
+        _ => NativeRequest::Command {
+            agent_session_id: agent.clone(),
+            command: command.clone(),
+        },
+    };
+    NativeRequestPayload::new(request)
 }
 
 /// A real executing-host/stream exit is source closure, not an interrupt.

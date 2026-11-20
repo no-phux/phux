@@ -137,6 +137,13 @@ exist. This avoids a redundant SpringBoard termination/registration round
 trip on cold CI images. All launch deadlines and the real paired input and
 lifecycle requirements remain unchanged.
 
+The newly created simulator boots through one `bootstatus <owned-UUID> -b`
+operation under the existing 240-second boot-readiness deadline. Apple's `-b`
+boots the device if needed and monitors until boot completes. There is no
+separate `boot` RPC or its preliminary generic 30-second cutoff; the sequential
+boot-command allowance decreases from 270 to 240 seconds. A failed boot still
+fails qualification, with owned cleanup and no state-changing retry.
+
 A just-booted simulator keeps doing first-boot work for minutes after
 `bootstatus` returns; on CI runners install, launch and `launchctl` calls in
 that window took 20-130 seconds and the app's 18-second connect budget ran
@@ -155,6 +162,10 @@ Command stdout and diagnostic stderr are stored separately so service warnings
 cannot be mistaken for an app-container path or JSON response.
 Report and tree validation reads the retained evidence copies, so the files
 uploaded by CI are the exact documents that passed qualification.
+
+Simulator qualification retains payload-free connection traces and sealed
+capture-health receipts. See [Connection diagnostics](./connection-diagnostics.md)
+for the capture boundary, retention checks and first-failure policy.
 
 **Evidence boundary:** calling the UIKit input override is not physical
 keyboard, autocorrect, dictation or CJK IME automation. A simulator screenshot

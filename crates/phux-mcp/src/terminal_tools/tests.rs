@@ -272,6 +272,13 @@ fn completed_records_survive_natural_exit_screen_expiry_and_server_restart() {
             let session = new_session(&mut stream, "exit", 11).await;
             let request = json!({"idempotency_key":"66666666666666666666666666666666","session":session,"argv":["./relative-task"],"cwd":cwd});
             let created = invoke("phux_terminal_create", &socket, request.clone()).await;
+            let execution = json!({"execution":created["execution_ref"],"timeout_secs":10});
+            let first_result = invoke("phux_execution_result", &socket, execution.clone()).await;
+            assert_eq!(first_result["status"], "observed");
+            assert_eq!(
+                first_result["observation"]["outcome"],
+                json!({"type":"exited","code":7})
+            );
             let terminal_id = u32::try_from(created["terminal_id"].as_u64().unwrap()).unwrap();
             await_engine_exit(&mut stream, terminal_id).await;
             let lookup = json!({"session":session,"idempotency_key":request["idempotency_key"]});
@@ -295,6 +302,8 @@ fn completed_records_survive_natural_exit_screen_expiry_and_server_restart() {
             assert_eq!(recovered["resource"], created["resource"]);
             assert_eq!(recovered["placement"], created["placement"]);
             assert_eq!(recovered["execution"]["outcome"]["code"], 7);
+            let exact = invoke("phux_execution_result", &socket, execution.clone()).await;
+            assert_eq!(exact, first_result, "same execution after cold restart");
             let replay = invoke("phux_terminal_create", &socket, request).await;
             assert_eq!(replay["replayed"], true);
             assert_eq!(replay["resource"], created["resource"]);
@@ -316,6 +325,9 @@ fn completed_records_survive_natural_exit_screen_expiry_and_server_restart() {
             )
             .await;
             assert!(matches!(result, CommandResult::Accepted { .. }));
+            let exact = invoke("phux_execution_result", &socket, execution).await;
+            assert_eq!(exact["status"], "superseded");
+            assert!(exact["observation"].is_null());
             let page = organization(&mut stream).await;
             assert_eq!(
                 page.resources[0].activation.as_ref().unwrap().state,
@@ -334,6 +346,49 @@ fn completed_records_survive_natural_exit_screen_expiry_and_server_restart() {
             drop(stream);
             join_after_shutdown(shutdown, server).await;
         }
+    });
+}
+
+#[test]
+fn an_unread_creation_reply_recovers_the_exact_execution_without_replaying() {
+    run_local(async {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("lost-api-reply.sock");
+        let (shutdown, server) = spawn_server_seed_pty_no_cmd(socket.clone(), None);
+        let mut writer = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+        let session = new_session(&mut writer, "lost", 31).await;
+        let key = "76767676767676767676767676767676";
+        let mut intent = phux_protocol::api::TerminalCreate::new(session.as_str(), key);
+        intent.argv = vec!["/bin/sh".into(), "-c".into(), "exit 42".into()];
+        phux_server_testkit::send_command(&mut writer, 90, intent.command().unwrap()).await;
+        let mut reader = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+        tokio::time::timeout(WIRE_RECV_TIMEOUT, async {
+            while count(&mut reader, &session).await != 1 {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        // The process and arrangement committed, but this caller never read
+        // the response and has only its original operation identity.
+        drop(writer);
+        let recovered = invoke(
+            "phux_terminal_operation",
+            &socket,
+            json!({"session":session,"idempotency_key":key}),
+        )
+        .await;
+        let exact = invoke(
+            "phux_execution_result",
+            &socket,
+            json!({"execution":recovered["execution_ref"],"timeout_secs":5}),
+        )
+        .await;
+        assert_eq!(exact["status"], "observed");
+        assert_eq!(exact["observation"]["outcome"]["code"], 42);
+        assert_eq!(count(&mut reader, &session).await, 1);
+        drop(reader);
+        join_after_shutdown(shutdown, server).await;
     });
 }
 

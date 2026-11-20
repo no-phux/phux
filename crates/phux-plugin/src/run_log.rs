@@ -358,6 +358,11 @@ mod tests {
     #[test]
     fn action_errors_record_the_message_and_never_succeed() {
         let request = PluginActionRequest {
+            context: crate::ActionContext::supplied(
+                crate::ActionSource::Cli,
+                crate::ActionTarget::default(),
+                serde_json::Value::Null,
+            ),
             plugin_id: "example.p".to_owned(),
             action_id: "go".to_owned(),
             timeout: None,

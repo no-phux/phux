@@ -30,7 +30,8 @@ impl ServerFeatureExtSet {
         | ServerFeatureExt::Credentials as u32
         | ServerFeatureExt::ForwardTcp as u32
         | ServerFeatureExt::ForwardAgent as u32
-        | ServerFeatureExt::SlotTabs as u32;
+        | ServerFeatureExt::SlotTabs as u32
+        | ServerFeatureExt::CurrentQuestions as u32;
 
     /// Known extended features in this set, in bit order.
     pub fn iter(self) -> impl Iterator<Item = ServerFeatureExt> {

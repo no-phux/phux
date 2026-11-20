@@ -85,6 +85,14 @@ Do not multiply every screen by every case. Cover the gallery and selected
 flow, explain inapplicable cases and extend the nearest exporter for gaps.
 Do not lower the requirement or build a giant screenshot framework.
 
+Settings size-control cases use the integrated app view, its actual text
+scale and explicit scroll reveal of the selected button. Compare standard
+and largest iOS accessibility text on both phone widths, including reduced
+native-sized 2× viewports; desktop controls use the desktop's largest 140%
+text scale, not an iOS setting. Check both buttons' complete visible bounds,
+label/value containment and non-overlap, real touch/keyboard activation and
+range limits. A 44-point visible fragment of a taller button is not a pass.
+
 ## Review behavior as well as pixels
 
 Use the trees and behavior tests to check focus/name/role, clipping/scroll
@@ -101,6 +109,15 @@ above the keyboard while questions scroll. It does not change Send, controller
 code or draft lifetime. Prove existing dismissal/draft semantics, scrolling,
 keyboard clearance and no input leaking into the terminal. Do not force menu
 API adoption. This is not a standing instruction to churn Inbox afterward.
+
+Phone pane-motion cases exercise the actual Move handler over a retained,
+unequal split arrangement. They export idle, press, first-axis, mid-drag,
+release, release +100 ms and settled frames at a fixed 60 Hz. Matching
+`.motion.json` sidecars bind each case, frame and elapsed time into the
+manifest. Horizontal/vertical drift, reversal, boundary resistance,
+cancellation, reduced motion and keyboard-open cases supplement the small,
+light/dark and native-sized 2× matrix. They establish rendered trajectories
+and input semantics, not physical-device smoothness.
 
 Inspect full images and the changed region's surroundings. Explain upstream
 rendering changes too. Reproduce regressions, fix their cause and recapture.

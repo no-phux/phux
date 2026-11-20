@@ -1,7 +1,40 @@
 import Foundation
 
+/// The shipped probe's one-shot input and terminal outcome, independent of UIKit.
+/// A later live connection must not revive a failed qualification.
+struct QualificationProgress {
+    private(set) var injected = false
+    private(set) var finished = false
+    private var failed = false
+
+    mutating func claimInput(when ready: Bool) -> Bool {
+        guard ready, !finished, !injected else { return false }
+        injected = true
+        return true
+    }
+
+    mutating func publish(_ write: () throws -> Bool) rethrows {
+        guard !finished else { return }
+        finished = try write()
+    }
+
+    mutating func claimFailure() -> Bool {
+        guard !failed else { return false }
+        failed = true
+        finished = true
+        return true
+    }
+}
+
 /// Qualification's readiness file must describe the frame whose tree was saved.
 enum QualificationEvidence {
+    /// A pre-consumer failure report also acknowledges that synchronous seal
+    /// cleanup returned. It is never rendered-input or lifecycle evidence.
+    static func preparationFailure(seal: () -> Void, publish: () -> Void) {
+        seal()
+        publish()
+    }
+
     static func publish(report: [String: Any], tree: [String: Any], marker: String,
                         didPresent: Bool, write: ([String: Any], String) throws -> Void) throws -> Bool {
         guard didPresent, report["marker_seen"] as? Bool == true,

@@ -10,6 +10,8 @@ use super::*;
 use crate::connection::io::SEND_BUDGET;
 use crate::control::{ControlOptions, ControlPlane, encode};
 
+mod diagnostics;
+
 #[test]
 fn wsl_reconnects_like_a_local_upgrade_without_overriding_custom_pacing() {
     let target = Target::wsl("/linux.sock".into(), "/custom/phux".into());

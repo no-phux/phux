@@ -17,7 +17,7 @@ use phux_client::state::StateView;
 use phux_config::socket::default_socket_path;
 
 use super::attach::{self, DialPlan, DialRefusal};
-use super::json_err::{self, CliError, codes};
+use super::json_err::{self, CliError, Refusal, codes};
 use super::remote::{self, Endpoint, RemoteEntry};
 use super::remote_target::{self, Bootstrap};
 
@@ -82,16 +82,42 @@ impl ServerSpec {
         verb: &str,
         json: bool,
     ) -> Result<ServerTarget, ExitCode> {
+        let bootstrap = bootstrap_for(json || matches!(verb, "upload" | "download"));
+        self.resolve_inner(rt, verb, bootstrap, true)
+            .map_err(|error| error.emit(json && error.err.code != codes::USAGE_ERROR))
+    }
+
+    /// Resolve a registered target without printing diagnostics or enrolling it.
+    pub(super) fn resolve_quiet(
+        self,
+        rt: &tokio::runtime::Runtime,
+        verb: &str,
+    ) -> Result<ServerTarget, Refusal> {
+        self.resolve_inner(rt, verb, Bootstrap::Never, false)
+    }
+
+    fn resolve_inner(
+        self,
+        rt: &tokio::runtime::Runtime,
+        verb: &str,
+        bootstrap: Bootstrap,
+        warn_renewal: bool,
+    ) -> Result<ServerTarget, Refusal> {
         let Some(raw) = self.remote else {
             return Ok(ServerTarget::Local(
                 self.socket.unwrap_or_else(default_socket_path),
             ));
         };
         if self.socket.is_some() {
-            error!("{SOCKET_REMOTE_CONFLICT}");
-            return Err(ExitCode::from(2));
+            return Err(Refusal::new(
+                codes::USAGE_ERROR,
+                SOCKET_REMOTE_CONFLICT,
+                "",
+                2,
+            ));
         }
-        resolve_remote(rt, &raw, verb, json).map(|remote| ServerTarget::Remote(Box::new(remote)))
+        resolve_remote(rt, &raw, verb, bootstrap, warn_renewal)
+            .map(|remote| ServerTarget::Remote(Box::new(remote)))
     }
 }
 
@@ -100,19 +126,16 @@ fn resolve_remote(
     rt: &tokio::runtime::Runtime,
     raw: &str,
     verb: &str,
-    json: bool,
-) -> Result<RemoteServer, ExitCode> {
-    let target = remote_target::parse_target(raw).map_err(|err| {
-        json_err::emit(json, &CliError::new(codes::REMOTE_UNRESOLVED, err, ""), 2)
+    bootstrap: Bootstrap,
+    warn_renewal: bool,
+) -> Result<RemoteServer, Refusal> {
+    let target = remote_target::parse_target(raw)
+        .map_err(|err| Refusal::new(codes::REMOTE_UNRESOLVED, err, "", 2))?;
+    let entry = remote_target::resolve(&target, None, bootstrap).map_err(|report| {
+        Refusal::from_error(ladder_refusal_error(&report), 1)
+            .with_human(report.lines().map(str::to_owned).collect())
     })?;
-    // Attach's own resolver; JSON automation and deadline-bounded transfers never pair.
-    let entry = remote_target::resolve(
-        &target,
-        None,
-        bootstrap_for(json || matches!(verb, "upload" | "download")),
-    )
-    .map_err(|report| emit_ladder_refusal(json, &report))?;
-    dial_entry(rt, &entry, verb, json)
+    plan_entry_inner(rt, &entry, verb, warn_renewal).map_err(|err| Refusal::from_error(err, 1))
 }
 
 /// Whether a cold target may pair over ssh: as under attach, except for a
@@ -128,6 +151,7 @@ const fn bootstrap_for(json: bool) -> Bootstrap {
 /// Turn a registered entry into a dial, reporting any refusal on the `--json`
 /// contract with exit code 1. `ssh://` entries carry only an interactive
 /// attach, so they are refused.
+#[cfg(test)]
 fn dial_entry(
     rt: &tokio::runtime::Runtime,
     entry: &RemoteEntry,
@@ -145,6 +169,15 @@ pub(crate) fn plan_entry(
     entry: &RemoteEntry,
     verb: &str,
 ) -> Result<RemoteServer, CliError> {
+    plan_entry_inner(rt, entry, verb, true)
+}
+
+fn plan_entry_inner(
+    rt: &tokio::runtime::Runtime,
+    entry: &RemoteEntry,
+    verb: &str,
+    warn_renewal: bool,
+) -> Result<RemoteServer, CliError> {
     let endpoint = Endpoint::parse(&entry.endpoint)
         .map_err(|err| entry_refusal(entry, &DialRefusal::Malformed(err)))?;
     let token = remote::read_token(entry)
@@ -154,7 +187,9 @@ pub(crate) fn plan_entry(
     let identity = entry
         .client_identity()
         .map_err(|err| unusable_entry(entry, &err, &re_pair_remedy(&entry.name)))?;
-    entry.warn_if_renewal_due();
+    if warn_renewal {
+        entry.warn_if_renewal_due();
+    }
     let plan = match endpoint {
         Endpoint::Quic(addr) => attach::plan_quic_dial(rt, &addr, token, fingerprint, server_name),
         Endpoint::Ws(url) => attach::plan_ws_dial(url, token, fingerprint, server_name),
@@ -267,16 +302,6 @@ fn ssh_only_refusal(name: &str, destination: &str, verb: &str) -> CliError {
              until then, run the command on the host: `ssh {destination} phux {verb} ...`"
         ),
     )
-}
-
-/// Print a ladder refusal: the same prose lines `phux attach --remote`
-/// prints, or one JSON line under `json`.
-fn emit_ladder_refusal(json: bool, report: &str) -> ExitCode {
-    if !json {
-        crate::output::error_block(report.lines());
-        return ExitCode::FAILURE;
-    }
-    json_err::emit(true, &ladder_refusal_error(report), 1)
 }
 
 /// The JSON form of a ladder refusal: its first line is the message and the

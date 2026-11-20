@@ -81,6 +81,127 @@ fn await_view(server: &common::ServerGuard, agent: &str, want: impl Fn(&Value) -
 fn asking(view: &Value) -> bool {
     view["questions"].as_array().is_some_and(|q| !q.is_empty())
 }
+
+#[test]
+#[ignore = "real isolated daemon and ACP peer; run via just e2e"]
+fn cli_current_questions_and_exact_receipt_across_connections() {
+    let root = tempfile::tempdir().unwrap();
+    let ledger = root.path().join("peer.jsonl");
+    let server = common::ServerGuard::start("exactq");
+    profile(&server, root.path(), &ledger);
+    let spawned = document(
+        &server,
+        &["launch", "--acp", "peer", "--session", "work", "--json"],
+    );
+    let agent = spawned["agent_session_id"].as_str().unwrap();
+    let activation = spawned["activation"].as_str().unwrap();
+    await_view(&server, agent, |view| view["connected"] == true);
+    command(
+        &server,
+        agent,
+        activation,
+        90,
+        &json!({"type":"prompt","text":"permission"}),
+    );
+    let current = await_value(|| document(&server, &["agent", "questions", agent]), asking);
+    let target = format!(
+        "{}/^{}",
+        current["authority"].as_str().unwrap(),
+        current["resource"].as_str().unwrap()
+    );
+    assert_eq!(document(&server, &["agent", "questions", &target]), current);
+    let question = &current["questions"][0];
+    assert_eq!(question["type"], "provider");
+    assert_eq!(question["reference"]["activation"], activation);
+    let guardian = format!("@{}", spawned["terminal_id"]);
+    assert_eq!(
+        document(&server, &["agent", "questions", &guardian])["questions"],
+        json!([])
+    );
+    server.success(&["upgrade"]);
+    await_value(
+        || {
+            let (status, output, _) = server.run(&["agent", "questions", &target]);
+            if status == 0 {
+                serde_json::from_str(&output).unwrap()
+            } else {
+                Value::Null
+            }
+        },
+        |reconnected| reconnected == &current,
+    );
+
+    let reference = &question["reference"];
+    assert_stale_question_refused(&server, reference);
+    let operation = "18446744073709551615";
+    let answer =
+        json!({"question":reference,"operation_id":operation,"response":{"option_id":"deny-once"}});
+    let sent = document(
+        &server,
+        &[
+            "agent",
+            "respond-question",
+            "--request-json",
+            &answer.to_string(),
+        ],
+    );
+    assert_eq!(sent["disposition"], "queued");
+    assert_eq!(sent["awaiting_dispatch"], false);
+    await_value(
+        || document(&server, &["agent", "questions", &target]),
+        |q| q["questions"] == json!([]),
+    );
+    let receipt = document(
+        &server,
+        &[
+            "agent",
+            "question-receipt",
+            "--question-json",
+            &reference.to_string(),
+            "--operation-id",
+            operation,
+        ],
+    );
+    assert_eq!(receipt, sent);
+    let (missing, stdout, _) = server.run(&[
+        "agent",
+        "question-receipt",
+        "--question-json",
+        &reference.to_string(),
+        "--operation-id",
+        "111",
+    ]);
+    assert_eq!(missing, 3);
+    assert_eq!(
+        serde_json::from_str::<Value>(&stdout).unwrap()["disposition"],
+        "unknown"
+    );
+    let calls = std::fs::read_to_string(&ledger).unwrap();
+    assert_eq!(count(&calls, "\"method\": \"session/prompt\""), 1);
+    await_value(
+        || log(&server, agent),
+        |log| log.to_string().contains("peer result: deny-once"),
+    );
+}
+
+fn assert_stale_question_refused(server: &common::ServerGuard, reference: &Value) {
+    let mut changed = reference.clone();
+    changed["revision"] = json!("0".repeat(64));
+    let stale =
+        json!({"question":changed,"operation_id":"99","response":{"option_id":"allow-once"}});
+    let (status, stdout, stderr) = server.run(&[
+        "agent",
+        "respond-question",
+        "--request-json",
+        &stale.to_string(),
+    ]);
+    assert_eq!(status, 1, "{stderr}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&stdout).unwrap()["disposition"],
+        "refused"
+    );
+}
+
 fn count(text: &str, needle: &str) -> usize {
     text.lines().filter(|line| line.contains(needle)).count()
 }

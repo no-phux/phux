@@ -184,8 +184,11 @@ pub struct BindingDocument {
     pub session: String,
     /// Organization session key.
     pub session_key: String,
-    /// Worker pane id, decimal.
-    pub terminal_id: String,
+    /// Worker pane at launch, if any. Display only; not a durable selector.
+    pub terminal_id: Option<String>,
+    /// Exact authority-owned execution, omitted in legacy receipts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution: Option<phux_protocol::api::ExecutionRef>,
     /// Worktree path.
     pub worktree_path: String,
     /// Branch name.
@@ -243,6 +246,7 @@ impl StartDocument {
                 session: binding.session.clone(),
                 session_key: binding.session_key.clone(),
                 terminal_id: binding.terminal_id.clone(),
+                execution: binding.execution.clone(),
                 worktree_path: binding.worktree_path.clone(),
                 branch: binding.branch.clone(),
                 tab_title: binding.tab_title.clone(),

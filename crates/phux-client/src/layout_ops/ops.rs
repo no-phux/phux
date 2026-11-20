@@ -102,9 +102,10 @@ impl<'a> LayoutOps<'a> {
             .session_by_live(self.session)
             .ok_or(LayoutOpsError::MissingLayout)?;
         let key = session.arrangement.ok_or(LayoutOpsError::MissingLayout)?;
+        let session_key = session.key;
         let handles = HandleMap::from_pairs(
             inventory
-                .members(&session.key)
+                .members(&session_key)
                 .map(|record| (record.key, record.live.clone())),
         );
         let request_id = self.allocate_request_id();
@@ -120,6 +121,13 @@ impl<'a> LayoutOps<'a> {
             revision: value.revision,
             handles,
             binding,
+            authority: inventory.authority,
+            stored: value,
+            members: inventory
+                .resources
+                .into_iter()
+                .filter(|record| record.session == session_key)
+                .collect(),
         })
     }
 

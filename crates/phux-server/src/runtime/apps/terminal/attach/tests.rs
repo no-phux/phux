@@ -5,6 +5,7 @@ mod handshake;
 mod native_capture;
 mod native_pump;
 mod prepare_attach;
+mod publication_diagnostics;
 mod staging;
 mod two_pump;
 mod two_pump_lagged;

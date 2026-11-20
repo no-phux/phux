@@ -1,6 +1,6 @@
 [package]
 name = "phux-rune"
-version = "0.1.40"
+version = "0.1.44"
 description = "The phux desktop client, built on the Rune UI framework."
 edition = "2024"
 publish = false
@@ -28,11 +28,11 @@ phux-protocol = { path = "../../crates/phux-protocol" }
 # Phux supplies Inter and the terminal font through AppSpec::fonts. Keep
 # Rune's other defaults, but don't carry its unused embedded font copies.
 # Packaged qualification and the updater's GPU launch check use headless tooling.
-rune = { git = "https://github.com/anomalyco/rune", rev = "532993160d5f41f288dc17f0f1b3fa28f38976ea", default-features = false, features = ["accessibility", "dbus", "metal-backend", "ogg-audio", "svg", "tooling"] }
-rune-notify = { git = "https://github.com/anomalyco/rune", rev = "532993160d5f41f288dc17f0f1b3fa28f38976ea" }
-rune-perf = { git = "https://github.com/anomalyco/rune", rev = "532993160d5f41f288dc17f0f1b3fa28f38976ea" }
+rune = { git = "https://github.com/anomalyco/rune", rev = "1ff57939ef7f68810660abf696dccf6ac8e2d2fc", default-features = false, features = ["accessibility", "dbus", "metal-backend", "ogg-audio", "svg", "tooling"] }
+rune-notify = { git = "https://github.com/anomalyco/rune", rev = "1ff57939ef7f68810660abf696dccf6ac8e2d2fc" }
+rune-perf = { git = "https://github.com/anomalyco/rune", rev = "1ff57939ef7f68810660abf696dccf6ac8e2d2fc" }
 # The quick terminal's shortcut recorder in Settings.
-rune-kit = { git = "https://github.com/anomalyco/rune", rev = "532993160d5f41f288dc17f0f1b3fa28f38976ea" }
+rune-kit = { git = "https://github.com/anomalyco/rune", rev = "1ff57939ef7f68810660abf696dccf6ac8e2d2fc" }
 # Never called directly: Rune's decoder guesses the format, so these
 # features (unified with Rune's png/jpeg) let typed documents draw GIF/WebP.
 image = { version = "0.25", default-features = false, features = ["gif", "webp"] }
@@ -56,6 +56,14 @@ qrcode = { version = "0.14", default-features = false }
 # Frame builders the tests feed the embedded client; pure Rust, no new graph.
 phux-wire-fixtures = { path = "../../crates/phux-wire-fixtures" }
 
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+phux-plugin = { path = "../../crates/phux-plugin" }
+
+# Catching SIGXFSZ, so a write past RLIMIT_FSIZE fails instead of killing
+# the app (src/file_size.rs); already in the graph.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # The desktop's light or dark preference from the XDG portal (src/theme/portal.rs);
 # the same zbus, tokio and futures-util Rune's `dbus` feature already builds.
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -76,13 +84,14 @@ objc2-core-text = { version = "0.3.2", default-features = false, features = ["st
 skrifa = "0.44"
 
 [patch.crates-io]
-# Git dependencies do not inherit Rune's workspace patches. Track all five
-# at the same rev: native IME, text shaping/bidi, GPU and native accessibility.
-winit = { git = "https://github.com/anomalyco/rune", rev = "532993160d5f41f288dc17f0f1b3fa28f38976ea" }
-parley_engine = { git = "https://github.com/anomalyco/rune", rev = "532993160d5f41f288dc17f0f1b3fa28f38976ea" }
-wgpu-hal = { git = "https://github.com/anomalyco/rune", rev = "532993160d5f41f288dc17f0f1b3fa28f38976ea" }
-accesskit_windows = { git = "https://github.com/anomalyco/rune", rev = "532993160d5f41f288dc17f0f1b3fa28f38976ea" }
-accesskit_macos = { git = "https://github.com/anomalyco/rune", rev = "532993160d5f41f288dc17f0f1b3fa28f38976ea" }
+# Git dependencies do not inherit Rune's workspace patches. Track all six
+# at the same rev: native IME, Wayland frame corners, shaping/bidi, GPU and AX.
+winit = { git = "https://github.com/anomalyco/rune", rev = "1ff57939ef7f68810660abf696dccf6ac8e2d2fc" }
+sctk-adwaita = { git = "https://github.com/anomalyco/rune", rev = "1ff57939ef7f68810660abf696dccf6ac8e2d2fc" }
+parley_engine = { git = "https://github.com/anomalyco/rune", rev = "1ff57939ef7f68810660abf696dccf6ac8e2d2fc" }
+wgpu-hal = { git = "https://github.com/anomalyco/rune", rev = "1ff57939ef7f68810660abf696dccf6ac8e2d2fc" }
+accesskit_windows = { git = "https://github.com/anomalyco/rune", rev = "1ff57939ef7f68810660abf696dccf6ac8e2d2fc" }
+accesskit_macos = { git = "https://github.com/anomalyco/rune", rev = "1ff57939ef7f68810660abf696dccf6ac8e2d2fc" }
 
 [profile.release]
 lto = "thin"

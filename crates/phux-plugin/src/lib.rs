@@ -1,5 +1,6 @@
 //! Shared plugin runtime surface for CLI and agent consumers.
 
+mod action_context;
 mod launch;
 pub mod run_log;
 pub mod startup_log;
@@ -12,6 +13,7 @@ use phux_config::plugin::{self, PluginManifestAction};
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
+pub use action_context::{ActionContext, ActionSource, ActionTarget};
 pub use launch::{
     KindClaim, KindLaunchError, LaunchError, LaunchMode, LaunchableIntegration, NativeExecution,
     ResolvedLaunch, executable_on_path, executable_path, integration_for_kind, kind_matches,
@@ -55,6 +57,13 @@ pub struct CommandSpecOutput {
 ///
 /// When `argv` is empty or the process cannot be spawned or awaited.
 pub async fn run_command_spec(spec: CommandSpec) -> std::io::Result<CommandSpecOutput> {
+    run_child(spec, false).await
+}
+
+async fn run_child(
+    spec: CommandSpec,
+    clean_environment: bool,
+) -> std::io::Result<CommandSpecOutput> {
     let Some((program, args)) = spec.argv.split_first() else {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -64,6 +73,9 @@ pub async fn run_command_spec(spec: CommandSpec) -> std::io::Result<CommandSpecO
     let start = Instant::now();
     let mut process = Command::new(program);
     process.args(args).kill_on_drop(true);
+    if clean_environment {
+        prepare_action_environment(&mut process);
+    }
     if let Some(cwd) = &spec.cwd {
         process.current_dir(cwd);
     }
@@ -97,6 +109,30 @@ pub async fn run_command_spec(spec: CommandSpec) -> std::io::Result<CommandSpecO
     })
 }
 
+fn prepare_action_environment(process: &mut Command) {
+    process.env_clear();
+    for key in [
+        "PATH",
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "TMPDIR",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "PHUX_BIN",
+    ] {
+        if let Some(value) = std::env::var_os(key) {
+            process.env(key, value);
+        }
+    }
+    // Older plugin scripts call phux without a route. An unset socket
+    // would select the owner default, possibly on the wrong machine.
+    // This cannot connect or be created: /dev/null is not a directory.
+    #[cfg(unix)]
+    process.env("PHUX_SOCKET", "/dev/null/phux-action.sock");
+}
+
 /// Request to execute one action declared by a configured plugin manifest.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginActionRequest {
@@ -108,6 +144,8 @@ pub struct PluginActionRequest {
     pub timeout: Option<Duration>,
     /// Optional cwd override. Relative paths resolve under the plugin root.
     pub cwd: Option<PathBuf>,
+    /// Versioned, non-authorizing input to the child.
+    pub context: ActionContext,
 }
 
 /// Structured plugin action execution result.
@@ -174,6 +212,15 @@ pub enum PluginActionError {
         /// Action id.
         action_id: String,
     },
+    /// This manifest or action opted out on the executing platform.
+    #[error("plugin action is unavailable on this platform")]
+    UnsupportedPlatform,
+    /// Context is passed in one bounded environment value.
+    #[error("plugin action context exceeds 16384 bytes")]
+    ContextTooLarge,
+    /// Could not encode the process input.
+    #[error("could not encode plugin action context: {0}")]
+    Context(#[from] serde_json::Error),
     /// Process spawn or wait failed.
     #[error("plugin action process failed: {0}")]
     Io(#[from] std::io::Error),
@@ -190,12 +237,16 @@ pub async fn run_configured_action(
     request: &PluginActionRequest,
 ) -> Result<PluginActionOutput, PluginActionError> {
     let (plugin_root, action) = resolve_action(config_path, request)?;
+    let context = serde_json::to_string(&request.context)?;
+    if context.len() > 16 * 1024 {
+        return Err(PluginActionError::ContextTooLarge);
+    }
     let cwd = request
         .cwd
         .as_ref()
         .map_or_else(|| plugin_root.clone(), |cwd| plugin_root.join(cwd));
     let spec = CommandSpec {
-        argv: action.command.clone(),
+        argv: executable_argv(&plugin_root, &action.command),
         cwd: Some(cwd.clone()),
         env: vec![
             ("PHUX_PLUGIN_ID".to_owned(), request.plugin_id.clone()),
@@ -204,10 +255,11 @@ pub async fn run_configured_action(
                 "PHUX_PLUGIN_ROOT".to_owned(),
                 plugin_root.display().to_string(),
             ),
+            ("PHUX_ACTION_CONTEXT".to_owned(), context),
         ],
         timeout: request.timeout,
     };
-    let output = run_command_spec(spec).await?;
+    let output = run_child(spec, true).await?;
     Ok(PluginActionOutput {
         schema_version: 1,
         plugin_id: request.plugin_id.clone(),
@@ -222,6 +274,17 @@ pub async fn run_configured_action(
     })
 }
 
+fn executable_argv(root: &Path, command: &[String]) -> Vec<String> {
+    let mut argv = command.to_vec();
+    if let Some(program) = argv.first_mut() {
+        let path = Path::new(program);
+        if path.is_relative() && path.components().count() > 1 {
+            *program = root.join(path).to_string_lossy().into_owned();
+        }
+    }
+    argv
+}
+
 /// [`run_configured_action`], then append the result (success or failure)
 /// to the current profile's run log ([`run_log`]) for `phux plugin log`.
 ///
@@ -232,13 +295,61 @@ pub async fn run_configured_action_logged(
     config_path: &Path,
     request: &PluginActionRequest,
 ) -> Result<PluginActionOutput, PluginActionError> {
+    run_with_log(config_path, request, run_log::default_path()).await
+}
+
+async fn run_with_log(
+    config_path: &Path,
+    request: &PluginActionRequest,
+    log_path: PathBuf,
+) -> Result<PluginActionOutput, PluginActionError> {
     let result = run_configured_action(config_path, request).await;
-    run_log::record_async(
-        run_log::default_path(),
-        run_log::RunRecord::from_action(request, &result),
-    )
-    .await;
+    run_log::record_async(log_path, run_log::RunRecord::from_action(request, &result)).await;
     result
+}
+
+/// One locally installed action suitable for presentation in a client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfiguredAction {
+    /// Manifest id of the enabled plugin.
+    pub plugin: String,
+    /// Plugin-local action id.
+    pub id: String,
+    /// Human-readable palette title.
+    pub title: String,
+}
+
+/// List platform-compatible actions in the local configuration.
+pub fn configured_actions(config_path: &Path) -> Result<Vec<ConfiguredAction>, PluginActionError> {
+    let cfg = config_loader::load_from(config_path)?;
+    Ok(plugin::load_enabled_manifests(config_path, &cfg.plugins)
+        .into_iter()
+        .filter(|manifest| platforms_allow(manifest.platforms.as_deref()))
+        .flat_map(|manifest| {
+            manifest
+                .actions
+                .into_iter()
+                .filter(|action| platforms_allow(action.platforms.as_deref()))
+                .map(move |action| ConfiguredAction {
+                    plugin: manifest.id.clone(),
+                    id: action.id,
+                    title: action.title,
+                })
+        })
+        .collect())
+}
+
+/// Run on an embedder's worker thread, with the same process and log contract
+/// as clients that already have an async runtime.
+pub fn run_configured_action_blocking(
+    config_path: &Path,
+    request: &PluginActionRequest,
+    log_path: PathBuf,
+) -> Result<PluginActionOutput, PluginActionError> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(run_with_log(config_path, request, log_path))
 }
 
 /// Find the configured plugin's root and the requested action.
@@ -262,6 +373,7 @@ fn resolve_action(
         if !entry.enabled {
             return Err(PluginActionError::PluginDisabled(plugin_id.clone()));
         }
+        let permitted = platforms_allow(manifest.platforms.as_deref());
         let action = manifest
             .actions
             .into_iter()
@@ -270,7 +382,29 @@ fn resolve_action(
                 plugin_id: plugin_id.clone(),
                 action_id: request.action_id.clone(),
             })?;
+        if !permitted || !platforms_allow(action.platforms.as_deref()) {
+            return Err(PluginActionError::UnsupportedPlatform);
+        }
         return Ok((manifest.plugin_root, action));
     }
     Err(PluginActionError::PluginNotFound(plugin_id.clone()))
 }
+
+/// Does this declaration allow execution on this machine?
+#[must_use]
+pub fn platforms_allow(platforms: Option<&[plugin::PluginPlatform]>) -> bool {
+    platforms.is_none_or(|platforms| {
+        platforms.iter().any(|platform| {
+            use plugin::PluginPlatform::{Linux, Macos, Windows};
+            match platform {
+                Linux => cfg!(target_os = "linux"),
+                Macos => cfg!(target_os = "macos"),
+                Windows => cfg!(target_os = "windows"),
+            }
+        })
+    })
+}
+
+#[cfg(test)]
+#[cfg(unix)]
+mod action_tests;

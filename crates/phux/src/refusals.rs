@@ -136,13 +136,16 @@ pub(crate) fn usage_refusal(cli: &Cli) -> Option<ExitCode> {
     // — before the interactive TTY preflight below. Otherwise a typo in a
     // script would surface as "interactive use requires a terminal", which
     // names the wrong problem entirely.
-    if let Some(message) = malformed_remote_target(cli) {
-        return Some(emit_usage_error(message));
-    }
-    if socket_and_remote_collide(cli) {
-        return Some(emit_usage_error(
-            commands::server_target::SOCKET_REMOTE_CONFLICT.to_owned(),
-        ));
+    // `api` reports target errors itself so it can retain the request identity.
+    if !matches!(&cli.command, Some(Command::Api(_))) {
+        if let Some(message) = malformed_remote_target(cli) {
+            return Some(emit_usage_error(message));
+        }
+        if socket_and_remote_collide(cli) {
+            return Some(emit_usage_error(
+                commands::server_target::SOCKET_REMOTE_CONFLICT.to_owned(),
+            ));
+        }
     }
     if cli.socket.is_some()
         && let Some(verb) = cli.command.as_ref().and_then(commands::socketless_verb)

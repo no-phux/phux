@@ -45,6 +45,7 @@ mod command_admission;
 mod fixture;
 mod integrations;
 mod publication_recovery;
+mod questions;
 mod receipts_and_lifecycle;
 mod viewer_spawn;
 use crate::auth::{AuthenticatedCredential, ConnectionIdentity};

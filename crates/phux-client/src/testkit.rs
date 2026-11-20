@@ -193,6 +193,28 @@ impl ScriptedServer {
         Self::on_stream(stream, spec).run().await
     }
 
+    #[cfg(test)]
+    pub(crate) async fn accept_then_drop_reply(
+        listener: &UnixListener,
+        mut spec: ScriptSpec,
+    ) -> Vec<FrameKind> {
+        let (stream, _) = listener.accept().await.expect("accept scripted client");
+        let mut link = FrameLink::new(stream);
+        let mut seen = Vec::new();
+        while let Some(frame) = link.recv().await {
+            if matches!(frame, FrameKind::Command { .. }) {
+                seen.push(frame);
+                link.close_output().await;
+                break;
+            }
+            for reply in reference_reply(&frame, &mut spec) {
+                link.send(&reply).await;
+            }
+            seen.push(frame);
+        }
+        seen
+    }
+
     /// Serve until the script is exhausted and [`EndOfScript`] says to stop,
     /// or the client hangs up. Returns every frame the client sent, in order
     /// — which is what the "never sends ATTACH" style guards inspect.

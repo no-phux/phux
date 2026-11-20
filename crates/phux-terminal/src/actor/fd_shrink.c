@@ -14,6 +14,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <paths.h>
 #include <stdint.h>
 #include <signal.h>
 #include <stdio.h>
@@ -51,7 +52,7 @@ static void status_write(const unsigned char *bytes, size_t size) {
     }
 }
 
-static void launch_failed(unsigned char stage) {
+static _Noreturn void launch_failed(unsigned char stage) {
     uint32_t error = (uint32_t)errno;
     const unsigned char bytes[] = {
         stage, (unsigned char)(error >> 24), (unsigned char)(error >> 16),
@@ -116,6 +117,75 @@ static void apply_spawn_dir(void) {
     unsetenv("PHUX_FD_SHRINK_CWD");
 }
 
+/* Only search past lookup failures. ENOEXEC is an exec failure, not an
+ * instruction to pass the selected file to a shell or try another program. */
+static int path_lookup_miss(int error) {
+    switch (error) {
+    case ENOENT:
+    case ENOTDIR:
+#ifdef __APPLE__
+    case ELOOP:
+    case ENAMETOOLONG:
+#elif defined(__GLIBC__)
+    case ESTALE:
+    case ENODEV:
+    case ETIMEDOUT:
+#endif
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+static void exec_path_entry(char *file, const char *dir, size_t len,
+                            char *const argv[], size_t program_size) {
+#ifdef __APPLE__
+    /* Darwin's execvp spells the empty (current-directory) entry "./". */
+    if (len == 0) {
+        dir = ".";
+        len = 1;
+    }
+#endif
+    if (len != 0) {
+        memcpy(file, dir, len);
+        file[len++] = '/';
+    }
+    memcpy(file + len, argv[0], program_size);
+    execv(file, argv);
+}
+
+/* Search the child's effective PATH after chdir, as execvp would, but use
+ * execv for every attempt. The kernel still handles valid shebangs. */
+static _Noreturn void exec_requested(char *const argv[]) {
+    if (strchr(argv[0], '/') != NULL) {
+        execv(argv[0], argv);
+        launch_failed(2);
+    }
+
+    const char *dir = getenv("PATH");
+    if (dir == NULL) dir = _PATH_DEFPATH;
+    size_t program_size = strlen(argv[0]) + 1;
+    char *file = malloc(strlen(dir) + program_size + 2);
+    if (file == NULL) launch_failed(2);
+
+    int denied = 0;
+    const char *end;
+    do {
+        end = strchr(dir, ':');
+        size_t len = end == NULL ? strlen(dir) : (size_t)(end - dir);
+        exec_path_entry(file, dir, len, argv, program_size);
+        if (errno == EACCES) {
+            denied = 1;
+        } else if (!path_lookup_miss(errno)) {
+            launch_failed(2);
+        }
+        dir = end == NULL ? NULL : end + 1;
+    } while (dir != NULL);
+
+    errno = denied ? EACCES : ENOENT;
+    launch_failed(2);
+}
+
 int main(int argc, char **argv) {
     const unsigned char ready = 0xa5;
     status_write(&ready, 1);
@@ -129,6 +199,5 @@ int main(int argc, char **argv) {
     if (setsid() < 0) launch_failed(3);
     if (ioctl(0, TIOCSCTTY, 0) < 0) launch_failed(3);
     apply_spawn_dir();
-    execvp(argv[2], &argv[2]);
-    launch_failed(2);
+    exec_requested(&argv[2]);
 }

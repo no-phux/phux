@@ -16,6 +16,8 @@ import struct
 import subprocess
 from urllib.parse import quote
 
+from visual_motion import MOTION_FRAMES, pane_motion_inventory
+
 
 FAMILIES = ("inbox", "settings", "navigation", "resources")
 THEMES = ("dark", "light")
@@ -201,6 +203,14 @@ def settings_inventory():
         for (form, width, height), state in product(
             SETTINGS_VIEWPORTS[2:], ("before", "chooser", "cancel", "accepted"))
     })
+    cases.update({
+        f"settings/size-{form}-{theme}-{text}-{control}-{scale}x.png": (width, height, scale)
+        for (form, width, height, scale), theme, text, control in product(
+            (("desktop", 1100, 720, 1), ("desktop-min", 640, 360, 1),
+             ("phone", 393, 852, 1), ("small", 320, 568, 1),
+             ("native", 393, 480, 2), ("native-small", 320, 340, 2)),
+            THEMES, ("standard", "ax5"), ("text-bigger", "interface-bigger"))
+    })
     return cases
 
 
@@ -225,11 +235,12 @@ def navigation_inventory():
             ((393, 852, 1, "false"), (320, 568, 1, "false"),
              (393, 480, 2, "true"), (320, 340, 2, "true")))
     })
+    cases.update(pane_motion_inventory(THEMES))
     return cases
 
 
 def required_inventory():
-    """303 required cases: 192 Inbox, 34 Settings, 76 navigation, 1 resource.
+    """491 required cases: 192 Inbox, 82 Settings, 216 navigation, 1 resource.
 
     Values are (logical width, logical height, scale); additional cases are
     welcome, but cannot replace any maintained case.
@@ -255,10 +266,14 @@ def inbox_exporter_for(stem):
 
 def exporter_for(family, stem):
     if family == "settings":
+        if stem.startswith("size-"):
+            return "settings_size_visual_review_frames"
         if "-appearance-" in stem:
             return "mobile_appearance_and_real_theme_palette_render_accept_and_cancel"
         return "settings_native_render_frames"
     if family == "navigation":
+        if stem.startswith("pane-motion-"):
+            return "phone_pane_motion_visual_review_frames"
         if stem.startswith("header-"):
             return "phone_header_visual_review_frames"
         if stem.startswith("retina-"):
@@ -280,7 +295,7 @@ def case_record(root, png):
     physical = png_size(png)
     tree = json.loads(tree_path.read_text(encoding="utf-8"))
     logical = validate_tree(tree, physical, tree_path)
-    return {
+    case = {
         "family": family, "png": relative, "tree": tree_relative,
         "exporter": exporter_for(family, png.stem),
         "scenario": required_label(tree, "scenario", tree_path),
@@ -289,6 +304,27 @@ def case_record(root, png):
         "physical": physical, "logical": logical, "scale": tree["scale"],
         "elementCount": len(tree["elements"]),
     }
+    if png.stem.startswith("pane-motion-"):
+        case.update(motion_record(root, png, tree))
+    return case
+
+
+def motion_record(root, png, tree):
+    path = png.with_suffix(".motion.json")
+    relative = safe_relative(root, path)
+    require(path.is_file(), f"{png}: missing motion timing")
+    motion = json.loads(path.read_text(encoding="utf-8"))
+    require(isinstance(motion, dict), f"{path}: motion must be an object")
+    stage = motion.get("stage")
+    require(type(stage) is str and stage in MOTION_FRAMES, f"{path}: unknown motion stage")
+    require(type(motion.get("schema")) is int and motion["schema"] == 1
+            and motion.get("scenario") == tree["scenario"]
+            and png.stem == f'{motion["scenario"]}-{stage}', f"{path}: wrong motion case")
+    frame, elapsed = motion.get("frame"), motion.get("elapsed_ms")
+    require(type(frame) is int and frame == MOTION_FRAMES[stage], f"{path}: wrong motion frame")
+    require(type(elapsed) in (int, float) and math.isfinite(elapsed)
+            and abs(elapsed - frame * 1000.0 / 60.0) < 1e-8, f"{path}: wrong motion clock")
+    return {"motion": relative, "motionSha256": digest(path)}
 
 
 def validate_required_geometry(case, expected):

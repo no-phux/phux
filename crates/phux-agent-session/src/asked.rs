@@ -157,6 +157,14 @@ impl AskedDetector {
         self.states.contains_key(&terminal)
     }
 
+    /// Current per-pane evidence, including which source produced it.
+    #[must_use]
+    pub fn observation(&self, terminal: ResourceId) -> Option<(AskedSource, &AskedPayload)> {
+        self.states
+            .get(&terminal)
+            .map(|state| (state.source, &state.payload))
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn current(&self, terminal: ResourceId) -> Option<&AskedPayload> {

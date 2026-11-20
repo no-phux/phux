@@ -32,6 +32,9 @@ validate_tree = _reports.validate_tree
 _settle_spec = importlib.util.spec_from_file_location("rune_simulator_settle", Path(__file__).with_name("simulator_settle.py"))
 _settle = importlib.util.module_from_spec(_settle_spec)
 _settle_spec.loader.exec_module(_settle)
+_trace_spec = importlib.util.spec_from_file_location("rune_connection_diagnostics", Path(__file__).with_name("connection_diagnostics.py"))
+_trace = importlib.util.module_from_spec(_trace_spec)
+_trace_spec.loader.exec_module(_trace)
 
 BUNDLE_ID = "sh.phux.rune.ios"
 MARKER = "RUNE_IOS_INPUT_OK"
@@ -99,6 +102,11 @@ class Qualification:
         self.sequence = 0
         self.configuration = None
         self.documents = None
+        self.diagnostic_prefixes = []
+        self.diagnostic_reports = set()
+        self.diagnostic_receipts = {}
+        self.diagnostic_pid = None
+        self.diagnostic_sealed = set()
 
     def run(self, command, timeout=30, env=None):
         self.sequence += 1
@@ -141,6 +149,9 @@ class Qualification:
     def start_server(self):
         socket = self.scratch / "s"
         env = server_environment(self.scratch)
+        # Extra server phases are opt-in for this isolated fixture only.
+        env["RUST_LOG"] = ("phux=info,warn,phux_server::publication_diagnostics=debug,"
+                           "phux_server::enrollment_diagnostics=debug")
         policy = Path(env["XDG_CONFIG_HOME"]) / "phux/config.toml"
         policy.parent.mkdir(parents=True, exist_ok=True)
         policy.write_text('[policy]\nmode = "paired"\n')
@@ -189,7 +200,8 @@ class Qualification:
         (self.out / "simulator.json").write_text(json.dumps({
             "udid": self.udid, "runtime": runtime, "device_type": device,
         }, indent=2) + "\n")
-        self.simctl("boot", self.udid)
+        # -b boots and waits under the existing 240s readiness deadline,
+        # without a separate boot RPC's premature generic 30s cutoff.
         self.simctl("bootstatus", self.udid, "-b", timeout=240)
         self.settle()
 
@@ -213,6 +225,7 @@ class Qualification:
         with open(secret, "x", opener=lambda path, flags: os.open(path, flags, 0o600)) as handle:
             json.dump(self.configuration, handle)
         self.configuration = None
+        self.diagnostic_prefixes.append("")
         result = self.simctl(
             # This is a new simulator and freshly installed app: there cannot
             # be an old process to terminate. Asking SpringBoard to terminate
@@ -226,7 +239,8 @@ class Qualification:
         match = re.search(rf"^{re.escape(BUNDLE_ID)}: ([0-9]+)$", result, re.MULTILINE)
         if not match:
             raise ValueError(f"simctl returned no app PID: {result}")
-        return int(match[1])
+        self.diagnostic_pid = int(match[1])
+        return self.diagnostic_pid
 
     def require_alive(self, pid):
         listing = self.simctl("spawn", self.udid, "launchctl", "list", attempts=QUERY_ATTEMPTS)
@@ -263,6 +277,7 @@ class Qualification:
         self.simctl("io", self.udid, "screenshot", self.out / (prefix + "ios-native.png"))
         if not (self.out / (prefix + "ios-native.png")).stat().st_size:
             raise ValueError("empty simulator screenshot")
+        self.diagnostic_reports.add(prefix)
         return report
 
     def await_scene_report(self, source, pid, message):
@@ -295,59 +310,33 @@ class Qualification:
     def resume_identity(self, original):
         # New process, no ticket/configuration launch argument: only saved
         # public preferences plus Keychain token and held key may reconnect.
+        self.finish_connection_diagnostics()
         self.simctl("terminate", self.udid, BUNDLE_ID, timeout=60)
+        self.preserve_connection_diagnostics(prefixes=("",))
         for name in ("rune-qualification.json", "rune-tree.json"):
             (self.documents / name).unlink(missing_ok=True)
         marker = MARKER + "_RESUMED"
+        self.diagnostic_prefixes.append("resume-")
         launched = self.simctl("launch", self.udid, BUNDLE_ID, "--qualification-resume",
             "--qualification-session", SESSION, "--qualification-input", marker_command(marker),
             "--qualification-marker", marker, timeout=120)
         match = re.search(rf"^{re.escape(BUNDLE_ID)}: ([0-9]+)$", launched, re.MULTILINE)
         if not match:
             raise ValueError("simulator did not report the resumed app PID")
-        report = self.collect_report(int(match[1]), resumed=True)
+        self.diagnostic_pid = int(match[1])
+        report = self.collect_report(self.diagnostic_pid, resumed=True)
         if report["key_id"] != original["key_id"]:
             raise ValueError("relaunch did not use the same saved device identity")
         return report
 
-    def stop_server(self):
-        if self.server is not None and self.server.poll() is None:
-            self.server.terminate()  # Popen owns this exact PID, never a port/name.
-            try:
-                self.server.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                self.server.kill()
-                self.server.wait(timeout=10)
+    preserve_connection_diagnostics = _trace.preserve_connection_diagnostics
+    require_connection_diagnostics = _trace.require_connection_diagnostics
+    finish_connection_diagnostics = _trace.finish_connection_diagnostics
+    stop_server = _trace.stop_server
 
-    def failure_screenshot(self):
-        if self.udid is None:
-            return
-        try:
-            self.simctl("io", self.udid, "screenshot", self.out / "ios-native-failure.png")
-        except (OSError, subprocess.SubprocessError):
-            # Preserve the failing command and its log; a boot failure has no screen.
-            pass
-        try:
-            self.simctl("spawn", self.udid, "log", "show", "--last", "1m", "--style", "compact",
-                        "--predicate", 'eventMessage CONTAINS "sh.phux.rune.ios"', timeout=30)
-        except (OSError, subprocess.SubprocessError):
-            pass
-
-    def cleanup(self):
-        errors = []
-        try:
-            self.stop_server()
-        except (OSError, subprocess.SubprocessError) as error:
-            errors.append(f"server cleanup: {error}")
-        if self.udid is not None:
-            for action in ("shutdown", "delete"):
-                try:
-                    self.simctl(action, self.udid, timeout=60)
-                except (OSError, subprocess.SubprocessError) as error:
-                    errors.append(f"{action} {self.udid}: {error}")
-        (self.out / "cleanup.json").write_text(json.dumps({"errors": errors}) + "\n")
-        if errors:
-            raise ValueError("owned simulator cleanup failed: " + "; ".join(errors))
+    failure_screenshot = _trace.failure_screenshot
+    cleanup = _trace.cleanup
+    cleanup_simulator = _trace.cleanup_simulator
 
 
 def qualify(app, phux, out, transport="quic"):
@@ -380,13 +369,17 @@ def qualify(app, phux, out, transport="quic"):
         finally:
             failed = sys.exc_info()[0] is not None
             try:
+                # Shutdown quiesces the writer before capture and simulator
+                # deletion. Keep first-failure evidence and any later recovery.
                 lane.cleanup()
-            except ValueError as error:
+                if not failed:
+                    lane.require_connection_diagnostics()
+            except (ValueError, OSError, subprocess.SubprocessError) as error:
                 if not failed:
                     raise
                 # cleanup.json retains the exact owned-resource failure;
                 # never replace the app/assertion failure with teardown noise.
-                print(f"Additional simulator cleanup failure: {error}", file=sys.stderr)
+                print(f"Additional qualification teardown failure: {error}", file=sys.stderr)
 
 
 def absolute_path(value):

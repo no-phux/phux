@@ -29,6 +29,20 @@ pub(crate) enum PumpFault {
     PaneGone,
 }
 
+impl PumpFault {
+    pub(super) fn record(self) {
+        let outcome = match self {
+            Self::OutboundClosed => "outbound_closed",
+            Self::TombstoneNotQueued => "tombstone_not_queued",
+            Self::GenerationLost => "generation_lost",
+            Self::PublicationNotActivated => "publication_not_activated",
+            Self::ReplayAbandoned => "replay_abandoned",
+            Self::PaneGone => "pane_gone",
+        };
+        super::bootstrap::publication_phase("pump_end", outcome);
+    }
+}
+
 /// Whether a broadcast control frame belongs to a pump's current generation,
 /// and whether forwarding it ends that generation.
 #[derive(Debug, Clone, Copy)]

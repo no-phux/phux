@@ -4,6 +4,7 @@
 
 pub mod breakpoints;
 pub mod chrome;
+pub mod kit;
 pub mod overlay;
 mod sgr;
 pub mod theme;

@@ -5,6 +5,8 @@
 # merged bump; rune-client.yml then builds, qualifies and publishes it.
 # Repository variable RUNE_AUTO_RELEASE=false stops it; docs/releasing.md's
 # hand steps still work. Logic: clients/rune/scripts/release.py.
+# A release SHA that is still not green after six hours fails the run once.
+# Later runs find that line in this workflow's failed logs and exit 0.
 #
 # Push as the release App, never GITHUB_TOKEN: its pushes trigger no
 # workflows, so the bump PR would get no ci and the tag no release.

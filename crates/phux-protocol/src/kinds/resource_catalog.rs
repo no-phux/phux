@@ -217,6 +217,10 @@ pub static KINDS: [KindSpec; 5] = [
                 C_NATIVE_LAUNCH,
                 C_NATIVE_COMMAND,
                 C_NATIVE_CONTROLLER,
+                C_CURRENT_QUESTIONS,
+                C_CURRENT_QUESTIONS_KEYED,
+                C_RESPOND_QUESTION,
+                C_QUESTION_RECEIPT,
             ];
         },
         events: events! {

@@ -93,9 +93,9 @@ impl NativeBinding {
         if let Err(error) = self.admit(&command) {
             return self.refuse(command, requester, error);
         }
-        if let NativeIntent::Answer { question_id, .. } = &command.intent {
+        if let Some(question_id) = command.intent.question_id() {
             self.answered
-                .insert(question_id.clone(), command.operation_id);
+                .insert(question_id.to_owned(), command.operation_id);
         }
         let result = NativeCommandResult {
             operation_id: command.operation_id,
@@ -148,7 +148,10 @@ impl NativeBinding {
             NativeIntent::Answer {
                 question_id,
                 response,
-            } => self.validate_response(question_id, response),
+            } => self.validate_response(question_id, response, None),
+            NativeIntent::AnswerExact { question, response } => {
+                self.validate_response(&question.id, response, Some(question))
+            }
         }
     }
     const fn validate_prompt(&self) -> Result<(), &'static str> {
@@ -164,12 +167,22 @@ impl NativeBinding {
         &self,
         question_id: &str,
         response: &serde_json::Value,
+        exact: Option<&phux_protocol::native_agent::questions::QuestionRef>,
+    ) -> Result<(), &'static str> {
+        if self.answered.contains_key(question_id) {
+            return Err("question already has a reserved responder");
+        }
+        self.validate_current_response(question_id, response, exact)
+    }
+
+    pub(super) fn validate_current_response(
+        &self,
+        question_id: &str,
+        response: &serde_json::Value,
+        exact: Option<&phux_protocol::native_agent::questions::QuestionRef>,
     ) -> Result<(), &'static str> {
         if !self.view.capabilities.questions.is_supported() {
             return Err("provider does not support native questions");
-        }
-        if self.answered.contains_key(question_id) {
-            return Err("question already has a reserved responder");
         }
         let question = self
             .view
@@ -177,6 +190,9 @@ impl NativeBinding {
             .iter()
             .find(|question| question.id == question_id)
             .ok_or("question is stale or absent")?;
+        if exact.is_some_and(|reference| !super::questions::matches_revision(reference, question)) {
+            return Err("question changed after it was read");
+        }
         validate_answer(question, response)
     }
 
@@ -186,7 +202,17 @@ impl NativeBinding {
         operation.delivered = true;
         operation.result.disposition = NativeDisposition::Unknown;
         operation.result.detail = Some("dispatched to host; admission not yet acknowledged".into());
-        Some(operation.command.clone())
+        let mut command = operation.command.clone();
+        // The broker already validated the exact reference against the live
+        // callback. Retain it in the ledger, but preserve the private guardian
+        // message across a daemon upgrade with an older live guardian.
+        if let NativeIntent::AnswerExact { question, response } = command.intent {
+            command.intent = NativeIntent::Answer {
+                question_id: question.id,
+                response,
+            };
+        }
+        Some(command)
     }
     pub(crate) fn complete(&mut self, result: NativeCommandResult) -> Result<(), String> {
         validate_payload(&result)?;
@@ -229,16 +255,14 @@ impl NativeBinding {
         {
             return None;
         }
-        let NativeIntent::Answer { question_id, .. } = &operation.command.intent else {
-            return None;
-        };
+        let question_id = operation.command.intent.question_id()?;
         (self
             .view
             .questions
             .iter()
-            .any(|question| &question.id == question_id)
+            .any(|question| question.id == question_id)
             && self.answered.get(question_id) == Some(&result.operation_id))
-        .then(|| question_id.clone())
+        .then(|| question_id.to_owned())
     }
     fn validate_view(&self, next: &NativeView) -> Result<(), String> {
         if next.activation != self.activation || next.backend != self.view.backend {

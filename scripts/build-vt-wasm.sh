@@ -53,6 +53,14 @@ fi
 [[ -f "$GHOSTTY_SRC/build.zig" ]] || { echo "ghostty source missing: $GHOSTTY_SRC" >&2; exit 1; }
 GHOSTTY_SRC="$(cd "$GHOSTTY_SRC" && pwd)"
 
+# Resolve translate_c's exact aro package through Ghostty's official mirror
+# before the cold dependency walk can hit Codeberg and abort Zig 0.17. Use the
+# installed compiler and an independent bootstrap cache; only unpacked packages
+# enter the source tree, never compiler output from a previous rebuild.
+( cd "$repo/scripts/zig-mirrors" && ZIG_GLOBAL_CACHE_DIR="$scratch/zig-mirror-global" "$zig" build \
+    --fetch=needed --pkg-dir "$GHOSTTY_SRC/zig-pkg" \
+    --cache-dir "$scratch/zig-mirror-cache" )
+
 # Build, normalize, ABI-test, and smoke one engine from fresh caches into
 # $scratch/out-N/bin/ghostty-vt.wasm. Only fetched packages carry over.
 rebuild() {

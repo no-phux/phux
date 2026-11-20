@@ -211,7 +211,7 @@ like `summarize.py` work.
 
 | Table | Adds |
 | --- | --- |
-| `[[actions]]` | A command in the palette. `keys` binds it in the prefix table (`"t s"` is <kbd>C-a</kbd> <kbd>t</kbd> <kbd>s</kbd>); a key that is already bound, by you or by the shipped defaults, keeps its binding and the plugin's is dropped. |
+| `[[actions]]` | A command run on the invoking machine. `keys` binds it in the TUI prefix table (`"t s"` is <kbd>C-a</kbd> <kbd>t</kbd> <kbd>s</kbd>); user and shipped bindings win. |
 | `[[events]]` | A hook: `on` names a [hook event](./hooks.md#events), and `command` runs every time it fires, with the same environment as a config hook. An `on` that is no hook event would never fire: `phux plugin validate` rejects it, suggesting the nearest event, and the server skips it with a warning. |
 | `[[panes]]` | A program to open as a pane. `placement` is `split`, `tab`, `zoomed`, or `overlay` (a floating box). |
 | `[[widgets]]` | A status-bar widget: `id`, a `slot` (`left`, `center`, or `right`, the default), and a `kind` with its [options](./reference/widgets.md). It goes after your own widgets. |
@@ -238,22 +238,11 @@ rows = 3
 
 ### What a plugin process receives
 
-A plugin command is a normal child process. It is not sandboxed, and it
-inherits the environment of the process that starts it. phux adds the
-variables below. These are the ones set today.
+A plugin command is a normal child process and is not sandboxed. Install
+only plugins you trust. Environment handling differs by entrypoint.
 
-**Actions** (`[[actions]]`, from the palette, a key, or
-`phux config run`) run with the plugin directory as the working
-directory. phux adds:
-
-| Variable | Value |
-| --- | --- |
-| `PHUX_PLUGIN_ID` | The plugin's manifest `id` |
-| `PHUX_PLUGIN_ACTION_ID` | The action's `id` |
-| `PHUX_PLUGIN_ROOT` | The plugin directory |
-
-An action does not get `PHUX_SOCKET` from phux. If the process that runs
-the action already has `PHUX_SOCKET`, the action inherits it.
+**Actions** (`[[actions]]`) receive explicit context in a scrubbed
+environment. See [the action process interface](./plugin-actions.md#process-environment).
 
 **Event hooks** (`[[events]]`) run with the plugin directory as the
 working directory. They receive the same variables as a
@@ -293,29 +282,8 @@ sidebar sections do not start a process.
 
 ### Running actions
 
-An action runs from the command palette, from the key in its `keys`, or
-from a shell:
-
-```sh
-phux config run example.pane-tools summarize
-```
-
-To give a plugin action a key, set `keys` in its manifest, or bind it in
-your own `[keybindings]` with the `plugin-action` action, naming the
-plugin and the action's `id`:
-
-```toml
-[keybindings.prefix-table]
-"Y" = { action = "plugin-action", plugin = "example.pane-tools", id = "summarize" }
-```
-
-Your bindings win over a manifest's `keys`. Binding the same key yourself
-takes it back, and a key you set to `"none"` stays unbound even when a
-plugin's `keys` names it.
-
-`phux config run` prints the action's output and exits with its exit
-code. `--timeout SECS` gives up after that long, and `--json` prints the
-result as a JSON document.
+See [Running plugin actions](./plugin-actions.md) for the palette, key,
+CLI and MCP invocation interfaces.
 
 ## Listing a plugin
 
@@ -339,8 +307,8 @@ The optional [first-party plugins](../plugins/README.md) are in `plugins/`:
 - `usage` publishes your AI plan limits to every client.
 - `agent-stats` publishes each agent's
   [work done](../plugins/agent-stats/README.md#contract) to every client.
-- `continuum` saves and restores your workspace.
-- `agent-tools` launches and drives a bench of coding agents.
+- `continuum` saves workspace archives through host hooks.
+- `agent-tools` packages coding-agent integrations and bench demo scripts.
 
 `phux config init --distro starter` turns on all but `agent-stats` from a
 source checkout.

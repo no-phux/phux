@@ -1,4 +1,4 @@
-//! The `Panes` verbs that read a pane: `snapshot`, `wait`, and `watch`.
+//! The `Panes` verbs that read a pane: `snapshot`, `wait`, `watch`, and `on`.
 
 use crate::commands::{JsonOpt, SnapshotFormat};
 use usage::Args;
@@ -275,4 +275,29 @@ pub(crate) struct WatchArgs {
 
     #[usage(flatten)]
     pub(crate) json: JsonOpt,
+}
+
+/// Run a local command on each matching live pane event
+#[derive(Debug, Args)]
+#[usage(
+    long_about = "Run a local command on each matching live pane event.\n\n\
+        Example: phux on bell --target @7 -- ./notify 'build pane'\n\n\
+        Pass the command as argv after `--`; phux does not invoke a shell. \
+        Each invocation gets one `phux watch --json` line on stdin and has 30 seconds \
+        to finish. Commands run one at a time with only PATH inherited. Run `on` \
+        against the server that owns the pane and has an event journal. A gap, \
+        disconnect, or command failure stops the subscription; no automatic replay."
+)]
+pub(crate) struct OnArgs {
+    /// Exact journal event name from `phux watch`; metadata and gap notices are not dispatched.
+    #[usage(value_name = "EVENT")]
+    pub(crate) event: String,
+
+    /// Target selector. Omit for the most-recently-focused session.
+    #[usage(long, value_name = "TARGET")]
+    pub(crate) target: Option<String>,
+
+    /// The executable and its literal arguments.
+    #[usage(value_name = "COMMAND", double_dash = "required", required)]
+    pub(crate) command: Vec<std::ffi::OsString>,
 }

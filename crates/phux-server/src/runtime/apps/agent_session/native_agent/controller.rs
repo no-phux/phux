@@ -3,6 +3,7 @@ use super::closure::close;
 use super::integrations;
 use super::launch::spawn;
 use super::publication::publish;
+use super::questions;
 use super::source_dispatch::refuse_undeliverable;
 use crate::runtime::commands::CommandContext;
 use crate::state::ClientId;
@@ -128,12 +129,13 @@ fn host_binding<'a>(
 pub(crate) async fn handle(ctx: &CommandContext, request: NativeRequest) -> CommandResult {
     let state = &ctx.state;
     let client = ctx.client_id;
-    if state.with(|s| s.native_agents().sealed)
-        && let Some(result) = sealed_request(state, &request)
-    {
+    if let Some(result) = guard_ingress(state, &request) {
         return result;
     }
     match request {
+        request @ (NativeRequest::CurrentQuestions { .. }
+        | NativeRequest::RespondQuestion { .. }
+        | NativeRequest::QuestionReceipt { .. }) => questions::handle(ctx, request),
         NativeRequest::ListIntegrations {} => integrations::list().await,
         NativeRequest::LaunchIntegration {
             integration,
@@ -221,6 +223,18 @@ pub(crate) async fn handle(ctx: &CommandContext, request: NativeRequest) -> Comm
     }
 }
 
+fn guard_ingress(state: &SharedState, request: &NativeRequest) -> Option<CommandResult> {
+    if let NativeRequest::Command { command, .. } = request
+        && matches!(command.intent, NativeIntent::AnswerExact { .. })
+    {
+        return Some(refusal("exact answers require respond_question ingress"));
+    }
+    if state.with(|s| s.native_agents().sealed) {
+        return sealed_request(state, request);
+    }
+    None
+}
+
 fn sealed_request(state: &SharedState, request: &NativeRequest) -> Option<CommandResult> {
     match request {
         NativeRequest::Command {
@@ -256,6 +270,9 @@ fn sealed_request(state: &SharedState, request: &NativeRequest) -> Option<Comman
         )),
         NativeRequest::Register { .. }
         | NativeRequest::Receive { .. }
+        | NativeRequest::CurrentQuestions { .. }
+        | NativeRequest::RespondQuestion { .. }
+        | NativeRequest::QuestionReceipt { .. }
         | NativeRequest::ListIntegrations {} => None,
     }
 }
@@ -268,7 +285,7 @@ fn refused_command(operation_id: u64, detail: &str) -> NativeCommandResult {
     }
 }
 
-fn submit_command(
+pub(super) fn submit_command(
     s: &mut crate::state::ServerState,
     client: ClientId,
     agent: &ResourceId,
@@ -307,7 +324,7 @@ fn submit_command(
             |binding| binding.refuse(command, client.0, "native source or guardian closed"),
         );
     }
-    let answer_requires_human = matches!(command.intent, NativeIntent::Answer { .. });
+    let answer_requires_human = command.intent.question_id().is_some();
     if native_input_blocked(
         s,
         client,

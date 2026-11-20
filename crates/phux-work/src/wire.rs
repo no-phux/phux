@@ -20,7 +20,7 @@ use crate::store::{
 /// Keeper compatibility includes a semantic epoch, even during development
 /// within one package version. Bump the epoch for incompatible request or
 /// mutation semantics; otherwise an already-running keeper could retain them.
-pub(crate) const BUILD: &str = concat!(env!("CARGO_PKG_VERSION"), "/keeper-5");
+pub(crate) const BUILD: &str = concat!(env!("CARGO_PKG_VERSION"), "/keeper-6");
 
 /// Longest request or response line, in bytes.
 pub(crate) const MAX_LINE: u64 = 1 << 20;

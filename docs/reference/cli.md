@@ -16,8 +16,6 @@ One section per command, in the order `phux <command> --help` would print them. 
 phux
 A terminal multiplexer whose server you can drive from code.
 
-Run `phux` alone to attach to your session; every other verb is headless.
-
 Usage: phux [FLAGS] [SUBCOMMAND]
 
 Sessions:
@@ -45,12 +43,13 @@ Panes:
   upload        Upload a local file without attaching or submitting input
   wait          Block until a pane meets a condition
   watch         Stream a pane's events as they happen
+  on            Run a local command on each matching live pane event
   resize        Set a pane's grid size
   tag           Read and write pane tags (address them with #tag)
   insert-pane   Insert an existing pane into a layout
   mv            Move a pane into another session, or beside another pane
   swap-pane     Swap two panes in a layout
-  terminal      Create and place terminals; inspect API and receipts
+  terminal      Create and place terminals; inspect creation receipts
   resource      Inspect a resource or wait for its process to exit
   slot          Keep several panes in one layout slot, as tabs
 
@@ -101,6 +100,7 @@ More:
   perf          Show the server's performance telemetry
   whoami        Report who this connection is to the server
   runtime-info  Inspect this binary's protocol and capabilities
+  api           Discover and call this server's public operations
   archive       Export sessions to an archive file, or import one
   worktree      Manage git worktrees and their bound sessions
   idea          Capture an idea
@@ -165,8 +165,14 @@ Commands:
                     `--remote-debugging-port`.
   prompt            Hand an agent a turn's worth of work, with a delivery
                     receipt.
+  question-receipt  Read a previously submitted response receipt without
+                    resending.
+  questions         Read current questions from the server, without reading a
+                    title or transcript.
   report-state      Report hook-sourced lifecycle evidence to the pane's
                     detector.
+  respond-question  Respond to an exact structured question as a human; never
+                    types into a pane.
   send-keys         Send keys to a pane, but only if it still hosts the expected
                     agent.
   session           Open or close a pane's agent session (an `AgentSession`
@@ -991,6 +997,41 @@ Global flags:
       --socket <PATH>        Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
+## `phux agent question-receipt`
+
+```text
+Read a previously submitted response receipt without resending.
+
+Usage: phux agent question-receipt <--question-json <QUESTION_JSON>> <--operation-id <OPERATION_ID>>
+
+Flags:
+      --question-json <QUESTION_JSON>  Original exact question reference as
+                                  JSON.
+      --operation-id <OPERATION_ID>  Original nonzero decimal operation ID.
+  -h, --help                      Print help
+
+Global flags:
+      --socket <PATH>             Server socket to dial (default:
+                                  `$PHUX_SOCKET`)
+```
+
+## `phux agent questions`
+
+```text
+Read current questions from the server, without reading a title or transcript.
+
+Usage: phux agent questions <TARGET>
+
+Arguments:
+  <TARGET>  Exact local @N or AUTHORITY/^RESOURCE, not a focus selector.
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
 ## `phux agent report-state`
 
 ```text
@@ -1008,6 +1049,23 @@ Flags:
 
 Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent respond-question`
+
+```text
+Respond to an exact structured question as a human; never types into a pane.
+
+Usage: phux agent respond-question <--request-json <REQUEST_JSON>>
+
+Flags:
+      --request-json <REQUEST_JSON>  JSON with the returned question reference,
+                                  decimal-string `operation_id` and response.
+  -h, --help                      Print help
+
+Global flags:
+      --socket <PATH>             Server socket to dial (default:
+                                  `$PHUX_SOCKET`)
 ```
 
 ## `phux agent send-keys`
@@ -1717,6 +1775,85 @@ Global flags:
       --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
+## `phux api`
+
+```text
+Discover and call this server's public operations
+
+Results are JSON. Select a registered server with `--remote`, or use the local
+socket. This does not start a server or enroll a new host. Discovery can display
+operations this CLI does not yet know how to call.
+
+Usage: phux api [--remote <HOST>] <SUBCOMMAND>
+
+Commands:
+  call      Call a typed public operation without resolving names or changing
+            focus.
+  describe  Read the full input, output, authorization and recovery contract for
+            one operation.
+  list      List the connected server's public operations and their contracts.
+  help      Print this message or the help of the given subcommand(s)
+
+Flags:
+      --remote <HOST>  Registered phux host to connect to instead of the local
+                       server.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux api call`
+
+```text
+Call a typed public operation without resolving names or changing focus.
+
+Usage: phux api call <--request-json <JSON>> <OPERATION>
+
+Arguments:
+  <OPERATION>  Public operation name.
+
+Flags:
+      --request-json <JSON>  UTF-8 JSON input, up to 1 MiB. Use `-` to read from
+                             standard input.
+  -h, --help                 Print help
+
+Global flags:
+      --socket <PATH>        Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux api describe`
+
+```text
+Read the full input, output, authorization and recovery contract for one
+operation.
+
+Usage: phux api describe <OPERATION>
+
+Arguments:
+  <OPERATION>  Public operation name.
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux api list`
+
+```text
+List the connected server's public operations and their contracts.
+
+Usage: phux api list
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
 ## `phux approvals`
 
 ```text
@@ -2291,8 +2428,8 @@ Commands:
   plugins            List plugin manifests declared by `[[plugins]]`.
   reload             Re-read the layered config and apply it to running clients
                      in place.
-  run                Execute one action declared by a configured plugin
-                     manifest.
+  run                Execute one locally configured plugin action on this
+                     machine.
   shell-integration  Print the snippet that makes a shell mark prompts and
                      commands.
   show               Print the effective config (shipped defaults + your
@@ -2577,7 +2714,7 @@ Global flags:
 ## `phux config run`
 
 ```text
-Execute one action declared by a configured plugin manifest.
+Execute one locally configured plugin action on this machine.
 
 Usage: phux config run [FLAGS] <PLUGIN> <ACTION>
 
@@ -2586,15 +2723,18 @@ Arguments:
   <ACTION>  Plugin-local action id.
 
 Flags:
-      --timeout <SECS>  Give up after this many seconds. Omit to wait
-                        indefinitely.
-      --cwd <PATH>      Override the action cwd. Relative paths resolve under
-                        plugin root.
-      --json            Emit the structured action result as JSON.
-  -h, --help            Print help
+      --timeout <SECS>      Give up after this many seconds. Omit to wait
+                            indefinitely.
+      --cwd <PATH>          Override the action cwd. Relative paths resolve
+                            under plugin root.
+      --target-json <JSON>  Explicit target facts as a JSON object; never
+                            selects or dials a server.
+      --input-json <JSON>   Application-specific action input as JSON.
+      --json                Emit the structured action result as JSON.
+  -h, --help                Print help
 
 Global flags:
-      --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
+      --socket <PATH>       Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux config shell-integration`
@@ -3773,10 +3913,8 @@ Flags:
       --ratio <RATIO>      Fraction of the split retained by TARGET (requires
                            `--target`).
                            (default: 0.5)
-      --projection <KEY>   Named projection to place into instead of the shared
-                           default (requires `--target`). Must be
-                           `<prefix>.layout/v1/<session-id>` for TARGET's
-                           session.
+      --projection <KEY>   Legacy option; placed launch refuses named
+                           projections.
   -c, --cwd <DIR>          Working directory for a `working_directory =
                            "workspace"` template. Defaults to the current
                            directory.
@@ -4706,6 +4844,35 @@ Flags:
 
 Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux on`
+
+```text
+Run a local command on each matching live pane event.
+
+Example: phux on bell --target @7 -- ./notify 'build pane'
+
+Pass the command as argv after `--`; phux does not invoke a shell. Each
+invocation gets one `phux watch --json` line on stdin and has 30 seconds to
+finish. Commands run one at a time with only PATH inherited. Run `on` against
+the server that owns the pane and has an event journal. A gap, disconnect, or
+command failure stops the subscription; no automatic replay.
+
+Usage: phux on [--target <TARGET>] <EVENT> <-- COMMAND>…
+
+Arguments:
+  <EVENT>        Exact journal event name from `phux watch`; metadata and gap
+                 notices are not dispatched.
+  <-- COMMAND>…  The executable and its literal arguments.
+
+Flags:
+      --target <TARGET>  Target selector. Omit for the most-recently-focused
+                         session.
+  -h, --help             Print help
+
+Global flags:
+      --socket <PATH>    Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux organize`
@@ -6098,16 +6265,35 @@ them attaches or resizes.
 Usage: phux resource <SUBCOMMAND>
 
 Commands:
-  methods  List the methods a resource answers on this server.
-  show     Show one resource: kind, lifecycle, exit, process, tags, agent.
-  wait     Wait until a resource's process exits.
-  help     Print this message or the help of the given subcommand(s)
+  execution  Read or wait for one exact durable execution; outputs JSON.
+  methods    List the methods a resource answers on this server.
+  show       Show one resource: kind, lifecycle, exit, process, tags, agent.
+  wait       Wait until a resource's process exits.
+  help       Print this message or the help of the given subcommand(s)
 
 Flags:
   -h, --help           Print help
 
 Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux resource execution`
+
+```text
+Read or wait for one exact durable execution; outputs JSON.
+
+Usage: phux resource execution <--request-json <JSON>> [--remote <HOST>]
+
+Flags:
+      --request-json <JSON>  Exact execution identity and optional
+                             `timeout_secs` as a JSON object.
+      --remote <HOST>        Read from a registered remote host instead of the
+                             local socket.
+  -h, --help                 Print help
+
+Global flags:
+      --socket <PATH>        Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux resource methods`
@@ -7041,12 +7227,13 @@ Global flags:
 ```text
 Create a pane without attaching
 
-With `--target`, the pane is inserted beside an exact local owner; otherwise it
-joins the server's most recently active session. The new pane's id prints to
-stdout. With `--satellite NAME` on a federation hub (`phux server --hub`), the
-spawn is routed over the hub's link to that satellite and the returned id is
-qualified with that host — addressable through the hub by every
-satellite-capable verb. Does not auto-start a server.
+With `--target`, the server creates and places the pane atomically beside a
+split leaf in the shared arrangement; otherwise it joins the server's most
+recently active session. The new pane's id prints to stdout. With `--satellite
+NAME` on a federation hub (`phux server --hub`), the spawn is routed over the
+hub's link to that satellite and the returned id is qualified with that host —
+addressable through the hub by every satellite-capable verb. Does not auto-start
+a server.
 
 Usage: phux spawn [FLAGS] [COMMAND]…
 
@@ -7068,23 +7255,24 @@ Flags:
       --ratio <RATIO>            Fraction of the split retained by TARGET
                                  (requires `--target`).
                                  (default: 0.5)
-      --projection <KEY>         Named projection to place into instead of the
-                                 shared default (requires `--target`). Must be
-                                 `<prefix>.layout/v1/<session-id>` for TARGET's
-                                 session.
+      --projection <KEY>         Legacy option; placed spawn refuses named
+                                 projections.
   -c, --cwd <CWD>                Working directory for the new pane.
       --retain [SECS]            Keep the pane inspectable after its process
                                  exits, for SECS seconds (bare `--retain`: the
                                  server's default). Its screen, history, and
                                  exit status stay readable through `phux
                                  resource show` and `phux resource wait` until
-                                 then, or until `phux kill`. Write
-                                 `--retain=SECS` when a command follows.
+                                 then, or until `phux kill`. Unplaced spawn
+                                 only. Write `--retain=SECS` when a command
+                                 follows.
       --idempotency-key <HEX32>  Make the spawn safe to retry: a repeat with the
                                  same key (32 hex digits) and the same request
                                  answers the first pane instead of spawning
-                                 another. Draw one key per spawn and reuse it on
-                                 retry.
+                                 another. Draw one key per spawn. For a placed
+                                 spawn with an unknown reply, use `phux terminal
+                                 operation` to check its receipt without
+                                 resolving the selector again.
       --app <NAME>               Run an application in the new pane instead of a
                                  command: launched, mirrored into documents
                                  under the pane, and quit when the pane is
@@ -7274,7 +7462,7 @@ Global flags:
 ## `phux terminal`
 
 ```text
-Create and place terminals; inspect API and receipts
+Create and place terminals; inspect creation receipts
 
 Always returns versioned JSON. Creation commits membership, placement and launch
 intent together; a receipt is not process or task completion.
@@ -7283,11 +7471,11 @@ Usage: phux terminal <SUBCOMMAND>
 
 Commands:
   create     Create, place and start a terminal from one strict JSON intention.
-  describe   Read the connected server's public workflow schemas and retry
-             contracts.
   operation  Recover a retained creation receipt without executing or retrying
              anything. A missing receipt means unknown, not that the original
              request was refused.
+  run        Start argv directly in a new terminal and wait for that exact
+             execution.
   help       Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -7302,8 +7490,8 @@ Global flags:
 ```text
 Create, place and start a terminal from one strict JSON intention.
 
-Use `terminal describe` for the complete nested request schema. Argv runs in a
-new process, never by typing into an existing shell. The resource and
+Use `api describe terminal.create` for the complete nested request schema. Argv
+runs in a new process, never by typing into an existing shell. The resource and
 failed/completed execution remain until explicit removal.
 
 Usage: phux terminal create <--request-json <JSON>>
@@ -7317,31 +7505,50 @@ Global flags:
       --socket <PATH>        Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
-## `phux terminal describe`
-
-```text
-Read the connected server's public workflow schemas and retry contracts.
-
-Usage: phux terminal describe
-
-Flags:
-  -h, --help           Print help
-
-Global flags:
-      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
-```
-
 ## `phux terminal operation`
 
 ```text
 Recover a retained creation receipt without executing or retrying anything. A
 missing receipt means unknown, not that the original request was refused.
 
-Usage: phux terminal operation <--session <KEY>> <--idempotency-key <HEX32>>
+Usage: phux terminal operation <FLAGS>
 
 Flags:
       --session <KEY>            Original full durable destination session key.
       --idempotency-key <HEX32>  Same key supplied to terminal create.
+      --remote <HOST>            Read the receipt on a registered remote owner.
+  -h, --help                     Print help
+
+Global flags:
+      --socket <PATH>            Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux terminal run`
+
+```text
+Direct argv execution with no shell input or focus selection.
+
+Waits by default. Prints a JSON result, then returns the child's exit status
+(128 plus signal if signaled). The JSON result distinguishes a child exit from a
+phux timeout, failed launch, or unknown outcome.
+
+Usage: phux terminal run <FLAGS> [ARGV]…
+
+Arguments:
+  [ARGV]…  Program and literal arguments. Use `--` before the program.
+
+Flags:
+      --session <KEY_OR_NAME>    Full durable session key (with optional ^), or
+                                 an exact session name.
+      --remote <HOST>            Use a registered remote owner instead of the
+                                 local socket.
+  -c, --cwd <DIR>                Absolute directory on the owner. Defaults to
+                                 the session's recorded directory.
+      --timeout <SECS>           Bound the wait after the creation receipt
+                                 (1..=3600 seconds).
+                                 (default: 600)
+      --idempotency-key <HEX32>  Caller-generated operation key, or one
+                                 generated and returned by phux.
   -h, --help                     Print help
 
 Global flags:

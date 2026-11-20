@@ -58,6 +58,15 @@ validates the immutable engine source and matching Zig requirement, then
 reports prebuilt versus source-only target coverage. It does not replace
 native compilation tests or claim unpublished archives exist.
 
+Cold source builds bootstrap `translate_c`'s pinned `aro` package from
+Ghostty's official archive mirror before resolving the dependency graph.
+Zig enforces the same package content hash as the nested Codeberg git URL;
+neither the engine nor compiler changes. This avoids Zig 0.17's crashing
+git-fetch path. Explicit `GHOSTTY_ZIG_SYSTEM_DIR` builds remain offline.
+The macOS bundled TMD build uses the same manifest bootstrap, with private
+temporary caches. A raw `zig fetch` is not equivalent: Zig 0.17 stores a
+compressed archive that can fail its hash check when reloaded.
+
 ## Build cache (mbx)
 
 Both environments run `cargo` through [mbx](https://mr-boxington.jdx.dev).

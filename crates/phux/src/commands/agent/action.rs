@@ -1,11 +1,9 @@
 //! The `phux agent` grammar: [`AgentAction`], one variant per verb. Long
 //! flag sets live in [`super::action_flags`] so each file stays readable.
 
-use std::path::PathBuf;
-
 use super::action_flags::{
-    AnswerFlags, EmitFlags, ListFlags, LogFlags, NativeCommandFlags, PromptFlags, SendKeysFlags,
-    SetFlags, StartFlags, UsageFlags,
+    AnswerFlags, EmitFlags, ExplainFlags, ListFlags, LogFlags, NativeCommandFlags, PromptFlags,
+    SendKeysFlags, SetFlags, StartFlags, UsageFlags,
 };
 use super::resource_session;
 
@@ -23,6 +21,26 @@ pub(crate) enum AgentAction {
         target: String,
         #[usage(flatten)]
         flags: NativeCommandFlags,
+    },
+    /// Read current questions from the server, without reading a title or transcript.
+    Questions {
+        /// Exact local @N or AUTHORITY/^RESOURCE, not a focus selector.
+        target: String,
+    },
+    /// Respond to an exact structured question as a human; never types into a pane.
+    RespondQuestion {
+        /// JSON with the returned question reference, decimal-string `operation_id` and response.
+        #[usage(long)]
+        request_json: String,
+    },
+    /// Read a previously submitted response receipt without resending.
+    QuestionReceipt {
+        /// Original exact question reference as JSON.
+        #[usage(long)]
+        question_json: String,
+        /// Original nonzero decimal operation ID.
+        #[usage(long)]
+        operation_id: String,
     },
     /// List every pane's detected or declared agent and current state.
     ///
@@ -58,29 +76,8 @@ pub(crate) enum AgentAction {
     /// pane's OSC title; a text one does not, so pass `--title` to exercise
     /// title-scoped rules against it (or to override the captured title).
     Explain {
-        /// Target selector (resolves to one pane). Omit for the focused
-        /// pane. Not used in offline (`--file`) mode.
-        target: Option<String>,
-        /// Emit machine-readable JSON instead of the table.
-        #[usage(long)]
-        json: bool,
-        /// Evaluate a captured screen offline instead of querying the
-        /// server. `-` reads stdin.
-        #[usage(long, value_name = "PATH", conflicts("target"))]
-        file: Option<PathBuf>,
-        /// Agent kind whose manifest to evaluate, or one of its binary
-        /// aliases. Required with `--file`: offline there is no foreground
-        /// process group to identify the agent from.
-        #[usage(long, value_name = "KIND", requires("--file"))]
-        kind: Option<String>,
-        /// OSC 0/2 title to evaluate `title`-scoped rules against. Overrides
-        /// a JSON capture's own title; defaults to it, else to empty.
-        #[usage(long, value_name = "TEXT", requires("--file"))]
-        title: Option<String>,
-        /// How to read `--file`. `auto` picks JSON when the first
-        /// non-whitespace byte is `{`.
-        #[usage(long, choices("auto", "json", "text"), requires("--file"))]
-        format: Option<String>,
+        #[usage(flatten)]
+        flags: ExplainFlags,
     },
     /// Declare the agent identity and state associated with a pane.
     ///

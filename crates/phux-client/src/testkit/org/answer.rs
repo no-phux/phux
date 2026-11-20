@@ -52,6 +52,18 @@ impl OrgFixture {
     }
 
     fn page(&self, filter: OrgFilter, page_size: u32, cursor: Option<&[u8]>) -> CommandResult {
+        if let OrgFilter::Resource(key) = filter {
+            let resources = self
+                .resource_ref(&key)
+                .cloned()
+                .into_iter()
+                .collect::<Vec<_>>();
+            let count = u32::try_from(resources.len()).unwrap_or(0);
+            let page = OrganizationPage::new(self.authority, Revision::new(self.revision), 0)
+                .with_resources(resources)
+                .with_totals(0, count, 0);
+            return CommandResult::OkWith(CommandValue::OrganizationPage(Box::new(page)));
+        }
         let sessions: Vec<&SessionRecord> = self
             .sessions
             .iter()

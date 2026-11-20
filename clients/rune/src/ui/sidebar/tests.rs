@@ -201,3 +201,53 @@ fn twins_with_an_agent_still_name_their_pane() {
     assert_eq!(detail(Some("@90")).as_deref(), Some("claude · done · @90"));
     assert_eq!(detail(None).as_deref(), Some("claude · done"));
 }
+
+/// The key the window's focus sits on, if any.
+fn focused(rt: &mut rune::Runtime<Desk>) -> Option<String> {
+    let mut key = None;
+    rt.update(|_, tx| key = tx.focused().map(str::to_owned));
+    key
+}
+
+#[test]
+fn a_clicked_row_hands_the_keyboard_back_to_the_terminal() {
+    let mut rt = listed(true);
+    for row in [
+        format!("pane-{}", ResourceId::local(2)),
+        "select-session-1".to_owned(),
+    ] {
+        let (x, y) = rt.find(&row).expect("sidebar row");
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(0.0);
+        // Arrows, Space and Return go to the shown terminal, not the list.
+        assert_eq!(focused(&mut rt), None, "{row} kept focus after a click");
+    }
+    // Keys still walk the list: Tab lands on it, Down moves along it.
+    let in_list = |key: &Option<String>| {
+        key.as_deref()
+            .is_some_and(|k| k.starts_with("pane-") || k.starts_with("select-session"))
+    };
+    for _ in 0..20 {
+        if in_list(&focused(&mut rt)) {
+            break;
+        }
+        rt.key(rune::KeyEvent {
+            key: rune::Key::Tab,
+            mods: rune::Mods::default(),
+        });
+        rt.frame(0.0);
+    }
+    let landed = focused(&mut rt);
+    assert!(in_list(&landed), "Tab reaches the list: {landed:?}");
+    rt.key(rune::KeyEvent {
+        key: rune::Key::Down,
+        mods: rune::Mods::default(),
+    });
+    rt.frame(0.0);
+    let next = focused(&mut rt);
+    assert!(
+        in_list(&next) && next != landed,
+        "Down walks the list: {landed:?} -> {next:?}"
+    );
+}

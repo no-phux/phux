@@ -141,6 +141,8 @@ uuid = { workspace = true, features = ["v7"] }
 # Same crate and the same two features phux-client already uses; no new
 # third-party dependency enters the workspace.
 rustix = { version = "1.1", default-features = false, features = ["std", "process", "termios", "fs"] }
+# Direct spawn for event handlers; no ENOEXEC shell fallback.
+nix = { version = "0.31", default-features = false, features = ["process", "signal"] }
 
 [dev-dependencies]
 phux-frozen.workspace = true

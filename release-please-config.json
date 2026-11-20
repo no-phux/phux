@@ -98,7 +98,7 @@
         {
           "type": "toml",
           "path": "clients/rune/Cargo.lock",
-          "jsonpath": "$.package[?(!@.source && (@.name.value=='phux-client-core' || @.name.value=='phux-client-runtime' || @.name.value=='phux-config-core' || @.name.value=='phux-core' || @.name.value=='phux-design' || @.name.value=='phux-dial' || @.name.value=='phux-perf' || @.name.value=='phux-protocol' || @.name.value=='phux-vt' || @.name.value=='phux-wire-fixtures' || @.name.value=='quictun'))].version"
+          "jsonpath": "$.package[?(!@.source && (@.name.value=='phux-client-core' || @.name.value=='phux-client-runtime' || @.name.value=='phux-config' || @.name.value=='phux-config-core' || @.name.value=='phux-core' || @.name.value=='phux-design' || @.name.value=='phux-dial' || @.name.value=='phux-perf' || @.name.value=='phux-plugin' || @.name.value=='phux-protocol' || @.name.value=='phux-vt' || @.name.value=='phux-wire-fixtures' || @.name.value=='quictun'))].version"
         },
         {
           "type": "toml",

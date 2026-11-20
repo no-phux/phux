@@ -36,11 +36,7 @@ enum Payload {
 const TEARDOWN: &[(&str, &str)] = &[
     (
         "phux_launch",
-        "a launch that cannot place its pane rolls back the pane it just spawned",
-    ),
-    (
-        "phux_spawn",
-        "a spawn that cannot place its pane rolls back the pane it just spawned",
+        "an unplaced launch rolls back only its own pane if its provenance write fails",
     ),
     (
         "phux_app_open",

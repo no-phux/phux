@@ -4,7 +4,13 @@
 //! (ADR-0036 ladder).
 
 use phux_protocol::ids::ResourceId;
-use phux_protocol::wire::frame::{AgentEvent, Command, CommandResult, ErrorCode, FrameKind};
+use phux_protocol::native_agent::questions::{
+    CurrentQuestion, CurrentQuestions, PtyQuestionSource, QuestionTarget,
+};
+use phux_protocol::native_agent::{NativeRequest, NativeRequestPayload};
+use phux_protocol::wire::frame::{
+    AgentEvent, Command, CommandResult, CommandValue, ErrorCode, FrameKind,
+};
 use tempfile::TempDir;
 use tokio::net::UnixStream;
 
@@ -52,6 +58,15 @@ async fn asked_before_reply(
     (result, asked)
 }
 
+async fn current_questions(stream: &mut UnixStream, target: QuestionTarget) -> CurrentQuestions {
+    let request = NativeRequestPayload::new(NativeRequest::CurrentQuestions { target }).unwrap();
+    let (reply, _) = asked_before_reply(stream, 41, Command::NativeAgent { request }).await;
+    let CommandResult::OkWith(CommandValue::Json(value)) = reply else {
+        panic!("question level read failed: {reply:?}");
+    };
+    serde_json::from_str(&value).unwrap()
+}
+
 /// The title sentinel `phux-ask[q1]:Deploy to prod??s=Yes|No|Hold` parses into
 /// an `Asked`; the hook then reporting the same question emits nothing new.
 #[test]
@@ -84,6 +99,18 @@ fn ask_title_sentinel_emits_asked_and_a_repeating_hook_does_not_re_emit() {
             })
         );
 
+        let by_handle = current_questions(
+            &mut stream,
+            QuestionTarget::Handle {
+                resource: pane.clone(),
+            },
+        )
+        .await;
+        assert!(
+            matches!(by_handle.questions.as_slice(), [CurrentQuestion::PtyEvidence {
+            source: PtyQuestionSource::Sentinel, id, ..
+        }] if id == "q1")
+        );
         let hook = report_asked(pane, "q1", "Deploy to prod?", &["Yes", "No", "Hold"]);
         let (result, duplicates) = asked_before_reply(&mut stream, 9, hook).await;
         assert_eq!(result, CommandResult::Ok, "the hook still owns the ask");
@@ -93,6 +120,22 @@ fn ask_title_sentinel_emits_asked_and_a_repeating_hook_does_not_re_emit() {
         );
 
         drop(stream);
+        let (mut reconnected, _) =
+            connect_as(&server.socket, "question-reconnect", full_caps()).await;
+        let by_key = current_questions(
+            &mut reconnected,
+            QuestionTarget::Key {
+                authority: by_handle.authority,
+                resource: by_handle.resource,
+            },
+        )
+        .await;
+        assert!(
+            matches!(by_key.questions.as_slice(), [CurrentQuestion::PtyEvidence {
+            source: PtyQuestionSource::Hook, id, ..
+        }] if id == "q1")
+        );
+        drop(reconnected);
         server.stop().await;
     });
 }

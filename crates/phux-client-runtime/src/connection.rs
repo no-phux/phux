@@ -340,6 +340,14 @@ mod driver;
 mod establish;
 pub(crate) mod io;
 mod ssh;
+pub(crate) mod trace;
+
+/// Shared identity and clock for payload-free consumer and enrollment evidence.
+pub(crate) struct AttemptTrace {
+    connection: u64,
+    attempt: u32,
+    started: tokio::time::Instant,
+}
 mod wsl;
 
 pub(crate) use establish::{DialFailure, establish};

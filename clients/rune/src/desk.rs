@@ -48,6 +48,8 @@ pub mod notice;
 pub mod onboarding;
 mod palette;
 mod pending;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod plugin_actions;
 pub use pending::Pending;
 pub mod phone;
 pub mod pitch;
@@ -129,6 +131,8 @@ pub struct Desk {
     pub palette_picked: usize,
     /// What the palette lists.
     pub palette_mode: crate::palette::Mode,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    plugin_actions: plugin_actions::Actions,
     /// The theme a live preview stands in for, restored unless one is chosen.
     theme_before: Option<Option<&'static crate::theme::Theme>>,
     pub sidebar_open: bool,
@@ -266,6 +270,8 @@ impl Desk {
             palette_query: rune::TextEdit::new(""),
             palette_picked: 0,
             palette_mode: crate::palette::Mode::All,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            plugin_actions: plugin_actions::Actions::default(),
             theme_before: None,
             sidebar_open,
             window_w: 0.0,
@@ -353,6 +359,8 @@ impl Desk {
             | self.pump_onboarding(tx)
             | self.follow_accessibility()
             | self.expire_notice(tx);
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let updated = updated | self.pump_plugin_actions();
         let Some(client) = self.connection.client.clone() else {
             return updated | self.tend_link(tx);
         };

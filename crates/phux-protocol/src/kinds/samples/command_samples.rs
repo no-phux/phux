@@ -274,83 +274,7 @@ fn org_command_samples() -> Vec<(Command, &'static Rule)> {
 )]
 pub(crate) fn command_samples() -> Vec<(Command, &'static Rule)> {
     let focus = InputEvent::Focus(FocusEvent::Gained);
-    vec![
-        (
-            Command::NativeAgent {
-                request: crate::native_agent::NativeRequestPayload::new(
-                    crate::native_agent::NativeRequest::ListIntegrations {},
-                )
-                .unwrap(),
-            },
-            &C_NATIVE_LIST,
-        ),
-        (
-            Command::NativeAgent {
-                request: crate::native_agent::NativeRequestPayload::new(
-                    crate::native_agent::NativeRequest::LaunchIntegration {
-                        integration: "opencode".into(),
-                        session: session_key(),
-                        cwd: "/workspace".into(),
-                    },
-                )
-                .unwrap(),
-            },
-            &C_NATIVE_LAUNCH,
-        ),
-        (
-            Command::NativeAgent {
-                request: crate::native_agent::NativeRequestPayload::new(
-                    crate::native_agent::NativeRequest::Spawn {
-                        spec: crate::native_agent::SpawnNativeAgent {
-                            session: "session".into(),
-                            backend: "acp".into(),
-                            provider: "omp".into(),
-                            command: vec!["omp".into()],
-                            cwd: None,
-                            env: std::collections::BTreeMap::new(),
-
-                            native_id: None,
-                            guardian: None,
-                            guardian_key: None,
-                            guardian_expected: None,
-                        },
-                    },
-                )
-                .unwrap(),
-            },
-            &C_NATIVE_SPAWN,
-        ),
-        (
-            Command::NativeAgent {
-                request: crate::native_agent::NativeRequestPayload::new(
-                    crate::native_agent::NativeRequest::Command {
-                        agent_session_id: terminal(),
-                        command: crate::native_agent::NativeCommand {
-                            operation_id: 1,
-                            activation: "activation".into(),
-                            intent: crate::native_agent::NativeIntent::Prompt {
-                                text: "hello".into(),
-                            },
-                        },
-                    },
-                )
-                .unwrap(),
-            },
-            &C_NATIVE_COMMAND,
-        ),
-        (
-            Command::NativeAgent {
-                request: crate::native_agent::NativeRequestPayload::new(
-                    crate::native_agent::NativeRequest::Register {
-                        agent_session_id: terminal(),
-                        activation: "activation".into(),
-                        binding_proof: "proof".into(),
-                    },
-                )
-                .unwrap(),
-            },
-            &C_NATIVE_CONTROLLER,
-        ),
+    native_command_samples().into_iter().chain([
         (
             Command::attach_terminal(terminal(), None),
             &C_ATTACH_RESOURCE,
@@ -582,10 +506,10 @@ pub(crate) fn command_samples() -> Vec<(Command, &'static Rule)> {
             },
             &C_CLOSE_TAB_RESOURCES,
         ),
-    ]
-    .into_iter()
+    ])
     .chain(org_command_samples())
     .chain(forward_samples())
     .chain(service_http_samples())
+    .chain(question_samples())
     .collect()
 }
