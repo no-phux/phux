@@ -180,8 +180,6 @@ pub fn settings(desk: &Desk, t: &Tokens) -> El {
                 .font(secondary(desk, t)).color(dim).wrap());
     }
     let updater = &desk.updater;
-    // The containing phone card already supplies its row gutter.
-    let toggle_inset = if desk.phone.is_some() { 0.0 } else { s.s4 };
     let mut buttons = row().w_full().gap(s.s2).flex_wrap();
     if let Some(action) = updater.action() {
         let mut button = act_button(action, "update-act-settings", t).min_h(s.touch_min);
@@ -239,8 +237,10 @@ pub fn settings(desk: &Desk, t: &Tokens) -> El {
     };
     section = section
         .child(buttons)
-        .child(toggle(desk, automatic, t).px(toggle_inset));
-    section.child(phux::settings(desk, t, toggle_inset))
+        // The section's card supplies the row gutter, on a phone and a
+        // desk alike: the toggle lines up with the words above it.
+        .child(toggle(desk, automatic, t).px(0.0));
+    section.child(phux::settings(desk, t))
 }
 
 /// Failures and compatibility warnings stay in view even when search hides
