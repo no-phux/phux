@@ -432,7 +432,7 @@ fn explicit_agent_record_writes_fire_agent_state_changed_on_real_edges() {
 /// is ignored whole and leaves the stored record alone.
 #[test]
 fn an_agent_record_over_its_byte_limit_is_refused() {
-    use phux_client_core::agent_record::MAX_AGENT_RECORD_BYTES;
+    use phux_protocol::wire::frame::MAX_AGENT_RECORD_BYTES;
 
     let state = SharedState::new();
     let (_session, pane) = state.with_mut(|s| s.seed_session("record-cap"));

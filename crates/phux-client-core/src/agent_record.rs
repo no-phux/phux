@@ -146,10 +146,7 @@ impl fmt::Display for AgentAttention {
     }
 }
 
-/// The most bytes an encoded `phux.agent/v1` record may hold. Writers refuse
-/// a larger record, the server ignores a `SET_METADATA` carrying one, and
-/// [`parse_agent_record`] reads one as "no declared agent".
-pub const MAX_AGENT_RECORD_BYTES: usize = 4096;
+pub use phux_protocol::wire::frame::MAX_AGENT_RECORD_BYTES;
 
 /// The most bytes of an unsupported word a reading carries. A record may hold
 /// up to [`MAX_AGENT_RECORD_BYTES`]; a vocabulary word is a slug, and a

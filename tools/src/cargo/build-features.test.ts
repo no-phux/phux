@@ -54,3 +54,16 @@ test("each host graph rejects a native terminal dependency", () => {
     ).toEqual([`${name}: production graph reaches phux-terminal`]);
   }
 });
+
+test("the server production graph rejects client state", () => {
+  const lean = parseTree(CLEAN.replace(/^wtransport-proto.*\n/m, ""));
+  expect(
+    violations({
+      full: parseTree(CLEAN),
+      lean,
+      mcp: lean,
+      ...HOST,
+      server: parseTree("phux-client-core v1.0.0|\n"),
+    }),
+  ).toEqual(["server: production graph reaches client state"]);
+});

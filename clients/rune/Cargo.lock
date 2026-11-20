@@ -2697,9 +2697,9 @@ name = "phux-client-core"
 version = "0.159.1"
 dependencies = [
  "bytes",
- "ciborium",
  "libghostty-vt",
  "phux-core",
+ "phux-layout-codec",
  "phux-perf",
  "phux-protocol",
  "phux-vt",
@@ -2797,6 +2797,17 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-tungstenite",
+]
+
+[[package]]
+name = "phux-layout-codec"
+version = "0.159.1"
+dependencies = [
+ "ciborium",
+ "phux-core",
+ "phux-protocol",
+ "serde",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

@@ -61,14 +61,14 @@ and gets the server's view, which is what `phux snapshot` does.
 
 ## Crates
 
-All under `crates/`. Every crate is `publish = false` except
-`phux-protocol`. Rows are responsibilities; Cargo manifests define the
-dependency edges.
+Only `phux-protocol` is published. Cargo manifests define the dependency
+edges.
 
 | Crate | Role |
 | --- | --- |
 | `phux-protocol` | wire format, message catalog, codec, capabilities, the kind catalog (also the authorization classifier); pure Rust, no libghostty |
-| `phux-vt` | libghostty glue for native crates |
+| `phux-vt` | libghostty glue |
+| `phux-layout-codec` | legacy TUI layout metadata |
 | `phux-core` | domain records: sessions, resources, arrangements, and the pure `apply()` that organizes them; no I/O |
 | `phux-config-core` | config file location, `extends` layering, `[[remote]]`, `[organize]`, profile and socket paths |
 | `phux-design` | [design tokens](./design-language.md) |

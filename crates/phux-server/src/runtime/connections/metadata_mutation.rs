@@ -2,7 +2,7 @@ use super::metadata_read::protected_key_refusal;
 use super::session_create::{apply_session_keep_empty, handle_session_create_metadata};
 use crate::state::{ClientId, Outbound, ServerInterceptedKey, ServerState, SharedState};
 use phux_protocol::ids::ResourceId as WireResourceId;
-use phux_protocol::wire::frame::{FrameKind, RESOURCE_AGENT_KEY, Scope};
+use phux_protocol::wire::frame::{FrameKind, MAX_AGENT_RECORD_BYTES, RESOURCE_AGENT_KEY, Scope};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, trace, warn};
@@ -107,14 +107,13 @@ fn reject_set_metadata(
     }
     // The agent record is read by every client and by the server's own
     // arbiter; a writer may not make it larger than the shared reader takes.
-    if key == RESOURCE_AGENT_KEY
-        && value.len() > phux_client_core::agent_record::MAX_AGENT_RECORD_BYTES
-    {
+    if key == RESOURCE_AGENT_KEY && value.len() > MAX_AGENT_RECORD_BYTES {
         warn!(
             ?client_id,
             request_id,
             value_len = value.len(),
-            "SET_METADATA(agent): record exceeds 4096 bytes; ignoring",
+            limit = MAX_AGENT_RECORD_BYTES,
+            "SET_METADATA(agent): record exceeds byte limit; ignoring",
         );
         return true;
     }
