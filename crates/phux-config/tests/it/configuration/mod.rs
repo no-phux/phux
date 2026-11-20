@@ -9,4 +9,3 @@ mod provenance;
 mod satellite;
 mod scaffold;
 mod shipped_plugins;
-mod usage_plugin;

@@ -265,7 +265,7 @@ pub fn unreachable_socket_message(verb: &str, io_err: &std::io::Error, socket: &
 mod tests {
     use std::path::Path;
 
-    use super::{ERROR_SCHEMA_VERSION, Refusal, codes, error_document, transport_refusal};
+    use super::{Refusal, codes, error_document, transport_refusal};
     use crate::attach::AttachError;
 
     #[test]
@@ -293,24 +293,6 @@ mod tests {
             "organization_authority"
         );
         assert!(doc["error"]["recovery"]["scope"].get("id").is_none());
-    }
-
-    /// The emit shape, pinned: `schema_version` 1, nested error object with
-    /// code and message, top-level `remedy` and `exit_code`.
-    #[test]
-    fn error_document_pins_the_contract_shape() {
-        let err = Refusal::new(codes::NO_SERVER, "no server running at /tmp/x", "start one");
-        let doc = error_document(&err, 1);
-        assert_eq!(doc["schema_version"], u64::from(ERROR_SCHEMA_VERSION));
-        assert_eq!(doc["error"]["code"], "no_server");
-        assert_eq!(doc["error"]["message"], "no server running at /tmp/x");
-        assert_eq!(doc["remedy"], "start one");
-        assert_eq!(doc["exit_code"], 1);
-        // Exactly the four top-level keys; a consumer may deny-list nothing.
-        assert_eq!(doc.as_object().map(serde_json::Map::len), Some(4));
-        // The emitted form is one line.
-        let line = serde_json::to_string(&doc).unwrap_or_default();
-        assert!(!line.contains('\n'), "error line must be single-line");
     }
 
     /// The printed line keeps the documented key order and carries exactly

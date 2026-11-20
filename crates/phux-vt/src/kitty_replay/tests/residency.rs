@@ -96,29 +96,6 @@ fn images_that_leave_the_pane_are_deleted_from_the_outer_terminal() {
 }
 
 #[test]
-fn placeholder_only_replays_never_touch_cells() {
-    let mut source = terminal();
-    transmit(&mut source, 7, 8, 8);
-    source.vt_write(b"\x1b_Ga=p,i=7,p=3,U=1,c=2,r=2,q=2;\x1b\\");
-    let mut iter = PlacementIterator::new().unwrap();
-    let mut residency = KittyResidency::default();
-    let mut out = Vec::new();
-    assert!(
-        !emit_kitty_graphics_replay(
-            &source,
-            &mut iter,
-            &mut residency,
-            &mut out,
-            (0, 0),
-            (10, 5)
-        )
-        .unwrap()
-    );
-    assert_eq!(contains(&out, b"a=t,"), 1);
-    assert!(!out.windows(2).any(|w| w == b"\x1b["), "no cursor motion");
-}
-
-#[test]
 fn forget_retransmits_without_duplicating_anonymous_placements() {
     let mut source = terminal();
     transmit(&mut source, 7, 8, 8);

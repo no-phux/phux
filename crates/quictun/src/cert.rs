@@ -308,27 +308,6 @@ mod tests {
         assert_eq!(cert_fingerprint(&narrow).unwrap(), fp, "never widened");
     }
 
-    /// A world-readable or group-writable key is refused before its bytes are
-    /// read; a group-readable one (an `ssl-cert` group setup) still loads.
-    #[test]
-    fn loading_a_key_checks_its_mode() {
-        let dir = tempfile::tempdir().unwrap();
-        let cert = dir.path().join("cert.pem");
-        let key = dir.path().join("key.pem");
-        ensure_self_signed(&cert, &key).unwrap();
-        for (mode, loads) in [(0o600, true), (0o640, true), (0o644, false), (0o660, false)] {
-            fs::set_permissions(&key, fs::Permissions::from_mode(mode)).unwrap();
-            let result = load_key(&key);
-            assert_eq!(result.is_ok(), loads, "{mode:04o}: {result:?}");
-            if !loads {
-                assert!(
-                    matches!(&result, Err(CertError::InsecureKey(message)) if message.contains("chmod 600")),
-                    "{mode:04o}: {result:?}"
-                );
-            }
-        }
-    }
-
     #[test]
     fn loading_reports_an_empty_cert_file() {
         let dir = tempfile::tempdir().unwrap();

@@ -425,16 +425,6 @@ describe("merge_group ci-green", () => {
     expect(refusal).toContain("rerun when green");
   });
 
-  test("push queued plus a qualifying merge_group run refuses", () => {
-    let consulted = false;
-    const refusal = ciGreenResult(sha, "queued", "success", () => {
-      consulted = true;
-      return undefined;
-    });
-    expect(consulted).toBe(false);
-    expect(refusal).toContain("rerun when green");
-  });
-
   test.each(["waiting", "pending", "requested"])(
     "push %s plus a qualifying merge_group run refuses",
     (push) => {

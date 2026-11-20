@@ -7,11 +7,8 @@
 //! in a transport remedy depends on the environment, so it is spelled
 //! `<server-log>` in the golden.
 //!
-//! A tool still on the residue runs through the CLI only with
-//! `PHUX_TEST_GOLDEN_CLI` naming a built `phux` (never the installed one);
-//! `PHUX_TEST_GOLDEN_WRITE=1` rewrites its goldens from that run. A tool that
-//! moved in-process runs on every test run, against the goldens the CLI
-//! froze.
+//! Every case's tool has moved in-process and runs on every test run,
+//! against the goldens the CLI froze.
 
 use phux_client::agent_meta::{AgentMetaState, AgentRecord};
 use phux_client::testkit::{self, ScriptSpec};
@@ -24,7 +21,6 @@ use serde_json::{Value, json};
 use tokio::net::UnixListener;
 
 use super::{agent_spec, golden_path, screen, state};
-use crate::tools::ToolError;
 
 /// A socket nothing listens on, spelled the same on every machine.
 const DEAD_SOCKET: &str = "/nonexistent/phux-mcp-golden.sock";
@@ -224,32 +220,14 @@ const CASES: &[Case] = &[
     no_server("whoami_no_server", "phux_whoami", || json!({})),
 ];
 
-/// How a case's tool is reached.
-enum Path<'a> {
-    /// The canonical CLI at this path, through the residue adapter.
-    Cli(&'a std::ffi::OsStr),
-    /// The registered handler, as `tools/call` reaches it.
-    Dispatch,
-}
-
-async fn call(path: &Path<'_>, tool: &str, args: &Value) -> Result<Value, ToolError> {
-    match path {
-        Path::Cli(program) => {
-            let adapter = crate::cli_adapter::CliAdapter::new(*program);
-            crate::tools::call_with_adapter(tool, args, &adapter).await
-        }
-        Path::Dispatch => crate::tools::dispatch(tool, args).await,
-    }
-}
-
 /// The environment-dependent server log path, spelled `<server-log>`.
 fn normalized(text: &str) -> String {
     let log = phux_config::instance::server_log_path();
     text.replace(&log.display().to_string(), "<server-log>")
 }
 
-/// Run `case` along `path` and render what it pins.
-async fn render(case: &Case, path: &Path<'_>) -> String {
+/// Run `case` through its registered handler and render what it pins.
+async fn render(case: &Case) -> String {
     let mut args = (case.args)();
     let dir = tempfile::tempdir().expect("temp dir");
     let server = match case.socket {
@@ -264,7 +242,7 @@ async fn render(case: &Case, path: &Path<'_>) -> String {
             Some(tokio::spawn(testkit::serve_every(listener, case.spec)))
         }
     };
-    let result = call(path, case.tool, &args).await;
+    let result = crate::tools::dispatch(case.tool, &args).await;
     if let Some(server) = server {
         server.abort();
     }
@@ -280,25 +258,12 @@ async fn render(case: &Case, path: &Path<'_>) -> String {
     }
 }
 
-/// Whether `tool` still runs the CLI.
-fn on_residue(tool: &str) -> bool {
-    matches!(
-        crate::tool_table::row(tool).map(|row| row.exec),
-        Some(crate::tool_table::Exec::Cli(_))
-    )
-}
-
-/// Compare each of `cases` along `path` with its golden, rewriting the
-/// goldens instead when `write` is set.
-async fn check(cases: impl Iterator<Item = &Case>, path: &Path<'_>, write: bool) {
+/// Compare each of `cases` with its golden.
+async fn check(cases: impl Iterator<Item = &Case>) {
     let mut mismatches = Vec::new();
     for case in cases {
-        let actual = render(case, path).await;
+        let actual = render(case).await;
         let file = golden_path(case.golden);
-        if write {
-            std::fs::write(&file, &actual).expect("write golden");
-            continue;
-        }
         match std::fs::read_to_string(&file) {
             Ok(expected) if expected == actual => {}
             Ok(expected) => mismatches.push(format!(
@@ -320,21 +285,9 @@ async fn check(cases: impl Iterator<Item = &Case>, path: &Path<'_>, write: bool)
 #[tokio::test]
 async fn moved_tools_match_the_goldens_the_cli_froze() {
     let _ = crate::cli_adapter::spawn_record::take();
-    let moved = CASES.iter().filter(|case| !on_residue(case.tool));
-    check(moved, &Path::Dispatch, false).await;
+    check(CASES.iter()).await;
     assert!(
         crate::cli_adapter::spawn_record::take().is_empty(),
         "a moved tool spawned the CLI"
     );
-}
-
-#[tokio::test]
-async fn residue_tools_through_the_cli_match_their_goldens() {
-    let Some(program) = std::env::var_os("PHUX_TEST_GOLDEN_CLI") else {
-        eprintln!("PHUX_TEST_GOLDEN_CLI is unset; the CLI-path residue goldens are not checked");
-        return;
-    };
-    let write = std::env::var_os("PHUX_TEST_GOLDEN_WRITE").is_some();
-    let residue = CASES.iter().filter(|case| on_residue(case.tool));
-    check(residue, &Path::Cli(&program), write).await;
 }

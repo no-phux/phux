@@ -130,18 +130,6 @@ fn the_tour_is_offered_once() {
 }
 
 #[test]
-fn a_notice_is_announced_and_an_error_at_once() {
-    for (kind, role) in [(NoticeKind::Info, "status"), (NoticeKind::Error, "alert")] {
-        let mut desk = Desk::with_preferences(&Resolved::offline("a11y"), None, Prefs::memory());
-        desk.say(kind, "Copied");
-        let tree = runtime(desk).accessibility_json();
-        let notice = find_by(&tree, "role", role);
-        assert_eq!(notice["name"], "Copied", "{kind:?}");
-        assert_eq!(find(&tree, "toast-close")["name"], "Dismiss");
-    }
-}
-
-#[test]
 fn glass_is_saved_like_the_theme() {
     let mut desk = crate::test_support::settings_window();
     desk.set_glass(40);

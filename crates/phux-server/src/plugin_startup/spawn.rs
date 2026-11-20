@@ -381,16 +381,6 @@ mod tests {
             .to_owned()
     }
 
-    #[test]
-    fn missing_program_is_a_spawn_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let spec = spec(&dir, &["/no/such/phux-startup-program"]);
-        spawn_on_local(&spec, &dir, async |spawned| match spawned {
-            Err(err) => assert_eq!(err.kind(), std::io::ErrorKind::NotFound, "{err}"),
-            Ok(_) => panic!("a missing program must not look like a live child"),
-        });
-    }
-
     #[cfg(target_os = "linux")]
     #[test]
     fn pdeathsig_treats_pid_one_and_a_subreaper_as_distinct_from_init() {

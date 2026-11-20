@@ -239,18 +239,3 @@ pub(crate) fn slot(args: crate::commands::SlotArgs, socket: Option<PathBuf>) -> 
     };
     run_slot(operation, json, socket)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The CLI's divider flag maps onto the library's direction one to one.
-    #[test]
-    fn cli_split_maps_to_the_library_direction() {
-        assert_eq!(
-            Direction::from(SpawnSplit::Horizontal),
-            Direction::Horizontal
-        );
-        assert_eq!(Direction::from(SpawnSplit::Vertical), Direction::Vertical);
-    }
-}

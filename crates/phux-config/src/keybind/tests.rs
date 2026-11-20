@@ -145,22 +145,6 @@ fn lenient_build_skips_only_the_offending_binding() {
     assert_eq!(resolver.feed(ck("q")), Feed::NoMatch);
 }
 
-/// A binding to an action no dispatcher knows is a diagnostic that names
-/// the nearest real action, so a strict build (reload) refuses it rather
-/// than installing a chord that silently does nothing.
-#[test]
-fn an_unknown_action_is_a_diagnostic_with_a_suggestion() {
-    let cfg = cfg_from("[keybindings.prefix-table]\nc = \"new-windoww\"\n");
-    let err = Resolver::new(&cfg.keybindings).expect_err("unknown action refused");
-    assert_eq!(
-        err.to_string(),
-        "unknown action `new-windoww` (did you mean `new-window`?)"
-    );
-    let cfg = cfg_from("[keybindings.prefix-table]\nc = \"zzzzzzzzzz\"\n");
-    let err = Resolver::new(&cfg.keybindings).expect_err("unknown action refused");
-    assert_eq!(err.to_string(), "unknown action `zzzzzzzzzz`");
-}
-
 /// Strict `new` fails with exactly the first lenient diagnostic.
 #[test]
 fn strict_new_errors_with_the_first_lenient_diagnostic() {

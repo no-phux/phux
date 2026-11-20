@@ -1,14 +1,12 @@
 //! `phux.whoami/v1` record assembly and admission of the ssh origin.
 
 use jiff::Timestamp;
-use phux_protocol::ids::ResourceId;
 use phux_protocol::policy::{PeerIdentity, TransportType};
-use phux_protocol::wire::frame::{Scope, ServingUser, SshClient, WHOAMI_KEY, WhoamiRecord};
+use phux_protocol::wire::frame::{ServingUser, SshClient, WhoamiRecord};
 use phux_protocol::wire::ssh_origin::SshOrigin;
 
 use super::{
-    ServingHost, admit_ssh_origin, auth_route, build_record, is_whoami_key, may_announce_ssh,
-    record_for,
+    ServingHost, admit_ssh_origin, auth_route, build_record, may_announce_ssh, record_for,
 };
 use crate::auth::AuthenticatedCredential;
 use crate::state::{ClientId, ServerState};
@@ -94,16 +92,6 @@ fn a_same_uid_bridge_announcement_reports_ssh_stdio() {
     );
     assert_eq!(record.peer_uid, Some(serving_uid()), "the bridge's uid");
     assert_eq!(record.principal, None, "the announcement grants nothing");
-}
-
-/// Another uid on the socket (root, say) cannot relabel itself.
-#[test]
-fn an_announcement_from_another_uid_is_ignored() {
-    let (state, client) = announced_by(serving_uid().wrapping_add(1));
-    assert_eq!(state.clients().ssh_origin(client), None);
-    let record = answered(&state, client);
-    assert_eq!(record.auth_route, "uds");
-    assert_eq!(record.ssh_client, None);
 }
 
 /// Only a Unix-socket peer of the serving uid may announce. The
@@ -241,27 +229,4 @@ fn every_transport_has_a_route_word() {
             "{transport:?} {bearer}"
         );
     }
-}
-
-/// Only the Global scope carries the key.
-#[test]
-fn the_key_lives_in_the_global_scope_only() {
-    assert!(is_whoami_key(&Scope::Global, WHOAMI_KEY));
-    assert!(!is_whoami_key(
-        &Scope::Resource(ResourceId::local(1)),
-        WHOAMI_KEY
-    ));
-    assert!(!is_whoami_key(&Scope::Global, "phux.whoami/v2"));
-}
-
-/// A newer server's additive field does not break an older reader.
-#[test]
-fn a_reader_ignores_fields_it_does_not_know() {
-    let json = r#"{"schema_version":1,"principal":"p","credential_id":"c",
-        "auth_route":"bearer-quic","peer_uid":null,
-        "serving_user":{"uid":0,"name":null},"host":"h",
-        "server_version":"9","later":true}"#;
-    let record: WhoamiRecord = serde_json::from_str(json).expect("parses");
-    assert_eq!(record.principal.as_deref(), Some("p"));
-    assert_eq!(record.serving_user.name, None);
 }

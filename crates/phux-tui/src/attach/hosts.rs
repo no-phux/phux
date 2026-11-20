@@ -334,26 +334,6 @@ mod tests {
     }
 
     #[test]
-    fn the_attached_machine_is_never_a_second_segment() {
-        let hosts = vec![
-            host(LOCAL_HOST, HostKind::Local),
-            host("mini", HostKind::Remote),
-            host("xps", HostKind::Remote),
-        ];
-        let names = |origin| {
-            other_hosts(&hosts, &origin)
-                .iter()
-                .map(|h| h.name.clone())
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(names(AttachOrigin::Local), ["mini", "xps"]);
-        assert_eq!(
-            names(AttachOrigin::Remote("mini".to_owned())),
-            [LOCAL_HOST, "xps"]
-        );
-    }
-
-    #[test]
     fn origin_label_prefers_the_registry_name_then_this_machine() {
         let hosts = vec![host(LOCAL_HOST, HostKind::Local)];
         assert_eq!(

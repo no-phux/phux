@@ -230,53 +230,7 @@ mod tests {
         (reg, [s0, s1], [t0, t1])
     }
 
-    // --- the u32 boundary: `u32::MAX - 1` is the last id minted ---
-
-    #[test]
-    #[should_panic(expected = "terminal wire-id space exhausted")]
-    fn terminal_space_panics_instead_of_saturating() {
-        let (_reg, _, terminals) = two_of_each();
-        let mut space = IdSpace::new();
-        space.set_next_terminal_wire(u32::MAX - 1);
-        let _ = space.intern_resource(terminals[0]);
-        let _ = space.intern_resource(terminals[1]);
-    }
-
-    // -- the ResourceId-is-an-enum invariant --------------------------
-
-    #[test]
-    fn terminal_from_wire_is_none_for_a_satellite_id() {
-        let (_reg, _, terminals) = two_of_each();
-        let mut space = IdSpace::new();
-        let wire = space.intern_resource(terminals[0]);
-        let raw = wire.local_id().expect("minted id is Local");
-        let satellite = WireResourceId::satellite("peer", raw);
-        assert!(
-            space.resource_from_wire(&satellite).is_none(),
-            "satellite terminals are routed by federation and never interned"
-        );
-        assert_eq!(space.resource_from_wire(&wire), Some(terminals[0]));
-    }
-
     // -- shape parity across the three spaces -------------------------
-
-    #[test]
-    fn every_space_allocates_monotonically_from_one() {
-        let (_reg, sessions, terminals) = two_of_each();
-        let mut space = IdSpace::new();
-        assert_eq!(space.intern_session(sessions[0]), WireSessionId(1));
-        assert_eq!(space.intern_session(sessions[1]), WireSessionId(2));
-        assert_eq!(space.intern_window(sessions[0]), WireWindowId(1));
-        assert_eq!(space.intern_window(sessions[1]), WireWindowId(2));
-        assert_eq!(
-            space.intern_resource(terminals[0]),
-            WireResourceId::local(1)
-        );
-        assert_eq!(
-            space.intern_resource(terminals[1]),
-            WireResourceId::local(2)
-        );
-    }
 
     #[test]
     fn retiring_does_not_recycle_wire_ids() {

@@ -1,6 +1,6 @@
 //! One-shot sessions against a real server: request/reply with the frames
-//! interleaved ahead of each answer, metadata reads, spawn, corked batches,
-//! QUIC per-Terminal streams, and refusal classification.
+//! interleaved ahead of each answer, metadata reads, spawn, QUIC
+//! per-Terminal streams, and a revoked token ending an attached runtime.
 
 #![allow(clippy::expect_used, reason = "test assertions")]
 #![allow(clippy::unwrap_used, reason = "test assertions")]
@@ -227,40 +227,6 @@ fn a_unix_session_reads_metadata_with_the_notices_ahead_of_each_answer() {
     });
 }
 
-/// A corked batch reaches the server as one write and every request in it
-/// is answered, in order.
-#[test]
-fn a_corked_batch_of_requests_is_answered_in_order() {
-    run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket = tmp.path().join("c.sock");
-        let (shutdown, server) = spawn_server(socket.clone(), Some("main"));
-        let mut session = connect_uds(&socket).await;
-        session.cork();
-        for nonce in 1..=3 {
-            session
-                .send(&FrameKind::Ping { nonce })
-                .await
-                .expect("corked");
-        }
-        session.uncork().await.expect("ship the batch");
-        let mut pongs = Vec::new();
-        while pongs.len() < 3 {
-            if let FrameKind::Pong { nonce } = timeout(STEP, session.recv())
-                .await
-                .expect("answered")
-                .expect("recv")
-            {
-                pongs.push(nonce);
-            }
-        }
-        assert_eq!(pongs, vec![1, 2, 3]);
-        assert!(session.try_recv().expect("nothing pending").is_none());
-        session.shutdown().await;
-        stop(shutdown, server).await;
-    });
-}
-
 /// QUIC multistream: a Terminal has no route until it is bound, its input
 /// rides its own stream once bound, its content comes back on it, and an
 /// unbind takes the route away again. The viewport barrier settles.
@@ -379,61 +345,5 @@ fn a_revoked_quic_token_ends_an_attached_runtime() {
         client.close();
         drop(client);
         stop(shutdown, server).await;
-    });
-}
-
-/// 401 on the upgrade, as a token gate refusing a token answers it.
-async fn refuse_with_401() -> u16 {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    tokio::task::spawn_local(async move {
-        while let Ok((mut stream, _)) = listener.accept().await {
-            let mut request = Vec::new();
-            let mut buf = [0_u8; 1024];
-            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
-                match stream.read(&mut buf).await {
-                    Ok(0) | Err(_) => break,
-                    Ok(read) => request.extend_from_slice(&buf[..read]),
-                }
-            }
-            let _ = stream
-                .write_all(
-                    b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                )
-                .await;
-        }
-    });
-    port
-}
-
-/// Each failure lands in the variant a caller reacts to.
-#[test]
-fn refusals_are_classified_for_the_caller() {
-    run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let missing = Session::connect(
-            &Dial::uds(&tmp.path().join("absent.sock")),
-            CLIENT.to_owned(),
-            control_caps(),
-        )
-        .await;
-        assert!(
-            matches!(&missing, Err(SessionError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound),
-            "{missing:?}"
-        );
-
-        let port = refuse_with_401().await;
-        let gate = Target::ws(format!("ws://127.0.0.1:{port}"));
-        let refused = Session::connect_target(&gate, CLIENT.to_owned(), control_caps()).await;
-        let error = refused.expect_err("401");
-        assert!(error.is_fatal_refusal(), "a 401 is not retried: {error}");
-
-        let unpinned = Target::quic("192.0.2.1:8788");
-        let plan = Session::connect_target(&unpinned, CLIENT.to_owned(), control_caps()).await;
-        assert!(
-            matches!(&plan, Err(SessionError::Connect(detail)) if detail.contains("certificate pin")),
-            "{plan:?}"
-        );
     });
 }

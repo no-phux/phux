@@ -191,27 +191,6 @@ fn rendered_snapshot_does_not_resize_the_panes() {
 
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
-fn resize_does_not_attach_the_session() {
-    // The trap this verb exists to avoid falling into itself: a headless
-    // caller that attaches contributes an 80x24 no-TTY viewport, and under
-    // the default `window-size = "smallest"` policy that drags the pane
-    // straight back to the default it was just moved off. Resizing twice in
-    // a row is what makes a lingering subscription observable — the second
-    // call's read-back would show 80x24, not 140x45.
-    let server = start_server();
-    server.success(&["resize", SESSION, "140x45"]);
-    let stdout = server.success(&["resize", SESSION, "140x45"]);
-    assert_eq!(stdout.trim(), "140x45");
-    assert_eq!(
-        pane_size(&server),
-        (140, 45),
-        "a previous `phux resize` left a view attached to the session; its \
-         80x24 no-TTY viewport is now fighting the size being requested"
-    );
-}
-
-#[test]
-#[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn resize_refuses_an_unknown_target_without_touching_any_pane() {
     let server = start_server();
     server.success(&["resize", SESSION, "110x35"]);

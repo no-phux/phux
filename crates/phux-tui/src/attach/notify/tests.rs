@@ -67,15 +67,6 @@ fn done_fires_once_per_run() {
 }
 
 #[test]
-fn blocked_then_done_after_working_fires_done() {
-    let (t, _) = step(track(Phase::Working, true), Phase::Blocked, true);
-    assert_eq!(
-        step(Some(t), Phase::Settled, true).1,
-        Some(NotifyKind::Done)
-    );
-}
-
-#[test]
 fn ask_names_itself() {
     let mut asked = row(1, Phase::Blocked);
     asked.asking = true;

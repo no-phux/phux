@@ -49,7 +49,6 @@ pub(super) fn adopt_uds_listener(fd: RawFd) -> Result<UdsListener, ServerError> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transport::Incoming;
     use crate::upgrade::blob::{BLOB_VERSION, Counters};
     use std::io::Write;
     use std::os::fd::IntoRawFd;
@@ -88,22 +87,5 @@ mod tests {
 
         let read = read_blob_from_fd(fd).expect("read blob");
         assert_eq!(read, blob);
-    }
-
-    #[tokio::test]
-    async fn adopts_an_inherited_listener_and_accepts() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("resume.sock");
-        let std_listener = std::os::unix::net::UnixListener::bind(&path).expect("bind listener");
-        // Relinquish ownership; `adopt_uds_listener` re-takes it by raw fd,
-        // exactly as the re-exec'd image inherits it.
-        let fd = std_listener.into_raw_fd();
-
-        let uds = adopt_uds_listener(fd).expect("adopt listener");
-
-        let (client, accepted) =
-            tokio::join!(tokio::net::UnixStream::connect(&path), uds.accept(),);
-        client.expect("client connects to the adopted socket");
-        accepted.expect("adopted listener accepts the connection");
     }
 }

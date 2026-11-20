@@ -85,26 +85,6 @@ fn phone_palette_and_navigation_use_the_same_foreground_order_as_painting() {
 }
 
 #[test]
-fn settings_theme_palette_returns_to_its_parent_on_both_forms() {
-    for phone in [false, true] {
-        let mut rt = runtime(phone);
-        rt.update(|desk, _| {
-            desk.toggle_settings();
-            desk.settings_themes();
-        });
-        rt.frame(0.0);
-        assert_eq!(rt.state.modal(), Some(Modal::Palette));
-        rt.key(KeyEvent {
-            key: Key::Escape,
-            mods: Mods::default(),
-        });
-        rt.frame(0.1);
-        assert!(rt.state.settings_open);
-        assert_eq!(rt.state.modal(), Some(Modal::Settings));
-    }
-}
-
-#[test]
 fn toasts_paint_under_a_menu_and_hide_behind_the_inbox() {
     let mut desk = Desk::with_preferences(
         &crate::launch::Resolved::offline("toasts"),

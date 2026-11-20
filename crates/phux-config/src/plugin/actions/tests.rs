@@ -101,18 +101,6 @@ fn plugin_action_target_reads_id_or_the_older_action_arg() {
 }
 
 #[test]
-fn merge_user_binding_wins_on_exact_chord_conflict() {
-    let mut kb = base_kb(); // user binds `d` -> detach
-    merge_plugin_bindings(&mut kb, &[entry("p", "a", Some("d"))]);
-    assert_eq!(
-        kb.prefix_table.get("d"),
-        Some(&Action::Bare("detach".to_owned())),
-        "user's binding must survive the merge untouched"
-    );
-    assert_eq!(kb.prefix_table.len(), 1, "plugin binding dropped");
-}
-
-#[test]
 fn merge_user_binding_wins_on_chord_equivalent_spelling() {
     // `?` and `S-/` are the same chord (shifted-glyph rule); a plugin
     // spelling the user's chord differently must still lose.

@@ -360,33 +360,17 @@ fn verb_only_connection_matrix(verb: Verb) {
 }
 
 #[test]
-fn inventory_only_connection_matrix() {
-    verb_only_connection_matrix(Verb::Inventory);
-}
-
-#[test]
-fn observe_only_connection_matrix() {
-    verb_only_connection_matrix(Verb::Observe);
-}
-
-#[test]
-fn create_only_connection_matrix() {
-    verb_only_connection_matrix(Verb::Create);
-}
-
-#[test]
-fn bind_only_connection_matrix() {
-    verb_only_connection_matrix(Verb::Bind);
-}
-
-#[test]
-fn input_only_connection_matrix() {
-    verb_only_connection_matrix(Verb::Input);
-}
-
-#[test]
-fn signal_only_connection_matrix() {
-    verb_only_connection_matrix(Verb::Signal);
+fn each_single_verb_grant_admits_exactly_its_rows() {
+    for verb in [
+        Verb::Inventory,
+        Verb::Observe,
+        Verb::Create,
+        Verb::Bind,
+        Verb::Input,
+        Verb::Signal,
+    ] {
+        verb_only_connection_matrix(verb);
+    }
 }
 
 #[test]

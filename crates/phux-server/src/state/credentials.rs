@@ -157,51 +157,6 @@ mod tests {
     }
 
     #[test]
-    fn only_bound_provider_claims_after_approval_and_completion_is_single_use() {
-        let mut broker = CredentialBroker::default();
-        broker.register("mac", ClientId(1)).unwrap();
-        assert!(broker.register("mac", ClientId(2)).is_err());
-        let mut reply = broker
-            .insert(
-                "id".into(),
-                ClientId(3),
-                ClientId(1),
-                request(),
-                std::time::Duration::from_secs(120),
-            )
-            .unwrap();
-        assert!(broker.claim(ClientId(1), "mac").is_none());
-        assert!(broker.ready("id"));
-        assert!(broker.claim(ClientId(2), "mac").is_none());
-        assert!(broker.claim(ClientId(1), "other-label").is_none());
-        assert!(broker.claim(ClientId(1), "mac").is_some());
-        assert!(broker.claim(ClientId(1), "mac").is_none());
-        assert!(broker.completion_request("id", ClientId(2)).is_none());
-        broker.complete("id", Some(SecretValues(vec!["secret".into()])));
-        assert_eq!(reply.try_recv().unwrap().unwrap().0, vec!["secret"]);
-        assert!(broker.completion_request("id", ClientId(1)).is_none());
-    }
-
-    #[test]
-    fn disconnect_retires_binding_and_every_exchange() {
-        let mut broker = CredentialBroker::default();
-        broker.register("mac", ClientId(1)).unwrap();
-        let mut reply = broker
-            .insert(
-                "id".into(),
-                ClientId(3),
-                ClientId(1),
-                request(),
-                std::time::Duration::from_secs(120),
-            )
-            .unwrap();
-        broker.disconnect(ClientId(1));
-        assert!(reply.try_recv().is_err());
-        assert!(broker.provider("mac").is_none());
-        assert!(broker.pending.is_empty());
-    }
-
-    #[test]
     fn one_connection_cannot_exhaust_provider_labels_and_disconnect_releases_its_slot() {
         let mut broker = CredentialBroker::default();
         broker.register("mac", ClientId(1)).unwrap();

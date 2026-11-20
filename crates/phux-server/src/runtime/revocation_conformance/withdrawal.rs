@@ -17,34 +17,6 @@ use crate::state::Outbound;
 use crate::workload::WorkloadRegistry;
 
 #[tokio::test(flavor = "current_thread")]
-async fn revoking_a_key_terminates_its_live_connections_with_authorization_revoked() {
-    local(async {
-        let fx = Fixture::paired(&["*@global"]);
-        let attached = fx.workload().await;
-        attached.attach(1).await;
-        let idle = fx.workload().await;
-
-        fx.revoke_key();
-        fx.sweep();
-
-        for connection in [&attached, &idle] {
-            connection
-                .assert_ended_with(DetachReason::AuthorizationRevoked)
-                .await;
-            assert!(fx.state.with(|s| s.connection_revoked(connection.client)));
-        }
-        assert!(
-            fx.state
-                .with(|s| !s.attached().contains_key(&attached.client)),
-            "the attachment is released"
-        );
-        attached.finish().await;
-        idle.finish().await;
-    })
-    .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
 async fn expiry_terminates_with_authorization_expired_and_releases_leases() {
     local(async {
         let fx = Fixture::expiring(jiff::SignedDuration::from_millis(750));

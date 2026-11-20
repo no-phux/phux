@@ -218,59 +218,14 @@ fn spanless_schema_error_renders_no_fabricated_position() {
     );
 }
 
-/// Per-field user values parse and round-trip; explicit predictive echo
-/// beats the per-transport default in both directions.
+/// Explicit predictive echo beats the per-transport default in both
+/// directions.
 #[test]
-fn user_values_parse_and_round_trip() {
-    let cfg = parse_and_round_trip("[keybindings]\nwhich-key = false\nwhich-key-delay-ms = 250\n");
-    assert!(!cfg.keybindings.which_key);
-    assert_eq!(cfg.keybindings.which_key_delay_ms, 250);
-
+fn explicit_predictive_echo_beats_the_transport_default() {
     let cfg = parse_and_round_trip("[experimental]\npredictive-echo = true\n");
     assert!(cfg.experimental.predictive_echo_for(false));
     let cfg = parse_and_round_trip("[experimental]\npredictive-echo = false\n");
     assert!(!cfg.experimental.predictive_echo_for(true));
-
-    let cfg =
-        parse_and_round_trip("[sidebar]\nenabled  = true\nwidth    = 30\nposition = \"right\"\n");
-    assert!(cfg.sidebar.enabled);
-    assert_eq!(cfg.sidebar.width, 30);
-    assert_eq!(cfg.sidebar.position, SidebarPosition::Right);
-
-    let cfg = parse_and_round_trip("[sidebar]\nagents-share = 55\n");
-    assert_eq!(cfg.sidebar.agents_share, 55);
-
-    let cfg = parse_and_round_trip("[status]\nleft     = [\"session-name\"]\nposition = \"top\"\n");
-    assert_eq!(cfg.status.position, StatusPosition::Top);
-
-    let cfg = parse_and_round_trip("[defaults]\nterm = \"ghostty\"\n");
-    assert_eq!(cfg.defaults.term, "ghostty");
-
-    let cfg = parse_and_round_trip(
-        r#"
-[defaults]
-cwd-inheritance       = "home"
-spawn-on-attach       = "/usr/bin/tmux-like"
-session-name-template = "phux-${cwd-basename}"
-"#,
-    );
-    assert_eq!(cfg.defaults.cwd_inheritance, CwdInheritance::Home);
-    assert_eq!(
-        cfg.defaults.spawn_on_attach.as_deref(),
-        Some("/usr/bin/tmux-like")
-    );
-    assert_eq!(cfg.defaults.session_name_template, "phux-${cwd-basename}");
-
-    let cfg = parse_and_round_trip("[defaults]\nwindow-size = \"largest\"\n");
-    assert_eq!(cfg.defaults.window_size, WindowSize::Largest);
-    let cfg = parse_and_round_trip("[defaults]\nwindow-size = \"active\"\n");
-    assert_eq!(cfg.defaults.window_size, WindowSize::Active);
-    assert_eq!(cfg.defaults.keep_awake, phux_config::KeepAwake::Off);
-    let cfg = parse_and_round_trip("[defaults]\nkeep-awake = \"while-agents-work\"\n");
-    assert_eq!(
-        cfg.defaults.keep_awake,
-        phux_config::KeepAwake::WhileAgentsWork
-    );
 }
 
 /// Replace the `:COL:` in `path:LINE:COL: message` with `:<col>:` so

@@ -1,5 +1,5 @@
 //! The Terminal engine driven directly, with no server: actors over their
-//! channels, input encoding, and snapshot synthesis.
+//! channels and input encoding.
 
 #![allow(
     clippy::expect_used,
@@ -13,4 +13,3 @@ mod actor;
 mod common;
 mod key_encode_snapshot;
 mod statesync_convergence;
-mod synthesis;

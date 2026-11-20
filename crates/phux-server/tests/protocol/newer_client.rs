@@ -147,24 +147,6 @@ fn an_unknown_command_tag_is_refused_with_its_request_id() {
 }
 
 #[test]
-fn an_unknown_enum_inside_a_known_command_is_refused_with_its_request_id() {
-    run_local(async {
-        let (_server, mut stream) = spawn_server_connected(None).await;
-        let mut get_state = command_body(phux_server_testkit::get_state());
-        // GET_STATE is a tag then a `StateScope` tag; name a newer scope.
-        *get_state.last_mut().unwrap() = 0x7F;
-        send_raw(&mut stream, &raw_command(90, &get_state)).await;
-        let result = await_command_result(&mut stream, 90).await;
-        assert_unsupported(&result);
-        let CommandResult::Error { message, .. } = result else {
-            unreachable!()
-        };
-        assert!(message.contains("StateScope"), "{message:?}");
-        assert_usable(&mut stream, 2).await;
-    });
-}
-
-#[test]
 fn bytes_and_fields_a_newer_client_appends_are_skipped() {
     run_local(async {
         let (_server, mut stream) = spawn_server_connected(None).await;

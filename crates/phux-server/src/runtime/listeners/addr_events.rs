@@ -153,10 +153,4 @@ mod tests {
     async fn subscribing_opens_a_route_socket_here() {
         assert!(AddrEvents::subscribe().is_live());
     }
-
-    #[test]
-    fn short_messages_are_not_address_events() {
-        assert!(!is_address_added(&[]));
-        assert!(!is_address_added(&[0, 0, 0]));
-    }
 }

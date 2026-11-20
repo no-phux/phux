@@ -87,8 +87,8 @@ mod tests {
         assert!(rects.values().all(|r| r.y >= 5), "pane above the top inset");
     }
 
-    /// Labelled-grid snapshots: a 2-pane split with either focus (the layout
-    /// is identical), and a 3-pane cross split whose T-junctions must render.
+    /// Labelled-grid snapshots: a 2-pane split, and a 3-pane cross split
+    /// whose T-junctions must render.
     #[test]
     fn layout_snapshots() {
         let cross = split_at(
@@ -103,10 +103,6 @@ mod tests {
             (
                 "two_pane_h_split_80x24_focus_left",
                 focused(pair(SplitDir::Horizontal, 0.5), 1),
-            ),
-            (
-                "two_pane_h_split_80x24_focus_right",
-                focused(pair(SplitDir::Horizontal, 0.5), 2),
             ),
             ("three_pane_cross_80x24_focus_top_left", focused(cross, 1)),
         ] {

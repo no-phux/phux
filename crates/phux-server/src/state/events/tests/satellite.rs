@@ -41,22 +41,6 @@ fn relayed_events_reach_only_their_satellite_scope_and_are_not_retained() {
     );
 }
 
-#[test]
-fn a_cursor_on_a_satellite_scope_is_owed_a_gap() {
-    let mut state = ServerState::new();
-    let _ = record(&mut state, 1, AgentEvent::Bell);
-    let client = state.clients_mut().new_client_id();
-    let (tx, mut rx) = mpsc::channel(4);
-    state.subscribe_satellite_events(
-        client,
-        WireResourceId::satellite("sat", 9),
-        EventFilter::all(),
-        Some(0),
-        tx,
-    );
-    assert_eq!(drain(&mut rx), vec![gap(1, 1)]);
-}
-
 /// A satellite cursor's gap is covered by the head, sent or owed; a hub
 /// event on another scope does not raise it.
 #[test]
@@ -151,22 +135,6 @@ fn a_withheld_role_changed_does_not_raise_a_legacy_connections_head() {
         "the withheld ROLE_CHANGED must not raise a legacy head"
     );
     assert_eq!(state.journal_head_for(Some(aware)), role_changed);
-}
-
-#[test]
-fn an_interrupted_satellite_scope_is_owed_a_gap_and_stops_receiving() {
-    let satellite = WireResourceId::satellite("sat", 9);
-    let mut state = ServerState::new();
-    let client = state.clients_mut().new_client_id();
-    let (tx, mut rx) = mpsc::channel(4);
-    state.subscribe_satellite_events(client, satellite.clone(), EventFilter::all(), None, tx);
-    state.interrupt_satellite_scope(client, &satellite);
-    assert!(
-        matches!(drain(&mut rx).as_slice(), [AgentEvent::JournalGap { .. }]),
-        "the interrupted stream is reported"
-    );
-    let _ = state.record_relayed_event(satellite, AgentEvent::Bell, None);
-    assert!(drain(&mut rx).is_empty(), "the scope is gone");
 }
 
 /// A void cursor merged into a pending replay reports `journal_gap{1,

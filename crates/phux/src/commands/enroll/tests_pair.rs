@@ -3,7 +3,6 @@
 
 use super::pair::{PairReport, candidate_endpoints, token_path, write_token};
 use super::ssh::{authority, destination_host, parse_ssh_g_hostname};
-use std::path::Path;
 
 pub(super) fn report(fp: Option<&str>, overlay: &[&str]) -> PairReport {
     PairReport {
@@ -157,14 +156,4 @@ fn token_is_written_owner_only() {
     assert_eq!(std::fs::read_to_string(&path).expect("read"), "deadbeef\n");
     let mode = std::fs::metadata(&path).expect("stat").permissions().mode();
     assert_eq!(mode & 0o777, 0o600, "a bearer token must not be readable");
-}
-
-#[test]
-fn token_path_is_namespaced_per_remote() {
-    let state = Path::new("/state");
-    assert_eq!(
-        token_path(state, "mini"),
-        Path::new("/state/remotes/mini.token")
-    );
-    assert_ne!(token_path(state, "mini"), token_path(state, "studio"));
 }

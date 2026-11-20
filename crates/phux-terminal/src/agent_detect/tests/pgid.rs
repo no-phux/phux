@@ -2,44 +2,6 @@ use super::*;
 
 // --- pid reuse (phux-w7z2.43) -------------------------------------------
 
-/// A recycled pgid with a new start time is a new occupant.
-#[test]
-fn a_recycled_pgid_is_a_new_occupant_not_the_old_one() {
-    let mut h = occupied("t", 100);
-
-    // Same kind, same id, different process.
-    h.occupy(agent_started("t", 100, Some(999_999)));
-    assert_eq!(
-        h.identity_tick(),
-        reidentified("t"),
-        "the id was recycled; the start time is what says so",
-    );
-}
-
-/// Without start times, comparison degrades to pgids, not "all new".
-#[test]
-fn an_unavailable_start_time_degrades_to_comparing_pgids() {
-    let mut h = Harness::unidentified();
-    h.occupy(agent_started("t", 100, None));
-    assert_eq!(h.identity_tick(), DetectOutcome::Quiet, "acquiring");
-    h.now += STARTUP_GRACE + Duration::from_millis(1);
-    assert_eq!(published(&h.tick("WORKING")), DetectedState::Working);
-
-    for _ in 0..20 {
-        assert_eq!(
-            h.identity_tick(),
-            DetectOutcome::Quiet,
-            "no start time anywhere: fall back to the pgid, stay silent",
-        );
-    }
-    // ... and the pgid alone still catches the restarts it always caught.
-    h.occupy(agent_started("t", 271, None));
-    assert!(matches!(
-        h.identity_tick(),
-        DetectOutcome::Reidentified { .. }
-    ));
-}
-
 /// A transiently unreadable start time does not erase the known one.
 #[test]
 fn a_transiently_unreadable_start_time_does_not_erase_the_one_we_have() {

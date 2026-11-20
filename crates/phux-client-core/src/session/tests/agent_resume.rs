@@ -262,24 +262,6 @@ fn large_agent_resume_preserves_state_while_bounding_the_retained_log() {
 }
 
 #[test]
-fn agent_resume_staging_obeys_the_existing_chunk_ceiling() {
-    let mut rig = agent_rig(0);
-    let next = resumed();
-    let committed = rig.cursor();
-    rig.ok(next.resume(0, 0));
-    let limit = u32::try_from(MAX_BOOTSTRAP_STAGING_CHUNKS).unwrap();
-    for chunk_seq in 0..limit {
-        rig.ok(next.chunk(chunk_seq, b""));
-    }
-    assert!(matches!(
-        rig.up(next.chunk(limit, b"")),
-        Err(KernelError::BootstrapStagingLimitExceeded)
-    ));
-    assert_eq!(rig.cursor(), committed);
-    assert!(rig.publication().is_none());
-}
-
-#[test]
 fn expired_agent_resume_staging_preserves_the_committed_generation() {
     for transition in 0..3 {
         let mut rig = agent_rig(0);

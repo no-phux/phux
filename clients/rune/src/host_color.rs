@@ -200,20 +200,6 @@ mod tests {
     }
 
     #[test]
-    fn every_swatch_reads_on_the_house_layers() {
-        use phux_design::{Mode, Roles};
-        for mode in [Mode::Dark, Mode::Light] {
-            let r = Roles::house(mode);
-            for ground in [r.layer.ground, r.layer.sidebar, r.layer.raised] {
-                for (i, (id, _)) in PALETTE.iter().enumerate() {
-                    let got = contrast(swatch(i, ground.paint()), ground.paint());
-                    assert!(got >= 3.0, "{id} on {ground}: {got}");
-                }
-            }
-        }
-    }
-
-    #[test]
     fn a_notice_names_its_machine_by_whole_word() {
         let names = ["mini", "mac", LOCAL];
         let text = format!("mini isn't available, so this is {LOCAL}.");

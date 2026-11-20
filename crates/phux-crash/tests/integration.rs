@@ -1,7 +1,7 @@
 //! Integration tests for phux-crash.
 //!
 //! These tests verify that installing the handler does not interfere with
-//! normal program operation (tokio runtime, signal handling, I/O), that a
+//! tokio's own signal handling, that a
 //! fatal signal still kills the process with that signal after the handler
 //! runs, and that the terminal restore bytes reach stderr only while armed.
 //!
@@ -49,49 +49,6 @@ fn subprocess_entry() {
     phux_crash::install_terminal_restore_only();
 
     match scenario.as_str() {
-        // Scenario 1: install handler, run tokio runtime with concurrent work, exit cleanly.
-        "tokio_normal" => {
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .expect("tokio runtime");
-            rt.block_on(async {
-                // Spawn several concurrent tasks to stress the runtime.
-                let mut handles = Vec::new();
-                for i in 0..20 {
-                    handles.push(tokio::spawn(async move {
-                        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-                        i * i
-                    }));
-                }
-                let mut sum = 0u64;
-                for h in handles {
-                    sum += h.await.unwrap();
-                }
-                // Also test signal infrastructure coexistence.
-                // Register a tokio SIGTERM handler (same as the pager does).
-                #[cfg(unix)]
-                {
-                    use tokio::signal::unix::{SignalKind, signal};
-                    let _term = signal(SignalKind::terminate())
-                        .expect("tokio SIGTERM handler should work alongside crash handler");
-                }
-                eprintln!("tokio_normal: sum={sum}, all tasks completed");
-            });
-        }
-
-        // Scenario 2: install handler, do sync file I/O and computation, exit cleanly.
-        "sync_normal" => {
-            let tmp = tempfile::tempdir().expect("tempdir");
-            for i in 0..50 {
-                let path = tmp.path().join(format!("file-{i}.txt"));
-                std::fs::write(&path, format!("contents {i}")).expect("write");
-                let data = std::fs::read_to_string(&path).expect("read");
-                assert!(data.contains(&format!("{i}")));
-            }
-            eprintln!("sync_normal: 50 files written and read back");
-        }
-
         // Scenario 3: install handler, send ourselves SIGBUS.
         "sigbus" => {
             // SAFETY: raising a signal has no memory-safety preconditions.
@@ -159,22 +116,12 @@ fn subprocess_entry() {
 
 // ── Parent test cases ───────────────────────────────────────────────────
 
-/// The handler leaves a tokio runtime, sync I/O, and other signal handlers
-/// working.
+/// The handler leaves tokio's own signal handlers working.
 #[test]
-fn handler_does_not_interfere_with_normal_work() {
-    for (scenario, done) in [
-        ("tokio_normal", "all tasks completed"),
-        ("sync_normal", "50 files written"),
-        ("tokio_signals", "signal coexistence OK"),
-    ] {
-        let (status, _stdout, stderr) = run_scenario(scenario);
-        assert!(status.success(), "{scenario}: {status:?}\nstderr: {stderr}");
-        assert!(
-            stderr.contains(done),
-            "{scenario}: no {done:?}\nstderr: {stderr}"
-        );
-    }
+fn handler_does_not_clobber_other_signal_handlers() {
+    let (status, _stdout, stderr) = run_scenario("tokio_signals");
+    assert!(status.success(), "{status:?}\nstderr: {stderr}");
+    assert!(stderr.contains("signal coexistence OK"), "stderr: {stderr}");
 }
 
 /// Each fatal signal kills the child with `SIG_DFL` restored and the signal

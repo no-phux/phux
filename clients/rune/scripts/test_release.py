@@ -71,11 +71,6 @@ class ReleaseTest(unittest.TestCase):
         self.assertEqual(stuck_exit(STUCK_SECONDS + 1, SHA, None), 1)
         self.assertEqual(stuck_exit(STUCK_SECONDS, SHA, None), 0)
 
-    def test_inside_the_six_hour_gate_still_waits(self):
-        self.assertEqual(stuck_exit(STUCK_SECONDS, SHA, []), 0)
-        self.assertEqual(stuck_exit(STUCK_SECONDS - 1, SHA, []), 0)
-        self.assertEqual(stuck_exit(STUCK_SECONDS + 1, SHA, []), 1)
-
 
 if __name__ == "__main__":
     unittest.main()

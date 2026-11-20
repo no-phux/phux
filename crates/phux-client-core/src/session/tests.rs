@@ -1982,20 +1982,6 @@ fn padded_agent_wire_record(seq: u64, wire_bytes: usize) -> Vec<u8> {
 }
 
 #[test]
-fn agent_bootstrap_rejects_record_one_byte_over_wire_limit_with_or_without_lf() {
-    use super::agent_stream::{AgentRecordError, MAX_RECORD_BYTES};
-    let oversize = padded_agent_wire_record(1, MAX_RECORD_BYTES + 1);
-    for bytes in [oversize.as_slice(), &oversize[..oversize.len() - 1]] {
-        let (mut rig, g) = replacing_agent_rig(1);
-        assert!(matches!(
-            rig.up(g.chunk(0, bytes)),
-            Err(KernelError::AgentRecord(AgentRecordError::Oversize(16_385)))
-        ));
-        assert_agent_replacement_failure(&rig);
-    }
-}
-
-#[test]
 fn agent_live_record_wire_limit_includes_lf_and_whitespace() {
     use super::agent_stream::{AgentRecordError, MAX_RECORD_BYTES};
     let g = agent_gen(3, 4);

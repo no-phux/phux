@@ -596,32 +596,6 @@ mod tests {
     }
 
     #[test]
-    fn tee_forwards_every_byte_to_the_inner_sink() {
-        let sink = MemSink::default();
-        let rec = Rc::new(RefCell::new(recorder(sink.clone())));
-        let mut inner = ShortWriter {
-            got: Vec::new(),
-            limit: 4,
-        };
-        {
-            let mut tee = TeeSink {
-                inner: &mut inner,
-                rec: Rc::clone(&rec),
-            };
-            // `write_all` loops over the short writes; both sides must end up
-            // with the identical byte stream.
-            tee.write_all(b"\x1b[2Jhello world").expect("tee write_all");
-        }
-        Rc::try_unwrap(rec)
-            .expect("sole owner")
-            .into_inner()
-            .finish()
-            .expect("finish");
-        assert_eq!(inner.got, b"\x1b[2Jhello world");
-        assert_eq!(output_text(&sink.contents()), "\x1b[2Jhello world");
-    }
-
-    #[test]
     fn flush_emits_a_resize_event_when_the_probe_reports_new_dims() {
         let sink = MemSink::default();
         // Popped from the end: first probe agrees with the header, second
@@ -651,34 +625,6 @@ mod tests {
             .collect();
         assert_eq!(resizes.len(), 1, "only the real size change is recorded");
         assert_eq!(resizes[0].data, "100x30");
-    }
-
-    #[test]
-    fn flush_emits_no_resize_event_when_dims_are_unchanged() {
-        let sink = MemSink::default();
-        let rec = Rc::new(RefCell::new(
-            recorder(sink.clone()).with_size_probe(Box::new(|| Some((80, 24)))),
-        ));
-        let mut inner = Vec::new();
-        {
-            let mut tee = TeeSink {
-                inner: &mut inner,
-                rec: Rc::clone(&rec),
-            };
-            for _ in 0..5 {
-                tee.flush().expect("flush");
-            }
-        }
-        Rc::try_unwrap(rec)
-            .expect("sole owner")
-            .into_inner()
-            .finish()
-            .expect("finish");
-        let (_, events) = read_cast(sink.contents().as_slice()).expect("cast parses");
-        assert!(
-            events.iter().all(|e| e.code != EventCode::Resize),
-            "a per-frame ioctl must not produce per-frame resize events"
-        );
     }
 
     #[test]

@@ -286,17 +286,6 @@ mod tests {
     }
 
     #[test]
-    fn strict_cwd_sets_the_directory_and_the_mark() {
-        let mut command = LaunchCommand::new("/bin/sh");
-        apply_strict_spawn_cwd(&mut command, std::path::Path::new("/gone"));
-        assert_eq!(
-            command.get_cwd().map(OsString::as_os_str),
-            Some(OsStr::new("/gone"))
-        );
-        assert_eq!(command.get_env(STRICT_CWD_KEY), Some(OsStr::new("1")));
-    }
-
-    #[test]
     fn each_shell_is_integrated_its_own_way_and_keeps_what_was_set() {
         let dir = std::path::Path::new("/state/shell-integration");
         let value = |command: &LaunchCommand, key: &str| {

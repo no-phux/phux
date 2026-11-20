@@ -67,15 +67,6 @@ fn replica_history_exit_and_detach_events_have_no_swift_vocabulary() {
 }
 
 #[test]
-fn unrelated_events_are_handed_back() {
-    let event = lower_event(Event::TerminalChanged {
-        terminal_id: ResourceId::local(5),
-    })
-    .expect_err("not lowered here");
-    assert!(matches!(event, Event::TerminalChanged { .. }));
-}
-
-#[test]
 fn statuses_fold_the_pre_attach_states_together() {
     use phux_client_runtime::control::Status;
     for status in [

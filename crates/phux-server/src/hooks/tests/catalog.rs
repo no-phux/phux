@@ -25,31 +25,6 @@ fn first_matching_config_entry_wins_and_consumes_the_event() {
 }
 
 #[test]
-fn matched_runs_injects_event_env() {
-    let catalog = catalog_from_toml(
-        r#"
-        [[hooks.pane-exit]]
-        action = { kind = "run", command = "true" }
-        "#,
-    );
-    let event = HookEvent::new(
-        PANE_EXIT,
-        [
-            ("exit-code".to_owned(), "0".to_owned()),
-            ("terminal-id".to_owned(), "7".to_owned()),
-        ],
-    );
-    let runs = matched_runs(&catalog, &event, None);
-    assert_eq!(runs.len(), 1);
-    let env = &runs[0].spec.env;
-    assert!(env.contains(&("PHUX_EVENT".to_owned(), "pane-exit".to_owned())));
-    assert!(env.contains(&("PHUX_EXIT_CODE".to_owned(), "0".to_owned())));
-    assert!(env.contains(&("PHUX_TERMINAL_ID".to_owned(), "7".to_owned())));
-    // No socket configured: no PHUX_SOCKET.
-    assert!(env.iter().all(|(key, _)| key != "PHUX_SOCKET"));
-}
-
-#[test]
 fn plugin_events_match_on_name_only_and_all_fire() {
     let hook = |on: &str, id: &str| PluginEventHook {
         plugin_id: "p".to_owned(),

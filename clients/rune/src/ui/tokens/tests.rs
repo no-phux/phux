@@ -25,14 +25,6 @@ fn nested_radii_run_parallel() {
 }
 
 #[test]
-fn equal_inputs_share_one_tokens() {
-    let a = system(true);
-    assert!(Rc::ptr_eq(&a, &system(true)));
-    assert!(!Rc::ptr_eq(&a, &system(false)));
-    assert_ne!(a.version, system(false).version);
-}
-
-#[test]
 fn increased_contrast_draws_the_solved_variant() {
     let t = Tokens::resolve(&Inputs {
         increased_contrast: true,

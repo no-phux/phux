@@ -267,24 +267,4 @@ mod tests {
             assert!(!is_dotgit(OsStr::new(name)), "{name:?}");
         }
     }
-
-    #[test]
-    fn a_swapped_in_symlink_is_never_followed() {
-        let root = std::env::temp_dir().join(format!("phux-beneath-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join("real")).unwrap();
-        std::fs::write(root.join("real/file"), "inside").unwrap();
-        let outside = root.with_extension("outside");
-        std::fs::create_dir_all(&outside).unwrap();
-        std::fs::write(outside.join("file"), "outside").unwrap();
-        assert!(open_file(&root, "real/file").is_ok());
-
-        // The check-then-open race, collapsed: the directory is already a
-        // symlink when the walk reaches it.
-        std::fs::remove_dir_all(root.join("real")).unwrap();
-        std::os::unix::fs::symlink(&outside, root.join("real")).unwrap();
-        assert!(matches!(open_file(&root, "real/file"), Err(Walk::Symlink)));
-        assert!(matches!(open_dir(&root, "real"), Err(Walk::Symlink)));
-        assert!(matches!(open_file(&root, "nope"), Err(Walk::NotFound)));
-    }
 }

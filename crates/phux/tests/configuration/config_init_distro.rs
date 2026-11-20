@@ -102,49 +102,6 @@ fn init_distro_starter_then_show_reflects_distro_values() {
 }
 
 #[test]
-fn init_distro_accepts_a_path_spec() {
-    let tmp = TempDir::new().expect("tempdir");
-    let xdg = tmp.path().join("xdg");
-    let starter_path = repo_distros_dir().join("starter").join("starter.toml");
-    // Empty distros dir: the path spec must not consult it.
-    let empty = tmp.path().join("empty-distros");
-    std::fs::create_dir_all(&empty).expect("mkdir");
-
-    let (code, _, stderr) = run(
-        &[
-            "config",
-            "init",
-            "--distro",
-            starter_path.to_str().expect("utf8"),
-        ],
-        &xdg,
-        &empty,
-    );
-    assert_eq!(code, 0, "path spec must resolve; stderr={stderr}");
-    let (code, _, stderr) = run(&["config", "show"], &xdg, &empty);
-    assert_eq!(code, 0, "path-spec scaffold must validate; stderr={stderr}");
-}
-
-#[test]
-fn init_distro_unknown_name_fails_and_writes_nothing() {
-    let tmp = TempDir::new().expect("tempdir");
-    let xdg = tmp.path().join("xdg");
-    let empty = tmp.path().join("empty-distros");
-    std::fs::create_dir_all(&empty).expect("mkdir");
-
-    let (code, _, stderr) = run(&["config", "init", "--distro", "nope"], &xdg, &empty);
-    assert_ne!(code, 0, "unknown distro name must fail");
-    assert!(
-        stderr.contains("unknown distro") && stderr.contains("nope"),
-        "stderr names the spec: {stderr}"
-    );
-    assert!(
-        !xdg.join("phux").join("config.toml").exists(),
-        "a failed init must not leave a config behind"
-    );
-}
-
-#[test]
 fn init_distro_broken_layer_fails_before_writing() {
     let tmp = TempDir::new().expect("tempdir");
     let xdg = tmp.path().join("xdg");

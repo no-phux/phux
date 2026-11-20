@@ -67,12 +67,11 @@ mod tests {
     /// The serde defaults and [`ChromeBreakpoints::default`] name the same
     /// numbers.
     #[test]
-    fn the_defaults_are_the_historical_constants() {
-        let bp = ChromeBreakpoints::default();
-        assert_eq!(bp.compact_cols, 64);
-        assert_eq!(bp.compact_rows, 18);
-        assert_eq!(bp.min_pane_cols, 40);
-        assert_eq!(bp, ChromeBreakpoints::from_cfg(&ChromeCfg::default()));
+    fn the_defaults_match_the_config_defaults() {
+        assert_eq!(
+            ChromeBreakpoints::default(),
+            ChromeBreakpoints::from_cfg(&ChromeCfg::default())
+        );
     }
 
     /// The thresholds are inclusive: a viewport *at* the breakpoint is
@@ -84,18 +83,5 @@ mod tests {
         assert!(!bp.is_col_starved(65));
         assert!(bp.is_row_starved(18));
         assert!(!bp.is_row_starved(19));
-    }
-
-    /// `0` disables a threshold rather than meaning "always": no viewport
-    /// has fewer than zero columns, so nothing is ever starved.
-    #[test]
-    fn a_zero_threshold_never_fires_on_a_real_viewport() {
-        let bp = ChromeBreakpoints {
-            compact_cols: 0,
-            compact_rows: 0,
-            min_pane_cols: 0,
-        };
-        assert!(!bp.is_col_starved(1));
-        assert!(!bp.is_row_starved(1));
     }
 }

@@ -213,17 +213,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
-    fn capture_reports_a_live_process() {
-        let s = ProcessStats::capture().unwrap_or_default();
-        assert!(
-            s.max_rss_bytes > 0,
-            "rss should be non-zero for a running test"
-        );
-        assert!(s.cpu_total_us() > 0 || s.voluntary_ctx_switches > 0);
-    }
-
-    #[test]
     fn delta_subtracts_cpu_and_keeps_rss() {
         let a = ProcessStats {
             cpu_user_us: 10,

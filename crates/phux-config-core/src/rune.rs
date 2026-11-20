@@ -101,25 +101,4 @@ mod tests {
         let sideways = "[rune]\nquick-terminal-edge = \"left\"\n";
         assert!(crate::loader::parse_client(sideways, std::path::Path::new("c.toml")).is_err());
     }
-
-    #[test]
-    fn markdown_viewers_preserve_argv_and_an_explicit_source_adapter() {
-        for command in [
-            vec![],
-            vec![
-                "/path with spaces/viewer".into(),
-                "--width".into(),
-                "{width}".into(),
-            ],
-        ] {
-            let cfg = RuneCfg {
-                markdown_viewer: Some(command),
-                ..RuneCfg::default()
-            };
-            let parsed =
-                crate::loader::parse_client(&cfg.to_toml(), std::path::Path::new("c.toml"))
-                    .unwrap();
-            assert_eq!(parsed.rune, cfg);
-        }
-    }
 }

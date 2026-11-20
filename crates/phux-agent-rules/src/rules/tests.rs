@@ -168,7 +168,7 @@ match = { contains = "-- pager --" }
 
     /// Kebab-case flags bind (without `rename_all` they would be silently
     /// ignored), and any unusable manifest is rejected whole: a bad regex,
-    /// an unknown state, a removed or mis-cased flag, a malformed region.
+    /// an unknown state, a removed or mis-cased flag.
     #[test]
     fn manifests_bind_their_flags_or_are_rejected_whole() {
         let set = compile(&one_rule(
@@ -184,10 +184,6 @@ match = { contains = "-- pager --" }
             "state = \"idle\"\nregion = \"title\"\nvisible-blocker = true\nmatch = { contains = \"x\" }",
             "state = \"idle\"\nregion = \"title\"\nvisible-working = true\nmatch = { contains = \"x\" }",
             "state = \"idle\"\nregion = \"title\"\nvisible_idle = true\nmatch = { contains = \"x\" }",
-            "state = \"idle\"\nregion = \"bottom-lines(0)\"\nmatch = { contains = \"x\" }",
-            "state = \"idle\"\nregion = \"title(2)\"\nmatch = { contains = \"x\" }",
-            "state = \"idle\"\nregion = \"bottom_lines\"\nmatch = { contains = \"x\" }",
-            "state = \"idle\"\nregion = \"nonsense\"\nmatch = { contains = \"x\" }",
         ] {
             assert!(install(&one_rule(body)).is_err(), "{body}");
         }

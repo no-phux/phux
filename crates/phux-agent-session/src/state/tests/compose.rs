@@ -93,10 +93,11 @@ fn compose_reasserts_a_kind_the_detector_authored() {
     assert_eq!(got.state, "idle");
 }
 
-/// An explicit `kind` is preserved (§3.7).
+/// An explicit `kind` is preserved (§3.7), even on a record that already
+/// carries a state.
 #[test]
 fn compose_preserves_an_explicitly_set_kind() {
-    let existing = br#"{"name":"reviewer","kind":"my-agent"}"#;
+    let existing = br#"{"name":"reviewer","kind":"my-agent","state":"idle"}"#;
     let owned = ownership_after(existing);
     assert!(owned.kind, "the writer supplied a kind");
     let got = composed(Some(existing), "claude", "claude", "working", owned);

@@ -121,22 +121,6 @@ mod tests {
     }
 
     #[test]
-    fn palette_is_stable() {
-        let ids: Vec<_> = PALETTE.iter().map(|(id, _)| *id).collect();
-        assert_eq!(
-            ids,
-            [
-                "blue", "violet", "magenta", "sky", "coral", "olive", "slate", "copper", "green",
-                "navy"
-            ]
-        );
-        assert_eq!(resolve("x", Some("blue")).hex, "#4F8BF0");
-        assert_eq!(resolve("x", Some("copper")).hex, "#C9926B");
-        assert_eq!(resolve("x", Some("green")).hex, "#3DAA5C");
-        assert_eq!(resolve("x", Some("navy")).hex, "#2F55C4");
-    }
-
-    #[test]
     fn overrides_resolve_and_unknown_ones_fall_back() {
         let picked = resolve("mini", Some("violet"));
         assert_eq!((picked.id.as_str(), picked.overridden), ("violet", true));

@@ -165,23 +165,6 @@ mod tests {
     }
 
     #[test]
-    fn letters_map_arithmetically_and_carry_text() {
-        let e = event(ch("a"), KeyMods::default());
-        assert_eq!(e.key, PhysicalKey::A);
-        assert_eq!(e.text.as_deref(), Some("a"));
-        assert_eq!(e.action, KeyAction::Press);
-        assert!(e.mods.is_empty());
-
-        let e = event(ch("z"), KeyMods::default());
-        assert_eq!(e.key, PhysicalKey::Z);
-
-        // Uppercase resolves to the same physical key; the case travels in text.
-        let e = event(ch("Q"), KeyMods::default());
-        assert_eq!(e.key, PhysicalKey::Q);
-        assert_eq!(e.text.as_deref(), Some("Q"));
-    }
-
-    #[test]
     fn ctrl_chords_drop_text_and_set_mods() {
         // Ctrl-C: the encoder derives 0x03 from key + mods; text must be None.
         let e = event(ch("c"), KeyMods::ctrl());

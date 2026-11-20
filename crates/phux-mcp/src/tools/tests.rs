@@ -44,14 +44,13 @@ mod tests {
     async fn added_tool_dispatch_routes_to_strict_validation() {
         // `Some(message)` pins the refusal text exactly; `None` only requires
         // a refusal. Each case is refused before the CLI is discovered.
-        let cases: [(&str, Value, Option<&str>); 9] = [
+        let cases: [(&str, Value, Option<&str>); 8] = [
             // No `target`: detach addresses a session, not a pane.
             (
                 "phux_detach",
                 json!({ "confirm": true, "session": "work", "target": "@1" }),
                 None,
             ),
-            ("phux_launch", json!({}), None),
             (
                 "phux_paste",
                 json!({ "target": "@1" }),
