@@ -95,6 +95,20 @@ impl OrgSide {
     }
 }
 
+/// Core's admitted transition before the store write. The runtime can
+/// validate the live effects while it still holds the state lock.
+#[must_use]
+pub(crate) struct PreparedCommit {
+    applied: Applied,
+    now: Stamp,
+}
+
+impl PreparedCommit {
+    pub(crate) const fn effects(&self) -> &[phux_core::Effect] {
+        self.applied.effects.as_slice()
+    }
+}
+
 /// A command whose store write has been decided, before memory mirrors it.
 #[must_use]
 pub(crate) struct PersistedCommit {
@@ -298,6 +312,15 @@ impl ServerState {
         actor: &Actor,
         leading_journal: u64,
     ) -> Result<PersistedCommit, Refusal> {
+        let prepared = self.prepare_commit(cmd, actor)?;
+        self.persist_prepared(prepared, leading_journal)
+    }
+
+    pub(crate) fn prepare_commit(
+        &mut self,
+        cmd: &Command,
+        actor: &Actor,
+    ) -> Result<PreparedCommit, Refusal> {
         if self.org.unreadable_receipts.contains_key(&cmd.operation) {
             return Err(Refusal::DuplicateOperation);
         }
@@ -309,6 +332,15 @@ impl ServerState {
             now,
             &mut self.org.keys,
         )?;
+        Ok(PreparedCommit { applied, now })
+    }
+
+    pub(crate) fn persist_prepared(
+        &mut self,
+        prepared: PreparedCommit,
+        leading_journal: u64,
+    ) -> Result<PersistedCommit, Refusal> {
+        let PreparedCommit { applied, now } = prepared;
         if applied.replayed {
             return Ok(PersistedCommit {
                 applied,
@@ -342,7 +374,7 @@ impl ServerState {
             .saturating_add(u64::try_from(journaled).unwrap_or(u64::MAX))
             .saturating_add(leading_journal);
         if let Err(error) = self.org.store.commit(&applied.transition, journal_seq, now) {
-            tracing::error!(%error, operation = %cmd.operation, "org store commit failed; refused");
+            tracing::error!(%error, operation = %applied.operation, "org store commit failed; refused");
             return Err(store_refusal(&error));
         }
         Ok(PersistedCommit {

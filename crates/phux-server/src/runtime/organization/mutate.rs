@@ -10,7 +10,7 @@ use tracing::{debug, info};
 use crate::org_wire as ow;
 use crate::state::{ClientId, ServerState, SharedState};
 
-use super::{answer, run_effect};
+use super::{answer, effects::LiveTermination, run_effect};
 
 /// Owner, expected revision, and group count of an arrangement replace,
 /// captured before `op` moves into the command.
@@ -54,7 +54,14 @@ pub(super) fn mutate(
     let committed = state.with_mut(|s| {
         let actor = s.actor_for(client_id);
         let command = phux_core::Command { operation, op };
-        let commit = s.commit_command_from(&command, &actor, Some(client_id))?;
+        let prepared = s.prepare_commit(&command, &actor)?;
+        let live_termination = LiveTermination::plan(s, prepared.effects())?;
+        let persisted = s.persist_prepared(prepared, 0)?;
+        let mut commit = s.mirror_persisted(persisted, &actor, Some(client_id));
+        if let Some(termination) = live_termination {
+            termination.start(s);
+            commit.applied.effects.clear();
+        }
         let detached: Vec<_> = s
             .take_killed_sessions()
             .into_iter()

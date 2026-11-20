@@ -23,8 +23,15 @@ records explain history; [look them up deliberately](./architecture.md#historica
   missed or a gap marker, never silence.
 - The server plans the affected resources before committing a close. Local
   kill and close-tab commands check tab locks against that plan, including
-  bound descendants, and commit it under the same state lock. Session kill
-  uses the plan to count and commit close events and can override tab locks.
+  bound descendants, and commit it under the same state lock. Durable
+  terminate also checks its live cascade before persisting the activation
+  change, then starts that cancellation under the same lock. A parent
+  closing asynchronously refuses new child bindings. The server only
+  signals a detached process group whose recorded leader still matches.
+  Verified leader disappearance without a wait status leaves the exit
+  status unknown. Reconciliation keeps uncertainty as Lost while a recorded
+  identity cannot be checked. Session kill uses the plan to count and commit
+  close events and can override tab locks.
   Children are journaled and reaped before their parents.
 
 **Wire**

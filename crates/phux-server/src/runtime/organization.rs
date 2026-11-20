@@ -1,9 +1,10 @@
 //! Organization commands (ADR-0161, `docs/organization.md`). Mutations
-//! commit through [`ServerState::commit_command_from`] and answer `Ok` with a
+//! commit through the organization store and answer `Ok` with a
 //! [`Committed`] receipt, `Accepted` when effects follow as events, or
 //! `Refused` (only these commands ever get `Refused` or `Accepted`, R08).
-//! Effects run after the commit, off its lock, and report real outcomes as
-//! `ActivationChanged`.
+//! Effects start after the commit and report real outcomes as
+//! `ActivationChanged`. A live termination starts under the commit lock
+//! using the cascade checked before persistence.
 
 use std::time::Duration;
 

@@ -92,6 +92,7 @@ pub(crate) async fn spawn_document<A: DocumentApi>(spawn: ResourceSpawn<'_>) {
         let name = resource.native_id.as_deref();
         let core =
             A::create(s, core_parent, target, name, &actor).map_err(|refusal| match refusal {
+                phux_core::Refusal::NotFound => SpawnError::ParentNotFound,
                 phux_core::Refusal::InvalidArgument { field: "name", .. } => {
                     SpawnError::SpawnFailed(refusal.to_string())
                 }
