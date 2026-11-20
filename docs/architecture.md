@@ -121,13 +121,12 @@ comment-preserving config writer and `extends`, with existing user layers
 winning. No tmux syntax or compatibility behavior enters the loader,
 server, protocol or client runtime. See the [import contract](./tmux-import.md).
 
-`phux-client-core` is the part every client shares: a synchronous kernel
-that takes wire frames in and produces effects (paint this, send that),
-with no I/O of its own. `phux-client-runtime` wraps it with the async
-parts: dialing, reconnecting, the engine thread that owns libghostty
-replicas, and one publication table for terminal grids and whole
-documents. The TUI, the desktop app, and the FFI bindings sit on the
-runtime; the browser client sits on the core alone, doing its own I/O.
+`phux-client-core` is the synchronous kernel. It takes wire frames in
+and produces effects without I/O. `phux-client-runtime` adds native dialing,
+reconnect, an engine thread for the replicas and a publication table for grids
+and documents. Rune and the FFI bindings use the runtime's connected client.
+The TUI runs the kernel in its own attach loop over the shared headless
+connection. The browser also runs the kernel and owns its browser I/O.
 
 The TUI paints pane interiors from libghostty through a cell-diffed front
 buffer and paints chrome with ratatui in disjoint regions. Phux Rune paints the
