@@ -101,7 +101,7 @@ impl Desk {
             cwd,
             env: None,
             session_id,
-            initial_size: None,
+            initial_size: self.tab_spawn_size(),
         });
         self.connection.pending_spawns.push(request);
     }
