@@ -28,11 +28,11 @@ phux-protocol = { path = "../../crates/phux-protocol" }
 # Phux supplies Inter and the terminal font through AppSpec::fonts. Keep
 # Rune's other defaults, but don't carry its unused embedded font copies.
 # Packaged qualification and the updater's GPU launch check use headless tooling.
-rune = { git = "https://github.com/anomalyco/rune", rev = "42e1e59e0e775069fa4e6ac37870dd6f56b65dfd", default-features = false, features = ["accessibility", "dbus", "metal-backend", "ogg-audio", "svg", "tooling"] }
-rune-notify = { git = "https://github.com/anomalyco/rune", rev = "42e1e59e0e775069fa4e6ac37870dd6f56b65dfd" }
-rune-perf = { git = "https://github.com/anomalyco/rune", rev = "42e1e59e0e775069fa4e6ac37870dd6f56b65dfd" }
+rune = { git = "https://github.com/anomalyco/rune", rev = "25d0483a50d411156e047f58ca98902e25689529", default-features = false, features = ["accessibility", "dbus", "metal-backend", "ogg-audio", "svg", "tooling"] }
+rune-notify = { git = "https://github.com/anomalyco/rune", rev = "25d0483a50d411156e047f58ca98902e25689529" }
+rune-perf = { git = "https://github.com/anomalyco/rune", rev = "25d0483a50d411156e047f58ca98902e25689529" }
 # The quick terminal's shortcut recorder in Settings.
-rune-kit = { git = "https://github.com/anomalyco/rune", rev = "42e1e59e0e775069fa4e6ac37870dd6f56b65dfd" }
+rune-kit = { git = "https://github.com/anomalyco/rune", rev = "25d0483a50d411156e047f58ca98902e25689529" }
 # Never called directly: Rune's decoder guesses the format, so these
 # features (unified with Rune's png/jpeg) let typed documents draw GIF/WebP.
 image = { version = "0.25", default-features = false, features = ["gif", "webp"] }
@@ -86,12 +86,12 @@ skrifa = "0.44"
 [patch.crates-io]
 # Git dependencies do not inherit Rune's workspace patches. Track all six
 # at the same rev: native IME, Wayland frame corners, shaping/bidi, GPU and AX.
-winit = { git = "https://github.com/anomalyco/rune", rev = "42e1e59e0e775069fa4e6ac37870dd6f56b65dfd" }
-sctk-adwaita = { git = "https://github.com/anomalyco/rune", rev = "42e1e59e0e775069fa4e6ac37870dd6f56b65dfd" }
-parley_engine = { git = "https://github.com/anomalyco/rune", rev = "42e1e59e0e775069fa4e6ac37870dd6f56b65dfd" }
-wgpu-hal = { git = "https://github.com/anomalyco/rune", rev = "42e1e59e0e775069fa4e6ac37870dd6f56b65dfd" }
-accesskit_windows = { git = "https://github.com/anomalyco/rune", rev = "42e1e59e0e775069fa4e6ac37870dd6f56b65dfd" }
-accesskit_macos = { git = "https://github.com/anomalyco/rune", rev = "42e1e59e0e775069fa4e6ac37870dd6f56b65dfd" }
+winit = { git = "https://github.com/anomalyco/rune", rev = "25d0483a50d411156e047f58ca98902e25689529" }
+sctk-adwaita = { git = "https://github.com/anomalyco/rune", rev = "25d0483a50d411156e047f58ca98902e25689529" }
+parley_engine = { git = "https://github.com/anomalyco/rune", rev = "25d0483a50d411156e047f58ca98902e25689529" }
+wgpu-hal = { git = "https://github.com/anomalyco/rune", rev = "25d0483a50d411156e047f58ca98902e25689529" }
+accesskit_windows = { git = "https://github.com/anomalyco/rune", rev = "25d0483a50d411156e047f58ca98902e25689529" }
+accesskit_macos = { git = "https://github.com/anomalyco/rune", rev = "25d0483a50d411156e047f58ca98902e25689529" }
 
 [profile.release]
 lto = "thin"

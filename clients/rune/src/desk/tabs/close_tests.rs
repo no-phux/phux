@@ -111,10 +111,10 @@ fn an_unavailable_terminal_close_is_visible_and_sends_nothing() {
 #[test]
 fn a_partial_terminal_close_result_is_visible() {
     use phux_client_runtime::control::Event;
-    use rune::{Env, Runtime as RuneRuntime};
+    use rune::Env;
 
     let (client, desk) = fixture();
-    let mut rt = RuneRuntime::new(
+    let mut rt = crate::test_support::runtime(
         desk,
         crate::ui::view,
         crate::test_support::SIZE,
