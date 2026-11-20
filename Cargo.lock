@@ -3259,7 +3259,7 @@ dependencies = [
 
 [[package]]
 name = "phux-layout-codec"
-version = "0.159.1"
+version = "0.160.0"
 dependencies = [
  "ciborium",
  "phux-core",
