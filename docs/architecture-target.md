@@ -131,6 +131,7 @@ and [the current gate](../scripts/check-file-tokens.sh).
 | Rule | Measured change | Boundary exercised |
 | --- | --- | --- |
 | Guarded host-local close | Four handlers checked the named targets separately from teardown. They now reach one admission over one child-first plan. Session kill takes its journal count from its own plan. Live durable terminate admits and runs a plan without dropping the state lock across persistence. | Parent with a locked child, overlapping parent and child requests, store refusal, exact activation and receipt replay. |
+| Graceful terminate acknowledgement | Browser validated the echoed operation. Native and headless could accept a bare or foreign reply. All three now use one reply classifier and keep the original operation when the outcome is unknown. | Accepted, foreign, bare and lost replies across the browser, runtime and headless paths. |
 | Plugin shortcut merge | The merge still has one implementation. Two CLI-to-TUI policy dependencies became zero, and platform filtering moved from separate presentation and execution implementations to one configuration predicate. | Both CLI key listings, the TUI palette and runtime execution, including when user configuration suppresses a default. |
 | Slot-tab arrangement write | Two assignments of the outgoing flag became one. An extension capability now has one declaration for its discriminant, name, inventory and known mask, in place of four. | Old-peer omission and modern explicit empty tabs on the wire, the spatial edit, and slot creation and removal over native QUIC. |
 
