@@ -26,7 +26,7 @@ pub(in crate::runtime) struct AttachResourceGeneration {
     /// Hands the pump its post-replay live receiver at the native publication
     /// fence.
     pub(in crate::runtime) native_publication_gate:
-        Option<oneshot::Sender<phux_terminal_api::actor::NativePublicationReply>>,
+        Option<oneshot::Sender<crate::runtime::apps::terminal::attach::NativePublication>>,
 }
 
 /// One in-flight `ATTACH_RESOURCE`: the resolved terminal plus the negotiated
@@ -187,7 +187,7 @@ impl AttachResourceSession<'_> {
         }
 
         let (native_publication_gate_tx, native_publication_gate_rx) =
-            oneshot::channel::<phux_terminal_api::actor::NativePublicationReply>();
+            oneshot::channel::<crate::runtime::apps::terminal::attach::NativePublication>();
         let snapshot_gate = if tick_managed {
             None
         } else {
@@ -230,7 +230,7 @@ pub(in crate::runtime) struct AttachResourcePumpChannels {
     pub(in crate::runtime) snapshot_gate: oneshot::Receiver<u64>,
     /// Delivers the post-replay live receiver at the native publication fence.
     pub(in crate::runtime) native_publication_gate:
-        oneshot::Receiver<phux_terminal_api::actor::NativePublicationReply>,
+        oneshot::Receiver<crate::runtime::apps::terminal::attach::NativePublication>,
 }
 
 impl AttachResourcePumpChannels {
@@ -249,14 +249,14 @@ impl AttachResourcePumpChannels {
             result = self.snapshot_gate => result.ok()?,
         };
         let mut start = crate::runtime::apps::terminal::attach::OutputPumpStart {
+            superseded: false,
             published_cut,
             replay: Vec::new(),
             live: None,
         };
         if native_checkpoint_profile(profile) {
             let publication = self.native_publication_gate.await.ok()?;
-            start.live = Some(publication.live);
-            start.replay = publication.replay;
+            start.adopt_native_publication(publication);
         }
         Some((start, self.output_rx))
     }

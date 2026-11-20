@@ -82,9 +82,29 @@ pub(crate) const fn next_bootstrap_id(id: BootstrapId) -> BootstrapId {
 }
 
 pub(crate) struct OutputPumpStart {
+    pub(crate) superseded: bool,
     pub(crate) published_cut: u64,
     pub(crate) replay: Vec<(u64, bytes::Bytes)>,
     pub(crate) live: Option<tokio::sync::broadcast::Receiver<ResourceOutput>>,
+}
+
+/// Actor-confirmed retirement is not an activated replay/live handoff.
+#[derive(Debug)]
+pub(crate) enum NativePublication {
+    Activated(phux_terminal_api::actor::NativePublicationReply),
+    Superseded,
+}
+
+impl OutputPumpStart {
+    pub(crate) fn adopt_native_publication(&mut self, publication: NativePublication) {
+        match publication {
+            NativePublication::Activated(publication) => {
+                self.replay = publication.replay;
+                self.live = Some(publication.live);
+            }
+            NativePublication::Superseded => self.superseded = true,
+        }
+    }
 }
 
 pub(super) struct SnapshotGate {
@@ -198,7 +218,7 @@ pub(crate) async fn activate_native_publication(
     stream_id: StreamId,
     bootstrap_id: BootstrapId,
     cursor: phux_terminal_api::native_state::OpaqueHistoryCursor,
-) -> Result<phux_terminal_api::actor::NativePublicationReply, NativeRequestFailure> {
+) -> Result<NativePublication, NativeRequestFailure> {
     publication_phase("native_activation", "started");
     let (reply, publication) = oneshot::channel();
     handle
@@ -213,10 +233,21 @@ pub(crate) async fn activate_native_publication(
         })
         .await
         .map_err(|_| NativeRequestFailure::Unsent.traced("native_activation"))?;
-    publication
+    match publication
         .await
         .map_err(|_| NativeRequestFailure::Dropped.traced("native_activation"))?
-        .map_err(NativeRequestFailure::Refused)
-        .inspect_err(|_| publication_phase("native_activation", "refused"))
-        .inspect(|_| publication_phase("native_activation", "activated"))
+    {
+        Ok(publication) => {
+            publication_phase("native_activation", "activated");
+            Ok(NativePublication::Activated(publication))
+        }
+        Err(phux_terminal_api::native_state::NativeStateError::Resize) => {
+            publication_phase("native_activation", "superseded");
+            Ok(NativePublication::Superseded)
+        }
+        Err(error) => {
+            publication_phase("native_activation", "refused");
+            Err(NativeRequestFailure::Refused(error))
+        }
+    }
 }

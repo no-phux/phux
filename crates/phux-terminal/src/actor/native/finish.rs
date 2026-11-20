@@ -199,6 +199,12 @@ impl TerminalActor {
         let mut waiting = HashSet::new();
         let mut installed = 0_usize;
         for (waiter, reply_value) in prepared {
+            if self.native_cursor_owners.len() >= MAX_NATIVE_HISTORY_CLIENTS {
+                let _ = waiter
+                    .reply
+                    .send(Err(crate::native_state::NativeStateError::LimitExceeded));
+                continue;
+            }
             if !self.retain_native_generation(&cursor, installed_new && installed == 0) {
                 let _ = waiter
                     .reply
@@ -210,6 +216,8 @@ impl TerminalActor {
             self.native_cursor_owners.insert(
                 key,
                 NativeCursorOwner {
+                    history_released: false,
+                    superseded: false,
                     cursor,
                     record_index: 0,
                     touched: tokio::time::Instant::now(),
@@ -224,6 +232,12 @@ impl TerminalActor {
                 waiting.remove(&key);
                 self.release_native_binding(key);
             }
+        }
+        if installed_new
+            && installed == 0
+            && let CanonicalTerminal::Native(manager) = &mut *self.terminal.borrow_mut()
+        {
+            let _ = manager.release_generation(&cursor);
         }
         waiting
     }

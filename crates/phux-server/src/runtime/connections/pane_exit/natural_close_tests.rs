@@ -137,6 +137,7 @@ impl Fixture {
 
 fn start() -> OutputPumpStart {
     OutputPumpStart {
+        superseded: false,
         published_cut: 0,
         replay: Vec::new(),
         live: None,

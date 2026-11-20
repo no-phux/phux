@@ -71,6 +71,8 @@ fn resize_tombstone_is_ordered_after_every_queued_live_sequence() {
     actor.native_cursor_owners.insert(
         NativeCursorKey::new(7, stream_id),
         NativeCursorOwner {
+            history_released: false,
+            superseded: false,
             cursor,
             record_index: 0,
             touched: tokio::time::Instant::now(),
@@ -123,6 +125,8 @@ async fn an_attach_time_reflow_owes_a_resync_to_the_native_pumps_it_tombstoned()
     actor.native_cursor_owners.insert(
         NativeCursorKey::new(7, stream_id),
         NativeCursorOwner {
+            history_released: false,
+            superseded: false,
             cursor: [1; crate::native_state::TOKEN_LEN],
             record_index: 0,
             touched: tokio::time::Instant::now(),
@@ -174,6 +178,8 @@ async fn a_cursor_invalidated_by_resize_is_tombstoned_never_faulted() {
     let cursor: crate::native_state::OpaqueHistoryCursor = [1; crate::native_state::TOKEN_LEN];
     let wire_cursor = Bytes::copy_from_slice(&cursor);
     let binding = || NativeCursorOwner {
+        history_released: false,
+        superseded: false,
         cursor,
         record_index: 0,
         touched: tokio::time::Instant::now(),

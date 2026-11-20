@@ -36,6 +36,7 @@ impl OutputPumpContext {
         {
             return Err(PumpFault::TombstoneNotQueued);
         }
+        generation.retire();
         // The id advances only once the replacement frames are queued.
         let bootstrap_id = next_bootstrap_id(prior_bootstrap_id);
         let Some(reply) = self.capture_native_checkpoint(bootstrap_id).await? else {
@@ -78,6 +79,10 @@ impl OutputPumpContext {
                 PumpFault::PublicationNotActivated
             }
         })?;
+        let NativePublication::Activated(publication) = publication else {
+            self.retire_superseded_publication(generation, cut).await?;
+            return Ok(false);
+        };
         // Unfence before the replay so it passes the same `forwards` gate as
         // live output: a replay entry at or behind the cut is already in the
         // checkpoint, and resending it is a `DuplicateSequence` the client
@@ -92,6 +97,27 @@ impl OutputPumpContext {
         Ok(true)
     }
 
+    /// READY is queued but never activated: its only valid sequence is the
+    /// checkpoint cut, not any output the actor queued while activation waited.
+    pub(super) async fn retire_superseded_publication(
+        &self,
+        generation: &mut PumpGeneration,
+        cut: u64,
+    ) -> Result<(), PumpFault> {
+        self.out_tx
+            .send(Outbound::Frame(FrameKind::BootstrapTombstone {
+                terminal_id: self.wire_terminal_id.clone(),
+                stream_id: self.stream_id,
+                bootstrap_id: generation.bootstrap_id(),
+                reason: phux_protocol::wire::frame::TombstoneReason::Resize,
+                last_valid_seq: cut,
+            }))
+            .await
+            .map_err(|_| PumpFault::TombstoneNotQueued)?;
+        generation.retire();
+        Ok(())
+    }
+
     /// Capture after EOF/retention expiry, independently of earlier Exit
     /// broadcasts. Only capture has a deadline: cancelling a publication after
     /// BEGIN could leave the client with a partial generation.
@@ -99,7 +125,7 @@ impl OutputPumpContext {
         &self,
         generation: &mut PumpGeneration,
         output_rx: &mut tokio::sync::broadcast::Receiver<ResourceOutput>,
-    ) -> Result<(), PumpFault> {
+    ) -> Result<bool, PumpFault> {
         if publishes_native_checkpoints(self.profile) {
             return self
                 .publish_final_native_generation(generation, output_rx)
@@ -164,7 +190,7 @@ impl OutputPumpContext {
             .republish_synthesized_generation(generation, &resync)
             .await
         {
-            ControlFlow::Continue(()) => Ok(()),
+            ControlFlow::Continue(()) => Ok(generation.is_active() && !generation.is_fenced()),
             ControlFlow::Break(fault) => Err(fault.unwrap_or(PumpFault::PublicationNotActivated)),
         }
     }
@@ -173,7 +199,7 @@ impl OutputPumpContext {
         &self,
         generation: &mut PumpGeneration,
         output_rx: &mut tokio::sync::broadcast::Receiver<ResourceOutput>,
-    ) -> Result<(), PumpFault> {
+    ) -> Result<bool, PumpFault> {
         let bootstrap_id = next_bootstrap_id(generation.bootstrap_id());
         let capture = request_native_checkpoint(&self.terminal, |reply| {
             phux_terminal_api::actor::NativeBootstrapRequest::full_budget(
@@ -210,9 +236,9 @@ impl OutputPumpContext {
                 .await
                 .map_err(|_| PumpFault::TombstoneNotQueued)?;
         }
+        generation.retire();
         self.publish_captured_native_generation(generation, output_rx, bootstrap_id, reply)
-            .await?;
-        Ok(())
+            .await
     }
 
     /// `BOOTSTRAP_TOMBSTONE` retiring the generation this pump publishes.
@@ -356,7 +382,7 @@ impl OutputPumpContext {
     /// already tombstoned. Stay fenced and ask for the resync, under the gap
     /// retry budget, so a lost broadcast cannot freeze the client; a closing
     /// pane ends the pump quietly instead.
-    async fn await_superseded_resync(
+    pub(super) async fn await_superseded_resync(
         &self,
         generation: &mut PumpGeneration,
     ) -> ControlFlow<Option<PumpFault>> {

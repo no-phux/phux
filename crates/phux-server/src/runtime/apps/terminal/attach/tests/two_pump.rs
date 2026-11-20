@@ -62,6 +62,7 @@ pub(super) fn spawn_two_pump_consumer(
     let (gate_tx, gate_rx) = oneshot::channel();
     gate_tx
         .send(OutputPumpStart {
+            superseded: false,
             published_cut,
             replay: Vec::new(),
             live: None,

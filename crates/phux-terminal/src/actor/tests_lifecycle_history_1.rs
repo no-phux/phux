@@ -119,6 +119,10 @@ async fn saturated_history_busy_hint_clamps_rows_on_the_public_wire() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one two-owner pending/backlog lifecycle schedule"
+)]
 async fn releasing_an_owner_answers_pending_history_and_promotes_the_backlog() {
     use phux_protocol::wire::frame::HistoryTombstoneReason;
     for mode in ["release", "reattach", "expire"] {
@@ -152,6 +156,8 @@ async fn releasing_an_owner_answers_pending_history_and_promotes_the_backlog() {
             actor.native_cursor_owners.insert(
                 NativeCursorKey::new(7, phux_protocol::ids::StreamId::new(1).expect("stream")),
                 NativeCursorOwner {
+                    history_released: false,
+                    superseded: false,
                     cursor: [0; 32],
                     record_index: 0,
                     touched: tokio::time::Instant::now() - NATIVE_HISTORY_TTL,
