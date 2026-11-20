@@ -278,6 +278,30 @@ fn the_context_menu_walks_from_the_keyboard_and_escape_returns_focus() {
     assert_eq!(focused(&rt), before, "focus goes back where it was");
 }
 
+/// Every context row shows its whole title: the kit's fixed minimum width
+/// once cut "Screenshot to Terminal" to "Screenshot to…".
+#[test]
+fn the_context_menu_is_wide_enough_for_every_title() {
+    let mut rt = window(true, None, false);
+    settle(&mut rt);
+    open_menu(&mut rt);
+    settle(&mut rt);
+    let style = crate::ui::tokens_for(true, None).kit.ty.ui_compact;
+    let labels: Vec<_> = (rt.elements().into_iter())
+        .filter(|e| e.key.as_deref() == Some("label") && e.path.contains("context-item"))
+        .collect();
+    assert_eq!(labels.len(), crate::desk::CONTEXT_MENU.len());
+    for label in labels {
+        let words = label.text.clone().unwrap_or_default();
+        let (need, _) = rune::text::measure(&words, &[], style, None);
+        assert!(
+            label.rect[2] + 0.5 >= need,
+            "{words:?} is cut: {} of {need}",
+            label.rect[2]
+        );
+    }
+}
+
 /// A menu row runs its action and closes the menu; the tab menu disables
 /// Close Tab while the tab is locked.
 #[test]

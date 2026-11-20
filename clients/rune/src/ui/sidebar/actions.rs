@@ -2,8 +2,10 @@
 
 use phux_protocol::ids::SessionKey;
 use rune::{El, el};
+use rune_kit::{IconButton, IconButtonVariant};
 
-use super::super::{Tokens, icon_press, icons};
+use super::super::{Tokens, icons};
+use crate::desk::Desk;
 
 /// A fixed close slot for local sessions. Satellites have no supported
 /// session mutation on this connection, so expose no misleading button.
@@ -12,13 +14,14 @@ pub(super) fn session_controls(key: Option<SessionKey>, name: &str, t: &Tokens) 
     let label = format!("Close session {name}");
     // Its own press handler owns the hit, including pointer moves: Rune
     // does not forward a child button's gesture to its draggable parent.
-    icon_press(
-        &icons::CLOSE,
-        "Close session",
-        format!("session-close-{key}"),
-        t,
-        move |d| d.close_session_key(key),
-    )
+    // Muted (kit `GhostMuted`): a close on every header is a lot of ink
+    // beside the names it sits with; the hover wash still marks it.
+    IconButton::new(&icons::CLOSE)
+        .variant(IconButtonVariant::GhostMuted)
+        .label("Close session")
+        .on_press(move |d: &mut Desk| d.close_session_key(key))
+        .build(&t.kit)
+        .key(format!("session-close-{key}"))
     .size(t.space.pointer_min, t.space.pointer_min)
     .radius(t.radius.sm)
     // Pointer only: the list's arrows press what they reach, so a Tab stop

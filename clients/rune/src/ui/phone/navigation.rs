@@ -292,7 +292,7 @@ fn connections(desk: &Desk, p: &Look) -> El {
     .fill(p.roles.layer.raised.paint())
     .child(
         text(desk.machines.label().to_owned())
-            .font(p.ty.mono)
+            .font(p.ty.label.host(desk.machines.label()))
             .color(dim)
             .truncate()
             .a11y_hidden(),
