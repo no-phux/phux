@@ -28,7 +28,11 @@ fn a_listing_moves_the_window_only_after_an_add() {
 }
 
 fn desk() -> Desk {
-    Desk::open(&crate::launch::Resolved::offline("not launched"), None)
+    Desk::with_preferences(
+        &crate::launch::Resolved::offline("not launched"),
+        None,
+        rune::prefs::Prefs::memory(),
+    )
 }
 
 #[test]

@@ -29,7 +29,11 @@ fn desk() -> Desk {
         socket: Some(PathBuf::from("/nowhere/phux.sock")),
         ..Options::default()
     };
-    Desk::open(&launch::resolve(&options), None)
+    Desk::with_preferences(
+        &launch::resolve(&options),
+        None,
+        rune::prefs::Prefs::memory(),
+    )
 }
 
 fn pane(id: u32, session: u32, cwd: Option<&str>) -> PaneDescriptor {
@@ -452,7 +456,11 @@ fn a_protocol_refusal_keeps_the_servers_words() {
 
 #[test]
 fn a_window_without_phux_installs_it_and_says_why_an_install_failed() {
-    let mut desk = Desk::open(&launch::Resolved::offline("no phux"), None);
+    let mut desk = Desk::with_preferences(
+        &launch::Resolved::offline("no phux"),
+        None,
+        rune::prefs::Prefs::memory(),
+    );
     assert_eq!(desk.standing(), Standing::NoCli(None));
     // What `install_phux` sets before its worker runs the real installer.
     desk.link.installing = true;
@@ -476,7 +484,11 @@ fn a_window_without_phux_installs_it_and_says_why_an_install_failed() {
 
 #[test]
 fn an_install_shows_a_moving_bar_until_it_ends() {
-    let mut desk = Desk::open(&launch::Resolved::offline("no phux"), None);
+    let mut desk = Desk::with_preferences(
+        &launch::Resolved::offline("no phux"),
+        None,
+        rune::prefs::Prefs::memory(),
+    );
     desk.link.installing = true;
     desk.link.finding = true;
     let mut rt = rune::Runtime::new(

@@ -112,18 +112,23 @@ mod tests {
 
     #[test]
     fn edge_colour_is_the_settings_page_or_the_terminal_ground_as_srgb() {
-        let mut rt = runtime();
-        // No terminal yet: the theme's own ground, encoded for UIKit.
-        let ground = edge_srgb(&rt);
-        let linear = crate::ui::phone_edge_color(&rt.state);
-        assert!(ground.iter().all(|c| (0.0..=1.0).contains(c)), "{ground:?}");
-        let lifted = ground.iter().zip([linear.r, linear.g, linear.b]);
-        assert!(
-            lifted.into_iter().all(|(srgb, linear)| *srgb >= linear),
-            "sRGB encoding never darkens a linear value"
+        crate::test_support::isolated_preferences(
+            "mobile::host::tests::edge_colour_is_the_settings_page_or_the_terminal_ground_as_srgb",
+            || {
+                let mut rt = runtime();
+                // No terminal yet: the theme's own ground, encoded for UIKit.
+                let ground = edge_srgb(&rt);
+                let linear = crate::ui::phone_edge_color(&rt.state);
+                assert!(ground.iter().all(|c| (0.0..=1.0).contains(c)), "{ground:?}");
+                let lifted = ground.iter().zip([linear.r, linear.g, linear.b]);
+                assert!(
+                    lifted.into_iter().all(|(srgb, linear)| *srgb >= linear),
+                    "sRGB encoding never darkens a linear value"
+                );
+                rt.update(|state, _| state.settings_open = true);
+                assert_ne!(edge_srgb(&rt), ground, "Settings paints its own page");
+            },
         );
-        rt.update(|state, _| state.settings_open = true);
-        assert_ne!(edge_srgb(&rt), ground, "Settings paints its own page");
     }
 
     #[test]
@@ -145,22 +150,27 @@ mod tests {
 
     #[test]
     fn a_frames_requests_are_taken_once_and_copies_leave_as_plain_text() {
-        let mut rt = runtime();
-        let quiet = json!({"connection": false, "paste": false, "copied_text": null,
+        crate::test_support::isolated_preferences(
+            "mobile::host::tests::a_frames_requests_are_taken_once_and_copies_leave_as_plain_text",
+            || {
+                let mut rt = runtime();
+                let quiet = json!({"connection": false, "paste": false, "copied_text": null,
             "open_urls": [], "feedback": null});
-        assert_eq!(take_requests(&mut rt), quiet);
-        rt.update(|state, tx| {
-            state.toggle_machines();
-            state.phone.as_mut().unwrap().feedback = Some(Feedback::Hold);
-            tx.copy("selected words".to_owned());
-            let native = state.native.as_mut().unwrap();
-            native.paste_requested = true;
-        });
-        assert_eq!(
-            take_requests(&mut rt),
-            json!({"connection": true, "paste": true, "copied_text": "selected words",
+                assert_eq!(take_requests(&mut rt), quiet);
+                rt.update(|state, tx| {
+                    state.toggle_machines();
+                    state.phone.as_mut().unwrap().feedback = Some(Feedback::Hold);
+                    tx.copy("selected words".to_owned());
+                    let native = state.native.as_mut().unwrap();
+                    native.paste_requested = true;
+                });
+                assert_eq!(
+                    take_requests(&mut rt),
+                    json!({"connection": true, "paste": true, "copied_text": "selected words",
                 "open_urls": [], "feedback": "hold"})
+                );
+                assert_eq!(take_requests(&mut rt), quiet, "each request is served once");
+            },
         );
-        assert_eq!(take_requests(&mut rt), quiet, "each request is served once");
     }
 }

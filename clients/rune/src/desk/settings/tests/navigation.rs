@@ -6,9 +6,7 @@ use super::super::Settings;
 use super::*;
 
 fn settings_desk() -> Desk {
-    let mut desk = Desk::new(&Resolved::offline("settings"));
-    desk.prefs = Prefs::memory();
-    desk.settings = Settings::load(&desk.prefs);
+    let mut desk = Desk::with_preferences(&Resolved::offline("settings"), None, Prefs::memory());
     desk.settings_open = true;
     desk
 }

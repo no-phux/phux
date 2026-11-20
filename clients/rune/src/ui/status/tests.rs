@@ -113,33 +113,40 @@ fn a_touch_confirmation_names_no_key() {
 
 #[test]
 fn the_phone_app_speaks_of_its_computer_and_of_no_command() {
-    let mut desk = phone();
-    let hint = "Check that Tailscale is on and mini is awake.".to_owned();
-    assert_eq!(
-        said(&desk, &Standing::Unreachable(hint.clone())),
-        ("Can't reach mini".to_owned(), hint.clone())
+    crate::test_support::isolated_preferences(
+        "ui::status::tests::the_phone_app_speaks_of_its_computer_and_of_no_command",
+        || {
+            let mut desk = phone();
+            let hint = "Check that Tailscale is on and mini is awake.".to_owned();
+            assert_eq!(
+                said(&desk, &Standing::Unreachable(hint.clone())),
+                ("Can't reach mini".to_owned(), hint.clone())
+            );
+            assert_eq!(
+                said(&desk, &Standing::Connecting(String::new())),
+                ("Connecting to mini…".to_owned(), String::new())
+            );
+            let behind =
+                Standing::Incompatible("server requires 12.x; update the phux server".to_owned());
+            let (title, detail) = said(&desk, &behind);
+            assert_eq!(title, "Update phux on mini");
+            assert!(!detail.contains('`'), "{detail}");
+            // What a desktop says the same way stays as it is.
+            assert_eq!(said(&desk, &Standing::NoSessions).0, "No sessions");
+            // Refused: the title says why nothing will retry.
+            desk.connection.error =
+                Some("mini refused the pairing token (unauthorized)".to_owned());
+            let refused = desk.standing();
+            assert!(matches!(&refused, Standing::Unreachable(why) if why.ends_with("Pair again.")));
+            assert_eq!(said(&desk, &refused).0, "No longer paired");
+            assert!(phone::repairs(&desk, &refused));
+            assert!(!phone::repairs(&desk, &Standing::Closed(String::new())));
+            // A desktop keeps its own words for all of it.
+            let desktop = crate::test_support::settings_window();
+            assert_eq!(said(&desktop, &refused).0, "Can't reach phux");
+            assert!(!phone::repairs(&desktop, &refused));
+        },
     );
-    assert_eq!(
-        said(&desk, &Standing::Connecting(String::new())),
-        ("Connecting to mini…".to_owned(), String::new())
-    );
-    let behind = Standing::Incompatible("server requires 12.x; update the phux server".to_owned());
-    let (title, detail) = said(&desk, &behind);
-    assert_eq!(title, "Update phux on mini");
-    assert!(!detail.contains('`'), "{detail}");
-    // What a desktop says the same way stays as it is.
-    assert_eq!(said(&desk, &Standing::NoSessions).0, "No sessions");
-    // Refused: the title says why nothing will retry.
-    desk.connection.error = Some("mini refused the pairing token (unauthorized)".to_owned());
-    let refused = desk.standing();
-    assert!(matches!(&refused, Standing::Unreachable(why) if why.ends_with("Pair again.")));
-    assert_eq!(said(&desk, &refused).0, "No longer paired");
-    assert!(phone::repairs(&desk, &refused));
-    assert!(!phone::repairs(&desk, &Standing::Closed(String::new())));
-    // A desktop keeps its own words for all of it.
-    let desktop = crate::test_support::settings_window();
-    assert_eq!(said(&desktop, &refused).0, "Can't reach phux");
-    assert!(!phone::repairs(&desktop, &refused));
 }
 
 #[test]

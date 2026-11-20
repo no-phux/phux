@@ -288,7 +288,11 @@ mod tests {
 
     #[test]
     fn nothing_extra_is_said_with_no_server_update_due() {
-        let desk = Desk::new(&Resolved::offline("not launched"));
+        let desk = Desk::with_preferences(
+            &Resolved::offline("not launched"),
+            None,
+            rune::prefs::Prefs::memory(),
+        );
         assert!(detail(&desk.updater, Some("mini")).is_empty());
     }
 
@@ -296,7 +300,11 @@ mod tests {
     /// opening the card never moves focus into it.
     #[test]
     fn main_window_update_card_joins_tab_order_without_taking_focus() {
-        let mut desk = Desk::new(&Resolved::offline("update card focus"));
+        let mut desk = Desk::with_preferences(
+            &Resolved::offline("update card focus"),
+            None,
+            rune::prefs::Prefs::memory(),
+        );
         desk.updater.install = Ok("/not-an-installed-app".into());
         desk.updater.staged = Some("999.0.0".into());
         let mut rt = rune::Runtime::new(

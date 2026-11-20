@@ -16,6 +16,46 @@ pub mod visual;
 pub const SCALE: f32 = 2.0;
 pub const SIZE: (f32, f32) = (1100.0, 720.0);
 
+/// Exercise production preference-opening factories in a private child process.
+/// `full_test_name` is the exact libtest name, without the crate prefix.
+/// Call before constructing any fixture; the parent never changes its environment.
+pub fn isolated_preferences(full_test_name: &str, body: impl FnOnce()) {
+    const CHILD: &str = "RUNE_TEST_PRIVATE_PREFERENCES";
+    const DONE: &str = "private preferences body completed:";
+    if std::env::var_os(CHILD).is_some_and(|name| name == full_test_name) {
+        body();
+        println!("\n{DONE} {full_test_name}");
+        return;
+    }
+    let directory = tempfile::TempDir::new().expect("private preference directory");
+    let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+        .args(["--exact", full_test_name, "--nocapture", "--test-threads=1"])
+        .env("RUNE_PREFS_DIR", directory.path())
+        .env(CHILD, full_test_name)
+        .output()
+        .expect("the private preference child runs");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{full_test_name} failed with private preferences:\n{stdout}{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line == format!("{DONE} {full_test_name}")),
+        "the child did not complete {full_test_name}:\n{stdout}"
+    );
+}
+
+#[test]
+#[should_panic(expected = "the child did not complete")]
+fn isolated_preferences_rejects_a_missing_test() {
+    isolated_preferences("test_support::no_such_preference_test", || {
+        panic!("a missing test must never execute this body");
+    });
+}
+
 pub fn window() -> Desk {
     Desk::with_preferences(
         &Resolved::offline("test window"),

@@ -82,8 +82,11 @@ fn fixture() -> (Arc<Client>, Desk) {
     }
     client.attach_session(AttachTarget::ByName("selected".into()));
     assert_eq!(client.selected_session(), Some(1));
-    let mut desk = Desk::new(&Resolved::offline("session close"));
-    desk.prefs = rune::prefs::Prefs::memory();
+    let mut desk = Desk::with_preferences(
+        &Resolved::offline("session close"),
+        None,
+        rune::prefs::Prefs::memory(),
+    );
     desk.connection.client = Some(client.clone());
     desk.connection.status = Status::Attached;
     desk.connection.topology = Some(Topology::from_snapshot(&snapshot));

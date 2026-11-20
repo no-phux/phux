@@ -104,8 +104,12 @@ fn reconnects_in_place(phone: bool, size: (f32, f32)) {
         session_recovery: SessionRecovery::CallerValidated,
         ..ControlOptions::default()
     }));
-    let mut desk = Desk::new(&Resolved::offline("reconnect")).with_phone(phone);
-    desk.prefs = rune::prefs::Prefs::memory();
+    let mut desk = Desk::with_preferences(
+        &Resolved::offline("reconnect"),
+        None,
+        rune::prefs::Prefs::memory(),
+    )
+    .with_phone(phone);
     desk.link.heard = true; // no first-run tour over the terminal
     desk.connection.client = Some(Arc::clone(&client));
     let env = rune::Env::new(true, 2.0);

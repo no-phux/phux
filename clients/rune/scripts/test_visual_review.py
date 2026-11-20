@@ -343,10 +343,16 @@ class VisualReview(unittest.TestCase):
         cargo.write_text(f"#!{sys.executable}\n{fixture}")
         cargo.chmod(0o755)
         out = self.root / "fresh review"
+        private_seed = self.root / "inherited-private-prefs"
+        seed = private_seed / "sh.phux.rune/prefs.json"
+        seed.parent.mkdir(parents=True)
+        seed_bytes = b'{"font_size":15,"tour_offered":false}\n'
+        seed.write_bytes(seed_bytes)
         environment = {
             **os.environ, "PATH": str(binaries) + os.pathsep + os.environ["PATH"],
             "PHUX_SOCKET": "do-not-connect", "PHUX_WS_TOKENS": "do-not-use",
             "SIMCTL_CHILD_PHUX_PROFILE": "default",
+            "RUNE_PREFS_DIR": str(private_seed),
         }
         result = subprocess.run(["bash", str(scripts / "visual-review.sh"), str(out)],
                                 env=environment, cwd=self.root, capture_output=True, text=True)
@@ -356,6 +362,12 @@ class VisualReview(unittest.TestCase):
         self.assertEqual(manifest["currentRunePin"], "test-pin")
         self.assertFalse(manifest["dirty"])
         self.assertEqual(len(list((out / "logs").glob("*.log"))), 12)
+        self.assertEqual(seed.read_bytes(), seed_bytes)
+        self.assertEqual({path.relative_to(private_seed).as_posix(): path.read_bytes()
+                          for path in private_seed.rglob("*") if path.is_file()},
+                         {"sh.phux.rune/prefs.json": seed_bytes})
+        self.assertEqual(json.loads((out / "prefs/runner-fixture.json").read_text()),
+                         {"fixture": True})
 
 
 if __name__ == "__main__":

@@ -311,9 +311,7 @@ mod tests {
     use crate::ui::tokens::{Inputs, Tokens};
 
     fn desk() -> Desk {
-        let mut desk = Desk::new(&Resolved::offline("a11y"));
-        desk.prefs = Prefs::memory();
-        desk
+        Desk::with_preferences(&Resolved::offline("a11y"), None, Prefs::memory())
     }
 
     /// The tokens a window draws with for what `desk` read.

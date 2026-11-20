@@ -13,6 +13,11 @@ assert sys.argv[1:5] == ["test", "--release", "--locked", "--lib"]
 assert sys.argv[6:] == ["--", "--nocapture", "--test-threads=1"]
 assert not any(key.startswith(("PHUX_", "SIMCTL_CHILD_PHUX_")) for key in os.environ)
 assert Path.cwd().name == "rune"
+preferences = Path(os.environ["RUNE_PREFS_DIR"])
+assert preferences == Path(os.environ["RUNE_INBOX_SNAP"]).parent / "prefs"
+assert preferences.is_dir()
+# Simulate a preference write only to qualify runner isolation, never rendering.
+(preferences / "runner-fixture.json").write_text('{"fixture": true}\n')
 filters = {
     "phone_inbox_visual_review_frames": "RUNE_INBOX_SNAP",
     "phone_acp_visual_review_frames": "RUNE_INBOX_SNAP",

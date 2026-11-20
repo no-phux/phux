@@ -2,7 +2,11 @@
 use super::*;
 
 fn window(client: &Arc<Client>) -> Runtime<Desk> {
-    let mut desk = Desk::new(&Resolved::offline("review fixture"));
+    let mut desk = Desk::with_preferences(
+        &Resolved::offline("review fixture"),
+        None,
+        rune::prefs::Prefs::memory(),
+    );
     desk.link.heard = true;
     desk.connection.client = Some(Arc::clone(client));
     desk.connection.resources.images = Some(rune::ImageCache::new(Arc::new(|| {})));

@@ -322,7 +322,11 @@ mod tests {
     use crate::launch::Resolved;
 
     fn desk() -> Desk {
-        Desk::new(&Resolved::offline("not launched"))
+        Desk::with_preferences(
+            &Resolved::offline("not launched"),
+            None,
+            rune::prefs::Prefs::memory(),
+        )
     }
 
     #[test]

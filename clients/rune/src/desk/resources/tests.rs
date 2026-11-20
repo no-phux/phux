@@ -137,7 +137,11 @@ fn fixture(records: &[ResourceRecord], doc: &ArrangementDoc) -> (Arc<Client>, Ru
         );
     }
     client.feed(FrameKind::AttachReady { attach_id }).unwrap();
-    let mut desk = Desk::new(&Resolved::offline("fixture only"));
+    let mut desk = Desk::with_preferences(
+        &Resolved::offline("fixture only"),
+        None,
+        rune::prefs::Prefs::memory(),
+    );
     desk.link.heard = true; // no first-run preferences write
     desk.connection.client = Some(Arc::clone(&client));
     desk.connection.resources.images = Some(rune::ImageCache::new(Arc::new(|| {})));

@@ -6,8 +6,7 @@ use super::*;
 use crate::launch::Resolved;
 
 fn desk(prefs: Prefs) -> Desk {
-    let mut desk = Desk::new(&Resolved::offline("onboarding"));
-    desk.prefs = prefs;
+    let mut desk = Desk::with_preferences(&Resolved::offline("onboarding"), None, prefs);
     desk.launch.aimed = false;
     desk
 }

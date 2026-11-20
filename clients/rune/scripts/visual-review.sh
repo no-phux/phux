@@ -15,7 +15,7 @@ if [[ -e "$out" || -L "$out" ]]; then
 fi
 # mkdir, without -p, also rejects concurrent claims of this exact output.
 mkdir "$out"
-mkdir "$out/logs" "$out/inbox" "$out/settings" "$out/navigation" "$out/resources"
+mkdir "$out/logs" "$out/inbox" "$out/settings" "$out/navigation" "$out/resources" "$out/prefs"
 cd "$repo/clients/rune"
 
 # Do not inherit a production server address or another run's export paths.
@@ -26,6 +26,7 @@ export RUNE_INBOX_SNAP="$out/inbox"
 export RUNE_SETTINGS_SNAP="$out/settings"
 export RUNE_NAVIGATION_SNAP="$out/navigation"
 export RUNE_RESOURCE_SNAP="$out/resources/mixed.png"
+export RUNE_PREFS_DIR="$out/prefs"
 
 render() {
     local filter="$1"

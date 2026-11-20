@@ -46,7 +46,11 @@ fn the_fix_runs_then_leaves_a_shell() {
 
 #[test]
 fn a_disconnected_window_says_so_and_the_row_toggles() {
-    let mut desk = Desk::open(&crate::launch::Resolved::offline("not launched"), None);
+    let mut desk = Desk::with_preferences(
+        &crate::launch::Resolved::offline("not launched"),
+        None,
+        rune::prefs::Prefs::memory(),
+    );
     desk.toggle_checklist(None);
     let deadline = Instant::now() + Duration::from_secs(5);
     let answer = loop {
@@ -70,7 +74,11 @@ fn a_disconnected_window_says_so_and_the_row_toggles() {
 
 #[test]
 fn the_palette_opens_this_machines_checklist() {
-    let mut desk = Desk::open(&crate::launch::Resolved::offline("not launched"), None);
+    let mut desk = Desk::with_preferences(
+        &crate::launch::Resolved::offline("not launched"),
+        None,
+        rune::prefs::Prefs::memory(),
+    );
     desk.what_works_here();
     assert!(desk.machines.open);
     assert_eq!(

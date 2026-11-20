@@ -216,7 +216,11 @@ mod tests {
 
     #[test]
     fn answers_become_rows_and_failures_say_why() {
-        let mut desk = Desk::new(&crate::launch::Resolved::offline("test"));
+        let mut desk = Desk::with_preferences(
+            &crate::launch::Resolved::offline("test"),
+            None,
+            rune::prefs::Prefs::memory(),
+        );
         let inbox = desk.connection.resources.screens.inbox.clone();
         desk.connection.resources.screens.waiting = 2;
         inbox.lock().unwrap().extend([

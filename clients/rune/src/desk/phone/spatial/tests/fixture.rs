@@ -174,8 +174,15 @@ pub fn fixture(phone: bool) -> (Arc<Client>, Runtime<Desk>) {
         ..ControlOptions::default()
     }));
     boot(&client);
-    let mut desk = Desk::new(&Resolved::offline("spatial fixture")).with_phone(phone);
-    desk.prefs = Prefs::memory();
+    let mut desk =
+        Desk::with_preferences(&Resolved::offline("spatial fixture"), None, Prefs::memory())
+            .with_phone(phone);
+    assert_eq!(
+        desk.font_size,
+        crate::grid::DEFAULT_FONT_SIZE,
+        "isolated before the first frame"
+    );
+    assert!(!desk.prefs.is_persistent());
     desk.link.heard = true;
     desk.connection.client = Some(Arc::clone(&client));
     let mut rt = Runtime::new(desk, crate::ui::view, (393.0, 852.0), Env::new(true, 2.0));
@@ -184,6 +191,27 @@ pub fn fixture(phone: bool) -> (Arc<Client>, Runtime<Desk>) {
     settle(&mut rt);
     outbound(&client);
     (client, rt)
+}
+
+#[test]
+fn both_forms_start_with_memory_preferences_and_the_default_font() {
+    crate::test_support::isolated_preferences(
+        "desk::phone::spatial::tests::fixture::both_forms_start_with_memory_preferences_and_the_default_font",
+        || {
+            let mut seed = Prefs::open("sh.phux.rune");
+            seed.set("font_size", &15.0_f32).unwrap();
+            let path = seed.path().unwrap().to_owned();
+            let before = std::fs::read(&path).unwrap();
+            assert_eq!(crate::grid::DEFAULT_FONT_SIZE, 13.0);
+            for phone in [false, true] {
+                let (_, rt) = fixture(phone);
+                assert_eq!(rt.state.font_size, crate::grid::DEFAULT_FONT_SIZE);
+                assert_eq!(rt.state.phone.is_some(), phone);
+                assert!(rt.state.prefs.path().is_none());
+            }
+            assert_eq!(std::fs::read(path).unwrap(), before);
+        },
+    );
 }
 
 pub fn poll(rt: &mut Runtime<Desk>) {
