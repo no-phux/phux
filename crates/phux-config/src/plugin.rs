@@ -114,6 +114,18 @@ pub enum PluginPlatform {
     Windows,
 }
 
+/// Whether a manifest platform list allows this machine. An omitted list allows every OS.
+#[must_use]
+pub fn platforms_allow(platforms: Option<&[PluginPlatform]>) -> bool {
+    platforms.is_none_or(|platforms| {
+        platforms.iter().any(|platform| match platform {
+            PluginPlatform::Linux => cfg!(target_os = "linux"),
+            PluginPlatform::Macos => cfg!(target_os = "macos"),
+            PluginPlatform::Windows => cfg!(target_os = "windows"),
+        })
+    })
+}
+
 /// Build command declared in a plugin manifest.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PluginManifestBuild {

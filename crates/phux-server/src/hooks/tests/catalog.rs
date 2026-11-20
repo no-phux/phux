@@ -151,6 +151,45 @@ fn catalog_skips_disabled_plugins_and_keeps_enabled_ones() {
 }
 
 #[test]
+fn plugin_events_apply_only_the_event_platform_list() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(
+        &dir.path().join("plugins/p/phux-plugin.toml"),
+        r#"
+        id = "p"
+        name = "Test"
+        version = "0.1.0"
+        min_phux_version = "0.0.1"
+        platforms = []
+
+        [[events]]
+        id = "eligible"
+        title = "Eligible"
+        on = "pane-exit"
+        command = ["true"]
+
+        [[events]]
+        id = "ineligible"
+        title = "Ineligible"
+        on = "pane-exit"
+        command = ["true"]
+        platforms = []
+        "#,
+    );
+    let cfg: Config = toml::from_str(
+        r#"[[plugins]]
+manifest = "plugins/p/phux-plugin.toml"
+"#,
+    )
+    .expect("valid config");
+
+    let catalog = HookCatalog::from_config(&cfg, &dir.path().join("config.toml"));
+
+    assert_eq!(catalog.plugin_events.len(), 1);
+    assert_eq!(catalog.plugin_events[0].event_id, "eligible");
+}
+
+#[test]
 fn catalog_skips_manifest_load_failures() {
     let dir = tempfile::tempdir().expect("tempdir");
     let cfg: Config = toml::from_str(

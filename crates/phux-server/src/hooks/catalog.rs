@@ -8,8 +8,6 @@ use phux_config::plugin::{self, PluginManifest};
 use phux_config::{Config, HookEntry, vocab};
 use tracing::{debug, warn};
 
-use super::platform_enabled;
-
 /// One `[[events]]` entry resolved from an **enabled** plugin manifest.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginEventHook {
@@ -86,7 +84,7 @@ impl HookCatalog {
 fn manifest_event_hooks(manifest: PluginManifest) -> Vec<PluginEventHook> {
     let mut hooks = Vec::new();
     for event in manifest.events {
-        if !platform_enabled(event.platforms.as_deref()) {
+        if !plugin::platforms_allow(event.platforms.as_deref()) {
             continue;
         }
         if let Some(dead) = plugin::dead_event(&event) {

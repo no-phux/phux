@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use phux_config::loader as config_loader;
-use phux_config::plugin::actions::{platforms_allow, supported_actions};
-use phux_config::plugin::{self, PluginManifestAction};
+use phux_config::plugin::actions::supported_actions;
+use phux_config::plugin::{self, PluginManifestAction, platforms_allow};
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 

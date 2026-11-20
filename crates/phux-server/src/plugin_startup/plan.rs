@@ -8,9 +8,7 @@
 
 use std::path::Path;
 
-use phux_config::plugin::{
-    self, MAX_STARTUP_ENTRIES, PluginConfigEntry, PluginManifest, PluginPlatform,
-};
+use phux_config::plugin::{self, MAX_STARTUP_ENTRIES, PluginConfigEntry, PluginManifest};
 
 /// One sidecar the supervisor knows how to start.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,8 +95,9 @@ pub fn catalog_from_plugins(config_path: &Path, plugins: &[PluginConfigEntry]) -
 }
 
 fn push_manifest(catalog: &mut StartupCatalog, manifest: &PluginManifest, hash: u64) {
+    let manifest_allowed = plugin::platforms_allow(manifest.platforms.as_deref());
     for startup in &manifest.startup {
-        if !platforms_allow(manifest.platforms.as_deref(), startup.platforms.as_deref()) {
+        if !manifest_allowed || !plugin::platforms_allow(startup.platforms.as_deref()) {
             tracing::debug!(
                 plugin = %manifest.id,
                 startup = %startup.id,
@@ -121,12 +120,6 @@ fn push_manifest(catalog: &mut StartupCatalog, manifest: &PluginManifest, hash: 
             catalog.skipped_cap.push(spec);
         }
     }
-}
-
-/// Both lists must allow this OS. `None` allows every OS.
-fn platforms_allow(manifest: Option<&[PluginPlatform]>, entry: Option<&[PluginPlatform]>) -> bool {
-    use crate::hooks::platform_enabled;
-    platform_enabled(manifest) && platform_enabled(entry)
 }
 
 /// FNV-1a of the manifest bytes. Stable for the life of a process and across

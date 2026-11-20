@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use crate::keybind::{ResolvedAction, Resolver, parse_chord_sequence};
 use crate::{Action, KeybindingsCfg, ParamAction};
 
-use super::{PluginManifest, PluginManifestAction, PluginPlatform};
+use super::{PluginManifest, PluginManifestAction, platforms_allow};
 
 /// The action name used by plugin bindings and palette selections.
 pub const PLUGIN_ACTION_NAME: &str = "plugin-action";
@@ -107,18 +107,6 @@ pub fn entries_from_manifests(manifests: &[PluginManifest]) -> Vec<PluginActionE
             keys: action.keys.clone(),
         })
         .collect()
-}
-
-/// Whether a manifest platform list allows this machine. An omitted list allows every OS.
-#[must_use]
-pub fn platforms_allow(platforms: Option<&[PluginPlatform]>) -> bool {
-    platforms.is_none_or(|platforms| {
-        platforms.iter().any(|platform| match platform {
-            PluginPlatform::Linux => cfg!(target_os = "linux"),
-            PluginPlatform::Macos => cfg!(target_os = "macos"),
-            PluginPlatform::Windows => cfg!(target_os = "windows"),
-        })
-    })
 }
 
 /// Merge plugin `keys` bindings into the prefix table.
