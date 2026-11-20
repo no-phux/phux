@@ -1,6 +1,8 @@
 """Rendered selected-grid evidence must bind to the native readiness report."""
 
+import contextlib
 import copy
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -264,6 +266,89 @@ class EvidenceTests(unittest.TestCase):
                     lane.collect_report(123)
                 lane.simctl.assert_not_called()
                 sleep.assert_not_called()
+
+
+class InputGateTimeoutTests(unittest.TestCase):
+    """PHUX-834: the unchanged 90s timeout names a never-ready input gate."""
+
+    def timeout_message(self, gate):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            documents = root / "Documents"
+            documents.mkdir()
+            if gate is not None:
+                (documents / qualify.INPUT_GATE).write_text(json.dumps(gate))
+            lane = qualify.Qualification(root / "App", root / "phux", root, root)
+            lane.documents = documents
+            lane.require_alive = Mock()
+            lane.simctl = Mock()
+            clock = iter((0.0, 45.0, 90.0))
+            with patch.object(qualify.time, "monotonic", side_effect=lambda: next(clock)), \
+                    patch.object(qualify.time, "sleep"), \
+                    self.assertRaises(TimeoutError) as raised:
+                lane.collect_report(123)
+            lane.simctl.assert_not_called()
+            return str(raised.exception)
+
+    def test_a_shown_frame_that_never_became_input_ready_is_named(self):
+        message = self.timeout_message({"schema": 1, "frame_shown": True, "input_ready": False})
+        self.assertTrue(message.startswith("native qualification report not written within 90s"))
+        self.assertIn("input_ready never became true", message)
+
+    def test_other_timeouts_keep_the_original_message(self):
+        original = "native qualification report not written within 90s"
+        for gate in (None, {"schema": 1, "frame_shown": True, "input_ready": True}, ["junk"]):
+            with self.subTest(gate=gate):
+                self.assertEqual(self.timeout_message(gate), original)
+
+
+class InputOrderLogTests(unittest.TestCase):
+    """PHUX-834: the qualify log prints input_ready:true before the first InputKey."""
+
+    def trace(self, rows):
+        return "".join(json.dumps(row) + "\n" for row in rows)
+
+    def row(self, phase, elapsed, process=None, connection=1, attempt=1):
+        return {
+            "connection": connection, "attempt": attempt, "elapsed_ms": elapsed,
+            "process_elapsed_ms": elapsed if process is None else process, "phase": phase,
+        }
+
+    def test_input_ready_is_printed_before_the_first_input_key(self):
+        text = self.trace([
+            self.row("attempt_started", 0),
+            self.row("input_injected", 1, 1),
+            self.row("input_ready", 10, 40),
+            self.row("input_injected", 12, 42),
+            self.row("input_injected", 13, 43),
+        ])
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            out = root / "out"
+            out.mkdir()
+            (out / "rune-connection-diagnostics.jsonl").write_text(text)
+            (out / "resume-rune-connection-diagnostics.jsonl").write_text(self.trace([
+                self.row("input_ready", 5, 5),
+                self.row("input_injected", 6, 6),
+            ]))
+            lane = qualify.Qualification(root / "App", root / "phux", out, root, "wss")
+            with contextlib.redirect_stdout(io.StringIO()) as printed:
+                lane.emit_input_order()
+        self.assertEqual(printed.getvalue().splitlines(), [
+            "wss: input_ready input_ready:true elapsed_ms=10 process_elapsed_ms=40",
+            "wss: input_injected InputKey elapsed_ms=12 process_elapsed_ms=42",
+            "wss resume: input_ready input_ready:true elapsed_ms=5 process_elapsed_ms=5",
+            "wss resume: input_injected InputKey elapsed_ms=6 process_elapsed_ms=6",
+        ])
+
+    def test_input_order_is_not_printed_without_a_later_injection(self):
+        text = self.trace([
+            self.row("input_injected", 1),
+            self.row("input_ready", 2),
+        ])
+        with contextlib.redirect_stdout(io.StringIO()) as printed:
+            qualify.print_input_order_lines("quic", text)
+        self.assertEqual(printed.getvalue(), "")
 
 
 if __name__ == "__main__":

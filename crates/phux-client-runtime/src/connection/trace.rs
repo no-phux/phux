@@ -1,12 +1,16 @@
 //! Payload-free attempt phases for an embedder's opt-in tracing subscriber.
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, PoisonError};
 
 use tokio::time::Instant;
 
 pub(super) use super::AttemptTrace;
 
 static NEXT_CONNECTION: AtomicU64 = AtomicU64::new(1);
+/// The driver and the UI thread both record; one at a time keeps every
+/// attempt's rows in clock order on disk.
+static ORDER: Mutex<()> = Mutex::new(());
 
 tokio::task_local! {
     static CURRENT: AttemptTrace;
@@ -34,7 +38,13 @@ impl AttemptTrace {
         CURRENT.scope(current, future).await
     }
 
+    /// The attempt this task is recording for, if any.
+    pub(crate) fn current() -> Option<Self> {
+        CURRENT.try_with(|current| *current).ok()
+    }
+
     pub(crate) fn record(&self, phase: &'static str) {
+        let _order = ORDER.lock().unwrap_or_else(PoisonError::into_inner);
         tracing::debug!(
             target: "phux_client_runtime::connection_diagnostics",
             connection = self.connection,

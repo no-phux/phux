@@ -365,10 +365,22 @@ pub fn set_active(rt: &mut rune::Runtime<State>, active: bool) {
     });
 }
 
+/// Qualification log: the probe observed `input_ready` and is about to type.
+pub fn trace_input_ready(rt: &rune::Runtime<State>) {
+    if let Some(client) = rt.state.connection.client.as_ref() {
+        client.with_control(|control| control.trace_input_ready());
+    }
+}
+
 /// Local qualification evidence; no credentials, endpoint or clipboard
 /// contents. A real grid, not a placeholder title, must contain the marker.
 pub fn report(rt: &rune::Runtime<State>, frames: u64, marker: &str) -> Value {
     let state = &rt.state;
+    // A drawn frame can precede the shown terminal's attach (PHUX-834); only
+    // the client's own gate says typed input would reach it.
+    let input_ready = (state.connection.client.as_ref())
+        .zip(state.connection.shown.as_ref())
+        .is_some_and(|(c, s)| c.input_ready(&s.resource));
     let grid = state
         .connection
         .client
@@ -396,6 +408,7 @@ pub fn report(rt: &rune::Runtime<State>, frames: u64, marker: &str) -> Value {
         })
         .unwrap_or_default();
     json!({"schema": 1, "frames": frames, "connected": grid.is_some(),
+        "input_ready": input_ready, "input_refusals": state.input_refusals,
         "session": state.selected_session_name(), "terminal_id": state.connection.shown.as_ref().map(|s| s.resource.to_string()),
         // Frames carry no soft-wrap flag, so a marker that wraps a row also counts.
         "marker_seen": !marker.is_empty() && (text.contains(marker) || text.replace('\n', "").contains(marker)),

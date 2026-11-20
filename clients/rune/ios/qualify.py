@@ -35,6 +35,17 @@ _settle_spec.loader.exec_module(_settle)
 _trace_spec = importlib.util.spec_from_file_location("rune_connection_diagnostics", Path(__file__).with_name("connection_diagnostics.py"))
 _trace = importlib.util.module_from_spec(_trace_spec)
 _trace_spec.loader.exec_module(_trace)
+_input_spec = importlib.util.spec_from_file_location("rune_qualify_input", Path(__file__).with_name("qualify_input.py"))
+_input = importlib.util.module_from_spec(_input_spec)
+_input_spec.loader.exec_module(_input)
+INPUT_GATE = _input.INPUT_GATE
+input_gate_reason = _input.input_gate_reason
+print_input_order_lines = _input.print_input_order_lines
+_host_spec = importlib.util.spec_from_file_location("rune_qualify_host", Path(__file__).with_name("qualify_host.py"))
+_host = importlib.util.module_from_spec(_host_spec)
+_host_spec.loader.exec_module(_host)
+simulator_pair = _host.simulator_pair
+server_environment = _host.server_environment
 
 BUNDLE_ID = "sh.phux.rune.ios"
 MARKER = "RUNE_IOS_INPUT_OK"
@@ -46,47 +57,10 @@ CONTAINER_TIMEOUT = 60
 QUERY_ATTEMPTS = 3
 
 
-def version_tuple(value):
-    return tuple((list(map(int, value.split("."))) + [0, 0])[:3])
-
-
-def available_ios_runtime(runtime):
-    return (runtime.get("isAvailable") and ".iOS-" in runtime["identifier"]
-            and version_tuple(runtime["version"]) >= (26, 0, 0))
-
-
-def simulator_pair(runtimes, device_types):
-    """Use runtime-supported IDs, not a device name guessed from OS version."""
-    phones = {d["identifier"] for d in device_types if d.get("productFamily") == "iPhone"}
-    available = filter(available_ios_runtime, runtimes)
-    for runtime in sorted(available, key=lambda r: version_tuple(r["version"])):
-        compatible = [d for d in runtime.get("supportedDeviceTypes", [])
-                      if d["identifier"] in phones]
-        if compatible:
-            device = min(compatible, key=lambda d: (d["name"] != "iPhone 17", d["name"]))
-            return runtime["identifier"], device["identifier"]
-    raise ValueError("no available iOS >=26 runtime with an advertised compatible iPhone")
-
-
 def marker_command(marker=MARKER):
     # The complete closed witness must not appear in the command echo.
     escaped = "".join(f"\\{byte:03o}" for byte in ("[[" + marker + "]]\n").encode())
     return f"printf '{escaped}'"
-
-
-def server_environment(scratch):
-    home = scratch / "home"
-    home.mkdir()
-    config = scratch / "config"
-    config.mkdir()
-    prefs = scratch / "prefs"
-    prefs.mkdir()
-    return {"HOME": str(home), "XDG_CONFIG_HOME": str(config),
-            "XDG_DATA_HOME": str(scratch / "data"), "XDG_STATE_HOME": str(scratch / "state"),
-            "PATH": "/usr/bin:/bin", "SHELL": "/bin/sh", "TERM": "xterm-256color",
-            "TMPDIR": str(scratch), "PHUX_PROFILE": "rune-ios-qualification",
-            "PHUX_WS_SECURE": "1",
-            "RUNE_PREFS_DIR": str(prefs)}
 
 
 class Qualification:
@@ -260,7 +234,7 @@ class Qualification:
         while not source.is_file():
             self.require_alive(pid)
             if time.monotonic() >= deadline:
-                raise TimeoutError("native qualification report not written within 90s")
+                raise TimeoutError("native qualification report not written within 90s" + input_gate_reason(documents))
             time.sleep(0.5)
         shutil.copy2(source, self.out / (prefix + source.name))
         report = json.loads((self.out / (prefix + source.name)).read_text())
@@ -313,7 +287,7 @@ class Qualification:
         self.finish_connection_diagnostics()
         self.simctl("terminate", self.udid, BUNDLE_ID, timeout=60)
         self.preserve_connection_diagnostics(prefixes=("",))
-        for name in ("rune-qualification.json", "rune-tree.json"):
+        for name in ("rune-qualification.json", "rune-tree.json", INPUT_GATE):
             (self.documents / name).unlink(missing_ok=True)
         marker = MARKER + "_RESUMED"
         self.diagnostic_prefixes.append("resume-")
@@ -328,6 +302,16 @@ class Qualification:
         if report["key_id"] != original["key_id"]:
             raise ValueError("relaunch did not use the same saved device identity")
         return report
+
+    def emit_input_order(self):
+        """Print input_ready:true, then the first InputKey send, per capture."""
+        for prefix, label in (("", self.transport), ("resume-", f"{self.transport} resume")):
+            path = self.out / (prefix + "rune-connection-diagnostics.jsonl")
+            try:
+                text = path.read_text()
+            except OSError:
+                continue
+            print_input_order_lines(label, text)
 
     preserve_connection_diagnostics = _trace.preserve_connection_diagnostics
     require_connection_diagnostics = _trace.require_connection_diagnostics
@@ -374,6 +358,7 @@ def qualify(app, phux, out, transport="quic"):
                 lane.cleanup()
                 if not failed:
                     lane.require_connection_diagnostics()
+                    lane.emit_input_order()
             except (ValueError, OSError, subprocess.SubprocessError) as error:
                 if not failed:
                     raise
