@@ -95,29 +95,25 @@ supplant it.
 
 ## Close intents
 
-Closing a view changes client presentation. Resource close commands
-carry different identities and guarantees.
+Closing a view changes client presentation.
 
-| Request | Identity and effect | Reply |
+| Request | Target and effect | Reply |
 | --- | --- | --- |
-| `KILL_RESOURCE` | Close a live handle and its bound descendants. Session lifetime governs an emptied session. | The serving host committed the close. |
-| `KILL_RESOURCES` | Close live handles in host-local groups. Naming every member of a persistent session can delete it too. | Keyed replies report per-id outcomes. Unkeyed replies can include skips or failed satellite routes, logged by the server. |
-| `CLOSE_TAB_RESOURCES` | Close live handles in host-local groups and preserve keep-empty sessions. Requires its feature bit. | The local close skips missing handles. Satellite partitions are forwarded without waiting for results. |
-| `RESOURCE_TERMINATE` | Target a resource handle, instance, and activation id on an `ORGANIZATION` peer. | `Accepted` for the same operation settles admission. Lifecycle events report effects. Separate requests can have different outcomes. |
+| `KILL_RESOURCE` | Live handle and bound descendants. Session lifetime governs emptied sessions. | Close committed by the serving host. |
+| `KILL_RESOURCES` | Host-local groups. Naming all members can delete a persistent session. | Keyed replies report each id. Unkeyed skips and relay failures appear in server logs. |
+| `CLOSE_TAB_RESOURCES` | Host-local groups. Preserves keep-empty sessions. Requires its feature bit. | Skips missing locals and forwards satellite groups without waiting. |
+| `RESOURCE_TERMINATE` | Handle, instance, and activation on an organization peer. | Matching `Accepted` confirms admission. Lifecycle events report effects. Each request settles separately. |
 
-`KILL_RESOURCE_IF` adds allocation-instance and use preconditions for
-delayed cleanup. `SESSION_KILL` explicitly ends a session and overrides
-its tab locks. For retry and incarnation rules, see
-[protocol receipts](./protocol.md#receipts-retries-and-backpressure).
+`KILL_RESOURCE_IF` checks allocation instance and use for delayed cleanup.
+`SESSION_KILL` ends the session and overrides tab locks. See
+[retry and incarnation rules](./protocol.md#receipts-retries-and-backpressure).
 
-Native `close_terminals` and browser `kill_pane` request graceful
-termination of verified activations on organization peers. Missing
-identity leaves the request unavailable or refused. Native
-`close_terminals` requires keep-empty support on older peers. The browser
-uses single kill on older peers. Native `kill_terminal` requests single
-kill explicitly.
-A lost or unreadable reply can leave the outcome unknown. Reconcile from
-the serving host's state and receipts.
+Native `close_terminals` and browser `kill_pane` use graceful terminate on
+organization peers after verifying activation. Missing identity makes close
+unavailable or refused. On older peers, `close_terminals` requires advertised
+keep-empty support and the browser uses single kill. Native `kill_terminal`
+explicitly uses single kill. Lost or unreadable replies can leave outcomes
+unknown. Reconcile from the serving host's state and receipts.
 
 ## Complete creation intentions
 

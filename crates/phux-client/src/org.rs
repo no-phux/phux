@@ -180,10 +180,10 @@ pub async fn request(
     match conn.request(request_id, command).await {
         Ok(reply) => {
             let (result, interleaved) = reply.into_parts();
-            let outcome = match terminate_operation {
-                Some(operation) => OrgOutcome::from_terminate_reply(operation, &result),
-                None => OrgOutcome::from_result(&result),
-            };
+            let outcome = terminate_operation.map_or_else(
+                || OrgOutcome::from_result(&result),
+                |operation| OrgOutcome::from_terminate_reply(operation, &result),
+            );
             Ok((
                 checked_outcome(outcome, receipt_operation)?,
                 Degradation::from_interleaved(&interleaved),
