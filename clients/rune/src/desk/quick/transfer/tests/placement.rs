@@ -216,3 +216,122 @@ fn a_cancelled_in_flight_write_ignores_late_success_and_refusal_receipts() {
         assert!(crate::test_support::notice(&desk).contains("selected session changed"));
     }
 }
+
+/// The size a split's spawn asks for, with the focused pane's grid `area`.
+fn split_spawn_size(
+    dir: phux_client_core::layout::SplitDir,
+    area: [f32; 2],
+    zoomed: bool,
+) -> (Option<(u16, u16)>, Desk) {
+    let (client, mut desk) = connected();
+    desk.connection.shown = Some(Shown {
+        resource: terminal(),
+        view: None,
+    });
+    desk.connection.areas.insert(terminal(), area);
+    if zoomed {
+        desk.connection.zoomed = Some(terminal());
+    }
+    desk.split(dir);
+    let size = outbound(&client)
+        .into_iter()
+        .find_map(|frame| match frame {
+            FrameKind::SpawnResource { initial_size, .. } => Some(initial_size),
+            _ => None,
+        })
+        .expect("a split spawns");
+    (size, desk)
+}
+
+#[test]
+fn a_split_spawns_its_terminal_at_the_half_it_will_fill() {
+    use crate::ui::PAD;
+    use phux_client_core::layout::SplitDir;
+    use phux_design::tokens::SPACE;
+    let area = [800.0, 400.0];
+    let (side, desk) = split_spawn_size(SplitDir::Horizontal, area, false);
+    let metrics = desk.metrics();
+    let half = |grid: f32| (grid + 2.0 * PAD - SPACE.card_gap) / 2.0 - 2.0 * PAD;
+    assert_eq!(side, Some(metrics.fit([half(800.0), 400.0])));
+    let whole = metrics.fit(area);
+    let (cols, rows) = side.unwrap();
+    assert!(
+        cols < whole.0 / 2 && rows == whole.1,
+        "{side:?} of {whole:?}"
+    );
+    let (below, _) = split_spawn_size(SplitDir::Vertical, area, false);
+    assert_eq!(below, Some(metrics.fit([800.0, half(400.0)])));
+    // A zoomed pane's area is not the one it splits: no guess from it.
+    let (zoomed, _) = split_spawn_size(SplitDir::Horizontal, area, true);
+    assert_ne!(zoomed, side);
+}
+
+/// A split of `terminal()` written into session 1 and not yet answered.
+fn split_in_flight() -> (Arc<Client>, Desk, u32, OperationId) {
+    use phux_client_core::layout::SplitDir;
+    let (client, mut desk) = connected();
+    install_arrangement(&client, 1);
+    desk.place_split(
+        &client,
+        &ResourceId::local(8),
+        Some((terminal(), SplitDir::Horizontal)),
+        Some(session(1)),
+    );
+    let (request, operation) = layout_write(&client);
+    (client, desk, request, operation)
+}
+
+#[test]
+fn a_split_shows_and_takes_the_keyboard_when_written_not_when_answered() {
+    use phux_client_core::layout::leaves;
+    let (client, mut desk, request, operation) = split_in_flight();
+    let tree = desk
+        .split_preview(&client)
+        .and_then(|doc| doc.active_group()?.tree.clone())
+        .expect("the written split shows before its answer");
+    assert_eq!(leaves(&tree), vec![terminal(), ResourceId::local(8)]);
+    assert_eq!(
+        desk.connection.wanted.as_ref().map(|(id, _)| id),
+        Some(&ResourceId::local(8))
+    );
+    // The person moves on before the server answers; the answer and the
+    // replica catching up must not pull the keyboard back.
+    desk.connection.wanted = None;
+    reply(
+        &mut desk,
+        &client,
+        request,
+        CommandResult::OkWith(CommandValue::Committed(Box::new(Committed::new(
+            operation,
+            Revision::new(2),
+        )))),
+    );
+    desk.place_pending_splits(&client);
+    assert!(desk.connection.wanted.is_none());
+}
+
+#[test]
+fn a_refused_split_shows_the_replica_until_it_is_written_again() {
+    let (client, mut desk, request, _) = split_in_flight();
+    reply(
+        &mut desk,
+        &client,
+        request,
+        CommandResult::Refused(Refusal::Conflict {
+            current: Revision::new(2),
+        }),
+    );
+    assert!(desk.split_preview(&client).is_none());
+}
+
+#[test]
+fn a_cancelled_split_in_flight_gives_back_the_keyboard_it_asked_for() {
+    let (client, mut desk, _, _) = split_in_flight();
+    assert!(desk.connection.wanted.is_some());
+    client.attach_session(AttachTarget::ById(SessionId::new(2)));
+    install_arrangement(&client, 2);
+    desk.place_pending_splits(&client);
+    assert!(!desk.splits_waiting());
+    assert!(desk.connection.wanted.is_none());
+    assert!(desk.split_preview(&client).is_none());
+}

@@ -86,7 +86,9 @@ impl Desk {
         };
         self.place_pending_splits(client);
         let listed = self.listed_resources();
-        let arrangement = self.arrangement(client).map(|(key, mut doc)| {
+        let preview = self.split_preview(client);
+        let arrangement = self.arrangement(client).map(|(key, doc)| {
+            let mut doc = preview.unwrap_or(doc);
             self.choose_slot_tabs(&mut doc, &shown);
             (key, doc)
         });

@@ -179,7 +179,8 @@ session (or `--session NAME`). It never creates a session on its own.
   tree the terminal UI uses, so both show the same layout. Each pane floats
   as its own rounded glass card, the one with the keyboard lit in the accent.
   Split, move between panes, zoom one, drag the gutters between cards; new
-  splits and ratios are written back to the server.
+  splits and ratios are written back to the server. A split shows at its
+  size before the server answers.
 - **Terminal.** The runtime's draw list: colours, bold and italic,
   underlines, box and block glyphs, wide characters, cursor (with blink) and
   selection, on device-pixel cells. Each pane follows its own size. Programs

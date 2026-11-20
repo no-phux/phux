@@ -182,7 +182,7 @@ impl Desk {
             cwd,
             env: None,
             session_id: client.selected_session(),
-            initial_size: None,
+            initial_size: self.tab_spawn_size(),
         });
         self.connection
             .pending_splits
