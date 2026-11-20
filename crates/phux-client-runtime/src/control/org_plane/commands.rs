@@ -1,6 +1,6 @@
 //! The typed organization commands a consumer submits.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use phux_client_core::layout::ArrangementDoc as HandleDoc;
@@ -321,29 +321,27 @@ impl ControlPlane {
         })?)
     }
 
-    /// Close terminals. Against a server that advertises `ORGANIZATION`
-    /// each is terminated (`RESOURCE_TERMINATE`, which leaves membership and
-    /// arrangement to the server); otherwise one atomic `CLOSE_TAB_RESOURCES`
-    /// when the server advertises it. The reply is
-    /// [`Event::TerminalsClosed`] under the returned id; `None` when neither
-    /// path is available.
+    /// Close terminals through their exact activations. Wait for a live
+    /// organization replica so its handles and activations share an epoch.
     pub(in crate::control) fn close_terminals_by_record(
         &mut self,
         ids: &[ResourceId],
     ) -> Option<u32> {
-        if !self.organization_supported() || !self.organization.is_live() {
+        if !self.organization.is_live() {
             return None;
         }
         let request_id = self.next_request_id();
         let mut batch = CloseBatch {
             request_id,
-            operations: HashSet::new(),
+            operations: HashMap::new(),
             errors: Vec::new(),
         };
         for id in ids {
             let target = self.organization.resource_by_live(id).and_then(live_target);
             let Some(target) = target else {
-                batch.errors.push(format!("{id:?} has no live record here"));
+                batch
+                    .errors
+                    .push(format!("{id}: the live activation is unavailable"));
                 continue;
             };
             match self.journal_org_operation(Command::ResourceTerminate {
@@ -352,9 +350,9 @@ impl ControlPlane {
                 mode: TerminateMode::Graceful,
             }) {
                 Ok(operation) => {
-                    batch.operations.insert(operation);
+                    batch.operations.insert(operation, id.clone());
                 }
-                Err(error) => batch.errors.push(error.to_string()),
+                Err(error) => batch.errors.push(format!("{id}: {error}")),
             }
         }
         if batch.operations.is_empty() {

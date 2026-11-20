@@ -40,7 +40,9 @@ impl Desk {
         let mut deliveries = Vec::new();
         for event in events.drain(..start) {
             match event {
-                Event::InputDelivery { .. } => deliveries.push(event),
+                Event::InputDelivery { .. } | Event::TerminalsClosed { error: Some(_), .. } => {
+                    deliveries.push(event);
+                }
                 Event::TerminalSpawned { .. } | Event::OrganizationOperation { .. } => {
                     self.connection
                         .receipts

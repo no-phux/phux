@@ -169,11 +169,11 @@ pub enum Event {
         /// Why the kill failed, if it did.
         error: Option<String>,
     },
-    /// The server answered a `CLOSE_TAB_RESOURCES` batch.
+    /// A close submission settled. Lifecycle events report its effects.
     TerminalsClosed {
-        /// The command correlation.
+        /// The request correlation.
         request_id: u32,
-        /// Why the close failed, if it did.
+        /// Refused, unsent, or unknown members. Other members may be accepted.
         error: Option<String>,
     },
     /// A terminal closed (process exit, signal, kill, or it vanished from a

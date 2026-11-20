@@ -34,8 +34,8 @@ use phux_protocol::input::key::KeyEvent;
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
     AgentEvent, AttachTarget, Command, CommandResult, CommandValue, ErrorCode, FrameKind,
-    HistoryRejectionReason, HistoryTombstoneReason, LiveTarget, OrgFilter, OrganizationPage,
-    PathQueryResult, PathResults, SpawnResult, TerminateMode, ViewportInfo,
+    HistoryRejectionReason, HistoryTombstoneReason, OrgFilter, OrganizationPage, PathQueryResult,
+    PathResults, SpawnResult, TerminateMode, ViewportInfo,
 };
 use phux_protocol::{PROTOCOL_VERSION, ResourceKind, Version};
 use phux_vt_web::{Grid, NativeCodecError, NativeDecoder, Terminal, Vt};
@@ -199,9 +199,14 @@ pub struct Outcome {
 struct PendingKill {
     request_id: u32,
     target: ResourceId,
-    /// The session being read for the activation; `None` once the
-    /// terminate (or legacy kill) is on the wire.
-    resolving: Option<SessionKey>,
+    phase: KillPhase,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum KillPhase {
+    Resolving(SessionKey),
+    Terminate(OperationId),
+    Legacy,
 }
 
 struct PendingSplit {
@@ -382,6 +387,7 @@ impl Connection {
     /// Permanently fail this connection after a transport or framing violation.
     pub fn fail_protocol(&mut self, _message: &str) {
         self.failed = true;
+        self.lose_pending_kill();
         self.approvals.disconnect();
         self.cancel_path_query();
     }

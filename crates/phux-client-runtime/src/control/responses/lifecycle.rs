@@ -131,6 +131,15 @@ impl ControlPlane {
                 });
             }
             Pending::Close => {
+                let error = match result {
+                    CommandResult::Ok => None,
+                    CommandResult::Error {
+                        code: ErrorCode::Unknown(_),
+                        message,
+                    } => Some(format!("outcome unknown: {message}")),
+                    CommandResult::Error { .. } => error,
+                    _ => Some("outcome unknown: unexpected close reply".to_owned()),
+                };
                 self.push_event(Event::TerminalsClosed { request_id, error });
             }
             Pending::NativeAgent {

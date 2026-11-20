@@ -134,11 +134,12 @@ impl HostedClient {
         self.client.close_view()
     }
 
-    /// Kill the focused terminal, ending its process, without closing its
-    /// siblings.
+    /// Request termination of the focused terminal. The pane remains until
+    /// closure is observed. The `phux-panes` event reports later errors.
     ///
     /// # Errors
-    /// Refuses the last pane; use the host's Release Session control instead.
+    /// Refuses the last pane, a pending operation, or missing session identity
+    /// on an organization peer. Use Release Session to end the whole session.
     pub fn kill_pane(&self) -> Result<(), JsValue> {
         self.client.kill_pane()
     }

@@ -90,7 +90,7 @@ impl ControlPlane {
                 Pending::Close => {
                     self.push_event(Event::TerminalsClosed {
                         request_id,
-                        error: Some(message.to_owned()),
+                        error: Some(format!("outcome unknown: {message}")),
                     });
                 }
                 Pending::NativeAgent {

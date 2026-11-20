@@ -94,6 +94,44 @@ fn fixture() -> (Arc<Client>, Desk) {
     (client, desk)
 }
 
+#[test]
+fn an_unavailable_terminal_close_is_visible_and_sends_nothing() {
+    let (client, mut desk) = fixture();
+    client.with_control(|control| control.connection_lost(None));
+
+    desk.close_now(&ResourceId::local(1));
+
+    assert!(sent(&client).is_empty());
+    assert!(crate::test_support::notice(&desk).contains("Close unavailable"));
+}
+
+#[test]
+fn a_partial_terminal_close_result_is_visible() {
+    use phux_client_runtime::control::Event;
+    use rune::{Env, Runtime as RuneRuntime};
+
+    let (client, desk) = fixture();
+    let mut rt = RuneRuntime::new(
+        desk,
+        crate::ui::view,
+        crate::test_support::SIZE,
+        Env::new(true, crate::test_support::SCALE),
+    );
+    rt.update(|desk, tx| {
+        assert!(desk.apply(
+            &client,
+            Event::TerminalsClosed {
+                request_id: 5,
+                error: Some("@2: outcome unknown".into()),
+            },
+            tx,
+        ));
+    });
+
+    assert!(crate::test_support::notice(&rt.state).contains("@2: outcome unknown"));
+    assert!(sent(&client).is_empty());
+}
+
 fn killed(client: &Client) -> Vec<SessionKey> {
     sent(client)
         .into_iter()

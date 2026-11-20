@@ -403,9 +403,9 @@ impl Desk {
     /// Stop the agent: its pane closes and the tiles come back.
     pub fn cancel_migration(&mut self) {
         if let Migrate::Running(_, Some(pane)) = &self.onboarding.migrate
-            && let Some(client) = &self.connection.client
+            && !self.request_terminal_close(vec![pane.clone()])
         {
-            let _ = client.close_terminals(vec![pane.clone()]);
+            return;
         }
         self.onboarding.migrate = Migrate::Choosing;
     }

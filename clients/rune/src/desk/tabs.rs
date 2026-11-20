@@ -256,8 +256,8 @@ impl Desk {
         }
         if terminals.iter().any(|id| self.asks_to_close(id)) {
             self.pending = Some(Pending::CloseTab(terminals));
-        } else if let Some(client) = &self.connection.client {
-            let _ = client.close_terminals(terminals);
+        } else {
+            self.request_terminal_close(terminals);
         }
     }
 
@@ -328,9 +328,30 @@ impl Desk {
         if self.is_document(terminal) {
             return self.hide_documents(std::slice::from_ref(terminal));
         }
-        if let Some(client) = &self.connection.client {
-            let _ = client.close_terminals(vec![terminal.clone()]);
+        self.request_terminal_close(vec![terminal.clone()]);
+    }
+
+    pub(super) fn request_terminal_close(&mut self, ids: Vec<ResourceId>) -> bool {
+        if ids.is_empty() {
+            return true;
         }
+        let request = self
+            .connection
+            .client
+            .as_ref()
+            .and_then(|client| client.close_terminals(ids));
+        self.report_close_submission(request)
+    }
+
+    pub(super) fn report_close_submission(&mut self, request: Option<u32>) -> bool {
+        if request.is_some() {
+            return true;
+        }
+        self.say(
+            NoticeKind::Error,
+            "Close unavailable on this connection. Check the pane before trying again.",
+        );
+        false
     }
 
     /// Lock the active tab, or unlock it if it is locked.

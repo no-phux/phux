@@ -93,6 +93,32 @@ fences are concurrency/authority checks, not optional UI bookkeeping. The
 legacy TUI layout metadata adapter translates into this model; it does not
 supplant it.
 
+## Close intents
+
+Closing a view changes client presentation. Resource close commands
+carry different identities and guarantees.
+
+| Request | Identity and effect | Reply |
+| --- | --- | --- |
+| `KILL_RESOURCE` | Close a live handle and its bound descendants. Session lifetime governs an emptied session. | The serving host committed the close. |
+| `KILL_RESOURCES` | Close live handles in host-local groups. Naming every member of a persistent session can delete it too. | Keyed replies report per-id outcomes. Unkeyed replies can include skips or failed satellite routes, logged by the server. |
+| `CLOSE_TAB_RESOURCES` | Close live handles in host-local groups and preserve keep-empty sessions. Requires its feature bit. | The local close skips missing handles. Satellite partitions are forwarded without waiting for results. |
+| `RESOURCE_TERMINATE` | Target a resource handle, instance, and activation id on an `ORGANIZATION` peer. | `Accepted` settles admission. Lifecycle events report effects. Separate requests can have different outcomes. |
+
+`KILL_RESOURCE_IF` adds allocation-instance and use preconditions for
+delayed cleanup. `SESSION_KILL` explicitly ends a session and overrides
+its tab locks. For retry and incarnation rules, see
+[protocol receipts](./protocol.md#receipts-retries-and-backpressure).
+
+Native `close_terminals` and browser `kill_pane` request graceful
+termination of verified activations on organization peers. Missing
+identity leaves the request unavailable or refused. Native
+`close_terminals` requires keep-empty support on older peers. The browser
+uses single kill on older peers. Native `kill_terminal` requests single
+kill explicitly.
+A lost or unreadable reply can leave the outcome unknown. Reconcile from
+the serving host's state and receipts.
+
 ## Complete creation intentions
 
 The [public terminal workflow](./public-api.md) commits membership, a stable
