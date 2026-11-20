@@ -1,6 +1,7 @@
 use phux_core::ids::{ResourceId, SessionId};
 use phux_core::process::ExitOutcome;
 use phux_protocol::ids::SessionId as WireSessionId;
+use phux_protocol::wire::info::projection_key_session;
 
 use super::ServerState;
 
@@ -8,18 +9,6 @@ use super::ServerState;
 /// §3.5), used to find every layout key naming a reaped session.
 fn layout_key_suffix(session: WireSessionId) -> String {
     format!(".layout/v1/{}", session.get())
-}
-
-/// The wire session id a `<prefix>.layout/v1/<id>` key names, or `None` for
-/// a non-layout key or a non-canonical id (which the reap would never
-/// match anyway).
-pub(crate) fn layout_key_session_id(key: &str) -> Option<u32> {
-    let (prefix, suffix) = key.rsplit_once(".layout/v1/")?;
-    if prefix.is_empty() || prefix.contains(".layout/v1/") {
-        return None;
-    }
-    let id = suffix.parse::<u32>().ok()?;
-    (suffix == id.to_string()).then_some(id)
 }
 
 impl ServerState {
@@ -36,11 +25,8 @@ impl ServerState {
         {
             return None;
         }
-        let wire_id = layout_key_session_id(key)?;
-        let live = self
-            .idspace
-            .resolve_session(WireSessionId::new(wire_id))
-            .is_some();
+        let wire = projection_key_session(key)?;
+        let live = self.idspace.resolve_session(wire).is_some();
         Some(!live)
     }
 }
