@@ -50,14 +50,41 @@ fn window_on(
     locale: Locale,
     phone: bool,
 ) -> Runtime<Desk> {
-    let mut replica = crate::test_support::terminal::Replica::new(120, 40, 1);
+    window_with(size, dark, theme, locale, phone, false)
+}
+
+/// The window, its terminal split beside a second when `split`: the
+/// first keeps the keyboard.
+fn window_with(
+    size: (f32, f32),
+    dark: bool,
+    theme: Option<&'static Theme>,
+    locale: Locale,
+    phone: bool,
+    split: bool,
+) -> Runtime<Desk> {
+    use phux_client_core::layout::{LayoutNode, SplitDir};
+    let mut replica =
+        crate::test_support::terminal::Replica::new(120, 40, if split { 2 } else { 1 });
     replica.feed(SCREEN.to_owned());
     let mut desk = crate::test_support::window().with_phone(phone);
     desk.settings.theme = theme;
     desk.connection.client = Some(std::sync::Arc::clone(&replica.client));
-    desk.connection.layout = Some(phux_client_core::layout::LayoutNode::Leaf(
-        replica.terminal.clone(),
-    ));
+    let first = LayoutNode::Leaf(replica.terminal.clone());
+    desk.connection.layout = Some(if split {
+        let second = phux_protocol::ids::ResourceId::local(2);
+        desk.connection
+            .others
+            .insert(second.clone(), Some(replica.views[1]));
+        LayoutNode::Split {
+            dir: SplitDir::Horizontal,
+            ratio: 0.5,
+            left: Box::new(first),
+            right: Box::new(LayoutNode::Leaf(second)),
+        }
+    } else {
+        first
+    });
     desk.connection.shown = Some(crate::desk::Shown {
         resource: replica.terminal.clone(),
         view: Some(replica.views[0]),
@@ -152,6 +179,27 @@ fn the_gallery_paints() {
     // still lines up.
     let mocha = crate::theme::find("catppuccin-mocha");
     surfaces(&gpu, || window(DESKTOP, true, mocha, Locale::En), "mocha");
+}
+
+/// Two terminals side by side, the first with the keyboard, with the
+/// sidebar open and folded: how focus reads among panes, and the window's
+/// controls over the panes when the sidebar is away.
+#[test]
+fn the_gallery_paints_a_split() {
+    let gpu = rune::render::Gpu::headless();
+    for dark in [true, false] {
+        for folded in [false, true] {
+            let mut rt = window_with(DESKTOP, dark, None, Locale::En, false, true);
+            settle(&mut rt);
+            if folded {
+                rt.update(|d, _| d.sidebar_open = false);
+                settle(&mut rt);
+            }
+            let tone = if dark { "dark" } else { "light" };
+            let side = if folded { "-folded" } else { "" };
+            paint(&gpu, &mut rt, DESKTOP, &format!("split-{tone}{side}"));
+        }
+    }
 }
 
 /// §1.5 nesting in the real tree: the palette's rows are inset in its
