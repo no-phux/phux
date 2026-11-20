@@ -2,11 +2,12 @@
 //! keys have one text form.
 
 use crate::common::{assert_round_trip, decode, decode_state, encode, state_reply};
+use phux_protocol::caps::{ServerFeatureExt, ServerFeatureExtSet};
 use phux_protocol::ids::{
-    IdempotencyKey, KEY_TEXT_LEN, ResourceId, ResourceKey, Revision, SessionId, SessionKey,
-    WindowId,
+    ArrangementKey, IdempotencyKey, KEY_TEXT_LEN, ResourceId, ResourceKey, Revision, SessionId,
+    SessionKey, WindowId,
 };
-use phux_protocol::wire::frame::{AgentEvent, Command, FrameKind, SessionLifetime};
+use phux_protocol::wire::frame::{AgentEvent, ArrangementDoc, Command, FrameKind, SessionLifetime};
 use phux_protocol::wire::info::{
     ResourceInfo, SessionInfo, SessionSnapshot, TUI_LAYOUT_KEY_PREFIX, tui_layout_key,
     tui_layout_key_session,
@@ -15,6 +16,35 @@ use phux_protocol::wire::info::{
 // -----------------------------------------------------------------------------
 // Older shapes stay byte-identical.
 // -----------------------------------------------------------------------------
+
+#[test]
+fn replacement_slot_tabs_are_authoritative_only_with_peer_support() {
+    let operation = IdempotencyKey::new([1; 16]).unwrap();
+    let arrangement = ArrangementKey::new([2; 16]).unwrap();
+    let old = ServerFeatureExtSet::with(&[ServerFeatureExt::Organization]);
+    let new =
+        ServerFeatureExtSet::with(&[ServerFeatureExt::Organization, ServerFeatureExt::SlotTabs]);
+    for (features, expected_slot_tabs) in [(old, false), (new, true)] {
+        let command = Command::replace_arrangement(
+            operation,
+            arrangement,
+            Revision::new(3),
+            ArrangementDoc { groups: Vec::new() },
+            features,
+        );
+        let frame = FrameKind::Command {
+            request_id: 42,
+            command,
+        };
+        assert!(matches!(
+            decode(&encode(&frame)).unwrap(),
+            FrameKind::Command {
+                command: Command::ArrangementReplace { slot_tabs, .. },
+                ..
+            } if slot_tabs == expected_slot_tabs
+        ));
+    }
+}
 
 /// How recently a session was used rides the same `SESSION_STATE` as a
 /// skippable field: it round-trips, and a snapshot without it reads `None`.

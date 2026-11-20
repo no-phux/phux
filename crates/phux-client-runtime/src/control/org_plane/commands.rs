@@ -312,13 +312,18 @@ impl ControlPlane {
             .arrangement_document(&session)
             .ok_or(ArrangementSubmitError::NotHeld)?;
         let wire = to_protocol(document, self.organization.handles(), &binding)?;
-        Ok(self.submit_organization(Command::ArrangementReplace {
-            operation: mint_operation(),
-            arrangement: key,
-            expected: revision,
-            document: wire,
-            slot_tabs: self.slot_tabs_supported(),
-        })?)
+        let features = self
+            .server
+            .as_ref()
+            .map(|server| server.features_ext)
+            .unwrap_or_default();
+        Ok(self.submit_organization(Command::replace_arrangement(
+            mint_operation(),
+            key,
+            revision,
+            wire,
+            features,
+        ))?)
     }
 
     /// Close terminals through their exact activations. Wait for a live

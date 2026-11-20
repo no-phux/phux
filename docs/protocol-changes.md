@@ -5,9 +5,11 @@ For the existing formats and dispatch, see [Server protocol](./protocol.md).
 - Allocate type bytes in `wire/frame/catalog.rs`, sub-tags in
   `*tags.rs` beside it; duplicates fail to compile.
 - Append field ids to `tlv_body!` in `wire/field/`.
-- Gate new behavior on a feature bit in `caps/server_features.rs`. Do not
-  bump the protocol version for an additive change. A shipped capability bit is
-  never withdrawn or repointed.
+- Gate new behavior with a row in
+  `crates/phux-protocol/src/caps/server_features/ext.rs`. The original feature
+  word is frozen. The server's HELLO support table and listener policy decide
+  which known bits each connection sees. Additive changes keep the protocol
+  version. Keep each shipped bit assigned to its original capability.
 - Grow a positional record only at its tail; never reorder, retype, or
   remove a field. A non-final composite record needs a length prefix and a
   mid-record optional a presence byte ([compatibility](./compatibility.md#making-a-change-compatible)).
