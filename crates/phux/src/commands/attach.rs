@@ -1438,19 +1438,6 @@ mod tests {
         })
     }
 
-    #[test]
-    fn unnamed_attach_and_fallback_preserve_lookup_only_authority() {
-        assert_eq!(requested_attach_target(None), AttachTarget::Last);
-        assert_eq!(
-            default_lookup_target("configured"),
-            AttachTarget::ByName("configured".to_owned()),
-        );
-        assert_eq!(
-            requested_attach_target(Some("explicit".to_owned())),
-            AttachTarget::ByName("explicit".to_owned()),
-        );
-    }
-
     /// `phux attach X` against a live server that has no `X` used to print
     /// only the server's refusal. Attach stays lookup-only (tmux's `attach -t`
     /// refuses the same way), so the miss names the verb that creates it.

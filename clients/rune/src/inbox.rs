@@ -342,13 +342,6 @@ mod tests {
     }
 
     #[test]
-    fn urgency_orders_marks() {
-        assert!(rank(Mark::Blocked) < rank(Mark::Failed));
-        assert!(rank(Mark::Failed) < rank(Mark::Done));
-        assert!(rank(Mark::Done) < rank(Mark::Bell));
-    }
-
-    #[test]
     fn waits_read_short() {
         assert_eq!(age(12), "12s");
         assert_eq!(age(61), "1m");

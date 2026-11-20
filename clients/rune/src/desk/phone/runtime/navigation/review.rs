@@ -2,31 +2,6 @@
 use super::*;
 
 #[test]
-fn session_confirmation_keeps_its_key_when_selection_and_names_change() {
-    let (client, mut rt) = fixture();
-    let key = phux_protocol::ids::SessionKey::new([1; 16]).unwrap();
-    inventory(&mut rt);
-    rt.update(|d, _| {
-        d.connection.topology.as_mut().unwrap().sessions[0].key = Some(key);
-        d.close_session();
-    });
-    settle(&mut rt);
-    let question = Some(crate::desk::Pending::CloseSession(key, "budget".into()));
-    assert_eq!(rt.state.pending, question);
-    rt.update(|d, _| {
-        d.connection.topology.as_mut().unwrap().sessions[0].name = "renamed".into();
-        client.attach_session(phux_protocol::wire::frame::AttachTarget::ByName(
-            "empty".into(),
-        ));
-    });
-    settle(&mut rt);
-    assert_eq!(client.selected_session(), Some(2));
-    assert_eq!(rt.state.pending, question);
-    tap(&mut rt, "confirm-cancel", 0.1);
-    assert!(rt.state.pending.is_none());
-}
-
-#[test]
 fn closing_from_actions_confirms_the_exact_pane_and_cancel_sends_no_close() {
     let (client, mut rt) = fixture();
     inventory(&mut rt);

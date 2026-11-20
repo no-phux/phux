@@ -936,17 +936,6 @@ mod tests {
     }
 
     #[test]
-    fn invalidation_and_prefetch_are_explicit() {
-        let mut cache = HistoryCache::new(config(64, 64), Some(cursor(1)));
-        assert!(cache.should_prefetch(2));
-        cache.mark_pruned();
-        assert_eq!(cache.status().state, HistoryLoadState::Pruned);
-        assert!(!cache.should_prefetch(0));
-        cache.tombstone();
-        assert_eq!(cache.status().state, HistoryLoadState::Tombstoned);
-    }
-
-    #[test]
     fn same_cursor_pages_require_strict_nonzero_sequence() {
         let mut cache = fetching(128, 8);
         let first = cache

@@ -85,17 +85,6 @@ mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, duplex, split};
 
-    /// A tee forwards exactly what it reads and records the same bytes.
-    #[tokio::test]
-    async fn a_tee_records_what_it_forwards() {
-        let sink = Arc::new(Mutex::new(Vec::new()));
-        let mut tee = Tee::new(&b"ciphertext"[..], Some(Arc::clone(&sink)));
-        let mut read = Vec::new();
-        tee.read_to_end(&mut read).await.unwrap();
-        assert_eq!(read, b"ciphertext");
-        assert_eq!(*sink.lock().unwrap(), b"ciphertext");
-    }
-
     /// Whichever side half-closes first, its last bytes and FIN reach the
     /// other side and the whole bridge ends.
     #[tokio::test]

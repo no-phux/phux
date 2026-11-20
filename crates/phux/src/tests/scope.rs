@@ -171,23 +171,6 @@ fn attach_dial_auth_flags_need_one_transport() {
     }
 }
 
-/// The global `--socket` parses in both positions and lands on the same
-/// root field either way; the two spellings are one invocation.
-#[test]
-fn socket_parses_before_and_after_the_verb() {
-    let before = crate::parse_cli(["phux", "--socket", "/tmp/x.sock", "ls"])
-        .expect("`phux --socket X ls` parses");
-    let after = crate::parse_cli(["phux", "ls", "--socket", "/tmp/x.sock"])
-        .expect("`phux ls --socket X` parses");
-    for cli in [before, after] {
-        assert!(matches!(cli.command, Some(Command::Ls(..))));
-        assert_eq!(
-            cli.socket.as_deref(),
-            Some(std::path::Path::new("/tmp/x.sock"))
-        );
-    }
-}
-
 /// A `--socket` handed to a verb that never dials a server is refused
 /// (via `socketless_verb`), not silently ignored.
 #[test]

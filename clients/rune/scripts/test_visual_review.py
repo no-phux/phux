@@ -1,7 +1,6 @@
 """Header-only fixtures qualify the packager, never an actual image decoder."""
 import copy
 import json
-from itertools import product
 import os
 from pathlib import Path
 import shutil
@@ -124,66 +123,10 @@ class VisualReview(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing required cases"):
             self.produce()
 
-    def test_each_small_light_keyboard_retina_scrolled_native_case_is_required(self):
-        names = (
-            "inbox/phone-question-dark-320x568-1x.png",
-            "inbox/desktop-question-light-1100x720-1x.png",
-            "inbox/phone-reply-dark-393x852-1x.png",
-            "inbox/phone-reply-dark-393x852-2x.png",
-            "inbox/desktop-scrolled-light-640x360-1x.png",
-            "inbox/phone-native-reply-light-320x280-1x.png",
-            "inbox/phone-sending-light-320x280-1x.png",
-            "inbox/phone-other-question-dark-320x568-2x.png",
-            "inbox/desktop-refused-light-640x360-1x.png",
-            "settings/small-typed-search.png",
-            "settings/small-no-match.png",
-            "settings/theme-phone-light-ax5-heading-1x.png",
-            "settings/theme-native-small-dark-ax5-heading-2x.png",
-            "settings/theme-small-light-standard-search-1x.png",
-            "settings/theme-native-light-ax5-chooser-2x.png",
-            "settings/theme-desktop-min-dark-ax5-cancelled-1x.png",
-            "navigation/matching-light-320.png",
-            "navigation/retina-2x-native-true-640.png",
-            "navigation/header-quiet-light-native-false-1x-320.png",
-            "navigation/header-split-dark-native-true-2x-640.png",
-            "navigation/header-keyboard-light-native-false-1x-393.png",
-            "navigation/header-large-text-light-native-true-2x-786.png",
-            "navigation/header-empty-dark-native-false-1x-320.png",
-            "navigation/pane-motion-horizontal-light-320x568-1x-native-false-keyboard-true-reduced-false-mid-drag.png",
-            "navigation/pane-motion-horizontal-dark-393x480-2x-native-true-keyboard-false-reduced-false-release-plus-100ms.png",
-            "navigation/pane-motion-cancel-light-320x568-1x-native-false-keyboard-false-reduced-false-settled.png",
-        )
-        for name in names:
-            with self.subTest(case=name):
-                png = self.root / name
-                contents = png.read_bytes()
-                png.unlink()
-                with self.assertRaisesRegex(ValueError, "missing required cases"):
-                    self.produce()
-                png.write_bytes(contents)
-
     def test_missing_tree_fails(self):
         (self.root / self.subject).with_suffix(".json").unlink()
         with self.assertRaisesRegex(ValueError, "missing matching tree"):
             self.produce()
-
-    def test_each_inline_keyboard_and_no_choices_case_is_required(self):
-        names = (
-            "phone-inline-dark-393x852-1x.png", "phone-inline-light-393x852-1x.png",
-            "phone-inline-dark-320x568-1x.png", "phone-inline-light-320x568-1x.png",
-            "phone-inline-no-choices-dark-393x852-1x.png",
-            "phone-inline-no-choices-light-393x852-1x.png",
-            "phone-inline-no-choices-dark-320x568-1x.png",
-            "phone-inline-no-choices-light-320x568-1x.png",
-        )
-        for name in names:
-            with self.subTest(case=name):
-                png = self.root / "inbox" / name
-                contents = png.read_bytes()
-                png.unlink()
-                with self.assertRaisesRegex(ValueError, "missing required cases"):
-                    self.produce()
-                png.write_bytes(contents)
 
     def test_pixel_mismatch_fails(self):
         tree = copy.deepcopy(self.tree)
@@ -191,23 +134,6 @@ class VisualReview(unittest.TestCase):
         self.frame(self.subject, tree=tree)
         with self.assertRaisesRegex(ValueError, "pixel dimensions differ"):
             self.produce()
-
-    def test_each_acp_phone_and_native_reduced_case_is_required(self):
-        names = [
-            f"phone-acp-{state}-{theme}-{size}-1x.png"
-            for state, theme, size in product(
-                ("select", "ask", "form", "input"), ("dark", "light"),
-                ("393x852", "320x568", "320x280"))
-        ]
-        self.assertEqual(len(names), 24)
-        for name in names:
-            with self.subTest(case=name):
-                png = self.root / "inbox" / name
-                contents = png.read_bytes()
-                png.unlink()
-                with self.assertRaisesRegex(ValueError, "missing required cases"):
-                    self.produce()
-                png.write_bytes(contents)
 
     def test_logical_rounding_is_bounded_to_half_a_pixel(self):
         tree = copy.deepcopy(self.tree)

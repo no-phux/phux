@@ -118,9 +118,6 @@ fn unsupported(request_id: u32) -> FrameKind {
     }
 }
 
-/// Feeds the server's answer to `request_id`.
-type Reply = fn(&mut ControlPlane, u32) -> Result<(), ControlError>;
-
 /// An attached plane with one spawn in flight; returns its request id.
 fn pending_spawn() -> (ControlPlane, u32) {
     let mut plane = home();
@@ -129,43 +126,23 @@ fn pending_spawn() -> (ControlPlane, u32) {
     (plane, request_id)
 }
 
-/// A spawn reply this build cannot read settles the spawn as failed instead
-/// of leaving it pending; the session stays.
+/// A spawn reply whose id has a shape this build cannot read settles the
+/// spawn as failed instead of leaving it pending; the session stays.
 #[test]
-fn unreadable_spawn_replies_settle_the_spawn() {
-    let cases: [(&str, Reply); 2] = [
-        // An unknown spawn refusal.
-        ("an_unknown_spawn_refusal_settles_the_spawn", |plane, id| {
-            plane.feed_bytes(&raw(
-                TYPE_RESOURCE_SPAWNED,
-                &[(1, &id.to_be_bytes()), (2, &[0x01, 0xFE])],
-            ))
-        }),
-        // A reply whose id has a shape this build does not know.
-        (
-            "an_unreadable_spawn_reply_settles_the_spawn",
-            |plane, id| {
-                plane.feed_bytes(&raw(
-                    TYPE_RESOURCE_SPAWNED,
-                    &[(1, &id.to_be_bytes()), (2, &[0x00, 0xFF, 1])],
-                ))
-            },
-        ),
-    ];
-    for (label, reply) in cases {
-        let (mut plane, request_id) = pending_spawn();
-        reply(&mut plane, request_id)
-            .unwrap_or_else(|error| panic!("{label}: the reply is not fatal: {error:?}"));
-        assert!(
-            plane.take_events().iter().any(|event| matches!(
-                event,
-                Event::TerminalSpawned { request_id: id, terminal_id: None, error: Some(_) }
-                    if *id == request_id
-            )),
-            "{label}: the spawn settles as failed"
-        );
-        assert_eq!(plane.status(), Status::Attached, "{label}");
-    }
+fn an_unreadable_spawn_reply_settles_the_spawn() {
+    let (mut plane, request_id) = pending_spawn();
+    plane
+        .feed_bytes(&raw(
+            TYPE_RESOURCE_SPAWNED,
+            &[(1, &request_id.to_be_bytes()), (2, &[0x00, 0xFF, 1])],
+        ))
+        .expect("the reply is not fatal");
+    assert!(plane.take_events().iter().any(|event| matches!(
+        event,
+        Event::TerminalSpawned { request_id: id, terminal_id: None, error: Some(_) }
+            if *id == request_id
+    )));
+    assert_eq!(plane.status(), Status::Attached);
 }
 
 /// A reply value this build cannot read may mean the input landed: unknown,

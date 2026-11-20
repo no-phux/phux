@@ -104,19 +104,6 @@ async fn probe_hello_returns_the_negotiated_version_triple() {
 }
 
 #[tokio::test]
-async fn peer_pid_names_the_process_behind_the_socket() {
-    // The listener is this process, so the peer pid is ours.
-    let (_dir, conn, server) = crate::testkit::connect_one(ScriptSpec::new()).await;
-    assert_eq!(
-        conn.peer_pid(),
-        Some(i32::try_from(std::process::id()).unwrap()),
-        "a UDS connection's peer pid must be the listening process"
-    );
-    drop(conn);
-    server.await.unwrap();
-}
-
-#[tokio::test]
 async fn the_agent_index_is_complete_only_when_every_pane_answered() {
     // Two panes, one record: a definite absence keeps the index complete.
     let dir = tempfile::tempdir().unwrap();

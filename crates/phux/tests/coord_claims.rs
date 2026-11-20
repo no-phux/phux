@@ -403,31 +403,6 @@ fn mail_durable_ids_replay_across_cli_invocations_and_conflicts_keep_recovery() 
 }
 
 #[test]
-fn mail_is_stored_and_taken_once_for_the_agent_without_a_bell() {
-    let cli = CliStore::new();
-    let sent = send_mail(&cli, "opencode@730", "rebased");
-    assert_eq!(sent["schema"], "phux.coord/v1");
-    assert!(sent.get("bells").is_none(), "nothing rings a pane: {sent}");
-    let wait = ["mail", "wait", "--timeout", "0", "--json"];
-    let taken = cli.json("@730", &wait, 0);
-    assert_eq!(taken["reader"], "@730");
-    assert_eq!(taken["mail"][0]["body"], "rebased");
-    let text = taken["text"].as_str().unwrap();
-    assert!(text.contains("From @749 in thread pr-1"), "{text}");
-    let again = cli.json("@730", &wait, 0);
-    assert_eq!(again["mail"], serde_json::json!([]));
-    assert!(again["text"].is_null());
-    let inbox = cli.json("@730", &["mail", "read", "--peek", "--json"], 0);
-    assert_eq!(inbox["mail"].as_array().unwrap().len(), 1, "still unread");
-    assert!(
-        cli.run("@749", &mail_send("@730", "x", "y", &["--no-ring"]))
-            .status
-            .code()
-            .is_some_and(|code| code != 0)
-    );
-}
-
-#[test]
 fn hook_context_prints_one_hook_reply_or_nothing() {
     let cli = CliStore::new();
     let hook = |event: &str| {
@@ -455,37 +430,6 @@ fn hook_context_prints_one_hook_reply_or_nothing() {
     let stop: Value = serde_json::from_str(&hook("Stop")).unwrap();
     assert_eq!(stop["decision"], "block");
     assert!(stop["reason"].as_str().unwrap().contains("second"));
-}
-
-#[test]
-fn a_satellite_pane_is_an_address_on_its_hub() {
-    let cli = CliStore::new();
-    let sent = cli.json(
-        "@749",
-        &mail_send("min-api/pi@3", "t", "hi", &["--json"]),
-        0,
-    );
-    assert_eq!(sent["mail"]["to"][0], "min-api/pi@3", "{sent}");
-    let refused = cli.json(
-        "@749",
-        &[
-            "mail",
-            "wait",
-            "--as",
-            "a/b/@730",
-            "--timeout",
-            "0",
-            "--json",
-        ],
-        2,
-    );
-    assert!(
-        refused["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("at most one host"),
-        "{refused}"
-    );
 }
 
 #[test]

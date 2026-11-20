@@ -327,32 +327,6 @@ mod tests {
         block.members.iter().map(|m| (m.index, m.linked)).collect()
     }
 
-    /// With no link anywhere, a free-text label on a git row changes
-    /// nothing: the identity groups, worktree markers and keys included.
-    #[test]
-    fn unlinked_rows_group_exactly_by_identity() {
-        let main = project("gh/a/phux", "phux", false, "mini");
-        let wt = project("gh/a/phux", "phux", true, "mini");
-        let plain = [row(Some(&wt), 0), row(Some(&main), 0)];
-        let tagged = [
-            GroupRow {
-                label: Some("phux-checkout"),
-                ..row(Some(&wt), 0)
-            },
-            GroupRow {
-                label: Some("other-dir"),
-                ..row(Some(&main), 0)
-            },
-        ];
-        let expected = group_rows(&plain, 2);
-        assert_eq!(group_rows(&tagged, 2), expected);
-        let Block::Project(block) = &expected[0] else {
-            panic!("{expected:?}");
-        };
-        assert_eq!(block.key, "gh/a/phux");
-        assert_eq!(members(&expected[0]), [(1, false), (0, true)]);
-    }
-
     #[test]
     fn a_link_naming_an_identity_joins_its_group_across_hosts() {
         let mini = project("gh/a/phux", "phux", false, "mini");

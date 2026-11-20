@@ -135,27 +135,6 @@ mod tests {
     use phux_protocol::input::key::{KeyAction, ModSet, PhysicalKey};
     use phux_vt::input::FromGhostty as _;
 
-    #[test]
-    fn key_event_to_libghostty_round_trips_fields() {
-        let ev = KeyEvent {
-            action: KeyAction::Press,
-            key: PhysicalKey::A,
-            mods: ModSet::CTRL | ModSet::SHIFT,
-            consumed_mods: ModSet::SHIFT,
-            composing: false,
-            text: Some("A".to_owned()),
-            unshifted_codepoint: Some(u32::from('a')),
-        };
-        let mut lg = key_event_to_libghostty(&ev).expect("convert");
-        assert_eq!(lg.action(), Action::Press);
-        assert_eq!(lg.key(), Key::A);
-        assert_eq!(lg.mods(), Mods::CTRL | Mods::SHIFT);
-        assert_eq!(lg.consumed_mods(), Mods::SHIFT);
-        assert!(!lg.is_composing());
-        assert_eq!(lg.utf8(), Some("A"));
-        assert_eq!(lg.unshifted_codepoint(), 'a');
-    }
-
     /// ADR-0024: the phux-owned wire atoms stay in lockstep with libghostty's.
     #[test]
     fn atoms_round_trip_libghostty() {

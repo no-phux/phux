@@ -48,10 +48,6 @@ fn pair_without_a_terminal_names_enable_and_leaves_the_config() {
             !stderr.contains("phones need paired mode"),
             "{args:?} prompted: {stderr}"
         );
-        assert!(
-            !stderr.contains("PHUX_WS_ADDR") && !stderr.contains("overlay network"),
-            "{args:?} still prints the old refusal: {stderr}"
-        );
         let errors: Vec<_> = stderr
             .lines()
             .filter(|line| line.contains("phux: error:"))

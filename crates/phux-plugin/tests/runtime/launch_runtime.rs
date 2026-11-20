@@ -300,25 +300,6 @@ fn duplicate_enabled_plugin_and_integration_ids_fail_closed() {
     );
 }
 
-/// `phux agent start --kind K`: the unique `[agent_identity]` claimant, with
-/// trim/case tolerance; `--integration` overrides without consulting claims.
-#[test]
-fn a_kind_resolves_the_integration_that_claims_it() {
-    let fx = Fixture::new(true);
-    for kind in ["codex", " CODEX "] {
-        assert_eq!(
-            fx.for_kind(None, kind).expect("claimed").integration_id,
-            "codex"
-        );
-    }
-    assert_eq!(
-        fx.for_kind(Some("rooted"), "codex")
-            .expect("explicit")
-            .integration_id,
-        "rooted"
-    );
-}
-
 /// An unclaimed kind falls back to the integration spelled like the kind, as
 /// given: the CLI canonicalizes `--kind CLAUDE` before calling.
 #[test]

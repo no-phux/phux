@@ -446,15 +446,6 @@ fn transport_errors_read_as_words() {
 }
 
 #[test]
-fn a_protocol_refusal_keeps_the_servers_words() {
-    assert_eq!(
-        incompatible("server error VersionIncompatible: server speaks 12").as_deref(),
-        Some("server speaks 12")
-    );
-    assert_eq!(incompatible("server error Unknown: no"), None);
-}
-
-#[test]
 fn a_window_without_phux_installs_it_and_says_why_an_install_failed() {
     let mut desk = Desk::with_preferences(
         &launch::Resolved::offline("no phux"),

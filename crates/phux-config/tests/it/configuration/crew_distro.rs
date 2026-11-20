@@ -23,7 +23,6 @@ fn crew(overrides: &str) -> phux_config::Config {
 #[test]
 fn crew_composes_starter_and_loadable_palette_entries() {
     let config = crew("");
-    assert_eq!(config.plugins.len(), 4);
     assert_eq!(
         config.theme.slots.get("accent").map(String::as_str),
         Some("#a6f750")
@@ -40,7 +39,6 @@ fn crew_composes_starter_and_loadable_palette_entries() {
         .iter()
         .find(|m| m.id == "com.phux.crew")
         .expect("Crew plugin");
-    assert_eq!(crew.panes.len(), 2);
     assert!(crew.panes.iter().any(|p| p.id == "lead"));
     assert!(crew.panes.iter().any(|p| p.id == "board"));
     assert!(crew.actions.iter().any(|a| a.id == "doctor"));

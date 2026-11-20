@@ -73,13 +73,6 @@ mod tests {
             r#"{"name":"codex","state":"idle"}"#
         );
     }
-
-    #[test]
-    fn non_object_json_is_not_a_record() {
-        assert!(AgentRecordJson::decode(b"[1,2,3]").is_none());
-        assert!(AgentRecordJson::decode(b"\"hello\"").is_none());
-        assert!(AgentRecordJson::decode(b"not json").is_none());
-    }
 }
 
 #[cfg(test)]

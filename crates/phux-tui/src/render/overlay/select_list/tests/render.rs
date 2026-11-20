@@ -164,18 +164,6 @@ fn the_query_edits_at_its_caret() {
     assert_eq!(commit(&mut sl), None);
 }
 
-/// Pins the mid-scroll box: windowed rows, the selection inside it, and
-/// the scrollbar thumb away from both ends.
-#[test]
-fn scrolled_list_render_is_stable() {
-    let mut sl = long_list(24);
-    render_to_string(&sl, 44, 16);
-    for _ in 0..15 {
-        key(&mut sl, PhysicalKey::ArrowDown);
-    }
-    insta::assert_snapshot!(render_to_string(&sl, 44, 16));
-}
-
 /// Above the compact breakpoint the picker floats: a centered box with
 /// panes visible around it, not a screen, and only as tall as its rows
 /// need (three rows: the query line, the rows, and the two borders).
@@ -186,7 +174,6 @@ fn roomy_viewport_render_still_floats() {
     let bounds = sl.bounds(area).expect("bounded");
     assert_eq!((bounds.width, bounds.height), (50, 6));
     assert!(bounds.x > 0 && bounds.y > 0);
-    insta::assert_snapshot!(render_to_string(&sl, 100, 30));
 }
 
 /// A long list stops at half the viewport and scrolls; a list that

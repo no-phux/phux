@@ -56,7 +56,6 @@ libc = "0.2"
 # wrote to stderr. `tokio` proves the handler coexists with a running runtime
 # and does not clobber tokio's own signal handlers.
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "signal", "io-util", "net"] }
-tempfile.workspace = true
 
 # NOT `workspace = true`. This is derived third-party signal-handler code:
 # `clippy::pedantic` and `clippy::nursery` fire on its raw pointer casts and

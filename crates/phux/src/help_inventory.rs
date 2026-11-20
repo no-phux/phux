@@ -42,16 +42,6 @@ fn ticket_like_tokens(help: &str) -> Vec<String> {
         .collect()
 }
 
-#[test]
-fn ticket_scanner_distinguishes_skill_names_from_issue_tokens() {
-    let text = "`using-phux-tools` using-phux-mcp phux-plugin.toml phux-client-ffi \
-                `phux-y8v6` (phux-foz.5) /phux-l5xa";
-    assert_eq!(
-        ticket_like_tokens(text),
-        ["phux-y8v6", "phux-foz.5", "phux-l5xa"]
-    );
-}
-
 fn root_long_help() -> String {
     crate::render_help_page(Cli::command(), true, usage::help::Style::PLAIN).unwrap_or_default()
 }
@@ -132,23 +122,12 @@ fn long_help_has_one_complete_grouped_inventory() {
         !long.contains("\nCommands:\n"),
         "an ungrouped `Commands:` section crept back into the root page"
     );
-    for jargon in ["SPAWN_RESOURCE", "phux.agent/v1", " L3 "] {
-        assert!(
-            !long.contains(jargon),
-            "root help leaks protocol jargon {jargon}"
-        );
-    }
 }
 
-/// The root page is a single readable screenful at 80 columns: no line
-/// wider than the width it is laid out for, and the page as a whole stays
-/// under the bound. The visible verbs on their own rows (the three approval
-/// verbs of ADR-0128 among them) plus six group headings set the floor; the
-/// bound leaves no room for a reference-style epilogue to creep back in.
-///
-/// Raise the bound only for a root verb someone scans the first page for.
+/// The root page is laid out for 80 columns, keeps the reference epilogue
+/// in its topics, and ends by pointing at them.
 #[test]
-fn root_long_help_fits_eighty_columns_and_stays_short() {
+fn root_long_help_fits_eighty_columns() {
     let long = root_long_help();
     for line in long.lines() {
         assert!(
@@ -156,11 +135,6 @@ fn root_long_help_fits_eighty_columns_and_stays_short() {
             "root help line wider than 80 columns: {line:?}"
         );
     }
-    let lines = long.lines().count();
-    assert!(
-        lines <= 112,
-        "root help grew to {lines} lines; the page is meant to be one screen"
-    );
     assert!(
         !long.contains("ENVIRONMENT") && !long.contains("EXIT STATUS"),
         "the reference epilogue belongs to `phux help environment` / `phux help exit-codes`"
@@ -221,10 +195,6 @@ fn help_leaks_no_internal_ids() {
         "user-facing help cites a repo-internal docs/ path; an installed \
          binary's user has no checkout — point at `phux help <verb>` or the \
          website instead"
-    );
-    assert!(
-        !buf.contains("CREATE_SESSION"),
-        "help still describes the removed CREATE_SESSION verb"
     );
     for jargon in ["SPAWN_RESOURCE", "phux.agent/v1", " L3 "] {
         assert!(

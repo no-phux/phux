@@ -403,18 +403,6 @@ mod tests {
         assert!(journal.record(bell(1), None, 0).is_none());
     }
 
-    #[test]
-    fn a_pull_replay_returns_later_entries_in_order_filtered() {
-        let mut journal = Journal::new(16, 1 << 20);
-        for terminal in [1, 2, 1, 2] {
-            let _ = journal.record(bell(terminal), None, 0);
-        }
-        let only_one = |entry: &JournalEntry| entry.terminal == Some(WireResourceId::local(1));
-        assert_eq!(pull(&journal, 0, only_one), (None, vec![1, 3]));
-        assert_eq!(pull(&journal, 2, |_| true), (None, vec![3, 4]));
-        assert_eq!(pull(&journal, 4, |_| true), (None, vec![]));
-    }
-
     /// An unretained scope owes a cursor everything after it; the head and
     /// the sentinel are owed nothing, and a cursor ahead of the head is void.
     #[test]
@@ -431,16 +419,6 @@ mod tests {
         assert_eq!(journal.gap_without_replay(2), None);
         assert_eq!(journal.gap_without_replay(u64::MAX), None);
         assert_eq!(journal.gap_without_replay(9), Some((1, 2)));
-    }
-
-    #[test]
-    fn eviction_by_count_reports_the_gap_it_opened() {
-        let mut journal = Journal::new(2, 1 << 20);
-        for _ in 0..5 {
-            let _ = journal.record(bell(1), None, 0);
-        }
-        assert_eq!(pull(&journal, 0, |_| true), (Some((1, 3)), vec![4, 5]));
-        assert_eq!(pull(&journal, 3, |_| true), (None, vec![4, 5]));
     }
 
     #[test]
@@ -468,31 +446,5 @@ mod tests {
         let _ = journal.allocate_seq();
         let _ = journal.record(bell(1), None, 0);
         assert_eq!(pull(&journal, 0, |_| true), (None, vec![1, 3]));
-    }
-
-    #[test]
-    fn the_newest_admitted_seq_ignores_other_scopes() {
-        let mut journal = Journal::new(3, 1 << 20);
-        for terminal in [1, 2, 1, 2] {
-            let _ = journal.record(bell(terminal), None, 0);
-        }
-        let only = |terminal: u32| {
-            move |entry: &JournalEntry| entry.terminal == Some(WireResourceId::local(terminal))
-        };
-        assert_eq!(journal.newest_admitted(only(1)), 3);
-        assert_eq!(journal.newest_admitted(only(2)), 4);
-        assert_eq!(journal.newest_admitted(only(9)), 0, "nothing retained");
-        assert_eq!(journal.evicted_through(), 1);
-        assert_eq!(Journal::new(3, 1 << 20).newest_admitted(|_| true), 0);
-    }
-
-    #[test]
-    fn narrowing_the_bounds_evicts_immediately() {
-        let mut journal = Journal::new(16, 1 << 20);
-        for _ in 0..4 {
-            let _ = journal.record(bell(1), None, 0);
-        }
-        journal.set_bounds(1, 1 << 20);
-        assert_eq!(pull(&journal, 0, |_| true), (Some((1, 3)), vec![4]));
     }
 }

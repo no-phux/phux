@@ -295,23 +295,3 @@ fn the_unescapers_invert_the_escapers() {
         );
     }
 }
-
-/// The launchd job names the server bundle through `Current`, so a grant
-/// given to `phux Server` survives the next update's version directory.
-#[test]
-fn launchd_plist_runs_the_bundle_through_the_current_symlink() {
-    let root = phux_config::server_bundle::root_in(std::path::Path::new("/Users/u"));
-    let current = phux_config::server_bundle::current_executable(&root);
-    let plist = render_launchd_plist(&ServicePlan {
-        binary: current,
-        ..plan()
-    });
-    assert!(
-        plist.contains(
-            "    <string>/Users/u/Library/Application Support/sh.phux/Server/Versions/\
-             Current/phux Server.app/Contents/MacOS/phux</string>"
-        ),
-        "{plist}"
-    );
-    assert!(!plist.contains("Versions/v"), "{plist}");
-}

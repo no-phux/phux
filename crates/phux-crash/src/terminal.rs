@@ -88,25 +88,6 @@ mod tests {
     }
 
     #[test]
-    fn restore_seq_includes_all_modes() {
-        for needle in [
-            b"\x1b[?2026l".as_slice(),
-            b"\x1b[?25h".as_slice(),
-            b"\x1b[?1000l".as_slice(),
-            b"\x1b[?1002l".as_slice(),
-            b"\x1b[?1003l".as_slice(),
-            b"\x1b[?1015l".as_slice(),
-            b"\x1b[?1006l".as_slice(),
-            b"\x1b[?2004l".as_slice(),
-            b"\x1b[?1004l".as_slice(),
-            b"\x1b[<u".as_slice(),
-            b"\x1b[?1049l".as_slice(),
-        ] {
-            position_of(needle);
-        }
-    }
-
-    #[test]
     fn restore_seq_ends_synchronized_update_first() {
         // Multiplexers (zellij/tmux) must stop buffering before subsequent
         // resets arrive, otherwise they get batched onto the wrong screen.

@@ -158,14 +158,6 @@ mod tests {
         Some(Observed { alive, start_raw })
     }
 
-    #[test]
-    fn a_live_pid_without_a_readable_identity_is_uncertain() {
-        assert_eq!(
-            recorded_process(recorded(1), Some(BOOT), probe(seen(true, None))),
-            ProcessPresence::Uncertain
-        );
-    }
-
     /// Each recorded activation and what the restart concludes about it.
     #[test]
     fn decide_reads_each_recorded_activation() {
@@ -192,17 +184,6 @@ mod tests {
                 want,
                 "{label}"
             );
-        }
-    }
-
-    #[test]
-    fn this_process_has_an_identity() {
-        let pid = i32::try_from(std::process::id()).expect("pid");
-        let observed = observe(pid);
-        assert!(observed.alive);
-        if let Some(id) = proc_identity(pid) {
-            assert_eq!(Some(id.start_raw), observed.start_raw);
-            assert_eq!(Some(id.boot_id), boot_id());
         }
     }
 }

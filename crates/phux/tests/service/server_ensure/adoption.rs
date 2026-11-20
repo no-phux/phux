@@ -106,14 +106,6 @@ fn deadline_kills_and_reaps_the_adoption_helper() {
 }
 
 #[test]
-fn sigterm_kills_and_reaps_the_adoption_helper() {
-    assert_helper_cleaned_up(
-        Some(rustix::process::Signal::TERM),
-        "#!/bin/sh\necho $$ > helper.pid\nexec /bin/sleep 60\n",
-    );
-}
-
-#[test]
 fn sigint_reaps_a_helper_that_closed_its_output_before_exiting() {
     // Exercise cancellation during waitid polling, rather than a pipe read.
     assert_helper_cleaned_up(

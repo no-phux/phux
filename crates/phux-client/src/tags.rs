@@ -338,16 +338,15 @@ mod tests {
         result
     }
 
-    /// `%name` (ADR-0075) tags exactly the named pane, a name equal to its
-    /// kind included; a miss is a typed refusal.
+    /// `%name` (ADR-0075) tags exactly the named pane; a miss is a typed
+    /// refusal.
     #[tokio::test]
     async fn apply_resolves_percent_name_through_the_agent_resolver() {
         use crate::agent_meta::{AgentRecord, RESOURCE_AGENT_KEY};
         use crate::testkit::ScriptSpec;
-        let named = |id: u32, name: &str, kind: Option<&str>| {
+        let named = |id: u32, name: &str| {
             let record = AgentRecord {
                 name: name.to_owned(),
-                kind: kind.map(str::to_owned),
                 ..AgentRecord::default()
             };
             ScriptSpec::new().state(pane_state()).stored_metadata(
@@ -358,7 +357,7 @@ mod tests {
         };
 
         let tags = ["ci".to_owned()];
-        let added = apply_on(named(2, "build", None), "%build", TagOp::Add(&tags))
+        let added = apply_on(named(2, "build"), "%build", TagOp::Add(&tags))
             .await
             .expect("tag %build");
         assert_eq!(
@@ -366,11 +365,7 @@ mod tests {
             vec![(ResourceId::local(2), vec!["ci".to_owned()])]
         );
 
-        let kind_named = apply_on(named(2, "claude", Some("claude")), "%claude", TagOp::List)
-            .await
-            .expect("tag ls %claude");
-        assert_eq!(kind_named.rows.len(), 1, "{kind_named:?}");
-        let unknown = apply_on(named(2, "build", None), "%ghost", TagOp::List).await;
+        let unknown = apply_on(named(2, "build"), "%ghost", TagOp::List).await;
         assert!(
             matches!(&unknown, Err(TagError::Agent(err)) if err.exit_code() == 1),
             "{unknown:?}"

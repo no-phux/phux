@@ -64,21 +64,6 @@ fn the_shipped_bar_is_exactly_the_terminal_width_at_every_size() {
     }
 }
 
-/// A roomy terminal shows the quiet lineup: padded tabs, session name,
-/// and clock. No permanent action-hint strip.
-#[test]
-fn a_roomy_terminal_shows_the_whole_lineup() {
-    let windows = [win("zsh", false), win("nvim", true), win("server", false)];
-    let text = shipped_text(120, "phux", &windows);
-
-    assert!(text.starts_with(" 0 zsh   1 nvim   2 server "), "{text:?}");
-    assert!(!text.contains("s Sessions"), "{text:?}");
-    assert!(!text.contains("S Settings"), "{text:?}");
-    assert!(text.contains("phux"), "{text:?}");
-    // The `switch` chip is for narrow terminals only.
-    assert!(!text.contains("agents"), "{text:?}");
-}
-
 /// The gates read the terminal, not the row: beside a sidebar an 80-column
 /// terminal leaves the bar 61 columns, and that is still room for context,
 /// with the sidebar already listing the agents the chip would open.

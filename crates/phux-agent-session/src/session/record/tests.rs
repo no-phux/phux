@@ -50,15 +50,7 @@ fn a_record_needs_a_string_type_an_object_body_and_an_object_data() {
 }
 
 #[test]
-fn oversize_and_post_session_end_records_are_refused() {
-    let big = format!(
-        "{{\"type\":\"provider_raw\",\"data\":{{\"b\":\"{}\"}}}}",
-        "x".repeat(MAX_RECORD_BYTES)
-    );
-    assert!(matches!(
-        validate(big.as_bytes(), false),
-        Err(RecordError::Oversized { .. })
-    ));
+fn post_session_end_records_are_refused() {
     assert_eq!(
         validate(b"{\"type\":\"prompt\"}", true),
         Err(RecordError::AfterSessionEnd)

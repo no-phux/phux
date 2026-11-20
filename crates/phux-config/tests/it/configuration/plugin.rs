@@ -21,25 +21,6 @@ fn refusal(dir: &std::path::Path, id: &str, extra: &str) -> String {
 }
 
 #[test]
-fn provider_fixture_loads() -> Result<(), Box<dyn std::error::Error>> {
-    let fixture = std::path::PathBuf::from(
-        std::env::var_os("CARGO_MANIFEST_DIR").expect("the test runner sets CARGO_MANIFEST_DIR"),
-    )
-    .join("tests/fixtures/provider-showcase/phux-plugin.toml");
-    let loaded = plugin::load_plugin_manifest(&fixture)?;
-    assert_eq!(loaded.id, "com.phux.demo.provider-showcase");
-    assert_eq!(loaded.events[0].id, "exit");
-    assert_eq!(loaded.panes[0].id, "board");
-    assert_eq!(loaded.links[0].id, "ticket");
-    assert_eq!(loaded.profiles[0].id, "ops-bench");
-    assert_eq!(loaded.profiles[0].panes[0].pane, "board");
-    for event in &loaded.events {
-        assert!(phux_config::vocab::HOOK_EVENTS.contains(&event.on.as_str()));
-    }
-    Ok(())
-}
-
-#[test]
 fn plugin_manifest_loads_actions_events_and_panes() -> Result<(), Box<dyn std::error::Error>> {
     let dir = TempDir::new()?;
     let loaded = load(

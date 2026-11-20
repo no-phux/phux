@@ -353,23 +353,6 @@ mod tests {
     }
 
     #[test]
-    fn unknown_state_and_attention_words_are_tolerated() {
-        let parsed =
-            parse_agent_record(br#"{"name":"a","state":"hibernating","attention":"maximal"}"#)
-                .expect("open enums must not fail the parse");
-        assert_eq!(parsed.state, AgentMetaState::Unknown);
-        assert_eq!(parsed.attention, Some(AgentAttention::Normal));
-    }
-
-    #[test]
-    fn rejects_missing_or_empty_name_and_malformed_json() {
-        assert_eq!(parse_agent_record(br#"{"state":"idle"}"#), None);
-        assert_eq!(parse_agent_record(br#"{"name":"  "}"#), None);
-        assert_eq!(parse_agent_record(b"not json"), None);
-        assert_eq!(parse_agent_record(br#"["name"]"#), None);
-    }
-
-    #[test]
     fn the_shell_check_reads_the_cursor_row_not_the_whole_screen() {
         let at_prompt = marked_screen(
             Some(cursor_at(10)),

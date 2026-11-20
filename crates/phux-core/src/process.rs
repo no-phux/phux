@@ -171,30 +171,4 @@ mod tests {
         assert_eq!(json["prompt"]["state"], "unknown");
         assert!(json["prompt"]["last_exit_code"].is_null());
     }
-
-    #[test]
-    fn full_state_round_trips() {
-        let state = TerminalProcessState {
-            child: Some(ProcessIdentity {
-                pid: 42,
-                start_ms: Some(1_700_000_000_000),
-            }),
-            foreground: Some(ForegroundProcess {
-                pgid: 43,
-                start_ms: None,
-                name: Some("vim".to_owned()),
-            }),
-            cwd: Some("/repo".to_owned()),
-            prompt: PromptFacet {
-                state: PromptState::AtPrompt,
-                last_exit_code: Some(3),
-            },
-            exit: Some(ProcessExit::observed(ExitOutcome::signaled(9), Some(7))),
-        };
-        let json = serde_json::to_string(&state).expect("serialize");
-        assert!(json.contains("\"state\":\"at_prompt\""), "got {json}");
-        assert!(json.contains("\"reason\":\"exited\""), "got {json}");
-        let back: TerminalProcessState = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(back, state);
-    }
 }

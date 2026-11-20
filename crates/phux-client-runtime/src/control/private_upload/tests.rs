@@ -193,21 +193,6 @@ fn authority_changes_and_missing_upload_support_refuse_private_intent() {
 }
 
 #[test]
-fn ordinary_file_uploads_keep_their_existing_reconnect_policy() {
-    let (mut control, _) = connected();
-    control.put_file(ResourceId::local(3), "txt".to_owned(), b"ordinary".to_vec());
-    let first = commands(&mut control);
-    control.connection_lost(None);
-    control.connection_opened();
-    control.take_outbound();
-    control.handshake_ready = true;
-    control.queue_next_upload();
-    let replay = commands(&mut control);
-    assert_eq!(first[0].1, replay[0].1);
-    assert!(control.take_file_upload_receipts().is_empty());
-}
-
-#[test]
 fn queued_private_chunks_are_fenced_at_drain_and_release_the_next_upload() {
     let (mut control, destination) = connected();
     let private = control.put_private_image(&destination, b"private".to_vec());

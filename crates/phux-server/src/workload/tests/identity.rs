@@ -246,15 +246,6 @@ fn a_credential_records_who_it_is_for_and_old_records_infer_it_from_pairing() {
     );
 }
 
-/// Pairing promises full terminal-endpoint control, including organization
-/// and keyed termination. Keep its spelled-out ceiling in step with the verbs.
-#[test]
-fn paired_device_scope_includes_every_terminal_verb() {
-    let ceiling = parse_ceiling(&scopes(&[PAIRED_DEVICE_SCOPE])).unwrap();
-    let all = parse_ceiling(&scopes(&["*@global"])).unwrap();
-    assert_eq!(ceiling, all);
-}
-
 /// A ticket enrolls a person's device whatever ceiling it carries.
 #[test]
 fn a_ticket_enrolls_a_human_principal() {

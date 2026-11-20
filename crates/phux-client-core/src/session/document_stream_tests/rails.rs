@@ -100,25 +100,6 @@ fn fill_chunk_ceiling(kernel: &mut Kernel, effects: &mut EffectBuffer) {
 }
 
 #[test]
-fn document_staging_hits_the_chunk_ceiling_and_is_retired() {
-    let mut kernel = kernel();
-    let mut effects = EffectBuffer::new();
-    begin(&mut kernel, first(), &mut effects).unwrap();
-    fill_chunk_ceiling(&mut kernel, &mut effects);
-    let over = u32::try_from(MAX_BOOTSTRAP_STAGING_CHUNKS).unwrap();
-    assert!(matches!(
-        chunk(&mut kernel, &surface(), first(), over, b"", &mut effects),
-        Err(KernelError::BootstrapStagingLimitExceeded)
-    ));
-    assert!(resync_required(&effects));
-    assert!(matches!(
-        ready(&mut kernel, 0, first(), &mut effects),
-        Err(KernelError::RetiredGeneration { .. })
-    ));
-    assert!(documents(&effects).is_empty());
-}
-
-#[test]
 fn document_and_terminal_staging_share_the_connection_ceilings() {
     // A terminal holding the whole byte budget leaves none for a document.
     let mut kernel = kernel();

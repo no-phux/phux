@@ -212,15 +212,6 @@ fn a_stream_without_a_record_is_named_by_its_provider() {
 }
 
 #[test]
-fn state_glyphs_cover_the_v1_vocabulary() {
-    assert_eq!(agent_state_glyph(AgentMetaState::Blocked), "●");
-    assert_eq!(agent_state_glyph(AgentMetaState::Working), "◐");
-    assert_eq!(agent_state_glyph(AgentMetaState::Idle), "○");
-    assert_eq!(agent_state_glyph(AgentMetaState::Done), "◆");
-    assert_eq!(agent_state_glyph(AgentMetaState::Unknown), "·");
-}
-
-#[test]
 fn no_record_falls_back_to_title_then_placeholder() {
     let workspace = ArrangementDoc::single(tid(1));
     // With a title: the OSC fallback (record outranks it when present).

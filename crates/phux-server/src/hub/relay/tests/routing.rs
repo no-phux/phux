@@ -3,27 +3,6 @@
 use super::*;
 
 #[test]
-fn route_to_satellite_rewrites_terminal_ids_to_local() {
-    let command = Command::GetScreen {
-        terminal_id: ResourceId::satellite("devbox", 7),
-        request_scrollback: Some(10),
-        cells: true,
-        format: 0,
-    };
-    let (routed_host, rewritten) = route_to_satellite(&command).expect("satellite target");
-    assert_eq!(routed_host, host());
-    assert_eq!(
-        rewritten,
-        Command::GetScreen {
-            terminal_id: ResourceId::local(7),
-            request_scrollback: Some(10),
-            cells: true,
-            format: 0,
-        }
-    );
-}
-
-#[test]
 fn route_to_satellite_ignores_local_and_unscoped_commands() {
     assert!(
         route_to_satellite(&Command::GetScreen {

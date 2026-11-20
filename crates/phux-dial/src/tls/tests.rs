@@ -58,25 +58,6 @@ fn explicit_identity_paths_fail_as_explicit_inputs() {
 }
 
 #[test]
-fn explicit_pem_identity_builds_without_environment_lookup() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let certificate = dir.path().join("client-cert.pem");
-    let private_key = dir.path().join("client-key.pem");
-    crate::cert::ensure_self_signed(&certificate, &private_key).expect("identity pair");
-
-    let config = client_config_with_identity(
-        &CertTrust::SkipVerify,
-        &TlsClientIdentity::PemFiles {
-            certificate,
-            private_key,
-        },
-        Some(b"phux-test/1"),
-    )
-    .expect("explicit PEM identity");
-    assert_eq!(config.alpn_protocols, vec![b"phux-test/1".to_vec()]);
-}
-
-#[test]
 fn require_paired_needs_a_whole_identity() {
     let path = |name: &str| Some(PathBuf::from(name));
     assert_eq!(

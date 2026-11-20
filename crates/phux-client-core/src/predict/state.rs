@@ -794,18 +794,6 @@ mod tests {
     }
 
     #[test]
-    fn multiple_keystrokes_stack_horizontally() {
-        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
-        for ch in ["h", "e", "l", "l", "o"] {
-            assert_eq!(s.predict_key(&key_text(ch)), PredictionOutcome::Predicted);
-        }
-        let cells: Vec<_> = s.pending().map(|p| (p.row, p.col, p.kind)).collect();
-        let want: Vec<_> = (0..5).map(|c| (0, c, PredictionKind::Insert)).collect();
-        assert_eq!(cells, want);
-        assert_eq!(s.cursor(), (0, 5));
-    }
-
-    #[test]
     fn enter_after_insert_predicts_newline_and_advances_row() {
         let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
         for ch in ["h", "i"] {

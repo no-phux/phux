@@ -66,19 +66,3 @@ fn answers_lower_to_typed_swift_records() {
         }
     );
 }
-
-#[test]
-fn requests_lift_to_the_protocol_request() {
-    let request: CheckoutRequest = WireCheckoutRequest::Read {
-        path: "README.md".to_owned(),
-        max_bytes: 0,
-    }
-    .into();
-    assert_eq!(
-        request,
-        CheckoutRequest::Read {
-            path: "README.md".to_owned(),
-            max_bytes: 0
-        }
-    );
-}

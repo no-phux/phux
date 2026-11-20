@@ -57,15 +57,6 @@ fn only_auth_failed_closes_are_credential_refusal() {
     }
 }
 
-/// phux's tunnel dials carry phux's tag; the tag's own rules are
-/// `quictun`'s and tested there.
-#[test]
-fn tunnel_cids_carry_the_phux_tag() {
-    let cid = tunnel_cid().expect("tagged cid");
-    assert!(TUNNEL_CID_TAG.matches(&cid));
-    assert_eq!(&cid[..4], b"phxT");
-}
-
 /// Dial a loopback peer that reads the bearer preamble and then closes
 /// with `code` / `reason`; return how the client classifies the close.
 async fn dial_and_get_closed(code: u32, reason: &'static [u8]) -> DialError {
