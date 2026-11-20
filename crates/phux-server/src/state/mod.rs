@@ -71,6 +71,7 @@ mod viewport;
 
 pub(crate) use app_slots::AppSlot;
 pub use approvals::{Decision, HoldRefusal, OpenedApproval, PendingApproval};
+pub(crate) use bindings::ClosePlan;
 pub use client::{AttachError, AttachSnapshotPane, AttachedClient, ClientId};
 use client_table::ClientTable;
 pub use conditional_kill::KillIfRefusal;

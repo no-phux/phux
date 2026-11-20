@@ -62,12 +62,8 @@ fn a_pane_killed_before_its_exit_still_fires_pane_exit_and_holds_self_exit() {
         spawn_resource_exit_watcher(state.clone(), pane, Some(exit_rx), root.clone(), None);
 
         let committed = state.with_mut(|s| {
-            committed_close::commit_close(
-                s,
-                &[pane],
-                phux_protocol::wire::frame::CloseReason::Killed,
-                crate::state::CloseAttribution::default(),
-            )
+            let plan = s.plan_close(&[pane], phux_protocol::wire::frame::CloseReason::Killed);
+            committed_close::commit_close(s, plan, crate::state::CloseAttribution::default())
         });
         assert_eq!(committed.len(), 1);
         committed_close::announce(&state, committed);

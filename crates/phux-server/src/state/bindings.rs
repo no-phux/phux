@@ -12,37 +12,25 @@
 //!
 //! [`Registry::children`]: phux_core::registry::Registry::children
 
+use std::collections::HashSet;
+
 use phux_core::ids::ResourceId;
 use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::CloseReason;
 
 use super::ServerState;
 
-/// Targets still in the registry, then their descendants, in parent-before-child
-/// order. `reason` is the targets'; descendants are `ParentClosed`.
-fn planned_closes(
-    s: &ServerState,
-    targets: &[ResourceId],
-    reason: CloseReason,
-) -> Vec<(ResourceId, CloseReason)> {
-    let mut closing = Vec::new();
-    for target in targets {
-        if s.sessions.registry.resource(*target).is_none() {
-            continue;
-        }
-        if !closing.iter().any(|(id, _)| id == target) {
-            closing.push((*target, reason));
-        }
+/// Exact set a close will cancel and reap, with descendants before parents.
+pub(crate) struct ClosePlan(Vec<(ResourceId, CloseReason)>);
+
+impl ClosePlan {
+    pub(crate) fn resources(&self) -> impl ExactSizeIterator<Item = ResourceId> + '_ {
+        self.0.iter().map(|(id, _)| *id)
     }
-    let roots: Vec<ResourceId> = closing.iter().map(|(id, _)| *id).collect();
-    for parent in roots {
-        for child in s.resource_descendants(parent) {
-            if !closing.iter().any(|(id, _)| *id == child) {
-                closing.push((child, CloseReason::ParentClosed));
-            }
-        }
+
+    pub(crate) fn into_resources(self) -> impl Iterator<Item = ResourceId> {
+        self.0.into_iter().map(|(id, _)| id)
     }
-    closing
 }
 
 impl ServerState {
@@ -147,31 +135,49 @@ impl ServerState {
         reason: CloseReason,
         attribution: super::CloseAttribution,
     ) -> u32 {
-        let closing = self.mark_and_cancel(targets, reason, attribution);
-        u32::try_from(closing.len()).unwrap_or(u32::MAX)
+        let count = self.mark_and_cancel(targets, reason, attribution);
+        u32::try_from(count).unwrap_or(u32::MAX)
     }
 
-    /// Resources a close of `targets` would claim: each target still in the
-    /// registry, then its descendants, parents before children.
-    pub(crate) fn resources_closing_with(&self, targets: &[ResourceId]) -> Vec<ResourceId> {
-        planned_closes(self, targets, CloseReason::Killed)
-            .into_iter()
-            .map(|(id, _)| id)
-            .collect()
+    /// Resolve the cascade before mutating state. An explicitly targeted
+    /// descendant keeps the requested reason regardless of request order.
+    pub(crate) fn plan_close(&self, targets: &[ResourceId], reason: CloseReason) -> ClosePlan {
+        let explicit: HashSet<_> = targets.iter().copied().collect();
+        let mut seen = HashSet::new();
+        let mut closing = Vec::new();
+        for &target in targets.iter().rev() {
+            if seen.contains(&target) || self.registry().resource(target).is_none() {
+                continue;
+            }
+            // Reversing the breadth-first descendants visits every descendant
+            // before its parent. Previously visited subtrees are already
+            // planned in that order, so overlapping requests need only one row per id.
+            let subtree = self
+                .resource_descendants(target)
+                .into_iter()
+                .rev()
+                .chain(std::iter::once(target));
+            for id in subtree.filter(|id| seen.insert(*id)) {
+                let reason = if explicit.contains(&id) {
+                    reason
+                } else {
+                    CloseReason::ParentClosed
+                };
+                closing.push((id, reason));
+            }
+        }
+        ClosePlan(closing)
     }
 
-    /// Record why `targets` and their descendants close and cancel their
-    /// actors, without reaping. Returns every closing resource, each after
-    /// its parent, so a reverse walk closes children first.
-    pub(crate) fn mark_and_cancel(
+    /// Record why each planned resource closes and cancel its actor. Reaping
+    /// is the caller's responsibility or, for an asynchronous close, the
+    /// exit watcher's.
+    pub(crate) fn cancel_close_plan(
         &mut self,
-        targets: &[ResourceId],
-        reason: CloseReason,
+        plan: &ClosePlan,
         attribution: super::CloseAttribution,
-    ) -> Vec<ResourceId> {
-        let closing = planned_closes(self, targets, reason);
-        let mut closed = Vec::with_capacity(closing.len());
-        for (resource, reason) in closing {
+    ) {
+        for &(resource, reason) in plan.0.iter().rev() {
             self.mark_resource_closing(resource, reason);
             if attribution != super::CloseAttribution::default() {
                 self.close_attributions
@@ -179,9 +185,18 @@ impl ServerState {
                     .or_insert(attribution);
             }
             self.resources_mut().detach_actor(resource);
-            closed.push(resource);
         }
-        closed
+    }
+
+    pub(crate) fn mark_and_cancel(
+        &mut self,
+        targets: &[ResourceId],
+        reason: CloseReason,
+        attribution: super::CloseAttribution,
+    ) -> usize {
+        let plan = self.plan_close(targets, reason);
+        self.cancel_close_plan(&plan, attribution);
+        plan.resources().len()
     }
 
     /// Note that `resource` has an exit watcher, which runs until its
