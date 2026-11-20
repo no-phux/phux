@@ -135,13 +135,18 @@ pub(super) fn look(desk: &Desk, t: &Tokens) -> El {
         theme::color(art::LIGHT_GROUND),
         theme::color(art::DARK_GROUND),
     );
+    // One window, its right half in the dark: one set of lights, and the
+    // bars running on across the split in the other ink. Two half windows
+    // side by side each clipped and bordered their own corners.
     let half = art::WINDOW.0 / 2.0;
-    let auto = row()
-        .size(art::WINDOW.0, art::WINDOW.1)
-        .radius(art::WINDOW_RADIUS)
-        .clip_rounded(art::WINDOW_RADIUS)
-        .child(window(light, Color::BLACK, false).w(half).radius(0.0))
-        .child(window(dark, Color::WHITE, false).w(half).radius(0.0));
+    let night = col()
+        .pin(None, Some(0.0), Some(0.0), Some(0.0))
+        .w(half)
+        .fill(dark)
+        .pt(6.0 + art::LIGHTS + 5.0)
+        .pr(6.0)
+        .child(el().w_full().h(4.0).fill(Color::WHITE.alpha(0.25)));
+    let auto = window(light, Color::BLACK, false).child(night);
     let schemes = row()
         .gap(s.s3)
         .child(choice(

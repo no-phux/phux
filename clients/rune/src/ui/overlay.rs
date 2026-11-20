@@ -297,7 +297,17 @@ pub fn find_bar(desk: &Desk, id: &ResourceId, area: [f32; 2], p: &Tokens) -> Opt
         .border(s.hairline, edge.paint())
         .transition(pop(t))
         .child(field)
-        .child(text(status).font(t.ty.readout).color(count.paint()))
+        // A count ("3 of 12") changes in place, so it is a readout; the
+        // miss is words, in the caption's own face (§1.4).
+        .child(
+            text(status)
+                .font(if miss {
+                    t.ty.caption
+                } else {
+                    t.ty.readout
+                })
+                .color(count.paint()),
+        )
         .child(case)
         .child(
             icon_press(&icons::ARROW_UP, "Older match", "find-older", p, |d| {

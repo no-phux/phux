@@ -220,8 +220,9 @@ fn step_of(key: &Key, horizontal: bool) -> Option<f32> {
     }
 }
 
-/// How a card is lit: the keyboard's, among several, glows in the window's
-/// machine colour.
+/// How a card is lit: the keyboard's, among several, stands one tier
+/// higher with a firmer rim. Focus adds no colour of its own, and the
+/// cards without the keyboard stay at full strength, as legible as it.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Lit {
     Resting,
@@ -229,20 +230,16 @@ pub(super) enum Lit {
 }
 
 /// A floating card around `content` (§1.7): `radius.lg`, on the raised
-/// tier at rest, lifted to floating with the machine's glow in place of
-/// its second drop when it has the keyboard, and edged with a top-lit
-/// hairline rim. `content` is clipped to the corners; the rim draws over
-/// it and never takes the pointer.
+/// tier at rest and lifted to floating when it has the keyboard, edged
+/// with a top-lit hairline rim that is firmer on the lifted card.
+/// `content` is clipped to the corners; the rim draws over it and never
+/// takes the pointer.
 pub(super) fn card(content: El, ground: Color, lit: Lit, ink: &Tokens) -> El {
     let t = ink;
     let r = t.radius.lg;
-    let (top, bottom) = match lit {
-        Lit::Resting => (t.roles.border.strong, t.roles.border.muted),
-        Lit::Focused => (t.roles.border.strong, t.roles.border.base),
-    };
-    let top = match lit {
-        Lit::Resting => top.paint(),
-        Lit::Focused => t.host,
+    let (top, bottom, tier) = match lit {
+        Lit::Resting => (t.roles.border.base, t.roles.border.muted, Tier::Raised),
+        Lit::Focused => (t.roles.border.strong, t.roles.border.base, Tier::Floating),
     };
     let lifted = el()
         .w_full()
@@ -250,17 +247,13 @@ pub(super) fn card(content: El, ground: Color, lit: Lit, ink: &Tokens) -> El {
         .radius(r)
         .continuous_corners()
         .fill(ground);
-    let lifted = match lit {
-        Lit::Resting => t.elevate(lifted, Tier::Raised),
-        Lit::Focused => t.elevate_glowing(lifted, Tier::Floating, t.host),
-    };
-    lifted
+    t.elevate(lifted, tier)
         .child(content.radius(r).continuous_corners().clip_rounded(r))
         .child(
             el().cover()
                 .radius(r)
                 .continuous_corners()
-                .border_gradient(t.space.hairline, top, bottom.paint())
+                .border_gradient(t.space.hairline, top.paint(), bottom.paint())
                 .inert(),
         )
 }
@@ -360,11 +353,6 @@ fn terminal_pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Tokens) -> E
         .children(overlay::find_bar(desk, id, area, ink))
         .children(question.map(|card| card.content))
         .children(tab_badge(desk, id, t))
-        // Panes without the keyboard sit back a little, under the scrim.
-        .children(
-            (several && !focused)
-                .then(|| el().cover().fill(t.roles.layer.scrim.paint()).inert()),
-        )
         // Outlined while a dragged terminal would join its slot as a tab.
         .children(joining.then(|| {
             el().cover()
