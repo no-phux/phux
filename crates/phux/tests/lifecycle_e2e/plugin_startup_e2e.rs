@@ -293,8 +293,15 @@ fn upgrade_restarts_the_sidecar_without_leaking_a_socket_fd() {
         "replacement {second} died\n{}",
         sidecar_death_dump(root.path(), &xdg.state, &pids, second, server.pid())
     );
-    let notes = startup_notes(&xdg.state);
-    let stopped_at = notes.iter().rposition(|note| note == "stopped");
+    // The child can publish its pid before the resumed supervisor publishes
+    // the corresponding run-log entry. Wait for the latter before asserting it.
+    let mut notes = Vec::new();
+    let mut stopped_at = None;
+    poll_until(Duration::from_secs(10), || {
+        notes = startup_notes(&xdg.state);
+        stopped_at = notes.iter().rposition(|note| note == "stopped");
+        stopped_at.is_some_and(|index| notes[index + 1..].iter().any(|note| note == "started"))
+    });
     let after_stopped = match stopped_at {
         Some(index) => &notes[index + 1..],
         None => &[],

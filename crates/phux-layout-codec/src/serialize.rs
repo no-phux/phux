@@ -1,21 +1,23 @@
+#![allow(clippy::redundant_pub_crate, reason = "the codec shadows are private")]
+
 use serde::{Deserialize, Serialize};
 
 use phux_protocol::ResourceId;
 
 use super::LayoutDecodeError;
-use crate::layout::{LayoutNode, SplitDir};
+use crate::{LayoutNode, SplitDir};
 
 /// Minimal envelope shape used to peek the `version` byte before
 /// committing to a full decode of the current schema.
 #[derive(Debug, Deserialize)]
-pub(in crate::layout) struct VersionProbe {
+pub(super) struct VersionProbe {
     /// The envelope schema version (`3` workspace with required stable IDs).
     pub version: u8,
 }
 
 /// The v3 multi-window envelope (docs/organization.md#records-handles-and-arrangements).
 #[derive(Debug, Serialize, Deserialize)]
-pub(in crate::layout) struct CborWorkspaceEnvelope {
+pub(super) struct CborWorkspaceEnvelope {
     /// Envelope schema version (`3`).
     pub version: u8,
     /// The workspace's windows, in order.
@@ -30,7 +32,7 @@ pub(in crate::layout) struct CborWorkspaceEnvelope {
 
 /// One slot's tabs inside [`CborWorkspaceEnvelope`].
 #[derive(Debug, Serialize, Deserialize)]
-pub(in crate::layout) struct CborSlot {
+pub(super) struct CborSlot {
     /// Every tab, in strip order.
     pub strip: Vec<CborResourceId>,
     /// Index into `strip` of the stored default.
@@ -41,7 +43,7 @@ pub(in crate::layout) struct CborSlot {
 
 /// One window inside [`CborWorkspaceEnvelope`].
 #[derive(Debug, Serialize, Deserialize)]
-pub(in crate::layout) struct CborWindow {
+pub(super) struct CborWindow {
     /// Required, nonzero stable layout identity.
     pub id: [u8; 16],
     /// The window's display name.
@@ -59,7 +61,7 @@ pub(in crate::layout) struct CborWindow {
 /// in-memory tree and converts via `From`.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub(in crate::layout) enum CborLayoutNode {
+pub(super) enum CborLayoutNode {
     /// A single pane (tree leaf).
     Leaf {
         /// The leaf's terminal id.
@@ -81,7 +83,7 @@ pub(in crate::layout) enum CborLayoutNode {
 /// CBOR shadow of [`SplitDir`].
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(in crate::layout) enum CborSplitDir {
+pub(super) enum CborSplitDir {
     /// A left/right split (vertical divider between panes).
     Horizontal,
     /// A top/bottom split (horizontal divider between panes).
@@ -91,7 +93,7 @@ pub(in crate::layout) enum CborSplitDir {
 /// CBOR shadow of [`ResourceId`].
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub(in crate::layout) enum CborResourceId {
+pub(super) enum CborResourceId {
     /// A terminal local to this server.
     Local {
         /// The local numeric id.
@@ -166,7 +168,7 @@ impl From<&LayoutNode> for CborLayoutNode {
 
 impl CborLayoutNode {
     /// Convert this CBOR shadow back into a [`LayoutNode`], validating the split ratio.
-    pub(in crate::layout) fn into_layout_node(self) -> Result<LayoutNode, LayoutDecodeError> {
+    pub(super) fn into_layout_node(self) -> Result<LayoutNode, LayoutDecodeError> {
         Ok(match self {
             Self::Leaf { pane } => LayoutNode::Leaf(pane.into()),
             Self::Split {

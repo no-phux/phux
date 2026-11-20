@@ -84,7 +84,7 @@ pub fn layout_key_session(key: &str) -> Option<LayoutKeyOwner> {
     if key == LAYOUT_KEY {
         return Some(LayoutKeyOwner::Legacy);
     }
-    let suffix = key.strip_prefix(&format!("{LAYOUT_KEY}/"))?;
+    let suffix = key.strip_prefix(phux_protocol::wire::info::TUI_LAYOUT_KEY_PREFIX)?;
     // An unparsable suffix is `None`, never `Legacy` (which reads as ours).
     Some(LayoutKeyOwner::Session(SessionId::new(
         suffix.parse::<u32>().ok()?,

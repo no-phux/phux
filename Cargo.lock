@@ -3086,12 +3086,12 @@ name = "phux-client-core"
 version = "0.160.0"
 dependencies = [
  "bytes",
- "ciborium",
  "criterion",
  "insta",
  "libghostty-vt",
  "phux-core",
  "phux-frozen",
+ "phux-layout-codec",
  "phux-perf",
  "phux-protocol",
  "phux-vt",
@@ -3258,6 +3258,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "phux-layout-codec"
+version = "0.160.0"
+dependencies = [
+ "ciborium",
+ "phux-core",
+ "phux-protocol",
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "phux-mcp"
 version = "0.160.0"
 dependencies = [
@@ -3375,6 +3386,7 @@ dependencies = [
  "phux-dial",
  "phux-frozen",
  "phux-git",
+ "phux-layout-codec",
  "phux-perf",
  "phux-plugin",
  "phux-protocol",

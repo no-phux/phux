@@ -11,24 +11,7 @@ use phux_protocol::ResourceId;
 use super::mutation::{MutationError, swap_leaves};
 use super::{ArrangementDoc, SplitDir, leaves, split_at};
 
-/// One slot's tabs, in strip order.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Slot {
-    /// Every tab, in strip order.
-    pub strip: Vec<ResourceId>,
-    /// The stored default: what a fresh attach and older clients show.
-    pub default: usize,
-    /// What this client shows: the leaf its group's tree holds.
-    pub shown: usize,
-}
-
-impl Slot {
-    /// The tab this client shows.
-    #[must_use]
-    pub fn showing(&self) -> &ResourceId {
-        &self.strip[self.shown]
-    }
-}
+pub use phux_layout_codec::Slot;
 
 impl ArrangementDoc {
     /// The slot holding `pane` among its tabs.

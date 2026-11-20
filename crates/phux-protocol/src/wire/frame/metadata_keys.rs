@@ -177,6 +177,9 @@ pub const RESOURCE_NOTE_KEY: &str = "phux.note/v1";
 /// prefer it over title or screen heuristics. Stored opaquely.
 pub const RESOURCE_AGENT_KEY: &str = "phux.agent/v1";
 
+/// Maximum UTF-8 payload size accepted for a declared agent record.
+pub const MAX_AGENT_RECORD_BYTES: usize = 4 * 1024;
+
 /// Server-owned projection of a pending `AgentEvent::Asked` (ADR-0035, ADR-0136).
 ///
 /// Value is the single byte `1` while any ask source still holds, and the

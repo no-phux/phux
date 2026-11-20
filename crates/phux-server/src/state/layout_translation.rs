@@ -11,9 +11,9 @@
 //! stay opaque metadata. Isolated here so it can be deleted with the
 //! translation layer.
 
-use phux_client_core::layout::{ArrangementDoc, Group, LayoutNode, LayoutState};
 use phux_core::ids::SessionId;
 use phux_core::{Actor, ArrangementOwner, EntryRef, EntryTarget, Op};
+use phux_layout_codec::{Group, LayoutNode};
 use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::Scope;
 
@@ -57,7 +57,7 @@ impl ServerState {
         value: &[u8],
         actor: &Actor,
     ) -> Result<(), String> {
-        let doc = ArrangementDoc::decode_cbor(value).map_err(|e| e.to_string())?;
+        let doc = phux_layout_codec::decode(value).map_err(|e| e.to_string())?;
         let record = self
             .registry()
             .session(session)
@@ -72,8 +72,7 @@ impl ServerState {
             .groups
             .iter()
             .filter_map(|group| {
-                let tree = group.state.tree.as_ref()?;
-                let tree = self.core_tree(tree, &record.members, &mut fresh)?;
+                let tree = self.core_tree(&group.tree, &record.members, &mut fresh)?;
                 Some(phux_core::Group {
                     locked: false,
                     id: group.id,
@@ -153,23 +152,17 @@ impl ServerState {
             .iter()
             .filter_map(|group| {
                 let tree = self.client_tree(&group.tree)?;
-                let focus = phux_client_core::layout::leaves(&tree).into_iter().next()?;
-                Some(Group::with_id(
-                    group.id,
-                    group.name.clone().unwrap_or_default(),
-                    LayoutState {
-                        tree: Some(tree),
-                        focus: Some(focus),
-                    },
-                ))
+                let focus = tree.leaves().into_iter().next().cloned()?;
+                Some(Group {
+                    id: group.id,
+                    name: group.name.clone().unwrap_or_default(),
+                    tree,
+                    focus,
+                    locked: false,
+                })
             })
             .collect();
-        let doc = ArrangementDoc {
-            groups,
-            active: 0,
-            slots: Vec::new(),
-        };
-        let Ok(bytes) = doc.encode_topology_cbor() else {
+        let Ok(bytes) = phux_layout_codec::encode(groups.iter().map(Group::borrow), 0, &[]) else {
             return;
         };
         let wire = self.idspace.intern_session(session);
@@ -212,7 +205,7 @@ fn present_leaves<L: Clone>(
 #[allow(clippy::unwrap_used, clippy::expect_used, reason = "tests")]
 mod tests {
     use super::*;
-    use phux_client_core::layout::SplitDir;
+    use phux_client_core::layout::{ArrangementDoc, Group, LayoutState, SplitDir};
 
     fn handle_for(state: &mut ServerState, pane: phux_core::ids::ResourceId) {
         state

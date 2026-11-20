@@ -124,6 +124,25 @@ Malformed bytes still end the link. A hub relays a command to a satellite
 only when that satellite advertises the feature, and refuses
 `UNSUPPORTED_SATELLITE_ROUTE` otherwise.
 
+## Legacy TUI layouts
+
+An older client can still read and write the default
+`phux.tui.layout/v1/<session-id>` metadata key. A current server decodes the
+legacy v3 envelope at the metadata boundary and commits a session arrangement
+through the same authority as the typed API. Its reverse projection gives an
+older reader live handles and split topology. Current writers use the typed
+arrangement when both peers support it. Named projections remain opaque
+metadata for their own readers. The envelope can carry slot tabs as an
+optional field, which older readers skip. Clients of older servers still need the legacy
+codec and cannot infer typed support from an envelope.
+
+The bridge is part of the current wire major's compatibility promise. Its
+removal needs a wire-major compatibility change with an inventory of readers
+and writers and a tested migration for supported clients. Old upgrade blobs
+are a separate persisted format and retain their own readers and fixtures.
+The legacy codec shares the same shape between client and server without
+putting client presentation state in the server's production graph.
+
 ## Making a change compatible
 
 - A new resource kind is a new kind tag. A server streams it only to a

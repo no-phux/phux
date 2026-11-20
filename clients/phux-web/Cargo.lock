@@ -342,8 +342,8 @@ checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
 name = "phux-client-core"
 version = "0.160.0"
 dependencies = [
- "ciborium",
  "phux-core",
+ "phux-layout-codec",
  "phux-perf",
  "phux-protocol",
  "serde",
@@ -367,6 +367,17 @@ dependencies = [
 [[package]]
 name = "phux-design"
 version = "0.160.0"
+
+[[package]]
+name = "phux-layout-codec"
+version = "0.160.0"
+dependencies = [
+ "ciborium",
+ "phux-core",
+ "phux-protocol",
+ "serde",
+ "thiserror",
+]
 
 [[package]]
 name = "phux-perf"
