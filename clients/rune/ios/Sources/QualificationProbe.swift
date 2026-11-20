@@ -17,6 +17,8 @@ final class QualificationProbe {
     private var imported = false
     private var keyID: String?
     private var connectedEndpoint: String?
+    /// The last input gate written to `rune-input-gate.json`.
+    private var inputGate: Bool?
 
     func testInputContracts() async throws {
         #if targetEnvironment(simulator)
@@ -113,6 +115,9 @@ final class QualificationProbe {
         if let message = report["error"] as? String, !message.isEmpty {
             failure(message); return
         }
+        if progress.refusedAfterReady(refusals: report["input_refusals"] as? UInt64 ?? 0) {
+            failure("input refused after input_ready"); return
+        }
         injectInput(report, input: input)
         guard progress.injected, report["marker_seen"] as? Bool == true else { return }
         report["input_through_native"] = true
@@ -141,15 +146,26 @@ final class QualificationProbe {
     }
 
     private func injectInput(_ report: [String: Any], input: RuneInput) {
-        let ready = report["connected"] as? Bool == true &&
+        let shown = report["connected"] as? Bool == true &&
               report["session"] as? String == session &&
               (report["frames"] as? UInt64 ?? 0) > 0 &&
               input.context?.kind == "terminal" && input.context?.wanted == true && input.isFirstResponder
-        guard progress.claimInput(when: ready) else { return }
+        let inputReady = report["input_ready"] as? Bool == true
+        if shown && !progress.injected { recordInputGate(inputReady) }
+        guard progress.claimInput(shown: shown, inputReady: inputReady,
+                                  refusals: report["input_refusals"] as? UInt64 ?? 0) else { return }
         // The same UIKit override used by the system keyboard; not an
         // OS-generated keystroke/IME qualification claim.
         input.insertText(command)
         input.insertText("\n")
+    }
+
+    /// What the driver names if no report arrives: a frame is shown, and
+    /// whether the client has said input would reach it. Written on change.
+    private func recordInputGate(_ ready: Bool) {
+        guard inputGate != ready else { return }
+        inputGate = ready
+        try? write(["schema": 1, "frame_shown": true, "input_ready": ready], name: "rune-input-gate.json")
     }
 
     func active(_ active:Bool, bridge:NativeBridge) {

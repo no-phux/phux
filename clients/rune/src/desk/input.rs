@@ -251,6 +251,7 @@ impl Desk {
             sent
         });
         if !sent {
+            self.input_refusals += 1;
             return self.say(NoticeKind::Error, INPUT_PAUSED);
         }
         phux_perf::echo_hop::record("send");

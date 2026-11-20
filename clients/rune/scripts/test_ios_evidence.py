@@ -266,5 +266,39 @@ class EvidenceTests(unittest.TestCase):
                 sleep.assert_not_called()
 
 
+class InputGateTimeoutTests(unittest.TestCase):
+    """PHUX-834: the unchanged 90s timeout names a never-ready input gate."""
+
+    def timeout_message(self, gate):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            documents = root / "Documents"
+            documents.mkdir()
+            if gate is not None:
+                (documents / qualify.INPUT_GATE).write_text(json.dumps(gate))
+            lane = qualify.Qualification(root / "App", root / "phux", root, root)
+            lane.documents = documents
+            lane.require_alive = Mock()
+            lane.simctl = Mock()
+            clock = iter((0.0, 45.0, 90.0))
+            with patch.object(qualify.time, "monotonic", side_effect=lambda: next(clock)), \
+                    patch.object(qualify.time, "sleep"), \
+                    self.assertRaises(TimeoutError) as raised:
+                lane.collect_report(123)
+            lane.simctl.assert_not_called()
+            return str(raised.exception)
+
+    def test_a_shown_frame_that_never_became_input_ready_is_named(self):
+        message = self.timeout_message({"schema": 1, "frame_shown": True, "input_ready": False})
+        self.assertTrue(message.startswith("native qualification report not written within 90s"))
+        self.assertIn("input_ready never became true", message)
+
+    def test_other_timeouts_keep_the_original_message(self):
+        original = "native qualification report not written within 90s"
+        for gate in (None, {"schema": 1, "frame_shown": True, "input_ready": True}, ["junk"]):
+            with self.subTest(gate=gate):
+                self.assertEqual(self.timeout_message(gate), original)
+
+
 if __name__ == "__main__":
     unittest.main()

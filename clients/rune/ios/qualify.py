@@ -74,6 +74,21 @@ def marker_command(marker=MARKER):
     return f"printf '{escaped}'"
 
 
+INPUT_GATE = "rune-input-gate.json"
+
+
+def input_gate_reason(documents):
+    """Name the probe's input gate when a shown terminal never took input."""
+    try:
+        gate = json.loads((documents / INPUT_GATE).read_text())
+    except (OSError, ValueError):
+        return ""
+    if isinstance(gate, dict) and gate.get("frame_shown") is True and gate.get("input_ready") is False:
+        return ("; a terminal frame was shown but input_ready never became true"
+                " (the shown terminal's attach_terminal was never acknowledged)")
+    return ""
+
+
 def server_environment(scratch):
     home = scratch / "home"
     home.mkdir()
@@ -260,7 +275,7 @@ class Qualification:
         while not source.is_file():
             self.require_alive(pid)
             if time.monotonic() >= deadline:
-                raise TimeoutError("native qualification report not written within 90s")
+                raise TimeoutError("native qualification report not written within 90s" + input_gate_reason(documents))
             time.sleep(0.5)
         shutil.copy2(source, self.out / (prefix + source.name))
         report = json.loads((self.out / (prefix + source.name)).read_text())
@@ -313,7 +328,7 @@ class Qualification:
         self.finish_connection_diagnostics()
         self.simctl("terminate", self.udid, BUNDLE_ID, timeout=60)
         self.preserve_connection_diagnostics(prefixes=("",))
-        for name in ("rune-qualification.json", "rune-tree.json"):
+        for name in ("rune-qualification.json", "rune-tree.json", INPUT_GATE):
             (self.documents / name).unlink(missing_ok=True)
         marker = MARKER + "_RESUMED"
         self.diagnostic_prefixes.append("resume-")
