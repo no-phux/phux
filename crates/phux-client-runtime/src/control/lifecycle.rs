@@ -411,12 +411,18 @@ impl ControlPlane {
         self.live_connection_epoch = None;
         self.handshake_ready = false;
         self.error = Some(message.into());
-        self.strand_durable("the connection failed before the operation completed");
-        self.org_strand("the connection failed before the operation completed");
-        self.strand_extensions("the connection failed before the operation completed");
+        self.strand_in_flight("the connection failed before the operation completed");
         self.approvals_connection_ended();
         self.fail_pending("the connection failed before the server answered", false);
         self.set_status(Status::Failed);
+    }
+
+    /// Strand every durable, organization, and extension operation still
+    /// waiting on a server that will never answer it.
+    fn strand_in_flight(&mut self, reason: &str) {
+        self.strand_durable(reason);
+        self.org_strand(reason);
+        self.strand_extensions(reason);
     }
 
     /// The session ends at the consumer's request.
@@ -424,9 +430,7 @@ impl ControlPlane {
         self.discard_agent_delivery();
         self.live_connection_epoch = None;
         self.handshake_ready = false;
-        self.strand_durable("the client closed before the operation completed");
-        self.org_strand("the client closed before the operation completed");
-        self.strand_extensions("the client closed before the operation completed");
+        self.strand_in_flight("the client closed before the operation completed");
         self.fail_pending("the client closed before the server answered", false);
         if let Some(engine) = &self.engine {
             engine.reset_connection();

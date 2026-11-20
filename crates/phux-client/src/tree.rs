@@ -73,15 +73,6 @@ pub use phux_core::image::{ImageFormat, image_size};
 
 use reader::{Absorbed, Reader};
 
-/// The width and height a PNG's `IHDR` names, when `bytes` is one.
-#[must_use]
-pub fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
-    match image_size(bytes) {
-        Ok((ImageFormat::Png, width, height)) => Some((width, height)),
-        _ => None,
-    }
-}
-
 const REQUEST_SPAWN: u32 = 1;
 const REQUEST_PUBLISH: u32 = 3;
 const REQUEST_ATTACH: u32 = 4;
