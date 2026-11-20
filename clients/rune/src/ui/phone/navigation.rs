@@ -1,5 +1,5 @@
 //! Touch-first session browsing and contextual actions, separate from search
-//! commands. Keep chrome fixed while only the inventory scrolls.
+//! commands. Ordinary chrome stays fixed; large text scrolls the whole body.
 //!
 //! One inset and rhythm for the page, cards and their touch rows, all from
 //! the phone's tokens: the page margin, `xl` cards with rows nested inside
@@ -17,8 +17,10 @@ use crate::keys::{self, Shortcut};
 use crate::ui::tokens::{GlassSurface, Paint, Tier};
 use crate::ui::{badge, icons, pressable};
 
+mod connections;
 mod resource;
 use crate::ui::Cover;
+use connections::view as connections;
 use resource::resource_row;
 
 pub(in crate::ui) fn view(desk: &Desk, top: f32) -> Option<El> {
@@ -61,13 +63,16 @@ pub(in crate::ui) fn view(desk: &Desk, top: f32) -> Option<El> {
         .pr(s.s1)
         .gap(s.s2);
     // At the accessibility text sizes the title takes its own line under
-    // Done, as iOS's large titles do, so the two never collide.
+    // Done. Searching borrows that large title's room above the keyboard;
+    // the modal keeps its Sessions name and Done stays in reach.
+    let searching =
+        page == Page::Sessions && desk.phone.as_ref().is_some_and(|phone| phone.query.focused);
     let header = if p.type_scale >= crate::ui::tokens::layout::PHONE.stacked_title_scale {
         header
             .flex_wrap()
             .child(el().grow(1.0))
             .child(done)
-            .child(el().w_full().child(heading))
+            .children((!searching).then(|| el().w_full().child(heading)))
     } else {
         header
             .items_center()
@@ -234,15 +239,50 @@ fn sessions(desk: &Desk, p: &Look) -> El {
         .key("phone-session-new-label")
         .font(p.ty.label.medium())
         .color(ink)
-        .truncate()
+        .wrap()
+        .min_w(0.0)
+        .shrink()
         .a11y_hidden(),
     );
-    let footer = dock(footer, p);
+    let large_text = p.type_scale >= crate::ui::tokens::layout::PHONE.stacked_title_scale;
+    let footer = if large_text {
+        // Inline at the end of the list, not glass floating over its text.
+        footer.fill(p.roles.layer.raised.paint())
+    } else {
+        dock(footer, p)
+    };
     let footer = if desk.connection.client.is_some() {
         footer
     } else {
         footer.inert()
     };
+    // At large text sizes these controls can each be taller than the
+    // ordinary list viewport. Let the whole body scroll, including search
+    // and New session, rather than pinning oversized chrome over the list.
+    let connections = (!phone.query.focused).then(|| connections(desk, p));
+    if large_text {
+        return col()
+            .w_full()
+            .grow(1.0)
+            .min_h(0.0)
+            .px(crate::ui::tokens::phone::page_margin())
+            .pb(s.s3)
+            .child(
+                col()
+                    .key("phone-session-list")
+                    .w_full()
+                    .h_full()
+                    .min_h(0.0)
+                    .scroll(rune::ScrollSpec {
+                        stick_bottom: false,
+                    })
+                    .gap(s.s3)
+                    .child(search)
+                    .children(connections)
+                    .child(list)
+                    .child(footer),
+            );
+    }
     col()
         .w_full()
         .grow(1.0)
@@ -253,7 +293,7 @@ fn sessions(desk: &Desk, p: &Look) -> El {
         .child(search)
         // Search borrows the machine row's room so even a 320×568 phone
         // can show a complete result above the keyboard and floating dock.
-        .children((!phone.query.focused).then(|| connections(desk, p)))
+        .children(connections)
         .child(
             el().grow(1.0)
                 .min_h(0.0)
@@ -275,40 +315,6 @@ fn sessions(desk: &Desk, p: &Look) -> El {
                 )
                 .child(footer.pin(Some(0.0), None, Some(0.0), Some(0.0))),
         )
-}
-
-fn connections(desk: &Desk, p: &Look) -> El {
-    let dim = p.roles.text.dim.paint();
-    let label = format!(
-        "Connections · {} · {}",
-        desk.machines.label(),
-        desk.link_word()
-    );
-    control("phone-session-connections", &label, p, |d, tx| {
-        d.phone_action(Shortcut::Machines, tx)
-    })
-    .w_full()
-    .gap(p.space.s2)
-    .fill(p.roles.layer.raised.paint())
-    .child(
-        text(desk.machines.label().to_owned())
-            .font(p.ty.label.host(desk.machines.label()))
-            .color(dim)
-            .truncate()
-            .a11y_hidden(),
-    )
-    .child(el().grow(1.0))
-    .child(
-        text(desk.link_word())
-            .font(p.ty.caption)
-            .color(dim)
-            .a11y_hidden(),
-    )
-    .child(
-        rune::icon(&icons::CHEVRON_RIGHT, p.icon.size.md)
-            .color(dim)
-            .a11y_hidden(),
-    )
 }
 
 /// Every query word may match a different inventory field; never screen text.

@@ -17,6 +17,7 @@ import subprocess
 from urllib.parse import quote
 
 from visual_motion import MOTION_FRAMES, pane_motion_inventory
+from visual_navigation import navigation_exporter, navigation_inventory
 from visual_themes import theme_inventory
 
 
@@ -216,39 +217,14 @@ def settings_inventory():
     return cases
 
 
-def navigation_inventory():
-    cases = {
-        f"navigation/{state}-{theme}-{width}.png": (width, height, 1)
-        for state, theme, (width, height) in product(
-            ("inventory", "scrolled", "matching", "search"), THEMES,
-            ((393, 852), (320, 568), (768, 1024)))
-    }
-    cases.update({
-        f"navigation/retina-{scale}x-native-{native}-{width * scale}.png": (width, height, scale)
-        for width, height, scale, native in (
-            (320, 568, 2, "false"), (393, 852, 3, "false"),
-            (320, 340, 2, "true"), (393, 480, 3, "true"))
-    })
-    cases.update({
-        f"navigation/header-{state}-{theme}-native-{native}-{scale}x-{width * scale}.png":
-            (width, height, scale)
-        for state, theme, (width, height, scale, native) in product(
-            ("quiet", "waiting", "split", "keyboard", "large-text", "empty"), THEMES,
-            ((393, 852, 1, "false"), (320, 568, 1, "false"),
-             (393, 480, 2, "true"), (320, 340, 2, "true")))
-    })
-    cases.update(pane_motion_inventory(THEMES))
-    return cases
-
-
 def required_inventory():
-    """635 required cases: 192 Inbox, 226 Settings, 216 navigation, 1 resource.
+    """707 required cases: 192 Inbox, 226 Settings, 288 navigation, 1 resource.
 
     Values are (logical width, logical height, scale); additional cases are
     welcome, but cannot replace any maintained case.
     """
     return {
-        **inbox_inventory(), **settings_inventory(), **navigation_inventory(),
+        **inbox_inventory(), **settings_inventory(), **navigation_inventory(THEMES),
         "resources/mixed.png": (800, 600, 1),
     }
 
@@ -276,13 +252,7 @@ def exporter_for(family, stem):
             return "mobile_appearance_and_real_theme_palette_render_accept_and_cancel"
         return "settings_native_render_frames"
     if family == "navigation":
-        if stem.startswith("pane-motion-"):
-            return "phone_pane_motion_visual_review_frames"
-        if stem.startswith("header-"):
-            return "phone_header_visual_review_frames"
-        if stem.startswith("retina-"):
-            return "retina_navigation_renders_in_native_safe_area_and_desktop_phone_viewports"
-        return "session_browser_renders_realistic_dark_light_and_search_states"
+        return navigation_exporter(stem)
     return {
         "inbox": inbox_exporter_for(stem),
         "resources": "native_png_headless_renderer_smoke",
