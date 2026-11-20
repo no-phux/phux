@@ -153,18 +153,40 @@ def compile_assets(app, env, out, simulator):
     return icons
 
 
+def cargo_target_dir(env):
+    """Directory clippy already uses, so rust-cache can keep libghostty-vt-sys.
+
+    A caller-set ``CARGO_TARGET_DIR`` is a local override. Otherwise this is
+    the Rune workspace target. The CI job must not set the variable itself:
+    rust-cache hashes the job environment into the cache key.
+    """
+    configured = env.get("CARGO_TARGET_DIR")
+    return Path(configured) if configured else RUNE / "target"
+
+
 def build_rust(out, env, triple, release):
+    profile = "release" if release else "debug"
+    target_dir = cargo_target_dir(env)
+    rust_env = dict(env)
+    rust_env["CARGO_TARGET_DIR"] = str(target_dir)
+    # Temporary: one CI run records fingerprint dirty reasons. Remove after.
+    rust_env["CARGO_LOG"] = "cargo::core::compiler::fingerprint=info"
+    # A restored archive must not satisfy is_file() without this cargo run.
+    produced = target_dir / triple / profile / "libphux_rune_ios.a"
+    produced.unlink(missing_ok=True)
     command = ["cargo", "rustc", "--manifest-path", RUNE / "Cargo.toml", "-p",
                "phux-rune-ios", "--lib", "--locked", "--target", triple]
     if release:
         command.append("--release")
     output = run([*command, "--", "--print", "native-static-libs"],
-                 env, out, "rust", timeout=2400)
+                 rust_env, out, "rust", timeout=2400)
     flags = native_static_flags(output)
-    profile = "release" if release else "debug"
+    if not produced.is_file():
+        raise ValueError(f"cargo did not produce {produced}")
     library = out / "cargo" / triple / profile / "libphux_rune_ios.a"
-    if not library.is_file():
-        raise ValueError(f"cargo did not produce {library}")
+    if produced.resolve() != library.resolve():
+        library.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(produced, library)
     return library, flags, profile
 
 
@@ -233,7 +255,8 @@ def build(out, target, release):
     app = out / "Phux Rune.app"
     app.mkdir()  # Never overwrite a prior build or somebody else's bundle.
     env = apple_environment(out)
-    env.update(IPHONEOS_DEPLOYMENT_TARGET=MIN_IOS, CARGO_TARGET_DIR=str(out / "cargo"))
+    env["IPHONEOS_DEPLOYMENT_TARGET"] = MIN_IOS
+    env["CARGO_TARGET_DIR"] = str(cargo_target_dir(env))
     simulator = target == "simulator"
     triple = "aarch64-apple-ios-sim" if simulator else "aarch64-apple-ios"
     library, flags, profile = build_rust(out, env, triple, release)

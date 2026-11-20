@@ -75,25 +75,32 @@ class BuildTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="rune path ") as temporary:
             root = Path(temporary)
             ios, rune, out = root / "ios", root / "rune", root / "out"
+            caller_target = root / "caller-target"
             (ios / "Sources").mkdir(parents=True)
             (ios / "Sources/Host.swift").touch()
             (ios / "Bridge.h").touch()
             rune.mkdir()
             (rune / "Cargo.toml").write_text('[package]\nversion = "1.2.3"\n')
+            stale = caller_target / "aarch64-apple-ios-sim" / "debug" / "libphux_rune_ios.a"
+            stale.parent.mkdir(parents=True)
+            stale.write_bytes(b"stale")
             commands = []
 
             def fake_run(command, env, output, name, timeout=120, stdout_only=False):
                 commands.append([str(arg) for arg in command])
                 if name == "rust":
                     target = command[command.index("--target") + 1]
-                    library = output / "cargo" / target / "debug/libphux_rune_ios.a"
-                    library.parent.mkdir(parents=True)
-                    library.touch()
+                    self.assertEqual(Path(env["CARGO_TARGET_DIR"]), caller_target)
+                    library = Path(env["CARGO_TARGET_DIR"]) / target / "debug" / "libphux_rune_ios.a"
+                    self.assertFalse(library.exists(), "stale staticlib was not removed before cargo")
+                    library.parent.mkdir(parents=True, exist_ok=True)
+                    library.write_bytes(b"fresh-staticlib")
                     return "note: native-static-libs: -framework Security -lSystem -lSystem\n"
                 return {"sdk": "/an sdk", "revision": "abc123"}.get(name, "")
 
             with patch.multiple(build, IOS=ios, RUNE=rune), \
-                    patch.object(build, "apple_environment", return_value={}), \
+                    patch.object(build, "apple_environment", return_value={
+                        "CARGO_TARGET_DIR": str(caller_target)}), \
                     patch.object(build, "copy_resources", return_value=["Font.ttf"]), \
                     patch.object(build, "compile_assets", return_value={}), \
                     patch.object(build, "prepare_tailnet", return_value={
@@ -121,6 +128,9 @@ class BuildTests(unittest.TestCase):
             self.assertEqual(entitlements["application-identifier"], "PHUXSIMDEV." + qualify.BUNDLE_ID)
             self.assertEqual(entitlements["keychain-access-groups"], ["PHUXSIMDEV." + qualify.BUNDLE_ID])
             self.assertEqual(app, out / "Phux Rune.app")
+            linked = out / "cargo" / "aarch64-apple-ios-sim" / "debug" / "libphux_rune_ios.a"
+            self.assertEqual(linked.read_bytes(), b"fresh-staticlib")
+            self.assertIn(str(linked), swift)
 
     def test_command_runner_is_bounded_and_rooted(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -135,12 +145,22 @@ class BuildTests(unittest.TestCase):
     def test_release_device_rust_and_swift_targets(self):
         with tempfile.TemporaryDirectory() as temporary:
             out = Path(temporary)
+            rune = out / "rune"
             library = out / "cargo/aarch64-apple-ios/release/libphux_rune_ios.a"
-            library.parent.mkdir(parents=True)
-            library.touch()
-            with patch.object(build, "run", return_value="native-static-libs: -lSystem") as run:
+
+            def fake_run(command, env, output, name, timeout=120, stdout_only=False):
+                produced = Path(env["CARGO_TARGET_DIR"]) / "aarch64-apple-ios/release/libphux_rune_ios.a"
+                self.assertEqual(produced, rune / "target/aarch64-apple-ios/release/libphux_rune_ios.a")
+                self.assertFalse(produced.exists(), "stale staticlib was not removed before cargo")
+                produced.parent.mkdir(parents=True)
+                produced.write_bytes(b"device-staticlib")
+                return "native-static-libs: -lSystem"
+
+            with patch.multiple(build, RUNE=rune), \
+                    patch.object(build, "run", side_effect=fake_run) as run:
                 result = build.build_rust(out, {}, "aarch64-apple-ios", True)
             self.assertEqual(result, (library, ["-lSystem"], "release"))
+            self.assertEqual(library.read_bytes(), b"device-staticlib")
             self.assertIn("--release", run.call_args.args[0])
             with patch.object(build, "run", side_effect=["/device/sdk\n", ""]) as run:
                 build.build_swift(out, {}, out / "App", [], library, ["-lSystem"], False, True)
