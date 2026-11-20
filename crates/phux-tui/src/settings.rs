@@ -13,10 +13,10 @@ use std::time::Duration;
 use crate::render::chrome::status_bar::widgets::WidgetError;
 use phux_config::keybind::{BindingDiagnostic, Resolver};
 use phux_config::plugin::PluginManifest;
+use phux_config::plugin::actions::{self, PluginActionEntry};
 use phux_config::{Config, ConfigError, KeybindingsCfg, SidebarPosition};
 
 use crate::attach::paint::SidebarEdge;
-use crate::attach::plugin_actions::{self, PluginActionEntry};
 use crate::attach::plugin_panes::{self, PluginPaneEntry};
 use crate::attach::plugin_sidebar;
 use crate::render::chrome::sidebar::SidebarPainter;
@@ -209,7 +209,7 @@ impl TuiSettings {
                 Some(StatusBarPainter::error_line(config_error_line(&err)))
             }
         };
-        let plugin_actions = plugin_actions::entries_from_manifests(&manifests);
+        let plugin_actions = actions::entries_from_manifests(&manifests);
         let plugin_panes = plugin_panes::entries_from_manifests(&manifests);
         let plugin_sidebar = plugin_sidebar::specs_from_manifests(&manifests);
         let keybindings = merged_keybindings(cfg, &plugin_actions);
@@ -246,7 +246,7 @@ impl TuiSettings {
         // Widget composition is the one post-parse validation step that can
         // still reject the config.
         let status_bar = compose_status_bar(cfg, &manifests).map_err(|err| err.to_string())?;
-        let plugin_actions = plugin_actions::entries_from_manifests(&manifests);
+        let plugin_actions = actions::entries_from_manifests(&manifests);
         let plugin_panes = plugin_panes::entries_from_manifests(&manifests);
         let plugin_sidebar = plugin_sidebar::specs_from_manifests(&manifests);
         let keybindings = merged_keybindings(cfg, &plugin_actions);
@@ -345,7 +345,7 @@ fn enabled_manifests(cfg: &Config) -> Vec<PluginManifest> {
 /// Keybindings with plugin `keys` merged in (user config wins), cached.
 fn merged_keybindings(cfg: &Config, plugin_actions: &[PluginActionEntry]) -> KeybindingsCfg {
     let mut kb = cfg.keybindings.clone();
-    plugin_actions::merge_plugin_bindings(&mut kb, plugin_actions);
+    actions::merge_plugin_bindings(&mut kb, plugin_actions);
     for problem in crate::render::overlay::copy_mode::set_copy_mode_keys(&kb.modes) {
         tracing::warn!("{problem}");
     }

@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use phux_config::loader as config_loader;
+use phux_config::plugin::actions::{platforms_allow, supported_actions};
 use phux_config::plugin::{self, PluginManifestAction};
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
@@ -322,19 +323,12 @@ pub struct ConfiguredAction {
 /// List platform-compatible actions in the local configuration.
 pub fn configured_actions(config_path: &Path) -> Result<Vec<ConfiguredAction>, PluginActionError> {
     let cfg = config_loader::load_from(config_path)?;
-    Ok(plugin::load_enabled_manifests(config_path, &cfg.plugins)
-        .into_iter()
-        .filter(|manifest| platforms_allow(manifest.platforms.as_deref()))
-        .flat_map(|manifest| {
-            manifest
-                .actions
-                .into_iter()
-                .filter(|action| platforms_allow(action.platforms.as_deref()))
-                .map(move |action| ConfiguredAction {
-                    plugin: manifest.id.clone(),
-                    id: action.id,
-                    title: action.title,
-                })
+    let manifests = plugin::load_enabled_manifests(config_path, &cfg.plugins);
+    Ok(supported_actions(&manifests)
+        .map(|(manifest, action)| ConfiguredAction {
+            plugin: manifest.id.clone(),
+            id: action.id.clone(),
+            title: action.title.clone(),
         })
         .collect())
 }
@@ -388,21 +382,6 @@ fn resolve_action(
         return Ok((manifest.plugin_root, action));
     }
     Err(PluginActionError::PluginNotFound(plugin_id.clone()))
-}
-
-/// Does this declaration allow execution on this machine?
-#[must_use]
-pub fn platforms_allow(platforms: Option<&[plugin::PluginPlatform]>) -> bool {
-    platforms.is_none_or(|platforms| {
-        platforms.iter().any(|platform| {
-            use plugin::PluginPlatform::{Linux, Macos, Windows};
-            match platform {
-                Linux => cfg!(target_os = "linux"),
-                Macos => cfg!(target_os = "macos"),
-                Windows => cfg!(target_os = "windows"),
-            }
-        })
-    })
 }
 
 #[cfg(test)]

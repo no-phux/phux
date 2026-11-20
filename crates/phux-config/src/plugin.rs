@@ -1,5 +1,6 @@
 //! Declarative plugin manifest parsing for phux config consumers.
 
+pub mod actions;
 mod lint;
 mod loader;
 mod profile;

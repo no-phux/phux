@@ -1,6 +1,8 @@
 //! Plugin handlers: manifest actions run as jobs, manifest panes opened as
 //! terminals.
 
+use phux_config::plugin::actions::plugin_action_target;
+
 use crate::attach::actions::{PendingSplit, PendingWindow, SplitHost};
 use crate::attach::input_dispatch::args::str_arg;
 use crate::attach::input_dispatch::dispatch::{
@@ -24,7 +26,7 @@ pub(in crate::attach) fn plugin_action(
         ..
     }: ActionCall<'_, '_>,
 ) {
-    let Some((plugin, action_id)) = plugin_actions::plugin_action_target(&resolved.args) else {
+    let Some((plugin, action_id)) = plugin_action_target(&resolved.args) else {
         tracing::warn!(
             args = ?resolved.args,
             "plugin-action missing/bad `plugin`/`id` args",

@@ -3,6 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use phux_config::plugin::actions::PluginActionEntry;
 use phux_protocol::ResourceId;
 
 use crate::attach::actions::{PendingSplit, PendingWindow};
@@ -10,7 +11,6 @@ use crate::attach::focus::FocusHistory;
 use crate::attach::jobs::Jobs;
 use crate::attach::paint::SidebarReservation;
 use crate::attach::pane_state::AttentionNavigation;
-use crate::attach::plugin_actions::PluginActionEntry;
 use crate::attach::plugin_panes::PluginPaneEntry;
 use crate::attach::sidebar_zones::PeerInputs;
 use crate::layout::{ArrangementDoc, SplitDir};

@@ -43,7 +43,7 @@ mod restore_hint;
 // vocabulary the driver and its siblings both read; see the module doc.
 mod pane_state;
 mod peer_arrangements;
-pub mod plugin_actions;
+mod plugin_actions;
 pub mod plugin_panes;
 pub mod plugin_sidebar;
 mod review;

@@ -81,7 +81,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         // ADR-0147: built-in actions first dismiss the floating overlay; for
         // `kill-pane` that is the whole action. An extension must not kill a
         // floating terminal as an implicit side effect of invocation.
-        let extension = resolved.action == crate::attach::plugin_actions::PLUGIN_ACTION_NAME;
+        let extension = resolved.action == phux_config::plugin::actions::PLUGIN_ACTION_NAME;
         let dismissed = if extension || resolved.action == "command-palette" {
             false
         } else {
