@@ -329,6 +329,12 @@ impl Topology {
         self.sessions.iter().find(|session| session.name == name)
     }
 
+    /// The session entry whose live id is `id`.
+    #[must_use]
+    pub fn session(&self, id: u32) -> Option<&SessionDescriptor> {
+        self.sessions.iter().find(|session| session.id == id)
+    }
+
     /// The session entry keyed `key`.
     #[must_use]
     pub fn session_keyed(&self, key: &SessionKey) -> Option<&SessionDescriptor> {

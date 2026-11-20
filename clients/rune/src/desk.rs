@@ -70,6 +70,7 @@ mod splits;
 pub mod surfaces;
 mod tabs;
 pub mod updates;
+mod worker;
 mod worktree;
 
 pub use layout::SplitPath;

@@ -78,7 +78,6 @@ icon!(
     "M13 3.5v5a1 1 0 0 1-1 1H3.5M6 6.5l-3 3 3 3"
 );
 icon!(CHECK, "phux-check", "M3.5 8.5l3 3 6-7");
-icon!(ARROW_RIGHT, "phux-arrow-right", "M3 8h10M9 4l4 4-4 4");
 icon!(ARROW_UP, "phux-arrow-up", "M8 13V3M4 7l4-4 4 4");
 icon!(ARROW_DOWN, "phux-arrow-down", "M8 3v10M4 9l4 4 4-4");
 icon!(BOLT, "phux-bolt", "M9 2L3.5 9h4L7 14l5.5-7h-4z");
@@ -177,21 +176,3 @@ shape!(
     r#"<circle cx="8" cy="3.7" r="0.8" fill="currentColor"/><circle cx="11.04" cy="4.96" r="0.8" fill="currentColor"/><circle cx="12.3" cy="8" r="0.8" fill="currentColor"/><circle cx="11.04" cy="11.04" r="0.8" fill="currentColor"/><circle cx="8" cy="12.3" r="0.8" fill="currentColor"/><circle cx="4.96" cy="11.04" r="0.8" fill="currentColor"/><circle cx="3.7" cy="8" r="0.8" fill="currentColor"/><circle cx="4.96" cy="4.96" r="0.8" fill="currentColor"/>"#
 );
 icon!(STATUS_ENDED, "phux-status-ended", "M4.5 8h7");
-
-#[allow(dead_code, reason = "right-to-left layout reads it")]
-/// Whether `icon` points along the reading direction, so a right-to-left
-/// layout mirrors it (§1.11).
-pub fn mirrors(icon: &Icon) -> bool {
-    [
-        &CHEVRON_RIGHT,
-        &CHEVRON_LEFT,
-        &ARROW_RIGHT,
-        &ARROW_LEFT,
-        &BRING,
-        &RETURN,
-        &BACKSPACE,
-        &PROMPT,
-    ]
-    .iter()
-    .any(|known| std::ptr::eq(*known, icon))
-}

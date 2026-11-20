@@ -132,17 +132,7 @@ impl Updater {
     }
 
     fn worker(&self, job: impl FnOnce(&dyn Fn(Done)) + Send + 'static) {
-        let sender = self.done.0.clone();
-        let waker = self.waker.clone();
-        std::thread::spawn(move || {
-            let send = |done| {
-                let _ = sender.send(done);
-                if let Some(waker) = &waker {
-                    waker();
-                }
-            };
-            job(&send);
-        });
+        super::worker::spawn(self.done.0.clone(), self.waker.clone(), job);
     }
 
     /// Rune's setup hook: clear what a reboot left, check now, and every six

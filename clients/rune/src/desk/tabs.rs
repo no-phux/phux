@@ -360,16 +360,7 @@ impl Desk {
             return;
         };
         let (group, locked) = (tab.id, !tab.locked);
-        let session = self.connection.client.as_ref().and_then(|client| {
-            let id = client.selected_session()?;
-            self.connection
-                .topology
-                .as_ref()?
-                .sessions
-                .iter()
-                .find(|s| s.id == id)?
-                .key
-        });
+        let session = self.selected_key();
         let (Some(client), Some(session)) = (&self.connection.client, session) else {
             return;
         };
@@ -379,20 +370,7 @@ impl Desk {
     }
 
     pub fn close_session(&mut self) {
-        let Some(id) = self
-            .connection
-            .client
-            .as_ref()
-            .and_then(|c| c.selected_session())
-        else {
-            return;
-        };
-        let key = self
-            .connection
-            .topology
-            .as_ref()
-            .and_then(|t| t.sessions.iter().find(|s| s.id == id)?.key);
-        if let Some(key) = key {
+        if let Some(key) = self.selected_key() {
             self.close_session_key(key);
         }
     }
@@ -419,16 +397,8 @@ impl Desk {
     }
 
     pub fn rename_selected_session(&mut self) {
-        let Some(id) = self
-            .connection
-            .client
-            .as_ref()
-            .and_then(|c| c.selected_session())
-        else {
-            return;
-        };
-        let session = self.connection.topology.as_ref().and_then(|t| {
-            let session = t.sessions.iter().find(|s| s.id == id)?;
+        let session = self.connection.client.as_ref().and_then(|client| {
+            let session = self.selected_entry(client)?;
             Some((session.key?, session.name.clone()))
         });
         if let Some((key, name)) = session {

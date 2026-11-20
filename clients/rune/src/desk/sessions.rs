@@ -2,10 +2,11 @@
 //! terminal or session, step through them.
 
 use phux_client_runtime::control::{
-    ControlOptions, PredictionStyle, SessionRecovery, SpawnRequest, Status, Topology,
+    ControlOptions, PredictionStyle, SessionDescriptor, SessionRecovery, SpawnRequest, Status,
+    Topology,
 };
 use phux_client_runtime::{Client, ClientOptions, Runtime, Target};
-use phux_protocol::ids::ResourceId;
+use phux_protocol::ids::{ResourceId, SessionKey};
 use phux_protocol::input::focus::FocusEvent;
 use phux_protocol::wire::frame::{AttachTarget, RolePolicy};
 use rune::Tx;
@@ -41,10 +42,7 @@ impl Desk {
         let Some(client) = &self.connection.client else {
             return Vec::new();
         };
-        let Some(key) = client.selected_session().and_then(|id| {
-            let topology = self.connection.topology.as_ref()?;
-            topology.sessions.iter().find(|s| s.id == id)?.key
-        }) else {
+        let Some(key) = self.selected_entry(client).and_then(|s| s.key) else {
             return Vec::new();
         };
         client
@@ -72,14 +70,22 @@ impl Desk {
         }
     }
 
+    /// The topology entry of the session `client` has selected.
+    pub(super) fn selected_entry(&self, client: &Client) -> Option<&SessionDescriptor> {
+        self.connection
+            .topology
+            .as_ref()?
+            .session(client.selected_session()?)
+    }
+
+    /// The selected session's key, once the server has keyed it.
+    pub(super) fn selected_key(&self) -> Option<SessionKey> {
+        self.selected_entry(self.connection.client.as_ref()?)?.key
+    }
+
     pub fn selected_session_name(&self) -> Option<String> {
-        let id = self.connection.client.as_ref()?.selected_session()?;
-        let topology = self.connection.topology.as_ref()?;
-        topology
-            .sessions
-            .iter()
-            .find(|s| s.id == id)
-            .map(|s| s.name.clone())
+        let client = self.connection.client.as_ref()?;
+        Some(self.selected_entry(client)?.name.clone())
     }
 
     pub fn new_terminal(&mut self) {
