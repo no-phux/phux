@@ -1,16 +1,21 @@
-//! Pointer drags over client chrome: the sidebar edge and the two window
-//! strips. Pane-divider drags (ADR-0048) share the grab slot ([`DragGrab`]).
+//! Pointer drags over client chrome: the sidebar edge, the two window
+//! strips, and a pane's title. Pane-divider drags (ADR-0048) share the grab
+//! slot ([`DragGrab`]).
 //!
 //! Everything here is synchronous and client-local; the one wire effect, a
 //! reordered layout broadcast on release, is [`DragCommit::broadcast`]. A
 //! dragged sidebar width lasts for the attach and is never written to
 //! `config.toml`.
 
+use std::collections::HashMap;
+
+use phux_protocol::ResourceId;
 use phux_protocol::input::mouse::MouseEvent;
 
 use super::ctx::{DispatchCtx, DragGrab, WindowGrab, WindowStrip};
 use super::dispatch::{drag_resize, quantize_cell};
-use crate::attach::paint::{SidebarEdge, SidebarReservation, sidebar_rect};
+use crate::attach::paint::{SidebarEdge, SidebarReservation, content_rect, sidebar_rect};
+use crate::attach::pane_state::PaneSlot;
 use crate::render::chrome::sidebar::{SidebarHit, hit_test};
 
 /// The narrowest a dragged sidebar may get. Narrower than this, a window
@@ -18,12 +23,14 @@ use crate::render::chrome::sidebar::{SidebarHit, hit_test};
 pub(super) const MIN_DRAGGED_SIDEBAR_COLS: u16 = 16;
 
 /// What releasing a grab asks the async caller to do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(super) struct DragCommit {
     /// The release changed what is on screen.
     pub layout_changed: bool,
     /// The release changed shared layout that other clients must see.
     pub broadcast: bool,
+    /// The pane focus moves to: the one a dragged pane joined.
+    pub focus: Option<ResourceId>,
 }
 
 /// Advance `grab` by one button-motion event. Returns whether the screen
@@ -34,6 +41,9 @@ pub(super) fn motion(ctx: &mut DispatchCtx<'_>, grab: &DragGrab, mouse: &MouseEv
         DragGrab::Divider(divider) => drag_resize(ctx, mouse, divider),
         DragGrab::SidebarEdge => resize_sidebar(ctx, quantize_cell(mouse.x)),
         DragGrab::Window(_) => preview_window_drop(ctx, mouse),
+        // ponytail: no drop marker while a pane is carried; outline the
+        // target if a drop on the wrong pane turns out to be easy to make.
+        DragGrab::Pane(_) => false,
     }
 }
 
@@ -50,6 +60,7 @@ pub(super) fn release(
         DragGrab::Divider(_) => DragCommit {
             layout_changed: false,
             broadcast: true,
+            focus: None,
         },
         // Width is client-local presentation; motion already applied it.
         DragGrab::SidebarEdge => DragCommit::default(),
@@ -60,7 +71,78 @@ pub(super) fn release(
                 // strip even when the order did not change.
                 layout_changed: true,
                 broadcast: moved,
+                focus: None,
             }
+        }
+        DragGrab::Pane(pane) => {
+            let joined = join_slot(ctx, pane, mouse);
+            DragCommit {
+                layout_changed: joined.is_some(),
+                broadcast: joined.is_some(),
+                focus: joined,
+            }
+        }
+    }
+}
+
+/// The pane whose title, in the rule above it, is under the pointer: the
+/// handle a pane is dragged by onto another pane's slot. Only where the
+/// drop can be kept: an arrangement record on a server that keeps slot
+/// tabs. Elsewhere a press there falls through to the divider.
+pub(super) fn pane_title_at(
+    ctx: &DispatchCtx<'_>,
+    panes: &HashMap<ResourceId, PaneSlot>,
+    layout: &crate::layout::LayoutState,
+    content: crate::layout::Rect,
+    mouse: &MouseEvent,
+) -> Option<ResourceId> {
+    if !ctx.slot_tabs {
+        return None;
+    }
+    let (x, y) = (quantize_cell(mouse.x), quantize_cell(mouse.y));
+    let multi = crate::attach::multi_pane::compute_layout_in(layout, content, ctx.viewport);
+    multi.rects.iter().find_map(|(id, rect)| {
+        if rect.y.checked_sub(1) != Some(y) {
+            return None;
+        }
+        let label = crate::attach::pane_state::pane_label(ctx.engine_kernel, panes, id)?;
+        let (start, end) = crate::render::chrome::dividers::title_span(*rect, &label, ctx.theme)?;
+        (start..end).contains(&x).then(|| id.clone())
+    })
+}
+
+/// Pick up `pane` by its title.
+pub(super) fn begin_pane_drag(ctx: &mut DispatchCtx<'_>, pane: ResourceId) {
+    tracing::debug!(?pane, "pane drag: grabbed");
+    *ctx.drag = Some(DragGrab::Pane(pane));
+}
+
+/// Make `pane` the last tab of the slot of the pane under the release
+/// point. That pane, or `None` when the drop lands on no other pane.
+fn join_slot(
+    ctx: &mut DispatchCtx<'_>,
+    pane: &ResourceId,
+    mouse: &MouseEvent,
+) -> Option<ResourceId> {
+    use crate::attach::multi_pane::{RouteDecision, route_mouse_event};
+    let content = content_rect(ctx.viewport, ctx.bar, ctx.sidebar);
+    let target = match route_mouse_event(
+        &*ctx.workspace.render_group(ctx.zoomed.as_ref())?,
+        content,
+        ctx.viewport,
+        mouse,
+    ) {
+        RouteDecision::Pane { target, .. } if target != *pane => target,
+        _ => return None,
+    };
+    match ctx.workspace.add_tab(pane, &target) {
+        Ok(()) => {
+            tracing::debug!(?pane, ?target, "pane drag: joined slot");
+            Some(target)
+        }
+        Err(err) => {
+            tracing::debug!(?pane, ?target, error = %err, "pane drag: refused");
+            None
         }
     }
 }

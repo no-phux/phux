@@ -102,8 +102,10 @@ impl PaneLabel<'_> {
 }
 
 mod cells;
+mod drag_handle;
 mod emit;
 use cells::{ChromeCells, Sym};
+pub use drag_handle::title_span;
 use emit::emit_cells;
 
 thread_local! {
