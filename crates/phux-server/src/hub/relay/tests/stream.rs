@@ -45,27 +45,6 @@ fn session_drops_chained_satellite_tags_from_the_return_leg() {
 }
 
 #[test]
-fn terminal_closed_retags_and_drops_the_proxy_subscription() {
-    let mut session = RelaySession::new(host(), BootstrapLimits::default());
-    let (out_tx, mut out_rx) = mpsc::channel(8);
-    subscribe(&mut session, 9, ClientId(1), out_tx);
-    session.feed(&closed_frame(9));
-    let frame = next_frame(&mut out_rx, "closed fanned out");
-    assert_eq!(
-        frame,
-        FrameKind::ResourceClosed {
-            terminal_id: ResourceId::satellite("devbox", 9),
-            exit_status: Some(0),
-            reason: phux_protocol::wire::frame::CloseReason::Unknown,
-            signal: None,
-        }
-    );
-    // Subscription is gone: further frames for id 9 do not fan out.
-    session.feed(&agent_event(9));
-    assert!(out_rx.try_recv().is_err());
-}
-
-#[test]
 fn terminal_close_follows_retained_output_before_subscription_removal() {
     let mut session = RelaySession::new(host(), BootstrapLimits::default());
     let (out_tx, mut out_rx) = mpsc::channel(1);

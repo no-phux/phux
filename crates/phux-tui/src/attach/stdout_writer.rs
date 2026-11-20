@@ -565,16 +565,6 @@ mod tests {
         assert!(queued >= 3, "only {queued} of 6 frames were queued");
     }
 
-    /// A one-off giant buffer is dropped, not pooled.
-    #[test]
-    fn oversized_buffers_are_not_recycled() {
-        let mut sink = detached_sink(vec![Vec::with_capacity(SPARE_MAX_BYTES + 1)]);
-        let mut q = sink.shared.queue.lock().expect("lock");
-        StdoutSink::reclaim(&mut sink.recycled, &mut q);
-        drop(q);
-        assert!(sink.recycled.is_empty());
-    }
-
     /// Recycling engages for a large frame accumulated by many small writes
     /// (doubling growth): the limit is sized from capacity, so a frame-sized
     /// allocation survives in the pool instead of one being minted per frame.

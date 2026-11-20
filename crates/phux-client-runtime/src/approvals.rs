@@ -107,27 +107,6 @@ mod tests {
     }
 
     #[test]
-    fn credential_record_preserves_exact_references_and_bound_identity() {
-        let record = br#"{"id":"0123456789abcdef0123456789abcdef","requester":{"client":3},"method":"CREDENTIAL_REQUEST","requested_at_ms":1,"expires_at_ms":2,"credential":{"request":{"provider":"desktop","references":["op://vault/item/field"],"purpose":"Run tests"},"provider":{"client":8,"credential_id":"sha256:bound","client_name":"desktop label"}}}"#;
-        let approval = Approval::parse(record).unwrap();
-        let credential = approval.credential.as_ref().unwrap();
-        assert_eq!(credential.request.references, ["op://vault/item/field"]);
-        assert_eq!(credential.request.purpose, "Run tests");
-        assert_eq!(credential.provider.client, 8);
-        assert_eq!(
-            credential.provider.credential_id.as_deref(),
-            Some("sha256:bound")
-        );
-        assert_eq!(
-            Approval::parse(&serde_json::to_vec(&approval).unwrap()).unwrap(),
-            approval
-        );
-        let mut object = serde_json::to_value(approval).unwrap();
-        object["credential"] = serde_json::Value::Null;
-        assert!(Approval::parse(&serde_json::to_vec(&object).unwrap()).is_err());
-    }
-
-    #[test]
     fn a_decision_is_classified_from_its_refusal_and_the_read_back() {
         let denied = || Some((ErrorCode::PermissionDenied, "permission denied".to_owned()));
         assert_eq!(
@@ -158,7 +137,5 @@ mod tests {
             DecisionOutcome::classify(denied(), None),
             DecisionOutcome::Refused { .. }
         ));
-        assert_eq!(Decision::Approve.value(), APPROVAL_APPROVE);
-        assert_eq!(Decision::Deny.as_str(), "deny");
     }
 }

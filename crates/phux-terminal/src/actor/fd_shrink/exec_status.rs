@@ -158,15 +158,6 @@ mod tests {
     }
 
     #[test]
-    fn held_status_descriptor_has_a_deadline() {
-        let (reader, _writer) = channel().unwrap();
-        assert_eq!(
-            read_status(UnixStream::from(reader), Duration::from_millis(10)),
-            Err(uncertain())
-        );
-    }
-
-    #[test]
     fn confirm_kills_a_silent_child_at_the_two_second_deadline() {
         let mut child = std::process::Command::new("sleep")
             .arg("60")

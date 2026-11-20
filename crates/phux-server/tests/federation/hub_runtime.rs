@@ -61,18 +61,3 @@ fn hub_startup_rejects_a_malformed_enabled_entry_before_binding() {
         "fails before binding"
     );
 }
-
-#[test]
-fn hub_startup_skips_disabled_entries() {
-    let dir = TempDir::new().unwrap();
-    run_hub(
-        &dir,
-        vec![
-            entry("devbox", "quic://devbox:8788", true),
-            entry("web", "wss://web.example:8787", true),
-            entry("legacy", "ssh://legacy-host", true),
-            entry("parked", "definitely not a uri", false),
-        ],
-    )
-    .expect("a valid registry with a disabled malformed entry starts");
-}

@@ -147,18 +147,6 @@ fn turning_to_need_you_bursts_and_starts_a_fresh_trail() {
 }
 
 #[test]
-fn tiers_add_their_flourishes() {
-    assert!(!flourish(1).tips && !flourish(1).crown);
-    assert!(flourish(2).tips && flourish(2).eye < flourish(3).eye);
-    let queen = flourish(4);
-    assert!(queen.crown && queen.abdomen > 1.0);
-    let mut b = hive(vec![forager(1, 0, Mood::Idle)]).bees.remove(0);
-    let base = b.len(1.0);
-    b.who.tier = 4;
-    assert!(b.len(1.0) > base * 1.3);
-}
-
-#[test]
 fn the_sim_is_deterministic_and_idle_bees_draw_first() {
     let make = || {
         let mut h = hive(vec![

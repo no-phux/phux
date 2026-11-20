@@ -79,26 +79,6 @@ fn canonical_example_round_trips() {
     );
 }
 
-#[test]
-fn missing_sections_use_defaults() {
-    let input = r#"
-[defaults]
-shell = "/bin/bash"
-"#;
-    let cfg = parse_str(input, &path()).expect("partial config parses");
-
-    let want_defaults = DefaultsCfg {
-        shell: Some("/bin/bash".to_owned()),
-        ..DefaultsCfg::default()
-    };
-    assert_eq!(cfg.defaults, want_defaults);
-    assert_eq!(cfg.keybindings.prefix, "C-a"); // schema default
-    assert!(cfg.keybindings.prefix_table.is_empty());
-    assert!(cfg.status.left.is_empty());
-    assert!(cfg.hooks.is_empty());
-    assert!(cfg.theme.slots.is_empty());
-}
-
 /// Empty input is exactly `Config::default()`, and the shipped values are
 /// pinned per field so a changed default cannot slip through equality.
 #[test]

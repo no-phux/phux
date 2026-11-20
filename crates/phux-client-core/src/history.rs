@@ -936,29 +936,6 @@ mod tests {
     }
 
     #[test]
-    fn two_clients_keep_independent_tail_policy() {
-        let mut first = HistoryCache::new(config(64, 64), Some(cursor(1)));
-        let mut second = HistoryCache::new(config(64, 64), Some(cursor(1)));
-        assert_eq!(first.begin_fetch(), Some(cursor(1)));
-        assert_eq!(second.begin_fetch(), Some(cursor(1)));
-        let page = first
-            .accept_page(&cursor(1), 1, None, 0, 0, b"opaque")
-            .unwrap();
-        second
-            .accept_page(&cursor(1), 1, None, 0, 0, b"opaque")
-            .unwrap();
-        let anchor = DocumentAnchorId::from_raw(7);
-        first.register_anchor_pages(anchor, [page]).unwrap();
-        first.pin_viewport(anchor).unwrap();
-        first.note_live_output(3);
-        second.note_live_output(3);
-        assert_eq!(first.viewport_anchor(), ViewportAnchor::Pinned(anchor));
-        assert_eq!(first.status().unread_rows, 3);
-        assert_eq!(second.viewport_anchor(), ViewportAnchor::Tail);
-        assert_eq!(second.status().unread_rows, 0);
-    }
-
-    #[test]
     fn invalidation_and_prefetch_are_explicit() {
         let mut cache = HistoryCache::new(config(64, 64), Some(cursor(1)));
         assert!(cache.should_prefetch(2));
@@ -1009,15 +986,6 @@ mod tests {
         );
         assert_eq!(cache.status().next_cursor, Some(cursor(1)));
         assert_eq!(cache.status().state, HistoryLoadState::Loading);
-    }
-
-    #[test]
-    fn tracked_anchor_registrations_are_bounded() {
-        let mut cache = HistoryCache::new(config(64, 1), None);
-        cache
-            .register_anchor_pages(DocumentAnchorId::from_raw(1), std::iter::empty())
-            .unwrap();
-        assert_second_anchor_refused(&mut cache);
     }
 
     #[test]

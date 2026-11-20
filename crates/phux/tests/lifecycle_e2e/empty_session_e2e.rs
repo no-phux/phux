@@ -71,12 +71,8 @@ fn new_empty_starts_only(name: &str) {
     drop(dir);
 }
 
-#[test]
-#[ignore = "spawns a real phux server; run via `just e2e`."]
-fn new_empty_without_a_server_creates_only_the_requested_session() {
-    new_empty_starts_only("parked");
-}
-
+/// Named `default`, the name an ordinary auto-spawn seeds: a seeded
+/// session would collide with it or sit beside it.
 #[test]
 #[ignore = "spawns a real phux server; run via `just e2e`."]
 fn new_empty_named_default_without_a_server_succeeds() {

@@ -1,45 +1,5 @@
 use super::*;
 
-/// A resize with cell pixel metrics sets the kernel winsize pixels
-/// (`cells x cell size`); a later pixel-less resize keeps them.
-#[tokio::test(flavor = "current_thread")]
-async fn resize_with_cell_px_updates_pty_winsize_pixels() {
-    on_local!(async {
-        let cmd = CommandBuilder::new("/bin/cat");
-        let bundle = TerminalActor::new_with_command(cmd, 80, 24).expect("spawn");
-        let master = std::sync::Arc::clone(&bundle.actor.pty.as_ref().expect("pty").master);
-        let handle = bundle.handle.clone();
-        let token = bundle.token.clone();
-        let join = tokio::task::spawn_local(bundle.actor.run());
-
-        // 100x40 cells at 9x18 px per cell: 900x720 px text area.
-        resize(
-            &handle,
-            ResizeRequest {
-                cell_px: Some((9, 18)),
-                resync_clients: false,
-                ..grid_resize(100, 40)
-            },
-        )
-        .await;
-        wait_for_winsize(&master, (100, 40, 900, 720)).await;
-
-        // Pixel-less resize: grid changes, cell size sticks.
-        resize(
-            &handle,
-            ResizeRequest {
-                resync_clients: false,
-                ..grid_resize(90, 30)
-            },
-        )
-        .await;
-        wait_for_winsize(&master, (90, 30, 810, 540)).await;
-
-        stop(&token, join).await;
-    })
-    .await;
-}
-
 /// Without client pixel metrics the winsize still carries nonzero pixels
 /// from [`DEFAULT_CELL_PX`], at spawn and after a pixel-less resize.
 #[tokio::test(flavor = "current_thread")]

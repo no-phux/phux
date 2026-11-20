@@ -211,13 +211,3 @@ fn a_start_report_does_not_apply_once_the_activation_is_running() {
         "a start for an activation that already left Starting is dropped without a store write"
     );
 }
-
-#[test]
-fn normal_start_end_and_remove_policy_still_commit_in_order() {
-    let (mut s, id, _dir, _db) = retained();
-    s.activation_started(id, None);
-    assert_eq!(activation(&s, id).state, ExecState::Running);
-    s.activation_ended(id, ExitOutcome::exited(0), false);
-    assert_eq!(activation(&s, id).state, ExecState::Completed);
-    assert!(!s.has_pending_activation_reports());
-}

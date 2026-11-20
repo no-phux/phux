@@ -56,17 +56,6 @@ fn demo_cast() -> PathBuf {
         .expect("the committed demo cast must exist")
 }
 
-/// A committed asciicast v3 recording made by asciinema (relative event
-/// intervals, grid nested under `term`).
-fn v3_cast() -> PathBuf {
-    crate::runner::manifest_dir()
-        .join("../../docs/assets/pi-live-fleet.cast")
-        .canonicalize()
-        .expect("the committed v3 cast must exist")
-}
-
-const V3_HEADER: (u64, u64) = (140, 40);
-
 /// The fixture: a 100x30 header, a marker, a resize to 64x18, a second
 /// marker, and the line-feed probe.
 fn fixture_cast() -> PathBuf {
@@ -255,21 +244,6 @@ fn recorded_bytes_reach_the_pane_untranslated() {
         Some(LF_PROBE_NEXT_ROW),
         "a bare line feed must not have returned the carriage; screen={lines:?}"
     );
-}
-
-#[test]
-#[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
-fn an_asciicast_v3_recording_plays_too() {
-    let server = ServerGuard::start("play");
-    let pane = server.play(&["--speed", "50", "--idle-limit", "0.1"], &v3_cast(), None);
-    server.wait_for(&pane, "the v3 header's grid", |server, pane| {
-        server.size(pane) == Some(V3_HEADER)
-    });
-    server.wait_for(&pane, "painted output", |server, pane| {
-        server
-            .screen(pane)
-            .is_some_and(|(_, _, lines)| lines.iter().any(|line| !line.trim().is_empty()))
-    });
 }
 
 #[test]

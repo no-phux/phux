@@ -73,14 +73,6 @@ fn tolerates_unknown_fields_from_a_newer_remote() {
 }
 
 #[test]
-fn the_document_is_found_past_startup_noise() {
-    // A shell startup file that prints on a non-interactive login must
-    // not hide the one-line document.
-    let parsed = PairReport::parse("Welcome to box\n{\"token\":\"t\"}\n\n").expect("parse");
-    assert_eq!(parsed.token, "t");
-}
-
-#[test]
 fn refuses_a_document_with_no_token() {
     assert!(PairReport::parse(r#"{"cert_fingerprint":"AB"}"#).is_err());
     assert!(PairReport::parse(r#"{"token":""}"#).is_err());
@@ -128,15 +120,6 @@ fn operator_endpoint_override_is_the_only_candidate() {
     assert_eq!(
         dial("mini", Some("AB"), overlay, Some("wss://mini.ts.net:8787")),
         ["wss://mini.ts.net:8787"]
-    );
-}
-
-#[test]
-fn ipv6_overlay_address_is_bracketed() {
-    // Without brackets the result would not parse as HOST:PORT.
-    assert_eq!(
-        dial("", Some("AB"), &["fd7a::1"], None),
-        ["quic://[fd7a::1]:8788"]
     );
 }
 

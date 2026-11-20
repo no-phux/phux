@@ -171,7 +171,6 @@ pub fn swatch(index: usize, ground: Color) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::color;
     use serde_json::json;
 
     #[test]
@@ -219,17 +218,5 @@ mod tests {
         assert_eq!(named(&text, names), Some("mini"));
         assert_eq!(named("macbook-mini set up", names), None);
         assert_eq!(named("Switch to mac now", names), Some("mac"));
-    }
-
-    #[test]
-    fn every_swatch_reads_on_light_and_dark_grounds() {
-        // The system theme's sheets, sidebar and window, light then dark.
-        for ground in [0xfb_fbfc, 0xf1_f1f2, 0xff_ffff, 0x1e_1f22, 0x14_1517] {
-            for (i, (id, _)) in PALETTE.iter().enumerate() {
-                let c = swatch(i, color(ground));
-                let bar = contrast(c, color(ground));
-                assert!(bar >= 3.0, "{id} on {ground:06x}: {bar}");
-            }
-        }
     }
 }

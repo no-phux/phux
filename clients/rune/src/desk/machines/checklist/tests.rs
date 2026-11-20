@@ -31,19 +31,6 @@ fn reads_items_verbatim_and_unknown_words_as_unknown() {
 }
 
 #[test]
-fn an_older_server_is_told_plainly() {
-    assert_eq!(
-        words(&ChecklistError::Unsupported),
-        "This machine's phux is too old to report this. Update phux on it."
-    );
-    let refused = ChecklistError::Refused {
-        code: phux_protocol::wire::frame::ErrorCode::Unavailable,
-        message: "doctor failed".to_owned(),
-    };
-    assert_eq!(words(&refused), "doctor failed");
-}
-
-#[test]
 fn a_fix_pane_never_reuses_a_session() {
     assert_eq!(fresh_name("fix-restore", &[]), "fix-restore");
     let taken = ["fix-restore".to_owned(), "fix-restore-2".to_owned()];

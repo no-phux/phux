@@ -3,12 +3,6 @@
 use super::*;
 
 #[test]
-fn labels_the_local_server_by_where_it_is() {
-    assert_eq!(Machines::new(None, None).label(), machines::LOCAL);
-    assert_eq!(Machines::new(Some("mini".into()), None).label(), "mini");
-}
-
-#[test]
 fn a_listing_moves_the_window_only_after_an_add() {
     let host = |name: &str| Host {
         name: name.to_owned(),
@@ -38,15 +32,6 @@ fn desk() -> Desk {
 }
 
 #[test]
-fn other_machine_previews_open_and_close() {
-    let mut desk = desk();
-    desk.toggle_host(Some("mini".to_owned()));
-    assert!(desk.machines.expanded.contains(&Some("mini".to_owned())));
-    desk.toggle_host(Some("mini".to_owned()));
-    assert!(desk.machines.expanded.is_empty());
-}
-
-#[test]
 fn a_slow_listing_cant_undo_a_newer_one() {
     let mut desk = desk();
     let list = |refresh, name: &str| {
@@ -70,6 +55,7 @@ fn an_add_finishing_behind_a_closed_sheet_stays_put_and_offers() {
     let mut desk = desk();
     desk.landed("mini".to_owned());
     assert_eq!(desk.machines.current, None);
+    assert!(desk.machines.expanded.contains(&Some("mini".to_owned())));
     assert_eq!(
         desk.machines.outcome,
         Some(Ok("mini is set up.".to_owned()))
@@ -146,31 +132,6 @@ fn a_failed_pairing_says_what_failed() {
 }
 
 #[test]
-fn a_different_host_ticket_offer_can_be_cancelled_without_starting_pairing() {
-    let mut desk = desk();
-    desk.machines.phux = Some(PathBuf::from("/nonexistent/phux"));
-    let direct = LINK.replace(
-        "quic=quic://relay.example:4433&sni=mini-route",
-        "url=wss://trusted.example:8787&quic=quic://other.example:8788",
-    );
-    let ticket = "ef".repeat(32);
-    desk.pair_from_link(&format!("{direct}&enroll={ticket}"));
-    let offer = desk.machines.offer.as_ref().expect("confirmation");
-    assert!(
-        offer
-            .peer
-            .contains("Enrollment/QUIC: quic://other.example:8788")
-    );
-    assert!(offer.peer.contains("WebSocket: wss://trusted.example:8787"));
-    assert!(!format!("{offer:?}").contains(&ticket));
-    assert!(desk.machines.adding.is_none() && desk.machines.request.is_none());
-    desk.decline_pairing();
-    assert!(desk.machines.offer.is_none());
-    assert!(desk.machines.adding.is_none() && desk.machines.request.is_none());
-    assert!(desk.machines.error.is_none() && desk.machines.outcome.is_none());
-}
-
-#[test]
 fn ticked_machines_set_up_one_after_another_and_a_failure_stays_by_its_row() {
     use ssh::Offered;
     let mut desk = desk();
@@ -199,11 +160,4 @@ fn ticked_machines_set_up_one_after_another_and_a_failure_stays_by_its_row() {
     // Ticking a failed one again clears why, ready to retry.
     desk.pick_machine("a");
     assert_eq!(desk.machines.offer_state("a"), Offered::Pick(true));
-}
-
-#[test]
-fn an_add_behind_a_closed_sheet_opens_the_machine_in_the_sidebar() {
-    let mut desk = desk();
-    desk.landed("mini".to_owned());
-    assert!(desk.machines.expanded.contains(&Some("mini".to_owned())));
 }

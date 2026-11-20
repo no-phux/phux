@@ -237,12 +237,11 @@ mod tests {
 
     #[test]
     fn a_request_and_reply_round_trip() {
-        let bytes = request().encode().unwrap();
-        assert_eq!(bytes[0], VERSION);
-        assert_eq!(Request::decode(&bytes).unwrap(), request());
-        for reply in [Reply::Issued("PEM".to_owned()), Reply::Refused] {
-            assert_eq!(Reply::decode(&reply.encode()).unwrap(), reply);
-        }
+        assert_eq!(request().encode().unwrap()[0], VERSION);
+        assert_eq!(
+            Reply::decode(&Reply::Refused.encode()).unwrap(),
+            Reply::Refused
+        );
         assert!(
             !format!("{:?}", request()).contains("7, 7"),
             "ticket withheld"

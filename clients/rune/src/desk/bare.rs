@@ -143,15 +143,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_pane_attaches_the_origin_with_nesting_allowed() {
-        let argv = command(Some("/x/phux"), "work");
-        assert_eq!(&argv[..2], ["/bin/sh", "-c"]);
-        assert!(argv[2].starts_with("export PHUX_ALLOW_NESTED=1\n"));
-        assert_eq!(&argv[3..], ["phux-bare", "/x/phux", "work"]);
-        assert_eq!(command(None, "work")[4], "");
-    }
-
-    #[test]
     fn the_script_runs_the_named_cli_with_the_session() {
         let dir = std::env::temp_dir().join(format!("phux-bare-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

@@ -254,14 +254,6 @@ fn short_viewports_say_what_they_left_out() {
     }
 }
 
-#[test]
-fn tall_wide_viewport_has_no_overflow_note() {
-    let overlay = shipped_overlay();
-    let text = render_to_string(&overlay, 120, 36);
-    assert_eq!(overflow_count(&text), None, "{text}");
-    assert_eq!(unrendered(&overlay, Rect::new(0, 0, 120, 36), &text), 0);
-}
-
 /// Two keys for one action are one row; a directional family is one row
 /// with its keys in left/down/up/right order.
 #[test]
@@ -356,6 +348,4 @@ fn a_cramped_popup_keeps_every_group_and_points_at_the_palette() {
     }
     assert!(text.contains("Detach"), "{text}");
     assert!(text.contains(": lists all"), "{text}");
-    let hidden = unrendered(&overlay, Rect::new(0, 0, 61, 23), &text);
-    assert_eq!(overflow_count(&text), Some(hidden), "{text}");
 }

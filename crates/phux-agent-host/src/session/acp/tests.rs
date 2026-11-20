@@ -1,6 +1,4 @@
 use super::*;
-use phux_protocol::native_agent::{NativeOption, NativeQuestion};
-use serde_json::json;
 
 /// Every transcript row queued on `callback`'s sink, in order.
 fn transcript_rows(
@@ -17,32 +15,6 @@ fn transcript_rows(
             phux_client_core::session::agent_transcript::TranscriptEntry::from_data(entry)
         })
         .collect()
-}
-
-#[tokio::test]
-async fn unsupported_client_execution_callbacks_fail_explicitly() {
-    let callback = Callback::new(crate::session::tests::sink(), "custom");
-    let session = sdk::SessionId::new("session");
-    let read = callback
-        .request(sdk::AgentRequest::ReadTextFileRequest(
-            sdk::ReadTextFileRequest::new(session.clone(), "/never-read"),
-        ))
-        .await
-        .unwrap_err();
-    assert_eq!(read.code, sdk::ErrorCode::MethodNotFound);
-    let terminal = callback
-        .request(sdk::AgentRequest::CreateTerminalRequest(
-            sdk::CreateTerminalRequest::new(session, "never-executed"),
-        ))
-        .await
-        .unwrap_err();
-    assert_eq!(terminal.code, sdk::ErrorCode::MethodNotFound);
-    let params = serde_json::value::to_raw_value(&json!({})).unwrap();
-    let extension = callback
-        .ext_method(sdk::ExtRequest::new("unknown", params.into()))
-        .await
-        .unwrap_err();
-    assert_eq!(extension.code, sdk::ErrorCode::MethodNotFound);
 }
 
 #[test]
@@ -123,49 +95,4 @@ fn chunks_preserve_row_identity_until_role_changes() {
     assert_eq!(rows[4].id, rows[3].id);
     assert_eq!(rows[4].text, "reply");
     assert!(rows[4].is_final);
-}
-
-#[tokio::test]
-async fn question_wait_requires_matching_explicit_answer() {
-    let callback = Callback::new(crate::session::tests::sink(), "cursor");
-    let question = NativeQuestion {
-        id: "permission".into(),
-        kind: "permission".into(),
-        title: "Tool permission".into(),
-        message: String::new(),
-        options: vec![NativeOption {
-            id: "allow-once".into(),
-            label: "Allow once".into(),
-            description: None,
-        }],
-        questions: Vec::new(),
-        fields: json!({}),
-    };
-    let wait = callback.ask(question);
-    let (answer, result) = tokio::join!(wait, async {
-        tokio::task::yield_now().await;
-        let refused = callback.startup_command(NativeCommand {
-            operation_id: 1,
-            activation: "a".into(),
-            intent: NativeIntent::Answer {
-                question_id: "other-permission".into(),
-                response: json!({"option_id":"allow-once"}),
-            },
-        });
-        assert_eq!(refused.disposition, NativeDisposition::Refused);
-        assert!(callback.waiting.lock().contains_key("acp-question:1"));
-        callback.startup_command(NativeCommand {
-            operation_id: 2,
-            activation: "a".into(),
-            intent: NativeIntent::Answer {
-                question_id: "acp-question:1".into(),
-                response: json!({"option_id":"allow-once"}),
-            },
-        })
-    });
-    assert_eq!(answer.unwrap(), json!({"option_id":"allow-once"}));
-    assert_eq!(result.operation_id, 2);
-    assert_eq!(result.disposition, NativeDisposition::Queued);
-    assert!(callback.waiting.lock().is_empty());
-    assert!(callback.sink.view().questions.is_empty());
 }

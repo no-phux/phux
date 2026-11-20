@@ -137,20 +137,6 @@ fn agents_overflow_declares_what_it_dropped() {
     assert!(!rows.contains(&SidebarRow::NeedsYouOverflow), "{rows:?}");
 }
 
-/// The panel is a fixed share of the body, so however many agents need a
-/// human Sessions always keeps their header at the same row.
-#[test]
-fn agents_band_is_fixed_and_never_starves_sessions() {
-    for h in MIN_FOOTER_HEIGHT..24 {
-        let rows = row_model(counts(20, 2, 3), h);
-        let body = usize::from(h) - 1;
-        assert_eq!(rows[0], SidebarRow::NeedsYouHeader, "h={h}");
-        let band = agents_budget(DEFAULT_AGENTS_SHARE, body);
-        assert_eq!(rows[band], SidebarRow::SpacesHeader, "h={h}");
-        assert!(band < body, "Sessions keeps a row: h={h}");
-    }
-}
-
 /// The invariants that must hold for every shape, since the allocator is
 /// what both the painter and the hit-tester read.
 #[test]

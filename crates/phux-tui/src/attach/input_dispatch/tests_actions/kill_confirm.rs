@@ -29,7 +29,11 @@ fn kill_pane_confirms_then_kills_the_named_terminal() {
         .map(|(_, leaf)| leaf.clone())
         .collect();
     assert_eq!(targets, vec![tid(1)]);
-    assert_eq!(effects.kill_frames.len(), 1);
+    assert!(matches!(
+        effects.kill_frames.as_slice(),
+        [FrameKind::Command { command: Command::KillResource { terminal_id, .. }, .. }]
+            if *terminal_id == tid(1)
+    ));
     assert_eq!(effects.expected_closes, vec![tid(1)]);
     assert_eq!(f.workspace.groups.len(), 1);
 }

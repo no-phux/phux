@@ -126,8 +126,8 @@ proptest! {
     }
 }
 
-/// HELLO round-trips across every capability shape a client can advertise:
-/// the default caps, each `ColorSupport` variant, image/kbd/hyperlink
+/// HELLO round-trips across the capability shapes the proptest catalog does
+/// not draw: the default caps, image/kbd/hyperlink
 /// combinations, `OutputMode::StateSync` (phux-fseo), and outer terminal
 /// default colors.
 #[test]
@@ -153,14 +153,6 @@ fn hello_round_trips_across_capability_shapes() {
             },
         }),
     ];
-    for color in [
-        ColorSupport::TrueColor,
-        ColorSupport::Indexed256,
-        ColorSupport::Indexed16,
-        ColorSupport::Mono,
-    ] {
-        shapes.push(ClientCapabilities::new().with_color_support(color));
-    }
     // HELLO field 9, the origin `phux stdio-bridge` stamps: both address
     // families, with and without the server endpoint.
     for (client, server) in [
@@ -185,23 +177,8 @@ fn hello_round_trips_across_capability_shapes() {
     }
 }
 
-/// Protocol 0.7 requires an explicit selected profile and negotiated bounds.
-#[test]
-fn hello_ok_without_profile_is_rejected() {
-    let mut fields = Vec::new();
-    tlv_field(&mut fields, 1, &0u16.to_be_bytes());
-    tlv_field(&mut fields, 2, &7u16.to_be_bytes());
-    tlv_field(&mut fields, 3, &0u16.to_be_bytes());
-    let framed = framed_tlv(0x80, &fields);
-    assert_eq!(
-        FrameKind::decode(&framed).unwrap_err(),
-        DecodeError::UnexpectedEof
-    );
-}
-
 /// Outer-frame rejections: truncated header, zero or over-cap length, a
-/// length past the buffer, a truncated body, and unknown or retired type
-/// bytes (0x40 is the pre-ADR-0013 `PANE_DIFF`).
+/// length past the buffer, a truncated body, and an unknown type byte.
 #[test]
 fn malformed_outer_frames_are_rejected() {
     let frame = |len: u32, rest: &[u8]| {
@@ -218,10 +195,6 @@ fn malformed_outer_frames_are_rejected() {
         (
             frame(1, &[0x42]),
             DecodeError::UnknownFrameKind { tag: 0x42 },
-        ),
-        (
-            frame(9, &[0x40, 0, 0, 0, 0, 0, 0, 0, 0]),
-            DecodeError::UnknownFrameKind { tag: 0x40 },
         ),
     ];
     for (bytes, want) in cases {
@@ -245,24 +218,17 @@ fn hello_rejects_legacy_and_truncated_capabilities() {
         KeyboardProtocolSet::default().as_wire(),
         1u8,
     ];
-    let cases: [(Option<&[u8]>, DecodeError); 4] = [
-        (None, DecodeError::UnexpectedEof),
-        (Some(&[0x00]), DecodeError::UnexpectedEof),
-        (Some(&[0xFF]), DecodeError::UnexpectedEof),
-        (Some(&full_caps), DecodeError::UnexpectedEof),
-    ];
-    for (caps, want) in cases {
+    let cases: [&[u8]; 3] = [&[0x00], &[0xFF], &full_caps];
+    for caps in cases {
         let mut fields = Vec::new();
         tlv_field(&mut fields, 1, b"x");
         tlv_field(&mut fields, 2, &0u16.to_be_bytes());
         tlv_field(&mut fields, 3, &7u16.to_be_bytes());
         tlv_field(&mut fields, 4, &0u16.to_be_bytes());
-        if let Some(caps) = caps {
-            tlv_field(&mut fields, 5, caps);
-        }
+        tlv_field(&mut fields, 5, caps);
         assert_eq!(
             FrameKind::decode(&framed_tlv(0x01, &fields)).unwrap_err(),
-            want
+            DecodeError::UnexpectedEof
         );
     }
 }
@@ -412,29 +378,6 @@ fn unknown_field_id_is_skipped_forward_compat() {
 }
 
 #[test]
-fn unknown_trailing_field_id_is_skipped_forward_compat() {
-    // The same skip-by-length rule for an unknown field appended *after* the
-    // known fields — the shape a newer peer produces when it adds a field an
-    // older decoder does not know.
-    let real = crate::common::encode(&FrameKind::Bell {
-        terminal_id: ResourceId::local(0x2A),
-    });
-    let type_byte = real[4];
-    let mut fields = real[5..].to_vec(); // the Bell terminal_id field
-    tlv_field(&mut fields, 250, &[1, 2, 3, 4, 5, 6]); // unknown trailing field
-    let bytes = framed_tlv(type_byte, &fields);
-
-    let (decoded, tail) = FrameKind::decode(&bytes).unwrap();
-    assert_eq!(
-        decoded,
-        FrameKind::Bell {
-            terminal_id: ResourceId::local(0x2A),
-        },
-    );
-    assert!(tail.is_empty());
-}
-
-#[test]
 fn invalid_utf8_in_hello_client_name() {
     // HELLO (0x01) whose CLIENT_NAME field (id 1) holds non-UTF-8 bytes must
     // surface InvalidUtf8. The client_name value rides as raw bytes inside the
@@ -445,17 +388,6 @@ fn invalid_utf8_in_hello_client_name() {
 
     let err = Decoder::new(&bytes).read_frame().unwrap_err();
     assert_eq!(err, DecodeError::InvalidUtf8);
-}
-
-#[test]
-fn tail_is_returned_after_single_frame() {
-    let frame = FrameKind::Ping { nonce: 7 };
-    let mut buf = crate::common::encode(&frame);
-    buf.extend_from_slice(&[0xAA, 0xBB, 0xCC]);
-
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(decoded, frame);
-    assert_eq!(tail, &[0xAA, 0xBB, 0xCC]);
 }
 
 proptest! {

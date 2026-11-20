@@ -177,11 +177,4 @@ mod tests {
             "a read after EOF must never complete; it completed with {again:?}",
         );
     }
-
-    /// With stdin not a terminal the device guard refuses, rather than
-    /// returning some unrelated terminal.
-    #[test]
-    fn no_private_handle_when_stdin_is_not_a_terminal() {
-        assert!(controlling_tty().is_err());
-    }
 }

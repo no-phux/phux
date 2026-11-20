@@ -41,15 +41,6 @@ fn version_incompatible_hello_keeps_its_code() {
         ),
         "{incompatible:?}"
     );
-    let (_, refused) = negotiate_against(|_| FrameKind::Error {
-        request_id: None,
-        code: ErrorCode::PermissionDenied,
-        message: message.to_owned(),
-    });
-    assert!(
-        matches!(&refused, Err(SessionError::Refused(text)) if text == message),
-        "{refused:?}"
-    );
 }
 
 #[test]

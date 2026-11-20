@@ -251,39 +251,6 @@ fn server_state_matches_the_dense_projections() {
     }
 }
 
-/// The recorder satisfies the server bridge too, so the triangle stays
-/// explicit even if the client comparison weakens.
-#[test]
-fn replay_frame_matches_the_server_projection() {
-    for case in CORPUS {
-        let expected = dense_as_screen_state(&replay_frame(case), 0);
-        let actual = server_state(case);
-        assert_eq!(
-            actual.lines, expected.lines,
-            "[{}] server text lines differ from the recorder's frame",
-            case.name
-        );
-        assert_eq!(
-            actual.cursor, expected.cursor,
-            "[{}] server cursor differs from the recorder's frame",
-            case.name
-        );
-        assert_eq!(
-            styled_cells_only(
-                actual
-                    .cells
-                    .as_deref()
-                    .expect("cells = true populates Some(..)")
-            ),
-            expected
-                .cells
-                .expect("dense_as_screen_state always populates Some(..)"),
-            "[{}] server sparse cells differ from the recorder's styled cells",
-            case.name
-        );
-    }
-}
-
 /// A wide glyph's tail is `""` in dense projections (preserving
 /// `cells[row * cols + col]` indexing) and absent from the sparse one.
 #[test]

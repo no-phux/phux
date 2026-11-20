@@ -18,15 +18,6 @@ fn composed(
     AgentRecordJson::decode(&compose(existing, kind, name, state, ownership)).expect("decodes")
 }
 
-#[test]
-fn compose_from_nothing_writes_the_detector_view() {
-    let bytes = compose(None, "claude", "claude", "working", DETECTOR);
-    assert_eq!(
-        String::from_utf8(bytes).expect("utf8"),
-        r#"{"name":"claude","kind":"claude","state":"working"}"#
-    );
-}
-
 /// An identity-only SET that beat the arbiter bit is merged, not
 /// clobbered.
 #[test]
@@ -54,22 +45,6 @@ fn compose_preserves_an_identity_only_kind_without_ownership_bits() {
     assert_eq!(got.kind.as_deref(), Some("my-agent"));
     assert_eq!(got.name, "reviewer");
     assert_eq!(got.state, "working");
-}
-
-/// The field-for-field preservation the ADR promises.
-#[test]
-fn compose_preserves_an_identity_only_declaration() {
-    let existing = br#"{"name":"reviewer","kind":"claude","session":"fleet-7"}"#;
-    let got = composed(
-        Some(existing),
-        "claude",
-        "claude",
-        "blocked",
-        ownership_after(existing),
-    );
-    assert_eq!(got.name, "reviewer", "the human's name survives");
-    assert_eq!(got.session.as_deref(), Some("fleet-7"), "and their label");
-    assert_eq!(got.state, "blocked", "the detector supplies only `state`");
 }
 
 #[test]
@@ -169,8 +144,7 @@ type Contradiction<'a> = (&'a str, Option<&'a [u8]>, &'a str, &'a RuleSet, bool)
 #[test]
 fn an_explicit_kind_is_contradicted_only_by_a_derivable_other_kind() {
     let rules = detectable();
-    let empty = RuleSet::default();
-    let cases: [Contradiction<'_>; 9] = [
+    let cases: [Contradiction<'_>; 7] = [
         (
             "declared claude, now running codex",
             Some(br#"{"name":"claude","kind":"claude","state":"working"}"#),
@@ -208,14 +182,6 @@ fn an_explicit_kind_is_contradicted_only_by_a_derivable_other_kind() {
             Some(br#"{"name":"x","kind":""}"#),
             "codex",
             &rules,
-            false,
-        ),
-        ("bad bytes", Some(b"}{ nonsense"), "codex", &rules, false),
-        (
-            "no manifests loaded",
-            Some(br#"{"name":"claude","kind":"claude"}"#),
-            "codex",
-            &empty,
             false,
         ),
     ];

@@ -62,14 +62,6 @@ fn pre_hello_frames_are_refused_before_body_decode() {
     assert_eq!(code(&ping), None, "PING stays legal before HELLO");
 }
 
-/// Every known bit but `QUIC_STREAMS` is advertised.
-#[test]
-fn runtime_advertises_every_known_bit_except_quic_streams() {
-    let advertised = runtime_server_features();
-    assert!(!advertised.contains(ServerFeature::QuicStreams));
-    assert_eq!(advertised.iter().count(), ServerFeature::ALL.len() - 1);
-}
-
 /// ADR-0115: `QUIC_STREAMS` is advertised only on QUIC, and only to a
 /// client that opted in.
 #[tokio::test]

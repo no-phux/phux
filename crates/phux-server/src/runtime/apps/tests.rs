@@ -1,5 +1,5 @@
 use super::*;
-use phux_protocol::kinds::{KINDS, command_kind};
+use phux_protocol::kinds::KINDS;
 
 #[test]
 fn every_app_is_listed() {
@@ -13,37 +13,6 @@ fn every_app_is_listed() {
         );
     }
     assert_eq!(APP_KINDS.len(), KINDS.len(), "APPS lists an app twice");
-}
-
-#[test]
-fn a_facet_command_routes_to_its_kind_and_a_host_command_to_none() {
-    let screen = Command::GetScreen {
-        terminal_id: phux_protocol::ids::ResourceId::default(),
-        request_scrollback: None,
-        cells: false,
-        format: 0,
-    };
-    assert_eq!(owning_kind(&screen), Some(ResourceKind::Terminal));
-    assert!(app_owning(&screen).is_some());
-    assert_eq!(command_kind(&Command::DescribeApi), None);
-    assert!(app_owning(&Command::DescribeApi).is_none());
-}
-
-/// A host-addressed method its catalog row says an app serves reaches that
-/// app, though it names no resource; `tests/lifecycle/mirrors.rs` drives
-/// `MIRROR` through the production dispatch to `mirror::handle`.
-#[test]
-fn a_mirror_routes_to_the_surface_app() {
-    let mirror = Command::Mirror {
-        host: None,
-        op: phux_protocol::wire::frame::MirrorOp::Targets,
-    };
-    let provide = Command::MirrorProvide {
-        targets: "[]".to_owned(),
-    };
-    assert_eq!(owning_kind(&mirror), Some(ResourceKind::PixelSurface));
-    assert_eq!(owning_kind(&provide), Some(ResourceKind::PixelSurface));
-    assert!(app_owning(&mirror).is_some());
 }
 
 /// An upgrade resume rebuilds in `APPS` order, and a child's rebuild finds

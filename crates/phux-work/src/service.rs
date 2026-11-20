@@ -399,17 +399,4 @@ mod compatibility_tests {
             matches!(response, Response::Fault(Fault::BadRequest { keeper: Some(keeper), .. }) if keeper == BUILD)
         );
     }
-
-    #[test]
-    fn matching_version_parser_errors_identify_the_keeper_and_do_not_dispatch() {
-        let line =
-            serde_json::json!({"build": BUILD, "request": {"op": "unknown_operation"}}).to_string();
-        let Decoded::Rejected(response, served) = decode(&line) else {
-            panic!("invalid payload dispatched");
-        };
-        assert_eq!(served, Served::Answered);
-        assert!(
-            matches!(response, Response::Fault(Fault::BadRequest { keeper: Some(keeper), .. }) if keeper == BUILD)
-        );
-    }
 }

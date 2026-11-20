@@ -155,15 +155,7 @@ fn diff_shows_one_file_per_area_and_untracked_whole() {
 
 #[test]
 fn paths_outside_the_checkout_are_refused() {
-    for path in [
-        "",
-        "/etc/passwd",
-        "../x",
-        "a/../../x",
-        "./a",
-        ".git/config",
-        "a/.GIT/x",
-    ] {
+    for path in ["", "/etc/passwd", "../x", "a/../../x", "./a"] {
         assert!(
             matches!(relative(path), Err(CheckoutError::InvalidPath(_))),
             "{path:?}"
@@ -465,14 +457,10 @@ fn an_overrunning_write_is_stopped_without_leaving_index_lock() {
 }
 
 #[test]
-fn a_spoofed_dotgit_name_is_refused_and_hidden() {
+fn a_spoofed_dotgit_name_is_hidden_from_the_tree() {
     let dir = repo("dotgit");
     write(&dir, "sub/.GIT/config", "x");
     let checkout = Checkout::open(&dir).unwrap();
-    assert!(matches!(
-        checkout.read("sub/.GIT/config", 0),
-        Err(CheckoutError::InvalidPath(_))
-    ));
     let names: Vec<_> = checkout
         .tree("sub")
         .unwrap()

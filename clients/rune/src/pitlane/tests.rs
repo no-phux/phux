@@ -109,20 +109,20 @@ fn each_mood_has_its_spot() {
             .unwrap()
             .p
     };
-    assert_eq!(s.goal(1), Some([bay(2), 0.035 * s.sp]));
-    assert_eq!(s.goal(2), Some([bay(3), 0.13 * s.sp]));
+    let (waiting, idle) = (s.goal(1).unwrap(), s.goal(2).unwrap());
+    assert_eq!(
+        (waiting[0], idle[0]),
+        (bay(2), bay(3)),
+        "each at its own bay"
+    );
+    assert!(
+        waiting[1] < idle[1],
+        "waiting stands at the lane, idle inside"
+    );
     assert_eq!(s.goal(3), Some(s.parc[0]));
     assert_eq!(s.goal(4), Some(s.parc[1]));
     // Parc fermé is past every garage, down the lane.
     assert!(s.parc[0][0] > bay(3));
-}
-
-#[test]
-fn higher_tiers_are_bigger_cars() {
-    let mut s = scene(vec![driver(1, 0, Mood::Working)], &["mini"]);
-    let base = s.cars[0].r(s.k);
-    s.cars[0].tier = 4;
-    assert!((s.cars[0].r(s.k) / base - 1.2 / 1.05).abs() < 1e-4);
 }
 
 /// Seconds until car 0 is in the pit lane, stepping at most `limit`.

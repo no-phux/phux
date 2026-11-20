@@ -3,8 +3,6 @@
     clippy::redundant_pub_crate,
     reason = "test-only re-export for sibling host fixtures, not a public server API"
 )]
-pub(super) use phux_terminal::downsample;
-
 /// A peer on `transport` running as the serving user.
 pub(crate) fn peer(
     transport: phux_protocol::policy::TransportType,

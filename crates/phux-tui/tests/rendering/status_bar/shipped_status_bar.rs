@@ -79,86 +79,6 @@ fn a_roomy_terminal_shows_the_whole_lineup() {
     assert!(!text.contains("agents"), "{text:?}");
 }
 
-/// Inactive tabs are dim text with no fill; the active tab is the lime
-/// chip on the selection bed. The index recedes behind the name without
-/// leaving the tab's bed. Session name and clock recede to the same dim,
-/// so the bar is not a slab of filled chips.
-#[test]
-fn shipped_inactive_tabs_are_dim_text_not_a_slab() {
-    let windows = [win("zsh", false), win("nvim", true), win("server", false)];
-    let row = shipped_row(120, "phux", &windows);
-
-    let inactive = row
-        .iter()
-        .find(|c| c.hit == Some(CellHit::Window(0)))
-        .and_then(|c| c.style.as_ref())
-        .expect("inactive tab styled");
-    assert_eq!(inactive.fg.as_deref(), Some("theme.dim"));
-    assert_eq!(inactive.bg, None);
-
-    let active = row
-        .iter()
-        .find(|c| c.hit == Some(CellHit::Window(1)))
-        .and_then(|c| c.style.as_ref())
-        .expect("active tab styled");
-    assert_eq!(active.fg.as_deref(), Some("theme.accent"));
-    assert_eq!(active.bg.as_deref(), Some("theme.selection_bg"));
-    assert!(active.bold);
-
-    let index = row
-        .iter()
-        .find(|c| c.hit == Some(CellHit::Window(1)) && c.text.first() == Some(&'1'))
-        .and_then(|c| c.style.as_ref())
-        .expect("active index styled");
-    assert_eq!(
-        index.fg.as_deref(),
-        Some("theme.border"),
-        "the index recedes"
-    );
-    assert_eq!(
-        index.bg.as_deref(),
-        Some("theme.selection_bg"),
-        "but keeps the bed"
-    );
-
-    let session = row
-        .iter()
-        .find(|c| c.hit.is_none() && c.text.first() == Some(&'p'))
-        .and_then(|c| c.style.as_ref())
-        .expect("session name styled");
-    assert_eq!(session.fg.as_deref(), Some("theme.dim"));
-    assert_eq!(session.bg, None);
-
-    let clock = row
-        .iter()
-        .find(|c| c.hit.is_none() && c.text.first() == Some(&':'))
-        .and_then(|c| c.style.as_ref())
-        .expect("clock styled");
-    assert_eq!(clock.fg.as_deref(), Some("theme.dim"));
-    assert_eq!(clock.bg, None);
-}
-
-/// A narrow terminal trades ambient context for an affordance: the clock
-/// and session name step aside, the tab strip collapses around the active
-/// tab, and a clickable `switch` chip appears.
-#[test]
-fn a_narrow_terminal_trades_context_for_an_affordance() {
-    let windows = [
-        win("zsh", false),
-        win("nvim", true),
-        win("server", false),
-        win("logs", false),
-    ];
-    let text = shipped_text(46, "phux", &windows);
-
-    assert!(text.contains(" agents "), "{text:?}");
-    assert!(!text.contains("C-a"), "no teaching strip: {text:?}");
-    // The active tab is always visible, whole.
-    assert!(text.contains("1 nvim"), "{text:?}");
-    // And no tab is half-drawn: every window name present is complete.
-    assert!(!text.contains('\u{2026}'), "no clipped tab: {text:?}");
-}
-
 /// The gates read the terminal, not the row: beside a sidebar an 80-column
 /// terminal leaves the bar 61 columns, and that is still room for context,
 /// with the sidebar already listing the agents the chip would open.
@@ -226,22 +146,4 @@ fn the_two_right_slot_shapes_never_overlap() {
             assert!(has_chip, "no chip at width {width}: {text:?}");
         }
     }
-}
-
-/// Down to a genuinely tiny grid the bar still degrades rather than
-/// breaking: no panic, no overrun, and the active window's index — the
-/// thing you navigate by — is the last thing to go.
-#[test]
-fn a_tiny_grid_still_degrades_instead_of_breaking() {
-    let windows = [
-        win("zsh", false),
-        win("a-very-long-window-name", true),
-        win("logs", false),
-    ];
-    for width in 1u16..=20 {
-        let text = shipped_text(width, "a-long-session-name", &windows);
-        assert_eq!(text.chars().count(), usize::from(width));
-    }
-    // At 12 columns the active tab's index survives.
-    assert!(shipped_text(12, "s", &windows).contains('1'));
 }

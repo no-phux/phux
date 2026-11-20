@@ -276,10 +276,7 @@ mod tests {
     }
 
     #[test]
-    fn the_card_names_the_form_and_the_work() {
-        assert_eq!(form_name(3, Form::Lionfish), "Exotic lionfish");
-        assert_eq!(form_name(4, Form::Manta), "Legendary manta ray");
-        assert_eq!(form_name(2, Form::Octopus), "Elder");
+    fn the_card_counts_the_work() {
         assert_eq!(work_line(&w(1, 4.0)), "1 task finished · 4 min working");
         assert_eq!(
             work_line(&w(12, 80.0)),

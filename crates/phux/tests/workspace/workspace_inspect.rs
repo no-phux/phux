@@ -115,13 +115,3 @@ fn project_inspect_marks_detached_worktree_current() {
                 && item["detached"] == true)
     );
 }
-
-#[test]
-fn project_inspect_rejects_missing_repo_without_stdout() {
-    let tmp = TempDir::new().expect("tempdir");
-    let missing_arg = tmp.path().to_string_lossy();
-    let (code, stdout, stderr) = run(&["project", "inspect", "--json", &missing_arg]);
-    assert_ne!(code, 0, "missing repo should fail");
-    assert!(stdout.is_empty());
-    assert!(stderr.contains("not a git repository"));
-}

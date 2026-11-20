@@ -281,6 +281,7 @@ fn duplicate_names_are_ambiguous_not_first_wins() {
 fn unreadable_token_names_the_path_and_never_the_bytes() {
     let err = read_token(Some(Path::new("/nonexistent/phux/token"))).expect_err("missing");
     assert!(err.contains("/nonexistent/phux/token"), "{err}");
+    assert!(err.contains("phux host add"), "{err}");
     assert_eq!(read_token(None), Ok(None));
 }
 
@@ -291,11 +292,4 @@ fn a_paused_entry_is_not_resolved() {
     let target = RemoteTarget::parse("mini").expect("target");
     let refusal = resolve_entry(&paused, &target).expect_err("paused");
     assert!(refusal.contains("phux host enable mini"), "{refusal}");
-}
-
-#[test]
-fn a_token_file_from_another_machine_says_to_pair_this_one() {
-    let missing = std::env::temp_dir().join("phux-no-such-token-file");
-    let refusal = read_token(Some(&missing)).expect_err("missing");
-    assert!(refusal.contains("phux host add"), "{refusal}");
 }

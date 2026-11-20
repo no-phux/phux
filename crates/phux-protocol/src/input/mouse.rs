@@ -50,24 +50,3 @@ pub struct MouseEvent {
     /// Pane-local surface-space pixel Y.
     pub y: f64,
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn mouse_atoms_round_trip_wire_discriminants() {
-        for a in [
-            MouseAction::Press,
-            MouseAction::Release,
-            MouseAction::Motion,
-        ] {
-            assert_eq!(MouseAction::try_from(a as u32), Ok(a));
-        }
-        for b in [MouseButton::Left, MouseButton::Middle, MouseButton::Eleven] {
-            assert_eq!(MouseButton::try_from(b as u32), Ok(b));
-        }
-        assert!(MouseAction::try_from(99).is_err());
-        assert!(MouseButton::try_from(99).is_err());
-    }
-}

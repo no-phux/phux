@@ -193,13 +193,6 @@ impl ConnectorHandle {
         self.conn.close(0u32.into(), b"connector done");
     }
 
-    /// Await the tunnel connection's close, bounded.
-    pub async fn closed(&self) -> quinn::ConnectionError {
-        timeout(WIRE_RECV_TIMEOUT, self.conn.closed())
-            .await
-            .expect("tunnel close resolves within deadline")
-    }
-
     /// Consumers admitted (bearer verified) and served.
     pub fn bridged(&self) -> usize {
         self.state.lock().unwrap().bridged

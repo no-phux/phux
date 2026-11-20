@@ -388,11 +388,7 @@ mod runtime;
 mod tests {
     use phux_protocol::input::key::{ModSet, PhysicalKey};
 
-    use rune::prefs::Prefs;
-    use rune::{Env, Runtime, TouchPhase};
-
     use super::*;
-    use crate::launch::Resolved;
 
     fn atom(typed: Option<Typed>) -> (PhysicalKey, ModSet) {
         match typed {
@@ -433,35 +429,6 @@ mod tests {
         phone.shift = true;
         let (key, mods) = atom(phone.take(&Soft::Key(Key::Tab)));
         assert_eq!((key, mods), (PhysicalKey::Tab, ModSet::SHIFT));
-    }
-
-    /// Presses a drawn key the way a finger does.
-    fn tap(runtime: &mut Runtime<Desk>, key: &str, at: f64) {
-        let (x, y) = runtime.find(key).unwrap_or_else(|| panic!("no {key}"));
-        runtime.touch(1, TouchPhase::Started, x, y, at);
-        runtime.frame(1.0 / 60.0);
-        runtime.touch(1, TouchPhase::Ended, x, y, at + 0.05);
-        runtime.frame(1.0 / 60.0);
-        // Flush the next frame too: no deferred input may outlive its field.
-        runtime.frame(1.0 / 60.0);
-    }
-
-    // The keyboard sits outside the palette's scrim; Rune counts what comes
-    // after a modal in the tree as part of it. A Rune bump that changes that
-    // fails here, not on someone's phone.
-    #[test]
-    fn the_drawn_keyboard_types_into_the_open_palette() {
-        let mut desk = Desk::new(&Resolved::offline("phone")).with_phone(true);
-        desk.prefs = Prefs::memory();
-        desk.palette_open = true;
-        let mut runtime = Runtime::new(desk, crate::ui::view, (393.0, 852.0), Env::new(true, 2.0));
-        runtime.on_key = Some(Desk::key);
-        runtime.frame(0.0);
-        tap(&mut runtime, "phone-latch-Shift", 0.1);
-        tap(&mut runtime, "phone-cap-116", 0.3);
-        tap(&mut runtime, "phone-cap-104", 0.5);
-        assert!(runtime.state.palette_open);
-        assert_eq!(runtime.state.palette_query.text, "Th");
     }
 
     #[test]

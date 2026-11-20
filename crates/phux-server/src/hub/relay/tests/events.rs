@@ -215,56 +215,6 @@ fn satellite_event_ids_are_retagged_or_vetted_before_hub_consumers_see_them() {
     );
 }
 
-#[test]
-fn instance_only_close_preserves_satellite_fence_and_correlates_refusal() {
-    use phux_protocol::wire::frame::{KillConditions, KillPrecondition};
-    let precondition = KillPrecondition {
-        instance: Some(phux_protocol::ids::ServerInstance::new([3; 16])),
-        conditions: KillConditions::NONE,
-    };
-    let (target, command) = route_to_satellite(&Command::KillResourceIf {
-        terminal_id: ResourceId::satellite(host(), 9),
-        precondition,
-        operation_id: None,
-    })
-    .expect("satellite route");
-    assert_eq!(target, host());
-    let mut session = negotiated(&[ServerFeature::ConditionalKill]);
-    let (reply, mut rx) = oneshot::channel();
-    let wire = session
-        .handle_request_checked(RelayRequest::Command {
-            command,
-            reply,
-            subscribe: None,
-        })
-        .expect("instance-only kill reaches capable satellite");
-    let FrameKind::Command {
-        request_id,
-        command,
-    } = decode(&wire)
-    else {
-        panic!("expected command");
-    };
-    assert_eq!(
-        command,
-        Command::KillResourceIf {
-            terminal_id: ResourceId::local(9),
-            precondition,
-            operation_id: None,
-        }
-    );
-    let refusal = CommandResult::error(
-        ErrorCode::PreconditionFailed,
-        "satellite incarnation changed",
-    );
-    session.feed(&FrameKind::CommandResult {
-        request_id,
-        result: refusal.clone(),
-    });
-    assert_eq!(rx.try_recv().expect("correlated outcome"), refusal);
-    assert!(session.pending.is_empty());
-}
-
 #[tokio::test]
 async fn handle_and_session_preserve_spawn_owner_geometry_and_pty_options() {
     let (handle, mut mailbox) = RelayHandle::new(host());

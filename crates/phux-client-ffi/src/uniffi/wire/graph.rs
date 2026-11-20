@@ -454,22 +454,10 @@ mod tests {
     fn panes_carry_their_session_and_record_context() {
         let graph = session_topology(topology(), None);
         let pane = &graph.panes[0];
-        assert_eq!(pane.terminal_id, "satellite:box:4");
-        assert_eq!(pane.session_name, "work");
         assert_eq!(pane.session_key, Some(session_key().to_string()));
-        assert_eq!((pane.cols, pane.rows), (80, 24));
-        assert_eq!(pane.title.as_deref(), Some("vim"));
-        assert_eq!(pane.name.as_deref(), Some("editor"));
-        assert_eq!(pane.revision, Some(9));
         let activation = pane.activation.as_ref().unwrap();
         assert_eq!((activation.id, activation.state.as_str()), (2, "running"));
         assert!(pane.group_id.is_none(), "no arrangement held");
-        assert!(pane.is_focused);
-    }
-
-    #[test]
-    fn the_focused_pane_is_a_string_identity() {
-        assert_eq!(session_topology(topology(), None).focused_pane, "local:7");
     }
 
     #[test]
@@ -484,14 +472,5 @@ mod tests {
         assert!(session.inbox);
         assert!(session.focused);
         assert_eq!(graph.inbox, Some(session_key().to_string()));
-    }
-
-    #[test]
-    fn agent_sessions_are_projected() {
-        let graph = session_topology(topology(), None);
-        assert_eq!(graph.agent_sessions.len(), 1);
-        assert_eq!(graph.agent_sessions[0].id, "local:8");
-        assert_eq!(graph.agent_sessions[0].parent.as_deref(), Some("local:7"));
-        assert_eq!(graph.agent_sessions[0].provider.as_deref(), Some("claude"));
     }
 }

@@ -277,27 +277,6 @@ pub fn paint_scrollbar(buf: &mut Buffer, track: Rect, theme: &Theme, total: usiz
 mod tests {
     use super::*;
 
-    #[test]
-    fn modal_renders_title_and_body() {
-        let theme = Theme::default();
-        let modal = Modal::new(
-            &theme,
-            "demo",
-            vec![Line::from("hello"), Line::from("world")],
-        );
-        let area = Rect::new(0, 0, 40, 10);
-        let mut buf = Buffer::empty(area);
-        modal.render_into(area, &mut buf);
-        let text: String = (0..10)
-            .flat_map(|y| (0..40).map(move |x| (x, y)))
-            .map(|(x, y)| buf[(x, y)].symbol().to_owned())
-            .collect();
-        assert!(
-            ["demo", "hello", "world"].iter().all(|w| text.contains(w)),
-            "{text}"
-        );
-    }
-
     /// A legend too long to sit beside the count sheds its leading hints
     /// instead of cutting `1 of 2` down to `1`.
     #[test]

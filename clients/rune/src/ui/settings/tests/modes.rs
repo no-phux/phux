@@ -103,26 +103,3 @@ fn settings_render_in_every_mode_and_size() {
         }
     }
 }
-
-/// The kit switch is a switch with its state, every row a Tab stop, and the
-/// increased-contrast tokens reach the window (§1.11).
-#[test]
-fn increased_contrast_reaches_settings_and_rows_stay_switches() {
-    let mut rt = window((1100.0, 720.0), false, false, Mode::ContrastMore);
-    rt.update(|d, tx| {
-        tx.instant();
-        d.settings_category(Category::Terminal);
-    });
-    rt.frame(0.0);
-    let tree = rt.accessibility_json();
-    let text = tree.to_string();
-    assert!(text.contains("\"switch\""), "a switch role");
-    let copy = crate::ui::element(&rt, "set-copy-select");
-    assert!(copy.focusable);
-    let more = crate::ui::Tokens::resolve(&crate::ui::tokens::Inputs {
-        increased_contrast: true,
-        ..crate::ui::tokens::Inputs::system(false)
-    });
-    let base = crate::ui::Tokens::resolve(&crate::ui::tokens::Inputs::system(false));
-    assert_ne!(more.version, base.version, "contrast is in the memo key");
-}

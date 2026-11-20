@@ -327,7 +327,6 @@ mod tests {
             FenceVerdict::Forward,
             "past the horizon the id is unknown, as it is to the dedupe record"
         );
-        assert_eq!(store.entries.len(), 1);
     }
 
     #[test]

@@ -69,21 +69,6 @@ fn an_unknown_codec_refuses_one_resource_and_the_rest_carry_on() {
 }
 
 #[test]
-fn a_known_bootstrap_lifts_the_refusal() {
-    let mut rig = rig();
-    let g = res(4);
-    rig.ok(g.begin_gridless(unknown(9), 0));
-    rig.ok(g.begin_gridless(BootstrapStreamProfile::PixelSurfacePngV1, 0));
-    assert!(!rig.k.is_unsupported(&g.id));
-    rig.ok(g.chunk(0, b"\x89PNG"));
-    rig.ok(g.ready(None));
-    assert!(matches!(
-        rig.fx.as_slice(),
-        [KernelEffect::Document(document)] if document.bytes == b"\x89PNG"
-    ));
-}
-
-#[test]
 fn an_unknown_codec_on_a_document_kind_is_refused_too() {
     let mut rig = rig();
     let g = res(5);

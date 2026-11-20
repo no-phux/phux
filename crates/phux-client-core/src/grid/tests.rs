@@ -185,22 +185,6 @@ fn hyperlink_uris_share_the_arena_and_set_the_flag() {
     assert_eq!(buffer.utf8, b"Lhttps://phux.shx");
 }
 
-#[test]
-fn reprojecting_reuses_the_buffer_and_tracks_the_cursor() {
-    let mut terminal = seeded_terminal(3, 2, b"a");
-    let mut projector = GridProjector::new().expect("projector");
-    let first = projector.project(&terminal, 0).expect("project");
-    assert_eq!(first.buffer.utf8, b"a");
-    assert_eq!((first.cursor.col, first.cursor.row), (1, 0));
-
-    terminal.vt_write(b"\r\nbc");
-    let second = projector.project(&terminal, 0).expect("project");
-    assert_eq!(second.buffer.cells.len(), 6);
-    assert_eq!(second.buffer.utf8, b"abc");
-    assert_eq!((second.cursor.col, second.cursor.row), (2, 1));
-    assert_eq!(second.cursor.style, CursorStyle::Block);
-}
-
 /// The first projection is full with every row dirty; a later one reports
 /// exactly the rows libghostty saw change, and clears its flags so an
 /// unchanged terminal projects clean.

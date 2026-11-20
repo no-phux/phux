@@ -70,7 +70,6 @@ fn whoami_reports_the_local_socket_peer() {
     assert!(prose.status.success());
     let text = String::from_utf8_lossy(&prose.stdout);
     let lines: Vec<&str> = text.lines().collect();
-    assert_eq!(lines.len(), 8, "{text}");
     assert!(lines.contains(&"auth_route:     uds"), "{text}");
     assert!(lines.contains(&"principal:      none"), "{text}");
     assert!(lines.contains(&"ssh_client:     none"), "{text}");
@@ -93,14 +92,13 @@ fn pairing_uses_explicit_overlay_addresses_without_fabricating_a_route() {
     let quic = listeners::bound_listener_addr(&socket, listeners::RemoteListenerTransport::Quic)
         .to_string();
 
-    for (addresses, expected) in [
-        (
+    // Parsing (dedupe, empty, invalid) is pinned in `phux-config`'s overlay
+    // tests; this is the wiring into `phux pair --json`.
+    {
+        let (addresses, expected) = (
             "10.77.0.2,fd77::2,10.77.0.2",
             serde_json::json!(["10.77.0.2", "fd77::2"]),
-        ),
-        ("", serde_json::json!([])),
-        ("10.77.0.2,bad", serde_json::json!([])),
-    ] {
+        );
         let out = common::phux_cmd(crate::runner::phux_bin())
             .envs(hermetic_env(dir.path()))
             .env("PHUX_OVERLAY_ADDRS", addresses)
@@ -178,29 +176,9 @@ fn serve_paired_remote(dir: &Path) -> (Server, paired::Enrolled, String, String)
     (server, enrolled, socket, quic)
 }
 
-/// Over `--remote`: a `paired` secure loopback QUIC listener admits the dial
-/// by an enrolled certificate behind the token `phux pair` minted, and
-/// whoami reports the certificate's credential back with no peer uid.
-#[test]
-#[ignore = "spawns a real server with a QUIC listener; runs in the e2e lane"]
-fn whoami_over_remote_reports_the_workload_credential() {
-    let dir = TempDir::new().expect("tempdir");
-    let (_server, enrolled, _socket, _quic) = serve_paired_remote(dir.path());
-
-    let whoami = ["whoami", "--remote", REMOTE, "--json"];
-    let doc = json_doc(&await_success(dir.path(), &whoami, &enrolled.env()));
-    assert_eq!(doc["auth_route"], "bearer-quic", "{doc}");
-    assert_eq!(doc["credential_id"], enrolled.credential_id, "{doc}");
-    assert!(doc["principal"].is_string(), "{doc}");
-    assert_eq!(
-        doc["peer_uid"],
-        serde_json::Value::Null,
-        "a network route has no kernel peer uid: {doc}"
-    );
-}
-
-/// A paired client keeps working across a real in-place upgrade: the
-/// resumed image inherits the QUIC listener on the same address and admits
+/// Over `--remote` the server reports the enrolled certificate's credential
+/// and no peer uid, and the client keeps working across a real in-place
+/// upgrade: the resumed image inherits the QUIC listener on the same address and admits
 /// the same token and certificate (phux-wa4vy: phones came back unpaired).
 #[test]
 #[ignore = "spawns a real server and re-execs it in place; runs in the e2e lane"]
@@ -209,6 +187,14 @@ fn a_paired_remote_client_survives_an_upgrade() {
     let (_server, enrolled, socket, quic) = serve_paired_remote(dir.path());
     let whoami = ["whoami", "--remote", REMOTE, "--json"];
     let before = json_doc(&await_success(dir.path(), &whoami, &enrolled.env()));
+    assert_eq!(before["auth_route"], "bearer-quic", "{before}");
+    assert_eq!(before["credential_id"], enrolled.credential_id, "{before}");
+    assert!(before["principal"].is_string(), "{before}");
+    assert_eq!(
+        before["peer_uid"],
+        serde_json::Value::Null,
+        "a network route has no kernel peer uid: {before}"
+    );
 
     let upgrade = phux(dir.path(), &["--socket", &socket, "upgrade"]);
     assert!(

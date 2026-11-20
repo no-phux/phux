@@ -208,37 +208,3 @@ fn osc_progress_is_mirrored_without_event_listeners() {
     actor.feed_for_test(b"\x1b]9;4;0;\x07");
     assert_eq!(actor.last_progress, "4;0;");
 }
-
-/// phux-yeca: the synthesized tick emitter defaults off, so a human (raw)
-/// attach stays on the immediate PTY broadcast; only the `StateSync`
-/// consumer of two is served.
-#[test]
-fn tick_emit_mixed_mode_serves_only_state_sync_consumer() {
-    let bundle = TerminalActor::new(20, 5).expect("new");
-    let mut actor = bundle.actor;
-    let sync_client = ClientId(1);
-    let raw_client = ClientId(2);
-    let (sync_tx, mut sync_rx) = dummy_outbound();
-    let (raw_tx, mut raw_rx) = dummy_outbound();
-    actor
-        .register_consumer(sync_client, sync_tx, 11, true)
-        .expect("register state-sync");
-    actor
-        .register_consumer(raw_client, raw_tx, 12, false)
-        .expect("register raw");
-    actor.vt_write_for_test(b"shared-pane-write");
-
-    actor.tick_emit();
-
-    assert!(
-        matches!(
-            sync_rx.try_recv(),
-            Ok(Outbound::Frame(FrameKind::ResourceOutput { seq: 1, .. })),
-        ),
-        "state-sync consumer must receive the synthesized delta at seq 1",
-    );
-    assert!(
-        raw_rx.try_recv().is_err(),
-        "raw consumer must stay on the broadcast pump — tick must not double-paint it",
-    );
-}

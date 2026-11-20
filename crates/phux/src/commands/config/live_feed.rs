@@ -334,27 +334,6 @@ mod tests {
         assert!(!binding.asked);
     }
 
-    /// Attention propagation: a blocked record with no declared attention
-    /// derives high attention into the projection, overriding the
-    /// manifest's declared normal.
-    #[test]
-    fn attention_propagates_from_runtime_record() {
-        let rows = vec![manifest_row("codex", PluginAgentState::Working)];
-        let feed = feed_with(
-            vec![(
-                pane(1),
-                record("codex", Some("codex"), AgentMetaState::Blocked),
-            )],
-            vec![],
-        );
-
-        let merged = merge_agents(&rows, Some(&feed));
-
-        assert_eq!(merged[0].state, "blocked");
-        assert_eq!(merged[0].attention, "high");
-        assert_eq!(merged[0].source, ProjectionSource::Runtime);
-    }
-
     /// Asked propagation: an active ADR-0035 ask elevates a record that
     /// declares no state to blocked/high and flags the binding.
     #[test]

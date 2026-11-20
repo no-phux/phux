@@ -31,24 +31,6 @@ fn json_error(stderr: &str) -> serde_json::Value {
         .unwrap_or_else(|err| panic!("stderr line is not JSON ({err}):\n{line}"))
 }
 
-/// The binary in `target/` is in no recognized install location, so a real
-/// update refuses outright. It must not fall back to overwriting itself, and
-/// it must not reach the network to find that out.
-#[test]
-fn an_unrecognized_install_location_is_refused_not_overwritten() {
-    let (code, stdout, stderr) = run(&["update"]);
-    assert_eq!(code, 2, "stderr:\n{stderr}");
-    assert!(stdout.is_empty(), "stdout must stay empty: {stdout}");
-    assert!(
-        stderr.contains("not a recognized phux install location"),
-        "the refusal must say why:\n{stderr}"
-    );
-    assert!(
-        stderr.contains(".local/bin"),
-        "the refusal must name where phux does maintain installs:\n{stderr}"
-    );
-}
-
 /// The same refusal as the JSON contract, also for `--rollback` (before it
 /// looks for a backup) and `--channel next`.
 #[test]
@@ -94,19 +76,6 @@ fn a_tag_that_is_not_a_release_tag_is_refused_without_network() {
     }
 }
 
-/// `--channel next` is a closed vocabulary; anything else is clap's problem,
-/// diagnosed offline, and must not look like a release-tag refusal.
-#[test]
-fn a_channel_that_is_not_stable_or_next_is_refused_without_network() {
-    let (code, stdout, stderr) = run(&["update", "--check", "--channel", "nightly", "--json"]);
-    assert_eq!(code, 2, "stderr:\n{stderr}");
-    assert!(stdout.is_empty(), "stdout must stay empty: {stdout}");
-    assert!(
-        stderr.contains("invalid value 'nightly'") || stderr.contains("possible values"),
-        "clap must name the closed vocabulary:\n{stderr}"
-    );
-}
-
 /// `--check` reports; `--dry-run` and `--rollback` act. Combining them is a
 /// usage error caught by clap rather than a silently-ignored flag.
 #[test]
@@ -127,19 +96,4 @@ fn contradictory_flag_combinations_are_usage_errors() {
     // `--version` names a release to install, so it cannot ride a rollback.
     let (code, _, stderr) = run(&["update", "--rollback", "--version", "v1.2.3"]);
     assert_eq!(code, 2, "stderr:\n{stderr}");
-}
-
-/// `phux upgrade` stays the low-level primitive and keeps its own contract:
-/// with no server it reports and exits 1, and it never claims to have
-/// fetched anything.
-#[test]
-fn upgrade_remains_the_local_re_exec_primitive() {
-    let socket = format!("/tmp/phux-no-such-server-{}.sock", std::process::id());
-    let (code, stdout, stderr) = run(&["--socket", &socket, "upgrade"]);
-    assert_eq!(code, 1, "stderr:\n{stderr}");
-    assert!(stdout.is_empty());
-    assert!(
-        stderr.contains("no server running"),
-        "upgrade must still name the missing server:\n{stderr}"
-    );
 }

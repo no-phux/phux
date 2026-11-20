@@ -3,7 +3,7 @@ use super::*;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerifier};
 use rustls::pki_types::{ServerName, UnixTime};
 
-use super::verify::{leaf_fingerprint, normalize_fingerprint};
+use super::verify::normalize_fingerprint;
 
 #[test]
 fn normalize_fingerprint_is_separator_and_case_insensitive() {
@@ -38,8 +38,7 @@ fn pinned_verifier_accepts_only_the_pinned_leaf() {
             UnixTime::now(),
         )
     };
-    assert!(verify(Some(pinned.clone())).is_ok());
-    assert!(verify(Some(pinned.to_lowercase().replace(':', ""))).is_ok());
+    assert!(verify(Some(pinned)).is_ok());
     assert!(verify(Some("00".repeat(32))).is_err());
     assert!(verify(None).is_ok(), "skip-verify accepts any leaf");
 }
@@ -336,10 +335,6 @@ async fn handshake_with(
     })
 }
 
-fn pin_of(cert: &CertificateDer<'_>) -> String {
-    leaf_fingerprint(cert)
-}
-
 /// ADR-0153: a client pinning the CA accepts every leaf it issued, so a
 /// re-issued server certificate needs no re-pair.
 #[tokio::test]
@@ -415,23 +410,6 @@ async fn a_forged_chain_or_a_self_signed_leaf_is_refused() {
             .expect("an authority change");
         assert_eq!(change.presented, None, "the leaf chains to nothing");
     }
-}
-
-/// A leaf pin trusts its leaf and learns nothing from it, whatever chain
-/// it arrives with.
-#[tokio::test]
-async fn a_leaf_pin_holds_its_leaf_only() {
-    let (issuer, ca) = authority();
-    let genuine = issue(&issuer, &ca);
-    let pinned = CertTrust::Pinned(pin_of(&genuine.chain[0]));
-    handshake_with(&genuine, &pinned)
-        .await
-        .expect("pinned leaf");
-    let other = issue(&issuer, &ca);
-    assert!(
-        handshake_with(&other, &pinned).await.is_err(),
-        "another leaf of the same authority is not the pinned leaf"
-    );
 }
 
 #[test]

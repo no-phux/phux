@@ -5,8 +5,6 @@
 
 #![allow(clippy::too_many_lines, reason = "scripted release gates")]
 
-mod capture_latency;
-
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;

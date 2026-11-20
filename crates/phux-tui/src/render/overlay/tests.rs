@@ -106,12 +106,6 @@ fn session_management_drill_down_keeps_picker_until_explicitly_closed() {
         panic!("management")
     };
     assert_eq!(manage.action, "session-actions");
-    let mut expected_args = target.args.clone();
-    expected_args.insert(
-        "switch-action".to_owned(),
-        toml::Value::String("switch-session".to_owned()),
-    );
-    assert_eq!(manage.args, expected_args);
     assert_eq!(
         stack.depth(),
         1,

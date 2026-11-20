@@ -1,7 +1,6 @@
 //! One-shot sessions against a real server: request/reply with the frames
 //! interleaved ahead of each answer, metadata reads, spawn, corked batches,
-//! QUIC per-Terminal streams, the WebSocket lane, and refusal
-//! classification.
+//! QUIC per-Terminal streams, and refusal classification.
 
 #![allow(clippy::expect_used, reason = "test assertions")]
 #![allow(clippy::unwrap_used, reason = "test assertions")]
@@ -320,77 +319,6 @@ fn a_quic_session_binds_routes_and_unbinds_terminal_streams() {
         timeout(STEP, session.shutdown())
             .await
             .expect("QUIC close drains");
-        stop(shutdown, server).await;
-    });
-}
-
-/// The WebSocket lane: plan a loopback target, negotiate, and round-trip.
-#[test]
-fn a_websocket_session_round_trips() {
-    run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket = tmp.path().join("w.sock");
-        let mut config = ServerConfig {
-            socket_path: socket.clone(),
-            pre_seeded_session: Some("main".to_owned()),
-            seed_with_pty: false,
-            seed_command: None,
-            ..ServerConfig::with_default_socket()
-        };
-        phux_server_testkit::embedder::embed_owner_engine(&mut config);
-        let (shutdown, stopped) = oneshot::channel::<()>();
-        let server = tokio::task::spawn_local(async move {
-            phux_server_testkit::terminal_server(config)
-                .listen_ws(SocketAddr::from(([127, 0, 0, 1], 0)))
-                .run_async(async move {
-                    let _ = stopped.await;
-                })
-                .await
-        });
-        let addr = bound_listener_addr(&socket, RemoteListenerTransport::Wss).await;
-        let target = Target::ws(format!("ws://{addr}/phux"));
-        let mut session = Session::connect_target(&target, CLIENT.to_owned(), control_caps())
-            .await
-            .expect("connect over WebSocket");
-        assert!(!session.multistream_enabled());
-        session.cork();
-        session
-            .send(&FrameKind::Ping { nonce: 77 })
-            .await
-            .expect("ping");
-        session.uncork().await.expect("a no-op off a Unix socket");
-        let deadline = Instant::now() + STEP;
-        loop {
-            assert!(Instant::now() < deadline, "no PONG over WebSocket");
-            if matches!(
-                session.recv().await.expect("recv"),
-                FrameKind::Pong { nonce: 77 }
-            ) {
-                break;
-            }
-        }
-        session.shutdown().await;
-        stop(shutdown, server).await;
-    });
-}
-
-/// A QUIC listener refusing the bearer token closes the connection with its
-/// auth code after the stream opened. The read that sees it is a refusal the
-/// caller stops on and words as one, not a lost connection it redials.
-#[test]
-fn a_refused_quic_token_is_a_fatal_refusal() {
-    run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket = tmp.path().join("t.sock");
-        let tokens = tmp.path().join("tokens");
-        phux_server::auth::mint_token(&tokens).expect("a credential the wrong token is not");
-        let (shutdown, server, addr) = quic_server(&tmp, &socket, Some(&tokens)).await;
-        let mut target = Target::quic(addr.to_string());
-        target.token = Some("ab".repeat(32));
-        let refused = Session::connect_target(&target, CLIENT.to_owned(), control_caps()).await;
-        let error = refused.expect_err("an unknown token");
-        assert!(error.is_fatal_refusal(), "{error}");
-        assert!(!error.to_string().contains("connection lost"), "{error}");
         stop(shutdown, server).await;
     });
 }

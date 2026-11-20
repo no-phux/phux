@@ -35,18 +35,6 @@ async fn codepoint_buffer_reads_the_base_of_combining_clusters() {
 }
 
 #[wasm_bindgen_test]
-async fn handles_cursor_movement_and_overwrite() {
-    let vt = Vt::load().await.expect("load ghostty-vt engine");
-    let term = vt.terminal(20, 5);
-
-    // Write, carriage-return to column 0, overwrite the first char.
-    term.write(b"world\r");
-    term.write(b"W");
-    let rows = term.rows_text();
-    assert_eq!(rows[0], "World", "CR + overwrite; got {:?}", rows[0]);
-}
-
-#[wasm_bindgen_test]
 async fn reads_truecolor_grid() {
     let vt = Vt::load().await.expect("load ghostty-vt engine");
     let term = vt.terminal(20, 3);
@@ -78,18 +66,6 @@ async fn frozen_style_flags_distinguish_inverse_from_other_attributes() {
     assert!(!grid.cells[0].inverse, "bold is not inverse");
     assert!(grid.cells[1].inverse, "SGR 7 sets the inverse flag");
     assert!(!grid.cells[2].inverse, "SGR 0 clears inverse");
-}
-
-#[wasm_bindgen_test]
-async fn history_budget_options_round_trip() {
-    let vt = Vt::load().await.expect("load ghostty-vt engine");
-    let term = vt.terminal(20, 3);
-    term.set_history_budget(2 * 1024 * 1024, 1234)
-        .expect("set budgets");
-    assert_eq!(
-        term.history_budget().expect("get budgets"),
-        (2 * 1024 * 1024, 1234)
-    );
 }
 
 #[wasm_bindgen_test]

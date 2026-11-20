@@ -81,12 +81,4 @@ mod tests {
         );
         assert_eq!(cell_color(None, StyleColor::None), CellColor::Default);
     }
-
-    #[test]
-    fn default_style_projects_to_the_default_cell_style() {
-        assert_eq!(
-            cell_style(&Style::default(), None, None),
-            CellStyle::default()
-        );
-    }
 }

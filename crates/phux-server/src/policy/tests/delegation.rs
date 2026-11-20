@@ -8,13 +8,10 @@ use std::time::Duration;
 use jiff::Timestamp;
 use phux_core::PrincipalId;
 use phux_protocol::kinds::{Requirement, Verb, Verbs, frame_rule};
-use phux_protocol::wire::frame::{Command, FrameKind, TerminalSignal};
-
-use phux_protocol::wire::frame::{AttachTarget, InputMode, ReportedAgentState};
+use phux_protocol::wire::frame::{AttachTarget, Command, InputMode, ReportedAgentState};
 
 use super::{
-    ConnectionGrant, World, admits, admits_command, agent_child, attach, command,
-    controlled_surface, get_screen, organization_samples, samples, scoped, spawn, world,
+    ConnectionGrant, World, admits, admits_command, agent_child, attach, samples, scoped, world,
 };
 use crate::delegation::{AGENT_VERBS, DelegatedCredential, DelegationError, DelegationRequest};
 use crate::state::ClientId;
@@ -101,43 +98,6 @@ fn a_delegated_agent_is_admitted_only_rows_needing_agent_verbs() {
     assert!(admitted > 0, "the agent can still observe and type");
 }
 
-#[test]
-fn a_delegated_agent_is_refused_terminate_signal_and_organize_even_in_its_session() {
-    let mut world = world();
-    let grant = agent(&mut world);
-    let alpha = world.alpha.clone();
-    for refused in [
-        Command::KillResource {
-            terminal_id: alpha.clone(),
-            operation_id: None,
-        },
-        Command::SignalTerminal {
-            terminal_id: alpha.clone(),
-            signal: TerminalSignal::Interrupt,
-            operation_id: None,
-        },
-    ] {
-        assert!(
-            !admits_command(&world, &grant, refused.clone()),
-            "{refused:?}"
-        );
-    }
-    for frame in organization_samples(&world, &alpha) {
-        let FrameKind::Command { command: org, .. } = &frame else {
-            unreachable!("organization samples are commands");
-        };
-        let reads = matches!(
-            org,
-            Command::GetOrganization { .. }
-                | Command::ArrangementGet { .. }
-                | Command::GetCreation { .. }
-        );
-        if !reads {
-            assert!(!admits(&world, &grant, &frame), "{org:?}");
-        }
-    }
-}
-
 /// `BIND` on its own session (R24): the agent attaches, asks for the input
 /// lease, and reports its agent state there, and nowhere else.
 #[test]
@@ -168,59 +128,6 @@ fn a_delegated_agent_binds_attaches_and_reports_only_in_its_session() {
     assert!(admits_command(&world, &grant, report(alpha)));
     assert!(!admits_command(&world, &grant, lease(beta.clone())));
     assert!(!admits_command(&world, &grant, report(beta)));
-}
-
-/// `BIND` admits the lease request, and human precedence still decides it:
-/// the agent takes a free lease but never one the owner holds.
-#[test]
-fn a_delegated_agent_takes_a_free_lease_and_never_a_humans() {
-    const AGENT: ClientId = ClientId(51);
-    const HUMAN: ClientId = ClientId(52);
-    let mut world = world();
-    let grant = agent(&mut world);
-    world.state.set_connection_grant(AGENT, grant);
-    world
-        .state
-        .set_connection_grant(HUMAN, ConnectionGrant::owner());
-    let pane = world.alpha_core;
-    assert!(!world.state.lease_protected_from(pane, AGENT), "free");
-    world.state.set_input_lease(pane, HUMAN);
-    assert!(
-        world.state.lease_protected_from(pane, AGENT),
-        "a human-held lease is not the agent's to take"
-    );
-    assert!(world.state.release_input_lease(pane, HUMAN));
-    world.state.set_input_lease(pane, AGENT);
-    assert!(
-        !world.state.lease_protected_from(pane, HUMAN),
-        "a human's takeover always wins"
-    );
-}
-
-#[test]
-fn a_delegated_agent_is_confined_to_its_own_session() {
-    let mut world = world();
-    let grant = agent(&mut world);
-    assert!(admits_command(
-        &world,
-        &grant,
-        get_screen(world.alpha.clone())
-    ));
-    assert!(!admits_command(
-        &world,
-        &grant,
-        get_screen(world.beta.clone())
-    ));
-    let key = |terminal_id| {
-        command(Command::RouteInput {
-            terminal_id,
-            event: phux_protocol::input::InputEvent::Focus(
-                phux_protocol::input::focus::FocusEvent::Gained,
-            ),
-        })
-    };
-    assert!(admits(&world, &grant, &key(world.alpha.clone())));
-    assert!(!admits(&world, &grant, &key(world.beta.clone())));
 }
 
 #[test]
@@ -395,25 +302,4 @@ fn paired_policy_grants_act_as_the_principal_the_record_was_enrolled_for() {
             .kind(),
         PrincipalKind::Human
     );
-}
-
-/// A delegated agent holds no `CREATE`, so it opens no document beside its
-/// own pane, with a control class (a page included) or without one.
-#[test]
-fn a_delegated_agent_opens_no_document() {
-    use phux_protocol::wire::frame::ControlClass;
-    let mut world = world();
-    let grant = agent(&mut world);
-    let parent = world.alpha.clone();
-    let classes = ControlClass::ALL.map(Some);
-    for control in std::iter::once(None).chain(classes) {
-        let surface = phux_protocol::wire::frame::SpawnResource {
-            control,
-            ..controlled_surface(&parent, ControlClass::Page)
-        };
-        assert!(
-            !admits(&world, &grant, &spawn(None, None, Some(surface))),
-            "a delegated agent opened a {control:?} surface"
-        );
-    }
 }

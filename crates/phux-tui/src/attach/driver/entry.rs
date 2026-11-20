@@ -21,8 +21,6 @@ use crate::render::chrome::status_bar::Notice;
 
 // Re-exported so `main_loop`, `loop_state`, and the tests keep their
 // `entry::` paths.
-#[cfg(test)]
-pub(super) use super::loop_exit::is_local_detach;
 pub(super) use super::loop_exit::{
     CarriedSidebar, EntryPick, LoopExit, SwitchCarry, detached_loop_exit, finish_onboarding_claim,
     finish_return_onboarding_after_paint, seed_sidebar_enabled,

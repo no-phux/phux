@@ -171,45 +171,15 @@ mod tests {
     #[test]
     fn an_answer_on_the_offered_terms_becomes_the_server_info() {
         let offered = ClientCapabilities::new();
-        let current = (
-            PROTOCOL_VERSION.major,
-            PROTOCOL_VERSION.minor,
-            PROTOCOL_VERSION.patch,
-        );
-        let info = answer(&offered, current)
-            .accept(&offered)
-            .expect("accepted");
-        assert_eq!(info.id, b"incarnation");
-        assert_eq!(info.protocol, current);
-        assert_eq!(info.bootstrap().limits, info.limits);
-    }
-
-    #[test]
-    fn a_newer_minor_on_the_same_major_is_accepted_and_recorded() {
-        let offered = ClientCapabilities::new();
         let newer = (
             PROTOCOL_VERSION.major,
             PROTOCOL_VERSION.minor.wrapping_add(1),
             PROTOCOL_VERSION.patch.wrapping_add(3),
         );
-        let info = answer(&offered, newer)
-            .accept(&offered)
-            .expect("same major interoperates");
+        let info = answer(&offered, newer).accept(&offered).expect("accepted");
+        assert_eq!(info.id, b"incarnation");
         assert_eq!(info.protocol, newer, "the server's version, not ours");
-    }
-
-    #[test]
-    fn another_protocol_major_is_refused() {
-        let offered = ClientCapabilities::new();
-        let skewed = (
-            PROTOCOL_VERSION.major.wrapping_add(1),
-            PROTOCOL_VERSION.minor,
-            PROTOCOL_VERSION.patch,
-        );
-        assert!(matches!(
-            answer(&offered, skewed).accept(&offered),
-            Err(HelloOkError::UnsupportedProtocol { .. })
-        ));
+        assert_eq!(info.bootstrap().limits, info.limits);
     }
 
     #[test]

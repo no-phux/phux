@@ -64,13 +64,6 @@ fn host_edits_preserve_other_fields_and_refuse_inherited_or_colliding_names() {
     );
 }
 
-#[test]
-fn non_destructive_host_lookup_still_refuses_ambiguous_names() {
-    let (err, code) = resolve_host_role("mini", None, true, true, "rename").expect_err("ambiguous");
-    assert_eq!(code, 2);
-    assert!(err.remedy.contains("host rename --role remote mini"));
-}
-
 /// `host rm` with no `--role`: unique names resolve, a doubly-registered
 /// name is refused (exit 2) with both disambiguating commands named, and
 /// a miss is exit 1.

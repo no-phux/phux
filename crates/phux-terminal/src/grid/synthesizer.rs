@@ -41,8 +41,6 @@ mod projection;
 mod rendered;
 mod snapshot;
 
-#[cfg(test)]
-use encoding::cup_len;
 use encoding::{
     assemble_diff, emit_cell, emit_cell_bounded, emit_epilogue, emit_screen_mode,
     encode_graphemes_bounded, write_cup,

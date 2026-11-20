@@ -70,20 +70,6 @@ test("the built-in shell is never rewritten or refused", async () => {
   }
 });
 
-test("the catalog drops session-per-task creation and adds owned kill", async () => {
-  delete process.env.PHUX_TERMINAL_ID;
-  fakeCli();
-  const host = await setupHost();
-  try {
-    expect(host.toolNames()).not.toContain("phux_create");
-    expect(host.toolNames()).not.toContain("phux_list");
-    expect(host.toolNames()).toContain("phux_spawn");
-    expect(host.toolNames()).toContain("phux_kill");
-  } finally {
-    await host.close();
-  }
-});
-
 test("document reads register and a surface frame reaches OpenCode as a file part", async () => {
   delete process.env.PHUX_TERMINAL_ID;
   fakeCli();
@@ -94,9 +80,6 @@ test("document reads register and a surface frame reaches OpenCode as a file par
   });
   const host = await setupHost(false);
   try {
-    for (const name of ["phux_documents", "phux_tree_snapshot", "phux_tree_wait", "phux_surface_snapshot"]) {
-      expect(host.toolNames()).toContain(name);
-    }
     const result = await host.execute("phux_surface_snapshot", { target: "@3" }, "a") as { content: unknown[] };
     expect(result.content[1]).toEqual({
       type: "file", uri: `data:image/png;base64,${png.toString("base64")}`, mime: "image/png", name: "frame-1.png",

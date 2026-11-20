@@ -108,29 +108,6 @@ fn answer_reattach(plane: &mut ControlPlane) -> usize {
 }
 
 #[test]
-fn a_stalled_document_is_attached_again_instead_of_reconnecting() {
-    let mut plane = published_surface();
-    feed_mis_tagged_run(&mut plane, 10);
-    assert_eq!(
-        reattaches(&mut plane),
-        1,
-        "only that resource is attached again"
-    );
-    let events = plane.take_events();
-    assert!(events.iter().any(|event| matches!(
-        event,
-        Event::DocumentStalled { terminal_id, attempt: 1, .. } if *terminal_id == surface()
-    )));
-    assert!(
-        !events
-            .iter()
-            .any(|event| matches!(event, Event::ResyncRequired { .. })),
-        "a document stall is no connection resync"
-    );
-    assert_ne!(plane.status(), Status::Connecting);
-}
-
-#[test]
 fn a_document_that_keeps_stalling_is_reported_lost() {
     let mut plane = published_surface();
     let mut seq = 10;

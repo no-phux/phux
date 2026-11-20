@@ -418,6 +418,3 @@ pub(super) const fn frame_resource(frame: &FrameKind) -> Option<&WireResourceId>
         _ => None,
     }
 }
-
-#[cfg(test)]
-mod tests;

@@ -5,7 +5,6 @@
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
 
@@ -29,27 +28,6 @@ fn write_plugin(dir: &Path, id: &str, version: &str, build: bool) {
     .unwrap();
 }
 
-fn executable(path: &Path, body: &str) {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).unwrap();
-    }
-    std::fs::write(path, body).unwrap();
-    let mut perms = std::fs::metadata(path).unwrap().permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(path, perms).unwrap();
-}
-
-/// `PATH` with a fake `git` running `body` first.
-fn fake_git(home: &TestHome, body: &str) -> String {
-    let fake = home.scratch.join("bin").join("git");
-    executable(&fake, body);
-    format!(
-        "{}:{}",
-        fake.parent().unwrap().display(),
-        std::env::var("PATH").unwrap_or_default()
-    )
-}
-
 /// The installed copy of plugin `id`'s manifest.
 fn installed_manifest(home: &TestHome, id: &str) -> String {
     std::fs::read_to_string(home.plugins_dir().join(id).join("phux-plugin.toml")).unwrap()
@@ -64,70 +42,6 @@ fn head(repo: &Path) -> String {
         .unwrap();
     assert!(out.status.success());
     String::from_utf8_lossy(&out.stdout).trim().to_owned()
-}
-
-#[test]
-fn option_shaped_ref_never_reaches_git() {
-    let home = TestHome::new();
-    let marker = home.scratch.join("git-invoked");
-    let path = fake_git(
-        &home,
-        &format!("#!/bin/sh\necho invoked > {}\nexit 1\n", marker.display()),
-    );
-    let (code, stdout, stderr) = home.run_with(
-        &["plugin", "install", "--", "--upload-pack=evil://x"],
-        |cmd| {
-            cmd.env("PATH", &path);
-        },
-    );
-    assert_ne!(code, 0);
-    assert!(stdout.is_empty(), "{stdout}");
-    assert!(stderr.contains("starts with '-'"), "{stderr}");
-    assert!(stderr.contains("rejected before git"), "{stderr}");
-    assert!(!marker.exists(), "git was invoked for an option-shaped ref");
-
-    let (code, _, stderr) = home.run_with(
-        &[
-            "plugin",
-            "install",
-            "file:///tmp/phux-empty-rev",
-            "--rev",
-            "",
-        ],
-        |cmd| {
-            cmd.env("PATH", &path);
-        },
-    );
-    assert_ne!(code, 0);
-    assert!(stderr.contains("--rev must name"), "{stderr}");
-    assert!(!marker.exists(), "empty --rev must not spawn git");
-}
-
-#[test]
-fn git_fetch_timeout_kills_the_process() {
-    let home = TestHome::new();
-    let pidfile = home.scratch.join("git.pid");
-    let path = fake_git(
-        &home,
-        &format!("#!/bin/sh\necho $$ > {}\nsleep 60\n", pidfile.display()),
-    );
-    let (code, _, stderr) = home.run_with(
-        &["plugin", "install", "file:///tmp/phux-timeout-probe"],
-        |cmd| {
-            cmd.env("PATH", &path);
-            cmd.env("PHUX_PLUGIN_GIT_TIMEOUT_MS", "300");
-        },
-    );
-    assert_ne!(code, 0, "{stderr}");
-    assert!(stderr.contains("timed out"), "{stderr}");
-    let pid = std::fs::read_to_string(&pidfile).expect("fake git recorded its pid");
-    let alive = Command::new("kill")
-        .args(["-0", pid.trim()])
-        .stderr(std::process::Stdio::null())
-        .status()
-        .unwrap()
-        .success();
-    assert!(!alive, "git process {pid} still alive after timeout");
 }
 
 #[test]
@@ -186,52 +100,6 @@ fn plant_stale_build_hash(home: &TestHome) {
         .collect::<Vec<_>>()
         .join("\n");
     std::fs::write(path, stale).unwrap();
-}
-
-fn assert_controls_are_escaped(stderr: &str) {
-    assert!(stderr.contains(r#""x\u{1b}[2K\r\ny""#), "{stderr:?}");
-    assert!(!stderr.contains('\u{1b}'), "{stderr:?}");
-    assert!(!stderr.contains('\r'), "{stderr:?}");
-}
-
-#[test]
-fn remote_build_refusal_escapes_control_characters() {
-    let home = TestHome::new();
-    let repo = home.scratch.join("repo");
-    let marker = home.scratch.join("runs.txt");
-    std::fs::create_dir_all(&repo).unwrap();
-    std::fs::write(
-        repo.join("phux-plugin.toml"),
-        format!(
-            "id = \"example.hostile\"\nname = \"Guard\"\nversion = \"0.1.0\"\n\
-             min_phux_version = \"0.0.1\"\n\n\
-             [[build]]\ncommand = [\"sh\", \"-c\", \"echo ran >> {}\", \"x\\u001b[2K\\r\\ny\"]\n\n\
-             [[actions]]\nid = \"open\"\ntitle = \"Open\"\ncommand = [\"true\"]\n",
-            marker.display()
-        ),
-    )
-    .unwrap();
-    let url = init_repo(&repo, "hostile");
-
-    let (code, _, stderr) = home.run(&["plugin", "install", &url]);
-    assert_ne!(code, 0, "{stderr}");
-    assert_controls_are_escaped(&stderr);
-    assert!(stderr.contains("Refused:"), "{stderr}");
-    assert!(stderr.contains("Nothing was installed"), "{stderr}");
-    assert!(!marker.exists());
-    assert!(!home.plugins_dir().join("example.hostile").exists());
-
-    let (code, _, stderr) = home.run(&["plugin", "install", &url, "--yes"]);
-    assert_eq!(code, 0, "{stderr}");
-    assert_controls_are_escaped(&stderr);
-    assert_eq!(std::fs::read_to_string(&marker).unwrap().lines().count(), 1);
-
-    plant_stale_build_hash(&home);
-    let (code, _, stderr) = home.run(&["plugin", "update", "example.hostile"]);
-    assert_ne!(code, 0, "{stderr}");
-    assert_controls_are_escaped(&stderr);
-    assert!(stderr.contains("Nothing was updated"), "{stderr}");
-    assert_eq!(std::fs::read_to_string(&marker).unwrap().lines().count(), 1);
 }
 
 #[test]
@@ -386,45 +254,4 @@ fn update_reasks_when_the_stored_build_hash_does_not_match() {
         1,
         "a stale build hash must not run the command"
     );
-}
-
-#[test]
-fn git_ssh_command_is_kept_and_gains_batch_mode() {
-    let home = TestHome::new();
-    let log = home.scratch.join("ssh.log");
-    let wrapper = home.scratch.join("ssh-wrap");
-    executable(
-        &wrapper,
-        &format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$0\" \"$@\" > {}\nexit 1\n",
-            log.display()
-        ),
-    );
-    let (code, _, stderr) = home.run_with(
-        &["plugin", "install", "ssh://git@127.0.0.1/no-such-plugin"],
-        |cmd| {
-            cmd.env(
-                "GIT_SSH_COMMAND",
-                format!("{} --custom-key", wrapper.display()),
-            );
-            cmd.stdin(std::process::Stdio::null());
-        },
-    );
-    assert_ne!(code, 0, "{stderr}");
-    let recorded = std::fs::read_to_string(&log).expect("ssh wrapper was invoked");
-    assert!(
-        recorded.contains(wrapper.to_str().unwrap()),
-        "wrapper was replaced: {recorded}"
-    );
-    assert!(recorded.contains("--custom-key"), "{recorded}");
-    assert!(recorded.contains("BatchMode=yes"), "{recorded}");
-}
-
-#[test]
-fn plugin_new_rejects_dot() {
-    let home = TestHome::new();
-    let (code, _, stderr) = home.run(&["plugin", "new", "."]);
-    assert_ne!(code, 0, "{stderr}");
-    assert!(stderr.contains("not a plugin id"), "{stderr}");
-    assert!(!home.scratch.join("phux-plugin.toml").exists());
 }

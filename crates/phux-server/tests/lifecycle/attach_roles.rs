@@ -15,7 +15,7 @@ use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, ControlAction, ErrorCode, FrameKind, InputMode, RolePolicy,
 };
 use phux_protocol::wire::info::ResourceInfo;
-use phux_server_testkit::{attach_by_name, command, encode_frame_vec, recv_typed, send_frame};
+use phux_server_testkit::{attach_by_name, command, recv_typed, send_frame};
 use tokio::net::UnixStream;
 
 use crate::common::{
@@ -113,33 +113,9 @@ async fn next_uncorrelated_error(stream: &mut UnixStream) -> ErrorCode {
     .await
 }
 
+/// The byte layout is pinned in `phux-protocol`'s wire contract tests.
 #[test]
-fn attach_without_role_policy_is_byte_identical_and_behaves_as_before() {
-    // No role and no cursor are two absent presence bytes: ATTACH_RESOURCE
-    // is DETACH_RESOURCE with its own tag and `0, 0` appended.
-    let pane = ResourceId::local(7);
-    let body = |command| {
-        let framed = encode_frame_vec(&FrameKind::Command {
-            request_id: 1,
-            command,
-        });
-        let mut dec = phux_protocol::wire::decode::Decoder::new(&framed[5..]);
-        while let Some((id, value)) = dec.read_field().unwrap() {
-            if id == 2 {
-                return value.to_vec();
-            }
-        }
-        panic!("COMMAND without a command field");
-    };
-    let attach_body = body(attach_resource(&pane, None));
-    let detach_body = body(Command::DetachResource { terminal_id: pane });
-    assert_eq!(
-        (attach_body[0], detach_body[0]),
-        (0x01, 0x02),
-        "the command tags"
-    );
-    assert_eq!(attach_body[1..], [&detach_body[1..], &[0, 0]].concat());
-
+fn the_server_advertises_roles_and_a_roleless_attach_behaves_as_before() {
     phux_server_testkit::run_local(async {
         let server = Server::start(Some(SESSION), |_| {});
         // The server advertises the feature in HELLO_OK.

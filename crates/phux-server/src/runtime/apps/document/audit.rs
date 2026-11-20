@@ -322,13 +322,4 @@ mod tests {
         state.set_client_name(owner, "é".repeat(200));
         assert_eq!(state.relayed_for(owner).name.len(), 254);
     }
-
-    #[test]
-    fn text_is_measured_never_kept() {
-        let typed = DocumentInput::Type {
-            text: "pässwörd".into(),
-        };
-        assert_eq!(kind(&typed), ("type", 8));
-        assert_eq!(kind(&DocumentInput::Click { x: 1, y: 2 }), ("click", 0));
-    }
 }

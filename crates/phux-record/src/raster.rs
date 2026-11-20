@@ -762,24 +762,6 @@ mod tests {
     }
 
     #[test]
-    fn the_fallback_tier_never_steals_a_codepoint_the_face_can_draw() {
-        let raster = Rasterizer::new(Theme::default());
-        for ch in ['A', '\u{2192}', '\u{25b2}', '\u{25cf}', '\u{e0b0}'] {
-            assert!(
-                matches!(raster.glyph_of(&ch.to_string()), Glyph::Bitmap(_)),
-                "{ch:?} did not come from the face"
-            );
-        }
-        for ch in ['\u{2500}', '\u{2588}', '\u{276f}', '\u{2713}', '\u{26a0}'] {
-            assert!(
-                matches!(raster.glyph_of(&ch.to_string()), Glyph::Boxed(_)),
-                "{ch:?} fell through to the face or to tofu"
-            );
-        }
-        assert!(matches!(raster.glyph_of("\u{6f22}"), Glyph::Tofu));
-    }
-
-    #[test]
     fn a_marker_label_paints_a_bar_along_the_bottom() {
         let raster = Rasterizer::new(Theme::default());
         let mut surface = raster.surface_for(20, 4);

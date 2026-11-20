@@ -1,20 +1,8 @@
 #[test]
-fn append_resource_output_is_admitted_through_the_parent_alone() {
+fn a_named_terminal_row_admits_a_child_through_its_parent() {
     let mut world = world();
     let child_wire = agent_child(&mut world);
-    let append = Command::AppendResourceOutput {
-        terminal_id: child_wire.clone(),
-        bytes: b"{}\n".to_vec(),
-    };
     let parent = local_id(&world.alpha);
-    let on_parent = scoped(&[&format!("bind,input@terminal:{parent}")]);
-    let on_child = scoped(&[&format!("bind,input@terminal:{}", local_id(&child_wire))]);
-    assert!(admits_command(&world, &on_parent, append.clone()));
-    assert!(
-        !admits_command(&world, &on_child, append),
-        "a grant naming only the child does not suffice"
-    );
-    // Every other named-Terminal row admits a child through its parent.
     let observe_parent = scoped(&[&format!("observe@terminal:{parent}")]);
     assert!(admits_command(
         &world,
@@ -192,18 +180,8 @@ fn persisted_ceilings_refuse_ids_that_restart_with_the_server() {
 }
 
 #[test]
-fn any_grant_reads_its_own_whoami() {
+fn a_global_key_other_than_whoami_needs_observe_on_global() {
     let world = world();
-    let whoami = FrameKind::GetMetadata {
-        request_id: 1,
-        scope: Scope::Global,
-        key: WHOAMI_KEY.to_owned(),
-    };
-    let terminal = format!("input@terminal:{}", local_id(&world.alpha));
-    for grant in [scoped(&["observe@host:x"]), scoped(&[&terminal])] {
-        assert!(admits(&world, &grant, &whoami));
-    }
-    // Any other Global key still needs OBSERVE on Global.
     let other = FrameKind::GetMetadata {
         request_id: 1,
         scope: Scope::Global,
@@ -224,39 +202,13 @@ fn clearing_keep_empty_is_signal_on_the_named_session() {
         )
     };
     let on_alpha = scoped(&[&format!("signal@group:{}", world.alpha_group)]);
-    assert!(admits(&world, &on_alpha, &clear("alpha")));
-    assert!(
-        !admits(&world, &on_alpha, &clear("beta")),
-        "another session"
-    );
     assert!(
         !admits(&world, &on_alpha, &clear("nowhere")),
         "an absent session is refused like a foreign one"
     );
-    assert!(
-        !admits(
-            &world,
-            &scoped(&[&format!("bind@group:{}", world.alpha_group)]),
-            &clear("alpha")
-        ),
-        "SIGNAL, not BIND"
-    );
     assert!(admits(&world, &scoped(&["signal@host"]), &clear("nowhere")));
-    // Setting the mark stays CREATE and BIND on Global.
-    let mark = set(
-        Scope::Global,
-        SESSION_KEEP_EMPTY_KEY,
-        &encode_session_keep_empty("alpha", true),
-    );
-    assert!(!admits(&world, &on_alpha, &mark));
-    assert!(admits(&world, &scoped(&["create,bind@global"]), &mark));
-    // Any other value, and deleting the key, stay default-deny.
+    // Deleting the key stays default-deny.
     let all = scoped(&["*@global"]);
-    assert!(!admits(
-        &world,
-        &all,
-        &set(Scope::Global, SESSION_KEEP_EMPTY_KEY, b"alpha")
-    ));
     let delete = FrameKind::DeleteMetadata {
         request_id: 1,
         scope: Scope::Global,

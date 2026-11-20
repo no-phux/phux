@@ -131,31 +131,6 @@ fn text_goes_in_chunks_a_keyboard_event_can_carry() {
 }
 
 #[test]
-fn every_key_has_its_virtual_key_code() {
-    let mut unique: Vec<u16> = DocumentKey::ALL.iter().map(|key| key_code(*key)).collect();
-    unique.sort_unstable();
-    unique.dedup();
-    assert_eq!(unique.len(), DocumentKey::ALL.len());
-    #[cfg(target_os = "macos")]
-    {
-        use core_graphics::event::KeyCode;
-        assert_eq!(key_code(DocumentKey::Enter), KeyCode::RETURN);
-        assert_eq!(key_code(DocumentKey::Tab), KeyCode::TAB);
-        assert_eq!(key_code(DocumentKey::Backspace), KeyCode::DELETE);
-        assert_eq!(key_code(DocumentKey::Escape), KeyCode::ESCAPE);
-        assert_eq!(key_code(DocumentKey::ArrowLeft), KeyCode::LEFT_ARROW);
-        assert_eq!(key_code(DocumentKey::ArrowRight), KeyCode::RIGHT_ARROW);
-        assert_eq!(key_code(DocumentKey::ArrowDown), KeyCode::DOWN_ARROW);
-        assert_eq!(key_code(DocumentKey::ArrowUp), KeyCode::UP_ARROW);
-    }
-}
-
-#[test]
-fn the_dry_run_frame_is_a_160x100_png() {
-    assert_eq!(phux_client::tree::png_size(DRY_RUN_FRAME), Some((160, 100)));
-}
-
-#[test]
 fn window_info_reads_bounds_and_owner_or_nothing() {
     let (rect, pid) = window_info(r#"{"x":300,"y":102,"w":1320,"h":840,"pid":93904}"#).unwrap();
     assert_eq!((rect.x, rect.w, pid), (300.0, 1320.0, 93904));

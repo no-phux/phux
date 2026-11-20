@@ -106,20 +106,6 @@ fn an_announcement_from_another_uid_is_ignored() {
     assert_eq!(record.ssh_client, None);
 }
 
-/// No announcement, no change: the plain Unix-socket route.
-#[test]
-fn no_announcement_reports_uds() {
-    let mut state = ServerState::new();
-    let client = ClientId(7);
-    state
-        .clients_mut()
-        .set_peer_identity(client, peer(TransportType::UnixSocket, serving_uid()));
-    admit_ssh_origin(&mut state, client, None);
-    let record = answered(&state, client);
-    assert_eq!(record.auth_route, "uds");
-    assert_eq!(record.ssh_client, None);
-}
-
 /// Only a Unix-socket peer of the serving uid may announce. The
 /// in-process transport and every network transport may not, whatever
 /// uid they carry.

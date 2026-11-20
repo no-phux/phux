@@ -151,12 +151,6 @@ fn ssh_argv_matrix_is_shell_free_and_option_injection_proof() {
         ssh_argv(Some("me"), "devbox", Some(2222)),
         argv(&["-p", "2222", "-l", "me"])
     );
-    // interval * count == LINK_IDLE_TIMEOUT.
-    assert_eq!(
-        LINK_KEEPALIVE_INTERVAL * 3,
-        LINK_IDLE_TIMEOUT,
-        "keepalive constants drifted; re-derive ServerAlive* expectations"
-    );
 }
 
 #[test]

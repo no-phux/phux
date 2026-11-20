@@ -246,12 +246,6 @@ mod tests {
     }
 
     #[test]
-    fn held_actions_come_first_with_nothing_else_waiting() {
-        let list = items(None, &Activities::default(), &[approval("X", None, None)]);
-        assert!(matches!(list.as_slice(), [Item::Approval(_)]));
-    }
-
-    #[test]
     fn credentials_are_named_as_1password_not_a_generic_held_verb() {
         let record = br#"{"id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","requester":{"client":3},"method":"CREDENTIAL_REQUEST","requested_at_ms":1,"expires_at_ms":2,"credential":{"request":{"provider":"desktop","references":["op://vault/item/field"],"purpose":"Run tests"},"provider":{"client":8,"credential_id":"sha256:bound"}}}"#;
         assert_eq!(

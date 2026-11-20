@@ -26,14 +26,13 @@ const pane: AgentPane = {
   explanation: "blocked",
 };
 
-test("target picker respects narrow widths and can be invalidated", () => {
+test("target picker respects narrow widths", () => {
   const picker = new PhuxTargetPicker([pane], theme, () => {}, () => {});
 
   const lines = picker.render(12);
 
   assert.ok(lines.length > 0);
   assert.ok(lines.every((line) => visibleWidth(line) <= 12));
-  assert.doesNotThrow(() => picker.invalidate());
 });
 
 test("target picker handles zero-width renders", () => {

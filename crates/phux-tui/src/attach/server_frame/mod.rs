@@ -21,7 +21,7 @@ pub(in crate::attach) use outcome::pane_label;
 pub(super) use outcome::{FrameOutcome, ProjectTagFrame};
 
 #[cfg(test)]
-use engine_route::{attach_agent_sessions, route_engine_frame};
+use engine_route::route_engine_frame;
 #[cfg(test)]
 use handler::{handle_window_spawned, reconcile_loaded_workspace};
 #[cfg(test)]

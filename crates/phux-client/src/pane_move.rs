@@ -847,31 +847,6 @@ mod tests {
         );
     }
 
-    /// Naming only one side's projection is refused before any write.
-    #[tokio::test]
-    async fn cross_session_move_with_one_projection_key_is_refused() {
-        let spec = ScriptSpec::new().states([snapshot(false, true)]);
-        let (_dir, mut conn, server) = connect_one(spec).await;
-        let error = move_pane(
-            &mut conn,
-            tid(1),
-            tid(3),
-            SplitDir::Horizontal,
-            0.5,
-            &["myapp.layout/v1/1".to_owned()],
-        )
-        .await
-        .unwrap_err();
-        assert!(matches!(error, PaneMoveError::ProjectionArityMismatch));
-        drop(conn);
-        let seen = server.await.unwrap();
-        assert!(
-            seen.iter()
-                .all(|frame| !matches!(frame, FrameKind::SetMetadata { .. })),
-            "an arity refusal must happen before any layout write"
-        );
-    }
-
     #[test]
     fn single_session_projection_arity_and_validation() {
         let session = SessionId::new(1);

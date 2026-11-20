@@ -1,14 +1,13 @@
-//! `[[startup]]` sidecars: restart, stop, cap, platform, reconcile, idle.
+//! `[[startup]]` sidecars: restart, stop, reconcile, idle. Backoff steps,
+//! the cap and platform filters are unit-tested in `plugin_startup`.
 
-use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use phux_config::plugin::PluginConfigEntry;
 use phux_server::plugin_startup::{
-    PluginStartupConfig, PluginStartupSource, StartupCatalog, StartupSpec, catalog_from_plugins,
+    PluginStartupConfig, PluginStartupSource, StartupCatalog, StartupSpec,
 };
 use phux_server::{ServerConfig, ServerError};
 use phux_server_testkit::{run_local, spawn_server_with};
@@ -121,10 +120,6 @@ impl Running {
             .expect("join")
             .expect("server");
     }
-
-    fn runs(&self) -> String {
-        std::fs::read_to_string(self.state.join("plugin-runs.jsonl")).unwrap_or_default()
-    }
 }
 
 impl Drop for Running {
@@ -217,43 +212,6 @@ fn fresh_pid(path: &Path, previous: i32) -> bool {
         .ok()
         .and_then(|text| text.trim().parse::<i32>().ok())
         .is_some_and(|pid| pid != previous && alive(pid))
-}
-
-/// Crash: exit 1 restarts with the backoff steps, and the sixth failure stays dead.
-#[test]
-fn crash_restarts_with_backoff_then_gives_up() {
-    let _timing = timing_lock();
-    run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let root = dir(tmp.path(), "plugin");
-        let server = Running::one(&root, "date +%s%N >> starts\nexit 1\n");
-        let starts = root.join("starts");
-        assert!(
-            wait_until(Duration::from_secs(90), || read_lines(&starts).len() >= 6).await,
-            "expected 6 starts, saw {:?}",
-            read_lines(&starts)
-        );
-        let stamps: Vec<u128> = read_lines(&starts)
-            .iter()
-            .map(|line| line.trim().parse().unwrap_or(0))
-            .collect();
-        for (index, expected) in [1_000_u128, 2_000, 4_000, 8_000, 16_000].iter().enumerate() {
-            let gap = stamps[index + 1].saturating_sub(stamps[index]) / 1_000_000;
-            assert!(
-                gap + 300 >= *expected && gap < expected + 8_000,
-                "gap {index} was {gap}ms, expected {expected}ms..{}ms",
-                expected + 8_000
-            );
-        }
-        tokio::time::sleep(Duration::from_secs(3)).await;
-        assert_eq!(
-            read_lines(&starts).len(),
-            6,
-            "the sixth failure must stay dead"
-        );
-        assert!(server.runs().contains("gave up"), "{}", server.runs());
-        server.stop().await;
-    });
 }
 
 /// A failure after 60 seconds up resets the next delay to 1 second.
@@ -379,121 +337,6 @@ fn three_stubborn_sidecars_share_one_five_second_deadline() {
             "server exit took {elapsed:?}; three SIGTERM-ignoring sidecars must share one 5s deadline"
         );
         assert!(pids.iter().all(|pid| !alive(*pid)));
-    });
-}
-
-#[test]
-fn exit_zero_is_not_restarted() {
-    let _timing = timing_lock();
-    run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let root = dir(tmp.path(), "plugin");
-        let server = Running::one(&root, "echo hi >> out\nexit 0\n");
-        wait_file(&root.join("out")).await;
-        tokio::time::sleep(Duration::from_secs(3)).await;
-        assert_eq!(read_lines(&root.join("out")), ["hi"]);
-        assert!(
-            server.runs().contains("exited 0 (not restarting)"),
-            "{}",
-            server.runs()
-        );
-        server.stop().await;
-    });
-}
-
-fn manifest_header(id: &str) -> String {
-    format!("id = \"{id}\"\nname = \"{id}\"\nversion = \"0.1.0\"\nmin_phux_version = \"0.0.2\"\n")
-}
-
-const fn entry(manifest: PathBuf) -> PluginConfigEntry {
-    PluginConfigEntry {
-        manifest,
-        enabled: true,
-    }
-}
-
-#[test]
-fn platform_filter_skips_other_operating_systems() {
-    run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let this = if cfg!(target_os = "linux") {
-            "linux"
-        } else if cfg!(target_os = "macos") {
-            "macos"
-        } else {
-            "windows"
-        };
-        let other = if this == "linux" { "windows" } else { "linux" };
-        let mut plugins = Vec::new();
-        for (name, platform) in [("ok", this), ("no", other)] {
-            let manifest = dir(tmp.path(), name).join("phux-plugin.toml");
-            let body = format!(
-                "{}[[startup]]\nid = \"web\"\nplatforms = [\"{platform}\"]\ncommand = [\"/bin/sh\", \"-c\", \"echo $$ > pid; sleep 1000\"]\n",
-                manifest_header(&format!("plug.{name}"))
-            );
-            std::fs::write(&manifest, body).unwrap();
-            plugins.push(entry(manifest));
-        }
-        let catalog = catalog_from_plugins(tmp.path(), &plugins);
-        assert_eq!(catalog.admitted.len(), 1);
-        assert_eq!(catalog.admitted[0].plugin_id, "plug.ok");
-        let server = Running::boot(catalog, None, None);
-        wait_file(&tmp.path().join("ok/pid")).await;
-        tokio::time::sleep(Duration::from_secs(1)).await;
-        assert!(
-            !tmp.path().join("no/pid").exists(),
-            "other-platform sidecar must not spawn"
-        );
-        server.stop().await;
-    });
-}
-
-#[test]
-fn global_cap_skips_later_plugins_in_order() {
-    run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let mut plugins = Vec::new();
-        let mut dirs = Vec::new();
-        for (plugin, count) in [("plug.a", 5), ("plug.b", 4)] {
-            let root = dir(tmp.path(), plugin);
-            let mut body = manifest_header(plugin);
-            for n in 0..count {
-                let sidecar = dir(&root, &format!("{plugin}{n}"));
-                let command = sh(
-                    &sidecar,
-                    &format!("echo $$ > {}\nsleep 1000\n", sidecar.join("pid").display()),
-                );
-                let _ = write!(
-                    body,
-                    "[[startup]]\nid = \"s{n}\"\ncommand = [\"/bin/sh\", \"{}\"]\n",
-                    command[1]
-                );
-                dirs.push(sidecar);
-            }
-            let manifest = root.join("phux-plugin.toml");
-            std::fs::write(&manifest, body).unwrap();
-            plugins.push(entry(manifest));
-        }
-        let catalog = catalog_from_plugins(tmp.path(), &plugins);
-        assert_eq!(catalog.skipped_cap.len(), 1);
-        assert_eq!(catalog.skipped_cap[0].startup_id, "s3");
-        assert_eq!(catalog.skipped_cap[0].plugin_id, "plug.b");
-        let server = Running::boot(catalog, None, None);
-        assert!(
-            wait_until(Duration::from_secs(15), || dirs[..8]
-                .iter()
-                .all(|dir| dir.join("pid").is_file()))
-            .await,
-            "admitted sidecars did not all start"
-        );
-        tokio::time::sleep(Duration::from_secs(1)).await;
-        assert!(
-            !dirs[8].join("pid").exists(),
-            "the 9th entry must not start"
-        );
-        assert!(server.runs().contains("skipped: cap"), "{}", server.runs());
-        assert!(server.runs().contains("plug.b"), "{}", server.runs());
-        server.stop().await;
     });
 }
 

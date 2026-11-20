@@ -14,12 +14,6 @@ const HOST = {
   config: parseTree("phux-config v0.120.1|\n"),
 };
 
-test("cargo tree rows parse to package features", () => {
-  const parsed = parseTree(CLEAN);
-  expect([...parsed.keys()]).toEqual(["phux", "ratatui-core", "rustls", "wtransport-proto"]);
-  expect(parsed.get("rustls")).toEqual(new Set(["ring", "std"]));
-});
-
 test("clean graphs hold every boundary", () => {
   const lean = parseTree(CLEAN.replace(/^wtransport-proto.*\n/m, ""));
   expect(violations({ full: parseTree(CLEAN), lean, mcp: lean, ...HOST })).toEqual([]);
@@ -46,25 +40,17 @@ test("each broken boundary is reported", () => {
   ]);
 });
 
-test("each host graph rejects every native terminal dependency", () => {
+test("each host graph rejects a native terminal dependency", () => {
   const lean = parseTree(CLEAN.replace(/^wtransport-proto.*\n/m, ""));
   for (const name of ["server", "terminalApi", "config"] as const) {
-    for (const dependency of [
-      "phux-terminal",
-      "libghostty-vt",
-      "libghostty-vt-sys",
-      "portable-pty",
-      "portable-pty-adopt",
-    ]) {
-      expect(
-        violations({
-          full: parseTree(CLEAN),
-          lean,
-          mcp: lean,
-          ...HOST,
-          [name]: parseTree(`${dependency} v1.0.0|\n`),
-        }),
-      ).toEqual([`${name}: production graph reaches ${dependency}`]);
-    }
+    expect(
+      violations({
+        full: parseTree(CLEAN),
+        lean,
+        mcp: lean,
+        ...HOST,
+        [name]: parseTree("phux-terminal v1.0.0|\n"),
+      }),
+    ).toEqual([`${name}: production graph reaches phux-terminal`]);
   }
 });

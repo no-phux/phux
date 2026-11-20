@@ -140,20 +140,6 @@ mod tests {
     }
 
     #[test]
-    fn infers_gif_from_extension() {
-        let spec = ok("demo.gif");
-        assert_eq!(spec.format, OutputFormat::Gif);
-        assert_eq!(spec.final_path, PathBuf::from("demo.gif"));
-    }
-
-    #[test]
-    fn infers_cast_from_extension() {
-        let spec = ok("demo.cast");
-        assert_eq!(spec.format, OutputFormat::Cast);
-        assert_eq!(spec.final_path, PathBuf::from("demo.cast"));
-    }
-
-    #[test]
     fn infers_apng_from_png_and_from_apng() {
         // A recording is an animation, so a `.png` request is an APNG
         // request — there is no still-frame output from this verb.

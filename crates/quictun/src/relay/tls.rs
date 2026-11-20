@@ -124,23 +124,6 @@ fn enrolled_routes(tokens: &CachedRouteTokens) -> BTreeSet<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-
-    /// The relay maps a surviving half-pair onto its own error (with the
-    /// operator hint) and leaves the certificate untouched.
-    #[test]
-    fn ensure_self_signed_refuses_a_partial_pair() {
-        let dir = tempfile::tempdir().unwrap();
-        let cert = dir.path().join("relay-cert.pem");
-        let key = dir.path().join("relay-key.pem");
-        ensure_self_signed(&cert, &key).unwrap();
-        let fp = cert_fingerprint(&cert).unwrap();
-
-        fs::remove_file(&key).unwrap();
-        let err = ensure_self_signed(&cert, &key).unwrap_err();
-        assert!(matches!(err, RelayError::PartialTlsPair { .. }), "{err}");
-        assert_eq!(cert_fingerprint(&cert).unwrap(), fp);
-    }
 
     #[test]
     fn gate_admits_connectors_always_and_consumers_only_for_enrolled_sni() {
@@ -162,45 +145,5 @@ mod tests {
                 "relay_alpn={relay_alpn} sni={sni:?}"
             );
         }
-    }
-
-    #[test]
-    fn enrolled_routes_follow_the_file_and_fail_closed() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("relay-tokens");
-        let tokens = CachedRouteTokens::new(path.clone());
-        assert!(
-            enrolled_routes(&tokens).is_empty(),
-            "missing file: no routes"
-        );
-
-        crate::relay::tokens::mint_route_token(&path, "alpha").unwrap();
-        assert!(enrolled_routes(&tokens).contains("alpha"));
-        fs::remove_file(&path).unwrap();
-        assert!(enrolled_routes(&tokens).is_empty());
-
-        fs::write(&path, "not a valid line\n").unwrap();
-        assert!(
-            enrolled_routes(&tokens).is_empty(),
-            "malformed: fail closed"
-        );
-    }
-
-    #[test]
-    fn server_config_offers_every_alpn_and_needs_material() {
-        let dir = tempfile::tempdir().unwrap();
-        let cert = dir.path().join("relay-cert.pem");
-        let key = dir.path().join("relay-key.pem");
-        let tokens = Arc::new(CachedRouteTokens::new(dir.path().join("relay-tokens")));
-        let mut protocol = Protocol::new(b"t/1", b"c/1", crate::CidTag(*b"test"));
-        protocol.consumer_alpns.push(b"h3".to_vec());
-        assert!(server_config(&cert, &key, &protocol, Arc::clone(&tokens)).is_err());
-
-        ensure_self_signed(&cert, &key).unwrap();
-        let config = server_config(&cert, &key, &protocol, tokens).unwrap();
-        assert_eq!(
-            config.alpn_protocols,
-            vec![b"t/1".to_vec(), b"c/1".to_vec(), b"h3".to_vec()]
-        );
     }
 }

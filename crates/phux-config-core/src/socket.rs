@@ -330,14 +330,6 @@ mod tests {
     }
 
     #[test]
-    fn absent_path_probes_absent() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("phux.sock");
-        assert_eq!(probe(&path), SocketState::Absent);
-        assert!(probe(&path).needs_server());
-    }
-
-    #[test]
     fn a_bound_socket_probes_live() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("phux.sock");

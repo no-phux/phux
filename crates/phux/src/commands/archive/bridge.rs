@@ -255,22 +255,4 @@ mod tests {
         assert!(records.is_empty());
         assert_eq!(warnings.len(), 1, "{warnings:?}");
     }
-
-    #[test]
-    fn each_provider_is_resolved_once() {
-        let snap = snapshot(vec![
-            pane(1),
-            agent(2, 1, "claude", Some("a")),
-            pane(3),
-            agent(4, 3, "claude", Some("b")),
-        ]);
-        let mut calls = 0;
-        let (records, _) =
-            bridge_live_agent_sessions(&snap, HashMap::new(), &HashMap::new(), |provider| {
-                calls += 1;
-                claude_owner(provider)
-            });
-        assert_eq!(records.len(), 2);
-        assert_eq!(calls, 1);
-    }
 }

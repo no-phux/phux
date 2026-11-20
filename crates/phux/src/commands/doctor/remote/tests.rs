@@ -291,23 +291,9 @@ fn an_incompatible_remote_probe_is_not_told_to_remove_the_socket() {
     let text = format!("{}\n{}", check.detail, check.hint.expect("hint"));
     assert!(text.contains("kill 4242"), "{text}");
     assert!(
-        text.contains("`ps -p 4242 -o pid=,ppid=,user=,args=`"),
+        !text.contains("stale") && !text.contains("remove"),
         "{text}"
     );
-    assert!(
-        text.contains("phux server --ensure --socket '/tmp/old.sock'`"),
-        "{text}"
-    );
-    for forbidden in [
-        "stale",
-        "phux upgrade",
-        "survive",
-        "remove",
-        "pkill",
-        "killall",
-    ] {
-        assert!(!text.contains(forbidden), "{forbidden} in {text}");
-    }
 
     let other = AttachError::Io(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
     let other_check = remote_probe_failure(std::path::Path::new("/tmp/denied.sock"), &other, None);

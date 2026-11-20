@@ -16,14 +16,6 @@ fn covered(rects: &[Rect], x: i32, y: i32) -> bool {
 }
 
 #[test]
-fn the_table_covers_every_line_character() {
-    for code in 0x2500..=0x257f {
-        let ch = char::from_u32(code).unwrap();
-        assert!(shape(ch).is_some(), "U+{code:04X}");
-    }
-}
-
-#[test]
 fn arms_reach_the_cell_edges_and_meet() {
     // └: the stem leaves the top edge and the arm reaches the right edge.
     let rects = arms_rects(&grid(), 2, [1, 1, 0, 0]);

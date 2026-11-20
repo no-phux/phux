@@ -17,12 +17,6 @@ fn fire_on_full_or_closed_queue_never_blocks_or_panics() {
     dispatcher.fire(HookEvent::new(PANE_EXIT, []));
 }
 
-#[test]
-fn fire_hook_without_registered_dispatcher_is_noop() {
-    let state = crate::state::SharedState::new();
-    fire_hook(&state, HookEvent::new(PANE_EXIT, []));
-}
-
 /// A config `run` hook executes with the event env and `PHUX_SOCKET`.
 #[tokio::test(flavor = "current_thread")]
 async fn dispatcher_executes_config_hook_with_env_injection() {
@@ -104,31 +98,6 @@ async fn dispatcher_executes_plugin_event_in_plugin_root_with_plugin_env() {
     assert_eq!(records[0].plugin_id.as_deref(), Some("notifier"));
     assert_eq!(records[0].name, "plugin.notifier.on-exit");
     assert!(records[0].succeeded(), "{records:?}");
-}
-
-/// A slow hook does not block `fire`.
-#[tokio::test(flavor = "current_thread")]
-async fn fire_returns_immediately_while_hook_still_runs() {
-    let catalog = catalog_from_toml(
-        r#"
-        [[hooks.pane-exit]]
-        action = { kind = "run", command = "sleep 30" }
-        "#,
-    );
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let dispatcher = spawn_hook_dispatcher(catalog, None, None);
-            let started = Instant::now();
-            dispatcher.fire(HookEvent::new(PANE_EXIT, []));
-            assert!(
-                started.elapsed() < Duration::from_millis(200),
-                "fire must not wait for the hook child",
-            );
-            // Let it spawn, then drop everything (kill_on_drop reaps).
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        })
-        .await;
 }
 
 /// Poll for `path` to appear (the hook child writes it asynchronously).

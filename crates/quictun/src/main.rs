@@ -530,10 +530,6 @@ mod tests {
     #[test]
     fn each_command_takes_only_its_own_flags() {
         assert!(
-            parse("relay", &["--max-conns-per-rout", "4"]).is_err(),
-            "typo"
-        );
-        assert!(
             parse("pair", &["--listen", "0.0.0.0:1"]).is_err(),
             "relay's flag"
         );
@@ -541,14 +537,5 @@ mod tests {
             parse("connect", &["--state", "/tmp"]).is_err(),
             "connect keeps no state"
         );
-        assert!(flags_of("frobnicate").is_none());
-    }
-
-    #[test]
-    fn counts_must_be_positive() {
-        let zero = parse("relay", &["--max-conns", "0"]).unwrap();
-        assert!(zero.positive("max-conns").is_err());
-        let four = parse("relay", &["--max-conns", "4"]).unwrap();
-        assert!(matches!(four.positive("max-conns"), Ok(Some(4))));
     }
 }

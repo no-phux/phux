@@ -247,32 +247,6 @@ fn a_done_that_lands_during_the_exit_grace_projects_done_unchecked() {
     );
 }
 
-#[test]
-fn an_exit_with_no_done_record_projects_failed() {
-    let root = tempfile::tempdir().expect("temp");
-    let repo = root.path().join("repo");
-    let harness = Harness::new(root.path(), "sleep 0.6\nexit 0\n", None, true);
-    let _stop = StopKeeper(harness.guard.xdg.state.clone());
-    mission_json(
-        &harness.guard,
-        &repo,
-        &[
-            "mission", "add", "--start", "--agent", "fake", "--repo", "demo", "Bare", "--json",
-        ],
-        &[],
-    );
-    wait_state(&harness.guard, &repo, "demo/1", "failed");
-    let events = event_rows(&harness.guard.xdg.state);
-    assert!(
-        events.iter().any(|(_, kind)| kind == "failed"),
-        "exit with no done should record failed, got {events:?}"
-    );
-    assert!(
-        events.iter().all(|(_, kind)| kind != "done_unchecked"),
-        "exit with no done recorded done_unchecked: {events:?}"
-    );
-}
-
 struct Harness {
     guard: ServerGuard,
     log_dir: PathBuf,

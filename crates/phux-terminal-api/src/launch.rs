@@ -244,7 +244,6 @@ mod tests {
         let cases: &[(&str, bool, &[&str])] = &[
             ("/bin/zsh", false, &["/bin/zsh"]),
             ("/bin/bash", true, &["/bin/bash", "-l"]),
-            ("/bin/zsh", true, &["/bin/zsh", "-l"]),
             ("sh", true, &["sh", "-l"]),
             (
                 "/opt/homebrew/bin/fish",

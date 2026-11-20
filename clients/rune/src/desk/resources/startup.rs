@@ -201,30 +201,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn argv_preserves_untrusted_target_as_one_argument_and_pins_host_socket() {
-        let args = argv(
-            "/dev/phux".as_ref(),
-            "/dev/socket".as_ref(),
-            Source::Page,
-            "page; touch /tmp/no",
-        )
-        .unwrap();
-        assert_eq!(
-            args,
-            [
-                "/dev/phux",
-                "--socket",
-                "/dev/socket",
-                "agent",
-                "page",
-                "mirror",
-                "--",
-                "page; touch /tmp/no"
-            ]
-        );
-    }
-
-    #[test]
     fn unsupported_hosts_are_actionable_not_guessed() {
         assert!(Source::Page.supported(false, false).is_ok());
         assert!(

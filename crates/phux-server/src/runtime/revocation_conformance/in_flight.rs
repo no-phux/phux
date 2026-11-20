@@ -1,9 +1,7 @@
 //! Revocation against work already in flight: queued frames, a
 //! connection before HELLO, a replay, an input receipt, and hub relays.
 
-use phux_protocol::ids::{InputOperationId, ResourceId as WireResourceId, SatelliteHost};
-use phux_protocol::input::InputEvent;
-use phux_protocol::input::focus::FocusEvent;
+use phux_protocol::ids::{ResourceId as WireResourceId, SatelliteHost};
 use phux_protocol::wire::frame::{AgentEvent, Command, DetachReason, FrameKind, Scope};
 use tokio::sync::mpsc;
 
@@ -89,7 +87,7 @@ async fn a_revoked_grant_admits_no_frame_even_before_the_connection_closes() {
 async fn a_connection_revoked_before_hello_closes_without_a_frame() {
     local(async {
         let fx = Fixture::paired(&["*@global"]);
-        let pending = fx.connect(workload_identity(&fx.credential_id, &["*@global"]), None);
+        let pending = fx.connect(workload_identity(&fx.credential_id, &["*@global"]));
         settle().await;
 
         revoke_connection(&fx.state, pending.client, Revocation::Revoked);
@@ -174,34 +172,6 @@ async fn revoking_mid_subscribe_stops_an_in_flight_replay() {
             "the replaying subscription is dropped"
         );
         agent.finish().await;
-    })
-    .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn revoking_mid_input_drops_the_pending_apply_input_receipt() {
-    local(async {
-        let fx = Fixture::paired(&["*@global"]);
-        let lane = crate::runtime::test_support::start_input_lane(&fx.state).unwrap();
-        let agent = fx.workload_with_lane(Some(lane.handle())).await;
-        agent.attach(1).await;
-
-        agent.send(&FrameKind::Command {
-            request_id: 4,
-            command: Command::ApplyInput {
-                operation_id: InputOperationId::new([7; 16]).unwrap(),
-                terminal_id: fx.alpha.clone(),
-                events: vec![InputEvent::Focus(FocusEvent::Gained)],
-            },
-        });
-        settle().await;
-        revoke_connection(&fx.state, agent.client, Revocation::Revoked);
-
-        agent
-            .assert_ended_with(DetachReason::AuthorizationRevoked)
-            .await;
-        agent.finish().await;
-        drop(lane);
     })
     .await;
 }

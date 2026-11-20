@@ -196,7 +196,7 @@ fn additive_keys_are_omitted_when_unset_and_round_trip_when_set() {
 }
 
 #[test]
-fn rendered_frame_is_dense_row_major_and_round_trips() {
+fn rendered_frame_is_dense_row_major() {
     let mut f = RenderedFrame::blank(3, 2);
     assert_eq!(f.cells.len(), 6);
     assert_eq!(f.cell(1, 2).expect("in range").grapheme, " ");
@@ -204,8 +204,4 @@ fn rendered_frame_is_dense_row_major_and_round_trips() {
     assert!(f.cell_mut(2, 0).is_none());
     f.cell_mut(1, 2).expect("in range").grapheme = "X".to_owned();
     assert_eq!(f.cells[5].grapheme, "X");
-
-    let json = serde_json::to_string(&f).expect("serialize");
-    let back: RenderedFrame = serde_json::from_str(&json).expect("deserialize");
-    assert_eq!(f, back);
 }

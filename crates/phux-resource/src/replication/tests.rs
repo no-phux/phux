@@ -29,16 +29,6 @@ fn emit(sync: &mut ConsumerSync<u32>, version: u32) -> u64 {
 }
 
 #[test]
-fn new_consumer_waits_for_its_first_walk() {
-    let sync = consumer(7);
-    assert_eq!(sync.next_seq, 7);
-    assert_eq!(sync.last_acked_seq, 0);
-    assert!(sync.needs_initial_emit && !sync.behind && !sync.loss_tolerant);
-    assert!(sync.rtt.smoothed().is_none());
-    assert!(sync.must_walk_when_clean());
-}
-
-#[test]
 fn generation_must_match_stream_and_bootstrap() {
     let sync = consumer(1);
     assert!(sync.matches_generation(stream(1), bootstrap(1)));

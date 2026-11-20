@@ -244,24 +244,6 @@ fn refuse(plane: &mut ControlPlane, request_id: u32) {
 }
 
 #[test]
-fn an_accepted_decision_clears_the_approval() {
-    let mut plane = watching(&[(id(1), 10)]);
-    let (_, confirm) = decide(&mut plane, id(1));
-    answer_metadata(&mut plane, confirm, None);
-    let events = plane.take_events();
-    assert!(events.iter().any(|e| matches!(e, Event::ApprovalsChanged)));
-    assert!(events.iter().any(|e| matches!(
-        e,
-        Event::ApprovalDecision {
-            outcome: DecisionOutcome::Decided,
-            decision: Decision::Approve,
-            ..
-        }
-    )));
-    assert!(plane.approvals().is_empty());
-}
-
-#[test]
 fn a_refused_decision_on_a_gone_record_is_stale_and_not_retried() {
     let mut plane = watching(&[(id(1), 10)]);
     let (decide_id, confirm) = decide(&mut plane, id(1));

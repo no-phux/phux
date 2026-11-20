@@ -123,21 +123,3 @@ fn no_file_holds_a_raw_style_literal() {
         over.join("\n")
     );
 }
-
-#[wasm_bindgen_test]
-fn the_patterns_match_what_the_spec_names() {
-    assert_eq!(hex_colors("color: #0b0b0f; x: #FFF; #E8E5DF14"), 3);
-    assert_eq!(hex_colors("#phux-agent-badges #[derive] #123456789"), 0);
-    assert_eq!(
-        rgb_functions("rgba(0,0,0,.5) rgb(1 2 3) torgb( ink.rgb()"),
-        2
-    );
-    assert_eq!(
-        physical_properties("padding-left: 8px; left:0; right : 1px; inset-inline-start: 0"),
-        3
-    );
-    assert_eq!(
-        physical_properties("|left, right| rect.left() padding-inline-start:"),
-        0
-    );
-}

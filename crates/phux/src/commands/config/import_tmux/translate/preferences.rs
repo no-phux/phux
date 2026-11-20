@@ -162,10 +162,6 @@ mod tests {
             Some(("status", "position", Some(Value::String("bottom".into()))))
         );
         assert_eq!(
-            setting("status-position", "middle"),
-            Some(("status", "position", None))
-        );
-        assert_eq!(
             setting("mouse", "off"),
             Some(("defaults", "mouse", Some(Value::Boolean(false))))
         );
@@ -182,14 +178,6 @@ mod tests {
             Some(("defaults", "shell", None))
         );
         assert_eq!(setting("status-left", "custom"), None);
-        assert_eq!(
-            setting("set-clipboard", "external"),
-            Some((
-                "defaults",
-                "clipboard-write",
-                Some(Value::String("deny".into()))
-            ))
-        );
     }
 
     #[test]

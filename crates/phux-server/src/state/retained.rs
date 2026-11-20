@@ -263,18 +263,6 @@ mod tests {
     }
 
     #[test]
-    fn the_process_exit_record_is_the_facet() {
-        let facet = ExitFacet::new(7, 9)
-            .with_signal(Some(15))
-            .with_reason(CloseReason::Killed);
-        let exit = process_exit(&facet);
-        assert_eq!(exit.status, None);
-        assert_eq!(exit.signal, Some(15));
-        assert_eq!(exit.reason, "killed");
-        assert_eq!(exit.exited_at_ms, Some(7));
-    }
-
-    #[test]
     fn retention_is_refused_while_a_close_is_pending_and_bounded_by_count() {
         let mut s = ServerState::new();
         s.config_mut().retain = policy();

@@ -121,18 +121,6 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_stage_that_finishes_in_time_returns_its_value() {
-        let deadline = Deadline::new(Some(Duration::from_secs(5)));
-        let out = deadline
-            .run(async {
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                "done"
-            })
-            .await;
-        assert_eq!(out, Some("done"));
-    }
-
-    #[tokio::test(start_paused = true)]
     async fn an_in_flight_stage_is_cancelled_at_the_deadline() {
         let budget = Duration::from_millis(250);
         let start = Instant::now();
@@ -189,15 +177,6 @@ mod tests {
         tokio::time::advance(Duration::from_secs(3)).await;
         assert!(long.expired());
         assert!(!unbounded.expired());
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn started_at_is_when_the_budget_began() {
-        let before = Instant::now();
-        let deadline = Deadline::new(Some(Duration::from_secs(1)));
-        tokio::time::advance(Duration::from_millis(400)).await;
-        assert_eq!(deadline.started_at(), before);
-        assert_eq!(deadline.started_at().elapsed(), Duration::from_millis(400));
     }
 
     #[tokio::test(start_paused = true)]

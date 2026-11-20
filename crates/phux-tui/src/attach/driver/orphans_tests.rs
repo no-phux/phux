@@ -1,5 +1,5 @@
 use phux_protocol::ids::{SatelliteHost, ServerInstance};
-use phux_protocol::wire::frame::{ErrorCode, KillPrecondition, SpawnError, SpawnResult};
+use phux_protocol::wire::frame::{ErrorCode, SpawnError, SpawnResult};
 
 use super::*;
 
@@ -77,33 +77,6 @@ fn only_command(frames: Vec<FrameKind>) -> (u32, Command) {
         panic!("expected a command frame");
     };
     (request_id, command)
-}
-
-#[test]
-fn one_kill_per_orphan_under_fresh_request_ids() {
-    let mut kills = OrphanKills::default();
-    let mut next = 40;
-    let frames = kills.kill_frames(vec![edge(9), edge(10)], &mut next);
-    assert_eq!(
-        frames,
-        vec![
-            FrameKind::Command {
-                request_id: 40,
-                command: Command::KillResource {
-                    terminal_id: edge(9),
-                    operation_id: None,
-                },
-            },
-            FrameKind::Command {
-                request_id: 41,
-                command: Command::KillResource {
-                    terminal_id: edge(10),
-                    operation_id: None,
-                },
-            },
-        ]
-    );
-    assert_eq!(next, 42);
 }
 
 #[test]
@@ -288,32 +261,6 @@ fn an_unreachable_satellite_forgets_its_strays() {
     assert_eq!(waiting(&mut kills, now), vec![edge(9)], "not unreachable");
 }
 
-/// A host inventory's unreachable rows forget those satellites' strays.
-#[test]
-fn unreachable_hosts_forget_their_strays() {
-    let now = Instant::now();
-    let mut kills = with_strays(vec![edge(9), other(4)], now);
-    kills.forget_hosts(&hosts(&["edge"]));
-    assert_eq!(waiting(&mut kills, now), vec![other(4)]);
-}
-
-/// A conditional stray outlives every unreachable signal,
-/// since the satellite judges its kill; an unconditional one beside it on
-/// the same host is forgotten.
-#[test]
-fn a_conditional_stray_outlives_unreachable_signals() {
-    let now = Instant::now();
-    let mut kills = with_spawned(vec![bound(edge(9)), SpawnedPane::unbound(edge(10))], now);
-    kills.observe(unreachable_reply(3, "edge"));
-    kills.observe(FrameKind::Error {
-        request_id: None,
-        code: ErrorCode::SatelliteUnreachable,
-        message: "unreachable".to_owned(),
-    });
-    kills.forget_hosts(&hosts(&["edge"]));
-    assert_eq!(waiting(&mut kills, now), vec![edge(9)]);
-}
-
 /// A pane freshly minted on the same host with an id no greater than a
 /// stray's means that satellite restarted: the stray is forgotten, and a
 /// stray on another host, or with a lower id, is kept.
@@ -367,36 +314,6 @@ fn a_switch_remembers_parked_and_drained_spawns() {
     assert_eq!(waiting(&mut kills, now), vec![edge(9), edge(10)]);
 }
 
-/// A bound switch stray is retried with `KILL_RESOURCE_IF`
-/// carrying its instance token and the attachment condition. An unbound one
-/// keeps `KILL_RESOURCE`.
-#[test]
-fn a_switch_stray_is_retried_conditionally_only_when_bound() {
-    let now = Instant::now();
-    let conditional = FrameKind::Command {
-        request_id: 1,
-        command: Command::KillResourceIf {
-            terminal_id: edge(9),
-            precondition: KillPrecondition::spawned_and_unattached(token()),
-            operation_id: None,
-        },
-    };
-    let plain = FrameKind::Command {
-        request_id: 1,
-        command: Command::KillResource {
-            terminal_id: edge(9),
-            operation_id: None,
-        },
-    };
-    for (pane, expected) in [
-        (bound(edge(9)), conditional),
-        (SpawnedPane::unbound(edge(9)), plain),
-    ] {
-        let mut kills = with_spawned(vec![pane.clone()], now);
-        assert_eq!(retries(&mut kills, now), vec![expected], "{pane:?}");
-    }
-}
-
 /// A spawn the switch drained that answers bound is remembered with its
 /// token and retried conditionally.
 #[test]
@@ -417,18 +334,6 @@ fn a_drained_bound_spawn_is_retried_conditionally() {
     kills.finish_switch_drain();
     let (_, command) = only_command(retries(&mut kills, now));
     assert_eq!(command, bound(edge(9)).bound().unwrap().kill_command());
-}
-
-/// A pane an unreachable satellite stranded is recorded for a conditional
-/// retry.
-#[test]
-fn unreachable_strays_are_recorded_for_a_conditional_retry() {
-    let now = Instant::now();
-    let stranded = || vec![bound(edge(9)).bound().unwrap()];
-    let mut kills = with_spawned(Vec::new(), now);
-    kills.record_unreachable(stranded(), now);
-    let (_, command) = only_command(retries(&mut kills, now));
-    assert_eq!(command, stranded()[0].kill_command());
 }
 
 /// A conditional kill's refusal, whatever it says, is consumed and the

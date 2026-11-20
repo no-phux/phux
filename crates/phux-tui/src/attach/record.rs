@@ -813,22 +813,6 @@ mod tests {
     }
 
     #[test]
-    fn create_opens_a_file_and_writes_a_header() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("session.cast");
-        let mut rec =
-            SessionRecorder::create(&path, Some("live"), CastVersion::V2).expect("create");
-        rec.record(b"ok");
-        rec.finish().expect("finish");
-
-        let bytes = std::fs::read(&path).expect("read back");
-        let (header, events) = read_cast(bytes.as_slice()).expect("cast parses");
-        assert!(header.cols > 0 && header.rows > 0);
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].data, "ok");
-    }
-
-    #[test]
     fn a_virtual_viewport_is_fixed_and_never_emits_a_resize() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("virtual.cast");

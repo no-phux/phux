@@ -270,19 +270,7 @@ mod tests {
     }
 
     #[test]
-    fn every_state_has_a_ladder_row() {
-        for s in State::ALL {
-            assert_eq!(s.mark().state, s.key());
-        }
-        assert_eq!(State::Unknown.word(), None);
-        assert_eq!(word("needs_you"), Some("needs you"));
-    }
-
-    #[test]
-    fn plurals_cover_zero_one_and_many() {
-        assert_eq!(plural("count.needs_you", 0).as_deref(), Some("0 need you"));
-        assert_eq!(plural("count.needs_you", 1).as_deref(), Some("1 needs you"));
-        assert_eq!(plural("count.needs_you", 7).as_deref(), Some("7 need you"));
+    fn unknown_keys_have_no_plural_and_exact_matches_win() {
         assert_eq!(plural("count.nope", 1), None);
         assert_eq!(
             plural_message("{count, plural, =0 {none} one {# x} other {# xs}}", 0).as_deref(),

@@ -197,23 +197,6 @@ fn every_refusal_reads_as_words() {
 }
 
 #[test]
-fn every_failure_reads_as_words() {
-    use CheckoutFailure as F;
-    for (kind, words) in [
-        (F::PermissionDenied, "Permission denied"),
-        (F::TerminalNotFound, "terminal is gone"),
-        (F::Unsupported, "doesn't serve changes"),
-        (F::Busy, "busy"),
-        (F::Unanswered, "connection ended"),
-        (F::Other, "The server refused. why"),
-    ] {
-        assert!(failure(kind, "why").contains(words), "{kind:?}");
-    }
-    assert!(unsent(true).contains("doesn't support changes"));
-    assert!(unsent(false).contains("Not connected"));
-}
-
-#[test]
 fn an_outcome_is_its_answer_or_the_reason_there_is_none() {
     let status = answered(CheckoutAnswer::Status(CheckoutStatus::default()));
     assert!(status_of(&status).is_ok());

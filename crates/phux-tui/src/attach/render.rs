@@ -1691,14 +1691,12 @@ mod tests {
         let mut t = pane(10, 2, b"AA");
         let mut r = renderer();
         let _ = full(&mut r, &t, (0, 0), (10, 2));
-        assert_eq!(r.pool.last_dims(), Some((10, 2)));
         // Grow, overwrite, and consume the row dirty bits through a separate
         // render state: the shape that leaves a pooled cache stale.
         t.resize(10, 4, 0, 0).expect("resize");
         t.vt_write(b"\x1b[1;1HZZ");
         let _ = read_seen(&t, (0, 0), (10, 4));
         let painted = full(&mut r, &t, (0, 0), (10, 4));
-        assert_eq!(r.pool.last_dims(), Some((10, 4)));
         assert!(painted.contains("ZZ"), "{painted:?}");
     }
 

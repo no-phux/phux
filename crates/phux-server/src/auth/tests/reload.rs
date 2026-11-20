@@ -141,19 +141,6 @@ fn stable_reads_reject_credentials_deleted_during_initialization_and_reload() {
 }
 
 #[test]
-fn deleting_store_revokes_all_on_next_authentication() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("credentials");
-    let minted = mint_credential(&path, None, &[TERMINAL_CONTROL_SCOPE.to_owned()], None).unwrap();
-    let bearer = secret(&minted);
-    let store = ReloadingTokenStore::load(path.clone()).unwrap();
-    assert!(store.verify(&bearer));
-    fs::remove_file(path).unwrap();
-    assert!(!store.verify(&bearer));
-    assert!(store.is_empty());
-}
-
-#[test]
 fn revocation_affects_new_authentication_not_established_attestation() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("credentials");

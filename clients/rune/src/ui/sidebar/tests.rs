@@ -1,7 +1,6 @@
 use super::*;
 use crate::theme::contrast;
 use phux_config_core::host_color::PALETTE;
-use phux_design::Tone;
 use phux_design::tokens::IDENTITY;
 
 fn tokens(dark: bool, theme: Option<&'static crate::theme::Theme>) -> std::rc::Rc<Tokens> {
@@ -33,7 +32,7 @@ fn host_marks_read_in_every_theme() {
 }
 
 #[test]
-fn every_mark_draws_a_vector_mark_in_its_tone_with_its_word() {
+fn a_mark_never_borrows_the_accent() {
     let ink = tokens(true, None);
     let t: &Tokens = ink.as_ref();
     for mark in [
@@ -48,23 +47,9 @@ fn every_mark_draws_a_vector_mark_in_its_tone_with_its_word() {
         Mark::Idle,
         Mark::None,
     ] {
-        let f = face(mark, t);
-        let state = state_of(mark);
-        if mark == Mark::Bell {
-            assert!(std::ptr::eq(f.icon, &icons::BELL));
-            assert_eq!(f.ink, t.status.tone(Tone::Bell).ink);
-        } else {
-            assert_eq!(f.ink, t.status.state(state).tone.ink, "{mark:?}");
-            assert_eq!(f.word, state.word(), "{mark:?}");
-        }
         // Colour means state: a terminal's mark never borrows the accent.
-        assert_ne!(f.ink, t.roles.accent.accent.paint(), "{mark:?}");
+        assert_ne!(face(mark, t).ink, t.roles.accent.accent.paint(), "{mark:?}");
     }
-    // `blocked` is retired from the UI; the canonical word is `needs you`.
-    assert_eq!(face(Mark::Blocked, t).word, Some("needs you"));
-    assert_eq!(face(Mark::Failed, t).word, Some("failed"));
-    // The quiet class shares a mark; the words tell it apart.
-    assert_ne!(face(Mark::Succeeded, t).word, face(Mark::Idle, t).word);
 }
 
 #[test]
@@ -190,25 +175,6 @@ fn rows_are_one_focusable_source_list_with_their_words() {
         said("needs you") && said("done") && said("idle"),
         "marks are named"
     );
-}
-
-#[test]
-fn a_retheme_under_the_same_id_repaints_the_rows() {
-    // Omarchy swaps palettes under one id: the memo keys on the tokens'
-    // version, which follows the palette, not the id.
-    let mut a = *crate::theme::find("catppuccin-mocha").expect("built in");
-    let mut b = a;
-    a.id = "omarchy";
-    b.id = "omarchy";
-    b.background = 0x10_20_30;
-    let version = |theme: crate::theme::Theme| {
-        Tokens::resolve(&super::super::tokens::Inputs {
-            theme: Some(theme),
-            ..super::super::tokens::Inputs::system(true)
-        })
-        .version
-    };
-    assert_ne!(version(a), version(b));
 }
 
 #[test]

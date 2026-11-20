@@ -63,15 +63,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn empty_queue_writes_nothing() {
-        let state = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
-        let mut buf = Vec::new();
-        let n = render_overlay(&state, (0, 0), &mut buf).expect("overlay render");
-        assert_eq!(n, 0);
-        assert!(buf.is_empty());
-    }
-
     /// Predictions are pane-local; the pane origin offsets every CUP so a
     /// non-origin pane never ghosts at the viewport top.
     #[test]

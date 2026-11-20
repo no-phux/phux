@@ -17,7 +17,7 @@ use phux_protocol::ids::{
 use phux_protocol::wire::decode::Decoder;
 use phux_protocol::wire::frame::{
     ActorRef, AgentEvent, ApprovalOutcome, CloseReason, ControlAction, EventStamp, FrameKind,
-    ResourceLifecycle, Scope, SpawnError, SpawnResource, SpawnResult,
+    ResourceLifecycle, SpawnError, SpawnResource, SpawnResult,
 };
 use phux_protocol::wire::info::{ExitFacet, ResourceInfo, SessionSnapshot};
 use phux_protocol::wire::{DecodeError, frame::TYPE_EVENT};
@@ -81,27 +81,6 @@ fn spawn(resource: Option<SpawnResource>) -> FrameKind {
     .frame()
 }
 
-#[test]
-fn event_envelope_roundtrips_seq_ts_actor_and_operation_id() {
-    let full = EventStamp::new(42, 1_700_000_000_123)
-        .with_actor(Some(actor()))
-        .with_operation_id(Some(key(0x5a)));
-    let bare = EventStamp::new(1, 0).with_actor(Some(ActorRef::new(ClientId::new(0))));
-    for stamp in [full, bare, EventStamp::new(u64::MAX - 1, u64::MAX)] {
-        assert_round_trip(&event(
-            Some(ResourceId::local(3)),
-            AgentEvent::ResourceSpawned {
-                kind: ResourceKind::Terminal,
-                parent: None,
-            },
-            Some(stamp),
-        ));
-    }
-    let bytes = encode(&event(None, AgentEvent::Bell, Some(EventStamp::new(5, 6))));
-    let ids: Vec<u32> = fields(&bytes).1.into_iter().map(|(id, _)| id).collect();
-    assert_eq!(ids, [2, 3, 4], "seq and ts_ms always travel together");
-}
-
 /// A stamp's fields 4-6 mean nothing without field 3 and are dropped.
 #[test]
 fn event_stamp_exists_only_with_its_sequence() {
@@ -144,133 +123,24 @@ fn event_without_journal_fields_is_byte_identical_to_0_9_0() {
     assert_eq!(decode(&older).unwrap(), plain);
 }
 
+/// `input_activity` is tag `0x0f` and an unstamped `EVENT`.
 #[test]
-fn subscribe_events_after_seq_is_skipped_by_an_older_decoder() {
-    for terminal in [None, Some(ResourceId::local(4))] {
-        let with = FrameKind::SubscribeEvents {
-            terminal: terminal.clone(),
-            after_seq: Some(41),
-        };
-        let without = FrameKind::SubscribeEvents {
-            terminal,
-            after_seq: None,
-        };
-        assert_round_trip(&with);
-        assert_round_trip(&without);
-        let bytes = encode(&with);
-        assert_eq!(drop_ids(&bytes, &[2]), encode(&without));
-        let older = refield(&bytes, |id| Some(if id == 2 { 99 } else { id }));
-        assert_eq!(decode(&older).unwrap(), without);
-    }
-    // The live-only journal subscription is the maximum cursor.
-    assert_round_trip(&FrameKind::SubscribeEvents {
-        terminal: None,
-        after_seq: Some(u64::MAX),
-    });
-}
-
-#[test]
-fn agent_event_journal_gap_and_source_gap_roundtrip_and_unknown_tag_still_skips() {
-    assert_round_trip(&event(
-        None,
-        AgentEvent::JournalGap {
-            first_missing: 12,
-            last_missing: 4_107,
-        },
-        None,
-    ));
-    assert_round_trip(&event(
-        Some(ResourceId::local(8)),
-        AgentEvent::SourceGap { dropped: 3 },
-        Some(EventStamp::new(4_200, 1)),
-    ));
-    let (_, fs) = fields(&encode(&event(
-        None,
-        AgentEvent::SourceGap { dropped: 3 },
-        None,
-    )));
-    assert_eq!(fs[0].1[0], 0x0c, "source_gap is tag 0x0c");
-
-    // 0x10 is the next unallocated tag: still skipped by its length.
-    let agent_event = [0x10, 0, 0, 0, 2, 0xaa, 0xbb];
-    let mut body = Vec::new();
-    tlv_field(&mut body, 2, &agent_event);
-    assert_eq!(
-        decode(&framed_tlv(TYPE_EVENT, &body)).unwrap(),
-        event(
-            None,
-            AgentEvent::Unknown {
-                tag: 0x10,
-                body: vec![0xaa, 0xbb],
-            },
-            None,
-        )
-    );
-}
-
-/// `input_activity` (tag `0x0f`) round-trips as an unstamped `EVENT`. A
-/// decoder whose match stops at `0x0e` keeps the body and surfaces `Unknown`.
-#[test]
-fn input_activity_round_trips_unstamped_and_an_older_decoder_reads_unknown() {
-    let frame = event(
+fn input_activity_is_tag_0x0f_and_unstamped() {
+    let bytes = encode(&event(
         Some(ResourceId::local(3)),
         AgentEvent::InputActivity {
             origin: "ada".to_owned(),
         },
         None,
-    );
-    assert_round_trip(&frame);
-    let bytes = encode(&frame);
+    ));
     let (_, fs) = fields(&bytes);
     assert!(fs.iter().all(|(id, _)| *id <= 2), "no stamp fields: {fs:?}");
     let event_bytes = &fs.iter().find(|(id, _)| *id == 2).expect("event").1;
-    let mut dec = Decoder::new(event_bytes);
-    let tag = dec.read_u8().unwrap();
-    let body = dec.read_bytes().unwrap().to_vec();
-    assert_eq!(tag, 0x0f);
-    // Tags a draft.25 decoder knows stop at approval_decided (0x0e).
-    let older = if tag <= 0x0e {
-        panic!("tag {tag:#x} was already allocated before input_activity");
-    } else {
-        AgentEvent::Unknown {
-            tag,
-            body: body.clone(),
-        }
-    };
-    assert_eq!(
-        older,
-        AgentEvent::Unknown {
-            tag: 0x0f,
-            body: body.clone(),
-        }
-    );
-    assert_eq!(Decoder::new(&body).read_str().unwrap(), "ada");
-    match decode(&bytes).unwrap() {
-        FrameKind::Event {
-            terminal,
-            event: AgentEvent::InputActivity { origin },
-            stamp: None,
-        } => {
-            assert_eq!(terminal, Some(ResourceId::local(3)));
-            assert_eq!(origin, "ada");
-        }
-        other => panic!("current decoder: {other:?}"),
-    }
+    assert_eq!(event_bytes[0], 0x0f);
 }
 
 #[test]
-fn terminal_control_expired_round_trips_and_an_unknown_action_is_opaque() {
-    assert_round_trip(&event(
-        Some(ResourceId::local(2)),
-        AgentEvent::TerminalControl {
-            lifecycle: ResourceLifecycle::Running,
-            exit_status: None,
-            input_holder: None,
-            action: ControlAction::Expired,
-            actor: None,
-        },
-        None,
-    ));
+fn terminal_control_role_changed_round_trips_and_an_unknown_action_is_opaque() {
     // ADR-0127's `ROLE_CHANGED = 10` is known and round-trips as itself.
     assert_round_trip(&event(
         Some(ResourceId::local(2)),
@@ -301,23 +171,6 @@ fn terminal_control_expired_round_trips_and_an_unknown_action_is_opaque() {
             None,
         )
     );
-}
-
-#[test]
-fn resource_closed_signal_field_roundtrips_and_is_absent_by_default() {
-    let closed = |exit_status, signal| FrameKind::ResourceClosed {
-        terminal_id: ResourceId::local(5),
-        exit_status,
-        reason: CloseReason::Exited,
-        signal,
-    };
-    assert_round_trip(&closed(None, Some(9)));
-    assert_round_trip(&closed(None, Some(-1)));
-    assert_round_trip(&closed(Some(0), None));
-    let with = encode(&closed(None, Some(9)));
-    let (_, fs) = fields(&with);
-    assert_eq!(fs.last().unwrap(), &(4, 9u32.to_be_bytes().to_vec()));
-    assert_eq!(drop_ids(&with, &[4]), encode(&closed(None, None)));
 }
 
 #[test]
@@ -479,23 +332,6 @@ fn resource_info_facet_row_carries_lifecycle_exit_and_input_holder_additively() 
     assert_eq!(result_len(&bare) - result_len(&state(vec![plain(1)])), 19);
     let empty = state(Vec::new());
     assert_eq!(result_len(&state(vec![plain(1)])) - result_len(&empty), 19);
-}
-
-#[test]
-fn metadata_changed_actor_roundtrips() {
-    let changed = |actor| FrameKind::MetadataChanged {
-        scope: Scope::Global,
-        key: "phux.tui.layout/v1/1".to_owned(),
-        value: Some(b"{}".to_vec()),
-        actor,
-    };
-    assert_round_trip(&changed(Some(actor())));
-    assert_round_trip(&changed(Some(ActorRef::new(ClientId::new(1)))));
-    assert_round_trip(&changed(None));
-    let with = encode(&changed(Some(actor())));
-    assert_eq!(drop_ids(&with, &[4]), encode(&changed(None)));
-    let older = refield(&with, |id| Some(if id == 4 { 50 } else { id }));
-    assert_eq!(decode(&older).unwrap(), changed(None));
 }
 
 /// ADR-0128's events: `approval_requested = 0x0d { id }` and

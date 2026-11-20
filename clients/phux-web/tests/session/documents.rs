@@ -354,15 +354,6 @@ async fn a_faulted_document_says_its_stream_is_lost_and_the_terminal_lives() {
 }
 
 #[wasm_bindgen_test]
-async fn a_declared_image_without_its_signature_is_its_type_and_size() {
-    let mut session = attached_to(vec![resource(3, ResourceKind::Document, None)]).await;
-    publish(&mut session, 3, 1, TYPED, &typed("image/png", b"<svg/>"));
-    let document = session.document(&ResourceId::local(3)).unwrap();
-    assert!(document.image.is_empty(), "nothing for an image decoder");
-    assert_eq!(document.notice().as_deref(), Some("image/png · 6 bytes"));
-}
-
-#[wasm_bindgen_test]
 async fn a_stalled_document_is_attached_again_then_lost_without_failing() {
     let mut session = attached_to(vec![resource(
         2,

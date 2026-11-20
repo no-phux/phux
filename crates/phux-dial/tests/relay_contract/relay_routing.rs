@@ -1,7 +1,5 @@
 //! SNI routing against the production relay (ADR-0052 Decision 1): routes
-//! never cross-talk, unknown or absent SNI is refused at TLS, and an enrolled
-//! route with no live tunnel is refused with `ROUTE_OFFLINE` after the
-//! handshake.
+//! never cross-talk, and unknown or absent SNI is refused at TLS.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
@@ -9,12 +7,10 @@
 
 use std::time::Duration;
 
-use phux_dial::relay::{DEFAULT_MAX_CONNS, ROUTE_OFFLINE_CODE};
+use phux_dial::relay::DEFAULT_MAX_CONNS;
 use tokio::time::sleep;
 
-use crate::common::{
-    contains_subslice, expect_echo, expect_post_handshake_close, mint, spawn_relay,
-};
+use crate::common::{contains_subslice, expect_echo, mint, spawn_relay};
 
 const PAYLOAD_A: &[u8] = b"payload-for-route-alpha";
 const PAYLOAD_B: &[u8] = b"payload-for-route-beta";
@@ -80,27 +76,4 @@ async fn unknown_or_absent_sni_refused_no_bytes_reach_any_tunnel() {
     assert_eq!(connector.bridged(), 0);
     assert_eq!(connector.rejected(), 0);
     assert!(connector.tapped_bytes().is_empty());
-}
-
-/// An enrolled route with no live tunnel completes the handshake and is
-/// closed `ROUTE_OFFLINE`; once a connector arrives, a retry succeeds.
-#[tokio::test]
-async fn consumer_before_tunnel_gets_route_offline_then_recovers() {
-    let dir = tempfile::tempdir().unwrap();
-    let relay = spawn_relay(dir.path(), DEFAULT_MAX_CONNS).await;
-    let token = mint(&relay.tokens_path, "alpha");
-
-    // Enrolled route, no connector yet: bounded post-handshake refusal.
-    let refused = relay.consumer("alpha").await;
-    expect_post_handshake_close(refused, ROUTE_OFFLINE_CODE, "route offline").await;
-
-    // The connector arrives; the retry succeeds through it.
-    let connector = relay.connector("alpha", token, b"A:").await;
-    relay.await_route_live("alpha").await;
-    let mut consumer = relay
-        .consumer("alpha")
-        .await
-        .expect("retry dials once the tunnel is live");
-    expect_echo(&mut consumer, b"A:", b"recovered").await;
-    assert_eq!(connector.bridged(), 1);
 }

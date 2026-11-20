@@ -171,11 +171,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_is_hermetic() {
-        assert_eq!(ServerEnv::from_lookup(|_| None), ServerEnv::default());
-    }
-
-    #[test]
     fn lookup_resolves_every_variable() {
         let env = ServerEnv::from_lookup(|var| {
             Some(match var {

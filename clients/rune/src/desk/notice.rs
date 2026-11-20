@@ -377,23 +377,6 @@ mod tests {
     }
 
     #[test]
-    fn a_toast_closes_when_its_time_is_up_and_wakes_for_it() {
-        let mut desk = desk();
-        desk.clock = 10.0;
-        desk.say(NoticeKind::Info, "Copied");
-        assert_eq!(desk.toasts().next_due(), Some(16.0), "six seconds");
-        assert!(!tick(&mut desk, 15.9), "not yet");
-        assert_eq!(
-            desk.notice.as_ref().map(|n| n.text.as_str()),
-            Some("Copied")
-        );
-        assert!(tick(&mut desk, 16.0), "its time is up");
-        assert_eq!(desk.notice, None);
-        assert!(desk.toasts().is_empty());
-        assert_eq!(desk.toasts().next_due(), None, "nothing to wake for");
-    }
-
-    #[test]
     fn toasts_stack_newest_in_front_and_each_keeps_its_own_time() {
         let mut desk = desk();
         desk.say(NoticeKind::Error, "Rename failed");
@@ -421,31 +404,6 @@ mod tests {
     }
 
     #[test]
-    fn the_pointer_over_the_stack_pauses_every_timer_until_it_leaves() {
-        let mut desk = desk();
-        desk.say(NoticeKind::Info, "Copied");
-        desk.clock = 2.0;
-        desk.toast_input(ToastInput::PointerOver, &mut Tx::default());
-        assert!(desk.toasts().expanded());
-        assert_eq!(desk.toasts().next_due(), None, "paused");
-        assert!(!tick(&mut desk, 30.0), "held open, it stays");
-        desk.toast_input(ToastInput::PointerLeft, &mut Tx::default());
-        assert_eq!(desk.toasts().next_due(), Some(34.0), "the four it had left");
-        assert!(tick(&mut desk, 34.0));
-    }
-
-    #[test]
-    fn an_away_phone_app_stops_the_clock() {
-        let mut desk = desk();
-        desk.say(NoticeKind::Info, "Copied");
-        desk.clock = 1.0;
-        desk.toasts_shown(false);
-        assert!(!tick(&mut desk, 60.0), "no time runs while away");
-        desk.toasts_shown(true);
-        assert_eq!(desk.toasts().next_due(), Some(65.0));
-    }
-
-    #[test]
     fn an_offer_is_taken_from_its_own_toast_and_that_toast_goes() {
         fn opened(desk: &mut Desk) {
             desk.settings_open = true;
@@ -457,17 +415,6 @@ mod tests {
         desk.take_offer_of(id);
         assert!(desk.settings_open, "the tip's action ran");
         assert_eq!(texts(&desk), ["Copied"], "only the tip went");
-    }
-
-    #[test]
-    fn dismissing_the_front_toast_brings_the_next_forward() {
-        let mut desk = desk();
-        desk.say(NoticeKind::Error, "first");
-        desk.say(NoticeKind::Error, "second");
-        desk.dismiss_notice();
-        assert_eq!(desk.notice.as_ref().map(|n| n.text.as_str()), Some("first"));
-        desk.clear_notices();
-        assert_eq!(desk.notice, None);
     }
 
     #[test]

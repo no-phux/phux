@@ -62,9 +62,6 @@ test("resource tool schemas are strict and require exact document targets", () =
   }
   assert.deepEqual((PhuxTreeWaitParams as { required?: string[] }).required, ["target", "until"]);
   assert.equal((PhuxTreeSnapshotParams as unknown as { properties: { target: { pattern: string } } }).properties.target.pattern, "^(?:[^/\\s]+/)?@[0-9]+$");
-  assert.deepEqual([...fixture(() => completed({})).tools.keys()], [
-    "phux_list", "phux_documents", "phux_tree_snapshot", "phux_tree_wait", "phux_surface_snapshot",
-  ]);
 });
 
 test("phux_list prints every resource kind beside the sessions", async () => {

@@ -2,48 +2,6 @@
 
 use super::*;
 
-/// A row advances the cursor exactly `rect.w` columns: a wide glyph spills
-/// into a cell ratatui leaves empty, and writing a space there pushed CJK
-/// window names out over the panes.
-#[test]
-fn a_wide_window_name_stays_inside_the_strip() {
-    let mut p = SidebarPainter::new(Theme::default());
-    p.set_roster(vec![active_roster()]);
-    assert!(p.set_windows(vec![win("日本語のペイン名前がとても長い", true)]));
-    let rect = r(0, 0, 20, 12);
-    let painted = paint_to_string(&mut p, rect);
-    // Each emitted row is one run from one CUP, so the emitted
-    // GLYPH widths per row must total the strip's width exactly —
-    // one column too many and the next row starts inside a pane.
-    let rows = rows_of(&painted);
-    assert_eq!(rows.len(), usize::from(rect.h), "one run per strip row");
-    for row in rows {
-        assert_eq!(
-            crate::render::display_width(&row),
-            usize::from(rect.w),
-            "row {row:?} does not advance the cursor exactly {} columns",
-            rect.w
-        );
-    }
-}
-
-#[test]
-fn renders_each_window_label() {
-    let mut p = SidebarPainter::new(Theme::default());
-    p.set_roster(vec![active_roster()]);
-    p.set_windows(vec![win("editor", false), win("shell", true)]);
-    let raw = paint_to_string(&mut p, r(0, 0, 20, 14));
-    let plain = strip_ansi(&raw);
-    assert!(plain.contains("editor"), "first tab label: {plain:?}");
-    assert!(plain.contains("shell"), "second tab label: {plain:?}");
-    assert!(plain.contains(SPACES_HEADER), "sessions header: {plain:?}");
-    // The active window gets the filled status dot.
-    assert!(plain.contains('●'), "active dot missing: {plain:?}");
-    assert!(plain.contains('○'), "inactive dot missing: {plain:?}");
-    // Separator rule present.
-    assert!(plain.contains('│'), "separator missing: {plain:?}");
-}
-
 /// Two tabs with one name get the strip's index so their rows differ;
 /// a unique name stays bare.
 #[test]

@@ -246,20 +246,6 @@ fn run_status_and_stderr(socket: &Path, args: &[&str]) -> (i32, String) {
 }
 
 #[test]
-fn run_rejects_malformed_selector_before_touching_server() {
-    let dir = tempfile::tempdir().expect("create temp dir for absent socket");
-    let absent_socket = dir.path().join("absent.sock");
-    // A non-numeric pane index is a parse error, so the invalid-target
-    // diagnostic must win even though no server exists at this socket.
-    let (code, stderr) = run_status_and_stderr(&absent_socket, &["run", "work:0.x", "true"]);
-    assert_eq!(code, 1, "a malformed selector should exit 1");
-    assert!(
-        stderr.contains("invalid target"),
-        "expected an 'invalid target' parse diagnostic, got: {stderr}",
-    );
-}
-
-#[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn tag_round_trips_and_drives_the_hash_selector() {
     let server = ServerGuard::start("run-wait");

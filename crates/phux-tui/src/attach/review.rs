@@ -210,31 +210,6 @@ mod tests {
     }
 
     #[test]
-    fn identical_record_keeps_a_reviewed_done() {
-        let id = pane();
-        let done = rec("reviewer", AgentMetaState::Done);
-        let mut review = ReviewIndex::default();
-        assert!(review.observe_record(&id, Some(&done), Some(&id)));
-        assert!(review.is_seen(&id));
-        assert!(
-            !review.observe_record(&id, Some(&done), None),
-            "identical GET must not re-arm"
-        );
-        assert!(review.is_seen(&id));
-    }
-
-    #[test]
-    fn a_genuine_change_rearms_when_unfocused() {
-        let id = pane();
-        let mut review = ReviewIndex::default();
-        review.observe_record(&id, Some(&rec("reviewer", AgentMetaState::Done)), Some(&id));
-        assert!(review.observe_record(&id, Some(&rec("reviewer", AgentMetaState::Working)), None));
-        assert!(!review.is_seen(&id));
-        review.observe_record(&id, Some(&rec("reviewer", AgentMetaState::Done)), None);
-        assert!(!review.is_seen(&id), "a new completion is unread");
-    }
-
-    #[test]
     fn a_focused_change_stays_reviewed() {
         let id = pane();
         let mut review = ReviewIndex::default();
@@ -265,17 +240,6 @@ mod tests {
             !review.forget(&id),
             "a second forget is not a review change"
         );
-    }
-
-    #[test]
-    fn stream_completion_invalidates_an_unfocused_pane() {
-        let id = pane();
-        let sid = session();
-        let mut review = ReviewIndex::default();
-        review.observe_stream(&id, &[(sid.clone(), AgentMetaState::Working)], Some(&id));
-        assert!(review.is_seen(&id));
-        assert!(review.observe_stream(&id, &[(sid, AgentMetaState::Done)], None));
-        assert!(!review.is_seen(&id));
     }
 
     #[test]

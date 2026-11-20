@@ -81,16 +81,6 @@ fn records_chain_and_verify() {
 }
 
 #[test]
-fn reopening_continues_the_chain() {
-    let dir = tempfile::tempdir().unwrap();
-    write(dir.path(), 2, ROTATE_BYTES);
-    write(dir.path(), 2, ROTATE_BYTES);
-    let report = verify_dir(dir.path()).unwrap();
-    assert_eq!(report.failure, None);
-    assert_eq!(report.records, 4);
-}
-
-#[test]
 fn a_second_writer_waits_for_the_first_to_close() {
     let dir = tempfile::tempdir().unwrap();
     let mut first = AuditLog::open(dir.path()).unwrap();

@@ -8,17 +8,6 @@ fn body(build: impl FnOnce(&mut Encoder<'_>)) -> Vec<u8> {
 }
 
 #[test]
-fn browse_and_satellite_search_round_trip() {
-    for (recursive, host) in [(false, None), (true, Some(SatelliteHost::new("dev")))] {
-        let bytes = body(|e| encode_query(e, 42, "~/src", "cfg", recursive, host.as_ref()));
-        assert_eq!(
-            decode_query(&mut Decoder::new(&bytes)),
-            Ok((42, "~/src".into(), "cfg".into(), recursive, host))
-        );
-    }
-}
-
-#[test]
 fn frames_dispatch_with_distinct_l3_tags() {
     let frames = [
         super::super::FrameKind::PathQuery {

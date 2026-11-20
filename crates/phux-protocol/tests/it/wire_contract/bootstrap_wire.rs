@@ -3,7 +3,6 @@
 #![allow(clippy::unwrap_used)]
 
 use bytes::{Bytes, BytesMut};
-use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
     BootstrapCapabilities, BootstrapLimits, BootstrapProfile, BootstrapProfileKind,
     BootstrapProfileSet, BootstrapStreamProfile, ClientCapabilities, EngineCodec, EngineCodecSet,

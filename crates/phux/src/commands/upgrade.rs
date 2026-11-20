@@ -786,28 +786,6 @@ mod tests {
     }
 
     #[test]
-    fn a_scripted_transient_refusal_clears_on_the_wire() {
-        let dir = tempfile::tempdir().unwrap();
-        let (socket, _seen) = scripted_server(dir.path(), |connection| {
-            let spec = phux_client::testkit::ScriptSpec::new();
-            if connection < 2 {
-                spec.refuse_upgrade(TREE_CHANGED)
-            } else {
-                spec
-            }
-        });
-        let mut env = NoWait {
-            live: LiveUpgrade::new(&socket, true).unwrap(),
-            sleeps: Vec::new(),
-        };
-
-        let ack = drive(&mut env, Consent::Advise, None).unwrap();
-
-        assert_eq!(ack, UpgradeAck::Upgrading);
-        assert_eq!(env.sleeps, TRANSIENT_BACKOFF[..2]);
-    }
-
-    #[test]
     fn a_legacy_server_is_upgraded_after_its_agent_sessions_close() {
         use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
         use phux_protocol::ids::{ResourceKind, SessionId, WindowId};
@@ -841,34 +819,5 @@ mod tests {
         assert_eq!(ack, UpgradeAck::Upgrading);
         assert_eq!(kills(&seen), [local(3)], "only the agent session closes");
         assert!(env.sleeps.is_empty());
-    }
-
-    #[test]
-    fn a_legacy_server_without_consent_keeps_every_agent_session() {
-        use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
-        use phux_protocol::ids::{ResourceKind, SessionId, WindowId};
-        use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
-
-        let dir = tempfile::tempdir().unwrap();
-        let (socket, seen) = scripted_server(dir.path(), |_| {
-            let mut agent = ResourceInfo::resource(local(3), ResourceKind::AgentSession);
-            agent.parent = Some(local(1));
-            phux_client::testkit::ScriptSpec::new()
-                .server_features(ServerFeatureSet::with(&[ServerFeature::ResourceKinds]))
-                .state(
-                    SessionSnapshot::new(SessionId::new(1), WindowId::new(1), local(1))
-                        .with_resources(vec![agent]),
-                )
-                .refuse_upgrade(LEGACY)
-        });
-        let mut env = NoWait {
-            live: LiveUpgrade::new(&socket, true).unwrap(),
-            sleeps: Vec::new(),
-        };
-
-        let ack = drive(&mut env, Consent::Advise, None).unwrap();
-
-        assert_eq!(ack, UpgradeAck::Refused(LEGACY.to_owned()));
-        assert!(kills(&seen).is_empty());
     }
 }

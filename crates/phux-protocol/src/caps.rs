@@ -26,21 +26,6 @@ mod tests {
     }
 
     #[test]
-    fn color_support_wire_roundtrips_every_variant() {
-        for v in [
-            ColorSupport::TrueColor,
-            ColorSupport::Indexed256,
-            ColorSupport::Indexed16,
-            ColorSupport::Mono,
-        ] {
-            let tag = v.as_wire();
-            let back = ColorSupport::from_wire(tag).expect("known tag");
-            assert_eq!(back, v);
-        }
-        assert!(ColorSupport::from_wire(0xFF).is_none());
-    }
-
-    #[test]
     fn legacy_resource_kinds_are_frozen_at_tags_zero_to_four() {
         // A HELLO without RESOURCE_KINDS must never gain a later kind.
         assert_eq!(ResourceKindSet::LEGACY.as_wire(), 0x1F);

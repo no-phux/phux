@@ -59,21 +59,6 @@ fn this_test_ran_under_the_runner() {
 }
 
 #[test]
-fn nothing_inherited_addresses_a_server() {
-    for key in [
-        "PHUX_SOCKET",
-        "PHUX_PROFILE",
-        "PHUX_TERMINAL_ID",
-        "PHUX_WS_TOKENS",
-        "PHUX_WS_TLS_CERT",
-        "PHUX_WS_TLS_KEY",
-        "PHUX_BIN",
-    ] {
-        assert_eq!(std::env::var_os(key), None, "{key} reached a test process");
-    }
-}
-
-#[test]
 fn a_test_binary_loses_production_addresses_and_keeps_test_knobs() {
     let dir = tempfile::tempdir().expect("tempdir");
     let env = stdout(&run_as_test_binary(

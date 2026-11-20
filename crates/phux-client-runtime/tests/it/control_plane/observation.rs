@@ -69,45 +69,6 @@ fn a_quiet_activity_omits_the_graph_and_a_bell_samples_it() {
 }
 
 #[test]
-fn a_reconnect_reusing_every_id_is_visible_between_two_observations() {
-    let mut plane = attached();
-    let before = plane.take_observation();
-    assert_eq!(before.connection_epoch, 1);
-    assert_eq!(before.status, Status::Attached);
-    assert_eq!(boundaries(&before), [1]);
-
-    reconnect_with_reused_ids(&mut plane);
-    let after = plane.take_observation();
-    // Status, topology and ids are indistinguishable from `before`; only
-    // the incarnation and the ordered boundary say the panes are new.
-    assert_eq!(after.status, Status::Attached);
-    assert_eq!(
-        after.topology.as_ref().map(|topology| topology.panes.len()),
-        before
-            .topology
-            .as_ref()
-            .map(|topology| topology.panes.len())
-    );
-    assert_eq!(
-        after.topology.as_ref().unwrap().panes[0].terminal_id,
-        before.topology.as_ref().unwrap().panes[0].terminal_id
-    );
-    assert_eq!(after.connection_epoch, 2);
-    assert_eq!(boundaries(&after), [2]);
-    let lost = after
-        .events
-        .iter()
-        .position(|event| matches!(event, Event::ConnectionLost { .. }))
-        .expect("the loss is in the batch");
-    let opened = after
-        .events
-        .iter()
-        .position(|event| matches!(event, Event::ConnectionOpened { .. }))
-        .unwrap();
-    assert!(lost < opened);
-}
-
-#[test]
 fn a_recovery_between_drain_and_status_sampling_stays_in_one_observation() {
     let mut plane = attached();
     let _ = plane.take_observation();

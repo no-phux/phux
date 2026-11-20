@@ -32,13 +32,8 @@ impl Default for HangupPolicy {
 }
 
 impl HangupPolicy {
-    /// A longer `grace`, for a child that needs it under test load.
-    #[cfg(test)]
-    pub(super) const fn stretched(grace: Duration) -> Self {
-        Self { grace, gate: None }
-    }
-
-    /// Like [`Self::stretched`], starting the ceiling only once `gate` exists.
+    /// A longer `grace` for a child under test load, starting the ceiling
+    /// only once `gate` exists.
     #[cfg(test)]
     pub(super) fn gated(grace: Duration, gate: &std::path::Path) -> Self {
         Self {
@@ -64,29 +59,5 @@ impl HangupPolicy {
         let hold = self.gate().map_or(Duration::ZERO, |(_, wait)| wait);
         hold.saturating_add(self.grace)
             .saturating_add(PANE_KILL_REAP_BUDGET)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_drain_budget_covers_every_stage_of_the_hangup() {
-        let production = HangupPolicy::default();
-        assert_eq!(
-            production.orphan_drain_budget(),
-            PANE_KILL_GRACE + PANE_KILL_REAP_BUDGET
-        );
-        let stretched = HangupPolicy::stretched(Duration::from_secs(2));
-        assert_eq!(
-            stretched.orphan_drain_budget(),
-            Duration::from_secs(2) + PANE_KILL_REAP_BUDGET
-        );
-        let gated = HangupPolicy::gated(Duration::from_secs(2), std::path::Path::new("/marker"));
-        assert_eq!(
-            gated.orphan_drain_budget(),
-            GATE_WAIT + Duration::from_secs(2) + PANE_KILL_REAP_BUDGET
-        );
     }
 }

@@ -216,37 +216,6 @@ fn the_project_header_count_agrees_with_its_number() {
     assert_eq!(needs_you_count(12).as_deref(), Some("12 need you"));
 }
 
-/// Two sessions of one project that both need you: the header says so in
-/// the plural.
-#[test]
-fn a_project_of_two_that_need_you_says_need() {
-    use phux_client::glance::SessionGlance;
-    use phux_core::project_identity::SessionProject;
-
-    let project = |linked| SessionProject {
-        id: "github.com/no-phux/phux".to_owned(),
-        name: "phux".to_owned(),
-        checkout: "/w".to_owned(),
-        branch: None,
-        linked_worktree: linked,
-        host: Some("mini".to_owned()),
-    };
-    let row = |name: &str| SessionGlance {
-        name: name.to_owned(),
-        waiting: 1,
-        ..SessionGlance::default()
-    };
-    let of = |identity| super::glance_rows::RowProject {
-        identity,
-        link: None,
-    };
-    let lines = super::glance_rows::collapse_by_project(vec![
-        (row("phux"), of(Some(project(false)))),
-        (row("feat"), of(Some(project(true)))),
-    ]);
-    assert_eq!(lines[0], "phux (project, 2 need you)", "{lines:?}");
-}
-
 /// The collapse line agrees with its count: one hidden session that needs
 /// you "needs" you, more "need" you.
 #[test]

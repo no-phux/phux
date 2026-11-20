@@ -51,21 +51,6 @@ fn endpoint_parse_rejects_typos_at_registration_time() {
     assert!(Endpoint::parse("ssh://").is_err(), "ssh needs a host");
 }
 
-#[test]
-fn ssh_needs_no_pairing_but_quic_and_wss_do() {
-    assert!(!Endpoint::parse("ssh://mini").expect("ssh").needs_pairing());
-    assert!(
-        Endpoint::parse("quic://mini:1")
-            .expect("quic")
-            .needs_pairing()
-    );
-    assert!(
-        Endpoint::parse("wss://mini:1")
-            .expect("wss")
-            .needs_pairing()
-    );
-}
-
 /// An enrolled identity is two absolute paths or nothing; half of one
 /// is refused at registration and at dial time alike.
 #[test]
@@ -280,11 +265,6 @@ fn read_token_takes_the_first_meaningful_line() {
         read_token(&entry_with_token(Some(path))).expect("read"),
         Some("deadbeef".to_owned())
     );
-}
-
-#[test]
-fn read_token_is_none_without_a_token_file() {
-    assert_eq!(read_token(&entry_with_token(None)).expect("read"), None);
 }
 
 #[test]

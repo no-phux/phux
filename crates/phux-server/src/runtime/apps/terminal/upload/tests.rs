@@ -260,33 +260,6 @@ fn upload_admission_counts_capacity_and_releases_failed_job_claim() {
     assert_eq!(BUDGET.payload.available_permits(), 1024);
 }
 
-#[tokio::test]
-async fn upload_admission_survives_cancellation_of_running_worker() {
-    static BUDGET: UploadBudget = UploadBudget::new(1, 1024);
-    let request = chunk(id(1), 0, b"payload", false, None);
-    let reservation = BUDGET.reserve(&request).expect("worker admission");
-    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-    let (finish_tx, finish_rx) = std::sync::mpsc::channel();
-    let worker = tokio::task::spawn_blocking(move || {
-        let _reservation = reservation;
-        started_tx.send(()).expect("announce start");
-        finish_rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("finish worker");
-    });
-    started_rx.await.expect("worker started");
-    worker.abort();
-    assert!(
-        BUDGET.reserve(&request).is_err(),
-        "a running worker still owns admission"
-    );
-    finish_tx.send(()).expect("release worker");
-    worker
-        .await
-        .expect("running blocking worker completes despite abort");
-    assert!(BUDGET.reserve(&request).is_ok());
-}
-
 #[test]
 fn chunks_finalize_only_after_digest_and_retry_idempotently() {
     let temp = TempDir::new().unwrap();

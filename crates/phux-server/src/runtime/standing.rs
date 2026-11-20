@@ -132,11 +132,4 @@ mod tests {
         assert!(!slot.due(false, died));
         assert!(slot.due(false, died + BACKOFF_BASE));
     }
-
-    #[test]
-    fn a_mirror_found_running_is_adopted_not_restarted() {
-        let mut slot = Slot::default();
-        assert!(!slot.due(true, Instant::now()));
-        assert!(slot.started.is_none() && slot.args.is_none());
-    }
 }

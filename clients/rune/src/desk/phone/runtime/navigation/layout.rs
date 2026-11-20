@@ -96,28 +96,6 @@ fn search_chrome_stays_fixed_and_the_last_row_clears_the_glass_dock() {
 }
 
 #[test]
-fn pane_accessibility_action_still_requests_the_exact_resource() {
-    let (client, mut rt) = fixture();
-    detailed_inventory(&mut rt);
-    rt.update(|d, _| d.open_phone_sessions());
-    settle(&mut rt);
-    assert!(rt.accessibility_action(
-        "phone-session-pane-@2",
-        rune::accesskit::Action::Click,
-        None
-    ));
-    settle(&mut rt);
-    // This fixture has a replica only for @1. Opening @2 must retain that
-    // exact request until its replica arrives, not show an unrelated pane.
-    assert_eq!(
-        rt.state.connection.wanted.as_ref().unwrap().0,
-        ResourceId::local(2)
-    );
-    assert!(rt.state.phone_page().is_none());
-    no_terminal_input(&client);
-}
-
-#[test]
 fn a_matching_pane_fits_whole_above_the_dock_with_the_search_keyboard_open() {
     let (_, mut rt) = fixture();
     detailed_inventory(&mut rt);

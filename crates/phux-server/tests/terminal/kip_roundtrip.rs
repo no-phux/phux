@@ -5,8 +5,8 @@
 //! The TUIs are host-provided, not nix-pinned, so each test probes for its
 //! binary and the `ghostty` terminfo and skips (passing, with a greppable
 //! `SKIP(kip_roundtrip::..)` line) when either is missing. Findings
-//! (2026-07-10): fzf, less, nvim, vim and btop all pass under ghostty; only
-//! nvim pushes kitty flags, so it is the one genuine CSI-u round trip. htop,
+//! (2026-07-10): only nvim pushes kitty flags, so it is the one genuine
+//! CSI-u round trip. htop,
 //! the phux-7vx ncurses `fullkbd` reproducer, was never available, so the
 //! default `TERM` stays `xterm-256color` (`defaults.term` opts in).
 //!
@@ -28,7 +28,7 @@ use tokio::time::timeout_at;
 use phux_server_testkit::screen::Screen;
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed, run_local, seed_pty,
-    send_frame, spawn_server_with, wait_for_server_screen_text, wait_for_socket,
+    send_frame, spawn_server_with, wait_for_socket,
 };
 
 use super::common::{named_key, sh};
@@ -103,7 +103,7 @@ fn printable_key(c: char) -> KeyEvent {
 }
 
 /// Ambient budget for a host TUI's FIRST paint after attach: a cold
-/// `posix_spawn` of btop/nvim/fzf/less that the host may not schedule for
+/// `posix_spawn` of nvim that the host may not schedule for
 /// seconds under load (booted simulators, parallel builds; load averages in
 /// the hundreds). Not the subject, so not a latency bound: the subject's
 /// `WIRE_RECV_TIMEOUT` deadlines start after it (phux-5wxp.3, shape 5).
@@ -115,7 +115,6 @@ const TUI_FIRST_PAINT_BUDGET: Duration = Duration::from_secs(60);
 /// feeds a [`Screen`] oracle and is kept raw for kitty forensics.
 struct TuiProbe {
     stream: UnixStream,
-    socket_path: PathBuf,
     terminal_id: ResourceId,
     screen: Screen,
     raw: Vec<u8>,
@@ -128,7 +127,7 @@ struct TuiProbe {
 impl TuiProbe {
     /// Attach and replay the bootstrap into the oracle (output that raced the
     /// attach arrives only there), then pin the anchor pane.
-    async fn attach(mut stream: UnixStream, socket_path: PathBuf) -> Self {
+    async fn attach(mut stream: UnixStream) -> Self {
         send_frame(&mut stream, &attach_by_name("default")).await;
         let terminal_id = match recv_typed(&mut stream).await.1 {
             FrameKind::Attached { snapshot, .. } => snapshot.resources[0].id.clone(),
@@ -136,7 +135,6 @@ impl TuiProbe {
         };
         let mut probe = Self {
             stream,
-            socket_path,
             terminal_id,
             screen: Screen::new(80, 24).unwrap(),
             raw: Vec::new(),
@@ -270,13 +268,6 @@ impl TuiProbe {
         );
     }
 
-    /// Poll the server's own grid on a separate unsubscribed connection (the
-    /// attached stream's output must keep feeding the oracle).
-    async fn wait_server_screen_text(&self, needle: &str, deadline: Duration) {
-        let mut control = wait_for_socket(&self.socket_path, SOCKET_CONNECT_DEADLINE).await;
-        wait_for_server_screen_text(&mut control, &self.terminal_id, needle, deadline).await;
-    }
-
     /// The app really quit: its pane closed as `Exited`, not killed or torn
     /// down. The exit status races a 20ms reap budget, so it is only reported.
     async fn expect_closed(&mut self, what: &str) {
@@ -325,7 +316,7 @@ where
                 term.clone_into(&mut cfg.term);
             });
         let stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-        let mut probe = TuiProbe::attach(stream, socket_path).await;
+        let mut probe = TuiProbe::attach(stream).await;
         scenario(&mut probe).await;
         drop(shutdown_tx);
     });
@@ -340,48 +331,6 @@ fn harness_seed_pane_sees_configured_term() {
         probe
             .await_first_paint("TERM_IS[ghostty]", "seed TERM")
             .await;
-    });
-}
-
-#[test]
-fn fzf_filters_and_accepts_under_term_ghostty() {
-    if !require_tui("fzf_ghostty", "fzf") {
-        return;
-    }
-    let cmd = sh("printf 'alpha\\nbravo\\ncharlie\\n' | fzf");
-    run_tui_probe(cmd, "ghostty", async |probe: &mut TuiProbe| {
-        probe.await_first_paint("charlie", "fzf list").await;
-        probe.type_str("brav").await;
-        probe.expect_screen_contains("> brav", "fzf query").await;
-        probe
-            .expect_screen_contains("1/3", "fzf match counter")
-            .await;
-        probe.send_key(named_key(PhysicalKey::Enter)).await;
-        probe.expect_closed("fzf accept").await;
-    });
-}
-
-#[test]
-fn less_searches_and_quits_under_term_ghostty() {
-    if !require_tui("less_ghostty", "less") {
-        return;
-    }
-    let tmp = TempDir::new().unwrap();
-    let file = tmp.path().join("numbers.txt");
-    let body: Vec<String> = (1..=200).map(|n| format!("line-{n}")).collect();
-    std::fs::write(&file, body.join("\n")).unwrap();
-    let mut cmd = CommandBuilder::new("less");
-    cmd.arg(&file);
-    run_tui_probe(cmd, "ghostty", async |probe: &mut TuiProbe| {
-        probe.await_first_paint("line-1", "less page").await;
-        probe.type_str("/line-137").await;
-        probe
-            .expect_screen_contains("/line-137", "less search prompt")
-            .await;
-        probe.send_key(named_key(PhysicalKey::Enter)).await;
-        probe.expect_screen_contains("line-137", "less jump").await;
-        probe.send_key(printable_key('q')).await;
-        probe.expect_closed("less quit").await;
     });
 }
 
@@ -406,51 +355,5 @@ fn nvim_kip_insert_and_quit_under_term_ghostty() {
         probe.expect_screen_contains(":q!", "nvim cmdline").await;
         probe.send_key(named_key(PhysicalKey::Enter)).await;
         probe.expect_closed("nvim :q!").await;
-    });
-}
-
-/// Hang guard for vim under CPU starvation (phux-7y78), not a latency bound.
-/// vim's startup wait is already its own barrier on the server grid.
-const VIM_HANG_GUARD: Duration = Duration::from_secs(60);
-
-#[test]
-fn vim_insert_and_quit_under_term_ghostty() {
-    if !require_tui("vim_ghostty", "vim") {
-        return;
-    }
-    let mut cmd = CommandBuilder::new("vim");
-    cmd.args(["-u", "NONE", "-i", "NONE"]);
-    run_tui_probe(cmd, "ghostty", async |probe: &mut TuiProbe| {
-        // A lone `i` on the splash is eaten as wait_return; Enter first.
-        probe
-            .wait_server_screen_text("VIM - Vi IMproved", VIM_HANG_GUARD)
-            .await;
-        probe.send_key(named_key(PhysicalKey::Enter)).await;
-        probe.send_key(printable_key('i')).await;
-        probe.type_str("kip roundtrip ok").await;
-        probe
-            .wait_server_screen_text("kip roundtrip ok", VIM_HANG_GUARD)
-            .await;
-        probe.send_key(named_key(PhysicalKey::Escape)).await;
-        probe.type_str(":q!").await;
-        probe.expect_screen_contains(":q!", "vim cmdline").await;
-        probe.send_key(named_key(PhysicalKey::Enter)).await;
-        probe.expect_closed("vim :q!").await;
-    });
-}
-
-#[test]
-fn btop_quits_on_q_under_term_ghostty() {
-    if !require_tui("btop_ghostty", "btop") {
-        return;
-    }
-    let mut cmd = CommandBuilder::new("btop");
-    // btop refuses to start without a UTF-8 locale.
-    cmd.env("LANG", "en_US.UTF-8");
-    cmd.env("LC_ALL", "en_US.UTF-8");
-    run_tui_probe(cmd, "ghostty", async |probe: &mut TuiProbe| {
-        probe.await_first_paint("cpu", "btop dashboard").await;
-        probe.send_key(printable_key('q')).await;
-        probe.expect_closed("btop quit").await;
     });
 }

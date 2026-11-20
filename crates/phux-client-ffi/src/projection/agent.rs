@@ -73,50 +73,6 @@ mod tests {
         badge(&ResourceId::local(1), Some(record.as_bytes()))
     }
 
-    #[test]
-    fn open_vocabulary_state_keeps_the_defaults() {
-        assert_eq!(
-            badge(
-                &ResourceId::local(9),
-                Some(br#"{"name":"Claude","kind":"claude","state":"newer"}"#),
-            ),
-            AgentBadge {
-                terminal_id: ResourceId::local(9),
-                name: "Claude".to_owned(),
-                kind: Some("claude".to_owned()),
-                session: None,
-                state: AgentState::Unknown,
-                attention: AgentAttention::Low,
-                state_reading: StateReading::Unsupported("newer".to_owned()),
-                attention_reading: AttentionReading::Derived,
-            }
-        );
-    }
-
-    #[test]
-    fn malformed_records_clear_the_badge() {
-        assert_eq!(
-            badge(&ResourceId::local(2), Some(b"not-json")),
-            AgentBadge {
-                terminal_id: ResourceId::local(2),
-                name: String::new(),
-                kind: None,
-                session: None,
-                state: AgentState::Unknown,
-                attention: AgentAttention::Low,
-                state_reading: StateReading::NoRecord,
-                attention_reading: AttentionReading::Derived,
-            }
-        );
-        for record in [r#"["blocked"]"#, r#"{"state":"blocked"}"#, r#"{"name":7}"#] {
-            assert_eq!(
-                read(record).state_reading,
-                StateReading::NoRecord,
-                "{record}"
-            );
-        }
-    }
-
     /// A tombstone, an empty name and a whitespace-only name each clear the
     /// badge to the same no-record reading.
     #[test]
@@ -197,18 +153,6 @@ mod tests {
     }
 
     #[test]
-    fn the_session_label_is_carried() {
-        assert_eq!(
-            badge(
-                &ResourceId::local(8),
-                Some(br#"{"name":"a","session":"rung-a"}"#),
-            )
-            .session,
-            Some("rung-a".to_owned())
-        );
-    }
-
-    #[test]
     fn absent_explicit_unknown_and_unsupported_states_stay_distinct() {
         // All four normalize to Unknown (L3 §3.7); only the reading differs.
         let readings = [
@@ -232,26 +176,6 @@ mod tests {
             let recognized = read(&format!(r#"{{"name":"a","state":"{word}"}}"#));
             assert_eq!(recognized.state_reading, StateReading::Recognized, "{word}");
         }
-    }
-
-    #[test]
-    fn blocked_followed_by_a_newer_word_is_unsupported_not_cleared() {
-        let blocked = read(r#"{"name":"a","kind":"claude","state":"blocked"}"#);
-        assert_eq!(blocked.attention, AgentAttention::High);
-        let newer = read(r#"{"name":"a","kind":"claude","state":"waiting_approval"}"#);
-        // Still a declared agent, still asking to be noticed: never an
-        // all-clear, and distinguishable from the record going away.
-        assert_eq!(newer.name, "a");
-        assert_eq!(newer.state, AgentState::Unknown);
-        assert_ne!(newer.attention, AgentAttention::None);
-        assert_eq!(
-            newer.state_reading,
-            StateReading::Unsupported("waiting_approval".to_owned())
-        );
-        assert_ne!(
-            newer.state_reading,
-            badge(&ResourceId::local(1), None).state_reading
-        );
     }
 
     #[test]

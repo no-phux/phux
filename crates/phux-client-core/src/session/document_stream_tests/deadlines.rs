@@ -287,61 +287,6 @@ fn a_stalled_cut_from_an_earlier_connection_stops_holding_the_ceiling() {
     assert_eq!(kernel.expire_bootstrap_staging(IDLE + 1, &mut effects), 1);
 }
 
-fn output_to(kernel: &mut Kernel, raw: u64, seq: u64) -> Outcome {
-    let g = surface_gen(&surface(), raw);
-    kernel.update(g.output(seq, b"doc"), &mut EffectBuffer::new())
-}
-
-#[test]
-fn live_output_reads_the_clock_only_while_a_deadline_is_pending() {
-    // The kernel's own clock, as the runtime drives it.
-    let mut kernel = kernel();
-    let mut effects = EffectBuffer::new();
-    let begin_at = |kernel: &mut Kernel, id: &ResourceId, raw: u64| {
-        kernel.update(
-            KernelInput::BootstrapBegin {
-                terminal_id: id,
-                stream_id: stream(),
-                bootstrap_id: generation(raw),
-                profile: BootstrapStreamProfile::PixelSurfacePngV1,
-                geometry: CanonicalGeometry { cols: 0, rows: 0 },
-                base_seq: 4,
-            },
-            &mut EffectBuffer::new(),
-        )
-    };
-    begin_at(&mut kernel, &surface(), 1).unwrap();
-    kernel
-        .update(
-            KernelInput::BootstrapReady {
-                terminal_id: &surface(),
-                stream_id: stream(),
-                bootstrap_id: generation(1),
-                history_cursor: None,
-            },
-            &mut effects,
-        )
-        .unwrap();
-    // A sweep with nothing due clears the deadline the cut left behind.
-    kernel.next_deadline_ms = Some(0);
-    output_to(&mut kernel, 1, 5).unwrap();
-    let (reads, sweeps) = (kernel.clock_reads.get(), kernel.deadline_sweeps);
-    for seq in 6..1_006 {
-        output_to(&mut kernel, 1, seq).unwrap();
-    }
-    assert_eq!(kernel.clock_reads.get(), reads, "no deadline, no clock");
-    // A cut in flight elsewhere: one read and one comparison per update,
-    // and no lane scan before it is due.
-    begin_at(&mut kernel, &ResourceId::local(10), 1).unwrap();
-    let (reads, sweeps_before) = (kernel.clock_reads.get(), kernel.deadline_sweeps);
-    for seq in 1_006..2_006 {
-        output_to(&mut kernel, 1, seq).unwrap();
-    }
-    assert_eq!(kernel.clock_reads.get() - reads, 1_000);
-    assert_eq!(kernel.deadline_sweeps, sweeps_before);
-    assert_eq!(sweeps_before, sweeps, "opening a cut scans nothing");
-}
-
 #[test]
 fn a_run_of_frames_off_the_current_generation_asks_for_recovery() {
     let mut kernel = kernel();

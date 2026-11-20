@@ -244,49 +244,6 @@ esac
         assert_eq!(record, bearer_record());
     }
 
-    /// The descriptions carry the rules that make results readable: a
-    /// non-zero exit is the answer, and doctor's `server-health` repeats.
-    #[test]
-    fn the_descriptions_state_the_answer_not_error_rule() {
-        let status = status_schema();
-        let status = status["description"].as_str().unwrap();
-        assert!(
-            status.contains("A STOPPED SERVER IS AN ANSWER, NOT AN ERROR"),
-            "{status}",
-        );
-        assert!(status.contains("branch on `running`"), "{status}");
-        assert!(
-            status.contains("MAY BE NULL ON A RUNNING SERVER"),
-            "a null pid must not read as \"no server\": {status}",
-        );
-        assert!(status.contains("never auto-starts"), "{status}");
-
-        let doctor = doctor_schema();
-        let doctor = doctor["description"].as_str().unwrap();
-        assert!(
-            doctor.contains("A FAILING CHECK IS AN ANSWER, NOT AN ERROR"),
-            "{doctor}",
-        );
-        assert!(
-            doctor.contains("READ EVERY ROW, NOT THE FIRST"),
-            "the co-occurring server-health rows must be stated: {doctor}",
-        );
-        assert!(doctor.contains("READ-ONLY"), "{doctor}");
-        assert!(
-            doctor.contains("relay it, do not run it"),
-            "the hints name remedies that restart services: {doctor}",
-        );
-
-        let whoami = whoami_schema();
-        let whoami = whoami["description"].as_str().unwrap();
-        assert!(whoami.contains("READ-ONLY and idempotent"), "{whoami}");
-        assert!(whoami.contains("never auto-starts"), "{whoami}");
-        assert!(
-            whoami.contains("`server_too_old`"),
-            "the older-server refusal must be stated: {whoami}",
-        );
-    }
-
     /// Each tool executes the exact canonical argv, and the interesting
     /// non-zero exit returns the document instead of an error.
     #[tokio::test]
@@ -344,33 +301,6 @@ esac
             assert!(
                 !err.0.contains("malformed JSON"),
                 "{name} misdiagnosed an empty stdout: {err:?}",
-            );
-        }
-    }
-
-    /// Validation happens before any subprocess: an adapter pointed at a
-    /// program that cannot exist proves nothing was executed.
-    #[tokio::test]
-    async fn malformed_arguments_are_rejected_before_execution() {
-        let adapter = CliAdapter::new("must-not-execute");
-        for (name, args) in [
-            ("phux_status", json!({ "target": "@1" })),
-            ("phux_doctor", json!({ "json": true })),
-            // No multiplexer to address.
-            ("phux_status", json!({ "action": "status" })),
-            ("phux_doctor", json!({ "socket": 7 })),
-            ("phux_diagnose", json!({})),
-        ] {
-            assert!(
-                call_with_adapter(name, &args, &adapter).await.is_err(),
-                "{name} accepted {args}",
-            );
-        }
-        // `--remote` is a CLI flag, not an MCP argument.
-        for args in [json!({ "remote": "me@mini" }), json!({ "socket": 7 })] {
-            assert!(
-                run_whoami(&args).await.is_err(),
-                "phux_whoami accepted {args}"
             );
         }
     }

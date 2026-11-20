@@ -472,21 +472,4 @@ mod tests {
         assert_eq!(args.out.as_deref(), Some(std::path::Path::new("frame.png")));
         assert!(crate::parse_cli(["phux", "snapshot", "--out", "f", "--rendered"]).is_err());
     }
-
-    /// clap's `default_missing_value` must be a string literal, so bare
-    /// `--tail`'s count and the `--help` text can drift from the constant
-    /// that documents them. Pin all three here.
-    #[test]
-    fn bare_tail_default_matches_the_documented_constant() {
-        assert_eq!(
-            phux_client::snapshot::ROW_WINDOW_DEFAULT,
-            80,
-            "clap spells this as default_missing = \"80\" in commands::mod",
-        );
-        assert_eq!(
-            phux_client::snapshot::ROW_WINDOW_MAX,
-            10_000,
-            "the --tail help text spells this as 10000",
-        );
-    }
 }

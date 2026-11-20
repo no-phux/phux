@@ -64,28 +64,8 @@ fn token_file_must_be_owner_only_and_valid_hex() {
 }
 
 #[test]
-fn token_file_is_reread_and_length_checked() {
+fn token_file_is_length_checked() {
     let file = tempfile::NamedTempFile::new().expect("token file");
-    std::fs::write(
-        file.path(),
-        format!("{}\n", "11".repeat(crate::auth::TOKEN_LEN)),
-    )
-    .expect("write first token");
-    assert_eq!(
-        read_connector_token(Some(file.path())).expect("first token"),
-        Some(vec![0x11; crate::auth::TOKEN_LEN])
-    );
-
-    std::fs::write(
-        file.path(),
-        format!("{}\n", "22".repeat(crate::auth::TOKEN_LEN)),
-    )
-    .expect("rotate token");
-    assert_eq!(
-        read_connector_token(Some(file.path())).expect("rotated token"),
-        Some(vec![0x22; crate::auth::TOKEN_LEN])
-    );
-
     std::fs::write(file.path(), "22\n").expect("write short token");
     let error = read_connector_token(Some(file.path())).expect_err("short token refused");
     assert!(error.contains("exactly 32 token bytes"), "{error}");

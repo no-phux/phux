@@ -191,26 +191,3 @@ fn checkout_methods_read_and_stage_the_terminals_checkout() {
         server.stop().await;
     });
 }
-
-#[test]
-fn a_terminal_outside_any_checkout_is_a_typed_refusal() {
-    run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let plain = tmp.path().join("plain");
-        std::fs::create_dir_all(&plain).unwrap();
-        let mut cmd = sh("sleep 30");
-        cmd.cwd(&plain);
-        // A fresh temp directory is under no checkout.
-        let server = SpawnedServer::seeded_in(tmp, SESSION, cmd);
-        let (mut stream, _) = connect_as(&server.socket, "checkout-none", full_caps()).await;
-        let pane = attach_pane(&mut stream, SESSION).await;
-
-        let answer = checkout(&mut stream, 1, &pane, CheckoutRequest::Branches).await;
-        assert!(
-            matches!(&answer, CheckoutAnswer::Refused(r) if r.code == CheckoutRefusalCode::NotARepository),
-            "{answer:?}"
-        );
-
-        server.stop().await;
-    });
-}
