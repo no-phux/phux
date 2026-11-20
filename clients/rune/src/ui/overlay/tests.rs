@@ -10,6 +10,7 @@ use crate::test_support::server::{self, agent, pane, session, settle};
 use crate::theme::Theme;
 
 use crate::test_support::SCALE;
+mod help;
 const DESKTOP: (f32, f32) = (1280.0, 800.0);
 
 const SCREEN: &str = "\x1b[2J\x1b[H\x1b[1;38;5;208m✻\x1b[0m Welcome to \x1b[1mClaude Code\x1b[0m\r\n\r\n\

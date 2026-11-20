@@ -288,6 +288,14 @@ pub fn find_bar(desk: &Desk, id: &ResourceId, area: [f32; 2], p: &Tokens) -> Opt
         .absolute(left, PAD + s.s1)
         .w(width)
         .on_drag(keep_from_pane)
+        // Keyboard help makes the toolbar's buttons a natural stop. Escape
+        // belongs to Find there too, never to the terminal underneath it.
+        .on_key(|d: &mut Desk, event, tx| {
+            if event.key != rune::Key::Escape {
+                return false;
+            }
+            d.find_key(event, tx)
+        })
         .min_h(s.row_h + s.s2)
         .pl(s.s3)
         .pr(s.s1)
