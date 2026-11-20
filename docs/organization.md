@@ -103,7 +103,7 @@ carry different identities and guarantees.
 | `KILL_RESOURCE` | Close a live handle and its bound descendants. Session lifetime governs an emptied session. | The serving host committed the close. |
 | `KILL_RESOURCES` | Close live handles in host-local groups. Naming every member of a persistent session can delete it too. | Keyed replies report per-id outcomes. Unkeyed replies can include skips or failed satellite routes, logged by the server. |
 | `CLOSE_TAB_RESOURCES` | Close live handles in host-local groups and preserve keep-empty sessions. Requires its feature bit. | The local close skips missing handles. Satellite partitions are forwarded without waiting for results. |
-| `RESOURCE_TERMINATE` | Target a resource handle, instance, and activation id on an `ORGANIZATION` peer. | `Accepted` settles admission. Lifecycle events report effects. Separate requests can have different outcomes. |
+| `RESOURCE_TERMINATE` | Target a resource handle, instance, and activation id on an `ORGANIZATION` peer. | `Accepted` for the same operation settles admission. Lifecycle events report effects. Separate requests can have different outcomes. |
 
 `KILL_RESOURCE_IF` adds allocation-instance and use preconditions for
 delayed cleanup. `SESSION_KILL` explicitly ends a session and overrides

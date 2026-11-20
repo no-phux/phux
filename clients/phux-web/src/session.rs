@@ -202,7 +202,7 @@ struct PendingKill {
     phase: KillPhase,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 enum KillPhase {
     Resolving(SessionKey),
     Terminate(OperationId),

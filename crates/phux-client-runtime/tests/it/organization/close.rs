@@ -147,3 +147,27 @@ fn a_close_batch_can_be_partly_accepted_and_preserves_unknown_outcomes() {
         "an unknown result is not resubmitted"
     );
 }
+
+#[test]
+fn an_unmatched_acceptance_leaves_the_close_unknown_under_its_own_request() {
+    let foreign = OperationId::new([254; 16]).unwrap();
+    for reply in [
+        CommandResult::Accepted { operation: foreign },
+        CommandResult::Ok,
+    ] {
+        let mut plane = seeded();
+        let close = plane.close_terminals(vec![ResourceId::local(1)]).unwrap();
+        let sent = commands(&mut plane);
+        let [(attempt, Command::ResourceTerminate { operation, .. })] = sent.as_slice() else {
+            panic!("expected a fenced terminate, got {sent:?}");
+        };
+        assert_ne!(*operation, foreign);
+        answer(&mut plane, *attempt, reply);
+        assert!(plane.take_events().iter().any(|event| matches!(
+            event,
+            Event::TerminalsClosed { request_id, error: Some(error) }
+                if *request_id == close && error.contains("@1: outcome unknown")
+        )));
+        assert!(commands(&mut plane).is_empty());
+    }
+}
