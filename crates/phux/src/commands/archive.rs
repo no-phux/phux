@@ -33,6 +33,7 @@ use phux_client::agent_session_record::spawn_with_agent_session_on;
 
 mod bridge;
 pub(crate) mod model;
+mod places;
 mod snapshot;
 
 use model::{RestoreSummary, WorkspaceWindow, parse_archive, restore_plan};
@@ -149,32 +150,12 @@ async fn capture_archive(
                 .to_owned(),
         ));
     }
-    // Typed attributes are authoritative and per-session. Singleton metadata
-    // values remain a fallback for older sessions and archives.
-    let mut projects = phux_client::workspace_place::fetch_project_by_session(socket_path).await;
-    let mut hosts = phux_client::workspace_place::fetch_host_by_session(socket_path).await;
-    let mut directories =
-        phux_client::workspace_place::fetch_directory_by_session(socket_path).await;
-    let mut links = HashMap::new();
-    for session in records.sessions {
-        for (key, value) in session.attrs {
-            match key.as_str() {
-                "project" => {
-                    projects.insert(session.name.clone(), value);
-                }
-                phux_core::project_identity::attr::LINK => {
-                    links.insert(session.name.clone(), value);
-                }
-                "directory" => {
-                    directories.insert(session.name.clone(), value);
-                }
-                "host" => {
-                    hosts.insert(session.name.clone(), value);
-                }
-                _ => {}
-            }
-        }
-    }
+    let places::Places {
+        projects,
+        hosts,
+        directories,
+        mut links,
+    } = places::session_places(socket_path, records.sessions).await;
     let (mut archive, reconcile_warnings) = archive_from_snapshot(
         &snapshot,
         snapshot::AgentRecords {
