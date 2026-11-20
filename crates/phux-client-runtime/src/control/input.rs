@@ -250,7 +250,18 @@ impl ControlPlane {
         }
     }
 
-    pub(crate) const fn set_attempt_trace(&mut self, trace: Option<crate::connection::AttemptTrace>) {
+    /// The qualification probe observed `input_ready` and is about to type.
+    /// Same attempt clock as [`Self::trace_input`], and nothing else changes.
+    pub fn trace_input_ready(&self) {
+        if let Some(trace) = &self.attempt_trace {
+            trace.record("input_ready");
+        }
+    }
+
+    pub(crate) const fn set_attempt_trace(
+        &mut self,
+        trace: Option<crate::connection::AttemptTrace>,
+    ) {
         self.attempt_trace = trace;
     }
 

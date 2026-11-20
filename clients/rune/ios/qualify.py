@@ -344,6 +344,16 @@ class Qualification:
             raise ValueError("relaunch did not use the same saved device identity")
         return report
 
+    def emit_input_order(self):
+        """Print input_ready:true, then the first InputKey send, per capture."""
+        for prefix, label in (("", self.transport), ("resume-", f"{self.transport} resume")):
+            path = self.out / (prefix + "rune-connection-diagnostics.jsonl")
+            try:
+                text = path.read_text()
+            except OSError:
+                continue
+            print_input_order_lines(label, text)
+
     preserve_connection_diagnostics = _trace.preserve_connection_diagnostics
     require_connection_diagnostics = _trace.require_connection_diagnostics
     finish_connection_diagnostics = _trace.finish_connection_diagnostics
@@ -352,6 +362,46 @@ class Qualification:
     failure_screenshot = _trace.failure_screenshot
     cleanup = _trace.cleanup
     cleanup_simulator = _trace.cleanup_simulator
+
+
+def input_order_lines(transport, text):
+    """The probe's input_ready row, then the first InputKey send after it."""
+    ready = None
+    injected = None
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = _trace.diagnostic_row(line)
+        except ValueError:
+            return []
+        if ready is None:
+            if row["phase"] == "input_ready":
+                ready = row
+            continue
+        if row["phase"] != "input_injected":
+            continue
+        if (row["connection"], row["attempt"]) != (ready["connection"], ready["attempt"]):
+            continue
+        if row["elapsed_ms"] < ready["elapsed_ms"]:
+            continue
+        injected = row
+        break
+    if ready is None or injected is None:
+        return []
+
+    def stamped(row, label):
+        return (f"{transport}: {label} elapsed_ms={row['elapsed_ms']} "
+                f"process_elapsed_ms={row['process_elapsed_ms']}")
+    return [
+        stamped(ready, "input_ready input_ready:true"),
+        stamped(injected, "input_injected InputKey"),
+    ]
+
+
+def print_input_order_lines(transport, text):
+    for line in input_order_lines(transport, text):
+        print(line, flush=True)
 
 
 def qualify(app, phux, out, transport="quic"):
@@ -389,6 +439,7 @@ def qualify(app, phux, out, transport="quic"):
                 lane.cleanup()
                 if not failed:
                     lane.require_connection_diagnostics()
+                    lane.emit_input_order()
             except (ValueError, OSError, subprocess.SubprocessError) as error:
                 if not failed:
                     raise

@@ -392,6 +392,15 @@ pub unsafe extern "C" fn phux_rune_ios_traits(
     });
 }
 
+/// Records `input_ready` on the attempt clock, immediately before the probe types.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_rune_ios_trace_input_ready(pointer: *mut c_void) {
+    attempt(|| {
+        mobile::trace_input_ready(unsafe { host(pointer)? }.layer.runtime());
+        Ok(())
+    });
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_rune_ios_report(
     pointer: *mut c_void,

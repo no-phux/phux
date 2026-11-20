@@ -118,7 +118,7 @@ final class QualificationProbe {
         if progress.refusedAfterReady(refusals: report["input_refusals"] as? UInt64 ?? 0) {
             failure("input refused after input_ready"); return
         }
-        injectInput(report, input: input)
+        injectInput(report, input: input, bridge: bridge)
         guard progress.injected, report["marker_seen"] as? Bool == true else { return }
         report["input_through_native"] = true
         report["transport"] = connectedEndpoint?.hasPrefix("wss://") == true ? "paired-wss" : "paired-quic"
@@ -145,7 +145,7 @@ final class QualificationProbe {
         self.backgroundFrames = nil
     }
 
-    private func injectInput(_ report: [String: Any], input: RuneInput) {
+    private func injectInput(_ report: [String: Any], input: RuneInput, bridge: NativeBridge) {
         let shown = report["connected"] as? Bool == true &&
               report["session"] as? String == session &&
               (report["frames"] as? UInt64 ?? 0) > 0 &&
@@ -154,6 +154,8 @@ final class QualificationProbe {
         if shown && !progress.injected { recordInputGate(inputReady) }
         guard progress.claimInput(shown: shown, inputReady: inputReady,
                                   refusals: report["input_refusals"] as? UInt64 ?? 0) else { return }
+        // Same attempt clock as the InputKey send, written before it.
+        bridge.traceInputReady()
         // The same UIKit override used by the system keyboard; not an
         // OS-generated keystroke/IME qualification claim.
         input.insertText(command)

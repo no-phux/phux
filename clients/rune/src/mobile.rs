@@ -365,6 +365,13 @@ pub fn set_active(rt: &mut rune::Runtime<State>, active: bool) {
     });
 }
 
+/// Qualification log: the probe observed `input_ready` and is about to type.
+pub fn trace_input_ready(rt: &rune::Runtime<State>) {
+    if let Some(client) = rt.state.connection.client.as_ref() {
+        client.with_control(|control| control.trace_input_ready());
+    }
+}
+
 /// Local qualification evidence; no credentials, endpoint or clipboard
 /// contents. A real grid, not a placeholder title, must contain the marker.
 pub fn report(rt: &rune::Runtime<State>, frames: u64, marker: &str) -> Value {
