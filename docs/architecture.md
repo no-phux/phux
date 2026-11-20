@@ -1,11 +1,12 @@
 # Architecture
 
-For people changing phux. [Concepts](./concepts.md) is the user-level model;
-[protocol](./protocol.md) is the wire. [Organization](./organization.md) owns
-durable records, activations and restore; [remote authority](./remote.md#who-can-do-what)
-owns grants and revocation; [embedding](./embedding.md#runtime-consumer-contract)
-owns the runtime consumer boundary. [Substrate](./substrate.md) covers
-principals, keeper authority, delegation, and adapter boundaries.
+[Concepts](./concepts.md) is the user model. [Protocol](./protocol.md)
+covers the wire, [organization](./organization.md) the durable records,
+[remote authority](./remote.md#who-can-do-what) the grants and revocation,
+[embedding](./embedding.md#runtime-consumer-contract) the consumer contract,
+and [substrate](./substrate.md) principals, delegation, and the keeper.
+The [architecture target](./architecture-target.md) describes the migration
+and how to verify it.
 
 Brand artwork and cross-repository release delivery are documented in
 [brand assets](./brand-assets.md).
