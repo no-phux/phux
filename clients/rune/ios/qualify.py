@@ -35,6 +35,17 @@ _settle_spec.loader.exec_module(_settle)
 _trace_spec = importlib.util.spec_from_file_location("rune_connection_diagnostics", Path(__file__).with_name("connection_diagnostics.py"))
 _trace = importlib.util.module_from_spec(_trace_spec)
 _trace_spec.loader.exec_module(_trace)
+_input_spec = importlib.util.spec_from_file_location("rune_qualify_input", Path(__file__).with_name("qualify_input.py"))
+_input = importlib.util.module_from_spec(_input_spec)
+_input_spec.loader.exec_module(_input)
+INPUT_GATE = _input.INPUT_GATE
+input_gate_reason = _input.input_gate_reason
+print_input_order_lines = _input.print_input_order_lines
+_host_spec = importlib.util.spec_from_file_location("rune_qualify_host", Path(__file__).with_name("qualify_host.py"))
+_host = importlib.util.module_from_spec(_host_spec)
+_host_spec.loader.exec_module(_host)
+simulator_pair = _host.simulator_pair
+server_environment = _host.server_environment
 
 BUNDLE_ID = "sh.phux.rune.ios"
 MARKER = "RUNE_IOS_INPUT_OK"
@@ -46,62 +57,10 @@ CONTAINER_TIMEOUT = 60
 QUERY_ATTEMPTS = 3
 
 
-def version_tuple(value):
-    return tuple((list(map(int, value.split("."))) + [0, 0])[:3])
-
-
-def available_ios_runtime(runtime):
-    return (runtime.get("isAvailable") and ".iOS-" in runtime["identifier"]
-            and version_tuple(runtime["version"]) >= (26, 0, 0))
-
-
-def simulator_pair(runtimes, device_types):
-    """Use runtime-supported IDs, not a device name guessed from OS version."""
-    phones = {d["identifier"] for d in device_types if d.get("productFamily") == "iPhone"}
-    available = filter(available_ios_runtime, runtimes)
-    for runtime in sorted(available, key=lambda r: version_tuple(r["version"])):
-        compatible = [d for d in runtime.get("supportedDeviceTypes", [])
-                      if d["identifier"] in phones]
-        if compatible:
-            device = min(compatible, key=lambda d: (d["name"] != "iPhone 17", d["name"]))
-            return runtime["identifier"], device["identifier"]
-    raise ValueError("no available iOS >=26 runtime with an advertised compatible iPhone")
-
-
 def marker_command(marker=MARKER):
     # The complete closed witness must not appear in the command echo.
     escaped = "".join(f"\\{byte:03o}" for byte in ("[[" + marker + "]]\n").encode())
     return f"printf '{escaped}'"
-
-
-INPUT_GATE = "rune-input-gate.json"
-
-
-def input_gate_reason(documents):
-    """Name the probe's input gate when a shown terminal never took input."""
-    try:
-        gate = json.loads((documents / INPUT_GATE).read_text())
-    except (OSError, ValueError):
-        return ""
-    if isinstance(gate, dict) and gate.get("frame_shown") is True and gate.get("input_ready") is False:
-        return ("; a terminal frame was shown but input_ready never became true"
-                " (the shown terminal's attach_terminal was never acknowledged)")
-    return ""
-
-
-def server_environment(scratch):
-    home = scratch / "home"
-    home.mkdir()
-    config = scratch / "config"
-    config.mkdir()
-    prefs = scratch / "prefs"
-    prefs.mkdir()
-    return {"HOME": str(home), "XDG_CONFIG_HOME": str(config),
-            "XDG_DATA_HOME": str(scratch / "data"), "XDG_STATE_HOME": str(scratch / "state"),
-            "PATH": "/usr/bin:/bin", "SHELL": "/bin/sh", "TERM": "xterm-256color",
-            "TMPDIR": str(scratch), "PHUX_PROFILE": "rune-ios-qualification",
-            "PHUX_WS_SECURE": "1",
-            "RUNE_PREFS_DIR": str(prefs)}
 
 
 class Qualification:
@@ -362,46 +321,6 @@ class Qualification:
     failure_screenshot = _trace.failure_screenshot
     cleanup = _trace.cleanup
     cleanup_simulator = _trace.cleanup_simulator
-
-
-def input_order_lines(transport, text):
-    """The probe's input_ready row, then the first InputKey send after it."""
-    ready = None
-    injected = None
-    for line in text.splitlines():
-        if not line.strip():
-            continue
-        try:
-            row = _trace.diagnostic_row(line)
-        except ValueError:
-            return []
-        if ready is None:
-            if row["phase"] == "input_ready":
-                ready = row
-            continue
-        if row["phase"] != "input_injected":
-            continue
-        if (row["connection"], row["attempt"]) != (ready["connection"], ready["attempt"]):
-            continue
-        if row["elapsed_ms"] < ready["elapsed_ms"]:
-            continue
-        injected = row
-        break
-    if ready is None or injected is None:
-        return []
-
-    def stamped(row, label):
-        return (f"{transport}: {label} elapsed_ms={row['elapsed_ms']} "
-                f"process_elapsed_ms={row['process_elapsed_ms']}")
-    return [
-        stamped(ready, "input_ready input_ready:true"),
-        stamped(injected, "input_injected InputKey"),
-    ]
-
-
-def print_input_order_lines(transport, text):
-    for line in input_order_lines(transport, text):
-        print(line, flush=True)
 
 
 def qualify(app, phux, out, transport="quic"):

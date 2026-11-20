@@ -63,6 +63,7 @@ mod geometry;
 mod global_metadata;
 mod input;
 mod input_delivery;
+mod input_trace;
 mod kernel;
 pub mod keys;
 mod lifecycle;
