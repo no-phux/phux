@@ -262,7 +262,8 @@ async fn forwarded_input_mouse_scales_cells_to_surface_pixels() {
 }
 
 /// Pane 2 titled "two", dragged by its title in the rail: released on pane
-/// 1 it becomes a tab of pane 1's slot, and focus follows to pane 1.
+/// 1 it becomes a tab of pane 1's slot, and focus follows to pane 1. Untitled,
+/// it is dragged by the same cells.
 #[tokio::test]
 async fn a_pane_dragged_by_its_title_onto_another_joins_its_slot() {
     let title = mouse(
@@ -299,6 +300,12 @@ async fn a_pane_dragged_by_its_title_onto_another_joins_its_slot() {
     env.dispatch(vec![title.clone(), over_pane_2(MouseAction::Release, MouseButton::Left)])
         .await;
     assert!(env.fx.workspace.slots.is_empty());
+
+    // An untitled pane is dragged by the start of its rule.
+    let mut env = titled(true);
+    env.panes.get_mut(&tid(2)).expect("slot").last_title.clear();
+    env.dispatch(vec![title.clone(), drop_on_pane_1.clone()]).await;
+    assert_eq!(env.fx.workspace.slot_of(&tid(2)).expect("a slot").strip, [tid(1), tid(2)]);
 
     // A server that would drop the tabs gets no drag.
     let mut env = titled(false);
