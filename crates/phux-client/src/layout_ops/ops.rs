@@ -140,18 +140,13 @@ impl<'a> LayoutOps<'a> {
         document: &ArrangementDoc,
     ) -> Result<Option<ArrangementDoc>, LayoutOpsError> {
         let wire = crate::layout::wire::to_protocol(document, &read.handles, &read.binding)?;
-        let command = Command::ArrangementReplace {
-            operation: org::mint_operation(),
-            arrangement: read.key,
-            expected: read.revision,
-            document: wire,
-            // An older server would drop tabs written to it; one that knows
-            // them keeps the document's tabs as written.
-            slot_tabs: self
-                .conn
-                .server_features_ext()
-                .contains(phux_protocol::caps::ServerFeatureExt::SlotTabs),
-        };
+        let command = Command::replace_arrangement(
+            org::mint_operation(),
+            read.key,
+            read.revision,
+            wire,
+            self.conn.server_features_ext(),
+        );
         debug!(
             arrangement = %read.key,
             expected = read.revision.get(),

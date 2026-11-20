@@ -3,35 +3,7 @@
 use super::{ServerFeatureExt, ServerFeatureExtSet};
 
 impl ServerFeatureExtSet {
-    const KNOWN: u32 = ServerFeatureExt::PathQuery as u32
-        | ServerFeatureExt::ResizeCellPx as u32
-        | ServerFeatureExt::CommittedTeardown as u32
-        | ServerFeatureExt::AgentStreamResume as u32
-        | ServerFeatureExt::Organization as u32
-        | ServerFeatureExt::SessionKill as u32
-        | ServerFeatureExt::NativeAgent as u32
-        | ServerFeatureExt::PerfControl as u32
-        | ServerFeatureExt::SessionProject as u32
-        | ServerFeatureExt::FileDownload as u32
-        | ServerFeatureExt::Checkout as u32
-        | ServerFeatureExt::NativeAgentLaunch as u32
-        | ServerFeatureExt::HostServiceHttp as u32
-        | ServerFeatureExt::CreatePlacement as u32
-        | ServerFeatureExt::ApiDescription as u32
-        | ServerFeatureExt::AccessibilityTree as u32
-        | ServerFeatureExt::PixelSurface as u32
-        | ServerFeatureExt::TypedDocument as u32
-        | ServerFeatureExt::Mirrors as u32
-        | ServerFeatureExt::PrivacyStatus as u32
-        | ServerFeatureExt::DurableResourceInspection as u32
-        | ServerFeatureExt::TabLock as u32
-        | ServerFeatureExt::ClipboardRead as u32
-        | ServerFeatureExt::HostChecklist as u32
-        | ServerFeatureExt::Credentials as u32
-        | ServerFeatureExt::ForwardTcp as u32
-        | ServerFeatureExt::ForwardAgent as u32
-        | ServerFeatureExt::SlotTabs as u32
-        | ServerFeatureExt::CurrentQuestions as u32;
+    const KNOWN: u32 = Self::with(ServerFeatureExt::ALL).0;
 
     /// Known extended features in this set, in bit order.
     pub fn iter(self) -> impl Iterator<Item = ServerFeatureExt> {

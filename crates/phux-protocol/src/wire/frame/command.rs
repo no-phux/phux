@@ -1,6 +1,7 @@
 //! Control-plane command, result, and agent-event types — SPEC §5
 //! (ADR-0021) and SPEC §7.5 (ADR-0022).
 
+use crate::caps::{ServerFeatureExt, ServerFeatureExtSet};
 use crate::ids::{
     ArrangementKey, FileUploadId, GroupId, InputOperationId, OperationId, ResourceId, ResourceKey,
     ResourceKind, Revision, SessionKey,
@@ -104,6 +105,28 @@ impl Command {
             terminal_id: resource_id,
             role_policy,
             agent_after_seq: after_seq,
+        }
+    }
+
+    /// Replace an arrangement from a client that supplies its slot tabs.
+    ///
+    /// Advertised slot-tab support makes the supplied tabs authoritative,
+    /// including an empty list. Without the capability, the command leaves
+    /// the slot-tab flag unset.
+    #[must_use]
+    pub const fn replace_arrangement(
+        operation: OperationId,
+        arrangement: ArrangementKey,
+        expected: Revision,
+        document: ArrangementDoc,
+        features: ServerFeatureExtSet,
+    ) -> Self {
+        Self::ArrangementReplace {
+            operation,
+            arrangement,
+            expected,
+            document,
+            slot_tabs: features.contains(ServerFeatureExt::SlotTabs),
         }
     }
 
