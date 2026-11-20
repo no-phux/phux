@@ -168,3 +168,79 @@ fn ungrouped_satellite_panes_keep_their_owning_host_visible() {
             .any(|e| e.text.as_deref() == Some("build-box"))
     );
 }
+
+#[test]
+fn connections_names_the_destination_and_keeps_long_context_inside_its_button() {
+    for width in [320.0, 393.0] {
+        for machine in [
+            "Build studio",
+            "build-studio-integration-runner",
+            "開発コンピュータ",
+        ] {
+            let (_, mut rt) = fixture();
+            rt.set_viewport((width, 568.0), 2.0);
+            rt.update(|d, _| {
+                d.machines.current = Some(machine.into());
+                d.connection.status = phux_client_runtime::control::Status::Closed;
+                d.open_phone_sessions();
+            });
+            settle(&mut rt);
+            let button = element(&rt, "phone-session-connections");
+            assert_eq!(
+                button.label.as_deref(),
+                Some(format!("Connections · {machine} · not connected").as_str())
+            );
+            assert!(button.rect[2] >= 44.0 && button.visible[3] >= 44.0);
+            for key in ["phone-connections-title", "phone-connections-detail"] {
+                let child = element(&rt, key);
+                assert!(child.rect[0] >= button.rect[0], "{key}: {child:?}");
+                assert!(child.rect[0] + child.rect[2] <= button.rect[0] + button.rect[2]);
+                assert!(child.rect[1] >= button.rect[1]);
+                assert!(child.rect[1] + child.rect[3] <= button.rect[1] + button.rect[3]);
+            }
+            assert_eq!(
+                element(&rt, "phone-connections-title").text.as_deref(),
+                Some("Connections")
+            );
+            assert_eq!(
+                element(&rt, "phone-connections-detail").text.as_deref(),
+                Some(format!("{machine} · not connected").as_str())
+            );
+        }
+    }
+}
+
+#[test]
+fn large_connections_and_search_scroll_without_covering_the_last_action() {
+    for (width, height) in [(320.0, 478.0), (393.0, 759.0)] {
+        let (_, mut rt) = fixture();
+        detailed_inventory(&mut rt);
+        rt.set_viewport((width, height), 2.0);
+        rt.update(|d, _| {
+            d.native = Some(crate::mobile::Platform::test());
+            d.machines.current = Some("Build studio".into());
+            d.set_accessibility(false, "UICTContentSizeCategoryAccessibilityXXXL");
+            d.open_phone_sessions();
+        });
+        settle(&mut rt);
+        let connections = element(&rt, "phone-session-connections").rect;
+        let list = element(&rt, "phone-session-list").rect;
+        let search = element(&rt, "phone-session-query").rect;
+        assert!(connections[1] >= list[1]);
+        assert!(list[3] >= connections[3], "{list:?} vs {connections:?}");
+        rt.update(|_, tx| tx.scroll_to_instant("phone-session-list", 0.0, 100_000.0));
+        rt.settle_all();
+        settle(&mut rt);
+        assert!(element(&rt, "phone-session-connections").rect[1] < connections[1] - 44.0);
+        assert!(element(&rt, "phone-session-query").rect[1] < search[1] - 44.0);
+        let last = element(&rt, "phone-session-new");
+        assert!(last.rect[1] >= list[1], "{last:?} vs {list:?}");
+        assert!(last.rect[1] + last.rect[3] <= list[1] + list[3]);
+        assert!(last.visible[3] >= last.rect[3] - 0.5, "{last:?}");
+        let label = element(&rt, "phone-session-new-label");
+        assert!(label.rect[0] >= last.rect[0]);
+        assert!(label.rect[0] + label.rect[2] <= last.rect[0] + last.rect[2]);
+        assert!(label.rect[1] >= last.rect[1]);
+        assert!(label.rect[1] + label.rect[3] <= last.rect[1] + last.rect[3]);
+    }
+}

@@ -46,6 +46,15 @@ fn phone_connections_visual_review_frames() {
                     (size.0 * scale, size.1 * scale),
                     &name,
                 );
+                rt.update(|_, tx| tx.scroll_to_instant("phone-session-list", 0.0, 100_000.0));
+                settle_for_snapshot(&mut rt);
+                paint(
+                    &gpu,
+                    &mut renderer,
+                    &mut rt,
+                    (size.0 * scale, size.1 * scale),
+                    &format!("{name}-bottom"),
+                );
                 // Keep the exact same fixture on the baseline: this captures
                 // reading composition, not an implementation-specific golden.
                 if !largest {

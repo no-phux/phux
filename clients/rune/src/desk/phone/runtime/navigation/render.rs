@@ -338,7 +338,8 @@ fn the_phone_paints_the_design_fixture() {
                 .iter()
                 .filter(|i| i.params[1] == rune::render::KIND_BACKDROP_BLUR)
                 .count();
-            let glass = matches!(mode, "standard" | "largest-text");
+            // Large text uses an inline action, not glass over the list.
+            let glass = mode == "standard";
             assert_eq!(blurs, usize::from(glass), "{name}: the dock's glass");
             paint(
                 &gpu,
@@ -347,6 +348,20 @@ fn the_phone_paints_the_design_fixture() {
                 (393, 852),
                 &format!("{name}-sessions"),
             );
+            if mode == "largest-text" {
+                rt.update(|_, tx| tx.scroll_to_instant("phone-session-list", 0.0, 100_000.0));
+                settle_for_snapshot(&mut rt);
+                let button = crate::ui::element(&rt, "phone-session-new");
+                assert!(button.visible[3] >= button.rect[3] - 0.5, "{button:?}");
+                assert_eq!(crate::ui::glass_panels(&rt), 0, "inline, not a blur");
+                paint(
+                    &gpu,
+                    &mut renderer,
+                    &mut rt,
+                    (393, 852),
+                    &format!("{name}-sessions-bottom"),
+                );
+            }
         }
     }
 }
