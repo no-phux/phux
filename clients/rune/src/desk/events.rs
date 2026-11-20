@@ -120,6 +120,15 @@ impl Desk {
                 self.popup_ended(client, &terminal_id, false)
                     | self.resource_closed(client, &terminal_id, exit_status)
             }
+            Event::TerminalsClosed {
+                error: Some(error), ..
+            } => {
+                self.say(
+                    NoticeKind::Error,
+                    format!("Some close requests could not be confirmed. {error}"),
+                );
+                true
+            }
             Event::OrganizationOperation { operation, outcome } => {
                 self.quick_move_outcome(client, operation, &outcome)
                     | self.sidebar_move_outcome(client, operation, &outcome)

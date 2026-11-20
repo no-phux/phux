@@ -8,6 +8,7 @@ pub(super) use outbound::OutboundFrame;
 use super::subscriptions::{KindPolicy, Origin, RIDES_SHARED_PUMP, STREAMED};
 use std::collections::HashSet;
 
+use phux_protocol::caps::ServerFeature;
 use phux_protocol::wire::frame::InputMode;
 
 use super::{
@@ -355,16 +356,21 @@ impl ControlPlane {
         request_id
     }
 
-    /// Close a batch of terminals. Against a server that advertises
-    /// `ORGANIZATION`, each is terminated (`RESOURCE_TERMINATE`), leaving
-    /// membership and arrangement to the server; otherwise one atomic
-    /// `CLOSE_TAB_RESOURCES`. `None` before the handshake. The reply is
-    /// [`Event::TerminalsClosed`].
+    /// Request each terminal's graceful termination on an organization peer.
+    /// Per-resource outcomes may differ. Older peers receive the advertised
+    /// `CLOSE_TAB_RESOURCES` command, which preserves keep-empty sessions.
+    /// `None` means no request was queued. Otherwise [`Event::TerminalsClosed`]
+    /// reports the requests' outcomes, and lifecycle events report effects.
     pub fn close_terminals(&mut self, ids: Vec<ResourceId>) -> Option<u32> {
-        if let Some(request_id) = self.close_terminals_by_record(&ids) {
-            return Some(request_id);
+        if !self.handshake_ready || ids.is_empty() {
+            return None;
         }
-        self.server.as_ref()?;
+        if self.organization_supported() {
+            return self.close_terminals_by_record(&ids);
+        }
+        if !self.server.as_ref()?.has(ServerFeature::CloseTabResources) {
+            return None;
+        }
         let request_id = self.next_request_id();
         self.pending.insert(request_id, Pending::Close);
         self.queue_frame(&FrameKind::Command {

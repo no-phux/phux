@@ -251,19 +251,23 @@ async fn killing_on_an_organization_server_terminates_the_current_activation() {
         running(ResourceKey::new([2; 16]).unwrap(), key, target.clone(), 3),
     ]);
     let terminate = session.on_frame(organization_page(request_id, page));
-    let request_id = match decode_one(&terminate.send[0]) {
+    let (request_id, operation) = match decode_one(&terminate.send[0]) {
         FrameKind::Command {
             request_id,
-            command: Command::ResourceTerminate { target: live, .. },
+            command:
+                Command::ResourceTerminate {
+                    operation,
+                    target: live,
+                    ..
+                },
         } => {
             assert_eq!(live.resource, target);
             assert_eq!(live.instance, ServerInstance::new([7; 16]));
             assert_eq!(live.activation, ActivationId::new(3));
-            request_id
+            (request_id, operation)
         }
         other => panic!("expected RESOURCE_TERMINATE, got {other:?}"),
     };
-    let operation = phux_protocol::ids::OperationId::new([5; 16]).unwrap();
     session.on_frame(reply(request_id, CommandResult::Accepted { operation }));
     assert!(session.pane_pending(), "the pane stays until it closes");
     assert_eq!(session.pane_rects().len(), 2);
@@ -273,29 +277,102 @@ async fn killing_on_an_organization_server_terminates_the_current_activation() {
 }
 
 #[wasm_bindgen_test]
-async fn an_unlisted_kill_target_falls_back_and_a_refusal_keeps_the_pane() {
+async fn an_unlisted_kill_target_is_reported_without_a_legacy_kill() {
     let key = session_key(4);
-    let (mut session, target, request_id) = killing_second(key).await;
-    // A page set that does not list the target falls back to KILL_RESOURCE.
-    let fallback = session.on_frame(organization_page(request_id, empty_page()));
-    let request_id = match decode_one(&fallback.send[0]) {
-        FrameKind::Command {
-            request_id,
-            command: Command::KillResource { terminal_id, .. },
-        } => {
-            assert_eq!(terminal_id, target);
-            request_id
-        }
-        other => panic!("expected the legacy kill, got {other:?}"),
-    };
-    session.on_frame(command_err(
-        request_id,
-        ErrorCode::InvalidCommand,
-        "not permitted",
-    ));
+    let (mut session, _, request_id) = killing_second(key).await;
+    let unavailable = session.on_frame(organization_page(request_id, empty_page()));
+    assert!(unavailable.send.is_empty());
+    assert!(unavailable.panes);
     assert!(!session.pane_pending());
     assert_eq!(session.pane_rects().len(), 2);
-    assert!(session.pane_error().unwrap().contains("not permitted"));
+    assert!(session.pane_error().unwrap().contains("live activation"));
+}
+
+#[wasm_bindgen_test]
+async fn close_checks_session_identity_across_inventory_pages() {
+    let key = session_key(4);
+    let (mut session, target, request_id) = killing_second(key).await;
+    let first_page = empty_page()
+        .with_resources(vec![running(
+            ResourceKey::new([3; 16]).unwrap(),
+            session_key(5),
+            target.clone(),
+            3,
+        )])
+        .with_next_cursor(Some(vec![7]));
+    let read = session.on_frame(organization_page(request_id, first_page));
+    match decode_one(&read.send[0]) {
+        FrameKind::Command {
+            request_id,
+            command: Command::GetOrganization { cursor, .. },
+        } => {
+            assert_eq!(cursor, Some(vec![7]));
+            let second_page = empty_page().with_resources(vec![running(
+                ResourceKey::new([2; 16]).unwrap(),
+                key,
+                target.clone(),
+                4,
+            )]);
+            let close = session.on_frame(organization_page(request_id, second_page));
+            assert!(matches!(
+                decode_one(&close.send[0]),
+                FrameKind::Command {
+                    command: Command::ResourceTerminate { target: live, .. }, ..
+                } if live.resource == target && live.activation == ActivationId::new(4)
+            ));
+        }
+        other => panic!("expected the next inventory page, got {other:?}"),
+    }
+}
+
+#[wasm_bindgen_test]
+async fn an_organization_peer_with_no_session_key_cannot_kill_by_handle() {
+    let mut session = ready_session(
+        hello_with(organization_caps()),
+        vec![SessionInfo::new(SessionId::new(1), "unresolved")],
+        vec![ResourceId::local(101), ResourceId::local(102)],
+    )
+    .await;
+    session.focus_pane(&ResourceId::local(102)).unwrap();
+    let error = session.kill_pane_frame().unwrap_err();
+    assert!(error.contains("identifies its session"), "{error}");
+    assert!(!session.pane_pending());
+    assert_eq!(session.pane_rects().len(), 2);
+}
+
+#[wasm_bindgen_test]
+async fn a_close_remains_unknown_after_an_unreadable_reply_or_disconnect() {
+    for result in [
+        Some(CommandResult::error(
+            ErrorCode::Unknown(0),
+            "unreadable close reply",
+        )),
+        Some(CommandResult::Ok),
+        Some(CommandResult::Accepted {
+            operation: phux_protocol::ids::OperationId::new([5; 16]).unwrap(),
+        }),
+        None,
+    ] {
+        let key = session_key(4);
+        let (mut session, target, request_id) = killing_second(key).await;
+        let page = empty_page().with_resources(vec![running(
+            ResourceKey::new([2; 16]).unwrap(),
+            key,
+            target,
+            3,
+        )]);
+        let terminate = session.on_frame(organization_page(request_id, page));
+        let request_id = command_id(&terminate.send[0]);
+        if let Some(result) = result {
+            let outcome = session.on_frame(reply(request_id, result));
+            assert!(outcome.send.is_empty());
+        } else {
+            session.fail_protocol("disconnected");
+        }
+        assert!(!session.pane_pending());
+        assert_eq!(session.pane_rects().len(), 2);
+        assert!(session.pane_error().unwrap().contains("outcome is unknown"));
+    }
 }
 
 #[wasm_bindgen_test]

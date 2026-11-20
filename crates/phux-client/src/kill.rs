@@ -132,8 +132,9 @@ fn merged_kill_failures(document: &str) -> Option<Vec<String>> {
     )
 }
 
-/// Kill every Terminal in `ids` in one atomic round trip (a whole-session
-/// target), with any interleaved notices as the [`Degradation`].
+/// Request a batch kill (for example a whole-session target). The server
+/// closes each host's subset separately. Interleaved notices supply the
+/// [`Degradation`]. A keyed request reports per-id outcomes.
 ///
 /// # Errors
 ///

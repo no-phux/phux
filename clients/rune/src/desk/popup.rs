@@ -180,7 +180,7 @@ impl Desk {
             }
             // Dismissed while it was starting.
             (Some(id), false) => {
-                let _ = client.close_terminals(vec![id.clone()]);
+                self.report_close_submission(client.close_terminals(vec![id.clone()]));
             }
             (None, up) => {
                 self.connection.popup = Popup::default();
@@ -241,7 +241,7 @@ impl Desk {
                 let _ = client.destroy_view(view);
             }
             if kill {
-                let _ = client.close_terminals(vec![id.clone()]);
+                self.report_close_submission(client.close_terminals(vec![id.clone()]));
             }
             self.connection.fitted.remove(&id);
             self.connection.areas.remove(&id);

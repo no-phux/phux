@@ -97,10 +97,9 @@ pub enum WireEvent {
         terminal_id: String,
         error: Option<String>,
     },
-    /// The server answered one of OUR `close_terminals` batches
-    /// (`CLOSE_TAB_RESOURCES`, correlated by the `request_id` it returned).
-    /// `error` is `None` when every pane closed; the batch is all or
-    /// nothing. Each pane's own `TerminalClosed` follows.
+    /// A `close_terminals` request settled, correlated by the id it returned.
+    /// An error can include refused, unsent, or unknown requests even if
+    /// other panes' requests were accepted. `PaneClosed` reports actual close.
     TerminalsClosed {
         request_id: u32,
         error: Option<String>,

@@ -331,9 +331,7 @@ impl Desk {
                     .into_iter()
                     .filter(|id| !self.is_document(id))
                     .collect();
-                if let Some(client) = &self.connection.client {
-                    let _ = client.close_terminals(terminals);
-                }
+                self.request_terminal_close(terminals);
             }
             Some(Pending::CloseSession(key, _)) => {
                 if let Some(client) = &self.connection.client

@@ -616,8 +616,7 @@ impl Client {
             .with(|control| control.release_input(terminal_id))
     }
 
-    /// Close a batch of terminals atomically; `None` when the server does
-    /// not support it.
+    /// Request closes via [`ControlPlane::close_terminals`].
     #[must_use]
     pub fn close_terminals(&self, ids: Vec<ResourceId>) -> Option<u32> {
         self.inner.with(|control| control.close_terminals(ids))

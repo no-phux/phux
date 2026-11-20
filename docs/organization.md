@@ -94,6 +94,28 @@ fences are concurrency/authority checks, not optional UI bookkeeping. The
 legacy TUI layout metadata adapter translates into this model; it does not
 supplant it.
 
+## Close intents
+
+Closing a view changes client presentation.
+
+| Request | Target and effect | Reply |
+| --- | --- | --- |
+| `KILL_RESOURCE` | Live handle and bound descendants. Session lifetime governs emptied sessions. | Close committed by the serving host. |
+| `KILL_RESOURCES` | Host-local groups. Naming all members can delete a persistent session. | Keyed replies report each id. Unkeyed skips and relay failures appear in server logs. |
+| `CLOSE_TAB_RESOURCES` | Host-local groups. Preserves keep-empty sessions. Requires its feature bit. | Skips missing locals and forwards satellite groups without waiting. |
+| `RESOURCE_TERMINATE` | Handle, instance, and activation on an organization peer. | Matching `Accepted` confirms admission. Lifecycle events report effects. Each request settles separately. |
+
+`KILL_RESOURCE_IF` checks allocation instance and use for delayed cleanup.
+`SESSION_KILL` ends the session and overrides tab locks. See
+[retry and incarnation rules](./protocol.md#receipts-retries-and-backpressure).
+
+Native `close_terminals` and browser `kill_pane` use graceful terminate on
+organization peers after verifying activation. Missing identity makes close
+unavailable or refused. On older peers, `close_terminals` requires advertised
+keep-empty support and the browser uses single kill. Native `kill_terminal`
+explicitly uses single kill. Lost or unreadable replies can leave outcomes
+unknown. Reconcile from the serving host's state and receipts.
+
 ## Complete creation intentions
 
 The [public terminal workflow](./public-api.md) commits membership, a stable

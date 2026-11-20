@@ -150,6 +150,13 @@ takeover is spent once, not repeated automatically on reconnect. Geometry
 comes from authoritative frames; the designated size-owning view sends
 resize intent, while observers do not create resize feedback loops.
 
+`close_terminals` requires a current handshake and, on an organization
+peer, a live organization snapshot. It returns a request id or reports
+unavailability (`None` in Rust, `0` in UniFFI). `TerminalsClosed` settles
+the requests. Errors can include refused, unsent, or unknown members
+after other requests were accepted. Observe pane lifecycle events for
+actual closure. See [close intents](./organization.md#close-intents).
+
 A listener is a coalesced wake, not an event payload. Drain then invalidate
 only affected views. Driver notifications run on the runtime thread;
 registration (`set_listener`) and explicit `wake`/`close` can invoke the

@@ -104,7 +104,21 @@ impl OrgOutcome {
         }
     }
 
-    /// Whether the operation is known to have taken effect.
+    /// Classify a terminate reply against the exact submitted operation.
+    /// Acceptance confirms admission. The resource's lifecycle reports the
+    /// process outcome.
+    #[must_use]
+    pub fn from_terminate_reply(expected: OperationId, result: &CommandResult) -> Self {
+        match result {
+            CommandResult::Accepted { operation } if *operation == expected => Self::Accepted,
+            CommandResult::Refused(_) | CommandResult::Error { .. } => Self::from_result(result),
+            _ => Self::Unknown {
+                reason: "the reply did not acknowledge this terminate operation".to_owned(),
+            },
+        }
+    }
+
+    /// Whether the reply reports a value, commit, or acceptance.
     #[must_use]
     pub const fn succeeded(&self) -> bool {
         matches!(self, Self::Committed(_) | Self::Accepted | Self::Value(_))
@@ -344,9 +358,15 @@ impl OrgJournal {
             .iter()
             .position(|op| op.in_flight == Some(request_id))?;
         let op = self.ops.remove(position)?;
+        let outcome = match &op.command {
+            Command::ResourceTerminate { .. } => {
+                OrgOutcome::from_terminate_reply(op.operation, result)
+            }
+            _ => OrgOutcome::from_result(result),
+        };
         Some(OrgReport {
             operation: op.operation,
-            outcome: OrgOutcome::from_result(result),
+            outcome,
         })
     }
 
