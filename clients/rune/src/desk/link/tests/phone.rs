@@ -35,7 +35,8 @@ fn failed(error: &str) -> Desk {
 }
 
 fn drawn(desk: Desk, size: (f32, f32)) -> rune::Runtime<Desk> {
-    let mut rt = rune::Runtime::new(desk, crate::ui::view, size, rune::Env::new(true, 2.0));
+    let mut rt =
+        crate::test_support::runtime(desk, crate::ui::view, size, rune::Env::new(true, 2.0));
     rt.frame(0.0);
     rt
 }
@@ -98,65 +99,80 @@ fn the_phone_reads_failures_without_transport_text_or_commands() {
 
 #[test]
 fn the_phone_says_what_to_check_once_a_dial_runs_long() {
-    let mut desk = phone();
-    let hint = reach_hint("mini");
-    // No client at all is already a failure: say so from the start.
-    assert_eq!(desk.standing(), Standing::Unreachable(hint.clone()));
-    desk.connection.client = Some(embedded());
-    desk.connection.status = Status::Connecting;
-    assert_eq!(desk.standing(), Standing::Connecting(String::new()));
-    desk.link.down_since = Some(Instant::now() - Duration::from_secs(2));
-    assert_eq!(desk.standing(), Standing::Connecting(hint.clone()));
-    desk.connection.status = Status::Failed;
-    desk.connection.error = Some(UNANSWERED.to_owned());
-    assert_eq!(desk.standing(), Standing::Unreachable(hint));
-    // A desktop keeps the transport's words, and waits without any.
-    let mut desktop = stale(embedded());
-    assert_eq!(desktop.standing(), Standing::Connecting(String::new()));
-    desktop.connection.status = Status::Failed;
-    desktop.connection.error = Some(UNANSWERED.to_owned());
-    assert_eq!(
-        desktop.standing(),
-        Standing::Unreachable(UNANSWERED.to_owned())
+    crate::test_support::isolated_preferences(
+        "desk::link::tests::phone::the_phone_says_what_to_check_once_a_dial_runs_long",
+        || {
+            let mut desk = phone();
+            let hint = reach_hint("mini");
+            // No client at all is already a failure: say so from the start.
+            assert_eq!(desk.standing(), Standing::Unreachable(hint.clone()));
+            desk.connection.client = Some(embedded());
+            desk.connection.status = Status::Connecting;
+            assert_eq!(desk.standing(), Standing::Connecting(String::new()));
+            desk.link.down_since = Some(Instant::now() - Duration::from_secs(2));
+            assert_eq!(desk.standing(), Standing::Connecting(hint.clone()));
+            desk.connection.status = Status::Failed;
+            desk.connection.error = Some(UNANSWERED.to_owned());
+            assert_eq!(desk.standing(), Standing::Unreachable(hint));
+            // A desktop keeps the transport's words, and waits without any.
+            let mut desktop = stale(embedded());
+            assert_eq!(desktop.standing(), Standing::Connecting(String::new()));
+            desktop.connection.status = Status::Failed;
+            desktop.connection.error = Some(UNANSWERED.to_owned());
+            assert_eq!(
+                desktop.standing(),
+                Standing::Unreachable(UNANSWERED.to_owned())
+            );
+        },
     );
 }
 
 #[test]
 fn the_phones_banner_names_its_computer_and_keeps_the_servers_words() {
-    let mut desk = failed(UNANSWERED);
-    desk.connection.status = Status::Connecting;
-    desk.connection.error = None;
-    let keeps = "Your sessions keep running on mini.";
-    assert_eq!(desk.banner(), Some(Banner::Reconnecting(keeps.to_owned())));
-    desk.link.ended = Some("the server is shutting down".to_owned());
-    let said = Banner::Reconnecting("the server is shutting down".to_owned());
-    assert_eq!(desk.banner(), Some(said));
-    // A desktop's is unchanged.
-    let desktop = stale(embedded());
-    let keeps = "Your sessions keep running on the server.";
-    assert_eq!(
-        desktop.banner(),
-        Some(Banner::Reconnecting(keeps.to_owned()))
+    crate::test_support::isolated_preferences(
+        "desk::link::tests::phone::the_phones_banner_names_its_computer_and_keeps_the_servers_words",
+        || {
+            let mut desk = failed(UNANSWERED);
+            desk.connection.status = Status::Connecting;
+            desk.connection.error = None;
+            let keeps = "Your sessions keep running on mini.";
+            assert_eq!(desk.banner(), Some(Banner::Reconnecting(keeps.to_owned())));
+            desk.link.ended = Some("the server is shutting down".to_owned());
+            let said = Banner::Reconnecting("the server is shutting down".to_owned());
+            assert_eq!(desk.banner(), Some(said));
+            // A desktop's is unchanged.
+            let desktop = stale(embedded());
+            let keeps = "Your sessions keep running on the server.";
+            assert_eq!(
+                desktop.banner(),
+                Some(Banner::Reconnecting(keeps.to_owned()))
+            );
+        },
     );
 }
 
 #[test]
 fn a_refused_phone_is_offered_pairing_from_the_banner() {
-    let desk = failed(QUIC_REFUSED);
-    assert!(desk.stuck() && desk.unpaired());
-    let stuck = Banner::Stuck(Standing::Unreachable(UNPAIRED.to_owned()));
-    assert_eq!(desk.banner(), Some(stuck));
-    let mut rt = drawn(desk, PHONE);
-    assert!(rt.find("banner-retry").is_some());
-    assert!(rt.find("banner-update").is_none());
-    assert!(rt.accessibility_action("banner-pair", Action::Click, None));
-    rt.frame(0.0);
-    let native = rt.state.native.as_ref().expect("the phone app");
-    assert!(native.connection_requested, "pairing is the host's sheet");
-    // An unanswered dial keeps retrying on its own: nothing to pair.
-    let rt = drawn(failed(UNANSWERED), PHONE);
-    assert!(rt.find("banner-pair").is_none());
-    assert!(rt.find("banner-retry").is_some());
+    crate::test_support::isolated_preferences(
+        "desk::link::tests::phone::a_refused_phone_is_offered_pairing_from_the_banner",
+        || {
+            let desk = failed(QUIC_REFUSED);
+            assert!(desk.stuck() && desk.unpaired());
+            let stuck = Banner::Stuck(Standing::Unreachable(UNPAIRED.to_owned()));
+            assert_eq!(desk.banner(), Some(stuck));
+            let mut rt = drawn(desk, PHONE);
+            assert!(rt.find("banner-retry").is_some());
+            assert!(rt.find("banner-update").is_none());
+            assert!(rt.accessibility_action("banner-pair", Action::Click, None));
+            rt.frame(0.0);
+            let native = rt.state.native.as_ref().expect("the phone app");
+            assert!(native.connection_requested, "pairing is the host's sheet");
+            // An unanswered dial keeps retrying on its own: nothing to pair.
+            let rt = drawn(failed(UNANSWERED), PHONE);
+            assert!(rt.find("banner-pair").is_none());
+            assert!(rt.find("banner-retry").is_some());
+        },
+    );
 }
 
 #[test]
@@ -170,64 +186,74 @@ fn a_desktops_stuck_banner_is_unchanged() {
 
 #[test]
 fn the_phones_banner_clears_its_top_bar_and_takes_a_thumb() {
-    let mut rt = drawn(failed(QUIC_REFUSED), PHONE);
-    let (bar, _) = rt.presented("phone-top").expect("the top bar");
-    let (banner, _) = rt.presented("reconnect-banner").expect("the banner");
-    assert!(banner[1] >= bar[1] + bar[3], "{banner:?} under {bar:?}");
-    for key in ["banner-pair", "banner-retry"] {
-        let (button, _) = rt.presented(key).expect(key);
-        assert!(button[3] >= 44.0, "{key}: {button:?}");
-    }
-    // A held confirmation keeps the top of the stage; the banner goes under.
-    rt.update(|desk, _| desk.pending = Some(Pending::Close(ResourceId::local(1))));
-    for _ in 0..60 {
-        rt.frame(1.0 / 60.0);
-    }
-    let (confirm, _) = rt.presented("confirm-bar").expect("the confirmation");
-    let (banner, _) = rt.presented("reconnect-banner").expect("the banner");
-    assert!(
-        banner[1] >= confirm[1] + confirm[3],
-        "{banner:?} under {confirm:?}"
+    crate::test_support::isolated_preferences(
+        "desk::link::tests::phone::the_phones_banner_clears_its_top_bar_and_takes_a_thumb",
+        || {
+            let mut rt = drawn(failed(QUIC_REFUSED), PHONE);
+            let (bar, _) = rt.presented("phone-top").expect("the top bar");
+            let (banner, _) = rt.presented("reconnect-banner").expect("the banner");
+            assert!(banner[1] >= bar[1] + bar[3], "{banner:?} under {bar:?}");
+            for key in ["banner-pair", "banner-retry"] {
+                let (button, _) = rt.presented(key).expect(key);
+                assert!(button[3] >= 44.0, "{key}: {button:?}");
+            }
+            // A held confirmation keeps the top of the stage; the banner goes under.
+            rt.update(|desk, _| desk.pending = Some(Pending::Close(ResourceId::local(1))));
+            for _ in 0..60 {
+                rt.frame(1.0 / 60.0);
+            }
+            let (confirm, _) = rt.presented("confirm-bar").expect("the confirmation");
+            let (banner, _) = rt.presented("reconnect-banner").expect("the banner");
+            assert!(
+                banner[1] >= confirm[1] + confirm[3],
+                "{banner:?} under {confirm:?}"
+            );
+            for key in ["confirm-cancel", "confirm-ok"] {
+                let (button, _) = rt.presented(key).expect(key);
+                assert!(button[3] >= 44.0, "{key}: {button:?}");
+            }
+        },
     );
-    for key in ["confirm-cancel", "confirm-ok"] {
-        let (button, _) = rt.presented(key).expect(key);
-        assert!(button[3] >= 44.0, "{key}: {button:?}");
-    }
 }
 
 #[test]
 fn the_phones_placeholder_offers_what_can_help() {
-    let keys = |desk: Desk| {
-        let rt = drawn(desk, PHONE);
-        [
-            "placeholder-pair",
-            "placeholder-retry",
-            "placeholder-machines",
-        ]
-        .map(|key| rt.presented(key).map(|(rect, _)| rect[3]))
-    };
-    let unshown = |error: &str| {
-        let mut desk = failed(error);
-        desk.connection.shown = None;
-        desk
-    };
-    // Refused: pair again, which is also where its other computers are.
-    let [pair, retry, machines] = keys(unshown(QUIC_REFUSED));
-    assert!(pair.is_some_and(|h| h >= 44.0) && retry.is_some_and(|h| h >= 44.0));
-    assert_eq!(machines, None);
-    // Unanswered: try again, or go elsewhere.
-    let [pair, retry, machines] = keys(unshown(UNANSWERED));
-    assert!(pair.is_none() && retry.is_some() && machines.is_some_and(|h| h >= 44.0));
-    // Dialing says nothing at first, then offers a retry beside its hint.
-    let mut dialing = unshown(UNANSWERED);
-    dialing.connection.status = Status::Connecting;
-    dialing.connection.error = None;
-    dialing.link.down_since = None;
-    let [pair, retry, machines] = keys(dialing);
-    assert!(pair.is_none() && retry.is_none() && machines.is_some());
-    let mut slow = unshown(UNANSWERED);
-    slow.connection.status = Status::Connecting;
-    slow.connection.error = None;
-    let [_, retry, _] = keys(slow);
-    assert!(retry.is_some());
+    crate::test_support::isolated_preferences(
+        "desk::link::tests::phone::the_phones_placeholder_offers_what_can_help",
+        || {
+            let keys = |desk: Desk| {
+                let rt = drawn(desk, PHONE);
+                [
+                    "placeholder-pair",
+                    "placeholder-retry",
+                    "placeholder-machines",
+                ]
+                .map(|key| rt.presented(key).map(|(rect, _)| rect[3]))
+            };
+            let unshown = |error: &str| {
+                let mut desk = failed(error);
+                desk.connection.shown = None;
+                desk
+            };
+            // Refused: pair again, which is also where its other computers are.
+            let [pair, retry, machines] = keys(unshown(QUIC_REFUSED));
+            assert!(pair.is_some_and(|h| h >= 44.0) && retry.is_some_and(|h| h >= 44.0));
+            assert_eq!(machines, None);
+            // Unanswered: try again, or go elsewhere.
+            let [pair, retry, machines] = keys(unshown(UNANSWERED));
+            assert!(pair.is_none() && retry.is_some() && machines.is_some_and(|h| h >= 44.0));
+            // Dialing says nothing at first, then offers a retry beside its hint.
+            let mut dialing = unshown(UNANSWERED);
+            dialing.connection.status = Status::Connecting;
+            dialing.connection.error = None;
+            dialing.link.down_since = None;
+            let [pair, retry, machines] = keys(dialing);
+            assert!(pair.is_none() && retry.is_none() && machines.is_some());
+            let mut slow = unshown(UNANSWERED);
+            slow.connection.status = Status::Connecting;
+            slow.connection.error = None;
+            let [_, retry, _] = keys(slow);
+            assert!(retry.is_some());
+        },
+    );
 }

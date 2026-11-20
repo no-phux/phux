@@ -360,7 +360,6 @@ mod tests {
             "/private/tmp/opencode/phux-fleet-{}-absent.sock",
             std::process::id()
         )));
-        desk.prefs = rune::prefs::Prefs::memory();
         desk.machines.current = Some("remote".to_owned());
         let mut activities = Activities::default();
         declared(&mut activities, 1);

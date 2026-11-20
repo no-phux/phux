@@ -2,7 +2,6 @@
 
 use phux_client_runtime::Client;
 use phux_protocol::wire::frame::FrameKind;
-use rune::prefs::Prefs;
 use rune::{Runtime, TouchPhase};
 
 use super::*;
@@ -14,7 +13,6 @@ mod sheets;
 fn fixture() -> (std::sync::Arc<Client>, Runtime<Desk>) {
     let (client, mut rt) = crate::test_support::input_fixture();
     rt.state.phone = Some(Phone::default());
-    rt.state.prefs = Prefs::memory();
     rt.set_viewport((393.0, 852.0), 2.0);
     (client, rt)
 }
@@ -41,7 +39,6 @@ fn a_tap_on_a_url_opens_it_and_a_drag_across_it_does_not() {
     let (_client, mut rt) =
         crate::test_support::input_fixture_showing("\x1b[2J\x1b[Hsee https://phux.sh/docs now");
     rt.state.phone = Some(Phone::default());
-    rt.state.prefs = Prefs::memory();
     rt.set_viewport((393.0, 852.0), 2.0);
     settle(&mut rt);
     let id = rt

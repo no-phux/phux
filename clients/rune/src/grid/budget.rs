@@ -130,9 +130,29 @@ fn fixture(cols: u16, rows: u16, terminals: u32) -> (Replica, Runtime<Panes>) {
         metrics: Metrics::new(DEFAULT_FONT_SIZE, SCALE),
         tick: 0,
     };
-    let mut runtime = Runtime::new(state, panes, SIZE, Env::new(true, SCALE));
+    let mut runtime = crate::test_support::runtime(state, panes, SIZE, Env::new(true, SCALE));
+    runtime.state.metrics =
+        rune::text::lend(&mut runtime.text, || Metrics::new(DEFAULT_FONT_SIZE, SCALE));
     runtime.frame(0.0);
     (replica, runtime)
+}
+
+#[test]
+fn fixture_metrics_match_the_runtime_font_advance() {
+    let _fonts = rune::text::with_families(super::FAMILIES.0, "Inter");
+    let (_, mut runtime) = fixture(80, 24, 1);
+    let style = runtime.state.metrics.style(false, false).tracking(0.0);
+    let natural = runtime
+        .text
+        .layout_rich("MMMMMMMMMM", &[], style, 1.0, None)
+        .full_width()
+        / 10.0;
+    let expected = (natural * SCALE).round().max(1.0) / SCALE;
+    assert!(natural > 0.0, "the runtime font shapes real advances");
+    assert_eq!(
+        runtime.state.metrics.cell_w, expected,
+        "cached metrics use the runtime's fonts, not the preceding family override"
+    );
 }
 
 fn draw(runtime: &mut Runtime<Panes>) {
@@ -229,7 +249,8 @@ fn window_phase() {
         resource: replica.terminal.clone(),
         view: Some(replica.views[0]),
     });
-    let mut runtime = Runtime::new(desk, crate::ui::view, SIZE, Env::new(true, SCALE));
+    let mut runtime =
+        crate::test_support::runtime(desk, crate::ui::view, SIZE, Env::new(true, SCALE));
     runtime.frame(0.0);
     replica.feed(scroll_line(rows, 9999));
     runtime.update(|desk, _| desk.generation += 1);

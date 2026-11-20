@@ -7,7 +7,6 @@ mod scroll_keys;
 #[test]
 fn find_clipboard_commands_cannot_escape_to_the_terminal() {
     let (client, mut rt) = crate::test_support::input_fixture();
-    rt.state.prefs = rune::prefs::Prefs::memory();
     let board = rune::clipboard::memory();
     board.set_text("clipboard sentinel");
     rt.use_clipboard(&board);
@@ -92,7 +91,6 @@ fn find_clipboard_commands_cannot_escape_to_the_terminal() {
 fn native_field_ink_follows_live_themes_in_both_forms() {
     for phone in [false, true] {
         let (_, mut rt) = crate::test_support::input_fixture();
-        rt.state.prefs = rune::prefs::Prefs::memory();
         rt.state.phone = phone.then(crate::desk::phone::Phone::default);
         rt.set_viewport(
             if phone {
@@ -170,7 +168,6 @@ fn native_field_ink_follows_live_themes_in_both_forms() {
 fn native_field_context_menu_edits_only_its_find_field_in_both_forms() {
     for phone in [false, true] {
         let (client, mut rt) = crate::test_support::input_fixture();
-        rt.state.prefs = rune::prefs::Prefs::memory();
         rt.state.phone = phone.then(crate::desk::phone::Phone::default);
         rt.set_viewport(
             if phone {

@@ -6,8 +6,7 @@ use super::*;
 use crate::launch::Resolved;
 
 fn desk(prefs: Prefs) -> Desk {
-    let mut desk = Desk::new(&Resolved::offline("onboarding"));
-    desk.prefs = prefs;
+    let mut desk = Desk::with_preferences(&Resolved::offline("onboarding"), None, prefs);
     desk.launch.aimed = false;
     desk
 }
@@ -133,7 +132,7 @@ fn a_grant_coming_through_moves_on_to_the_next() {
             .to_vec(),
         ..Permissions::default()
     };
-    let mut rt = rune::Runtime::new(
+    let mut rt = crate::test_support::runtime(
         desk(Prefs::memory()),
         crate::ui::view,
         (1100.0, 720.0),

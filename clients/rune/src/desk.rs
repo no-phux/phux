@@ -399,6 +399,9 @@ impl Desk {
     }
 }
 
+#[cfg(test)]
+mod preferences_tests;
+
 /// A topology of just `sessions` and `panes`.
 #[cfg(test)]
 pub fn topology(

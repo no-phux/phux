@@ -293,6 +293,7 @@ mod tests {
     #[test]
     fn symbols_the_chosen_font_lacks_fall_back_to_a_system_face() {
         use super::super::{FAMILIES, FONT_CHOICES, FONTS, mono_family};
+        let _fonts = rune::text::with_families(FAMILIES.0, FAMILIES.1);
         let style = Metrics::new(13.0, 2.0).style(false, false);
         for family in FONT_CHOICES {
             let mut ts = rune::text::TextSystem::new(FONTS, (FAMILIES.0, &mono_family(family)));

@@ -71,10 +71,10 @@ class VisualReview(unittest.TestCase):
 
     def test_bundle_has_all_families_hashes_and_honest_status(self):
         manifest = self.produce()
-        self.assertEqual(len(manifest["cases"]), 491)
+        self.assertEqual(len(manifest["cases"]), 635)
         self.assertEqual({family: sum(case["family"] == family for case in manifest["cases"])
                           for family in review.FAMILIES},
-                          {"inbox": 192, "settings": 82, "navigation": 216, "resources": 1})
+                          {"inbox": 192, "settings": 226, "navigation": 216, "resources": 1})
         case = next(case for case in manifest["cases"] if case["png"] == self.subject)
         self.assertEqual(case["physical"], [320, 568])
         self.assertEqual(case["logical"], [320, 568])
@@ -103,6 +103,8 @@ class VisualReview(unittest.TestCase):
                          "settings_native_render_frames")
         self.assertEqual(review.exporter_for("settings", "size-small-dark-ax5-text-bigger-1x"),
                          "settings_size_visual_review_frames")
+        self.assertEqual(review.exporter_for("settings", "theme-native-small-light-ax5-revealed-2x"),
+                         "settings_theme_visual_review_frames")
         self.assertEqual(review.exporter_for("navigation", "inventory-light-393"),
                          "session_browser_renders_realistic_dark_light_and_search_states")
         self.assertEqual(review.exporter_for("resources", "mixed"),
@@ -135,6 +137,11 @@ class VisualReview(unittest.TestCase):
             "inbox/desktop-refused-light-640x360-1x.png",
             "settings/small-typed-search.png",
             "settings/small-no-match.png",
+            "settings/theme-phone-light-ax5-heading-1x.png",
+            "settings/theme-native-small-dark-ax5-heading-2x.png",
+            "settings/theme-small-light-standard-search-1x.png",
+            "settings/theme-native-light-ax5-chooser-2x.png",
+            "settings/theme-desktop-min-dark-ax5-cancelled-1x.png",
             "navigation/matching-light-320.png",
             "navigation/retina-2x-native-true-640.png",
             "navigation/header-quiet-light-native-false-1x-320.png",
@@ -322,7 +329,7 @@ class VisualReview(unittest.TestCase):
         repo = self.root / "repo"
         scripts = repo / "clients/rune/scripts"
         scripts.mkdir(parents=True)
-        for name in ("visual-review.sh", "visual_review.py", "visual_motion.py"):
+        for name in ("visual-review.sh", "visual_review.py", "visual_motion.py", "visual_themes.py"):
             shutil.copyfile(Path(__file__).with_name(name), scripts / name)
         (scripts.parent / "Cargo.toml").write_text('rune = { rev = "test-pin" }\n')
         for args in (["init", "-q"], ["add", "."],
@@ -336,19 +343,31 @@ class VisualReview(unittest.TestCase):
         cargo.write_text(f"#!{sys.executable}\n{fixture}")
         cargo.chmod(0o755)
         out = self.root / "fresh review"
+        private_seed = self.root / "inherited-private-prefs"
+        seed = private_seed / "sh.phux.rune/prefs.json"
+        seed.parent.mkdir(parents=True)
+        seed_bytes = b'{"font_size":15,"tour_offered":false}\n'
+        seed.write_bytes(seed_bytes)
         environment = {
             **os.environ, "PATH": str(binaries) + os.pathsep + os.environ["PATH"],
             "PHUX_SOCKET": "do-not-connect", "PHUX_WS_TOKENS": "do-not-use",
             "SIMCTL_CHILD_PHUX_PROFILE": "default",
+            "RUNE_PREFS_DIR": str(private_seed),
         }
         result = subprocess.run(["bash", str(scripts / "visual-review.sh"), str(out)],
                                 env=environment, cwd=self.root, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         manifest = json.loads((out / "manifest.json").read_text())
-        self.assertEqual(len(manifest["cases"]), 491)
+        self.assertEqual(len(manifest["cases"]), 635)
         self.assertEqual(manifest["currentRunePin"], "test-pin")
         self.assertFalse(manifest["dirty"])
-        self.assertEqual(len(list((out / "logs").glob("*.log"))), 11)
+        self.assertEqual(len(list((out / "logs").glob("*.log"))), 12)
+        self.assertEqual(seed.read_bytes(), seed_bytes)
+        self.assertEqual({path.relative_to(private_seed).as_posix(): path.read_bytes()
+                          for path in private_seed.rglob("*") if path.is_file()},
+                         {"sh.phux.rune/prefs.json": seed_bytes})
+        self.assertEqual(json.loads((out / "prefs/runner-fixture.json").read_text()),
+                         {"fixture": True})
 
 
 if __name__ == "__main__":

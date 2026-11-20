@@ -17,6 +17,7 @@ import subprocess
 from urllib.parse import quote
 
 from visual_motion import MOTION_FRAMES, pane_motion_inventory
+from visual_themes import theme_inventory
 
 
 FAMILIES = ("inbox", "settings", "navigation", "resources")
@@ -209,8 +210,9 @@ def settings_inventory():
             (("desktop", 1100, 720, 1), ("desktop-min", 640, 360, 1),
              ("phone", 393, 852, 1), ("small", 320, 568, 1),
              ("native", 393, 480, 2), ("native-small", 320, 340, 2)),
-            THEMES, ("standard", "ax5"), ("text-bigger", "interface-bigger"))
+             THEMES, ("standard", "ax5"), ("text-bigger", "interface-bigger"))
     })
+    cases.update(theme_inventory(THEMES))
     return cases
 
 
@@ -240,7 +242,7 @@ def navigation_inventory():
 
 
 def required_inventory():
-    """491 required cases: 192 Inbox, 82 Settings, 216 navigation, 1 resource.
+    """635 required cases: 192 Inbox, 226 Settings, 216 navigation, 1 resource.
 
     Values are (logical width, logical height, scale); additional cases are
     welcome, but cannot replace any maintained case.
@@ -268,6 +270,8 @@ def exporter_for(family, stem):
     if family == "settings":
         if stem.startswith("size-"):
             return "settings_size_visual_review_frames"
+        if stem.startswith("theme-"):
+            return "settings_theme_visual_review_frames"
         if "-appearance-" in stem:
             return "mobile_appearance_and_real_theme_palette_render_accept_and_cancel"
         return "settings_native_render_frames"

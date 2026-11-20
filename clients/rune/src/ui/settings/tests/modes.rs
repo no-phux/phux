@@ -38,7 +38,7 @@ fn window(size: (f32, f32), phone: bool, dark: bool, mode: Mode) -> Runtime<Desk
     if scale > 1.0 {
         desk.set_accessibility(false, "UICTContentSizeCategoryXXXL");
     }
-    let mut rt = Runtime::new(desk, crate::ui::view, size, Env::new(dark, 1.0));
+    let mut rt = crate::test_support::runtime(desk, crate::ui::view, size, Env::new(dark, 1.0));
     rt.on_key = Some(Desk::key);
     rt.set_srgb_blend(true);
     if matches!(mode, Mode::ContrastMore) {

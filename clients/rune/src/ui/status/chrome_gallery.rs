@@ -117,7 +117,7 @@ fn window(dark: bool) -> Runtime<Desk> {
         view: Some(replica.views[0]),
     });
     desk.pending = Some(Pending::Close(ResourceId::local(4)));
-    let mut rt = Runtime::new(desk, crate::ui::view, SIZE, Env::new(dark, scale()));
+    let mut rt = crate::test_support::runtime(desk, crate::ui::view, SIZE, Env::new(dark, scale()));
     rt.frame(0.0);
     rename(&mut rt, Words::En);
     rt.update(move |d, _| {

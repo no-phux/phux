@@ -221,48 +221,58 @@ fn mobile_never_infers_remote_trust_or_a_local_cli() {
 
 #[test]
 fn a_paired_name_is_what_the_window_says_and_never_what_it_dials() {
-    let named = |name: serde_json::Value| -> Configuration {
-        serde_json::from_value(json!({"endpoint": "quic://localhost:8788", "name": name}))
-            .expect("a configuration")
-    };
-    let target = named(json!("  Phil's Mac mini ")).target().unwrap();
-    assert_eq!(target.name, "Phil's Mac mini");
-    assert_eq!(target.transport, Transport::Quic("localhost:8788".into()));
-    let paired = state(named(json!("mini"))).unwrap();
-    assert_eq!(paired.machines.label(), "mini");
-    let native = paired.native.as_ref().unwrap();
-    assert_eq!(
-        native.target.transport,
-        Transport::Quic("localhost:8788".into())
+    crate::test_support::isolated_preferences(
+        "mobile::tests::a_paired_name_is_what_the_window_says_and_never_what_it_dials",
+        || {
+            let named = |name: serde_json::Value| -> Configuration {
+                serde_json::from_value(json!({"endpoint": "quic://localhost:8788", "name": name}))
+                    .expect("a configuration")
+            };
+            let target = named(json!("  Phil's Mac mini ")).target().unwrap();
+            assert_eq!(target.name, "Phil's Mac mini");
+            assert_eq!(target.transport, Transport::Quic("localhost:8788".into()));
+            let paired = state(named(json!("mini"))).unwrap();
+            assert_eq!(paired.machines.label(), "mini");
+            let native = paired.native.as_ref().unwrap();
+            assert_eq!(
+                native.target.transport,
+                Transport::Quic("localhost:8788".into())
+            );
+            // Nothing fit to show leaves the endpoint to speak for itself.
+            for unnamed in [json!(null), json!(""), json!("   "), json!("mini\nrm -rf")] {
+                assert_eq!(named(unnamed).target().unwrap().name, "localhost:8788");
+            }
+            // Settings saved before pairing carried a name still open.
+            let saved: Configuration =
+                serde_json::from_value(json!({"endpoint": "quic://localhost:8788"})).unwrap();
+            assert_eq!(saved.name, None);
+            assert_eq!(state(saved).unwrap().machines.label(), "localhost:8788");
+        },
     );
-    // Nothing fit to show leaves the endpoint to speak for itself.
-    for unnamed in [json!(null), json!(""), json!("   "), json!("mini\nrm -rf")] {
-        assert_eq!(named(unnamed).target().unwrap().name, "localhost:8788");
-    }
-    // Settings saved before pairing carried a name still open.
-    let saved: Configuration =
-        serde_json::from_value(json!({"endpoint": "quic://localhost:8788"})).unwrap();
-    assert_eq!(saved.name, None);
-    assert_eq!(state(saved).unwrap().machines.label(), "localhost:8788");
 }
 
 #[test]
 fn an_absence_is_measured_on_the_wall_clock_from_its_first_edge() {
-    let at = |secs| SystemTime::UNIX_EPOCH + Duration::from_secs(secs);
-    let mut state = with_target(config("quic://localhost:8788").target().unwrap(), None);
-    let native = state.native.as_mut().unwrap();
-    // Becoming active with no absence behind it measures nothing.
-    assert_eq!(native.set_active(true, at(100)), None);
-    // Resigning and then backgrounding is one absence.
-    assert_eq!(native.set_active(false, at(100)), None);
-    assert_eq!(native.set_active(false, at(130)), None);
-    assert!(!native.active);
-    assert_eq!(
-        native.set_active(true, at(145)),
-        Some(Duration::from_secs(45))
+    crate::test_support::isolated_preferences(
+        "mobile::tests::an_absence_is_measured_on_the_wall_clock_from_its_first_edge",
+        || {
+            let at = |secs| SystemTime::UNIX_EPOCH + Duration::from_secs(secs);
+            let mut state = with_target(config("quic://localhost:8788").target().unwrap(), None);
+            let native = state.native.as_mut().unwrap();
+            // Becoming active with no absence behind it measures nothing.
+            assert_eq!(native.set_active(true, at(100)), None);
+            // Resigning and then backgrounding is one absence.
+            assert_eq!(native.set_active(false, at(100)), None);
+            assert_eq!(native.set_active(false, at(130)), None);
+            assert!(!native.active);
+            assert_eq!(
+                native.set_active(true, at(145)),
+                Some(Duration::from_secs(45))
+            );
+            assert!(native.active && native.away_since.is_none());
+            // A clock set back while away is no time at all, not a panic.
+            assert_eq!(native.set_active(false, at(200)), None);
+            assert_eq!(native.set_active(true, at(150)), Some(Duration::ZERO));
+        },
     );
-    assert!(native.active && native.away_since.is_none());
-    // A clock set back while away is no time at all, not a panic.
-    assert_eq!(native.set_active(false, at(200)), None);
-    assert_eq!(native.set_active(true, at(150)), Some(Duration::ZERO));
 }

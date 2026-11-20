@@ -27,7 +27,8 @@ fn find<'a>(node: &'a Value, key: &str) -> &'a Value {
 }
 
 fn runtime(desk: Desk) -> Runtime<Desk> {
-    let mut runtime = Runtime::new(desk, crate::ui::view, (1100.0, 720.0), Env::new(true, 2.0));
+    let mut runtime =
+        crate::test_support::runtime(desk, crate::ui::view, (1100.0, 720.0), Env::new(true, 2.0));
     runtime.on_key = Some(Desk::key);
     runtime.frame(0.0);
     runtime
@@ -41,9 +42,7 @@ mod navigation;
 
 #[test]
 fn settings_read_and_change_through_a_screen_reader() {
-    let mut desk = Desk::new(&Resolved::offline("a11y"));
-    // What the actions change stays in the test.
-    desk.prefs = Prefs::memory();
+    let mut desk = Desk::with_preferences(&Resolved::offline("a11y"), None, Prefs::memory());
     desk.settings_open = true;
     desk.settings_category(Category::Terminal);
     let mut runtime = runtime(desk);
@@ -98,7 +97,7 @@ fn settings_read_and_change_through_a_screen_reader() {
 /// takes the toast down.
 #[test]
 fn an_offer_is_a_button_that_runs_its_action() {
-    let mut desk = Desk::new(&Resolved::offline("a11y"));
+    let mut desk = Desk::with_preferences(&Resolved::offline("a11y"), None, Prefs::memory());
     desk.offer("New here?", "Show me", Desk::show_essentials);
     let mut runtime = runtime(desk);
     let tree = runtime.accessibility_json();
@@ -114,8 +113,7 @@ fn an_offer_is_a_button_that_runs_its_action() {
 /// The tour is offered once per install, not once per window or connection.
 #[test]
 fn the_tour_is_offered_once() {
-    let mut desk = Desk::new(&Resolved::offline("tour"));
-    desk.prefs = Prefs::memory();
+    let mut desk = Desk::with_preferences(&Resolved::offline("tour"), None, Prefs::memory());
     desk.offer_tour();
     let first = desk
         .notice
@@ -134,7 +132,7 @@ fn the_tour_is_offered_once() {
 #[test]
 fn a_notice_is_announced_and_an_error_at_once() {
     for (kind, role) in [(NoticeKind::Info, "status"), (NoticeKind::Error, "alert")] {
-        let mut desk = Desk::new(&Resolved::offline("a11y"));
+        let mut desk = Desk::with_preferences(&Resolved::offline("a11y"), None, Prefs::memory());
         desk.say(kind, "Copied");
         let tree = runtime(desk).accessibility_json();
         let notice = find_by(&tree, "role", role);
@@ -146,7 +144,6 @@ fn a_notice_is_announced_and_an_error_at_once() {
 #[test]
 fn glass_is_saved_like_the_theme() {
     let mut desk = crate::test_support::settings_window();
-    desk.prefs = Prefs::memory();
     desk.set_glass(40);
     assert_eq!(super::Settings::load(&desk.prefs).glass, 40);
     desk.set_glass(250);

@@ -21,7 +21,8 @@ fn phone_desk(tabs: u8) -> Desk {
 }
 
 fn runtime(desk: Desk, size: (f32, f32)) -> rune::Runtime<Desk> {
-    let mut rt = rune::Runtime::new(desk, crate::ui::view, size, rune::Env::new(false, 1.0));
+    let mut rt =
+        crate::test_support::runtime(desk, crate::ui::view, size, rune::Env::new(false, 1.0));
     for frame in 0..3 {
         rt.frame(f64::from(frame));
     }
@@ -92,7 +93,7 @@ fn the_active_tab_is_brought_whole_into_the_strip() {
             active: i == 5,
         })
         .collect();
-    let mut rt = rune::Runtime::new(
+    let mut rt = crate::test_support::runtime(
         desk,
         crate::ui::view,
         (393.0, 852.0),

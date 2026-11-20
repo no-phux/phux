@@ -198,29 +198,34 @@ fn sanitized_paste_preserves_selection_and_undo_boundaries() {
 
 #[test]
 fn a_native_connection_replacement_keeps_its_host_and_trust() {
-    let mut state = crate::mobile::state(crate::mobile::Configuration {
-        endpoint: "quic://localhost:8788".into(),
-        name: None,
-        tls_server_name: None,
-        certificate_pin: Some("11".repeat(32)),
-        token: Some("22".repeat(32)),
-        session: Some("work".into()),
-        authority_ca: None,
-        chain_pem: None,
-        key_id: None,
-    })
-    .unwrap();
-    state.native.as_mut().unwrap().active = false;
-    state.replace_connection(super::super::link::Replacement::Retry);
-    let native = state.native.as_ref().unwrap();
-    assert!(!native.active);
-    assert_eq!(native.target.cert_fingerprint, Some("11".repeat(32)));
-    assert_eq!(native.target.token, Some("22".repeat(32)));
-    assert_eq!(
-        native.target.transport,
-        phux_client_runtime::Transport::Quic("localhost:8788".into())
+    crate::test_support::isolated_preferences(
+        "desk::native_input::tests::a_native_connection_replacement_keeps_its_host_and_trust",
+        || {
+            let mut state = crate::mobile::state(crate::mobile::Configuration {
+                endpoint: "quic://localhost:8788".into(),
+                name: None,
+                tls_server_name: None,
+                certificate_pin: Some("11".repeat(32)),
+                token: Some("22".repeat(32)),
+                session: Some("work".into()),
+                authority_ca: None,
+                chain_pem: None,
+                key_id: None,
+            })
+            .unwrap();
+            state.native.as_mut().unwrap().active = false;
+            state.replace_connection(super::super::link::Replacement::Retry);
+            let native = state.native.as_ref().unwrap();
+            assert!(!native.active);
+            assert_eq!(native.target.cert_fingerprint, Some("11".repeat(32)));
+            assert_eq!(native.target.token, Some("22".repeat(32)));
+            assert_eq!(
+                native.target.transport,
+                phux_client_runtime::Transport::Quic("localhost:8788".into())
+            );
+            assert!(!state.launch.can_ensure());
+        },
     );
-    assert!(!state.launch.can_ensure());
 }
 
 #[test]
@@ -323,7 +328,6 @@ fn field(
     Bridge,
 ) {
     let (client, mut rt) = crate::test_support::input_fixture();
-    rt.state.prefs = rune::prefs::Prefs::memory();
     rt.update(|d, tx| {
         tx.instant();
         match key {
@@ -524,7 +528,6 @@ fn changed_text_or_revision_and_invalid_selection_are_atomic_rejections() {
 #[test]
 fn a_native_shell_uses_the_full_available_stage_without_drawn_keys() {
     let (client, mut rt) = crate::test_support::input_fixture();
-    rt.state.prefs = rune::prefs::Prefs::memory();
     rt.state.phone = Some(super::super::phone::Phone::default());
     rt.state.native = Some(crate::mobile::Platform::test());
     rt.set_viewport((393.0, 600.0), 2.0);

@@ -383,7 +383,7 @@ fn phone_keyboard_tab_keeps_question_navigation_and_return_answers_that_question
         view: Some(replica.views[0]),
     });
     desk.connection.layout = Some(phux_client_core::layout::LayoutNode::Leaf(replica.terminal));
-    let mut rt = Runtime::new(
+    let mut rt = crate::test_support::runtime(
         desk,
         crate::ui::view,
         (393.0, 852.0),

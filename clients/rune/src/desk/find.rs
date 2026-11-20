@@ -217,7 +217,11 @@ mod tests {
         use crate::desk::Pending;
         use crate::desk::input::Modal;
 
-        let mut desk = Desk::new(&crate::launch::Resolved::offline("not launched"));
+        let mut desk = Desk::with_preferences(
+            &crate::launch::Resolved::offline("not launched"),
+            None,
+            rune::prefs::Prefs::memory(),
+        );
         desk.connection.find_query.focused = true;
         assert_eq!(desk.modal(), Some(Modal::FindField));
         desk.pending = Some(Pending::Close(phux_protocol::ids::ResourceId::local(1)));

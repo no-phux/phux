@@ -343,7 +343,11 @@ mod tests {
     use crate::launch::Resolved;
 
     fn desk() -> Desk {
-        Desk::new(&Resolved::offline("notes"))
+        Desk::with_preferences(
+            &Resolved::offline("notes"),
+            None,
+            rune::prefs::Prefs::memory(),
+        )
     }
 
     fn texts(desk: &Desk) -> Vec<&str> {

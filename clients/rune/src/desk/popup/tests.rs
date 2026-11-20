@@ -19,7 +19,6 @@ fn id(n: u32) -> ResourceId {
 /// An attached window showing one terminal, on settings no test can save.
 fn window() -> (Arc<Client>, rune::Runtime<Desk>) {
     let (client, mut rt) = crate::test_support::input_fixture();
-    rt.state.prefs = rune::prefs::Prefs::memory();
     rt.state.connection.status = Status::Attached;
     rt.frame(0.0);
     let _ = client.take_outbound();

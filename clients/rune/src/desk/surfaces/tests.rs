@@ -5,7 +5,8 @@ use rune::{Env, Key, KeyEvent, Mods, Runtime};
 fn runtime(phone: bool) -> Runtime<Desk> {
     let mut desk = crate::test_support::settings_window().with_phone(phone);
     desk.settings_open = false;
-    let mut rt = Runtime::new(desk, crate::ui::view, (900.0, 700.0), Env::new(true, 1.0));
+    let mut rt =
+        crate::test_support::runtime(desk, crate::ui::view, (900.0, 700.0), Env::new(true, 1.0));
     rt.on_key = Some(Desk::key);
     rt
 }
@@ -105,7 +106,11 @@ fn settings_theme_palette_returns_to_its_parent_on_both_forms() {
 
 #[test]
 fn toasts_paint_under_a_menu_and_hide_behind_the_inbox() {
-    let mut desk = Desk::new(&crate::launch::Resolved::offline("toasts"));
+    let mut desk = Desk::with_preferences(
+        &crate::launch::Resolved::offline("toasts"),
+        None,
+        rune::prefs::Prefs::memory(),
+    );
     desk.say(super::super::NoticeKind::Info, "Copied");
     desk.pointer.menu = Some(rune::PointerPress { x: 10.0, y: 20.0 });
     let up: Vec<_> = desk.surfaces().collect();

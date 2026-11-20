@@ -249,7 +249,8 @@ fn kit_components_paint_only_token_colours() {
                 && (a.a - b.a).abs() < 2e-3
         };
         let known = |x: rune::Color| x.a == 0.0 || allowed.iter().any(|a| close(*a, x));
-        let mut rt = rune::Runtime::new((), kit_parts, (800.0, 600.0), rune::Env::new(dark, 1.0));
+        let mut rt =
+            crate::test_support::runtime((), kit_parts, (800.0, 600.0), rune::Env::new(dark, 1.0));
         for at in [0.0, 1.0, 2.0] {
             rt.frame(at);
         }

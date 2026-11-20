@@ -84,7 +84,11 @@ mod tests {
             socket: Some(PathBuf::from("/nowhere/phux.sock")),
             ..Options::default()
         };
-        Desk::open(&launch::resolve(&options), None)
+        Desk::with_preferences(
+            &launch::resolve(&options),
+            None,
+            rune::prefs::Prefs::memory(),
+        )
     }
 
     #[test]
@@ -146,24 +150,35 @@ mod tests {
 
     #[test]
     fn the_phone_app_coming_to_the_front_resumes_its_link() {
-        let configuration = serde_json::json!({"endpoint": "quic://localhost:8788"});
-        let state = crate::mobile::state(serde_json::from_value(configuration).expect("parses"))
-            .expect("a loopback host needs no pairing");
-        let size = (393.0, 852.0);
-        let mut rt = rune::Runtime::new(state, crate::ui::view, size, rune::Env::new(true, 2.0));
-        rt.state.link.tries = 5;
-        crate::mobile::set_active(&mut rt, false);
-        assert!(!rt.state.focused);
-        assert_eq!((rt.state.link.tries, rt.state.link.retry_at), (5, None));
-        crate::mobile::set_active(&mut rt, true);
-        assert!(rt.state.focused);
-        // Nothing was scheduled, so a nudge alone would have waited.
-        assert_eq!(rt.state.link.tries, 0);
-        assert!(
-            rt.state
-                .link
-                .retry_at
-                .is_some_and(|at| at <= Instant::now())
+        crate::test_support::isolated_preferences(
+            "desk::link::resume::tests::the_phone_app_coming_to_the_front_resumes_its_link",
+            || {
+                let configuration = serde_json::json!({"endpoint": "quic://localhost:8788"});
+                let state =
+                    crate::mobile::state(serde_json::from_value(configuration).expect("parses"))
+                        .expect("a loopback host needs no pairing");
+                let size = (393.0, 852.0);
+                let mut rt = crate::test_support::runtime(
+                    state,
+                    crate::ui::view,
+                    size,
+                    rune::Env::new(true, 2.0),
+                );
+                rt.state.link.tries = 5;
+                crate::mobile::set_active(&mut rt, false);
+                assert!(!rt.state.focused);
+                assert_eq!((rt.state.link.tries, rt.state.link.retry_at), (5, None));
+                crate::mobile::set_active(&mut rt, true);
+                assert!(rt.state.focused);
+                // Nothing was scheduled, so a nudge alone would have waited.
+                assert_eq!(rt.state.link.tries, 0);
+                assert!(
+                    rt.state
+                        .link
+                        .retry_at
+                        .is_some_and(|at| at <= Instant::now())
+                );
+            },
         );
     }
 

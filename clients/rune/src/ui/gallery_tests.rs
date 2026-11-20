@@ -89,7 +89,7 @@ fn window_on(
     ];
     let mut topology = crate::desk::topology(vec![phux, site, mobile], panes);
     server::terminal_resources(&mut topology);
-    let mut rt = Runtime::new(desk, crate::ui::view, size, Env::new(dark, SCALE));
+    let mut rt = crate::test_support::runtime(desk, crate::ui::view, size, Env::new(dark, SCALE));
     rt.on_key = Some(Desk::key);
     // The embedded client reports its own one-terminal graph on the first
     // frame; the fixture's replaces it after.

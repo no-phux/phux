@@ -334,6 +334,9 @@ impl Entry {
         press: fn(&mut Desk),
         t: &Tokens,
     ) -> El {
+        if desk.phone.is_some() && matches!(self, Self::Theme) {
+            return super::theme_row::view(desk, &value, self.detail(), t);
+        }
         let s = &t.space;
         pressable(key, t)
             .w_full()

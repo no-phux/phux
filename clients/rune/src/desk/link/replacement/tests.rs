@@ -5,7 +5,12 @@ use crate::launch::Resolved;
 
 #[test]
 fn reconnect_keeps_settings_navigation_search_return_context_and_phone_form() {
-    let mut desk = Desk::new(&Resolved::offline("settings reconnect")).with_phone(true);
+    let mut desk = Desk::with_preferences(
+        &Resolved::offline("settings reconnect"),
+        None,
+        rune::prefs::Prefs::memory(),
+    )
+    .with_phone(true);
     desk.settings_open = true;
     desk.settings_category(crate::desk::SettingsCategory::Developer);
     desk.settings_ui.query = rune::TextEdit::new("logs");
@@ -26,7 +31,12 @@ fn reconnect_keeps_settings_navigation_search_return_context_and_phone_form() {
 #[test]
 fn replacing_a_machine_keeps_phone_preferences_not_old_panes_or_latches() {
     // Embedded launch never locates/spawns an installed CLI on the redial.
-    let mut desk = Desk::new(&Resolved::embedded(None)).with_phone(true);
+    let mut desk = Desk::with_preferences(
+        &Resolved::embedded(None),
+        None,
+        rune::prefs::Prefs::memory(),
+    )
+    .with_phone(true);
     desk.machines.current = Some("previous".into());
     let phone = desk.phone.as_mut().unwrap();
     phone.keyboard = false;

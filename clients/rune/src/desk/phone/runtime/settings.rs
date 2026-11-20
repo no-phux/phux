@@ -224,3 +224,51 @@ fn native_enter_escape_and_close_reconcile_settings_focus() {
         no_terminal_input(&client);
     }
 }
+
+#[test]
+fn enlarged_theme_row_touch_and_keyboard_keep_preview_and_terminal_input_ownership() {
+    for size in [(393.0, 480.0), (320.0, 340.0)] {
+        let (client, mut rt) = open(true);
+        rt.set_viewport(size, 2.0);
+        rt.update(|d, tx| {
+            d.native = Some(crate::mobile::Platform::test());
+            d.set_accessibility(false, "UICTContentSizeCategoryAccessibilityXXXL");
+            d.settings.theme = crate::theme::find("phux-light");
+            d.settings_category(crate::desk::SettingsCategory::Appearance);
+            tx.instant();
+            tx.scroll_key_to("settings-theme", 24.0);
+        });
+        settle(&mut rt);
+        let before = rt.state.settings.theme;
+        let button = crate::ui::element(&rt, "settings-theme");
+        let [x, y, w, h] = button.visible;
+        assert!(w >= 44.0 && h >= 44.0);
+        rt.touch(1, TouchPhase::Started, x + w / 2.0, y + h / 2.0, 0.1);
+        rt.touch(1, TouchPhase::Ended, x + w / 2.0, y + h / 2.0, 0.15);
+        settle(&mut rt);
+        assert!(rt.state.palette_open);
+        rt.paste("nord");
+        settle(&mut rt);
+        assert_eq!(rt.state.settings.theme, crate::theme::find("nord"));
+        rt.key(crate::keys::plain(Key::Escape));
+        settle(&mut rt);
+        assert_eq!(rt.state.settings.theme, before);
+        assert!(rt.state.settings_open && !rt.state.palette_open);
+        assert!(crate::ui::element(&rt, "settings-theme").focused);
+        assert!(!rt.state.phone.as_ref().unwrap().keyboard);
+        no_terminal_input(&client);
+        // Rune's native button contract uses Space, not Return (default button).
+        rt.key(crate::keys::plain(Key::Text(" ".into())));
+        settle(&mut rt);
+        assert!(rt.state.palette_open);
+        rt.paste("nord");
+        settle(&mut rt);
+        rt.key(crate::keys::plain(Key::Enter));
+        settle(&mut rt);
+        assert_eq!(rt.state.settings.theme, crate::theme::find("nord"));
+        assert!(rt.state.settings_open && !rt.state.palette_open);
+        assert!(crate::ui::element(&rt, "settings-theme").focused);
+        assert!(!rt.state.settings_search_focused());
+        no_terminal_input(&client);
+    }
+}
