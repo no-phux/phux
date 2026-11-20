@@ -14,6 +14,7 @@ use crate::desk::{Desk, SettingsCategory as Category};
 
 mod controls;
 mod entries;
+mod theme_row;
 
 pub(super) use controls::{Toggle, grown, kit_button, section, toggle};
 

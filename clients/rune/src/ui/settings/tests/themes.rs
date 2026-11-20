@@ -143,3 +143,70 @@ fn settings_theme_visual_review_frames() {
         }
     }
 }
+
+#[test]
+fn large_phone_theme_names_wrap_below_the_title_without_a_narrow_value_column() {
+    for size in [(393, 852), (320, 568), (393, 480), (320, 340)] {
+        for theme in [
+            None,
+            crate::theme::find("phux-light"),
+            crate::theme::find("catppuccin-macchiato"),
+        ] {
+            let mut rt = scene(true, size, 2, true, false);
+            rt.update(|d, tx| {
+                d.settings.theme = theme;
+                tx.instant();
+                tx.scroll_key_to("settings-theme", 24.0);
+            });
+            rt.frame(1.0);
+            rt.frame(1.0);
+            let elements = rt.elements();
+            let button = crate::ui::element(&rt, "settings-theme");
+            let copy = |text: &str| {
+                elements
+                    .iter()
+                    .find(|e| {
+                        e.path.starts_with(&format!("{}/", button.path))
+                            && e.text.as_deref() == Some(text)
+                    })
+                    .unwrap()
+                    .rect
+            };
+            let title = copy("Theme");
+            let value = copy(theme.map_or("System", |t| t.name));
+            let detail = copy(
+                "System, built-in and local themes. Preview live, Return to keep, Escape to restore.",
+            );
+            assert!(
+                title[1] + title[3] <= value[1],
+                "title precedes value: {title:?} {value:?}"
+            );
+            assert!(
+                value[1] + value[3] < detail[1],
+                "help starts below the name"
+            );
+            let tokens = crate::ui::Tokens::for_phone(
+                &rt.state,
+                false,
+                theme,
+                crate::ui::tokens::phone::Scale::Free,
+            );
+            let line = tokens.ty.body.line_px();
+            assert!(value[3] >= line - 0.5, "the requested type is not shrunk");
+            if theme == crate::theme::find("phux-light") {
+                assert!(
+                    (value[3] - line).abs() < 0.5,
+                    "phux Light uses one natural line, not the old narrow column"
+                );
+            }
+            assert!(
+                detail[2] >= button.rect[2] - 32.5,
+                "help uses the full content gutter"
+            );
+            for rect in [title, value, detail] {
+                assert!(rect[0] >= 32.0 && rect[0] + rect[2] <= size.0 as f32 - 31.5);
+            }
+            assert!(button.visible[2] >= 44.0 && button.visible[3] >= 44.0);
+        }
+    }
+}

@@ -93,6 +93,12 @@ text scale, not an iOS setting. Check both buttons' complete visible bounds,
 label/value containment and non-overlap, real touch/keyboard activation and
 range limits. A 44-point visible fragment of a taller button is not a pass.
 
+Theme-row cases use the integrated view at those same scales, with real search
+and palette preview/cancel/accept. Retain whole-row focus reveal **and** an
+explicit heading-aligned scroll: a description taller than the viewport can
+reveal its bottom on focus, hiding the title/value being judged. Heading frames
+show reading composition; they do not claim automatic whole-row reveal is fixed.
+
 ## Review behavior as well as pixels
 
 Use the trees and behavior tests to check focus/name/role, clipping/scroll

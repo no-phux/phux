@@ -61,3 +61,29 @@ fn settings_switches_expose_one_name_and_keep_description_state_and_action() {
         );
     }
 }
+
+#[test]
+fn theme_is_one_named_button_with_its_current_value_and_help_on_both_forms() {
+    for phone in [false, true] {
+        let mut rt = runtime((640.0, 720.0), phone);
+        rt.update(|d, tx| {
+            d.settings_category(Category::Appearance);
+            d.settings.theme = crate::theme::find("phux-light");
+            tx.instant();
+        });
+        rt.frame(1.0);
+        let tree = rt.accessibility_json();
+        let button = keyed(&tree, "settings-theme").unwrap();
+        assert_eq!(button["role"], "button");
+        assert_eq!(button["name"], "Theme");
+        assert_eq!(button["value"], "phux Light");
+        assert_eq!(
+            button["description"],
+            "System, built-in and local themes. Preview live, Return to keep, Escape to restore."
+        );
+        assert_eq!(tree.to_string().matches("\"name\":\"Theme\"").count(), 1);
+        assert!(rt.accessibility_action("settings-theme", Action::Click, None));
+        rt.frame(1.0);
+        assert!(rt.state.palette_open);
+    }
+}
