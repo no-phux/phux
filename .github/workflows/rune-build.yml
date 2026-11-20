@@ -144,6 +144,7 @@ jobs:
       # libghostty-vt-sys. Qualify's `cargo build -p phux` uses the root
       # target. cache-on-failure stays off: save-if is fixed when the step
       # starts and cannot tell whether the build then succeeded.
+      # Workspace crates stay pruned: cache-workspace-crates stays unset.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: |
@@ -157,9 +158,7 @@ jobs:
       - name: Check the native Rust bridge
         run: |
           cargo fmt --manifest-path clients/rune/Cargo.toml --all --check
-          # Temporary: record fingerprint dirty reasons for this one run.
-          CARGO_LOG=cargo::core::compiler::fingerprint=info \
-            cargo clippy --locked --manifest-path clients/rune/Cargo.toml -p phux-rune-ios \
+          cargo clippy --locked --manifest-path clients/rune/Cargo.toml -p phux-rune-ios \
             --target aarch64-apple-ios-sim -- -D warnings
       - name: Build native simulator app and device bundle
         run: |
@@ -176,8 +175,7 @@ jobs:
             --jobs 8
       - name: Qualify native rendering and input against the same-source dev server
         run: |
-          # Temporary: record fingerprint dirty reasons for this one run.
-          CARGO_LOG=cargo::core::compiler::fingerprint=info cargo build --locked -p phux
+          cargo build --locked -p phux
           python3 clients/rune/ios/qualify.py --app "$RUNNER_TEMP/ios-simulator/Phux Rune.app" \
             --phux "$PWD/target/debug/phux" --out "$RUNNER_TEMP/ios-qualification/quic"
           python3 clients/rune/ios/qualify.py --app "$RUNNER_TEMP/ios-simulator/Phux Rune.app" \

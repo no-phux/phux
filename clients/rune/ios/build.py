@@ -169,8 +169,6 @@ def build_rust(out, env, triple, release):
     target_dir = cargo_target_dir(env)
     rust_env = dict(env)
     rust_env["CARGO_TARGET_DIR"] = str(target_dir)
-    # Temporary: one CI run records fingerprint dirty reasons. Remove after.
-    rust_env["CARGO_LOG"] = "cargo::core::compiler::fingerprint=info"
     # A restored archive must not satisfy is_file() without this cargo run.
     produced = target_dir / triple / profile / "libphux_rune_ios.a"
     produced.unlink(missing_ok=True)
