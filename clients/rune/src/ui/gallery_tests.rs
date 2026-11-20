@@ -181,9 +181,61 @@ fn the_gallery_paints() {
     surfaces(&gpu, || window(DESKTOP, true, mocha, Locale::En), "mocha");
 }
 
+/// Folding and unfolding the sidebar over one pane, stepped at 60 Hz: the
+/// drawer and the pane move together over frames, never in one, and land
+/// where they started.
+#[test]
+fn the_fold_moves_the_drawer_and_the_pane_together() {
+    let mut rt = window(DESKTOP, true, None, Locale::En);
+    settle(&mut rt);
+    let pane = format!("pane-host-{}", phux_protocol::ids::ResourceId::local(1));
+    let width = |rt: &Runtime<Desk>, key: &str| rt.presented(key).expect(key).0[2];
+    let open = (width(&rt, "sidebar-host"), width(&rt, &pane));
+    for shown in [false, true] {
+        rt.update(move |d, _| d.sidebar_open = shown);
+        let mut seen = Vec::new();
+        // `frame` takes the step since the last frame.
+        for _ in 0..90 {
+            rt.frame(1.0 / 60.0);
+            seen.push((width(&rt, "sidebar-host"), width(&rt, &pane)));
+        }
+        // One spring for the drawer and the gutters: the pane's far edge
+        // never runs past the window, nor opens a gap short of it.
+        let edge = open.0 + open.1;
+        for &(drawer, pane) in &seen {
+            let far = drawer + pane;
+            assert!(
+                far <= DESKTOP.0 + 0.5 && far >= edge - 0.5,
+                "the far edge holds: {seen:?}"
+            );
+        }
+        let mid = seen[5];
+        let (from, to) = if shown { (0.0, open.0) } else { (open.0, 0.0) };
+        let between = |x: f32, a: f32, b: f32| x > a.min(b) + 1.0 && x < a.max(b) - 1.0;
+        assert!(between(mid.0, from, to), "the drawer moves: {seen:?}");
+        let last = seen[seen.len() - 1];
+        assert!((last.0 - to).abs() < 0.5, "the drawer lands: {seen:?}");
+        if shown {
+            assert!(
+                (last.1 - open.1).abs() < 0.5,
+                "the pane lands back: {seen:?}"
+            );
+        } else {
+            assert!(
+                last.1 > open.1 + open.0,
+                "flush, the pane takes the gutters too: {seen:?}"
+            );
+            assert!(
+                between(mid.1, open.1, last.1),
+                "the pane moves with it: {seen:?}"
+            );
+        }
+    }
+}
+
 /// Two terminals side by side, the first with the keyboard, with the
-/// sidebar open and folded: how focus reads among panes, and the window's
-/// controls over the panes when the sidebar is away.
+/// sidebar open and folded: how focus reads among panes without a colour
+/// of its own, and the split keeping its cards when the sidebar is away.
 #[test]
 fn the_gallery_paints_a_split() {
     let gpu = rune::render::Gpu::headless();
@@ -199,6 +251,14 @@ fn the_gallery_paints_a_split() {
             let side = if folded { "-folded" } else { "" };
             paint(&gpu, &mut rt, DESKTOP, &format!("split-{tone}{side}"));
         }
+        // One pane, folded: the window is one surface (`Desk::flush`).
+        let mut rt = window(DESKTOP, dark, None, Locale::En);
+        settle(&mut rt);
+        rt.update(|d, _| d.sidebar_open = false);
+        settle(&mut rt);
+        assert!(rt.state.flush());
+        let tone = if dark { "dark" } else { "light" };
+        paint(&gpu, &mut rt, DESKTOP, &format!("flush-{tone}"));
     }
 }
 

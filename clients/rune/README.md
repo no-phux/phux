@@ -177,7 +177,7 @@ session (or `--session NAME`). It never creates a session on its own.
   that folder and quoted only when it must be.
 - **Splits.** The selected session's arrangement is the server-stored split
   tree the terminal UI uses, so both show the same layout. Each pane floats
-  as its own rounded glass card, the one with the keyboard lit in the accent.
+  as its own rounded glass card, the one with the keyboard raised.
   Split, move between panes, zoom one, drag the gutters between cards; new
   splits and ratios are written back to the server. A split shows at its
   size before the server answers.

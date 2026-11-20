@@ -227,6 +227,22 @@ fn step_of(key: &Key, horizontal: bool) -> Option<f32> {
 pub(super) enum Lit {
     Resting,
     Focused,
+    /// The window's one surface ([`Desk::flush`]): no rim and no lift, the
+    /// card's ground continuous with the window's.
+    Flush,
+}
+
+impl Lit {
+    /// How the pane with or without the keyboard is lit in `desk`.
+    fn of(desk: &Desk, several: bool, focused: bool) -> Self {
+        if desk.flush() {
+            Self::Flush
+        } else if several && focused {
+            Self::Focused
+        } else {
+            Self::Resting
+        }
+    }
 }
 
 /// A floating card around `content` (§1.7): `radius.lg`, on the raised
@@ -237,9 +253,11 @@ pub(super) enum Lit {
 pub(super) fn card(content: El, ground: Color, lit: Lit, ink: &Tokens) -> El {
     let t = ink;
     let r = t.radius.lg;
+    let b = &t.roles.border;
     let (top, bottom, tier) = match lit {
-        Lit::Resting => (t.roles.border.base, t.roles.border.muted, Tier::Raised),
-        Lit::Focused => (t.roles.border.strong, t.roles.border.base, Tier::Floating),
+        Lit::Resting => (b.base.paint(), b.muted.paint(), Tier::Raised),
+        Lit::Focused => (b.strong.paint(), b.base.paint(), Tier::Floating),
+        Lit::Flush => (Color::TRANSPARENT, Color::TRANSPARENT, Tier::Flat),
     };
     let lifted = el()
         .w_full()
@@ -253,7 +271,7 @@ pub(super) fn card(content: El, ground: Color, lit: Lit, ink: &Tokens) -> El {
             el().cover()
                 .radius(r)
                 .continuous_corners()
-                .border_gradient(t.space.hairline, top.paint(), bottom.paint())
+                .border_gradient(t.space.hairline, top, bottom)
                 .inert(),
         )
 }
@@ -276,11 +294,7 @@ pub(super) fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Tokens) ->
         .as_ref()
         .is_some_and(|s| &s.resource == id);
     if desk.is_document(id) {
-        let lit = if focused && several {
-            Lit::Focused
-        } else {
-            Lit::Resting
-        };
+        let lit = Lit::of(desk, several, focused);
         let t = ink;
         let ground = t.roles.layer.ground.paint();
         return float(
@@ -326,7 +340,11 @@ fn terminal_pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Tokens) -> E
                 .font(t.ty.caption)
                 .color(t.roles.text.dim.paint()),
         );
-        return float(id, framed(desk, opening, ground, Lit::Resting, t), t);
+        return float(
+            id,
+            framed(desk, opening, ground, Lit::of(desk, several, false), t),
+            t,
+        );
     };
     if focused {
         // The exact frame this build paints, for the drawn receipt.
@@ -339,11 +357,7 @@ fn terminal_pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Tokens) -> E
     let editing = question.as_ref().is_some_and(|card| card.editing);
     let grid_layer = terminal_layer(desk, id, &frame, focused, editing, ink);
     let ground = grid::background(&frame);
-    let lit = if several && focused {
-        Lit::Focused
-    } else {
-        Lit::Resting
-    };
+    let lit = Lit::of(desk, several, focused);
     let joining = id
         .local_id()
         .is_some_and(|n| desk.connection.reorder.target() == Some(Grab::Pane(n)));

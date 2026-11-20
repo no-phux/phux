@@ -275,6 +275,18 @@ impl Desk {
         }
     }
 
+    /// The window is one surface: a desk with its sidebar away and one pane
+    /// on screen. The pane loses its card and runs edge to edge, the
+    /// window's controls sitting on its ground, as a terminal window's do.
+    pub fn flush(&self) -> bool {
+        self.phone.is_none()
+            && !self.sidebar_shown()
+            && matches!(
+                self.connection.layout,
+                Some(phux_client_core::layout::LayoutNode::Leaf(_))
+            )
+    }
+
     /// The root's layout: learn the window width, and post a frame when it
     /// crosses the narrow line, since on_layout runs after poll.
     pub fn window_laid_out(&mut self, width: f32) {

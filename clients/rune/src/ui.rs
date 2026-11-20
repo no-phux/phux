@@ -138,6 +138,7 @@ fn window(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     if desk.bare.is_some() || desk.quick.is_some() {
         return bare(desk, p, lights.max(insets.height), band, cx);
     }
+    let flush = desk.flush();
     let main = row()
         .key("main")
         .w_full()
@@ -157,6 +158,18 @@ fn window(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                 .h_full()
                 .min_w(0.0)
                 .min_h(0.0)
+                // Flush, the band and the pane are one surface: the
+                // terminal's ground under both, the card's gutters, rim
+                // and lift gone (`Desk::flush`).
+                .fill(if flush {
+                    t.roles.layer.ground.paint()
+                } else {
+                    rune::Color::TRANSPARENT
+                })
+                // On the drawer's spring, as the sidebar is: a fold moves
+                // the drawer, the gutters and the panes as one, so the
+                // pane's far edge never runs past the window or short of it.
+                .token_motion(t.motion.drawer.enter)
                 .children(
                     (!desk.settings.hover_toolbar)
                         .then(|| status::title_bar(desk, p, lights, insets.trailing)),
@@ -167,13 +180,13 @@ fn window(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                         .w_full()
                         .min_w(0.0)
                         .min_h(0.0)
-                        .pl(if desk.sidebar_shown() {
+                        .pl(if desk.sidebar_shown() || flush {
                             0.0
                         } else {
                             s.card_gap
                         })
-                        .pr(s.card_gap)
-                        .pb(s.card_gap)
+                        .pr(if flush { 0.0 } else { s.card_gap })
+                        .pb(if flush { 0.0 } else { s.card_gap })
                         .child(
                             // What floats here never takes rows from a terminal.
                             col()

@@ -103,8 +103,18 @@ pub fn hover_toolbar(desk: &Desk, p: &Tokens, lights: f32, trailing: f32) -> Opt
             .token_motion(t.motion.drawer.enter)
             .on_hover_change(|d: &mut Desk, over, _| d.pointer.toolbar = over)
             .children(shown.then(|| {
-                band(desk, p, lights, trailing, t.roles.layer.sidebar.paint())
-                    .transition(rune::Transition::opacity())
+                band(
+                    desk,
+                    p,
+                    lights,
+                    trailing,
+                    if desk.flush() {
+                        t.roles.layer.ground.paint()
+                    } else {
+                        t.roles.layer.sidebar.paint()
+                    },
+                )
+                .transition(rune::Transition::opacity())
             }))
     })
 }
