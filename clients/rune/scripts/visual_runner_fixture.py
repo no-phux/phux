@@ -29,6 +29,7 @@ filters = {
     "retina_navigation_renders_in_native_safe_area_and_desktop_phone_viewports": "RUNE_NAVIGATION_SNAP",
     "phone_header_visual_review_frames": "RUNE_NAVIGATION_SNAP",
     "phone_connections_visual_review_frames": "RUNE_NAVIGATION_SNAP",
+    "phone_connections_keyboard_visual_review_frames": "RUNE_NAVIGATION_SNAP",
     "phone_pane_motion_visual_review_frames": "RUNE_NAVIGATION_SNAP",
     "native_png_headless_renderer_smoke": "RUNE_RESOURCE_SNAP",
 }

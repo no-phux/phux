@@ -26,6 +26,12 @@ def navigation_inventory(themes=("dark", "light")):
              (393, 480, 2, "true"), (320, 340, 2, "true")))
     })
     cases.update(connections_inventory(themes))
+    cases.update({
+        f"navigation/connections-keyboard-{theme}-{state}-{width * 2}.png":
+            (width, height, 2)
+        for theme, state, (width, height) in product(
+            themes, ("top", "bottom"), ((320, 340), (393, 480)))
+    })
     cases.update(pane_motion_inventory(themes))
     return cases
 
@@ -41,3 +47,16 @@ def connections_inventory(themes):
             ("", "-bottom", "-focused"))
         if case != "large" or state != "-focused"
     }
+
+
+def navigation_exporter(stem):
+    for prefix, exporter in (
+        ("connections-keyboard-", "phone_connections_keyboard_visual_review_frames"),
+        ("connections-", "phone_connections_visual_review_frames"),
+        ("pane-motion-", "phone_pane_motion_visual_review_frames"),
+        ("header-", "phone_header_visual_review_frames"),
+        ("retina-", "retina_navigation_renders_in_native_safe_area_and_desktop_phone_viewports"),
+    ):
+        if stem.startswith(prefix):
+            return exporter
+    return "session_browser_renders_realistic_dark_light_and_search_states"

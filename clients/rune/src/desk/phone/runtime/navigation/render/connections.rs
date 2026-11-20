@@ -75,3 +75,44 @@ fn phone_connections_visual_review_frames() {
         }
     }
 }
+
+#[test]
+fn phone_connections_keyboard_visual_review_frames() {
+    let gpu = rune::render::Gpu::headless();
+    for size in [(320, 340), (393, 480)] {
+        for (appearance, theme) in [("dark", None), ("light", crate::theme::find("phux-light"))] {
+            let (_, mut rt) = fixture();
+            detailed_inventory(&mut rt);
+            rt.set_viewport((size.0 as f32, size.1 as f32), 2.0);
+            rt.set_system_reduced_motion(true);
+            rt.update(|d, _| {
+                d.native = Some(crate::mobile::Platform::test());
+                d.settings.theme = theme;
+                d.set_accessibility(false, "UICTContentSizeCategoryAccessibilityXXXL");
+                d.open_phone_sessions();
+            });
+            settle_for_snapshot(&mut rt);
+            tap(&mut rt, "phone-session-query", 0.1);
+            rt.key(crate::keys::plain(Key::Text("review".into())));
+            settle_for_snapshot(&mut rt);
+            let mut renderer = app_renderer(&gpu);
+            let name = format!("connections-keyboard-{appearance}");
+            paint(
+                &gpu,
+                &mut renderer,
+                &mut rt,
+                (size.0 * 2, size.1 * 2),
+                &format!("{name}-top"),
+            );
+            rt.update(|_, tx| tx.scroll_to_instant("phone-session-list", 0.0, 100_000.0));
+            settle_for_snapshot(&mut rt);
+            paint(
+                &gpu,
+                &mut renderer,
+                &mut rt,
+                (size.0 * 2, size.1 * 2),
+                &format!("{name}-bottom"),
+            );
+        }
+    }
+}

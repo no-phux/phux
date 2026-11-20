@@ -70,10 +70,10 @@ class VisualReview(unittest.TestCase):
 
     def test_bundle_has_all_families_hashes_and_honest_status(self):
         manifest = self.produce()
-        self.assertEqual(len(manifest["cases"]), 699)
+        self.assertEqual(len(manifest["cases"]), 707)
         self.assertEqual({family: sum(case["family"] == family for case in manifest["cases"])
                           for family in review.FAMILIES},
-                          {"inbox": 192, "settings": 226, "navigation": 280, "resources": 1})
+                          {"inbox": 192, "settings": 226, "navigation": 288, "resources": 1})
         case = next(case for case in manifest["cases"] if case["png"] == self.subject)
         self.assertEqual(case["physical"], [320, 568])
         self.assertEqual(case["logical"], [320, 568])
@@ -100,6 +100,8 @@ class VisualReview(unittest.TestCase):
                          "phone_pane_motion_visual_review_frames")
         self.assertEqual(review.exporter_for("navigation", "connections-large-light-2x-native-true-bottom-640"),
                          "phone_connections_visual_review_frames")
+        self.assertEqual(review.exporter_for("navigation", "connections-keyboard-dark-bottom-640"),
+                         "phone_connections_keyboard_visual_review_frames")
         self.assertEqual(review.exporter_for("settings", "desktop"),
                          "settings_native_render_frames")
         self.assertEqual(review.exporter_for("settings", "size-small-dark-ax5-text-bigger-1x"),
@@ -287,10 +289,10 @@ class VisualReview(unittest.TestCase):
                                 env=environment, cwd=self.root, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         manifest = json.loads((out / "manifest.json").read_text())
-        self.assertEqual(len(manifest["cases"]), 699)
+        self.assertEqual(len(manifest["cases"]), 707)
         self.assertEqual(manifest["currentRunePin"], "test-pin")
         self.assertFalse(manifest["dirty"])
-        self.assertEqual(len(list((out / "logs").glob("*.log"))), 13)
+        self.assertEqual(len(list((out / "logs").glob("*.log"))), 14)
         self.assertEqual(seed.read_bytes(), seed_bytes)
         self.assertEqual({path.relative_to(private_seed).as_posix(): path.read_bytes()
                           for path in private_seed.rglob("*") if path.is_file()},

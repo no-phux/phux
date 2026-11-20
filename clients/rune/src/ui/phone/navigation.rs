@@ -63,13 +63,16 @@ pub(in crate::ui) fn view(desk: &Desk, top: f32) -> Option<El> {
         .pr(s.s1)
         .gap(s.s2);
     // At the accessibility text sizes the title takes its own line under
-    // Done, as iOS's large titles do, so the two never collide.
+    // Done. Searching borrows that large title's room above the keyboard;
+    // the modal keeps its Sessions name and Done stays in reach.
+    let searching =
+        page == Page::Sessions && desk.phone.as_ref().is_some_and(|phone| phone.query.focused);
     let header = if p.type_scale >= crate::ui::tokens::layout::PHONE.stacked_title_scale {
         header
             .flex_wrap()
             .child(el().grow(1.0))
             .child(done)
-            .child(el().w_full().child(heading))
+            .children((!searching).then(|| el().w_full().child(heading)))
     } else {
         header
             .items_center()

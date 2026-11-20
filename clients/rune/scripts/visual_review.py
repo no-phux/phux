@@ -17,7 +17,7 @@ import subprocess
 from urllib.parse import quote
 
 from visual_motion import MOTION_FRAMES, pane_motion_inventory
-from visual_navigation import navigation_inventory
+from visual_navigation import navigation_exporter, navigation_inventory
 from visual_themes import theme_inventory
 
 
@@ -218,7 +218,7 @@ def settings_inventory():
 
 
 def required_inventory():
-    """699 required cases: 192 Inbox, 226 Settings, 280 navigation, 1 resource.
+    """707 required cases: 192 Inbox, 226 Settings, 288 navigation, 1 resource.
 
     Values are (logical width, logical height, scale); additional cases are
     welcome, but cannot replace any maintained case.
@@ -252,15 +252,7 @@ def exporter_for(family, stem):
             return "mobile_appearance_and_real_theme_palette_render_accept_and_cancel"
         return "settings_native_render_frames"
     if family == "navigation":
-        if stem.startswith("connections-"):
-            return "phone_connections_visual_review_frames"
-        if stem.startswith("pane-motion-"):
-            return "phone_pane_motion_visual_review_frames"
-        if stem.startswith("header-"):
-            return "phone_header_visual_review_frames"
-        if stem.startswith("retina-"):
-            return "retina_navigation_renders_in_native_safe_area_and_desktop_phone_viewports"
-        return "session_browser_renders_realistic_dark_light_and_search_states"
+        return navigation_exporter(stem)
     return {
         "inbox": inbox_exporter_for(stem),
         "resources": "native_png_headless_renderer_smoke",

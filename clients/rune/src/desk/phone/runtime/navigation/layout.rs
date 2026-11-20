@@ -244,3 +244,39 @@ fn large_connections_and_search_scroll_without_covering_the_last_action() {
         assert!(label.rect[1] + label.rect[3] <= last.rect[1] + last.rect[3]);
     }
 }
+
+#[test]
+fn keyboard_reduced_large_search_keeps_the_whole_create_action_reachable() {
+    for size in [(320.0, 340.0), (393.0, 480.0)] {
+        let (client, mut rt) = fixture();
+        detailed_inventory(&mut rt);
+        rt.set_viewport(size, 2.0);
+        rt.update(|d, _| {
+            d.native = Some(crate::mobile::Platform::test());
+            d.set_accessibility(false, "UICTContentSizeCategoryAccessibilityXXXL");
+            d.open_phone_sessions();
+        });
+        settle(&mut rt);
+        tap(&mut rt, "phone-session-query", 0.1);
+        rt.key(crate::keys::plain(rune::Key::Text("review".into())));
+        settle(&mut rt);
+        let editor = element(&rt, "phone-session-query");
+        assert!(editor.visible[3] >= editor.rect[3] - 0.5, "{editor:?}");
+        rt.update(|_, tx| tx.scroll_to_instant("phone-session-list", 0.0, 100_000.0));
+        rt.settle_all();
+        settle(&mut rt);
+        let list = element(&rt, "phone-session-list");
+        let action = element(&rt, "phone-session-new");
+        assert!(
+            action.visible[3] >= action.rect[3] - 0.5,
+            "complete create action must fit above the keyboard: {action:?} vs {list:?}"
+        );
+        let label = element(&rt, "phone-session-new-label");
+        assert!(label.visible[3] >= label.rect[3] - 0.5, "{label:?}");
+        assert!(label.rect[0] >= action.rect[0]);
+        assert!(label.rect[0] + label.rect[2] <= action.rect[0] + action.rect[2]);
+        assert!(label.rect[1] >= action.rect[1]);
+        assert!(label.rect[1] + label.rect[3] <= action.rect[1] + action.rect[3]);
+        no_terminal_input(&client);
+    }
+}

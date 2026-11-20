@@ -52,6 +52,7 @@ render session_browser_renders_realistic_dark_light_and_search_states
 render retina_navigation_renders_in_native_safe_area_and_desktop_phone_viewports
 render phone_header_visual_review_frames
 render phone_connections_visual_review_frames
+render phone_connections_keyboard_visual_review_frames
 render phone_pane_motion_visual_review_frames
 render native_png_headless_renderer_smoke
 python3 -B "$scripts/visual_review.py" "$out" --repo "$repo" >"$out/logs/manifest.log" 2>&1 || {
