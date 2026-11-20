@@ -41,7 +41,7 @@ pub fn switch(desk: &Desk, p: &Tokens) -> El {
         ))
         .child(
             text(desk.machines.label().to_owned())
-                .font(t.ty.label.semibold().machine())
+                .font(t.ty.label.semibold().host(desk.machines.label()))
                 .color(t.roles.text.text.paint())
                 .truncate()
                 .a11y_hidden(),
@@ -243,8 +243,9 @@ fn row_shell(key: String, current: bool, t: &Tokens) -> El {
 }
 
 fn name(words: String, t: &Tokens) -> El {
+    let font = t.ty.label.host(&words);
     text(words)
-        .font(t.ty.label.machine())
+        .font(font)
         .color(t.roles.text.text.paint())
         .truncate()
         .min_w(0.0)
