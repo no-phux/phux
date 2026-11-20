@@ -149,8 +149,8 @@ fn palette_lists_split_below_beside_split_right() {
 
 // ---------- phux-r82.5: dynamic plugin rows ----------
 
-fn plugin_entry(keys: Option<&str>) -> super::super::plugin_actions::PluginActionEntry {
-    super::super::plugin_actions::PluginActionEntry {
+fn plugin_entry(keys: Option<&str>) -> PluginActionEntry {
+    PluginActionEntry {
         plugin_id: "com.example.tools".to_owned(),
         plugin_name: "Agent Tools".to_owned(),
         action_id: "summarize".to_owned(),
@@ -193,7 +193,7 @@ fn plugin_actions_inject_namespaced_rows_under_plugin_header() {
 fn plugin_row_shows_merged_binding_chord() {
     let entry = plugin_entry(Some("g"));
     let mut kb = KeybindingsCfg::default();
-    super::super::plugin_actions::merge_plugin_bindings(&mut kb, std::slice::from_ref(&entry));
+    phux_config::plugin::actions::merge_plugin_bindings(&mut kb, std::slice::from_ref(&entry));
     let items = palette_items(Some(&kb), &[entry], &[]);
     let row = items
         .iter()
