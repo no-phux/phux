@@ -39,8 +39,9 @@ fn valid_configs_check_clean() {
         "[status]\nleft = [{ kind = \"windows\", separator = \" | \" }]\n\
          center = [\"help-hints\"]\n\
          right = [{ kind = \"session-name\", format = \"[{name}]\", style = { fg = \"red\", bold = true } }, { kind = \"time\", format = \" %H:%M\" }]\n".to_owned(),
-        // `name` / `file` select a theme; every colour syntax the renderer reads.
-        "[theme]\nname = \"nord\"\nfile = \"~/x/colors.toml\"\naccent = \"#1e66f5\"\n\
+        // Every colour syntax the renderer reads. A `name` or `file` that does
+        // not resolve is not clean; those selectors have their own tests.
+        "[theme]\naccent = \"#1e66f5\"\n\
          chord = \"light-green\"\ndim = \"244\"\nsurface = \"reset\"\npane_title_focus = \"Bright Cyan\"\n".to_owned(),
     ] {
         let report = run(&input);
@@ -276,4 +277,220 @@ fn every_finding_is_reported_in_one_pass() {
 #[test]
 fn unparseable_toml_is_an_error_not_a_clean_report() {
     assert!(check("this is not = = toml\n", Path::new(PATH)).is_err());
+}
+
+/// Palette [`crate::theme::load_dir`] accepts. Bright colours and `muted`
+/// are derived; this is the same set as the theme-pack example.
+const LOADABLE_THEME: &str = r##"
+mode = "dark"
+accent = "#bef264"
+selection = "#293628"
+background = "#0f1218"
+foreground = "#c9d1dc"
+red = "#f87171"
+yellow = "#fde047"
+green = "#86efac"
+cyan = "#67e8f9"
+blue = "#7aa2f7"
+magenta = "#c4b5fd"
+"##;
+
+fn check_themes(input: &str, installed: &Path) -> CheckReport {
+    check_with_themes(input, Path::new(PATH), Some(installed)).expect("check runs")
+}
+
+fn one(report: &CheckReport) -> &Finding {
+    assert_eq!(report.findings.len(), 1, "{:?}", report.findings);
+    &report.findings[0]
+}
+
+fn install_theme(root: &Path, name: &str, colors: &str) -> std::path::PathBuf {
+    let dir = root.join(name);
+    std::fs::create_dir_all(&dir).expect("theme dir");
+    std::fs::write(dir.join("colors.toml"), colors).expect("colors.toml");
+    dir
+}
+
+/// Forward slashes, so a Windows temp path is not a TOML escape.
+fn toml_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+/// `name = "nordd"` is the reload error, not a clean report.
+#[test]
+fn an_unknown_theme_name_is_the_reload_error() {
+    let installed = tempfile::tempdir().expect("tempdir");
+    let report = check_themes("[theme]\nname = \"nordd\"\n", installed.path());
+    let found = one(&report);
+    assert_eq!(found.path, "theme.name");
+    assert_eq!(found.fault, Fault::UnknownName);
+    assert_eq!(
+        found.message,
+        "no theme named \"nordd\"; `phux theme list` shows what is installed"
+    );
+    assert_eq!(found.source, Some(LayerSource::User(PATH.into())));
+}
+
+/// A name outside the catalog charset is the invalid-name error, not a miss.
+#[test]
+fn an_invalid_theme_name_is_refused() {
+    let installed = tempfile::tempdir().expect("tempdir");
+    let report = check_themes("[theme]\nname = \"Nord\"\n", installed.path());
+    let found = one(&report);
+    assert_eq!(found.path, "theme.name");
+    assert_eq!(found.fault, Fault::UnknownName);
+    assert_eq!(
+        found.message,
+        "\"Nord\" is not a usable theme name (lowercase letters, digits, `.`, `_`, `+`, `-`)"
+    );
+}
+
+/// A name that [`crate::theme::load_dir`] can load, plus slot overrides, is clean.
+#[test]
+fn an_installed_theme_name_and_its_slot_overrides_check_clean() {
+    let installed = tempfile::tempdir().expect("tempdir");
+    install_theme(installed.path(), "phux-check-seam", LOADABLE_THEME);
+    let report = check_themes(
+        "[theme]\nname = \"phux-check-seam\"\naccent = \"#1e66f5\"\nchord = \"light-green\"\n",
+        installed.path(),
+    );
+    assert!(report.is_ok(), "{:?}", report.findings);
+}
+
+/// The name is in the catalog, but its `colors.toml` does not load.
+#[test]
+fn a_named_theme_whose_palette_does_not_load_is_a_bad_value() {
+    let installed = tempfile::tempdir().expect("tempdir");
+    let dir = install_theme(installed.path(), "phux-check-seam", "not toml\n");
+    let report = check_themes("[theme]\nname = \"phux-check-seam\"\n", installed.path());
+    let found = one(&report);
+    assert_eq!(found.path, "theme.name");
+    assert_eq!(found.fault, Fault::BadValue);
+    let expected = crate::theme::load_dir(&dir).expect_err("palette does not load");
+    assert_eq!(found.message, expected.to_string());
+}
+
+/// `file` wins over `name`. A file that does not load is one bad value, and
+/// the name beside it is not also required to exist.
+#[test]
+fn a_theme_file_that_does_not_load_is_refused_without_also_requiring_the_name() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let missing = root.path().join("missing.toml");
+    let broken = root.path().join("broken.toml");
+    std::fs::write(&broken, "not = [\n").expect("write");
+    let incomplete = root.path().join("incomplete.toml");
+    std::fs::write(&incomplete, "mode = \"dark\"\nbackground = \"#000000\"\n").expect("write");
+    for path in [&missing, &broken, &incomplete] {
+        let shown = toml_path(path);
+        let input = format!("[theme]\nfile = \"{shown}\"\nname = \"nordd\"\n");
+        let report = check_themes(&input, root.path());
+        let found = one(&report);
+        assert_eq!(found.path, "theme.file", "{shown}");
+        assert_eq!(found.fault, Fault::BadValue, "{shown}");
+        let expected = crate::theme::load_file(Path::new(&shown)).expect_err("does not load");
+        assert_eq!(found.message, expected.to_string(), "{shown}");
+    }
+}
+
+/// A file that loads is clean even when `name` would not resolve.
+#[test]
+fn a_loadable_theme_file_checks_clean_even_when_the_name_does_not() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let file = root.path().join("colors.toml");
+    std::fs::write(&file, LOADABLE_THEME).expect("write");
+    let shown = toml_path(&file);
+    let input =
+        format!("[theme]\nfile = \"{shown}\"\nname = \"Not A Theme\"\naccent = \"#1e66f5\"\n");
+    let report = check_themes(&input, root.path());
+    assert!(report.is_ok(), "{:?}", report.findings);
+}
+
+/// Slot findings stay, and they are not dropped when the selector is also wrong.
+#[test]
+fn a_slot_mistake_is_still_reported_beside_an_unknown_theme_name() {
+    let installed = tempfile::tempdir().expect("tempdir");
+    let report = check_themes(
+        "[theme]\nacent = \"#123456\"\nname = \"nordd\"\n",
+        installed.path(),
+    );
+    assert_eq!(paths(&report), vec!["theme.acent", "theme.name"]);
+    assert_eq!(report.findings[0].fault, Fault::UnknownName);
+    assert_eq!(report.findings[1].fault, Fault::UnknownName);
+    assert!(
+        report.findings[1]
+            .message
+            .contains("no theme named \"nordd\"")
+    );
+}
+
+/// An enabled plugin theme resolves. A disabled plugin, and an empty plugin
+/// list, do not, even when the manifest is on disk beside the config.
+#[test]
+fn plugin_themes_resolve_only_from_enabled_manifests() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let plugin = root.path().join("plugin");
+    install_theme(&plugin.join("themes"), "pack", LOADABLE_THEME);
+    std::fs::write(
+        plugin.join("phux-plugin.toml"),
+        "id = \"test.theme\"\n\
+         name = \"Test\"\n\
+         version = \"0.1.0\"\n\
+         min_phux_version = \"0.0.2\"\n\
+         \n\
+         [[themes]]\n\
+         name = \"pack\"\n\
+         path = \"themes/pack\"\n",
+    )
+    .expect("manifest");
+    let config = plugin.join("config.toml");
+    let installed = root.path().join("installed");
+    std::fs::create_dir(&installed).expect("installed dir");
+
+    let enabled = "[[plugins]]\nmanifest = \"phux-plugin.toml\"\n\n[theme]\nname = \"pack\"\n";
+    let report = check_with_themes(enabled, &config, Some(&installed)).expect("check runs");
+    assert!(
+        report.is_ok(),
+        "enabled plugin theme: {:?}",
+        report.findings
+    );
+
+    let disabled = "[[plugins]]\nmanifest = \"phux-plugin.toml\"\nenabled = false\n\n\
+                    [theme]\nname = \"pack\"\n";
+    let report = check_with_themes(disabled, &config, Some(&installed)).expect("check runs");
+    let found = one(&report);
+    assert_eq!(found.path, "theme.name");
+    assert_eq!(found.fault, Fault::UnknownName);
+    assert!(found.message.contains("no theme named \"pack\""));
+
+    // The manifest is on disk, but an empty plugin list does not search for it.
+    let report = check_with_themes("[theme]\nname = \"pack\"\n", &config, Some(&installed))
+        .expect("check runs");
+    let found = one(&report);
+    assert_eq!(found.path, "theme.name");
+    assert!(found.message.contains("no theme named \"pack\""));
+}
+
+/// A manifest that fails to load is not a new finding, and it does not
+/// suppress the installed catalog.
+#[test]
+fn a_broken_plugin_manifest_does_not_hide_the_installed_catalog() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let installed = root.path().join("installed");
+    install_theme(&installed, "phux-check-seam", LOADABLE_THEME);
+    let config = root.path().join("config.toml");
+
+    let unknown = "[[plugins]]\nmanifest = \"missing.toml\"\n\n[theme]\nname = \"nordd\"\n";
+    let report = check_with_themes(unknown, &config, Some(&installed)).expect("check runs");
+    let found = one(&report);
+    assert_eq!(found.path, "theme.name");
+    assert_eq!(found.fault, Fault::UnknownName);
+    assert!(found.message.contains("no theme named \"nordd\""));
+
+    let known = "[[plugins]]\nmanifest = \"missing.toml\"\n\n[theme]\nname = \"phux-check-seam\"\n";
+    let report = check_with_themes(known, &config, Some(&installed)).expect("check runs");
+    assert!(
+        report.is_ok(),
+        "installed name still resolves: {:?}",
+        report.findings
+    );
 }

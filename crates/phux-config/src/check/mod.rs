@@ -7,9 +7,11 @@
 //! (ADR-0039).
 //!
 //! A semantic pass then runs over the deserialized [`Config`] for mistakes
-//! that parse fine and do nothing at runtime: out-of-range ceilings, chords
-//! that do not parse, unknown action / hook / widget / theme-slot names,
-//! theme colours that do not parse, and bindings that shadow each other.
+//! that parse fine and do nothing at runtime, or that `phux config reload`
+//! would refuse: out-of-range ceilings, chords that do not parse, unknown
+//! action / hook / widget / theme-slot names, theme colours that do not
+//! parse, a `[theme]` `name` or `file` that does not resolve, and bindings
+//! that shadow each other.
 
 mod semantic;
 
@@ -36,8 +38,9 @@ pub enum Fault {
     /// A chord that does not parse, or a binding another one shadows.
     BadChord,
     /// A name outside the validation vocabulary ([`crate::vocab`],
-    /// [`crate::theme_slots`]): an action, hook event, `when` key, widget
-    /// kind, or `[theme]` slot that does nothing.
+    /// [`crate::theme_slots`], [`crate::theme`]): an action, hook event,
+    /// `when` key, widget kind, `[theme]` slot, or theme name that does
+    /// nothing.
     UnknownName,
     /// A hook action that can never execute server-side (only `run` does);
     /// a match still consumes the event under first-match-wins.
@@ -108,6 +111,25 @@ impl CheckReport {
 /// [`ConfigError`] only when the check cannot run at all (unparseable TOML, an
 /// unreadable or cyclic layer): a file never read is never reported clean.
 pub fn check(user_input: &str, path: &Path) -> Result<CheckReport, ConfigError> {
+    let installed = crate::theme::themes_dir();
+    check_with_themes(user_input, path, installed.as_deref())
+}
+
+/// [`check`], resolving `[theme] name` against `installed` instead of
+/// [`crate::theme::themes_dir`].
+///
+/// `None` scans no install directory. Tests pass a temporary directory so a
+/// pass or failure does not depend on themes installed for the developer.
+/// Plugin themes still resolve from `config.plugins` relative to `path`.
+///
+/// # Errors
+///
+/// As [`check`].
+pub(crate) fn check_with_themes(
+    user_input: &str,
+    path: &Path,
+    installed: Option<&Path>,
+) -> Result<CheckReport, ConfigError> {
     let (mut merged, provenance) = merged_config_with_provenance(user_input, path)?;
     let mut findings = Vec::new();
     let mut truncated = false;
@@ -151,7 +173,7 @@ pub fn check(user_input: &str, path: &Path) -> Result<CheckReport, ConfigError> 
     };
 
     if let Some(config) = config {
-        semantic_pass(&config, &provenance, &mut findings);
+        semantic_pass(&config, &provenance, &mut findings, path, installed);
         if findings.len() > MAX_FINDINGS {
             findings.truncate(MAX_FINDINGS);
             truncated = true;

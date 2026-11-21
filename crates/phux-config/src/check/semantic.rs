@@ -2,6 +2,7 @@
 //! runtime.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use super::{Fault, Finding, array_entry_source, push_semantic, suggest};
 use crate::keybind::{KeybindError, Resolver, parse_chord, parse_chord_sequence};
@@ -12,13 +13,22 @@ pub(super) fn semantic_pass(
     config: &Config,
     provenance: &ConfigProvenance,
     findings: &mut Vec<Finding>,
+    config_path: &Path,
+    installed_themes: Option<&Path>,
 ) {
     defaults_findings(&config.defaults, provenance, findings);
     limits_findings(&config.limits, provenance, findings);
     keybinding_findings(&config.keybindings, provenance, findings);
     hook_findings(&config.hooks, provenance, findings);
     status_widget_findings(&config.status, provenance, findings);
-    theme_findings(&config.theme, provenance, findings);
+    theme_findings(
+        &config.theme,
+        &config.plugins,
+        provenance,
+        findings,
+        config_path,
+        installed_themes,
+    );
 }
 
 /// `[defaults]` values that parse as any `u32` but have a ceiling. Flagged
@@ -362,11 +372,15 @@ fn diagnostic_path(kb: &KeybindingsCfg, binding: &str) -> String {
 /// `[theme]` is a free-form `slot -> color` map, so a misspelt slot or a
 /// colour the renderer cannot parse deserializes fine and is dropped at
 /// paint time (with only a log warning). `name` and `file` select a theme
-/// rather than override a slot, so they are not slots.
+/// rather than override a slot. Reload refuses a selector
+/// [`crate::theme::resolve_selected`] cannot load; this reports that error.
 fn theme_findings(
     theme: &crate::ThemeCfg,
+    plugins: &[crate::plugin::PluginConfigEntry],
     provenance: &ConfigProvenance,
     findings: &mut Vec<Finding>,
+    config_path: &Path,
+    installed: Option<&Path>,
 ) {
     let slots = theme_slots::slot_names();
     for (key, spec) in theme.slot_overrides() {
@@ -384,5 +398,57 @@ fn theme_findings(
             );
             push_semantic(findings, provenance, path, Fault::BadValue, message);
         }
+    }
+    if let Some((path, fault, message)) =
+        theme_selector_finding(theme, plugins, config_path, installed)
+    {
+        push_semantic(findings, provenance, path, fault, message);
+    }
+}
+
+/// The reload error for the selector [`crate::ThemeCfg::selection`] chooses.
+/// `file` wins over `name`, so a missing file is the only selector finding
+/// when both are set. An empty plugin list contributes no plugin themes. A
+/// manifest that fails to load is skipped; the installed catalog is still
+/// checked, and the broken plugin is not a finding of its own.
+fn theme_selector_finding(
+    theme: &crate::ThemeCfg,
+    plugins: &[crate::plugin::PluginConfigEntry],
+    config_path: &Path,
+    installed: Option<&Path>,
+) -> Option<(String, Fault, String)> {
+    let loaded = if plugins.is_empty() {
+        Vec::new()
+    } else {
+        crate::plugin::load_enabled_manifests(config_path, plugins)
+    };
+    let error = crate::theme::resolve_selected_in(theme, &loaded, installed).err()?;
+    let (path, fault) = selector_fault(theme.selection(), &error)?;
+    Some((path.to_owned(), fault, error.to_string()))
+}
+
+/// Where a failed selector is reported. [`crate::theme::ThemeSelection::None`]
+/// does not fail [`crate::theme::resolve_selected_in`].
+const fn selector_fault(
+    selection: crate::theme::ThemeSelection<'_>,
+    error: &crate::theme::ThemeError,
+) -> Option<(&'static str, Fault)> {
+    match selection {
+        crate::theme::ThemeSelection::None => None,
+        crate::theme::ThemeSelection::File(_) => Some(("theme.file", Fault::BadValue)),
+        crate::theme::ThemeSelection::Name(_) => Some(("theme.name", name_fault(error))),
+    }
+}
+
+/// A name missing from the catalog is an unknown name. A catalog entry whose
+/// `colors.toml` does not load is a bad value, same as a `file` that fails.
+const fn name_fault(error: &crate::theme::ThemeError) -> Fault {
+    match error {
+        crate::theme::ThemeError::NotFound(_) | crate::theme::ThemeError::InvalidName(_) => {
+            Fault::UnknownName
+        }
+        crate::theme::ThemeError::Io { .. }
+        | crate::theme::ThemeError::Parse { .. }
+        | crate::theme::ThemeError::Missing { .. } => Fault::BadValue,
     }
 }

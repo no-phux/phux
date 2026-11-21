@@ -254,7 +254,8 @@ chrome some people can't see at all.
 - `phux theme show` prints the resolved colours and the contrast ratio.
 - `phux config show` shows what `[theme]` holds after layering.
 - `phux config check` flags a slot name phux doesn't know (with the
-  nearest real slot) and a colour it can't parse.
+  nearest real slot), a colour it can't parse, and a `name` or `file`
+  that does not resolve.
 
 ```text
 $ phux config check
@@ -263,6 +264,7 @@ theme.dim: bad value: `lime` is not a colour (use a name like `cyan`, an index 0
 2 problems
 ```
 
-phux itself ignores either mistake and the slot keeps its colour, so run
+phux itself ignores a bad slot and the slot keeps its colour, so run
 the check after editing `[theme]`. A `[theme] name` that matches no
-installed theme makes `phux config reload` refuse the file.
+installed theme, or a `file` that does not load, is the same refusal
+`phux config check` and `phux config reload` both report.
