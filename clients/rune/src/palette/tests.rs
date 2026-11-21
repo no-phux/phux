@@ -148,3 +148,49 @@ fn an_empty_query_keeps_list_order() {
     assert_eq!(hits.len(), items.len());
     assert_eq!(hits[0].item, items[0]);
 }
+
+#[test]
+fn terminals_sit_under_their_tab_and_a_search_keeps_the_heading() {
+    let terminal = |n: u32, title: &str| Item {
+        title: title.to_owned(),
+        detail: format!("work · @{n}"),
+        kind: "terminal",
+        target: Target::Terminal {
+            id: ResourceId::local(n),
+            session: "work".to_owned(),
+        },
+    };
+    let tab = |title: &str, panes: [u32; 2]| TabGroup {
+        title: title.to_owned(),
+        session: "work".to_owned(),
+        panes: panes.map(ResourceId::local).to_vec(),
+    };
+    let items: Vec<_> = [(1, "vim"), (2, "zsh"), (3, "claude"), (4, "htop")]
+        .map(|(n, title)| terminal(n, title))
+        .into();
+    let tabs = [tab("editor", [1, 2]), tab("agents", [3, 4])];
+    let rows = |query| {
+        let hits = rank_grouped(items.clone(), &tabs, query);
+        hits.into_iter()
+            .map(|hit| (hit.item.kind, hit.item.title))
+            .collect::<Vec<_>>()
+    };
+    let row = |kind, title: &str| (kind, title.to_owned());
+    assert_eq!(
+        rows(""),
+        [
+            row("tab", "editor"),
+            row("pane", "vim"),
+            row("pane", "zsh"),
+            row("tab", "agents"),
+            row("pane", "claude"),
+            row("pane", "htop"),
+        ]
+    );
+    // A pane brings its heading; a tab's title brings all its panes.
+    assert_eq!(rows("htop"), [row("tab", "agents"), row("pane", "htop")]);
+    assert_eq!(
+        rows("editor"),
+        [row("tab", "editor"), row("pane", "vim"), row("pane", "zsh")]
+    );
+}

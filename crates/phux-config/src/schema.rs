@@ -289,7 +289,9 @@ pub enum NotifyMode {
 
 /// `[notifications] from-programs`: whether a pane's own desktop
 /// notification sequences (OSC 9, OSC 777) reach anyone.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, schemars::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum FromPrograms {
     /// Ignored: no escape sequence a pane prints raises a notification.
