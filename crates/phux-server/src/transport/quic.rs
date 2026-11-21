@@ -292,6 +292,10 @@ impl FrameWriter for QuicWriter {
         Some(self.diagnostic_tracker())
     }
 
+    fn peer_route_label(&self) -> Option<String> {
+        Some(self.send.window().connection().remote_address().to_string())
+    }
+
     async fn write_frame(&mut self, frame: &[u8]) -> io::Result<()> {
         let _write = self.diagnostics.tracker().begin_write();
         self.send.write_all(frame).await

@@ -113,7 +113,7 @@ pub(super) async fn ws_admit(
     let (tx, rx) = ws.split();
     Ok((
         WsReader { rx },
-        WsWriter { tx },
+        WsWriter { tx, remote: peer },
         crate::auth::ConnectionIdentity {
             peer: peer_identity,
             ssh_origin: None,

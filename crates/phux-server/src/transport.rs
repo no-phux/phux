@@ -140,6 +140,15 @@ pub(crate) trait FrameWriter {
         None
     }
 
+    /// Peer address this writer sends to, when the transport already has one.
+    ///
+    /// Address text only (`IP`, and the port when the stored type is a socket
+    /// address). Never a certificate, token, path, or payload. Writers
+    /// without an address leave the default.
+    fn peer_route_label(&self) -> Option<String> {
+        None
+    }
+
     async fn write_frame(&mut self, frame: &[u8]) -> io::Result<()>;
 
     /// Write back-to-back encoded frames; `ends` holds each frame's exclusive

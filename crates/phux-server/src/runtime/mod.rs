@@ -40,6 +40,7 @@ mod privacy;
 mod process_env;
 mod pump;
 mod reply;
+pub mod reply_route;
 mod resume;
 pub mod revocation;
 #[cfg(test)]

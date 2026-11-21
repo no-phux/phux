@@ -195,10 +195,7 @@ impl WtListener {
                 recv,
                 frames: super::FrameAssembler::default(),
             },
-            WtWriter {
-                send,
-                _connection: connection,
-            },
+            WtWriter { send, connection },
             identity,
         ))
     }
@@ -329,11 +326,16 @@ impl FrameReader for WtReader {
 /// round trip instead of queueing megabytes.
 pub(crate) struct WtWriter {
     send: WtSend,
-    /// Keeps the WebTransport session alive for the stream's lifetime.
-    _connection: quinn::Connection,
+    /// Session, kept alive for the stream's lifetime. Its remote address is
+    /// the route label.
+    connection: quinn::Connection,
 }
 
 impl FrameWriter for WtWriter {
+    fn peer_route_label(&self) -> Option<String> {
+        Some(self.connection.remote_address().to_string())
+    }
+
     async fn write_frame(&mut self, frame: &[u8]) -> io::Result<()> {
         match &mut self.send {
             WtSend::Plain(send) => send.write_all(frame).await,

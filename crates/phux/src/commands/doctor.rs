@@ -20,6 +20,7 @@ pub(crate) mod other_host;
 mod permissions;
 mod remote;
 mod remote_cert;
+mod reply_route;
 mod server_health;
 mod supervision;
 
@@ -31,6 +32,7 @@ use credentials::{check_client_certs, check_token_store, check_workload_authorit
 use permissions::check_permissions;
 use remote::{check_remote_listeners, check_remote_reachable};
 use remote_cert::{check_remote_cert, check_remote_cert_chain};
+use reply_route::check_reply_route;
 use server_health::check_server_health;
 use supervision::check_supervision;
 
@@ -129,6 +131,7 @@ pub(crate) fn run_doctor(json: bool, socket: Option<PathBuf>) -> ExitCode {
         check_client_certs(),
         check_remote_listeners(&socket_path),
         check_remote_reachable(&socket_path),
+        check_reply_route(),
         check_logs(),
         check_audit(&socket_path),
     ]);

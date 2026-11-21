@@ -237,6 +237,7 @@ async fn step_succeeded<W: FrameWriter>(
         Some(Ok(())) => true,
         Some(Err(err)) => {
             debug!(?client_id, error = %err, step, "writer step failed; client task ending");
+            note_reply_route(writer, &err);
             let _ = writer.close().await;
             false
         }
@@ -245,6 +246,17 @@ async fn step_succeeded<W: FrameWriter>(
             false
         }
     }
+}
+
+/// Record a reachability failure for doctor. Close errors are not steps.
+fn note_reply_route<W: FrameWriter>(writer: &W, err: &io::Error) {
+    let Some(kind) = crate::runtime::reply_route::routing_kind(err) else {
+        return;
+    };
+    let peer = writer
+        .peer_route_label()
+        .unwrap_or_else(|| "unknown peer".to_owned());
+    crate::runtime::reply_route::note_unreachable(&peer, kind);
 }
 
 /// A write the revocation interrupted may have stopped mid-frame, so no

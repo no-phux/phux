@@ -154,6 +154,8 @@ impl FrameReader for WsReader {
 /// WebSocket write half.
 pub(crate) struct WsWriter {
     pub(super) tx: futures_util::stream::SplitSink<Ws, Message>,
+    /// Peer socket already in hand at accept.
+    pub(super) remote: SocketAddr,
 }
 
 impl WsWriter {
@@ -166,6 +168,10 @@ impl WsWriter {
 }
 
 impl FrameWriter for WsWriter {
+    fn peer_route_label(&self) -> Option<String> {
+        Some(self.remote.to_string())
+    }
+
     /// Queue one frame as one binary message without flushing; the writer
     /// task flushes once per mailbox drain, so a burst leaves as full TCP
     /// segments instead of one partial segment per frame.
