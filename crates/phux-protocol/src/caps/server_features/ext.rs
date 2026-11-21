@@ -109,6 +109,11 @@ define_server_feature_word! {
         /// outer default colours become its panes' OSC 10/11 answers
         /// mid-attach. A client MUST see the bit before sending the frame.
         ViewportColors = VIEWPORT_COLORS = 0x2000_0000,
+        /// The server answers `CHECKOUT` contract 2: the `show` operation, and
+        /// the `applied` answer and `git_unavailable` refusal for a client whose
+        /// command carries contract 2. Advertised only beside
+        /// [`Self::Checkout`]; a client MUST see the bit before sending `show`.
+        CheckoutV2 = CHECKOUT_V2 = 0x4000_0000,
     }
 }
 

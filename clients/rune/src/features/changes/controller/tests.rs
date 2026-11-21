@@ -98,6 +98,7 @@ fn requests(client: &Client) -> Vec<(u32, CheckoutRequest)> {
                     Command::Checkout {
                         terminal_id,
                         request,
+                        ..
                     },
             } => {
                 assert_eq!(terminal_id, ResourceId::local(1));

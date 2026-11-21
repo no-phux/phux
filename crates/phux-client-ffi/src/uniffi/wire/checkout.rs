@@ -4,9 +4,10 @@
 
 use phux_protocol::checkout::{
     CheckoutAnswer, CheckoutArea, CheckoutBranch, CheckoutBranches, CheckoutCheck,
-    CheckoutCheckState, CheckoutCommit, CheckoutDiff, CheckoutEntry, CheckoutEntryKind,
-    CheckoutFile, CheckoutLog, CheckoutPrState, CheckoutPullRequest, CheckoutRequest,
-    CheckoutReviewDecision, CheckoutStatus, CheckoutTree, CheckoutTreeEntry,
+    CheckoutCheckState, CheckoutCommit, CheckoutCommitDetail, CheckoutCommitFile, CheckoutDiff,
+    CheckoutEntry, CheckoutEntryKind, CheckoutFile, CheckoutLog, CheckoutPrState,
+    CheckoutPullRequest, CheckoutRequest, CheckoutReviewDecision, CheckoutStatus, CheckoutTree,
+    CheckoutTreeEntry,
 };
 
 use phux_client_runtime::control::{CheckoutFailure, CheckoutOutcome, CheckoutResponse};
@@ -62,6 +63,9 @@ pub enum WireCheckoutRequest {
     Stage { paths: Vec<String> },
     /// Unstage paths; answers the refreshed status.
     Unstage { paths: Vec<String> },
+    /// One commit in full, by a 4 to 64 hex digit id; only when the session
+    /// negotiated `checkout-v2`.
+    Show { sha: String },
 }
 
 mirror_enum_from!(WireCheckoutRequest => CheckoutRequest {
@@ -74,6 +78,7 @@ mirror_enum_from!(WireCheckoutRequest => CheckoutRequest {
     PullRequest,
     Stage { paths },
     Unstage { paths },
+    Show { sha },
 });
 
 /// Why a checkout request produced no answer.
@@ -87,6 +92,7 @@ pub enum WireCheckoutError {
     Timeout,
     Busy,
     GitFailed,
+    GitUnavailable,
     ReadFailed,
     GhUnavailable,
     GhUnauthenticated,
@@ -108,6 +114,7 @@ mirror_enum_from!(CheckoutRefusalCode => WireCheckoutError {
     Timeout,
     Busy,
     GitFailed,
+    GitUnavailable,
     ReadFailed,
     GhUnavailable,
     GhUnauthenticated,
@@ -148,7 +155,7 @@ impl From<CheckoutResponse> for WireCheckoutAnswer {
 }
 
 /// A typed answer, or why there is none. `Stage` and `Unstage` answer
-/// `Status`.
+/// `Status`, or `Applied` when the write landed but the status read failed.
 #[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq)]
 pub enum WireCheckoutResult {
     Status {
@@ -171,6 +178,16 @@ pub enum WireCheckoutResult {
     },
     PullRequest {
         pull_request: WireCheckoutPullRequest,
+    },
+    /// The reply to `Show`.
+    Commit {
+        commit: WireCheckoutCommitDetail,
+    },
+    /// A stage or unstage landed, but its refreshed status could not be read
+    /// (`error` says why); read the status again.
+    Applied {
+        error: WireCheckoutError,
+        message: String,
     },
     /// The message is display-only.
     Failed {
@@ -200,6 +217,13 @@ impl From<CheckoutOutcome> for WireCheckoutResult {
                 CheckoutAnswer::PullRequest(pr) => Self::PullRequest {
                     pull_request: pr.into(),
                 },
+                CheckoutAnswer::Commit(commit) => Self::Commit {
+                    commit: commit.into(),
+                },
+                CheckoutAnswer::Applied(refusal) => Self::Applied {
+                    error: refusal.code.into(),
+                    message: refusal.message,
+                },
                 CheckoutAnswer::Refused(refusal) => Self::Failed {
                     error: refusal.code.into(),
                     message: refusal.message,
@@ -220,6 +244,8 @@ pub struct WireCheckoutStatus {
     pub behind: u32,
     pub entries: Vec<WireCheckoutEntry>,
     pub truncated: bool,
+    /// Every changed entry; `None` when the host could not count them all.
+    pub total: Option<u32>,
 }
 
 mirror_from!(CheckoutStatus => WireCheckoutStatus {
@@ -231,6 +257,7 @@ mirror_from!(CheckoutStatus => WireCheckoutStatus {
     behind,
     entries: vec,
     truncated,
+    total,
 });
 
 /// One changed path in one area.
@@ -304,18 +331,58 @@ mirror_from!(CheckoutCommit => WireCheckoutCommit {
     refs,
 });
 
+/// One commit in full: the whole message, the files it changed against its
+/// first parent, and the patch.
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct WireCheckoutCommitDetail {
+    pub commit: WireCheckoutCommit,
+    pub message: String,
+    pub files: Vec<WireCheckoutCommitFile>,
+    pub diff: String,
+    pub truncated: bool,
+}
+
+mirror_from!(CheckoutCommitDetail => WireCheckoutCommitDetail {
+    commit: into,
+    message,
+    files: vec,
+    diff,
+    truncated,
+});
+
+/// One file a commit changed; counts are `None` for a binary file.
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct WireCheckoutCommitFile {
+    pub path: String,
+    pub from: Option<String>,
+    pub added: Option<u32>,
+    pub deleted: Option<u32>,
+    pub binary: bool,
+}
+
+mirror_from!(CheckoutCommitFile => WireCheckoutCommitFile {
+    path,
+    from,
+    added,
+    deleted,
+    binary,
+});
+
 /// Every branch, locals first.
 #[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
 pub struct WireCheckoutBranches {
     pub current: Option<String>,
     pub branches: Vec<WireCheckoutBranch>,
     pub truncated: bool,
+    /// Every branch; `None` when the host could not count them all.
+    pub total: Option<u32>,
 }
 
 mirror_from!(CheckoutBranches => WireCheckoutBranches {
     current,
     branches: vec,
     truncated,
+    total,
 });
 
 /// One branch; `time` is the tip's committer time in Unix seconds.
@@ -366,9 +433,16 @@ pub struct WireCheckoutTree {
     pub dir: String,
     pub entries: Vec<WireCheckoutTreeEntry>,
     pub truncated: bool,
+    /// Every entry; `None` when the host could not count them all.
+    pub total: Option<u32>,
 }
 
-mirror_from!(CheckoutTree => WireCheckoutTree { dir, entries: vec, truncated });
+mirror_from!(CheckoutTree => WireCheckoutTree {
+    dir,
+    entries: vec,
+    truncated,
+    total,
+});
 
 /// One directory entry.
 #[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
@@ -482,6 +556,8 @@ pub struct WireCheckoutPullRequest {
     pub state: WireCheckoutPrState,
     pub url: String,
     pub head_ref: String,
+    /// The branch it merges into; empty from an older host.
+    pub base_ref: String,
     pub is_draft: bool,
     pub review_decision: Option<WireCheckoutReviewDecision>,
     pub checks: Vec<WireCheckoutCheck>,
@@ -493,6 +569,7 @@ mirror_from!(CheckoutPullRequest => WireCheckoutPullRequest {
     state: into,
     url,
     head_ref,
+    base_ref,
     is_draft,
     review_decision: opt,
     checks: vec,

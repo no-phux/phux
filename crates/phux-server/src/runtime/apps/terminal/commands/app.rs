@@ -222,7 +222,11 @@ async fn serve(
         Command::Checkout {
             terminal_id,
             request,
-        } => crate::runtime::apps::terminal::checkout::handle(state, &terminal_id, request).await,
+            contract,
+        } => {
+            crate::runtime::apps::terminal::checkout::handle(state, &terminal_id, request, contract)
+                .await
+        }
         Command::ReportAsked {
             terminal_id,
             id,
