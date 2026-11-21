@@ -13,34 +13,30 @@
 use phux_core::ResumeToken;
 use tokio::sync::watch;
 
-const ESC: u8 = 0x1b;
+use super::osc_scan::OscScan;
+
 /// What follows `ESC ]` in a report.
 const INTRO: &[u8] = b"7501;";
 /// The protocol's 4096-byte sequence limit, less `OSC 7501 ;` and `ST`.
 const MAX_BODY: usize = 4087;
 
-#[derive(Debug, Clone, Copy, Default)]
-enum State {
-    #[default]
-    Ground,
-    /// After `ESC`.
-    Esc,
-    /// After `ESC ]` and this many bytes of [`INTRO`].
-    Intro(usize),
-    Body,
-    /// After `ESC` inside the body: `\` ends the report.
-    BodyEsc,
-}
-
 /// What a write asks for: `Some(token)` hands one over, `None` withdraws it.
 type Change = Option<ResumeToken>;
 
 /// The scanner and the channel its findings leave on.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) struct Resume {
-    state: State,
-    body: Vec<u8>,
+    osc: OscScan,
     sink: Option<watch::Sender<Change>>,
+}
+
+impl Default for Resume {
+    fn default() -> Self {
+        Self {
+            osc: OscScan::new(INTRO, MAX_BODY),
+            sink: None,
+        }
+    }
 }
 
 impl Resume {
@@ -74,72 +70,39 @@ impl Resume {
     }
 
     /// The last change `bytes` asks for, continuing a report an earlier
-    /// write left open. Costs one `memchr` when no `ESC` is present.
+    /// write left open.
     fn scan(&mut self, bytes: &[u8]) -> Option<Change> {
         let mut change = None;
-        let mut rest = bytes;
-        loop {
-            if matches!(self.state, State::Ground) {
-                let Some(at) = memchr::memchr(ESC, rest) else {
-                    break;
-                };
-                rest = &rest[at..];
+        self.osc.scan(bytes, |body| {
+            if let Some(next) = report(body) {
+                change = Some(next);
             }
-            let Some((&byte, tail)) = rest.split_first() else {
-                break;
-            };
-            rest = tail;
-            self.state = match (self.state, byte) {
-                (State::Body, 0x07) | (State::BodyEsc, b'\\') => {
-                    change = self.report().or(change);
-                    State::Ground
-                }
-                (State::Body, ESC) => State::BodyEsc,
-                // CAN and SUB cancel the sequence; a longer one is not ours.
-                (State::Body, 0x18 | 0x1a) => State::Ground,
-                (State::Body, _) if self.body.len() == MAX_BODY => State::Ground,
-                (State::Body, _) => {
-                    self.body.push(byte);
-                    State::Body
-                }
-                (State::Esc | State::BodyEsc, b']') => State::Intro(0),
-                (State::Intro(seen), _) if INTRO.get(seen) == Some(&byte) => {
-                    if seen + 1 == INTRO.len() {
-                        self.body.clear();
-                        State::Body
-                    } else {
-                        State::Intro(seen + 1)
-                    }
-                }
-                (_, ESC) => State::Esc,
-                _ => State::Ground,
-            };
-        }
+        });
         change
     }
+}
 
-    /// What the finished body asks for. An empty `resume=` withdraws the
-    /// token. A token counts only with a well-formed `app` in the same
-    /// report; anything else changes nothing.
-    fn report(&self) -> Option<Change> {
-        let body = std::str::from_utf8(&self.body).ok()?;
-        let (mut app, mut resume) = (None, None);
-        for pair in body.split(':') {
-            match pair
-                .split_once('=')
-                .map(|(key, value)| (key.trim_ascii(), value.trim_ascii()))
-            {
-                Some(("app", value)) => app = Some(value),
-                Some(("resume", value)) => resume = Some(value),
-                _ => {}
-            }
+/// What the finished body asks for. An empty `resume=` withdraws the
+/// token. A token counts only with a well-formed `app` in the same
+/// report; anything else changes nothing.
+fn report(body: &[u8]) -> Option<Change> {
+    let body = std::str::from_utf8(body).ok()?;
+    let (mut app, mut resume) = (None, None);
+    for pair in body.split(':') {
+        match pair
+            .split_once('=')
+            .map(|(key, value)| (key.trim_ascii(), value.trim_ascii()))
+        {
+            Some(("app", value)) => app = Some(value),
+            Some(("resume", value)) => resume = Some(value),
+            _ => {}
         }
-        let resume = resume?;
-        if resume.is_empty() {
-            return Some(None);
-        }
-        ResumeToken::new(app?, resume).map(Some)
     }
+    let resume = resume?;
+    if resume.is_empty() {
+        return Some(None);
+    }
+    ResumeToken::new(app?, resume).map(Some)
 }
 
 #[cfg(test)]

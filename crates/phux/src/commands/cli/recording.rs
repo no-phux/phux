@@ -149,8 +149,8 @@ pub(crate) struct PlayArgs {
           default_missing = "0")]
     pub(crate) loops: Option<u32>,
 
-    /// Placement axis: `horizontal` puts the new pane to the right;
-    /// `vertical` puts it below.
+    /// Placement axis: `horizontal` stacks the panes, `vertical`
+    /// places them side-by-side.
     #[usage(long, value_enum, default = "horizontal")]
     pub(crate) split: SpawnSplit,
 

@@ -309,6 +309,14 @@ impl Desk {
                     &shown,
                     self.connection.reorder.order(),
                 ));
+                let server = self.connection.client.as_ref().and_then(|c| c.server());
+                for item in &mut items {
+                    if let (Target::Action(action), Some(server)) = (&item.target, &server)
+                        && let Some(feature) = super::compat::too_old(server, *action)
+                    {
+                        item.detail = format!("server too old for {feature}");
+                    }
+                }
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
                 items.extend(self.plugin_actions.items());
                 items.extend(self.resource_items());

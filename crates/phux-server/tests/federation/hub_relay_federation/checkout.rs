@@ -32,6 +32,7 @@ fn checkout_on_a_satellite_terminal_is_answered_by_the_satellite() {
             Command::Checkout {
                 terminal_id: fed.sat_id(),
                 request: CheckoutRequest::Status,
+                contract: phux_protocol::checkout::CHECKOUT_CONTRACT,
             },
         )
         .await;

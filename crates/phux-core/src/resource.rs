@@ -118,6 +118,27 @@ pub struct TerminalLaunch {
     /// the server; reinstalled as that key at every activation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notify: Option<String>,
+    /// The directory the pane's program last reported (`cd /etc`). Not an
+    /// organization wire field; a relaunch starts there while it exists,
+    /// else in [`Self::cwd`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_cwd: Option<PathBuf>,
+    /// The local pane id (`@N`) the pane last had. Not an organization wire
+    /// field; a cold-started server gives it back to the pane on relaunch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_id: Option<u32>,
+}
+
+impl TerminalLaunch {
+    /// Where a relaunch starts: the last reported directory while it is
+    /// still a directory, else the launch directory.
+    #[must_use]
+    pub fn relaunch_cwd(&self) -> Option<&std::path::Path> {
+        self.last_cwd
+            .as_deref()
+            .filter(|dir| dir.is_dir())
+            .or(self.cwd.as_deref())
+    }
 }
 
 /// An opaque id a program handed over (`resume=` on OSC 7501) so the
@@ -357,7 +378,31 @@ mod tests {
     fn a_launch_without_a_token_serializes_without_the_field() {
         let json = serde_json::to_string(&TerminalLaunch::default()).unwrap();
         assert!(!json.contains("resume"), "{json}");
+        assert!(
+            !json.contains("last_cwd") && !json.contains("pane_id"),
+            "{json}"
+        );
         let launch: TerminalLaunch = serde_json::from_str(&json).unwrap();
         assert_eq!(launch.resume, None);
+    }
+
+    #[test]
+    fn a_relaunch_starts_in_the_last_directory_while_it_exists() {
+        let gone = std::env::temp_dir().join("phux-no-such-dir-for-relaunch");
+        let launch = |last: Option<&std::path::Path>| TerminalLaunch {
+            cwd: Some("/launch".into()),
+            last_cwd: last.map(std::path::Path::to_path_buf),
+            ..TerminalLaunch::default()
+        };
+        let here = std::env::temp_dir();
+        assert_eq!(launch(Some(&here)).relaunch_cwd(), Some(here.as_path()));
+        assert_eq!(
+            launch(Some(&gone)).relaunch_cwd(),
+            Some(std::path::Path::new("/launch"))
+        );
+        assert_eq!(
+            launch(None).relaunch_cwd(),
+            Some(std::path::Path::new("/launch"))
+        );
     }
 }

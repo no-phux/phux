@@ -235,10 +235,12 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
         Command::Checkout {
             terminal_id,
             request,
+            contract,
         } => {
             enc.write_u8(crate::wire::frame::COMMAND_TAG_CHECKOUT);
             encode_terminal_id(terminal_id, enc);
             enc.write_bytes(&crate::checkout::encode_request(request));
+            enc.write_u8(*contract);
         }
         Command::ServiceHttpOpen { request } => super::service_http::encode_open(request, enc),
         Command::Mirror { host, op } => super::mirror::encode(host.as_deref(), op, enc),

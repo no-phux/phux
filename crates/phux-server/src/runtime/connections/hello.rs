@@ -251,6 +251,7 @@ const fn runtime_server_features_ext() -> ServerFeatureExtSet {
         ServerFeatureExt::SlotTabs,
         ServerFeatureExt::FileDownload,
         ServerFeatureExt::Checkout,
+        ServerFeatureExt::CheckoutV2,
         ServerFeatureExt::HostServiceHttp,
         ServerFeatureExt::AccessibilityTree,
         ServerFeatureExt::PixelSurface,

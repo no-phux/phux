@@ -1,5 +1,5 @@
 //! The window's design tokens: one object per appearance, built from
-//! phux-brand's tokens (`phux_design`) and the chosen theme, and wrapping
+//! the design tokens (`phux_design`) and the chosen theme, and wrapping
 //! a `rune_kit::Kit` built from the same values.
 //!
 //! This is an owner path: the raw values and the Rune calls the lints keep
@@ -291,8 +291,8 @@ pub(crate) fn ease_host(rgb: u32, roles: &Roles) -> Color {
     let c = Rgb8::hex(rgb);
     let grounds = [roles.layer.ground, roles.layer.sidebar, roles.layer.raised].map(Rgba8::rgb);
     let extreme = roles.mode.extreme();
-    let max = f64::from(tok::IDENTITY.host_ease_max);
-    let bar = f64::from(tok::IDENTITY.host_bar);
+    let max = tok::IDENTITY.host_ease_max;
+    let bar = tok::IDENTITY.host_bar;
     let step = |s: u8| phux_design::solve::mix(c, extreme, max * f64::from(s) / 50.0);
     (0..=50)
         .map(step)
@@ -346,7 +346,7 @@ impl Tokens {
     /// does not already cover.
     fn fingerprint(&self) -> u64 {
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        phux_design::BRAND_VERSION.hash(&mut h);
+        phux_design::DESIGN_VERSION.hash(&mut h);
         self.roles.hash(&mut h);
         self.kit.c.hash(&mut h);
         self.kit.ty.hash(&mut h);

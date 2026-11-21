@@ -6,6 +6,7 @@
 
 use std::cell::Cell;
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -25,6 +26,7 @@ pub(crate) mod bare;
 mod changes;
 mod clipboard_read;
 mod clipboard_write;
+mod compat;
 pub mod connection;
 mod copy_mode;
 mod events;
@@ -187,6 +189,9 @@ pub struct Desk {
     waker: Option<Waker>,
     /// Settings that outlive the window: text size, the sidebar.
     prefs: rune::prefs::Prefs,
+    /// Directory of the shared first-run step. Tests leave this empty until
+    /// they pass a temp directory; production is the server state directory.
+    onboarding_dir: Option<PathBuf>,
     /// What every terminal is doing, for the sidebar's marks.
     pub activities: crate::activity::Activities,
     /// The blink phase a blinking cursor shows now, and when typing last
@@ -323,6 +328,7 @@ impl Desk {
             launch,
             waker: None,
             prefs,
+            onboarding_dir: onboarding::default_state_dir(),
             activities: crate::activity::Activities::default(),
             blink_on: true,
             blink_since: 0.0,

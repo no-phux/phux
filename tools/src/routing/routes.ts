@@ -134,11 +134,15 @@ const ROUTES: Record<string, Surface[]> = {
   // Brand release plumbing is verified by guards. Changed application artwork
   // still routes through its destination's packaging/build checks.
   "brand.{config,lock}.json": [],
-  "scripts/{brand,update-brand,test_brand_update}.py": [],
+  "scripts/{brand,update-brand,test_brand_update,design-pin}.py": [],
   "scripts/{export-product-skills.sh,product-skills}": [],
   "scripts/skills-package/**": [],
   "scripts/build-mobile-ffi-android.sh": [],
   "scripts/ci/setup-android-ndk.sh": [],
+  // The worktree lease and the mbx target heal are guards. They do not
+  // change what any product lane compiles.
+  "scripts/worktree-{claim,verify,release}.sh": [],
+  "scripts/lib/{worktree-owner,worktree-owner_test,mbx-target,mbx-target_test}.sh": [],
 };
 
 /**

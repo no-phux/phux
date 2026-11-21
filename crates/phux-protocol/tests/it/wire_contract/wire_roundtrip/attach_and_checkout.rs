@@ -110,12 +110,16 @@ fn checkout_requests_and_answers_round_trip_and_are_bounded() {
         CheckoutRequest::Unstage {
             paths: vec!["a b.txt".to_owned(), "ü.rs".to_owned()],
         },
+        CheckoutRequest::Show {
+            sha: "c0ffee12".to_owned(),
+        },
     ] {
         let frame = FrameKind::Command {
             request_id: 9,
             command: Command::Checkout {
                 terminal_id: terminal.clone(),
                 request,
+                contract: phux_protocol::checkout::CHECKOUT_CONTRACT,
             },
         };
         crate::common::assert_round_trip(&frame);
@@ -141,6 +145,20 @@ fn checkout_requests_and_answers_round_trip_and_are_bounded() {
             code: CheckoutRefusalCode::NotARepository,
             message: "not a checkout".to_owned(),
         }),
+        CheckoutAnswer::Applied(CheckoutRefusal {
+            code: CheckoutRefusalCode::GitUnavailable,
+            message: "no git".to_owned(),
+        }),
+        CheckoutAnswer::Commit(phux_protocol::checkout::CheckoutCommitDetail {
+            message: "subject\n\nbody".to_owned(),
+            files: vec![phux_protocol::checkout::CheckoutCommitFile {
+                path: "a.rs".to_owned(),
+                added: Some(1),
+                ..Default::default()
+            }],
+            diff: "+x\n".to_owned(),
+            ..Default::default()
+        }),
     ] {
         let reply = FrameKind::CommandResult {
             request_id: 9,
@@ -156,6 +174,7 @@ fn checkout_requests_and_answers_round_trip_and_are_bounded() {
             request: CheckoutRequest::Stage {
                 paths: vec!["x".repeat(MAX_CHECKOUT_REQUEST_BYTES)],
             },
+            contract: phux_protocol::checkout::CHECKOUT_CONTRACT,
         },
     };
     assert_eq!(

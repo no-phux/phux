@@ -3112,6 +3112,7 @@ dependencies = [
  "phux-client-core",
  "phux-client-runtime",
  "phux-config",
+ "phux-design",
  "phux-dial",
  "phux-protocol",
  "phux-server",
@@ -3217,6 +3218,7 @@ name = "phux-design"
 version = "0.161.1"
 dependencies = [
  "serde_json",
+ "sha2 0.11.1",
 ]
 
 [[package]]

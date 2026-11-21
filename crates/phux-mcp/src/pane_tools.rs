@@ -83,12 +83,7 @@ impl SpawnRequest {
         Ok(Self {
             target,
             satellite,
-            // `phux spawn --split` names the child axis directly.
-            split: if split == "vertical" {
-                SplitDir::Vertical
-            } else {
-                SplitDir::Horizontal
-            },
+            split: split_dir(&split),
             ratio,
             projection,
             cwd: bounded_string(args, "cwd", false)?,
@@ -124,6 +119,15 @@ impl SpawnRequest {
             }),
         }
     }
+}
+
+/// `--split` names the divider, the same word `phux spawn` uses.
+fn split_dir(split: &str) -> SplitDir {
+    match split {
+        "vertical" => Direction::Vertical,
+        _ => Direction::Horizontal,
+    }
+    .wire()
 }
 
 /// The optional `retain_secs` argument, bounded to `0..=86400`.
@@ -428,6 +432,14 @@ pub(crate) async fn spatial(args: &Value, edit: Spatial) -> Result<Value, ToolEr
 #[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spawn_split_names_the_divider() {
+        assert_eq!(split_dir("horizontal"), Direction::Horizontal.wire());
+        assert_eq!(split_dir("horizontal"), SplitDir::Vertical);
+        assert_eq!(split_dir("vertical"), Direction::Vertical.wire());
+        assert_eq!(split_dir("vertical"), SplitDir::Horizontal);
+    }
 
     /// Validation refuses before dialing (the socket cannot exist).
     #[tokio::test]

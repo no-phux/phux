@@ -195,6 +195,7 @@ describe("native setup and rust icount", () => {
       "scripts/lib/dev-toolchain.sh",
       "scripts/lib/output.sh",
       "scripts/lib/apple-toolchain-env.sh",
+      "scripts/lib/mbx-target.sh",
     ]);
     expect([...ICOUNT_PR_PATHS]).toEqual([
       "benchmarks/icount-baseline.json",
@@ -251,6 +252,7 @@ describe("native setup and rust icount", () => {
     expect(chosen).not.toContain("icount");
     expect(lanes(["scripts/setup-rust.sh"], "pull_request")).toContain("native");
     expect(lanes(["scripts/lib/dev-toolchain.sh"], "pull_request")).toContain("native");
+    expect(lanes(["scripts/lib/mbx-target.sh"], "pull_request")).toContain("native");
   });
 
   test.each(["scripts/zig-mirrors/build.zig", "scripts/zig-mirrors/build.zig.zon"])(

@@ -316,6 +316,8 @@ pub(crate) fn launch_of(
         restore: None,
         resume: None,
         notify: None,
+        last_cwd: None,
+        pane_id: None,
     }
 }
 

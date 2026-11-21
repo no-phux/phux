@@ -17,6 +17,7 @@ pub mod json_schema;
 pub mod keybind;
 pub mod loader;
 pub mod mirror;
+pub mod onboarding;
 pub mod overlay;
 pub mod plugin;
 pub mod producer;
@@ -43,9 +44,10 @@ pub use mirror::MirrorConfigEntry;
 pub use phux_config_core::guard as production;
 use phux_config_core::layer;
 pub use phux_config_core::{
-    ConfigError, ConfigProvenance, KeyOrigin, LayerSource, MAX_EXTENDS_DEPTH, OrganizeCfg,
-    RemoteConfigEntry, RuneCfg, SessionConfigEntry, byte_offset_to_line_col, host_color, instance,
-    known_authorities, remote, server_bundle, session_color, socket,
+    ConfigError, ConfigProvenance, IconConfigEntry, KeyOrigin, LayerSource, MAX_EXTENDS_DEPTH,
+    OrganizeCfg, RemoteConfigEntry, RuneCfg, SessionConfigEntry, byte_offset_to_line_col,
+    host_color, instance, known_authorities, pane_icon, remote, server_bundle, session_color,
+    socket,
 };
 pub use producer::ProducerConfigEntry;
 pub use project::ProjectConfigEntry;

@@ -21,8 +21,10 @@ fn host_marks_read_in_every_theme() {
                 let name = theme.map_or("system", |t| t.id);
                 // Eased for the sidebar; the focused card's rim sits on
                 // the window ground, a shade away.
-                let mark = contrast(host, sidebar);
-                if mark < IDENTITY.host_bar || contrast(host, ground) < IDENTITY.host_bar - 0.1 {
+                let mark = f64::from(contrast(host, sidebar));
+                if mark < IDENTITY.host_bar
+                    || f64::from(contrast(host, ground)) < IDENTITY.host_bar - 0.1
+                {
                     low.push(format!("{id} on {name}/{dark}: {mark:.2}"));
                 }
             }
@@ -120,6 +122,7 @@ fn listed(dark: bool) -> rune::Runtime<Desk> {
             activation: None,
             exec: None,
             foreground: None,
+            icon: None,
         })
         .collect();
     let mut topology = crate::desk::topology(vec![session], panes);

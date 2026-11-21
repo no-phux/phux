@@ -272,6 +272,8 @@ pub fn core_launch(
                 // `phux.notify/v1` writes set `notify`.
                 resume: None,
                 notify: None,
+                last_cwd: None,
+                pane_id: None,
             }))
         }
         phux_core::ResourceKind::AgentSession => {

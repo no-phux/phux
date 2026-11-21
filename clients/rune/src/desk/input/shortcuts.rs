@@ -9,6 +9,9 @@ use crate::keys::Shortcut;
 
 impl Desk {
     pub fn shortcut(&mut self, action: Shortcut, tx: &mut Tx) {
+        if self.refuse_too_old(action) {
+            return;
+        }
         match action {
             Shortcut::Copy => self.copy(tx),
             Shortcut::SelectAll => self.select_all(tx),

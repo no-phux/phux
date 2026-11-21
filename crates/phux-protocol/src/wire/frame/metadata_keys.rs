@@ -242,8 +242,11 @@ pub const RESOURCE_ASKED_KEY: &str = "phux.agent.asked/v1";
 pub const RESOURCE_AGENT_SESSION_KEY: &str = "phux.agent-session/v1";
 
 /// Conventional Terminal-scoped metadata key for the server-observed
-/// foreground process and available-shell answer. Clients may read and
-/// subscribe to this key but MUST NOT set or delete it.
+/// foreground process and available-shell answer.
+///
+/// It also carries the `icon` a program in the pane set
+/// (`OSC 1337 ; SetUserVar=phux_icon`). Clients may read and subscribe to
+/// this key but MUST NOT set or delete it.
 pub const RESOURCE_PANE_OCCUPANT_KEY: &str = "phux.pane-occupant/v1";
 
 /// Server-owned Terminal-scoped record of the connection that last typed

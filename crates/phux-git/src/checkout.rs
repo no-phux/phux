@@ -16,6 +16,7 @@ use crate::status::{failure, parse_status};
 mod beneath;
 mod parse;
 mod pr;
+mod show;
 mod types;
 
 pub use beneath::relative;
@@ -29,8 +30,8 @@ use parse::{text_at_line, tracking};
 pub use pr::{Check, CheckState, PrState, PullRequest, ReviewDecision};
 use types::Result;
 pub use types::{
-    BranchList, BranchRef, Change, CheckoutError, Commit, EntryKind, FileDiff, FileText, Listing,
-    ListingEntry, LogPage, Snapshot,
+    BranchList, BranchRef, Change, CheckoutError, Commit, CommitDetail, CommitFile, EntryKind,
+    FileDiff, FileText, Listing, ListingEntry, LogPage, Snapshot,
 };
 
 /// The longest a `git` read may run.
@@ -56,6 +57,9 @@ const MAX_COUNTED_UNTRACKED: usize = 200;
 const BINARY_SNIFF: usize = 8000;
 /// A directory with more entries than this is cut without sorting the rest.
 const MAX_SCANNED_ENTRIES: usize = 50_000;
+
+/// One commit as [`parse_commit`] reads it.
+const LOG_FORMAT: &str = "%H%x1f%h%x1f%an%x1f%ae%x1f%at%x1f%D%x1f%s";
 
 const GIT_ENV: [(&str, &str); 4] = [
     ("GIT_OPTIONAL_LOCKS", "0"),
@@ -119,6 +123,7 @@ impl Checkout {
         )?;
         let text = complete_records(&out);
         let status = parse_status(&text);
+        let total = (!out.truncated).then_some(status.entries.len());
         let unstaged = self.numstat(false);
         let staged = self.numstat(true);
         let mut counted_untracked = 0;
@@ -154,6 +159,7 @@ impl Checkout {
             behind: status.branch.behind,
             changes,
             truncated,
+            total,
         })
     }
 
@@ -193,13 +199,14 @@ impl Checkout {
         let limit = limit.clamp(1, MAX_LOG_LIMIT);
         let skip = format!("--skip={skip}");
         let count = format!("--max-count={}", limit + 1);
+        let format = format!("--format={LOG_FORMAT}");
         let mut args = vec![
             "-c",
             "log.showSignature=false",
             "log",
             "--no-color",
             "-z",
-            "--format=%H%x1f%h%x1f%an%x1f%ae%x1f%at%x1f%D%x1f%s",
+            &format,
             &skip,
             &count,
             "HEAD",
@@ -241,12 +248,14 @@ impl Checkout {
             .filter_map(|line| parse_branch(line, current.as_deref()))
             .partition(|branch| !branch.remote);
         local.extend(remote);
+        let total = (!out.truncated).then_some(local.len());
         let truncated = out.truncated || local.len() > MAX_ENTRIES;
         local.truncate(MAX_ENTRIES);
         Ok(BranchList {
             current,
             branches: local,
             truncated,
+            total,
         })
     }
 
@@ -260,7 +269,7 @@ impl Checkout {
             (dir, format!("{dir}/"))
         };
         let opened = beneath::open_dir(&self.root, rel).map_err(|walk| walk.into_error(dir))?;
-        let (found, mut truncated) = beneath::list(opened, MAX_SCANNED_ENTRIES)
+        let (found, scan_cut) = beneath::list(opened, MAX_SCANNED_ENTRIES)
             .map_err(|error| io_error(&format!("Could not list {dir}"), &error))?;
         let mut entries: Vec<ListingEntry> = found
             .into_iter()
@@ -284,10 +293,15 @@ impl Checkout {
             (a.kind != EntryKind::Directory, &a.name)
                 .cmp(&(b.kind != EntryKind::Directory, &b.name))
         });
-        truncated |= entries.len() > MAX_ENTRIES;
+        let total = (!scan_cut).then_some(entries.len());
+        let truncated = scan_cut || entries.len() > MAX_ENTRIES;
         entries.truncate(MAX_ENTRIES);
         self.mark_ignored(&prefix, &mut entries);
-        Ok(Listing { entries, truncated })
+        Ok(Listing {
+            entries,
+            truncated,
+            total,
+        })
     }
 
     /// Up to `max_bytes` (at most [`MAX_TEXT_BYTES`]; zero means that cap) of
@@ -483,7 +497,7 @@ fn run_git(
         Mode::Read => (GIT_TIMEOUT, Stop::Kill),
         Mode::Write(timeout) => (timeout, Stop::Terminate),
     };
-    Run {
+    let out = Run {
         program: "git",
         dir,
         args: &full,
@@ -496,9 +510,23 @@ fn run_git(
     .exec()
     .map_err(|error| match error {
         RunError::Timeout => CheckoutError::Timeout,
+        RunError::Spawn(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            CheckoutError::GitUnavailable
+        }
         RunError::Spawn(error) => CheckoutError::Git(format!("Could not run git: {error}")),
         RunError::Wait(message) => CheckoutError::Git(format!("git did not finish: {message}")),
-    })
+    })?;
+    // macOS's `/usr/bin/git` is a shim that fails this way without the
+    // Command Line Tools.
+    if !out.status.success()
+        && (out
+            .stderr
+            .contains("xcrun: error: invalid active developer path")
+            || out.stderr.contains("No developer tools were found"))
+    {
+        return Err(CheckoutError::GitUnavailable);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

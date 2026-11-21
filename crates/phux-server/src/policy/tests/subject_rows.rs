@@ -414,12 +414,12 @@ fn rows(world: &mut World) -> Vec<Row> {
             "input",
         ),
         on_terminal(
-            command(Command::Checkout {
-                terminal_id: t.clone(),
-                request: phux_protocol::checkout::CheckoutRequest::Stage {
+            command(Command::checkout(
+                t.clone(),
+                phux_protocol::checkout::CheckoutRequest::Stage {
                     paths: vec!["a.txt".to_owned()],
                 },
-            }),
+            )),
             "input",
         ),
         on_terminal(

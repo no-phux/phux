@@ -166,6 +166,26 @@ phux does not read OSC 7. It asks the operating system for the folder of
 the pane's process (on Linux and macOS), when a command finishes and when
 output goes quiet. A program cannot set the pane's folder by escape.
 
+## Pane icon (OSC 1337 SetUserVar)
+
+A program can give its pane an icon with the user-variable sequence iTerm2
+and WezTerm use, so it works from a shell on the far side of `ssh` too:
+
+```sh
+printf '\033]1337;SetUserVar=phux_icon=%s\007' "$(printf '🦀' | base64)"
+printf '\033]1337;SetUserVar=phux_icon=\007'   # remove it
+```
+
+The value is base64 of an icon: an emoji or a Nerd Font symbol, 1 to 32
+bytes of UTF-8 with no space, control character, or text-direction
+override. An empty value removes
+the icon; a value that breaks the rule, or another variable, changes
+nothing. The icon stays until the program changes or removes it, or the
+server restarts. The server publishes it as `icon` in the pane's
+`phux.pane-occupant/v1` record, and the terminal UI and the desktop draw it
+before the pane's name in tabs and lists. It comes before an icon from your
+[`[[icons]]`](./clients.md#pane-icons) config.
+
 ## Notifications and the bell
 
 By default phux ignores OSC 9 (other than `9;4`), OSC 777, and OSC 99 from
@@ -283,6 +303,7 @@ agent record, so the record says what a program claims, not who it is.
 | OSC 777 | Ignored, or a note with `from-programs = "notes"` |
 | OSC 99 | Ignored |
 | OSC 133 | Prompt state, command events, exit codes; `A` ends active OSC 7501 records |
+| OSC 1337 | `SetUserVar=phux_icon` sets the [pane icon](#pane-icon-osc-1337-setuservar); `Copy` is a [clipboard](#clipboard-osc-52) write |
 | OSC 7501 | [Program status](./program-protocol.md#program-status-osc-7501) |
 | BEL | `bell` event |
 
@@ -291,3 +312,4 @@ agent record, so the record says what a program claims, not who it is.
 | Date | Revision | Changes |
 | --- | --- | --- |
 | 2026-10-21 | 1 | First version. |
+| 2026-11-21 | 2 | Pane icon (OSC 1337 `SetUserVar=phux_icon`). |

@@ -29,9 +29,9 @@ pub(crate) enum SignalArg {
     Kill,
 }
 
-/// Parsed `--split` spelling; creation verbs name the placement axis, while
-/// existing-pane edits name the divider. Keep the per-command help explicit.
-/// `h` / `v` are accepted shorthands.
+/// Parsed `--split`. `horizontal` stacks the new pane below; `vertical`
+/// places it to the right. Creation verbs and existing-pane edits share
+/// this meaning. `h` / `v` are accepted shorthands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum SpawnSplit {
     #[usage(visible_alias = "h")]

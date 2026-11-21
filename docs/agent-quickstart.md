@@ -267,7 +267,8 @@ object; branch on `error.code` (except `status`, `ls --all` and
 Exit codes, from `phux help exit-codes`: `0` success, `1` failure (no
 server, no such target, or the command failed), `2` a usage error or a
 refused request, `3` the selector was resolved against a partial view of
-the fleet, `124` a wait timed out, `125` `phux run` timed out. The same
+the fleet, `4` the server never answered (within `PHUX_TIMEOUT`, default
+10 seconds), `124` a wait timed out, `125` `phux run` timed out. The same
 table is [exit codes](./reference/exit-codes.md).
 
 Clients on this machine dial a Unix socket: `--socket`, else

@@ -311,6 +311,10 @@ impl ControlPlane {
                     .and_then(serde_json::Value::as_str)
                     .filter(|name| !name.is_empty() && !name.chars().any(char::is_control))
                     .map(str::to_owned);
+                let icon = field("icon")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|icon| phux_config_core::pane_icon::is_icon(icon))
+                    .map(str::to_owned);
                 if let Some(pane) = self
                     .topology
                     .as_mut()
@@ -319,6 +323,7 @@ impl ControlPlane {
                     // Names the pane (`PaneDescriptor::label`); bindings
                     // re-read the topology on this event.
                     pane.foreground = foreground;
+                    pane.icon = icon;
                 }
                 Event::BackgroundWork {
                     terminal_id,

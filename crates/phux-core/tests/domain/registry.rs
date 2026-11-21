@@ -62,6 +62,8 @@ fn creation_issues_handles_and_seeds_facets_from_the_launch_spec() {
                 restore: None,
                 resume: None,
                 notify: None,
+                last_cwd: None,
+                pane_id: None,
             })),
             ..shell()
         },

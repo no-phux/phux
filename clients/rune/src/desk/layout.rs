@@ -304,6 +304,16 @@ impl Desk {
             .map_or(0.0, |size| (if horizontal { size[0] } else { size[1] }) - phux_design::tokens::SPACE.card_gap)
     }
 
+    /// A divider drag that ended without a drop (Escape, focus lost, a
+    /// system touch cancel): the preview goes back and nothing is written.
+    pub fn cancel_divider(&mut self) {
+        if self.connection.dragging.take().is_some()
+            && let Some(client) = self.connection.client.clone()
+        {
+            self.refresh_layout(&client);
+        }
+    }
+
     /// A divider drag: preview the ratio locally, and write it on release.
     pub fn drag_divider(&mut self, path: SplitPath, ratio: f32, done: bool) {
         let ratio = ratio.clamp(MIN_RATIO, 1.0 - MIN_RATIO);

@@ -2,6 +2,8 @@
 
 use super::*;
 
+mod show;
+
 /// A fresh repository named for its test, so tests run in parallel.
 fn repo(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("phux-checkout-{name}-{}", std::process::id()));

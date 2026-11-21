@@ -27,6 +27,7 @@ fn ordinary_hub_admission_requires_each_commands_own_extended_bit() {
             Command::Checkout {
                 terminal_id: ResourceId::local(1),
                 request: CheckoutRequest::Status,
+                contract: phux_protocol::checkout::CHECKOUT_CONTRACT,
             },
             ServerFeatureExt::Checkout,
         ),
@@ -70,6 +71,31 @@ fn ordinary_hub_admission_requires_each_commands_own_extended_bit() {
             );
         }
     }
+}
+
+#[test]
+fn hub_forwards_checkout_show_only_to_a_satellite_with_checkout_v2() {
+    let show = Command::Checkout {
+        terminal_id: ResourceId::local(1),
+        request: phux_protocol::checkout::CheckoutRequest::Show {
+            sha: "abcd".to_owned(),
+        },
+        contract: phux_protocol::checkout::CHECKOUT_CONTRACT,
+    };
+    let mut session = negotiated(ServerFeature::ALL);
+    session.set_satellite_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Checkout]));
+    assert!(matches!(
+        session.command_rejection(&show),
+        Some(CommandResult::Error {
+            code: ErrorCode::UnsupportedSatelliteRoute,
+            ..
+        })
+    ));
+    session.set_satellite_features_ext(ServerFeatureExtSet::with(&[
+        ServerFeatureExt::Checkout,
+        ServerFeatureExt::CheckoutV2,
+    ]));
+    assert!(session.command_rejection(&show).is_none());
 }
 
 /// ADR-0124: `retain_secs` crosses only with `RETAIN_ON_EXIT`; the hub
@@ -237,6 +263,7 @@ fn hub_refuses_extended_commands_to_a_satellite_without_their_bit() {
     let (target, checkout) = route_to_satellite(&Command::Checkout {
         terminal_id: ResourceId::satellite(host(), 9),
         request: request.clone(),
+        contract: phux_protocol::checkout::CHECKOUT_CONTRACT,
     })
     .expect("CHECKOUT routes to its satellite");
     assert_eq!(target, host());
@@ -245,6 +272,7 @@ fn hub_refuses_extended_commands_to_a_satellite_without_their_bit() {
         Command::Checkout {
             terminal_id: ResourceId::local(9),
             request,
+            contract: phux_protocol::checkout::CHECKOUT_CONTRACT,
         }
     );
     let mut older = RelaySession::new(host(), BootstrapLimits::default());

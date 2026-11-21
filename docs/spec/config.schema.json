@@ -441,6 +441,34 @@
       ],
       "type": "object"
     },
+    "IconConfigEntry": {
+      "additionalProperties": false,
+      "description": "One `[[icons]]` entry. Every matcher it names must match.",
+      "properties": {
+        "cwd": {
+          "description": "The working folder: `*` matches any run of characters, including `/`,\nand a leading `~` is the home folder.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "icon": {
+          "description": "The glyph.",
+          "type": "string"
+        },
+        "process": {
+          "description": "The foreground program's name, matched exactly (`cargo`, `htop`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "icon"
+      ],
+      "type": "object"
+    },
     "KeepAwake": {
       "description": "When the server keeps the machine from idle-sleeping\n(`defaults.keep-awake`).",
       "oneOf": [
@@ -1748,6 +1776,22 @@
       ],
       "default": {},
       "description": "`[host]`: this machine as clients draw it (its colour override)."
+    },
+    "icons": {
+      "default": [],
+      "description": "`[[icons]]`: the icon clients draw before a pane's label.",
+      "items": {
+        "$ref": "#/definitions/IconConfigEntry"
+      },
+      "type": "array"
+    },
+    "icons-append": {
+      "default": [],
+      "description": "`[[icons]]`: the icon clients draw before a pane's label.",
+      "items": {
+        "$ref": "#/definitions/IconConfigEntry"
+      },
+      "type": "array"
     },
     "keybindings": {
       "allOf": [
