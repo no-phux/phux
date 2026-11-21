@@ -265,6 +265,14 @@ name in it, pairing times out. Check in this order:
 If the two cannot share a network, pair through a
 [relay](./remote.md#relays).
 
+**A paired device that keeps reconnecting while the server looks fine.**
+If `phux doctor` warns `remote-replies`, the listener is bound and the
+pairing is good, but this machine cannot send its replies back to that
+device: it has no route to it. `route -n get <address>` (macOS) or
+`ip route get <address>` (Linux) shows which route a reply takes; a LAN or
+VPN route covering the private network's range is the usual cause. Fix the
+route; pairing again or restarting phux does not help.
+
 ## Keys, clipboard, and agents
 
 **Keys do nothing, or the prefix is wrong.** `phux config check` reports

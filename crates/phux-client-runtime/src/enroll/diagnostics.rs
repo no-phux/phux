@@ -44,7 +44,7 @@ impl EnrollmentTrace {
         match tokio::time::timeout(crate::dial::DIAL_TIMEOUT, exchanged).await {
             Err(_) => {
                 self.record("enroll_deadline");
-                Err(crate::dial::timed_out(name))
+                Err(crate::dial::timed_out(name, crate::dial::DIAL_TIMEOUT))
             }
             Ok(Err(error)) => {
                 self.record(error_phase(&error));

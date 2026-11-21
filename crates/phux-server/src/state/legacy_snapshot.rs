@@ -135,7 +135,7 @@ impl ServerState {
                 .with_windows(windows)
                 .with_resources(panes);
         if self.has_remote_listener_report() {
-            snapshot = snapshot.with_listeners(self.remote_listeners().clone());
+            snapshot = snapshot.with_listeners(self.remote_listeners());
         }
         Some(snapshot)
     }
