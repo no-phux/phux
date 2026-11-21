@@ -4,7 +4,7 @@
 use super::{Arc, FrameKey, GridFrame};
 use super::{
     EngineApplyError, EngineEvent, EngineOutcome, InputBlockReason, InputEligibility,
-    KernelDamageKind, KernelEffect, Owner, ResourceId, apply_event,
+    KernelDamageKind, KernelEffect, KernelInput, Owner, ResourceId,
 };
 
 impl Owner {
@@ -22,7 +22,7 @@ impl Owner {
         let mut damaged = Vec::new();
         let mut outcomes = Vec::with_capacity(events.len());
         for event in events {
-            let outcome = self.apply_one(event, &mut damaged);
+            let outcome = self.apply_one(&event, &mut damaged);
             if outcome.error.is_some() {
                 crate::perf::APPLY_ERRORS.incr();
             }
@@ -40,34 +40,42 @@ impl Owner {
         outcomes
     }
 
-    fn apply_one(&mut self, event: EngineEvent, damaged: &mut Vec<ResourceId>) -> EngineOutcome {
+    fn apply_one(&mut self, event: &EngineEvent, damaged: &mut Vec<ResourceId>) -> EngineOutcome {
+        let Some(input) = event.input() else {
+            return EngineOutcome {
+                error: Some(EngineApplyError::Protocol(
+                    "unexpected engine frame".to_owned(),
+                )),
+                ..EngineOutcome::default()
+            };
+        };
         // A frame queued behind a terminal close is stale evidence, including
         // when the close and stale frame share this batch.
-        if event
-            .terminal_id()
+        if input
+            .resource_id()
             .is_some_and(|terminal_id| self.is_closed(terminal_id))
         {
             return EngineOutcome::default();
         }
-        if let EngineEvent::AttachStarted { terminals, .. } = &event {
+        if let KernelInput::AttachStarted { terminals, .. } = input {
             self.prepare_attach(terminals);
         }
         #[cfg(feature = "engine")]
-        let closing = match &event {
-            EngineEvent::Closed { terminal_id, .. } => Some(terminal_id.clone()),
+        let closing = match &input {
+            KernelInput::ResourceClosed { terminal_id, .. } => Some((*terminal_id).clone()),
             _ => None,
         };
         #[cfg(feature = "engine")]
-        let output = match &event {
-            EngineEvent::Output { terminal_id, .. } => Some(terminal_id.clone()),
+        let output = match &input {
+            KernelInput::ResourceOutput { terminal_id, .. } => Some(*terminal_id),
             _ => None,
         };
-        let result = apply_event(&mut self.kernel, event, &mut self.effects);
+        let result = self.kernel.update(input, &mut self.effects);
         #[cfg(feature = "engine")]
         if result.is_ok()
             && let Some(id) = output
         {
-            self.note_view_output(&id);
+            self.note_view_output(id);
         }
         #[cfg_attr(not(feature = "engine"), allow(unused_mut))]
         let mut effects = self.effects.take();

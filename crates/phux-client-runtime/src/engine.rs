@@ -1,7 +1,7 @@
 //! The engine owner thread (ADR-0133 decision 4).
 //!
 //! `SessionKernel` and every engine replica live on one dedicated thread;
-//! owned [`EngineEvent`]s go in over a channel and owned [`EngineOutcome`]s
+//! owned events go in over a channel and owned [`EngineOutcome`]s
 //! come back. With the `engine` feature the adapter is libghostty and every
 //! damaged terminal is re-projected and published before the outcome is
 //! answered, unless a DEC 2026 transaction is holding its last complete frame
@@ -30,13 +30,12 @@ pub use phux_client_core::session::AgentStreamInfo;
 #[cfg(feature = "engine")]
 use phux_client_core::session::ClosedReplica;
 use phux_client_core::session::{
-    AgentSessionDeclaration, EffectBuffer, HistoryRejectionReason, HistoryUnavailableReason,
-    InputBlockReason, InputEligibility, KernelDamageKind, KernelEffect, KernelError, KernelInput,
-    KernelStatus, SessionKernel,
+    EffectBuffer, InputBlockReason, InputEligibility, KernelDamageKind, KernelEffect, KernelError,
+    KernelInput, KernelStatus, SessionKernel,
 };
-use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, BootstrapStreamProfile};
-use phux_protocol::ids::{BootstrapId, ResourceId, StreamId};
-use phux_protocol::wire::frame::{AgentEvent, CloseReason, TombstoneReason};
+use phux_protocol::caps::{BootstrapLimits, BootstrapProfile};
+use phux_protocol::ids::ResourceId;
+use phux_protocol::wire::frame::{AgentEvent, CloseReason};
 
 #[cfg(feature = "engine")]
 use crate::publication::{
@@ -48,7 +47,6 @@ type Adapter = GhosttyAdapter;
 #[cfg(not(feature = "engine"))]
 type Adapter = byte_adapter::ByteAdapter;
 
-mod apply;
 /// The headless replica: a bounded byte buffer per terminal.
 #[cfg(not(feature = "engine"))]
 pub mod byte_adapter;
@@ -64,6 +62,7 @@ mod types;
 mod views;
 
 use query::{Command, Lifecycle, Query, QueuedCommand};
+pub(crate) use types::EngineEvent;
 pub use types::*;
 
 use owner::Owner;

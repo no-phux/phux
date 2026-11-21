@@ -1,9 +1,27 @@
 //! One terminal-scoped render cache, with independently owned frame buffers.
 
 use super::{
-    Arc, EngineError, GridBuffer, GridDamage, GridFrame, Owner, ProjectorSlot, ResourceId,
-    Scrollbar, apply_default_colors, engine_error, frame_colors, monotonic_ms, terminal_defaults,
+    Arc, EngineError, FrameColors, GridBuffer, GridDamage, GridFrame, Owner, ProjectorSlot,
+    ResourceId, Rgb, Scrollbar, apply_default_colors, engine_error, monotonic_ms,
+    terminal_defaults,
 };
+
+fn frame_colors(colors: &libghostty_vt::render::Colors) -> FrameColors {
+    let rgb = |color: libghostty_vt::color::Rgb| Rgb {
+        r: color.r,
+        g: color.g,
+        b: color.b,
+    };
+    FrameColors {
+        background: rgb(colors.background),
+        foreground: rgb(colors.foreground),
+        has_background: false,
+        has_foreground: false,
+        reversed: false,
+        cursor: colors.cursor.map(rgb),
+        palette: Box::new(colors.palette.map(rgb)),
+    }
+}
 
 /// Frames a presentation published and has since replaced, kept until every
 /// consumer lets go so a later projection refills their buffers instead of
