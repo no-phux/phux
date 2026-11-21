@@ -116,6 +116,7 @@ impl std::fmt::Debug for TuiSettings {
             .field("clipboard_write", &self.clipboard_write)
             .field("clipboard_read", &self.clipboard_read)
             .field("notifications", &self.notifications)
+            .field("outer_title", &self.outer_title)
             .finish()
     }
 }

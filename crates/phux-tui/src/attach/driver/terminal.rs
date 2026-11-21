@@ -136,6 +136,10 @@ const POP_TITLE: &[u8] = b"\x1b[23;2t";
 /// `[chrome] title` with `{session}` and `{window}` filled in once (a name
 /// containing `{window}` stays literal). Characters that must never reach a
 /// VT emitter are dropped, since names and pane titles are untrusted.
+#[allow(
+    clippy::literal_string_with_formatting_args,
+    reason = "`{session}` and `{window}` are the option's own placeholders"
+)]
 pub(super) fn outer_title(format: &str, session: &str, window: &str) -> String {
     let mut title = String::new();
     let mut rest = format;
