@@ -1,10 +1,15 @@
 //! Terminal attach, bootstrap, and subscription.
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the split command modules share the parent command namespace"
-)]
 
-use super::*;
+use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities};
+use phux_protocol::wire::frame::{Command, CommandResult, ControlAction, ErrorCode, RolePolicy};
+use tokio_util::sync::CancellationToken;
+
+use crate::resource::ResourceHandle;
+use crate::runtime::commands::results::{
+    AttachResourceFailure, terminal_not_found, wrong_resource_kind,
+};
+use crate::runtime::commands::routing::CommandContext;
+use crate::state::{ClientId, Outbound, RoleEffects, SharedState};
 
 /// Handle `ATTACH_RESOURCE`: subscribe the caller to one
 /// Terminal's content stream, snapshot first, without a session `ATTACH`.

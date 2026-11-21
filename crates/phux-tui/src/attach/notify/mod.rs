@@ -20,6 +20,9 @@ pub(super) const COALESCE: Duration = Duration::from_secs(1);
 /// The shortest gap between two posts of the same kind for the same pane.
 pub(super) const RATE_LIMIT: Duration = Duration::from_secs(10);
 
+/// The rate-limit bucket for notes, beside [`NotifyKind::bucket`]'s.
+const NOTE_BUCKET: u8 = 2;
+
 /// After a notifier is built, edges only re-baseline for this long, so an
 /// attach or session switch never replays every already-blocked agent.
 pub(super) const ATTACH_GRACE: Duration = Duration::from_secs(2);
@@ -303,6 +306,31 @@ impl Notifier {
                     && !(cfg.suppress_focused && track.viewing && client_focused)
             })
         });
+    }
+
+    /// Whether a warn or error note for `key` notifies now: not with
+    /// `mode = "off"`, not (with `suppress-focused`) while the pane is
+    /// `seen` in a focused window, and at most once per [`RATE_LIMIT`].
+    pub(super) fn note_due(
+        &mut self,
+        key: &ResourceId,
+        seen: bool,
+        cfg: NotificationsCfg,
+        now: Instant,
+    ) -> bool {
+        if cfg.mode == NotifyMode::Off || (cfg.suppress_focused && seen && self.client_focused) {
+            return false;
+        }
+        let slot = (key.clone(), NOTE_BUCKET);
+        if self
+            .last_sent
+            .get(&slot)
+            .is_some_and(|sent| now.saturating_duration_since(*sent) < RATE_LIMIT)
+        {
+            return false;
+        }
+        self.last_sent.insert(slot, now);
+        true
     }
 
     /// When the earliest pending post is due.

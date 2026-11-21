@@ -91,7 +91,7 @@ pub fn resolve(name: &str, override_id: Option<&str>) -> HostColor {
 }
 
 /// `[host]`: settings for this machine as other clients see it.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct LocalHostCfg {
     /// Palette id overriding this machine's automatic colour; absent or

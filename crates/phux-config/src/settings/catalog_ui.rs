@@ -2,8 +2,8 @@
 //! chrome, notifications, and the remaining scalar tables.
 
 use super::{
-    Applies, METADATA_VALUE_BYTES_MIN, NOTIFY_MODE, NOTIFY_PROTOCOL, SIDEBAR_POSITION,
-    STATUS_POSITION, SettingKind, SettingSection, SettingSpec, U16_MAX, U32_MAX,
+    Applies, FROM_PROGRAMS, METADATA_VALUE_BYTES_MIN, NOTIFY_MODE, NOTIFY_PROTOCOL,
+    SIDEBAR_POSITION, STATUS_POSITION, SettingKind, SettingSection, SettingSpec, U16_MAX, U32_MAX,
     VOICE_TIMEOUT_MAX_SECS, WHICH_KEY_DELAY_MAX_MS,
 };
 
@@ -19,6 +19,16 @@ pub(super) const ROWS: &[SettingSpec] = &[
                  Chord syntax: modifier letters C, M, A, S joined to the key by a dash, \
                  e.g. C-a or M-Space. C-a is the default because some emulators swallow \
                  C-Space before it reaches the client.",
+        applies: Applies::LiveReload,
+    },
+    SettingSpec {
+        key: "keybindings.defaults",
+        section: SettingSection::Keybindings,
+        kind: SettingKind::Bool,
+        summary: "Keep the shipped key bindings",
+        detail: "false starts from an empty keymap: only bindings from your own config \
+                 layers apply. The shipped command-palette keys stay as the way out \
+                 until you bind command-palette yourself.",
         applies: Applies::LiveReload,
     },
     SettingSpec {
@@ -200,6 +210,16 @@ pub(super) const ROWS: &[SettingSpec] = &[
                  one taking your keys stands out. Your terminal decides how faint text looks.",
         applies: Applies::LiveReload,
     },
+    SettingSpec {
+        key: "chrome.title",
+        section: SettingSection::Chrome,
+        kind: SettingKind::Text,
+        summary: "Window title of the terminal phux runs in",
+        detail: "Shown by your window manager and window switcher while attached. {session} \
+                 becomes the session name and {window} the tab in view. The title you had \
+                 comes back on detach. Empty leaves the title alone.",
+        applies: Applies::LiveReload,
+    },
     // -- [notifications] ----------------------------------------------------
     SettingSpec {
         key: "notifications.mode",
@@ -258,6 +278,16 @@ pub(super) const ROWS: &[SettingSpec] = &[
         detail: "terminal mode also rings the bell; system mode asks the desktop notifier \
                  for its default sound. bell mode always rings.",
         applies: Applies::LiveReload,
+    },
+    SettingSpec {
+        key: "notifications.from-programs",
+        section: SettingSection::Notifications,
+        kind: SettingKind::Choice(FROM_PROGRAMS),
+        summary: "What OSC 9 and OSC 777 from a pane do",
+        detail: "off ignores them, so no escape sequence a pane prints raises a \
+                 notification. notes makes each one the pane's note, as phux notify would, \
+                 at most one a second per pane. Read by the server when it starts.",
+        applies: Applies::NextSpawn,
     },
     // -- [experimental] -----------------------------------------------------
     SettingSpec {

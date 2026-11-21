@@ -340,7 +340,7 @@ fn take_osc(
     let Some((payload_len, terminator_len)) = osc_end(&bytes[2..]) else {
         return Take::NeedMore;
     };
-    note_osc(&bytes[2..2 + payload_len], foreground, background);
+    phux_client::attach::input::note_osc_color(&bytes[2..2 + payload_len], foreground, background);
     if let Some(colors) = ready_colors(*foreground, *background) {
         return Take::Colors(colors);
     }
@@ -466,24 +466,6 @@ fn wait_with(
     }
 }
 
-fn note_osc(
-    payload: &[u8],
-    foreground: &mut Option<TerminalColor>,
-    background: &mut Option<TerminalColor>,
-) {
-    if let Some((selector, value)) = split_once(payload, b';')
-        && let Ok(selector) = std::str::from_utf8(selector)
-        && let Ok(selector) = selector.parse::<u8>()
-        && let Some(color) = parse_color(value)
-    {
-        match selector {
-            10 => *foreground = Some(color),
-            11 => *background = Some(color),
-            _ => {}
-        }
-    }
-}
-
 fn osc_end(bytes: &[u8]) -> Option<(usize, usize)> {
     for (idx, byte) in bytes.iter().enumerate() {
         if *byte == b'\x07' {
@@ -494,43 +476,6 @@ fn osc_end(bytes: &[u8]) -> Option<(usize, usize)> {
         }
     }
     None
-}
-
-fn split_once(bytes: &[u8], delimiter: u8) -> Option<(&[u8], &[u8])> {
-    let idx = bytes.iter().position(|byte| *byte == delimiter)?;
-    Some((&bytes[..idx], &bytes[idx + 1..]))
-}
-
-fn parse_color(value: &[u8]) -> Option<TerminalColor> {
-    let value = std::str::from_utf8(value).ok()?;
-    if let Some(rgb) = value.strip_prefix("rgb:") {
-        let mut components = rgb.split('/');
-        let r = normalize_component(components.next()?)?;
-        let g = normalize_component(components.next()?)?;
-        let b = normalize_component(components.next()?)?;
-        return components
-            .next()
-            .is_none()
-            .then_some(TerminalColor { r, g, b });
-    }
-    let hex = value.strip_prefix('#')?;
-    if hex.len() != 6 {
-        return None;
-    }
-    Some(TerminalColor {
-        r: u8::from_str_radix(&hex[0..2], 16).ok()?,
-        g: u8::from_str_radix(&hex[2..4], 16).ok()?,
-        b: u8::from_str_radix(&hex[4..6], 16).ok()?,
-    })
-}
-
-fn normalize_component(component: &str) -> Option<u8> {
-    if component.is_empty() || component.len() > 4 {
-        return None;
-    }
-    let value = u16::from_str_radix(component, 16).ok()?;
-    let max = (1_u32 << (component.len() * 4)) - 1;
-    u8::try_from((u32::from(value) * 255 + max / 2) / max).ok()
 }
 
 #[cfg(test)]

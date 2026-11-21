@@ -185,12 +185,18 @@ right = [
 # `dim-unfocused`: in a tab with several panes, the ones without focus
 # are painted faint. How faint is up to your terminal.
 #
+# `title`: the window title of the terminal phux runs in, which your
+# window manager and window switcher show. `{session}` is the session
+# name and `{window}` the tab in view. The old title comes back on
+# detach; "" leaves the title alone.
+#
 # [chrome]
 # compact-cols = 64
 # compact-rows = 18
 # min-pane-cols = 40
 # new-tab-after-current = false
 # dim-unfocused = false
+# title = "{session}: {window}"
 
 # Agent notifications. The TUI
 # posts one when an agent becomes blocked or asks for you, and when an
@@ -210,6 +216,14 @@ right = [
 # "osc99" if auto guesses wrong. Inside tmux the sequence is wrapped for
 # passthrough (tmux needs `set -g allow-passthrough on`).
 #
+# A note a program posts with `phux notify` shows as a toast; a warn or
+# error note for a pane you can't see also notifies, the same way.
+#
+# `from-programs`: "off" ignores OSC 9 and OSC 777 from panes, so no
+# escape sequence a pane prints raises a notification. "notes" makes each
+# one the pane's note, at most one a second per pane. The server reads it
+# when it starts.
+#
 # [notifications]
 # mode = "terminal"
 # terminal-protocol = "auto"
@@ -217,4 +231,5 @@ right = [
 # done = true
 # suppress-focused = true
 # sound = false
+# from-programs = "off"
 

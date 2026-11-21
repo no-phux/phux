@@ -37,6 +37,7 @@ test.each<[string[], Surface[]]>([
   [["docs/releasing.md"], []],
   [["README.md"], ["phux"]],
   [["docs/spec/wire-schema.json"], ["phux"]],
+  [["docs/spec/config.schema.json"], ["phux"]],
   [["docs/agents.md"], ["phux"]],
   [["examples/agents/05-program-status.sh"], ["phux"]],
   [["examples/agents/tests/program-status-smoke.sh"], ["phux"]],

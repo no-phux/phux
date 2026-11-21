@@ -281,13 +281,22 @@ fn note_outcome(scope: &Scope, value: Option<&[u8]>) -> FrameOutcome {
     else {
         return FrameOutcome::default();
     };
-    let from = format!(
-        "from {}",
-        phux_client::selector::format_terminal_id(terminal)
-    );
-    let lines = note.body.into_iter().chain([from]).collect();
+    let selector = phux_client::selector::format_terminal_id(terminal);
+    let note_alert = (note.level != phux_client_core::note::NoteLevel::Info).then(|| {
+        let alert = crate::attach::notify::Note {
+            title: format!("{selector}: {}", note.title),
+            body: note.body.clone().unwrap_or_default(),
+        };
+        (terminal.clone(), alert)
+    });
+    let lines = note
+        .body
+        .into_iter()
+        .chain([format!("from {selector}")])
+        .collect();
     FrameOutcome {
         note: Some(crate::attach::jobs::Toast::lines(note.title, lines)),
+        note_alert,
         ..FrameOutcome::default()
     }
 }

@@ -1,10 +1,16 @@
 //! Pane spawning: attribution, actor launch, and pane wiring.
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the split command modules share the parent command namespace"
-)]
 
-use super::*;
+use phux_protocol::wire::frame::AgentEvent;
+use tokio_util::sync::CancellationToken;
+
+use crate::runtime::apps::terminal::agent_state::spawn_agent_state_drain;
+use crate::runtime::apps::terminal::commands::seed::{
+    AGENT_STATE_SINK_CAPACITY, EVENT_SINK_CAPACITY, spawn_cwd_of, stamp_spawn_cwd,
+};
+use crate::runtime::commands::SpawnAttribution;
+use crate::runtime::connections::PaneEvents;
+use crate::runtime::spawn_resource_exit_watcher;
+use crate::state::SharedState;
 
 /// The per-pane answer to "does this Terminal own a live `AgentSession`
 /// child?" (ADR-0103 §5), read once per detector tick.
@@ -172,9 +178,10 @@ pub(in crate::runtime) fn launch_pane_actor_with_failure_policy(
         agent_state,
         program_status,
         resume,
+        program_note,
         ..
     } = bundle;
-    let wiring = PaneWiring::new(events, agent_state, program_status, resume);
+    let wiring = PaneWiring::new(events, agent_state, program_status, resume, program_note);
     let wire_terminal_id = state.with_mut(|s| {
         let wire = s
             .spawn_resource_actor(terminal, handle, terminal_token, run)
@@ -219,7 +226,12 @@ pub(crate) struct PaneWiring {
         tokio::sync::watch::Receiver<Vec<phux_terminal_api::agent_detect::ProgramStatusRecord>>,
     /// The OSC 7501 `resume=` token, for the pane's launch record.
     resume: tokio::sync::watch::Receiver<Option<phux_core::ResumeToken>>,
+    /// OSC 9 / OSC 777, for `notifications.from-programs`.
+    program_note: ProgramNoteRx,
 }
+
+type ProgramNoteRx =
+    tokio::sync::watch::Receiver<Option<phux_terminal_api::agent_detect::ProgramNote>>;
 
 pub(crate) fn engine_reports(
     state: &SharedState,
@@ -242,12 +254,14 @@ impl PaneWiring {
             Vec<phux_terminal_api::agent_detect::ProgramStatusRecord>,
         >,
         resume: tokio::sync::watch::Receiver<Option<phux_core::ResumeToken>>,
+        program_note: ProgramNoteRx,
     ) -> Self {
         Self {
             events,
             agent_state,
             program_status,
             resume,
+            program_note,
         }
     }
     /// Start the detector's metadata drain for the pane at `wire`, and hand
@@ -269,6 +283,11 @@ impl PaneWiring {
             state.clone(),
             wire.clone(),
             self.resume,
+        );
+        crate::runtime::apps::terminal::program_note::spawn_drain(
+            state.clone(),
+            wire.clone(),
+            self.program_note,
         );
         PaneEvents {
             wire: wire.clone(),

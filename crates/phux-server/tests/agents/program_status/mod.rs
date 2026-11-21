@@ -69,6 +69,15 @@ impl Pane {
     }
 
     async fn start_named(stages: &[Vec<u8>], retained: bool, name: &str) -> Self {
+        Self::start_with(stages, retained, name, phux_config::FromPrograms::Off).await
+    }
+
+    async fn start_with(
+        stages: &[Vec<u8>],
+        retained: bool,
+        name: &str,
+        from_programs: phux_config::FromPrograms,
+    ) -> Self {
         use std::os::unix::fs::PermissionsExt;
 
         let tmp = TempDir::new().unwrap();
@@ -120,6 +129,7 @@ impl Pane {
                 by_default: retained,
                 ..RetainPolicy::default()
             };
+            cfg.from_programs = from_programs;
         });
         let mut stream = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
         let terminal = attach_focused(&mut stream, "demo").await;
@@ -297,5 +307,6 @@ async fn changed(stream: &mut UnixStream, terminal: &ResourceId, key: &str) -> O
 }
 
 mod lifetime;
+mod notes;
 mod projection;
 mod reports;

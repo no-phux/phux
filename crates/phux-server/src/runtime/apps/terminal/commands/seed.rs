@@ -1,10 +1,13 @@
 //! Session seeding and PTY-backed pane spawns.
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the split command modules share the parent command namespace"
-)]
 
-use super::*;
+use tokio_util::sync::CancellationToken;
+
+use crate::runtime::apps::terminal::commands::spawn::{
+    DEFAULT_SPAWN_DIMS, exit_policy_for, launch_of, launch_pane_actor, register_pty_command,
+    set_agent_session, spawn_actor,
+};
+use crate::runtime::commands::{SeedOrigin, SpawnAttribution};
+use crate::state::SharedState;
 
 #[cfg(test)]
 mod composition_tests {

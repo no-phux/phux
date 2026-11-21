@@ -1,11 +1,14 @@
 //! Routed input destinations.
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the split command modules share the parent command namespace"
-)]
 
-use super::*;
-use phux_terminal_api::actor::TerminalResource as _;
+use phux_protocol::input::InputEvent;
+use phux_protocol::wire::frame::{CommandResult, ControlAction, ErrorCode};
+use phux_terminal_api::TerminalInput;
+use phux_terminal_api::actor::{TerminalHandle, TerminalResource as _};
+use tracing::{debug, warn};
+
+use crate::resource::ResourceHandle;
+use crate::runtime::commands::{terminal_not_found, wrong_resource_kind};
+use crate::state::{ClientId, Resolved, SharedState};
 
 /// A resolved, lease-checked local input destination.
 #[derive(Debug)]

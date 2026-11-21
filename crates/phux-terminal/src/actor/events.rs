@@ -75,6 +75,16 @@ impl TerminalActor {
         self.resume.subscribe()
     }
 
+    /// Subscribe to OSC 9 / OSC 777 notifications before starting this
+    /// actor. Only live output reports; an upgrade seed's replay does not.
+    pub fn subscribe_program_note(
+        &mut self,
+    ) -> tokio::sync::watch::Receiver<Option<phux_terminal_api::agent_detect::ProgramNote>> {
+        let (tx, rx) = tokio::sync::watch::channel(None);
+        self.program_note_sink = Some(tx);
+        rx
+    }
+
     pub(super) fn publish_program_status(&self) {
         if let Some(sink) = &self.program_status_sink {
             sink.send_replace(self.program_status.snapshot());
@@ -272,6 +282,7 @@ impl TerminalActor {
                 | effects::Effect::InputStart
                 | effects::Effect::Progress(_)
                 | effects::Effect::ProgramStatus(_)
+                | effects::Effect::Note(_)
                 | effects::Effect::Bell => {}
             }
         }
@@ -318,6 +329,11 @@ impl TerminalActor {
                 effects::Effect::PromptStart => {
                     changed |= self.program_status.expire_active();
                     self.resume.forget();
+                }
+                effects::Effect::Note(note) => {
+                    if let Some(sink) = &self.program_note_sink {
+                        sink.send_replace(Some(note.clone()));
+                    }
                 }
                 _ => {}
             }

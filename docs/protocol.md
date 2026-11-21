@@ -193,7 +193,10 @@ unshifted codepoint. `INPUT_MOUSE`, `INPUT_FOCUS`, `INPUT_PASTE`, and
 `VIEWPORT_RESIZE` (`0x20`) likewise. The server encodes them to bytes for
 the PTY according to the terminal's current modes (application cursor
 keys, kitty keyboard protocol, bracketed paste...), so clients never
-generate escape sequences.
+generate escape sequences. `VIEWPORT_COLORS` (`0x2B`, behind
+`features_ext.VIEWPORT_COLORS`) carries the outer terminal's new default
+colours after a theme switch; the client's panes answer OSC 10/11 with them
+and its later spawns start with them.
 
 ### Terminal queries
 

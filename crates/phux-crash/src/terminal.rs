@@ -33,6 +33,7 @@
 //   ?1015   RXVT extended mouse reporting                  never enabled by phux
 //   ?2004   Bracketed paste mode                           write_enter_alt_screen
 //   ?1004   Focus reporting (focus in/out events)          write_enter_alt_screen
+//   ?2031   Colour-scheme change reports                   write_enter_alt_screen
 //   CSI<u   Kitty keyboard protocol pop (flags 5 pushed    write_enter_alt_screen
 //           with CSI>5u)                                   (ADR-0146)
 //
@@ -47,7 +48,7 @@
 /// The kitty CSI-u pop precedes `?1049l` per spec (the protocol stack
 /// is per-screen).
 pub const RESTORE_SEQ: &[u8] =
-    b"\x1b[?2026l\x1b[?25h\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1015l\x1b[?1006l\x1b[?2004l\x1b[?1004l\x1b[<u\x1b[?1049l";
+    b"\x1b[?2026l\x1b[?25h\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1015l\x1b[?1006l\x1b[?2004l\x1b[?1004l\x1b[?2031l\x1b[<u\x1b[?1049l";
 
 /// Write terminal restore sequences to stderr using raw `libc::write`.
 ///

@@ -244,6 +244,7 @@ const fn runtime_server_features_ext() -> ServerFeatureExtSet {
         ServerFeatureExt::NativeAgent,
         ServerFeatureExt::NativeAgentLaunch,
         ServerFeatureExt::CurrentQuestions,
+        ServerFeatureExt::ViewportColors,
         ServerFeatureExt::PerfControl,
         ServerFeatureExt::SessionProject,
         ServerFeatureExt::TabLock,

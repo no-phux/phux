@@ -192,7 +192,8 @@ pub(super) fn agent_queue(
 
 /// Give each window the badge of the agent in its focused pane, from the
 /// same [`agent_entries`] rows the sidebar paints, so tab, row, and title
-/// agree.
+/// agree. Each window also takes the theme's ladder column for its exit
+/// marker.
 pub(super) fn badge_windows(
     windows: &mut [crate::render::chrome::status_bar::widgets::WindowInfo],
     workspace: &ArrangementDoc,
@@ -200,6 +201,7 @@ pub(super) fn badge_windows(
     theme: &crate::render::Theme,
 ) {
     for (i, (info, window)) in windows.iter_mut().zip(&workspace.groups).enumerate() {
+        info.glyphs = theme.term.glyphs;
         let focused_leaf = window.state.focus.as_ref().and_then(|focus| {
             window
                 .state
@@ -275,6 +277,7 @@ pub(super) fn window_infos(
                 branch,
                 exited: window_exited_mark(&leaves, focus, panes),
                 badge: None,
+                glyphs: crate::render::theme::Glyphs::default(),
             }
         })
         .collect()

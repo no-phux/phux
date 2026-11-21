@@ -22,7 +22,7 @@ use crate::attach::paint::{
     paint_full_frame, sidebar_reservation,
 };
 use crate::attach::pane_state::{AttachKernel, PaneSlot, published_test_state};
-use crate::attach::render::{ReplicaWalk, SelectionRect};
+use crate::attach::render::SelectionRect;
 use crate::layout::ArrangementDoc;
 use crate::render::chrome::sidebar::SidebarPainter;
 use crate::render::chrome::status_bar::{Notice, StatusBarPainter, widgets::WindowInfo};
@@ -628,19 +628,7 @@ const PROBE_PANE_TEXT: &str = "PANE-BASE";
 
 /// Replay `bytes` into a fresh terminal and project it to trimmed rows.
 fn probe_rows(bytes: &[u8], (cols, rows): (u16, u16)) -> Vec<String> {
-    let mut probe = PaneSlot::new_with_size(cols, rows).expect("probe slot");
-    probe.terminal.vt_write(bytes);
-    let mut frame = phux_core::screen::RenderedFrame::blank(cols, rows);
-    probe
-        .renderer
-        .render_at_cells(
-            ReplicaWalk::for_test(&probe.terminal),
-            &mut frame,
-            (0, 0),
-            (cols, rows),
-        )
-        .expect("project probe cells");
-    frame
+    crate::attach::pane_state::probe_frame(bytes, (cols, rows))
         .cells
         .chunks(usize::from(cols))
         .map(|row| {
@@ -657,11 +645,7 @@ fn probe_window(name: &str, active: bool) -> WindowInfo {
     WindowInfo {
         name: name.to_owned(),
         active,
-        zoomed: false,
-        attention: false,
-        branch: None,
-        exited: None,
-        badge: None,
+        ..WindowInfo::default()
     }
 }
 

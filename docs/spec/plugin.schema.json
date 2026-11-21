@@ -1,0 +1,932 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "PluginAgentAttention": {
+      "description": "Normalized attention priority for agent-aware consumers.",
+      "oneOf": [
+        {
+          "const": "none",
+          "description": "Explicitly no attention requested.",
+          "type": "string"
+        },
+        {
+          "const": "low",
+          "description": "Low-priority background signal.",
+          "type": "string"
+        },
+        {
+          "const": "normal",
+          "description": "Normal attention priority.",
+          "type": "string"
+        },
+        {
+          "const": "high",
+          "description": "High-priority signal that should be surfaced prominently.",
+          "type": "string"
+        }
+      ]
+    },
+    "PluginAgentState": {
+      "description": "Normalized state labels for agent-aware consumers.",
+      "oneOf": [
+        {
+          "const": "unknown",
+          "description": "State cannot be determined yet.",
+          "type": "string"
+        },
+        {
+          "const": "idle",
+          "description": "Agent is available and not actively working.",
+          "type": "string"
+        },
+        {
+          "const": "working",
+          "description": "Agent is currently doing work.",
+          "type": "string"
+        },
+        {
+          "const": "blocked",
+          "description": "Agent is waiting for human input or otherwise blocked.",
+          "type": "string"
+        }
+      ]
+    },
+    "PluginPanePlacement": {
+      "description": "Placement requested by a plugin pane entrypoint.",
+      "oneOf": [
+        {
+          "const": "overlay",
+          "description": "Floating box over the pane area, in no window; closes when its\nprocess exits or the user dismisses it (ADR-0147).",
+          "type": "string"
+        },
+        {
+          "const": "split",
+          "description": "Split next to the focused pane.",
+          "type": "string"
+        },
+        {
+          "const": "tab",
+          "description": "New window/tab.",
+          "type": "string"
+        },
+        {
+          "const": "zoomed",
+          "description": "Zoomed pane view.",
+          "type": "string"
+        }
+      ]
+    },
+    "PluginPlatform": {
+      "description": "Platform names accepted in plugin manifests.",
+      "oneOf": [
+        {
+          "const": "linux",
+          "description": "Linux.",
+          "type": "string"
+        },
+        {
+          "const": "macos",
+          "description": "macOS.",
+          "type": "string"
+        },
+        {
+          "const": "windows",
+          "description": "Windows.",
+          "type": "string"
+        }
+      ]
+    },
+    "PluginWidgetSlot": {
+      "description": "Status-bar slot a plugin widget appends to.",
+      "oneOf": [
+        {
+          "const": "left",
+          "description": "Append to the left slot.",
+          "type": "string"
+        },
+        {
+          "const": "center",
+          "description": "Append to the center slot.",
+          "type": "string"
+        },
+        {
+          "const": "right",
+          "description": "Append to the right slot (the conventional home for indicators).",
+          "type": "string"
+        }
+      ]
+    },
+    "RawPluginManifestAction": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "command-append": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "contexts": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "contexts-append": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "description": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "keys": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "platforms": {
+          "default": null,
+          "items": {
+            "$ref": "#/definitions/PluginPlatform"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "platforms-append": {
+          "default": null,
+          "items": {
+            "$ref": "#/definitions/PluginPlatform"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "command"
+      ],
+      "type": "object"
+    },
+    "RawPluginManifestAgent": {
+      "additionalProperties": false,
+      "properties": {
+        "attention": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/PluginAgentAttention"
+            }
+          ],
+          "default": "normal"
+        },
+        "contexts": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "contexts-append": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "description": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "state": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/PluginAgentState"
+            }
+          ],
+          "default": "unknown"
+        }
+      },
+      "required": [
+        "id",
+        "label"
+      ],
+      "type": "object"
+    },
+    "RawPluginManifestBuild": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "command-append": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "platforms": {
+          "default": null,
+          "items": {
+            "$ref": "#/definitions/PluginPlatform"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "platforms-append": {
+          "default": null,
+          "items": {
+            "$ref": "#/definitions/PluginPlatform"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "type": "object"
+    },
+    "RawPluginManifestEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "command-append": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "description": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "on": {
+          "type": "string"
+        },
+        "platforms": {
+          "default": null,
+          "items": {
+            "$ref": "#/definitions/PluginPlatform"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "platforms-append": {
+          "default": null,
+          "items": {
+            "$ref": "#/definitions/PluginPlatform"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "on",
+        "command"
+      ],
+      "type": "object"
+    },
+    "RawPluginManifestLinkHandler": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "command-append": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "contexts": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "contexts-append": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "description": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "patterns": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "patterns-append": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "platforms": {
+          "default": null,
+          "items": {
+            "$ref": "#/definitions/PluginPlatform"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "platforms-append": {
+          "default": null,
+          "items": {
+            "$ref": "#/definitions/PluginPlatform"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "schemes": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "schemes-append": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "command"
+      ],
+      "type": "object"
+    },
+    "RawPluginManifestPane": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "command-append": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "description": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "placement": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/PluginPanePlacement"
+            }
+          ],
+          "default": "overlay"
+        },
+        "platforms": {
+          "default": null,
+          "items": {
+            "$ref": "#/definitions/PluginPlatform"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "platforms-append": {
+          "default": null,
+          "items": {
+            "$ref": "#/definitions/PluginPlatform"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "command"
+      ],
+      "type": "object"
+    },
+    "RawPluginManifestProfile": {
+      "additionalProperties": false,
+      "properties": {
+        "actions": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "actions-append": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "agents": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "agents-append": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "contexts": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "contexts-append": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "description": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "events": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "events-append": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "panes": {
+          "items": {
+            "$ref": "#/definitions/RawPluginProfilePane"
+          },
+          "type": "array"
+        },
+        "panes-append": {
+          "items": {
+            "$ref": "#/definitions/RawPluginProfilePane"
+          },
+          "type": "array"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title"
+      ],
+      "type": "object"
+    },
+    "RawPluginManifestSidebar": {
+      "additionalProperties": false,
+      "properties": {
+        "format": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "rows": {
+          "default": null,
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "format"
+      ],
+      "type": "object"
+    },
+    "RawPluginManifestStartup": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "command-append": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "platforms": {
+          "default": null,
+          "items": {
+            "$ref": "#/definitions/PluginPlatform"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "platforms-append": {
+          "default": null,
+          "items": {
+            "$ref": "#/definitions/PluginPlatform"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "command"
+      ],
+      "type": "object"
+    },
+    "RawPluginManifestTheme": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "path"
+      ],
+      "type": "object"
+    },
+    "RawPluginManifestWidget": {
+      "additionalProperties": true,
+      "description": "Raw `[[widgets]]` entry. No `deny_unknown_fields`: every key besides\n`id` / `slot` / `kind` is a kind-specific widget option captured by the\nflattened `opts` map (the same open shape `[status]` widget tables use).",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "slot": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/PluginWidgetSlot"
+            }
+          ],
+          "default": "right"
+        }
+      },
+      "required": [
+        "id",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "RawPluginProfilePane": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "pane": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "pane",
+        "role"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "A `phux-plugin.toml` as written: what `load_plugin_manifest` validates.",
+  "properties": {
+    "actions": {
+      "items": {
+        "$ref": "#/definitions/RawPluginManifestAction"
+      },
+      "type": "array"
+    },
+    "actions-append": {
+      "items": {
+        "$ref": "#/definitions/RawPluginManifestAction"
+      },
+      "type": "array"
+    },
+    "agents": {
+      "items": {
+        "$ref": "#/definitions/RawPluginManifestAgent"
+      },
+      "type": "array"
+    },
+    "agents-append": {
+      "items": {
+        "$ref": "#/definitions/RawPluginManifestAgent"
+      },
+      "type": "array"
+    },
+    "build": {
+      "items": {
+        "$ref": "#/definitions/RawPluginManifestBuild"
+      },
+      "type": "array"
+    },
+    "build-append": {
+      "items": {
+        "$ref": "#/definitions/RawPluginManifestBuild"
+      },
+      "type": "array"
+    },
+    "description": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "events": {
+      "items": {
+        "$ref": "#/definitions/RawPluginManifestEvent"
+      },
+      "type": "array"
+    },
+    "events-append": {
+      "items": {
+        "$ref": "#/definitions/RawPluginManifestEvent"
+      },
+      "type": "array"
+    },
+    "id": {
+      "type": "string"
+    },
+    "links": {
+      "items": {
+        "$ref": "#/definitions/RawPluginManifestLinkHandler"
+      },
+      "type": "array"
+    },
+    "links-append": {
+      "items": {
+        "$ref": "#/definitions/RawPluginManifestLinkHandler"
+      },
+      "type": "array"
+    },
+    "min_phux_version": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "panes": {
+      "items": {
+        "$ref": "#/definitions/RawPluginManifestPane"
+      },
+      "type": "array"
+    },
+    "panes-append": {
+      "items": {
+        "$ref": "#/definitions/RawPluginManifestPane"
+      },
+      "type": "array"
+    },
+    "platforms": {
+      "default": null,
+      "items": {
+        "$ref": "#/definitions/PluginPlatform"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "platforms-append": {
+      "default": null,
+      "items": {
+        "$ref": "#/definitions/PluginPlatform"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "profiles": {
+      "description": "`[[profiles]]`; `[[workspaces]]` is its spelling before the word\n\"workspace\" meant linked sessions, read for one release.",
+      "items": {
+        "$ref": "#/definitions/RawPluginManifestProfile"
+      },
+      "type": "array"
+    },
+    "profiles-append": {
+      "description": "`[[profiles]]`; `[[workspaces]]` is its spelling before the word\n\"workspace\" meant linked sessions, read for one release.",
+      "items": {
+        "$ref": "#/definitions/RawPluginManifestProfile"
+      },
+      "type": "array"
+    },
+    "sidebar": {
+      "items": {
+        "$ref": "#/definitions/RawPluginManifestSidebar"
+      },
+      "type": "array"
+    },
+    "sidebar-append": {
+      "items": {
+        "$ref": "#/definitions/RawPluginManifestSidebar"
+      },
+      "type": "array"
+    },
+    "startup": {
+      "items": {
+        "$ref": "#/definitions/RawPluginManifestStartup"
+      },
+      "type": "array"
+    },
+    "startup-append": {
+      "items": {
+        "$ref": "#/definitions/RawPluginManifestStartup"
+      },
+      "type": "array"
+    },
+    "themes": {
+      "items": {
+        "$ref": "#/definitions/RawPluginManifestTheme"
+      },
+      "type": "array"
+    },
+    "themes-append": {
+      "items": {
+        "$ref": "#/definitions/RawPluginManifestTheme"
+      },
+      "type": "array"
+    },
+    "version": {
+      "type": "string"
+    },
+    "widgets": {
+      "items": {
+        "$ref": "#/definitions/RawPluginManifestWidget"
+      },
+      "type": "array"
+    },
+    "widgets-append": {
+      "items": {
+        "$ref": "#/definitions/RawPluginManifestWidget"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "id",
+    "name",
+    "version",
+    "min_phux_version"
+  ],
+  "title": "RawPluginManifest",
+  "type": "object"
+}
