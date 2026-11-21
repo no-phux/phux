@@ -140,13 +140,19 @@ jobs:
           chmod +x "$RUNNER_TEMP/zig-no-git"
           echo "ZIG=$RUNNER_TEMP/zig-no-git" >> "$GITHUB_ENV"
       - uses: ./.github/actions/setup-bun
+      # Clippy and build.py share clients/rune/target, including
+      # libghostty-vt-sys. Qualify's `cargo build -p phux` uses the root
+      # target. cache-on-failure stays off: save-if is fixed when the step
+      # starts and cannot tell whether the build then succeeded.
+      # Workspace crates stay pruned: cache-workspace-crates stays unset.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: |
+            clients/rune -> target
             . -> target
           shared-key: rune-ios-native
           save-if: ${{ github.ref == 'refs/heads/main' }}
-          cache-on-failure: "true"
+          cache-on-failure: "false"
       - name: Test native build and qualification drivers
         run: python3 -B -m unittest discover -s clients/rune/scripts -p 'test_*.py' -v
       - name: Check the native Rust bridge
