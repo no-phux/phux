@@ -18,7 +18,7 @@ use crate::attach::pane_state::PaneSlot;
 use crate::layout::ArrangementDoc;
 use crate::render::chrome::status_bar::Notice;
 
-/// ERROR never terminates the attach (SPEC §9: `DETACHED` plus transport
+/// ERROR never terminates the attach (`DETACHED` plus transport
 /// close does); the same code is fatal and non-fatal on the same server. An
 /// uncorrelated error names its code in a notice.
 fn handle_error_frame(request_id: Option<u32>, code: ErrorCode, message: &str) -> FrameOutcome {

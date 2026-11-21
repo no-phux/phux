@@ -193,7 +193,10 @@ unshifted codepoint. `INPUT_MOUSE`, `INPUT_FOCUS`, `INPUT_PASTE`, and
 `VIEWPORT_RESIZE` (`0x20`) likewise. The server encodes them to bytes for
 the PTY according to the terminal's current modes (application cursor
 keys, kitty keyboard protocol, bracketed paste...), so clients never
-generate escape sequences.
+generate escape sequences. `VIEWPORT_COLORS` (`0x2B`, behind
+`features_ext.VIEWPORT_COLORS`) carries the outer terminal's new default
+colours after a theme switch; the client's panes answer OSC 10/11 with them
+and its later spawns start with them.
 
 ### Terminal queries
 
@@ -247,7 +250,7 @@ bells, and command boundaries from shell integration.
 `PERF_CONTROL` (command tag `0x39`) is gated on
 `features_ext.PERF_CONTROL` (`0x80`). Its positional body is one op byte:
 trace start (`0`), trace stop (`1`), heap accounting on (`2`), or off (`3`).
-Undefined ops decode and receive `INVALID_COMMAND`. The ordinary owner
+An undefined op is refused `UNSUPPORTED`. The ordinary owner
 socket alone can use it: traces write files on the server host and heap
 accounting affects every allocation. Delegated and remote grants cannot
 enable it. Older servers do not advertise the bit; clients check before

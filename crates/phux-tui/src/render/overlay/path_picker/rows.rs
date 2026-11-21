@@ -113,7 +113,7 @@ pub(super) fn relative<'a>(path: &'a str, root: &str) -> &'a str {
 
 /// Host-supplied text as it may be painted: a filename is arbitrary bytes on
 /// the host, so a control character is shown escaped, never written to the
-/// terminal (L3 §5). The action keeps the original path, which insertion then
+/// terminal. The action keeps the original path, which insertion then
 /// refuses.
 fn display(text: &str) -> String {
     if !text.chars().any(char::is_control) {

@@ -1,7 +1,7 @@
 //! The settings window's state: what is remembered between launches and how
 //! changing it reaches the runtime.
 
-use phux_config_core::RuneCfg;
+use phux_config_core::{ClientConfig, RuneCfg};
 use rune::Tx;
 use rune::prefs::Prefs;
 
@@ -127,16 +127,16 @@ impl Settings {
     }
 }
 
-/// `config.toml`'s `[rune]` table, and what was wrong with the file if it
-/// did not load; its `[[sessions]]` colours are learned on the way. Tests
+/// `config.toml` as a client reads it, and what was wrong with the file if
+/// it did not load; its `[[sessions]]` colours are learned on the way. Tests
 /// never read the real file.
-pub(super) fn load_file() -> (RuneCfg, Option<String>) {
+pub(super) fn load_file() -> (ClientConfig, Option<String>) {
     if cfg!(test) {
-        return (RuneCfg::default(), None);
+        return (ClientConfig::default(), None);
     }
     match phux_config_core::loader::load_client() {
-        Ok(config) => {
-            crate::session_color::learn(config.sessions);
+        Ok(mut config) => {
+            crate::session_color::learn(std::mem::take(&mut config.sessions));
             if let Some(socket) = config.rune.ssh_agent.as_deref().map(str::trim) {
                 let home = std::env::var_os("HOME").unwrap_or_default();
                 let socket = socket.strip_prefix("~/").map_or_else(
@@ -145,9 +145,9 @@ pub(super) fn load_file() -> (RuneCfg, Option<String>) {
                 );
                 phux_client_runtime::connection::set_ssh_agent(socket);
             }
-            (config.rune, None)
+            (config, None)
         }
-        Err(err) => (RuneCfg::default(), Some(err.to_string())),
+        Err(err) => (ClientConfig::default(), Some(err.to_string())),
     }
 }
 
@@ -287,16 +287,25 @@ impl Desk {
             )
     }
 
-    /// The root's layout: learn the window width, and post a frame when it
-    /// crosses the narrow line, since on_layout runs after poll.
-    pub fn window_laid_out(&mut self, width: f32) {
+    /// The root's layout: learn the window's size, and post a frame when it
+    /// crosses the narrow line or starts the size glance, since on_layout
+    /// runs after poll.
+    pub fn window_laid_out(&mut self, [width, height]: [f32; 2]) {
         let was = self.sidebar_narrow();
+        let resized = self.window_w > 0.0 && [width, height] != [self.window_w, self.window_h];
         self.window_w = width;
-        if was != self.sidebar_narrow() {
+        self.window_h = height;
+        let crossed = was != self.sidebar_narrow();
+        if crossed {
             self.sidebar_peek = false;
-            if let Some(waker) = &self.waker {
-                waker();
-            }
+        }
+        if resized {
+            self.glance_resize();
+        }
+        if (crossed || resized)
+            && let Some(waker) = &self.waker
+        {
+            waker();
         }
     }
 

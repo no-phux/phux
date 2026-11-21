@@ -98,6 +98,7 @@ More:
   rec           Record a pane to a cast, GIF, or APNG
   play          Play a recording back as a live pane
   perf          Show the server's performance telemetry
+  version       Show this client's and the server's versions
   whoami        Report who this connection is to the server
   runtime-info  Inspect this binary's protocol and capabilities
   api           Discover and call this server's public operations
@@ -107,6 +108,7 @@ More:
   mcp           Run the bundled MCP stdio adapter
   skill         Print the agent skill this binary ships with
   completion    Print a shell completion script
+  man           Print the phux(1) manual page
 
 Flags:
       --rec <PATH>            Record this session (.cast, .gif, or .apng)
@@ -4237,6 +4239,26 @@ Global flags:
       --socket <PATH>       Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
+## `phux man`
+
+```text
+Print the phux(1) manual page
+
+Writes the manual page as roff on stdout, rendered from the same help text as
+`phux <command> --help`, so it matches this build. Packages install it as
+`man1/phux.1`; to read it without installing:
+
+phux man | man -l -
+
+Usage: phux man
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
 ## `phux mcp`
 
 ```text
@@ -7855,6 +7877,42 @@ Flags:
                                   (default: 60)
       --json                      Print the structured receipt on stdout,
                                   including non-success outcomes.
+      --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
+                                  machine instead of the local socket,
+                                  ssh-style: `--remote me@mini`. Same target
+                                  and resolution as `phux attach --remote`: a
+                                  registered host is dialed directly over
+                                  QUIC or WSS, and an unregistered one is
+                                  paired over your ssh trust first and
+                                  remembered (except `upload`, `download`,
+                                  and calls with `--json`: these never pair
+                                  and refuse unregistered hosts, naming
+                                  remedies). PORT defaults to 8788. Cannot
+                                  combine with `--socket`.
+  -h, --help                      Print help
+
+Global flags:
+      --socket <PATH>             Server socket to dial (default:
+                                  `$PHUX_SOCKET`)
+```
+
+## `phux version`
+
+```text
+Show this client's and the server's versions
+
+Prints the package and protocol versions of this `phux` and of the server it
+reaches, one field per line, for a bug report. With `--remote HOST` the server
+is that host's. Without a server it prints the client's lines, then why the
+server is unreachable (exit 1). Does not start a server.
+
+Usage: phux version [--json] [--remote <[USER@]HOST[:PORT]>]
+
+Flags:
+      --json                      Emit stable, versioned JSON on stdout instead
+                                  of the human view. On failure, stdout stays
+                                  empty and stderr carries one JSON error
+                                  object.
       --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
                                   machine instead of the local socket,
                                   ssh-style: `--remote me@mini`. Same target

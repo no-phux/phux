@@ -114,7 +114,7 @@ fn the_recessive_rungs_stay_ordered() {
     }
 }
 
-/// 16 colours: the semantic map of spec §4.2, chosen per background, and
+/// 16 colours: the semantic map, chosen per background, and
 /// never ANSI 8 as ink on a dark ground.
 #[test]
 fn sixteen_colours_follow_the_semantic_map() {

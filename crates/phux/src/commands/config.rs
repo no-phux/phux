@@ -319,7 +319,7 @@ pub(crate) enum ReloadRingError {
 /// Ring the `phux.config.reload/v1` doorbell on the server at `socket_path`
 /// with a fresh nonce and wait for the read-back. The server handles a
 /// connection's frames in order, so `Ok` also means a hub has already
-/// re-read its `[[satellites]]` (L3 §3.8).
+/// re-read its `[[satellites]]`.
 pub(crate) async fn ring_config_reload(socket_path: &Path) -> Result<(), ReloadRingError> {
     use phux_client::attach::connection::Connection;
     use phux_protocol::wire::frame::{CONFIG_RELOAD_KEY, FrameKind, Scope};

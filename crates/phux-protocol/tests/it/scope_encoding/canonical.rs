@@ -1,4 +1,4 @@
-//! The §5 canonical bytes and every refusal rule for them.
+//! The canonical bytes and every refusal rule for them.
 
 use super::{grant, host, set};
 use phux_protocol::scope::{EffectiveScopeSet, MAX_GRANTS, ScopeError, Selector, TerminalScopeSet};

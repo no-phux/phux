@@ -2,6 +2,7 @@
 //! runtime.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use super::{Fault, Finding, array_entry_source, push_semantic, suggest};
 use crate::keybind::{KeybindError, Resolver, parse_chord, parse_chord_sequence};
@@ -10,6 +11,7 @@ use crate::{Config, ConfigProvenance, DefaultsCfg, HookEntry, KeybindingsCfg, th
 
 pub(super) fn semantic_pass(
     config: &Config,
+    path: &Path,
     provenance: &ConfigProvenance,
     findings: &mut Vec<Finding>,
 ) {
@@ -19,6 +21,7 @@ pub(super) fn semantic_pass(
     hook_findings(&config.hooks, provenance, findings);
     status_widget_findings(&config.status, provenance, findings);
     theme_findings(&config.theme, provenance, findings);
+    theme_selection_findings(config, path, provenance, findings);
 }
 
 /// `[defaults]` values that parse as any `u32` but have a ceiling. Flagged
@@ -385,4 +388,31 @@ fn theme_findings(
             push_semantic(findings, provenance, path, Fault::BadValue, message);
         }
     }
+}
+
+/// The theme `[theme] name` / `file` selects must load, with the same
+/// resolution `phux config reload` refuses on, so check catches it first.
+fn theme_selection_findings(
+    config: &Config,
+    path: &Path,
+    provenance: &ConfigProvenance,
+    findings: &mut Vec<Finding>,
+) {
+    use crate::theme::{FILE_KEY, NAME_KEY, ThemeError, ThemeSelection};
+    let key = match config.theme.selection() {
+        ThemeSelection::None => return,
+        ThemeSelection::File(_) => FILE_KEY,
+        ThemeSelection::Name(_) => NAME_KEY,
+    };
+    let plugins = crate::plugin::load_enabled_manifests(path, &config.plugins);
+    let Err(err) = crate::theme::resolve_selected(&config.theme, &plugins) else {
+        return;
+    };
+    let fault = if matches!(err, ThemeError::NotFound(_)) {
+        Fault::UnknownName
+    } else {
+        Fault::BadValue
+    };
+    let path = crate::layer::child_path("theme", key);
+    push_semantic(findings, provenance, path, fault, err.to_string());
 }

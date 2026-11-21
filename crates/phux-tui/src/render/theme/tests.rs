@@ -143,7 +143,7 @@ fn cfg(pairs: &[(&str, &str)]) -> phux_config::ThemeCfg {
     phux_config::ThemeCfg { slots }
 }
 
-/// The slot map of spec §4.2 is a system, not a bag of colours: slots
+/// The slot map is a system, not a bag of colours: slots
 /// that share a token must stay equal, and the pairs the old palette
 /// conflated (chord and working, done and focus) must stay apart.
 #[test]

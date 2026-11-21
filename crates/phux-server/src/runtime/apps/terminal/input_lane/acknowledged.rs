@@ -225,7 +225,7 @@ impl PendingCompletion {
     ) {
         // No `set_final`: a pre-handoff refusal keeps the id-to-digest binding
         // but not the refusal result, so the unchanged operation may be
-        // evaluated again once its cause is repaired (SPEC L1 §6.2.1).
+        // evaluated again once its cause is repaired.
         drop(self.reservation);
         cache.set_retryable(self.operation_id, &result);
         let _ = self.reply.send(result);

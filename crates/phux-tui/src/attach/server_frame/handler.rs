@@ -400,7 +400,7 @@ fn dispatch_frame<W: crate::attach::RenderSink>(
             message,
         } => error_frame_outcome(ctx, request_id, code, message),
         // A correlated reply that reached the dispatcher instead of its
-        // awaiter: inert (L1 §5 tolerates interleaved replies).
+        // awaiter: inert (the protocol tolerates interleaved replies).
         FrameKind::CommandResult { request_id, result } => {
             command_result_outcome(ctx, request_id, result)
         }

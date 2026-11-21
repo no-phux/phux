@@ -17,7 +17,7 @@ pub enum RouteDecision {
         /// The pane the mouse event addresses.
         target: ResourceId,
         /// Pane-local 0-indexed cell x (treated as f64 pixels per
-        /// SPEC §9.2.1 — the cell-quantising client contract).
+        /// cell: the cell-quantising client contract).
         pane_x: f64,
         /// Pane-local 0-indexed cell y.
         pane_y: f64,

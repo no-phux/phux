@@ -7,7 +7,7 @@
 use super::*;
 use phux_terminal_api::actor::TerminalResource as _;
 
-/// Handle [`AttachTarget::CreateIfMissing`] (SPEC §13): seed `name` as an
+/// Handle [`AttachTarget::CreateIfMissing`]: seed `name` as an
 /// ephemeral session when it does not exist. A server-wide seed command wins
 /// over the wire `command`; a stale wire `cwd` falls back. Spawn failure is
 /// `SessionNotFound`.
@@ -36,6 +36,8 @@ pub(crate) async fn resolve_create_if_missing(
         )
     });
 
+    // `cwd-inheritance = "fixed"` places a session the request left unplaced.
+    let cwd = cwd.or_else(|| state.with(|s| s.config().fixed_cwd.clone()));
     let seed_result = if with_pty {
         let mut seed_cmd = spawn_argv_builder(state, command);
         phux_terminal_api::launch::apply_spawn_cwd(&mut seed_cmd, cwd.as_deref(), &name);
@@ -94,6 +96,7 @@ pub(crate) async fn resolve_inherited_cwd(
         phux_config::CwdInheritance::Home => std::env::var("HOME").ok().filter(|h| !h.is_empty()),
         phux_config::CwdInheritance::SessionRoot => session_root_cwd(state, client_id).await,
         phux_config::CwdInheritance::LastCwdPerWindow => last_window_cwd(state, client_id).await,
+        phux_config::CwdInheritance::Fixed => state.with(|s| s.config().fixed_cwd.clone()),
     }
 }
 

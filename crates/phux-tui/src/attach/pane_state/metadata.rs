@@ -138,7 +138,7 @@ const UNREACHABLE_TAILS: [&str; 5] = [
     "proxy withdrawal cancelled ",
 ];
 
-/// The host a hub `SatelliteUnreachable` diagnostic names (L1 §9.1), or
+/// The host a hub `SatelliteUnreachable` diagnostic names, or
 /// `None` when the message is not one of the shapes the hub emits.
 pub(in crate::attach) fn satellite_host_in_unreachable(message: &str) -> Option<&str> {
     let (host, tail) = message.strip_prefix("satellite ")?.split_once(' ')?;

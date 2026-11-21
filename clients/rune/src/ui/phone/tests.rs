@@ -45,7 +45,7 @@ fn controls_take_their_ground_not_the_os_appearance() {
         let text = t.roles.text.text.paint();
         assert_ne!(crate::theme::on_fill(text), crate::theme::on_fill(ground));
         assert!(contrast(text, ground) >= 4.5);
-        // §1.10's state ink reads on the control surface, too.
+        // The state ink reads on the control surface, too.
         assert!(contrast(text, t.roles.layer.raised.paint()) >= 4.5);
         assert!(contrast(t.roles.text.dim.paint(), t.roles.layer.raised.paint()) >= 4.5);
     }
@@ -121,7 +121,7 @@ fn the_active_tab_is_brought_whole_into_the_strip() {
     );
 }
 
-/// §1.6 and audit row 29: every control the phone draws is a 44-point
+/// Audit row 29: every control the phone draws is a 44-point
 /// target in the accessibility tree. The drawn keyboard's letters keep the
 /// system keyboard's width; they are 44 tall.
 #[test]
@@ -197,7 +197,7 @@ fn a_waiting_tab_names_its_state() {
     assert_eq!(name("phone-tab-1").as_deref(), Some("Tab 2, needs you"));
 }
 
-/// The phone paints no glass of its own outside the session dock (§1.9),
+/// The phone paints no glass of its own outside the session dock,
 /// and Reduce Transparency from the host takes even that away.
 #[test]
 fn reduce_transparency_from_the_host_drops_the_dock_glass() {

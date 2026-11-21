@@ -12,7 +12,7 @@ pub fn element(rt: &rune::Runtime<Desk>, key: &str) -> rune::ElementInfo {
 
 /// The glass panels `rt`'s last frame draws (`Tokens::glass_panel`),
 /// asserting none sits inside a one-layer ancestor: a faded group or a
-/// card still scaling in, which would flatten its backdrop (§1.9).
+/// card still scaling in, which would flatten its backdrop.
 pub fn glass_panels(rt: &rune::Runtime<Desk>) -> usize {
     let all = rt.elements();
     let glass: Vec<usize> = (all.iter().enumerate())

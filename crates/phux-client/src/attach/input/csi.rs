@@ -154,7 +154,7 @@ fn dispatch_sgr_mouse(body: &[u8], final_byte: u8, out: &mut Vec<InputEvent>) {
 }
 
 /// Push a mouse event from an xterm button code and 1-indexed cell position,
-/// as 0-indexed integer-valued `f64` coordinates (SPEC §9.2.1).
+/// as 0-indexed integer-valued `f64` coordinates.
 fn push_mouse(action: MouseAction, raw_btn: u32, col: u32, row: u32, out: &mut Vec<InputEvent>) {
     out.push(InputEvent::Mouse(MouseEvent {
         action,

@@ -3,7 +3,7 @@
 //! an agent brings a setup over, its pane sits beside the step.
 //!
 //! Actions are kit buttons (`Submit` for the step's one primary action),
-//! choices kit checkboxes, status the OWN `tone_badge` (§4.1.3).
+//! choices kit checkboxes, status the OWN `tone_badge`.
 
 use phux_design::State;
 use rune::{Align, Color, Cx, DragItem, El, TextStyle, Transition, col, el, row, text};
@@ -247,7 +247,7 @@ fn badge(words: impl Into<String>, t: &Tokens) -> El {
 
 /// Done, as colour, mark and word: Installed, Granted.
 /// A step that is settled: a neutral check and its word, not the `done`
-/// status mark, which means an agent's unseen result (§1.3).
+/// status mark, which means an agent's unseen result.
 fn good(word: &'static str, t: &Tokens) -> El {
     let ink = t.roles.text.dim.paint();
     row()
@@ -341,8 +341,8 @@ fn welcome(desk: &Desk, t: &Tokens) -> El {
         )
 }
 
-/// A group of choices: an opaque raised card (no ad hoc translucency,
-/// §1.2), `radius.lg`.
+/// A group of choices: an opaque raised card (no ad hoc translucency),
+/// `radius.lg`.
 fn panel(t: &Tokens) -> El {
     let s = &t.space;
     col()

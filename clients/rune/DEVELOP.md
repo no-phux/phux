@@ -217,7 +217,7 @@ reason:
   owner paths: a tab's chord and close button, and a pane's drag grip,
   swap at 0 or 1 under the pointer without a view rebuild. It never dims.
 - **Unfocused split dim.** With several panes, the panes without the
-  keyboard sit under `layer.scrim` (§4.1.3). It is the modal scrim's role
+  keyboard sit under `layer.scrim`. It is the modal scrim's role
   used at pane scope, the one second meaning the role has: a pane behind
   the focused one is set back the way a window behind a sheet is.
 - **BEL wash (audit row 28): n/a in Rune.** Rune draws no BEL wash; a bell

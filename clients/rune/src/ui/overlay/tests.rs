@@ -1,4 +1,4 @@
-//! The overlays and modal surfaces on tokens (§4.1.3, Lane C): painted
+//! The overlays and modal surfaces on tokens (Lane C): painted
 //! through Rune's real renderer over a populated window, walked from the
 //! keyboard, and recorded by the motion gate. `RUNE_GALLERY_SNAP=DIR`
 //! writes each frame as `DIR/overlay-NAME.png`.

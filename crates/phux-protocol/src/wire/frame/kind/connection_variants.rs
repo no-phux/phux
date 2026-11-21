@@ -21,7 +21,7 @@ macro_rules! connection_frames {
         protocol_minor: u16,
         /// Highest protocol patch version the client supports.
         protocol_patch: u16,
-        /// Client capability advertisement (SPEC §6.2).
+        /// Client capability advertisement.
         client_caps: ClientCapabilities,
     },
     /// `HELLO_OK` — server handshake acknowledgement (`docs/protocol.md#handshake`).
@@ -37,7 +37,7 @@ macro_rules! connection_frames {
         /// The conformance tiers the server mounts; intersect with the
         /// client's `layers` for the negotiated tier set.
         server_caps: ServerCapabilities,
-        /// Opaque server identity bytes (SPEC §6.1).
+        /// Opaque server identity bytes.
         server_id: Vec<u8>,
         /// Explicit synchronization profile selected for this connection's
         /// Terminal streams. `None`, carried as an absent field, when the
@@ -177,6 +177,14 @@ macro_rules! connection_frames {
         viewport: ViewportInfo,
     },
 
+    /// `VIEWPORT_COLORS` — the attached client's outer terminal changed its
+    /// default colours (a theme switch), as the `HELLO` palette reports
+    /// them. Sent only to a server advertising `VIEWPORT_COLORS`.
+    ViewportColors {
+        /// The new OSC 10/11 defaults.
+        colors: crate::caps::TerminalDefaultColors,
+    },
+
     /// `ATTACHED` — metadata inventory for an accepted attach.
     ///
     /// Resource content follows separately through bootstrap streams. This
@@ -198,7 +206,7 @@ macro_rules! connection_frames {
 
     /// `DETACHED` — server confirms detach and closes the transport
     /// (`docs/protocol.md#attach-and-output`). With that close, the only ending a
-    /// consumer may act on; an `ERROR` never ends an attach (§9).
+    /// consumer may act on; an `ERROR` never ends an attach.
     Detached {
         /// Why the attach ended, or `None` when unstated or unrecognised.
         /// A consumer MUST NOT infer [`DetachReason::Requested`] from absence.

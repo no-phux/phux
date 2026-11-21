@@ -906,7 +906,7 @@ mod tests {
     #[tokio::test]
     async fn a_scoped_denial_refuses_the_move_instead_of_wedging_it() {
         // An out-of-scope MOVE_RESOURCE is refused with the move's own reply
-        // (workload-auth §7); the move must end on it.
+        //; the move must end on it.
         let (source_key, destination_key) = projection_keys();
         let spec = cross_spec(
             [snapshot(false, true), snapshot(true, true)],

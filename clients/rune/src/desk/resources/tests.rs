@@ -341,7 +341,7 @@ fn document_focus_cannot_send_terminal_input_upload_history_resize_or_paint_ack(
         d.paste(&id(1), "unsafe\n");
         d.paste_clipboard(tx);
         d.drop_files(&id(1), &["/tmp/file".into()]);
-        d.shortcut(crate::keys::Shortcut::ScrollTop, tx);
+        d.shortcut(crate::keys::Shortcut::ScrollToTop, tx);
         d.open_find();
         d.laid_out(id(1), [0.0, 0.0, 800.0, 600.0]);
         d.drawn();

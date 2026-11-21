@@ -92,7 +92,7 @@ fn one_shot_session_create_results_are_bounded_and_connection_scoped() {
 #[test]
 fn terminal_fanout_reaches_attach_terminal_only_subscribers_exactly_once() {
     // ATTACH_RESOURCE-only consumers resolve to their mailbox too
-    // (L1 §3.1, §5.1), each exactly once.
+    //, each exactly once.
     let mut s = ServerState::new();
     let (_sid, pid) = s.seed_session("default");
 

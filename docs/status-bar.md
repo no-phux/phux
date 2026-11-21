@@ -212,6 +212,7 @@ blocked = true              # an agent needs you
 done = true                 # an agent finished
 suppress-focused = true     # quiet for the pane you're looking at
 sound = false
+from-programs = "off"       # or "notes": OSC 9 / 777 from panes become notes
 ```
 
 | Mode | Delivers |
@@ -223,6 +224,10 @@ sound = false
 
 "Finished" fires once per run, and looking at the pane before it goes out
 cancels it. A burst of notifications within a second arrives as one.
+
+A `warn` or `error` [note](./scripting.md#notes) for a pane that isn't on
+screen notifies the same way, at most once every ten seconds per pane.
+`from-programs` is read by the server when it starts.
 
 `terminal-protocol = "auto"` picks OSC 99 for kitty, OSC 777 for Ghostty,
 WezTerm, and foot, and OSC 9 for the rest. Over SSH your terminal may not

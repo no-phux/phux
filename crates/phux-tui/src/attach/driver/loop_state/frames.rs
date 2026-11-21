@@ -2,6 +2,7 @@
 
 mod burst;
 mod clipboard;
+mod default_colors;
 mod handling;
 mod outcomes;
 mod peer_metadata;

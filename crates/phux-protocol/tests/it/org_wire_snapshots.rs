@@ -1,7 +1,7 @@
 //! Snapshot tests for the organization commands, results, and events
 //! (`docs/organization.md`): one golden hex dump per shape, so a byte change
 //! to any of them surfaces in review; `wire_snapshots.rs` checks them. The
-//! frames outside §5.7 keep their goldens in `frame_wire_snapshots.rs`.
+//! frames outside organization keep their goldens in `frame_wire_snapshots.rs`.
 
 #![allow(
     clippy::unwrap_used,

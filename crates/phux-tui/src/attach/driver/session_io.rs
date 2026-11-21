@@ -71,7 +71,7 @@ pub(super) fn attach_client_caps(
     default_colors: Option<phux_protocol::caps::TerminalDefaultColors>,
     dial: &crate::attach::Dial,
 ) -> ClientCapabilities {
-    // Color tier from the environment (SPEC §6.2); L3 for layout metadata.
+    // Color tier from the environment; L3 for layout metadata.
     let bootstrap = phux_client_core::engine::ghostty::native_bootstrap_capabilities(
         BootstrapLimits::default(),
     );
@@ -103,7 +103,7 @@ pub(super) fn attach_client_name() -> String {
 /// Send the TUI's `ATTACH` with no window-size vote (ADR-0145): the server
 /// applies per-pane cell size, and the outer window is not any pane's size.
 /// A zero viewport resizes nothing on attach and re-resolves nothing on
-/// detach (L1 §9), so a read-only view leaves live panes alone.
+/// detach, so a read-only view leaves live panes alone.
 pub(super) async fn send_attach(
     conn: &mut Connection,
     target: AttachTarget,
@@ -115,7 +115,7 @@ pub(super) async fn send_attach(
         attach_id,
         target,
         viewport: ViewportInfo::new(0, 0),
-        // SPEC §13: clients SHOULD opt in to scrollback. The cap below
+        // Clients SHOULD opt in to scrollback. The cap below
         // matches the default in docs/config.md; a configurable knob lives
         // with the rest of `phux-config`.
         request_scrollback: true,

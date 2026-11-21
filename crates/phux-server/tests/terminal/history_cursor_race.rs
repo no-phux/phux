@@ -4,9 +4,9 @@
 //! Splitting a pane mid-attach used to kill the client: the new pane is
 //! created at 80x24 and bootstrapped, the client resizes the leaf (which
 //! drains every native cursor), then quotes the now-dead cursor from
-//! `BOOTSTRAP_READY`. Once `BOOTSTRAP_TOMBSTONE` retires a generation, L1 §4.6
+//! `BOOTSTRAP_READY`. Once `BOOTSTRAP_TOMBSTONE` retires a generation, the protocol
 //! forbids any further history status for it; a cursor naming an unknown
-//! terminal gets `HISTORY_TOMBSTONE { Released }` (L1 §4.5).
+//! terminal gets `HISTORY_TOMBSTONE { Released }`.
 
 use bytes::Bytes;
 use phux_protocol::caps::{

@@ -400,7 +400,7 @@ impl ControlPlane {
     ) -> Option<bool> {
         let read = self.roster.reads.remove(&request_id)?;
         if code == ErrorCode::PermissionDenied {
-            // A grant never widens on a live connection (workload-auth §7),
+            // A grant never widens on a live connection,
             // so neither the read nor its subscription is ever retried here.
             self.roster.subscribed.remove(&read.terminal_id);
             self.roster.denied.insert(read.terminal_id);

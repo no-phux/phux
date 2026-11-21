@@ -106,7 +106,7 @@ fn phone_typography_and_wrapping_fit_long_labels_and_values_without_shrinking() 
         d.machines.current = Some("a-very-long-remote-machine-name.example".into());
     });
     rt.frame(1.0);
-    // The phone reads a role up: lead for body, body for caption (§1.4).
+    // The phone reads a role up: lead for body, body for caption.
     let t = tokens(&rt.state);
     assert_eq!(super::primary(&rt.state, &t), t.ty.lead);
     assert_eq!(super::secondary(&rt.state, &t), t.ty.body);
@@ -254,7 +254,7 @@ fn tokens(desk: &Desk) -> std::rc::Rc<crate::ui::Tokens> {
 }
 
 /// Every word Settings draws reaches 4.5:1 on both its grounds (the sheet
-/// and its cards), and the control outline 3:1 (§1.2, D4), for the house
+/// and its cards), and the control outline 3:1 (D4), for the house
 /// look and every built-in theme in both modes.
 #[test]
 fn settings_ink_keeps_text_and_control_contrast_on_its_surfaces() {

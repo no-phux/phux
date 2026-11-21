@@ -1,4 +1,4 @@
-//! One terminal theme to every colour role (spec §2.2–2.3), solver
+//! One terminal theme to every colour role, solver
 //! `phux-derive/2`.
 //!
 //! This is phux-brand's `tools/derive.ts` statement for statement: IEEE-754
@@ -6,7 +6,7 @@
 //! `powf`), `round` half away from zero. `tests/vectors.rs` holds it to the
 //! brand's golden vectors byte for byte, so change both together or neither.
 
-// `a·b + c` stays two roundings: the spec forbids FMA contraction (§2.2).
+// `a·b + c` stays two roundings: the spec forbids FMA contraction.
 #![allow(clippy::suboptimal_flops)]
 
 mod complete;
@@ -22,7 +22,7 @@ use crate::tokens::{
     AccentRoles, BorderRoles, LayerRoles, Params, SelectionRoles, TextRoles, WashRoles,
 };
 
-/// A terminal theme, the solver's input (§2.1).
+/// A terminal theme, the solver's input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Theme {
     pub bg: Rgb8,
@@ -36,7 +36,7 @@ pub struct Theme {
     pub dark: Option<bool>,
 }
 
-// --- §2.2 primitives ---------------------------------------------------------
+// --- primitives -------------------------------------------------------------
 
 /// The linear-light value of channel `v`, from the shipped bit patterns.
 fn linear(lut: &[u64], v: u8) -> f64 {
@@ -231,7 +231,7 @@ impl Floors {
     }
 }
 
-// --- §2.3 derive -------------------------------------------------------------
+// --- derive -----------------------------------------------------------------
 
 /// The mode a theme draws in: its explicit flag, else luminance.
 #[must_use]
@@ -258,7 +258,7 @@ pub(crate) struct Core {
     pub(crate) selection: SelectionRoles,
 }
 
-/// Every role of §1.2 for `theme`.
+/// Every role for `theme`.
 #[must_use]
 #[allow(
     clippy::too_many_lines,

@@ -97,7 +97,7 @@ pub(crate) struct ResourceSpawn<'a> {
     pub(crate) connection_token: &'a CancellationToken,
     /// The connection's output pumps, for a stream the spawn starts.
     pub(crate) output_pumps: &'a mut JoinSet<()>,
-    /// Whether content waits for `STREAM_BIND` (QUIC multi-stream, L1 §4.9).
+    /// Whether content waits for `STREAM_BIND` (QUIC multi-stream).
     pub(crate) defer_subscription: bool,
     /// The kinds the spawner decodes. It stays the producer of what it
     /// spawns either way; it is streamed the resource only if listed.
@@ -122,7 +122,7 @@ pub(crate) struct SpawnConnection<'a> {
     pub(crate) defer_subscription: bool,
 }
 
-/// Serve `SPAWN_RESOURCE` (SPEC §10.1) through the app of the requested
+/// Serve `SPAWN_RESOURCE` through the app of the requested
 /// kind. An unrecognised kind is refused, never spawned as a Terminal. The
 /// spawner is subscribed to what it spawns, so a connection with no
 /// Terminal profile is refused a kind whose catalog stream contract needs

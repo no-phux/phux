@@ -224,7 +224,7 @@ pub struct TerminalActor {
     pty: Option<PtyOwned>,
     /// The grace the child gets on teardown.
     hangup: HangupPolicy,
-    /// Sink for agent events sourced from the PTY stream (SPEC §7.5), set by
+    /// Sink for agent events sourced from the PTY stream, set by
     /// the runtime's spawn path and drained into the event journal.
     /// Non-blocking: a full sink drops and counts, for a `source_gap`
     /// (ADR-0123).
@@ -240,6 +240,8 @@ pub struct TerminalActor {
     program_status_sink: Option<watch::Sender<Vec<program_status::Record>>>,
     /// The OSC 7501 `resume=` token, kept out of the records above.
     resume: resume::Resume,
+    /// OSC 9 / OSC 777 notifications, for the server to map onto notes.
+    program_note_sink: Option<watch::Sender<Option<phux_terminal_api::agent_detect::ProgramNote>>>,
     /// Agent-state detector (ADR-0046), built in [`Self::run`] for PTY-backed
     /// actors with a sink and rules.
     agent_detect: Option<crate::agent_detect::AgentDetector>,

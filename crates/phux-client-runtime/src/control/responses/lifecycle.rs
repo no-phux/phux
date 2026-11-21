@@ -345,7 +345,7 @@ impl ControlPlane {
             (None, extra) => extra.to_owned(),
         };
         self.error = Some(detail.clone());
-        // A refused HELLO ended with PROTOCOL_ERROR before workload-auth §7's
+        // A refused HELLO ended with PROTOCOL_ERROR before the revocation
         // AUTHENTICATION_FAILED was emitted; both stop retrying.
         let fatal = matches!(
             reason,

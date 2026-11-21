@@ -68,6 +68,22 @@ impl Owner {
         Ok(*anchor)
     }
 
+    /// Where a tracked anchor is now, in history rows; `None` once pruned.
+    #[cfg(feature = "engine")]
+    pub(super) fn anchor_history_point(
+        &self,
+        id: &ResourceId,
+        handle: u64,
+    ) -> Result<Option<EngineDocumentPoint>, EngineError> {
+        let anchor = self.owned_anchor(id, handle)?;
+        let point = self.anchor_point(id, anchor)?;
+        Ok(point.map(|point| EngineDocumentPoint {
+            space: 0,
+            column: point.x,
+            row: point.y,
+        }))
+    }
+
     #[cfg(feature = "engine")]
     pub(super) fn release_anchor(
         &mut self,

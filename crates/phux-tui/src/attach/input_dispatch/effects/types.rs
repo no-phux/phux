@@ -87,6 +87,9 @@ pub(in crate::attach) struct ActionEffects {
     /// OSC 52 clipboard payload to emit on the host terminal after this
     /// action (the `report-bug` path copies the bundle path).
     pub(in crate::attach) clipboard: Option<String>,
+    /// Rows to scroll the focused pane's history, as the wheel does
+    /// (negative is up); the dispatcher applies it with its pane slots.
+    pub(in crate::attach) scroll_viewport: Option<isize>,
 }
 
 /// Exact move selected by the fuzzy destination picker.

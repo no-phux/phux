@@ -206,6 +206,26 @@ types an `x`.
 **An unbound key stays unbound.** A plugin whose manifest `keys` names it
 doesn't get it, whatever spelling either of you uses.
 
+## Starting from an empty keymap
+
+To build your own keymap instead of unbinding the defaults one by one,
+turn the shipped bindings off:
+
+```toml
+[keybindings]
+defaults = false
+
+[keybindings.prefix-table]
+"d" = "detach"
+```
+
+Only bindings from your own files apply, in every table and key mode. The
+shipped `command-palette` keys (<kbd>C-a</kbd> then <kbd>Space</kbd>,
+<kbd>:</kbd> or <kbd>?</kbd>) stay as the way out, since the palette runs
+every action, until you bind `command-palette` yourself. The prefix stays
+<kbd>C-a</kbd> unless you set it. Rune has its own switch,
+[`[rune] key-defaults`](config.md#rune).
+
 ## Key modes
 
 A key mode is a set of keys that work without the prefix while the mode
@@ -258,14 +278,8 @@ options for a mode that doesn't exist.
 ### Type in every pane at once
 
 `sync-panes` sends what you type, and what you paste, to every pane in the
-tab you are on, until you run it again. It is in the command palette
-(**Type in every pane of this tab (toggle)**) and has no key until you give
-it one:
-
-```toml
-[keybindings.prefix-table]
-"y" = "sync-panes"
-```
+tab you are on, until you run it again. Press the prefix, then
+<kbd>y</kbd>, or pick **Type in every pane** in the command palette.
 
 It belongs to that one tab: move to another tab and typing is ordinary
 there; come back and it is still on. phux says so each time it turns on or
@@ -274,6 +288,19 @@ title rule. Mouse input always goes to the pane under the pointer.
 
 To make the pane you are typing in stand out, `dim-unfocused = true` under
 `[chrome]` paints the other panes faint.
+
+### Jump to a pane by its number
+
+The prefix, then <kbd>i</kbd> (`display-panes`), draws a number over each
+pane in the tab. Press a number to focus that pane; any other key puts the
+numbers away. Panes are numbered in layout order, the first nine only.
+
+### Move the keyboard into the sidebar
+
+The prefix, then <kbd>e</kbd> (`focus-sidebar`), lights a row of the
+sidebar, opening it first if it is hidden. The arrows or <kbd>j</kbd> and
+<kbd>k</kbd> move, <kbd>Enter</kbd> does what a click on the row would, and
+<kbd>Esc</kbd> hands the keyboard back to the pane.
 
 ### Your own copy-mode keys
 
@@ -300,6 +327,10 @@ can be reached your way. The emacs motions, for example:
 "C-r" = { action = "copy-mode-key", key = "?" }
 "C-g" = { action = "copy-mode-key", key = "Escape" }
 ```
+
+`clear-selection` is the other action this table takes: it drops the
+selection and keeps you where you are, as <kbd>Esc</kbd> does while
+something is selected (`"C-c" = "clear-selection"`).
 
 A key you bind replaces what that key did in copy mode; the built-in keys
 you leave alone keep working. While you type a search, keys are text as

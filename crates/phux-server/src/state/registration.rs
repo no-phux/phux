@@ -69,7 +69,7 @@ impl ServerState {
     }
 
     /// Every subscriber's mailbox for terminal-scoped fanout
-    /// (`RESOURCE_CLOSED`, L1 §3.1), one per client whether attached or
+    /// (`RESOURCE_CLOSED`), one per client whether attached or
     /// `ATTACH_RESOURCE`-only. Closed mailboxes are skipped.
     #[must_use]
     pub fn terminal_fanout_targets(&self, terminal: ResourceId) -> Vec<mpsc::Sender<Outbound>> {
@@ -107,6 +107,10 @@ impl ServerState {
         }
         let wire = self.idspace.intern_resource(terminal);
         self.resources.register(terminal, handle, token);
+        // The member's leaf is live now; legacy layout readers see it.
+        if let Some(session) = self.registry().session_of(terminal) {
+            self.publish_arrangement_as_layout(session);
+        }
         Ok(wire)
     }
 

@@ -357,8 +357,10 @@ phux notify --level error "build failed" "3 errors in src/lib.rs"
 ```
 
 Rune and the terminal UI show a note as a toast. When the note's pane is out
-of sight, a `warn` or `error` note also raises a system notification from
-Rune. Each note replaces the pane's last one, so a progress note can be
+of sight, a `warn` or `error` note also raises a notification: Rune posts a
+system notification, and the terminal UI delivers it the way
+`[notifications] mode` says, following `suppress-focused`, at most once
+every ten seconds per pane. Each note replaces the pane's last one, so a progress note can be
 updated in place. Inside a pane the note is about that pane; `--pane @N`
 names another. The note is stored in the pane's `phux.note/v1` metadata as
 `{"level", "title", "body", "at"}`.
@@ -372,9 +374,20 @@ vim.notify = function(msg, level)
 end
 ```
 
-phux still ignores OSC 9, 777 and 99 from panes
+By default phux ignores OSC 9, 777 and 99 from panes
 ([program protocol](./program-protocol.md#relationship-to-other-sequences)),
-so no escape sequence a pane prints can raise a notification.
+so no escape sequence a pane prints can raise a notification. For programs
+that already print OSC 9 or OSC 777, opt in with:
+
+```toml
+[notifications]
+from-programs = "notes"
+```
+
+Each one then becomes the pane's `info` note: OSC 9's text is the title,
+OSC 777's title and body are the note's. The server writes at most one a
+second per pane, keeping the newest, and reads the setting when it starts,
+so restart the server after changing it. OSC 99 stays ignored.
 
 ## JSON output and errors
 

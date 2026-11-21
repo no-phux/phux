@@ -419,7 +419,7 @@ proptest! {
 
 #[test]
 fn error_code_wire_values_match_spec() {
-    // SPEC §14 names these wire values; lock them in so a refactor cannot
+    // These wire values are fixed; lock them in so a refactor cannot
     // silently renumber the enum.
     for (code, wire) in [
         (ErrorCode::VersionIncompatible, 1),

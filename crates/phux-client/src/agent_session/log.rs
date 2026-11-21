@@ -167,7 +167,7 @@ pub(super) async fn follow(
     })
 }
 
-/// Best-effort `DETACH_RESOURCE` (idempotent, L1 §5.1): never turns a
+/// Best-effort `DETACH_RESOURCE` (idempotent): never turns a
 /// completed read into a failure.
 pub(super) async fn detach(conn: &mut Connection, resource: &ResourceId) {
     let _ = conn

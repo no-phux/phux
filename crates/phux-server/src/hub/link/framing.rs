@@ -80,12 +80,12 @@ pub(super) async fn ssh_exit_reason(
     }
 }
 
-/// Compose the loss reason for a satellite that broke SPEC §5 framing.
+/// Compose the loss reason for a satellite that broke the framing rules.
 pub(super) fn framing_loss_reason(violation: FramingError) -> String {
     format!("satellite sent a malformed frame: {violation}")
 }
 
-/// The SPEC §5 `ERROR { FRAME_TOO_LARGE }` goodbye, shared with the
+/// The `ERROR { FRAME_TOO_LARGE }` goodbye, shared with the
 /// server's client loop.
 pub(super) fn encode_frame_too_large(violation: FramingError) -> Vec<u8> {
     let mut encoded = bytes::BytesMut::new();

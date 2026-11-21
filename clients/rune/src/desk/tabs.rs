@@ -40,6 +40,10 @@ pub struct Tabs {
     pub list: Vec<Tab>,
     /// The pane each tab last had the keyboard in.
     focus: HashMap<[u8; 16], ResourceId>,
+    /// The terminal the keyboard left last (`last-pane`).
+    pub last_pane: Option<ResourceId>,
+    /// The tab the keyboard left last (`last-tab`).
+    pub left_tab: Option<[u8; 16]>,
     pub renaming: Option<Renaming>,
     pub rename_field: TextEdit,
     /// The title bar's room for the strip, in points, once it is laid out:

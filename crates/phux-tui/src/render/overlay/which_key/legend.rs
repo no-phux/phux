@@ -36,6 +36,7 @@ impl Group {
             "focus-direction",
             "url-picker",
             "sync-panes",
+            "display-panes",
             "popup",
         ];
         if action.ends_with("-pane") || PANE.contains(&action) {
@@ -59,6 +60,7 @@ pub(super) const ACTION_ORDER: &[&str] = &[
     "next-pane",
     "previous-pane",
     "last-pane",
+    "display-panes",
     "next-slot-tab",
     "previous-slot-tab",
     "toggle-zoom",

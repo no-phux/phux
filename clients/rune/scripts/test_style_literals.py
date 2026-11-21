@@ -102,7 +102,7 @@ class Patterns(unittest.TestCase):
 
 class Tree(unittest.TestCase):
     def test_the_baseline_is_empty(self):
-        # §5.1's end state: no raw style literal outside owner and art paths.
+        # The end state: no raw style literal outside owner and art paths.
         baseline = json.loads(style_literals.BASELINE.read_text(encoding="utf-8"))
         self.assertEqual(baseline, {})
 

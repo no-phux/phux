@@ -8,7 +8,7 @@ use rune_kit::{IconButton, IconButtonVariant, Keybind};
 use super::tokens::{Paint, SHEET_MAX_H, Tier, Tokens};
 use crate::desk::Desk;
 
-/// A modal sheet (§4.1.3 OWN): scrim, header with a close button,
+/// A modal sheet (OWN): scrim, header with a close button,
 /// scrolling body, footer. Kit `Dialog` cannot hold its top offset, footer
 /// rule or scrolling body, so phux keeps its own on tokens, with Rune's
 /// `.modal` for the focus trap and its return.
@@ -42,7 +42,7 @@ impl Sheet {
             .min_h(0.0)
             .radius(t.radius.lg)
             .clip_rounded(t.radius.lg)
-            // The one modal surface (§1.2): raised, edged in `border.base`.
+            // The one modal surface: raised, edged in `border.base`.
             .fill(t.roles.layer.raised.paint())
             .border(s.hairline, t.roles.border.base.paint())
             .transition(t.enter())
@@ -109,7 +109,7 @@ pub(crate) fn sheet_header(
         ))
 }
 
-/// The one scrim every modal sits on (§1.2 `layer.scrim`): `base` over the
+/// The one scrim every modal sits on (`layer.scrim`): `base` over the
 /// whole window, fading in and out, trapping focus as a modal named
 /// `label`. `close` is what Escape and a press on the scrim do; `None`
 /// leaves Escape to the content (the popup's command owns it).
@@ -154,7 +154,7 @@ impl Cover for El {
 }
 
 /// Something to press: the hover wash under the pointer, the press wash in
-/// its place while held (§1.10), and the pointer. Key errors name the
+/// its place while held, and the pointer. Key errors name the
 /// caller, not this.
 #[track_caller]
 pub(crate) fn pressable(key: impl Into<String>, p: &Tokens) -> El {
@@ -174,7 +174,7 @@ pub(crate) fn reveal(e: El, on_hover: bool) -> El {
     e.group_opacity(rest, hover)
 }
 
-/// The selected row or tab: §1.10's one treatment.
+/// The selected row or tab: the one treatment.
 pub(crate) use super::rows::lifted;
 
 /// A key as the chrome draws one, wherever it names a chord (kit `Keybind`).
@@ -191,7 +191,7 @@ pub(crate) fn tip(el: El, words: impl Into<String>, action: crate::keys::Shortcu
 }
 
 /// A secondary action in a row of them: kit `Button`, outlined, with the
-/// kit's press scale on `spring.press` (§1.10), in the Tab order.
+/// kit's press scale on `spring.press`, in the Tab order.
 pub(crate) fn button(
     label: &'static str,
     key: &'static str,

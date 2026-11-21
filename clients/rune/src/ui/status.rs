@@ -205,7 +205,7 @@ fn retry(p: &Tokens) -> El {
 }
 
 /// A placeholder's title: a failure leads with its mark and reads in the
-/// failed tone (§1.3: colour, word and mark together); anything else is
+/// failed tone (colour, word and mark together); anything else is
 /// quiet.
 fn title_line(title: String, failed: bool, t: &Tokens) -> El {
     let font = t.ty.lead.semibold();

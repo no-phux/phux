@@ -6,7 +6,8 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 use super::{
-    SecureFileError, Stamp, is_owned_regular_file, parent_of, refuse_production, validate_owner_dir,
+    SecureFileError, Stamp, is_owned_regular_file, parent_of, refuse_production,
+    repair_own_state_dir, validate_owner_dir,
 };
 
 /// Default workload and credential file names; a write sweeps stale
@@ -31,6 +32,7 @@ pub(crate) fn open_owner_dir(path: &Path) -> Result<File, SecureFileError> {
         .recursive(true)
         .mode(0o700)
         .create(dir)?;
+    repair_own_state_dir(dir);
     let named = fs::symlink_metadata(dir)?;
     validate_owner_dir(&named)?;
     let handle = OpenOptions::new()

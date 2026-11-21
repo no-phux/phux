@@ -35,7 +35,7 @@ impl RelaySession {
     }
 
     /// Deliver one re-tagged frame. An `EVENT` is re-stamped by the hub's
-    /// registry (ADR-0123, L1 §7.3) and reaches that Terminal's subscribers;
+    /// registry (ADR-0123) and reaches that Terminal's subscribers;
     /// without a journal it fans out with its stamp dropped.
     pub(super) fn deliver_stream_frame(&mut self, id: u32, frame: FrameKind) {
         let FrameKind::Event {
@@ -58,7 +58,7 @@ impl RelaySession {
         }
         satellite_gap_as_source_gap(&mut event);
         self.mirror_satellite_lease_state(id, &event, stamp.as_deref().map(|s| s.seq));
-        // L1 §9.1: a keyed operation's event names the consumer that sent
+        // A keyed operation's event names the consumer that sent
         // it, and only on a terminal that operation targeted.
         let (stamp, actor) = self.vet_event_stamp(id, stamp);
         let Some(event) = self.retag_event_ids(id, event, actor) else {
@@ -116,7 +116,7 @@ impl RelaySession {
     }
 
     /// Re-tag the ids inside a satellite event into the hub's id space
-    /// (L1 §9.1), or `None` to drop an event naming an id the hub cannot
+    ///, or `None` to drop an event naming an id the hub cannot
     /// represent: a resource parent is re-tagged `Satellite { host, id }`
     /// (a chained one drops the event); a client id becomes the hub
     /// consumer the hub knows for it (the lease holder, the operation's
@@ -271,7 +271,7 @@ impl RelaySession {
     }
 
     /// The cursor for the link's own `SUBSCRIBE_EVENTS`: journal semantics
-    /// with no replay when the satellite speaks them (L1 §7.1), else live-only.
+    /// with no replay when the satellite speaks them, else live-only.
     pub(super) fn link_event_cursor(&self) -> Option<u64> {
         self.satellite_features
             .contains(ServerFeature::EventJournal)

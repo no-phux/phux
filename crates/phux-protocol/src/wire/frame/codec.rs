@@ -244,7 +244,7 @@ pub(in crate::wire) fn decode_env(
     Ok(out)
 }
 
-// `Scope` (SPEC §7.4): tag, then a `ResourceId`, a `u32` group, or nothing.
+// `Scope`: tag, then a `ResourceId`, a `u32` group, or nothing.
 
 pub(in crate::wire) fn encode_scope(scope: &Scope, enc: &mut Encoder<'_>) {
     match scope {

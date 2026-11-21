@@ -2,7 +2,7 @@
 //! expires after its TTL (visible in `GET_STATE`), `SEIZE` rearms the TTL at
 //! the new holder's value, and no path that ends or replaces a lease lets
 //! its dead timer expire a later one. Watchers are journal-aware so
-//! `EXPIRED` crosses as itself rather than rendered `RELEASED` (L1 §7.1).
+//! `EXPIRED` crosses as itself rather than rendered `RELEASED`.
 
 use std::time::Duration;
 

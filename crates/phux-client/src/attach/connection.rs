@@ -1,7 +1,7 @@
 //! A negotiated connection to a phux server: a facade over the client
 //! runtime's one-shot [`Session`] (ADR-0171).
 //!
-//! The runtime owns the transport: dial, `HELLO`, SPEC §5 framing, send
+//! The runtime owns the transport: dial, `HELLO`, framing, send
 //! budgets, corking, QUIC per-Terminal streams, and the classification of
 //! every failure. This type keeps the API the verbs, MCP, and the TUI call,
 //! and turns a `SessionError` into an [`AttachError`] with nothing more
@@ -29,7 +29,7 @@ use super::outcome::AttachError;
 ///
 /// # The COMMAND interleave contract
 ///
-/// L1 §5 lets the server emit other frames before a `COMMAND_RESULT`, and it
+/// The protocol lets the server emit other frames before a `COMMAND_RESULT`, and it
 /// does so on paths a client cannot avoid: `ATTACH_RESOURCE` pushes the
 /// bootstrap transcript before its ack, a federation hub pushes one
 /// uncorrelated `ERROR` per unreachable satellite before a `GET_STATE`

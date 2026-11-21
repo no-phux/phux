@@ -34,8 +34,15 @@ impl Desk {
             Shortcut::InterfaceBigger => self.step_interface_size(1),
             Shortcut::InterfaceSmaller => self.step_interface_size(-1),
             Shortcut::InterfaceReset => self.set_interface_size(None),
-            Shortcut::ScrollTop => self.scroll(Scroll::Top),
-            Shortcut::ScrollBottom => self.scroll(Scroll::Bottom),
+            Shortcut::ScrollToTop => self.scroll(Scroll::Top),
+            Shortcut::ScrollToBottom => self.scroll(Scroll::Bottom),
+            Shortcut::ScrollPageUp => self.scroll_page(-2),
+            Shortcut::ScrollPageDown => self.scroll_page(2),
+            Shortcut::ScrollHalfPageUp => self.scroll_page(-1),
+            Shortcut::ScrollHalfPageDown => self.scroll_page(1),
+            Shortcut::ClearSelection => {
+                self.clear_copy_selection();
+            }
             Shortcut::PromptUp => self.scroll(Scroll::Prompt(-1)),
             Shortcut::PromptDown => self.scroll(Scroll::Prompt(1)),
             Shortcut::Palette => self.toggle_palette(),
@@ -90,6 +97,11 @@ impl Desk {
             Shortcut::CopyConfig => self.copy_config(tx),
             Shortcut::RestoreSessions => self.restore_sessions(),
             Shortcut::Bare => self.toggle_bare(),
+            Shortcut::DisplayPanes => self.display_panes(),
+            Shortcut::FocusSidebar => self.focus_sidebar(tx),
+            Shortcut::SyncPanes => self.toggle_sync(),
+            Shortcut::LastPane => self.last_pane(),
+            Shortcut::LastTab => self.last_tab(),
         }
     }
 

@@ -107,7 +107,7 @@ fn child_and_scrollback_survive_graceful_upgrade() {
     );
 
     // A kill of the resumed session leaves the authoritative list at once
-    // (its reply follows the committed teardown, L1 §5.2), and its child then
+    // (its reply follows the committed teardown), and its child then
     // dies inside the pane-kill grace, so the child is awaited, not assumed
     // dead the moment `ls` stops listing it. This harness never attaches a
     // client, so the server intentionally stays alive after becoming empty.

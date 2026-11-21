@@ -20,12 +20,12 @@ mod types;
 
 pub use beneath::relative;
 use beneath::{io_error, path_list};
-#[cfg(test)]
-use parse::tracking;
 use parse::{
-    Counts, complete_records, file_text, head_oid, is_binary, line_count, parse_branch,
-    parse_commit, text_at_line,
+    Counts, complete_records, file_diff, file_text, head_oid, is_binary, line_count,
+    new_file_patch, parse_branch, parse_commit,
 };
+#[cfg(test)]
+use parse::{text_at_line, tracking};
 pub use pr::{Check, CheckState, PrState, PullRequest, ReviewDecision};
 use types::Result;
 pub use types::{
@@ -160,39 +160,27 @@ impl Checkout {
     /// One file's unified diff in `area`; an untracked file shows whole.
     pub fn diff(&self, path: &str, area: Area) -> Result<FileDiff> {
         let path = relative(path)?;
-        let out = match area {
-            Area::Staged | Area::Unstaged | Area::Conflicted => {
-                let mut args = vec!["diff"];
-                if area == Area::Staged {
-                    args.push("--cached");
-                }
-                args.extend(DIFF_FLAGS);
-                args.extend(["--", path]);
-                self.git(&args, MAX_TEXT_BYTES)?
-            }
-            Area::Untracked => {
-                // `--no-index` reads the path itself; this check narrows,
-                // but cannot close, a swap racing it (phux bead).
-                self.resolve(path)?;
-                let mut args = vec!["diff", "--no-index"];
-                args.extend(DIFF_FLAGS);
-                args.extend(["--", "/dev/null", path]);
-                self.git(&args, MAX_TEXT_BYTES)?
-            }
-        };
-        // `--no-index` exits 1 when the files differ.
-        if !matches!(out.status.code(), Some(0 | 1)) {
+        if area == Area::Untracked {
+            // Read through the `openat` walk, never by name, so a component
+            // swapped for a symlink cannot redirect what the patch shows.
+            let (mode, bytes, cut) = beneath::read_entry(&self.root, path, MAX_TEXT_BYTES)
+                .map_err(|walk| walk.into_error(path))?;
+            let mut text = new_file_patch(path, mode, &bytes);
+            let truncated = cut || text.len() > MAX_TEXT_BYTES;
+            text.truncate(MAX_TEXT_BYTES);
+            return Ok(file_diff(&text, truncated));
+        }
+        let mut args = vec!["diff"];
+        if area == Area::Staged {
+            args.push("--cached");
+        }
+        args.extend(DIFF_FLAGS);
+        args.extend(["--", path]);
+        let out = self.git(&args, MAX_TEXT_BYTES)?;
+        if !out.status.success() {
             return Err(CheckoutError::Git(failure(&out.stderr, "")));
         }
-        let (text, truncated) = text_at_line(&out.stdout, out.truncated);
-        let binary = text
-            .lines()
-            .any(|line| line.starts_with("Binary files ") || line == "GIT binary patch");
-        Ok(FileDiff {
-            text,
-            truncated,
-            binary,
-        })
+        Ok(file_diff(&out.stdout, out.truncated))
     }
 
     /// `limit` commits after the newest `skip`, newest first; only those
@@ -421,25 +409,6 @@ impl Checkout {
             let full = format!("{prefix}{}", entry.name);
             entry.ignored = ignored.contains(full.as_bytes());
         }
-    }
-
-    /// `root/rel` with every component but the last checked not to be a
-    /// symlink; the last may be one, which Git shows as its target text.
-    fn resolve(&self, rel: &str) -> Result<PathBuf> {
-        let mut path = self.root.clone();
-        let components: Vec<_> = Path::new(rel).components().collect();
-        for (index, component) in components.iter().enumerate() {
-            path.push(component);
-            let meta = path
-                .symlink_metadata()
-                .map_err(|_| CheckoutError::NotFound(format!("{rel} does not exist")))?;
-            if meta.file_type().is_symlink() && index + 1 < components.len() {
-                return Err(CheckoutError::InvalidPath(format!(
-                    "{rel} crosses a symbolic link"
-                )));
-            }
-        }
-        Ok(path)
     }
 
     fn git(&self, args: &[&str], max_stdout: usize) -> Result<Bounded> {

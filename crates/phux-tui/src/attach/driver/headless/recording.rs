@@ -54,7 +54,7 @@ pub async fn record_composited(
         negotiated.profile,
         history_config,
     );
-    // Zero viewport: the server resizes nothing (L1 §9). The cell grid
+    // Zero viewport: the server resizes nothing. The cell grid
     // below is local to the compositor.
     let mut attach_id = send_attach(&mut conn, target).await?;
     let attached = match wait_for_attached(&mut conn, attach_id).await {

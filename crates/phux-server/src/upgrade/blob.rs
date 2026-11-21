@@ -67,7 +67,7 @@ pub struct StateBlob {
     /// reader ignores the field and drops the sessions as it always did.
     #[serde(default)]
     pub agent_sessions: Vec<AgentSessionBlob>,
-    /// Group- and Global-scope L3 metadata (SPEC §7.4): the TUI layout keys
+    /// Group- and Global-scope L3 metadata: the TUI layout keys
     /// and session tags. Without it every upgrade silently drops each
     /// session's `phux.tui.layout/v1/<id>` (#1207). Additive: an older blob
     /// reads as none.

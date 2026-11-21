@@ -93,7 +93,7 @@ struct Marks {
     /// record but must never `DELETE` it.
     explicit_identity: bool,
     /// An explicit writer set the stored `kind`, which the detector must
-    /// preserve (§3.7). Separate from `explicit_identity`, since a bare kind
+    /// preserve. Separate from `explicit_identity`, since a bare kind
     /// does not protect a record from deletion.
     explicit_kind: bool,
 }
@@ -149,7 +149,7 @@ impl AgentRecordArbiter {
             explicit_identity: record.is_some_and(|r| {
                 !r.name.is_empty() || r.session.is_some() || r.attention.is_some()
             }),
-            // ...but an explicitly supplied kind is still preserved (§3.7).
+            // ...but an explicitly supplied kind is still preserved.
             explicit_kind: record.is_some_and(|r| r.kind.as_ref().is_some_and(|k| !k.is_empty())),
         };
         self.update(terminal, |stored| *stored = marks);
@@ -161,7 +161,7 @@ impl AgentRecordArbiter {
         self.marks.remove(terminal);
     }
 
-    /// Withdraw a declaration whose subject is provably gone (§3.7).
+    /// Withdraw a declaration whose subject is provably gone.
     ///
     /// Clears `declared` only: identity bookkeeping stays, and the detector
     /// does not gain ownership (its next write acquires it normally).
@@ -269,7 +269,7 @@ pub fn compose(
 /// the detector sees (I2).
 ///
 /// A shim declares `kind: claude`; after a switch to codex the preserved
-/// kind would sit beside codex's derived state. §3.7 forbids correcting the
+/// kind would sit beside codex's derived state. The record contract forbids correcting the
 /// kind but permits withdrawing state on positive evidence the occupant is
 /// gone, so the server withholds state (the shape `%name` writes refuse).
 /// Only a kind with a loaded manifest can be contradicted: an open slug
@@ -311,7 +311,7 @@ pub fn stored_state(existing: Option<&[u8]>) -> Option<String> {
 /// Used to retract a record carrying human identity (a `DELETE` would lose
 /// it for good) and to withdraw a declaration whose subject is gone. State
 /// becomes `unknown` (safe beside any `kind`, I2); `attention` is cleared
-/// with it, since §3.7 derives it from state. Byte-idempotent. `None` when
+/// with it, since the server derives it from state. Byte-idempotent. `None` when
 /// nothing is stored.
 #[must_use]
 pub fn withdraw_state(existing: Option<&[u8]>) -> Option<Vec<u8>> {

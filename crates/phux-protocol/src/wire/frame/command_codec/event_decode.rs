@@ -18,12 +18,11 @@ pub(super) fn decode_native_result_event(body: &[u8]) -> Result<AgentEvent, Deco
     let mut dec = Decoder::new(body);
     let agent_session_id = decode_terminal_id(&mut dec)?;
     let operation_id = dec.read_u64_be()?;
-    let Some(disposition) = crate::native_agent::NativeDisposition::from_u8(dec.read_u8()?) else {
-        return Ok(AgentEvent::Unknown {
-            tag: crate::wire::frame::EVENT_TAG_NATIVE_AGENT_RESULT,
-            body: body.to_vec(),
-        });
-    };
+    // A disposition this build does not know is still a settled receipt:
+    // `Unknown` (outcome not stated), never an opaque event its waiter
+    // cannot match.
+    let disposition = crate::native_agent::NativeDisposition::from_u8(dec.read_u8()?)
+        .unwrap_or(crate::native_agent::NativeDisposition::Unknown);
     // A presence byte, never "whatever bytes remain": a newer peer's bytes
     // after it are skipped.
     let detail = dec.read_option("NativeAgentResult detail", |d| Ok(d.read_str()?.to_owned()))?;
