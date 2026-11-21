@@ -72,7 +72,8 @@ pub(super) fn inbox_button(waiting: usize, t: &Tokens) -> El {
 }
 
 /// Stable-width creation controls (kit ghost buttons); keyboard hints wait
-/// in the tooltip instead of moving labels.
+/// in the tooltip instead of moving labels. A click hands the keyboard back
+/// to the terminal, or the next Space would create another.
 pub(super) fn foot(
     label: &'static str,
     key: &'static str,
@@ -83,7 +84,10 @@ pub(super) fn foot(
     let button = Button::new(label)
         .variant(ButtonVariant::Ghost)
         .icon(&icons::PLUS)
-        .on_press(press)
+        .on_press_tx(move |d: &mut Desk, tx| {
+            press(d);
+            super::clicked(tx);
+        })
         .build(&t.kit)
         .key(key)
         .grow(1.0)

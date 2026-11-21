@@ -323,7 +323,7 @@ fn counts_by_session(desk: &Desk, topology: &Topology) -> HashMap<u32, Counts> {
 
 /// A click on a row picks it and hands the keyboard back to the shown
 /// terminal; only keys keep focus in the list, where arrows walk it.
-fn clicked(tx: &mut rune::Tx) {
+pub(super) fn clicked(tx: &mut rune::Tx) {
     if !tx.by_keys() {
         tx.blur();
     }
