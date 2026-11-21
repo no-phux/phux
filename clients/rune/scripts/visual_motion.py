@@ -1,4 +1,4 @@
-"""Required fixed-clock frames from the real phone pane-gesture exporter."""
+"""Required fixed-clock frames from real phone gesture and control exporters."""
 from itertools import product
 
 
@@ -6,6 +6,21 @@ MOTION_FRAMES = {
     "idle": 0, "start": 1, "first-axis": 2, "mid-drag": 3,
     "release": 4, "release-plus-100ms": 10, "settled": 100,
 }
+
+ACCESSORY_RESIZE_FRAMES = {"first": 1, "middle": 6, "settled": 60}
+
+
+def motion_frames(stem):
+    return ACCESSORY_RESIZE_FRAMES if stem.startswith("accessory-resize-") else MOTION_FRAMES
+
+
+def accessory_resize_inventory(themes=("dark", "light")):
+    return {
+        f"navigation/accessory-resize-{direction}-{theme}-{width}x{height}-2x-{stage}.png":
+            (width, height, 2)
+        for direction, theme, (width, height), stage in product(
+            ("grow", "shrink"), themes, ((320, 340), (393, 480)), ACCESSORY_RESIZE_FRAMES)
+    }
 
 
 def pane_motion_inventory(themes=("dark", "light")):

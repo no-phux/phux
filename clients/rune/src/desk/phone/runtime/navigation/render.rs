@@ -1,6 +1,7 @@
 //! Paint the actual phone navigator through Rune's GPU renderer.
 use super::*;
 
+mod accessory;
 mod connections;
 mod header;
 

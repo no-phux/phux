@@ -21,12 +21,13 @@ SOURCE = {
 
 
 def motion_fixture(path, tree):
-    if not path.stem.startswith("pane-motion-"):
+    if not path.stem.startswith(("pane-motion-", "accessory-resize-")):
         return
-    stage = next(stage for stage in review.MOTION_FRAMES if path.stem.endswith(f"-{stage}"))
+    frames = review.motion_frames(path.stem)
+    stage = next(stage for stage in frames if path.stem.endswith(f"-{stage}"))
     scenario = path.stem[:-(len(stage) + 1)]
     tree["scenario"] = scenario
-    frame = review.MOTION_FRAMES[stage]
+    frame = frames[stage]
     path.with_suffix(".motion.json").write_text(json.dumps({
         "schema": 1, "scenario": scenario, "stage": stage,
         "frame": frame, "elapsed_ms": frame * 1000.0 / 60.0,
@@ -70,10 +71,10 @@ class VisualReview(unittest.TestCase):
 
     def test_bundle_has_all_families_hashes_and_honest_status(self):
         manifest = self.produce()
-        self.assertEqual(len(manifest["cases"]), 707)
+        self.assertEqual(len(manifest["cases"]), 923)
         self.assertEqual({family: sum(case["family"] == family for case in manifest["cases"])
                           for family in review.FAMILIES},
-                          {"inbox": 192, "settings": 226, "navigation": 288, "resources": 1})
+                          {"inbox": 192, "settings": 226, "navigation": 504, "resources": 1})
         case = next(case for case in manifest["cases"] if case["png"] == self.subject)
         self.assertEqual(case["physical"], [320, 568])
         self.assertEqual(case["logical"], [320, 568])
@@ -289,10 +290,10 @@ class VisualReview(unittest.TestCase):
                                 env=environment, cwd=self.root, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         manifest = json.loads((out / "manifest.json").read_text())
-        self.assertEqual(len(manifest["cases"]), 707)
+        self.assertEqual(len(manifest["cases"]), 923)
         self.assertEqual(manifest["currentRunePin"], "test-pin")
         self.assertFalse(manifest["dirty"])
-        self.assertEqual(len(list((out / "logs").glob("*.log"))), 14)
+        self.assertEqual(len(list((out / "logs").glob("*.log"))), 16)
         self.assertEqual(seed.read_bytes(), seed_bytes)
         self.assertEqual({path.relative_to(private_seed).as_posix(): path.read_bytes()
                           for path in private_seed.rglob("*") if path.is_file()},
