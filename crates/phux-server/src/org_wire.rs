@@ -270,6 +270,8 @@ pub fn core_launch(
                 restore: spec.restore.clone(),
                 // Not an organization wire field: only PTY reports set it.
                 resume: None,
+                last_cwd: None,
+                pane_id: None,
             }))
         }
         phux_core::ResourceKind::AgentSession => {
