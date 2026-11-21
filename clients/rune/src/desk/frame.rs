@@ -12,6 +12,9 @@ use rune::Tx;
 
 use super::{Desk, Painted};
 
+/// How long the title bar shows the terminal's size after it changes.
+const SIZE_GLANCE: f64 = 1.2;
+
 impl Desk {
     /// Ghostty's cursor blink: 600 ms phases while the window has focus and
     /// the program asked for a blinking cursor, restarting on typing. Wakes
@@ -45,6 +48,47 @@ impl Desk {
             self.generation += 1;
         }
         changed
+    }
+
+    /// The terminal's size shows in the title bar only while the window is
+    /// resized, as Ghostty's resize overlay does: for [`SIZE_GLANCE`]
+    /// seconds after the last change, never at rest or for a launch's fit.
+    /// Remembers the grid it shows and wakes to hide it.
+    pub(super) fn glance_size(&mut self, client: &Client, tx: &mut Tx) -> bool {
+        let size = self
+            .connection
+            .shown
+            .as_ref()
+            .and_then(|shown| client.acquire_view(shown.view?))
+            .map(|frame| (frame.cols, frame.rows));
+        let changed = size.is_some() && size != self.size_seen;
+        if size.is_some() {
+            self.size_seen = size;
+        }
+        if self.size_glance().is_some() {
+            tx.wake_after(Duration::from_secs_f64(
+                (self.size_until - self.clock).max(0.01),
+            ));
+        }
+        let shown = self.size_glance().is_some();
+        let flipped = shown != self.size_was_shown;
+        self.size_was_shown = shown;
+        (changed && shown) || flipped
+    }
+
+    /// The window changed size: show the terminal's size for a moment.
+    pub(crate) fn glance_resize(&mut self) {
+        self.size_until = self.clock + SIZE_GLANCE;
+    }
+
+    /// The grid size to show in the title bar, while a resize is fresh.
+    pub fn size_glance(&self) -> Option<(u16, u16)> {
+        self.size_seen.filter(|_| self.clock < self.size_until)
+    }
+
+    /// The shown terminal's grid size as last seen.
+    pub fn last_size(&self) -> Option<(u16, u16)> {
+        self.size_seen
     }
 
     /// Typing shows the cursor and restarts its blink.
@@ -214,6 +258,39 @@ impl Desk {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_title_bar_shows_the_size_only_while_the_window_resizes() {
+        let (client, mut rt) = crate::test_support::input_fixture_showing("");
+        rt.frame(0.0);
+        let mut at = |clock: f64| {
+            rt.update(|desk, tx| {
+                desk.clock = clock;
+                desk.glance_size(&client, tx);
+            });
+            rt.state.size_glance()
+        };
+        // Attaching and the launch's first fits say nothing.
+        assert_eq!(at(0.5), None);
+        assert!(rt.state.last_size().is_some());
+        rt.state.window_laid_out([1100.0, 720.0]);
+        assert_eq!(
+            rt.state.size_glance(),
+            None,
+            "the first layout is no resize"
+        );
+        rt.state.window_laid_out([900.0, 720.0]);
+        assert_eq!(rt.state.size_glance(), rt.state.last_size());
+        let mut at = |clock: f64| {
+            rt.update(|desk, tx| {
+                desk.clock = clock;
+                desk.glance_size(&client, tx);
+            });
+            rt.state.size_glance()
+        };
+        assert!(at(1.0).is_some());
+        assert_eq!(at(0.5 + SIZE_GLANCE + 0.01), None, "and goes once it rests");
+    }
 
     #[test]
     fn the_cursor_blinks_only_while_the_connection_is_up() {

@@ -287,16 +287,25 @@ impl Desk {
             )
     }
 
-    /// The root's layout: learn the window width, and post a frame when it
-    /// crosses the narrow line, since on_layout runs after poll.
-    pub fn window_laid_out(&mut self, width: f32) {
+    /// The root's layout: learn the window's size, and post a frame when it
+    /// crosses the narrow line or starts the size glance, since on_layout
+    /// runs after poll.
+    pub fn window_laid_out(&mut self, [width, height]: [f32; 2]) {
         let was = self.sidebar_narrow();
+        let resized = self.window_w > 0.0 && [width, height] != [self.window_w, self.window_h];
         self.window_w = width;
-        if was != self.sidebar_narrow() {
+        self.window_h = height;
+        let crossed = was != self.sidebar_narrow();
+        if crossed {
             self.sidebar_peek = false;
-            if let Some(waker) = &self.waker {
-                waker();
-            }
+        }
+        if resized {
+            self.glance_resize();
+        }
+        if (crossed || resized)
+            && let Some(waker) = &self.waker
+        {
+            waker();
         }
     }
 
