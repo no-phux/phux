@@ -54,15 +54,7 @@ pub(super) fn default_colors() -> Option<TerminalDefaultColors> {
 }
 
 fn probe_once() -> Option<TerminalDefaultColors> {
-    // `O_NOCTTY`: probing must never acquire a controlling terminal.
-    let mut tty = File::from(
-        rustix::fs::open(
-            probe_device(),
-            rustix::fs::OFlags::RDWR | rustix::fs::OFlags::NOCTTY | rustix::fs::OFlags::CLOEXEC,
-            rustix::fs::Mode::empty(),
-        )
-        .ok()?,
-    );
+    let tty = open_probe_tty()?;
     let original = rustix::termios::tcgetattr(tty.as_fd()).ok()?;
 
     // Non-canonical, fully non-blocking reads: `poll` owns the waiting, so a
@@ -75,46 +67,79 @@ fn probe_once() -> Option<TerminalDefaultColors> {
     probe_mode.special_codes[SpecialCodeIndex::VMIN] = 0;
     probe_mode.special_codes[SpecialCodeIndex::VTIME] = 0;
     rustix::termios::tcsetattr(tty.as_fd(), OptionalActions::Now, &probe_mode).ok()?;
-    let mut exchange_state = InFlight {
-        tty: tty.try_clone().ok()?,
+    // Owns the restore from here on: every early return drops it.
+    let mut in_flight = InFlight {
+        tty,
         original,
         response: Vec::with_capacity(128),
         settle_by: Instant::now() + SETTLE_BUDGET,
     };
 
-    tty.write_all(PROBE_QUERY).ok()?;
-    tty.flush().ok()?;
+    (&in_flight.tty).write_all(PROBE_QUERY).ok()?;
+    (&in_flight.tty).flush().ok()?;
 
-    let InFlight { tty, response, .. } = &mut exchange_state;
+    let InFlight { tty, response, .. } = &mut in_flight;
     let first = read_replies(tty, response, Instant::now() + PROBE_BUDGET);
     let colors = palette_from_attempts(first, || {
         read_replies(tty, response, Instant::now() + LATE_REPLY_BUDGET)
     });
-    if !saw_primary_da(&exchange_state.response) {
+    if !saw_primary_da(&in_flight.response) {
         // DA1 is the terminal's last reply; until it lands, echo stays off so
         // a slow terminal's answers cannot print on the cooked screen or
-        // reach the shell. Raw mode or a failed attach settles it.
-        *lock_in_flight() = Some(exchange_state);
+        // reach the shell. Raw mode or a failed attach settles it, and the
+        // watchdog bounds the wait, so a slow handshake or a signal in it
+        // never leaves echo off for long.
+        let settle_by = in_flight.settle_by;
+        *lock_in_flight() = Some(in_flight);
+        spawn_settle_watchdog(settle_by);
     }
     colors
 }
 
-/// The terminal device to probe: stdin's (else stdout's) named tty. macOS
-/// `poll` answers `POLLNVAL` at once for the `/dev/tty` alias, so probing
-/// through it read nothing and let every reply leak; `/dev/tty` is the last
-/// resort.
-fn probe_device() -> std::path::PathBuf {
+/// Restore the tty at `settle_by` if nothing settled it first.
+fn spawn_settle_watchdog(settle_by: Instant) {
+    let spawned = std::thread::Builder::new()
+        .name("phux-probe-settle".to_owned())
+        .spawn(move || {
+            std::thread::sleep(settle_by.saturating_duration_since(Instant::now()));
+            settle(false);
+        });
+    if spawned.is_err() {
+        // No watchdog, no unbounded window: give the tty back now.
+        settle(false);
+    }
+}
+
+/// Open the probe's terminal (`O_NOCTTY`: never acquire a controlling
+/// terminal). The named device can refuse a different user after `su`; the
+/// `/dev/tty` alias still opens, even though macOS cannot poll it.
+fn open_probe_tty() -> Option<File> {
+    let open = |path: &std::path::Path| {
+        rustix::fs::open(
+            path,
+            rustix::fs::OFlags::RDWR | rustix::fs::OFlags::NOCTTY | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .ok()
+        .map(File::from)
+    };
+    probe_device()
+        .and_then(|device| open(&device))
+        .or_else(|| open(std::path::Path::new("/dev/tty")))
+}
+
+/// The terminal device to probe: stdout's named tty (where the frames go),
+/// else stdin's. macOS `poll` answers `POLLNVAL` at once for the `/dev/tty`
+/// alias, so probing through it read nothing and let every reply leak.
+fn probe_device() -> Option<std::path::PathBuf> {
     let named = |fd: std::os::fd::BorrowedFd<'_>| {
         rustix::termios::isatty(fd)
             .then(|| rustix::termios::ttyname(fd, Vec::new()).ok())
             .flatten()
     };
-    named(std::io::stdin().as_fd())
-        .or_else(|| named(std::io::stdout().as_fd()))
-        .map_or_else(
-            || std::path::PathBuf::from("/dev/tty"),
-            |name| std::ffi::OsString::from_vec(name.into_bytes()).into(),
-        )
+    named(std::io::stdout().as_fd())
+        .or_else(|| named(std::io::stdin().as_fd()))
+        .map(|name| std::ffi::OsString::from_vec(name.into_bytes()).into())
 }
 
 /// Wall-clock cap, from the query, on waiting out a slow terminal's replies
