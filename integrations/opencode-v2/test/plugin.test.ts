@@ -116,28 +116,45 @@ test("spawned terminals are owned, capped, killable only by their owner, and rel
   expect(calls.killed).toEqual(["@12", "@11", "@13"]);
 });
 
-test("fleet context is opt-in and always a full checkpoint", async () => {
+test("opt-in fleet context is a durable instruction entry, never per-request system text", async () => {
   delete process.env.PHUX_TERMINAL_ID;
   delete process.env.PHUX_CONTEXT_AWARENESS;
   fakeCli();
   const quiet = await setupHost(false, { contextAwareness: undefined });
   try {
-    const system = await quiet.context("a");
-    expect(system).toHaveLength(1);
+    expect(await quiet.context("a")).toHaveLength(1);
+    await quiet.prompt("a");
+    expect(quiet.entries).toEqual([]);
   } finally {
     await quiet.close();
   }
-  spyOn(PhuxCli.prototype, "agentList").mockResolvedValue({ schema_version: 1, agents: [] } as never);
+  const agents = spyOn(PhuxCli.prototype, "agentList").mockResolvedValue({ schema_version: 1, agents: [] } as never);
   const aware = await setupHost(false, { contextAwareness: true });
   try {
-    await aware.context("a");
-    const second = await aware.context("a");
-    expect(second).toHaveLength(2);
-    expect(second[1]).toContain('kind="checkpoint"');
+    await aware.prompt("a");
+    await aware.prompt("a");
+    // The static rule is the whole system addition: fleet state never rewrites the prefix.
+    expect(await aware.context("a")).toHaveLength(1);
+    agents.mockResolvedValue({ schema_version: 1, agents: [fleetPane("@5")] } as never);
+    await aware.prompt("a");
+    const [first, unchanged, changed] = aware.entries;
+    expect(aware.entries.every((entry) => entry.sessionID === "a" && entry.key === "phux-fleet")).toBe(true);
+    // An unchanged fleet is the same value, so OpenCode records no change.
+    expect(unchanged!.value).toBe(first!.value);
+    expect(first!.value).not.toContain("seq");
+    expect(first!.value).toContain("untrusted");
+    expect(changed!.value).toContain('"terminal":"@5"');
   } finally {
     await aware.close();
   }
 });
+
+function fleetPane(terminal: string) {
+  return {
+    terminal, session: "work", window: "1", agent: { label: "claude", kind: "claude" }, state: "idle",
+    confidence: 1, attention: "none", title: null, cwd: "/tmp", sources: [], explanation: "",
+  };
+}
 
 test("host cancellation interrupts an in-flight CLI operation", async () => {
   delete process.env.PHUX_TERMINAL_ID;
@@ -217,6 +234,7 @@ async function setupHost(serverLifecycle = true, extra: Record<string, unknown> 
   const hooks: Record<string, (event: unknown) => Promise<void>> = {};
   const shellHooks: Record<string, (event: { command: string }) => Promise<void>> = {};
   const sessionHooks: Record<string, (event: unknown) => Promise<void>> = {};
+  const entries: { sessionID: string; key: string; value: string }[] = [];
   let deliver!: (entry: { event: unknown; done: () => void } | undefined) => void;
   const rpc: Record<string, (input: unknown, call: { signal: AbortSignal }) => Promise<unknown>> = {};
   const context = {
@@ -232,7 +250,10 @@ async function setupHost(serverLifecycle = true, extra: Record<string, unknown> 
       transform: async (transform: (editor: unknown) => void) => transform({ add: (tool: Info) => { tools[tool.name] = tool; } }),
       hook: async (name: string, hook: (event: unknown) => Promise<void>) => { hooks[name] = hook; },
     },
-    session: { hook: async (name: string, hook: (event: unknown) => Promise<void>) => { sessionHooks[name] = hook; } },
+    session: {
+      hook: async (name: string, hook: (event: unknown) => Promise<void>) => { sessionHooks[name] = hook; },
+      instructions: { entry: { put: async (entry: (typeof entries)[number]) => { entries.push(entry); } } },
+    },
     shell: {
       hook: async (name: string, hook: (event: { command: string }) => Promise<void>) => {
         shellHooks[name] = hook;
@@ -260,6 +281,10 @@ async function setupHost(serverLifecycle = true, extra: Record<string, unknown> 
     before: (event: unknown) => hooks["execute.before"]!(event),
     shellHookCount: () => Object.keys(shellHooks).length,
     toolNames: () => Object.keys(tools),
+    entries,
+    prompt: async (sessionID: string) => {
+      await sessionHooks.prompt?.({ sessionID, messageID: "message", prompt: { text: "hi" }, delivery: "steer" });
+    },
     context: async (sessionID: string) => {
       const event = { sessionID, system: [] as { text: string }[] };
       await sessionHooks.context!(event);

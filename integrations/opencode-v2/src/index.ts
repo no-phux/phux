@@ -28,7 +28,7 @@ export interface PhuxOpenCodeV2Options {
   readonly executable?: string;
   readonly socket?: string;
   readonly lifecycleTimeoutMs?: number;
-  /** Inject a fleet inventory into every request. Off by default: phux_panes answers on demand. */
+  /** Keep a fleet inventory in each session's context. Off by default: phux_panes answers on demand. */
   readonly contextAwareness?: boolean;
   readonly contextTimeoutMs?: number;
   /** Live terminals one OpenCode session may own through phux_spawn. */
@@ -62,8 +62,9 @@ const plugin = Plugin.define({
       target: () => identityTarget,
       ...(options.lifecycleTimeoutMs === undefined ? {} : { timeoutMs: options.lifecycleTimeoutMs }),
     });
+    const contextAwareness = options.contextAwareness ?? contextAwarenessEnabled(environment.PHUX_CONTEXT_AWARENESS, false);
     const awareness = new PhuxContextAwareness(cli, {
-      enabled: options.contextAwareness ?? contextAwarenessEnabled(environment.PHUX_CONTEXT_AWARENESS, false),
+      enabled: contextAwareness,
       ...(options.contextTimeoutMs === undefined ? {} : { timeoutMs: options.contextTimeoutMs }),
     });
     const maxTerminals = options.maxTerminals ?? DEFAULT_MAX_TERMINALS;
@@ -107,11 +108,23 @@ const plugin = Plugin.define({
 
     await ctx.session.hook("context", async (event) => {
       event.system.push({ type: "text", text: PARENT_PANE_RULE });
-      // The system prompt is rebuilt per request, so only a full checkpoint is
-      // meaningful here; a delta would arrive without its base.
-      const emission = await awareness.checkpoint(event.sessionID, contextIdentity(event.sessionID));
-      if (emission !== null) event.system.push({ type: "text", text: emission.text });
     });
+
+    if (contextAwareness) {
+      // Fleet state is a session instruction entry, never per-request system
+      // text: OpenCode keeps the first value in the session's system prompt and
+      // appends each later change to history as a durable system message, and
+      // carries it through compaction and forks. A fleet change therefore never
+      // rewrites the cached prefix, and an unchanged value is a no-op. It is
+      // refreshed as each prompt is admitted, before that turn's first request.
+      await ctx.session.hook("prompt", async (event) => {
+        const value = await awareness.state(contextIdentity(event.sessionID));
+        if (value === null) return;
+        await ctx.session.instructions.entry
+          .put({ sessionID: event.sessionID, key: FLEET_CONTEXT_KEY, value })
+          .catch((error: unknown) => console.error("phux fleet context:", error));
+      });
+    }
 
     if (reportLifecycle) {
       await ctx.tool.hook("execute.before", async (event) => {
@@ -140,7 +153,6 @@ const plugin = Plugin.define({
       for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
         const deleted = deletedSessionId(event);
         if (deleted !== undefined) {
-          awareness.delete(deleted);
           selectedTargets.delete(deleted);
           await terminals.release(deleted);
         }
@@ -238,6 +250,9 @@ function withImages(result: ToolResult) {
   }));
   return { content: [{ type: "text" as const, text: result.content }, ...files], metadata: result.metadata };
 }
+
+/** The instruction entry key OpenCode renders as `<context key="phux-fleet">`. */
+const FLEET_CONTEXT_KEY = "phux-fleet";
 
 const TARGET = { type: "string", minLength: 2, maxLength: 512, pattern: "^(?:[^/\\s]+/)?@[0-9]+$", description: "Exact @N or host/@N returned by phux_spawn." };
 
