@@ -48,6 +48,7 @@ pub mod notice;
 pub mod onboarding;
 mod palette;
 mod pending;
+mod picks;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod plugin_actions;
 pub use pending::Pending;
@@ -142,6 +143,10 @@ pub struct Desk {
     window_h: f32,
     /// The sidebar shown over the preference in a window too narrow for it.
     pub sidebar_peek: bool,
+    /// `display-panes`: the numbered panes, until the next key.
+    pub pane_numbers: Vec<ResourceId>,
+    /// The tab whose terminals all get what is typed (`sync-panes`).
+    pub sync_tab: Option<[u8; 16]>,
     /// The link under the pointer while ⌘ is held.
     pub pointer: links::Pointer,
     /// Everything waiting on you, and the system's view of it.
@@ -294,6 +299,8 @@ impl Desk {
             window_w: 0.0,
             window_h: 0.0,
             sidebar_peek: false,
+            pane_numbers: Vec::new(),
+            sync_tab: None,
             pointer: links::Pointer::default(),
             inbox: inbox::Inbox::default(),
             galaxy: galaxy::Galaxy::default(),

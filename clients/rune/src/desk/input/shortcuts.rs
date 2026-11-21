@@ -97,6 +97,9 @@ impl Desk {
             Shortcut::CopyConfig => self.copy_config(tx),
             Shortcut::RestoreSessions => self.restore_sessions(),
             Shortcut::Bare => self.toggle_bare(),
+            Shortcut::DisplayPanes => self.display_panes(),
+            Shortcut::FocusSidebar => self.focus_sidebar(tx),
+            Shortcut::SyncPanes => self.toggle_sync(),
         }
     }
 

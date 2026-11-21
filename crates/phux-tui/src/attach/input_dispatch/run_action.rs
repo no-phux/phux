@@ -29,6 +29,8 @@ mod urls;
 pub(in crate::attach) use urls::{copy_mode_key, copy_text, url_picker};
 mod restore;
 pub(in crate::attach) use restore::restore_sessions;
+mod picks;
+pub(in crate::attach) use picks::{display_panes, focus_sidebar};
 mod sync;
 pub(in crate::attach) use sync::sync_panes;
 mod worktree;

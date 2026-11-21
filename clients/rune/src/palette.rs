@@ -67,7 +67,7 @@ pub enum Mode {
 }
 
 /// The most rows the palette renders; the highlight stays within them.
-pub const ROWS: usize = 60;
+pub const ROWS: usize = 64;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Item {

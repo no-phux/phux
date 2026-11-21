@@ -24,6 +24,7 @@ A capital letter means Shift: <kbd>X</kbd> is <kbd>Shift</kbd>+<kbd>x</kbd>. Whe
 | <kbd>o</kbd> | Next pane | `next-pane` |
 | <kbd>;</kbd> | Previous pane | `previous-pane` |
 | <kbd>=</kbd> | Last pane | `last-pane` |
+| <kbd>i</kbd> | Show pane numbers | `display-panes` |
 | <kbd>z</kbd> | Zoom pane | `toggle-zoom` |
 | <kbd>[</kbd> | Copy mode | `copy-mode` |
 | <kbd>F</kbd> | Insert path… | `find-path` |
@@ -32,6 +33,7 @@ A capital letter means Shift: <kbd>X</kbd> is <kbd>Shift</kbd>+<kbd>x</kbd>. Whe
 | <kbd>f</kbd> | Freeze pane | `signal-terminal` |
 | <kbd>u</kbd> | Resume pane | `signal-terminal` |
 | <kbd>U</kbd> | Copy a link… | `url-picker` |
+| <kbd>y</kbd> | Type in every pane | `sync-panes` |
 
 ## Tab
 
@@ -76,6 +78,7 @@ A capital letter means Shift: <kbd>X</kbd> is <kbd>Shift</kbd>+<kbd>x</kbd>. Whe
 | <kbd>S</kbd> | Settings | `settings` |
 | <kbd>B</kbd> | Report a bug | `report-bug` |
 | <kbd>a</kbd> | Cycle agents filter | `agents-filter` |
+| <kbd>e</kbd> | Focus sidebar | `focus-sidebar` |
 | <kbd>O</kbd> | Organize everything | `organize` |
 | <kbd>R</kbd> | Resize mode | `enter-mode` |
 

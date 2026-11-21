@@ -138,6 +138,9 @@ every_shortcut!(
     PromptUp,
     PromptDown,
     Bare,
+    DisplayPanes,
+    FocusSidebar,
+    SyncPanes,
 );
 
 /// An essential with no chord here would teach a key that does nothing.
