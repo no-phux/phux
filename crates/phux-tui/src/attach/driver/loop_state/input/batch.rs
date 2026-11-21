@@ -29,6 +29,7 @@ impl super::super::SessionLoop {
         let mut events = std::mem::take(&mut self.input_events);
         self.parser.feed_into(&self.stdin_buf[..n], &mut events);
         self.send_clipboard_reply(conn).await?;
+        self.refresh_default_colors(conn, out, sidebar).await?;
         let step = self.dispatch_batch(conn, out, sidebar, events).await?;
         // A prompt answered in this batch may have allowed a read.
         self.flush_clipboard_query(out)?;
@@ -189,6 +190,7 @@ impl super::super::SessionLoop {
         if self.reload_request {
             self.reload_request = false;
             self.reload_config(out, sidebar);
+            Self::query_default_colors(out)?;
         }
         self.handoff_requested_host(conn).await;
         Ok(())

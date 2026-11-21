@@ -19,10 +19,12 @@ const ZIG: Surface[] = ["native", "web_engine"];
  * the root changelog. These leave the docs-only fast path.
  */
 const DOC_INPUTS: Record<string, Surface[]> = {
-  // README and the wire schema are Rust inputs. Other files under
-  // docs/spec, including the plugin index schema, are documentation.
+  // README, the wire schema and the config editor schemas are Rust inputs.
+  // Other files under docs/spec, including the plugin index schema, are
+  // documentation.
   "README.md": ["phux"],
   "docs/spec/wire-schema.json": ["phux"],
+  "docs/spec/{config,plugin}.schema.json": ["phux"],
   "docs/{reference,assets}/**": ["phux"],
   "docs/agents.md": ["phux"],
   // examples_e2e runs this page's automation example.

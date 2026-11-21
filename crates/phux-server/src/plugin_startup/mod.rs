@@ -9,6 +9,7 @@
 mod backoff;
 mod cloexec;
 mod exit_watch;
+mod gate;
 mod plan;
 mod reap;
 mod rotate;

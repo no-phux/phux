@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 /// `[forward]` table: TCP port and ssh-agent forwarding
 /// (`docs/forwarding.md`).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
 pub struct ForwardCfg {
     /// Serve `phux forward`. Off, the server does not advertise

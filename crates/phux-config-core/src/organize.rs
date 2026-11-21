@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// `[organize]` table: who judges where panes belong for `phux organize`
 /// (ADR-0174). Read by the client that runs it, never by the server.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
 pub struct OrganizeCfg {
     /// Argv whose trimmed stdout is the `TypeSafe` API key, run when

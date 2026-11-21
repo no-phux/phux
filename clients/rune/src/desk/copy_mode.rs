@@ -1,6 +1,6 @@
 //! Keyboard copy mode: a cursor over the focused pane, moved, extended and
 //! copied with the TUI's vi keys (`h j k l`, `w b e`, `0 ^ $`, `g G`,
-//! `H M L`, `C-u C-d C-b C-f`, `v V C-v`, `y`).
+//! `H M L`, `C-u C-d C-b C-f`, `v V C-v`, `y`, and `/ ? n N` ([`search`]).
 //!
 //! The cursor is a one-cell selection in the engine, so it paints as any
 //! selection does. A selection's fixed end is three engine anchors on the
@@ -16,8 +16,10 @@ use rune::{Key, KeyEvent, Tx};
 
 use super::{Desk, NoticeKind};
 
+pub(super) mod search;
+
 /// What the user is told on the way in.
-const HINT: &str = "Copy mode: h j k l move, v selects, y copies, Esc leaves.";
+const HINT: &str = "Copy mode: h j k l move, / searches, v selects, y copies, Esc leaves.";
 
 /// `EngineDocumentPoint::space` for the visible viewport.
 const VIEWPORT: u32 = 1;
@@ -48,6 +50,9 @@ pub struct CopyMode {
     pin: Option<Pin>,
     /// The engine anchors the shown selection runs between.
     ends: Vec<u64>,
+    /// The last search, and whether it went back (`?`).
+    query: Option<String>,
+    back: bool,
 }
 
 /// The codepoint in each cell of `row` (`0` for an empty cell).
@@ -106,6 +111,9 @@ impl Desk {
         else {
             return;
         };
+        // Find hands its current match over, selected.
+        let handed = self.find_match(&terminal);
+        self.close_find();
         let (col, row) = if frame.cursor.visible {
             (frame.cursor.col, frame.cursor.row)
         } else {
@@ -118,8 +126,13 @@ impl Desk {
             row,
             pin: None,
             ends: Vec::new(),
+            query: None,
+            back: false,
         });
         self.show_copy_cursor(frame.scrollbar.offset);
+        if let Some((start, end)) = handed {
+            self.copy_land(start, end, &frame);
+        }
         self.say(NoticeKind::Info, HINT);
     }
 
@@ -350,6 +363,14 @@ impl Desk {
                 };
                 self.toggle_copy_selection(shape, &frame);
                 (col, row, None)
+            }
+            (_, Some((c @ ('/' | '?'), _))) if !ctrl => {
+                self.copy_search_prompt(c == '?');
+                return true;
+            }
+            (_, Some(('n', shift))) if !ctrl => {
+                self.copy_search_again(shift);
+                return true;
             }
             (_, Some(('u', _))) if ctrl => scrolled(Scroll::Delta(-(page / 2).max(1))),
             (_, Some(('d', _))) if ctrl => scrolled(Scroll::Delta((page / 2).max(1))),

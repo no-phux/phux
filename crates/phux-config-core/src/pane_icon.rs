@@ -30,7 +30,7 @@ pub fn is_icon(icon: &str) -> bool {
 }
 
 /// One `[[icons]]` entry. Every matcher it names must match.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct IconConfigEntry {
     /// The glyph.

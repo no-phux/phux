@@ -138,6 +138,11 @@ every_shortcut!(
     PromptUp,
     PromptDown,
     Bare,
+    DisplayPanes,
+    FocusSidebar,
+    SyncPanes,
+    LastPane,
+    LastTab,
 );
 
 /// An essential with no chord here would teach a key that does nothing.
@@ -232,22 +237,34 @@ fn config_keys_add_a_chord_take_one_away_and_report_a_bad_name() {
     let (user, problems) = user_keys(&keys);
     assert_eq!(problems, ["cmd+y: no command named no-such-thing"]);
     assert_eq!(
-        lookup(&user, Chord::cmd(Cap::Char('j')).shift()),
+        lookup(&user, true, Chord::cmd(Cap::Char('j')).shift()),
         Some(Shortcut::SplitRight)
     );
-    assert_eq!(lookup(&user, Chord::cmd(Cap::Char('d'))), None);
+    assert_eq!(lookup(&user, true, Chord::cmd(Cap::Char('d'))), None);
     assert_eq!(
-        lookup(&user, Chord::ctrl(Cap::Char('9'))),
+        lookup(&user, true, Chord::ctrl(Cap::Char('9'))),
         Some(Shortcut::Tab(2))
     );
     assert_eq!(
-        lookup(&user, Chord::shifted(Cap::PageUp)),
+        lookup(&user, true, Chord::shifted(Cap::PageUp)),
         Some(Shortcut::ScrollPageUp)
     );
     // The name before `scroll-to-top` still binds.
     assert_eq!(
-        lookup(&user, Chord::cmd(Cap::Home)),
+        lookup(&user, true, Chord::cmd(Cap::Home)),
         Some(Shortcut::ScrollToTop)
+    );
+    // Without the built-in chords only yours act, and the palette and
+    // Settings until you bind them.
+    let first = |action| command(action).expect("a row").chords()[0];
+    assert_eq!(lookup(&user, false, first(Shortcut::NewTerminal)), None);
+    let palette = first(Shortcut::Palette);
+    assert_eq!(lookup(&user, false, palette), Some(Shortcut::Palette));
+    let (rebound, _) = user_keys(&[("cmd+y".to_owned(), "palette".to_owned())].into());
+    assert_eq!(lookup(&rebound, false, palette), None);
+    assert_eq!(
+        lookup(&rebound, false, Chord::cmd(Cap::Char('y'))),
+        Some(Shortcut::Palette)
     );
     // Every command has a name, and no two share one.
     let mut ids: Vec<String> = COMMANDS.iter().map(|command| id(command.action)).collect();

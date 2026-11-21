@@ -245,6 +245,8 @@ pub struct TerminalActor {
     /// sink has not taken yet.
     icon: osc_scan::IconScan,
     icon_owed: Option<osc_scan::IconChange>,
+    /// OSC 9 / OSC 777 notifications, for the server to map onto notes.
+    program_note_sink: Option<watch::Sender<Option<phux_terminal_api::agent_detect::ProgramNote>>>,
     /// Agent-state detector (ADR-0046), built in [`Self::run`] for PTY-backed
     /// actors with a sink and rules.
     agent_detect: Option<crate::agent_detect::AgentDetector>,

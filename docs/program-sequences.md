@@ -188,8 +188,10 @@ before the pane's name in tabs and lists. It comes before an icon from your
 
 ## Notifications and the bell
 
-phux ignores OSC 9 (other than `9;4`), OSC 777, and OSC 99 from a pane: a
-program cannot raise a desktop notification through phux. Report state
+By default phux ignores OSC 9 (other than `9;4`), OSC 777, and OSC 99 from
+a pane: a program cannot raise a desktop notification through phux. With
+`notifications.from-programs = "notes"`, OSC 9 and OSC 777 become the pane's
+[note](./scripting.md#notes) instead. Report state
 instead, with [OSC 7501](./program-protocol.md) or a
 [`phux-ask` question](#questions-the-phux-ask-title), and phux notifies the
 user according to their `[notifications]` settings.
@@ -216,7 +218,7 @@ phux answers these queries itself, without asking the user's terminal:
 | `OSC 7501 ; ? ST` | [Feature detection](./program-protocol.md#feature-detection) |
 | `CSI c` (primary device attributes) | `CSI ? ... c` |
 | `CSI > q` (XTVERSION) | `libghostty`. Do not detect phux by this. |
-| `OSC 10 ; ? ST`, `OSC 11 ; ? ST` | The default colours of the user's terminal, as phux saw them at attach |
+| `OSC 10 ; ? ST`, `OSC 11 ; ? ST` | The default colours of the user's terminal, as phux saw them at attach or after its last theme switch |
 | `CSI 14 t`, `CSI 16 t`, `CSI 18 t` | The pane's size, from a cell size of 8 by 16 pixels when the real one is unknown |
 
 Not answered: `CSI 21 t`, ENQ, and `CSI ? 996 n`. `OSC 52` reads are
@@ -295,10 +297,11 @@ agent record, so the record says what a program claims, not who it is.
 | OSC 0, 2 | Title, `phux-ask` questions, agent rules |
 | OSC 1 | No effect |
 | OSC 7 | Not read |
-| OSC 9 (notification) | Ignored |
+| OSC 9 (notification) | Ignored, or a note with `from-programs = "notes"` |
 | OSC 9;4 | Agent rules only |
 | OSC 52 | Clipboard write and read, by user policy |
-| OSC 99, OSC 777 | Ignored |
+| OSC 777 | Ignored, or a note with `from-programs = "notes"` |
+| OSC 99 | Ignored |
 | OSC 133 | Prompt state, command events, exit codes; `A` ends active OSC 7501 records |
 | OSC 1337 | `SetUserVar=phux_icon` sets the [pane icon](#pane-icon-osc-1337-setuservar); `Copy` is a [clipboard](#clipboard-osc-52) write |
 | OSC 7501 | [Program status](./program-protocol.md#program-status-osc-7501) |

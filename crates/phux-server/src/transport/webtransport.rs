@@ -86,7 +86,7 @@ impl WtListener {
     ) -> Result<Self, WtBindError> {
         let tls = super::tls::webtransport_server_config(cert_path, key_path)?;
         Ok(Self {
-            endpoint: super::quic::server_endpoint(addr, tls, None)?,
+            endpoint: super::quic::server_endpoint(addr, tls, None, Arc::default())?,
             tokens,
             inner,
             admissions: super::Admissions::new(),

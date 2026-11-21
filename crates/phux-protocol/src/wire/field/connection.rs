@@ -192,6 +192,14 @@ tlv_body! {
 }
 
 tlv_body! {
+    /// `VIEWPORT_COLORS` body fields (`docs/protocol.md`).
+    pub mod viewport_colors for ViewportColors => decode_viewport_colors {
+        /// Foreground then background, three RGB bytes each.
+        pub const COLORS: u32 = 1 => required colors: crate::caps::TerminalDefaultColors;
+    }
+}
+
+tlv_body! {
     /// `ATTACHED` body fields (`docs/protocol.md#attach-and-output`).
     pub mod attached for Attached => decode_attached {
         /// Full `SessionSnapshot` (positional sub-record).

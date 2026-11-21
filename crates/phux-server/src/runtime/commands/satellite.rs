@@ -1,10 +1,14 @@
 //! Satellite command relay.
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the split command modules share the parent command namespace"
-)]
 
-use super::*;
+use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode, FrameKind};
+use tracing::debug;
+
+use crate::runtime::commands::routing::CommandContext;
+use crate::runtime::commands::satellite_lease::{
+    SatelliteLeaseTarget, relay_satellite_acquire_input, relay_satellite_attach,
+    relay_satellite_release_input, relay_satellite_route_input,
+};
+use crate::state::{ClientId, Outbound, SharedState};
 
 /// Relay one satellite-targeted command (already rewritten to `Local` ids)
 /// over the hub link and send the correlated `COMMAND_RESULT` (ADR-0007 §4).
@@ -127,8 +131,9 @@ async fn refuse_satellite_watch(
     relay: &crate::hub::relay::RelayHandle,
     command: &Command,
 ) -> Option<CommandResult> {
-    use crate::policy::filter::admits_satellite_watch;
     use phux_protocol::wire::frame::ControlClass;
+
+    use crate::policy::filter::admits_satellite_watch;
     let (Command::AttachResource { terminal_id, .. }
     | Command::SubscribeResourceEvents { terminal_id, .. }
     | Command::GetScreen { terminal_id, .. }) = command

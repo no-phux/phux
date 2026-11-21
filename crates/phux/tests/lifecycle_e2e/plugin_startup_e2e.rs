@@ -92,15 +92,14 @@ fn start_server(xdg: &XdgDirs, tag: &str) -> ServerGuard {
         .start()
 }
 
-// The server writes the sidecar's pidfile after `spawn` returns, so the
-// sidecar can publish its own pid first. A SIGKILL in that gap leaves the
-// next start nothing to reap; the reap contract begins once the record is
-// there. The pidfile is renamed into place, so existing means complete.
-fn wait_for_server_pidfile(server: &ServerGuard, state: &Path) {
+// The server records the sidecar while it waits before `exec`, so once the
+// sidecar has published its own pid the pidfile is already in place and a
+// SIGKILL from here on leaves the next start something to reap.
+fn assert_server_pidfile(server: &ServerGuard, state: &Path) {
     let name = format!("web.{}.pid", server.pid());
     assert!(
-        poll_until(Duration::from_secs(20), || find_file(state, &name)),
-        "the server never recorded the sidecar in {name}"
+        find_file(state, &name),
+        "the sidecar ran before the server recorded it in {name}"
     );
 }
 
@@ -342,7 +341,7 @@ fn sigkill_of_the_server_is_reaped_by_the_next_start() {
     assert!(poll_until(Duration::from_secs(20), || pid_ready(&pid_path)));
     let pid = read_pid(&pid_path);
     let reap = Reap(pid);
-    wait_for_server_pidfile(&server, &xdg.state);
+    assert_server_pidfile(&server, &xdg.state);
     server.sigkill();
     assert!(
         alive(pid),
@@ -384,7 +383,7 @@ fn assert_grandchild_reaped(tag: &str, delay: &str, survives: &str, reaped: &str
     let grand = read_pid(&grand_path);
     let reap_leader = Reap(leader);
     let reap_grand = Reap(grand);
-    wait_for_server_pidfile(&server, &xdg.state);
+    assert_server_pidfile(&server, &xdg.state);
     server.sigkill();
     // Only Linux delivers PDEATHSIG. On macOS both processes remain for
     // the next start's orphan reaper, which is the cross-platform contract.

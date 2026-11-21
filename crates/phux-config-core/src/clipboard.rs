@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 
 /// What a client does with an OSC 52 clipboard read from its focused pane.
 /// Ghostty's `clipboard-read`.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(
+    Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash, schemars::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum ClipboardRead {
     /// Answer with the client's clipboard.
@@ -20,7 +22,9 @@ pub enum ClipboardRead {
 
 /// What a client does with an OSC 52 clipboard write from a pane
 /// (`defaults.clipboard-write`, ADR-0158). Ghostty's `clipboard-write`.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(
+    Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash, schemars::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum ClipboardWrite {
     /// Set the host clipboard (default, as Ghostty and tmux).
@@ -34,11 +38,13 @@ pub enum ClipboardWrite {
 
 /// The `[defaults]` keys a client reads; the rest belong to the server and
 /// the terminal UI.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct ClientDefaults {
     /// `defaults.clipboard-read`.
     pub clipboard_read: ClipboardRead,
     /// `defaults.clipboard-write`.
     pub clipboard_write: ClipboardWrite,
+    /// `defaults.attach-session`: the session a new window opens.
+    pub attach_session: Option<String>,
 }

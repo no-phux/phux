@@ -31,6 +31,13 @@ pub enum AgentDetectEvent {
     /// The icon a program set over OSC 1337 `phux_icon`; `None` clears it.
     Icon(Option<String>),
 }
+/// A desktop notification a program asked for (OSC 9 or OSC 777), as lossy
+/// UTF-8. The server decides whether it becomes the pane's note.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProgramNote {
+    pub title: String,
+    pub body: String,
+}
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct ProgramStatusRecord {
     pub id: String,

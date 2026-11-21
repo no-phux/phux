@@ -1116,10 +1116,7 @@ fn attached_seeds_pane_slots_from_snapshot_dimensions() {
     let mut h = H::new().with_viewport((132, 43));
     h.send(attached(snapshot, 1));
     let slot = &h.mirror.panes[&pane];
-    assert_eq!(
-        (slot.terminal.cols().unwrap(), slot.terminal.rows().unwrap()),
-        (132, 43)
-    );
+    assert_eq!(slot.geometry, (132, 43));
 }
 
 /// Cumulative frame ACKs belong to state-sync streams, not raw output.

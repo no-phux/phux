@@ -249,6 +249,30 @@ impl Desk {
         }
     }
 
+    /// The tabs of every session that has two or more, for the palette's
+    /// headings; a session whose arrangement hasn't arrived has none.
+    fn palette_tabs(&self, listed: &[phux_protocol::ids::ResourceId]) -> Vec<palette::TabGroup> {
+        let (Some(client), Some(topology)) = (&self.connection.client, &self.connection.topology)
+        else {
+            return Vec::new();
+        };
+        let org = client.organization();
+        let mut out = Vec::new();
+        for session in &topology.sessions {
+            let doc = session.key.and_then(|key| org.arrangement_document(&key));
+            let tabs = doc.map_or_else(Vec::new, |(_, _, doc, _)| super::tabs::list(&doc, listed));
+            if tabs.len() < 2 {
+                continue;
+            }
+            out.extend(tabs.iter().map(|tab| palette::TabGroup {
+                title: self.tab_label(tab),
+                session: session.name.clone(),
+                panes: tab.resources.clone(),
+            }));
+        }
+        out
+    }
+
     /// The palette's rows for the current query, best first.
     pub fn palette_hits(&self) -> Vec<Hit> {
         let topology = self.connection.topology.as_ref();
@@ -265,22 +289,31 @@ impl Desk {
                 palette::rank(items, query)
             }
             Mode::All => {
-                let mut items = self.resource_items();
-                // The quick terminal's own action.
-                items.extend(self.quick.is_some().then(|| palette::Item {
-                    title: "Move to a Tab".to_owned(),
-                    detail: "into the main window".to_owned(),
-                    kind: "action",
-                    target: Target::MoveToTab,
-                }));
+                // The quick terminal's own action leads; then terminals,
+                // sessions and commands; the mirrors, which few reach for,
+                // wait at the end until a query names them.
+                let mut items: Vec<palette::Item> = self
+                    .quick
+                    .is_some()
+                    .then(|| palette::Item {
+                        title: "Move to a Tab".to_owned(),
+                        detail: "into the main window".to_owned(),
+                        kind: "action",
+                        target: Target::MoveToTab,
+                    })
+                    .into_iter()
+                    .collect();
+                let shown = self.addressable();
                 items.extend(palette::items(
                     topology,
-                    &self.addressable(),
+                    &shown,
                     self.connection.reorder.order(),
                 ));
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
                 items.extend(self.plugin_actions.items());
-                palette::rank(items, query)
+                items.extend(self.resource_items());
+                let listed: Vec<_> = shown.into_iter().map(|r| r.id).collect();
+                palette::rank_grouped(items, &self.palette_tabs(&listed), query)
             }
             Mode::Mirror(source) => self.mirror_items(source, query),
             Mode::Screens => self.screen_hits(query),

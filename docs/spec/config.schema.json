@@ -1,0 +1,2088 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "Action": {
+      "anyOf": [
+        {
+          "description": "`\"detach\"`.",
+          "type": "string"
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ParamAction"
+            }
+          ],
+          "description": "`{ action = \"new-pane\", direction = \"vertical\" }`."
+        }
+      ],
+      "description": "An action attached to a binding, hook, or status slot: a bare name or an\ninline table (`docs/config.md`)."
+    },
+    "ChromeCfg": {
+      "additionalProperties": false,
+      "description": "`[chrome]`: responsive-chrome breakpoints (`docs/status-bar.md#breakpoints`).\n`0` disables a threshold; a very large value pins the opposite.",
+      "properties": {
+        "compact-cols": {
+          "default": 64,
+          "description": "Width at or below which overlays go full-bleed horizontally.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "compact-rows": {
+          "default": 18,
+          "description": "Height at or below which overlays go full-bleed vertically.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "dim-unfocused": {
+          "default": false,
+          "description": "Paint the panes you are not typing in faint.",
+          "type": "boolean"
+        },
+        "min-pane-cols": {
+          "default": 40,
+          "description": "Narrowest pane area worth tiling into; the sidebar is not reserved\nbelow `sidebar.width + min-pane-cols`.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "new-tab-after-current": {
+          "default": false,
+          "description": "Open a new tab right after the one in view instead of at the end.",
+          "type": "boolean"
+        },
+        "title": {
+          "default": "{session}: {window}",
+          "description": "The outer terminal's window title while attached: `{session}` and\n`{window}` are substituted; empty leaves the title alone.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "ClipboardRead": {
+      "description": "What a client does with an OSC 52 clipboard read from its focused pane.\nGhostty's `clipboard-read`.",
+      "oneOf": [
+        {
+          "const": "allow",
+          "description": "Answer with the client's clipboard.",
+          "type": "string"
+        },
+        {
+          "const": "ask",
+          "description": "Ask before answering.",
+          "type": "string"
+        },
+        {
+          "const": "deny",
+          "description": "Never answer (default).",
+          "type": "string"
+        }
+      ]
+    },
+    "ClipboardWrite": {
+      "description": "What a client does with an OSC 52 clipboard write from a pane\n(`defaults.clipboard-write`, ADR-0158). Ghostty's `clipboard-write`.",
+      "oneOf": [
+        {
+          "const": "allow",
+          "description": "Set the host clipboard (default, as Ghostty and tmux).",
+          "type": "string"
+        },
+        {
+          "const": "ask",
+          "description": "Ask before setting it.",
+          "type": "string"
+        },
+        {
+          "const": "deny",
+          "description": "Drop the write.",
+          "type": "string"
+        }
+      ]
+    },
+    "ConnectorConfigEntry": {
+      "additionalProperties": false,
+      "description": "One relay endpoint this server dials outbound.",
+      "properties": {
+        "cert-fingerprint": {
+          "description": "SHA-256 fingerprint of the relay TLS leaf certificate. Required for a\nnon-loopback relay; optional on loopback for local development.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "relay": {
+          "description": "Relay endpoint as `HOST:PORT`.",
+          "type": "string"
+        },
+        "token-file": {
+          "description": "Path to the relay-enrollment token. The file contains one hex token and\nis re-read on every dial so rotation does not require a server restart.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "relay"
+      ],
+      "type": "object"
+    },
+    "CwdInheritance": {
+      "description": "How a newly-spawned pane chooses its working directory\n(`defaults.cwd-inheritance`).",
+      "oneOf": [
+        {
+          "const": "inherit-focused",
+          "description": "The focused pane's live working directory (default, as tmux).",
+          "type": "string"
+        },
+        {
+          "const": "home",
+          "description": "Always `$HOME`.",
+          "type": "string"
+        },
+        {
+          "const": "session-root",
+          "description": "The directory the session was created in.",
+          "type": "string"
+        },
+        {
+          "const": "last-cwd-per-window",
+          "description": "The last working directory used in the window.",
+          "type": "string"
+        },
+        {
+          "const": "fixed",
+          "description": "Always `defaults.fixed-cwd` (else `$HOME`), for new sessions too.",
+          "type": "string"
+        }
+      ]
+    },
+    "DefaultsCfg": {
+      "additionalProperties": false,
+      "description": "`[defaults]` table. See `docs/reference/config.md` for shipped values.",
+      "properties": {
+        "agent-log-bytes": {
+          "default": 4194304,
+          "description": "Bytes of records an `AgentSession` retains and replays as its\nbootstrap (ADR-0103); older records are evicted with a tombstone\ncount. Ceiling: [`MAX_AGENT_LOG_BYTES`].",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "approval-max-pending": {
+          "default": 64,
+          "description": "Actions one connection may hold for approval at once (ADR-0128).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "approval-max-pending-total": {
+          "default": 1024,
+          "description": "Actions the whole server may hold for approval at once (ADR-0128).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "approval-ttl-secs": {
+          "default": 120,
+          "description": "Seconds a held `SIGNAL` action waits for a decision before its\nrequester is denied (ADR-0128). Read at server start.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "attach-session": {
+          "default": null,
+          "description": "The session a bare `phux` or `phux attach` and a new Rune window\nopen, created when missing. `--session` and links still win. Unset\nopens the session used last.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "browser-shim": {
+          "default": false,
+          "description": "Give panes a stand-in `BROWSER` that prints a link and copies it to\nthe attached person's clipboard, for a machine with no screen. Read\nat server start.",
+          "type": "boolean"
+        },
+        "clipboard-read": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ClipboardRead"
+            }
+          ],
+          "default": "deny",
+          "description": "What the client does with an OSC 52 clipboard read from the pane it\nis focused on (`docs/program-sequences.md#clipboard-osc-52`)."
+        },
+        "clipboard-write": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ClipboardWrite"
+            }
+          ],
+          "default": "allow",
+          "description": "What the client does with an OSC 52 clipboard write from the pane it\nis focused on (ADR-0158)."
+        },
+        "cwd-inheritance": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/CwdInheritance"
+            }
+          ],
+          "default": "inherit-focused",
+          "description": "How a freshly-spawned pane chooses its working directory."
+        },
+        "event-journal-bytes": {
+          "default": 1048576,
+          "description": "Estimated encoded bytes the event journal retains, beside\n[`Self::event_journal_entries`]. Ceiling: [`MAX_EVENT_JOURNAL_BYTES`].",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "event-journal-entries": {
+          "default": 4096,
+          "description": "Events the server's event journal retains for cursor replay\n(ADR-0123). A cursor older than the ring gets a journal gap.\nCeiling: [`MAX_EVENT_JOURNAL_ENTRIES`].",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "fixed-cwd": {
+          "default": null,
+          "description": "The directory `cwd-inheritance = \"fixed\"` starts new panes and\nsessions in; `~/` expands. Unset is `$HOME`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "history-bytes": {
+          "default": 10485760,
+          "description": "Bytes of scrollback per pane (ADR-0094): the bound that actually caps\na pane's resident memory, and usually the one that binds on wide\ngrids. Pruning is page-granular. Ceiling: [`MAX_HISTORY_BYTES`].",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "history-limit": {
+          "default": 50000,
+          "description": "Lines of scrollback per pane. libghostty prunes on this or\n[`Self::history_bytes`], whichever is reached first.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "keep-awake": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeepAwake"
+            }
+          ],
+          "default": "off",
+          "description": "Whether the server holds an idle-sleep inhibitor (`caffeinate`,\n`systemd-inhibit`) so a working agent is not put to sleep."
+        },
+        "mouse": {
+          "default": true,
+          "description": "Whether the client enables outer-terminal mouse tracking on attach\n(ADR-0048). `false` leaves the host's native selection untouched.",
+          "type": "boolean"
+        },
+        "retain-on-exit": {
+          "default": false,
+          "description": "Whether a Terminal spawned without `retain_secs` stays in the\ninventory, exited, after its process exits (ADR-0124).",
+          "type": "boolean"
+        },
+        "retain-on-exit-max": {
+          "default": 256,
+          "description": "How many exited Terminals are retained at once; one more closes the\noldest. `0` retains none.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "retain-on-exit-max-secs": {
+          "default": 86400,
+          "description": "The longest any Terminal is retained after exit.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "retain-on-exit-secs": {
+          "default": 600,
+          "description": "Seconds a retained Terminal stays after exit when the server default\napplies. Capped by [`Self::retain_on_exit_max_secs`].",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "session-name-template": {
+          "default": "${cwd-basename}",
+          "description": "Naming template for auto-created sessions. Placeholders:\n`${cwd-basename}` (default) and `${random-name}`; unknown ones pass\nthrough verbatim.",
+          "type": "string"
+        },
+        "shell": {
+          "default": null,
+          "description": "Shell for new panes. `None` resolves `$SHELL`, then `/bin/sh`, once at\nserver start; a wire `command` always wins.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "shell-integration": {
+          "default": false,
+          "description": "Make the default shell of new panes mark its prompts and commands\n(OSC 133) without the person editing a startup file. Read at server\nstart.",
+          "type": "boolean"
+        },
+        "spawn-on-attach": {
+          "default": null,
+          "description": "Command to spawn when `phux` auto-creates a session on attach.\n`None` uses [`Self::shell`].",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "term": {
+          "default": "xterm-256color",
+          "description": "`TERM` for server-spawned panes when the spawn's own env has none.\nDefault `xterm-256color`: `ghostty` is opt-in because not every app\n(htop) is proven to round-trip the kitty keyboard protocol.",
+          "type": "string"
+        },
+        "window-size": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/WindowSize"
+            }
+          ],
+          "default": "smallest",
+          "description": "Which size wins when concurrent views of one Terminal disagree\n(ADR-0027). Governs views only: an explicit `RESIZE_TERMINAL` always\napplies (ADR-0062)."
+        }
+      },
+      "type": "object"
+    },
+    "ExperimentalCfg": {
+      "additionalProperties": false,
+      "description": "`[experimental]`: opt-in flags that may change without a `SemVer` bump.",
+      "properties": {
+        "predictive-echo": {
+          "default": null,
+          "description": "Mosh-class predictive local echo (ADR-0090). Unset lets the transport\ndecide (see [`Self::predictive_echo_for`]); an explicit value wins.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ForwardCfg": {
+      "additionalProperties": false,
+      "description": "`[forward]` table: TCP port and ssh-agent forwarding\n(`docs/forwarding.md`).",
+      "properties": {
+        "agent": {
+          "default": false,
+          "description": "Broker ssh-agent requests from this server's panes to a client that\nruns `phux forward --agent`. On, every pane started afterwards gets\n`SSH_AUTH_SOCK` pointing at the server's broker socket, replacing\nany agent the server's own environment named. Off, the server does\nnot advertise `FORWARD_AGENT`, refuses the commands, and leaves\n`SSH_AUTH_SOCK` alone.",
+          "type": "boolean"
+        },
+        "allow": {
+          "default": [],
+          "description": "Targets a client may reach besides this machine's loopback, each a\n`host:port` or `ip:port` (`[::1]:port` for IPv6) matched exactly.\nThe server dials these, so list only what every holder of input\nrights on it may reach.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "allow-append": {
+          "default": [],
+          "description": "Targets a client may reach besides this machine's loopback, each a\n`host:port` or `ip:port` (`[::1]:port` for IPv6) matched exactly.\nThe server dials these, so list only what every holder of input\nrights on it may reach.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tcp": {
+          "default": true,
+          "description": "Serve `phux forward`. Off, the server does not advertise\n`FORWARD_TCP` and refuses the commands.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "FromPrograms": {
+      "description": "`[notifications] from-programs`: whether a pane's own desktop\nnotification sequences (OSC 9, OSC 777) reach anyone.",
+      "oneOf": [
+        {
+          "const": "off",
+          "description": "Ignored: no escape sequence a pane prints raises a notification.",
+          "type": "string"
+        },
+        {
+          "const": "notes",
+          "description": "Each becomes the pane's note, as if the program ran `phux notify`.",
+          "type": "string"
+        }
+      ]
+    },
+    "HookEntry": {
+      "additionalProperties": false,
+      "description": "One `[[hooks.<event>]]` entry (`docs/hooks.md`).",
+      "properties": {
+        "action": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/Action"
+            }
+          ],
+          "description": "Action to fire on match."
+        },
+        "when": {
+          "additionalProperties": true,
+          "default": {},
+          "description": "Match clauses; first match wins per event.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "type": "object"
+    },
+    "IconConfigEntry": {
+      "additionalProperties": false,
+      "description": "One `[[icons]]` entry. Every matcher it names must match.",
+      "properties": {
+        "cwd": {
+          "description": "The working folder: `*` matches any run of characters, including `/`,\nand a leading `~` is the home folder.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "icon": {
+          "description": "The glyph.",
+          "type": "string"
+        },
+        "process": {
+          "description": "The foreground program's name, matched exactly (`cargo`, `htop`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "icon"
+      ],
+      "type": "object"
+    },
+    "KeepAwake": {
+      "description": "When the server keeps the machine from idle-sleeping\n(`defaults.keep-awake`).",
+      "oneOf": [
+        {
+          "const": "off",
+          "description": "Never (default).",
+          "type": "string"
+        },
+        {
+          "const": "while-agents-work",
+          "description": "While at least one agent's state is `working`.",
+          "type": "string"
+        },
+        {
+          "const": "always",
+          "description": "For as long as the server runs.",
+          "type": "string"
+        }
+      ]
+    },
+    "KeybindingsCfg": {
+      "additionalProperties": false,
+      "description": "`[keybindings]` table: prefix key, prefix-table, global table, and key\nmodes.",
+      "properties": {
+        "defaults": {
+          "default": true,
+          "description": "Keep the shipped bindings. `false` starts from an empty keymap: only\nyour own layers' bindings apply, plus the shipped `command-palette`\nkeys unless you bind the palette yourself.",
+          "type": "boolean"
+        },
+        "global": {
+          "additionalProperties": {
+            "$ref": "#/definitions/Action"
+          },
+          "default": {},
+          "description": "Bindings that fire any time.",
+          "type": "object"
+        },
+        "mode-options": {
+          "additionalProperties": {
+            "$ref": "#/definitions/ModeOptions"
+          },
+          "default": {},
+          "description": "Per-mode options (`[keybindings.mode-options.<name>]`).",
+          "type": "object"
+        },
+        "modes": {
+          "additionalProperties": {
+            "additionalProperties": {
+              "$ref": "#/definitions/Action"
+            },
+            "type": "object"
+          },
+          "default": {},
+          "description": "Key modes (`[keybindings.modes.<name>]`): named tables whose bindings\nfire without the prefix while `enter-mode` has the mode active.",
+          "type": "object"
+        },
+        "prefix": {
+          "default": "C-a",
+          "description": "Prefix chord (default `C-a`; some emulators swallow `C-Space`).",
+          "type": "string"
+        },
+        "prefix-table": {
+          "additionalProperties": {
+            "$ref": "#/definitions/Action"
+          },
+          "default": {},
+          "description": "Bindings that fire after the prefix.",
+          "type": "object"
+        },
+        "which-key": {
+          "default": true,
+          "description": "Show the which-key popup when no chord follows the prefix within\n[`Self::which_key_delay_ms`].",
+          "type": "boolean"
+        },
+        "which-key-delay-ms": {
+          "default": 400,
+          "description": "Milliseconds after the prefix before the which-key popup shows.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "LimitsCfg": {
+      "additionalProperties": false,
+      "description": "`[limits]` table: server-enforced ceilings on shared resources.",
+      "properties": {
+        "metadata-value-bytes": {
+          "default": 262144,
+          "description": "Largest L3 metadata value stored at one key (`docs/protocol.md#commands-events-resources`),\nin bytes; a larger write is refused (ADR-0129).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "LocalHostCfg": {
+      "additionalProperties": false,
+      "description": "`[host]`: settings for this machine as other clients see it.",
+      "properties": {
+        "color": {
+          "description": "Palette id overriding this machine's automatic colour; absent or\n`\"auto\"` keeps the hash of its short host name.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "MirrorConfigEntry": {
+      "additionalProperties": false,
+      "description": "One display or window the server keeps a `phux agent surface mirror`\nrunning for, in its own session named by [`Self::session_name`].",
+      "properties": {
+        "format": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MirrorFormat"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Frame encoding, `png` (default) or `jpeg`."
+        },
+        "interval-ms": {
+          "description": "Milliseconds between captures while no input arrives (default 1000).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max-width": {
+          "description": "Scale frames down to at most this many pixels wide.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "quality": {
+          "description": "JPEG quality, 1 to 100 (default 70); needs `format = \"jpeg\"`.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "target": {
+          "description": "What to mirror, as `phux agent surface mirror` takes it: `display`,\n`display:OUTPUT`, `App`, or `App:title`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "type": "object"
+    },
+    "MirrorFormat": {
+      "description": "A standing mirror's frame encoding.",
+      "oneOf": [
+        {
+          "const": "png",
+          "description": "Lossless PNG.",
+          "type": "string"
+        },
+        {
+          "const": "jpeg",
+          "description": "JPEG at `quality`.",
+          "type": "string"
+        }
+      ]
+    },
+    "ModeOptions": {
+      "additionalProperties": false,
+      "description": "`[keybindings.mode-options.<name>]`: how a key mode treats keys it does\nnot bind.",
+      "properties": {
+        "exclusive": {
+          "default": false,
+          "description": "Swallow keys the mode does not bind instead of handling them as they\nare outside the mode (prefix and global bindings, then the pane).",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "NotificationsCfg": {
+      "additionalProperties": false,
+      "description": "`[notifications]`: how the TUI tells you an agent needs you or finished\n(`docs/status-bar.md#notifications`). Read by the client, live on\nreload.",
+      "properties": {
+        "blocked": {
+          "default": true,
+          "description": "Notify when an agent becomes blocked or asks for a human.",
+          "type": "boolean"
+        },
+        "done": {
+          "default": true,
+          "description": "Notify when an agent that was working finishes.",
+          "type": "boolean"
+        },
+        "from-programs": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/FromPrograms"
+            }
+          ],
+          "default": "off",
+          "description": "What the server does with OSC 9 and OSC 777 from a pane. Read at\nserver start."
+        },
+        "mode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/NotifyMode"
+            }
+          ],
+          "default": "terminal",
+          "description": "Where a notification goes."
+        },
+        "sound": {
+          "default": false,
+          "description": "Also ring the bell (`terminal`) or play the default sound (`system`).",
+          "type": "boolean"
+        },
+        "suppress-focused": {
+          "default": true,
+          "description": "Stay quiet about the pane you are looking at while the terminal\nwindow has focus.",
+          "type": "boolean"
+        },
+        "terminal-protocol": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/NotifyProtocol"
+            }
+          ],
+          "default": "auto",
+          "description": "Which escape sequence `terminal` mode writes."
+        }
+      },
+      "type": "object"
+    },
+    "NotifyMode": {
+      "description": "`[notifications] mode`: the delivery channel.",
+      "oneOf": [
+        {
+          "const": "terminal",
+          "description": "An OSC notification to the outer terminal; survives SSH.",
+          "type": "string"
+        },
+        {
+          "const": "system",
+          "description": "The desktop notifier of the machine the TUI runs on (`osascript` on\nmacOS, `notify-send` elsewhere).",
+          "type": "string"
+        },
+        {
+          "const": "bell",
+          "description": "The terminal bell only.",
+          "type": "string"
+        },
+        {
+          "const": "off",
+          "description": "No notifications.",
+          "type": "string"
+        }
+      ]
+    },
+    "NotifyProtocol": {
+      "description": "`[notifications] terminal-protocol`: the OSC dialect `terminal` mode\nwrites.",
+      "oneOf": [
+        {
+          "const": "auto",
+          "description": "Pick from the environment: OSC 99 for kitty, OSC 777 for Ghostty,\n`WezTerm`, and foot, OSC 9 otherwise.",
+          "type": "string"
+        },
+        {
+          "const": "osc9",
+          "description": "`OSC 9 ; message` (iTerm2, `WezTerm`, Ghostty, Windows Terminal).",
+          "type": "string"
+        },
+        {
+          "const": "osc777",
+          "description": "`OSC 777 ; notify ; title ; body` (Ghostty, `WezTerm`, foot).",
+          "type": "string"
+        },
+        {
+          "const": "osc99",
+          "description": "`OSC 99` desktop notifications (kitty).",
+          "type": "string"
+        }
+      ]
+    },
+    "OrganizeCfg": {
+      "additionalProperties": false,
+      "description": "`[organize]` table: who judges where panes belong for `phux organize`\n(ADR-0174). Read by the client that runs it, never by the server.",
+      "properties": {
+        "jev-key-command": {
+          "default": null,
+          "description": "Argv whose trimmed stdout is the `TypeSafe` API key, run when\n`TYPESAFE_API_KEY` is unset. Unset means the environment only.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "jev-key-command-append": {
+          "default": null,
+          "description": "Argv whose trimmed stdout is the `TypeSafe` API key, run when\n`TYPESAFE_API_KEY` is unset. Unset means the environment only.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "offline": {
+          "default": false,
+          "description": "Decide by repository matching only and send nothing off the machine.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "ParamAction": {
+      "additionalProperties": true,
+      "description": "Parameterized action. Per-action argument validation lives in the\ndispatcher, not here.",
+      "properties": {
+        "action": {
+          "description": "The action name. Hooks spell it `kind`; both are accepted.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "type": "object"
+    },
+    "PluginConfigEntry": {
+      "additionalProperties": false,
+      "description": "A plugin declared in `config.toml`.",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "description": "Whether this plugin is active for consumers that execute plugins.",
+          "type": "boolean"
+        },
+        "manifest": {
+          "description": "Path to a `phux-plugin.toml` manifest.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "manifest"
+      ],
+      "type": "object"
+    },
+    "PolicyCfg": {
+      "additionalProperties": false,
+      "description": "`[policy]`: the server's authorization posture\n(`docs/remote.md#who-can-connect`, ADR-0116). Read once at start.",
+      "properties": {
+        "mode": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PolicyMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Unset is `local`, and a configured remote entry point or workload\nauthority location then refuses to start (ADR-0179)."
+        },
+        "tailnet-owner": {
+          "default": false,
+          "description": "Under `paired`, admit this machine's owner's own tailnet devices over\nthe tailnet QUIC listener with no token or certificate, on the local\nTailscale client's word (`docs/config.md#tailnet-owner-devices`).",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "PolicyMode": {
+      "description": "The two closed policy modes (`docs/remote.md#who-can-connect`).",
+      "oneOf": [
+        {
+          "const": "local",
+          "description": "Owner's Unix socket only; a configured remote listener refuses start.",
+          "type": "string"
+        },
+        {
+          "const": "paired",
+          "description": "Every TLS connection must present an enrolled workload certificate.",
+          "type": "string"
+        }
+      ]
+    },
+    "ProducerConfigEntry": {
+      "additionalProperties": false,
+      "description": "One command the server keeps running in its own session, named by\n[`Self::session_name`]. The command runs in that session's pane, so it\nopens its documents under the pane it finds in `PHUX_TERMINAL_ID`.",
+      "properties": {
+        "command": {
+          "description": "The argv to run. A first word `phux` is the server's own binary.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "command-append": {
+          "description": "The argv to run. A first word `phux` is the server's own binary.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "description": "The producer's name; its session is `producer-` and the name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "command"
+      ],
+      "type": "object"
+    },
+    "ProjectConfigEntry": {
+      "additionalProperties": false,
+      "description": "One named project in `config.toml`.",
+      "properties": {
+        "name": {
+          "description": "The label `phux project open NAME` resolves: ASCII letters, digits,\n`-`, or `_`, unique across the catalog.",
+          "type": "string"
+        },
+        "path": {
+          "description": "The project's checkout: absolute, or `~/`-relative.",
+          "type": "string"
+        },
+        "recipe": {
+          "description": "A recipe outside the repository (absolute or `~/`-relative), used\ninstead of the checkout's `.phux/project.toml`. Trusted because the\nuser wrote it into their own config.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "path"
+      ],
+      "type": "object"
+    },
+    "QuickTerminalEdge": {
+      "description": "`[rune] quick-terminal-edge`: where the quick terminal opens.",
+      "oneOf": [
+        {
+          "const": "top",
+          "description": "Across the top of the display.",
+          "type": "string"
+        },
+        {
+          "const": "bottom",
+          "description": "Across the bottom of the display.",
+          "type": "string"
+        }
+      ]
+    },
+    "RemoteConfigEntry": {
+      "additionalProperties": false,
+      "description": "A remote phux server declared in `config.toml`.",
+      "properties": {
+        "cert-fingerprint": {
+          "description": "SHA-256 pin of the remote's TLS leaf certificate (required for a\nnon-loopback dial, ADR-0031).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client-cert": {
+          "description": "The workload client certificate chain (PEM, leaf first) this client\npresents to the remote over TLS, as `phux host add` enrolled it\n(ADR-0116). Set together with [`Self::client_key`].",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client-key": {
+          "description": "The private key for [`Self::client_cert`]: an owner-only file whose\npath is recorded here and whose bytes never are.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "color": {
+          "description": "Palette id overriding the host's automatic colour\n([`crate::host_color`]); absent or `\"auto\"` keeps the hash of `name`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "direct": {
+          "description": "A paired `quic://` endpoint kept beside an `ssh://` or `wss://` one,\ntried first and promoted to `endpoint` once it answers.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "endpoint": {
+          "description": "Transport endpoint URI: `quic://HOST:PORT`, `wss://HOST:PORT`, or\n`ssh://HOST` for the stdio bridge.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Local label `phux attach <name>` resolves (not a routable identity).",
+          "type": "string"
+        },
+        "paused": {
+          "description": "Paused by `phux host disable`: kept in the registry, but nothing\ndials it until `phux host enable`.",
+          "type": "boolean"
+        },
+        "remote-phux": {
+          "description": "The `phux` the host runs over ssh when it is not on a non-interactive\nshell's `PATH` (`--remote-phux`, or where `--install` put it), as one\nword of the remote command line; absent, `phux`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session": {
+          "description": "Session to attach on arrival; absent lets the server decide.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ssh": {
+          "description": "The ssh destination the entry was enrolled through, used to restart a\nserver that does not answer; absent, the name is used.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tls-server-name": {
+          "description": "TLS server name (SNI) a `quic://` or `wss://` dial offers instead of\nthe endpoint's host. Set, it names a relay route: the endpoint is\nthe relay, the pin is the relay's, and the relay splices the dial\nonto the server enrolled under this route (ADR-0052, ADR-0149).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "token-file": {
+          "description": "Path to the pairing token file `phux pair` minted; the token itself\nnever appears in `config.toml`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "endpoint"
+      ],
+      "type": "object"
+    },
+    "RestoreCfg": {
+      "additionalProperties": false,
+      "description": "`[restore]` table: bringing panes back after a reboot or a crash.",
+      "properties": {
+        "on-start": {
+          "default": false,
+          "description": "Run `phux restore` when the server starts: relaunch every pane a\nserver stop ended, and resume agents whose integration supports it.\nNothing is typed into a relaunched program.",
+          "type": "boolean"
+        },
+        "program": {
+          "default": [],
+          "description": "`[[restore.program]]`: the command a relaunch runs for a pane whose\nprogram handed over a resume token (OSC 7501 `resume=`), by `app`.\nA program with no entry here is never resumed.",
+          "items": {
+            "$ref": "#/definitions/RestoreProgram"
+          },
+          "type": "array"
+        },
+        "program-append": {
+          "default": [],
+          "description": "`[[restore.program]]`: the command a relaunch runs for a pane whose\nprogram handed over a resume token (OSC 7501 `resume=`), by `app`.\nA program with no entry here is never resumed.",
+          "items": {
+            "$ref": "#/definitions/RestoreProgram"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "RestoreProgram": {
+      "additionalProperties": false,
+      "description": "One `[[restore.program]]` entry.",
+      "properties": {
+        "app": {
+          "description": "The OSC 7501 `app` this entry resumes.",
+          "type": "string"
+        },
+        "command": {
+          "description": "The argv to run, without a shell. Each element that is exactly\n[`RESUME_TOKEN_PLACEHOLDER`] becomes the token.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "command-append": {
+          "description": "The argv to run, without a shell. Each element that is exactly\n[`RESUME_TOKEN_PLACEHOLDER`] becomes the token.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "app",
+        "command"
+      ],
+      "type": "object"
+    },
+    "RuneCfg": {
+      "additionalProperties": false,
+      "description": "`[rune]` table: settings the Rune app otherwise keeps in its own prefs.\n\nA key set here wins over the app's saved choice and cannot be changed\nfrom Settings; an unset key stays the app's to remember.",
+      "properties": {
+        "confirm-close": {
+          "default": null,
+          "description": "Ask before closing a terminal or tab with something running.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "copy-on-select": {
+          "default": null,
+          "description": "Copy a selection to the clipboard as soon as it is made.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "font-family": {
+          "default": null,
+          "description": "Terminal font family; `\"\"` is the built-in face.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "font-size": {
+          "default": null,
+          "description": "Terminal text size in points each window starts at.",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "interface-size": {
+          "default": null,
+          "description": "Size of the sidebar, tabs, palette and Settings in percent, 80 to\n200; the terminal's text keeps `font-size`. 100 when unset.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "key-defaults": {
+          "default": null,
+          "description": "`false` drops the built-in chords: only `[rune.keys]` acts, plus the\npalette and Settings chords until you bind those commands.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "keys": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "`[rune.keys]`: a chord such as `\"cmd+shift+d\"` and the command it\nruns, or `\"none\"` to take a built-in chord away.",
+          "type": "object"
+        },
+        "markdown-viewer": {
+          "default": null,
+          "description": "Markdown renderer argv: UTF-8 Markdown on stdin, plain UTF-8 on stdout.\n`{width}` expands to columns. Unset uses bundled tmd; `[]` shows source.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "markdown-viewer-append": {
+          "default": null,
+          "description": "Markdown renderer argv: UTF-8 Markdown on stdin, plain UTF-8 on stdout.\n`{width}` expands to columns. Unset uses bundled tmd; `[]` shows source.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "notifications": {
+          "default": null,
+          "description": "Post desktop notifications for agents that need attention.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "option-as-meta": {
+          "default": null,
+          "description": "Option sends Meta (Esc-prefixed) instead of composing characters.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "quick-terminal": {
+          "default": null,
+          "description": "Global chord that shows and hides the quick terminal, such as\n`\"ctrl+backquote\"`; unset or `\"none\"` leaves it off.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "quick-terminal-edge": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/QuickTerminalEdge"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The display edge the quick terminal drops from: `\"top\"` or `\"bottom\"`."
+        },
+        "quick-terminal-size": {
+          "default": null,
+          "description": "The quick terminal's height as a fraction of the display's, 0.2 to\n0.9; 0.4 when unset.",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "recent-first": {
+          "default": null,
+          "description": "List the session used last first, instead of in the arranged order.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "ssh-agent": {
+          "default": null,
+          "description": "Socket of the SSH agent `ssh://` hosts use, such as\n`\"~/.1password/agent.sock\"`: an app opened from the Dock does not\nsee the shell's `SSH_AUTH_SOCK`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "theme": {
+          "default": null,
+          "description": "Theme id, as the theme picker lists them; `\"\"` follows the system.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "wheel-arrows": {
+          "default": null,
+          "description": "The wheel over a full-screen program that doesn't use the mouse sends\narrow keys, unless the program resets DEC 1007. On when unset.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "SatelliteConfigEntry": {
+      "additionalProperties": false,
+      "description": "A satellite declared in `config.toml`.",
+      "properties": {
+        "cert-fingerprint": {
+          "description": "SHA-256 pin of the satellite's TLS leaf certificate.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client-cert": {
+          "description": "Enrolled client certificate PEM the hub presents when the satellite\nruns in `paired` mode (ADR-0116). Set together with\n[`Self::client_key`]; the same pair `[[remote]]` records.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client-key": {
+          "description": "The private key for [`Self::client_cert`]: an owner-only file whose\npath is recorded here and whose bytes never are.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "color": {
+          "description": "Palette id overriding the satellite's automatic colour\n([`crate::host_color`]); absent or `\"auto\"` keeps the hash of `name`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enabled": {
+          "default": true,
+          "description": "Whether this satellite is active for hub routing.",
+          "type": "boolean"
+        },
+        "endpoint": {
+          "description": "Transport endpoint URI for the satellite server.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Hub-local satellite name, used in `ResourceId::Satellite.host`.",
+          "type": "string"
+        },
+        "token-file": {
+          "description": "Path to the pairing token file `phux pair` minted (ADR-0038); the\ntoken itself never appears in `config.toml`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "endpoint"
+      ],
+      "type": "object"
+    },
+    "SessionConfigEntry": {
+      "additionalProperties": false,
+      "description": "One coloured session in `config.toml`.",
+      "properties": {
+        "color": {
+          "description": "Palette id the session is drawn in; anything else fails the load.",
+          "type": "string"
+        },
+        "name": {
+          "description": "The session's name, matched exactly. The first entry for a name wins.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "color"
+      ],
+      "type": "object"
+    },
+    "SidebarCfg": {
+      "additionalProperties": false,
+      "description": "`[sidebar]`: the vertical window list.",
+      "properties": {
+        "agents-share": {
+          "default": 50,
+          "description": "Share of the sidebar body the Agents panel keeps, as a percent\n(default `50`, half). `0` drops the panel entirely.\n\nADR-0112: the Agents panel on top and the Sessions panel below share\nthe body at a **fixed** line, whatever the agent population, so\ngaining or resolving an agent never moves Sessions. An empty Agents\npanel keeps its header and a quiet placeholder. Plugin sections claim\ntheir fixed bands first, and the whole sidebar yields below\n`width + chrome.min-pane-cols` columns.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "enabled": {
+          "default": true,
+          "description": "Show the sidebar (default `true`).",
+          "type": "boolean"
+        },
+        "hosts": {
+          "default": true,
+          "description": "Segment the Sessions area by machine (ADR-0140). Default `true`.\n\nThe attached server's sessions are always shown live. The other\nmachines (this one, when attached to a remote, and every `[[remote]]`\nhost) come from a *hosts provider*: a command that prints the\n`phux.hosts/v1` document, re-run every `hosts-refresh-secs`. `false`\nlists only the attached server's sessions and runs no provider.",
+          "type": "boolean"
+        },
+        "hosts-provider": {
+          "default": [],
+          "description": "Hosts provider argv. Empty (the default) runs this binary's own\n`ls --all --json`; any command printing the same shape replaces it,\nwhich is the same seam a plugin uses.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "hosts-provider-append": {
+          "default": [],
+          "description": "Hosts provider argv. Empty (the default) runs this binary's own\n`ls --all --json`; any command printing the same shape replaces it,\nwhich is the same seam a plugin uses.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "hosts-refresh-secs": {
+          "default": 10,
+          "description": "Seconds between hosts provider runs. Default `10`; at least 2.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "position": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/SidebarPosition"
+            }
+          ],
+          "default": "left",
+          "description": "Which edge the sidebar docks to."
+        },
+        "recent-first": {
+          "default": false,
+          "description": "List sessions most recently used first instead of in the arranged\norder.",
+          "type": "boolean"
+        },
+        "width": {
+          "default": 20,
+          "description": "Width in columns (default `20`). `0` sizes automatically to a quarter\nof the viewport, bounded to 28-40 columns.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "SidebarPosition": {
+      "description": "Which edge the sidebar docks to.",
+      "oneOf": [
+        {
+          "const": "left",
+          "description": "Left (default).",
+          "type": "string"
+        },
+        {
+          "const": "right",
+          "description": "Right.",
+          "type": "string"
+        }
+      ]
+    },
+    "StatusCfg": {
+      "additionalProperties": false,
+      "description": "`[status]` table: three widget slots plus the row the bar reserves.",
+      "properties": {
+        "center": {
+          "default": [],
+          "description": "Center slot.",
+          "items": {
+            "$ref": "#/definitions/Widget"
+          },
+          "type": "array"
+        },
+        "center-append": {
+          "default": [],
+          "description": "Center slot.",
+          "items": {
+            "$ref": "#/definitions/Widget"
+          },
+          "type": "array"
+        },
+        "left": {
+          "default": [],
+          "description": "Left slot.",
+          "items": {
+            "$ref": "#/definitions/Widget"
+          },
+          "type": "array"
+        },
+        "left-append": {
+          "default": [],
+          "description": "Left slot.",
+          "items": {
+            "$ref": "#/definitions/Widget"
+          },
+          "type": "array"
+        },
+        "position": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/StatusPosition"
+            }
+          ],
+          "default": "top",
+          "description": "Which outer-terminal row the bar reserves."
+        },
+        "right": {
+          "default": [],
+          "description": "Right slot.",
+          "items": {
+            "$ref": "#/definitions/Widget"
+          },
+          "type": "array"
+        },
+        "right-append": {
+          "default": [],
+          "description": "Right slot.",
+          "items": {
+            "$ref": "#/definitions/Widget"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "StatusPosition": {
+      "description": "Which row the status bar occupies.",
+      "oneOf": [
+        {
+          "const": "bottom",
+          "description": "The bottom row.",
+          "type": "string"
+        },
+        {
+          "const": "top",
+          "description": "The top row (default).",
+          "type": "string"
+        }
+      ]
+    },
+    "ThemeCfg": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "`[theme]`: free-form `slot -> color` map; the renderer interprets it.",
+      "type": "object"
+    },
+    "UplinkConfigEntry": {
+      "additionalProperties": false,
+      "description": "A hub this server dials out to and serves as a satellite, written by\n`phux host join`.",
+      "properties": {
+        "ca-fingerprint": {
+          "description": "`sha256:` fingerprint of the hub's workload CA: the only trust the\nuplink extends to the hub's certificate.",
+          "type": "string"
+        },
+        "client-cert": {
+          "description": "The enrolled satellite certificate chain (PEM, leaf then CA).",
+          "type": "string"
+        },
+        "client-key": {
+          "description": "Its private key: an owner-only file, never inline.",
+          "type": "string"
+        },
+        "enabled": {
+          "default": true,
+          "description": "Whether the server keeps this uplink up.",
+          "type": "boolean"
+        },
+        "hub": {
+          "description": "The hub's QUIC listener as `HOST:PORT`.",
+          "type": "string"
+        },
+        "mail-only": {
+          "description": "Joined for mail and claims only (`phux host join --mail-only`): the\nserver never dials this hub, so the hub reaches no terminal here.",
+          "type": "boolean"
+        },
+        "name": {
+          "description": "The satellite name the hub enrolled this server as: its\n`ResourceId::Satellite.host` on the hub.",
+          "type": "string"
+        },
+        "server-name": {
+          "description": "The TLS server name offered to the hub, when it is not `hub`'s host.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "hub",
+        "ca-fingerprint",
+        "client-cert",
+        "client-key"
+      ],
+      "type": "object"
+    },
+    "VoiceCfg": {
+      "additionalProperties": false,
+      "description": "`[voice]`: the server-side transcriber behind `TRANSCRIBE`. The server\nruns the configured command rather than embedding a model.",
+      "properties": {
+        "timeout-secs": {
+          "default": null,
+          "description": "Seconds before the transcriber is killed. Unset means 30.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "transcriber": {
+          "default": null,
+          "description": "Transcriber argv. `{path}` is replaced by the clip's path (appended\nwhen absent); trimmed stdout is the transcript.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "transcriber-append": {
+          "default": null,
+          "description": "Transcriber argv. `{path}` is replaced by the clip's path (appended\nwhen absent); trimmed stdout is the transcript.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "Widget": {
+      "anyOf": [
+        {
+          "description": "Shorthand for `{ kind = \"...\" }`.",
+          "type": "string"
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/definitions/WidgetSpec"
+            }
+          ],
+          "description": "`kind` plus options."
+        }
+      ],
+      "description": "A status-bar widget: a bare kind (`\"session\"`) or an inline table with\n`kind` plus options (`docs/status-bar.md#widget-kinds`)."
+    },
+    "WidgetSpec": {
+      "additionalProperties": true,
+      "description": "Long-form widget spec; options are validated per kind by\n[`crate::widget::validate`].",
+      "properties": {
+        "kind": {
+          "description": "Widget kind (see `docs/reference/widgets.md`).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "WindowSize": {
+      "description": "Which geometry wins when concurrent views of one Terminal disagree on\nsize (`defaults.window-size`, ADR-0027). Mirrors tmux's `window-size`.",
+      "oneOf": [
+        {
+          "const": "smallest",
+          "description": "The smallest view's size; larger views letterbox (default).",
+          "type": "string"
+        },
+        {
+          "const": "largest",
+          "description": "The largest view's size; smaller views clamp.",
+          "type": "string"
+        },
+        {
+          "const": "latest",
+          "description": "The most recently resized view's size.",
+          "type": "string"
+        },
+        {
+          "const": "active",
+          "description": "The size of the view last used: the one that most recently typed,\nclicked, pasted, gained focus, attached or resized. Lets a phone and\na desktop share a pane without the idle one shrinking it.",
+          "type": "string"
+        },
+        {
+          "const": "manual",
+          "description": "A fixed size set only by an explicit `RESIZE_TERMINAL` (ADR-0062).",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "description": "Top-level config (`docs/config.md`).",
+  "properties": {
+    "chrome": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/ChromeCfg"
+        }
+      ],
+      "default": {
+        "compact-cols": 64,
+        "compact-rows": 18,
+        "dim-unfocused": false,
+        "min-pane-cols": 40,
+        "new-tab-after-current": false,
+        "title": "{session}: {window}"
+      },
+      "description": "Responsive-chrome breakpoints (`[chrome]`)."
+    },
+    "connector": {
+      "default": [],
+      "description": "Outbound relay links this server supervises (ADR-0052).",
+      "items": {
+        "$ref": "#/definitions/ConnectorConfigEntry"
+      },
+      "type": "array"
+    },
+    "connector-append": {
+      "default": [],
+      "description": "Outbound relay links this server supervises (ADR-0052).",
+      "items": {
+        "$ref": "#/definitions/ConnectorConfigEntry"
+      },
+      "type": "array"
+    },
+    "defaults": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/DefaultsCfg"
+        }
+      ],
+      "default": {
+        "agent-log-bytes": 4194304,
+        "approval-max-pending": 64,
+        "approval-max-pending-total": 1024,
+        "approval-ttl-secs": 120,
+        "attach-session": null,
+        "browser-shim": false,
+        "clipboard-read": "deny",
+        "clipboard-write": "allow",
+        "cwd-inheritance": "inherit-focused",
+        "event-journal-bytes": 1048576,
+        "event-journal-entries": 4096,
+        "fixed-cwd": null,
+        "history-bytes": 10485760,
+        "history-limit": 50000,
+        "keep-awake": "off",
+        "mouse": true,
+        "retain-on-exit": false,
+        "retain-on-exit-max": 256,
+        "retain-on-exit-max-secs": 86400,
+        "retain-on-exit-secs": 600,
+        "session-name-template": "${cwd-basename}",
+        "shell": null,
+        "shell-integration": false,
+        "spawn-on-attach": null,
+        "term": "xterm-256color",
+        "window-size": "smallest"
+      },
+      "description": "Server-wide defaults: shell, `TERM`, scrollback, spawn policy."
+    },
+    "experimental": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/ExperimentalCfg"
+        }
+      ],
+      "default": {
+        "predictive-echo": null
+      },
+      "description": "Opt-in unstable features; may change without notice."
+    },
+    "extends": {
+      "description": "Config layers merged under this file, in order: a path, or a name for `layers/<name>.toml` beside it.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "forward": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/ForwardCfg"
+        }
+      ],
+      "default": {
+        "agent": false,
+        "allow": [],
+        "tcp": true
+      },
+      "description": "`[forward]`: what `phux forward` may reach from this server."
+    },
+    "hooks": {
+      "additionalProperties": {
+        "items": {
+          "$ref": "#/definitions/HookEntry"
+        },
+        "type": "array"
+      },
+      "default": {},
+      "description": "Event hooks (`[[hooks.<event>]]`), keyed by event name.",
+      "type": "object"
+    },
+    "host": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/LocalHostCfg"
+        }
+      ],
+      "default": {},
+      "description": "`[host]`: this machine as clients draw it (its colour override)."
+    },
+    "icons": {
+      "default": [],
+      "description": "`[[icons]]`: the icon clients draw before a pane's label.",
+      "items": {
+        "$ref": "#/definitions/IconConfigEntry"
+      },
+      "type": "array"
+    },
+    "icons-append": {
+      "default": [],
+      "description": "`[[icons]]`: the icon clients draw before a pane's label.",
+      "items": {
+        "$ref": "#/definitions/IconConfigEntry"
+      },
+      "type": "array"
+    },
+    "keybindings": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/KeybindingsCfg"
+        }
+      ],
+      "default": {
+        "defaults": true,
+        "global": {},
+        "mode-options": {},
+        "modes": {},
+        "prefix": "C-a",
+        "prefix-table": {},
+        "which-key": true,
+        "which-key-delay-ms": 400
+      },
+      "description": "Prefix, prefix-table, and global keybindings."
+    },
+    "limits": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/LimitsCfg"
+        }
+      ],
+      "default": {
+        "metadata-value-bytes": 262144
+      },
+      "description": "`[limits]`: server-enforced ceilings that are not per-pane defaults."
+    },
+    "mirrors": {
+      "default": [],
+      "description": "Displays and windows the server keeps mirrored (`[[mirrors]]`).",
+      "items": {
+        "$ref": "#/definitions/MirrorConfigEntry"
+      },
+      "type": "array"
+    },
+    "mirrors-append": {
+      "default": [],
+      "description": "Displays and windows the server keeps mirrored (`[[mirrors]]`).",
+      "items": {
+        "$ref": "#/definitions/MirrorConfigEntry"
+      },
+      "type": "array"
+    },
+    "notifications": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/NotificationsCfg"
+        }
+      ],
+      "default": {
+        "blocked": true,
+        "done": true,
+        "from-programs": "off",
+        "mode": "terminal",
+        "sound": false,
+        "suppress-focused": true,
+        "terminal-protocol": "auto"
+      },
+      "description": "Agent notifications the TUI posts (`[notifications]`)."
+    },
+    "organize": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/OrganizeCfg"
+        }
+      ],
+      "default": {
+        "jev-key-command": null,
+        "offline": false
+      },
+      "description": "`[organize]`: the judge behind `phux organize`."
+    },
+    "plugins": {
+      "default": [],
+      "description": "Declarative plugin manifests composed into this config.",
+      "items": {
+        "$ref": "#/definitions/PluginConfigEntry"
+      },
+      "type": "array"
+    },
+    "plugins-append": {
+      "default": [],
+      "description": "Declarative plugin manifests composed into this config.",
+      "items": {
+        "$ref": "#/definitions/PluginConfigEntry"
+      },
+      "type": "array"
+    },
+    "policy": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/PolicyCfg"
+        }
+      ],
+      "default": {
+        "mode": null,
+        "tailnet-owner": false
+      },
+      "description": "`[policy]`: the server's authorization posture\n(`docs/remote.md#who-can-connect`)."
+    },
+    "producers": {
+      "default": [],
+      "description": "Commands the server keeps running as document producers\n(`[[producers]]`).",
+      "items": {
+        "$ref": "#/definitions/ProducerConfigEntry"
+      },
+      "type": "array"
+    },
+    "producers-append": {
+      "default": [],
+      "description": "Commands the server keeps running as document producers\n(`[[producers]]`).",
+      "items": {
+        "$ref": "#/definitions/ProducerConfigEntry"
+      },
+      "type": "array"
+    },
+    "projects": {
+      "default": [],
+      "description": "Named projects `phux project open NAME` resolves (ADR-0152).",
+      "items": {
+        "$ref": "#/definitions/ProjectConfigEntry"
+      },
+      "type": "array"
+    },
+    "projects-append": {
+      "default": [],
+      "description": "Named projects `phux project open NAME` resolves (ADR-0152).",
+      "items": {
+        "$ref": "#/definitions/ProjectConfigEntry"
+      },
+      "type": "array"
+    },
+    "remote": {
+      "default": [],
+      "description": "Remote servers this machine attaches to (ADR-0055), written by\n`phux host add`.",
+      "items": {
+        "$ref": "#/definitions/RemoteConfigEntry"
+      },
+      "type": "array"
+    },
+    "remote-append": {
+      "default": [],
+      "description": "Remote servers this machine attaches to (ADR-0055), written by\n`phux host add`.",
+      "items": {
+        "$ref": "#/definitions/RemoteConfigEntry"
+      },
+      "type": "array"
+    },
+    "restore": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/RestoreCfg"
+        }
+      ],
+      "default": {
+        "on-start": false,
+        "program": []
+      },
+      "description": "`[restore]`: whether a starting server relaunches what the last one\nended."
+    },
+    "rune": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/RuneCfg"
+        }
+      ],
+      "default": {
+        "confirm-close": null,
+        "copy-on-select": null,
+        "font-family": null,
+        "font-size": null,
+        "interface-size": null,
+        "key-defaults": null,
+        "markdown-viewer": null,
+        "notifications": null,
+        "option-as-meta": null,
+        "quick-terminal": null,
+        "quick-terminal-edge": null,
+        "quick-terminal-size": null,
+        "recent-first": null,
+        "ssh-agent": null,
+        "theme": null,
+        "wheel-arrows": null
+      },
+      "description": "`[rune]`: settings the Rune desktop app reads; ignored elsewhere."
+    },
+    "satellites": {
+      "default": [],
+      "description": "Hub-and-spoke federation satellites declared for this host.",
+      "items": {
+        "$ref": "#/definitions/SatelliteConfigEntry"
+      },
+      "type": "array"
+    },
+    "satellites-append": {
+      "default": [],
+      "description": "Hub-and-spoke federation satellites declared for this host.",
+      "items": {
+        "$ref": "#/definitions/SatelliteConfigEntry"
+      },
+      "type": "array"
+    },
+    "sessions": {
+      "default": [],
+      "description": "`[[sessions]]`: the colour clients draw each named session in.",
+      "items": {
+        "$ref": "#/definitions/SessionConfigEntry"
+      },
+      "type": "array"
+    },
+    "sessions-append": {
+      "default": [],
+      "description": "`[[sessions]]`: the colour clients draw each named session in.",
+      "items": {
+        "$ref": "#/definitions/SessionConfigEntry"
+      },
+      "type": "array"
+    },
+    "sidebar": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/SidebarCfg"
+        }
+      ],
+      "default": {
+        "agents-share": 50,
+        "enabled": true,
+        "hosts": true,
+        "hosts-provider": [],
+        "hosts-refresh-secs": 10,
+        "position": "left",
+        "recent-first": false,
+        "width": 20
+      },
+      "description": "Window sidebar (`[sidebar]`)."
+    },
+    "status": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/StatusCfg"
+        }
+      ],
+      "default": {
+        "center": [],
+        "left": [],
+        "position": "top",
+        "right": []
+      },
+      "description": "Status-bar slot composition."
+    },
+    "theme": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/ThemeCfg"
+        }
+      ],
+      "default": {},
+      "description": "Color slots: free-form `slot -> color` strings."
+    },
+    "uplink": {
+      "default": [],
+      "description": "Hubs this server dials out to as a satellite (ADR-0182), written by\n`phux host join`.",
+      "items": {
+        "$ref": "#/definitions/UplinkConfigEntry"
+      },
+      "type": "array"
+    },
+    "uplink-append": {
+      "default": [],
+      "description": "Hubs this server dials out to as a satellite (ADR-0182), written by\n`phux host join`.",
+      "items": {
+        "$ref": "#/definitions/UplinkConfigEntry"
+      },
+      "type": "array"
+    },
+    "voice": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/VoiceCfg"
+        }
+      ],
+      "default": {
+        "timeout-secs": null,
+        "transcriber": null
+      },
+      "description": "`[voice]`: the server-side transcriber behind `TRANSCRIBE`."
+    }
+  },
+  "title": "Config",
+  "type": "object"
+}

@@ -283,20 +283,7 @@ async fn frames_sent(client: &mut Connection, server: &mut Connection) -> Vec<Fr
 }
 
 fn painted_sidebar_text(bytes: &[u8]) -> String {
-    use crate::attach::render::ReplicaWalk;
-    let mut probe = PaneSlot::new_with_size(100, 24).unwrap();
-    probe.terminal.vt_write(bytes);
-    let mut frame = phux_core::screen::RenderedFrame::blank(100, 24);
-    probe
-        .renderer
-        .render_at_cells(
-            ReplicaWalk::for_test(&probe.terminal),
-            &mut frame,
-            (0, 0),
-            (100, 24),
-        )
-        .unwrap();
-    frame
+    crate::attach::pane_state::probe_frame(bytes, (100, 24))
         .cells
         .chunks(100)
         .map(|row| {

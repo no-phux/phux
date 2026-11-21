@@ -18,7 +18,7 @@ use phux_dial::ws::WsDial;
 
 use super::io::Io;
 use super::{ConnectOptions, ConnectionEnd, Target};
-use crate::dial::{Dial, dial_message, timed_out};
+use crate::dial::{Dial, PlanError, dial_message, timed_out};
 use crate::reconnect::is_fatal_refusal;
 
 /// Why a dial did not produce a link.
@@ -132,19 +132,23 @@ async fn establish_quic(plan: &QuicDial) -> Result<Io, DialFailure> {
 }
 
 /// The driver's dial for one attempt: plan `target` (a refused plan is
-/// configuration, which no retry changes), then establish it, all within
+/// configuration, which no retry changes; a name that did not resolve is
+/// retried), then establish it, all within
 /// `options.dial_timeout`. The plan, and the token it owns, is dropped as
 /// soon as the link is up.
 pub(super) async fn dial(target: &Target, options: ConnectOptions) -> Result<Io, ConnectionEnd> {
     let name = target.name.as_str();
     tokio::time::timeout(options.dial_timeout, async {
-        let plan = target.plan().await.map_err(ConnectionEnd::Refused)?;
+        let plan = target.plan_dial().await.map_err(|error| match error {
+            PlanError::Refused(message) => ConnectionEnd::Refused(message),
+            PlanError::Unresolved(message) => ConnectionEnd::Dropped(Some(message)),
+        })?;
         establish(&plan).await.map_err(|failure| failure.end(name))
     })
     .await
     .map_err(|_| {
         super::trace::phase("dial_deadline");
-        ConnectionEnd::Dropped(Some(timed_out(name)))
+        ConnectionEnd::Dropped(Some(timed_out(name, options.dial_timeout)))
     })?
 }
 
@@ -180,6 +184,21 @@ mod tests {
             text.contains("captured-token-file"),
             "dial must name the captured token file, got {text}"
         );
+    }
+
+    /// A name that does not resolve yet (`MagicDNS` still starting) walks
+    /// the ladder; it is not configuration. `.invalid` never resolves.
+    #[tokio::test]
+    async fn an_unresolved_name_walks_the_ladder() {
+        let mut target = Target::quic("mini.invalid:8788");
+        target.name = "mini".to_owned();
+        match dial(&target, ConnectOptions::default()).await {
+            Err(ConnectionEnd::Dropped(Some(text))) => {
+                assert!(text.contains("could not resolve"), "{text}");
+            }
+            Err(other) => panic!("an unresolved name is retryable, got {other:?}"),
+            Ok(_) => panic!("mini.invalid resolved"),
+        }
     }
 
     #[tokio::test]

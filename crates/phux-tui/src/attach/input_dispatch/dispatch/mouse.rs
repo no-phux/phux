@@ -2,7 +2,7 @@
 //! dividers) and the pane gestures the client claims (click-to-focus, wheel,
 //! context menu, drag-to-copy).
 
-use super::super::args::{bare_action, select_window_action};
+use super::super::args::{bare_action, tab_click_action};
 use super::super::effects::broadcast_layout;
 use super::{
     AttachError, ContextMenu, DispatchCtx, DividerGrab, DragGrab, EventEnv, InputEvent, ModSet,
@@ -647,7 +647,7 @@ pub(in crate::attach::input_dispatch) fn bar_click_action(
 ) -> Option<phux_config::keybind::ResolvedAction> {
     use crate::render::chrome::status_bar::widgets::CellHit;
     match painter?.hit_at(x)? {
-        CellHit::Window(index) => select_window_action(index),
+        CellHit::Window(index) => tab_click_action(index),
         CellHit::Switch => Some(bare_action("agent-fleet")),
         CellHit::Action(action) => Some(bare_action(action)),
     }

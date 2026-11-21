@@ -1,10 +1,15 @@
 //! Satellite input leases, attach relay, and frame relay.
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the split command modules share the parent command namespace"
-)]
 
-use super::*;
+use phux_protocol::wire::frame::{
+    AgentEvent, Command, CommandResult, ControlAction, ErrorCode, FrameKind, InputMode,
+    ResourceLifecycle, RolePolicy,
+};
+use tracing::{debug, trace};
+
+use crate::runtime::commands::attach_terminal::invalid_agent_cursor;
+use crate::runtime::commands::routing::CommandContext;
+use crate::runtime::commands::satellite::relay_stream_establishing;
+use crate::state::{ClientId, Outbound, RelayRoute, SharedState};
 
 /// The hub-side lease coordinates one satellite-routed input command acts on.
 /// Hub consumers share one identity on the satellite, so exclusion between

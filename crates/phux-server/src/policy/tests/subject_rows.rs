@@ -579,6 +579,7 @@ fn rows(world: &mut World) -> Vec<Row> {
     rows.extend(mirror_rows());
     rows.extend(child_spawn_rows(world));
     rows.extend(credential_rows());
+    rows.extend(viewport_colors_row(&rows));
     rows.extend(question_rows(world));
     rows
 }

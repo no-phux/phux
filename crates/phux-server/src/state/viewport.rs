@@ -56,6 +56,18 @@ impl ServerState {
         }
     }
 
+    /// Record `client`'s new outer default colours (`VIEWPORT_COLORS`), which
+    /// its later spawns inherit. No-op for an unattached client.
+    pub fn set_client_default_colors(
+        &mut self,
+        client: ClientId,
+        colors: phux_protocol::caps::TerminalDefaultColors,
+    ) {
+        if let Some(c) = self.clients.attached.get_mut(&client) {
+            c.client_caps.default_colors = Some(colors);
+        }
+    }
+
     /// `client` was just used (typed, clicked, pasted, gained focus). True
     /// when that makes it the most recently used view under the `active`
     /// policy, so its panes should take its size; false, and nothing

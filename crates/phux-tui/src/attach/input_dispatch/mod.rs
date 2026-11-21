@@ -30,7 +30,9 @@ mod tests_slot_tabs;
 
 pub(super) use ctx::{DispatchCtx, DragGrab};
 pub(super) use deferred::{DeferredArrangementEdit, apply_deferred_arrangement_edits};
-pub(super) use dispatch::{dispatch_input_events, predict_now_ms, sync_overlays_to_focused_pane};
+pub(super) use dispatch::{
+    dispatch_input_events, predict_now_ms, sidebar_rows, sync_overlays_to_focused_pane,
+};
 pub use effects::ReattachTarget;
 pub(super) use effects::{PendingSessionRename, encode_layout_or_log};
 /// The session picker's rows and its live-refresh key, so the
