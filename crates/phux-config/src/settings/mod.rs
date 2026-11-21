@@ -219,6 +219,7 @@ const STATUS_POSITION: &[&str] = &["bottom", "top"];
 const SIDEBAR_POSITION: &[&str] = &["left", "right"];
 const NOTIFY_MODE: &[&str] = &["terminal", "system", "bell", "off"];
 const NOTIFY_PROTOCOL: &[&str] = &["auto", "osc9", "osc777", "osc99"];
+const FROM_PROGRAMS: &[&str] = &["off", "notes"];
 
 /// Every scalar setting of the schema, in section then field order.
 pub const CATALOG: &[SettingSpec] = &join_catalog();
