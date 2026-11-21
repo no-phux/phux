@@ -154,6 +154,45 @@ fn diff_shows_one_file_per_area_and_untracked_whole() {
 }
 
 #[test]
+fn untracked_patch_matches_git_no_index_without_its_index_line() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = repo("untracked-patch");
+    write(&dir, "my file.txt", "one\ntwo");
+    write(&dir, "q\"t\tb", "x\n");
+    write(&dir, "empty", "");
+    write(&dir, "bin/run.sh", "#!/bin/sh\n");
+    std::fs::set_permissions(
+        dir.join("bin/run.sh"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    std::fs::write(dir.join("blob"), [7_u8, 0, 1]).unwrap();
+    std::os::unix::fs::symlink("elsewhere", dir.join("link")).unwrap();
+    let checkout = Checkout::open(&dir).unwrap();
+    for path in [
+        "my file.txt",
+        "q\"t\tb",
+        "empty",
+        "bin/run.sh",
+        "blob",
+        "link",
+    ] {
+        let mut args = vec!["diff", "--no-index"];
+        args.extend(DIFF_FLAGS);
+        args.extend(["--", "/dev/null", path]);
+        let out = run_git(&dir, &args, 1 << 20, None, Mode::Read).unwrap();
+        let expected: String = String::from_utf8(out.stdout)
+            .unwrap()
+            .split_inclusive('\n')
+            .filter(|line| !line.starts_with("index "))
+            .collect();
+        let diff = checkout.diff(path, Area::Untracked).unwrap();
+        assert_eq!(diff.text, expected, "{path:?}");
+        assert_eq!(diff.binary, path == "blob", "{path:?}");
+    }
+}
+
+#[test]
 fn paths_outside_the_checkout_are_refused() {
     for path in ["", "/etc/passwd", "../x", "a/../../x", "./a"] {
         assert!(
