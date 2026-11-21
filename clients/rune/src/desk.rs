@@ -74,6 +74,7 @@ mod splits;
 pub mod surfaces;
 mod tabs;
 pub mod updates;
+pub(crate) mod window_frame;
 mod worker;
 mod worktree;
 

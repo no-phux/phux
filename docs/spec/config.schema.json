@@ -369,6 +369,20 @@
       },
       "type": "object"
     },
+    "Families": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      ],
+      "description": "`font-family` as written: one string or a list."
+    },
     "ForwardCfg": {
       "additionalProperties": false,
       "description": "`[forward]` table: TCP port and ssh-agent forwarding\n(`docs/forwarding.md`).",
@@ -660,6 +674,26 @@
         }
       },
       "type": "object"
+    },
+    "NewWindowScreen": {
+      "description": "`[rune] new-window-screen`: the display a new window opens on.",
+      "oneOf": [
+        {
+          "const": "current",
+          "description": "Where the window was when it closed, on a display still connected.",
+          "type": "string"
+        },
+        {
+          "const": "mouse",
+          "description": "The display under the pointer.",
+          "type": "string"
+        },
+        {
+          "const": "main",
+          "description": "The main display.",
+          "type": "string"
+        }
+      ]
     },
     "NotificationsCfg": {
       "additionalProperties": false,
@@ -1112,12 +1146,16 @@
           ]
         },
         "font-family": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Families"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": null,
-          "description": "Terminal font family; `\"\"` is the built-in face.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "description": "Terminal font family, or families tried in order before the built-in\nfaces: a list, or one string with commas between names. `\"\"` is the\nbuilt-in face."
         },
         "font-size": {
           "default": null,
@@ -1175,6 +1213,18 @@
             "array",
             "null"
           ]
+        },
+        "new-window-screen": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NewWindowScreen"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The display a new window opens on: `\"current\"` (where the window was\nwhen it closed), `\"mouse\"` (the one under the pointer) or `\"main\"`."
         },
         "notifications": {
           "default": null,
@@ -1237,6 +1287,18 @@
             "null"
           ]
         },
+        "tab-bar": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TabBar"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Where the terminal tabs go: `\"top\"` in the title bar, `\"bottom\"` under\nthe panes, or `\"hidden\"`."
+        },
         "theme": {
           "default": null,
           "description": "Theme id, as the theme picker lists them; `\"\"` follows the system.",
@@ -1244,6 +1306,18 @@
             "string",
             "null"
           ]
+        },
+        "title-bar": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TitleBar"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The title bar: `\"shown\"`, `\"hover\"` (hidden until the pointer reaches\nthe window's top edge) or `\"hidden\"`."
         },
         "wheel-arrows": {
           "default": null,
@@ -1498,12 +1572,52 @@
         }
       ]
     },
+    "TabBar": {
+      "description": "`[rune] tab-bar`: where the terminal tabs go.",
+      "oneOf": [
+        {
+          "const": "top",
+          "description": "In the title bar.",
+          "type": "string"
+        },
+        {
+          "const": "bottom",
+          "description": "Under the panes.",
+          "type": "string"
+        },
+        {
+          "const": "hidden",
+          "description": "Nowhere; the palette and shortcuts still switch tabs.",
+          "type": "string"
+        }
+      ]
+    },
     "ThemeCfg": {
       "additionalProperties": {
         "type": "string"
       },
       "description": "`[theme]`: free-form `slot -> color` map; the renderer interprets it.",
       "type": "object"
+    },
+    "TitleBar": {
+      "description": "`[rune] title-bar`: whether the band over the panes shows.",
+      "oneOf": [
+        {
+          "const": "shown",
+          "description": "Always.",
+          "type": "string"
+        },
+        {
+          "const": "hover",
+          "description": "While the pointer is at the window's top edge.",
+          "type": "string"
+        },
+        {
+          "const": "hidden",
+          "description": "Never; a thin strip along the top still moves the window.",
+          "type": "string"
+        }
+      ]
     },
     "UplinkConfigEntry": {
       "additionalProperties": false,
@@ -1969,6 +2083,7 @@
         "interface-size": null,
         "key-defaults": null,
         "markdown-viewer": null,
+        "new-window-screen": null,
         "notifications": null,
         "option-as-meta": null,
         "quick-terminal": null,
@@ -1976,7 +2091,9 @@
         "quick-terminal-size": null,
         "recent-first": null,
         "ssh-agent": null,
+        "tab-bar": null,
         "theme": null,
+        "title-bar": null,
         "wheel-arrows": null
       },
       "description": "`[rune]`: settings the Rune desktop app reads; ignored elsewhere."

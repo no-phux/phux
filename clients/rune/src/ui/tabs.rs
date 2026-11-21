@@ -500,6 +500,32 @@ mod tests {
     }
 
     #[test]
+    fn the_tab_bar_goes_where_the_file_puts_it() {
+        use phux_config_core::rune::{TabBar, TitleBar};
+        let bars = |tab_bar, title_bar| {
+            let mut desk = crate::test_support::settings_window();
+            desk.settings_open = false;
+            desk.settings.tab_bar = tab_bar;
+            desk.settings.title_bar = title_bar;
+            desk.connection.tabs.list = named(3, 0);
+            let window = (900.0, 500.0);
+            let env = rune::Env::new(false, 1.0);
+            let mut rt = crate::test_support::runtime(desk, crate::ui::view, window, env);
+            for frame in 0..4 {
+                rt.frame(f64::from(frame));
+            }
+            let tab = rt.presented("tab-0").map(|(rect, ..)| rect[1]);
+            (tab, rt.find("settings-button").is_some())
+        };
+        let (top, titled) = bars(TabBar::Top, TitleBar::Shown);
+        let (bottom, _) = bars(TabBar::Bottom, TitleBar::Shown);
+        assert!(titled && bottom.expect("bottom tabs") > top.expect("top tabs") + 300.0);
+        assert_eq!(bars(TabBar::Hidden, TitleBar::Shown).0, None);
+        let (row, titled) = bars(TabBar::Top, TitleBar::Hidden);
+        assert!(!titled && row.expect("tabs on a row of their own") < 40.0);
+    }
+
+    #[test]
     fn the_active_tab_keeps_its_name_in_a_crowd() {
         let rt = laid_out(12, 5, (900.0, 500.0));
         let active = rt.presented("tab-5").expect("the active tab").0;
