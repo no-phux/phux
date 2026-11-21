@@ -84,7 +84,7 @@ fn launch_schema() -> Value {
             "integration": string_schema(),
             "list": { "type": "boolean" },
             "target": string_schema(),
-            "split": { "type": "string", "enum": ["horizontal", "vertical"] },
+            "split": placement_split_schema(),
             "ratio": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1 },
             "projection": { "type": "string", "description": "Legacy option; placed launch refuses named projections." },
             "cwd": string_schema(),
@@ -102,7 +102,7 @@ fn spawn_schema() -> Value {
         json!({
             "target": string_schema(),
             "satellite": string_schema(),
-            "split": { "type": "string", "enum": ["horizontal", "vertical"] },
+            "split": placement_split_schema(),
             "ratio": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1 },
             "projection": { "type": "string", "description": "Legacy option; placed spawn refuses named projections." },
             "cwd": string_schema(),
@@ -180,6 +180,17 @@ fn rename_schema() -> Value {
     )
 }
 
+/// `split` for a pane created beside `target`; the spatial edits name the
+/// divider instead (`direction` in [`spatial_schema`]).
+fn placement_split_schema() -> Value {
+    json!({
+        "type": "string",
+        "enum": ["horizontal", "vertical"],
+        "description": "Where the new pane goes beside `target`: `horizontal` to the right \
+                        (default), `vertical` below.",
+    })
+}
+
 fn spatial_schema(name: &str, description: &str, roles: &[&str], geometry: bool) -> Value {
     let mut properties = Map::new();
     for role in roles {
@@ -188,7 +199,12 @@ fn spatial_schema(name: &str, description: &str, roles: &[&str], geometry: bool)
     if geometry {
         properties.insert(
             "direction".to_owned(),
-            json!({ "type": "string", "enum": ["horizontal", "vertical"] }),
+            json!({
+                "type": "string",
+                "enum": ["horizontal", "vertical"],
+                "description": "The divider: `horizontal` stacks the panes, `vertical` places them \
+                                side by side. The opposite of phux_spawn's `split`.",
+            }),
         );
         properties.insert(
             "ratio".to_owned(),
