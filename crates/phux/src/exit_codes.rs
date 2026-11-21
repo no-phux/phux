@@ -1,6 +1,6 @@
 //! The canonical exit-code table, rendered by `phux help exit-codes` and
 //! `docs/reference/exit-codes.md`. Verbs exit 0, 1, or 2; selector paths add 3
-//! (partial view); `wait` adds 124; `run` and plugin actions add 125 (`run`
+//! (partial view); a server that never answers is 4; `wait` adds 124; `run` and plugin actions add 125 (`run`
 //! otherwise mirrors the child's code). Call sites use these consts so the
 //! table and the behavior cannot drift.
 
@@ -20,6 +20,21 @@ pub(crate) const EXIT_USAGE: u8 = 2;
 /// [`EXIT_FAILURE`] so a script can branch: retry is right for 3 and
 /// wrong for 1. See `commands::partial`.
 pub(crate) const EXIT_PARTIAL_VIEW: u8 = 3;
+
+/// The server did not answer within `PHUX_TIMEOUT`, or a remote host never
+/// answered the dial — distinct from [`EXIT_FAILURE`] so a script can tell
+/// "could not ask" from "asked, and the answer was no".
+pub(crate) const EXIT_UNREACHABLE: u8 = 4;
+
+/// The exit code for a failed exchange with a server: [`EXIT_UNREACHABLE`]
+/// when it never answered, else [`EXIT_FAILURE`].
+pub(crate) fn transport_exit(err: &phux_client::attach::AttachError) -> u8 {
+    if err.is_unreachable() {
+        EXIT_UNREACHABLE
+    } else {
+        EXIT_FAILURE
+    }
+}
 
 /// `phux wait` gave up because `--timeout` expired (the conventional
 /// `timeout(1)` code).
@@ -61,6 +76,14 @@ pub(crate) const EXIT_CODES: &[ExitCodeSpec] = &[
             "Unanswerable: the selector was resolved against a partial view",
             "of the fleet (a federation satellite was unreachable). Retry",
             "once the link is back — unlike 1, the target may exist.",
+        ],
+    },
+    ExitCodeSpec {
+        code: EXIT_UNREACHABLE,
+        lines: &[
+            "Unreachable: the server did not answer within PHUX_TIMEOUT",
+            "(default 10s), or a remote host never answered the dial.",
+            "Unlike 1, this is no answer: retry once the server responds.",
         ],
     },
     ExitCodeSpec {

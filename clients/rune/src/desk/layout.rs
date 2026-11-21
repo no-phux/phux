@@ -233,6 +233,7 @@ impl Desk {
         };
         self.connection.resources.returning = None;
         if let Some(old) = self.connection.shown.take() {
+            self.leaving(&old.resource, id);
             self.connection.others.insert(old.resource, old.view);
         }
         self.activities.seen(id);
