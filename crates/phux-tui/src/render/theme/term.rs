@@ -26,9 +26,10 @@ pub enum Depth {
 }
 
 /// Which column of the status ladder the chrome draws.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Glyphs {
     /// `● ✕ ◆ ◐ ○ · – •`.
+    #[default]
     Unicode,
     /// `* x + ~ o . - !`: a CJK or non-UTF-8 locale, where the ladder's
     /// East-Asian-Ambiguous marks may draw two cells wide. The whole ladder

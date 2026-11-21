@@ -228,6 +228,7 @@ mod tests {
                 branch: None,
                 exited: None,
                 badge: None,
+                glyphs: Default::default(),
             })
             .collect();
         let mut panes = HashMap::new();
