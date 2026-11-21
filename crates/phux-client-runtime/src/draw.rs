@@ -125,11 +125,15 @@ fn ansi<C: Copy>(theme: &Theme<C>, index: usize) -> Option<C> {
     theme.ansi.as_ref()?.get(index).copied()
 }
 
-/// Background and underline colours arrive palette-resolved without their
-/// index. A colour equal to one of the frame's 16 ANSI entries was almost
-/// certainly that slot, so it takes the theme's colour; anything else (true
-/// colour, the 240 extended slots) paints as the application sent it.
-fn themed<C: Copy>(frame: &GridFrame, theme: &Theme<C>, color: Rgb) -> C {
+/// A non-default colour by its provenance. A palette index takes the
+/// theme's colour for an ANSI slot and paints anything else exactly as
+/// resolved. Only direct RGB is matched against the frame's 16 ANSI
+/// entries: a synthesized snapshot replays indexed viewport colours as RGB,
+/// so an ANSI-equal RGB was most likely that slot.
+fn themed<C: Copy>(frame: &GridFrame, theme: &Theme<C>, kind: u8, index: u8, color: Rgb) -> C {
+    if kind == COLOR_KIND_PALETTE {
+        return ansi(theme, usize::from(index)).unwrap_or_else(|| (theme.rgb)(color));
+    }
     if theme.ansi.is_some()
         && let Some(index) = frame.colors.palette[..16]
             .iter()
@@ -153,23 +157,23 @@ pub fn cell_colors<C: Copy>(
 ) -> CellColors<C> {
     let mut foreground = if metadata.foreground_kind == COLOR_KIND_DEFAULT {
         defaults.0
-    } else if metadata.foreground_kind == COLOR_KIND_PALETTE
-        && let Some(themed) = ansi(theme, usize::from(metadata.foreground_palette_index))
-    {
-        themed
     } else {
         themed(
             frame,
             theme,
+            metadata.foreground_kind,
+            metadata.foreground_palette_index,
             rgb(cell.foreground_r, cell.foreground_g, cell.foreground_b),
         )
     };
-    let mut background = if metadata.background_color_is_default {
+    let mut background = if metadata.background_kind == COLOR_KIND_DEFAULT {
         defaults.1
     } else {
         themed(
             frame,
             theme,
+            metadata.background_kind,
+            metadata.background_palette_index,
             rgb(cell.background_r, cell.background_g, cell.background_b),
         )
     };
@@ -180,12 +184,14 @@ pub fn cell_colors<C: Copy>(
         foreground = theme.selection_foreground;
         background = theme.selection_background;
     }
-    let underline = if metadata.underline_color_is_default {
+    let underline = if metadata.underline_kind == COLOR_KIND_DEFAULT {
         foreground
     } else {
         themed(
             frame,
             theme,
+            metadata.underline_kind,
+            metadata.underline_palette_index,
             rgb(cell.underline_r, cell.underline_g, cell.underline_b),
         )
     };

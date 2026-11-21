@@ -1,6 +1,6 @@
 use super::*;
 use crate::publication::{Cursor, FrameColors, GridBuffer, GridDamage, Scrollbar};
-use phux_client_core::grid::{CELL_OVERLINE, CELL_STRIKETHROUGH};
+use phux_client_core::grid::{CELL_OVERLINE, CELL_STRIKETHROUGH, COLOR_KIND_RGB, GridProjector};
 use phux_protocol::ResourceId;
 
 const RED: Rgb = rgb(255, 0, 0);
@@ -25,11 +25,7 @@ fn frame(rows: &[&[&str]], cols: u16) -> GridFrame {
                 utf8_len: u16::try_from(text.len()).unwrap_or(0),
                 ..Cell::default()
             });
-            buffer.metadata.push(CellMetadata {
-                background_color_is_default: true,
-                underline_color_is_default: true,
-                ..CellMetadata::default()
-            });
+            buffer.metadata.push(CellMetadata::default());
         }
     }
     GridFrame {
@@ -79,7 +75,8 @@ fn inverse_swaps_true_color_before_selection_and_faint() {
         ..Cell::default()
     };
     let metadata = CellMetadata {
-        foreground_kind: 2,
+        foreground_kind: COLOR_KIND_RGB,
+        background_kind: COLOR_KIND_RGB,
         ..CellMetadata::default()
     };
     let defaults = default_colors(&frame, &theme);
@@ -107,6 +104,7 @@ fn the_theme_maps_palette_provenance_and_yields_to_application_defaults() {
     let palette_fg = CellMetadata {
         foreground_kind: COLOR_KIND_PALETTE,
         foreground_palette_index: 1,
+        background_kind: COLOR_KIND_RGB,
         ..CellMetadata::default()
     };
     let red_bg = Cell {
@@ -243,7 +241,7 @@ fn backgrounds_merge_into_runs_and_skip_the_default() {
     for col in 1..3 {
         let (cell, metadata) = cell_mut(&mut frame, 0, col);
         cell.background_r = 255;
-        metadata.background_color_is_default = false;
+        metadata.background_kind = COLOR_KIND_RGB;
     }
     let list = DrawList::build(&frame, &theme(), Visibility::default());
     assert_eq!(list.background, rgb(0, 0, 0));
@@ -326,4 +324,59 @@ fn a_line_merges_past_one_the_same_cell_starts() {
     assert!(lines.contains(&(DecorationKind::Strikethrough, 0, 3)));
     assert!(lines.contains(&(DecorationKind::Underline(Underline::Single), 1, 3)));
     assert!(lines.contains(&(DecorationKind::Overline, 1, 3)));
+}
+
+/// VT bytes through the projector into painted colours: a palette index
+/// keeps its provenance on every channel, so an extended slot that equals
+/// an ANSI entry paints exactly and only ANSI slots take the theme.
+#[test]
+fn indexed_default_and_true_color_cells_round_trip_by_provenance() {
+    let mut terminal = libghostty_vt::Terminal::new(8, 2).expect("terminal");
+    terminal.vt_write(
+        concat!(
+            // Slot 16 collides with slot 1.
+            "\x1b]4;1;rgb:12/34/56;16;rgb:12/34/56\x1b\\",
+            "\x1b[31;41mA",
+            "\x1b[0;38;5;16;48;5;16mB",
+            "\x1b[0;38;2;1;2;3;48;2;4;5;6mC",
+            "\x1b[0mD",
+            "\x1b[4;58:5:1mE",
+            "\x1b[58:5:16mF",
+            // An erased row keeps its palette background.
+            "\x1b[0m\r\n\x1b[42m\x1b[K\x1b[0m",
+        )
+        .as_bytes(),
+    );
+    let mut projector = GridProjector::new().expect("projector");
+    let snapshot = projector.project(&terminal, 0).expect("project");
+    let mut frame = frame(&[], 8);
+    frame.rows = 2;
+    for (slot, color) in frame.colors.palette.iter_mut().zip(snapshot.colors.palette) {
+        *slot = rgb(color.r, color.g, color.b);
+    }
+    frame.buffer.cells.clone_from(&snapshot.buffer.cells);
+    frame.buffer.metadata.clone_from(&snapshot.buffer.metadata);
+    let ansi: [Rgb; 16] = std::array::from_fn(|i| rgb(u8::try_from(i).unwrap_or(0), 200, 200));
+    let theme = Theme {
+        foreground: Some(rgb(9, 9, 9)),
+        background: Some(rgb(8, 8, 8)),
+        ansi: Some(ansi),
+        ..theme()
+    };
+    let defaults = default_colors(&frame, &theme);
+    let colors = |index: usize| {
+        let cell = &frame.buffer.cells[index];
+        let metadata = frame.buffer.metadata[index];
+        let colors = cell_colors(cell, metadata, &frame, &theme, defaults);
+        (colors.foreground, colors.background, colors.underline)
+    };
+    let exact = rgb(0x12, 0x34, 0x56);
+    assert_eq!(colors(0), (ansi[1], ansi[1], ansi[1]), "ANSI index");
+    assert_eq!(colors(1), (exact, exact, exact), "extended index");
+    assert_eq!(colors(2).0, rgb(1, 2, 3), "true colour");
+    assert_eq!(colors(2).1, rgb(4, 5, 6), "true colour");
+    assert_eq!(colors(3), (defaults.0, defaults.1, defaults.0), "default");
+    assert_eq!(colors(4).2, ansi[1], "ANSI underline index");
+    assert_eq!(colors(5).2, exact, "extended underline index");
+    assert_eq!(colors(8).1, ansi[2], "erased palette background");
 }
