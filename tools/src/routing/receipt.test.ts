@@ -64,7 +64,7 @@ test("a merge group that validated the exact tree is reused", () => {
 test("an exact-tree partial PR Linux receipt cannot replace full queue/main qualification", () => {
   const paths = ["clients/rune/src/main.rs"];
   const c = new Classifier().classify(paths);
-  const options = { queueVerified: true, scope: { kind: "diff" as const, paths } };
+  const options = { pullRequestFast: true, scope: { kind: "diff" as const, paths } };
   const pr = { ...expected, coverage: plan(c, "pull_request", options).coverage };
   const full = { ...expected, coverage: plan(c, "push", options).coverage };
   files["receipt.json"] = JSON.stringify(pr);
@@ -75,7 +75,7 @@ test("an exact-tree partial PR Linux receipt cannot replace full queue/main qual
   expect(find(full)).toBe(3);
 });
 
-test("the required ci queue or fallback PR caller attests only the exact native child receipt", () => {
+test("the required ci queue or release PR caller attests only the exact native child receipt", () => {
   const apple = {
     ...expected,
     workflow: ".github/workflows/rune-macos.yml",
@@ -94,7 +94,7 @@ test("the required ci queue or fallback PR caller attests only the exact native 
   expect(find(apple)).toBe(3);
   run["event"] = "pull_request";
   expect(find(apple)).toBe(3);
-  // A full fallback PR receipt is reusable, but never release push evidence.
+  // A full release PR receipt is reusable, but never release push evidence.
   expect(find(apple, String(run["head_sha"]))).toBeUndefined();
   files["receipt.json"] = JSON.stringify({ ...apple, coverage: "" });
   expect(find(apple)).toBeUndefined();
@@ -138,7 +138,7 @@ test("release qualification needs a full native receipt from the exact main push
 test("web receipt reuse covers both browser jobs but keeps main's mandatory lanes", () => {
   const paths = ["crates/phux-server/src/lib.rs"];
   const c = new Classifier().classify(paths);
-  const options = { queueVerified: true, scope: { kind: "diff" as const, paths } };
+  const options = { pullRequestFast: true, scope: { kind: "diff" as const, paths } };
   const pr = plan(c, "pull_request", options);
   const main = plan(c, "push", options);
   const receipt = { ...expected, coverage: main.coverage };
