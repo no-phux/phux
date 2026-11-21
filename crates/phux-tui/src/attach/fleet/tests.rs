@@ -304,6 +304,10 @@ fn secondary_prefers_branch_over_cwd_and_shortens_cwd() {
     let items = local_fleet_items(&workspace, &agents, &meta);
     assert_eq!(items[0].secondary.as_deref(), Some("working \u{b7} main"));
     assert_eq!(items[1].secondary.as_deref(), Some("idle \u{b7} dir"));
+    // Home is `~`, as every other place names it, not the user's name.
+    meta.get_mut(&tid(2)).expect("seeded").cwd = Some("/home/u".to_owned());
+    let items = local_fleet_items(&workspace, &agents, &meta);
+    assert_eq!(items[1].secondary.as_deref(), Some("idle \u{b7} ~"));
 }
 
 #[test]

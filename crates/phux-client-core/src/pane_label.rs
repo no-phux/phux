@@ -106,7 +106,8 @@ fn path_place(path: &str) -> Option<&str> {
 
 /// The cwd as a person names it: its last component, `~` for a user's home
 /// on the pane's host (`/Users/<u>`, `/home/<u>`, `/root`).
-fn folder(cwd: &str) -> &str {
+#[must_use]
+pub fn folder(cwd: &str) -> &str {
     let trimmed = cwd.trim_end_matches('/');
     let parts: Vec<&str> = trimmed.split('/').filter(|p| !p.is_empty()).collect();
     match parts.as_slice() {

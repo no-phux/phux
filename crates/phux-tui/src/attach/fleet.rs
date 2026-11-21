@@ -390,10 +390,9 @@ fn pane_row(
         || session.is_some_and(|s| s.state == AgentMetaState::Blocked)
         || record.is_some_and(|r| r.effective_attention() == AgentAttention::High);
     let label = format!("{glyph} {} {who}", pane_address(w, window_name, p));
-    let place = meta
-        .branch
-        .clone()
-        .or_else(|| meta.cwd.as_deref().map(short_cwd));
+    let place = meta.branch.clone().or_else(|| {
+        (meta.cwd.as_deref()).map(|cwd| phux_client_core::pane_label::folder(cwd).to_owned())
+    });
     let secondary = match (state_word, place, host) {
         (Some(state), Some(place), Some(host)) => Some(format!("{host} {state} \u{b7} {place}")),
         (Some(state), None, Some(host)) => Some(format!("{host} {state}")),
@@ -540,15 +539,6 @@ fn who_label(name: &str, kind: Option<&str>) -> String {
 
 /// Shorten a cwd to its last path component for the secondary column
 /// (a full path would push the state word off a narrow modal).
-fn short_cwd(cwd: &str) -> String {
-    cwd.trim_end_matches('/')
-        .rsplit('/')
-        .next()
-        .filter(|s| !s.is_empty())
-        .unwrap_or(cwd)
-        .to_owned()
-}
-
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests;
