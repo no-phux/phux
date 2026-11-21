@@ -329,9 +329,18 @@ impl Desk {
         self.settings_ui.query.focused = false;
     }
 
-    pub fn clear_settings_search(&mut self) {
+    pub fn clear_settings_search(&mut self, tx: &mut Tx) {
         self.settings_ui.query.clear();
         self.focus_settings_search();
+        self.settings_search_edited(tx);
+    }
+
+    /// A changed search starts at its first result, not the old results'
+    /// offset. Shared by hardware, drawn and UIKit editing and by clearing;
+    /// a caret move changes no text and keeps the place.
+    pub fn settings_search_edited(&mut self, tx: &mut Tx) {
+        tx.scroll_to_instant("settings-content", 0.0, 0.0);
+        tx.instant();
     }
 
     pub fn focus_settings_search(&mut self) {
@@ -355,7 +364,9 @@ impl Desk {
     /// Native fields keep editing, selection, clipboard and Tab with Rune.
     pub fn settings_field_key(&mut self, event: &KeyEvent, tx: &mut Tx) -> bool {
         match event.key {
-            Key::Escape if !self.settings_ui.query.text.is_empty() => self.clear_settings_search(),
+            Key::Escape if !self.settings_ui.query.text.is_empty() => {
+                self.clear_settings_search(tx);
+            }
             Key::Escape => self.settings_dismiss(),
             Key::Enter => self.blur_settings_search(tx),
             _ => return false,
@@ -374,11 +385,11 @@ impl Desk {
         }
     }
 
-    pub fn settings_escape(&mut self) {
+    pub fn settings_escape(&mut self, tx: &mut Tx) {
         if self.settings_ui.query.text.is_empty() {
             self.settings_dismiss();
         } else {
-            self.clear_settings_search();
+            self.clear_settings_search(tx);
         }
     }
 
@@ -392,7 +403,11 @@ impl Desk {
             self.blur_settings_search(tx);
             return;
         }
+        let before = self.settings_ui.query.text.clone();
         self.settings_ui.query.key(event, None);
+        if self.settings_ui.query.text != before {
+            self.settings_search_edited(tx);
+        }
     }
 
     /// Install the chosen palette on the runtime. Live panes repaint with it.
