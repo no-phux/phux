@@ -3,7 +3,8 @@
 // A pull request runs exactly what its diff can affect. A push to main or a
 // merge group widens the Rust lanes to the full pool (a non-strict merge can
 // combine two green diffs into a red tree). Native setup and rust icount are
-// path-scoped only on queue-verified PRs, otherwise mandatory, and never removed by reuse.
+// path-scoped only on fast-path PRs (every PR but a release bot's), otherwise
+// mandatory, and never removed by reuse.
 // Rune's Apple legs belong to rune-macos.yml, not this Linux lane receipt.
 // `just check` runs the PR plan through the same recipes the jobs call.
 import { list, str, table } from "../lib/value.ts";
@@ -47,7 +48,7 @@ export const LANE_RECIPES: Record<Lane, readonly (readonly [string, ...string[]]
 /** Lanes a workstation cannot reproduce: x86_64 valgrind, a clean machine. */
 export const CI_ONLY: ReadonlySet<Lane> = new Set(["icount", "native"]);
 
-/** Full Linux qualification is absent from queue-verified fast-path PR receipts. */
+/** Full Linux qualification is absent from fast-path PR receipts. */
 export const LINUX_QUALIFY = ["linux-aarch64", "packaging"] as const;
 
 /**
@@ -57,6 +58,24 @@ export const LINUX_QUALIFY = ["linux-aarch64", "packaging"] as const;
 export const PERF_BASELINE_LABEL = "perf-baseline";
 
 /** Whether a pull_request payload carries `label`. Other events do not. */
+/** Release-bot heads: release-please and the Rune version train (clients/rune/scripts/release.py). */
+export const RELEASE_HEAD_PREFIXES = ["release-please--", "rune-release/"] as const;
+
+/**
+ * A same-repository release-bot pull request. Its merge commit is what gets
+ * tagged, so it keeps full qualification, Apple included: a red bump commit
+ * would wedge the release train. Bots merge these, so nobody waits on them.
+ */
+export function releasePullRequest(event: unknown, repository: string): boolean {
+  const head = table(table(table(event)["pull_request"])["head"]);
+  const ref = str(head["ref"]) ?? "";
+  return (
+    repository !== "" &&
+    str(table(head["repo"])["full_name"]) === repository &&
+    RELEASE_HEAD_PREFIXES.some((prefix) => ref.startsWith(prefix))
+  );
+}
+
 export function eventHasLabel(event: unknown, label: string): boolean {
   return list(table(table(event)["pull_request"])["labels"]).some(
     (item) => str(table(item)["name"]) === label,
@@ -145,11 +164,14 @@ export type PathScope =
   | { readonly kind: "none" };
 
 export interface PlanOptions {
-  /** Affirmative live base-branch rules evidence; unknown defaults to full qualification. */
-  readonly queueVerified?: boolean;
+  /**
+   * The pull-request fast path ci-plan always takes: path-scoped native and
+   * icount, no Linux packaging. Omitted defaults to full qualification.
+   */
+  readonly pullRequestFast?: boolean;
   /** Legacy queue option; Apple qualification is now owned by rune-macos.yml. */
   readonly mergeQueue?: boolean;
-  /** Request Linux qualification; only verified-queue PRs may default it off. */
+  /** Request Linux qualification; only fast-path PRs may default it off. */
   readonly runeQualify?: boolean;
   /**
    * Omitted and `full` fail closed (every pull-request lane). `none` is a
@@ -205,15 +227,15 @@ function qualificationRequired(
   options: PlanOptions,
   patterns: readonly string[],
 ): boolean {
-  return trigger === "push" || options.queueVerified !== true || touches(options.scope, patterns);
+  return trigger === "push" || options.pullRequestFast !== true || touches(options.scope, patterns);
 }
 
 function needed(c: Classification, trigger: Trigger, options: PlanOptions): Record<Lane, boolean> {
   const push = trigger === "push";
   const rust = c.needed.has("phux");
   const fullUnit = c.unitMode === "workspace" || c.unitMode === "rdeps";
-  // Only queue-verified pull requests may path-scope these. The aggregate
-  // rejects a skip on fallback PRs and main/queue, even for docs/metadata.
+  // Only fast-path pull requests may path-scope these. The aggregate
+  // rejects a skip on main and the queue, even for docs/metadata.
   const icount =
     options.perfBaseline === true || qualificationRequired(trigger, options, ICOUNT_PR_PATHS);
   const native = qualificationRequired(trigger, options, NATIVE_SETUP_PATHS);
@@ -252,10 +274,10 @@ export function plan(
   const covered = needed(c, "pull_request", {
     ...options,
     // Main's receipt contract stays path-scoped; its mandatory lanes run again.
-    queueVerified: push || options.queueVerified === true,
+    pullRequestFast: push || options.pullRequestFast === true,
   });
   const runeQualify =
-    (push || options.queueVerified !== true || options.runeQualify === true) && covered.rune;
+    (push || options.pullRequestFast !== true || options.runeQualify === true) && covered.rune;
   return {
     lanes: chosen(needed(c, trigger, options)),
     runeQualify,

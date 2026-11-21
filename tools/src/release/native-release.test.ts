@@ -114,7 +114,7 @@ test("metadata C qualifies Apple and preserves main's native/icount policy witho
   expect(change.kind).toBe("release-metadata");
   expect(classifyDetection(change).needed.size).toBe(0);
   const classification = classifyDetection(change);
-  const options = { queueVerified: true, scope: { kind: "none" as const } };
+  const options = { pullRequestFast: true, scope: { kind: "none" as const } };
   expect([...plan(classification, "pull_request", options).lanes]).toEqual(["guards"]);
   expect(planOutputs(plan(classification, "push", options), classification)).toMatchObject({
     native: true,

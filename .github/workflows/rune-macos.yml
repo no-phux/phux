@@ -2,8 +2,8 @@ name: rune-macos
 
 # Rune's macOS legs, off the pull-request and main-push `ci` gate.
 #
-# A standalone pull request reports a cheap check named `rune-macos`. When
-# queue enforcement is unverified, ci calls the required qualifying PR child.
+# A standalone pull request reports a cheap check named `rune-macos`. For a
+# release bot's PR, ci calls the required qualifying PR child.
 # On the queue, ci.yml calls this workflow and requires its
 # result in the existing `ci` aggregate. A main push, a nightly run, and a dispatch
 # run macos-arm64 and the iOS simulator through rune-build.yml. A direct push
@@ -21,7 +21,7 @@ on:
   workflow_call:
     inputs:
       qualify:
-        description: Required ci child; qualify this PR without relying on a merge queue.
+        description: Required ci child; qualify a merge group or a release bot's PR.
         type: boolean
         default: false
   schedule:

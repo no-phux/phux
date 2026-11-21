@@ -84,7 +84,7 @@ test("plan declares every output the planner writes, and jobs read only those", 
     "validated",
     "receipt",
     "receipt_name",
-    "queue_verified",
+    "release_qualify",
   ];
   const declared = Object.keys(table(job(CI, "plan")["outputs"]));
   const read = [...workflowText("ci.yml").matchAll(/needs\.plan\.outputs\.(\w+)/g)].map(
@@ -131,7 +131,7 @@ test("the ci aggregate needs every lane and accepts only success or a skip", () 
   expect(script).toBe("bash scripts/ci/ci-aggregate.sh");
   const baseline: Record<string, { result: string; outputs?: Record<string, string> }> =
     Object.fromEntries(lanes.map((id) => [id, { result: "skipped" }]));
-  baseline["plan"] = { result: "success", outputs: { queue_verified: "true" } };
+  baseline["plan"] = { result: "success", outputs: {} };
   for (const [id, result, code] of [
     ["lint", "skipped", 0],
     ["lint", "success", 0],

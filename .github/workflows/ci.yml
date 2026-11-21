@@ -52,7 +52,7 @@ jobs:
       native: ${{ steps.plan.outputs.native }}
       rune: ${{ steps.plan.outputs.rune }}
       rune_qualify: ${{ steps.plan.outputs.rune_qualify }}
-      queue_verified: ${{ steps.plan.outputs.queue_verified }}
+      release_qualify: ${{ steps.plan.outputs.release_qualify }}
       docs_only: ${{ steps.plan.outputs.docs_only }}
       docs_catalog: ${{ steps.plan.outputs.docs_catalog }}
       web_engine: ${{ steps.plan.outputs.web_engine }}
@@ -396,7 +396,7 @@ jobs:
       # `just native-smoke`, without installing just.
       - run: bash scripts/native-smoke.sh
 
-  # Only queue-verified PRs may skip packaging and the second Linux host.
+  # Fast-path PRs skip packaging and the second Linux host.
   rune:
     needs: plan
     if: needs.plan.outputs.rune == 'true'
@@ -406,13 +406,13 @@ jobs:
       ios: false
       qualify: ${{ needs.plan.outputs.rune_qualify == 'true' }}
 
-  # Required Apple proof: the queue, or Rune PRs on an unverified queue.
+  # Apple proof: the queue and release-bot PRs. Main pushes qualify the rest.
   queue-apple:
     name: queue-apple
     needs: plan
     if: >-
       github.event_name == 'merge_group' ||
-      (github.event_name == 'pull_request' && needs.plan.outputs.queue_verified != 'true' && needs.plan.outputs.rune == 'true')
+      (github.event_name == 'pull_request' && needs.plan.outputs.release_qualify == 'true' && needs.plan.outputs.rune == 'true')
     uses: ./.github/workflows/rune-macos.yml
     with:
       qualify: true
