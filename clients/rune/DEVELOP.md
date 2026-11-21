@@ -179,7 +179,7 @@ fixtures belong in `test_support`, not a benchmark or another feature.
 ## Design tokens
 
 The chrome draws only from `ui::tokens::Tokens`, built per appearance from
-phux-brand's tokens through `phux_design` ([design language](../../docs/design-language.md)).
+the design tokens through `phux_design` ([design language](../../docs/design-language.md)).
 `Tokens::for_window` gives the window's (the chosen theme derived, or the
 house look in the system appearance; the increased-contrast variant and
 forced colours when the system asks); `Tokens::for_phone` gives the phone's,

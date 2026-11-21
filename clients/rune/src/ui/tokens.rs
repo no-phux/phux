@@ -1,5 +1,5 @@
 //! The window's design tokens: one object per appearance, built from
-//! phux-brand's tokens (`phux_design`) and the chosen theme, and wrapping
+//! the design tokens (`phux_design`) and the chosen theme, and wrapping
 //! a `rune_kit::Kit` built from the same values.
 //!
 //! This is an owner path: the raw values and the Rune calls the lints keep
@@ -346,7 +346,7 @@ impl Tokens {
     /// does not already cover.
     fn fingerprint(&self) -> u64 {
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        phux_design::BRAND_VERSION.hash(&mut h);
+        phux_design::DESIGN_VERSION.hash(&mut h);
         self.roles.hash(&mut h);
         self.kit.c.hash(&mut h);
         self.kit.ty.hash(&mut h);

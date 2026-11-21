@@ -1,6 +1,6 @@
 [package]
 name = "phux-design"
-description = "The phux design language: phux-brand's tokens, the one theme-to-roles solver, the status mapping and the theme catalog."
+description = "The phux design language: its tokens, the one theme-to-roles solver, the status mapping and the theme catalog."
 publish = false
 version.workspace = true
 edition.workspace = true

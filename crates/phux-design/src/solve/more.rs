@@ -8,7 +8,7 @@ use crate::tokens::{AccentRoles, BorderRoles, Params, SelectionRoles, TextRoles,
 
 /// The increased-contrast variant of `base`.
 ///
-/// It is solved by the same primitives as phux-brand's `solveContrastMore`: text, dim, accent text and the tones
+/// It is solved by the same primitives as the generator's `solveContrastMore`: text, dim, accent text and the tones
 /// to `contrast_more.text_floor` over washes scaled by `wash_scale`, opaque
 /// `border.strong` and `border.control`. `ansi` is the theme's palette (the
 /// house terminal's for the house look).

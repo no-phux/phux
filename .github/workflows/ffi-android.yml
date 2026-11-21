@@ -174,6 +174,9 @@ jobs:
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # The design exports under design/ come from the tools package.
+      - uses: ./.github/actions/setup-bun
+
       - name: Build Android UniFFI artifact
         run: bash scripts/build-mobile-ffi-android.sh
 
@@ -183,7 +186,7 @@ jobs:
           set -euo pipefail
           stem="PhuxMobileFFI-${RELEASE_TAG:-$(git rev-parse --short HEAD)}.android"
           cd "$ARTIFACTS"
-          zip -qry "${stem}.zip" kotlin jniLibs provenance
+          zip -qry "${stem}.zip" kotlin jniLibs design provenance
           shasum -a 256 "${stem}.zip" > "${stem}.zip.sha256"
           cp provenance "${stem}.provenance"
           echo "stem=${stem}" >> "$GITHUB_OUTPUT"

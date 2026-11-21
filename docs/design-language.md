@@ -2,31 +2,41 @@
 
 One schema, one house look, and derived themes. Every phux client (the
 desktop and phone app on Rune, the TUI, phux-web, phux-mobile and the
-website) draws its chrome from the same tokens, published by the private
-`no-phux/phux-brand` library and pinned here like any other
-[brand asset](./brand-assets.md). This page states the contract. The values
-live in the tokens; no number is restated here.
+website) draws its chrome from the same tokens, authored in this repository.
+This page states the contract. The values live in the tokens; no number is
+restated here. Artwork (icons, logos, the fox) is a separate
+[brand asset](./brand-assets.md).
 
 ## Where the tokens are
 
-`brand.config.json` maps each token export to one destination, and
-`brand.lock.json` pins the release. A token change is a brand release, synced
-with `just brand-sync`; `just brand-check` refuses a hand edit.
+The sources are `crates/phux-design/tokens/src`: the house look
+(`house.json`), the solver constants (`derive.json`), the theme catalog
+(`themes.json`), the reader and forced-colours variants, the status ladder,
+the vocabulary, identity colours, the closed schema and `version.txt`.
+`just design-gen` (`bun tools/main.ts design-gen`, in `tools/src/design`)
+fits, solves and verifies them and writes every export; the `guards` lane
+runs it with `--check`, so a hand edit or a stale export fails CI.
 
-| Export | Destination | Read by |
-| --- | --- | --- |
-| `tokens/rust/phux_tokens.rs` | `crates/phux-design/src/generated/tokens.rs` | `phux_design::tokens` |
-| `tokens/themes.json` | `crates/phux-design/tokens/themes.json` | `phux_design::catalog()` |
-| `tokens/css/phux-tokens.css` | `clients/phux-web/assets/phux-tokens.css` | phux-web |
-| `tokens/ios/AccentColor.colorset/Contents.json` | `clients/rune/ios/Assets/AccentColor.colorset/Contents.json` | the Rune iOS shell |
+| Export | Read by |
+| --- | --- |
+| `crates/phux-design/src/generated/tokens.rs` | `phux_design::tokens` |
+| `crates/phux-design/tokens/themes.json` | `phux_design::catalog()` |
+| `crates/phux-design/tokens/derive-vectors.subset.json` | `tests/vectors.rs`, Rune's tests |
+| `clients/phux-web/assets/phux-tokens.css` | phux-web, the website (also a release asset) |
+| `clients/rune/ios/Assets/AccentColor.colorset/Contents.json` | the Rune iOS shell |
 
-The JSON destinations are marked `linguist-generated` in `.gitattributes`,
-and the code exports carry an `@generated` header.
+The mobile exports (Swift and Kotlin tokens and themes, Android resources,
+string catalogs and iOS colour sets) are not committed. `design-gen
+--mobile-out DIR` writes them, and both mobile FFI archives carry them under
+`design/` with a `manifest.json` of their sha256 and the phux commit. The
+JSON exports are marked `linguist-generated` in `.gitattributes`, and the
+code exports carry an `@generated` header.
 
 ## The house look and derived themes
 
-The house look is authored in phux-brand, whose CI holds it (and its
-increased-contrast and reader variants) to the floor checks in both modes.
+The generator holds the house look (and its increased-contrast and reader
+variants) to the floor checks in both modes, and refuses to write exports
+when one fails.
 With no theme picked, a client draws the house look in the system
 appearance, and the house terminal palette ships as the catalog theme `phux`
 (`phux-light`).
@@ -39,14 +49,15 @@ white or black only as far as it must to read on every surface it can land
 on, washes included. A derived theme that still falls short of a floor
 ships anyway, because the person chose it.
 
-The solver exists once per language and every port matches the brand's
-golden vectors exactly: colours as `#RRGGBBAA` strings, contrast within
-1e-12. Luminance goes through the shipped table, never `pow`, and
-arithmetic is IEEE-754 binary64 with no fused multiply-add. phux-brand's CI
-runs the full vector set and the floor checks.
-`crates/phux-design/tests/vectors.rs` spot-checks this port against a subset
-(`tokens/derive-vectors.subset.json`) pinned to the synced parameters, so a
-drift or a stale subset fails here too.
+The solver exists in the generator (TypeScript) and in `phux-design`
+(Rust), and both match the golden vectors exactly: colours as `#RRGGBBAA`
+strings, contrast within 1e-12. Luminance goes through the shipped table,
+never `pow`, and arithmetic is IEEE-754 binary64 with no fused multiply-add.
+The generator's tests run the full vector set and the floor checks.
+`crates/phux-design/tests/vectors.rs` checks the Rust port against the
+generated subset (`tokens/derive-vectors.subset.json`), so a drift fails
+here too. Mobile calls the Rust solver through `phux-client-ffi` rather than
+porting it.
 
 ## Roles
 
@@ -98,6 +109,8 @@ and touch targets.
 
 ## Changing the design
 
-Change the tokens in phux-brand, review its preview, release, then sync each
-consumer. Never edit a generated file here. A role a client needs and the
-schema lacks is a schema change in phux-brand, not a local colour.
+Edit `crates/phux-design/tokens/src` and run `just design-gen`; when a
+colour misses a floor, `bun tools/main.ts design-gen --suggest` prints the
+least move that clears it. Never edit a generated file. A role a client
+needs and the schema lacks is a schema change, not a local colour. Bump
+`version.txt` when the exports change.

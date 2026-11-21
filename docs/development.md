@@ -256,6 +256,9 @@ Things that fail CI and are easy to forget:
 
 - A CLI, config, or widget change without `just docs-gen`: the generated
   pages under `docs/reference/` are byte-compared by a unit test.
+- A design-token change without `just design-gen`: guards refuses exports
+  that differ from `crates/phux-design/tokens/src`
+  ([design language](./design-language.md)).
 - A wire change without regenerating `docs/spec/wire-schema.json`
   ([protocol](./protocol.md#changing-the-wire)).
 - A commit message that is not a conventional commit. `commitlint` checks

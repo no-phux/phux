@@ -119,6 +119,8 @@ test.each<[string[], Surface[]]>([
   [["tools/src/lib/git.ts"], ["web"]],
   [["tools/src/routing/routes.ts"], []],
   [["clients/rune/src/main.rs"], ["rune"]],
+  [["crates/phux-design/tokens/src/house.json"], ["phux", "web", "rune"]],
+  [["tools/src/design/tokens.ts"], []],
   [["clients/rune/scripts/notices.ts"], ["rune"]],
   [["clients/rune/packaging/AppIcon.png"], ["rune"]],
   [["brand.lock.json", "clients/rune/packaging/AppIcon.png"], ["rune"]],
@@ -266,6 +268,8 @@ test("content republishes on docs, installers and product skills only", () => {
     [["scripts/install-desktop.sh"], true],
     [[".agents/skills/using-phux/SKILL.md"], true],
     [["scripts/skills-package/package.json"], true],
+    [["clients/phux-web/assets/phux-tokens.css"], true],
+    [["crates/phux-design/tokens/src/vocabulary.json"], true],
     [["crates/phux/src/main.rs"], false],
     [["README.md"], false],
   ]);
@@ -319,6 +323,9 @@ test("the mobile FFI artifacts rebuild on their crate closure only", () => {
     [["crates/quictun/src/lib.rs"], true],
     [["scripts/build-mobile-ffi-android.sh"], true],
     [[".github/workflows/ffi-xcframework.yml"], true],
+    // The design tokens: the solver crate and the generator of design/.
+    [["crates/phux-design/tokens/src/house.json"], true],
+    [["tools/src/design/emit/swift.ts"], true],
     [["crates/phux-tui/src/lib.rs"], false],
     [["clients/rune/src/main.rs"], false],
     [["new-product/source.xyz"], false],

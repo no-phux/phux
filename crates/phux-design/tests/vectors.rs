@@ -1,6 +1,6 @@
-//! The parity contract, spot-checked: a few of phux-brand's golden vectors
-//! (`tokens/derive-vectors.subset.json`, cut from its
-//! `tokens/derive-vectors.json`; the brand's CI holds the full set).
+//! The parity contract, spot-checked: a few of the golden vectors
+//! (`tokens/derive-vectors.subset.json`, which `just design-gen` cuts from
+//! the full set its tests check).
 //! Colours match as exact `#RRGGBBAA` strings and contrast within 1e-12.
 
 #![allow(

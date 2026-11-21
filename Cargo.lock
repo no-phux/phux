@@ -3112,6 +3112,7 @@ dependencies = [
  "phux-client-core",
  "phux-client-runtime",
  "phux-config",
+ "phux-design",
  "phux-dial",
  "phux-protocol",
  "phux-server",
