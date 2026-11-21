@@ -34,7 +34,7 @@ impl Mood {
     }
 
     /// The status ladder state the mood draws as in chrome: its mark,
-    /// word and tone (§1.3).
+    /// word and tone.
     pub const fn state(self) -> phux_design::State {
         match self {
             Mood::Working => phux_design::State::Working,

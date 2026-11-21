@@ -119,13 +119,14 @@ nix develop .#browser -c bun tools/main.ts web-browser
 
 ## Design tokens
 
-The client's colours, type and spacing come from phux-brand. Nothing in
+The client's colours, type and spacing come from the design tokens
+(`crates/phux-design/tokens/src`). Nothing in
 `src/` or `index.html` spells its own. The canvas paints with `phux-design`
 roles. `src/ink.rs` solves them from the pane's palette, or uses the house
 look when the program set no palette. The backdrop is the ground, the pane
 borders are the strong and muted borders, and search hits use the match
-roles. The DOM reads the same roles from `assets/phux-tokens.css` (synced
-by `brand.config.json`). An embedder that loads no stylesheet falls back to
+roles. The DOM reads the same roles from `assets/phux-tokens.css` (generated
+by `just design-gen`). An embedder that loads no stylesheet falls back to
 the house dark values.
 
 Agent badges show a mark, the provider and the status word, all from

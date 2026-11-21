@@ -9,10 +9,10 @@
 
 use std::ffi::{CStr, CString, OsStr};
 use std::fs::File;
-use std::io;
+use std::io::{self, Read as _};
 use std::os::fd::{AsRawFd as _, FromRawFd as _, IntoRawFd as _, OwnedFd};
 use std::os::unix::ffi::OsStrExt as _;
-use std::os::unix::fs::OpenOptionsExt as _;
+use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Component, Path};
 
 use super::types::Result;
@@ -106,6 +106,66 @@ pub(super) fn open_file(root: &Path, rel: &str) -> std::result::Result<File, Wal
 /// Open the directory `rel` (empty for `root` itself) beneath `root`.
 pub(super) fn open_dir(root: &Path, rel: &str) -> std::result::Result<OwnedFd, Walk> {
     walk(root, rel, DIR_FLAGS)
+}
+
+/// An untracked entry's Git mode, up to `cap` bytes of it (a symlink's
+/// target, not what it points at), and whether bytes were left unread; a
+/// cut ends at the last whole line.
+pub(super) fn read_entry(
+    root: &Path,
+    rel: &str,
+    cap: usize,
+) -> std::result::Result<(&'static str, Vec<u8>, bool), Walk> {
+    let file = match open_file(root, rel) {
+        Err(Walk::Symlink) => return read_link(root, rel).map(|target| ("120000", target, false)),
+        opened => opened?,
+    };
+    let meta = file.metadata().map_err(Walk::Io)?;
+    if !meta.is_file() {
+        return Err(Walk::NotFound);
+    }
+    let mode = if meta.permissions().mode() & 0o100 == 0 {
+        "100644"
+    } else {
+        "100755"
+    };
+    let mut bytes = Vec::new();
+    file.take(u64::try_from(cap).unwrap_or(u64::MAX))
+        .read_to_end(&mut bytes)
+        .map_err(Walk::Io)?;
+    let cut = meta.len() > bytes.len() as u64;
+    if cut {
+        let end = bytes
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map_or(0, |i| i + 1);
+        bytes.truncate(end);
+    }
+    Ok((mode, bytes, cut))
+}
+
+/// The target of the symlink `rel`, read through its parent's descriptor.
+/// A component before it that is a symlink stops the walk.
+fn read_link(root: &Path, rel: &str) -> std::result::Result<Vec<u8>, Walk> {
+    let path = Path::new(rel);
+    let parent = path.parent().and_then(Path::to_str).unwrap_or("");
+    let name = path.file_name().ok_or(Walk::NotFound)?;
+    let name = CString::new(name.as_bytes()).map_err(|_| Walk::NotFound)?;
+    let dir = open_dir(root, parent)?;
+    let mut target = vec![0_u8; MAX_PATH_BYTES];
+    // SAFETY: `name` is NUL-terminated, `dir` is open, and `target` has the
+    // length passed.
+    let len = unsafe {
+        libc::readlinkat(
+            dir.as_raw_fd(),
+            name.as_ptr(),
+            target.as_mut_ptr().cast(),
+            target.len(),
+        )
+    };
+    let len = usize::try_from(len).map_err(|_| Walk::Io(io::Error::last_os_error()))?;
+    target.truncate(len);
+    Ok(target)
 }
 
 fn walk(root: &Path, rel: &str, last: libc::c_int) -> std::result::Result<OwnedFd, Walk> {

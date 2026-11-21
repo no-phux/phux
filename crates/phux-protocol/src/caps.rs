@@ -1,4 +1,4 @@
-//! Capability advertisements (SPEC §6.2).
+//! Capability advertisements.
 //!
 //! Capabilities live in HELLO and apply for the life of the connection. The
 //! server rewrites outbound SGR bytes to the advertised [`ColorSupport`]

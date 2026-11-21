@@ -1,14 +1,19 @@
 //! Satellite input leases, attach relay, and frame relay.
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the split command modules share the parent command namespace"
-)]
 
-use super::*;
+use phux_protocol::wire::frame::{
+    AgentEvent, Command, CommandResult, ControlAction, ErrorCode, FrameKind, InputMode,
+    ResourceLifecycle, RolePolicy,
+};
+use tracing::{debug, trace};
+
+use crate::runtime::commands::attach_terminal::invalid_agent_cursor;
+use crate::runtime::commands::routing::CommandContext;
+use crate::runtime::commands::satellite::relay_stream_establishing;
+use crate::state::{ClientId, Outbound, RelayRoute, SharedState};
 
 /// The hub-side lease coordinates one satellite-routed input command acts on.
 /// Hub consumers share one identity on the satellite, so exclusion between
-/// them is resolved here before anything touches the link (L1 §9.1).
+/// them is resolved here before anything touches the link.
 pub(super) struct SatelliteLeaseTarget<'a> {
     pub(in crate::runtime) state: &'a SharedState,
     pub(super) host: &'a phux_protocol::ids::SatelliteHost,
@@ -238,7 +243,7 @@ async fn seize_after_satellite_attach(
 }
 
 /// A hub consumer that narrows to `VIEWER` releases its satellite lease
-/// (L1 §8.1).
+///.
 async fn release_satellite_lease_for_viewer(
     target: &SatelliteLeaseTarget<'_>,
     relay: &crate::hub::relay::RelayHandle,
@@ -295,7 +300,7 @@ pub(super) async fn relay_satellite_release_input(
         && holder != target.client_id
     {
         // Idempotent no-op (ADR-0033), never forwarded: on the satellite
-        // this consumer is the holder's identity (L1 §9.1).
+        // this consumer is the holder's identity.
         return CommandResult::Ok;
     }
     let result = relay.command(command.clone()).await;
@@ -329,7 +334,7 @@ pub(super) async fn relay_satellite_route_input(
 }
 
 /// Tell the hub consumer a satellite SEIZE evicted that it lost the lease
-/// (L1 §9.1): the satellite sees one link identity and cannot. Best-effort.
+///: the satellite sees one link identity and cannot. Best-effort.
 fn notify_satellite_lease_seized(
     host: &phux_protocol::ids::SatelliteHost,
     id: u32,

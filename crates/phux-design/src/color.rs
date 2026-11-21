@@ -12,7 +12,7 @@ pub struct Rgb8 {
     pub b: u8,
 }
 
-/// Light or dark: which way legibility pushes (§2.3).
+/// Light or dark: which way legibility pushes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Mode {
     Dark,

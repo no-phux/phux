@@ -204,7 +204,9 @@ pub(super) async fn guard_command(
                     ),
                 }
             };
-            state.with(|s| crate::runtime::apps::command_refused(s, client_id, command, &result));
+            crate::runtime::apps::document::audit::record_refusal(
+                state, client_id, command, &result,
+            );
             let _ = out_tx
                 .send(Outbound::Frame(FrameKind::CommandResult {
                     request_id,
@@ -282,7 +284,7 @@ fn native_refusal(frame: &FrameKind) -> Option<FrameKind> {
                 message: DENIED.to_owned(),
             }),
         }),
-        // L3 §5: a permission refusal is a `PATH_RESULTS`, never an ERROR.
+        // A permission refusal is a `PATH_RESULTS`, never an ERROR.
         FrameKind::PathQuery {
             request_id, root, ..
         } => Some(FrameKind::PathResults {
@@ -322,7 +324,7 @@ mod tests {
     use super::*;
 
     /// A denied `PATH_QUERY` gets its own correlated refusal, so the picker
-    /// that sent it resolves instead of waiting on a reply (L3 §5).
+    /// that sent it resolves instead of waiting on a reply.
     #[test]
     fn denied_path_query_answers_with_permission_denied_path_results() {
         let frame = FrameKind::PathQuery {

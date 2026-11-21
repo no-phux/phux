@@ -183,7 +183,7 @@ fn a_stale_released_arriving_after_a_newer_acquires_reply_does_not_evict_it() {
     );
 }
 
-/// L1 §7.1 / ADR-0123: journal semantics on the link only when the
+/// ADR-0123: journal semantics on the link only when the
 /// satellite speaks them.
 #[test]
 fn the_link_subscribes_events_with_journal_semantics_when_the_satellite_speaks_them() {

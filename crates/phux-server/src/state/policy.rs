@@ -145,7 +145,7 @@ impl ServerState {
         std::sync::Arc::clone(&self.clients.revocation_wake)
     }
 
-    /// Withdraw a connection's authority and set its goodbye (§7 step 1); a
+    /// Withdraw a connection's authority and set its goodbye (revocation step 1); a
     /// connection still in its handshake gets a silent close.
     pub(crate) fn mark_connection_revoked(
         &mut self,

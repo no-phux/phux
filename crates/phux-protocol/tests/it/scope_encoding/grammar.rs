@@ -203,7 +203,7 @@ fn held_terminate_and_document_input_grammar() {
 
 /// Schema v2 adds `ORGANIZE = 0x40` and `TERMINATE = 0x80`; a v1 image still
 /// refuses those bits, and a v1 grant reads with `SIGNAL` implying
-/// `TERMINATE` and `CREATE` implying `ORGANIZE` (workload-auth §5, R07).
+/// `TERMINATE` and `CREATE` implying `ORGANIZE` (R07).
 #[test]
 fn schema_v2_verbs_and_the_v1_implication() {
     use phux_protocol::scope::{SCOPE_SCHEMA_VERSION, ScopeSchema};

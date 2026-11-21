@@ -1,4 +1,4 @@
-/// One image-transport protocol the client may advertise (SPEC §6.2).
+/// One image-transport protocol the client may advertise.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -16,7 +16,7 @@ u8_flag_set! {
     ImageProtocolSet of ImageProtocol { Sixel, KittyGraphics, Iterm2 }
 }
 
-/// One keyboard protocol the client may advertise (SPEC §6.2).
+/// One keyboard protocol the client may advertise.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -40,14 +40,14 @@ impl KeyboardProtocolSet {
     }
 }
 
-/// The client's advertised capability set (SPEC §6.2). Construct with
+/// The client's advertised capability set. Construct with
 /// [`Self::new`] and the `with_*` setters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct ClientCapabilities {
     /// The client's color tier.
     pub color_support: ColorSupport,
-    /// The conformance tiers the client speaks (SPEC §6.2 / §16).
+    /// The conformance tiers the client speaks.
     pub layers: LayerSet,
     /// Image protocols the client can render.
     pub image_protocols: ImageProtocolSet,
@@ -168,12 +168,12 @@ impl Default for ClientCapabilities {
     }
 }
 
-/// What the server implements, advertised in `HELLO_OK` (SPEC §6.1). New
+/// What the server implements, advertised in `HELLO_OK`. New
 /// server-owned capabilities append as trailing fields; the next is a second
 /// feature word (ADR-0137).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ServerCapabilities {
-    /// The conformance tiers the server mounts (SPEC §6.2 / §16).
+    /// The conformance tiers the server mounts.
     pub layers: LayerSet,
     /// Additive server-owned protocol features.
     pub features: ServerFeatureSet,

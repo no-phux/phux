@@ -209,11 +209,14 @@ fn management_toggles_cannot_discard_a_refused_handoff_or_unlock_channels() {
         Desk::with_preferences(&Resolved::offline("pending handoff"), None, Prefs::memory());
     desk.updater = updater();
     desk.updater.cli = Some(cli("1.0"));
-    assert!(!desk.updater.server_done(Ok(Handoff {
-        done: false,
-        retry: true,
-        detail: "busy server".into(),
-    })));
+    assert!(!desk.updater.server_done(
+        Ok(Handoff {
+            done: false,
+            retry: true,
+            detail: "busy server".into(),
+        }),
+        true
+    ));
     // The public toggle actions must not provide an off/on escape hatch.
     desk.toggle_update_phux();
     desk.toggle_update_phux();
@@ -282,11 +285,14 @@ fn server_only_and_its_retry() {
         updater.action(),
         Some(Action::UpdateServer { retry: false })
     );
-    assert!(!updater.server_done(Ok(Handoff {
-        done: false,
-        retry: true,
-        detail: "agents are mid-turn".to_owned(),
-    })));
+    assert!(!updater.server_done(
+        Ok(Handoff {
+            done: false,
+            retry: true,
+            detail: "agents are mid-turn".to_owned(),
+        }),
+        true
+    ));
     assert_eq!(updater.action(), Some(Action::UpdateServer { retry: true }));
     assert!(updater.message.as_deref().unwrap().contains("No session"));
 }
@@ -401,4 +407,54 @@ fn the_copied_mark_ends_on_its_own() {
     assert!(updater.copied);
     let done = updater.done.1.recv_timeout(Duration::from_secs(5));
     assert!(matches!(done, Ok(Done::CopiedShown)));
+}
+
+#[test]
+fn a_too_old_server_upgrades_in_place_or_installs_what_is_due() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let phux = dir.path().join("phux");
+    // No installed CLI or server: the stand-in records argv and answers the
+    // updater contract.
+    std::fs::write(
+        &phux,
+        "#!/bin/sh\nprintf '%s ' \"$@\" > \"$0.args\"\n\
+         echo '{\"schema_version\":2,\"server_handoff\":{\"result\":\"upgrading\"}}'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&phux, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let run = |manage_phux: bool, cli: Option<Cli>| {
+        let mut updater = updater();
+        updater.manage_phux = manage_phux;
+        updater.target = Some((phux.clone(), "/isolated/socket".into()));
+        updater.cli = cli;
+        updater.upgrade_server();
+        assert_eq!(updater.work, Work::Server);
+        assert!(updater.card_open());
+        let done = updater.done.1.recv_timeout(Duration::from_secs(10));
+        let Ok(Done::Server(Ok(handoff), false, installed)) = done else {
+            panic!("no handoff");
+        };
+        assert!(handoff.done);
+        let args = std::fs::read_to_string(dir.path().join("phux.args")).unwrap();
+        (installed, args)
+    };
+    // The installed phux may be newer than the server: an explicit click
+    // hot-swaps to it even with phux management off.
+    assert_eq!(
+        run(false, None),
+        (false, "--socket /isolated/socket upgrade ".into())
+    );
+    let (installed, args) = run(true, Some(cli("1.0")));
+    assert!(installed);
+    assert!(
+        args.starts_with("--socket /isolated/socket update --json"),
+        "{args}"
+    );
+    // A package-managed CLI is never reinstalled.
+    let managed = Cli {
+        mutable: false,
+        ..cli("1.0")
+    };
+    assert!(!run(true, Some(managed)).0);
 }

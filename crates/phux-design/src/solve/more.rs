@@ -1,4 +1,4 @@
-//! The increased-contrast variant (§1.11), solved from a role set.
+//! The increased-contrast variant, solved from a role set.
 
 use super::complete::complete;
 use super::{Core, Floors, byte, contrast, floor, on_fill, over, reach, reach_tone, tiers, washes};
@@ -8,7 +8,7 @@ use crate::tokens::{AccentRoles, BorderRoles, Params, SelectionRoles, TextRoles,
 
 /// The increased-contrast variant of `base`.
 ///
-/// It is solved by the same primitives as phux-brand's `solveContrastMore`: text, dim, accent text and the tones
+/// It is solved by the same primitives as the generator's `solveContrastMore`: text, dim, accent text and the tones
 /// to `contrast_more.text_floor` over washes scaled by `wash_scale`, opaque
 /// `border.strong` and `border.control`. `ansi` is the theme's palette (the
 /// house terminal's for the house look).
@@ -86,8 +86,11 @@ pub fn contrast_more(base: &Roles, ansi: &[Rgb8; 16], p: &Params) -> Roles {
             focus: up(base.border.focus, p.bars.focus, &f),
         },
         wash,
+        // The metal look's hi and lo are off under increased contrast.
         accent: AccentRoles {
             accent_text: up(base.accent.accent_text, fl.text_floor, &f),
+            hi: base.accent.accent,
+            lo: base.accent.accent,
             ..base.accent
         },
         tones,

@@ -1,6 +1,6 @@
 //! Client frames about an `AgentSession`. It owns none: its stream is
 //! raw-profile with no history beyond its bootstrap (ADR-0103 §4) and it takes
-//! no input (L1 §1.1). Each refusal keeps the connection.
+//! no input. Each refusal keeps the connection.
 
 use phux_protocol::wire::frame::{ErrorCode, FrameKind};
 

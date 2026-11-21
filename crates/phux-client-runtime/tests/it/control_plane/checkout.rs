@@ -16,7 +16,11 @@ fn checkout_correlates_typed_answers() {
         &decode(&plane.take_outbound()[0]),
         FrameKind::Command {
             request_id,
-            command: Command::Checkout { terminal_id, request: CheckoutRequest::Branches },
+            command: Command::Checkout {
+                terminal_id,
+                request: CheckoutRequest::Branches,
+                contract: phux_protocol::checkout::CHECKOUT_CONTRACT,
+            },
         } if *request_id == id && *terminal_id == target
     ));
     let answer = CheckoutAnswer::Status(CheckoutStatus {

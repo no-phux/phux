@@ -44,7 +44,7 @@ fn satellite_error_rolls_back_the_commands_subscription() {
 fn errored_upgrade_preserves_a_concurrently_retained_snapshot() {
     // B upgrades (re-gated), C attaches and B retains C's snapshot, then
     // B's upgrade errors: the rollback must not replace Retained with
-    // Open (L1 §9.1).
+    // Open.
     let mut session = RelaySession::new(host(), BootstrapLimits::default());
     let (tx_b, mut rx_b) = mpsc::channel(2);
     let (tx_c, mut rx_c) = mpsc::channel(8);

@@ -187,6 +187,33 @@ pub(in crate::attach) fn push_copy_mode(
     }
 }
 
+/// The scroll actions move the focused pane's history as the wheel does,
+/// without copy mode: a page is the pane's height less a row, as copy mode
+/// pages. The next key typed returns to the live screen.
+pub(in crate::attach) fn scroll(
+    ActionCall {
+        resolved,
+        ctx,
+        focused,
+        effects,
+        ..
+    }: ActionCall<'_, '_>,
+) {
+    /// Far enough to reach either end of any history (copy mode's `g`).
+    const FAR: isize = i32::MAX as isize;
+    let rows = focused_pane_rect(ctx, focused).h.saturating_sub(1).max(1);
+    let page = isize::try_from(rows).unwrap_or(1);
+    let half = (page / 2).max(1);
+    effects.scroll_viewport = Some(match resolved.action.as_str() {
+        "scroll-page-up" => -page,
+        "scroll-page-down" => page,
+        "scroll-half-page-up" => -half,
+        "scroll-half-page-down" => half,
+        "scroll-to-top" => -FAR,
+        _ => FAR,
+    });
+}
+
 /// ADR-0058: the keyboard route to the pane menu (the only one when the app
 /// owns the mouse), anchored inside the focused pane's corner.
 pub(in crate::attach) fn push_context_menu(ActionCall { ctx, focused, .. }: ActionCall<'_, '_>) {

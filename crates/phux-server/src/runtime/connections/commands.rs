@@ -21,7 +21,7 @@ fn spawn_input_receipt(
     slot: tokio::sync::OwnedSemaphorePermit,
     out_tx: mpsc::Sender<Outbound>,
     request_id: u32,
-    receipt: futures_util::future::LocalBoxFuture<'static, CommandResult>,
+    receipt: crate::runtime::apps::terminal::input_lane::InputReceipt,
 ) {
     receipts.spawn_local(async move {
         let _slot = slot;
@@ -66,7 +66,7 @@ impl From<ConnectionClose> for Undispatched {
 }
 
 /// Validate one framed message for dispatch, then run the frame guard
-/// (workload-auth §6) before any routing or handler. A message this build
+/// before any routing or handler. A message this build
 /// does not support, or the guard refuses, is answered here and yields
 /// `Ok(None)`: the connection keeps reading. A violation is the `Err` that
 /// ends it.
@@ -151,7 +151,7 @@ pub(in crate::runtime) enum Route {
 /// The route an admitted command takes. An approved held command asks the
 /// same question (ADR-0128), so it routes as it would have unheld.
 pub(in crate::runtime) fn route(command: &Command, input_lane: Option<&InputLane>) -> Route {
-    if input_lane.is_some_and(|lane| lane.rides(command)) {
+    if input_lane.is_some() && InputLane::rides(command) {
         return Route::InputLane;
     }
     // A copy or paste waits on the producer's clipboard, and a mirror
@@ -223,7 +223,7 @@ impl CommandDispatch<'_> {
 
     async fn run_inner(mut self, request_id: u32, command: Command) -> Option<WireResourceId> {
         let command_started = std::time::Instant::now();
-        // workload-auth §6: the command guard, above the input lane, the bulk
+        // The command guard, above the input lane, the bulk
         // worker, and every handler and satellite relay below.
         match crate::runtime::dispatch_guard::guard_command(
             self.state,

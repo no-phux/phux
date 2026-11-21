@@ -154,7 +154,7 @@ mod tests {
 
     #[test]
     fn absent_explicit_unknown_and_unsupported_states_stay_distinct() {
-        // All four normalize to Unknown (L3 §3.7); only the reading differs.
+        // All four normalize to Unknown; only the reading differs.
         let readings = [
             (None, StateReading::NoRecord),
             (Some(r#"{"name":"a"}"#), StateReading::Undeclared),

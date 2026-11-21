@@ -206,7 +206,7 @@ fn the_glance_groups_sessions_by_project() {
 }
 
 /// The project header counts what needs you in the vocabulary's plural
-/// (spec §1.3 rule 6): nothing for none, `1 needs you`, `2 need you`.
+/// (the status plural rule): nothing for none, `1 needs you`, `2 need you`.
 #[test]
 fn the_project_header_count_agrees_with_its_number() {
     use super::glance_rows::needs_you_count;

@@ -22,7 +22,7 @@ tlv_body! {
         /// `ClientCapabilities` blob (positional sub-record).
         pub const CLIENT_CAPS: u32 = 5;
         /// Frame compressions the client accepts (`u8` bitset); absent = none.
-        /// Top-level because the `CLIENT_CAPS` byte order is fixed (§6.2).
+        /// Top-level because the `CLIENT_CAPS` byte order is fixed.
         pub const COMPRESSION: u32 = 6;
         // Ids 7 and 8 are retired-unshipped (ADR-0116) and stay reserved.
         /// Positional `SshOrigin` stamped by `phux stdio-bridge`
@@ -188,6 +188,14 @@ tlv_body! {
     pub mod viewport_resize for ViewportResize => decode_viewport_resize {
         /// New `ViewportInfo` (positional sub-record).
         pub const VIEWPORT: u32 = 1 => required viewport: ViewportInfo;
+    }
+}
+
+tlv_body! {
+    /// `VIEWPORT_COLORS` body fields (`docs/protocol.md`).
+    pub mod viewport_colors for ViewportColors => decode_viewport_colors {
+        /// Foreground then background, three RGB bytes each.
+        pub const COLORS: u32 = 1 => required colors: crate::caps::TerminalDefaultColors;
     }
 }
 

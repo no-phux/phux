@@ -49,6 +49,8 @@ sha256sums_aarch64=('$aarch64')
 package() {
   cd "phux-v\${pkgver}-\${CARCH}-unknown-linux-gnu"
   install -Dm755 phux phux-mcp -t "\$pkgdir/usr/bin"
+  install -d "\$pkgdir/usr/share/man/man1"
+  "\$pkgdir/usr/bin/phux" man >"\$pkgdir/usr/share/man/man1/phux.1"
   install -Dm644 LICENSE NOTICE -t "\$pkgdir/usr/share/licenses/\$pkgname"
   install -Dm644 README.md THIRD-PARTY-NOTICES.md -t "\$pkgdir/usr/share/doc/\$pkgname"
 }

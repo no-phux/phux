@@ -309,6 +309,7 @@ impl Desk {
                 self.activities.seen(&id);
             }
             self.hurry_link();
+            self.recheck_pairing();
         }
         self.generation += 1;
     }

@@ -179,7 +179,7 @@ fn mirrors_need_an_observe_grant_of_the_target_class() {
 }
 
 /// The `MIRROR` rows: only a control grant (`mirrors_need_...` above)
-/// reaches them, so the §6 table sees them refused. And the `FORWARD_*`
+/// reaches them, so the table sees them refused. And the `FORWARD_*`
 /// row: `INPUT` on Global, so a grant scoped to the host, a session, or a
 /// Terminal is refused.
 fn mirror_rows() -> Vec<Row> {

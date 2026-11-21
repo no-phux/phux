@@ -1,4 +1,4 @@
-//! The visual bell's flash safety (design spec §1.11 "Flash").
+//! The visual bell's flash safety.
 //!
 //! A BEL washes the canvas in `status.bell` for `motion.curve.fade`, at most
 //! once per second however fast a program rings, well under WCAG 2.3.1's

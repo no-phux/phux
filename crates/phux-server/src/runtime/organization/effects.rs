@@ -60,18 +60,20 @@ fn launch(
     }) else {
         return;
     };
-    let result = if spec.kind() == kind {
-        crate::runtime::apps::launch(
-            kind,
-            crate::runtime::apps::ResourceLaunch {
-                state,
-                resource: id,
-                spec,
-                root_token,
-            },
-        )
-    } else {
-        Err("committed resource kind and launch spec disagree".to_owned())
+    let result = match (
+        spec.kind() == kind,
+        crate::runtime::apps::organization_launcher(kind),
+    ) {
+        (true, Some(launch)) => launch(crate::runtime::apps::ResourceLaunch {
+            state,
+            resource: id,
+            spec,
+            root_token,
+        }),
+        (true, None) => Err(format!(
+            "this {kind} projection must be opened by its producer"
+        )),
+        (false, _) => Err("committed resource kind and launch spec disagree".to_owned()),
     };
     if let Err(error) = result {
         fail_launch(state, resource, activation);

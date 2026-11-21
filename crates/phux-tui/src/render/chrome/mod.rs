@@ -18,7 +18,7 @@ use phux_client::agent_meta::AgentMetaState;
 
 /// How one agent's state is drawn anywhere: shape carries the state and
 /// colour reinforces it, so a colour-blind reader (or `NO_COLOR`) can
-/// still tell them apart (spec §1.3).
+/// still tell them apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AgentBadge {
     /// The single-cell glyph (the ladder's Unicode or ASCII column).
@@ -87,7 +87,7 @@ pub fn mark(theme: &Theme, state: State) -> &'static str {
     column(theme.term.glyphs, state)
 }
 
-fn column(glyphs: Glyphs, state: State) -> &'static str {
+pub(crate) fn column(glyphs: Glyphs, state: State) -> &'static str {
     let row = state.mark();
     match glyphs {
         Glyphs::Unicode => row.glyph,

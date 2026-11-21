@@ -15,7 +15,7 @@ use crate::wire::decode::Decoder;
 use crate::wire::encode::Encoder;
 use crate::wire::error::DecodeError;
 
-// `SpawnResult` (SPEC §7.2 / §10.1): `Ok` + `ResourceId`, or `Err` + a
+// `SpawnResult`: `Ok` + `ResourceId`, or `Err` + a
 // `SpawnError` tag, with a message for `SpawnFailed` / `SatelliteUnreachable`.
 //
 // The result is the field value's whole tail, so one this build cannot read

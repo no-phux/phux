@@ -23,9 +23,7 @@ use phux_client_core::history::HistoryCacheConfig;
 use phux_client_core::input_replay::{
     INPUT_RETRY_HORIZON, InputReplayJournal, ReplayDisposition, ReplayReport,
 };
-use phux_client_core::session::{
-    HistoryRejectionReason, HistoryUnavailableReason, KernelEffect, KernelSend, KernelStatus,
-};
+use phux_client_core::session::{KernelEffect, KernelSend, KernelStatus};
 use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities};
 use phux_protocol::ids::{ClientId, GroupId, InputOperationId, ResourceId, ResourceKind};
 use phux_protocol::input::InputEvent;
@@ -35,8 +33,7 @@ use phux_protocol::input::mouse::MouseEvent;
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
     AgentEvent, AttachTarget, Command, CommandResult, CommandValue, DetachReason, ErrorCode,
-    FrameKind, HistoryRejectionReason as WireRejection, HistoryTombstoneReason as WireTombstone,
-    MAX_APPLY_INPUT_COMMAND_BODY, RolePolicy, SpawnResult, StateScope, ViewportInfo,
+    FrameKind, MAX_APPLY_INPUT_COMMAND_BODY, RolePolicy, SpawnResult, StateScope, ViewportInfo,
 };
 use phux_protocol::wire::info::SessionSnapshot;
 

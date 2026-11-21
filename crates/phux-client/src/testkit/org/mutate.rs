@@ -68,7 +68,7 @@ impl OrgFixture {
                         ),
                     });
                 }
-                // Every session has an arrangement (SPEC L2 §2.2): the seed
+                // Every session has an arrangement: the seed
                 // member's one group, or none.
                 self.arrangement(session, ArrangementDoc { groups });
                 Ok((ok(committed), None))

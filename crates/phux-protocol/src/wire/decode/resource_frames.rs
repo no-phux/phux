@@ -136,7 +136,7 @@ impl Decoder<'_> {
             terminal_id: req(terminal_id)?,
             cols,
             rows,
-            // Both axes or neither (L1 §3.1): a half pair is no cell size.
+            // Both axes or neither: a half pair is no cell size.
             cell_px: cell_w.zip(cell_h),
         })
     }

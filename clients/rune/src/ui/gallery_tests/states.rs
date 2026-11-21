@@ -1,4 +1,4 @@
-//! The forced-state page (§5.2): every primitive in each state, kit and
+//! The forced-state page: every primitive in each state, kit and
 //! phux's own, and the status ladder's marks and words.
 
 use rune::{Cx, El, Env, Runtime, col, el, row, text};

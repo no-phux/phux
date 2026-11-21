@@ -47,10 +47,8 @@ pub(super) fn mutate(
             "arrangement save attempt"
         );
     }
-    // R17: a replaced session arrangement is published under the TUI layout
-    // key for older readers. A placed create publishes after its launch so
-    // the receipt observes the activation the effect recorded.
-    let republish = layout_publication_owner(&op);
+    // A placed create answers after its launch so the receipt observes the
+    // activation the effect recorded.
     let committed = state.with_mut(|s| {
         let actor = s.actor_for(client_id);
         let command = phux_core::Command { operation, op };
@@ -86,38 +84,7 @@ pub(super) fn mutate(
     for effect in std::mem::take(&mut applied.effects) {
         run_effect(state, effect, root_token);
     }
-    state.with_mut(|s| {
-        publish_committed_layout(s, republish, applied.replayed);
-        answer(s, &applied)
-    })
-}
-
-const fn layout_publication_owner(op: &Op) -> Option<phux_core::SessionKey> {
-    match op {
-        Op::ArrangementReplace {
-            owner: phux_core::ArrangementOwner::Session(key),
-            ..
-        } => Some(*key),
-        Op::ResourceCreate {
-            session,
-            placement: Some(_),
-            ..
-        } => *session,
-        _ => None,
-    }
-}
-
-fn publish_committed_layout(
-    s: &mut ServerState,
-    owner: Option<phux_core::SessionKey>,
-    replayed: bool,
-) {
-    if replayed {
-        return;
-    }
-    if let Some(session) = owner.and_then(|key| s.registry().session_id(&key)) {
-        s.publish_arrangement_as_layout(session);
-    }
+    state.with_mut(|s| answer(s, &applied))
 }
 
 /// App support is checked only for a new operation. Receipts remain the
@@ -165,9 +132,11 @@ fn projection_relaunch_refusal(
 }
 
 fn unsupported_launch(kind: phux_core::ResourceKind, capability: &str) -> Option<Refusal> {
-    (!crate::runtime::apps::supports_organization_launch(kind)).then(|| Refusal::Unsupported {
-        capability: capability.to_owned(),
-    })
+    crate::runtime::apps::organization_launcher(kind)
+        .is_none()
+        .then(|| Refusal::Unsupported {
+            capability: capability.to_owned(),
+        })
 }
 
 fn note_arrangement_result(

@@ -1,6 +1,6 @@
 //! A paired grant whose `OBSERVE` and `INVENTORY` sets differ, against a real
 //! server: `ATTACHED` and `GET_STATE` are different views of one live graph
-//! (workload-auth §6), and neither closes what the other lists.
+//!, and neither closes what the other lists.
 
 use super::*;
 use std::sync::Mutex;

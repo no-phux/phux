@@ -13,7 +13,6 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Keys a live pane of the production server exports, kept as the named
 /// floor of [`ambient_phux_keys`]: a child spawned from `CARGO_BIN_EXE_phux`
@@ -114,16 +113,20 @@ pub struct XdgDirs {
 }
 
 impl XdgDirs {
-    /// A fresh, empty pair under the target temp directory, named by `tag`,
-    /// the process id, a counter, and the clock.
+    /// A fresh, empty pair under the target temp directory, named by `tag`.
+    ///
+    /// `tempfile` picks a random root and creates it exclusively, so the
+    /// copies of this module compiled into one test binary (each with its own
+    /// statics) never share or delete each other's root. The root is kept:
+    /// a test's server may outlive the fixture value.
     pub fn fresh(tag: &str) -> Self {
-        static COUNTER: AtomicU32 = AtomicU32::new(0);
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos());
-        let root = xdg_root().join(format!("{tag}-{}-{n}-{nanos}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let parent = xdg_root();
+        std::fs::create_dir_all(&parent).expect("create XDG fixture parent");
+        let root = tempfile::Builder::new()
+            .prefix(&format!("{tag}-"))
+            .tempdir_in(&parent)
+            .expect("create isolated XDG root")
+            .keep();
         let dirs = Self {
             state: root.join("state"),
             config: root.join("config"),

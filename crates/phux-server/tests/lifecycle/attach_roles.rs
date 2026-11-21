@@ -3,7 +3,7 @@
 //! is a fresh journaled `PRIMARY` attach, `{ PRIMARY, DELIBERATE }` seizes
 //! in one step with one `SEIZED`, and no role byte behaves as before roles.
 //! `events` subscriptions are journal-aware so `ROLE_CHANGED` crosses them
-//! (L1 §7.1); a `legacy` one never sent a cursor and is never offered it.
+//!; a `legacy` one never sent a cursor and is never offered it.
 
 use std::time::Duration;
 

@@ -196,20 +196,35 @@ impl Fields {
         }
     }
 
+    /// A request's lifetime: one this build does not define is refused.
     pub(super) fn lifetime(&self) -> Result<Option<SessionLifetime>, DecodeError> {
-        enum_byte("SessionLifetime", self.lifetime, SessionLifetime::from_u8)
+        enum_byte("SessionLifetime", self.lifetime, SessionLifetime::known)
     }
 
+    /// A request's exit policy: one this build does not define is refused.
     pub(super) fn on_exit(&self) -> Result<Option<ExitPolicy>, DecodeError> {
-        enum_byte("ExitPolicy", self.on_exit, ExitPolicy::from_u8)
+        enum_byte("ExitPolicy", self.on_exit, ExitPolicy::known)
+    }
+
+    /// A lifetime a server reports: one this build does not define reads as
+    /// `Unknown` in that record, not a failed reply.
+    pub(super) fn reported_lifetime(&self) -> Option<SessionLifetime> {
+        self.lifetime.map(SessionLifetime::from_u8)
+    }
+
+    /// An exit policy a server reports, as [`Self::reported_lifetime`].
+    pub(super) fn reported_on_exit(&self) -> Option<ExitPolicy> {
+        self.on_exit.map(ExitPolicy::from_u8)
     }
 
     pub(super) fn launch_mode(&self) -> Result<Option<LaunchMode>, DecodeError> {
         enum_byte("LaunchMode", self.launch_mode, LaunchMode::from_u8)
     }
 
-    pub(super) fn state(&self) -> Result<Option<ExecState>, DecodeError> {
-        enum_byte("ExecState", self.state, ExecState::from_u8)
+    /// An execution state, only ever server-reported: one this build does
+    /// not define reads as `Unknown`.
+    pub(super) fn state(&self) -> Option<ExecState> {
+        self.state.map(ExecState::from_u8)
     }
 }
 

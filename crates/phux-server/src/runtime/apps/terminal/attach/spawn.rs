@@ -33,7 +33,7 @@ fn satellite_spawn_owner(
     }
 }
 
-/// Serve a Terminal `SPAWN_RESOURCE` (SPEC §10.1): spawn a PTY-backed
+/// Serve a Terminal `SPAWN_RESOURCE`: spawn a PTY-backed
 /// Terminal into the spawning client's current session (or the most recently
 /// active one for a detached spawner), auto-subscribe the spawner, and
 /// publish its first generation. Refusals ride the typed `RESOURCE_SPAWNED`

@@ -24,6 +24,46 @@ use crate::predict::PredictionState;
 #[cfg(test)]
 pub(super) const FALLBACK_CELL_PX: (u32, u32) = (8, 16);
 
+/// An isolated, Kitty-ready terminal for renderer tests that need one
+/// outside the session kernel.
+#[cfg(test)]
+pub(super) fn fixture_terminal(
+    cols: u16,
+    rows: u16,
+) -> Result<GhosttyTerminal<'static, 'static>, AttachError> {
+    let mut terminal = GhosttyTerminal::new(cols.max(1), rows.max(1))?;
+    terminal.set_scrollback_max_lines(Some(10_000))?;
+    phux_vt::kitty_replay::configure_terminal_for_kitty_graphics(&mut terminal)?;
+    terminal.resize(
+        cols.max(1),
+        rows.max(1),
+        FALLBACK_CELL_PX.0,
+        FALLBACK_CELL_PX.1,
+    )?;
+    Ok(terminal)
+}
+
+/// Replay `bytes` into a fresh fixture terminal and project its cells.
+#[cfg(test)]
+pub(super) fn probe_frame(
+    bytes: &[u8],
+    (cols, rows): (u16, u16),
+) -> phux_core::screen::RenderedFrame {
+    let mut terminal = fixture_terminal(cols, rows).expect("probe terminal");
+    terminal.vt_write(bytes);
+    let mut frame = phux_core::screen::RenderedFrame::blank(cols, rows);
+    TerminalRenderer::new()
+        .expect("probe renderer")
+        .render_at_cells(
+            ReplicaWalk::for_test(&terminal),
+            &mut frame,
+            (0, 0),
+            (cols, rows),
+        )
+        .expect("project probe cells");
+    frame
+}
+
 pub(super) type AttachKernel = SessionKernel<GhosttyAdapter>;
 
 pub(super) fn published_terminal<'a>(
@@ -69,15 +109,12 @@ impl AttentionNavigation {
 }
 
 /// One pane's render and frontend-local metadata. The terminal lives in the
-/// session kernel; the test-only `terminal` serves isolated renderer tests.
+/// session kernel.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent per-pane flags (scroll, attention, sync-output, seen); a bitset would obscure every read site"
 )]
 pub(super) struct PaneSlot {
-    #[cfg(test)]
-    /// Isolated terminal fixture; production uses the session kernel replica.
-    pub terminal: GhosttyTerminal<'static, 'static>,
     /// Per-pane render scaffolding (warm iterators, predictive-echo anchor).
     pub renderer: TerminalRenderer<'static>,
     /// Server-authored canonical grid dimensions for prediction and layout metadata.
@@ -116,6 +153,8 @@ pub(super) struct PaneSlot {
     /// The foreground program (`phux.pane-occupant/v1`), which names an
     /// auto-numbered window after what runs in it.
     pub foreground: Option<String>,
+    /// The icon a program in the pane set (`phux.pane-occupant/v1`'s `icon`).
+    pub program_icon: Option<String>,
     /// The attention ladder's "looked at" bit: set while focused, cleared when
     /// an unfocused pane's agent record changes, so "finished, unread" ranks
     /// above "working" until visited.
@@ -156,27 +195,7 @@ impl std::fmt::Debug for PaneSlot {
 impl PaneSlot {
     /// Allocate fresh frontend metadata and renderer scaffolding.
     pub(super) fn new_with_size(cols: u16, rows: u16) -> Result<Self, AttachError> {
-        #[cfg(not(test))]
-        let _ = (cols, rows);
-        #[cfg(test)]
-        let terminal = {
-            let mut terminal = {
-                let mut terminal = GhosttyTerminal::new(cols.max(1), rows.max(1))?;
-                terminal.set_scrollback_max_lines(Some(10_000))?;
-                terminal
-            };
-            phux_vt::kitty_replay::configure_terminal_for_kitty_graphics(&mut terminal)?;
-            terminal.resize(
-                cols.max(1),
-                rows.max(1),
-                FALLBACK_CELL_PX.0,
-                FALLBACK_CELL_PX.1,
-            )?;
-            terminal
-        };
         Ok(Self {
-            #[cfg(test)]
-            terminal,
             renderer: TerminalRenderer::new()?,
             geometry: (cols.max(1), rows.max(1)),
             lifecycle: ResourceLifecycle::Running,
@@ -192,6 +211,7 @@ impl PaneSlot {
             last_title: String::new(),
             slot_tab: None,
             foreground: None,
+            program_icon: None,
             seen: false,
             satellite_down: false,
             history_degraded: false,
@@ -317,17 +337,37 @@ pub(in crate::attach) fn cwd_basename(cwd: &str) -> Option<String> {
 /// What a window is called wherever the chrome names it (the tab bar, the
 /// tab picker): a user-given name as is; an auto-numbered one prefers
 /// context, from the focused pane's agent, then the label every client
-/// gives the pane (what runs in it and where, else its title or cwd).
+/// gives the pane (what runs in it and where, else its title or cwd). The
+/// focused pane's icon (`phux_config::pane_icon`) goes in front.
 pub(in crate::attach) fn display_window_name(
     name: &str,
     focus: Option<&ResourceId>,
     panes: &HashMap<ResourceId, PaneSlot>,
     agent_meta: &HashMap<ResourceId, phux_client::agent_meta::AgentRecord>,
 ) -> String {
+    let slot = focus.and_then(|fid| panes.get(fid));
+    let label = window_label(name, focus, slot, agent_meta);
+    match slot {
+        Some(slot) => phux_config::pane_icon::with_icon(
+            label,
+            slot.program_icon.as_deref(),
+            slot.foreground.as_deref(),
+            slot.cwd.as_deref(),
+        ),
+        None => label,
+    }
+}
+
+/// [`display_window_name`] before the focused pane's icon.
+fn window_label(
+    name: &str,
+    focus: Option<&ResourceId>,
+    slot: Option<&PaneSlot>,
+    agent_meta: &HashMap<ResourceId, phux_client::agent_meta::AgentRecord>,
+) -> String {
     if !auto_named(name) {
         return name.to_owned();
     }
-    let slot = focus.and_then(|fid| panes.get(fid));
     focus
         .and_then(|fid| agent_meta.get(fid))
         .map(|record| record.name.clone())

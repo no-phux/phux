@@ -185,7 +185,7 @@ async fn detector_writes_respect_human_records() {
     }
 }
 
-/// A declared state outranks derivations (L3 §3.7), but a confirmed
+/// A declared state outranks derivations, but a confirmed
 /// departure withdraws it to `unknown`, never deletes it; afterwards the
 /// detector's writes land again (phux-w7z2.13: a `kill -9` must not pin
 /// the pane at `working`).
@@ -217,7 +217,7 @@ async fn a_retract_withdraws_a_declared_state_but_never_deletes_it() {
 }
 
 /// phux-w7z2.45: a shim pane declared `kind: claude` now running codex
-/// keeps the declared kind (L3 §3.7) and withholds codex's state, and
+/// keeps the declared kind and withholds codex's state, and
 /// every later contradicted tick writes nothing.
 #[tokio::test(flavor = "current_thread")]
 async fn a_shim_pane_never_takes_a_state_from_an_occupant_its_kind_denies() {
@@ -350,6 +350,49 @@ async fn an_ask_sentinel_lands_in_the_ledger_the_hook_shares() {
         );
         drain(&state, &terminal, vec![AgentDetectEvent::AskSentinel(None)]).await;
         assert!(state.with(|s| s.current_agent_asked(pane).is_none()));
+    })
+    .await;
+}
+
+/// The program-set icon rides the occupant record: it waits for the
+/// detector's first reading, survives a foreground change, and goes when
+/// cleared.
+#[tokio::test(flavor = "current_thread")]
+async fn the_icon_rides_the_occupant_record() {
+    use phux_protocol::wire::frame::RESOURCE_PANE_OCCUPANT_KEY;
+    use phux_terminal_api::agent_detect::PaneOccupant;
+    local(async {
+        let (state, terminal) = pane(None);
+        let occupant = |fg: &str| {
+            AgentDetectEvent::Occupant(PaneOccupant {
+                foreground: fg.to_owned(),
+                is_pane_shell: false,
+                background: false,
+                icon: None,
+            })
+        };
+        let record = || {
+            let scope = Scope::Resource(terminal.clone());
+            state
+                .with(|s| s.metadata().get(&scope, RESOURCE_PANE_OCCUPANT_KEY))
+                .map(|bytes| String::from_utf8(bytes).expect("utf-8"))
+        };
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        spawn_agent_state_drain(state.clone(), terminal.clone(), rx);
+        let send = async |event| {
+            tx.send(event).await.expect("drain is alive");
+            for _ in 0..16 {
+                tokio::task::yield_now().await;
+            }
+        };
+        send(AgentDetectEvent::Icon(Some("🦀".to_owned()))).await;
+        assert_eq!(record(), None);
+        send(occupant("cargo")).await;
+        assert!(record().is_some_and(|r| r.contains(r#""icon":"🦀""#)));
+        send(occupant("rustc")).await;
+        assert!(record().is_some_and(|r| r.contains("rustc") && r.contains("🦀")));
+        send(AgentDetectEvent::Icon(None)).await;
+        assert!(record().is_some_and(|r| !r.contains("icon")));
     })
     .await;
 }

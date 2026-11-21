@@ -40,7 +40,7 @@ fn snapshot_without_resource_facets_is_byte_stable_and_decodes_defaults() {
     assert_eq!(decoded, frame);
 }
 
-/// PHA-406 L10 review (L1 §7.3, §9.1): the journal head at the cut rides the
+/// PHA-406 L10 review: the journal head at the cut rides the
 /// extension block as field 2, alone or beside `RESOURCE_STATE` entries, and
 /// a snapshot without it keeps its earlier bytes.
 #[test]

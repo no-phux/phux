@@ -241,7 +241,7 @@ fn append_buttons(
         button.set_attribute("data-approval-id", id)?;
         button.set_attribute("data-decision", decision)?;
         // Deny is destructive (the danger variant); Approve is the view's one
-        // primary action (§1.10). index.html styles both.
+        // primary action. index.html styles both.
         button.set_attribute(
             "data-variant",
             if decision == "deny" {

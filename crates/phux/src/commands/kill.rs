@@ -20,7 +20,7 @@ const REMOTE_SHUTDOWN_REFUSAL: &str = "`kill --server` is local-socket only: the
      `phux kill --remote HOST NAME`";
 
 /// `phux kill` as parsed: a selector or `--server`. `key` is
-/// `--idempotency-key` (L1 §5.1.1). A selector kill is dangerous (ADR-0128) and
+/// `--idempotency-key`. A selector kill is dangerous (ADR-0128) and
 /// needs `yes` or a typed "y"; `--server` never asks.
 pub(crate) fn run_request(
     target: Option<String>,

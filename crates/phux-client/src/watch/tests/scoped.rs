@@ -113,7 +113,7 @@ async fn agent_records_stream_as_agent_state_items_carrying_the_previous_record(
 }
 
 /// A tombstone and an unreadable value both stream as a cleared record
-/// (L3 §3.7), other keys are ignored, and events interleave in push order.
+///, other keys are ignored, and events interleave in push order.
 #[tokio::test]
 async fn clears_other_keys_and_ordering_on_one_stream() {
     let pane = ResourceId::local(3);

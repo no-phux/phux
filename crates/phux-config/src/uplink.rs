@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 /// A hub this server dials out to and serves as a satellite, written by
 /// `phux host join`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UplinkConfigEntry {
     /// The satellite name the hub enrolled this server as: its

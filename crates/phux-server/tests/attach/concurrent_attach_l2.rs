@@ -1,6 +1,6 @@
 //! Two clients attaching concurrently to one session get distinct client ids,
 //! the same pane, byte-identical bootstraps, and both see a keystroke from
-//! either (per-pane broadcast fanout, SPEC §12 / ADR-0006).
+//! either (per-pane broadcast fanout, ADR-0006).
 
 use phux_protocol::ids::ResourceId;
 use phux_protocol::input::key::PhysicalKey;

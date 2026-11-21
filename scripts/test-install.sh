@@ -144,9 +144,21 @@ if installer --help | grep -Fq '\'; then fail "--help prints an escape"; fi
 
 package() { # ID: pack a release whose binaries say ID, and serve it
   mkdir -p "$TMP/build-$1"
+  # `status` prints PHUX_STATUS (no server without it); `upgrade` exits
+  # PHUX_UPGRADE_EXIT; everything else PHUX_EXIT.
   for binary in phux phux-mcp; do
-    printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "${PHUX_CALLS:-/dev/null}"; exit "${PHUX_EXIT:-0}"\n%s %s\n' \
-      "$binary" "$1" > "$TMP/build-$1/$binary"
+    {
+      cat <<'EOF'
+#!/bin/sh
+printf "%s\n" "$*" >> "${PHUX_CALLS:-/dev/null}"
+case "$1" in
+  status) [ -n "${PHUX_STATUS:-}" ] || exit 1; printf "%s\n" "$PHUX_STATUS"; exit 0 ;;
+  upgrade) exit "${PHUX_UPGRADE_EXIT:-0}" ;;
+esac
+exit "${PHUX_EXIT:-0}"
+EOF
+      printf '%s %s\n' "$binary" "$1"
+    } > "$TMP/build-$1/$binary"
   done
   chmod 755 "$TMP/build-$1/"*
   bash "$ROOT/scripts/pack-release.sh" --id "$1" --target "$TARGET" --bin-dir "$TMP/build-$1" --out-dir "$SERVED" >/dev/null 2>&1

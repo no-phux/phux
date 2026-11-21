@@ -104,7 +104,7 @@ fn quiet_control(key: &str, label: &str, words: &str, p: &Look) -> El {
 }
 
 /// The spring the camera and the pane boxes move on: a page move on the
-/// phone (§1.8).
+/// phone.
 fn page_spring(p: &Look) -> rune::Spring {
     p.motion.page.enter
 }

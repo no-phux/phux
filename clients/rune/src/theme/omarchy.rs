@@ -80,7 +80,7 @@ fn read_in(dir: &Path) -> Option<Theme> {
         id: "omarchy",
         name: "Omarchy",
         accent: named("accent").unwrap_or(theme.accent),
-        // The theme's own selection, which the solver keeps (§2.1).
+        // The theme's own selection, which the solver keeps.
         selection: named("selection_background"),
         ..theme
     })

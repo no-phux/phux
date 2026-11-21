@@ -21,6 +21,10 @@ serde.workspace = true
 toml.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+# Editor schemas for config.toml (`docs/spec/config.schema.json`), derived
+# from these types. phux-protocol already builds it at this spec, so every
+# client graph has it.
+schemars = "1.2.3"
 # `instance` reads the uid and the host name, and `guard` the account home
 # from the password database, through `nix`'s safe wrappers,
 # keeping this crate's `forbid(unsafe_code)`.

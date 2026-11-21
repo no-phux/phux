@@ -23,7 +23,7 @@ pub const MAX_STREAM_BIND_BYTES: usize = 4 * 1024;
 /// A decoded `STREAM_BIND` header.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamBind {
-    /// The Terminal whose §4 frames ride this QUIC stream.
+    /// The Terminal whose frames ride this QUIC stream.
     pub terminal_id: ResourceId,
     /// The app-level `StreamId` (never the QUIC stream id).
     pub stream_id: StreamId,

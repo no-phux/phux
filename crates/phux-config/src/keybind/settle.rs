@@ -56,7 +56,78 @@ pub fn settle_bindings(
             }
         }
     }
+    if keybindings.get("defaults").and_then(toml::Value::as_bool) == Some(false) {
+        drop_shipped(keybindings, provenance);
+    }
     unbound_prefix_keys
+}
+
+/// The layer the embedded defaults merge at.
+const SHIPPED_LAYER: usize = 0;
+
+/// The escape hatch `defaults = false` keeps until your layers bind it.
+const ESCAPE_HATCH: &str = "command-palette";
+
+/// `[keybindings] defaults = false`: remove every binding only the shipped
+/// layer set, except its [`ESCAPE_HATCH`] keys while no layer of yours binds
+/// that action. A key mode left empty goes, with its shipped options.
+fn drop_shipped(keybindings: &mut toml::Table, provenance: &mut crate::ConfigProvenance) {
+    let mut tables: Vec<(String, &mut toml::Table)> = Vec::new();
+    let mut modes = None;
+    for (name, value) in keybindings.iter_mut() {
+        let toml::Value::Table(table) = value else {
+            continue;
+        };
+        if BINDING_TABLES.contains(&name.as_str()) {
+            tables.push((format!("keybindings.{name}"), table));
+        } else if name == MODES {
+            modes = Some(table);
+        }
+    }
+    for (mode, table) in modes.into_iter().flat_map(|modes| modes.iter_mut()) {
+        if let toml::Value::Table(table) = table {
+            tables.push((crate::layer::child_path("keybindings.modes", mode), table));
+        }
+    }
+    let shipped = |provenance: &crate::ConfigProvenance, path: &str, binding: &str| {
+        binding_layer(provenance, path, binding) == Some(SHIPPED_LAYER)
+    };
+    let hatch_rebound = tables.iter().any(|(path, table)| {
+        table.iter().any(|(binding, value)| {
+            action_name(value) == Some(ESCAPE_HATCH) && !shipped(provenance, path, binding)
+        })
+    });
+    for (path, table) in &mut tables {
+        let doomed: Vec<String> = table
+            .iter()
+            .filter(|(binding, value)| {
+                shipped(provenance, path, binding)
+                    && (hatch_rebound || action_name(value) != Some(ESCAPE_HATCH))
+            })
+            .map(|(binding, _)| binding.clone())
+            .collect();
+        for binding in &doomed {
+            remove_binding(table, path, binding, provenance);
+        }
+    }
+    let emptied: Vec<String> = match keybindings.get(MODES) {
+        Some(toml::Value::Table(modes)) => modes
+            .iter()
+            .filter(|(_, table)| table.as_table().is_some_and(toml::Table::is_empty))
+            .map(|(mode, _)| mode.clone())
+            .collect(),
+        _ => Vec::new(),
+    };
+    for mode in emptied {
+        if let Some(toml::Value::Table(modes)) = keybindings.get_mut(MODES) {
+            modes.remove(&mode);
+        }
+        if let Some(toml::Value::Table(options)) = keybindings.get_mut("mode-options")
+            && shipped(provenance, "keybindings.mode-options", &mode)
+        {
+            remove_binding(options, "keybindings.mode-options", &mode, provenance);
+        }
+    }
 }
 
 /// Settle one binding table: drop spellings a later layer replaced, then
@@ -140,12 +211,16 @@ pub fn binding_layer(
 
 /// `"none"`, bare or as `{ action = "none" }`.
 fn is_unbind(value: &toml::Value) -> bool {
-    let action = match value {
+    action_name(value) == Some(UNBIND_ACTION)
+}
+
+/// A binding's action name, bare or as `{ action = "..." }`.
+fn action_name(value: &toml::Value) -> Option<&str> {
+    match value {
         toml::Value::String(name) => Some(name.as_str()),
         toml::Value::Table(table) => table.get("action").and_then(toml::Value::as_str),
         _ => None,
-    };
-    action == Some(UNBIND_ACTION)
+    }
 }
 
 #[cfg(test)]
@@ -235,6 +310,27 @@ mod tests {
             layered("[keybindings.global]\n\"M-A\" = \"detach\"\n\"M-S-a\" = \"toggle-zoom\"\n");
         let (_, diags) = Resolver::new_lenient(&cfg.keybindings);
         assert_eq!(diags.len(), 1, "{diags:?}");
+    }
+
+    #[test]
+    fn defaults_false_keeps_only_your_bindings_and_the_palette() {
+        let cfg = layered(
+            "[keybindings]\ndefaults = false\n[keybindings.prefix-table]\nd = \"detach\"\n",
+        );
+        let kb = &cfg.keybindings;
+        let mut keys: Vec<&str> = kb.prefix_table.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, [":", "?", "Space", "d"]);
+        assert!(kb.modes.is_empty() && kb.mode_options.is_empty(), "{kb:?}");
+        let (mut resolver, diags) = Resolver::new_lenient(kb);
+        assert!(diags.is_empty(), "{diags:?}");
+        assert_eq!(resolves(&mut resolver, &["C-a", "x"]), None);
+        // Binding the palette yourself takes the shipped way out away.
+        let cfg = layered(
+            "[keybindings]\ndefaults = false\n[keybindings.global]\n\"M-p\" = \"command-palette\"\n",
+        );
+        assert!(cfg.keybindings.prefix_table.is_empty(), "{cfg:?}");
+        assert_eq!(cfg.keybindings.global.len(), 1);
     }
 
     #[test]

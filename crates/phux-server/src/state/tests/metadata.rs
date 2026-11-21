@@ -1,6 +1,6 @@
 use super::*;
 
-// --- L3 metadata (SPEC §7.4) ---
+// --- L3 metadata ---
 
 /// An attached L3 client and its mailbox (subscriptions capture it).
 fn attach_l3_client(
@@ -118,7 +118,7 @@ fn detach_drops_metadata_subscriptions_and_their_mailboxes() {
 
 #[test]
 fn non_l3_consumer_does_not_receive_metadata_changed() {
-    // SPEC §16.4: non-L3 clients see no L3 frames.
+    // Non-L3 clients see no L3 frames.
     let mut s = ServerState::new();
     let (l3_cid, l3_tx, mut l3_rx) = attach_l3_client(&mut s);
     let (l1_cid, l1_tx, mut l1_rx) = attach_l1_only_client(&mut s);

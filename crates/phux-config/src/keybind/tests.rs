@@ -52,7 +52,7 @@ fn punctuation_parses_to_physical_keys() {
 
 /// The shipped bindings build cleanly, bind no chord twice even under
 /// different spellings (`G` vs `S-g`), and keep the chords the TUI doc
-/// (§5.3) promises.
+/// promises.
 #[test]
 fn shipped_keybindings_are_clean_and_documented() {
     let keys = shipped().keybindings;

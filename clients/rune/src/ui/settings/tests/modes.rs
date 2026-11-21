@@ -1,5 +1,5 @@
 //! Settings through the real window in each appearance the design language
-//! names (§5.2): the house look light and dark, increased contrast, and the
+//! names: the house look light and dark, increased contrast, and the
 //! largest text size, at every size Settings is checked at.
 
 use super::*;

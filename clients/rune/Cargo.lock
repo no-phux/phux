@@ -2691,7 +2691,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-core"
-version = "0.161.0"
+version = "0.161.1"
 dependencies = [
  "bytes",
  "libghostty-vt",
@@ -2710,7 +2710,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-runtime"
-version = "0.161.0"
+version = "0.161.1"
 dependencies = [
  "bytes",
  "core-foundation 0.10.1",
@@ -2740,11 +2740,12 @@ dependencies = [
 
 [[package]]
 name = "phux-config"
-version = "0.161.0"
+version = "0.161.1"
 dependencies = [
  "jiff",
  "phux-config-core",
  "phux-protocol",
+ "schemars",
  "serde",
  "serde_json",
  "serde_path_to_error",
@@ -2756,9 +2757,10 @@ dependencies = [
 
 [[package]]
 name = "phux-config-core"
-version = "0.161.0"
+version = "0.161.1"
 dependencies = [
  "nix",
+ "schemars",
  "serde",
  "thiserror 2.0.21",
  "toml",
@@ -2767,7 +2769,7 @@ dependencies = [
 
 [[package]]
 name = "phux-core"
-version = "0.161.0"
+version = "0.161.1"
 dependencies = [
  "serde",
  "sha2",
@@ -2777,11 +2779,11 @@ dependencies = [
 
 [[package]]
 name = "phux-design"
-version = "0.161.0"
+version = "0.161.1"
 
 [[package]]
 name = "phux-dial"
-version = "0.161.0"
+version = "0.161.1"
 dependencies = [
  "futures-util",
  "hex",
@@ -2798,7 +2800,7 @@ dependencies = [
 
 [[package]]
 name = "phux-layout-codec"
-version = "0.161.0"
+version = "0.161.1"
 dependencies = [
  "ciborium",
  "phux-core",
@@ -2809,7 +2811,7 @@ dependencies = [
 
 [[package]]
 name = "phux-perf"
-version = "0.161.0"
+version = "0.161.1"
 dependencies = [
  "libc",
  "nix",
@@ -2819,7 +2821,7 @@ dependencies = [
 
 [[package]]
 name = "phux-plugin"
-version = "0.161.0"
+version = "0.161.1"
 dependencies = [
  "phux-config",
  "serde",
@@ -2830,7 +2832,7 @@ dependencies = [
 
 [[package]]
 name = "phux-protocol"
-version = "0.161.0"
+version = "0.161.1"
 dependencies = [
  "bitflags 2.13.2",
  "bytes",
@@ -2857,6 +2859,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "phux-client-core",
  "phux-client-runtime",
+ "phux-config",
  "phux-config-core",
  "phux-design",
  "phux-perf",
@@ -2891,7 +2894,7 @@ dependencies = [
 
 [[package]]
 name = "phux-vt"
-version = "0.161.0"
+version = "0.161.1"
 dependencies = [
  "bytes",
  "flate2",
@@ -2903,7 +2906,7 @@ dependencies = [
 
 [[package]]
 name = "phux-wire-fixtures"
-version = "0.161.0"
+version = "0.161.1"
 dependencies = [
  "bytes",
  "phux-protocol",
@@ -3130,7 +3133,7 @@ dependencies = [
 
 [[package]]
 name = "quictun"
-version = "0.161.0"
+version = "0.161.1"
 dependencies = [
  "quinn",
  "rustls",

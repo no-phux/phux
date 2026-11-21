@@ -56,7 +56,7 @@ fn hub_restamps_a_satellite_pane_closed_with_the_consumers_actor_by_operation_id
     );
 }
 
-/// L1 §9.1: every id inside a satellite's event is re-tagged or vetted
+/// Every id inside a satellite's event is re-tagged or vetted
 /// before a hub consumer sees it. An operation id a consumer forwarded
 /// for one terminal cannot be claimed on another (neither the id nor
 /// the consumer survives); the satellite's client ids become the hub's

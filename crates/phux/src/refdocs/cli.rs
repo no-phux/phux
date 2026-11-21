@@ -22,34 +22,45 @@ fn collect_visible<'a>(
     }
 }
 
-/// Render `docs/reference/cli.md`.
-pub(crate) fn page() -> Page {
-    use std::fmt::Write as _;
-
+/// Every visible invocation path, sorted, with its long help as plain text
+/// (trailing whitespace trimmed, the version banner reduced to `phux`). The
+/// CLI reference and `phux man` both render from this.
+pub(crate) fn help_sections() -> Vec<(String, String)> {
     let mut entries = Vec::new();
     collect_visible(Cli::spec().root, "phux", &mut entries);
     entries.sort_by(|a, b| a.0.cmp(&b.0));
+    entries
+        .into_iter()
+        .map(|(path, cmd)| {
+            let help = crate::render_help_page(cmd.cmd, true, usage::help::Style::PLAIN)
+                .unwrap_or_default();
+            // Preserve every visible byte of help while keeping generated
+            // Markdown free of trailing whitespace. Drop the live crate version
+            // from the root banner so a release-please bump cannot fail the
+            // freshness test on every open PR (phux-k0sj). `phux --help` still
+            // prints it.
+            let help = help
+                .lines()
+                .map(str::trim_end)
+                .map(without_crate_version_banner)
+                .collect::<Vec<_>>()
+                .join("\n");
+            (path, help.trim_end().to_owned())
+        })
+        .collect()
+}
+
+/// Render `docs/reference/cli.md`.
+pub(crate) fn page() -> Page {
+    use std::fmt::Write as _;
 
     let mut body = String::from(
         "One section per command, in the order `phux <command> --help` \
          would print them. The version line and hidden subcommands are \
          left out.\n\n",
     );
-    for (path, cmd) in &entries {
-        let help =
-            crate::render_help_page(cmd.cmd, true, usage::help::Style::PLAIN).unwrap_or_default();
-        // Preserve every visible byte of help while keeping generated
-        // Markdown free of trailing whitespace. Drop the live crate version
-        // from the root banner so a release-please bump cannot fail the
-        // freshness test on every open PR (phux-k0sj). `phux --help` still
-        // prints it.
-        let help = help
-            .lines()
-            .map(str::trim_end)
-            .map(without_crate_version_banner)
-            .collect::<Vec<_>>()
-            .join("\n");
-        let _ = write!(body, "## `{path}`\n\n```text\n{}\n```\n\n", help.trim_end());
+    for (path, help) in help_sections() {
+        let _ = write!(body, "## `{path}`\n\n```text\n{help}\n```\n\n");
     }
 
     Page {

@@ -44,7 +44,7 @@ fn pane_lifecycle_hooks_fire() {
     });
 }
 
-/// A kill reaps its pane in its own commit (L1 §5.2), before the process
+/// A kill reaps its pane in its own commit, before the process
 /// ends its hangup grace: the watcher still fires `pane-exit` with the
 /// status the process ended with, and last-session self-exit waits for
 /// that process instead of cutting its grace short.

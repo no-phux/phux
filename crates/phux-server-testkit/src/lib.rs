@@ -536,7 +536,7 @@ async fn expect_eof_within(stream: &mut UnixStream, deadline: Duration) -> Resul
     }
 }
 
-/// Assert the SPEC §14 fatal-close tail: `DETACHED { PROTOCOL_ERROR }`, then
+/// Assert the fatal-close tail: `DETACHED { PROTOCOL_ERROR }`, then
 /// EOF. The preceding `ERROR` frame is the caller's to check.
 pub async fn expect_protocol_error_close(stream: &mut UnixStream, deadline: Duration) {
     let (type_byte, detached) = recv_typed(stream).await;

@@ -52,6 +52,7 @@ fn pane(id: u32, session: u32, cwd: Option<&str>) -> PaneDescriptor {
         activation: None,
         exec: None,
         foreground: None,
+        icon: None,
     }
 }
 
@@ -142,7 +143,8 @@ fn nothing_retries_what_retrying_cant_change() {
     let mut desk = desk();
     desk.connection.status = Status::Failed;
     assert!(!desk.stuck());
-    desk.connection.error = Some("websocket: 401".to_owned());
+    desk.connection.error =
+        Some("mini: WebSocket handshake: HTTP error: 401 Unauthorized".to_owned());
     assert!(desk.stuck());
     // The QUIC lane's refusal is as final as the WebSocket's.
     desk.connection.error = Some(QUIC_REFUSED.to_owned());
@@ -206,7 +208,10 @@ fn a_stale_window_says_when_it_has_stopped_trying() {
     );
     desk.link.ended = None;
     desk.connection.status = Status::Failed;
-    for refusal in ["websocket: 401", QUIC_REFUSED] {
+    for refusal in [
+        "mini: WebSocket handshake: HTTP error: 401 Unauthorized",
+        QUIC_REFUSED,
+    ] {
         desk.connection.error = Some(refusal.to_owned());
         let Some(Banner::Stuck(Standing::Unreachable(why))) = desk.banner() else {
             panic!("{refusal} keeps retrying");

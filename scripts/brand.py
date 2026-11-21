@@ -15,7 +15,7 @@ import zipfile
 
 MAX_BYTES = 100 * 1024 * 1024
 PUBLIC_BASE = "https://phux.sh/brand/releases"
-CONSUMERS = ("phux", "mobile", "website", "org")
+CONSUMERS = ("phux", "mobile", "website")
 
 
 def digest(data):
@@ -94,8 +94,6 @@ def unpack(data):
 def validate_manifest(manifest, files):
     if manifest.get("schema") != 1 or not re.fullmatch(r"\d+\.\d+\.\d+", manifest.get("version", "")):
         raise ValueError("unsupported brand manifest or version")
-    if not re.fullmatch(r"[0-9a-f]{40}", manifest.get("source_revision", "")):
-        raise ValueError("brand manifest lacks source revision")
     if set(manifest["files"]) != set(files):
         raise ValueError("brand manifest does not match archive contents")
     for name, record in manifest["files"].items():
@@ -169,8 +167,7 @@ def install(root, archive, expected):
         changes[asset_destination(root, target)] = files[name]
         records[name] = {"destination": target, "sha256": digest(files[name])}
     lock = {
-        "schema": 1, "consumer": settings["consumer"], "version": manifest["version"],
-        "source_revision": manifest["source_revision"], "sha256": expected,
+        "schema": 1, "consumer": settings["consumer"], "version": manifest["version"], "sha256": expected,
         "url": f"{PUBLIC_BASE}/{manifest['version']}/phux-brand.zip", "files": records,
     }
     # Commit the lock last. An interrupted installation fails verification and

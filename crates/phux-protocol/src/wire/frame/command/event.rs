@@ -1,4 +1,4 @@
-//! [`AgentEvent`] and the enums its bodies carry (SPEC §7.5).
+//! [`AgentEvent`] and the enums its bodies carry.
 
 use crate::ids::{
     ActivationId, ArrangementKey, ClientId, LeaseEpoch, ResourceId, ResourceKey, ResourceKind,
@@ -101,7 +101,7 @@ impl ApprovalOutcome {
 }
 
 /// A server-pushed agent event carried by
-/// [`FrameKind::Event`](super::FrameKind::Event) (SPEC §7.5 / §10.3).
+/// [`FrameKind::Event`](super::FrameKind::Event).
 ///
 /// Each event is `tag: u8` + a length-prefixed body, so a decoder skips an
 /// unknown tag to [`AgentEvent::Unknown`] instead of failing the frame.

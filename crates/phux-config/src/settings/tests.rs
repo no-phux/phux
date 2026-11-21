@@ -9,6 +9,8 @@ use super::*;
 const OPTIONAL_KEYS: &[&str] = &[
     "defaults.shell",
     "defaults.spawn-on-attach",
+    "defaults.fixed-cwd",
+    "defaults.attach-session",
     "experimental.predictive-echo",
     "voice.transcriber",
     "voice.timeout-secs",

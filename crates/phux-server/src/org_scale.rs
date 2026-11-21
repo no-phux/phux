@@ -4,7 +4,7 @@
 //!
 //! The org-store scale test and the `icount` commit scenarios both start
 //! from [`seed`], so the gate and the proof measure the same shape
-//! (CONTRACTS §08 "Scale contract").
+//! (the organization scale contract).
 
 use std::path::Path;
 

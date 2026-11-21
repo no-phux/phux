@@ -86,6 +86,16 @@ macro_rules! open_wire_enum {
                     other => Self::Unknown(other),
                 }
             }
+
+            /// The value this build defines for `value`, or `None`: what a
+            /// request decoder refuses as `UNSUPPORTED`.
+            #[must_use]
+            pub const fn known(value: $repr) -> Option<Self> {
+                match value {
+                    $( $tag => Some(Self::$variant), )*
+                    _ => None,
+                }
+            }
         }
     };
 }

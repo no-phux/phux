@@ -9,7 +9,8 @@
 //! A semantic pass then runs over the deserialized [`Config`] for mistakes
 //! that parse fine and do nothing at runtime: out-of-range ceilings, chords
 //! that do not parse, unknown action / hook / widget / theme-slot names,
-//! theme colours that do not parse, and bindings that shadow each other.
+//! theme colours that do not parse, a selected theme that does not load, and
+//! bindings that shadow each other.
 
 mod semantic;
 
@@ -151,7 +152,7 @@ pub fn check(user_input: &str, path: &Path) -> Result<CheckReport, ConfigError> 
     };
 
     if let Some(config) = config {
-        semantic_pass(&config, &provenance, &mut findings);
+        semantic_pass(&config, path, &provenance, &mut findings);
         if findings.len() > MAX_FINDINGS {
             findings.truncate(MAX_FINDINGS);
             truncated = true;

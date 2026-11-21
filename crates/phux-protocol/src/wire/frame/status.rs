@@ -1,8 +1,8 @@
-//! Structured error codes and teardown/rejection reason enums (SPEC §14).
+//! Structured error codes and teardown/rejection reason enums.
 
 open_wire_enum! { u16; as_wire / from_wire_or_unknown;
 /// Structured error code carried by [`FrameKind::Error`](super::FrameKind::Error)
-/// (SPEC §14), a big-endian `u16`.
+///, a big-endian `u16`.
 ///
 /// Append-only: a newer peer may send a code this build does not know, so
 /// an unallocated value decodes as [`Self::Unknown`] carrying the raw
@@ -14,16 +14,16 @@ pub enum ErrorCode {
     /// A code this build does not know, with its raw wire value. Produced
     /// only by the decoder.
     Unknown(u16),
-    /// SPEC §6.1: HELLO version negotiation found no compatible version.
+    /// HELLO version negotiation found no compatible version.
     VersionIncompatible = 1,
-    /// SPEC §6: the peer sent a type byte the receiver does not recognise.
+    /// The peer sent a type byte the receiver does not recognise.
     UnknownMessageType = 2,
-    /// SPEC §5 / Appendix A: a message could not be decoded.
+    /// A message could not be decoded.
     MalformedMessage = 3,
-    /// SPEC §5: a frame's declared length exceeded the protocol cap.
+    /// A frame's declared length exceeded the protocol cap.
     FrameTooLarge = 4,
     // Value 5 is permanently reserved for the withdrawn OUT_OF_TIER error.
-    /// SPEC §6.1: peers share no usable explicit bootstrap profile/codec/features.
+    /// Peers share no usable explicit bootstrap profile/codec/features.
     CodecUnavailable = 6,
     /// The receiver understood the frame's framing but not its content: a
     /// frame type, command tag, or enum value newer than its protocol 1.x
@@ -31,12 +31,12 @@ pub enum ErrorCode {
     /// fall back to an older shape.
     Unsupported = 7,
 
-    /// SPEC §13: the client issued an operation that requires an attach
+    /// The client issued an operation that requires an attach
     /// while not attached.
     NotAttached = 100,
-    /// SPEC §13: the client requested attach while already attached.
+    /// The client requested attach while already attached.
     AlreadyAttached = 101,
-    /// SPEC §13: the requested session does not exist.
+    /// The requested session does not exist.
     SessionNotFound = 102,
     /// The requested window does not exist.
     WindowNotFound = 103,
@@ -51,9 +51,9 @@ pub enum ErrorCode {
     /// (ADR-0007).
     SatelliteUnreachable = 107,
 
-    /// SPEC §11: the requested COMMAND payload was structurally invalid.
+    /// The requested COMMAND payload was structurally invalid.
     InvalidCommand = 200,
-    /// SPEC §15: the requested operation is forbidden for this peer.
+    /// The requested operation is forbidden for this peer.
     PermissionDenied = 201,
     /// The server has run out of a resource needed to satisfy the request
     /// (file descriptors, memory, PTYs, ...).
@@ -102,7 +102,7 @@ pub enum ErrorCode {
 }
 
 /// How far a consumer should degrade on an [`ErrorCode`]. Not a wire field,
-/// and not fatality: termination is `DETACHED` plus close (SPEC §9).
+/// and not fatality: termination is `DETACHED` plus close.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ErrorScope {

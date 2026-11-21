@@ -27,6 +27,7 @@ const fn client_frame_variant(frame: &FrameKind) -> Option<usize> {
         FrameKind::SubscribeEvents { .. } => Some(22),
         FrameKind::PathQuery { .. } => Some(23),
         FrameKind::ClipboardReply { .. } => Some(24),
+        FrameKind::ViewportColors { .. } => Some(25),
         FrameKind::HelloOk { .. }
         | FrameKind::Pong { .. }
         | FrameKind::ResourceOutput { .. }
@@ -55,7 +56,7 @@ const fn client_frame_variant(frame: &FrameKind) -> Option<usize> {
     }
 }
 
-const CLIENT_FRAME_VARIANTS: usize = 25;
+const CLIENT_FRAME_VARIANTS: usize = 26;
 
 fn attach(target: AttachTarget) -> FrameKind {
     attach_as(target, None)
@@ -295,6 +296,15 @@ fn stream_samples() -> Vec<(FrameKind, &'static Rule)> {
                 viewport: ViewportInfo::new(80, 24),
             },
             &F_VIEWPORT_RESIZE,
+        ),
+        (
+            FrameKind::ViewportColors {
+                colors: crate::caps::TerminalDefaultColors {
+                    foreground: crate::caps::TerminalColor::default(),
+                    background: crate::caps::TerminalColor::default(),
+                },
+            },
+            &F_VIEWPORT_COLORS,
         ),
         (
             FrameKind::ResizeTerminal {

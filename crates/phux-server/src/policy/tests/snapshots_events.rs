@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------------
-// Filtered results (§6): what an admitted row returns.
+// Filtered results: what an admitted row returns.
 // -----------------------------------------------------------------------------
 
 /// `world`'s whole-server snapshot as `CLIENT` holding `scopes` may see it

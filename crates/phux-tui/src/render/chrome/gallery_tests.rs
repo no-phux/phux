@@ -1,4 +1,4 @@
-//! The TUI design gallery (spec §5.2): the sidebar, the status bar, a toast
+//! The TUI design gallery: the sidebar, the status bar, a toast
 //! overlay and the session picker, painted under each terminal the chrome
 //! must survive and serialised cell by cell (symbol, fg, bg, attributes)
 //! into `tests/fixtures/gallery/<fixture>.txt`, compared exactly.
@@ -26,7 +26,7 @@ use crate::render::overlay::select_list::{SelectItem, SelectList};
 use crate::render::overlay::toast::ToastOverlay;
 use crate::render::theme::{Depth, Glyphs, Outer, Theme, xterm_rgb};
 
-/// The terminals of spec §5.2, plus the house look in both modes and 256.
+/// The terminals, plus the house look in both modes and 256.
 fn fixtures() -> Vec<(&'static str, Theme)> {
     let solarized = phux_design::catalog()
         .find("solarized-dark")

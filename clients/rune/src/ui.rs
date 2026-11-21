@@ -9,6 +9,7 @@ use rune::{Cx, El, col, el, row};
 use crate::desk::Desk;
 use crate::desk::surfaces::Surface;
 use crate::features::changes;
+use phux_config_core::rune::TabBar;
 
 mod badge;
 mod chief;
@@ -18,13 +19,13 @@ pub(crate) use controls::{
     sheet_header, tip,
 };
 mod documents;
-#[allow(clippy::disallowed_methods)] // illustration art (§5.1)
+#[allow(clippy::disallowed_methods)] // illustration art
 mod galaxy;
-#[allow(clippy::disallowed_methods)] // illustration art (§5.1)
+#[allow(clippy::disallowed_methods)] // illustration art
 mod hive;
 mod icons;
 mod inbox;
-#[allow(clippy::disallowed_methods)] // illustration art (§5.1)
+#[allow(clippy::disallowed_methods)] // illustration art
 mod kitchen;
 mod machines;
 mod news;
@@ -33,17 +34,18 @@ mod overlay;
 pub(crate) use overlay::key_hint;
 mod pair;
 mod palette;
+mod pane_marks;
 mod panes;
 mod phone;
 pub(crate) use phone::edge_color as phone_edge_color;
-#[allow(clippy::disallowed_methods)] // illustration art (§5.1)
+#[allow(clippy::disallowed_methods)] // illustration art
 mod pitch;
-#[allow(clippy::disallowed_methods)] // illustration art (§5.1)
+#[allow(clippy::disallowed_methods)] // illustration art
 mod pitlane;
 mod playground;
 mod popup;
 mod questions;
-#[allow(clippy::disallowed_methods)] // illustration art (§5.1)
+#[allow(clippy::disallowed_methods)] // illustration art
 mod reef;
 pub(crate) mod rows;
 mod settings;
@@ -87,7 +89,7 @@ thread_local! {
     static KIT_LAYER: RefCell<Vec<El>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Mount `overlay` in the kit layer above the window (§4.1.4). Call it
+/// Mount `overlay` in the kit layer above the window. Call it
 /// from a view that runs every frame, never from inside a `memo`, whose
 /// closure does not run when its version holds.
 pub(crate) fn kit_overlay(overlay: El) {
@@ -102,7 +104,7 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     rune_kit::root(base, KIT_LAYER.with_borrow_mut(std::mem::take))
 }
 
-/// What every run of the view sets on `cx`, the phone's included (§4.1.1).
+/// What every run of the view sets on `cx`, the phone's included.
 fn wire(t: &Tokens, cx: &mut Cx<Desk>) {
     let text = t.roles.text.text.paint();
     // Native fields inherit a readable caret and selection in light themes too.
@@ -114,7 +116,7 @@ fn wire(t: &Tokens, cx: &mut Cx<Desk>) {
     cx.focus_ring(ring.width, ring.offset, t.roles.border.focus.paint());
     cx.help_look(tooltip(t));
     cx.titlebar_height(t.space.titlebar_h);
-    // `cx.web_focus()` (every pressable a Tab stop, §1.10) stays off: it
+    // `cx.web_focus()` (every pressable a Tab stop) stays off: it
     // moves a modal's first focus and focuses controls on press, which
     // changes Settings search and the context menu's keyboard walk
     // (DEVELOP.md, "Kit deviations"). Rows and kit controls are focusable.
@@ -149,7 +151,7 @@ fn window(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                 .w(if desk.sidebar_shown() { s.sidebar_w } else { 0.0 })
                 .h_full()
                 .clip_rounded(0.0)
-                // §1.8 drawer; Rune holds it still under reduced motion.
+                // The drawer spring; Rune holds it still under reduced motion.
                 .motion(t.motion.drawer.enter)
                 .child(sidebar::view(desk, p, s.titlebar_h, lights)),
         )
@@ -171,10 +173,7 @@ fn window(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                 // the drawer, the gutters and the panes as one, so the
                 // pane's far edge never runs past the window or short of it.
                 .token_motion(t.motion.drawer.enter)
-                .children(
-                    (!desk.settings.hover_toolbar)
-                        .then(|| status::title_bar(desk, p, lights, insets.trailing)),
-                )
+                .children(status::top(desk, p, lights, insets.trailing))
                 .child(
                     col()
                         .grow(1.0)
@@ -201,20 +200,21 @@ fn window(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                                 .children(overlay::toast(desk, p)),
                         ),
                 )
+                .children(status::tab_row(desk, p, TabBar::Bottom))
                 .children(status::hover_toolbar(desk, p, lights, insets.trailing)),
         );
     // No root paste hook: it would read the clipboard before anything here
     // saw the key. ⌘V and Edit ▸ Paste come to `Desk::key` instead, which
     // answers to the modal and keeps the terminal asked for.
     let root = ground(el().w_full().h_full(), desk.glass(), &t)
-        .on_layout(|d: &mut Desk, rect| d.window_laid_out(rect[2]))
+        .on_layout(|d: &mut Desk, rect| d.window_laid_out([rect[2], rect[3]]))
         .child(main);
     floating(root, desk, p, band, cx)
 }
 
 /// The window's ground: the sidebar layer, or at `glass` above 0 the
 /// system's Liquid Glass under that layer as a tint, thinned as glass rises
-/// down to the verified floor (§1.9). The material replaces a node's own
+/// down to the verified floor. The material replaces a node's own
 /// fill, so the tint is its first child. Increased contrast, reduce
 /// transparency and forced colours draw it opaque.
 fn ground(root: El, glass: f32, t: &Tokens) -> El {
@@ -234,7 +234,7 @@ fn glassed(root: El, tint: rune::Color, glass: f32, t: &Tokens) -> El {
 }
 
 /// The kit's tooltip on the overlay layer at the menu radius, its chord in
-/// keycaps, on every platform (§4.1.3).
+/// keycaps, on every platform.
 fn tooltip(t: &Tokens) -> rune::HelpLook {
     rune_kit::TooltipStyle::from_kit(&t.kit, rune_kit::TooltipAppearance::Compact)
         .radius(t.radius.md)

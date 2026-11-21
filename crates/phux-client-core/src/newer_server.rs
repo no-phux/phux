@@ -8,7 +8,7 @@
 
 use phux_protocol::wire::DecodeError;
 use phux_protocol::wire::LENGTH_PREFIX_LEN;
-use phux_protocol::wire::decode::newer_server_fallback;
+use phux_protocol::wire::decode::{inflated_frame, newer_server_fallback};
 use phux_protocol::wire::frame::{FrameKind, TYPE_ATTACH_READY, TYPE_ATTACHED};
 
 /// What a client reads in place of `framed`, which failed with `error`.
@@ -25,6 +25,11 @@ pub fn read_undecodable_frame(
     framed: &[u8],
     error: DecodeError,
 ) -> Result<Option<FrameKind>, DecodeError> {
+    if error.is_unsupported()
+        && let Some(inner) = inflated_frame(framed)
+    {
+        return read_undecodable_frame(&inner, error);
+    }
     let attach_frame = framed
         .get(LENGTH_PREFIX_LEN)
         .is_some_and(|&type_byte| matches!(type_byte, TYPE_ATTACHED | TYPE_ATTACH_READY));

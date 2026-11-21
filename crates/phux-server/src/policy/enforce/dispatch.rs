@@ -130,7 +130,7 @@ fn is_input_request(request: Request<'_>) -> bool {
 
 /// Decide `request` for `client` under `grant` against the handler's state
 /// snapshot. The owner's grant admits everything; a scoped grant is checked
-/// against the request's §6 row.
+/// against the request's scope-table row.
 ///
 /// # Errors
 ///
@@ -142,14 +142,14 @@ pub fn enforce(
     grant: &ConnectionGrant,
     request: Request<'_>,
 ) -> Result<(), Denial> {
-    // Revocation first (§7 step 1): it stops owner grants too.
+    // Revocation first: it stops owner grants too.
     if grant.revocation().is_some() {
         return Err(Denial::REVOKED);
     }
     let Authority::Scoped { effective, .. } = &grant.authority else {
         return Ok(());
     };
-    // Expiry is a policy time bound to the grant (workload-auth §5): past
+    // Expiry is a policy time bound to the grant: past
     // it, nothing is admitted, whether or not the connection is still open.
     if grant.is_expired_at(jiff::Timestamp::now()) {
         return Err(Denial::EXPIRED);
@@ -251,7 +251,7 @@ fn watch_denial(effective: &EffectiveScopeSet, needs: &[Need]) -> Option<Denial>
     })
 }
 
-/// The needs one §6 row places on `request`, or `None` when the subject
+/// The needs one row places on `request`, or `None` when the subject
 /// cannot be resolved: that is a refusal, never a skip.
 pub(super) fn needs_for(
     s: &ServerState,

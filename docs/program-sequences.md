@@ -166,10 +166,32 @@ phux does not read OSC 7. It asks the operating system for the folder of
 the pane's process (on Linux and macOS), when a command finishes and when
 output goes quiet. A program cannot set the pane's folder by escape.
 
+## Pane icon (OSC 1337 SetUserVar)
+
+A program can give its pane an icon with the user-variable sequence iTerm2
+and WezTerm use, so it works from a shell on the far side of `ssh` too:
+
+```sh
+printf '\033]1337;SetUserVar=phux_icon=%s\007' "$(printf '🦀' | base64)"
+printf '\033]1337;SetUserVar=phux_icon=\007'   # remove it
+```
+
+The value is base64 of an icon: an emoji or a Nerd Font symbol, 1 to 32
+bytes of UTF-8 with no space, control character, or text-direction
+override. An empty value removes
+the icon; a value that breaks the rule, or another variable, changes
+nothing. The icon stays until the program changes or removes it, or the
+server restarts. The server publishes it as `icon` in the pane's
+`phux.pane-occupant/v1` record, and the terminal UI and the desktop draw it
+before the pane's name in tabs and lists. It comes before an icon from your
+[`[[icons]]`](./clients.md#pane-icons) config.
+
 ## Notifications and the bell
 
-phux ignores OSC 9 (other than `9;4`), OSC 777, and OSC 99 from a pane: a
-program cannot raise a desktop notification through phux. Report state
+By default phux ignores OSC 9 (other than `9;4`), OSC 777, and OSC 99 from
+a pane: a program cannot raise a desktop notification through phux. With
+`notifications.from-programs = "notes"`, OSC 9 and OSC 777 become the pane's
+[note](./scripting.md#notes) instead. Report state
 instead, with [OSC 7501](./program-protocol.md) or a
 [`phux-ask` question](#questions-the-phux-ask-title), and phux notifies the
 user according to their `[notifications]` settings.
@@ -196,10 +218,11 @@ phux answers these queries itself, without asking the user's terminal:
 | `OSC 7501 ; ? ST` | [Feature detection](./program-protocol.md#feature-detection) |
 | `CSI c` (primary device attributes) | `CSI ? ... c` |
 | `CSI > q` (XTVERSION) | `libghostty`. Do not detect phux by this. |
-| `OSC 10 ; ? ST`, `OSC 11 ; ? ST` | The default colours of the user's terminal, as phux saw them at attach |
+| `OSC 10 ; ? ST`, `OSC 11 ; ? ST` | The default colours of the user's terminal, as phux saw them at attach or after its last theme switch |
 | `CSI 14 t`, `CSI 16 t`, `CSI 18 t` | The pane's size, from a cell size of 8 by 16 pixels when the real one is unknown |
 
-Not answered: `OSC 52` reads, `CSI 21 t`, ENQ, and `CSI ? 996 n`.
+Not answered: `CSI 21 t`, ENQ, and `CSI ? 996 n`. `OSC 52` reads are
+answered only by user policy ([Clipboard](#clipboard-osc-52)).
 
 ## The agent record
 
@@ -274,11 +297,13 @@ agent record, so the record says what a program claims, not who it is.
 | OSC 0, 2 | Title, `phux-ask` questions, agent rules |
 | OSC 1 | No effect |
 | OSC 7 | Not read |
-| OSC 9 (notification) | Ignored |
+| OSC 9 (notification) | Ignored, or a note with `from-programs = "notes"` |
 | OSC 9;4 | Agent rules only |
-| OSC 52 | Clipboard write, by user policy; reads not answered |
-| OSC 99, OSC 777 | Ignored |
+| OSC 52 | Clipboard write and read, by user policy |
+| OSC 777 | Ignored, or a note with `from-programs = "notes"` |
+| OSC 99 | Ignored |
 | OSC 133 | Prompt state, command events, exit codes; `A` ends active OSC 7501 records |
+| OSC 1337 | `SetUserVar=phux_icon` sets the [pane icon](#pane-icon-osc-1337-setuservar); `Copy` is a [clipboard](#clipboard-osc-52) write |
 | OSC 7501 | [Program status](./program-protocol.md#program-status-osc-7501) |
 | BEL | `bell` event |
 
@@ -287,3 +312,4 @@ agent record, so the record says what a program claims, not who it is.
 | Date | Revision | Changes |
 | --- | --- | --- |
 | 2026-10-21 | 1 | First version. |
+| 2026-11-21 | 2 | Pane icon (OSC 1337 `SetUserVar=phux_icon`). |

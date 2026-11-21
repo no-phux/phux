@@ -43,7 +43,7 @@ pub const HOOK_TIMEOUT: Duration = Duration::from_secs(30);
 /// The `to` value when the detector withdraws a record (the L3 `unknown`).
 pub const AGENT_STATE_UNKNOWN: &str = "unknown";
 
-/// One fired event: a §9 name plus context. Keys are kebab-case and reach the
+/// One fired event: an event name plus context. Keys are kebab-case and reach the
 /// child as `PHUX_<KEY>`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HookEvent {

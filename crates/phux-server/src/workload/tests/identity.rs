@@ -396,7 +396,7 @@ fn a_client_request_refuses_every_other_reply() {
         "the right pair still accepts"
     );
     // Another authority's chain for this key verifies against its own CA:
-    // the reply names the CA it is checked against (no CA pin yet, §2).
+    // the reply names the CA it is checked against (no CA pin yet).
     assert!(request.accept(&issue(&other, &request)).is_ok());
 }
 

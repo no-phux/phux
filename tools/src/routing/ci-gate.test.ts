@@ -114,6 +114,13 @@ test("a skipped docs catalog passes on main and a failure does not", () => {
   expect(aggregate({ ...ready, "docs-catalog": { result: "failure" } }, "push")).toBe(1);
 });
 
+test("a draft's skipped plan fails ci, so it cannot satisfy a readied PR", () => {
+  // GitHub counts a skipped required check as passing.
+  expect(String(job(CI, "ci")["if"])).not.toContain("draft");
+  const draft = { ...baseline, plan: { result: "skipped" }, "queue-apple": { result: "skipped" } };
+  expect(aggregate(draft, "pull_request")).toBe(1);
+});
+
 test("native setup's path list covers every script that job runs", () => {
   const commands = steps(job(CI, "native")).map(run).join("\n");
   const scripts = [...commands.matchAll(/scripts\/[A-Za-z0-9_./-]+\.sh/g)].map((match) => match[0]);

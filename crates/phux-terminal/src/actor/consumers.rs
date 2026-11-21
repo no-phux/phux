@@ -219,7 +219,7 @@ impl TerminalActor {
         self.release_native_owner(u64::from(client_id.get()));
     }
 
-    /// Handle a cumulative `FRAME_ACK` for `seq` (SPEC §8.2).
+    /// Handle a cumulative `FRAME_ACK` for `seq`.
     ///
     /// Under emit-once the reference already advanced on emit, so the ack
     /// tracks `last_acked_seq`, refreshes the cursor/mode capture, and feeds

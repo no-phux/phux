@@ -97,7 +97,7 @@ fn paint(
     );
     let tree = rt.accessibility_json();
     touch_targets(&tree, name);
-    // §1.9: the dock is the phone's one blur.
+    // The dock is the phone's one blur.
     assert!(
         crate::ui::glass_panels(rt) <= 1,
         "{name}: more than one blur on the phone"
@@ -151,7 +151,7 @@ fn as_app(
 }
 
 /// Every control the phone draws is a 44-point touch target in the
-/// accessibility tree (§1.6, audit row 29). The drawn keyboard's letters
+/// accessibility tree (audit row 29). The drawn keyboard's letters
 /// keep the system keyboard's width; they are 44 tall.
 fn touch_targets(node: &serde_json::Value, name: &str) {
     let key = node["key"].as_str().unwrap_or_default();
@@ -283,7 +283,7 @@ fn retina_navigation_renders_in_native_safe_area_and_desktop_phone_viewports() {
     }
 }
 
-/// The design fixture on the phone (§5.2): the house look and catalog
+/// The design fixture on the phone: the house look and catalog
 /// themes, each standard, at increased contrast, with Reduce Transparency
 /// and at the largest text size, over the terminal and the session page.
 /// The dock is the phone's one glass, and only where glass may draw.

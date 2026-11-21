@@ -142,7 +142,7 @@ pub enum Delta {
     DeleteArrangement(ArrangementKey),
 }
 
-/// An organization event for the journal (CONTRACTS §07).
+/// An organization event for the journal.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Event {

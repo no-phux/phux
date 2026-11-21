@@ -367,7 +367,7 @@ async fn get_screen_until_ok(hub: &mut UnixStream, sat_pane: u32) -> CommandResu
 }
 
 /// `GET_STATE { SERVER }` plus every un-correlated `ERROR` seen before the
-/// reply (the per-satellite degradation notice, L1 §9.1).
+/// reply (the per-satellite degradation notice).
 async fn get_state_via_hub(
     hub: &mut UnixStream,
     request_id: u32,

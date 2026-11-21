@@ -14,7 +14,7 @@
 //!
 //! `OK` means the bytes are in the tty input queue, not that they were
 //! consumed; `--wait` reports an observed detector transition. Admission is
-//! per pane (L1 §6.2.1): prompts to different panes run concurrently, and only
+//! per pane: prompts to different panes run concurrently, and only
 //! a second prompt to the same pane collides as busy.
 
 use std::path::PathBuf;

@@ -10,6 +10,7 @@ mod a11y;
 mod editing;
 mod modes;
 mod overflow;
+mod pair;
 mod quick;
 mod size_controls;
 mod themes;
@@ -106,7 +107,7 @@ fn phone_typography_and_wrapping_fit_long_labels_and_values_without_shrinking() 
         d.machines.current = Some("a-very-long-remote-machine-name.example".into());
     });
     rt.frame(1.0);
-    // The phone reads a role up: lead for body, body for caption (§1.4).
+    // The phone reads a role up: lead for body, body for caption.
     let t = tokens(&rt.state);
     assert_eq!(super::primary(&rt.state, &t), t.ty.lead);
     assert_eq!(super::secondary(&rt.state, &t), t.ty.body);
@@ -254,7 +255,7 @@ fn tokens(desk: &Desk) -> std::rc::Rc<crate::ui::Tokens> {
 }
 
 /// Every word Settings draws reaches 4.5:1 on both its grounds (the sheet
-/// and its cards), and the control outline 3:1 (§1.2, D4), for the house
+/// and its cards), and the control outline 3:1 (D4), for the house
 /// look and every built-in theme in both modes.
 #[test]
 fn settings_ink_keeps_text_and_control_contrast_on_its_surfaces() {
@@ -352,14 +353,14 @@ fn settings_native_render_frames() {
         rt.key(crate::keys::plain(Key::Text("clipboard".into())));
         rt.frame(0.0);
         camera.shoot(&mut rt, "-typed-search");
-        rt.update(|d, _| d.clear_settings_search());
+        rt.update(|d, tx| d.clear_settings_search(tx));
         rt.key(crate::keys::plain(Key::Text("no-such-setting".into())));
         rt.frame(0.0);
         camera.shoot(&mut rt, "-no-match");
         if !phone {
             rt.update(|d, tx| {
                 tx.instant();
-                d.clear_settings_search();
+                d.clear_settings_search(tx);
                 d.blur_settings_search(tx);
             });
             rt.frame(0.0);
@@ -376,65 +377,6 @@ fn settings_native_render_frames() {
             camera.shoot(&mut rt, "-about-revealed");
         }
     }
-}
-
-#[test]
-fn pair_a_phone_shows_a_code_devices_and_the_explicit_choice() {
-    let gpu = rune::render::Gpu::headless();
-    for (size, name) in [((1100, 720), "pair"), ((640, 360), "pair-min")] {
-        let mut rt = runtime((size.0 as f32, size.1 as f32), false);
-        let mut camera = Camera::new(&gpu, size, name);
-        rt.update(|d, tx| {
-            tx.instant();
-            d.connection.resources.images = Some(rune::ImageCache::new(std::sync::Arc::new(|| {})));
-            d.settings_category(Category::RemoteHosts);
-            d.pairing_fixture();
-        });
-        rt.frame(0.0);
-        for key in [
-            "pair-qr",
-            "pair-expiry",
-            "pair-network",
-            "pair-copy",
-            "pair-new",
-        ] {
-            assert!(rt.find(key).is_some(), "{key}");
-        }
-        assert!(rt.find("pair-revoke-1").is_some());
-        let expiry = rt.accessibility_json().to_string();
-        assert!(expiry.contains("Expires in 9:0"), "counts down");
-        assert!(expiry.contains("Over your tailnet"));
-        camera.shoot(&mut rt, "");
-        // Revealing the device list scrolls past the code.
-        rt.update(|_, tx| tx.scroll_into_view("pair-revoke-1"));
-        camera.shoot(&mut rt, "-devices");
-
-        // Remote access off: a code only after the explicit choice.
-        rt.update(|d, tx| {
-            tx.instant();
-            d.settings_ui.pairing.code = Some(Err(
-                "the server at /s has no remote listener bound because [policy] mode is unset"
-                    .to_owned(),
-            ));
-        });
-        rt.frame(0.0);
-        assert!(rt.find("pair-allow").is_some());
-        assert!(rt.find("pair-qr").is_none());
-        rt.update(|_, tx| tx.scroll_into_view("pair-allow"));
-        camera.shoot(&mut rt, "-enable");
-    }
-}
-
-#[test]
-fn search_finds_pairing_and_a_phone_never_offers_it() {
-    let mut rt = runtime((1100.0, 720.0), false);
-    rt.update(|d, _| d.settings_ui.query = rune::TextEdit::new("pair"));
-    rt.frame(0.0);
-    assert!(rt.find("pair-phone").is_some());
-    let mut rt = runtime((393.0, 852.0), true);
-    rt.update(|d, _| d.settings_category(Category::RemoteHosts));
-    rt.frame(0.0);
-    assert!(rt.find("pair-phone").is_none());
 }
 
 fn theme_scene(desk: &Desk, cx: &mut Cx<Desk>) -> El {

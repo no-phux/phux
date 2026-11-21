@@ -39,7 +39,7 @@ pub(crate) async fn abort_output_pumps(
     while output_pumps.join_next().await.is_some() {}
 }
 
-/// The typed SPEC §5 framing violation inside a transport read error, if
+/// The typed framing violation inside a transport read error, if
 /// any: every reader keeps the [`FramingError`] as the `io::Error` source.
 pub(super) fn framing_violation(err: &io::Error) -> Option<FramingError> {
     err.get_ref()
@@ -47,7 +47,7 @@ pub(super) fn framing_violation(err: &io::Error) -> Option<FramingError> {
         .copied()
 }
 
-/// SPEC §7.4: echo the nonce in PONG.
+/// Echo the nonce in PONG.
 pub(super) async fn reply_pong(out_tx: &mpsc::Sender<Outbound>, client_id: ClientId, nonce: u64) {
     debug!(nonce, "PING -> PONG");
     if out_tx
@@ -59,7 +59,7 @@ pub(super) async fn reply_pong(out_tx: &mpsc::Sender<Outbound>, client_id: Clien
     }
 }
 
-/// SPEC §7.3: answer DETACH with DETACHED and keep reading; the same
+/// Answer DETACH with DETACHED and keep reading; the same
 /// connection may attach again.
 pub(super) async fn detach_on_request(
     state: &SharedState,
@@ -108,14 +108,14 @@ pub(super) fn classify_attach_id(
 }
 
 /// Why one connection must end, and what the peer is owed on the way out
-/// (SPEC §9: `ERROR`, then `DETACHED`, then close).
+/// (`ERROR`, then `DETACHED`, then close).
 pub(crate) struct ConnectionClose {
     /// `Some(reason)` when the connection may be attached, so its pumps and
     /// consumer state are torn down first; `None` in the handshake phase.
     pub(in crate::runtime) attached_reason: Option<&'static str>,
     /// The `DETACHED` reason: `PROTOCOL_ERROR` for a violation,
     /// `AUTHENTICATION_FAILED` when HELLO's authentication outcome refused
-    /// the peer (workload-auth §7).
+    /// the peer.
     pub(in crate::runtime) detach_reason: DetachReason,
     pub(in crate::runtime) code: ErrorCode,
     pub(in crate::runtime) message: String,
@@ -335,7 +335,7 @@ impl ClientPlumbing {
         }
     }
 
-    /// End one connection for a protocol violation, in the order §9
+    /// End one connection for a protocol violation, in the order
     /// requires: tear down what may be attached, then `ERROR`, `DETACHED`,
     /// and close.
     async fn close(mut self, close: ConnectionClose, state: &SharedState, client_id: ClientId) {
