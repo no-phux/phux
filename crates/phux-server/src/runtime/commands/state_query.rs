@@ -50,7 +50,7 @@ pub(crate) fn handle_get_state(
                     .unwrap_or_else(empty_session_snapshot);
                 // An empty registry still reports listeners for `phux doctor`.
                 if snapshot.listeners().is_none() && s.has_remote_listener_report() {
-                    snapshot = snapshot.with_listeners(s.remote_listeners().clone());
+                    snapshot = snapshot.with_listeners(s.remote_listeners());
                 }
                 // L1 §7.3: the viewer's journal head at the cut, read under
                 // the snapshot's lock.

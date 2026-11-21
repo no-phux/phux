@@ -49,6 +49,8 @@ type QuicAccepted = (QuicMuxReader, QuicWriter, crate::auth::ConnectionIdentity)
 /// A QUIC listener: a quinn endpoint bound to a UDP socket.
 pub(crate) struct QuicListener {
     endpoint: quinn::Endpoint,
+    /// Replies the endpoint's socket could not send, for `phux doctor`.
+    replies: Arc<ReplyFailures>,
     admission: QuicAdmission,
     workload_registry: Option<Arc<crate::workload::ReloadingWorkloadRegistry>>,
     /// Where the enrollment ALPN issues into, when this listener offers it
@@ -97,8 +99,15 @@ impl QuicListener {
             client_ca,
             enrollment.is_some(),
         )?;
+        let replies = Arc::new(ReplyFailures::default());
         Ok(Self {
-            endpoint: server_endpoint(addr, tls, Some(MAX_CONCURRENT_BIDI_STREAMS))?,
+            endpoint: server_endpoint(
+                addr,
+                tls,
+                Some(MAX_CONCURRENT_BIDI_STREAMS),
+                replies.clone(),
+            )?,
+            replies,
             admission: tokens.map_or(QuicAdmission::Open, QuicAdmission::Store),
             workload_registry,
             enrollment: enrollment.map(Arc::new),
@@ -132,6 +141,11 @@ impl QuicListener {
 
     pub(crate) fn local_addr(&self) -> io::Result<SocketAddr> {
         self.endpoint.local_addr()
+    }
+
+    /// The replies this listener could not send.
+    pub(crate) fn replies(&self) -> Arc<ReplyFailures> {
+        self.replies.clone()
     }
 
     /// Adopt satellites that dial in under the satellite ALPN into `adopter`
@@ -169,11 +183,13 @@ pub(crate) enum QuicBindError {
 }
 
 /// A quinn server endpoint with phux's idle/keep-alive policy and, when
-/// given, a cap on client-opened bidi streams.
+/// given, a cap on client-opened bidi streams. Replies it cannot send are
+/// kept in `replies`.
 pub(super) fn server_endpoint(
     addr: SocketAddr,
     tls: rustls::ServerConfig,
     max_bidi_streams: Option<u64>,
+    replies: Arc<ReplyFailures>,
 ) -> Result<quinn::Endpoint, QuicBindError> {
     let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(tls)?;
     let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
@@ -186,7 +202,13 @@ pub(super) fn server_endpoint(
         transport.max_concurrent_bidi_streams(cap);
     }
     server_config.transport_config(Arc::new(transport));
-    Ok(quinn::Endpoint::server(server_config, addr)?)
+    let socket = replies::RecordingSocket::bind(addr, replies)?;
+    Ok(quinn::Endpoint::new_with_abstract_socket(
+        quinn::EndpointConfig::default(),
+        Some(server_config),
+        Arc::new(socket),
+        Arc::new(quinn::TokioRuntime),
+    )?)
 }
 
 /// The ALPN the handshake settled on.
@@ -383,6 +405,8 @@ pub(crate) use mux::*;
 pub(crate) use streams::*;
 
 mod enroll;
+mod replies;
+pub(crate) use replies::ReplyFailures;
 
 #[cfg(test)]
 mod enroll_adversarial;

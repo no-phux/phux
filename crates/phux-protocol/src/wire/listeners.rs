@@ -106,6 +106,12 @@ pub struct RemoteListenerSlot {
     /// a restart once it binds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waiting: Option<String>,
+    /// Set while this bound listener's recent replies could not leave the
+    /// host (a send error such as `No route to host`): how many, to which
+    /// peer, and the last error. A healthy bind with no return route to a
+    /// peer looks like this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_failure: Option<String>,
 }
 
 impl RemoteListenerSlot {
@@ -119,6 +125,7 @@ impl RemoteListenerSlot {
             addr: Some(addr.into()),
             disabled_reason: None,
             waiting: None,
+            reply_failure: None,
         }
     }
 
@@ -136,6 +143,7 @@ impl RemoteListenerSlot {
             addr,
             disabled_reason: Some(reason),
             waiting: None,
+            reply_failure: None,
         }
     }
 

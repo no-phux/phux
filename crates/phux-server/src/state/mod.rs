@@ -219,6 +219,9 @@ pub struct ServerState {
     retained: retained::RetainedTable,
     /// Remote listener bind outcomes for `GET_STATE` and `phux doctor`.
     remote_listeners: phux_protocol::wire::RemoteListenersReport,
+    /// The configured QUIC listener's failed replies, read into
+    /// [`Self::remote_listeners`].
+    quic_replies: Option<std::sync::Arc<crate::transport::quic::ReplyFailures>>,
     /// The operation dedupe record (ADR-0053, ADR-0126), with its own lock
     /// so the input lane need not take this one.
     operation_dedupe: crate::runtime::operation_dedupe::OperationDedupe,

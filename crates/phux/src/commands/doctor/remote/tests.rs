@@ -321,3 +321,39 @@ fn a_listener_waiting_for_its_address_warns() {
     );
     assert!(check.hint.expect("hint").contains("no restart"));
 }
+
+/// A bound, healthy listener whose replies cannot leave the host is its own
+/// finding: the listener check still passes, and the remedy is the host's
+/// return route, not pairing or a restart. Without a failed reply there is
+/// no finding.
+#[test]
+fn failed_replies_on_a_healthy_listener_are_a_distinct_finding() {
+    use phux_protocol::wire::{RemoteListenerSlot, RemoteListenerTransport, RemoteListenersReport};
+    let mut quic = RemoteListenerSlot::bound(RemoteListenerTransport::Quic, "0.0.0.0:8788");
+    let healthy = RemoteListenersReport::new().with_listeners(vec![quic.clone()]);
+    assert!(remote_replies_check(&healthy).is_none());
+
+    quic.reply_failure = Some(
+        "12 sends failed, the last to 100.124.2.116:51234 3s ago: No route to host (os error 65)"
+            .to_owned(),
+    );
+    let routeless = RemoteListenersReport::new().with_listeners(vec![quic]);
+    assert_eq!(
+        remote_listeners_check(Some(&routeless), true).status,
+        Status::Pass,
+        "the listener itself is healthy"
+    );
+    let check = remote_replies_check(&routeless).expect("a finding");
+    assert_eq!(check.name, "remote-replies");
+    assert_eq!(check.status, Status::Warn);
+    assert!(
+        check.detail.contains("No route to host") && check.detail.contains("100.124.2.116"),
+        "{}",
+        check.detail
+    );
+    let hint = check.hint.expect("hint");
+    assert!(
+        hint.contains("route") && hint.contains("No re-pair"),
+        "{hint}"
+    );
+}
