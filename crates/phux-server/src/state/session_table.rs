@@ -68,13 +68,6 @@ impl SessionTable {
         self.last_touched.get(&session).copied()
     }
 
-    /// Whether this server has any session-touch history, even if every
-    /// touched session has since gone away.
-    #[must_use]
-    pub(crate) fn has_touch_history(&self) -> bool {
-        !self.last_touched.is_empty()
-    }
-
     /// Mark `session` as touched by attach/input/focus activity.
     pub(super) fn touch(&mut self, session: SessionId) {
         let touched_at = self.next_touch_timestamp;
