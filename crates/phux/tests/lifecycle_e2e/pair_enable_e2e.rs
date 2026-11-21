@@ -23,6 +23,11 @@ const UNSET_CONFIG: &str = "\
 width = 28
 ";
 
+/// A private address for the client to see, so the unset-mode question and
+/// refusals run on a CI host with no tailnet. Nothing binds it: the mode
+/// stays unset in these tests.
+const OVERLAY: (&str, &str) = ("PHUX_OVERLAY_ADDRS", "100.64.0.1");
+
 const PAIRED_CONFIG: &str = "\
 # keep-me
 [sidebar]
@@ -41,7 +46,8 @@ fn pair_without_a_terminal_names_enable_and_leaves_the_config() {
     let (_config, path, server) = unset_server("pairno");
 
     for args in [vec!["pair"], vec!["pair", "--qr"]] {
-        let (code, stdout, stderr) = server.run(&args);
+        let (code, stdout, stderr) =
+            common::Out::of(server.cmd(&args).env(OVERLAY.0, OVERLAY.1)).into_parts();
         assert_ne!(code, 0, "{args:?} should refuse: {stderr}");
         assert!(stdout.is_empty(), "{args:?} minted nothing: {stdout}");
         assert!(
@@ -214,6 +220,7 @@ fn drive_pty(
     let mut client = common::PtyAttach::start_client("pair", &pair_args, (120, 40), |_, cmd| {
         cmd.env("XDG_STATE_HOME", &server.xdg.state);
         cmd.env("XDG_CONFIG_HOME", &server.xdg.config);
+        cmd.env(OVERLAY.0, OVERLAY.1);
     });
     let deadline = Instant::now() + Duration::from_secs(20);
     while !client.painted().contains(needle) {

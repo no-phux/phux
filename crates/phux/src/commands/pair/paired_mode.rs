@@ -6,6 +6,8 @@
 use std::io::{BufRead, Write as _};
 use std::path::Path;
 
+use phux_protocol::wire::ListenerDisabledReason;
+
 use super::{
     ListenerQueryError, LiveListeners, NO_BOUND_LISTENER, query_live_listeners, rebind_server,
 };
@@ -206,9 +208,12 @@ pub(super) fn ensure_remote_listener(
         Ok(Some(_)) => return Err(other_unbound_refusal(socket, &disabled)),
         Ok(None) => {}
     }
-    // Paired mode auto-binds overlay addresses only: without one, the write
-    // and restart would change the config and still leave nothing bound.
-    if !setup.has_private_address() {
+    // Paired mode binds overlay addresses, and any `--quic`/`--listen` the
+    // unset mode refused. With neither, the write and restart would change
+    // the config and still leave nothing bound.
+    let refused = ListenerDisabledReason::PolicyModeRefused.as_str();
+    let explicit = disabled.iter().any(|row| row.contains(refused));
+    if !explicit && !setup.has_private_address() {
         return Err(no_private_address_refusal(socket));
     }
     if !accept_paired_mode(enable, json, prompt) {
@@ -382,6 +387,24 @@ mod tests {
             assert_eq!(prompt.prompted, 0);
             assert!(!setup.wrote && !setup.rebound);
         }
+    }
+
+    /// A `--quic` the unset mode refused is something paired mode can bind,
+    /// so a missing overlay address does not block `--enable`.
+    #[test]
+    fn a_refused_explicit_listener_binds_without_a_private_address() {
+        let socket = Path::new("/run/phux.sock");
+        let mut prompt = ScriptedPrompt::silent();
+        let mut setup = ScriptedSetup::unbound(None);
+        setup.private = false;
+        setup.queries = std::collections::VecDeque::from([
+            Err(ListenerQueryError::Unbound {
+                disabled: vec!["quic at 127.0.0.1:4433 disabled (policy_mode_refused)".into()],
+            }),
+            Ok(live(None, Some("127.0.0.1:4433"))),
+        ]);
+        ensure_remote_listener(socket, true, false, &mut prompt, &mut setup).expect("bound");
+        assert!(setup.wrote && setup.rebound);
     }
 
     /// A mode that is already set, with nothing bound, is a different cause:

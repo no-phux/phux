@@ -98,9 +98,8 @@ session (or `--session NAME`). It never creates a session on its own.
   **New code**. It says which network the phone uses (tailnet, local
   network or relay). When remote access is off it says what turning it on
   means and waits for **Allow phones to connect** (`--enable`). With no
-  tailnet it changes nothing: it offers **Get Tailscale** and asks again
-  when the window comes back. Other refusals are one sentence, with the
-  CLI's words behind **Copy details**. **Paired
+  tailnet it offers **Get Tailscale** instead; other refusals are one
+  sentence with **Copy details**. **Paired
   devices** lists what `phux pair ls` says can connect; **Revoke** runs
   `phux pair revoke` so that device can't connect again.
 - **Updates.** Settings → **About & Updates** controls automatic checks,
