@@ -28,6 +28,24 @@ args = sys.argv[1:]
 mode = os.environ["MODE"]
 with (root / "calls").open("a") as out:
     out.write(json.dumps([name, *args]) + "\n")
+
+def seats_reply():
+    if mode == "malformed-seats":
+        return "not seat JSON"
+    countfile = root / "seat-count"
+    count = int(countfile.read_text()) + 1 if countfile.exists() else 1
+    countfile.write_text(str(count))
+    capabilities = 2
+    if mode == "late-seat":
+        capabilities = 0 if count < 3 else 2
+    if mode == "no-keyboard":
+        capabilities = 0
+    (root / "seat0-capabilities").write_text(str(capabilities))
+    with (root / "wayland-fixture-seats.log").open("a") as out:
+        out.write(json.dumps({"capabilities": capabilities,
+                              "app_exists": (root / "rune-fake.pid").exists()}) + "\n")
+    return json.dumps([{"name": "seat0", "capabilities": capabilities}])
+
 if name in ("fcitx5", "rune-fake"):
     pidfile = root / (name + ".pid")
     pending = root / (name + ".pid.tmp")
@@ -40,6 +58,7 @@ if name in ("fcitx5", "rune-fake"):
         assert not args, "fcitx must remain foreground"
     else:
         assert args == ["--socket", "fake.socket", "--session", "fresh-ime"]
+        assert int((root / "seat0-capabilities").read_text()) & 2, "app spawned without keyboard"
         # The app and the fake keyboard both emit fixture protocol records.
         fcntl.fcntl(1, fcntl.F_SETFL, fcntl.fcntl(1, fcntl.F_GETFL) | os.O_APPEND)
         print("[1.0] zwp_text_input_v3@12.enter(wl_surface@4)", flush=True)
@@ -69,6 +88,9 @@ elif name == "dbus-send":
         else:
             print(f'  string "IC program:sh.phux.rune frontend:{frontend} cap:52 focus:{focus}"')
 elif name == "swaymsg":
+    if args == ["-r", "-t", "get_seats"]:
+        print(seats_reply())
+        sys.exit(0)
     if mode == "tree-command-fails":
         sys.exit(6)
     if mode == "hung-tree":
@@ -193,7 +215,7 @@ class WaylandImeTests(unittest.TestCase):
 
     def assert_failure_evidence(self, stages, files):
         self.assertTrue(any(s["stage"] == "failure-liveness" for s in stages))
-        for artifact in ("tree-failure.json", "context-failure.log",
+        for artifact in ("seats-failure.json", "tree-failure.json", "context-failure.log",
                          "engine-failure.log", "state-failure.log", "terminal-failure.log"):
             self.assertIn("wayland-ime-" + artifact, files)
         self.assertIn("full snapshot row", files["wayland-ime-terminal-failure.log"])
@@ -280,6 +302,72 @@ class WaylandImeTests(unittest.TestCase):
             command.assert_called_once_with(ime.KEYS, "wayland-ime-wtype.log", timeout=5)
             wait.assert_called_once()
             self.assertEqual(driver.deadline, 202)
+
+    def test_seat0_keyboard_bit_accepts_keyboard_with_other_capabilities(self):
+        for capabilities in (2, 3, 6, 7):
+            with self.subTest(capabilities=capabilities):
+                reply = json.dumps([{"name": "seat0", "capabilities": capabilities}])
+                self.assertTrue(ime.seat_keyboard_ready(reply))
+
+    def test_pointer_touch_zero_and_wrong_seat_do_not_satisfy_keyboard_readiness(self):
+        cases = [[], [{"name": "seat1", "capabilities": 2}]]
+        for capabilities in (0, 1, 4):
+            cases.append([{"name": "seat1", "capabilities": 2},
+                          {"name": "seat0", "capabilities": capabilities}])
+        for seats in cases:
+            with self.subTest(seats=seats):
+                self.assertFalse(ime.seat_keyboard_ready(json.dumps(seats)))
+
+    def test_malformed_seat_schema_and_capability_types_fail_closed(self):
+        replies = ["not JSON", "", "{}", "null", "2", "[null]", "[2]"]
+        for capabilities in (None, True, "2", 2.0, -1):
+            replies.append(json.dumps([{"name": "seat0", "capabilities": capabilities}]))
+        replies.append('[{"name": "seat0"}]')
+        replies.append('[{"name": "seat0", "capabilities": 2}, null]')
+        for reply in replies:
+            with self.subTest(reply=reply):
+                with self.assertRaises(ValueError):
+                    ime.seat_keyboard_ready(reply)
+
+    def test_late_keyboard_is_observed_before_app_spawn(self):
+        result, calls, stages, files, _ = self.run_driver("late-seat")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        observations = [json.loads(line) for line in
+                        files["wayland-fixture-seats.log"].splitlines()]
+        self.assertEqual([o["capabilities"] for o in observations], [0, 0, 2])
+        self.assertTrue(all(not o["app_exists"] for o in observations))
+        order = [(s["stage"], s.get("name")) for s in stages]
+        self.assertLess(order.index(("seat-ready", None)), order.index(("process-start", "app")))
+        self.assertEqual(json.loads(files["wayland-ime-seats-before.json"]),
+                         [{"name": "seat0", "capabilities": 2}])
+        self.assertEqual(calls.count(["swaymsg", "-r", "-t", "get_seats"]), 3)
+        self.assertEqual([c for c in calls if c[0] == "wtype"], [ime.KEYS])
+
+    def test_no_keyboard_exhausts_shared_deadline_without_app_or_typing(self):
+        result, calls, stages, files, elapsed = self.run_driver("no-keyboard")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("seat0 keyboard capability before app spawn", result.stderr)
+        names = [c[0] for c in calls]
+        self.assertNotIn("rune-fake", names)
+        self.assertNotIn("wtype", names)
+        self.assertEqual([s["name"] for s in stages if s["stage"] == "process-start"], ["fcitx"])
+        self.assertGreaterEqual(elapsed, ime.STARTUP_SECONDS)
+        self.assertEqual(json.loads(files["wayland-ime-seats-before.json"]),
+                         [{"name": "seat0", "capabilities": 0}])
+        self.assertEqual(json.loads(files["wayland-ime-seats-failure.json"]),
+                         [{"name": "seat0", "capabilities": 0}])
+        self.assert_failure_evidence(stages, files)
+
+    def test_malformed_seat_reply_retains_raw_failure_evidence_without_app(self):
+        result, calls, stages, files, _ = self.run_driver("malformed-seats")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("seat0 keyboard capability before app spawn", result.stderr)
+        names = [c[0] for c in calls]
+        self.assertNotIn("rune-fake", names)
+        self.assertNotIn("wtype", names)
+        self.assertEqual(files["wayland-ime-seats-before.json"], "not seat JSON\n")
+        self.assertEqual(files["wayland-ime-seats-failure.json"], "not seat JSON\n")
+        self.assert_failure_evidence(stages, files)
 
 
 if __name__ == "__main__":

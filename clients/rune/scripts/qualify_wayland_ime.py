@@ -46,6 +46,25 @@ def focused_context(info):
     return False
 
 
+def keyboard_capability(capabilities):
+    if type(capabilities) is not int or capabilities < 0:
+        raise ValueError("seat0 capabilities must be a nonnegative integer")
+    return bool(capabilities & 2)
+
+
+def seat_keyboard_ready(reply):
+    seats = json.loads(reply)
+    if not isinstance(seats, list):
+        raise ValueError("GET_SEATS must return a seat list")
+    ready = False
+    for seat in seats:
+        if not isinstance(seat, dict):
+            raise ValueError("GET_SEATS entries must be seat objects")
+        if seat.get("name") == "seat0":
+            ready = keyboard_capability(seat.get("capabilities"))
+    return ready
+
+
 class Diagnostic:
     def __init__(self, scratch, binary, phux, socket, session):
         self.root = Path(scratch)
@@ -115,6 +134,11 @@ class Diagnostic:
             "wayland-ime-bus.log")
         return re.search(r"\bboolean true\b", info) is not None
 
+    def seat_ready(self):
+        reply = self.command(["swaymsg", "-r", "-t", "get_seats"],
+                             "wayland-ime-seats-before.json")
+        return seat_keyboard_ready(reply)
+
     def focused(self):
         tree = self.command(["swaymsg", "-t", "get_tree"], "wayland-ime-tree-before.json")
         return rune_focused(json.loads(tree), self.children["app"].pid)
@@ -147,6 +171,10 @@ class Diagnostic:
             "wayland-ime-bus-pid.log")
         if re.search(r"\buint32 " + str(self.children["fcitx"].pid) + r"\b", owner) is None:
             raise RuntimeError("fcitx D-Bus owner PID does not match the owned daemon")
+        # D-Bus ownership can precede fcitx's virtual keyboard. On Sway 1.9,
+        # creating text-input only after mapping can miss the focus replay.
+        self.wait_for("seat0 keyboard capability before app spawn", self.seat_ready)
+        self.event("seat-ready", seat="seat0", artifact="wayland-ime-seats-before.json")
         self.spawn("app", self.app_args, "wayland-ime-app.log")
         self.wait_for("restarted Rune PID has keyboard focus", self.focused)
         self.wait_for("focused Rune Wayland context (DebugInfo)", self.context_ready)
@@ -183,6 +211,7 @@ class Diagnostic:
                    processes={n: {"pid": p.pid, "returncode": p.poll()}
                               for n, p in self.children.items()})
         captures = [
+            (["swaymsg", "-r", "-t", "get_seats"], "wayland-ime-seats-failure.json"),
             (["swaymsg", "-t", "get_tree"], "wayland-ime-tree-failure.json"),
             (CONTROLLER, "wayland-ime-context-failure.log"),
             (["fcitx5-remote", "-n"], "wayland-ime-engine-failure.log"),
@@ -191,7 +220,7 @@ class Diagnostic:
             (["grim", str(self.root / "wayland-ime-failed.png")], "wayland-ime-grim.log"),
         ]
         for args, artifact in captures:
-            # A bounded diagnostic tail is separate from (never extends) startup.
+            # Seven failure-only captures, each capped at 1s; never extends startup.
             self.deadline = time.monotonic() + 1
             try:
                 self.command(args, artifact)
