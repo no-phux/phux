@@ -180,7 +180,7 @@ pub(super) fn apply_session_state(
     while let Some((field_id, v)) = dec.read_field()? {
         match field_id {
             field::session_state::LIFETIME => {
-                lifetime = SessionLifetime::from_u8(Decoder::new(v).read_u8()?);
+                lifetime = SessionLifetime::known(Decoder::new(v).read_u8()?);
             }
             field::session_state::KEY => {
                 key = <[u8; 16]>::try_from(v).ok().and_then(SessionKey::new);

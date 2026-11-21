@@ -159,11 +159,10 @@ fn snapshot_session_link_and_lifetime_ride_the_extension_block() {
     assert_round_trip(&state(keep.with_sessions(keep_sessions)));
 }
 
-/// An organization event whose body names an unknown enum value or misses a
-/// required field stays opaque, like any unknown event, instead of failing the
-/// frame.
+/// An organization event naming a value this build does not define keeps
+/// its shape with that one value `Unknown`, instead of failing the frame.
 #[test]
-fn malformed_organization_events_are_opaque() {
+fn an_organization_event_with_a_newer_value_reads_it_as_unknown() {
     let frame = FrameKind::Event {
         terminal: None,
         event: AgentEvent::SessionLifetimeChanged {
@@ -185,7 +184,13 @@ fn malformed_organization_events_are_opaque() {
         panic!("event");
     };
     assert!(
-        matches!(event, AgentEvent::Unknown { tag: 0x13, .. }),
+        matches!(
+            event,
+            AgentEvent::SessionLifetimeChanged {
+                lifetime: SessionLifetime::Unknown(0x09),
+                ..
+            }
+        ),
         "{event:?}"
     );
 }

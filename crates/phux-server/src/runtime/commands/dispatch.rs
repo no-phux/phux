@@ -1,10 +1,19 @@
 //! Local command dispatch.
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the split command modules share the parent command namespace"
-)]
 
-use super::*;
+use phux_protocol::ids::ResourceId;
+use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode, RolePolicy};
+
+use crate::runtime::commands::attach_terminal::{
+    handle_attach_terminal, subscribe_deferred_attach,
+};
+use crate::runtime::commands::kill::{
+    handle_close_tab_resources, handle_kill_resource_if, handle_kill_terminal,
+    handle_kill_terminals, kill_attribution,
+};
+use crate::runtime::commands::lifecycle::{handle_detach_clients, handle_detach_terminal};
+use crate::runtime::commands::resource_events::handle_subscribe_terminal_events;
+use crate::runtime::commands::routing::CommandContext;
+use crate::runtime::commands::state_query::{handle_get_perf, handle_get_state_federated};
 
 /// Run a routed command on this server and return its result.
 #[allow(

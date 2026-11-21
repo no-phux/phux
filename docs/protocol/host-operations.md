@@ -74,7 +74,7 @@ advertises `CHECKOUT`; otherwise it refuses `UNSUPPORTED_SATELLITE_ROUTE`.
 
 The command body ends with an optional contract byte, the answer contract
 the client reads; an older client writes none (contract 1) and an older
-server skips it. `features_ext.CHECKOUT_V2` (`0x20000000`) says the server
+server skips it. `features_ext.CHECKOUT_V2` (`0x40000000`) says the server
 answers contract 2:
 
 - `show` with a 4 to 64 hex digit `sha` answers `commit`: the commit, its

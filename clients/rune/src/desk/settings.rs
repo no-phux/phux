@@ -1,7 +1,7 @@
 //! The settings window's state: what is remembered between launches and how
 //! changing it reaches the runtime.
 
-use phux_config_core::RuneCfg;
+use phux_config_core::{ClientConfig, RuneCfg};
 use rune::prefs::Prefs;
 use rune::{Key, KeyEvent, Tx};
 
@@ -127,16 +127,16 @@ impl Settings {
     }
 }
 
-/// `config.toml`'s `[rune]` table, and what was wrong with the file if it
-/// did not load; its `[[sessions]]` colours are learned on the way. Tests
+/// `config.toml` as a client reads it, and what was wrong with the file if
+/// it did not load; its `[[sessions]]` colours are learned on the way. Tests
 /// never read the real file.
-pub(super) fn load_file() -> (RuneCfg, Option<String>) {
+pub(super) fn load_file() -> (ClientConfig, Option<String>) {
     if cfg!(test) {
-        return (RuneCfg::default(), None);
+        return (ClientConfig::default(), None);
     }
     match phux_config_core::loader::load_client() {
-        Ok(config) => {
-            crate::session_color::learn(config.sessions);
+        Ok(mut config) => {
+            crate::session_color::learn(std::mem::take(&mut config.sessions));
             if let Some(socket) = config.rune.ssh_agent.as_deref().map(str::trim) {
                 let home = std::env::var_os("HOME").unwrap_or_default();
                 let socket = socket.strip_prefix("~/").map_or_else(
@@ -145,9 +145,9 @@ pub(super) fn load_file() -> (RuneCfg, Option<String>) {
                 );
                 phux_client_runtime::connection::set_ssh_agent(socket);
             }
-            (config.rune, None)
+            (config, None)
         }
-        Err(err) => (RuneCfg::default(), Some(err.to_string())),
+        Err(err) => (ClientConfig::default(), Some(err.to_string())),
     }
 }
 

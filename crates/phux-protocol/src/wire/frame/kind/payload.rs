@@ -30,6 +30,7 @@ impl FrameKind {
             Self::ClipboardReply { .. } => field::clipboard_reply::encode(self, enc),
             Self::FrameAck { .. } => field::frame_ack::encode(self, enc),
             Self::ViewportResize { .. } => field::viewport_resize::encode(self, enc),
+            Self::ViewportColors { .. } => field::viewport_colors::encode(self, enc),
             Self::Attached { .. } => field::attached::encode(self, enc),
             Self::AttachReady { .. } => field::attach_ready::encode(self, enc),
             Self::BootstrapBegin { .. }

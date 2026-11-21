@@ -36,6 +36,7 @@ pub(crate) const FRAME_MODULES: &[(&str, &[(&str, u32)])] = &[
     ("input_terminal_reply", input_terminal_reply::FIELDS),
     ("frame_ack", frame_ack::FIELDS),
     ("viewport_resize", viewport_resize::FIELDS),
+    ("viewport_colors", viewport_colors::FIELDS),
     ("attached", attached::FIELDS),
     ("attach_ready", attach_ready::FIELDS),
     ("detached", detached::FIELDS),

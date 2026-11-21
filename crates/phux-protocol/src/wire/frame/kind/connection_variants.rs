@@ -177,6 +177,14 @@ macro_rules! connection_frames {
         viewport: ViewportInfo,
     },
 
+    /// `VIEWPORT_COLORS` — the attached client's outer terminal changed its
+    /// default colours (a theme switch), as the `HELLO` palette reports
+    /// them. Sent only to a server advertising `VIEWPORT_COLORS`.
+    ViewportColors {
+        /// The new OSC 10/11 defaults.
+        colors: crate::caps::TerminalDefaultColors,
+    },
+
     /// `ATTACHED` — metadata inventory for an accepted attach.
     ///
     /// Resource content follows separately through bootstrap streams. This

@@ -18,6 +18,8 @@ use libghostty_vt::effect::{
     SemanticPrompt, SemanticPromptKind,
 };
 
+use phux_terminal_api::agent_detect::ProgramNote;
+
 use super::program_status::{Record, Update, state_name};
 
 /// One effect the engine reported, in stream order.
@@ -39,6 +41,9 @@ pub(super) enum Effect {
     Progress(String),
     /// A valid OSC 7501 report. A full reset arrives as a root clear.
     ProgramStatus(Update),
+    /// `OSC 9 ; text` or `OSC 777 ; notify ; title ; body`: a desktop
+    /// notification the program asked for.
+    Note(ProgramNote),
     /// BEL in ground state, not a control-string terminator.
     Bell,
 }
@@ -74,6 +79,15 @@ pub(super) fn install(
                 if let Some(update) = program_status(report) {
                     pending.borrow_mut().push(Effect::ProgramStatus(update));
                 }
+            }
+        })?
+        .on_desktop_notification({
+            let pending = Rc::clone(pending);
+            move |_term, note| {
+                pending.borrow_mut().push(Effect::Note(ProgramNote {
+                    title: String::from_utf8_lossy(note.title()).into_owned(),
+                    body: String::from_utf8_lossy(note.body()).into_owned(),
+                }));
             }
         })?
         .on_bell({
@@ -156,7 +170,7 @@ impl PromptTracker {
                 self.facet.state = PromptState::AtPrompt;
                 self.facet.last_exit_code = *exit_code;
             }
-            Effect::Progress(_) | Effect::ProgramStatus(_) | Effect::Bell => {}
+            Effect::Progress(_) | Effect::ProgramStatus(_) | Effect::Note(_) | Effect::Bell => {}
         }
     }
 
@@ -258,6 +272,28 @@ mod tests {
             tracker.observe(&effect);
         }
         assert_eq!(tracker.facet().last_exit_code, None);
+    }
+
+    #[test]
+    fn osc_9_and_777_are_notes_and_osc_9_4_stays_progress() {
+        let note = |title: &str, body: &str| {
+            Effect::Note(ProgramNote {
+                title: title.to_owned(),
+                body: body.to_owned(),
+            })
+        };
+        assert_eq!(
+            effects(&[
+                b"\x1b]9;formatted 3 files\x07",
+                b"\x1b]777;notify;build;failed\x1b\\",
+                b"\x1b]9;4;1;50\x07",
+            ]),
+            [
+                note("", "formatted 3 files"),
+                note("build", "failed"),
+                Effect::Progress("4;1;50".to_owned()),
+            ]
+        );
     }
 
     #[test]

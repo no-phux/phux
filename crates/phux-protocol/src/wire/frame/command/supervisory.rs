@@ -91,7 +91,7 @@ macro_rules! supervisory_commands {
         cells: bool,
         /// Rendering for `ScreenState.rendered`: low 7 bits select
         /// ([`GET_SCREEN_FORMAT_SELECTOR_MASK`]; `0` none, `1` HTML, `2` VT,
-        /// others `INVALID_COMMAND`), high bit
+        /// others refused `UNSUPPORTED`), high bit
         /// ([`GET_SCREEN_FORMAT_UNWRAP`]) joins soft-wrapped rows. Trailing
         /// `u8`; absent decodes as `0`. An older peer ignores it, which the
         /// client detects from an absent `rendered`.
@@ -157,7 +157,8 @@ macro_rules! supervisory_commands {
     /// Stop the server with a clean exit, so a supervisor keeps it stopped
     /// (ADR-0080). **Local only**: refused off the Unix socket. A client MUST
     /// see [`ServerFeature::Shutdown`](crate::caps::ServerFeature::Shutdown)
-    /// first, since an older server drops the tag silently.
+    /// first: a 1.x server without it answers `UNSUPPORTED` and keeps
+    /// running.
     Shutdown,
     /// Take an exclusive input lease on `terminal_id` (ADR-0033): only the
     /// holder's input reaches the PTY; others are acked and dropped.

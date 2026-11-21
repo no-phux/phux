@@ -36,6 +36,7 @@ pub fn frame_rule(frame: &FrameKind) -> &'static Rule {
         | FrameKind::InputTerminalReply { .. }
         | FrameKind::ClipboardReply { .. } => &F_INPUT,
         FrameKind::ViewportResize { .. } => &F_VIEWPORT_RESIZE,
+        FrameKind::ViewportColors { .. } => &F_VIEWPORT_COLORS,
         FrameKind::SpawnResource {
             satellite,
             owner_terminal,

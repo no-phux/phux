@@ -1,24 +1,32 @@
 //! [`TerminalApp`]: the Terminal facet's commands and stream bootstrap.
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the split command modules share the parent command namespace"
-)]
 
 use futures_util::FutureExt as _;
 use futures_util::future::LocalBoxFuture;
-use phux_protocol::wire::frame::SpawnError;
+use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode, FrameKind};
 use phux_terminal_api::actor::TerminalResource as _;
 
-use super::*;
-use crate::resource::ResourceKind;
+use crate::runtime::apps::terminal::commands::agent_reports::{
+    handle_report_agent_state, handle_report_asked,
+};
+use crate::runtime::apps::terminal::commands::attach_resource::AttachResourceSession;
+use crate::runtime::apps::terminal::commands::input_lease::{
+    handle_acquire_input, handle_release_input,
+};
+use crate::runtime::apps::terminal::commands::input_route::handle_route_input;
+use crate::runtime::apps::terminal::commands::screen::{
+    handle_get_screen, handle_get_terminal_state,
+};
+use crate::runtime::apps::terminal::commands::signal::handle_signal_terminal;
 use crate::runtime::apps::{
     FrameAdmission, KindResume, NO_TERMINAL_PROFILE, ResourceApp, ResourceFrame, ResourceSpawn,
     StreamBootstrap, UpgradeCut,
 };
+use crate::runtime::commands::{AttachResourceFailure, CommandContext};
 use crate::runtime::connections::dispatch::FrameFlow;
 use crate::runtime::operation_dedupe::OperationClaim;
+use crate::state::SharedState;
 
-/// Serves [`ResourceKind::Terminal`].
+/// Serves [`ResourceKind::Terminal`](crate::resource::ResourceKind::Terminal).
 #[derive(Debug)]
 pub(crate) struct TerminalApp;
 
