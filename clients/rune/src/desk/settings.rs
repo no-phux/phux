@@ -128,7 +128,8 @@ impl Settings {
 }
 
 /// `config.toml`'s `[rune]` table, and what was wrong with the file if it
-/// did not load; its `[[sessions]]` colours are learned on the way. Tests
+/// did not load; its `[[sessions]]` colours and `[[icons]]` are learned on
+/// the way. Tests
 /// never read the real file.
 pub(super) fn load_file() -> (RuneCfg, Option<String>) {
     if cfg!(test) {
@@ -137,6 +138,7 @@ pub(super) fn load_file() -> (RuneCfg, Option<String>) {
     match phux_config_core::loader::load_client() {
         Ok(config) => {
             crate::session_color::learn(config.sessions);
+            phux_config_core::pane_icon::learn(config.icons);
             if let Some(socket) = config.rune.ssh_agent.as_deref().map(str::trim) {
                 let home = std::env::var_os("HOME").unwrap_or_default();
                 let socket = socket.strip_prefix("~/").map_or_else(

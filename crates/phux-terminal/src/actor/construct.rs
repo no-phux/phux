@@ -277,6 +277,8 @@ impl TerminalActor {
             program_status: super::program_status::ProgramStatus::default(),
             program_status_sink: None,
             resume: super::resume::Resume::default(),
+            icon: super::osc_scan::IconScan::default(),
+            icon_owed: None,
             agent_detect: None,
             agent_state_sink: None,
             live_session_probe: None,

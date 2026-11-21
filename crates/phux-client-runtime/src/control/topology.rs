@@ -87,6 +87,9 @@ pub struct PaneDescriptor {
     /// `phux.pane-occupant/v1` record; `None` until it is read, and for a
     /// satellite pane, whose record stays on its own server.
     pub foreground: Option<String>,
+    /// The icon a program in the terminal set, from the same record's
+    /// `icon`; `None` when none did.
+    pub icon: Option<String>,
 }
 
 /// One `AgentSession` resource: a record stream bound to a Terminal.
@@ -224,6 +227,7 @@ impl Topology {
                     activation: None,
                     exec: None,
                     foreground: None,
+                    icon: None,
                 }
             })
             .collect();

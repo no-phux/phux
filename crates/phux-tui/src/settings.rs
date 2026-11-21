@@ -295,6 +295,7 @@ impl TuiSettings {
         crate::attach::set_dim_unfocused(cfg.chrome.dim_unfocused);
         crate::attach::set_server_restores(cfg.restore.on_start);
         phux_client::session_order::set_recent_first(cfg.sidebar.recent_first);
+        phux_config::pane_icon::learn(cfg.icons.clone());
         Self {
             which_key: WhichKey {
                 enabled: keybindings.which_key,
