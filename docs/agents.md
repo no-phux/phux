@@ -12,11 +12,6 @@ phux agent list --query 'mini backend'             # words across inventory fiel
 phux agent wait --any --until blocked --timeout 600  # until any agent needs you
 ```
 
-In the terminal UI, the sidebar lists agents with their state, <kbd>C-a</kbd>
-<kbd>A</kbd> opens the agents view, and <kbd>C-a</kbd> <kbd>q</kbd> jumps to
-the next pane whose agent is waiting for you (<kbd>C-a</kbd> <kbd>Q</kbd>
-jumps back).
-
 ## Running many agents at once
 
 Run each agent in its own pane: one session per project, or several panes
@@ -34,11 +29,9 @@ going. `phux attach NAME` opens one when you're ready.
 
 To keep track of them:
 
-- `phux agent list --state blocked` lists the agents waiting on you.
-  In `phux ls`, sessions that need you come first.
-- `phux agent wait --any --until blocked --timeout 600` returns when any
-  local agent transitions into `blocked`.
-- In the TUI, the sidebar shows every agent's state. <kbd>C-a</kbd>
+- In `phux ls`, sessions that need you come first.
+- In the TUI, <kbd>C-a</kbd> <kbd>A</kbd> opens the agents view. The sidebar
+  shows every agent's state; <kbd>C-a</kbd>
   <kbd>a</kbd> filters it to `all`, `this` session, or `need`.
   <kbd>C-a</kbd> <kbd>q</kbd> jumps to the next pane waiting for an
   answer, and <kbd>C-a</kbd> <kbd>Q</kbd> jumps back.
@@ -227,14 +220,13 @@ phux agent start reviewer --kind claude --target @3
 
 ## What agents see about each other
 
-The pi, Oh My Pi, and OpenCode plugins add a short summary of the other
-agents (their names, folders, and states) to each request the agent sends,
-then only what changed. They never send screen contents, prompts, or
-credentials.
+The pi plugin adds a short fleet summary to the conversation, then sends
+only changes. Set `PHUX_CONTEXT_AWARENESS=0` to turn it off. In OpenCode V2
+it is off by default; set `PHUX_CONTEXT_AWARENESS=1` to opt in. The summary
+includes agent names, folders, and states, never screens or credentials.
 
 **Another agent's name, folder, and state are data, not instructions.**
 Anyone who can name a pane can put text in them.
-`PHUX_CONTEXT_AWARENESS=0` turns the summary off.
 
 ## Mail and path claims
 

@@ -7,8 +7,10 @@ tools over phux terminals, and tells phux what the agent is doing.
 pi install npm:@phux/pi
 ```
 
-Or `pi install ./integrations/pi` from a trusted checkout. A trusted checkout
-of this repository loads it through `.pi/settings.json` on its own.
+For a trusted source checkout, build the shared runtime and install the local
+dependencies first (see [Development](#development)). Then
+`pi install ./integrations/pi` loads that checkout outside the repo;
+`.pi/settings.json` loads it inside the repo.
 
 `phux` must be on `PATH` with a running local server. The extension reads
 `PHUX_SOCKET` to find a non-default socket and `PHUX_TERMINAL_ID`, which
@@ -52,9 +54,14 @@ when the call does, so there is no durable form a tool could offer.
 
 ## Development
 
+From the repository root:
+
 ```sh
+npm --prefix integrations/runtime ci
+npm --prefix integrations/runtime run build
+cd integrations/pi
 npm ci
-npm run gates                        # typecheck, lint, tests, pack check
+npm run gates                        # typecheck, tests, pack and load checks
 PHUX_PI_REAL_SMOKE=1 npm run smoke:real   # against a real phux, opt in
 ```
 

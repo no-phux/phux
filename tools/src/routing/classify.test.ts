@@ -54,7 +54,6 @@ test.each<[string[], Surface[]]>([
   [["scripts/examples-smoke.sh"], ["phux"]],
   [["scripts/agent-verify/run.py"], ["phux"]],
   [["scripts/test-agent-examples.py"], ["phux"]],
-  [["scripts/record-readme.sh"], ["phux"]],
   [["clients/phux-web/src/lib.rs"], ["web"]],
   [["tools/src/web/browser.ts"], ["web"]],
   [["clients/phux-vt-web/vendor/ghostty-vt.wasm"], ["web", "web_engine"]],
