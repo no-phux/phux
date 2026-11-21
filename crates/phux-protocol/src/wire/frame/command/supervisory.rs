@@ -229,6 +229,11 @@ macro_rules! supervisory_commands {
         terminal_id: ResourceId,
         /// The operation.
         request: crate::checkout::CheckoutRequest,
+        /// The answer contract the client reads
+        /// ([`CHECKOUT_CONTRACT`](crate::checkout::CHECKOUT_CONTRACT)): a
+        /// trailing byte, absent (1) from an older client and skipped by an
+        /// older server.
+        contract: u8,
     },
     /// Send one HTTP request to a service on this server's host, or on the
     /// named satellite's (`docs/host-services.md`). The reply is

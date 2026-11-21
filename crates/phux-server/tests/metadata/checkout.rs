@@ -66,6 +66,7 @@ async fn checkout(
         Command::Checkout {
             terminal_id: terminal_id.clone(),
             request,
+            contract: phux_protocol::checkout::CHECKOUT_CONTRACT,
         },
     )
     .await;
@@ -171,8 +172,16 @@ fn checkout_methods_read_and_stage_the_terminals_checkout() {
             },
         )
         .await;
+        let CheckoutAnswer::Log(log) = log else {
+            panic!("expected a log: {log:?}");
+        };
+        assert!(log.commits.len() == 1 && !log.has_more);
+        assert!(advertises(&hello, ServerFeatureExt::CheckoutV2));
+        let sha = log.commits[0].sha.clone();
+        let shown = checkout(&mut stream, 11, &pane, CheckoutRequest::Show { sha }).await;
         assert!(
-            matches!(&log, CheckoutAnswer::Log(log) if log.commits.len() == 1 && !log.has_more)
+            matches!(&shown, CheckoutAnswer::Commit(c) if c.files.iter().any(|f| f.path == "src/lib.rs")),
+            "{shown:?}"
         );
 
         assert_outside_paths_refused(&mut stream, &pane).await;
@@ -183,6 +192,7 @@ fn checkout_methods_read_and_stage_the_terminals_checkout() {
             Command::Checkout {
                 terminal_id: ResourceId::local(9_999),
                 request: CheckoutRequest::Status,
+                contract: phux_protocol::checkout::CHECKOUT_CONTRACT,
             },
         )
         .await;

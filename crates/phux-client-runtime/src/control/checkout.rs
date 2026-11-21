@@ -1,8 +1,10 @@
 //! Typed checkout methods: correlated Git reads and index writes on the
 //! checkout a Terminal is in, with a lossless answer queue.
 
+use phux_protocol::caps::ServerFeatureExt;
 use phux_protocol::checkout::{
-    CheckoutAnswer, CheckoutArea, CheckoutRequest, MAX_CHECKOUT_REQUEST_BYTES, encoded_request_len,
+    CHECKOUT_CONTRACT, CheckoutAnswer, CheckoutArea, CheckoutRequest, MAX_CHECKOUT_REQUEST_BYTES,
+    encoded_request_len,
 };
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode, FrameKind};
@@ -59,10 +61,13 @@ pub struct CheckoutResponse {
 impl ControlPlane {
     /// Ask the server that owns `terminal_id` for one checkout operation.
     /// Returns zero, sending nothing, when disconnected, when the server
-    /// predates `CHECKOUT`, when the request is malformed or too large, or
-    /// when the bounded answer queue is full.
+    /// predates `CHECKOUT` (or `CHECKOUT_V2`, for `show`), when the request
+    /// is malformed or too large, or when the bounded answer queue is full.
     pub fn checkout(&mut self, terminal_id: ResourceId, request: CheckoutRequest) -> u32 {
         if !self.checkout_ready() || !sendable(&request) {
+            return 0;
+        }
+        if matches!(request, CheckoutRequest::Show { .. }) && !self.checkout_v2() {
             return 0;
         }
         let request_id = self.next_request_id();
@@ -73,6 +78,7 @@ impl ControlPlane {
             command: Command::Checkout {
                 terminal_id,
                 request,
+                contract: CHECKOUT_CONTRACT,
             },
         });
         request_id
@@ -81,6 +87,14 @@ impl ControlPlane {
     /// Drain checkout answers. No answer is dropped to make room.
     pub fn take_checkout_answers(&mut self) -> Vec<CheckoutResponse> {
         std::mem::take(&mut self.extensions.checkout_answers)
+    }
+
+    /// Whether the server answers `show`.
+    #[must_use]
+    pub fn checkout_v2(&self) -> bool {
+        self.server
+            .as_ref()
+            .is_some_and(|server| server.has_ext(ServerFeatureExt::CheckoutV2))
     }
 
     fn checkout_ready(&self) -> bool {

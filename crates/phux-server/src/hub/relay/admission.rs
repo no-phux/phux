@@ -76,6 +76,24 @@ impl RelaySession {
                 ),
             });
         }
+        if matches!(
+            command,
+            Command::Checkout {
+                request: phux_protocol::checkout::CheckoutRequest::Show { .. },
+                ..
+            }
+        ) && !self
+            .satellite_features_ext
+            .contains(phux_protocol::caps::ServerFeatureExt::CheckoutV2)
+        {
+            return Some(CommandResult::Error {
+                code: ErrorCode::UnsupportedSatelliteRoute,
+                message: format!(
+                    "satellite {} lacks CHECKOUT_V2; nothing was forwarded",
+                    self.host
+                ),
+            });
+        }
         self.keyed_capability_rejection(command)
     }
 

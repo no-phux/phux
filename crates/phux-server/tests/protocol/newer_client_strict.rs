@@ -141,6 +141,7 @@ fn newer_commands() -> Vec<(&'static str, Vec<u8>)> {
     let checkout_tag = command_body(Command::Checkout {
         terminal_id: ResourceId::local(1),
         request: CheckoutRequest::Status,
+        contract: phux_protocol::checkout::CHECKOUT_CONTRACT,
     })[0];
     let mut checkout = vec![checkout_tag];
     checkout.extend_from_slice(&LOCAL_1);

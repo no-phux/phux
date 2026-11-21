@@ -13,7 +13,8 @@ use super::{CheckoutError, GH_TIMEOUT, Result};
 use crate::bounded::{Run, RunError, Stop};
 
 const MAX_GH_OUTPUT: usize = 4 * 1024 * 1024;
-const FIELDS: &str = "number,title,state,url,headRefName,isDraft,reviewDecision,statusCheckRollup";
+const FIELDS: &str =
+    "number,title,state,url,headRefName,baseRefName,isDraft,reviewDecision,statusCheckRollup";
 const GH_ENV: [(&str, &str); 5] = [
     ("GH_PROMPT_DISABLED", "1"),
     ("GH_NO_UPDATE_NOTIFIER", "1"),
@@ -71,6 +72,8 @@ pub struct PullRequest {
     pub state: PrState,
     pub url: String,
     pub head_ref: String,
+    /// The branch it merges into.
+    pub base_ref: String,
     pub is_draft: bool,
     pub review_decision: Option<ReviewDecision>,
     pub checks: Vec<Check>,
@@ -88,6 +91,8 @@ struct GhPr {
     url: String,
     #[serde(default)]
     head_ref_name: String,
+    #[serde(default)]
+    base_ref_name: String,
     #[serde(default)]
     is_draft: bool,
     #[serde(default)]
@@ -203,6 +208,7 @@ pub(super) fn parse(json: &[u8]) -> Result<PullRequest> {
         },
         url: pr.url,
         head_ref: pr.head_ref_name,
+        base_ref: pr.base_ref_name,
         is_draft: pr.is_draft,
         review_decision: pr
             .review_decision
@@ -271,7 +277,7 @@ mod tests {
     const SAMPLE: &str = r#"{
       "number": 1678, "title": "docs: compare", "state": "OPEN",
       "url": "https://github.com/no-phux/phux/pull/1678",
-      "headRefName": "docs/compare", "isDraft": false, "reviewDecision": "",
+      "headRefName": "docs/compare", "baseRefName": "main", "isDraft": false, "reviewDecision": "",
       "statusCheckRollup": [
         {"__typename":"CheckRun","name":"checks","workflowName":"ci","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"https://x/1"},
         {"__typename":"CheckRun","name":"build","workflowName":"ci","status":"IN_PROGRESS","conclusion":"","detailsUrl":""},
@@ -287,6 +293,7 @@ mod tests {
         assert_eq!(pr.number, 1678);
         assert_eq!(pr.state, PrState::Open);
         assert_eq!(pr.head_ref, "docs/compare");
+        assert_eq!(pr.base_ref, "main");
         assert_eq!(pr.review_decision, None);
         let states: Vec<_> = pr
             .checks

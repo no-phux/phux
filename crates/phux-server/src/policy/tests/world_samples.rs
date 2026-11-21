@@ -475,6 +475,7 @@ fn samples(world: &World, agent: &WireResourceId) -> Vec<FrameKind> {
         command(Command::Checkout {
             terminal_id: t.clone(),
             request: phux_protocol::checkout::CheckoutRequest::Status,
+            contract: phux_protocol::checkout::CHECKOUT_CONTRACT,
         }),
         command(Command::ServiceHttpClose { exchange: 1 }),
         command(Command::Forward {

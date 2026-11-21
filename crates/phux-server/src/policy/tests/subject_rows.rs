@@ -419,6 +419,7 @@ fn rows(world: &mut World) -> Vec<Row> {
                 request: phux_protocol::checkout::CheckoutRequest::Stage {
                     paths: vec!["a.txt".to_owned()],
                 },
+                contract: phux_protocol::checkout::CHECKOUT_CONTRACT,
             }),
             "input",
         ),
