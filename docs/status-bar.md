@@ -257,7 +257,13 @@ its record, so every client honours it, and it survives `phux upgrade`
 and a restart. `phux resource show @4` prints it as `notify`. A session,
 group, or tag target sets the panes it holds when you run the command;
 panes added later start `on`. A program's [notes](./scripting.md#notes)
-follow the mode too.
+follow the mode too. To start a quiet watcher, mute it right after you
+create it:
+
+```sh
+id=$(phux new --json -s watch -- cargo watch | jq -r .terminal_id)
+phux notify-mode "@$id" off
+```
 
 ## Debugging
 
