@@ -645,11 +645,7 @@ fn probe_window(name: &str, active: bool) -> WindowInfo {
     WindowInfo {
         name: name.to_owned(),
         active,
-        zoomed: false,
-        attention: false,
-        branch: None,
-        exited: None,
-        badge: None,
+        ..WindowInfo::default()
     }
 }
 

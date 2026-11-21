@@ -67,6 +67,12 @@ pub(super) enum Query {
     #[cfg(feature = "engine")]
     ReleaseAnchor(ResourceId, u64, Sender<Result<(), EngineError>>),
     #[cfg(feature = "engine")]
+    AnchorPoint(
+        ResourceId,
+        u64,
+        Sender<Result<Option<EngineDocumentPoint>, EngineError>>,
+    ),
+    #[cfg(feature = "engine")]
     ClearPresentation(ResourceId, u64, u64, Sender<Result<(), EngineError>>),
     #[cfg(feature = "engine")]
     PinViewport(ResourceId, u64, Sender<Result<EngineOutcome, EngineError>>),

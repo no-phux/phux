@@ -52,6 +52,7 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `chrome.dim-unfocused` | `false` |
 | `chrome.min-pane-cols` | `40` |
 | `chrome.new-tab-after-current` | `false` |
+| `chrome.title` | `"{session}: {window}"` |
 | `defaults.agent-log-bytes` | `4194304` |
 | `defaults.approval-max-pending` | `64` |
 | `defaults.approval-max-pending-total` | `1024` |
@@ -292,6 +293,8 @@ which-key-delay-ms = 400
 "o" = "next-pane"
 ";" = "previous-pane"
 "=" = "last-pane"
+# i numbers every pane for a moment; press a number to jump to that pane.
+"i" = "display-panes"
 
 # Tabs inside one split (`phux slot add` makes them): } and { show the
 # focused slot's next or previous tab, in this client only.
@@ -301,8 +304,10 @@ which-key-delay-ms = 400
 # Zoom the focused pane to fill the tab, and back.
 "z" = "toggle-zoom"
 
-# Show or hide the sidebar.
+# Show or hide the sidebar. e moves the keyboard into it: arrows or j/k
+# move, Enter opens the row, Esc goes back to the pane.
 "b" = "toggle-sidebar"
+"e" = "focus-sidebar"
 
 # Copy mode: scroll back, search, select, and copy. Vi keys and arrows move, y
 # copies, Esc leaves.
@@ -391,6 +396,10 @@ which-key-delay-ms = 400
 "g" = "give-input"
 "f" = { action = "signal-terminal", signal = "freeze" }
 "u" = { action = "signal-terminal", signal = "resume" }
+
+# y types into every pane of this tab at once, until you press it again;
+# each pane's title rule says [sync] while it is on.
+"y" = "sync-panes"
 
 # Resize the focused pane by 5 cells. R enters resize mode, below, to
 # keep resizing without pressing the prefix each time.
@@ -820,12 +829,18 @@ right = [
 # `dim-unfocused`: in a tab with several panes, the ones without focus
 # are painted faint. How faint is up to your terminal.
 #
+# `title`: the window title of the terminal phux runs in, which your
+# window manager and window switcher show. `{session}` is the session
+# name and `{window}` the tab in view. The old title comes back on
+# detach; "" leaves the title alone.
+#
 # [chrome]
 # compact-cols = 64
 # compact-rows = 18
 # min-pane-cols = 40
 # new-tab-after-current = false
 # dim-unfocused = false
+# title = "{session}: {window}"
 
 # Agent notifications. The TUI
 # posts one when an agent becomes blocked or asks for you, and when an

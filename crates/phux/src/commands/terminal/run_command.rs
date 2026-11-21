@@ -164,6 +164,8 @@ async fn launch(
     authority: AuthorityId,
     request: &TerminalCreate,
 ) -> Result<TerminalCreated, LaunchFailure> {
+    // LAUNCH_BUDGET, not the shorter process-wide reply deadline, bounds a create.
+    conn.set_reply_deadline(None);
     let sent = tokio::time::timeout(LAUNCH_BUDGET, terminal::create(conn, request)).await;
     match sent {
         Ok(Ok(receipt)) if receipt.authority == authority.to_string() => return Ok(receipt),

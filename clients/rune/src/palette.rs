@@ -67,7 +67,7 @@ pub enum Mode {
 }
 
 /// The most rows the palette renders; the highlight stays within them.
-pub const ROWS: usize = 60;
+pub const ROWS: usize = 64;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Item {
@@ -383,16 +383,44 @@ pub fn score(query: &str, text: &str) -> Option<(i32, Vec<usize>)> {
     Some((score, matched))
 }
 
+/// How well `item` matches `query`: its title, else (less) its detail.
+fn scored(item: &Item, query: &str) -> Option<(i32, Vec<usize>)> {
+    score(query, &item.title)
+        .or_else(|| score(query, &item.detail).map(|(s, _)| (s - 6, Vec::new())))
+}
+
 /// The items matching `query`, best first. An empty query keeps list order.
 pub fn rank(items: Vec<Item>, query: &str) -> Vec<Hit> {
+    rank_grouped(items, &[], query)
+}
+
+/// A tab's terminals, which the palette lists under the tab's title.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TabGroup {
+    pub title: String,
+    pub session: String,
+    pub panes: Vec<ResourceId>,
+}
+
+/// [`rank`], with each terminal of `tabs` under a heading for its tab,
+/// placed where its best terminal ranks. A tab whose title matches brings
+/// all its terminals, and a matched terminal brings its tab's heading.
+pub fn rank_grouped(items: Vec<Item>, tabs: &[TabGroup], query: &str) -> Vec<Hit> {
+    let tab_of = |item: &Item| match &item.target {
+        Target::Terminal { id, .. } if item.kind == "terminal" => {
+            tabs.iter().position(|tab| tab.panes.contains(id))
+        }
+        _ => None,
+    };
+    let titled: Vec<_> = tabs.iter().map(|tab| score(query, &tab.title)).collect();
     let mut hits: Vec<Hit> = items
         .into_iter()
         .filter_map(|item| {
-            let (title_score, matched) = score(query, &item.title)
-                .or_else(|| score(query, &item.detail).map(|(s, _)| (s - 6, Vec::new())))?;
+            let by_tab = || Some((titled[tab_of(&item)?].as_ref()?.0 - 1, Vec::new()));
+            let (score, matched) = scored(&item, query).or_else(by_tab)?;
             Some(Hit {
                 item,
-                score: title_score,
+                score,
                 matched,
             })
         })
@@ -400,7 +428,42 @@ pub fn rank(items: Vec<Item>, query: &str) -> Vec<Hit> {
     if !query.trim().is_empty() {
         hits.sort_by_key(|hit| std::cmp::Reverse(hit.score));
     }
-    hits
+    if tabs.is_empty() {
+        return hits;
+    }
+    let at: Vec<_> = hits.iter().map(|hit| tab_of(&hit.item)).collect();
+    let mut placed = vec![false; tabs.len()];
+    let mut out = Vec::with_capacity(hits.len() + tabs.len());
+    for (hit, tab) in hits.iter().zip(&at) {
+        let Some(tab) = *tab else {
+            out.push(hit.clone());
+            continue;
+        };
+        if std::mem::replace(&mut placed[tab], true) {
+            continue;
+        }
+        let group = &tabs[tab];
+        out.push(Hit {
+            item: Item {
+                title: group.title.clone(),
+                detail: group.session.clone(),
+                kind: "tab",
+                target: Target::Terminal {
+                    id: group.panes[0].clone(),
+                    session: group.session.clone(),
+                },
+            },
+            score: 0,
+            matched: titled[tab].clone().map(|(_, m)| m).unwrap_or_default(),
+        });
+        let panes = hits.iter().zip(&at).filter(|(_, at)| **at == Some(tab));
+        out.extend(panes.map(|(hit, _)| {
+            let mut hit = hit.clone();
+            hit.item.kind = "pane";
+            hit
+        }));
+    }
+    out
 }
 
 #[cfg(test)]

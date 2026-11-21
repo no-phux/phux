@@ -209,6 +209,9 @@ pub struct ChromeCfg {
     pub new_tab_after_current: bool,
     /// Paint the panes you are not typing in faint.
     pub dim_unfocused: bool,
+    /// The outer terminal's window title while attached: `{session}` and
+    /// `{window}` are substituted; empty leaves the title alone.
+    pub title: String,
 }
 
 impl Default for ChromeCfg {
@@ -219,6 +222,7 @@ impl Default for ChromeCfg {
             min_pane_cols: 40,
             new_tab_after_current: false,
             dim_unfocused: false,
+            title: "{session}: {window}".to_owned(),
         }
     }
 }
@@ -285,7 +289,9 @@ pub enum NotifyMode {
 
 /// `[notifications] from-programs`: whether a pane's own desktop
 /// notification sequences (OSC 9, OSC 777) reach anyone.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, schemars::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum FromPrograms {
     /// Ignored: no escape sequence a pane prints raises a notification.

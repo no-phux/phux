@@ -80,6 +80,17 @@ impl EngineHandle {
         self.request_view(view, move |id, reply| Query::TrackAnchor(id, point, reply))?
     }
 
+    /// Where an anchor of this view is now, in history coordinates (space
+    /// `0`, the row a [`Scroll::Row`] puts at the viewport's top); `None`
+    /// once the history holding it was pruned.
+    pub fn view_anchor_point(
+        &self,
+        view: ViewId,
+        anchor: u64,
+    ) -> Result<Option<EngineDocumentPoint>, EngineError> {
+        self.request_view(view, move |id, reply| Query::AnchorPoint(id, anchor, reply))?
+    }
+
     /// Release an anchor owned by this view.
     pub fn release_view_anchor(&self, view: ViewId, anchor: u64) -> Result<(), EngineError> {
         self.request_view(view, move |id, reply| {

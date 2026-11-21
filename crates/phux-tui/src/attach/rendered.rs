@@ -215,6 +215,7 @@ mod tests {
             branch: None,
             exited: None,
             badge: None,
+            glyphs: crate::render::theme::Glyphs::default(),
         }
     }
 

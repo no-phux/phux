@@ -210,6 +210,16 @@ pub(super) const ROWS: &[SettingSpec] = &[
                  one taking your keys stands out. Your terminal decides how faint text looks.",
         applies: Applies::LiveReload,
     },
+    SettingSpec {
+        key: "chrome.title",
+        section: SettingSection::Chrome,
+        kind: SettingKind::Text,
+        summary: "Window title of the terminal phux runs in",
+        detail: "Shown by your window manager and window switcher while attached. {session} \
+                 becomes the session name and {window} the tab in view. The title you had \
+                 comes back on detach. Empty leaves the title alone.",
+        applies: Applies::LiveReload,
+    },
     // -- [notifications] ----------------------------------------------------
     SettingSpec {
         key: "notifications.mode",

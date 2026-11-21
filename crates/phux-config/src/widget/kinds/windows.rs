@@ -20,7 +20,8 @@ pub const SPEC: WidgetKindSpec = WidgetKindSpec {
               window waiting on a human answer a ` !` marker, a window \
               holding a retained (exited) pane a dim ` x` / ` xN` marker, \
               and every tab is a click target committing `select-window` \
-              for its index — in any slot, top or bottom bar. Overflow \
+              for its index (the shown tab's goes back to the last one) \
+              — in any slot, top or bottom bar. Overflow \
               arrows select the nearest hidden window; long active labels \
               keep these arrows when space permits.",
     options: &[

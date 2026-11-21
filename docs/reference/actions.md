@@ -36,7 +36,7 @@ The **Palette** column is the command-palette section the action is offered unde
 | `next-window` | Tab |  | Switch to the next tab |
 | `previous-window` | Tab |  | Switch to the previous tab |
 | `last-window` | Tab |  | Switch back to the tab you were on before this one |
-| `select-window` | — | `index` (0-based tab position) | Focus the tab at a given index |
+| `select-window` | — | `index` (0-based tab position); `toggle = true` goes to the last tab when `index` is the one shown | Focus the tab at a given index |
 | `move-window` | — | `index` (0-based destination) or `delta` (signed slots, e.g. `-1`); clamped to the ends | Move the active tab to another position in the tab order |
 | `rename-window` | Tab | `name?` (bare opens an interactive prompt) | Rename the active tab (interactive prompt) |
 | `lock-window` | Tab |  | Lock the active tab: closing it or its last pane is refused until unlocked |
@@ -63,6 +63,7 @@ The **Palette** column is the command-palette section the action is offered unde
 | `previous-slot-tab` | Pane |  | Show the focused split's previous tab |
 | `toggle-zoom` | Pane |  | Zoom the focused pane to fill the tab (toggle) |
 | `toggle-sidebar` | phux |  | Show or hide the sidebar (toggle) |
+| `focus-sidebar` | phux |  | Move the keyboard into the sidebar: arrows or j/k move, Enter opens, Esc returns |
 | `command-palette` | — |  | Open the fuzzy commands and help finder |
 | `context-menu` | Pane |  | Open the context menu for the focused pane |
 | `window-picker` | Tab |  | Pick a tab from all sessions (grouped) |
@@ -70,6 +71,7 @@ The **Palette** column is the command-palette section the action is offered unde
 | `agent-fleet` | phux |  | Every agent, its state, and whether it needs you |
 | `agents-filter` | phux | `scope` (`all`, `session`, `attention`, or `next`), `host` (`all`, `here`, a satellite name, or `next`); both optional | Narrow the sidebar's Agents panel: every agent, this session's, or the ones that need you, on one machine or all of them. Bare, steps to the next scope |
 | `focus-pane` | — | `window` (window index), `pane` (DFS leaf ordinal) | Focus a pane by window index and DFS leaf ordinal |
+| `display-panes` | Pane |  | Number every pane in the tab; press a number to focus that pane |
 | `next-attention` | Pane |  | Jump to the next pane waiting for an answer |
 | `return-from-attention` | Pane |  | Return to where attention navigation started |
 | `switch-session` | — | `name`; `window?` (window index to select after the switch); `pane?` (DFS leaf ordinal to focus in that window); `host?` (a satellite of this hub: opens that session's active pane here through the relay instead of re-attaching) | Re-attach this client to another session |
