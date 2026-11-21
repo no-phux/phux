@@ -3,10 +3,8 @@
 //! The words and parsing live in `crate::onboarding`; the view in
 //! `ui/onboarding`.
 //!
-//! ponytail: the step lives in this app's settings, so another client (the
-//! terminal UI, mobile) doesn't know where you got to. Rex keeps it in a
-//! server-side onboarding pane so every client agrees; move it there once a
-//! second client grows onboarding.
+//! ponytail: the step lives in the server state directory so every client on
+//! this host reads the same file. Prefs remain a mirror.
 
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -29,6 +27,43 @@ mod start;
 
 const DONE_KEY: &str = "onboarding_done";
 const STEP_KEY: &str = "onboarding_step";
+
+/// The server state directory in a real run. Tests pass their own directory
+/// so nothing here reads the user's onboarding file.
+#[cfg(not(test))]
+pub(super) fn default_state_dir() -> Option<PathBuf> {
+    Some(phux_config::instance::state_dir())
+}
+
+#[cfg(test)]
+pub(super) fn default_state_dir() -> Option<PathBuf> {
+    None
+}
+
+fn to_shared(step: Step) -> phux_config::onboarding::OnboardingStep {
+    use phux_config::onboarding::OnboardingStep as Shared;
+    match step {
+        Step::Welcome => Shared::Welcome,
+        Step::Look => Shared::Look,
+        Step::Agents => Shared::Agents,
+        Step::Migrate => Shared::Migrate,
+        Step::Machines => Shared::Machines,
+        Step::Done => Shared::Done,
+    }
+}
+
+fn from_shared(step: phux_config::onboarding::OnboardingStep) -> Step {
+    use phux_config::onboarding::OnboardingStep as Shared;
+    match step {
+        Shared::Welcome => Step::Welcome,
+        Shared::Look => Step::Look,
+        Shared::Agents => Step::Agents,
+        Shared::Migrate => Step::Migrate,
+        Shared::Machines => Step::Machines,
+        Shared::Done => Step::Done,
+    }
+}
+
 /// How often the grant sheet asks again, in seconds.
 const POLL_EVERY: f64 = 1.0;
 const QUICK: Duration = Duration::from_secs(10);
@@ -159,24 +194,46 @@ impl Onboarding {
 }
 
 impl Desk {
-    /// The first connection of an install that hasn't been through it, picking
-    /// up at the step it was left on; else the tour's tip. A run aimed at a
-    /// server (development, qualification) or the phone form never opens it
-    /// on its own.
+    /// The first connection of an install that hasn't been through it.
+    /// Done when prefs say so or the shared step is `done`; otherwise the
+    /// shared step, then this app's saved step, then Welcome. A run aimed
+    /// at a server, or the phone or bare form, never opens it on its own.
     pub(crate) fn first_run(&mut self) {
-        let done = self.prefs.get::<bool>(DONE_KEY).unwrap_or(false);
         if self.quick.is_some() {
             return;
         }
-        if done || self.launch.aimed || self.phone.is_some() || self.bare.is_some() {
+        let prefs_done = self.prefs.get::<bool>(DONE_KEY).unwrap_or(false);
+        let shared = self.shared_step();
+        if prefs_done
+            || matches!(shared, Some(Step::Done))
+            || self.launch.aimed
+            || self.phone.is_some()
+            || self.bare.is_some()
+        {
             return self.offer_tour();
         }
-        let step = self.prefs.get::<String>(STEP_KEY);
-        self.open_onboarding_at(
-            step.as_deref()
+        let step = shared.unwrap_or_else(|| {
+            self.prefs
+                .get::<String>(STEP_KEY)
+                .as_deref()
                 .and_then(Step::from_id)
-                .unwrap_or(Step::Welcome),
-        );
+                .unwrap_or(Step::Welcome)
+        });
+        self.open_onboarding_at(step);
+    }
+
+    fn shared_step(&self) -> Option<Step> {
+        self.onboarding_dir
+            .as_deref()
+            .and_then(phux_config::onboarding::read)
+            .map(from_shared)
+    }
+
+    fn write_shared(&self, step: Step) {
+        let Some(dir) = self.onboarding_dir.as_deref() else {
+            return;
+        };
+        let _ = phux_config::onboarding::write(dir, to_shared(step));
     }
 
     /// From the palette or Settings: from the top, whatever was done before.
@@ -208,6 +265,7 @@ impl Desk {
         self.onboarding.grant_sheet = false;
         self.onboarding.copied = false;
         let _ = self.prefs.set(STEP_KEY, step.id());
+        self.write_shared(step);
         if step == Step::Machines {
             self.list_machines();
         }
@@ -238,6 +296,7 @@ impl Desk {
         self.onboarding.grant_sheet = false;
         let _ = self.prefs.set(DONE_KEY, &true);
         let _ = self.prefs.set(STEP_KEY, Step::Welcome.id());
+        self.write_shared(Step::Done);
     }
 
     pub fn toggle_keep_alive(&mut self) {
