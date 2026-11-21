@@ -16,6 +16,7 @@ Every exit code the `phux` binary uses, from the canonical in-code table that al
 | `1` | Failure: no server, no such target, or the verb itself failed. |
 | `2` | Usage error, or the server refused the request. |
 | `3` | Unanswerable: the selector was resolved against a partial view of the fleet (a federation satellite was unreachable). Retry once the link is back — unlike 1, the target may exist. |
+| `4` | Unreachable: the server did not answer within PHUX_TIMEOUT (default 10s), or a remote host never answered the dial. Unlike 1, this is no answer: retry once the server responds. |
 | `124` | `phux wait` gave up because `--timeout` expired. |
 | `125` | `phux run` gave up because `--timeout` expired; otherwise `run` mirrors the exit code of the command it ran, so `phux run … && next` composes like a shell. |
 

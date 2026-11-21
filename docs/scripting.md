@@ -451,6 +451,7 @@ Every command uses the same codes:
 | `1` | Failure: no server, no such target, or the command failed. |
 | `2` | Usage error, or the server refused the request. |
 | `3` | A linked machine didn't answer, so the target couldn't be resolved. Retry later. |
+| `4` | The server didn't answer within `PHUX_TIMEOUT` (default 10 seconds; `0` waits forever), or a remote host never answered. The JSON `error.code` is `timeout` for the deadline. |
 | `124` | `wait`, `watch`, or `resource wait` timed out. |
 | `125` | `run` timed out. Otherwise `run` exits with the command's own status. |
 

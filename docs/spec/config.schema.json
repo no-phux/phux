@@ -397,6 +397,21 @@
       },
       "type": "object"
     },
+    "FromPrograms": {
+      "description": "`[notifications] from-programs`: whether a pane's own desktop\nnotification sequences (OSC 9, OSC 777) reach anyone.",
+      "oneOf": [
+        {
+          "const": "off",
+          "description": "Ignored: no escape sequence a pane prints raises a notification.",
+          "type": "string"
+        },
+        {
+          "const": "notes",
+          "description": "Each becomes the pane's note, as if the program ran `phux notify`.",
+          "type": "string"
+        }
+      ]
+    },
     "HookEntry": {
       "additionalProperties": false,
       "description": "One `[[hooks.<event>]]` entry (`docs/hooks.md`).",
@@ -626,6 +641,15 @@
           "default": true,
           "description": "Notify when an agent that was working finishes.",
           "type": "boolean"
+        },
+        "from-programs": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/FromPrograms"
+            }
+          ],
+          "default": "off",
+          "description": "What the server does with OSC 9 and OSC 777 from a pane. Read at\nserver start."
         },
         "mode": {
           "allOf": [
@@ -1773,6 +1797,7 @@
       "default": {
         "blocked": true,
         "done": true,
+        "from-programs": "off",
         "mode": "terminal",
         "sound": false,
         "suppress-focused": true,

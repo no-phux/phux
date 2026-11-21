@@ -178,6 +178,17 @@ pub fn transport_refusal(
             format!("{START_SERVER_REMEDY}; {doctor}"),
         );
     }
+    if let AttachError::Io(io_err) = err
+        && err.is_timeout()
+    {
+        return Refusal::new(
+            codes::TIMEOUT,
+            format!("{verb}: {io_err}"),
+            format!(
+                "raise PHUX_TIMEOUT (seconds; 0 waits forever) if the server is only slow; {doctor}"
+            ),
+        );
+    }
     match err {
         AttachError::Disconnected => Refusal::new(
             codes::SERVER_DISCONNECTED,

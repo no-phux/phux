@@ -7,13 +7,15 @@
 //! and turns a `SessionError` into an [`AttachError`] with nothing more
 //! than a variant-for-variant conversion.
 
+use std::future::Future;
 use std::path::Path;
 use std::sync::Mutex;
+use std::time::Duration;
 
 pub use phux_client_runtime::session::{
     Answer, Dial, METADATA_WINDOW, NegotiatedBootstrap, Refusal, Reply,
 };
-use phux_client_runtime::session::{Session, control_caps};
+use phux_client_runtime::session::{Session, SessionError, control_caps};
 pub use phux_dial::CertTrust;
 pub use phux_dial::quic::QuicDial;
 pub use phux_dial::ws::WsDial;
@@ -41,6 +43,10 @@ use super::outcome::AttachError;
 #[derive(Debug)]
 pub struct Connection {
     session: Session,
+    /// Who answers, for a timeout message: the socket path, host, or URL.
+    peer: String,
+    /// Bound on each request/response exchange; `None` waits forever.
+    reply_deadline: Option<Duration>,
 }
 
 /// Product token the interactive client sends in `HELLO.client_name`.
@@ -79,6 +85,61 @@ pub fn install_client_name(name: Option<String>) {
     *INSTALLED_CLIENT_NAME
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = name;
+}
+
+// One bound for the handshake and every request/response exchange, set
+// once by the CLI from `PHUX_TIMEOUT`. `None` (the library default) waits
+// forever, as before.
+static INSTALLED_DEADLINE: Mutex<Option<Duration>> = Mutex::new(None);
+
+/// Bound later handshakes and request/response exchanges by `deadline`.
+///
+/// Process-wide; `None` waits forever. A deadline that fires is an
+/// [`AttachError::Io`] of kind `TimedOut` naming the server and the
+/// duration (see [`AttachError::is_timeout`]).
+pub fn install_deadline(deadline: Option<Duration>) {
+    *INSTALLED_DEADLINE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = deadline;
+}
+
+fn installed_deadline() -> Option<Duration> {
+    *INSTALLED_DEADLINE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Who `dial` reaches, as a person names it.
+fn peer_label(dial: &Dial) -> String {
+    match dial {
+        Dial::Uds(path) => path.display().to_string(),
+        #[cfg(windows)]
+        Dial::Wsl { socket, .. } => socket.display().to_string(),
+        Dial::Ssh { destination, .. } => destination.clone(),
+        Dial::Quic(quic) => quic.addr.to_string(),
+        Dial::Ws(ws) => ws.url.clone(),
+    }
+}
+
+/// Await `exchange`, bounded by `deadline` when set; on expiry, a
+/// `TimedOut` I/O error worded `"{what} timed out after {deadline}"`.
+/// Callers pass the exchange boxed so the timer does not grow every
+/// caller's future past the large-future lint.
+async fn bounded<T>(
+    deadline: Option<Duration>,
+    what: impl FnOnce() -> String,
+    exchange: impl Future<Output = Result<T, SessionError>>,
+) -> Result<T, AttachError> {
+    let Some(deadline) = deadline else {
+        return Ok(exchange.await?);
+    };
+    match tokio::time::timeout(deadline, exchange).await {
+        Ok(result) => Ok(result?),
+        Err(_) => Err(AttachError::Io(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!("{} timed out after {deadline:?}", what()),
+        ))),
+    }
 }
 
 /// The `HELLO.client_name` [`Connection::connect`] and [`Connection::connect_dial`] send.
@@ -160,8 +221,41 @@ impl Connection {
         client_name: String,
         client_caps: ClientCapabilities,
     ) -> Result<Self, AttachError> {
-        let session = Session::connect(dial, client_name, client_caps).await?;
-        Ok(Self { session })
+        let peer = peer_label(dial);
+        let deadline = installed_deadline();
+        let session = bounded(
+            deadline,
+            || format!("connecting to the phux server at {peer}"),
+            Box::pin(Session::connect(dial, client_name, client_caps)),
+        )
+        .await?;
+        Ok(Self {
+            session,
+            peer,
+            reply_deadline: deadline,
+        })
+    }
+
+    /// Bound each later request/response exchange on this connection by
+    /// `deadline` (`None` waits forever), replacing the installed one. For a
+    /// long-lived stream after its handshake, or a caller with its own,
+    /// longer budget. After a timeout the connection is out of step; drop it.
+    pub const fn set_reply_deadline(&mut self, deadline: Option<Duration>) {
+        self.reply_deadline = deadline;
+    }
+
+    /// Await one request's reply under [`Self::set_reply_deadline`].
+    async fn reply<T>(
+        deadline: Option<Duration>,
+        peer: &str,
+        exchange: impl Future<Output = Result<T, SessionError>>,
+    ) -> Result<T, AttachError> {
+        bounded(
+            deadline,
+            || format!("waiting for the phux server at {peer} to answer"),
+            exchange,
+        )
+        .await
     }
 
     /// An unnegotiated connection over an already-connected [`UnixStream`]:
@@ -171,6 +265,8 @@ impl Connection {
     pub fn from_stream(stream: UnixStream) -> Self {
         Self {
             session: Session::from_stream(stream),
+            peer: "the test stream".to_owned(),
+            reply_deadline: None,
         }
     }
 
@@ -337,7 +433,12 @@ impl Connection {
         request_id: u32,
         command: Command,
     ) -> Result<Reply, AttachError> {
-        Ok(self.session.request(request_id, command).await?)
+        Self::reply(
+            self.reply_deadline,
+            &self.peer,
+            Box::pin(self.session.request(request_id, command)),
+        )
+        .await
     }
 
     /// The extended server features `HELLO_OK` negotiated; empty before the
@@ -362,10 +463,12 @@ impl Connection {
         scope: Scope,
         key: String,
     ) -> Result<Reply<Answer<Option<Vec<u8>>>>, AttachError> {
-        Ok(self
-            .session
-            .request_metadata(request_id, scope, key)
-            .await?)
+        Self::reply(
+            self.reply_deadline,
+            &self.peer,
+            Box::pin(self.session.request_metadata(request_id, scope, key)),
+        )
+        .await
     }
 
     /// One `GET_METADATA` per `(scope, key)`, pipelined [`METADATA_WINDOW`]
@@ -380,10 +483,12 @@ impl Connection {
         first_request_id: u32,
         reads: Vec<(Scope, String)>,
     ) -> Result<Reply<Vec<Answer<Option<Vec<u8>>>>>, AttachError> {
-        Ok(self
-            .session
-            .request_metadata_many(first_request_id, reads)
-            .await?)
+        Self::reply(
+            self.reply_deadline,
+            &self.peer,
+            Box::pin(self.session.request_metadata_many(first_request_id, reads)),
+        )
+        .await
     }
 
     /// Send one `LIST_METADATA` and wait for its `METADATA_KEYS`.
@@ -396,10 +501,12 @@ impl Connection {
         request_id: u32,
         scope: Scope,
     ) -> Result<Reply<Answer<Vec<String>>>, AttachError> {
-        Ok(self
-            .session
-            .request_metadata_keys(request_id, scope)
-            .await?)
+        Self::reply(
+            self.reply_deadline,
+            &self.peer,
+            Box::pin(self.session.request_metadata_keys(request_id, scope)),
+        )
+        .await
     }
 
     /// Send one `SPAWN_RESOURCE` and wait for its `RESOURCE_SPAWNED`.
@@ -412,7 +519,12 @@ impl Connection {
         &mut self,
         frame: &FrameKind,
     ) -> Result<Reply<Answer<SpawnResult>>, AttachError> {
-        Ok(self.session.request_spawn(frame).await?)
+        Self::reply(
+            self.reply_deadline,
+            &self.peer,
+            Box::pin(self.session.request_spawn(frame)),
+        )
+        .await
     }
 
     /// Send one `MOVE_RESOURCE` and wait for its `RESOURCE_MOVED`
@@ -426,7 +538,12 @@ impl Connection {
         &mut self,
         frame: &FrameKind,
     ) -> Result<Reply<Answer<MoveResult>>, AttachError> {
-        Ok(self.session.request_move(frame).await?)
+        Self::reply(
+            self.reply_deadline,
+            &self.peer,
+            Box::pin(self.session.request_move(frame)),
+        )
+        .await
     }
 }
 

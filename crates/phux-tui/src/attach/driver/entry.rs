@@ -227,7 +227,11 @@ async fn connect_attach_dial(
         crate::render::theme::record_reported(colors);
     }
     let client_caps = attach_client_caps(default_colors, dial);
-    Connection::connect_dial_with_hello(dial, attach_client_name(), client_caps).await
+    let mut conn =
+        Connection::connect_dial_with_hello(dial, attach_client_name(), client_caps).await?;
+    // The deadline bounds the handshake only; an attach is a long-lived stream.
+    conn.set_reply_deadline(None);
+    Ok(conn)
 }
 
 fn negotiated_output_mode(conn: &Connection) -> Result<OutputMode, AttachError> {
