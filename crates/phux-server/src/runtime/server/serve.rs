@@ -215,7 +215,7 @@ impl ServerRuntime {
                     listener
                 });
                 if let ListeningHook(Some(hook)) = on_listening {
-                    hook(&state.with(|s| s.remote_listeners().clone()));
+                    hook(&state.with(crate::state::ServerState::remote_listeners));
                 }
 
                 // ADR-0162 startup order: open the store, resume (or import)

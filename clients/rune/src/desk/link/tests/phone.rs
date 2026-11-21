@@ -68,7 +68,11 @@ fn the_phone_reads_failures_without_transport_text_or_commands() {
             "{unresolved}"
         );
     }
-    for refusal in [QUIC_REFUSED, "websocket: 401", "pairing token refused"] {
+    for refusal in [
+        QUIC_REFUSED,
+        "mini: WebSocket handshake: HTTP error: 401 Unauthorized",
+        "pairing token refused",
+    ] {
         assert_eq!(plainly_on_phone(refusal, "mini"), UNPAIRED, "{refusal}");
     }
     // A pin's digits can spell a refusal; it is still the pin that changed.
