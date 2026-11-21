@@ -64,6 +64,9 @@ pub(crate) fn dispatch(
             json.json,
             socket,
         ),
+        Some(Command::NotifyMode(commands::NotifyModeArgs { target, mode, json })) => {
+            commands::agent::run_notify_mode(&target, mode, json.json, socket)
+        }
         Some(Command::Approvals(args)) => commands::approvals::run(args, socket),
         Some(Command::Credentials(args)) => commands::credentials::run(args, socket),
         Some(Command::Approve(args)) => commands::approvals::approve(args, socket),

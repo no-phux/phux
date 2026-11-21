@@ -82,6 +82,7 @@ impl Event {
                 | Self::AgentMetadata { .. }
                 | Self::BackgroundWork { .. }
                 | Self::Note { .. }
+                | Self::NotifyMode { .. }
                 | Self::SessionProject { .. }
                 | Self::ApprovalsChanged
                 | Self::ApprovalDecision { .. }

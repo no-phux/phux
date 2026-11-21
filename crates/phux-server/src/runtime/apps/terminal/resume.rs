@@ -33,32 +33,44 @@ fn report(s: &mut ServerState, terminal: &ResourceId, token: Option<ResumeToken>
     if s.shutting_down() {
         return;
     }
+    if let Err(refusal) = update_launch(s, terminal, |launch| launch.resume = token) {
+        tracing::debug!(?terminal, %refusal, "resume token not recorded");
+    }
+}
+
+/// Commit `edit` to the launch record of the live Terminal `terminal`.
+/// Nothing is written when the edit changes nothing, or for a pane with no
+/// current activation or Terminal launch.
+pub(in crate::runtime) fn update_launch(
+    s: &mut ServerState,
+    terminal: &ResourceId,
+    edit: impl FnOnce(&mut TerminalLaunch),
+) -> Result<(), String> {
     let Some(record) = s
         .idspace
         .resource_from_wire(terminal)
         .and_then(|id| s.registry().record(id))
     else {
-        return;
+        return Ok(());
     };
     let (Some(activation), Some(LaunchSpec::Terminal(launch))) =
         (record.activation.as_ref(), record.launch.as_ref())
     else {
-        return;
+        return Ok(());
     };
-    if launch.resume == token {
-        return;
+    let mut edited = launch.clone();
+    edit(&mut edited);
+    if edited == *launch {
+        return Ok(());
     }
     let op = Op::ResourceLaunchReported {
         resource: record.key,
         activation: activation.id,
-        launch: LaunchSpec::Terminal(TerminalLaunch {
-            resume: token,
-            ..launch.clone()
-        }),
+        launch: LaunchSpec::Terminal(edited),
     };
-    if let Err(refusal) = s.commit_system(op) {
-        tracing::debug!(?terminal, %refusal, "resume token not recorded");
-    }
+    s.commit_system(op)
+        .map(|_| ())
+        .map_err(|refusal| refusal.to_string())
 }
 
 /// The argv that resumes `launch`'s program: the user's command for the

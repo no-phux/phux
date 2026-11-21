@@ -145,7 +145,16 @@ impl Desk {
                 terminal_id,
                 note: Some(note),
                 live: true,
-            } => self.note_posted(&terminal_id, &note),
+            } if !self.inbox.muted.contains_key(&terminal_id) => {
+                self.note_posted(&terminal_id, &note)
+            }
+            Event::NotifyMode { terminal_id, mode } => {
+                if mode.alerts() {
+                    self.inbox.muted.remove(&terminal_id).is_some()
+                } else {
+                    self.inbox.muted.insert(terminal_id, mode) != Some(mode)
+                }
+            }
             Event::CommandResult {
                 request_id,
                 ref result,

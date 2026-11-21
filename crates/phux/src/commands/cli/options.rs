@@ -236,3 +236,15 @@ pub(crate) enum NoteLevelArg {
     /// Something went wrong.
     Error,
 }
+
+/// A pane's `phux notify-mode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[usage(ignore_case)]
+pub(crate) enum NotifyModeArg {
+    /// Notifications as configured.
+    On,
+    /// Badges and counts only: no toast, sound, or system notification.
+    UnreadOnly,
+    /// Like `unread-only`, and left out of counts such as the Dock's.
+    Off,
+}

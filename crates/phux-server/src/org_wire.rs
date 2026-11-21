@@ -264,8 +264,10 @@ pub fn core_launch(
                 cwd: spec.cwd.as_ref().map(std::path::PathBuf::from),
                 env: spec.env.clone(),
                 restore: spec.restore.clone(),
-                // Not an organization wire field: only PTY reports set it.
+                // Not organization wire fields: PTY reports set `resume`,
+                // `phux.notify/v1` writes set `notify`.
                 resume: None,
+                notify: None,
             }))
         }
         phux_core::ResourceKind::AgentSession => {

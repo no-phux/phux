@@ -171,6 +171,50 @@ pub const RESOURCE_LINK_KEY: &str = "phux.link/v1";
 /// Stored opaquely.
 pub const RESOURCE_NOTE_KEY: &str = "phux.note/v1";
 
+/// Terminal-scoped key holding the pane's notify mode, UTF-8 `on`,
+/// `unread-only`, or `off` ([`PaneNotify`], `docs/status-bar.md#muting-a-pane`).
+/// Absent is `on`. The server refuses any other value and keeps the mode on
+/// the pane's record, so it survives upgrades and restarts.
+pub const RESOURCE_NOTIFY_KEY: &str = "phux.notify/v1";
+
+/// A pane's [`RESOURCE_NOTIFY_KEY`] mode.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum PaneNotify {
+    /// Notifications as configured.
+    #[default]
+    On,
+    /// State, badges and counts only: no toast, sound or system notification.
+    UnreadOnly,
+    /// As `UnreadOnly`, and left out of counts such as the Dock's.
+    Off,
+}
+
+impl PaneNotify {
+    /// The stored word.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::On => "on",
+            Self::UnreadOnly => "unread-only",
+            Self::Off => "off",
+        }
+    }
+
+    /// The mode a stored value names; `None` for anything else.
+    #[must_use]
+    pub fn decode(value: &[u8]) -> Option<Self> {
+        [Self::On, Self::UnreadOnly, Self::Off]
+            .into_iter()
+            .find(|mode| mode.as_str().as_bytes() == value)
+    }
+
+    /// Whether the pane may raise a toast, sound or system notification.
+    #[must_use]
+    pub const fn alerts(self) -> bool {
+        matches!(self, Self::On)
+    }
+}
+
 /// Terminal-scoped key holding the declared agent identity and lifecycle.
 ///
 /// `docs/program-sequences.md#the-agent-record`, ADR-0040. A consumer that finds it MUST

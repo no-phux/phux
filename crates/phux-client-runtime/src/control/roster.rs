@@ -15,7 +15,8 @@
 
 use phux_protocol::caps::Layer;
 use phux_protocol::wire::frame::{
-    RESOURCE_AGENT_KEY, RESOURCE_ASKED_KEY, RESOURCE_NOTE_KEY, RESOURCE_PANE_OCCUPANT_KEY, Scope,
+    PaneNotify, RESOURCE_AGENT_KEY, RESOURCE_ASKED_KEY, RESOURCE_NOTE_KEY, RESOURCE_NOTIFY_KEY,
+    RESOURCE_PANE_OCCUPANT_KEY, Scope,
 };
 
 use super::{
@@ -68,10 +69,18 @@ enum RosterKey {
     Occupant,
     /// `phux.note/v1`: only a live change is news; a read is the baseline.
     Note,
+    /// `phux.notify/v1`: the pane's notify mode.
+    Notify,
 }
 
 impl RosterKey {
-    const ALL: [Self; 4] = [Self::Agent, Self::Asked, Self::Occupant, Self::Note];
+    const ALL: [Self; 5] = [
+        Self::Agent,
+        Self::Asked,
+        Self::Occupant,
+        Self::Note,
+        Self::Notify,
+    ];
 
     const fn wire(self) -> &'static str {
         match self {
@@ -79,6 +88,7 @@ impl RosterKey {
             Self::Asked => RESOURCE_ASKED_KEY,
             Self::Occupant => RESOURCE_PANE_OCCUPANT_KEY,
             Self::Note => RESOURCE_NOTE_KEY,
+            Self::Notify => RESOURCE_NOTIFY_KEY,
         }
     }
 
@@ -90,7 +100,7 @@ impl RosterKey {
     const fn federates(self) -> bool {
         // ponytail: a hub doesn't mirror notes; a satellite pane's notes show
         // when its own server is attached.
-        !matches!(self, Self::Occupant | Self::Note)
+        !matches!(self, Self::Occupant | Self::Note | Self::Notify)
     }
 
     fn from_wire(key: &str) -> Option<Self> {
@@ -274,6 +284,13 @@ impl ControlPlane {
                     .as_deref()
                     .and_then(phux_client_core::note::parse_note),
                 live,
+            },
+            RosterKey::Notify => Event::NotifyMode {
+                terminal_id,
+                mode: value
+                    .as_deref()
+                    .and_then(PaneNotify::decode)
+                    .unwrap_or_default(),
             },
             RosterKey::Agent => Event::AgentMetadata { terminal_id, value },
             RosterKey::Asked => {

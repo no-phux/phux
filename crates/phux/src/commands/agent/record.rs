@@ -205,12 +205,37 @@ pub(in crate::commands::agent) fn with_target_pane<F>(
     body: F,
 ) -> ExitCode
 where
-    F: for<'c> FnOnce(
-        &'c mut Connection,
-        ResourceId,
-    ) -> std::pin::Pin<
-        Box<dyn Future<Output = Result<ExitCode, phux_client::attach::AttachError>> + 'c>,
-    >,
+    F: for<'c> FnOnce(&'c mut Connection, ResourceId) -> TargetBody<'c>,
+{
+    with_targets(
+        target,
+        socket,
+        verb,
+        terminal_only,
+        json,
+        false,
+        move |conn, mut panes| body(conn, panes.remove(0)),
+    )
+}
+
+/// What a target body returns.
+pub(in crate::commands::agent) type TargetBody<'c> = std::pin::Pin<
+    Box<dyn Future<Output = Result<ExitCode, phux_client::attach::AttachError>> + 'c>,
+>;
+
+/// [`with_target_pane`], with `all` handing `body` every pane the target
+/// names (a session, a group, a tag) instead of one. Never empty.
+pub(in crate::commands::agent) fn with_targets<F>(
+    target: Option<&str>,
+    socket: Option<PathBuf>,
+    verb: &'static str,
+    terminal_only: Option<phux_client::read::Verb>,
+    json: bool,
+    all: bool,
+    body: F,
+) -> ExitCode
+where
+    F: for<'c> FnOnce(&'c mut Connection, Vec<ResourceId>) -> TargetBody<'c>,
 {
     let selector = match target.map(phux_client::selector::parse).transpose() {
         Ok(selector) => selector.unwrap_or(phux_client::selector::Selector::Current),
@@ -246,21 +271,28 @@ where
             Ok(candidates) => candidates,
             Err(err) => return crate::commands::report_agent_resolve_error(json, &err, false),
         };
-        let Some(pane) =
+        let panes = if all {
+            candidates
+        } else {
             phux_client::selector::pick_target_pane(&candidates, &snapshot.focused_resource)
-        else {
+                .into_iter()
+                .collect()
+        };
+        if panes.is_empty() {
             // A miss under a partial fleet view is unresolved, not absent.
             return partial::report_target_miss_for(json, target, &degradation);
-        };
-        if let Some(only) = terminal_only {
+        }
+        for pane in panes.iter().filter(|_| terminal_only.is_some()) {
             let resolved = phux_client::read::Resolved::in_snapshot(&snapshot, pane.clone());
-            if let Err(err) = phux_client::read::require_terminal(only, &resolved) {
+            if let Some(only) = terminal_only
+                && let Err(err) = phux_client::read::require_terminal(only, &resolved)
+            {
                 return crate::commands::read_kind::wrong_kind(json, &err);
             }
         }
         // Resolved, but from a narrower world than the user assumed.
         partial::warn_partial_view(verb, &degradation);
-        match body(&mut conn, pane).await {
+        match body(&mut conn, panes).await {
             Ok(code) => code,
             Err(err) => json_err::report_no_server(json, &err, &socket_path, verb),
         }

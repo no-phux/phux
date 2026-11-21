@@ -6,7 +6,9 @@ use std::path::Path;
 
 use phux_core::process::TerminalProcessState;
 use phux_protocol::ids::{ClientId, ResourceId};
-use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, RESOURCE_TAGS_KEY, Scope};
+use phux_protocol::wire::frame::{
+    Command, CommandResult, CommandValue, PaneNotify, RESOURCE_NOTIFY_KEY, RESOURCE_TAGS_KEY, Scope,
+};
 use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
 use serde_json::{Value, json};
 
@@ -36,6 +38,9 @@ pub struct ResourceDetails {
     pub process: Option<TerminalProcessState>,
     /// Its `phux.tags/v1` tags; `None` when the read was refused.
     pub tags: Option<Vec<String>>,
+    /// The Terminal's `phux.notify/v1` mode; `None` for another kind, or
+    /// when the read was refused.
+    pub notify: Option<PaneNotify>,
     /// The Terminal's declared `phux.agent/v1` record, if any.
     pub agent: Option<AgentRecord>,
     /// OSC 7501 active record and record-id index; absent on older servers.
@@ -69,6 +74,7 @@ impl ResourceDetails {
             "viewers": info.viewers.iter().copied().map(ClientId::get).collect::<Vec<_>>(),
             "process": self.process,
             "tags": self.tags,
+            "notify": self.notify.map(PaneNotify::as_str),
             "agent": self.agent,
             "program_status": self.program_status,
             "controller": self.controller,
@@ -103,6 +109,11 @@ pub async fn show(socket: &Path, resource: &ResourceId) -> Result<ResourceDetail
     } else {
         None
     };
+    let notify = if is_terminal {
+        read_notify(&mut conn, resource, &mut unreachable).await?
+    } else {
+        None
+    };
     let (program_status, controller) = if is_terminal {
         use phux_protocol::wire::frame::{RESOURCE_CONTROLLER_KEY, RESOURCE_PROGRAM_STATUS_KEY};
         (
@@ -132,6 +143,7 @@ pub async fn show(socket: &Path, resource: &ResourceId) -> Result<ResourceDetail
         info,
         process,
         tags,
+        notify,
         agent,
         program_status,
         controller,
@@ -197,6 +209,29 @@ async fn read_tags(
         Ok(None) => Some(Vec::new()),
         Err(_) => None,
     })
+}
+
+/// The pane's notify mode: absent or unreadable reads `on`.
+async fn read_notify(
+    conn: &mut Connection,
+    resource: &ResourceId,
+    notices: &mut Vec<String>,
+) -> Result<Option<PaneNotify>, AttachError> {
+    let (answer, interleaved) = conn
+        .request_metadata(
+            6,
+            Scope::Resource(resource.clone()),
+            RESOURCE_NOTIFY_KEY.to_owned(),
+        )
+        .await?
+        .into_parts();
+    notices.extend_from_slice(Degradation::from_interleaved(&interleaved).notices());
+    Ok(answer.ok().map(|value| {
+        value
+            .as_deref()
+            .and_then(PaneNotify::decode)
+            .unwrap_or_default()
+    }))
 }
 
 async fn read_agent(
@@ -290,6 +325,7 @@ mod tests {
             }))
             .metadata(|_, key| match key {
                 RESOURCE_TAGS_KEY => Some(br#"["build"]"#.to_vec()),
+                RESOURCE_NOTIFY_KEY => Some(b"off".to_vec()),
                 RESOURCE_AGENT_KEY => Some(br#"{"name":"reviewer","state":"idle"}"#.to_vec()),
                 phux_protocol::wire::frame::RESOURCE_CONTROLLER_KEY => {
                     Some(br#"{"client":4,"remote":true}"#.to_vec())
@@ -313,6 +349,7 @@ mod tests {
         assert_eq!(doc["process"]["child"]["pid"], 42);
         assert_eq!(doc["process"]["cwd"], "/repo");
         assert_eq!(doc["tags"], json!(["build"]));
+        assert_eq!(doc["notify"], "off");
         assert_eq!(doc["agent"]["name"], "reviewer");
         assert_eq!(doc["controller"]["remote"], true);
         assert!(doc["agent_session"].is_null());
