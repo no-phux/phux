@@ -442,15 +442,15 @@ fn cwd_inheritance_modes_open_spawns_in_the_seed_panes_directory() {
             let dir = TempDir::new().unwrap();
             let dir = dir.path().canonicalize().unwrap();
             let mut seed = LaunchCommand::new("/bin/sh");
-            seed.args(["-c", &format!("cd '{}' && read _", dir.display())]);
+            seed.args(["-c", &format!("cd '{}' && pwd && read _", dir.display())]);
             let server = Server::start(Some("main"), |cfg| {
                 phux_server_testkit::seed_pty(cfg, seed);
                 cfg.cwd_inheritance = mode;
             });
             let mut stream = server.connect().await;
-            attach(&mut stream, "main").await;
-            // Let the seed shell run its `cd` before the server queries it.
-            tokio::time::sleep(std::time::Duration::from_millis(75)).await;
+            let seed = attach(&mut stream, "main").await.focused_resource;
+            // The seed shell's `pwd` proves its `cd` ran before the server queries it.
+            output_containing(&mut stream, &seed, dir.to_str().unwrap().as_bytes()).await;
             let pane = spawned(&mut stream, 1, sh("read _; pwd; read _")).await;
             release(&mut stream, &pane).await;
             output_containing(&mut stream, &pane, dir.to_str().unwrap().as_bytes()).await;

@@ -104,9 +104,12 @@ impl Fake {
         std::fs::remove_file(self.dir.path().join("origin.next")).unwrap();
     }
 
-    /// Stop accepting connections, as a stopped service would.
-    pub(super) fn stop(&self) {
+    /// Stop accepting connections, as a stopped service would. Waits for the
+    /// accept task to drop its listener, so the next connect is refused
+    /// rather than queued on a listener about to close.
+    pub(super) async fn stop(&mut self) {
         self.accept.abort();
+        let _ = (&mut self.accept).await;
     }
 
     pub(super) async fn send_event(&self, event: &'static str) {
