@@ -416,6 +416,17 @@ fn spawn_frame() -> FrameKind {
 }
 
 #[test]
+fn spawn_split_names_the_divider() {
+    assert_eq!(
+        split_dir(SpawnSplit::Horizontal),
+        Direction::Horizontal.wire()
+    );
+    assert_eq!(split_dir(SpawnSplit::Horizontal), SplitDir::Vertical);
+    assert_eq!(split_dir(SpawnSplit::Vertical), Direction::Vertical.wire());
+    assert_eq!(split_dir(SpawnSplit::Vertical), SplitDir::Horizontal);
+}
+
+#[test]
 fn placed_spawn_uses_a_single_canonical_create() {
     let temp = tempfile::TempDir::new().expect("tempdir");
     let socket = temp.path().join("mock.sock");
@@ -426,7 +437,8 @@ fn placed_spawn_uses_a_single_canonical_create() {
         1,
         "spawn",
         "@1",
-        SpawnSplit::Vertical,
+        // User-facing horizontal stacks, so the wire axis stays Vertical.
+        SpawnSplit::Horizontal,
         0.3,
         None,
         None,

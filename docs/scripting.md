@@ -86,15 +86,10 @@ phux spawn --retain=600 -- make test
 | `-- COMMAND` | Runs a command instead of your shell. |
 | `-c DIR` | Sets the working directory. |
 | `--target PANE` | Places the new pane beside an existing one. |
-| `--split horizontal` / `vertical` | For `spawn` and `launch`, `horizontal` places the new pane to the right (the default); `vertical` stacks it below. Needs `--target`. |
+| `--split horizontal` / `vertical` | `horizontal` stacks the panes (the new pane below); `vertical` places them side by side (the new pane to the right). The same meaning for `spawn`, `launch`, `insert-pane`, and `mv`. `spawn` and `launch` need `--target`. |
 | `--ratio F` | The fraction of the split the target keeps. Needs `--target`. |
 | `--retain=SECS` | Keeps the exit status and last screen readable after an unplaced spawn exits. |
 | `--idempotency-key HEX32` | Makes a retry return the first pane instead of spawning another. |
-
-Existing-pane edits (`insert-pane` and `mv`) instead name the divider:
-`horizontal` stacks panes and `vertical` places them side by side. These
-existing spellings are retained for compatibility; check the command's help
-rather than transferring a split direction between the two command groups.
 
 With `--target`, `spawn` and `launch` create and place a pane in one server
 operation. The target must be a split leaf in the executing authority's
