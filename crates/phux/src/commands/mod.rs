@@ -76,6 +76,7 @@ pub(crate) mod kill;
 pub(crate) mod launch;
 pub(crate) mod logs;
 pub(crate) mod ls;
+pub(crate) mod man;
 pub(crate) mod mcp;
 pub(crate) mod migrate;
 pub(crate) mod mission;
@@ -130,6 +131,7 @@ pub(crate) mod wait;
 // Stalled peers for the run/wait deadline tests.
 #[cfg(test)]
 mod stall_peer;
+pub(crate) mod version;
 pub(crate) mod watch;
 pub(crate) mod whoami;
 pub(crate) mod workload;
@@ -240,6 +242,7 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
         },
         Command::Workload(..) => Some("workload"),
         Command::Completion(..) => Some("completion"),
+        Command::Man(..) => Some("man"),
         Command::Mcp(..) => Some("mcp"),
         Command::Skill(..) => Some("skill"),
         Command::Logs(..) => Some("logs"),
