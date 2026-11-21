@@ -298,7 +298,7 @@ fn context_item(action: Shortcut, title: &'static str, hint: String, locked: boo
 /// the column the places' glyphs keep aligned.
 fn kind_mark(kind: &str) -> Option<&'static rune::Icon> {
     match kind {
-        "terminal" => Some(&icons::PROMPT),
+        "terminal" | "pane" => Some(&icons::PROMPT),
         "session" => Some(&icons::WINDOW),
         "path" => Some(&icons::FOLDER),
         _ => None,
@@ -375,6 +375,12 @@ fn hit_row(hit: &Hit, index: usize, picked: bool, phone: bool, t: &Tokens) -> El
         .items_center()
         .focusable(true)
         .focus_selected(picked);
+    // A tab's terminals sit indented under its heading.
+    let base = if hit.item.kind == "pane" {
+        base.pl(s.s3 + s.s6)
+    } else {
+        base
+    };
     let base = if picked {
         base.fill(r.wash.current.paint())
     } else {

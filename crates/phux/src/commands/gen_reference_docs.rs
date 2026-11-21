@@ -19,17 +19,33 @@ use crate::refdocs;
 const DEFAULT_OUT: &str = "docs/reference";
 
 /// Render every registered page into `out` (default: the checkout's
-/// generated-reference tree). Idempotent: an up-to-date file is left
-/// untouched and reported as unchanged.
+/// generated-reference tree), and the editor schemas into `spec/` beside it.
+/// Idempotent: an up-to-date file is left untouched and reported as
+/// unchanged.
 pub(crate) fn run_gen_reference_docs(out: Option<PathBuf>) -> ExitCode {
     let out = out.unwrap_or_else(|| PathBuf::from(DEFAULT_OUT));
-    if let Err(err) = std::fs::create_dir_all(&out) {
-        error!("cannot create {}: {err}", out.display());
-        return ExitCode::FAILURE;
-    }
-    for page in refdocs::pages() {
-        let path = out.join(page.file);
-        let rendered = page.render();
+    let spec = out.parent().unwrap_or(&out).join("spec");
+    let schemas = [
+        (
+            "config.schema.json",
+            phux_config::json_schema::config_schema(),
+        ),
+        (
+            "plugin.schema.json",
+            phux_config::json_schema::plugin_schema(),
+        ),
+    ];
+    let files = refdocs::pages()
+        .into_iter()
+        .map(|page| (out.join(page.file), page.render()))
+        .chain(schemas.map(|(file, schema)| (spec.join(file), schema)));
+    for (path, rendered) in files {
+        if let Some(dir) = path.parent()
+            && let Err(err) = std::fs::create_dir_all(dir)
+        {
+            error!("cannot create {}: {err}", dir.display());
+            return ExitCode::FAILURE;
+        }
         if std::fs::read(&path).is_ok_and(|bytes| bytes == rendered.as_bytes()) {
             outln!("unchanged {}", path.display());
             continue;

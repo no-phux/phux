@@ -53,6 +53,8 @@ pub struct SidebarPainter {
     /// divider reaching this side) meet the separator rule, drawn as tees so
     /// the two read as one frame. Empty when no rule meets it.
     junctions: Vec<u16>,
+    /// The `focus-sidebar` cursor's strip row, lit for the next paint only.
+    lit: Option<u16>,
 }
 
 /// Open a satellite agent beside the focused pane. `None` when `resource`
@@ -97,6 +99,7 @@ impl SidebarPainter {
             session_colors: Vec::new(),
             drop_at: None,
             junctions: Vec::new(),
+            lit: None,
         }
     }
 
@@ -347,6 +350,16 @@ impl SidebarPainter {
         true
     }
 
+    /// Light strip row `row` (the `focus-sidebar` cursor) for the next
+    /// paint only. Every overlay paint marks it again, so the first paint
+    /// after the cursor leaves draws the row plain.
+    pub const fn mark_row(&mut self, row: Option<u16>) {
+        if row.is_some() || self.lit.is_some() {
+            self.lit = row;
+            self.dirty = true;
+        }
+    }
+
     /// Drop the paint cache so the next [`Self::paint`] re-emits even if its
     /// inputs are unchanged (e.g. after a full-frame clear).
     pub fn invalidate(&mut self) {
@@ -362,7 +375,16 @@ impl SidebarPainter {
         if !self.dirty && self.last.as_ref().is_some_and(|(r, _)| *r == rect) {
             return Ok(());
         }
-        let buf = self.compose(rect, self.rule, &self.junctions);
+        let mut buf = self.compose(rect, self.rule, &self.junctions);
+        let lit = self.lit.take();
+        if let Some(row) = lit {
+            let rule = self.rule.column(rect.w);
+            for x in (0..rect.w).filter(|x| *x != rule) {
+                if let Some(cell) = buf.cell_mut((x, row)) {
+                    cell.modifier.insert(ratatui::style::Modifier::REVERSED);
+                }
+            }
+        }
         let previous = self
             .last
             .as_ref()
@@ -370,7 +392,8 @@ impl SidebarPainter {
             .map(|(_, b)| b);
         emit_changed(out, &buf, rect, previous)?;
         self.last = Some((rect, buf));
-        self.dirty = false;
+        // A lit paint leaves dirty so the next one draws the row plain.
+        self.dirty = lit.is_some();
         Ok(())
     }
 

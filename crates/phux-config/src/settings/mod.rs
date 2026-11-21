@@ -212,6 +212,7 @@ const CWD_INHERITANCE: &[&str] = &[
     "home",
     "session-root",
     "last-cwd-per-window",
+    "fixed",
 ];
 const WINDOW_SIZE: &[&str] = &["smallest", "largest", "latest", "active", "manual"];
 const KEEP_AWAKE: &[&str] = &["off", "while-agents-work", "always"];

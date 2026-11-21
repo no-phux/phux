@@ -283,6 +283,7 @@ impl Desk {
         };
         // The old focus stays on screen if the layout still shows it.
         if let Some(old) = self.connection.shown.take() {
+            self.leaving(&old.resource, &target);
             self.connection.others.insert(old.resource, old.view);
             self.connection.painted.replace(None);
         }

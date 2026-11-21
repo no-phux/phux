@@ -32,6 +32,15 @@ impl super::super::SessionLoop {
         let empty = self
             .paint_empty_state(out, sidebar, RepaintLevel::Full)
             .unwrap_or(StatusBarPaint::NotPublished);
+        // The `focus-sidebar` cursor lights its row in this frame's strip.
+        let strip = sidebar.map(|res| crate::attach::paint::sidebar_rect(self.viewport_dims, res));
+        let strip_painter = &self.sidebar_painter;
+        let lit = strip.and_then(|strip| {
+            self.overlays.sidebar_rows(&|| {
+                crate::attach::input_dispatch::sidebar_rows(strip, &strip_painter.click_targets())
+            })
+        });
+        self.sidebar_painter.mark_row(lit);
         let base = self
             .mirror
             .workspace

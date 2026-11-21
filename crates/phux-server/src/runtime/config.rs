@@ -39,6 +39,9 @@ pub struct ServerConfig {
     /// How a new pane picks its working directory when the spawn leaves
     /// `cwd` unset (`defaults.cwd-inheritance`).
     pub cwd_inheritance: phux_config::CwdInheritance,
+    /// Where new panes, the seed session and sessions created without a
+    /// directory start under `cwd-inheritance = "fixed"`; `None` otherwise.
+    pub fixed_cwd: Option<String>,
     /// `TERM` baseline for every server-spawned pane (`defaults.term`); a
     /// per-spawn `env` entry overrides it.
     pub term: String,
@@ -164,6 +167,7 @@ impl ServerConfig {
             event_journal_bytes: phux_config::DEFAULT_EVENT_JOURNAL_BYTES,
             retain: crate::state::RetainPolicy::default(),
             cwd_inheritance: phux_config::CwdInheritance::default(),
+            fixed_cwd: None,
             term: phux_config::DefaultsCfg::default().term,
             shell: phux_config::shell::resolve_shell(None),
             login_shell: false,

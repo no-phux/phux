@@ -85,6 +85,9 @@ pub struct WindowInfo {
     pub exited: Option<String>,
     /// Pre-resolved agent badge of the focused pane, painted before the name.
     pub badge: Option<WindowBadge>,
+    /// The ladder column the chrome draws in, so the tab's exit marker
+    /// matches the sidebar's.
+    pub glyphs: crate::render::theme::Glyphs,
 }
 
 /// A pre-resolved agent badge for a [`WindowInfo`].
@@ -97,15 +100,21 @@ pub struct WindowBadge {
 }
 
 impl WindowInfo {
-    /// Compact chrome suffix for a retained pane: ` x`, ` x3`, or ` xsig9`.
+    /// Compact chrome suffix for a retained pane, as the sidebar draws it:
+    /// ` ✕3` or ` ✕sig9` for a failure, ` –` for a clean or unreported exit
+    /// (` x3` and ` -` in the ASCII column).
     #[must_use]
     pub fn exited_marker(&self) -> Option<String> {
-        let status = self.exited.as_ref()?;
-        Some(if status.is_empty() {
-            " x".to_owned()
+        let status = self.exited.as_deref()?;
+        let (state, code) = if status.is_empty() || status == "0" {
+            (phux_design::State::Ended, "")
         } else {
-            format!(" x{status}")
-        })
+            (phux_design::State::Failed, status)
+        };
+        Some(format!(
+            " {}{code}",
+            crate::render::chrome::column(self.glyphs, state)
+        ))
     }
 }
 

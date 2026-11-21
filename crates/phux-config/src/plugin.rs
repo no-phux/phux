@@ -14,8 +14,13 @@ pub use loader::load_plugin_manifest;
 use serde::{Deserialize, Serialize};
 pub use version::CURRENT_PHUX_VERSION;
 
+/// The editor schema's root for `phux-plugin.toml`: a manifest as written.
+pub(crate) fn manifest_schema() -> serde_json::Value {
+    crate::json_schema::root::<loader::RawPluginManifest>()
+}
+
 /// A plugin declared in `config.toml`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PluginConfigEntry {
     /// Path to a `phux-plugin.toml` manifest.
@@ -103,7 +108,9 @@ pub struct PluginManifestTheme {
 }
 
 /// Platform names accepted in plugin manifests.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, schemars::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum PluginPlatform {
     /// Linux.
@@ -153,7 +160,9 @@ pub struct PluginManifestAgent {
 }
 
 /// Normalized state labels for agent-aware consumers.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum PluginAgentState {
     /// State cannot be determined yet.
@@ -168,7 +177,9 @@ pub enum PluginAgentState {
 }
 
 /// Normalized attention priority for agent-aware consumers.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum PluginAgentAttention {
     /// Explicitly no attention requested.
@@ -309,7 +320,9 @@ pub struct PluginManifestWidget {
 }
 
 /// Status-bar slot a plugin widget appends to.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum PluginWidgetSlot {
     /// Append to the left slot.
@@ -344,7 +357,9 @@ pub const SIDEBAR_SECTION_DEFAULT_ROWS: u8 = 3;
 pub const SIDEBAR_SECTION_MAX_ROWS: u8 = 8;
 
 /// Placement requested by a plugin pane entrypoint.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum PluginPanePlacement {
     /// Floating box over the pane area, in no window; closes when its

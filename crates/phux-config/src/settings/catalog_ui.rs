@@ -22,6 +22,16 @@ pub(super) const ROWS: &[SettingSpec] = &[
         applies: Applies::LiveReload,
     },
     SettingSpec {
+        key: "keybindings.defaults",
+        section: SettingSection::Keybindings,
+        kind: SettingKind::Bool,
+        summary: "Keep the shipped key bindings",
+        detail: "false starts from an empty keymap: only bindings from your own config \
+                 layers apply. The shipped command-palette keys stay as the way out \
+                 until you bind command-palette yourself.",
+        applies: Applies::LiveReload,
+    },
+    SettingSpec {
         key: "keybindings.which-key",
         section: SettingSection::Keybindings,
         kind: SettingKind::Bool,
@@ -198,6 +208,16 @@ pub(super) const ROWS: &[SettingSpec] = &[
         summary: "Dim the panes you are not typing in",
         detail: "In a tab with several panes, the ones without focus are painted faint so the \
                  one taking your keys stands out. Your terminal decides how faint text looks.",
+        applies: Applies::LiveReload,
+    },
+    SettingSpec {
+        key: "chrome.title",
+        section: SettingSection::Chrome,
+        kind: SettingKind::Text,
+        summary: "Window title of the terminal phux runs in",
+        detail: "Shown by your window manager and window switcher while attached. {session} \
+                 becomes the session name and {window} the tab in view. The title you had \
+                 comes back on detach. Empty leaves the title alone.",
         applies: Applies::LiveReload,
     },
     // -- [notifications] ----------------------------------------------------

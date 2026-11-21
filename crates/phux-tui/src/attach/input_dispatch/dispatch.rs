@@ -47,6 +47,7 @@ mod sidebar_click;
 pub(super) use mouse::bar_click_action;
 pub(super) use mouse::{drag_resize, open_context_menu, quantize_cell};
 pub(super) use sidebar_click::sidebar_click_action;
+pub(in crate::attach) use sidebar_click::sidebar_rows;
 
 mod forwarding;
 mod geometry;
