@@ -4,6 +4,7 @@
 mod agents;
 mod attach;
 mod credentials;
+mod git;
 mod machines;
 mod maintain;
 mod more;
@@ -21,6 +22,7 @@ mod slot;
 pub(crate) use self::agents::*;
 pub(crate) use self::attach::*;
 pub(crate) use self::credentials::*;
+pub(crate) use self::git::*;
 pub(crate) use self::machines::*;
 pub(crate) use self::maintain::*;
 pub(crate) use self::more::*;
@@ -174,6 +176,9 @@ pub(crate) enum Command {
 
     #[usage(help_heading = "Machines", display_order = 46)]
     Download(DownloadArgs),
+
+    #[usage(help_heading = "Panes", display_order = 33)]
+    Git(GitArgs),
 
     #[usage(help_heading = "Machines", display_order = 47)]
     Forward(ForwardArgs),

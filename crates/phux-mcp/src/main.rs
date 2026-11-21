@@ -33,6 +33,7 @@ mod contracts;
 mod coord_tools;
 mod diagnostic_tools;
 mod document_tools;
+mod git_tool;
 #[cfg(test)]
 mod goldens;
 mod jsonrpc;
