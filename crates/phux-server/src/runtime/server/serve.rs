@@ -252,6 +252,9 @@ impl ServerRuntime {
                     return Err(err);
                 }
                 let reconciled = state.with_mut(crate::state::ServerState::reconcile);
+                if cold_start {
+                    state.with_mut(crate::state::ServerState::reserve_pane_ids);
+                }
                 if reconciled != crate::state::Reconciled::default() {
                     info!(
                         lost = reconciled.lost,

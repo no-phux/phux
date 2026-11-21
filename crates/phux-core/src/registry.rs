@@ -359,7 +359,11 @@ fn facets(r: &Resource, cwd_default: PathBuf) -> (Option<TerminalFacet>, Option<
     match (r.kind, &r.launch) {
         (ResourceKind::Terminal, launch) => {
             let cwd = match launch {
-                Some(LaunchSpec::Terminal(t)) => t.cwd.clone().unwrap_or(cwd_default),
+                Some(LaunchSpec::Terminal(t)) => t
+                    .last_cwd
+                    .clone()
+                    .or_else(|| t.cwd.clone())
+                    .unwrap_or(cwd_default),
                 _ => cwd_default,
             };
             (

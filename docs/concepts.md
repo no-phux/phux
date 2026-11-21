@@ -102,7 +102,7 @@ Tab and pane numbers count from 0. `phux help targets` prints the same table. Qu
 There are three ways to point at something, each for a different job:
 
 - A **name** (`work`, `work:1`) is for people. You can rename a session or tab, so a name can point somewhere else tomorrow.
-- A **pane id** (`@7`) names a pane that exists right now. Inside a pane, `$PHUX_TERMINAL_ID` holds it. Prefer ids in scripts. An id can be reused after its pane is gone or the server restarts, so don't store one for later.
+- A **pane id** (`@7`) names a pane that exists right now. Inside a pane, `$PHUX_TERMINAL_ID` holds it. Prefer ids in scripts. A pane keeps its id across a server restart and `phux restore`, but an id can be reused once its pane is gone, so check it before acting on a stored one.
 - A **key** (`^3f9a2c`) is the lasting identity of a session or pane, kept across server restarts. `phux ls -l` shows them.
 
 Starting a pane's program again, with `phux relaunch` or `phux restore`, is a new run in the same pane: same key, new process.
@@ -123,7 +123,7 @@ live pane number or a different view is not an equivalent target.
 | the server crashes, or `phux kill --server`          | end               | come back                 | lost       |
 | the machine reboots                                  | end               | come back                 | lost       |
 
-**When the server stops, the programs in it stop too.** The next server brings back your sessions, tabs, and panes, with each pane's directory, but no program is running in them. Start them again yourself:
+**When the server stops, the programs in it stop too.** The next server brings back your sessions, tabs, and panes, with each pane's directory (the last one its shell reported, while it still exists), but no program is running in them. Until you restore, a target in such a session says it is waiting for restore. Start them again yourself:
 
 ```sh
 phux restore           # start every pane a server stop ended
@@ -131,7 +131,7 @@ phux relaunch @4       # start one pane again
 phux rm @4             # forget a pane instead
 ```
 
-`phux restore` also resumes coding agents whose integration supports it. From an attached window, **Restore sessions** in the command palette (the TUI's or Rune's) runs the same thing. The TUI says so once when you attach after a restart that left panes ended, unless `[restore] on-start` is set.
+`phux restore` also resumes coding agents whose integration supports it. It never repeats an agent's one-shot task: a pane started as a recognized agent with its task on the command line (a prompt flag such as `--prompt` or `-p`, or an argument with spaces in it, like `opencode --prompt "fix the bug"`) comes back as your shell in its directory, unless the agent reported a resume token you allowed (below). From an attached window, **Restore sessions** in the command palette (the TUI's or Rune's) runs the same thing. The TUI says so once when you attach after a restart that left panes ended, unless `[restore] on-start` is set.
 
 To have each new server do that by itself, opt in:
 

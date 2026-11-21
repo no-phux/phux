@@ -177,6 +177,10 @@ pub(super) fn journal_drained_event(
     {
         desc.cwd = std::path::PathBuf::from(cwd);
     }
+    // And the launch record's, so a restart's relaunch starts there.
+    if let AgentEvent::CwdChanged { cwd } = &event {
+        crate::runtime::apps::terminal::resume::report_cwd(s, wire_terminal_id, cwd);
+    }
     // Likewise the program's title: GET_STATE reports it so a list can name
     // a pane before the client streams it (RESOURCE_PROGRAM_TITLE).
     if let AgentEvent::TitleChanged { title } = &event
