@@ -1,12 +1,17 @@
 //! The bar a held action waits in, and the question it asks.
 
+use phux_protocol::ids::ResourceId;
 use rune_kit::{Button, ButtonVariant};
 
 use super::*;
 
 /// What a held action would do, and the word for doing it. A keyboard is
-/// told its key; `touch` has none to name.
-pub(super) fn question(pending: &Pending, touch: bool) -> (String, &'static str) {
+/// told its key; `touch` has none to name. `called` names a terminal.
+pub(super) fn question(
+    pending: &Pending,
+    touch: bool,
+    called: &dyn Fn(&ResourceId) -> String,
+) -> (String, &'static str) {
     let keyed = |bare: &'static str, keyed: &'static str| if touch { bare } else { keyed };
     match pending {
         Pending::Mirror(source, target) => (
@@ -28,7 +33,7 @@ pub(super) fn question(pending: &Pending, touch: bool) -> (String, &'static str)
             )
         }
         Pending::Close(terminal) => (
-            format!("Close {terminal}? Anything running in it ends."),
+            format!("Close {}? Anything running in it ends.", called(terminal)),
             keyed("Close", "Close (Return)"),
         ),
         Pending::CloseTab(terminals) if terminals.len() == 1 => (
@@ -44,14 +49,16 @@ pub(super) fn question(pending: &Pending, touch: bool) -> (String, &'static str)
         ),
         Pending::ClipboardRead(terminal, _) => (
             format!(
-                "{terminal} wants to read your clipboard.{}",
+                "{} wants to read your clipboard.{}",
+                called(terminal),
                 keyed("", " A allows it every time.")
             ),
             keyed("Allow once", "Allow once (Return)"),
         ),
         Pending::ClipboardWrite(terminal, text) => (
             format!(
-                "{terminal} wants to set your clipboard ({} characters).",
+                "{} wants to set your clipboard ({} characters).",
+                called(terminal),
                 text.chars().count()
             ),
             keyed("Allow", "Allow (Return)"),
@@ -61,6 +68,23 @@ pub(super) fn question(pending: &Pending, touch: bool) -> (String, &'static str)
             keyed("End session", "End session (Return)"),
         ),
     }
+}
+
+/// A terminal as the person knows it, its name beside its address
+/// (`build (@4)`), or the address alone when nothing names it. A prompt
+/// that ends a terminal or hands it the clipboard says which one.
+fn called(desk: &Desk, id: &ResourceId) -> String {
+    let named = (desk.connection.topology.as_ref())
+        .and_then(|topology| topology.pane(id))
+        .and_then(|pane| {
+            phux_client_core::pane_label::pane_label(
+                pane.name.as_deref(),
+                pane.title.as_deref(),
+                pane.foreground.as_deref(),
+                pane.cwd.as_deref(),
+            )
+        });
+    named.map_or_else(|| id.to_string(), |name| format!("{name} ({id})"))
 }
 
 /// The pane ids (`@N`) in `message`, set as machine nouns:
@@ -107,7 +131,7 @@ pub(in crate::ui) fn question_bar(desk: &Desk, p: &Tokens) -> Option<El> {
     let s = &t.space;
     let pending = desk.pending.as_ref()?;
     let touch = desk.phone.is_some();
-    let (message, verb) = question(pending, touch);
+    let (message, verb) = question(pending, touch, &|id| called(desk, id));
     let cancel = if touch { "Cancel" } else { "Cancel (Esc)" };
     let verb_look = if destructive(pending) {
         t.danger_button()
