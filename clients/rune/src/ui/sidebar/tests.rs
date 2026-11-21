@@ -120,6 +120,7 @@ fn listed(dark: bool) -> rune::Runtime<Desk> {
             activation: None,
             exec: None,
             foreground: None,
+            icon: None,
         })
         .collect();
     let mut topology = crate::desk::topology(vec![session], panes);

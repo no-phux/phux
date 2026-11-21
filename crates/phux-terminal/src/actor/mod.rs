@@ -49,6 +49,7 @@ mod fd_shrink;
 mod hangup;
 mod io;
 mod native;
+mod osc_scan;
 #[cfg(target_os = "linux")]
 mod pane_scope;
 mod park;
@@ -240,6 +241,10 @@ pub struct TerminalActor {
     program_status_sink: Option<watch::Sender<Vec<program_status::Record>>>,
     /// The OSC 7501 `resume=` token, kept out of the records above.
     resume: resume::Resume,
+    /// The OSC 1337 `phux_icon` scan, and a change from it the agent-state
+    /// sink has not taken yet.
+    icon: osc_scan::IconScan,
+    icon_owed: Option<osc_scan::IconChange>,
     /// OSC 9 / OSC 777 notifications, for the server to map onto notes.
     program_note_sink: Option<watch::Sender<Option<phux_terminal_api::agent_detect::ProgramNote>>>,
     /// Agent-state detector (ADR-0046), built in [`Self::run`] for PTY-backed

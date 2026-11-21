@@ -353,3 +353,46 @@ async fn an_ask_sentinel_lands_in_the_ledger_the_hook_shares() {
     })
     .await;
 }
+
+/// The program-set icon rides the occupant record: it waits for the
+/// detector's first reading, survives a foreground change, and goes when
+/// cleared.
+#[tokio::test(flavor = "current_thread")]
+async fn the_icon_rides_the_occupant_record() {
+    use phux_protocol::wire::frame::RESOURCE_PANE_OCCUPANT_KEY;
+    use phux_terminal_api::agent_detect::PaneOccupant;
+    local(async {
+        let (state, terminal) = pane(None);
+        let occupant = |fg: &str| {
+            AgentDetectEvent::Occupant(PaneOccupant {
+                foreground: fg.to_owned(),
+                is_pane_shell: false,
+                background: false,
+                icon: None,
+            })
+        };
+        let record = || {
+            let scope = Scope::Resource(terminal.clone());
+            state
+                .with(|s| s.metadata().get(&scope, RESOURCE_PANE_OCCUPANT_KEY))
+                .map(|bytes| String::from_utf8(bytes).expect("utf-8"))
+        };
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        spawn_agent_state_drain(state.clone(), terminal.clone(), rx);
+        let send = async |event| {
+            tx.send(event).await.expect("drain is alive");
+            for _ in 0..16 {
+                tokio::task::yield_now().await;
+            }
+        };
+        send(AgentDetectEvent::Icon(Some("🦀".to_owned()))).await;
+        assert_eq!(record(), None);
+        send(occupant("cargo")).await;
+        assert!(record().is_some_and(|r| r.contains(r#""icon":"🦀""#)));
+        send(occupant("rustc")).await;
+        assert!(record().is_some_and(|r| r.contains("rustc") && r.contains("🦀")));
+        send(AgentDetectEvent::Icon(None)).await;
+        assert!(record().is_some_and(|r| !r.contains("icon")));
+    })
+    .await;
+}

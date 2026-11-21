@@ -31,6 +31,7 @@ The configuration surface of `~/.config/phux/config.toml`. The loader layers you
 | `[host]` | This machine as clients draw it: `color` overrides its automatic colour (`phux host color --local`). |
 | `[[projects]]` | Named projects `phux project open <name>` resolves: a checkout path and an optional out-of-repo recipe. |
 | `[[sessions]]` | A colour for a session by name, drawn beside it in the sidebar: `color` is one of the host palette's ids. |
+| `[[icons]]` | An icon drawn before a pane's name, by foreground `process` or `cwd` glob; a program-set icon comes first. |
 | `[theme]` | Free-form color slots (`slot = "color"`) consumed by the renderer. |
 | `[experimental]` | Opt-in unstable knobs; anything here may change or disappear without notice. |
 | `[policy]` | The authorization posture read at server start: `local` (owner socket only) or `paired` (workload mTLS, scope ceilings enforced at dispatch). |
@@ -641,6 +642,21 @@ exclusive = true
 # [[sessions]]
 # name = "api"
 # color = "coral"
+
+# Pane icons: a glyph (an emoji or a Nerd Font symbol) drawn before a
+# pane's name in the tab bar and the desktop's lists. The first entry whose
+# `process` (the foreground program's name) and `cwd` (a folder, `*` for
+# any run of characters, `~` for home) all match wins. A program in the
+# pane can set its own icon, which comes first
+# (docs/program-sequences.md). An older phux refuses this table.
+#
+# [[icons]]
+# icon = "🦀"
+# process = "cargo"
+#
+# [[icons]]
+# icon = "🏢"
+# cwd = "~/work/*"
 
 [status]
 # Left: the window/tab bar. The `windows` widget renders one tab per

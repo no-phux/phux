@@ -104,21 +104,25 @@ pub(super) fn metadata_error_outcome<W: crate::attach::RenderSink>(
     })
 }
 
-/// The pane's foreground from its `phux.pane-occupant/v1` record: it names
-/// an auto-numbered window, so a change repaints the chrome.
+/// The pane's foreground and program-set icon from its
+/// `phux.pane-occupant/v1` record: they name the window, so a change
+/// repaints the chrome.
 fn apply_occupant<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
     terminal: &ResourceId,
     value: Option<&[u8]>,
 ) -> FrameOutcome {
-    let foreground = value
+    let (foreground, icon) = value
         .and_then(parse_pane_occupant)
-        .map(|record| record.foreground);
+        .map_or((None, None), |record| {
+            (Some(record.foreground), record.icon)
+        });
     let Some(slot) = ctx.panes.get_mut(terminal) else {
         return FrameOutcome::default();
     };
-    let changed = slot.foreground != foreground;
+    let changed = slot.foreground != foreground || slot.program_icon != icon;
     slot.foreground = foreground;
+    slot.program_icon = icon;
     FrameOutcome {
         chrome_dirty: changed,
         ..FrameOutcome::default()

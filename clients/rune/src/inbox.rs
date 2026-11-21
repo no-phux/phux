@@ -309,6 +309,7 @@ mod tests {
             activation: None,
             exec: None,
             foreground: None,
+            icon: None,
         }
     }
 

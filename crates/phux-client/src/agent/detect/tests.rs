@@ -307,6 +307,7 @@ fn a_shell_foreground_outranks_agent_words_on_the_screen() {
         foreground: "bash".to_owned(),
         is_pane_shell: true,
         background: false,
+        icon: None,
     });
     let state = infer_agent_state(&evidence, &[]);
     assert_eq!(state.agent.kind, AgentKind::Unknown);
@@ -316,6 +317,7 @@ fn a_shell_foreground_outranks_agent_words_on_the_screen() {
         foreground: "node".to_owned(),
         is_pane_shell: false,
         background: false,
+        icon: None,
     });
     assert_eq!(
         infer_agent_state(&evidence, &[]).agent.kind,
