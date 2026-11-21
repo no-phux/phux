@@ -6,6 +6,7 @@
 set -euo pipefail
 
 ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+bash "$ROOT/scripts/lib/mbx-target_test.sh"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/worktree-owner-test.XXXXXX")"
 WORK="$(cd "$WORK" && pwd -P)"
 trap 'rm -rf -- "$WORK"' EXIT
