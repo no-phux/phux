@@ -170,6 +170,20 @@ fn validate_owner_dir(meta: &fs::Metadata) -> Result<(), SecureFileError> {
     Ok(())
 }
 
+/// Take group and world write off `dir` when it is phux's own state
+/// directory. A login umask of 002 leaves it group-writable whenever
+/// something creates it with a plain `create_dir_all` before phux makes it
+/// owner-only, so phux repairs its own directory rather than refuse to
+/// start. Nobody else can create a file the effective user owns, and every
+/// file in it is still checked on its own. Any other directory is one the
+/// operator chose (`PHUX_WORKLOAD_*`) and is refused as it is. Best
+/// effort: the check that follows reports what could not be repaired.
+fn repair_own_state_dir(dir: &Path) {
+    if dir == crate::telemetry::state_dir() {
+        let _ = crate::owner_dir::tighten(dir);
+    }
+}
+
 fn refuse_production(path: &Path) -> Result<(), SecureFileError> {
     phux_config::production::refuse_dev_on_production_state(path)
         .map_err(SecureFileError::ProductionState)

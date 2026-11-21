@@ -129,8 +129,10 @@ only when that satellite advertises the feature, and refuses
 An older client can still read and write the default
 `phux.tui.layout/v1/<session-id>` metadata key. A current server decodes the
 legacy v3 envelope at the metadata boundary and commits a session arrangement
-through the same authority as the typed API. Its reverse projection gives an
-older reader live handles and split topology. Current writers use the typed
+through the same authority as the typed API. It never stores the writer's
+bytes: a write that does not decode or is refused changes nothing. A `GET`
+encodes the current arrangement, live handles and split topology, and every
+arrangement change, whatever its source, is broadcast on the key. Current writers use the typed
 arrangement when both peers support it. Named projections remain opaque
 metadata for their own readers. The envelope can carry slot tabs as an
 optional field, which older readers skip. Clients of older servers still need the legacy

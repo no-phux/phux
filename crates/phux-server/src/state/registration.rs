@@ -107,6 +107,10 @@ impl ServerState {
         }
         let wire = self.idspace.intern_resource(terminal);
         self.resources.register(terminal, handle, token);
+        // The member's leaf is live now; legacy layout readers see it.
+        if let Some(session) = self.registry().session_of(terminal) {
+            self.publish_arrangement_as_layout(session);
+        }
         Ok(wire)
     }
 

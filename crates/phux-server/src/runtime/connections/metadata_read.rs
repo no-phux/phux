@@ -56,7 +56,8 @@ pub(super) async fn handle_get_metadata(
 
 /// The value one `GET_METADATA` answers with: the asking connection's own
 /// `phux.whoami/v1` record (never stored), a nonce-bearing create result only
-/// its owner may read, or whatever the store holds.
+/// its owner may read, a live session's arrangement encoded for its TUI
+/// layout key, or whatever the store holds.
 fn read_metadata_value(
     s: &ServerState,
     client_id: ClientId,
@@ -69,6 +70,9 @@ fn read_metadata_value(
     }
     if nonce_result && !s.clients().owns_session_create_result(client_id, key) {
         return None;
+    }
+    if let Some(session) = s.tui_layout_session(scope, key) {
+        return s.arrangement_as_layout(session);
     }
     s.metadata().get(scope, key)
 }

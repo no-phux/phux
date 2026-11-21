@@ -452,6 +452,23 @@ impl ServerState {
                 _ => None,
             })
             .collect();
+        // Every arrangement change reaches legacy readers of the TUI layout
+        // key, whatever its source; an emptied session's keys go instead.
+        let changed: Vec<SessionId> = transition
+            .deltas
+            .iter()
+            .filter_map(|delta| match delta {
+                phux_core::Delta::PutArrangement(phux_core::Arrangement {
+                    owner: phux_core::ArrangementOwner::Session(key),
+                    ..
+                }) => self.sessions.registry.session_id(key),
+                _ => None,
+            })
+            .filter(|session| !emptied.contains(session))
+            .collect();
+        for session in changed {
+            self.publish_arrangement_as_layout(session);
+        }
         for session in emptied {
             let wire = self.idspace.session_wire(session);
             self.forget_layout_keys_of_session(wire);
