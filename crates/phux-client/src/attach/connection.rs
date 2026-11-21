@@ -9,6 +9,7 @@
 
 use std::path::Path;
 use std::sync::Mutex;
+use std::time::Duration;
 
 pub use phux_client_runtime::session::{
     Answer, Dial, METADATA_WINDOW, NegotiatedBootstrap, Refusal, Reply,
@@ -24,6 +25,8 @@ use phux_protocol::wire::frame::{Command, FrameKind, MoveResult, RolePolicy, Sco
 use tokio::net::UnixStream;
 
 use super::outcome::AttachError;
+use super::reply_deadline;
+pub use super::reply_deadline::install_deadline;
 
 /// A connection that has completed `HELLO` negotiation.
 ///
@@ -41,6 +44,10 @@ use super::outcome::AttachError;
 #[derive(Debug)]
 pub struct Connection {
     session: Session,
+    /// Who answers, for a timeout message: the socket path, host, or URL.
+    peer: String,
+    /// Bound on each request/response exchange; `None` waits forever.
+    reply_deadline: Option<Duration>,
 }
 
 /// Product token the interactive client sends in `HELLO.client_name`.
@@ -160,8 +167,31 @@ impl Connection {
         client_name: String,
         client_caps: ClientCapabilities,
     ) -> Result<Self, AttachError> {
-        let session = Session::connect(dial, client_name, client_caps).await?;
-        Ok(Self { session })
+        // The dial keeps its own bound and classification (an unanswered
+        // host is `Unreachable`, which the remote attach repairs by starting
+        // the server); the deadline covers the HELLO wait that follows.
+        let peer = reply_deadline::peer_label(dial);
+        let deadline = reply_deadline::installed();
+        let mut session = Session::dial(dial).await?;
+        reply_deadline::bounded(
+            deadline,
+            || format!("connecting to the phux server at {peer}"),
+            Box::pin(session.negotiate(client_name, client_caps)),
+        )
+        .await?;
+        Ok(Self {
+            session,
+            peer,
+            reply_deadline: deadline,
+        })
+    }
+
+    /// Bound each later request/response exchange on this connection by
+    /// `deadline` (`None` waits forever), replacing the installed one. For a
+    /// long-lived stream after its handshake, or a caller with its own,
+    /// longer budget. After a timeout the connection is out of step; drop it.
+    pub const fn set_reply_deadline(&mut self, deadline: Option<Duration>) {
+        self.reply_deadline = deadline;
     }
 
     /// An unnegotiated connection over an already-connected [`UnixStream`]:
@@ -171,6 +201,8 @@ impl Connection {
     pub fn from_stream(stream: UnixStream) -> Self {
         Self {
             session: Session::from_stream(stream),
+            peer: "the test stream".to_owned(),
+            reply_deadline: None,
         }
     }
 
@@ -337,7 +369,12 @@ impl Connection {
         request_id: u32,
         command: Command,
     ) -> Result<Reply, AttachError> {
-        Ok(self.session.request(request_id, command).await?)
+        reply_deadline::reply(
+            self.reply_deadline,
+            &self.peer,
+            Box::pin(self.session.request(request_id, command)),
+        )
+        .await
     }
 
     /// The extended server features `HELLO_OK` negotiated; empty before the
@@ -362,10 +399,12 @@ impl Connection {
         scope: Scope,
         key: String,
     ) -> Result<Reply<Answer<Option<Vec<u8>>>>, AttachError> {
-        Ok(self
-            .session
-            .request_metadata(request_id, scope, key)
-            .await?)
+        reply_deadline::reply(
+            self.reply_deadline,
+            &self.peer,
+            Box::pin(self.session.request_metadata(request_id, scope, key)),
+        )
+        .await
     }
 
     /// One `GET_METADATA` per `(scope, key)`, pipelined [`METADATA_WINDOW`]
@@ -380,10 +419,12 @@ impl Connection {
         first_request_id: u32,
         reads: Vec<(Scope, String)>,
     ) -> Result<Reply<Vec<Answer<Option<Vec<u8>>>>>, AttachError> {
-        Ok(self
-            .session
-            .request_metadata_many(first_request_id, reads)
-            .await?)
+        reply_deadline::reply(
+            self.reply_deadline,
+            &self.peer,
+            Box::pin(self.session.request_metadata_many(first_request_id, reads)),
+        )
+        .await
     }
 
     /// Send one `LIST_METADATA` and wait for its `METADATA_KEYS`.
@@ -396,10 +437,12 @@ impl Connection {
         request_id: u32,
         scope: Scope,
     ) -> Result<Reply<Answer<Vec<String>>>, AttachError> {
-        Ok(self
-            .session
-            .request_metadata_keys(request_id, scope)
-            .await?)
+        reply_deadline::reply(
+            self.reply_deadline,
+            &self.peer,
+            Box::pin(self.session.request_metadata_keys(request_id, scope)),
+        )
+        .await
     }
 
     /// Send one `SPAWN_RESOURCE` and wait for its `RESOURCE_SPAWNED`.
@@ -412,7 +455,12 @@ impl Connection {
         &mut self,
         frame: &FrameKind,
     ) -> Result<Reply<Answer<SpawnResult>>, AttachError> {
-        Ok(self.session.request_spawn(frame).await?)
+        reply_deadline::reply(
+            self.reply_deadline,
+            &self.peer,
+            Box::pin(self.session.request_spawn(frame)),
+        )
+        .await
     }
 
     /// Send one `MOVE_RESOURCE` and wait for its `RESOURCE_MOVED`
@@ -426,7 +474,12 @@ impl Connection {
         &mut self,
         frame: &FrameKind,
     ) -> Result<Reply<Answer<MoveResult>>, AttachError> {
-        Ok(self.session.request_move(frame).await?)
+        reply_deadline::reply(
+            self.reply_deadline,
+            &self.peer,
+            Box::pin(self.session.request_move(frame)),
+        )
+        .await
     }
 }
 

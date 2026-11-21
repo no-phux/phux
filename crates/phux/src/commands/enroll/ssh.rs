@@ -122,12 +122,14 @@ pub(crate) fn accept_new_host_keys() {
     ACCEPT_NEW_HOST_KEYS.store(true, Ordering::Relaxed);
 }
 
-/// `ssh -o BatchMode=yes HOST ARGV...`, so a missing key errors instead of
-/// prompting.
+/// `ssh -o ConnectTimeout=10 -o BatchMode=yes HOST ARGV...`, so a missing
+/// key errors instead of prompting and a dead host errors instead of hanging.
 pub(super) fn ssh_command(program: &OsString, ssh_host: &str, argv: &[&str]) -> Command {
     let mut command = Command::new(program);
     // Rides the master a foreground [`login`] left, or leaves one.
     command.args(phux_client_runtime::connection::ssh_batch_control_options());
+    // An unroutable host fails in seconds rather than at the OS connect timeout.
+    command.arg("-o").arg("ConnectTimeout=10");
     command.arg("-o").arg("BatchMode=yes");
     if ACCEPT_NEW_HOST_KEYS.load(Ordering::Relaxed) {
         command.arg("-o").arg("StrictHostKeyChecking=accept-new");
@@ -321,5 +323,19 @@ mod tests {
             "it may prompt"
         );
         assert!(args.ends_with(&["-f", "-N", "--", "me@box"].map(str::to_owned)));
+    }
+
+    /// A batch run against an unroutable host gives up, never hangs.
+    #[test]
+    fn batch_runs_bound_the_connect() {
+        let command = ssh_command(&"ssh".into(), "me@box", &["phux", "ls"]);
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy())
+            .collect();
+        assert!(
+            args.iter().any(|arg| arg == "ConnectTimeout=10"),
+            "{args:?}"
+        );
     }
 }
