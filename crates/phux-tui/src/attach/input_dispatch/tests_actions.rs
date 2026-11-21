@@ -1240,7 +1240,6 @@ fn return_from_attention_consumes_a_stale_origin_safely() {
 // ---- sessions ----------------------------------------------------------------
 
 mod kill_confirm;
-mod scroll;
 mod session_picker_order;
 mod session_picker_projects;
 

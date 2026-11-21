@@ -1,13 +1,16 @@
 //! The scroll actions ask the dispatcher to move the focused pane's history
 //! by a page, half a page, or to either end.
 
-use super::*;
+use crate::layout::ArrangementDoc;
+
+use super::args::bare_action;
+use super::test_support::*;
 
 #[test]
 fn scroll_actions_ask_for_a_page_half_a_page_or_an_end() {
-    let mut workspace = ArrangementDoc::single(tid(1));
+    let mut f = fx(ArrangementDoc::single(tid(1)));
     let mut rows = |name: &str| {
-        run(&bare_action(name), &mut workspace)
+        f.run(&bare_action(name))
             .scroll_viewport
             .unwrap_or_else(|| panic!("{name} scrolls"))
     };
