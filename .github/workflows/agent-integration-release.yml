@@ -130,7 +130,6 @@ jobs:
           npm install --global npm@12.2.1
           npm --prefix integrations/runtime ci
           npm --prefix integrations/runtime run gates
-          git diff --exit-code -- integrations/runtime/dist
 
       - name: Install and run component gates
         working-directory: ${{ needs.prepare.outputs.directory }}

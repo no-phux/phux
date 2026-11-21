@@ -196,19 +196,15 @@ multi-host task coordinator and autonomous Lead are not shipping contracts.
 
 ### Cache-friendly agent context
 
-Stable instructions and tool definitions must not carry live fleet values.
-Fleet observations belong in bounded, attributed, persistent tail messages so
-an unchanged prefix can remain reusable; pi's shared awareness stream emits a
-checkpoint, then only changes, with fresh checkpoints after compaction or tree
-movement. Provider caching itself remains the harness/provider's concern.
+Keep live fleet values out of static instructions and tool definitions so the
+prefix can be reused. Fleet messages are bounded, attributed, and persistent.
+pi appends a checkpoint and then changes, re-checkpointing after compaction or
+tree movement.
 
-OpenCode V2 defaults fleet awareness off. Opt-in, it writes unsequenced fleet
-state to the session's `phux-fleet` instruction entry per prompt; OpenCode keeps
-the first value in the system prompt, appends each change as a durable system
-message, and carries the value through compaction and forks.
-The [bootload-cache research](./research/context-bootload-cache.md)
-records the earlier per-request design, measurements, and the cache ownership
-recommendation. No keeper bootload service exists today.
+OpenCode V2 fleet awareness is opt-in. Each prompt writes the unsequenced
+`phux-fleet` instruction entry: OpenCode keeps the first value in the system
+prompt and persists changes as system messages across compaction and forks.
+The harness prepares instructions; the provider caches inference, not the keeper.
 
 ## Where to look
 
@@ -291,9 +287,9 @@ The current architectural constraints, with their reasons, are in
 The 189 numbered ADRs are preserved unchanged at the last integrated
 ADR-bearing main snapshot,
 [`d21db2e345aeaff43a681b3a04dfd43f2cc082ca`](https://github.com/no-phux/phux/tree/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr).
-This is main history, not an ephemeral PR-branch commit. Current contracts
-remain in the live guides and the constraints above; history supplies the
-original trade-offs, rejected alternatives, and context.
+The [research snapshot](https://github.com/no-phux/phux/tree/162de4cc5382d3a13b169f72bea95bafeccc5142/docs/research)
+holds the bootload measurements and compensating-code inventory. Neither
+archive is a live contract.
 
 From a Git checkout, browse the index or search the complete archive:
 

@@ -6,7 +6,6 @@ docs/spec/CHANGELOG.md -linguist-generated
 docs/reference/cli.md linguist-generated=true
 docs/reference/config.md linguist-generated=true
 docs/assets/*.cast linguist-generated=true
-integrations/runtime/dist/** linguist-generated=true
 integrations/opencode-v2/index.js linguist-generated=true
 integrations/opencode-v2/tui.js linguist-generated=true
 integrations/opencode-v2/dist/gui-experimental.cjs linguist-generated=true
