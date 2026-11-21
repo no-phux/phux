@@ -1,9 +1,14 @@
-**Phux Rune 0.1.46**: clearer Connections and more room for large-text phone sessions, plus desktop polish since 0.1.45.
+**Phux Rune 0.1.47**: quieter session chrome, clearer terminal navigation and reliable keyboard handoff.
 
-- Phone Sessions now names **Connections** above its machine and link state. Long names wrap. At large text sizes, search, Connections and **New session** scroll with the inventory; focused search keeps the complete New session action reachable above the keyboard. (#2732)
-- Find buttons show keyboard-focus help and route Escape through Find without leaking input into the terminal. (#2732)
-- Update Rune to `dc8f7f72`, bringing exact-pixel-centre effects, native Metal libraries, focus-entry tracking, disabled-control focus rescue and keyboard tooltips. All ten manifest pins and 23 locked Rune packages move together. (#2732)
-- Fold the desktop sidebar into one window surface with one spring, round its rows, and inset the host stripe inside the selected edge.
-- Show pane focus without a coloured rim or dimming other panes, and show splits at their real size without waiting on the server. (#2725)
-- Make the local machine label and Find misses readable in words. Drop the repeated action glyph from the palette and mute session-close controls.
-- Fit context menus to their longest title and group their edits. Join Settings steppers into one capsule, align update toggles with their card, and preview Auto scheme as one window split light and dark.
+- Jump back to the last pane or tab, click the shown tab to return to the previous one, and find terminals grouped by tab in the palette. (#2814)
+- Option-click at a shell prompt to move its cursor. Search copy mode with `/`, `?`, `n` and `N`, and copy the selected match. (#2814)
+- Show pane numbers, focus the sidebar from the keyboard, and explicitly toggle typing into every pane of the tab. (#2783)
+- Choose a default session and opt out of shipped keybindings in configuration. (#2773)
+- Explain when an action needs a newer server and offer a local server upgrade. (#2815)
+- Open the palette on your terminals first, with mirrors last. Draw jump-to as a filled pill and quiet the session header.
+- Show terminal dimensions only while the window resizes.
+- Return keyboard input to the terminal after clicking New session. (#2759)
+- Clear a copy selection with Escape before leaving copy mode, and support scroll actions. (#2755)
+- Distinguish temporary connection failures from credential refusals when reconnecting. (#2763)
+- Require live session and selected-terminal evidence in native iOS qualification. (#2741)
+- Keep real Wayland input-method qualification strict and retain focus, engine and protocol diagnostics when it fails. This is not a claim that the intermittent input-method failure is repaired.
