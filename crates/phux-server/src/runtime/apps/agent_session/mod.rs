@@ -5,7 +5,6 @@ use futures_util::future::LocalBoxFuture;
 use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode, FrameKind};
 
 use super::{FrameAdmission, ResourceApp, ResourceFrame, ResourceSpawn, StreamBootstrap};
-use crate::resource::ResourceKind;
 use crate::runtime::commands::{AttachResourceFailure, CommandContext};
 use crate::runtime::connections::dispatch::FrameFlow;
 use crate::runtime::operation_dedupe::OperationClaim;
@@ -24,7 +23,7 @@ pub(crate) use native_agent::{claim_relaunch, retry_pending_closures, source_exi
 /// none. Records are at most 16 KiB, so this fits several per chunk.
 const DEFAULT_AGENT_CHUNK_BYTES: usize = 64 * 1024;
 
-/// Serves [`ResourceKind::AgentSession`].
+/// Serves [`ResourceKind::AgentSession`](crate::resource::ResourceKind::AgentSession).
 #[derive(Debug)]
 pub(crate) struct AgentSessionApp;
 

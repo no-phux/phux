@@ -125,8 +125,8 @@ impl ServerState {
         resource: ResourceId,
     ) -> Option<(CloseReason, CloseAttribution)> {
         self.sessions.registry.resource(resource)?;
-        Some(self.pending_closes.remove(&resource).map_or(
-            (CloseReason::Exited, CloseAttribution::default()),
+        Some(self.pending_closes.remove(&resource).map_or_else(
+            || (CloseReason::Exited, CloseAttribution::default()),
             |close| (close.reason, close.attribution),
         ))
     }

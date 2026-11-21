@@ -5,7 +5,7 @@
 
 use phux_protocol::ids::SessionId;
 
-use super::{AttachError, Connection, Notice, RepaintAccumulator, SidebarReservation};
+use super::{AttachError, Connection, Notice, RepaintAccumulator, SidebarReservation, Step};
 use crate::attach::arrangement_link::ArrangementLink;
 use crate::layout::ArrangementDoc;
 

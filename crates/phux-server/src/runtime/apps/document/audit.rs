@@ -39,7 +39,7 @@ pub(crate) fn record_refusal(
                 terminal_id,
                 intent,
                 result,
-            )
+            );
         });
     }
 }

@@ -16,9 +16,9 @@ use std::sync::mpsc::{self, Sender};
 
 #[cfg(feature = "engine")]
 use libghostty_vt::terminal::ScrollViewport;
+use phux_client_core::engine::CanonicalGeometry;
 #[cfg(feature = "engine")]
 use phux_client_core::engine::ghostty::{GhosttyAdapter, GhosttyReplica};
-use phux_client_core::engine::{CanonicalGeometry, EngineAdapter};
 #[cfg(feature = "engine")]
 use phux_client_core::engine::{DocumentPoint, DocumentSpace, EngineDocumentSelection};
 #[cfg(feature = "engine")]

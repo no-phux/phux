@@ -1,10 +1,10 @@
 //! One terminal-scoped render cache, with independently owned frame buffers.
 
 use super::{
-    Arc, EngineError, FrameColors, GridBuffer, GridDamage, GridFrame, Owner, ProjectorSlot,
-    ResourceId, Rgb, Scrollbar, apply_default_colors, engine_error, monotonic_ms,
-    terminal_defaults,
+    Arc, EngineError, GridBuffer, GridDamage, GridFrame, Owner, ProjectorSlot, ResourceId, Rgb,
+    Scrollbar, apply_default_colors, engine_error, monotonic_ms, terminal_defaults,
 };
+use crate::publication::FrameColors;
 
 fn frame_colors(colors: &libghostty_vt::render::Colors) -> FrameColors {
     let rgb = |color: libghostty_vt::color::Rgb| Rgb {

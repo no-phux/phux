@@ -128,9 +128,9 @@ reconnect, an engine thread for the replicas and a publication table for grids
 and documents. Rune and the FFI bindings use the runtime's connected client.
 The TUI runs the kernel in its own attach loop over the shared headless
 connection. The browser also runs the kernel and owns its browser I/O.
-The runtime and TUI share the kernel's translation of decoded bootstrap,
-output, and history frames. The TUI adopts typed arrangement reads directly
-and decodes layout metadata when attached to a legacy peer.
+The runtime, TUI and browser share the kernel's translation of decoded
+bootstrap, output, and history frames. The TUI adopts typed arrangement reads
+directly and decodes layout metadata when attached to a legacy peer.
 
 The TUI paints pane interiors from libghostty through a cell-diffed front
 buffer and paints chrome with ratatui in disjoint regions. Phux Rune paints the

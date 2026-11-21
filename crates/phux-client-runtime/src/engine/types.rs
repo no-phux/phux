@@ -15,6 +15,10 @@ use phux_protocol::wire::frame::FrameKind;
 
 /// What the control plane hands to the engine owner.
 #[derive(Debug)]
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "engine publicly re-exports the external types from this module"
+)]
 pub(crate) enum EngineEvent {
     /// A decoded bootstrap, output, or history frame.
     Stream(FrameKind),
