@@ -5,17 +5,23 @@ use super::EngineHandle;
 #[cfg(feature = "engine")]
 use super::HistoryStatus;
 use super::{
-    AgentEvent, BootstrapId, BootstrapLimits, BootstrapProfile, BootstrapStreamProfile,
-    CloseReason, HistoryCacheConfig, HistoryRejectionReason, HistoryUnavailableReason,
-    KernelEffect, KernelError, KernelStatus, ResourceId, StreamId, TombstoneReason,
+    AgentEvent, BootstrapLimits, BootstrapProfile, CloseReason, HistoryCacheConfig, KernelEffect,
+    KernelError, KernelStatus, ResourceId,
 };
-/// One owned kernel input, as the control plane decodes it from a frame.
-#[derive(Debug, Clone)]
+use phux_client_core::session::{AgentSessionDeclaration, KernelInput};
+#[cfg(feature = "engine")]
+use phux_protocol::BootstrapStreamProfile;
+use phux_protocol::wire::frame::FrameKind;
+
+/// What the control plane hands to the engine owner.
+#[derive(Debug)]
 #[allow(
-    missing_docs,
-    reason = "each field mirrors the `KernelInput` field of the same name"
+    clippy::redundant_pub_crate,
+    reason = "engine publicly re-exports the external types from this module"
 )]
-pub enum EngineEvent {
+pub(crate) enum EngineEvent {
+    /// A decoded bootstrap, output, or history frame.
+    Stream(FrameKind),
     /// `ATTACHED`: the aggregate attach and its terminal inventory.
     AttachStarted {
         attach_id: u32,
@@ -23,76 +29,6 @@ pub enum EngineEvent {
     },
     /// `ATTACH_READY`.
     AttachReady { attach_id: u32 },
-    /// `BOOTSTRAP_BEGIN`.
-    BootstrapBegin {
-        terminal_id: ResourceId,
-        stream_id: StreamId,
-        bootstrap_id: BootstrapId,
-        profile: BootstrapStreamProfile,
-        cols: u16,
-        rows: u16,
-        base_seq: u64,
-    },
-    /// `BOOTSTRAP_CHUNK`.
-    BootstrapChunk {
-        terminal_id: ResourceId,
-        stream_id: StreamId,
-        bootstrap_id: BootstrapId,
-        chunk_seq: u32,
-        payload: bytes::Bytes,
-    },
-    /// `BOOTSTRAP_READY`.
-    BootstrapReady {
-        terminal_id: ResourceId,
-        stream_id: StreamId,
-        bootstrap_id: BootstrapId,
-        history_cursor: Option<Vec<u8>>,
-    },
-    /// `HISTORY_PAGE`.
-    HistoryPage {
-        terminal_id: ResourceId,
-        stream_id: StreamId,
-        bootstrap_id: BootstrapId,
-        page_seq: u64,
-        rows: u32,
-        cursor: Vec<u8>,
-        next_cursor: Option<Vec<u8>>,
-        payload: bytes::Bytes,
-    },
-    /// `HISTORY_TOMBSTONE`.
-    HistoryTombstone {
-        terminal_id: ResourceId,
-        stream_id: StreamId,
-        bootstrap_id: BootstrapId,
-        cursor: Vec<u8>,
-        reason: HistoryUnavailableReason,
-    },
-    /// `HISTORY_REJECTED`.
-    HistoryRejected {
-        terminal_id: ResourceId,
-        stream_id: StreamId,
-        bootstrap_id: BootstrapId,
-        cursor: Vec<u8>,
-        reason: HistoryRejectionReason,
-        required_bytes: u32,
-        required_rows: u32,
-    },
-    /// `RESOURCE_OUTPUT`.
-    Output {
-        terminal_id: ResourceId,
-        stream_id: StreamId,
-        bootstrap_id: BootstrapId,
-        seq: u64,
-        bytes: bytes::Bytes,
-    },
-    /// `BOOTSTRAP_TOMBSTONE`.
-    Tombstone {
-        terminal_id: ResourceId,
-        stream_id: StreamId,
-        bootstrap_id: BootstrapId,
-        reason: TombstoneReason,
-        last_valid_seq: u64,
-    },
     /// `RESOURCE_CLOSED`, or a close inferred from a topology that no
     /// longer lists the terminal.
     Closed {
@@ -129,23 +65,46 @@ impl EngineEvent {
         }
     }
 
-    /// The terminal the event concerns, if it is terminal-scoped.
-    #[must_use]
-    pub const fn terminal_id(&self) -> Option<&ResourceId> {
-        match self {
-            Self::AttachStarted { .. } | Self::AttachReady { .. } => None,
-            Self::BootstrapBegin { terminal_id, .. }
-            | Self::BootstrapChunk { terminal_id, .. }
-            | Self::BootstrapReady { terminal_id, .. }
-            | Self::HistoryPage { terminal_id, .. }
-            | Self::HistoryTombstone { terminal_id, .. }
-            | Self::HistoryRejected { terminal_id, .. }
-            | Self::Output { terminal_id, .. }
-            | Self::Tombstone { terminal_id, .. }
-            | Self::Closed { terminal_id, .. }
-            | Self::Agent { terminal_id, .. }
-            | Self::AgentSessionDeclared { terminal_id, .. } => Some(terminal_id),
-        }
+    pub(super) fn input(&self) -> Option<KernelInput<'_>> {
+        let input = match self {
+            Self::Stream(frame) => return KernelInput::from_stream_frame(frame),
+            Self::AttachStarted {
+                attach_id,
+                terminals,
+            } => KernelInput::AttachStarted {
+                attach_id: *attach_id,
+                terminals,
+            },
+            Self::AttachReady { attach_id } => KernelInput::AttachReady {
+                attach_id: *attach_id,
+            },
+            Self::Closed {
+                terminal_id,
+                exit_status,
+                signal,
+                reason,
+            } => KernelInput::ResourceClosed {
+                terminal_id,
+                exit_status: *exit_status,
+                signal: *signal,
+                reason: *reason,
+            },
+            Self::Agent { terminal_id, event } => KernelInput::Event { terminal_id, event },
+            Self::AgentSessionDeclared {
+                terminal_id,
+                parent,
+                provider,
+                native_id,
+                state,
+            } => KernelInput::AgentSessionDeclared(AgentSessionDeclaration {
+                terminal_id,
+                parent: parent.as_ref(),
+                provider: provider.as_deref(),
+                native_id: native_id.as_deref(),
+                state: state.as_deref(),
+            }),
+        };
+        Some(input)
     }
 }
 

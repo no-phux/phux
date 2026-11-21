@@ -54,7 +54,7 @@ pub async fn record_composited(
         negotiated.profile,
         history_config,
     );
-    // Zero viewport: the server resizes nothing (L1 §9). The cell grid
+    // Zero viewport: the server resizes nothing. The cell grid
     // below is local to the compositor.
     let mut attach_id = send_attach(&mut conn, target).await?;
     let attached = match wait_for_attached(&mut conn, attach_id).await {
@@ -68,7 +68,7 @@ pub async fn record_composited(
     let viewport_dims = (capture.cols.max(1), capture.rows.max(1));
     let mut session =
         HeadlessSession::new(engine_kernel, headless_chrome(viewport_dims), viewport_dims);
-    let outcome = session.ingest(attached, None, None)?;
+    let outcome = session.ingest(attached, None)?;
     session.vcs.apply_snapshot(outcome.pane_cwds);
     let focused_session = outcome.sessions.map(|(_, focused)| focused);
     let title = session.mirror.session_name.clone();
@@ -90,16 +90,13 @@ pub async fn record_composited(
     if let Err(err) = session.request_agent_records(&mut conn).await {
         return end_composited(conn, &mut recorder, Err(err)).await;
     }
-    if let Err(err) = request_layout(
+    request_layout(
         socket,
         &mut session,
         outcome.subscribe_layout,
         focused_session,
     )
-    .await
-    {
-        return end_composited(conn, &mut recorder, Err(err)).await;
-    }
+    .await;
     let mut completion = HeadlessCompletion::default();
 
     let started = Instant::now();
@@ -219,7 +216,7 @@ impl RecordingLink<'_> {
     )]
     async fn absorb(&mut self, frame: FrameKind) -> Result<(), AttachError> {
         self.completion.observe_frame(&frame, *self.attach_id);
-        let outcome = self.session.ingest(frame, self.focused_session, None)?;
+        let outcome = self.session.ingest(frame, self.focused_session)?;
         if outcome.resync_required {
             *self.attach_id = restart_attach(
                 self.conn,

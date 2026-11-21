@@ -11,7 +11,7 @@ use crate::agent_detect::DetectedState;
 use phux_agent_session::asked::AskedPayload;
 
 impl TerminalActor {
-    /// Wire the agent-event sink (SPEC §7.5); the runtime drains it into the
+    /// Wire the agent-event sink; the runtime drains it into the
     /// event journal (ADR-0123). Set before `spawn_local`.
     pub fn set_event_sink(&mut self, sink: impl Into<phux_resource::event_sink::EventSink>) {
         self.event_sink = Some(sink.into());
@@ -26,7 +26,7 @@ impl TerminalActor {
     }
 
     /// Emit a signal's `terminal_control`, attributed to the client that
-    /// sent it and to its `operation_id` when keyed (L1 §5.1.1, §7.3).
+    /// sent it and to its `operation_id` when keyed.
     pub(super) fn emit_signal_control(
         &self,
         action: ControlAction,
@@ -75,6 +75,16 @@ impl TerminalActor {
         self.resume.subscribe()
     }
 
+    /// Subscribe to OSC 9 / OSC 777 notifications before starting this
+    /// actor. Only live output reports; an upgrade seed's replay does not.
+    pub fn subscribe_program_note(
+        &mut self,
+    ) -> tokio::sync::watch::Receiver<Option<phux_terminal_api::agent_detect::ProgramNote>> {
+        let (tx, rx) = tokio::sync::watch::channel(None);
+        self.program_note_sink = Some(tx);
+        rx
+    }
+
     pub(super) fn publish_program_status(&self) {
         if let Some(sink) = &self.program_status_sink {
             sink.send_replace(self.program_status.snapshot());
@@ -113,6 +123,25 @@ impl TerminalActor {
     /// re-derives every tick.
     pub(super) fn emit_agent_state(&self, event: AgentDetectEvent) {
         let _ = self.try_emit_agent_state(event);
+    }
+
+    /// Scan PTY output about to be written to the engine, which drops
+    /// OSC 1337 user variables, for a `phux_icon` change.
+    pub(super) fn observe_icon(&mut self, bytes: &[u8]) {
+        if let Some(icon) = self.icon.scan(bytes) {
+            self.icon_owed = Some(icon);
+        }
+    }
+
+    /// Hand the sink a pending icon change; a full sink keeps it for the
+    /// next write or detector tick.
+    fn flush_icon(&mut self) {
+        if let Some(icon) = self.icon_owed.take()
+            && !self.try_emit_agent_state(AgentDetectEvent::Icon(icon.clone()))
+            && self.agent_state_sink.is_some()
+        {
+            self.icon_owed = Some(icon);
+        }
     }
 
     pub(super) fn try_emit_agent_state(&self, event: AgentDetectEvent) -> bool {
@@ -214,6 +243,7 @@ impl TerminalActor {
         );
         let occupant = detector.take_occupant_update();
         let next = detector.interval();
+        self.flush_icon();
 
         if let Some(occupant) = occupant {
             if self.try_emit_agent_state(AgentDetectEvent::Occupant(occupant.clone())) {
@@ -242,6 +272,7 @@ impl TerminalActor {
     #[cfg(test)]
     pub(super) fn feed_for_test(&mut self, chunk: &[u8]) {
         self.resume.observe(chunk);
+        self.observe_icon(chunk);
         self.vt_write_for_test(chunk);
         self.source_events();
     }
@@ -272,6 +303,7 @@ impl TerminalActor {
                 | effects::Effect::InputStart
                 | effects::Effect::Progress(_)
                 | effects::Effect::ProgramStatus(_)
+                | effects::Effect::Note(_)
                 | effects::Effect::Bell => {}
             }
         }
@@ -319,9 +351,15 @@ impl TerminalActor {
                     changed |= self.program_status.expire_active();
                     self.resume.forget();
                 }
+                effects::Effect::Note(note) => {
+                    if let Some(sink) = &self.program_note_sink {
+                        sink.send_replace(Some(note.clone()));
+                    }
+                }
                 _ => {}
             }
         }
+        self.flush_icon();
         // A native cut can replay the child's last bytes after EOF was observed.
         if self.exit.is_some() {
             changed |= self.program_status.expire_active();

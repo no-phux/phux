@@ -71,7 +71,8 @@ fn legend_tiers_shrink_with_the_box_and_keep_a_gap() {
         mid.contains("\u{23ce} edit") && mid.contains("esc"),
         "{mid}"
     );
-    let status_end = mid.find("24").expect("status") + 2;
+    let total = page.visible_specs().len().to_string();
+    let status_end = mid.find(&total).expect("status") + total.len();
     let keys_start = mid.find('\u{23ce}').expect("legend");
     let gap = mid[status_end..keys_start].chars().count();
     assert!(gap >= 3, "gap {gap} in {mid}");

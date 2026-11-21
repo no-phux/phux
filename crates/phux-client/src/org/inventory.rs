@@ -171,6 +171,21 @@ impl OrgInventory {
             })
             .collect()
     }
+
+    /// The name of the session `selector` names (`NAME`, `NAME:N`,
+    /// `NAME:N.M`) when it still has panes for `phux restore` to start: a
+    /// miss on it means "waiting for restore", not "no such target".
+    #[must_use]
+    pub fn awaiting_restore(&self, selector: &crate::selector::Selector) -> Option<&str> {
+        use crate::selector::Selector;
+        let (Selector::Session(name) | Selector::Group(name, _) | Selector::Pane(name, ..)) =
+            selector
+        else {
+            return None;
+        };
+        let session = self.session_named(name)?;
+        (!self.restorable(Some(&session.key)).is_empty()).then_some(session.name.as_str())
+    }
 }
 
 /// Display names for the keys one output lists, written `^ab12cd`.

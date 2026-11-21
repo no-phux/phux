@@ -40,6 +40,8 @@ uniffi = ["uniffi/cli"]
 libghostty-vt = { workspace = true, features = ["kitty-graphics"] }
 phux-client-core = { workspace = true, features = ["native-engine"] }
 phux-client-runtime.workspace = true
+# The design solver, catalog and status vocabulary the apps draw with.
+phux-design.workspace = true
 phux-protocol.workspace = true
 # The surface carries the kernel's decoded agent records as JSON lines again.
 serde_json.workspace = true

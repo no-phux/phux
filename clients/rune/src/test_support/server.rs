@@ -52,6 +52,7 @@ pub fn pane(
         activation: None,
         exec: None,
         foreground: None,
+        icon: None,
     }
 }
 

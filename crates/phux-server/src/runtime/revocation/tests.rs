@@ -76,7 +76,7 @@ fn the_local_host_covers_keyed_selectors_and_a_session_never_covers_a_resource()
     assert!(still_contained(&[&keyed], &[&keyed]));
 }
 
-/// §7 step 1: a revoked grant admits nothing, whatever its shape. An
+/// Revocation step 1: a revoked grant admits nothing, whatever its shape. An
 /// owner-shaped grant an embedder engine (ADR-0072) mints for a bearer is the
 /// case the owner shortcut would otherwise let through.
 #[test]

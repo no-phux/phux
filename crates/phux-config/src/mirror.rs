@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 /// One display or window the server keeps a `phux agent surface mirror`
 /// running for, in its own session named by [`Self::session_name`].
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MirrorConfigEntry {
     /// What to mirror, as `phux agent surface mirror` takes it: `display`,
@@ -30,7 +30,7 @@ pub struct MirrorConfigEntry {
 }
 
 /// A standing mirror's frame encoding.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum MirrorFormat {
     /// Lossless PNG.

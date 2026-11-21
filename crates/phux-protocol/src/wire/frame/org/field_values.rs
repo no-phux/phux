@@ -109,6 +109,7 @@ pub(super) fn encode_outcome(outcome: Outcome, enc: &mut Encoder<'_>) {
             enc.write_u32_be(u32::from_be_bytes(signal.to_be_bytes()));
         }
         Outcome::Unobserved => enc.write_u8(OUTCOME_UNOBSERVED),
+        Outcome::Unknown(tag) => enc.write_u8(tag),
     }
 }
 
@@ -122,7 +123,7 @@ pub(super) fn decode_outcome(value: &[u8]) -> Result<Outcome, DecodeError> {
         OUTCOME_EXITED => Ok(Outcome::Exited(int(&mut dec)?)),
         OUTCOME_SIGNALED => Ok(Outcome::Signaled(int(&mut dec)?)),
         OUTCOME_UNOBSERVED => Ok(Outcome::Unobserved),
-        other => Err(DecodeError::unknown_enum("Outcome", other)),
+        other => Ok(Outcome::Unknown(other)),
     }
 }
 

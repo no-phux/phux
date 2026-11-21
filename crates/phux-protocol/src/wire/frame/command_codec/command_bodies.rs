@@ -140,9 +140,12 @@ pub(super) fn decode_checkout_command(dec: &mut Decoder<'_>) -> Result<Command, 
             payload: "CheckoutRequest",
         });
     }
+    // Trailing and optional: an older client writes no byte.
+    let contract = if dec.at_body_end() { 1 } else { dec.read_u8()? };
     Ok(Command::Checkout {
         terminal_id,
         request,
+        contract,
     })
 }
 

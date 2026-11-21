@@ -83,7 +83,7 @@ fn validated(name: &str, link: &pair::ConnectLink) -> Result<remote::NewRemote, 
     let endpoint = link
         .registry_endpoint()
         .ok_or_else(|| "--code: the connect code names no endpoint".to_owned())?;
-    remote::NewRemote::new(
+    let new = remote::NewRemote::new(
         name,
         endpoint,
         Some(&token_file),
@@ -92,7 +92,18 @@ fn validated(name: &str, link: &pair::ConnectLink) -> Result<remote::NewRemote, 
     )
     .and_then(|new| new.with_tls_server_name(link.tls_server_name.as_deref()))
     .and_then(|new| new.with_direct(link.quic.as_deref()))
-    .map_err(|err| format!("--code: {err}"))
+    .map_err(|err| format!("--code: {err}"))?;
+    // The ticket is single-use: a registry we cannot write must refuse now,
+    // not after the server has enrolled a credential nothing will name.
+    registry_writable().map_err(|err| format!("--code: {err}"))?;
+    Ok(new)
+}
+
+/// Fail now if [`remote::add_or_update`] could not write the registry (a dev
+/// build aimed at production state, a malformed or busy config).
+fn registry_writable() -> Result<(), String> {
+    crate::commands::toml_registry::edit_document(&phux_config::loader::config_path())?;
+    remote::load_registry().map(drop)
 }
 
 /// Write the token and the entry, then pin the link's authority.

@@ -1,11 +1,11 @@
 //! Terminal kill and close-tab handling, including satellite partitions.
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the split command modules share the parent command namespace"
-)]
 
-use super::*;
+use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode};
+use tracing::debug;
+
+use crate::runtime::commands::results::terminal_not_found;
 use crate::runtime::committed_close::{CommittedClose, announce, commit_user_close};
+use crate::state::{ClientId, ServerInterceptedKey, SharedState};
 
 /// The attribution a kill stamps on the `pane_closed` of everything it
 /// closes: the sending connection and, when keyed, its `operation_id`.
@@ -36,7 +36,7 @@ pub(super) fn handle_kill_terminal(
     finish_close(state, admitted)
 }
 
-/// `KILL_RESOURCE_IF` (ADR-0109, L1 §5.2.1): check and kill under one lock so
+/// `KILL_RESOURCE_IF` (ADR-0109): check and kill under one lock so
 /// no attach lands between them. A refusal kills nothing.
 pub(super) fn handle_kill_resource_if(
     state: &SharedState,
@@ -80,10 +80,10 @@ fn kill_if_refusal(
     }
 }
 
-/// Handle `KILL_RESOURCES` (L1 §5.2): close every local id under one lock,
+/// Handle `KILL_RESOURCES`: close every local id under one lock,
 /// then relay each satellite's part and await every answer. An unkeyed batch
 /// answers `OK` (skips and relay failures are logged); a keyed batch
-/// (L1 §5.1.1) answers one outcome per id, merged across hops.
+/// answers one outcome per id, merged across hops.
 pub(crate) async fn handle_kill_terminals(
     state: &SharedState,
     client_id: ClientId,
@@ -119,7 +119,7 @@ pub(crate) async fn handle_kill_terminals(
     results.into_result()
 }
 
-/// `CLOSE_TAB_RESOURCES` (L1 §5.2.2, ADR-0114): the atomic local close of
+/// `CLOSE_TAB_RESOURCES` (ADR-0114): the atomic local close of
 /// [`handle_kill_terminals`] that keeps keep-empty sessions. Unkeyed; the
 /// satellite parts are relayed detached and not awaited.
 pub(crate) fn handle_close_tab_resources(

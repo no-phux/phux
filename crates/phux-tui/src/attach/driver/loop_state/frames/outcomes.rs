@@ -26,12 +26,7 @@ impl super::super::SessionLoop {
         let prev_rects = self.leaf_rects(sidebar);
         let focused_before_frame = self.mirror.focused_resource.clone();
         let outcome = self.handle_frame(out, frame, sidebar, defer_paint)?;
-        self.focus_history
-            .observe(focused_before_frame, self.mirror.focused_resource.as_ref());
-        self.focus_history.repair(
-            self.mirror.focused_resource.as_ref(),
-            &self.mirror.workspace,
-        );
+        self.record_frame_focus(focused_before_frame);
         if outcome.exit {
             let end = outcome
                 .exit_reason
@@ -47,6 +42,18 @@ impl super::super::SessionLoop {
         self.fold_frame_outcome(conn, out, sidebar, outcome, prev_rects.as_ref(), repaint)
             .await?;
         Ok(FrameStep::Done)
+    }
+
+    pub(in crate::attach::driver::loop_state) fn record_frame_focus(
+        &mut self,
+        focused_before: Option<ResourceId>,
+    ) {
+        self.focus_history
+            .observe(focused_before, self.mirror.focused_resource.as_ref());
+        self.focus_history.repair(
+            self.mirror.focused_resource.as_ref(),
+            &self.mirror.workspace,
+        );
     }
 
     /// Fold one non-terminal frame outcome into the loop: attach what it
@@ -302,6 +309,9 @@ impl super::super::SessionLoop {
         if outcome.agent_meta_changed || review_changed {
             self.note_chrome_change(repaint);
         }
+        if let Some((terminal, alert)) = &outcome.note_alert {
+            self.alert_note(out, terminal, alert);
+        }
         if let Some(note) = &outcome.note {
             self.overlays.push(Box::new(ToastOverlay::new(
                 note.title.clone(),
@@ -313,6 +323,8 @@ impl super::super::SessionLoop {
         // The `phux config reload` doorbell rang.
         if outcome.config_reload {
             self.reload_config(out, sidebar);
+            // A theme switch rings it (the Omarchy hook): re-ask the colours.
+            let _ = Self::query_default_colors(out);
         }
         // Raised, not called: the fleet refresh repaints over a full frame, so
         // the accumulator collapses a burst into one.

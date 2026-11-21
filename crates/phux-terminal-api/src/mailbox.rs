@@ -48,7 +48,7 @@ pub enum ControlRequest {
         input_holder: Option<ClientId>,
         /// The client requesting the signal.
         by: ClientId,
-        /// The signal's `operation_id` (L1 §5.1.1).
+        /// The signal's `operation_id`.
         operation_id: Option<phux_protocol::ids::IdempotencyKey>,
         /// Delivery acknowledgement.
         reply: oneshot::Sender<Result<(), String>>,

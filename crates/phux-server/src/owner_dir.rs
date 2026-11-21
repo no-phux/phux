@@ -28,23 +28,33 @@ pub fn create(dir: &Path) -> io::Result<()> {
 }
 
 /// Take group and world write off `dir`, as paired mode requires of the
-/// state directory; one an older phux made under umask 002 has them. A
-/// missing directory is left alone.
+/// state directory.
+///
+/// One made under umask 002 (by an older phux, or by a plain
+/// `create_dir_all` of something inside it) has them. A missing directory
+/// is left alone; a symbolic link is not followed.
 ///
 /// # Errors
 ///
-/// The directory cannot be read or its mode changed.
+/// The directory cannot be opened or its mode changed.
 pub fn tighten(dir: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt as _;
-        let mode = match std::fs::metadata(dir) {
-            Ok(meta) => meta.permissions().mode(),
+        use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+        // Change the directory that was opened, not whatever the path
+        // names a moment later.
+        let handle = match std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(nix::libc::O_DIRECTORY | nix::libc::O_NOFOLLOW)
+            .open(dir)
+        {
+            Ok(handle) => handle,
             Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(err) => return Err(err),
         };
+        let mode = handle.metadata()?.permissions().mode();
         if mode & 0o022 != 0 {
-            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(mode & !0o022))?;
+            handle.set_permissions(std::fs::Permissions::from_mode(mode & !0o022))?;
         }
     }
     #[cfg(not(unix))]

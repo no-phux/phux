@@ -323,13 +323,13 @@ fn opening_bodies_share_a_byte_budget() {
 
 #[tokio::test]
 async fn a_moved_service_is_rediscovered_after_a_connect_failure() {
-    let old = Fake::stopped().await;
+    let mut old = Fake::stopped().await;
     let provider = old.provider();
     let exchanges = Exchanges::default();
     open_ok(&exchanges, provider, get("/echo")).await;
 
     let new = Fake::stopped().await;
-    old.stop();
+    old.stop().await;
     old.report_origin(new.addr);
     let head = open_ok(&exchanges, provider, get("/echo")).await;
     let (seen, _) = read_all(&exchanges, head.exchange, 1024).await;

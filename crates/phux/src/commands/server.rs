@@ -16,9 +16,12 @@ pub(crate) use run::run_server;
 pub use spawn::AUTO_SPAWN_IDLE_ENV;
 pub(crate) use spawn::{ensure_server, ensure_server_for_bootstrap, ensure_server_unseeded};
 
-/// How long the auto-spawn path waits for a fresh server to accept (bind is
-/// sub-ms on a healthy system; 2s tolerates a slow host).
-const AUTO_SPAWN_SOCKET_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long the auto-spawn path waits for a fresh server to accept. Bind is
+/// sub-ms on a healthy system, but startup first waits up to 3s for the
+/// state directory's audit lock while another server shares it; a shorter
+/// deadline gave up on a server about to accept and spawned a duplicate.
+/// A server that exits early is noticed at once, so failures stay fast.
+const AUTO_SPAWN_SOCKET_TIMEOUT: Duration = Duration::from_secs(6);
 
 /// Poll cadence while waiting for the auto-spawned server's socket.
 const AUTO_SPAWN_POLL_INTERVAL: Duration = Duration::from_millis(25);

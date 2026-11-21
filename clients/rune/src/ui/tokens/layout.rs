@@ -1,5 +1,5 @@
 //! The chrome's layout table: component widths and heights the token
-//! schema has no role for (§1.6 `layout` names only the phone column and
+//! schema has no role for (`layout` names only the phone column and
 //! the reader measure). One table, owned here, so a size is decided once
 //! and views never write geometry as a literal or as a multiple of a
 //! spacing step.
@@ -97,7 +97,7 @@ pub(crate) const MACHINES: Machines = Machines {
     nested: 40.0,
 };
 
-/// Settings (§4.1.3 gives the sheet as 840×600 with a rail).
+/// Settings (840×600 with a rail).
 pub(crate) struct Settings {
     pub(crate) sheet_w: f32,
     pub(crate) sheet_h: f32,

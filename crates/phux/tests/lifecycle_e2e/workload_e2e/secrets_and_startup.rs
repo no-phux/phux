@@ -125,7 +125,7 @@ fn workload_mode_starts_with_webtransport_and_reports_it_bound() {
 }
 
 /// A named workload CA or registry location with no `[policy] mode` is a
-/// startup error, not a silent owner grant (workload-auth §8): the operator
+/// startup error, not a silent owner grant: the operator
 /// pointed at workload authority without choosing to enforce it.
 #[test]
 #[ignore = "runs a real server start; runs in the e2e lane"]

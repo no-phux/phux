@@ -289,7 +289,7 @@ async fn assert_no_writes(mut conn: MockConnection, listener: tokio::net::UnixLi
 }
 
 /// `phux spawn --json` pins `schema_version` 1 plus the two documented
-/// fields (§4.11) for both a local and a satellite-routed spawn.
+/// fields for both a local and a satellite-routed spawn.
 #[test]
 fn spawned_document_pins_the_contract_shape() {
     let doc = phux_client::spawn::spawned_document(&ResourceId::local(7), false);
@@ -416,6 +416,17 @@ fn spawn_frame() -> FrameKind {
 }
 
 #[test]
+fn spawn_split_names_the_divider() {
+    assert_eq!(
+        split_dir(SpawnSplit::Horizontal),
+        Direction::Horizontal.wire()
+    );
+    assert_eq!(split_dir(SpawnSplit::Horizontal), SplitDir::Vertical);
+    assert_eq!(split_dir(SpawnSplit::Vertical), Direction::Vertical.wire());
+    assert_eq!(split_dir(SpawnSplit::Vertical), SplitDir::Horizontal);
+}
+
+#[test]
 fn placed_spawn_uses_a_single_canonical_create() {
     let temp = tempfile::TempDir::new().expect("tempdir");
     let socket = temp.path().join("mock.sock");
@@ -426,7 +437,8 @@ fn placed_spawn_uses_a_single_canonical_create() {
         1,
         "spawn",
         "@1",
-        SpawnSplit::Vertical,
+        // User-facing horizontal stacks, so the wire axis stays Vertical.
+        SpawnSplit::Horizontal,
         0.3,
         None,
         None,

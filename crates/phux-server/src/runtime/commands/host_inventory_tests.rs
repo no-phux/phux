@@ -100,7 +100,7 @@ fn inventory_members_include_documents_their_session_names() {
     assert_eq!(logs.pane_count, 1);
 }
 
-/// L1 §9.1: a satellite's window and client ids are its own. A merged
+/// A satellite's window and client ids are its own. A merged
 /// row names no hub window (so `window:N` selectors never reach it) and
 /// no hub client: the input holder is the hub's lease-ledger holder or a
 /// foreign id, and viewers are foreign ids.

@@ -1,6 +1,6 @@
 [package]
 name = "phux-rune"
-version = "0.1.45"
+version = "0.1.46"
 description = "The phux desktop client, built on the Rune UI framework."
 edition = "2024"
 publish = false
@@ -18,6 +18,8 @@ default-members = ["."]
 [dependencies]
 phux-client-core = { path = "../../crates/phux-client-core" }
 phux-client-runtime = { path = "../../crates/phux-client-runtime" }
+# Shared first-run step (`onboarding-progress.json` in the server state dir).
+phux-config = { path = "../../crates/phux-config" }
 # The host palette and hash every client shares.
 phux-config-core = { path = "../../crates/phux-config-core" }
 # The design tokens, the theme solver and the theme catalog every client shares.

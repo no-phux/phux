@@ -432,6 +432,7 @@ mod tests {
                 activation: Some(ActivationId::new(2)),
                 exec: Some(ExecState::Running),
                 foreground: None,
+                icon: None,
             }],
             agent_sessions: vec![AgentSessionDescriptor {
                 id: ResourceId::local(8),

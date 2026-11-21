@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/gen-formula.sh renders the CLI formula: bin.install only, Apache-2.0.
+# scripts/gen-formula.sh renders the CLI formula: the binaries, the man page, Apache-2.0.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"
@@ -28,6 +28,7 @@ grep -Fq "sha256 \"${arm_linux}\"" <<<"$formula" || fail "arm linux digest"
 grep -Fq 'license "Apache-2.0"' <<<"$formula" || fail "license"
 grep -Fq 'bin.install "phux"' <<<"$formula" || fail "install phux"
 grep -Fq 'bin.install "phux-mcp"' <<<"$formula" || fail "install phux-mcp"
+grep -Fq '(man1/"phux.1").write Utils.safe_popen_read(bin/"phux", "man")' <<<"$formula" || fail "install the man page"
 if grep -Eq 'quarantine|xattr|any_of|brew trust|postflight' <<<"$formula"; then
   fail "formula must match the live install and Apache-2.0 license"
 fi

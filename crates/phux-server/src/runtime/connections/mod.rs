@@ -29,6 +29,7 @@ mod writer;
 pub mod pane_events;
 pub mod pane_exit;
 pub mod socket;
+mod socket_heal;
 
 pub(super) use commands::{Route, route};
 #[cfg(test)]
@@ -43,7 +44,10 @@ pub(super) use pane_exit::journal_pane_closed;
 pub(crate) use pane_exit::spawn_resource_exit_watcher;
 pub(crate) use plumbing::abort_output_pumps;
 pub(super) use session_create::detach_clients_of_killed_session;
-pub(crate) use socket::{handle_existing_socket, prepare_socket_dir, secure_socket_file};
+pub(crate) use socket::{
+    SocketLock, handle_existing_socket, prepare_socket_dir, secure_socket_file,
+};
+pub(crate) use socket_heal::{BoundSocket, SocketGuard};
 
 #[cfg(test)]
 #[allow(

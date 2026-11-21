@@ -309,11 +309,19 @@ pub(in crate::attach) fn select_window(
         ..
     }: ActionCall<'_, '_>,
 ) {
-    let Some(index) = index_arg(resolved) else {
+    let Some(mut index) = index_arg(resolved) else {
         tracing::warn!(args = ?resolved.args, "select-window missing/bad `index` arg");
         effects.bell = true;
         return;
     };
+    // `toggle`: the tab already shown means the last one, as tmux's `-T`.
+    let toggle = resolved.args.get("toggle").and_then(toml::Value::as_bool);
+    if toggle == Some(true) && index == ctx.workspace.active {
+        let left = ctx.focus_history.left_window().cloned();
+        index = left
+            .and_then(|pane| window_holding(ctx.workspace, &pane))
+            .unwrap_or(index);
+    }
     switch_window(ctx, effects, |w| {
         w.select(index);
     });
@@ -424,5 +432,24 @@ mod tests {
         assert_eq!(effects.set_focus, Some(tid(1)));
         let effects = run("last-window");
         assert_eq!(effects.set_focus, Some(tid(3)));
+    }
+
+    #[test]
+    fn a_click_on_the_shown_tab_goes_back_to_the_last_one() {
+        use crate::attach::input_dispatch::args::tab_click_action;
+        let mut workspace = ArrangementDoc::single(tid(1));
+        workspace.add_group("2".to_owned(), tid(2));
+        workspace.select(0);
+        let mut f = fx(workspace);
+        let mut ctx = f.ctx();
+        let panes = HashMap::new();
+        let click = |index| tab_click_action(index).expect("an index");
+        let effects = run_action(&click(0), &mut ctx, None, &panes);
+        assert_eq!(effects.set_focus, None, "no tab was left yet");
+        assert!(!effects.bell);
+        let effects = run_action(&click(1), &mut ctx, None, &panes);
+        assert_eq!(effects.set_focus, Some(tid(2)));
+        let effects = run_action(&click(1), &mut ctx, None, &panes);
+        assert_eq!(effects.set_focus, Some(tid(1)));
     }
 }

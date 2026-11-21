@@ -135,12 +135,12 @@ pub(crate) const INPUT_EVENT_TAG_PASTE: u8 = 0x03;
 }
 // 0x04 (`Selection`) was removed by ADR-0030.
 
-// `StateScope` tags (SPEC §5.1).
+// `StateScope` tags.
 wire_tags! { StateScope;
 pub(crate) const STATE_SCOPE_TAG_SERVER: u8 = 0x00;
 }
 
-// Wire tags for the `CommandResult` tagged union (SPEC §5).
+// Wire tags for the `CommandResult` tagged union.
 wire_tags! { CommandResult;
 pub(crate) const COMMAND_RESULT_TAG_OK: u8 = 0x00;
 pub(crate) const COMMAND_RESULT_TAG_OK_WITH: u8 = 0x01;
@@ -153,7 +153,7 @@ pub(crate) const COMMAND_RESULT_TAG_REFUSED: u8 = 0x03;
 pub(crate) const COMMAND_RESULT_TAG_ACCEPTED: u8 = 0x04;
 }
 
-// Wire tags for the `CommandValue` tagged union (SPEC §5).
+// Wire tags for the `CommandValue` tagged union.
 wire_tags! { CommandValue;
 pub(crate) const COMMAND_VALUE_TAG_RESOURCE_ID: u8 = 0x00;
 pub(crate) const COMMAND_VALUE_TAG_GROUP_ID: u8 = 0x01;
@@ -175,7 +175,7 @@ pub(crate) const COMMAND_VALUE_TAG_FORWARD_OPENED: u8 = 0x0f;
 pub(crate) const COMMAND_VALUE_TAG_FORWARD_CHUNK: u8 = 0x10;
 }
 
-// Wire tags for the `AttachTarget` tagged union (SPEC §13).
+// Wire tags for the `AttachTarget` tagged union.
 wire_tags! { AttachTarget;
 pub(crate) const ATTACH_TARGET_LAST: u8 = 0;
 pub(crate) const ATTACH_TARGET_BY_NAME: u8 = 1;

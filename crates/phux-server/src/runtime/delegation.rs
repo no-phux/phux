@@ -55,7 +55,7 @@ pub struct DelegatedAgent {
 /// verb, or has no live grant; the session is gone), or
 /// [`DelegationError::Socket`] when the socket cannot be opened. Nothing is
 /// left minted on error.
-pub fn delegate_agent(
+pub(crate) fn delegate_agent(
     state: &SharedState,
     launcher: ClientId,
     session: SessionId,

@@ -10,8 +10,6 @@ use phux_client_runtime::control::{
     MAX_PATH_ANSWERS, PathFailure, PathMatchKind, PathSearchStatus, SpawnRequest, Status,
     StreamRecovery,
 };
-#[cfg(feature = "engine")]
-use phux_client_runtime::engine::EngineEvent;
 use phux_protocol::PROTOCOL_VERSION;
 #[cfg(feature = "engine")]
 use phux_protocol::caps::BootstrapLimits;

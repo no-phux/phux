@@ -155,6 +155,7 @@ pub(crate) const TOOLS: &[Row] = &[
         "upload",
         Touches::Wire(&[RESOLVE, "PUT_FILE"]),
     ),
+    cli("phux_git", "git", Touches::Wire(&[RESOLVE, "CHECKOUT"])),
     cli(
         "phux_snapshot",
         "snapshot",

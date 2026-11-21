@@ -22,7 +22,7 @@
 //!   `ResourceKind`, not a parallel frame family.
 //!
 //! L3 metadata frames use `0x50..=0x5F` client to server and `0xD0..=0xDF`
-//! server to client (SPEC §7.4). `FRAME_COMPRESSED` is no variant, so it is
+//! server to client. `FRAME_COMPRESSED` is no variant, so it is
 //! declared beside the catalog rather than in it.
 
 /// Invoke `$generator! { rows }` with every frame catalog row.
@@ -137,9 +137,9 @@ ListDirectory = TYPE_LIST_DIRECTORY 0x55, "LIST_DIRECTORY", "list_directory",
 /// the listing or a typed refusal.
 DirectoryListing = TYPE_DIRECTORY_LISTING 0xD3, "DIRECTORY_LISTING", "directory_listing",
     decode_directory_listing_frame;
-/// `PATH_QUERY` (client to server, L3 §5).
+/// `PATH_QUERY` (client to server).
 PathQuery = TYPE_PATH_QUERY 0x56, "PATH_QUERY", "path_query", decode_path_query;
-/// `PATH_RESULTS` (server to client, L3 §5).
+/// `PATH_RESULTS` (server to client).
 PathResults = TYPE_PATH_RESULTS 0xD4, "PATH_RESULTS", "path_results", decode_path_results;
 /// Discriminant for `SPAWN_RESOURCE` (client to server, `docs/protocol.md`);
 /// answered by [`TYPE_RESOURCE_SPAWNED`].
@@ -181,6 +181,10 @@ Event = TYPE_EVENT 0xB3, "EVENT", "event", decode_event;
 /// `docs/program-sequences.md#clipboard-osc-52`).
 ClipboardReply = TYPE_CLIPBOARD_REPLY 0x18, "CLIPBOARD_REPLY", "clipboard_reply",
     decode_clipboard_reply;
+/// Discriminant for `VIEWPORT_COLORS` (client to server, `docs/protocol.md`):
+/// the outer terminal's default colours changed mid-attach.
+ViewportColors = TYPE_VIEWPORT_COLORS 0x2B, "VIEWPORT_COLORS", "viewport_colors",
+    decode_viewport_colors;
         }
     };
 }

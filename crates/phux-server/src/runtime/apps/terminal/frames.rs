@@ -120,8 +120,8 @@ async fn route_input(
 ) -> FrameFlow {
     let parts = ctx
         .lane
-        .and_then(super::input_lane::parts_of)
-        .filter(|_| terminal_id.is_local());
+        .filter(|_| terminal_id.is_local())
+        .map(crate::runtime::apps::ConnectionLane::parts);
     let lane = parts.as_ref().map(|(lane, _)| *lane);
     let credit = match parts {
         Some((_, credits)) => {

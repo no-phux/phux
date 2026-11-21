@@ -29,6 +29,8 @@ mod urls;
 pub(in crate::attach) use urls::{copy_mode_key, copy_text, url_picker};
 mod restore;
 pub(in crate::attach) use restore::restore_sessions;
+mod picks;
+pub(in crate::attach) use picks::{display_panes, focus_sidebar};
 mod sync;
 pub(in crate::attach) use sync::sync_panes;
 mod worktree;
@@ -48,7 +50,7 @@ pub(in crate::attach) use spawn::{find_path, go_to_directory, insert_path, new_w
 pub(in crate::attach) use views::{
     agents_filter, focus_pane, next_attention, push_action_finder, push_agent_fleet,
     push_context_menu, push_copy_mode, push_getting_started, push_session_picker, push_settings,
-    push_window_picker, rec_mark, reload_config, report_bug, return_from_attention,
+    push_window_picker, rec_mark, reload_config, report_bug, return_from_attention, scroll,
     toggle_project_group,
 };
 #[cfg(test)]

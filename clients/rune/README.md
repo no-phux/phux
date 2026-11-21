@@ -97,7 +97,9 @@ session (or `--session NAME`). It never creates a session on its own.
   link from `phux pair --json --enroll`, with its expiry counting down and
   **New code**. It says which network the phone uses (tailnet, local
   network or relay). When remote access is off it says what turning it on
-  means and waits for **Allow phones to connect** (`--enable`). **Paired
+  means and waits for **Allow phones to connect** (`--enable`). With no
+  tailnet it offers **Get Tailscale** instead; other refusals are one
+  sentence with **Copy details**. **Paired
   devices** lists what `phux pair ls` says can connect; **Revoke** runs
   `phux pair revoke` so that device can't connect again.
 - **Updates.** Settings → **About & Updates** controls automatic checks,
@@ -122,8 +124,8 @@ session (or `--session NAME`). It never creates a session on its own.
   `notify-send`); clicking it goes there, and it is withdrawn when answered
   or seen. The Dock icon counts what's waiting.
 - **Tabs.** The session's arrangement groups, shared with the terminal UI.
-  ⌘T opens a terminal in a new tab, ⌘1–⌘9 switch, double-click renames, and
-  a drag reorders them on the server. The strip appears from two tabs up; a
+  ⌘T opens a terminal in a new tab, ⌘1–⌘9 switch, clicking the shown tab
+  goes back, double-click renames, and a drag reorders them on the server. The strip appears from two tabs up; a
   dot marks a tab that needs you, and a jump from anywhere lands on the
   right tab.
 - **Sidebar.** Every session and terminal on the server, each terminal with
@@ -259,8 +261,9 @@ session (or `--session NAME`). It never creates a session on its own.
 | ⌘] / ⌘[ | Next / previous terminal, any session |
 | ⌘B | Fold the sidebar |
 | ⌘F / ⌘G / ⌘⇧G / ⌘E | Find / older / newer / the selection |
-| ⌘⇧C | Copy mode: vi keys; `v` selects, `y` copies |
+| ⌘⇧C | Copy mode: vi keys, `/` `?` `n` `N` search; `v` selects, `y` copies |
 | ⌘-click | Open the link under it |
+| ⌥-click | Move a shell prompt's cursor there |
 | ⌘C / ⌘V | Copy the selection / paste (bracketed) |
 | ⌘= / ⌘- / ⌘0 | Bigger / smaller / default text |
 | ⌘⌥= / ⌘⌥- / ⌘⌥0 | Bigger / smaller / default interface (sidebar, tabs, palette, Settings) |
@@ -292,14 +295,10 @@ each line; the window asks first (Return pastes, Esc cancels).
 - A question raised through a hook before the window connected has no text
   to show (the server keeps only that one is pending); its card opens the
   terminal instead. Title-sentinel asks always show.
-- A URL that fills a row is assumed to continue on the next one (frames
-  carry no soft-wrap flag yet); the title bar shows the joined target
-  before a ⌘-click.
 - Screen readers get Settings, the buttons and notices, but terminal text,
   the palette's results, tabs and sidebar rows don't read well yet.
 - A GIF with no loop extension loops in a typed document instead of
   playing once: `image` reads it as an infinite loop, and Rune trusts it.
-- No DMG yet; the ZIP is the macOS download.
 - On Wayland there is no middle-click paste, and only sway is checked; see
   [Install](#install).
 - The update check draws off-screen, so a build that only fails when opening a

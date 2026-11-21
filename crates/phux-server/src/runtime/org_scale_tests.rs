@@ -1,4 +1,4 @@
-//! The organization store at automation scale (CONTRACTS §08): 5,000
+//! The organization store at automation scale: 5,000
 //! resources in 200 sessions plus 500 in Intake, a full receipt window,
 //! a real SQLite file. Pages and batches stay bounded, a commit writes only
 //! the pages it touches, nothing is dropped, and receipt churn stays at the

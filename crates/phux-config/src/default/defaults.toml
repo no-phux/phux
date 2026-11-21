@@ -96,9 +96,12 @@ clipboard-read = "deny"
 #   "home"                always $HOME
 #   "session-root"        the directory the session was created in
 #   "last-cwd-per-window" the last directory used in that tab
+#   "fixed"               always fixed-cwd ($HOME when unset), for new
+#                         sessions too
 # Following the focused pane needs your shell to report its directory
 # (OSC 7); most do.
 cwd-inheritance = "inherit-focused"
+# fixed-cwd = "~/notes"
 
 # spawn-on-attach: the command a plain `phux` runs when it creates its
 # first session, through `$SHELL -c`. `phux new` ignores it. Unset runs
@@ -110,6 +113,11 @@ cwd-inheritance = "inherit-focused"
 # their names in the session picker; ${random-name} is a word pair such as
 # drifting-cedar. Set "default" for one fixed name.
 session-name-template = "${cwd-basename}"
+
+# attach-session: the session a plain `phux`, `phux attach` and a new Rune
+# window open instead of the one used last, created when missing.
+# `phux attach NAME` and links still win.
+# attach-session = "scratch"
 
 # When two clients view one pane at different sizes, which size wins:
 #   "smallest" the smallest view; bigger ones get blank margins (like tmux)

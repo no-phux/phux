@@ -150,7 +150,7 @@ impl std::ops::Deref for ConnectionIdentity {
     }
 }
 
-/// The pairing credential that admitted a connection (§7).
+/// The pairing credential that admitted a connection.
 #[derive(Clone, Debug)]
 pub struct BearerAdmission {
     store: std::sync::Arc<ReloadingTokenStore>,

@@ -12,7 +12,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-/// Largest single record the codec accepts, including LF (L1 §7.1).
+/// Largest single record the codec accepts, including LF.
 pub const MAX_RECORD_BYTES: usize = 16 * 1024;
 
 /// The closed v1 `type` vocabulary (ADR-0103 §2). A record naming anything

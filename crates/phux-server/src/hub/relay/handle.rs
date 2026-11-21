@@ -142,7 +142,7 @@ impl RelayHandle {
     }
 
     /// Relay `command` from consumer `actor`. Keyed commands go through the
-    /// capability check and incarnation fence (L1 §9.1); others relay as
+    /// capability check and incarnation fence; others relay as
     /// [`Self::command`].
     pub(crate) async fn command_from(&self, command: Command, actor: ClientId) -> CommandResult {
         if crate::hub::operation_fence::fenced_key(&command).is_none() {

@@ -120,7 +120,7 @@ impl InputLaneHandle {
         events: Vec<InputEvent>,
     ) -> InputReceipt {
         // A satellite target is the hub's to forward (`handle_command` routes
-        // it before the lane, L1 §9.1). One that reaches the lane anyway is
+        // it before the lane). One that reaches the lane anyway is
         // refused before admission, so the refusal binds no id.
         if terminal_id.local_id().is_none() {
             return ready_receipt(unsupported_satellite_route());

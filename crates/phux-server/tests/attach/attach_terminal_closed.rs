@@ -1,6 +1,6 @@
 //! phux-w7z2.56: a consumer subscribed through `ATTACH_RESOURCE` alone (no
 //! session `ATTACH`, the shape of agents and federation proxies) receives
-//! `RESOURCE_CLOSED` when the pane dies (L1 §3.1), and the session-attached
+//! `RESOURCE_CLOSED` when the pane dies, and the session-attached
 //! consumer still receives it exactly once. No sleeps: the pane is killed on
 //! request, and "exactly once" is anchored on a `GET_STATE` barrier reply,
 //! which the in-order frame loop queues behind any duplicate.

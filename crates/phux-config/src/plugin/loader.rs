@@ -15,9 +15,10 @@ use super::{
     PluginPlatform, PluginWidgetSlot, SIDEBAR_SECTION_DEFAULT_ROWS, SIDEBAR_SECTION_MAX_ROWS,
 };
 
-#[derive(Debug, Deserialize)]
+/// A `phux-plugin.toml` as written: what `load_plugin_manifest` validates.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct RawPluginManifest {
+pub(super) struct RawPluginManifest {
     id: String,
     name: String,
     version: String,
@@ -52,7 +53,7 @@ struct RawPluginManifest {
     startup: Vec<RawPluginManifestStartup>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RawPluginManifestStartup {
     id: String,
@@ -61,14 +62,14 @@ struct RawPluginManifestStartup {
     command: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RawPluginManifestTheme {
     name: String,
     path: PathBuf,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RawPluginManifestSidebar {
     id: String,
@@ -78,7 +79,7 @@ struct RawPluginManifestSidebar {
     rows: Option<u8>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RawPluginManifestBuild {
     #[serde(default)]
@@ -86,7 +87,7 @@ struct RawPluginManifestBuild {
     command: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RawPluginManifestAgent {
     id: String,
@@ -101,7 +102,7 @@ struct RawPluginManifestAgent {
     contexts: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RawPluginManifestAction {
     id: String,
@@ -117,7 +118,7 @@ struct RawPluginManifestAction {
     keys: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RawPluginManifestEvent {
     id: String,
@@ -133,17 +134,18 @@ struct RawPluginManifestEvent {
 /// Raw `[[widgets]]` entry. No `deny_unknown_fields`: every key besides
 /// `id` / `slot` / `kind` is a kind-specific widget option captured by the
 /// flattened `opts` map (the same open shape `[status]` widget tables use).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct RawPluginManifestWidget {
     id: String,
     #[serde(default)]
     slot: PluginWidgetSlot,
     kind: String,
     #[serde(flatten)]
+    #[schemars(with = "std::collections::BTreeMap<String, serde_json::Value>")]
     opts: std::collections::BTreeMap<String, toml::Value>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RawPluginManifestPane {
     id: String,
@@ -487,7 +489,7 @@ fn normalize_pane(raw: RawPluginManifestPane) -> Result<PluginManifestPane, Plug
     })
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RawPluginManifestLinkHandler {
     id: String,

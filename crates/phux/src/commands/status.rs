@@ -47,6 +47,11 @@ pub(crate) struct StatusReport {
     protocol: (u16, u16, u16),
     /// This client's own protocol triple, [`phux_protocol::PROTOCOL_VERSION`].
     client_protocol: (u16, u16, u16),
+    /// The running server's release, from its start record
+    /// ([`phux_server::health::running_version`]); `None` when unrecorded.
+    server_version: Option<String>,
+    /// This client's own release.
+    client_version: &'static str,
     /// The additive server features `HELLO_OK` advertised, as their
     /// `snake_case` names — the capability probe for callers that cannot speak
     /// the wire themselves.
@@ -115,6 +120,7 @@ async fn collect(socket_path: &Path) -> Result<StatusReport, AttachError> {
         &snapshot,
         &degradation,
     );
+    report.server_version = phux_server::health::running_version();
     // An absent, refused or unreadable value reads as "not reported".
     report.keep_awake = keep_awake
         .into_iter()
@@ -152,6 +158,8 @@ fn build_report(
             PROTOCOL_VERSION.minor,
             PROTOCOL_VERSION.patch,
         ),
+        server_version: None,
+        client_version: env!("CARGO_PKG_VERSION"),
         features: features.iter().map(ServerFeature::snake_name).collect(),
         sessions,
         satellite_terminals,
@@ -225,6 +233,16 @@ fn render_human(report: &StatusReport, now_unix_secs: i64) -> Vec<String> {
         },
     ));
     lines.push(protocol_line(report.protocol, report.client_protocol));
+    if let Some(theirs) = report
+        .server_version
+        .as_deref()
+        .filter(|theirs| *theirs != report.client_version)
+    {
+        lines.push(format!(
+            "version: {theirs} (this client: {})",
+            report.client_version
+        ));
+    }
     lines.push(format!(
         "clients: {} attached",
         total_clients(&report.sessions)
@@ -313,6 +331,8 @@ fn status_document(report: &StatusReport) -> serde_json::Value {
             "minor": client_minor,
             "patch": client_patch,
         },
+        "server_version": report.server_version,
+        "client_version": report.client_version,
         "features": report.features,
         "clients": total_clients(&report.sessions),
         "sessions": report.sessions.iter().map(|s| serde_json::json!({

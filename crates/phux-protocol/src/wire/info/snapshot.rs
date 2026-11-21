@@ -169,7 +169,7 @@ pub struct SessionSnapshot {
 pub(super) struct SessionSnapshotTrail {
     pub(super) hosts: Box<[HostInventory]>,
     pub(super) listeners: Option<crate::wire::listeners::RemoteListenersReport>,
-    /// The journal head at the cut (extension block field 2, L1 §7.3).
+    /// The journal head at the cut (extension block field 2).
     pub(super) journal_head: Option<u64>,
 }
 
@@ -245,7 +245,7 @@ impl SessionSnapshot {
     }
 
     /// The same snapshot with no listener report: what a server returns to a
-    /// caller not entitled to server-global data (workload-auth §6).
+    /// caller not entitled to server-global data.
     #[must_use]
     pub fn without_listeners(mut self) -> Self {
         self.set_listeners(None);
@@ -274,7 +274,7 @@ impl SessionSnapshot {
         self.trail = (!trail.is_empty()).then(|| Box::new(trail));
     }
 
-    /// The newest event-journal `seq` at the cut (L1 §7.3), or `None` from a
+    /// The newest event-journal `seq` at the cut, or `None` from a
     /// peer without `EVENT_JOURNAL`.
     #[must_use]
     pub fn journal_head(&self) -> Option<u64> {

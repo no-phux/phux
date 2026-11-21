@@ -176,7 +176,7 @@ fn client_pair(dir: &Path) -> (PathBuf, PathBuf) {
     (certificate, private_key)
 }
 
-/// workload-auth §3: a client that requires paired authority refuses a
+/// No downgrade: a client that requires paired authority refuses a
 /// server that did not request its certificate, inside the handshake,
 /// and continues with one that did. Without the requirement, today's
 /// clients keep connecting to either.

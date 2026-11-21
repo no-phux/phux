@@ -19,6 +19,9 @@ pub mod host_list;
 pub mod ids;
 pub mod image;
 pub mod keys;
+// `org::Delta::PutResource` is the large variant; a transition carries a
+// handful of deltas, so boxing every resource write buys nothing.
+#[allow(clippy::large_enum_variant, reason = "see above")]
 pub mod org;
 pub mod process;
 pub mod project_identity;

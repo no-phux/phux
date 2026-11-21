@@ -16,6 +16,9 @@
 //! binding-local state a polling consumer needs. The isolated [`engine`]
 //! module serves connectionless playground and test terminals.
 
+// The design language: theme solver, colour maths, status vocabulary, catalog.
+mod design;
+
 // The VT engine grid surface (ADR-0007), and the local playground terminal
 // built on it.
 mod engine;

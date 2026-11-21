@@ -64,7 +64,7 @@ pub const fn make_named_key(key: PhysicalKey, mods: ModSet) -> KeyEvent {
 }
 
 /// `SHIFT` for uppercase letters and shifted punctuation, which also goes in
-/// `consumed_mods` (SPEC §9.1.3) so the encoder does not apply it twice.
+/// `consumed_mods` so the encoder does not apply it twice.
 const fn ascii_shift_mods(b: u8) -> ModSet {
     if ascii_unshifted(b) == b {
         ModSet::empty()

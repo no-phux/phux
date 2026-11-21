@@ -75,9 +75,15 @@ impl Desk {
             return false;
         }
         phux_perf::echo_hop::record("stdin");
+        if self.pane_number_key(event) {
+            return true;
+        }
         let action = keys::shortcut(&event.key, event.mods, tx.physical_key());
         if let Some(modal) = self.modal() {
             self.modal_key(modal, event, action, tx);
+            return true;
+        }
+        if action == Some(Shortcut::ClearSelection) && self.clear_copy_selection() {
             return true;
         }
         if self.copy_mode_key(event, tx) {
@@ -162,13 +168,7 @@ impl Desk {
                 self.machines_key(event, tx);
             }
             Modal::Settings if action.is_none() => self.settings_key(event, tx),
-            Modal::Confirm => {
-                if self.clipboard_read_key(event, tx).is_none()
-                    && self.clipboard_write_key(event, tx).is_none()
-                {
-                    self.confirm_key(event);
-                }
-            }
+            Modal::Confirm => self.confirm_bar_key(event, tx),
             Modal::PhonePicker => {
                 self.phone_picker_key(event);
             }
@@ -194,6 +194,16 @@ impl Desk {
         self.shortcut(action, tx);
     }
 
+    /// A key while the confirm bar holds the keyboard: an answer or nothing,
+    /// never an edit to the field underneath or terminal input.
+    pub(super) fn confirm_bar_key(&mut self, event: &rune::KeyEvent, tx: &mut Tx) {
+        if self.clipboard_read_key(event, tx).is_none()
+            && self.clipboard_write_key(event, tx).is_none()
+        {
+            self.confirm_key(event);
+        }
+    }
+
     /// The confirm bar's keys. True when `event` answered it.
     pub(super) fn confirm_key(&mut self, event: &rune::KeyEvent) -> bool {
         match event.key {
@@ -216,9 +226,9 @@ impl Desk {
         ) else {
             return false;
         };
-        self.send_input(|control, terminal| match typed {
-            Typed::Text(text) => control.send_text(terminal, &text),
-            Typed::Key(atom) => control.send_key(terminal, atom),
+        self.send_input(|control, terminal| match &typed {
+            Typed::Text(text) => control.send_text(terminal, text),
+            Typed::Key(atom) => control.send_key(terminal, atom.clone()),
         });
         true
     }
@@ -226,8 +236,8 @@ impl Desk {
     /// Send typed input to the focused terminal, whole or not at all: it
     /// returns to the live tail first and clears a stale highlight, as
     /// Ghostty does. Input the connection can't take now is said, not dropped
-    /// quietly.
-    pub(super) fn send_input(&mut self, send: impl FnOnce(&mut ControlPlane, &ResourceId) -> bool) {
+    /// quietly. With `sync-panes` on, the tab's other terminals get it too.
+    pub(super) fn send_input(&mut self, send: impl Fn(&mut ControlPlane, &ResourceId) -> bool) {
         self.stop_coast();
         self.leave_copy_mode(false);
         let (Some(client), Some((terminal, Some(view)))) =
@@ -236,6 +246,7 @@ impl Desk {
             return;
         };
         let terminal = terminal.clone();
+        let others = self.sync_others(&terminal);
         let frame = client.acquire_view(view);
         let behind = frame.as_ref().is_some_and(|f| !f.scrollbar.at_tail());
         let sent = client.with_control(|control| {
@@ -248,6 +259,11 @@ impl Desk {
             }
             let sent = send(control, &terminal);
             control.trace_input(sent);
+            for other in &others {
+                if control.input_ready(other) {
+                    send(control, other);
+                }
+            }
             sent
         });
         if !sent {
@@ -361,30 +377,39 @@ impl Desk {
             );
             return;
         }
-        if !self.deliver_paste(terminal, text) {
-            self.say(NoticeKind::Error, "Not connected; nothing was pasted.");
+        if let Err(why) = self.deliver_paste(terminal, text) {
+            self.say(NoticeKind::Error, why);
         }
     }
 
     /// Paste as the user, remembering the receipt so a refused or unknown
-    /// delivery reaches them. False: the terminal can't take input now.
-    pub(super) fn deliver_paste(&mut self, terminal: &ResourceId, text: &str) -> bool {
+    /// delivery reaches them. `Err` says why nothing was written: the
+    /// terminal can't take input now, or the paste was refused outright
+    /// (behind an unresolved one, say), which is never reported as sent.
+    pub(super) fn deliver_paste(
+        &mut self,
+        terminal: &ResourceId,
+        text: &str,
+    ) -> Result<(), &'static str> {
+        const OFFLINE: &str = "Not connected; nothing was pasted.";
         if self.is_document(terminal) {
-            return false;
+            return Err(OFFLINE);
         }
         let Some(client) = self.connection.client.clone() else {
-            return false;
+            return Err(OFFLINE);
         };
         if !client.input_ready(terminal) {
-            return false;
+            return Err(OFFLINE);
         }
         // The server brackets it per DEC 2004 and classifies it. A paste too
         // large for acknowledged input goes as one atomic event, unreceipted.
+        // A refusal's receipt is left untracked: the caller says it instead.
         let receipt = client.with_control(|control| control.apply_user_paste(terminal, text));
+        client.wake();
+        let receipt = receipt.map_err(|_| "Paste refused; nothing was written.")?;
         self.connection.pastes.extend(receipt);
         self.reclaim_fits();
-        client.wake();
-        true
+        Ok(())
     }
 
     /// One acknowledged write resolved. Unknown is never retried: only the
@@ -413,6 +438,22 @@ impl Desk {
         let Some(view) = shown.view else { return };
         let _ = client.with_control(|control| control.scroll_view(view, scroll));
         self.generation += 1;
+    }
+
+    /// Scroll the focused pane by `halves` half pages; a page is its height
+    /// less a row, as copy mode pages.
+    pub(super) fn scroll_page(&mut self, halves: i64) {
+        let view = self.connection.shown.as_ref().and_then(|s| s.view);
+        let rows = view
+            .and_then(|view| self.connection.client.as_ref()?.acquire_view(view))
+            .map_or(1, |frame| frame.rows);
+        let page = i64::from(rows.saturating_sub(1).max(1));
+        let rows = if halves.abs() == 2 {
+            page
+        } else {
+            (page / 2).max(1)
+        };
+        self.scroll(Scroll::Delta(rows * halves.signum()));
     }
 
     /// Back to the live tail of a pane scrolled into history.

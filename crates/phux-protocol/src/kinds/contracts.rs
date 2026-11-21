@@ -127,7 +127,7 @@ impl StreamContract {
     }
 }
 
-/// Whether a kind's `SPAWN_RESOURCE` names a parent (L1 §1.2).
+/// Whether a kind's `SPAWN_RESOURCE` names a parent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ParentRule {
     /// It must name one: it is a projection its parent supervises.

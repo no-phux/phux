@@ -14,7 +14,7 @@ pub(crate) const SPAWN_RESULT_OK: u8 = 0;
 pub(crate) const SPAWN_RESULT_ERR: u8 = 1;
 }
 
-// Wire tags for the `SpawnError` tagged union (SPEC §7.2 / §10.1).
+// Wire tags for the `SpawnError` tagged union.
 wire_tags! { SpawnError;
 pub(crate) const SPAWN_ERROR_TAG_GROUP_NOT_FOUND: u8 = 0;
 pub(crate) const SPAWN_ERROR_TAG_SPAWN_FAILED: u8 = 1;
@@ -36,14 +36,14 @@ pub(crate) const MOVE_ERROR_TAG_MOVE_FAILED: u8 = 0;
 pub(crate) const MOVE_ERROR_TAG_UNSUPPORTED_SATELLITE_ROUTE: u8 = 1;
 }
 
-// Wire tags for the `Scope` tagged union (SPEC §7.4 / §11.L3).
+// Wire tags for the `Scope` tagged union.
 wire_tags! { Scope;
 pub(crate) const SCOPE_TAG_RESOURCE: u8 = 0;
 pub(crate) const SCOPE_TAG_GROUP: u8 = 1;
 pub(crate) const SCOPE_TAG_GLOBAL: u8 = 2;
 }
 
-// `AgentEvent` tags (SPEC §7.5 / §10.3). Each event is `tag: u8` + a
+// `AgentEvent` tags. Each event is `tag: u8` + a
 // length-prefixed body, so an unknown tag skips to `AgentEvent::Unknown`.
 wire_tags! { Event;
 pub(crate) const EVENT_TAG_COMMAND_STARTED: u8 = 0x00;

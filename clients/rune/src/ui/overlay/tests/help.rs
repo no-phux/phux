@@ -117,3 +117,32 @@ fn find_help_visual_review_frames() {
         }
     }
 }
+
+#[test]
+fn a_confirmation_over_find_swallows_keys_that_do_not_answer_it() {
+    let mut rt = toolbar();
+    assert!(
+        rt.state.connection.find_query.focused,
+        "Find holds the keyboard"
+    );
+    let before = rt.state.connection.find_query.text.clone();
+    rt.update(|d, _| {
+        d.pending = Some(crate::desk::Pending::Close(
+            phux_protocol::ids::ResourceId::local(1),
+        ))
+    });
+    settle(&mut rt);
+    let _ = rt.state.connection.client.as_ref().unwrap().take_outbound();
+    rt.key(crate::keys::plain(Key::Text("x".into())));
+    settle(&mut rt);
+    assert_eq!(
+        rt.state.connection.find_query.text, before,
+        "the query is not edited"
+    );
+    assert!(rt.state.pending.is_some(), "x does not answer the bar");
+    no_input(&rt);
+    rt.key(crate::keys::plain(Key::Escape));
+    settle(&mut rt);
+    assert_eq!(rt.state.pending, None, "Escape still answers it");
+    no_input(&rt);
+}

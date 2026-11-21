@@ -6,8 +6,8 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 use super::{
-    FileRole, SecureFileError, Stamp, insecure, parent_of, refuse_production, validate_owner_dir,
-    validate_owner_file,
+    FileRole, SecureFileError, Stamp, insecure, parent_of, refuse_production, repair_own_state_dir,
+    validate_owner_dir, validate_owner_file,
 };
 use crate::workload::scrub;
 
@@ -25,7 +25,9 @@ pub(crate) fn probe(path: &Path, role: FileRole) -> Result<Option<Stamp>, Secure
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    validate_owner_dir(&fs::symlink_metadata(parent_of(path))?)?;
+    let dir = parent_of(path);
+    repair_own_state_dir(dir);
+    validate_owner_dir(&fs::symlink_metadata(dir)?)?;
     validate_owner_file(&meta, role)?;
     Ok(Some(Stamp::of(&meta)))
 }

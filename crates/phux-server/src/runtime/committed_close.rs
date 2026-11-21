@@ -92,7 +92,7 @@ pub(super) fn commit_close(
 /// Journal and reap one marked resource; `None` when another closer already
 /// reaped it.
 fn close_one(s: &mut ServerState, resource: CoreResourceId) -> Option<ClosedResource> {
-    let reason = s.begin_resource_close(resource)?;
+    let (reason, attribution) = s.begin_resource_close(resource)?;
     // ADR-0124: a retained pane's close reports the exit it was kept with.
     let exit = s
         .retained()
@@ -103,10 +103,9 @@ fn close_one(s: &mut ServerState, resource: CoreResourceId) -> Option<ClosedReso
     let parent = s
         .resource_parent(resource)
         .map(|parent| s.idspace.intern_resource(parent));
-    // Every subscriber, including `ATTACH_RESOURCE`-only ones (L1 §3.1).
+    // Every subscriber, including `ATTACH_RESOURCE`-only ones.
     let targets = s.terminal_fanout_targets(resource);
     let publication_fences = s.attach_publication_fences(resource);
-    let attribution = s.take_close_attribution(resource);
     crate::runtime::connections::journal_pane_closed(
         s,
         &wire_terminal_id,

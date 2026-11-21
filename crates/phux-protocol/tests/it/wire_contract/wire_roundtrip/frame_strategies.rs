@@ -324,7 +324,7 @@ pub(super) fn arb_mouse_event() -> impl Strategy<Value = MouseEvent> {
         })
 }
 
-/// One of every `ErrorCode` known to SPEC §14. The decoder must round-trip
+/// One of every `ErrorCode` on the wire. The decoder must round-trip
 /// every wire value defined by the spec.
 pub(super) fn arb_error_code() -> impl Strategy<Value = ErrorCode> {
     prop_oneof![

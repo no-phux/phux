@@ -214,7 +214,7 @@ fn focus_tints_rules_and_nothing_else() {
 
 /// Rules and titles sit on the terminal's own background only when the
 /// roles were solved against it; otherwise every chrome cell carries the
-/// surface fill (spec §4.2).
+/// surface fill.
 #[test]
 fn an_unknown_ground_fills_rules_and_titles_with_the_surface() {
     let content = railed(80, 24);

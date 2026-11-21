@@ -2,7 +2,7 @@ const ACCESSIBILITY_TREE: FeatureGate = FeatureGate::ext(ServerFeatureExt::Acces
 const PIXEL_SURFACE: FeatureGate = FeatureGate::ext(ServerFeatureExt::PixelSurface);
 const TYPED_DOCUMENT: FeatureGate = FeatureGate::ext(ServerFeatureExt::TypedDocument);
 
-/// The substrate every kind shares (L1 §1.1): spawn and close, the output
+/// The substrate every kind shares: spawn and close, the output
 /// subscription, kill, events, inventory, and the resource's L3 scope.
 pub static SUBSTRATE_METHODS: &[MethodSpec] = methods! {
     "SPAWN_RESOURCE" => Frame(TYPE_SPAWN_RESOURCE) [
@@ -58,9 +58,9 @@ pub static SUBSTRATE_METHODS: &[MethodSpec] = methods! {
 /// Events about the server or one subscription rather than one resource.
 ///
 /// `journal_gap` tells a subscriber which journal `seq` range it missed; it
-/// is never journaled itself (L1 §7.3). `approval_requested` and
+/// is never journaled itself. `approval_requested` and
 /// `approval_decided` report a held `SIGNAL` action (ADR-0128). The
-/// organization events (L1 §5.7) report committed changes to keyed records,
+/// organization events report committed changes to keyed records,
 /// which outlive any one live resource.
 pub static SERVER_EVENTS: &[EventSpec] = events! {
     "journal_gap" => EVENT_TAG_JOURNAL_GAP;
@@ -83,7 +83,7 @@ pub static SERVER_EVENTS: &[EventSpec] = events! {
 
 /// The events every kind shares: its own spawn and close, and `source_gap`
 /// when the resource produced events faster than the server could journal
-/// them (L1 §7.3).
+/// them.
 pub static SUBSTRATE_EVENTS: &[EventSpec] = events! {
     "pane_spawned" => EVENT_TAG_RESOURCE_SPAWNED;
     "pane_closed" => EVENT_TAG_RESOURCE_CLOSED;

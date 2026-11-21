@@ -26,7 +26,7 @@ async fn receipt_refusal_precedes_operation_cache_admission() {
                 crate::runtime::apps::terminal::input_lane::spawn_input_lane(state.clone())
                     .unwrap();
             let lane = lane_owner.handle();
-            let mut connection = crate::runtime::apps::InputLane::new(lane.clone()).connect();
+            let mut connection = lane.connect();
             let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(1);
             let token = CancellationToken::new();
             let mut command_tasks = crate::runtime::command_tasks::CommandTasks::new(token.clone());
@@ -127,7 +127,7 @@ async fn aborted_blocked_receipt_releases_completion_capacity() {
                 slots.clone().try_acquire_owned().unwrap(),
                 out_tx.clone(),
                 42,
-                Box::pin(receipt),
+                receipt,
             );
             tokio::task::yield_now().await;
             assert_eq!(slots.available_permits(), 0);

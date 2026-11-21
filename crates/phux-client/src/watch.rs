@@ -1,4 +1,4 @@
-//! Server-pushed watch stream (SPEC §7.5, ADR-0022): `EVENT` frames plus
+//! Server-pushed watch stream (ADR-0022): `EVENT` frames plus
 //! changes to each Terminal's `phux.agent/v1` record (ADR-0040 / ADR-0046),
 //! on one connection that never attaches or resizes a pane.
 //!
@@ -32,7 +32,7 @@ pub use resume::{WatchOutcome, watch_live_async, watch_resumable};
 use fleet::stream_fleet_items;
 use metadata::{agent_update, controller_update, subscribe_records};
 
-/// One observed change to a Terminal's `phux.agent/v1` record (L3 §3.7).
+/// One observed change to a Terminal's `phux.agent/v1` record.
 ///
 /// `record` is `None` for a deletion or an unreadable value ("no declared
 /// agent"), reported so a waiter learns the agent went away. `previous` is
@@ -50,7 +50,7 @@ pub struct AgentStateUpdate {
 /// One item on the watch stream, in the order the server pushed it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WatchItem {
-    /// An `EVENT` frame (SPEC §7.5).
+    /// An `EVENT` frame.
     Event(WatchEvent),
     /// A `METADATA_CHANGED` frame for the `phux.agent/v1` key.
     AgentState(AgentStateUpdate),

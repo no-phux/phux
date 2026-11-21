@@ -51,6 +51,18 @@ if [[ -n ${PHUX_PACKAGES_GPG_KEY:-} ]]; then
   signer="$(gpg --list-secret-keys --with-colons | awk -F: '$1 == "fpr" { print $10; exit }')"
 fi
 
+# The man page is the same for both arches: render it with the binary this
+# host can run. A release older than `phux man` ships without one.
+man_entry=""
+host_stem="phux-${tag}-$(uname -m)-unknown-linux-gnu"
+if [[ -f "$dist/$host_stem.tar.gz" ]]; then
+  tar -xzf "$dist/$host_stem.tar.gz" -C "$work"
+  if "$work/$host_stem/phux" man >"$work/phux.1" 2>/dev/null; then
+    man_entry="  - { src: $work/phux.1, dst: /usr/share/man/man1/phux.1 }"
+  fi
+fi
+[[ -n $man_entry ]] || phux_warn "no man page: $host_stem could not render one"
+
 for pair in x86_64:amd64 aarch64:arm64; do
   target="${pair%%:*}-unknown-linux-gnu"
   arch="${pair#*:}"
@@ -76,6 +88,7 @@ contents:
   - { src: $work/$stem/LICENSE, dst: /usr/share/doc/phux/LICENSE }
   - { src: $work/$stem/NOTICE, dst: /usr/share/doc/phux/NOTICE }
   - { src: $work/$stem/THIRD-PARTY-NOTICES.md, dst: /usr/share/doc/phux/THIRD-PARTY-NOTICES.md }
+$man_entry
 overrides:
   deb: { depends: ["libc6 (>= 2.35)"] }
   rpm: { depends: ["glibc >= 2.35"] }

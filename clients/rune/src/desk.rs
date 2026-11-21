@@ -6,6 +6,7 @@
 
 use std::cell::Cell;
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -25,6 +26,7 @@ pub(crate) mod bare;
 mod changes;
 mod clipboard_read;
 mod clipboard_write;
+mod compat;
 pub mod connection;
 mod copy_mode;
 mod events;
@@ -48,6 +50,7 @@ pub mod notice;
 pub mod onboarding;
 mod palette;
 mod pending;
+mod picks;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod plugin_actions;
 pub use pending::Pending;
@@ -61,6 +64,7 @@ mod quick_look;
 pub mod reef;
 mod reorder;
 pub mod resources;
+mod reveal;
 mod scene_host;
 mod screenshot;
 mod sessions;
@@ -70,6 +74,7 @@ mod splits;
 pub mod surfaces;
 mod tabs;
 pub mod updates;
+pub(crate) mod window_frame;
 mod worker;
 mod worktree;
 
@@ -141,8 +146,13 @@ pub struct Desk {
     pub sidebar_open: bool,
     /// The window's width in points, from the root's last layout; 0 until then.
     pub window_w: f32,
+    window_h: f32,
     /// The sidebar shown over the preference in a window too narrow for it.
     pub sidebar_peek: bool,
+    /// `display-panes`: the numbered panes, until the next key.
+    pub pane_numbers: Vec<ResourceId>,
+    /// The tab whose terminals all get what is typed (`sync-panes`).
+    pub sync_tab: Option<[u8; 16]>,
     /// The link under the pointer while ⌘ is held.
     pub pointer: links::Pointer,
     /// Everything waiting on you, and the system's view of it.
@@ -183,12 +193,20 @@ pub struct Desk {
     waker: Option<Waker>,
     /// Settings that outlive the window: text size, the sidebar.
     prefs: rune::prefs::Prefs,
+    /// Directory of the shared first-run step. Tests leave this empty until
+    /// they pass a temp directory; production is the server state directory.
+    onboarding_dir: Option<PathBuf>,
     /// What every terminal is doing, for the sidebar's marks.
     pub activities: crate::activity::Activities,
     /// The blink phase a blinking cursor shows now, and when typing last
     /// restarted it (app clock seconds).
     pub blink_on: bool,
     blink_since: f64,
+    /// The shown terminal's grid size as last seen, until when (app clock)
+    /// the title bar shows it after a window resize, and whether it did.
+    size_seen: Option<(u16, u16)>,
+    size_until: f64,
+    size_was_shown: bool,
     clock: f64,
     /// Bumped by every frame change of the shown terminal, so the view runs.
     pub generation: u64,
@@ -242,8 +260,18 @@ impl Desk {
         machine: Option<String>,
         prefs: rune::prefs::Prefs,
     ) -> Self {
-        let (file, file_error) = settings::load_file();
-        let key_problems = crate::keys::bind(&file.keys);
+        let (config, file_error) = settings::load_file();
+        let file = config.rune;
+        // `defaults.attach-session` opens this computer's server unless a
+        // flag or link named a session.
+        let mut launch = resolved.clone();
+        if machine.is_none() && launch.session.is_none() {
+            launch.session = config
+                .defaults
+                .attach_session
+                .filter(|s| !s.trim().is_empty());
+        }
+        let key_problems = crate::keys::bind(&file.keys, file.key_defaults != Some(false));
         phux_client_runtime::session_order::set_recent_first(file.recent_first.unwrap_or(false));
         let file_error = file_error.or_else(|| {
             (!key_problems.is_empty()).then(|| format!("[rune.keys] {}", key_problems.join("; ")))
@@ -279,7 +307,10 @@ impl Desk {
             theme_before: None,
             sidebar_open,
             window_w: 0.0,
+            window_h: 0.0,
             sidebar_peek: false,
+            pane_numbers: Vec::new(),
+            sync_tab: None,
             pointer: links::Pointer::default(),
             inbox: inbox::Inbox::default(),
             galaxy: galaxy::Galaxy::default(),
@@ -299,12 +330,16 @@ impl Desk {
             updater: updates::Updater::new(&prefs, resolved),
             machines: machines::Machines::new(machine, resolved.phux.clone()),
             link: link::Link::default(),
-            launch: resolved.clone(),
+            launch,
             waker: None,
             prefs,
+            onboarding_dir: onboarding::default_state_dir(),
             activities: crate::activity::Activities::default(),
             blink_on: true,
             blink_since: 0.0,
+            size_seen: None,
+            size_until: 0.0,
+            size_was_shown: false,
             clock: 0.0,
             generation: 0,
             font_size,
@@ -399,7 +434,7 @@ impl Desk {
         // Also re-snaps cells after a display-scale change.
         self.fit();
         self.wake_phone_fit(tx);
-        changed | self.blink(&client, tx) | self.tend_link(tx)
+        changed | self.blink(&client, tx) | self.glance_size(&client, tx) | self.tend_link(tx)
     }
 }
 

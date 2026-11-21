@@ -22,7 +22,7 @@ fn acked(actor: &TerminalActor, client: ClientId) -> u64 {
 }
 
 /// phux-q0e.4: in-order acks walk `last_acked_seq` forward; older or
-/// duplicate acks are dropped (cumulative, SPEC §12.2).
+/// duplicate acks are dropped (cumulative).
 #[test]
 fn on_frame_ack_is_cumulative_and_monotonic() {
     let client = ClientId(1);

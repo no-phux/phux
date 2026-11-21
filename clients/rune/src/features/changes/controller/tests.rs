@@ -98,6 +98,7 @@ fn requests(client: &Client) -> Vec<(u32, CheckoutRequest)> {
                     Command::Checkout {
                         terminal_id,
                         request,
+                        ..
                     },
             } => {
                 assert_eq!(terminal_id, ResourceId::local(1));
@@ -346,18 +347,18 @@ fn closed_and_reopened_panels_ignore_the_previous_requests() {
 #[test]
 fn unsupported_and_disconnected_clients_explain_why_nothing_was_sent() {
     let (client, mut rt) = fixture(false);
-    open(&mut rt);
-    assert!(
-        refusal(rt.state.connection.changes.listing.as_ref()).contains("doesn't support changes")
-    );
-    assert!(rt.find("changes-message").is_some());
+    // A server without CHECKOUT: the action says so and opens nothing.
+    rt.update(|desk, tx| desk.shortcut(Shortcut::Changes, tx));
+    assert!(!rt.state.connection.changes.open);
+    assert!(crate::test_support::notice(&rt.state).contains("too old for changes"));
     assert!(requests(&client).is_empty());
     rt.update(|desk, _| {
         desk.connection.client = None;
         desk.connection.status = Status::Idle;
-        desk.refresh_changes();
     });
+    open(&mut rt);
     assert!(refusal(rt.state.connection.changes.listing.as_ref()).contains("Not connected"));
+    assert!(rt.find("changes-message").is_some());
 }
 
 #[test]

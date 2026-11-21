@@ -25,7 +25,7 @@ pub struct AttachedClient {
     pub session: SessionId,
     /// Outbound mailbox, drained by the per-client write task.
     pub tx: mpsc::Sender<Outbound>,
-    /// Capabilities from HELLO (SPEC §6.2); outbound bytes are downsampled
+    /// Capabilities from HELLO; outbound bytes are downsampled
     /// to them. Without a HELLO, the permissive default.
     pub client_caps: ClientCapabilities,
     /// Immutable Terminal profile selected for this HELLO, if one was offered.
@@ -278,7 +278,7 @@ impl ServerState {
                 let _ = self.metadata_delete(&phux_protocol::wire::frame::Scope::Global, &key);
             }
         }
-        // Event subscriptions follow the same lifecycle (SPEC §7.5).
+        // Event subscriptions follow the same lifecycle.
         if let Some(sub) = self.clients.event_subscriptions.remove(&client_id) {
             sub.retire();
         }

@@ -140,14 +140,33 @@ async fn resolve_target_with(
     let candidates = resolve_targets(socket_path, selector, &snapshot)
         .await
         .map_err(|err| agent_refusal(&err, true))?;
-    let picked = phux_client::selector::pick_target_pane(&candidates, &snapshot.focused_resource)
-        .ok_or_else(|| {
-        partial::target_miss_keeping_status(Some(&selector.to_string()), &degradation)
-    })?;
+    let Some(picked) =
+        phux_client::selector::pick_target_pane(&candidates, &snapshot.focused_resource)
+    else {
+        return Err(miss(socket_path, selector, &degradation).await);
+    };
     // A hit is still worth a word: the pane we picked is the best of what a
     // partial fleet offered, and the user is about to act on it.
     partial::warn_partial_view(verb, &degradation);
     Ok(Resolved::in_snapshot(&snapshot, picked))
+}
+
+/// The refusal for a miss: a session whose panes wait for `phux restore`
+/// says so; anything else is the ordinary (or partial-view) miss.
+async fn miss(
+    socket_path: &Path,
+    selector: &Selector,
+    degradation: &phux_client::state::Degradation,
+) -> Refusal {
+    let target = selector.to_string();
+    if degradation.is_complete()
+        && let Ok(inventory) = phux_client::org::fetch_from_socket(socket_path).await
+        && let Some(session) = inventory.awaiting_restore(selector)
+    {
+        let err = phux_client::contract::awaiting_restore(&target, session);
+        return Refusal::from_error(err, crate::exit_codes::EXIT_FAILURE);
+    }
+    partial::target_miss_keeping_status(Some(&target), degradation)
 }
 
 /// Report a `%name` refusal on the shared error contract and return its

@@ -16,7 +16,7 @@ macro_rules! decode_body_dispatch {
         $variant:ident = $name:ident $tag:literal, $spec:literal, $module:literal, $decode:ident;
     )*) => {
         impl Decoder<'_> {
-            /// Decode one frame body by its SPEC §7 type byte. Each decoder
+            /// Decode one frame body by its type byte. Each decoder
             /// collects fields by id, defaults absent optional ones, and
             /// reports a missing required one as `UnexpectedEof`.
             pub(super) fn decode_body(&mut self, type_byte: u8) -> Result<FrameKind, DecodeError> {
@@ -80,7 +80,7 @@ impl Decoder<'_> {
         if let Some(origin) = ssh_origin {
             client_caps = client_caps.with_ssh_origin(origin);
         }
-        // Top-level on the wire (§6.2 freezes `CLIENT_CAPS`), folded into the
+        // Top-level on the wire (`CLIENT_CAPS` is frozen), folded into the
         // typed capabilities; absent keeps the empty set.
         if let Some(compression) = compression {
             client_caps = client_caps.with_compression(compression);

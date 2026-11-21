@@ -212,7 +212,7 @@ where
 enum Opening {
     /// A whole frame: length prefix, type byte, and body.
     Frame(Vec<u8>),
-    /// A header whose length §5 forbids, to pass through as-is.
+    /// A header whose length framing forbids, to pass through as-is.
     Unframed(Vec<u8>),
     /// The client closed its side before a whole frame arrived.
     Closed,

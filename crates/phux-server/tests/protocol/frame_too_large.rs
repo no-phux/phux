@@ -1,6 +1,6 @@
-//! SPEC §5: a frame `length` outside `1..=16_777_216` earns
+//! `docs/protocol.md#framing`: a frame `length` outside `1..=16_777_216` earns
 //! `ERROR { FRAME_TOO_LARGE }` (uncorrelated, naming the length), then the
-//! §14 fatal-close tail `DETACHED { PROTOCOL_ERROR }` and EOF.
+//! fatal-close tail `DETACHED { PROTOCOL_ERROR }` and EOF.
 
 use std::time::Duration;
 

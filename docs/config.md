@@ -115,6 +115,16 @@ path to check a draft before you move it into place:
 `--json` prints the same findings as a stable JSON document, so the check
 can gate a dotfiles CI run.
 
+### Editor completion
+
+With this first line, taplo and Even Better TOML complete keys, show their
+docs and flag unknown ones; `docs/spec/plugin.schema.json` does the same
+for `phux-plugin.toml`.
+
+```toml
+#:schema https://raw.githubusercontent.com/no-phux/phux/main/docs/spec/config.schema.json
+```
+
 ### Findings
 
 Each line is the key path, the kind of problem, and the detail:
@@ -284,7 +294,14 @@ copy-on-select = true
 wheel-arrows = true     # false: the wheel never sends arrows to full-screen programs
 confirm-close = false
 recent-first = true     # list the session you used last first
+tab-bar = "top"         # or "bottom" (under the panes), "hidden"
+title-bar = "shown"     # or "hover" (at the window's top edge), "hidden"
+new-window-screen = "current"  # or "mouse" (under the pointer), "main"
 ```
+
+A hidden title bar leaves a strip that moves the window. The window
+reopens where it closed (on Wayland, at its size). A `font-family` list
+such as `["Berkeley Mono", "Symbols Nerd Font"]` falls back in order.
 
 **Copy Settings as TOML** in Rune's command palette puts your current
 choices on the clipboard as this table. Rune reads the file at launch.
@@ -347,40 +364,8 @@ held only in an agent such as 1Password's is otherwise not offered
 ssh-agent = "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
 ```
 
-`[rune.keys]` binds Rune's own shortcuts. The key is a chord and the value
-is a command, or `"none"` to take a built-in chord away:
-
-```toml
-[rune.keys]
-"cmd+shift+d" = "split-right"
-"ctrl+alt+left" = "previous-tab"
-"cmd+d" = "none"
-```
-
-Modifiers are `cmd`, `ctrl`, `alt` and `shift`; `cmd` is the Super key off
-macOS. A built-in chord keeps working until you bind it to
-something else or to `"none"`. Menus and the shortcut list still show the
-built-in chords. The TUI's `[keybindings]` are separate: Rune's commands
-are the app's own.
-
-The command names:
-
-- Tabs and panes: `new-terminal` (a new tab), `close-terminal`, `close-tab`,
-  `next-tab`, `previous-tab`, `tab-1` to `tab-9`, `rename-tab`, `lock-tab`,
-  `split-right`, `split-down`, `zoom-pane`, `focus-left`, `focus-right`,
-  `focus-up`, `focus-down`, `next-terminal`, `previous-terminal`.
-- Sessions and machines: `new-session`, `switch-session`, `rename-session`,
-  `close-session`, `restore-sessions`, `machines`, `retry-connection`,
-  `jump-to-attention`, `inbox`.
-- Text: `copy`, `paste`, `select-all`, `copy-mode`, `find`, `find-next`,
-  `find-previous`, `find-selection`, `insert-path`, `screenshot`,
-  `scroll-top`, `scroll-bottom`, `prompt-up`, `prompt-down`, `zoom-in`,
-  `zoom-out`, `zoom-reset`.
-- The app: `palette`, `settings`, `change-theme`, `toggle-sidebar`,
-  `toggle-full-screen`, `keyboard-shortcuts`, `essential-shortcuts`,
-  `get-started`, `bare`, `copy-config`, `copy-diagnostics`,
-  `check-for-updates`, `install-update`, `playground` (the palette over
-  the scenes), `galaxy`, `reef`, `pitch`, `kitchen`, `pit-lane`, `hive`.
+`[rune.keys]` binds Rune's own shortcuts; [Key bindings](./keys.md#rune-shortcuts)
+has the chords and command names.
 
 ## Predictive echo
 

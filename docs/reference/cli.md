@@ -52,6 +52,7 @@ Panes:
   terminal      Create and place terminals; inspect creation receipts
   resource      Inspect a resource or wait for its process to exit
   slot          Keep several panes in one layout slot, as tabs
+  git           Read the Git checkout a pane is in
 
 Agents:
   agent         See and drive the agents running in panes
@@ -98,6 +99,7 @@ More:
   rec           Record a pane to a cast, GIF, or APNG
   play          Play a recording back as a live pane
   perf          Show the server's performance telemetry
+  version       Show this client's and the server's versions
   whoami        Report who this connection is to the server
   runtime-info  Inspect this binary's protocol and capabilities
   api           Discover and call this server's public operations
@@ -107,6 +109,7 @@ More:
   mcp           Run the bundled MCP stdio adapter
   skill         Print the agent skill this binary ships with
   completion    Print a shell completion script
+  man           Print the phux(1) manual page
 
 Flags:
       --rec <PATH>            Record this session (.cast, .gif, or .apng)
@@ -3088,6 +3091,166 @@ Global flags:
                                   `$PHUX_SOCKET`)
 ```
 
+## `phux git`
+
+```text
+Read the Git checkout a pane is in
+
+The server that owns the pane resolves the checkout from the pane's live working
+directory and runs Git there, so a pane on a satellite reads that host's
+checkout. Nothing attaches. A typed refusal (`not_a_repository`,
+`git_unavailable`, `no_pull_request`, ...) exits 1 with the answer still printed
+under `--json`.
+
+Usage: phux git <SUBCOMMAND>
+
+Commands:
+  branches  Local and remote-tracking branches.
+  diff      One file's unified diff (unstaged unless --staged or --untracked).
+  log       One page of history, newest first.
+  pr        The current branch's pull request and its checks, from the host's
+            `gh`.
+  show      One commit: message, files with line counts, and the patch.
+  status    Branch, upstream, and every changed file with line counts.
+  help      Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux git branches`
+
+```text
+Local and remote-tracking branches.
+
+Usage: phux git branches [--json] <TARGET>
+
+Arguments:
+  <TARGET>  Target selector, as for `status`.
+
+Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux git diff`
+
+```text
+One file's unified diff (unstaged unless --staged or --untracked).
+
+Usage: phux git diff [FLAGS] <TARGET> <PATH>
+
+Arguments:
+  <TARGET>  Target selector, as for `status`.
+  <PATH>    Checkout-relative path.
+
+Flags:
+      --staged         The index against `HEAD`.
+      --untracked      An untracked file, as a whole new file.
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux git log`
+
+```text
+One page of history, newest first.
+
+Usage: phux git log [FLAGS] <TARGET> [PATH]
+
+Arguments:
+  <TARGET>  Target selector, as for `status`.
+  [PATH]    Only commits touching this checkout-relative path.
+
+Flags:
+      --skip <N>       Commits to skip from `HEAD`.
+                       (default: 0)
+      --limit <N>      Commits to return, 1 to 100.
+                       (default: 20)
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux git pr`
+
+```text
+The current branch's pull request and its checks, from the host's `gh`.
+
+Usage: phux git pr [--json] <TARGET>
+
+Arguments:
+  <TARGET>  Target selector, as for `status`.
+
+Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux git show`
+
+```text
+One commit: message, files with line counts, and the patch.
+
+Usage: phux git show [--json] <TARGET> <SHA>
+
+Arguments:
+  <TARGET>  Target selector, as for `status`.
+  <SHA>     A commit id or a prefix of one (4 to 64 hex digits).
+
+Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux git status`
+
+```text
+Branch, upstream, and every changed file with line counts.
+
+Usage: phux git status [--json] <TARGET>
+
+Arguments:
+  <TARGET>  Target selector: session, session:group, session:group.pane, @id, or
+            `.` (focused).
+
+Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
 ## `phux give`
 
 ```text
@@ -3905,8 +4068,8 @@ Flags:
                            carries one JSON error object.
       --target <TARGET>    Existing local pane beside which to place the
                            launched pane.
-      --split <SPLIT>      Placement axis: `horizontal` puts the new pane to the
-                           right; `vertical` puts it below (requires
+      --split <SPLIT>      Placement axis: `horizontal` stacks the panes,
+                           `vertical` places them side-by-side (requires
                            `--target`).
                            [possible values: horizontal, h, vertical, v]
                            (default: horizontal)
@@ -4235,6 +4398,26 @@ Flags:
 
 Global flags:
       --socket <PATH>       Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux man`
+
+```text
+Print the phux(1) manual page
+
+Writes the manual page as roff on stdout, rendered from the same help text as
+`phux <command> --help`, so it matches this build. Packages install it as
+`man1/phux.1`; to read it without installing:
+
+phux man | man -l -
+
+Usage: phux man
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux mcp`
@@ -5326,8 +5509,8 @@ Flags:
                            declares; 0 plays the raw timeline.
       --loop [N]           Repeat the recording. Bare `--loop` repeats until the
                            pane is killed; `--loop N` plays it N times.
-      --split <SPLIT>      Placement axis: `horizontal` puts the new pane to the
-                           right; `vertical` puts it below.
+      --split <SPLIT>      Placement axis: `horizontal` stacks the panes,
+                           `vertical` places them side-by-side.
                            [possible values: horizontal, h, vertical, v]
                            (default: horizontal)
       --ratio <RATIO>      Fraction of the split retained by TARGET.
@@ -7247,9 +7430,9 @@ Flags:
                                  satellite`, on a server running `--hub`).
       --target <TARGET>          Existing local pane beside which to place the
                                  new pane.
-      --split <SPLIT>            Placement axis: `horizontal` puts the new pane
-                                 to the right; `vertical` puts it below
-                                 (requires `--target`).
+      --split <SPLIT>            Placement axis: `horizontal` stacks the panes,
+                                 `vertical` places them side-by-side (requires
+                                 `--target`).
                                  [possible values: horizontal, h, vertical, v]
                                  (default: horizontal)
       --ratio <RATIO>            Fraction of the split retained by TARGET
@@ -7855,6 +8038,42 @@ Flags:
                                   (default: 60)
       --json                      Print the structured receipt on stdout,
                                   including non-success outcomes.
+      --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
+                                  machine instead of the local socket,
+                                  ssh-style: `--remote me@mini`. Same target
+                                  and resolution as `phux attach --remote`: a
+                                  registered host is dialed directly over
+                                  QUIC or WSS, and an unregistered one is
+                                  paired over your ssh trust first and
+                                  remembered (except `upload`, `download`,
+                                  and calls with `--json`: these never pair
+                                  and refuse unregistered hosts, naming
+                                  remedies). PORT defaults to 8788. Cannot
+                                  combine with `--socket`.
+  -h, --help                      Print help
+
+Global flags:
+      --socket <PATH>             Server socket to dial (default:
+                                  `$PHUX_SOCKET`)
+```
+
+## `phux version`
+
+```text
+Show this client's and the server's versions
+
+Prints the package and protocol versions of this `phux` and of the server it
+reaches, one field per line, for a bug report. With `--remote HOST` the server
+is that host's. Without a server it prints the client's lines, then why the
+server is unreachable (exit 1). Does not start a server.
+
+Usage: phux version [--json] [--remote <[USER@]HOST[:PORT]>]
+
+Flags:
+      --json                      Emit stable, versioned JSON on stdout instead
+                                  of the human view. On failure, stdout stays
+                                  empty and stderr carries one JSON error
+                                  object.
       --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
                                   machine instead of the local socket,
                                   ssh-style: `--remote me@mini`. Same target

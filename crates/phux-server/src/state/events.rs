@@ -155,7 +155,7 @@ pub struct EventSubscription {
     pub(crate) tx: mpsc::Sender<Outbound>,
     /// Scopes this client watches, each with its type filter.
     pub(crate) scopes: HashMap<EventScope, EventFilter>,
-    /// Opened with `after_seq`, proving it decodes this draft (L1 §7.1).
+    /// Opened with `after_seq`, proving it decodes this draft.
     journal_aware: bool,
     /// Sequences this subscription missed and has not yet been told about.
     gap: Option<(u64, u64)>,
@@ -171,7 +171,7 @@ pub struct EventSubscription {
     /// Distinguishes this subscription from others for the same client.
     epoch: u64,
     /// A scoped grant's clauses: only events it may `OBSERVE` are delivered
-    /// or replayed (workload-auth §6). `None` for the owner's grant.
+    /// or replayed. `None` for the owner's grant.
     observe: Option<EffectiveScopeSet>,
 }
 

@@ -16,7 +16,7 @@ use crate::desk::updates::{Action, Updater, Work};
 use crate::updates::VERSION;
 
 /// The update's one primary action, a kit `Submit` button in the Tab
-/// order (§4.1.3).
+/// order.
 fn act_button(action: Action, key: &'static str, t: &Tokens) -> El {
     kit_button(key, action.label(), ButtonVariant::Submit, t)
         .on_press_tx(|d: &mut Desk, tx| d.update_act(tx))
@@ -245,7 +245,7 @@ pub fn settings(desk: &Desk, t: &Tokens) -> El {
 
 /// Failures and compatibility warnings stay in view even when search hides
 /// the About & Updates category. Informational update details stay there.
-/// The invalid treatment (§1.10): a `status.failed` edge, the words in
+/// The invalid treatment: a `status.failed` edge, the words in
 /// `text`.
 pub(super) fn warnings(desk: &Desk, t: &Tokens) -> Option<El> {
     let s = &t.space;
@@ -296,7 +296,7 @@ mod tests {
         assert!(detail(&desk.updater, Some("mini")).is_empty());
     }
 
-    /// Every pressable is focusable (§1.10), the card's action included;
+    /// Every pressable is focusable, the card's action included;
     /// opening the card never moves focus into it.
     #[test]
     fn main_window_update_card_joins_tab_order_without_taking_focus() {

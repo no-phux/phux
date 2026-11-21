@@ -349,6 +349,9 @@ fn run_cli() -> ExitCode {
     }
 
     let _log_guard: Option<phux_server::telemetry::WorkerGuard> = init_tracing(&cli);
+    phux_client::attach::connection::install_deadline(environment::deadline_from(
+        std::env::var(environment::TIMEOUT_ENV).ok().as_deref(),
+    ));
 
     let Cli {
         rec: root_rec,

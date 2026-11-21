@@ -55,7 +55,7 @@ pub fn path_changed(rt: &mut rune::Runtime<State>) {
     rt.update(|state, _| state.resume_link(None));
 }
 
-/// The system's accessibility settings Rune has no API for (§4.1.6):
+/// The system's accessibility settings Rune has no API for:
 /// Reduce Transparency and the text size, as a `UIContentSizeCategory`
 /// raw value. The phone's tokens read them; a change draws a frame.
 pub fn set_accessibility(

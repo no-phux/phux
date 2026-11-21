@@ -4,7 +4,7 @@
 //! One inset and rhythm for the page, cards and their touch rows, all from
 //! the phone's tokens: the page margin, `xl` cards with rows nested inside
 //! them, touch-height rows and the session dock, the phone's one pane of
-//! glass (§1.9).
+//! glass.
 
 use crate::ui::tokens::Voice;
 use phux_design::State;
@@ -105,7 +105,7 @@ fn column_max() -> f32 {
     phux_design::tokens::LAYOUT.content_max.phone_column
 }
 
-/// A row nested in a card: the card's radius less its inset (§1.5).
+/// A row nested in a card: the card's radius less its inset.
 fn nested(p: &Look) -> f32 {
     (p.radius.xl - p.space.s1).max(p.radius.xs)
 }
@@ -165,7 +165,7 @@ fn note(words: impl Into<String>, p: &Look) -> El {
 }
 
 /// The session dock: glass over the scrolling list, the phone's one
-/// backdrop blur (§1.9). Opaque under increased contrast, Reduce
+/// backdrop blur. Opaque under increased contrast, Reduce
 /// Transparency and forced colours.
 fn dock(e: El, p: &Look) -> El {
     let e = p.glass_panel(

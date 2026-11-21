@@ -47,6 +47,12 @@ export declare class PhuxContextAwareness {
      * persist another checkpoint whether compaction succeeds or fails.
      */
     checkpoint(streamId: string, identity?: PhuxContextIdentity, signal?: AbortSignal): Promise<PhuxContextEmission | null>;
+    /**
+     * The bounded fleet state alone, with no stream sequence, so an unchanged
+     * fleet yields identical text. For a host that persists the value and
+     * announces changes itself, such as an OpenCode V2 instruction entry.
+     */
+    state(identity?: PhuxContextIdentity, signal?: AbortSignal): Promise<string | null>;
     forceCheckpoint(streamId: string): void;
     delete(streamId: string): void;
     private serialized;

@@ -1,7 +1,12 @@
+use phux_protocol::ids::{ResourceId, SatelliteHost};
+use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode, RolePolicy};
+use tokio_util::sync::CancellationToken;
+
 use super::*;
 use crate::hub::relay::{HubRelays, RelayHandle, RelayMailbox, RelayRequest};
+use crate::runtime::commands::satellite_lease::{SatelliteLeaseTarget, relay_satellite_attach};
 use crate::runtime::test_support::error_code;
-use phux_protocol::ids::{ResourceId, SatelliteHost};
+use crate::state::{ClientId, Outbound, SharedState};
 
 struct Fixture {
     state: SharedState,

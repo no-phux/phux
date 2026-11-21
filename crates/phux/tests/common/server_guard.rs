@@ -98,6 +98,23 @@ impl fmt::Debug for ServerGuard {
     }
 }
 
+/// A verb run against this server may have started a work-store keeper
+/// that watches it (`phux mission`); stop it with the server so it cannot
+/// idle on past the test.
+impl Drop for ServerGuard {
+    fn drop(&mut self) {
+        // Test binaries run a dev build, so the store lives under `phux-dev`.
+        let pidfile = self.xdg.state.join("phux-dev/work/keeper.pid");
+        if let Some(pid) = std::fs::read_to_string(pidfile)
+            .ok()
+            .and_then(|text| text.trim().parse::<u32>().ok())
+            .filter(|pid| *pid > 1)
+        {
+            let _ = super::signal(pid, libc::SIGKILL);
+        }
+    }
+}
+
 impl ServerGuard {
     /// Spawn `phux server --session work` with the idle backstop and wait
     /// until the socket file appears.

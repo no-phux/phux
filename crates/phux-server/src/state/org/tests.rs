@@ -263,3 +263,30 @@ fn shutdown_leaves_records_for_the_next_start() {
     state.retire_record(terminal, ExitOutcome::exited(0));
     assert!(state.registry().record(terminal).is_some());
 }
+
+/// A cold start gives a pane the id it last had when it next launches, and
+/// a pane created first gets an id past every saved one.
+#[test]
+fn a_cold_start_gives_each_pane_its_saved_id_back() {
+    let mut state = ServerState::new();
+    let (_, kept) = state.seed_session("work");
+    let (_, fresh) = state.seed_session("other");
+    let record = state.registry().record(kept).unwrap().clone();
+    let Some(LaunchSpec::Terminal(launch)) = record.launch else {
+        panic!("terminal launch");
+    };
+    state
+        .commit_system(Op::ResourceLaunchReported {
+            resource: record.key,
+            activation: record.activation.unwrap().id,
+            launch: LaunchSpec::Terminal(phux_core::TerminalLaunch {
+                pane_id: Some(7),
+                ..launch
+            }),
+        })
+        .unwrap();
+    state.reserve_pane_ids();
+    let wire = phux_protocol::ids::ResourceId::local;
+    assert_eq!(state.idspace.intern_resource(fresh), wire(8));
+    assert_eq!(state.idspace.intern_resource(kept), wire(7));
+}

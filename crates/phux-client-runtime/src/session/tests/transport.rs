@@ -132,7 +132,7 @@ fn a_write_into_a_closed_peer_is_recorded_and_recv_reports_the_eof() {
     });
 }
 
-// ----- SPEC §5 ERROR { FRAME_TOO_LARGE } ------------------------------------
+// ----- ERROR { FRAME_TOO_LARGE } -------------------------------------------
 
 fn assert_frame_too_large(frame: &FrameKind, header: [u8; 4]) {
     let declared = u32::from_be_bytes(header);
@@ -162,7 +162,7 @@ async fn goodbye(peer: &mut UnixStream) -> FrameKind {
     }
 }
 
-/// SPEC §5: a peer receiving a length outside `1..=MAX_FRAME_LEN` MUST send
+/// `docs/protocol.md#framing`: a peer receiving a length outside `1..=MAX_FRAME_LEN` MUST send
 /// `ERROR { FRAME_TOO_LARGE }` and close, on either receive path.
 #[test]
 fn a_framing_violation_is_answered_with_frame_too_large() {

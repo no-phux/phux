@@ -5,9 +5,11 @@
 //! A write commits `ARRANGEMENT_REPLACE` attributed to the writer (last
 //! write wins, as the key always did): local leaves become member entries
 //! by resource key, satellite leaves stay satellite entries, and a leaf
-//! naming no member of the session is dropped. An arrangement replaced
-//! through the organization command is published back under the key, so
-//! older readers see it. Named projections and third-party layout keys
+//! naming no member of the session is dropped. A refused write changes
+//! nothing; the writer's bytes are never stored. A `GET` encodes the
+//! current arrangement, and every arrangement change (and every handle
+//! that brings a member's leaf live) republishes it under the key, so
+//! older readers follow. Named projections and third-party layout keys
 //! stay opaque metadata. Isolated here so it can be deleted with the
 //! translation layer.
 
@@ -133,20 +135,20 @@ impl ServerState {
         }
     }
 
-    /// Publish `session`'s arrangement under its TUI layout key, so older
-    /// readers see an arrangement replaced through the organization
-    /// command. Member entries without a live handle are dropped; a group
-    /// left empty is skipped.
-    pub(crate) fn publish_arrangement_as_layout(&mut self, session: SessionId) {
-        let Some(arrangement) = self
+    /// `session`'s arrangement as the legacy layout envelope: what a `GET`
+    /// of its TUI layout key answers.
+    ///
+    /// Member entries without a live handle are dropped and a group left
+    /// empty is skipped. Focus is no part of an arrangement, so each group
+    /// focuses its first leaf; readers keep their own. `None` when nothing
+    /// live is arranged, so an older reader bootstraps as it always did.
+    #[must_use]
+    pub(crate) fn arrangement_as_layout(&self, session: SessionId) -> Option<Vec<u8>> {
+        let arrangement = self
             .registry()
             .session(session)
             .and_then(|s| s.arrangement)
-            .and_then(|k| self.org().arrangement(&k))
-            .cloned()
-        else {
-            return;
-        };
+            .and_then(|k| self.org().arrangement(&k))?;
         let groups: Vec<Group> = arrangement
             .groups
             .iter()
@@ -162,28 +164,43 @@ impl ServerState {
                 })
             })
             .collect();
-        let Ok(bytes) = phux_layout_codec::encode(groups.iter().map(Group::borrow), 0, &[]) else {
+        if groups.is_empty() {
+            return None;
+        }
+        phux_layout_codec::encode(groups.iter().map(Group::borrow), 0, &[]).ok()
+    }
+
+    /// Store `session`'s arrangement under its TUI layout key and broadcast
+    /// it, so legacy subscribers see every arrangement change whatever its
+    /// source; with nothing live arranged, tombstone it. Equal bytes, or an
+    /// absent key, broadcast nothing. A session no wire id names yet has a
+    /// key nobody can read, and gets none.
+    pub(crate) fn publish_arrangement_as_layout(&mut self, session: SessionId) {
+        let Some(wire) = self.idspace.session_wire(session) else {
             return;
         };
-        let wire = self.idspace.intern_session(session);
         let key = phux_protocol::wire::info::tui_layout_key(wire);
         let scope = Scope::Group(super::DEFAULT_GROUP_ID);
-        let _ = self.metadata_set_by(&scope, &key, bytes, None);
+        let _ = match self.arrangement_as_layout(session) {
+            Some(bytes) => self.metadata_set_by(&scope, &key, bytes, None),
+            None => self.metadata_delete_by(&scope, &key, None),
+        };
     }
 
     /// An entry tree as a client layout tree over live wire ids; member
     /// entries without a live handle are dropped.
-    fn client_tree(&mut self, node: &phux_core::LayoutNode<EntryRef>) -> Option<LayoutNode> {
+    fn client_tree(&self, node: &phux_core::LayoutNode<EntryRef>) -> Option<LayoutNode> {
         present_leaves(node.map(&mut |entry| self.client_leaf(entry)))
     }
 
-    /// The live wire id an entry shows, if its resource has a handle.
-    fn client_leaf(&mut self, entry: &EntryRef) -> Option<WireResourceId> {
+    /// The live wire id an entry shows, if its resource has a handle (a
+    /// registered handle always has one).
+    fn client_leaf(&self, entry: &EntryRef) -> Option<WireResourceId> {
         match &entry.target {
             EntryTarget::Member(key) => {
                 let id = self.registry().resource_id(key)?;
                 self.resources().handle(id)?;
-                Some(self.idspace.intern_resource(id))
+                self.idspace.resource_wire(id).cloned()
             }
             EntryTarget::Satellite { host, id } => {
                 Some(WireResourceId::satellite(host.as_str(), *id))
@@ -273,8 +290,8 @@ mod tests {
             "the stranger leaf is dropped"
         );
 
+        let wire = state.idspace.intern_session(session);
         state.publish_arrangement_as_layout(session);
-        let wire = state.idspace.session_wire(session).unwrap();
         let bytes = state
             .metadata()
             .get(
@@ -287,5 +304,76 @@ mod tests {
             phux_client_core::layout::leaves(back.groups[0].state.tree.as_ref().unwrap()),
             vec![wa, wb]
         );
+    }
+    /// L3 §3.2: the key follows every arrangement change, not only a
+    /// replace: a leaf goes when its member is reaped, and a refused write
+    /// leaves the key as it was.
+    #[test]
+    fn the_published_layout_follows_every_arrangement_change() {
+        let mut state = ServerState::new();
+        let (session, a) = state.seed_session("work");
+        let b = state.add_pane_to_session(session).unwrap();
+        let key = phux_protocol::wire::info::tui_layout_key(state.idspace.intern_session(session));
+        handle_for(&mut state, a);
+        handle_for(&mut state, b);
+        let (wa, wb) = (
+            state.idspace.intern_resource(a),
+            state.idspace.intern_resource(b),
+        );
+        let scope = Scope::Group(crate::state::DEFAULT_GROUP_ID);
+        let leaves = |state: &ServerState| {
+            let bytes = state.metadata().get(&scope, &key).expect("published");
+            assert_eq!(Some(&bytes), state.arrangement_as_layout(session).as_ref());
+            let doc = ArrangementDoc::decode_cbor(&bytes).unwrap();
+            doc.groups
+                .iter()
+                .filter_map(|g| g.state.tree.as_ref())
+                .flat_map(phux_client_core::layout::leaves)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            leaves(&state),
+            vec![wa.clone()],
+            "published at registration"
+        );
+
+        let tree = LayoutNode::Split {
+            dir: SplitDir::Horizontal,
+            ratio: 0.5,
+            left: Box::new(LayoutNode::Leaf(wa.clone())),
+            right: Box::new(LayoutNode::Leaf(wb.clone())),
+        };
+        let doc = ArrangementDoc {
+            groups: vec![Group::with_id(
+                [7; 16],
+                "main".to_owned(),
+                LayoutState {
+                    tree: Some(tree),
+                    focus: Some(wb.clone()),
+                },
+            )],
+            active: 0,
+            slots: Vec::new(),
+        };
+        let write = doc.encode_cbor().unwrap();
+        state
+            .translate_layout_write(session, &write, &Actor::owner())
+            .unwrap();
+        assert_eq!(leaves(&state), vec![wa.clone(), wb]);
+        assert_ne!(
+            state.metadata().get(&scope, &key),
+            Some(write),
+            "encoded, not stored"
+        );
+
+        let _ = state.reap_resource(b);
+        assert_eq!(leaves(&state), vec![wa.clone()], "a prune republishes");
+
+        assert!(
+            state
+                .translate_layout_write(session, b"not-cbor", &Actor::owner())
+                .is_err()
+        );
+        assert_eq!(leaves(&state), vec![wa]);
     }
 }

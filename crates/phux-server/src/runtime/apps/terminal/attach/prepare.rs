@@ -7,6 +7,20 @@
 use super::*;
 use phux_terminal_api::actor::TerminalResource as _;
 
+/// Reattach fences the prior consumers before applying the viewport palette.
+pub(crate) async fn prepare_consumers(
+    panes: &[AttachSnapshotPane],
+    client_id: ClientId,
+    caps: ClientCapabilities,
+    same_session: bool,
+) {
+    if same_session {
+        detach_prior_state_sync_consumers(panes, crate::runtime::wire_client(client_id), caps)
+            .await;
+    }
+    apply_client_default_colors(panes, caps.default_colors).await;
+}
+
 /// Apply a session `ATTACH`'s declared role (ADR-0127) to every Terminal it
 /// returned in one critical section, then announce what changed.
 pub(crate) async fn apply_session_role(
@@ -16,17 +30,10 @@ pub(crate) async fn apply_session_role(
     role: phux_protocol::wire::frame::RolePolicy,
     was_subscribed: bool,
 ) {
-    // `TerminalApp::after_attach` hands over only this kind's panes; an input
-    // role means nothing to another kind.
-    debug_assert!(
-        panes
-            .iter()
-            .all(|pane| pane.handle.kind == crate::resource::ResourceKind::Terminal),
-        "session roles apply only to Terminal panes"
-    );
     let changes: Vec<_> = state.with_mut(|s| {
         panes
             .iter()
+            .filter(|pane| pane.handle.kind == crate::resource::ResourceKind::Terminal)
             .map(|pane| {
                 let effects = s.apply_attach_role(
                     client_id,
@@ -54,7 +61,7 @@ pub(crate) async fn apply_session_role(
 
 /// Stop a state-sync consumer's prior actor-side emitters before the new
 /// ATTACHED, so an old delta cannot land between it and the new bootstrap.
-pub(crate) async fn detach_prior_state_sync_consumers(
+async fn detach_prior_state_sync_consumers(
     panes: &[AttachSnapshotPane],
     wire_client_id: phux_protocol::ids::ClientId,
     client_caps: ClientCapabilities,
@@ -87,7 +94,7 @@ pub(crate) async fn detach_prior_state_sync_consumers(
 /// The most recent attach that advertises a palette sets the panes' default
 /// colors; each is acknowledged before snapshotting so later OSC 10/11
 /// queries see it.
-pub(crate) async fn apply_client_default_colors(
+async fn apply_client_default_colors(
     panes: &[AttachSnapshotPane],
     colors: Option<phux_protocol::caps::TerminalDefaultColors>,
 ) {
@@ -108,6 +115,67 @@ pub(crate) async fn apply_client_default_colors(
             let _ = done.await;
         }
     }
+}
+
+/// A Terminal's consumer owns engine state. Report a missing facet on a
+/// Terminal handle because it prevents teardown.
+fn routed_terminal(handle: &ResourceHandle) -> Option<&phux_terminal_api::actor::TerminalHandle> {
+    if handle.kind != crate::resource::ResourceKind::Terminal {
+        return None;
+    }
+    handle
+        .terminal()
+        .inspect_err(|error| tracing::error!(%error, "consumer teardown skipped"))
+        .ok()
+}
+
+/// Free a client's native cut and consumer entry without blocking: a full
+/// mailbox is reaped by `tick_emit` when the client's mailbox closes.
+pub(crate) fn release_consumer(handle: &ResourceHandle, client_id: ClientId) {
+    let Some(terminal) = routed_terminal(handle) else {
+        return;
+    };
+    let _ = terminal
+        .native_release
+        .try_send(phux_terminal_api::actor::NativeReleaseRequest { owner: client_id.0 });
+    let (reply_tx, _reply_rx) = oneshot::channel();
+    match terminal
+        .consumer_detach
+        .try_send(phux_terminal_api::actor::ConsumerDetachRequest {
+            client_id: crate::runtime::wire_client(client_id),
+            reply: reply_tx,
+        }) {
+        Ok(()) => {}
+        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+            trace!(
+                ?client_id,
+                "consumer_detach mailbox full; entry reaped by tick_emit when its mailbox closes",
+            );
+        }
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+            trace!(
+                ?client_id,
+                "consumer_detach: pane actor gone; nothing to free"
+            );
+        }
+    }
+}
+
+/// Drop a consumer and wait for the actor's reply, so nothing it emitted can
+/// follow what the caller queues next.
+pub(crate) async fn fence_consumer(handle: &ResourceHandle, client_id: ClientId) {
+    let Some(terminal) = routed_terminal(handle) else {
+        return;
+    };
+    let (reply_tx, reply_rx) = oneshot::channel();
+    let _ = terminal
+        .consumer_detach
+        .send(phux_terminal_api::actor::ConsumerDetachRequest {
+            client_id: crate::runtime::wire_client(client_id),
+            reply: reply_tx,
+        })
+        .await;
+    let _ = reply_rx.await;
 }
 
 /// The staging state one ATTACH accumulates, one pane at a time: each

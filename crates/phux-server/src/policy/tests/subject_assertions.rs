@@ -1,4 +1,4 @@
-/// workload-auth §6, both tables: every reachable row admits its verbs on
+/// Both scope tables: every reachable row admits its verbs on
 /// its subject selector and refuses the near misses (another Terminal,
 /// Group, or Host; a partial multi-target grant; a child-only grant); each
 /// required verb is necessary; an exempt row admits any grant; a

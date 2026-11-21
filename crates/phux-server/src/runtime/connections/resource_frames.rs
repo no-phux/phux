@@ -63,7 +63,7 @@ fn note_activity(ctx: &ResourceFrame<'_>, frame: &FrameKind) {
         _ => false,
     };
     if used {
-        crate::runtime::apps::client_activity(ctx.state, ctx.client_id);
+        crate::runtime::apps::terminal::commands::handle_client_activity(ctx.state, ctx.client_id);
     }
 }
 

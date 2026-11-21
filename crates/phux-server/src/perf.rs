@@ -94,12 +94,12 @@ pub static TABLE: &[Metric] = &[
     Metric::gauge("proc.sched_interactive", Unit::Count, &SCHED_INTERACTIVE),
 ];
 
-/// Every table a report covers: each app's, its engine's first, then the
-/// host's.
+/// The injected engine's metrics, followed by the host's.
 pub(crate) fn tables(state: &crate::state::SharedState) -> Vec<&'static [Metric]> {
-    let mut tables = crate::runtime::apps::metric_tables(state);
-    tables.push(TABLE);
-    tables
+    crate::runtime::apps::terminal::metric_table(state)
+        .into_iter()
+        .chain([TABLE])
+        .collect()
 }
 
 pub(crate) fn promote_helper_thread(name: &str) {

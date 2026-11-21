@@ -1,4 +1,4 @@
-//! SPEC §5 length-prefix framing, the one implementation every transport uses.
+//! Length-prefix framing (`docs/protocol.md#framing`), the one implementation every transport uses.
 //!
 //! A frame is `length: u32 BE || type: u8 || payload`, with `length` in
 //! <code>1..=[MAX_FRAME_LEN]</code>. Use [`frame_buffer`] for a stream
@@ -45,7 +45,7 @@ pub enum FramingError {
 }
 
 impl FramingError {
-    /// The text every peer role puts in its §5 `ERROR { FRAME_TOO_LARGE }`.
+    /// The text every peer role puts in its `ERROR { FRAME_TOO_LARGE }`.
     #[must_use]
     pub fn wire_message(self) -> String {
         format!("frame violates SPEC §5 framing: {self}")
@@ -59,7 +59,7 @@ impl From<FramingError> for std::io::Error {
     }
 }
 
-/// The uncorrelated `ERROR { FRAME_TOO_LARGE }` §5 obliges a peer to send
+/// The uncorrelated `ERROR { FRAME_TOO_LARGE }` framing obliges a peer to send
 /// before closing a transport whose peer broke framing.
 #[must_use]
 pub fn frame_too_large_error(violation: FramingError) -> FrameKind {

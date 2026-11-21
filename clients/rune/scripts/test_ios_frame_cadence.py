@@ -39,7 +39,10 @@ precondition(cadence.nextWake(drew: true, after: 2) == 2)
 
 let marker = "RUNE_IOS_INPUT_OK"
 let witness = "[[" + marker + "]]"
-let report: [String: Any] = ["marker_seen": true, "frames": UInt64(7), "terminal_id": "@1"]
+let session = "qualification"
+let report: [String: Any] = [
+    "connected": true, "session": session, "marker_seen": true, "frames": UInt64(7), "terminal_id": "@1"
+]
 func tree(_ text: String, grid: String = "grid-@1") -> [String: Any] {
     ["role": "window", "children": [
         ["role": "group", "key": grid, "children": [["role": "label", "name": text]]]
@@ -48,7 +51,7 @@ func tree(_ text: String, grid: String = "grid-@1") -> [String: Any] {
 @MainActor func publish(_ tree: [String: Any], drew: Bool = true,
              source: [String: Any] = report) throws -> [(String, [String: Any])] {
     var writes: [(String, [String: Any])] = []
-    _ = try QualificationEvidence.publish(report: source, tree: tree, marker: marker,
+    _ = try QualificationEvidence.publish(report: source, tree: tree, session: session, marker: marker,
         didPresent: drew, write: { value, name in writes.append((name, value)) })
     return writes
 }
@@ -87,7 +90,7 @@ precondition(wrappedSaved.count == 2, "soft-wrapped marker remains valid")
 enum WriteFailure: Error { case tree }
 var names: [String] = []
 do {
-    _ = try QualificationEvidence.publish(report: report, tree: tree(witness), marker: marker,
+    _ = try QualificationEvidence.publish(report: report, tree: tree(witness), session: session, marker: marker,
         didPresent: true, write: { _, name in
             names.append(name)
             throw WriteFailure.tree
@@ -127,6 +130,26 @@ connected.publish { true }
 precondition(connected.finished)
 precondition(connected.claimFailure(), "a post-success lifecycle failure must still be reported")
 connected.publish { preconditionFailure("lifecycle failure cannot become success") }
+
+// A reconnect can leave the witness visible after the live session disappears.
+var reconnecting = QualificationProgress()
+precondition(reconnecting.claimInput(when: true))
+var reconnectWrites: [String] = []
+for (observation, live) in [
+    (report.merging(["session": NSNull()]) { _, new in new }, false),
+    (report.merging(["session": "another-session"]) { _, new in new }, false),
+    (report.merging(["connected": false]) { _, new in new }, false),
+    (report, true),
+    (report, true)
+] {
+    try reconnecting.publish {
+        try QualificationEvidence.publish(report: observation, tree: tree(witness), session: session, marker: marker,
+            didPresent: true, write: { _, name in reconnectWrites.append(name) })
+    }
+    precondition(reconnecting.finished == live, "only a live observation of the requested session can finish")
+    precondition(!reconnecting.claimInput(when: live), "reconnect cannot reinject the witness")
+    precondition(reconnectWrites == (live ? ["rune-tree.json", "rune-qualification.json"] : []))
+}
 
 // The failure report acknowledges seal cleanup, including a failed seal.
 // Neither callback fabricates frame counts or a rendered-input success.

@@ -131,6 +131,7 @@ pub(crate) fn output_schemas() -> Value {
         "phux_execution_result".into(),
         phux_protocol::api::execution_result_schema(),
     );
+    schemas.insert("phux_git".into(), crate::git_tool::output_schema());
     schemas.insert(
         "phux_api_describe".into(),
         crate::terminal_tools::description_schema(),

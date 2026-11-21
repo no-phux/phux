@@ -217,7 +217,8 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
     /// A frame about one resource's stream or input goes to the app serving
     /// that resource's kind (see [`is_stream_frame`] and [`is_input_frame`]).
     /// `VIEWPORT_RESIZE` names no resource: it is the connection's size vote
-    /// for every Terminal it is attached to.
+    /// for every Terminal it is attached to. `VIEWPORT_COLORS` is likewise
+    /// the connection's palette.
     async fn resource_frame(self, frame: FrameKind) -> FrameFlow {
         if let FrameKind::ViewportResize { viewport } = frame {
             debug!(
@@ -226,7 +227,21 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
                 rows = viewport.rows,
                 "VIEWPORT_RESIZE"
             );
-            crate::runtime::apps::viewport_resize(self.state, self.client_id, &viewport);
+            crate::runtime::apps::terminal::commands::handle_viewport_resize(
+                self.state,
+                self.client_id,
+                &viewport,
+            );
+            return FrameFlow::Continue(());
+        }
+        if let FrameKind::ViewportColors { colors } = frame {
+            debug!(client_id = ?self.client_id, "VIEWPORT_COLORS");
+            crate::runtime::apps::terminal::commands::handle_viewport_colors(
+                self.state,
+                self.client_id,
+                colors,
+            )
+            .await;
             return FrameFlow::Continue(());
         }
         let ctx = ResourceFrame {
@@ -347,7 +362,7 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
             self.root_token,
             self.token,
             &mut self.plumbing.output_pumps,
-            // QUIC multi-stream: content starts at STREAM_BIND (L1 §4.9).
+            // QUIC multi-stream: content starts at STREAM_BIND.
             selection.quic_streams(),
         )
         .await;
@@ -383,6 +398,7 @@ const fn is_stream_frame(frame: &FrameKind) -> bool {
     matches!(
         frame,
         FrameKind::ViewportResize { .. }
+            | FrameKind::ViewportColors { .. }
             | FrameKind::ResizeTerminal { .. }
             | FrameKind::FrameAck { .. }
             | FrameKind::HistoryRequest { .. }

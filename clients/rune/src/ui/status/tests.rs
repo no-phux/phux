@@ -31,7 +31,7 @@ fn a_hover_toolbar_shows_at_the_top_edge_and_hides_off_it() {
     let mut desk = crate::test_support::settings_window();
     desk.settings_open = false;
     desk.sidebar_open = false;
-    desk.settings.hover_toolbar = true;
+    desk.settings.title_bar = phux_config_core::rune::TitleBar::Hover;
     let env = rune::Env::new(false, 1.0);
     let mut rt = crate::test_support::runtime(desk, crate::ui::view, (1100.0, 720.0), env);
     let at = |rt: &mut rune::Runtime<Desk>, y| {
@@ -176,7 +176,7 @@ fn a_narrow_window_folds_the_sidebar_and_the_toggle_peeks() {
     assert!(width(&rt) > 0.0, "the toggle peeks");
     // A peek is not a preference: a wide window still shows the sidebar.
     assert!(rt.state.sidebar_open);
-    rt.state.window_laid_out(1100.0);
+    rt.state.window_laid_out([1100.0, 720.0]);
     assert!(!rt.state.sidebar_peek && rt.state.sidebar_shown());
 }
 

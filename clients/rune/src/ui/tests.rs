@@ -29,7 +29,7 @@ fn the_bare_window_drops_the_chrome_and_keeps_the_sheets() {
 
 #[test]
 fn the_system_appearance_clears_the_bars_too() {
-    // WCAG AA for every word-carrying ink (§1.2 D4).
+    // WCAG AA for every word-carrying ink (D4).
     const TEXT_FLOOR: f32 = 4.5;
     for dark in [true, false] {
         let t = tokens_for(dark, None);

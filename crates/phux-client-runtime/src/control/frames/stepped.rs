@@ -1,4 +1,4 @@
-//! [`ControlPlane::feed_shared_batch`] as resumable steps.
+//! Inbound batches as resumable steps.
 //!
 //! Applying a run of engine events is a blocking round trip to the engine
 //! owner thread, and a reconnect's snapshot replay makes that run as large
@@ -8,17 +8,18 @@
 //! releases the lock for the round trip and re-takes it to complete the run.
 
 use bytes::Bytes;
+use phux_client_core::session::KernelInput;
 
 use crate::connection::{Shared, lock};
 
 use super::super::kernel::EngineApply;
 use super::super::{ControlError, ControlPlane, EngineEvent, EngineOutcome, FrameKind, ResourceId};
 use super::allowed_before_handshake;
-use super::classify::{ClassifiedFrame, classify_engine_frame};
 
 /// One transport read's frames, part way through being fed.
-pub(super) struct SharedBatch {
-    frames: std::vec::IntoIter<Bytes>,
+pub(super) struct FrameBatch<I: Iterator> {
+    frames: I,
+    decode: DecodeFrame<I::Item>,
     engine_events: Vec<EngineEvent>,
     deferred_error: Option<ControlError>,
     /// What the in-flight run was flushed for.
@@ -27,10 +28,13 @@ pub(super) struct SharedBatch {
     epoch: Option<u64>,
 }
 
-impl SharedBatch {
-    pub(super) fn new(frames: Vec<Bytes>) -> Self {
+type DecodeFrame<F> = fn(&ControlPlane, F) -> Result<Option<FrameKind>, ControlError>;
+
+impl<I: Iterator> FrameBatch<I> {
+    pub(super) const fn new(frames: I, decode: DecodeFrame<I::Item>) -> Self {
         Self {
-            frames: frames.into_iter(),
+            frames,
+            decode,
             engine_events: Vec::new(),
             deferred_error: None,
             after: None,
@@ -49,7 +53,7 @@ enum AfterApply {
 
 pub(super) enum BatchStep {
     /// Apply this run on the engine, without the control lock, then hand
-    /// the outcomes to [`ControlPlane::complete_shared_apply`].
+    /// the outcomes to [`ControlPlane::complete_frame_apply`].
     Apply(EngineApply),
     Done(Result<(), ControlError>),
 }
@@ -62,14 +66,16 @@ impl ControlPlane {
         shared: &Shared,
         frames: Vec<Bytes>,
     ) -> Result<(), ControlError> {
-        let mut batch = SharedBatch::new(frames);
-        let mut step = lock(shared).step_shared_batch(&mut batch);
+        let mut batch = FrameBatch::new(frames.into_iter(), |plane, bytes| {
+            plane.decode_shared_frame(&bytes)
+        });
+        let mut step = lock(shared).step_frame_batch(&mut batch);
         loop {
             match step {
                 BatchStep::Done(result) => return result,
                 BatchStep::Apply(apply) => {
                     let outcomes = apply.engine.apply_batch(apply.events);
-                    step = lock(shared).complete_shared_apply(&mut batch, apply.geometry, outcomes);
+                    step = lock(shared).complete_frame_apply(&mut batch, apply.geometry, outcomes);
                 }
             }
         }
@@ -77,14 +83,14 @@ impl ControlPlane {
 
     /// Feed frames until a run of engine events must be applied, or the
     /// batch is done.
-    pub(super) fn step_shared_batch(&mut self, batch: &mut SharedBatch) -> BatchStep {
+    pub(super) fn step_frame_batch(&mut self, batch: &mut FrameBatch<impl Iterator>) -> BatchStep {
         loop {
-            let Some(bytes) = batch.frames.next() else {
+            let Some(raw) = batch.frames.next() else {
                 return self
                     .flush_then(batch, AfterApply::Finish)
                     .unwrap_or(BatchStep::Done(Ok(())));
             };
-            let frame = match self.decode_shared_frame(&bytes) {
+            let frame = match (batch.decode)(self, raw) {
                 Ok(Some(frame)) => frame,
                 Ok(None) => continue,
                 Err(error) => {
@@ -100,13 +106,10 @@ impl ControlPlane {
                     .flush_then(batch, AfterApply::Fail(error))
                     .unwrap_or(BatchStep::Done(Ok(())));
             }
-            match classify_engine_frame(frame) {
-                ClassifiedFrame::Engine(event) => batch.engine_events.push(event),
-                ClassifiedFrame::Other(frame) => {
-                    if let Some(step) = self.flush_then(batch, AfterApply::Feed(frame)) {
-                        return step;
-                    }
-                }
+            if KernelInput::from_stream_frame(&frame).is_some() {
+                batch.engine_events.push(EngineEvent::Stream(frame));
+            } else if let Some(step) = self.flush_then(batch, AfterApply::Feed(frame)) {
+                return step;
             }
         }
     }
@@ -114,9 +117,9 @@ impl ControlPlane {
     /// Fold an applied run's outcomes in and keep feeding. A connection that
     /// ended while the engine worked (the consumer closed it) keeps none of
     /// what the run built.
-    pub(super) fn complete_shared_apply(
+    pub(super) fn complete_frame_apply(
         &mut self,
-        batch: &mut SharedBatch,
+        batch: &mut FrameBatch<impl Iterator>,
         geometry: Vec<(usize, ResourceId, bool)>,
         outcomes: Result<Vec<EngineOutcome>, crate::engine::EngineError>,
     ) -> BatchStep {
@@ -129,12 +132,16 @@ impl ControlPlane {
         }
         let flushed = self.complete_engine_apply(geometry, outcomes);
         self.resolve_flush(batch, after, flushed)
-            .unwrap_or_else(|| self.step_shared_batch(batch))
+            .unwrap_or_else(|| self.step_frame_batch(batch))
     }
 
     /// Hand out the pending run, or resolve `after` at once when there is
     /// none. `None` means keep feeding.
-    fn flush_then(&mut self, batch: &mut SharedBatch, after: AfterApply) -> Option<BatchStep> {
+    fn flush_then(
+        &mut self,
+        batch: &mut FrameBatch<impl Iterator>,
+        after: AfterApply,
+    ) -> Option<BatchStep> {
         if batch.engine_events.is_empty() {
             return self.resolve_flush(batch, after, Ok(()));
         }
@@ -152,7 +159,7 @@ impl ControlPlane {
     /// non-fatal deferral a batch feed applies.
     fn resolve_flush(
         &mut self,
-        batch: &mut SharedBatch,
+        batch: &mut FrameBatch<impl Iterator>,
         after: AfterApply,
         flushed: Result<(), ControlError>,
     ) -> Option<BatchStep> {
@@ -229,9 +236,11 @@ mod tests {
         }))
     }
 
-    fn handed_out(shared: &Shared) -> (SharedBatch, EngineApply) {
-        let mut batch = SharedBatch::new(vec![stray_output()]);
-        let BatchStep::Apply(apply) = lock(shared).step_shared_batch(&mut batch) else {
+    fn handed_out(shared: &Shared) -> (FrameBatch<std::iter::Once<Bytes>>, EngineApply) {
+        let mut batch = FrameBatch::new(std::iter::once(stray_output()), |plane, frame| {
+            plane.decode_shared_frame(&frame)
+        });
+        let BatchStep::Apply(apply) = lock(shared).step_frame_batch(&mut batch) else {
             panic!("an engine run is handed out");
         };
         (batch, apply)
@@ -250,7 +259,7 @@ mod tests {
         assert!(drained, "observation drains without waiting on the engine");
         let outcomes = apply.engine.apply_batch(apply.events);
         let BatchStep::Done(_) =
-            lock(&shared).complete_shared_apply(&mut batch, apply.geometry, outcomes)
+            lock(&shared).complete_frame_apply(&mut batch, apply.geometry, outcomes)
         else {
             panic!("a one-frame read is done after its run");
         };
@@ -264,7 +273,7 @@ mod tests {
         let (mut batch, apply) = handed_out(&open);
         let outcomes = apply.engine.apply_batch(apply.events);
         let BatchStep::Done(still_open) =
-            lock(&open).complete_shared_apply(&mut batch, apply.geometry, outcomes)
+            lock(&open).complete_frame_apply(&mut batch, apply.geometry, outcomes)
         else {
             panic!("done");
         };
@@ -279,7 +288,7 @@ mod tests {
         let _ = lock(&closed).take_events();
         let outcomes = apply.engine.apply_batch(apply.events);
         let BatchStep::Done(result) =
-            lock(&closed).complete_shared_apply(&mut batch, apply.geometry, outcomes)
+            lock(&closed).complete_frame_apply(&mut batch, apply.geometry, outcomes)
         else {
             panic!("done");
         };

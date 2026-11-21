@@ -16,7 +16,7 @@ impl TerminalActor {
         cell_px: Option<(u16, u16)>,
     ) -> bool {
         // libghostty rejects zero dimensions; clamp to 1 like the ATTACH
-        // path (SPEC §10.5).
+        // path.
         let cols = cols.max(1);
         let rows = rows.max(1);
         // The settled geometry repeated is a no-op; it must not invalidate

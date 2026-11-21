@@ -1,4 +1,4 @@
-//! Agent badges speak the shared status vocabulary (design spec §1.3): the
+//! Agent badges speak the shared status vocabulary: the
 //! ladder from `phux_design::tone_of`, a distinct mark per shape class, the
 //! vocabulary's words, and announcements only for needs-you and failed.
 

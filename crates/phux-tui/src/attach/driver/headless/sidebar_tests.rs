@@ -111,15 +111,12 @@ async fn headless_layout_is_the_arrangement_record() {
                 snapshot,
             },
             None,
-            None,
         )
         .expect("attached");
     let document = read_arrangement(&socket, session_id)
         .await
         .expect("arrangement read");
-    session
-        .ingest_layout(document.as_ref(), session_id)
-        .expect("ingest");
+    session.mirror.adopt_layout(document, true);
     let groups = &session.mirror.workspace.groups;
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].name, "build");

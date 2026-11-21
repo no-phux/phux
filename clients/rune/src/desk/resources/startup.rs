@@ -89,7 +89,7 @@ impl Desk {
         items.extend(
             [Source::Page, Source::Tree, Source::Surface].map(|source| Item {
                 title: format!("Start {} mirror…", source.verb()),
-                detail: "new supervised producer terminal · read-only".to_owned(),
+                detail: "read-only, in a new terminal".to_owned(),
                 kind: "action",
                 target: Target::Mirror(source),
             }),

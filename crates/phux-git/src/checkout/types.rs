@@ -17,6 +17,8 @@ pub enum CheckoutError {
     InvalidRequest(String),
     /// A child did not finish in time and was killed.
     Timeout,
+    /// No working `git` on this host.
+    GitUnavailable,
     /// Git refused; its own message.
     Git(String),
     /// A filesystem read failed.
@@ -43,6 +45,7 @@ impl fmt::Display for CheckoutError {
             | Self::Gh(message) => f.write_str(message),
             Self::NotARepository => f.write_str("not inside a Git working tree"),
             Self::Timeout => f.write_str("git did not finish in time"),
+            Self::GitUnavailable => f.write_str("git is not installed on this host"),
             Self::GhUnavailable => f.write_str("the GitHub CLI (gh) is not installed on this host"),
             Self::NoPullRequest => f.write_str("this branch has no pull request"),
         }
@@ -67,6 +70,8 @@ pub struct Snapshot {
     pub changes: Vec<Change>,
     /// More changes existed than [`MAX_ENTRIES`](super::MAX_ENTRIES) or fit the output cap.
     pub truncated: bool,
+    /// Every change there is; `None` when the output cap cut the count too.
+    pub total: Option<usize>,
 }
 
 /// One changed path in one area, with its line counts.
@@ -106,6 +111,33 @@ pub struct Commit {
     pub refs: Vec<String>,
 }
 
+/// One commit in full: its message, the files it changed against its first
+/// parent, and the patch.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommitDetail {
+    pub commit: Commit,
+    /// The whole message, subject included.
+    pub message: String,
+    pub files: Vec<CommitFile>,
+    /// Unified diff against the first parent, cut at a line boundary to
+    /// [`MAX_TEXT_BYTES`](super::MAX_TEXT_BYTES).
+    pub diff: String,
+    /// The diff or the file list was cut.
+    pub truncated: bool,
+}
+
+/// One file a commit changed, with its line counts.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommitFile {
+    pub path: String,
+    /// Where a rename or copy came from.
+    pub from: Option<String>,
+    /// `None` for a binary file.
+    pub added: Option<u32>,
+    pub deleted: Option<u32>,
+    pub binary: bool,
+}
+
 /// One page of history.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LogPage {
@@ -136,6 +168,8 @@ pub struct BranchList {
     pub current: Option<String>,
     pub branches: Vec<BranchRef>,
     pub truncated: bool,
+    /// Every branch there is; `None` when the output cap cut the count too.
+    pub total: Option<usize>,
 }
 
 /// What a directory entry is.
@@ -161,6 +195,8 @@ pub struct ListingEntry {
 pub struct Listing {
     pub entries: Vec<ListingEntry>,
     pub truncated: bool,
+    /// Every entry there is; `None` when the scan stopped before the end.
+    pub total: Option<usize>,
 }
 
 /// The start of one file.

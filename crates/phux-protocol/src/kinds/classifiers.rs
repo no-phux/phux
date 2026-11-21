@@ -2,7 +2,7 @@
 // Classifiers.
 // -----------------------------------------------------------------------------
 
-/// Classify one decoded client frame (workload-auth §6).
+/// Classify one decoded client frame.
 ///
 /// A `COMMAND` frame is classified by its nested command; a server-to-client
 /// frame arriving from a client is [`Classification::Deny`].
@@ -11,13 +11,13 @@ pub fn classify_frame(frame: &FrameKind) -> Classification {
     frame_rule(frame).classification()
 }
 
-/// Classify one decoded nested command (workload-auth §6).
+/// Classify one decoded nested command.
 #[must_use]
 pub fn classify_command(command: &Command) -> Classification {
     command_rule(command).classification()
 }
 
-/// The workload-auth §6 row that classifies `frame`: a `COMMAND` frame's
+/// The row that classifies `frame`: a `COMMAND` frame's
 /// nested command row, default-deny for a server-to-client frame.
 #[must_use]
 pub fn frame_rule(frame: &FrameKind) -> &'static Rule {
@@ -36,6 +36,7 @@ pub fn frame_rule(frame: &FrameKind) -> &'static Rule {
         | FrameKind::InputTerminalReply { .. }
         | FrameKind::ClipboardReply { .. } => &F_INPUT,
         FrameKind::ViewportResize { .. } => &F_VIEWPORT_RESIZE,
+        FrameKind::ViewportColors { .. } => &F_VIEWPORT_COLORS,
         FrameKind::SpawnResource {
             satellite,
             owner_terminal,
@@ -90,7 +91,7 @@ pub fn frame_rule(frame: &FrameKind) -> &'static Rule {
     }
 }
 
-/// The workload-auth §6 row that classifies the nested `command`; a command
+/// The row that classifies the nested `command`; a command
 /// the spec does not list is default-deny.
 #[must_use]
 pub fn command_rule(command: &Command) -> &'static Rule {
@@ -222,7 +223,7 @@ fn spawn_rule_in(
     }
 }
 
-/// A kind's catalog spawn contract says whether it has a parent (L1 §1.2);
+/// A kind's catalog spawn contract says whether it has a parent;
 /// a kind this build does not serve is not a Terminal, so it would.
 const fn kind_contradicts_binding(
     catalog: &'static [KindSpec],

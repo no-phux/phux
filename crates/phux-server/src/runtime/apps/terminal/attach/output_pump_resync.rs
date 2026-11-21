@@ -231,7 +231,7 @@ impl OutputPumpContext {
     }
 
     /// Publish the synthesized-VT replacement generation for a resync. A
-    /// live generation is tombstoned first (L1 §4.6), in the same queued
+    /// live generation is tombstoned first, in the same queued
     /// batch, so a deferred resync retires nothing.
     async fn republish_synthesized_generation(
         &self,
@@ -377,6 +377,11 @@ impl OutputPumpContext {
     ) -> ControlFlow<Option<PumpFault>> {
         crate::perf::PUMP_LAGGED.incr();
         if generation.fence_for_gap() {
+            // Under load the answer can be lapped too; that is not an
+            // actor that never answers.
+            if matches!(cause, GapCause::Dropped(_)) {
+                generation.refund_lapped_gap();
+            }
             debug!(
                 terminal_id = ?self.wire_terminal_id,
                 %cause,

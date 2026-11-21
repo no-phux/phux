@@ -85,7 +85,7 @@ pub const RESOURCE_ID_TAG_SATELLITE: u8 = 1;
 
 /// Wire identifier for a served resource (ADR-0016): owned by this server,
 /// or by a federation peer. A non-hub decoder MUST accept `Satellite` and
-/// answer [`UnsupportedSatelliteRoute`] (SPEC §14).
+/// answer [`UnsupportedSatelliteRoute`].
 ///
 /// [`UnsupportedSatelliteRoute`]: crate::wire::frame::ErrorCode::UnsupportedSatelliteRoute
 #[derive(
@@ -107,7 +107,7 @@ pub enum ResourceId {
         id: u32,
     },
     /// A resource owned by a federation peer (wire tag = 1). A hub rewrites
-    /// it to the peer's `Local` space and re-tags replies (SPEC L1 §9.1).
+    /// it to the peer's `Local` space and re-tags replies.
     Satellite {
         /// Federation peer that owns the resource.
         host: SatelliteHost,

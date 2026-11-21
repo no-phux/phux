@@ -41,7 +41,7 @@ pub(crate) fn spawn_resource_exit_watcher(
     state.with_mut(|s| s.begin_exit_watch(pane));
     tokio::task::spawn_local(async move {
         let (exit, mut events) = journal_until_exit(&state, rx, events).await;
-        crate::runtime::apps::resource_exited(&state, pane).await;
+        crate::runtime::apps::close_native_agent_sources(&state, pane).await;
         // ADR-0124: a retained pane stays `Exited` until purged or expired,
         // then takes the ordinary close path below.
         let retained = state.with_mut(|s| retain_exited_pane(s, pane, exit, events.as_mut()));
@@ -71,7 +71,7 @@ pub(crate) fn spawn_resource_exit_watcher(
     });
 }
 
-/// A kill reaped `pane` in its own commit (L1 §5.2) while the process ran
+/// A kill reaped `pane` in its own commit while the process ran
 /// its hangup grace: fire the `pane-exit` its exit still owes, with the
 /// status the process actually ended with. Nothing when another closer
 /// reaped it, as before.
@@ -97,10 +97,7 @@ async fn end_exit_watch(
     root_token: &CancellationToken,
     targets: &[mpsc::Sender<Outbound>],
 ) {
-    let due = state.with_mut(|s| {
-        s.end_exit_watch(pane);
-        s.self_exit_due()
-    });
+    let due = state.with_mut(|s| s.end_exit_watch(pane));
     if !due || root_token.is_cancelled() {
         return;
     }
@@ -129,7 +126,7 @@ struct RetainedExit {
 /// already closing it (ADR-0124 §2), all in one lock: record its exit facet,
 /// journal what it already queued and then `terminal_control { Exited }`,
 /// let its app withdraw what the exit invalidates (a Terminal's
-/// `phux.agent/v1` state, to `unknown`, L3 §3.7), and tell its engine to stop
+/// `phux.agent/v1` state, to `unknown`), and tell its engine to stop
 /// the detector and refuse input. No `RESOURCE_CLOSED`: the
 /// resource is still here. `None` leaves the pane to the close path.
 fn retain_exited_pane(
@@ -158,11 +155,11 @@ fn retain_exited_pane(
         exited,
     ));
     let handle = s.resources().handle(pane).cloned();
-    let app_hook = s
-        .registry()
-        .resource(pane)
-        .map(|resource| resource.kind)
-        .and_then(|kind| crate::runtime::apps::exit_retained(kind, s, &wire_terminal_id));
+    let app_hook = crate::runtime::apps::terminal::agent_state::retract_on_retained_exit(
+        s,
+        pane,
+        &wire_terminal_id,
+    );
     Some(RetainedExit {
         retention,
         wire_terminal_id,
@@ -249,7 +246,7 @@ fn reap_exited_pane(
     events: Option<&mut PaneEvents>,
 ) -> Option<ReapAndNotify> {
     // ADR-0104 §2: a cascading parent may already have reaped this child.
-    let reason = s.begin_resource_close(pane)?;
+    let (reason, attribution) = s.begin_resource_close(pane)?;
     // ADR-0124: a retained pane's close reports the exit it was kept with.
     let exit = s.retained().outcome(pane).unwrap_or(exit);
     // Interned before the cascade and the reap, which retires the wire id.
@@ -261,12 +258,11 @@ fn reap_exited_pane(
         .resource_parent(pane)
         .map(|parent| s.idspace.intern_resource(parent));
     let cascaded = cascade_children(s, pane, &wire_terminal_id);
-    // Every subscriber, including `ATTACH_RESOURCE`-only ones (L1 §3.1).
+    // Every subscriber, including `ATTACH_RESOURCE`-only ones.
     let targets: Vec<mpsc::Sender<Outbound>> = s.terminal_fanout_targets(pane);
     let mut drains = s.begin_terminal_output_drain(pane, wire_terminal_id.clone());
     drains.extend(s.attach_publication_fences(pane));
     // ADR-0123: `pane_closed` is journaled in the lock that removes the pane.
-    let attribution = s.take_close_attribution(pane);
     journal_pane_closed(
         s,
         &wire_terminal_id,
@@ -276,7 +272,7 @@ fn reap_exited_pane(
     );
     let preserve_record = matches!(reason, CloseReason::Exited | CloseReason::ServerShutdown)
         && s.record_survives_exit(pane);
-    let (_, actor_token) = s.reap_terminal_deferring_actor_cancel(pane, exit, preserve_record);
+    let actor_token = s.reap_resource_deferring_actor_cancel(pane, exit, preserve_record);
     // ADR-0105: clients of a session a group kill released are detached.
     let killed_clients: Vec<_> = s
         .take_killed_sessions()
@@ -309,7 +305,7 @@ fn cascade_children(
     let descendants = s.resource_descendants(pane);
     let mut cascaded = Vec::new();
     for child in descendants.into_iter().rev() {
-        let Some(recorded) = s.begin_resource_close(child) else {
+        let Some((recorded, attribution)) = s.begin_resource_close(child) else {
             continue;
         };
         // An unmarked child leaves because its parent is; one named in the
@@ -323,7 +319,6 @@ fn cascade_children(
         let child_targets = s.terminal_fanout_targets(child);
         let publication_fences = s.attach_publication_fences(child);
         let child_exit = s.retained().outcome(child).unwrap_or(ExitOutcome::UNKNOWN);
-        let attribution = s.take_close_attribution(child);
         journal_pane_closed(
             s,
             &wire_child_id,
@@ -498,7 +493,7 @@ pub(in crate::runtime) fn journal_pane_closed(
     exit_status: Option<i32>,
     attribution: crate::state::CloseAttribution,
 ) {
-    // Nothing follows a close (L1 §7): withdraw held actions first (ADR-0128).
+    // Nothing follows a close: withdraw held actions first (ADR-0128).
     s.withdraw_approvals_naming(wire_terminal_id);
     let record = crate::state::EventRecord::new(
         Some(wire_terminal_id.clone()),

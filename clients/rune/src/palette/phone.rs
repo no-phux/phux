@@ -21,7 +21,7 @@ const FIRST: [Shortcut; 12] = [
     Shortcut::Settings,
     Shortcut::Machines,
     Shortcut::CloseTab,
-    Shortcut::ScrollBottom,
+    Shortcut::ScrollToBottom,
 ];
 
 /// What needs a desktop's window, sidebar, updater or keyboard.
@@ -56,7 +56,7 @@ fn action(command: &Command, native: bool) -> Item {
 }
 
 /// A phone's empty-query order: its first commands, terminals, sessions,
-/// `extra` (the desk's own rows), the remaining commands, then themes.
+/// the remaining commands, `extra` (the desk's own rows), then themes.
 pub fn items(
     topology: Option<&Topology>,
     order: &[SessionKey],
@@ -70,11 +70,11 @@ pub fn items(
         .collect();
     out.extend(terminal_items(topology));
     out.extend(session_items(topology, order));
-    out.extend(extra);
     let rest = COMMANDS.iter().filter(|command| {
         command.listed && !FIRST.contains(&command.action) && !DESKTOP.contains(&command.action)
     });
     out.extend(rest.map(|command| action(command, native)));
+    out.extend(extra);
     out.extend(theme_items());
     out
 }

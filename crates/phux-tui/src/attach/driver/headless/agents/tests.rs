@@ -94,7 +94,7 @@ async fn headless_snapshot_waits_for_explicit_agent_cut_after_aggregate_ready() 
                 status_bar: None,
             };
             let mut session = HeadlessSession::new(kernel, chrome, (80, 24));
-            let outcome = session.ingest(attached, None, None).unwrap();
+            let outcome = session.ingest(attached, None).unwrap();
             let focused = outcome.sessions.map(|(_, focused)| focused);
             session.request_agent_records(&mut conn).await.unwrap();
             assert!(!session.agent_metadata_complete());

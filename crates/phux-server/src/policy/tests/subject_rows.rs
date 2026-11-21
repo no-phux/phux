@@ -1,4 +1,4 @@
-/// Every row of both §6 tables a client can reach, with the narrowest grant
+/// Every row of both tables a client can reach, with the narrowest grant
 /// that admits it and the near misses that must not.
 #[allow(
     clippy::too_many_lines,
@@ -414,12 +414,12 @@ fn rows(world: &mut World) -> Vec<Row> {
             "input",
         ),
         on_terminal(
-            command(Command::Checkout {
-                terminal_id: t.clone(),
-                request: phux_protocol::checkout::CheckoutRequest::Stage {
+            command(Command::checkout(
+                t.clone(),
+                phux_protocol::checkout::CheckoutRequest::Stage {
                     paths: vec!["a.txt".to_owned()],
                 },
-            }),
+            )),
             "input",
         ),
         on_terminal(
@@ -579,6 +579,7 @@ fn rows(world: &mut World) -> Vec<Row> {
     rows.extend(mirror_rows());
     rows.extend(child_spawn_rows(world));
     rows.extend(credential_rows());
+    rows.extend(viewport_colors_row(&rows));
     rows.extend(question_rows(world));
     rows
 }

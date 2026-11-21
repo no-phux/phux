@@ -2,6 +2,8 @@
 
 use super::*;
 
+mod show;
+
 /// A fresh repository named for its test, so tests run in parallel.
 fn repo(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("phux-checkout-{name}-{}", std::process::id()));
@@ -151,6 +153,45 @@ fn diff_shows_one_file_per_area_and_untracked_whole() {
         checkout.diff("nope.txt", Area::Untracked),
         Err(CheckoutError::NotFound(_))
     ));
+}
+
+#[test]
+fn untracked_patch_matches_git_no_index_without_its_index_line() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = repo("untracked-patch");
+    write(&dir, "my file.txt", "one\ntwo");
+    write(&dir, "q\"t\tb", "x\n");
+    write(&dir, "empty", "");
+    write(&dir, "bin/run.sh", "#!/bin/sh\n");
+    std::fs::set_permissions(
+        dir.join("bin/run.sh"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    std::fs::write(dir.join("blob"), [7_u8, 0, 1]).unwrap();
+    std::os::unix::fs::symlink("elsewhere", dir.join("link")).unwrap();
+    let checkout = Checkout::open(&dir).unwrap();
+    for path in [
+        "my file.txt",
+        "q\"t\tb",
+        "empty",
+        "bin/run.sh",
+        "blob",
+        "link",
+    ] {
+        let mut args = vec!["diff", "--no-index"];
+        args.extend(DIFF_FLAGS);
+        args.extend(["--", "/dev/null", path]);
+        let out = run_git(&dir, &args, 1 << 20, None, Mode::Read).unwrap();
+        let expected: String = String::from_utf8(out.stdout)
+            .unwrap()
+            .split_inclusive('\n')
+            .filter(|line| !line.starts_with("index "))
+            .collect();
+        let diff = checkout.diff(path, Area::Untracked).unwrap();
+        assert_eq!(diff.text, expected, "{path:?}");
+        assert_eq!(diff.binary, path == "blob", "{path:?}");
+    }
 }
 
 #[test]

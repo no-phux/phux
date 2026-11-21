@@ -226,7 +226,9 @@ journal gap. Replaying the same derived observation ID writes nothing.
 `needs_you` keeps the agent slot. `done_unchecked` and `failed` free it, and
 the keeper then starts the oldest queued task through the same worktree and
 brief path as `mission start`. The keeper stays up while any task is
-`working` or `queued`. On exit it waits a short bounded grace and re-reads
+`working` or `queued` and its server still accepts connections; once the
+server is gone it exits at its idle limit and the next verb starts another.
+On exit it waits a short bounded grace and re-reads
 that terminal's agent record before recording `failed`, so a `done` that
 lands in the same moment becomes `done_unchecked`.
 

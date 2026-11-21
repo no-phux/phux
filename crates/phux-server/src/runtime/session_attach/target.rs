@@ -1,17 +1,17 @@
 //! A session `ATTACH`'s target: the session it joins, created for a
-//! `CreateIfMissing` by the app that seeds sessions.
+//! `CreateIfMissing` with a default Terminal.
 
 use phux_protocol::wire::frame::{AttachTarget, ErrorCode};
 use tokio_util::sync::CancellationToken;
 
-use super::super::apps::{self, SessionSeed};
+use super::super::apps::{SessionSeed, terminal};
 use super::super::send_error;
 use crate::state::{Outbound, SharedState};
 
 /// Resolve `target` to the session the attach joins: the one the dispatch
 /// guard authorized, pinned by id before the first await, or the one a
 /// `CreateIfMissing` creates. No name is re-resolved after an await, so a
-/// concurrent rename cannot redirect the attach (workload-auth §5).
+/// concurrent rename cannot redirect the attach.
 pub(super) async fn resolve_attach_target(
     state: &SharedState,
     target: AttachTarget,
@@ -26,7 +26,9 @@ pub(super) async fn resolve_attach_target(
     let refusal = match target {
         AttachTarget::ByName(name) => format!("session {name:?} not found"),
         AttachTarget::ById(id) => format!("session id {} not found", id.get()),
-        AttachTarget::Last => "AttachTarget::Last has no live session to resolve".to_owned(),
+        AttachTarget::Last => {
+            "AttachTarget::Last: the server holds no session to attach".to_owned()
+        }
         AttachTarget::CreateIfMissing { name, command, cwd } => {
             return create_attach_session(
                 state,
@@ -65,16 +67,7 @@ async fn create_attach_session(
         root_token,
         default_colors,
     };
-    let Some(seeding) = apps::seed_session(seed) else {
-        send_error(
-            out_tx,
-            ErrorCode::SessionNotFound,
-            "CreateIfMissing: this server seeds no session",
-        )
-        .await;
-        return None;
-    };
-    let name = seeding.await?;
+    let name = terminal::attach::resolve_create_if_missing(seed).await?;
     let created = state.with(|s| s.sessions().find_by_name(&name));
     if created.is_none() {
         send_error(

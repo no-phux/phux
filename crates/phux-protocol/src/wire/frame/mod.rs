@@ -8,7 +8,7 @@
 //! +-------------------------+
 //! | length: u32 big-endian  |   number of bytes that follow
 //! +-------------------------+
-//! | type:   u8              |   message discriminant from §7
+//! | type:   u8              |   message discriminant
 //! +-------------------------+
 //! | payload: length-1 bytes |
 //! +-------------------------+
@@ -48,7 +48,7 @@ pub const MAX_RESOURCE_PROVIDER_BYTES: usize = 120;
 /// (`docs/program-sequences.md#the-agent-record`).
 pub const MAX_RESOURCE_NATIVE_ID_BYTES: usize = 1024;
 
-// Message discriminants (SPEC §7). Each `wire_tags!` declaration reserves its
+// Message discriminants. Each `wire_tags!` declaration reserves its
 // byte through a trait impl, so reusing a byte in one namespace is a
 // conflicting impl (E0119); `tests/wire_tag_registry.rs` proves it.
 #[allow(dead_code)]

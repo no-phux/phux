@@ -188,6 +188,9 @@ jobs:
           restore-keys: |
             mini-v1-ffi-xcframework-zig-
 
+      # The design exports under design/ come from the tools package.
+      - uses: ./.github/actions/setup-bun
+
       - name: Build, verify and smoke-test the mobile xcframework
         run: bash scripts/build-mobile-ffi-xcframework.sh --full
 
@@ -197,7 +200,8 @@ jobs:
           set -euo pipefail
           stem="PhuxMobileFFI-${RELEASE_TAG:-$(git rev-parse --short HEAD)}"
           cd "$MOBILE_ARTIFACTS"
-          zip -qry "${stem}.xcframework.zip" PhuxFFI.xcframework Generated provenance
+          test -f design/manifest.json
+          zip -qry "${stem}.xcframework.zip" PhuxFFI.xcframework Generated design provenance
           shasum -a 256 "${stem}.xcframework.zip" > "${stem}.xcframework.zip.sha256"
           cp provenance "${stem}.provenance"
           cat "${stem}.xcframework.zip.sha256" "${stem}.provenance"
