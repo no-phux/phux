@@ -115,6 +115,25 @@ impl TerminalActor {
         let _ = self.try_emit_agent_state(event);
     }
 
+    /// Scan PTY output about to be written to the engine, which drops
+    /// OSC 1337 user variables, for a `phux_icon` change.
+    pub(super) fn observe_icon(&mut self, bytes: &[u8]) {
+        if let Some(icon) = self.icon.scan(bytes) {
+            self.icon_owed = Some(icon);
+        }
+    }
+
+    /// Hand the sink a pending icon change; a full sink keeps it for the
+    /// next write or detector tick.
+    fn flush_icon(&mut self) {
+        if let Some(icon) = self.icon_owed.take()
+            && !self.try_emit_agent_state(AgentDetectEvent::Icon(icon.clone()))
+            && self.agent_state_sink.is_some()
+        {
+            self.icon_owed = Some(icon);
+        }
+    }
+
     pub(super) fn try_emit_agent_state(&self, event: AgentDetectEvent) -> bool {
         if let Some(sink) = self.agent_state_sink.as_ref() {
             return sink.try_send(event).is_ok();
@@ -214,6 +233,7 @@ impl TerminalActor {
         );
         let occupant = detector.take_occupant_update();
         let next = detector.interval();
+        self.flush_icon();
 
         if let Some(occupant) = occupant {
             if self.try_emit_agent_state(AgentDetectEvent::Occupant(occupant.clone())) {
@@ -242,6 +262,7 @@ impl TerminalActor {
     #[cfg(test)]
     pub(super) fn feed_for_test(&mut self, chunk: &[u8]) {
         self.resume.observe(chunk);
+        self.observe_icon(chunk);
         self.vt_write_for_test(chunk);
         self.source_events();
     }
@@ -322,6 +343,7 @@ impl TerminalActor {
                 _ => {}
             }
         }
+        self.flush_icon();
         // A native cut can replay the child's last bytes after EOF was observed.
         if self.exit.is_some() {
             changed |= self.program_status.expire_active();

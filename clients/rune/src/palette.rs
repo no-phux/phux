@@ -340,9 +340,15 @@ pub fn essential_items() -> Vec<Item> {
 }
 
 /// A terminal's name, else what runs in it and where (`claude · phux`):
-/// the one rule every client shares (`PaneDescriptor::label`).
+/// the one rule every client shares (`PaneDescriptor::label`), with the
+/// pane's icon in front (`phux_config_core::pane_icon`).
 pub fn pane_label(pane: &PaneDescriptor) -> String {
-    pane.label()
+    phux_config_core::pane_icon::with_icon(
+        pane.label(),
+        pane.icon.as_deref(),
+        pane.foreground.as_deref(),
+        pane.cwd.as_deref(),
+    )
 }
 
 /// Fuzzy subsequence match of `query` in `text`, case-insensitive. Rewards

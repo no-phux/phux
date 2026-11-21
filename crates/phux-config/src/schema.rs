@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    OrganizeCfg, RuneCfg, SessionConfigEntry, connector::ConnectorConfigEntry,
+    IconConfigEntry, OrganizeCfg, RuneCfg, SessionConfigEntry, connector::ConnectorConfigEntry,
     host_color::LocalHostCfg, mirror::MirrorConfigEntry, plugin::PluginConfigEntry,
     producer::ProducerConfigEntry, project::ProjectConfigEntry, remote::RemoteConfigEntry,
     satellite::SatelliteConfigEntry, uplink::UplinkConfigEntry,
@@ -58,6 +58,8 @@ pub struct Config {
     pub projects: Vec<ProjectConfigEntry>,
     /// `[[sessions]]`: the colour clients draw each named session in.
     pub sessions: Vec<SessionConfigEntry>,
+    /// `[[icons]]`: the icon clients draw before a pane's label.
+    pub icons: Vec<IconConfigEntry>,
     /// Color slots: free-form `slot -> color` strings.
     pub theme: ThemeCfg,
     /// Opt-in unstable features; may change without notice.

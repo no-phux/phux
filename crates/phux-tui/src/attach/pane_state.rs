@@ -116,6 +116,8 @@ pub(super) struct PaneSlot {
     /// The foreground program (`phux.pane-occupant/v1`), which names an
     /// auto-numbered window after what runs in it.
     pub foreground: Option<String>,
+    /// The icon a program in the pane set (`phux.pane-occupant/v1`'s `icon`).
+    pub program_icon: Option<String>,
     /// The attention ladder's "looked at" bit: set while focused, cleared when
     /// an unfocused pane's agent record changes, so "finished, unread" ranks
     /// above "working" until visited.
@@ -192,6 +194,7 @@ impl PaneSlot {
             last_title: String::new(),
             slot_tab: None,
             foreground: None,
+            program_icon: None,
             seen: false,
             satellite_down: false,
             history_degraded: false,
@@ -317,17 +320,37 @@ pub(in crate::attach) fn cwd_basename(cwd: &str) -> Option<String> {
 /// What a window is called wherever the chrome names it (the tab bar, the
 /// tab picker): a user-given name as is; an auto-numbered one prefers
 /// context, from the focused pane's agent, then the label every client
-/// gives the pane (what runs in it and where, else its title or cwd).
+/// gives the pane (what runs in it and where, else its title or cwd). The
+/// focused pane's icon (`phux_config::pane_icon`) goes in front.
 pub(in crate::attach) fn display_window_name(
     name: &str,
     focus: Option<&ResourceId>,
     panes: &HashMap<ResourceId, PaneSlot>,
     agent_meta: &HashMap<ResourceId, phux_client::agent_meta::AgentRecord>,
 ) -> String {
+    let slot = focus.and_then(|fid| panes.get(fid));
+    let label = window_label(name, focus, slot, agent_meta);
+    match slot {
+        Some(slot) => phux_config::pane_icon::with_icon(
+            label,
+            slot.program_icon.as_deref(),
+            slot.foreground.as_deref(),
+            slot.cwd.as_deref(),
+        ),
+        None => label,
+    }
+}
+
+/// [`display_window_name`] before the focused pane's icon.
+fn window_label(
+    name: &str,
+    focus: Option<&ResourceId>,
+    slot: Option<&PaneSlot>,
+    agent_meta: &HashMap<ResourceId, phux_client::agent_meta::AgentRecord>,
+) -> String {
     if !auto_named(name) {
         return name.to_owned();
     }
-    let slot = focus.and_then(|fid| panes.get(fid));
     focus
         .and_then(|fid| agent_meta.get(fid))
         .map(|record| record.name.clone())

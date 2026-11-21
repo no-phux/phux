@@ -231,4 +231,14 @@ fn an_auto_numbered_window_is_named_after_its_foreground() {
         display_window_name("api", Some(&id), &panes, &agents),
         "api"
     );
+    // A program-set icon goes in front of either.
+    panes.get_mut(&id).unwrap().program_icon = Some("🦀".to_owned());
+    assert_eq!(
+        display_window_name("1", Some(&id), &panes, &agents),
+        "🦀 npm · phux"
+    );
+    assert_eq!(
+        display_window_name("api", Some(&id), &panes, &agents),
+        "🦀 api"
+    );
 }
