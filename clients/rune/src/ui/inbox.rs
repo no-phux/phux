@@ -365,7 +365,7 @@ fn approval_card(approval: &Approval, phone: bool, t: &Tokens) -> El {
         row()
             .w_full()
             .gap(t.space.icon_gap)
-            .child(decide(Decision::Deny, "Deny", "⌫", ButtonVariant::Danger))
+            .child(decide(Decision::Deny, "Deny", "⌫", t.danger_button()))
             .child(decide(
                 Decision::Approve,
                 "Approve",

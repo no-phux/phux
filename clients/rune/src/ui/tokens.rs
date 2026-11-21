@@ -410,6 +410,19 @@ impl Tokens {
         }
     }
 
+    /// The look of a button that ends something (§1.10): the kit danger
+    /// button, unless the failed tone is a grey quieter than dim text
+    /// ([`Roles::recedes`]). Omarchy's Vantablack solves it to `#a4a4a4`,
+    /// so Close looked disabled beside a white Cancel. The verb still says
+    /// what it does.
+    pub(crate) fn danger_button(&self) -> rune_kit::ButtonVariant {
+        if self.roles.recedes(self.roles.status.failed) {
+            rune_kit::ButtonVariant::Neutral
+        } else {
+            rune_kit::ButtonVariant::Danger
+        }
+    }
+
     /// `e` lifted to `tier`: its shadow layers, rings already coloured.
     pub(crate) fn elevate(&self, e: El, tier: Tier) -> El {
         // Tiers retain CSS front-to-back order, as Kit's elevation does.

@@ -110,7 +110,7 @@ pub(in crate::ui) fn question_bar(desk: &Desk, p: &Tokens) -> Option<El> {
     let (message, verb) = question(pending, touch);
     let cancel = if touch { "Cancel" } else { "Cancel (Esc)" };
     let verb_look = if destructive(pending) {
-        ButtonVariant::Danger
+        t.danger_button()
     } else {
         ButtonVariant::Submit
     };
