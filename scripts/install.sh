@@ -644,6 +644,19 @@ offer_service() {
     || phux_message warn "the server is not supervised; retry with: $(shell_quote "$phux") service install --adopt"
 }
 
+# Best effort: `man` reads <dir>/../share/man for a <dir> on PATH, so
+# `man phux` works once phux does. Only beside an existing share/ (never a
+# new ~/share), and a release older than `phux man` writes nothing.
+install_man_page() {
+  share="$(dirname "$install_dir")/share"
+  [ -d "$share" ] && mkdir -p "$share/man/man1" 2>/dev/null || return 0
+  if "${install_dir}/phux" man >"$share/man/man1/.phux.1.tmp" 2>/dev/null; then
+    mv -f "$share/man/man1/.phux.1.tmp" "$share/man/man1/phux.1"
+  else
+    rm -f "$share/man/man1/.phux.1.tmp"
+  fi
+}
+
 # PIN and PIN_SHA256 pin the CLI; empty follows the channel.
 install_cli() {
   if [ "$repo" -eq 1 ] && [ "$channel" = stable ] && [ -z "$1" ] && manager="$(repo_manager)"; then
@@ -667,6 +680,7 @@ install_cli() {
   fetch_verified
   unpack_cli
   publish_cli
+  install_man_page
   detail ok "installed phux ${build_id} for ${target} to ${install_dir}"
   if [ "$target" = aarch64-apple-darwin ] && [ "$channel" != next ]; then
     # Best effort, in a subshell so a failure cannot undo the CLI install.

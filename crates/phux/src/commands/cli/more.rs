@@ -28,6 +28,32 @@ pub(crate) struct WhoamiArgs {
     pub(crate) remote: RemoteOpt,
 }
 
+/// Show this client's and the server's versions
+///
+/// Prints the package and protocol versions of this `phux` and of the
+/// server it reaches, one field per line, for a bug report. With
+/// `--remote HOST` the server is that host's. Without a server it prints
+/// the client's lines, then why the server is unreachable (exit 1). Does
+/// not start a server.
+#[derive(Debug, Args)]
+pub(crate) struct VersionArgs {
+    #[usage(flatten)]
+    pub(crate) json: JsonOpt,
+
+    #[usage(flatten)]
+    pub(crate) remote: RemoteOpt,
+}
+
+/// Print the phux(1) manual page
+///
+/// Writes the manual page as roff on stdout, rendered from the same help
+/// text as `phux <command> --help`, so it matches this build. Packages
+/// install it as `man1/phux.1`; to read it without installing:
+///
+///   phux man | man -l -
+#[derive(Debug, Args)]
+pub(crate) struct ManArgs {}
+
 /// Show the server's performance telemetry
 ///
 /// Reads the always-on latency histograms, throughput counters, and
