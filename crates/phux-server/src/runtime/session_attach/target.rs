@@ -26,7 +26,9 @@ pub(super) async fn resolve_attach_target(
     let refusal = match target {
         AttachTarget::ByName(name) => format!("session {name:?} not found"),
         AttachTarget::ById(id) => format!("session id {} not found", id.get()),
-        AttachTarget::Last => "AttachTarget::Last has no live session to resolve".to_owned(),
+        AttachTarget::Last => {
+            "AttachTarget::Last: the server holds no session to attach".to_owned()
+        }
         AttachTarget::CreateIfMissing { name, command, cwd } => {
             return create_attach_session(
                 state,

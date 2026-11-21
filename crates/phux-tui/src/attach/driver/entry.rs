@@ -317,9 +317,15 @@ async fn attach_session<W: crate::attach::RenderSink>(
     let dial = match &start {
         AttachStart::Dial(dial) | AttachStart::Connection(_, dial) => *dial,
     };
-    let (mut conn, attached, output_mode) = handshake(start, target, probe_default_colors)
+    let handshake = handshake(start, target, probe_default_colors)
         .instrument(handshake_span)
-        .await?;
+        .await;
+    // Hand the tty back from an unfinished colour probe before anything
+    // snapshots termios (the crash hook, raw mode). A refusal exits on the
+    // cooked terminal, so it first swallows the late replies the shell would
+    // otherwise read as typed input; the raw-mode input loop absorbs them.
+    crate::attach::terminal_probe::settle(handshake.is_err());
+    let (mut conn, attached, output_mode) = handshake?;
     // Output mode is per-connection, so this holds across session switches;
     // raw consumers skip `FRAME_ACK` (the server drops their acks).
     let wants_state_sync = output_mode == OutputMode::StateSync;

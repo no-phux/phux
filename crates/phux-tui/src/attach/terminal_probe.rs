@@ -2,9 +2,11 @@
 //! are silent. Sends OSC 10/11 then DA1: terminals answer DA1 in order even
 //! when they ignore colour queries, so a bare DA1 ends the wait.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::Write;
 use std::os::fd::AsFd;
+use std::os::unix::ffi::OsStringExt as _;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use phux_protocol::caps::{TerminalColor, TerminalDefaultColors};
@@ -42,41 +44,179 @@ enum ProbeRead {
     Failed,
 }
 
-/// Probe OSC 10/11 on `/dev/tty`; `None` on any unsupported or
-/// non-interactive path. Returns as soon as both replies or a DA1 arrive.
+/// Probe OSC 10/11 on `/dev/tty` once per process; `None` on any
+/// unsupported or non-interactive path. Returns as soon as both replies or a
+/// DA1 arrive. A retry or fallback attach reuses the answer: asking again
+/// only puts more replies in flight.
 pub(super) fn default_colors() -> Option<TerminalDefaultColors> {
-    let mut tty = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open("/dev/tty")
-        .ok()?;
+    static PROBED: OnceLock<Option<TerminalDefaultColors>> = OnceLock::new();
+    *PROBED.get_or_init(probe_once)
+}
+
+fn probe_once() -> Option<TerminalDefaultColors> {
+    let tty = open_probe_tty()?;
     let original = rustix::termios::tcgetattr(tty.as_fd()).ok()?;
-    let _restore = TermiosRestore {
-        tty: tty.try_clone().ok()?,
-        original: original.clone(),
-    };
 
     // Non-canonical, fully non-blocking reads: `poll` owns the waiting, so a
     // read never parks on the terminal's own timer. Keep signal handling
     // enabled; the probe must not alter Ctrl-C behavior.
-    let mut probe_mode = original;
+    let mut probe_mode = original.clone();
     probe_mode
         .local_modes
         .remove(LocalModes::ICANON | LocalModes::ECHO | LocalModes::ECHONL);
     probe_mode.special_codes[SpecialCodeIndex::VMIN] = 0;
     probe_mode.special_codes[SpecialCodeIndex::VTIME] = 0;
     rustix::termios::tcsetattr(tty.as_fd(), OptionalActions::Now, &probe_mode).ok()?;
+    // Owns the restore from here on: every early return drops it.
+    let mut in_flight = InFlight {
+        tty,
+        original,
+        response: Vec::with_capacity(128),
+        settle_by: Instant::now() + SETTLE_BUDGET,
+    };
 
-    tty.write_all(PROBE_QUERY).ok()?;
-    tty.flush().ok()?;
+    (&in_flight.tty).write_all(PROBE_QUERY).ok()?;
+    (&in_flight.tty).flush().ok()?;
 
-    let mut response = Vec::with_capacity(128);
-    let first = read_replies(&tty, &mut response, Instant::now() + PROBE_BUDGET);
+    let InFlight { tty, response, .. } = &mut in_flight;
+    let first = read_replies(tty, response, Instant::now() + PROBE_BUDGET);
     let colors = palette_from_attempts(first, || {
-        read_replies(&tty, &mut response, Instant::now() + LATE_REPLY_BUDGET)
+        read_replies(tty, response, Instant::now() + LATE_REPLY_BUDGET)
     });
-    discard_pending(&tty);
+    if !saw_primary_da(&in_flight.response) {
+        // DA1 is the terminal's last reply; until it lands, echo stays off so
+        // a slow terminal's answers cannot print on the cooked screen or
+        // reach the shell. Raw mode or a failed attach settles it, and the
+        // watchdog bounds the wait, so a slow handshake or a signal in it
+        // never leaves echo off for long.
+        let settle_by = in_flight.settle_by;
+        *lock_in_flight() = Some(in_flight);
+        spawn_settle_watchdog(settle_by);
+    }
     colors
+}
+
+/// Restore the tty at `settle_by` if nothing settled it first.
+fn spawn_settle_watchdog(settle_by: Instant) {
+    let spawned = std::thread::Builder::new()
+        .name("phux-probe-settle".to_owned())
+        .spawn(move || {
+            std::thread::sleep(settle_by.saturating_duration_since(Instant::now()));
+            settle(false);
+        });
+    if spawned.is_err() {
+        // No watchdog, no unbounded window: give the tty back now.
+        settle(false);
+    }
+}
+
+/// Open the probe's terminal (`O_NOCTTY`: never acquire a controlling
+/// terminal). The named device can refuse a different user after `su`; the
+/// `/dev/tty` alias still opens, even though macOS cannot poll it.
+fn open_probe_tty() -> Option<File> {
+    let open = |path: &std::path::Path| {
+        rustix::fs::open(
+            path,
+            rustix::fs::OFlags::RDWR | rustix::fs::OFlags::NOCTTY | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .ok()
+        .map(File::from)
+    };
+    probe_device()
+        .and_then(|device| open(&device))
+        .or_else(|| open(std::path::Path::new("/dev/tty")))
+}
+
+/// The terminal device to probe: stdout's named tty (where the frames go),
+/// else stdin's. macOS `poll` answers `POLLNVAL` at once for the `/dev/tty`
+/// alias, so probing through it read nothing and let every reply leak.
+fn probe_device() -> Option<std::path::PathBuf> {
+    let named = |fd: std::os::fd::BorrowedFd<'_>| {
+        rustix::termios::isatty(fd)
+            .then(|| rustix::termios::ttyname(fd, Vec::new()).ok())
+            .flatten()
+    };
+    named(std::io::stdout().as_fd())
+        .or_else(|| named(std::io::stdin().as_fd()))
+        .map(|name| std::ffi::OsString::from_vec(name.into_bytes()).into())
+}
+
+/// Wall-clock cap, from the query, on waiting out a slow terminal's replies
+/// when an attach fails before raw mode.
+const SETTLE_BUDGET: Duration = Duration::from_secs(1);
+
+/// The probe's tty while its DA1 reply is still owed: probe mode (no echo)
+/// until dropped, which discards queued replies and restores `original`.
+struct InFlight {
+    tty: File,
+    original: Termios,
+    response: Vec<u8>,
+    settle_by: Instant,
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        // Restoring echo first would print a queued reply as `^[]10;rgb:...`.
+        discard_pending(&self.tty);
+        let _ = rustix::termios::tcsetattr(self.tty.as_fd(), OptionalActions::Now, &self.original);
+    }
+}
+
+static IN_FLIGHT: Mutex<Option<InFlight>> = Mutex::new(None);
+
+fn lock_in_flight() -> std::sync::MutexGuard<'static, Option<InFlight>> {
+    IN_FLIGHT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Hand the tty back from an unfinished probe. With `wait`, first swallow
+/// the replies still owed (until DA1 or the settle budget): an attach that
+/// fails on the cooked terminal calls this before the process exits, so the
+/// replies never reach the shell. Raw mode calls it without waiting, as its
+/// input loop absorbs late replies. A no-op when nothing is in flight.
+pub(super) fn settle(wait: bool) {
+    let Some(mut in_flight) = lock_in_flight().take() else {
+        return;
+    };
+    if wait {
+        let InFlight {
+            tty,
+            response,
+            settle_by,
+            ..
+        } = &mut in_flight;
+        drain_until_da1(tty, response, *settle_by);
+    }
+}
+
+fn drain_until_da1(tty: &impl AsFd, response: &mut Vec<u8>, deadline: Instant) {
+    let mut chunk = [0_u8; 128];
+    while !saw_primary_da(response) && response.len() < MAX_RESPONSE_BYTES {
+        if wait_with(deadline, Instant::now, |timeout| poll_in(tty, timeout)) != Some(true) {
+            return;
+        }
+        match rustix::io::read(tty, &mut chunk) {
+            Ok(0) => return,
+            Ok(n) => response.extend_from_slice(&chunk[..n]),
+            Err(Errno::INTR | Errno::AGAIN) => {}
+            Err(_) => return,
+        }
+    }
+}
+
+/// Whether `bytes` holds the primary-DA reply that ends the exchange.
+fn saw_primary_da(bytes: &[u8]) -> bool {
+    (0..bytes.len()).any(|start| {
+        let Some(after) = bytes[start..].strip_prefix(b"\x1b[") else {
+            return false;
+        };
+        match csi_body(after) {
+            CsiBody::Final(end) => is_primary_da(&after[..=end]),
+            CsiBody::Incomplete | CsiBody::Invalid => false,
+        }
+    })
 }
 
 /// Colours from the first attempt. A DA1 "unsupported" answer does not spend
@@ -297,6 +437,9 @@ fn poll_in<Fd: AsFd>(fd: &Fd, timeout: Duration) -> Result<bool, Errno> {
     let mut fds = [PollFd::new(fd, PollFlags::IN)];
     match rustix::event::poll(&mut fds, Some(&timeout)) {
         Ok(0) => Ok(false),
+        // `POLLNVAL` / `POLLERR` with no input is not readiness: reading
+        // would see EOF and end the probe before any reply.
+        Ok(_) if !fds[0].revents().contains(PollFlags::IN) => Err(Errno::IO),
         Ok(_) => Ok(true),
         Err(err) => Err(err),
     }
@@ -320,20 +463,6 @@ fn wait_with(
             Err(Errno::INTR) => {}
             Err(_) => return None,
         }
-    }
-}
-
-struct TermiosRestore {
-    tty: File,
-    original: Termios,
-}
-
-impl Drop for TermiosRestore {
-    fn drop(&mut self) {
-        // Swallow a reply that landed after the read loop gave up. Restoring
-        // echo first prints it as `^[]10;rgb:...` on the cooked terminal.
-        discard_pending(&self.tty);
-        let _ = rustix::termios::tcsetattr(self.tty.as_fd(), OptionalActions::Now, &self.original);
     }
 }
 
@@ -405,211 +534,4 @@ fn normalize_component(component: &str) -> Option<u8> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::cell::{Cell, RefCell};
-    use std::collections::VecDeque;
-    use std::io::Read;
-
-    struct Scripted {
-        outcome: ProbeRead,
-        elapsed: Duration,
-        polls: Vec<Duration>,
-    }
-
-    fn sample_palette() -> TerminalDefaultColors {
-        TerminalDefaultColors {
-            foreground: TerminalColor {
-                r: 208,
-                g: 208,
-                b: 208,
-            },
-            background: TerminalColor {
-                r: 18,
-                g: 24,
-                b: 27,
-            },
-        }
-    }
-
-    /// Drive the exchange on a fake clock. A chunk is delivered on the next
-    /// poll; an empty queue times out and advances the clock by that poll.
-    fn drive(chunks: &[&[u8]], budget: Duration) -> Scripted {
-        let start = Instant::now();
-        let now = Cell::new(start);
-        let chunks = RefCell::new(
-            chunks
-                .iter()
-                .map(|chunk| chunk.to_vec())
-                .collect::<VecDeque<_>>(),
-        );
-        let mut polls = Vec::new();
-        let mut response = Vec::new();
-        let outcome = exchange(
-            &mut response,
-            start + budget,
-            || now.get(),
-            |timeout| {
-                polls.push(timeout);
-                if chunks.borrow().is_empty() {
-                    now.set(now.get() + timeout);
-                    Ok(false)
-                } else {
-                    Ok(true)
-                }
-            },
-            |buf| {
-                let mut queue = chunks.borrow_mut();
-                let Some(next) = queue.pop_front() else {
-                    return Err(Errno::AGAIN);
-                };
-                let n = next.len().min(buf.len());
-                buf[..n].copy_from_slice(&next[..n]);
-                if n < next.len() {
-                    queue.push_front(next[n..].to_vec());
-                }
-                Ok(n)
-            },
-        );
-        Scripted {
-            outcome,
-            elapsed: now.get().saturating_duration_since(start),
-            polls,
-        }
-    }
-
-    #[test]
-    fn parses_fragment_ready_x11_and_hash_responses() {
-        let bytes = b"noise\x1b]10;rgb:d0d0/d0d0/d0d0\x1b\\\x1b]11;#12181b\x07";
-        assert_eq!(classify(bytes), ProbeProgress::Colors(sample_palette()));
-    }
-
-    #[test]
-    fn incomplete_response_is_ignored() {
-        assert_eq!(classify(b"\x1b]10;rgb:ff/ff/ff"), ProbeProgress::Pending);
-    }
-
-    type ExchangeCase<'a> = (&'a str, &'a [&'a [u8]], ProbeRead, Option<usize>);
-
-    /// How a reply ends the exchange early, without spending the budget. A
-    /// terminal that ignores OSC 10/11 still answers DA1, and that reply ends
-    /// it. Colours (with or without a trailing DA1) yield the palette as soon
-    /// as both arrive. Replies arrive in order, so DA1 before both colours
-    /// means the rest is unanswered. A short read inside `CSI ? Ps` and an
-    /// echoed `CSI c` query are not yet a DA1 reply.
-    #[test]
-    fn a_reply_ends_the_exchange_before_the_deadline() {
-        use ProbeRead::Unsupported;
-        const FG: &[u8] = b"\x1b]10;rgb:d0d0/d0d0/d0d0\x1b\\";
-        const BG: &[u8] = b"\x1b]11;#12181b\x07";
-        const BOTH_DA1: &[u8] = b"\x1b]10;rgb:d0d0/d0d0/d0d0\x1b\\\x1b]11;#12181b\x07\x1b[?1;2c";
-        const FG_DA1_BG: &[u8] = b"\x1b]10;rgb:ff/00/00\x1b\\\x1b[?6c\x1b]11;rgb:00/00/00\x1b\\";
-        let colors = ProbeRead::Colors(sample_palette());
-        #[rustfmt::skip] // a case table, one row per case
-        let cases: [ExchangeCase<'_>; 6] = [
-            ("da1 only", &[b"\x1b[?64;1;2;6;9;15;18;21;22c"], Unsupported, Some(1)),
-            ("colours then da1 in one read", &[BOTH_DA1], colors, None),
-            ("colours do not wait for da1", &[FG, BG, b"\x1b[?6c"], colors, Some(2)),
-            ("da1 before both colours", &[FG_DA1_BG], Unsupported, None),
-            ("partial da1", &[b"\x1b[?64;1;2", b"c"], Unsupported, Some(2)),
-            ("echoed da1 query", &[b"\x1b[c", b"\x1b[?6c"], Unsupported, Some(2)),
-        ];
-        for (case, chunks, outcome, polls) in cases {
-            let scripted = drive(chunks, Duration::from_millis(25));
-            assert_eq!(scripted.outcome, outcome, "{case}");
-            assert_eq!(scripted.elapsed, Duration::ZERO, "{case}");
-            if let Some(polls) = polls {
-                assert_eq!(scripted.polls.len(), polls, "{case}");
-            }
-        }
-    }
-
-    /// No bytes at all: one poll, and the clock advances by the budget.
-    #[test]
-    fn no_reply_hits_the_probe_budget() {
-        let budget = Duration::from_millis(25);
-        let scripted = drive(&[], budget);
-        assert_eq!(scripted.outcome, ProbeRead::TimedOut);
-        assert_eq!(scripted.elapsed, budget);
-        assert_eq!(scripted.polls, [budget]);
-    }
-
-    /// DA1 (`Unsupported`) skips the late-reply attempt; a timeout still
-    /// reads a late colour reply.
-    #[test]
-    fn only_a_timeout_spends_the_late_reply_budget() {
-        let palette = Some(sample_palette());
-        #[rustfmt::skip] // a case table, one row per case
-        let cases = [
-            ("unsupported da1 skips the late budget", ProbeRead::Unsupported, None, 0),
-            ("a timeout reads a late colour reply", ProbeRead::TimedOut, palette, 1),
-        ];
-        for (case, first, want, attempts) in cases {
-            let calls = Cell::new(0_u8);
-            let colors = palette_from_attempts(first, || {
-                calls.set(calls.get() + 1);
-                want.map_or(ProbeRead::TimedOut, ProbeRead::Colors)
-            });
-            assert_eq!(colors, want, "{case}");
-            assert_eq!(calls.get(), attempts, "{case}");
-        }
-    }
-
-    /// `EINTR` retries the same Instant; it does not extend the budget.
-    #[test]
-    fn interrupted_wait_retries_the_same_deadline() {
-        let start = Instant::now();
-        let deadline = start + Duration::from_millis(20);
-        let now = Cell::new(start);
-        let mut polls = Vec::new();
-        let waited = wait_with(
-            deadline,
-            || now.get(),
-            |timeout| {
-                polls.push(timeout);
-                if polls.len() == 1 {
-                    now.set(now.get() + Duration::from_millis(5));
-                    Err(Errno::INTR)
-                } else {
-                    now.set(now.get() + timeout);
-                    Ok(false)
-                }
-            },
-        );
-        assert_eq!(waited, Some(false));
-        assert_eq!(
-            polls,
-            [Duration::from_millis(20), Duration::from_millis(15)]
-        );
-    }
-
-    /// Queued OSC replies must not survive for the shell to echo.
-    #[test]
-    fn discard_pending_swallows_queued_bytes() {
-        let (mut reader, mut writer) = std::io::pipe().expect("pipe");
-        writer
-            .write_all(b"\x1b]10;rgb:c5c5/d0d0/cdcd\x1b\\")
-            .expect("write reply");
-        drop(writer);
-        discard_pending(&reader);
-        let mut buf = [0_u8; 8];
-        assert_eq!(reader.read(&mut buf).expect("read after discard"), 0);
-    }
-
-    /// An expired deadline never enters `poll`.
-    #[test]
-    fn spent_budget_does_not_wait() {
-        let start = Instant::now();
-        let mut polls = 0_u8;
-        let waited = wait_with(
-            start,
-            || start,
-            |_| {
-                polls += 1;
-                Ok(true)
-            },
-        );
-        assert_eq!(waited, Some(false));
-        assert_eq!(polls, 0);
-    }
-}
+mod tests;
