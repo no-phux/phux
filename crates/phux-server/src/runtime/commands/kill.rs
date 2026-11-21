@@ -1,11 +1,11 @@
 //! Terminal kill and close-tab handling, including satellite partitions.
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the split command modules share the parent command namespace"
-)]
 
-use super::*;
+use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode};
+use tracing::debug;
+
+use crate::runtime::commands::results::terminal_not_found;
 use crate::runtime::committed_close::{CommittedClose, announce, commit_user_close};
+use crate::state::{ClientId, ServerInterceptedKey, SharedState};
 
 /// The attribution a kill stamps on the `pane_closed` of everything it
 /// closes: the sending connection and, when keyed, its `operation_id`.

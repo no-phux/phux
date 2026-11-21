@@ -1,12 +1,14 @@
 //! Viewport resize, attached input, replies, and frame acks.
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the split command modules share the parent command namespace"
-)]
 
-use super::*;
+use phux_protocol::wire::frame::ViewportInfo;
+use phux_terminal_api::TerminalInput;
+use phux_terminal_api::actor::{ConsumerAckRequest, TerminalResource as _};
+use tracing::{debug, trace, warn};
+
+use crate::runtime::apps::terminal::commands::input_route::InputDestination;
+use crate::runtime::apps::terminal::commands::resize::{send_wrong_kind_error, try_resize};
 use crate::runtime::connections::resource_frames::attached_input_resource;
-use phux_terminal_api::actor::TerminalResource as _;
+use crate::state::{ClientId, ResolvedOwned, SharedState};
 
 /// Record a session-attached client's viewport vote and recompute every
 /// subscribed Terminal in that session under the server's geometry policy.

@@ -1,10 +1,12 @@
 //! Detach, shutdown, upgrade, and session creation.
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the split command modules share the parent command namespace"
-)]
 
-use super::*;
+use phux_protocol::wire::frame::{CommandResult, CommandValue, DetachReason, ErrorCode, FrameKind};
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, error, info, warn};
+
+use crate::runtime::commands::results::SeedOrigin;
+use crate::runtime::{pump, reply};
+use crate::state::{ClientId, Outbound, SharedState};
 
 /// Handle `DETACH_RESOURCE`: drop every output task and the
 /// event subscription the caller holds on the terminal. Idempotent, so a
