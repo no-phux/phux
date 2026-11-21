@@ -23,7 +23,6 @@ import {
 } from "./plan.ts";
 import { alreadyValidated, artifactName, type Receipt } from "./receipt.ts";
 import { reusedMacos, runeMacosPlan } from "./rune-macos.ts";
-import { mergeQueueVerified } from "./queue-policy.ts";
 
 const print = (result: Classification) => console.log(formatOutputs(toOutputs(result)));
 const WORKFLOW = ".github/workflows/ci.yml";
@@ -121,16 +120,17 @@ export const commands: Record<string, Command> = {
       const event = process.env["GITHUB_EVENT_NAME"] ?? "";
       const eventPath = process.env["GITHUB_EVENT_PATH"];
       const repository = process.env["GITHUB_REPOSITORY"] ?? "";
-      const queueVerified = event === "pull_request" && mergeQueueVerified(repository, eventPath);
       const detection = detect(event, eventPath);
-      const fallback = event === "pull_request" && !queueVerified;
-      const c = classifyDetection(detection, fallback ? "qualify-rune" : "skip");
-      // A merge group is main's tree before it lands: main policy.
+      // Pull requests gate on their path-scoped Linux lanes only. Apple,
+      // Linux packaging and the mandatory lanes qualify on the main push
+      // (docs/ci.md#native-apple-qualification). A merge group is main's
+      // tree before it lands: main policy.
+      const c = classifyDetection(detection);
       const scope = pathScope(detection);
       const p = plan(c, triggerFor(event), {
         scope,
         perfBaseline: perfBaselineLabel(event, eventPath),
-        queueVerified: !fallback,
+        pullRequestFast: true,
         runeQualify: event !== "pull_request",
         docsCatalog: docsCatalogSelected(detection),
       });
@@ -144,7 +144,6 @@ export const commands: Record<string, Command> = {
       );
       writeOutputs({
         ...outputs,
-        queue_verified: queueVerified,
         validated,
         receipt: JSON.stringify(receipt),
         receipt_name: artifactName(receipt),

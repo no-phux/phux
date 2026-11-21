@@ -9,8 +9,8 @@ import { jobs, uses, workflow, workflowNames } from "../policy/workflows.ts";
 const MACOS_BUDGET = [
   "cache-warm.yml rune → rune-build.yml macos (macos-arm64) on macos-26 | schedule 10 0 * * * 17 6 * * *, workflow_dispatch",
   "cache-warm.yml rune → rune-build.yml ios-native (ios-native-simulator) on macos-26 | schedule 10 0 * * * 17 6 * * *, workflow_dispatch",
-  "ci.yml queue-apple → rune-build.yml macos (macos-arm64) on macos-26 | merge_group, pull_request",
-  "ci.yml queue-apple → rune-build.yml ios-native (ios-native-simulator) on macos-26 | merge_group, pull_request",
+  "ci.yml queue-apple → rune-build.yml macos (macos-arm64) on macos-26 | merge_group",
+  "ci.yml queue-apple → rune-build.yml ios-native (ios-native-simulator) on macos-26 | merge_group",
   "ffi-xcframework.yml build on xcode-27 | workflow_dispatch",
   "first-run-timing.yml macos on macos-26 | pull_request, push branches main, schedule 29 4 * * *, workflow_dispatch",
   "next.yml cli → build-cli.yml build aarch64-apple-darwin on xcode-27 | workflow_dispatch, workflow_run ci",
@@ -162,9 +162,6 @@ function calledHosts(lane: Table): "all" | "linux" | "macos" {
 /** A caller that refuses pull_request does not put that event in the pool. */
 function poolTriggers(lane: Table, triggers: string[]): string[] {
   const gate = str(lane["if"]) ?? "";
-  if (gate.includes("needs.plan.outputs.queue_verified")) {
-    return triggers.filter((label) => label === "merge_group" || label === "pull_request");
-  }
   if (gate === "github.event_name == 'merge_group'") {
     return triggers.filter((label) => label === "merge_group");
   }

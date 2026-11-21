@@ -182,8 +182,8 @@ test("the existing required ci check depends on real Apple qualification on the 
   const apple = job(ci, "queue-apple");
   expect(str(apple["name"])).toBe("queue-apple");
   expect(uses(apple)).toBe("./.github/workflows/rune-macos.yml");
-  expect(str(apple["if"])).toContain("github.event_name == 'merge_group'");
-  expect(str(apple["if"])).toContain("needs.plan.outputs.queue_verified != 'true'");
+  // Pull requests never wait on the macOS pool; main pushes qualify Apple.
+  expect(str(apple["if"])).toBe("github.event_name == 'merge_group'");
   expect(withInput(apple, "qualify")).toBe(true);
   expect(needs(job(ci, "ci"))).toContain("queue-apple");
   const mac = workflow("rune-macos.yml");
@@ -194,7 +194,7 @@ test("the existing required ci check depends on real Apple qualification on the 
   expect(table(mac["on"])["workflow_dispatch"]).toBeDefined();
 });
 
-test("required fallback PR Apple admission and concurrency cannot be satisfied by the cheap check", () => {
+test("a PR never admits Apple, and the required child's concurrency stays apart from the cheap check", () => {
   const pr = {
     ...push,
     event_name: "pull_request",
@@ -202,17 +202,8 @@ test("required fallback PR Apple admission and concurrency cannot be satisfied b
     event: { pull_request: { head: { repo: { full_name: "no-phux/phux" } } } },
   };
   const apple = job(workflow("ci.yml"), "queue-apple");
-  for (const [verified, rune, want] of [
-    ["true", "true", false],
-    ["false", "true", true],
-    ["", "true", true],
-    ["false", "false", false],
-  ] as const) {
-    expect(
-      evaluate(apple["if"], pr, {
-        needs: { plan: { outputs: { queue_verified: verified, rune } } },
-      }),
-    ).toBe(want);
+  for (const rune of ["true", "false"]) {
+    expect(evaluate(apple["if"], pr, { needs: { plan: { outputs: { rune } } } })).toBe(false);
   }
   const mac = workflow("rune-macos.yml");
   const selected = { needs: { plan: { outputs: { macos: "true" } } } };
@@ -241,7 +232,7 @@ test("required fallback PR Apple admission and concurrency cannot be satisfied b
   expect(requiredGroup).not.toBe(group("rune-macos.yml", forkDispatch));
 });
 
-test("fallback fork PR qualification grants no signing, release or provisioning authority", () => {
+test("Apple qualification grants no signing, release or provisioning authority", () => {
   const ci = workflow("ci.yml");
   const mac = workflow("rune-macos.yml");
   expect(ci["permissions"]).toEqual({ actions: "read", contents: "read" });

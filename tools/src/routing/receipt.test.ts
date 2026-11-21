@@ -64,7 +64,7 @@ test("a merge group that validated the exact tree is reused", () => {
 test("an exact-tree partial PR Linux receipt cannot replace full queue/main qualification", () => {
   const paths = ["clients/rune/src/main.rs"];
   const c = new Classifier().classify(paths);
-  const options = { queueVerified: true, scope: { kind: "diff" as const, paths } };
+  const options = { pullRequestFast: true, scope: { kind: "diff" as const, paths } };
   const pr = { ...expected, coverage: plan(c, "pull_request", options).coverage };
   const full = { ...expected, coverage: plan(c, "push", options).coverage };
   files["receipt.json"] = JSON.stringify(pr);
@@ -138,7 +138,7 @@ test("release qualification needs a full native receipt from the exact main push
 test("web receipt reuse covers both browser jobs but keeps main's mandatory lanes", () => {
   const paths = ["crates/phux-server/src/lib.rs"];
   const c = new Classifier().classify(paths);
-  const options = { queueVerified: true, scope: { kind: "diff" as const, paths } };
+  const options = { pullRequestFast: true, scope: { kind: "diff" as const, paths } };
   const pr = plan(c, "pull_request", options);
   const main = plan(c, "push", options);
   const receipt = { ...expected, coverage: main.coverage };

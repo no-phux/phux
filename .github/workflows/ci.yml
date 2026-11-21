@@ -52,7 +52,6 @@ jobs:
       native: ${{ steps.plan.outputs.native }}
       rune: ${{ steps.plan.outputs.rune }}
       rune_qualify: ${{ steps.plan.outputs.rune_qualify }}
-      queue_verified: ${{ steps.plan.outputs.queue_verified }}
       docs_only: ${{ steps.plan.outputs.docs_only }}
       docs_catalog: ${{ steps.plan.outputs.docs_catalog }}
       web_engine: ${{ steps.plan.outputs.web_engine }}
@@ -406,13 +405,12 @@ jobs:
       ios: false
       qualify: ${{ needs.plan.outputs.rune_qualify == 'true' }}
 
-  # Required Apple proof: the queue, or Rune PRs on an unverified queue.
+  # Required Apple proof on a merge group only. Pull requests never wait on
+  # the macOS pool; main pushes qualify Apple in rune-macos.yml.
   queue-apple:
     name: queue-apple
     needs: plan
-    if: >-
-      github.event_name == 'merge_group' ||
-      (github.event_name == 'pull_request' && needs.plan.outputs.queue_verified != 'true' && needs.plan.outputs.rune == 'true')
+    if: github.event_name == 'merge_group'
     uses: ./.github/workflows/rune-macos.yml
     with:
       qualify: true

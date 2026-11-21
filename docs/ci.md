@@ -16,18 +16,12 @@ on website main can alter phux CI results. Docs read by tests, including
 `docs/agents.md` and generated references, select their Rust consumers.
 A library change runs the tests of its dependents.
 
-PR fast paths require the live base repository/branch rules endpoint
-(`repos/{repo}/rules/branches/{branch}`) to affirm `merge_queue`.
-The plan reads it once with the read-only GitHub token; variables, queue
-entry and head branch names cannot attest enforcement. Missing/unknown
-policy, malformed responses and API/permission errors select full qualification.
-Queue rules must include all documented parameters, valid grouping/merge
-enums, integer bounds and an ordered minimum/maximum merge group size.
-No repository setting is changed.
-
-Only queue-verified PRs path-scope native setup and rust icount (or use
-`perf-baseline` for icount), and skip compile lanes for release metadata.
-Main, queue and fallback PRs always run native setup and rust icount,
+Pull requests take the fast path: they never wait on the macOS pool.
+A PR gates on its path-scoped Linux lanes, path-scopes native setup and
+rust icount (or uses `perf-baseline` for icount), and skips compile lanes
+for release metadata. Apple, Linux packaging and the mandatory lanes
+qualify on the main push. A red main blocks a release, not a merge.
+Main and the queue always run native setup and rust icount,
 including after receipt reuse. Unknown or unreadable scope fails closed. The classifier
 compares both full documents: root workspace and lock versions, release
 manifest versions, skill version lines, changelogs, and top-level `version`
@@ -42,8 +36,7 @@ that receipt (`tools/src/routing/receipt.ts`).
 
 ## After the merge
 
-The live `main` ruleset currently has no merge queue, so required `ci`
-uses full PR qualification as described above. A pull request merges once
+The live `main` ruleset has no merge queue. A pull request merges once
 its required `ci` and `commitlint` checks pass on its own diff; the ruleset
 does not make it re-run against a newer `main`. Main's push validates the
 resulting tree too. Stable drafts still ship only from a green exact-SHA main
@@ -58,10 +51,10 @@ failures comment on it. It closes once every tracked workflow's latest
 
 ## Native Apple qualification
 
-`ci.yml`'s `rune` lane is Linux. A queue-verified pull request runs `check.sh` and cargo-deny
+`ci.yml`'s `rune` lane is Linux. A pull request runs `check.sh` and cargo-deny
 on `linux-x86_64` only: no package, no packaged launch, and no
 `linux-aarch64`. Its receipt omits `linux-aarch64` and `packaging`, so a
-main push cannot reuse it for those. Fallback PRs, the merge queue, a main push, and a
+main push cannot reuse it for those. The merge queue, a main push, and a
 manual `ci` dispatch package and launch both Linux hosts. Nightly
 `cache-warm.yml` does the same with the default inputs. `rune-client.yml`
 does too. Its preflight is `ci-green`, described below. A standalone pull request
@@ -74,18 +67,18 @@ Recognized release metadata also selects both Apple legs, even when CI's
 product lanes are unselected. This qualifies the metadata release's own tree,
 including native code behind any intervening documentation-only commits.
 
-On `merge_group` and Rune-affecting fallback PRs (including release metadata),
+On `merge_group`,
 **the already-required `ci` aggregate calls and requires the Apple workflow**.
-It rejects a skipped, failed, or cancelled child. The standalone PR
-`rune-macos` check remains cheap, but cannot satisfy that required dependency.
-Fallback PRs keep read-only permissions and receive no signing/release secrets;
+It rejects a skipped, failed, or cancelled child. Pull requests never call it;
+the standalone PR `rune-macos` check stays cheap and covers no Apple work.
+The required child keeps read-only permissions and receives no signing/release secrets;
 tag-only signing and notarization remain tag-only. Simulator transport proof
 uses its isolated same-source server and generated fixture credentials.
 No additional required check, queue drain, or ruleset cutover is needed.
 Old queue entries retain their original full native `ci`. The child is
 not also triggered independently on the queue, so qualification is not doubled.
 
-A main push can reuse the exact native receipt from its successful queue or fallback PR
+A main push can reuse the exact native receipt from its successful queue
 `ci` caller: same immutable tree, source repository, referenced native child
 revision, workflow and both-leg
 coverage. Cheap PR and Linux-only receipts cannot attest Apple work.
@@ -147,7 +140,7 @@ cannot cancel a branch. The separator is a colon, forbidden in both names,
 so different repository/branch splits cannot collide.
 Merge groups retain their own queue-ref group. The Apple child's group
 prefix differs from its calling `ci`, preventing self-cancellation.
-Required fallback PR children also use a separate prefix from the standalone
+The required queue child also uses a separate prefix from the standalone
 cheap PR workflow, so that check cannot cancel the actual native proof.
 The `required:` and `standalone:` modes use a colon, forbidden in repository
 and branch names, so a fork name cannot masquerade as the required mode.
