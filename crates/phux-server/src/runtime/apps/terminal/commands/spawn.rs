@@ -1,10 +1,16 @@
 //! Pane spawning: attribution, actor launch, and pane wiring.
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the split command modules share the parent command namespace"
-)]
 
-use super::*;
+use phux_protocol::wire::frame::AgentEvent;
+use tokio_util::sync::CancellationToken;
+
+use crate::runtime::apps::terminal::agent_state::spawn_agent_state_drain;
+use crate::runtime::apps::terminal::commands::seed::{
+    AGENT_STATE_SINK_CAPACITY, EVENT_SINK_CAPACITY, spawn_cwd_of, stamp_spawn_cwd,
+};
+use crate::runtime::commands::SpawnAttribution;
+use crate::runtime::connections::PaneEvents;
+use crate::runtime::spawn_resource_exit_watcher;
+use crate::state::SharedState;
 
 /// The per-pane answer to "does this Terminal own a live `AgentSession`
 /// child?" (ADR-0103 §5), read once per detector tick.
