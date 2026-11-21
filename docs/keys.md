@@ -224,7 +224,7 @@ shipped `command-palette` keys (<kbd>C-a</kbd> then <kbd>Space</kbd>,
 <kbd>:</kbd> or <kbd>?</kbd>) stay as the way out, since the palette runs
 every action, until you bind `command-palette` yourself. The prefix stays
 <kbd>C-a</kbd> unless you set it. Rune has its own switch,
-[`[rune] key-defaults`](config.md#rune).
+[`[rune] key-defaults`](#rune-shortcuts).
 
 ## Key modes
 
@@ -381,6 +381,46 @@ previous tab (<kbd>n</kbd> <kbd>p</kbd>), copy mode (<kbd>[</kbd>), and
 detach (<kbd>d</kbd>) already match tmux. One difference to know:
 phux's <kbd>x</kbd> closes the pane without asking. The getting started
 guide lists [what else differs from tmux](./getting-started.md#coming-from-tmux).
+
+## Rune shortcuts
+
+`[rune.keys]` binds Rune's own shortcuts. The key is a chord and the value
+is a command, or `"none"` to take a built-in chord away:
+
+```toml
+[rune.keys]
+"cmd+shift+d" = "split-right"
+"ctrl+alt+left" = "previous-tab"
+"cmd+d" = "none"
+```
+
+Modifiers are `cmd`, `ctrl`, `alt` and `shift`; `cmd` is the Super key off
+macOS. A built-in chord works until you bind it elsewhere or to `"none"`. `key-defaults = false` in `[rune]` keeps
+only yours, plus the palette and Settings chords until you bind those. Menus and the shortcut list still show the
+built-in chords. The TUI's `[keybindings]` are separate: Rune's commands
+are the app's own.
+
+The command names:
+
+- Tabs and panes: `new-terminal` (a new tab), `close-terminal`, `close-tab`,
+  `next-tab`, `previous-tab`, `tab-1` to `tab-9`, `rename-tab`, `lock-tab`,
+  `split-right`, `split-down`, `zoom-pane`, `focus-left`, `focus-right`,
+  `focus-up`, `focus-down`, `next-terminal`, `previous-terminal`,
+  `last-pane`, `last-tab`.
+- Sessions and machines: `new-session`, `switch-session`, `rename-session`,
+  `close-session`, `restore-sessions`, `machines`, `retry-connection`,
+  `jump-to-attention`, `inbox`.
+- Text: `copy`, `paste`, `select-all`, `copy-mode`, `find`, `find-next`,
+  `find-previous`, `find-selection`, `insert-path`, `screenshot`,
+  `clear-selection` (in copy mode), `scroll-to-top`, `scroll-to-bottom`,
+  `scroll-page-up`, `scroll-page-down`, `scroll-half-page-up`,
+  `scroll-half-page-down`, `prompt-up`, `prompt-down`, `zoom-in`,
+  `zoom-out`, `zoom-reset`.
+- The app: `palette`, `settings`, `change-theme`, `toggle-sidebar`,
+  `toggle-full-screen`, `keyboard-shortcuts`, `essential-shortcuts`,
+  `get-started`, `bare`, `copy-config`, `copy-diagnostics`,
+  `check-for-updates`, `install-update`, `playground` (the palette over
+  the scenes), `galaxy`, `reef`, `pitch`, `kitchen`, `pit-lane`, `hive`.
 
 ## Inspecting bindings
 
