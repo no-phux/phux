@@ -39,7 +39,7 @@ mod session_frames;
 mod spawn_rules;
 
 use caps::{decode_client_capabilities, decode_server_capabilities, negotiated_bootstrap_limits};
-pub use correlation::{frame_request_id, newer_server_fallback};
+pub use correlation::{frame_request_id, inflated_frame, newer_server_fallback};
 use resource_frames::decode_flag;
 
 /// `SPAWN_RESOURCE`'s per-kind field rules under `catalog`, for the

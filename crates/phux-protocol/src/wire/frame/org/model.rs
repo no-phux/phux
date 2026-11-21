@@ -15,6 +15,9 @@ pub enum Outcome {
     Signaled(i32),
     /// The server did not observe the end (it ended while no server ran).
     Unobserved,
+    /// An outcome tag this build does not define, from a newer server; the
+    /// bytes after it are skipped.
+    Unknown(u8),
 }
 
 pub(super) const OUTCOME_EXITED: u8 = 0;

@@ -364,6 +364,8 @@ fn activation_condition(state: ExecState, outcome: Option<Outcome>) -> (Conditio
         ExecState::Failed => (Condition::Failed, "failed to start".to_owned()),
         ExecState::Lost => (Condition::Lost, "lost".to_owned()),
         ExecState::Abandoned => (Condition::Done, "abandoned".to_owned()),
+        // A newer server's state: nothing to act on that this build can name.
+        ExecState::Unknown(_) => (Condition::Running, exec_word(state).to_owned()),
         ExecState::Completed => match outcome {
             Some(Outcome::Exited(status)) if status != 0 => {
                 (Condition::Failed, format!("failed (exit {status})"))
@@ -378,7 +380,10 @@ fn activation_condition(state: ExecState, outcome: Option<Outcome>) -> (Conditio
 
 /// The stable word for an activation's execution state.
 const fn exec_word(state: ExecState) -> &'static str {
-    core_exec_state(state).as_str()
+    match core_exec_state(state) {
+        Some(state) => state.as_str(),
+        None => "unknown",
+    }
 }
 
 fn outcome_words(outcome: Outcome) -> String {
