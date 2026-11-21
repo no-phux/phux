@@ -9,6 +9,7 @@ use rune::{Cx, El, col, el, row};
 use crate::desk::Desk;
 use crate::desk::surfaces::Surface;
 use crate::features::changes;
+use phux_config_core::rune::TabBar;
 
 mod badge;
 mod controls;
@@ -170,10 +171,7 @@ fn window(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                 // the drawer, the gutters and the panes as one, so the
                 // pane's far edge never runs past the window or short of it.
                 .token_motion(t.motion.drawer.enter)
-                .children(
-                    (!desk.settings.hover_toolbar)
-                        .then(|| status::title_bar(desk, p, lights, insets.trailing)),
-                )
+                .children(status::top(desk, p, lights, insets.trailing))
                 .child(
                     col()
                         .grow(1.0)
@@ -200,6 +198,7 @@ fn window(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                                 .children(overlay::toast(desk, p)),
                         ),
                 )
+                .children(status::tab_row(desk, p, TabBar::Bottom))
                 .children(status::hover_toolbar(desk, p, lights, insets.trailing)),
         );
     // No root paste hook: it would read the clipboard before anything here

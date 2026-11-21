@@ -284,7 +284,14 @@ copy-on-select = true
 wheel-arrows = true     # false: the wheel never sends arrows to full-screen programs
 confirm-close = false
 recent-first = true     # list the session you used last first
+tab-bar = "top"         # or "bottom" (under the panes), "hidden"
+title-bar = "shown"     # or "hover" (at the window's top edge), "hidden"
+new-window-screen = "current"  # or "mouse" (under the pointer), "main"
 ```
+
+A hidden title bar leaves a strip that moves the window. The window
+reopens where it closed (on Wayland, at its size). A `font-family` list
+such as `["Berkeley Mono", "Symbols Nerd Font"]` falls back in order.
 
 **Copy Settings as TOML** in Rune's command palette puts your current
 choices on the clipboard as this table. Rune reads the file at launch.
