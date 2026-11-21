@@ -78,7 +78,7 @@ pub enum ReportedAgentState {
 
 /// [`Command::GetScreen::format`]'s low 7 bits: which rendering to
 /// produce (D9). `0` none, `1` HTML, `2` VT; `3..=127` are undefined and
-/// refused with `INVALID_COMMAND`.
+/// the decoder refuses them as `UNSUPPORTED`.
 pub const GET_SCREEN_FORMAT_SELECTOR_MASK: u8 = 0x7F;
 
 /// [`Command::GetScreen::format`]'s high bit: join soft-wrapped rows.
@@ -88,12 +88,13 @@ pub const GET_SCREEN_FORMAT_UNWRAP: u8 = 0x80;
 open_wire_enum! { u8; to_u8 / from_u8;
 /// The transport a [`Command::OpenListener`] asks for (`u8` on the wire).
 ///
-/// Only [`Self::Quic`] is defined. A decoder keeps any other value, so a
-/// server can refuse it by name instead of the whole frame failing to decode.
+/// Only [`Self::Quic`] is defined. The command decoder refuses any other
+/// value with a correlated `UNSUPPORTED`; a server that holds one built in
+/// process refuses it by name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ListenerTransport {
-    /// A value this build does not define. A server refuses it with
-    /// `INVALID_COMMAND`.
+    /// A value this build does not define. The decoder refuses it as
+    /// `UNSUPPORTED`.
     Unknown(u8),
     /// QUIC over TLS 1.3, admitting a listener-scoped bearer token.
     Quic = 0,
@@ -103,12 +104,12 @@ pub enum ListenerTransport {
 open_wire_enum! { u8; to_u8 / from_u8;
 /// The operation a [`Command::PerfControl`] asks for (`u8` on the wire).
 ///
-/// A decoder keeps any undefined value, so a server can refuse it by name
-/// instead of the whole frame failing to decode.
+/// The command decoder refuses an undefined op with a correlated
+/// `UNSUPPORTED`; a server that holds one built in process refuses it too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PerfOp {
-    /// A value this build does not define. A server refuses it with
-    /// `INVALID_COMMAND`.
+    /// A value this build does not define. The decoder refuses it as
+    /// `UNSUPPORTED`.
     Unknown(u8),
     /// Start recording a span trace.
     TraceStart = 0,

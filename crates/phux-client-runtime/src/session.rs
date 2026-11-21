@@ -114,13 +114,25 @@ impl Session {
         client_name: String,
         client_caps: ClientCapabilities,
     ) -> Result<Self, SessionError> {
+        let mut session = Self::dial(dial).await?;
+        session.negotiate(client_name, client_caps).await?;
+        Ok(session)
+    }
+
+    /// The transport half of [`Self::connect`]: dial `dial` within
+    /// [`DIAL_TIMEOUT`], unnegotiated, so a caller can bound [`Self::negotiate`]
+    /// on its own without changing how a dial failure is classified.
+    ///
+    /// # Errors
+    ///
+    /// Transport failures, or a dial that outlasts its bound
+    /// ([`SessionError::Unreachable`]).
+    pub async fn dial(dial: &Dial) -> Result<Self, SessionError> {
         refuse_production_socket(dial)?;
         let link = tokio::time::timeout(DIAL_TIMEOUT, establish(dial))
             .await
             .map_err(|_| dial_timed_out())??;
-        let mut session = Self::over(link);
-        session.negotiate(client_name, client_caps).await?;
-        Ok(session)
+        Ok(Self::over(link))
     }
 
     /// Plan `target` under the registry's trust rules

@@ -141,6 +141,8 @@ every_shortcut!(
     DisplayPanes,
     FocusSidebar,
     SyncPanes,
+    LastPane,
+    LastTab,
 );
 
 /// An essential with no chord here would teach a key that does nothing.
