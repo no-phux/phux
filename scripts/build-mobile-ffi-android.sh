@@ -116,6 +116,7 @@ done
 
 step "writing the design exports"
 bun tools/main.ts design-gen --check --mobile-out "$OUT/design"
+[[ -s "$OUT/design/manifest.json" ]] || die "design-gen wrote no design/manifest.json"
 
 step "writing provenance"
 phux_rev="$(git rev-parse HEAD)"

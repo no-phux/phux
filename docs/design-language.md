@@ -55,9 +55,11 @@ strings, contrast within 1e-12. Luminance goes through the shipped table,
 never `pow`, and arithmetic is IEEE-754 binary64 with no fused multiply-add.
 The generator's tests run the full vector set and the floor checks.
 `crates/phux-design/tests/vectors.rs` checks the Rust port against the
-generated subset (`tokens/derive-vectors.subset.json`), so a drift fails
-here too. Mobile calls the Rust solver through `phux-client-ffi` rather than
-porting it.
+generated subset (`tokens/derive-vectors.subset.json`): a few cases role by
+role, and every case's roles and verify list (`phux_design::verify`, the
+floor checks without OKLab's V10) against the generator's digests, so a
+drift fails here too. Mobile calls the Rust solver and checks through
+`phux-client-ffi` rather than porting them.
 
 ## Roles
 

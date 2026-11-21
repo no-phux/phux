@@ -186,6 +186,7 @@ jobs:
           set -euo pipefail
           stem="PhuxMobileFFI-${RELEASE_TAG:-$(git rev-parse --short HEAD)}.android"
           cd "$ARTIFACTS"
+          test -f design/manifest.json
           zip -qry "${stem}.zip" kotlin jniLibs design provenance
           shasum -a 256 "${stem}.zip" > "${stem}.zip.sha256"
           cp provenance "${stem}.provenance"

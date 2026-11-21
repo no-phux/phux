@@ -3218,6 +3218,7 @@ name = "phux-design"
 version = "0.161.1"
 dependencies = [
  "serde_json",
+ "sha2 0.11.1",
 ]
 
 [[package]]

@@ -291,8 +291,8 @@ pub(crate) fn ease_host(rgb: u32, roles: &Roles) -> Color {
     let c = Rgb8::hex(rgb);
     let grounds = [roles.layer.ground, roles.layer.sidebar, roles.layer.raised].map(Rgba8::rgb);
     let extreme = roles.mode.extreme();
-    let max = f64::from(tok::IDENTITY.host_ease_max);
-    let bar = f64::from(tok::IDENTITY.host_bar);
+    let max = tok::IDENTITY.host_ease_max;
+    let bar = tok::IDENTITY.host_bar;
     let step = |s: u8| phux_design::solve::mix(c, extreme, max * f64::from(s) / 50.0);
     (0..=50)
         .map(step)

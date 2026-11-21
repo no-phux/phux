@@ -117,8 +117,8 @@ impl Roles {
     pub fn ease_host(&self, c: Rgb8) -> Rgb8 {
         let p = Params::house();
         let layers = [self.layer.ground, self.layer.sidebar, self.layer.raised].map(Rgba8::rgb);
-        let bar = f64::from(tokens::IDENTITY.host_bar);
-        let max = f64::from(tokens::IDENTITY.host_ease_max);
+        let bar = tokens::IDENTITY.host_bar;
+        let max = tokens::IDENTITY.host_ease_max;
         let extreme = self.mode.extreme();
         let clears = |x: Rgb8| worst(x, &layers, p.srgb_lut) >= bar;
         if clears(c) {

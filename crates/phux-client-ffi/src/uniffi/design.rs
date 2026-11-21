@@ -12,7 +12,9 @@ use phux_design::tokens::{
     FlatScrim, FlatStatus, LayerRoles, MatchRoles, Rgba, SelectionRoles, StatusRoles, TextRoles,
     WashRoles,
 };
-use phux_design::{Agent, Link, Mode, Params, Rgb8, Roles, State, Theme, ToneInput};
+use phux_design::{
+    Agent, Check, Link, Mode, Params, Rgb8, Roles, Severity, State, Theme, ToneInput, Violation,
+};
 
 #[uniffi::remote(Record)]
 pub struct Rgba {
@@ -282,6 +284,51 @@ pub enum DesignState {
     Ended,
 }
 
+/// What [`design_verify`] checks a role set as.
+#[derive(uniffi::Record, Clone, Debug, Default, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools, reason = "independent check switches")]
+pub struct DesignCheck {
+    /// The house look or a variant: V3, V6, V8, V11 and V17 are errors, not
+    /// the warnings a derived theme gets.
+    pub house: bool,
+    /// Hold to the increased-contrast bars.
+    pub contrast_more: bool,
+    /// Also run the house look's glass, pulse and shadow checks (V14-V16).
+    pub house_extras: bool,
+    /// The terminal cursor and background, for V17; both or neither.
+    pub cursor: Option<u32>,
+    pub background: Option<u32>,
+    /// Check ids reported as warnings regardless (e.g. `V3`).
+    pub warn: Vec<String>,
+}
+
+/// How a failed check counts.
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DesignSeverity {
+    Error,
+    Warning,
+}
+
+/// One failed floor check: the role, the surface it read worst on, the bar.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct DesignViolation {
+    /// `V1` … `V17`.
+    pub id: String,
+    pub severity: DesignSeverity,
+    pub role: String,
+    pub surface: String,
+    pub value: f64,
+    pub bar: f64,
+}
+
+/// A named surface a role is checked on (`ground`, `raised+selected`).
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct DesignSurface {
+    pub name: String,
+    /// `0xRRGGBB`.
+    pub color: u32,
+}
+
 #[derive(uniffi::Error, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum DesignError {
     #[error("a theme has 16 ansi colours, got {0}")]
@@ -506,6 +553,72 @@ pub fn design_plural(key: String, count: u64) -> Option<String> {
 #[uniffi::export]
 pub fn design_plural_message(message: String, count: u64) -> Option<String> {
     phux_design::plural_message(&message, count)
+}
+
+impl From<Violation> for DesignViolation {
+    fn from(v: Violation) -> Self {
+        Self {
+            id: v.id.to_owned(),
+            severity: match v.severity {
+                Severity::Error => DesignSeverity::Error,
+                Severity::Warning => DesignSeverity::Warning,
+            },
+            role: v.role,
+            surface: v.surface,
+            value: v.value,
+            bar: v.bar,
+        }
+    }
+}
+
+fn surfaces(named: Vec<(String, Rgb8)>) -> Vec<DesignSurface> {
+    named
+        .into_iter()
+        .map(|(name, c)| DesignSurface {
+            name,
+            color: c.to_u32(),
+        })
+        .collect()
+}
+
+/// The floor checks (spec §2.5) over `roles`, as the generator runs them;
+/// V10 (`OKLab`) is the generator's alone.
+#[uniffi::export]
+pub fn design_verify(
+    roles: DesignRoles,
+    check: DesignCheck,
+) -> Result<Vec<DesignViolation>, DesignError> {
+    let roles = Roles::try_from(roles)?;
+    let warn: Vec<&str> = check.warn.iter().map(String::as_str).collect();
+    let cursor = check
+        .cursor
+        .zip(check.background)
+        .map(|(c, bg)| (rgb(c), rgb(bg)));
+    let check = Check {
+        house: check.house,
+        contrast_more: check.contrast_more,
+        house_extras: check.house_extras,
+        cursor,
+        warn: &warn,
+    };
+    let found = phux_design::verify(&roles, &Params::house(), &check);
+    Ok(found.into_iter().map(DesignViolation::from).collect())
+}
+
+/// T: the four layers, named, back to front.
+#[uniffi::export]
+pub fn design_tier_surfaces(roles: DesignRoles) -> Result<Vec<DesignSurface>, DesignError> {
+    Ok(surfaces(phux_design::tier_surfaces(&Roles::try_from(
+        roles,
+    )?)))
+}
+
+/// F⁺: the layers, then every wash over every layer, wash-major.
+#[uniffi::export]
+pub fn design_floor_surfaces(roles: DesignRoles) -> Result<Vec<DesignSurface>, DesignError> {
+    Ok(surfaces(phux_design::floor_surfaces(&Roles::try_from(
+        roles,
+    )?)))
 }
 
 /// The catalog themes `client` ships (`mobile`, `rune`, `tui`), in order.

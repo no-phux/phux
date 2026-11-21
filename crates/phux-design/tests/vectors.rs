@@ -16,10 +16,13 @@
 
 use phux_design::solve::{contrast, fade, mix, on_fill, over, reach};
 use phux_design::{
-    Agent, Link, Mode, Params, Rgb8, Rgba8, Roles, Theme, ToneInput, contrast_more, derive, plural,
-    tone_of,
+    Agent, Check, Link, Mode, Params, Rgb8, Rgba8, Roles, Severity, Theme, ToneInput, catalog,
+    contrast_more, derive, plural, tone_of, verify,
 };
+use std::fmt::Write as _;
+
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 const VECTORS: &str = include_str!("../tokens/derive-vectors.subset.json");
 
@@ -189,6 +192,12 @@ fn as_json(r: &Roles) -> Value {
         ("accent_text", a.accent_text),
     ] {
         put(&format!("accent.{k}"), v);
+    }
+    // The metal look's own; a set without it carries the accent, and the
+    // generator writes neither.
+    if (a.hi, a.lo) != (a.accent, a.accent) {
+        put("accent.hi", a.hi);
+        put("accent.lo", a.lo);
     }
     for tone in phux_design::Tone::ALL {
         let ink = r.tone(tone);
@@ -367,5 +376,110 @@ fn tone_of_and_plurals_match() {
             case["count"].as_u64().unwrap(),
         );
         assert_eq!(got.as_deref(), case["expect"].as_str(), "{case}");
+    }
+}
+
+/// `path=value` for every leaf, as the generator's `caseDigests` prints them.
+fn leaves(v: &Value, path: &str, out: &mut Vec<String>) {
+    let at = |k: &str| {
+        if path.is_empty() {
+            k.to_owned()
+        } else {
+            format!("{path}.{k}")
+        }
+    };
+    match v {
+        Value::Object(m) => m.iter().for_each(|(k, x)| leaves(x, &at(k), out)),
+        Value::Array(xs) => xs
+            .iter()
+            .enumerate()
+            .for_each(|(i, x)| leaves(x, &at(&i.to_string()), out)),
+        Value::String(s) => out.push(format!("{path}={s}")),
+        other => out.push(format!("{path}={other}")),
+    }
+}
+
+fn sha256(text: &str) -> String {
+    Sha256::digest(text.as_bytes())
+        .iter()
+        .fold(String::new(), |mut hex, b| {
+            write!(hex, "{b:02x}").unwrap();
+            hex
+        })
+}
+
+/// Every case the generator derives (the catalog, then the edges), not only
+/// the committed few: roles and verify lists, against its digests.
+#[test]
+fn every_case_derives_and_verifies_to_the_generators_digests() {
+    let v = vectors();
+    let p = Params::house();
+    let mut cases: Vec<(String, Theme)> = catalog()
+        .themes
+        .iter()
+        .map(|t| (t.id.to_owned(), t.input()))
+        .collect();
+    for e in v["edges"].as_array().unwrap() {
+        cases.push((e["id"].as_str().unwrap().to_owned(), input(e)));
+    }
+    let digests = &v["digests"];
+    assert_eq!(digests["cases"], cases.len());
+    let (mut roles, mut checks) = (String::new(), String::new());
+    for (id, theme) in &cases {
+        let r = derive(theme, &p);
+        let mut lines = Vec::new();
+        leaves(&as_json(&r), "", &mut lines);
+        lines.sort();
+        writeln!(roles, "{id}\n{}", lines.join("\n")).unwrap();
+        writeln!(checks, "{id}").unwrap();
+        let check = Check {
+            cursor: theme.cursor.map(|c| (c, theme.bg)),
+            ..Check::default()
+        };
+        for x in verify(&r, &p, &check) {
+            let severity = if x.severity == Severity::Error {
+                "error"
+            } else {
+                "warning"
+            };
+            writeln!(
+                checks,
+                "{} {severity} {} {} {:.6} {}",
+                x.id, x.role, x.surface, x.value, x.bar
+            )
+            .unwrap();
+        }
+    }
+    assert_eq!(sha256(&roles), digests["roles"], "derived roles drifted");
+    assert_eq!(
+        sha256(&checks),
+        digests["verify"],
+        "verify drifted:\n{checks}"
+    );
+}
+
+#[test]
+fn the_house_look_and_its_variant_pass_verify() {
+    use phux_design::tokens::TERMINAL;
+    let p = Params::house();
+    for (mode, t) in [(Mode::Dark, TERMINAL.dark), (Mode::Light, TERMINAL.light)] {
+        let house = Check {
+            house: true,
+            house_extras: true,
+            cursor: Some((t.cursor.rgb(), t.bg.rgb())),
+            ..Check::default()
+        };
+        assert_eq!(verify(&Roles::house(mode), &p, &house), vec![], "{mode:?}");
+        let more = Check {
+            house: true,
+            contrast_more: true,
+            warn: &["V3"],
+            ..Check::default()
+        };
+        let errors: Vec<_> = verify(&Roles::house_contrast_more(mode), &p, &more)
+            .into_iter()
+            .filter(|x| x.severity == Severity::Error)
+            .collect();
+        assert_eq!(errors, vec![], "contrast_more {mode:?}");
     }
 }

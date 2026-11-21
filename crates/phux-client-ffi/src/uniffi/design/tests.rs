@@ -46,13 +46,8 @@ fn the_house_look_and_its_variant_come_through_for_both_modes() {
             design_house(ffi, true),
             Roles::house_contrast_more(mode).into()
         );
-        // The solve reproduces the exported variant, but for the metal
-        // accent's hi and lo, which only the house look authors.
-        let mut solved =
-            design_contrast_more(design_house(ffi, false), terminal_ansi(mode)).unwrap();
-        let variant = design_house(ffi, true);
-        (solved.accent.hi, solved.accent.lo) = (variant.accent.hi, variant.accent.lo);
-        assert_eq!(solved, variant);
+        let solved = design_contrast_more(design_house(ffi, false), terminal_ansi(mode)).unwrap();
+        assert_eq!(solved, design_house(ffi, true));
         assert_eq!(design_house(ffi, false).mode, ffi);
     }
 }
@@ -93,7 +88,7 @@ fn a_host_colour_eases_just_far_enough_at_most_halfway() {
     let layers =
         [roles.layer.ground, roles.layer.sidebar, roles.layer.raised].map(phux_design::Rgba8::rgb);
     let lut = Params::house().srgb_lut;
-    let bar = f64::from(IDENTITY.host_bar);
+    let bar = IDENTITY.host_bar;
     let reads = |c: u32| phux_design::solve::worst(Rgb8::hex(c), &layers, lut) >= bar;
     // Already readable: unchanged.
     assert!(reads(0xE8_E5DF));
@@ -115,7 +110,7 @@ fn a_host_colour_eases_just_far_enough_at_most_halfway() {
         dark: Some(false),
     };
     let flat = design_derive(grey).unwrap();
-    let max = f64::from(IDENTITY.host_ease_max);
+    let max = IDENTITY.host_ease_max;
     assert_eq!(
         design_ease_host(0x77_7777, flat).unwrap(),
         design_mix(0x77_7777, 0x00_0000, max)
@@ -174,4 +169,56 @@ fn tone_of_and_plurals_speak_the_vocabulary() {
         design_plural_message(message, 21).as_deref(),
         Some("21 done")
     );
+}
+
+#[test]
+fn verify_and_the_surfaces_match_the_solver() {
+    use phux_design::tokens::TERMINAL;
+    for (ffi, t) in [
+        (DesignMode::Dark, TERMINAL.dark),
+        (DesignMode::Light, TERMINAL.light),
+    ] {
+        let house = DesignCheck {
+            house: true,
+            house_extras: true,
+            cursor: Some(t.cursor.rgb().to_u32()),
+            background: Some(t.bg.rgb().to_u32()),
+            ..DesignCheck::default()
+        };
+        assert_eq!(
+            design_verify(design_house(ffi, false), house).unwrap(),
+            vec![]
+        );
+        let more = DesignCheck {
+            house: true,
+            contrast_more: true,
+            warn: vec!["V3".to_owned()],
+            ..DesignCheck::default()
+        };
+        let found = design_verify(design_house(ffi, true), more).unwrap();
+        assert!(
+            found.iter().all(|v| v.severity == DesignSeverity::Warning),
+            "{found:?}"
+        );
+    }
+    // A broken look is reported, with the generator's ids and surfaces.
+    let mut broken = design_house(DesignMode::Dark, false);
+    broken.text.faint = broken.layer.overlay;
+    broken.wash.press = broken.wash.hover;
+    let found = design_verify(broken.clone(), DesignCheck::default()).unwrap();
+    let ids: Vec<_> = found
+        .iter()
+        .map(|v| format!("{} {}", v.id, v.role))
+        .collect();
+    assert!(ids.contains(&"V2 text.faint".to_owned()), "{ids:?}");
+    assert!(ids.contains(&"V9 wash.press".to_owned()), "{ids:?}");
+    let tiers = design_tier_surfaces(broken.clone()).unwrap();
+    let floor = design_floor_surfaces(broken).unwrap();
+    assert_eq!(
+        tiers.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+        ["ground", "sidebar", "raised", "overlay"]
+    );
+    assert_eq!(floor.len(), 4 + 4 * 4);
+    assert_eq!(floor[..4], tiers[..]);
+    assert_eq!(floor[19].name, "overlay+selected");
 }

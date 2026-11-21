@@ -200,6 +200,7 @@ jobs:
           set -euo pipefail
           stem="PhuxMobileFFI-${RELEASE_TAG:-$(git rev-parse --short HEAD)}"
           cd "$MOBILE_ARTIFACTS"
+          test -f design/manifest.json
           zip -qry "${stem}.xcframework.zip" PhuxFFI.xcframework Generated design provenance
           shasum -a 256 "${stem}.xcframework.zip" > "${stem}.xcframework.zip.sha256"
           cp provenance "${stem}.provenance"

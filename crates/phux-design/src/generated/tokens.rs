@@ -950,9 +950,9 @@ pub struct Identity {
     /// `provider`.
     pub provider: Providers,
     /// `host_bar`.
-    pub host_bar: f32,
+    pub host_bar: f64,
     /// `host_ease_max`.
-    pub host_ease_max: f32,
+    pub host_ease_max: f64,
     /// `glow_alpha`.
     pub glow_alpha: f32,
 }

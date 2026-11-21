@@ -18,3 +18,5 @@ workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+# The parity digests over every vector case.
+sha2 = "0.11"

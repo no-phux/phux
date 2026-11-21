@@ -7,6 +7,7 @@
 //! - [`derive()`]: one terminal theme to the full role set,
 //!   bit for bit with the generator's `tools/src/design/derive.ts`;
 //! - [`tone_of`], [`plural`] and [`word`]: the status vocabulary;
+//! - [`verify()`]: the floor checks, as the generator runs them;
 //! - [`catalog()`]: the unified theme catalog (`tokens/themes.json`).
 //!
 //! `tests/vectors.rs` spot-checks it against the generated subset of the
@@ -21,6 +22,7 @@ mod color;
 mod roles;
 pub mod solve;
 mod status;
+mod verify;
 
 /// The generated constants: the house look, its variants and every
 /// non-colour group (type, radius, space, motion, elevation, materials…).
@@ -32,6 +34,7 @@ pub use roles::{Layer, Roles, ToneInk};
 pub use solve::{Theme, contrast_more, derive};
 pub use status::{Agent, Link, State, Tone, ToneInput, plural, plural_message, tone_of, word};
 pub use tokens::Params;
+pub use verify::{Check, Severity, Violation, floor_surfaces, tier_surfaces, verify};
 
 impl Params {
     /// The solver parameters the generator fitted from the house look.

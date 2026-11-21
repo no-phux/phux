@@ -1,4 +1,5 @@
 /** The golden vectors (spec §2.7): the full set the tests check, and the subset phux commits. */
+import { createHash } from "node:crypto";
 import {
   SOLVER,
   contrast,
@@ -267,6 +268,30 @@ const SUBSET_CASES = [
  * The golden vectors phux commits: every primitive, tone_of and plural case, and the SUBSET_CASES
  * derivations without their verify lists. The full set is recomputed by tokens.test.ts, never committed.
  */
+/** `path=value` for every leaf of a role set, sorted: a layout-free form both ports can print. */
+function leaves(v: unknown, path = ""): string[] {
+  if (v === null || typeof v !== "object") return [`${path}=${String(v)}`];
+  return Object.entries(v).flatMap(([k, x]) => leaves(x, path ? `${path}.${k}` : k));
+}
+
+/**
+ * sha256 digests of every case's derived roles and verify list, so a port that checks only the
+ * committed cases still checks all of them. Verify values print at 6 decimals.
+ */
+export function caseDigests(v: any): { cases: number; roles: string; verify: string } {
+  const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+  const roles = v.cases
+    .map((c: any) => `${c.id}\n${leaves(c.expect).sort().join("\n")}\n`)
+    .join("");
+  const checks = v.cases
+    .map(
+      (c: any) =>
+        `${c.id}\n${c.verify.map((x: any) => `${x.id} ${x.severity} ${x.role} ${x.surface} ${x.value.toFixed(6)} ${x.bar}\n`).join("")}`,
+    )
+    .join("");
+  return { cases: v.cases.length, roles: sha(roles), verify: sha(checks) };
+}
+
 export function vectorSubset(v: any): string {
   const rows = (xs: unknown[], pad: string) =>
     `[\n${xs.map((x) => pad + JSON.stringify(x)).join(",\n")}\n${pad.slice(2)}]`;
@@ -285,7 +310,12 @@ export function vectorSubset(v: any): string {
     `  "primitives": {\n${primitives.join(",\n")}\n  },`,
     `  "tone_of": ${rows(v.tone_of, "    ")},`,
     `  "plural": ${rows(v.plural, "    ")},`,
-    `  "cases": ${rows(cases, "    ")}`,
+    `  "cases": ${rows(cases, "    ")},`,
+    `  "edges": ${rows(
+      EDGES.map(inputOf).map((input, i) => ({ id: EDGES[i]!.id, ...input })),
+      "    ",
+    )},`,
+    `  "digests": ${JSON.stringify(caseDigests(v))}`,
     "}",
     "",
   ].join("\n");

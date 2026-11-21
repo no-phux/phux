@@ -60,6 +60,9 @@ const field = (k: string) => (KEYWORDS.has(k) ? `r#${k}` : k);
 /** `0x141619FF` -> `0x1416_19FF` (clippy::unreadable_literal). */
 const grouped = (h: string) => `0x${h.slice(2).replace(/\B(?=(?:[0-9A-F]{4})+$)/g, "_")}`;
 
+/** Bars the solver compares in f64 (Swift's Double), so they are not widened from f32. */
+const F64_FIELDS = new Set(["Identity.host_bar", "Identity.host_ease_max"]);
+
 /** Whether a type holds a float anywhere, so it can't derive Eq. */
 function floaty(t: Ty, model: Model): boolean {
   if (t.kind === "scalar") return t.scalar === "float" || t.scalar === "double";
@@ -150,8 +153,10 @@ export function emitRust({ R, S, sha }: { R: Resolved; S: Sources; sha: string }
       `#[derive(Debug, Clone, Copy, PartialEq${eq})]`,
       `pub struct ${s.name} {`,
     );
-    for (const f of s.fields)
-      out.push(`    /// \`${f.key}\`.`, `    pub ${field(f.key)}: ${ty(f.ty)},`);
+    for (const f of s.fields) {
+      const type = F64_FIELDS.has(`${s.name}.${f.key}`) ? "f64" : ty(f.ty);
+      out.push(`    /// \`${f.key}\`.`, `    pub ${field(f.key)}: ${type},`);
+    }
     out.push("}", "");
   }
   for (const r of model.roots) {
