@@ -70,6 +70,8 @@ fn write_enter_alt_screen<W: Write>(out: &mut W, mouse: bool) -> io::Result<()> 
     out.write_all(b"\x1b[?25l")?;
     out.write_all(b"\x1b[?2004h")?;
     out.write_all(b"\x1b[?1004h")?;
+    // DEC 2031: the host reports a light/dark theme switch.
+    out.write_all(b"\x1b[?2031h")?;
     if mouse {
         out.write_all(b"\x1b[?1002h\x1b[?1006h")?;
         MOUSE_CAPTURE_ACTIVE.store(true, Ordering::SeqCst);
@@ -131,6 +133,7 @@ pub fn write_terminal_reset<W: Write>(out: &mut W) -> io::Result<()> {
     write_reset(out)?;
     out.write_all(b"\x1b[?2004l")?;
     out.write_all(b"\x1b[?1004l")?;
+    out.write_all(b"\x1b[?2031l")?;
     out.flush()?;
     if HOVER_TRACKING_ACTIVE.swap(false, Ordering::SeqCst) {
         out.write_all(b"\x1b[?1003l")?;

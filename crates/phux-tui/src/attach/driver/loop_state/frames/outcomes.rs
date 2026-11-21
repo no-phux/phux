@@ -320,6 +320,8 @@ impl super::super::SessionLoop {
         // The `phux config reload` doorbell rang.
         if outcome.config_reload {
             self.reload_config(out, sidebar);
+            // A theme switch rings it (the Omarchy hook): re-ask the colours.
+            let _ = Self::query_default_colors(out);
         }
         // Raised, not called: the fleet refresh repaints over a full frame, so
         // the accumulator collapses a burst into one.
