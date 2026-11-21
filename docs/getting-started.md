@@ -165,7 +165,7 @@ The mouse is on by default:
 - Drag a pane by its title (an untitled pane by the start of the line above it) onto another pane to make it a tab of that pane's slot.
 - Drag across text to copy it.
 - Right-click for a menu of actions for that pane, tab, or session.
-- Click a tab to switch to it; drag it to reorder.
+- Click a tab to switch to it, the tab you're on to go back to the last one; drag it to reorder.
 
 Programs that use the mouse themselves, such as `htop` or an editor, still get clicks over their own panes. To leave the mouse to your terminal's own selection instead, set `mouse = false` under `[defaults]` in your [config file](./config.md).
 

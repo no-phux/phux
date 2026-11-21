@@ -142,6 +142,10 @@ pub enum Shortcut {
     FocusSidebar,
     /// Typing goes to every terminal of the tab, until toggled off.
     SyncPanes,
+    /// Back to the terminal the keyboard left last.
+    LastPane,
+    /// Back to the tab the keyboard left last.
+    LastTab,
 }
 
 impl Shortcut {

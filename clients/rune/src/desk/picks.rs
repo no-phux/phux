@@ -1,6 +1,7 @@
 //! Keyboard picks: a pane by its number (`display-panes`), the sidebar's
-//! rows (`focus-sidebar`), and typing into every terminal of the tab
-//! (`sync-panes`).
+//! rows (`focus-sidebar`), typing into every terminal of the tab
+//! (`sync-panes`), and back to the last pane or tab (`last-pane`,
+//! `last-tab`, a click on the tab already shown).
 
 use phux_client_core::layout::leaves;
 use phux_protocol::ids::ResourceId;
@@ -43,6 +44,61 @@ impl Desk {
         }
         if let Some(shown) = &self.connection.shown {
             tx.focus_when_shown(format!("pane-{}", shown.resource), true);
+        }
+    }
+
+    /// Remember what the keyboard leaves for `new`: the terminal, and its
+    /// tab when `new` is in another (or a tab not listed yet).
+    pub(super) fn leaving(&mut self, old: &ResourceId, new: &ResourceId) {
+        if old == new {
+            return;
+        }
+        let tabs = &mut self.connection.tabs;
+        let tab_of = |id: &ResourceId| {
+            let tab = tabs.list.iter().find(|tab| tab.resources.contains(id));
+            tab.map(|tab| tab.id)
+        };
+        let (from, to) = (tab_of(old), tab_of(new));
+        if from.is_some() && from != to {
+            tabs.left_tab = from;
+        }
+        tabs.last_pane = Some(old.clone());
+    }
+
+    /// `last-pane`: back to the terminal the keyboard left last, in
+    /// whichever tab holds it.
+    pub(super) fn last_pane(&mut self) {
+        let Some(pane) = self.connection.tabs.last_pane.clone() else {
+            return;
+        };
+        let topology = self.connection.topology.as_ref();
+        let Some(session) = topology
+            .and_then(|t| t.pane(&pane))
+            .map(|p| p.session_name.clone())
+        else {
+            return;
+        };
+        self.show(pane, &session);
+    }
+
+    /// `last-tab`: back to the tab the keyboard left last, at its pane.
+    pub(super) fn last_tab(&mut self) {
+        let left = self.connection.tabs.left_tab;
+        let list = &self.connection.tabs.list;
+        if let Some(index) = list
+            .iter()
+            .position(|tab| Some(tab.id) == left && !tab.active)
+        {
+            self.select_tab(index);
+        }
+    }
+
+    /// A click on a tab: selects it, or back to the last tab when it is
+    /// the one shown, as tmux's `select-window -T` does.
+    pub fn click_tab(&mut self, index: usize) {
+        match self.connection.tabs.list.get(index) {
+            Some(tab) if tab.active => self.last_tab(),
+            _ => self.select_tab(index),
         }
     }
 
@@ -115,6 +171,29 @@ mod tests {
         desk.display_panes();
         assert!(desk.pane_number_key(&key(rune::Key::Escape)));
         assert!(desk.pane_numbers.is_empty());
+    }
+
+    #[test]
+    fn leaving_remembers_the_pane_and_the_tab_to_go_back_to() {
+        let mut desk = crate::test_support::window();
+        let id = ResourceId::local;
+        let tab = |n: u8, ids: &[u32], active| crate::desk::Tab {
+            id: [n; 16],
+            name: "t".into(),
+            resources: ids.iter().map(|&i| id(i)).collect(),
+            active,
+            locked: false,
+        };
+        desk.connection.tabs.list = vec![tab(1, &[1, 2], true), tab(2, &[3], false)];
+        desk.leaving(&id(1), &id(2));
+        assert_eq!(desk.connection.tabs.last_pane, Some(id(1)));
+        assert_eq!(desk.connection.tabs.left_tab, None, "same tab");
+        desk.leaving(&id(2), &id(3));
+        assert_eq!(desk.connection.tabs.last_pane, Some(id(2)));
+        assert_eq!(desk.connection.tabs.left_tab, Some([1; 16]));
+        // A new tab's terminal is in no listed tab yet.
+        desk.leaving(&id(3), &id(9));
+        assert_eq!(desk.connection.tabs.left_tab, Some([2; 16]));
     }
 
     #[test]

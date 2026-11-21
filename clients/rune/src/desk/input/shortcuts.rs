@@ -100,6 +100,8 @@ impl Desk {
             Shortcut::DisplayPanes => self.display_panes(),
             Shortcut::FocusSidebar => self.focus_sidebar(tx),
             Shortcut::SyncPanes => self.toggle_sync(),
+            Shortcut::LastPane => self.last_pane(),
+            Shortcut::LastTab => self.last_tab(),
         }
     }
 
