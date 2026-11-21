@@ -46,6 +46,9 @@ pub struct RuneCfg {
     /// Markdown renderer argv: UTF-8 Markdown on stdin, plain UTF-8 on stdout.
     /// `{width}` expands to columns. Unset uses bundled tmd; `[]` shows source.
     pub markdown_viewer: Option<Vec<String>>,
+    /// The phux session whose ACP agent a tap of the right Command key
+    /// prompts; `"chief"` when unset, `"none"` turns the tap off.
+    pub chief: Option<String>,
     /// `[rune.keys]`: a chord such as `"cmd+shift+d"` and the command it
     /// runs, or `"none"` to take a built-in chord away.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]

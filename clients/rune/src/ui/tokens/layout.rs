@@ -32,6 +32,8 @@ pub(crate) struct Overlay {
     /// The share of the window the popup takes, each way.
     pub(crate) popup_share: f32,
     pub(crate) news_w: f32,
+    /// The chief's composer field: room for a dictated paragraph.
+    pub(crate) chief_field_h: f32,
 }
 
 pub(crate) const OVERLAY: Overlay = Overlay {
@@ -50,6 +52,7 @@ pub(crate) const OVERLAY: Overlay = Overlay {
     toast_w: 420.0,
     popup_share: 0.8,
     news_w: 440.0,
+    chief_field_h: 96.0,
 };
 
 /// The tallest a sheet grows before its body scrolls.

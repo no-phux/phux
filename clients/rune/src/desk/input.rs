@@ -70,6 +70,10 @@ impl Desk {
 
     /// Every key nothing else took. True consumes it.
     pub fn key(&mut self, event: &rune::KeyEvent, tx: &mut Tx) -> bool {
+        // Opening takes the release, so the window builds the composer now.
+        if self.chief_tap(event, tx) {
+            return true;
+        }
         if let rune::Key::Modifier { .. } = event.key {
             self.modifiers_changed(event.mods.cmd);
             return false;
@@ -123,6 +127,7 @@ impl Desk {
             Modal::ContextMenu => self.close_menu(),
             Modal::Rename => self.cancel_rename(),
             Modal::News => self.close_news(),
+            Modal::Chief => self.close_chief(),
             _ => return false,
         }
         true
