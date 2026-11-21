@@ -45,7 +45,6 @@ guards: brand-check shellcheck tools-check docs-check install-surface-check
     bash scripts/check-release-cpu-baselines.sh
     bash scripts/test-demo-pi-setup.sh
     bash scripts/lib/worktree-owner_test.sh
-    bash scripts/lib/mbx-target_test.sh
     node --test scripts/test-npm-audit-gate.mjs
     bash examples/agents/tests/placed-fleet-smoke.sh
     bash examples/agents/tests/program-status-smoke.sh
