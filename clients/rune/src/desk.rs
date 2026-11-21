@@ -25,6 +25,7 @@ pub(crate) mod bare;
 mod changes;
 mod clipboard_read;
 mod clipboard_write;
+mod compat;
 pub mod connection;
 mod copy_mode;
 mod events;
