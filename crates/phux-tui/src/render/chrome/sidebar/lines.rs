@@ -52,21 +52,20 @@ impl SidebarPainter {
         ))
     }
 
-    /// One window's row under its session: the agent badge (or a plain dot,
-    /// filled when active, attention dot when asking), label, and branch
-    /// right-aligned. The active row's bed is laid by [`Self::compose`].
+    /// One window's row under its session: the needs-you mark when it
+    /// asks, else its agent badge, else `›` when active; then the label and
+    /// the branch right-aligned. The active row's bed is laid by
+    /// [`Self::compose`].
     pub(super) fn name_line(&self, index: usize, w: &WindowInfo, text_w: u16) -> Line<'static> {
         let (glyph, glyph_style) = self.window_glyph(w);
         let exited = self.exit_suffix(w);
         let exited_w = exited
             .as_ref()
             .map_or(0, |(marker, _)| display_width(marker));
-        // Reserve 2 cells for the ` ●` needs-you suffix so a long label
-        // can't push it off the strip. Same for the retained-exit ` ✕N` /
-        // ` –` marker.
+        // Reserve the retained-exit ` ✕N` / ` –` marker's cells so a long
+        // label can't push it off the strip.
         let label_w = usize::from(text_w)
             .saturating_sub(4) // nested indent + glyph + space
-            .saturating_sub(if w.attention { 2 } else { 0 })
             .saturating_sub(exited_w);
         // Two tabs with one name (both `home`) read as the same row; only
         // then does the label carry the strip's index, so unique names keep
@@ -92,20 +91,10 @@ impl SidebarPainter {
             Span::styled(format!("{glyph} "), glyph_style),
             Span::styled(label.clone(), style),
         ];
-        // A window holding a pane that asked for a human answer (ADR-0035)
-        // gets the needs-you mark.
-        if w.attention {
-            left.push(Span::styled(
-                format!(" {}", mark(&self.theme, State::NeedsYou)),
-                Style::default()
-                    .fg(self.theme.attention)
-                    .add_modifier(Modifier::BOLD),
-            ));
-        }
         if let Some((marker, style)) = exited {
             left.push(Span::styled(marker, style));
         }
-        let used = 4 + display_width(&label) + if w.attention { 2 } else { 0 } + exited_w;
+        let used = 4 + display_width(&label) + exited_w;
         let right = fitting_branch(w, usize::from(text_w).saturating_sub(used))
             .map(|branch| {
                 vec![Span::styled(
@@ -138,10 +127,11 @@ impl SidebarPainter {
     /// A window row's glyph and its style.
     fn window_glyph(&self, w: &WindowInfo) -> (String, Style) {
         if w.attention {
-            return (
-                mark(&self.theme, State::NeedsYou).to_owned(),
-                Style::default().fg(self.theme.attention),
-            );
+            let mut style = Style::default().fg(self.theme.attention);
+            if State::NeedsYou.mark().bold {
+                style = style.add_modifier(Modifier::BOLD);
+            }
+            return (mark(&self.theme, State::NeedsYou).to_owned(), style);
         }
         if let Some(badge) = &w.badge {
             let mut style = Style::default().fg(badge
@@ -155,11 +145,13 @@ impl SidebarPainter {
             }
             return (badge.glyph.clone(), style);
         }
-        // Focus, not status. Under the ASCII ladder these must not borrow
-        // its marks either (`*` is needs you, `o` idle), nor keep the
-        // ambiguous-width dots the ladder dropped.
+        // Focus, not status: never a ladder mark (`●` / `*` is needs you,
+        // `○` / `o` idle). In a grey theme the accent and the needs-you
+        // tone are near twins, so a shared glyph left "here" and "needs
+        // you" one mark apart in name only. `▸` is taken by a collapsed
+        // project.
         let ascii = self.theme.term.glyphs == crate::render::theme::Glyphs::Ascii;
-        let (active, inactive) = if ascii { (">", " ") } else { ("●", "○") };
+        let (active, inactive) = if ascii { (">", " ") } else { ("›", " ") };
         if w.active {
             (active.to_owned(), Style::default().fg(self.theme.accent))
         } else {

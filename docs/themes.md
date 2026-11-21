@@ -165,7 +165,8 @@ under `NO_COLOR`, and for colour-blind users.
 
 The status bar shows how many panes need you as `●2`. A window row
 marks a pane that needs you with `●`, a failed pane with `✕` and its exit
-code, and a clean exit with `–`. Under a Chinese, Japanese or Korean
+code, and a clean exit with `–`. The tab you are on is marked `›` (`>` in
+ASCII), never a status mark, so it cannot be mistaken for one. Under a Chinese, Japanese or Korean
 locale, or a locale that is not UTF-8, the whole ladder switches to the
 ASCII column, because those marks can draw two cells wide there.
 
