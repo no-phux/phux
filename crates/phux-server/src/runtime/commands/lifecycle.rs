@@ -77,6 +77,7 @@ pub(super) async fn handle_shutdown(
             s.mark_resource_closing(
                 resource,
                 phux_protocol::wire::frame::CloseReason::ServerShutdown,
+                crate::state::CloseAttribution::default(),
             );
         }
     });

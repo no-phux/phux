@@ -129,8 +129,7 @@ impl ServerState {
         // Subscriptions go now; draining pumps remain owned until close.
         // The actor stays available for their final checkpoint captures.
         let token = self.resources.forget_resource(pane);
-        // An unclaimed close reason must not outlive its id.
-        self.forget_close_reason(pane);
+        self.pending_closes.remove(&pane);
         self.retained.forget(pane);
         // No lease change can follow a removed pane.
         self.leases.forget_resource(pane);

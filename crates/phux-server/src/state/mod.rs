@@ -206,16 +206,8 @@ pub struct ServerState {
     /// (ADR-0063), self-exit arming, viewport stamps, upgrade context. See
     /// [`lifecycle_state`].
     lifecycle: Lifecycle,
-    /// Why each closing resource is closing (ADR-0104 §4), from the
-    /// decision to its `RESOURCE_CLOSED`; see [`bindings`] for the
-    /// one-closer rule.
-    close_reasons: std::collections::HashMap<
-        phux_core::ids::ResourceId,
-        phux_protocol::wire::frame::CloseReason,
-    >,
-    /// Who and which keyed operation closed a resource, for `pane_closed`
-    /// (`docs/protocol.md#receipts-retries-and-backpressure`); lives from kill to reap.
-    close_attributions: std::collections::HashMap<phux_core::ids::ResourceId, CloseAttribution>,
+    /// Each close's reason and attribution, from admission to reap.
+    pending_closes: std::collections::HashMap<phux_core::ids::ResourceId, bindings::PendingClose>,
     /// Every resource whose exit watcher still runs, with its wire id once
     /// a kill reaped it ahead of its process (`docs/protocol.md#commands-events-resources`); see
     /// [`bindings`].
