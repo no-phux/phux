@@ -109,6 +109,14 @@ impl Lifecycle {
         self.upgrade_ctx = Some((listener_fd, socket_path, flags));
     }
 
+    /// Hand a later upgrade `listener_fd` instead: the listener a rebound
+    /// socket path now reaches.
+    pub(crate) const fn set_upgrade_listener_fd(&mut self, listener_fd: RawFd) {
+        if let Some((fd, _, _)) = self.upgrade_ctx.as_mut() {
+            *fd = listener_fd;
+        }
+    }
+
     /// The upgrade context `(listener_fd, socket_path, runtime_flags)`, once
     /// serving has begun.
     pub(crate) fn upgrade_context(

@@ -356,7 +356,8 @@ impl ServerTarget {
         phux_client::state::get_state_on(&mut conn).await
     }
 
-    /// Report a failure talking to this server and return exit code 1.
+    /// Report a failure talking to this server and return exit code 1 (4
+    /// when it never answered).
     ///
     /// The local arm is the existing no-server diagnostic, unchanged. The
     /// remote arm names the host and endpoint, and adds the overlay hint when
@@ -365,7 +366,7 @@ impl ServerTarget {
         self.classify(err, verb).emit(json)
     }
 
-    /// The refusal behind [`Self::report_unreachable`], exit 1: the local
+    /// The refusal behind [`Self::report_unreachable`], exit 1 or 4: the local
     /// no-server classification, or the remote failure naming the host. A
     /// verb that words a particular failure its own way overrides the human
     /// text with [`json_err::Refusal::with_human`].
@@ -374,7 +375,7 @@ impl ServerTarget {
             Self::Local(path) => json_err::Refusal::no_server(err, path, verb),
             Self::Remote(remote) => json_err::Refusal::from_error(
                 remote.failure(err, verb),
-                crate::exit_codes::EXIT_FAILURE,
+                crate::exit_codes::transport_exit(err),
             ),
         }
     }
@@ -396,6 +397,8 @@ impl RemoteServer {
     fn failure(&self, err: &AttachError, verb: &str) -> CliError {
         let code = if matches!(err, AttachError::Disconnected) {
             codes::SERVER_DISCONNECTED
+        } else if err.is_timeout() {
+            codes::TIMEOUT
         } else {
             codes::TRANSPORT
         };

@@ -155,6 +155,9 @@ async fn exchange(
     if !features.contains(ServerFeatureExt::Credentials) {
         return Err(CredentialError::Unsupported);
     }
+    // A request waits on human approval: `timeout` is its bound, not the
+    // process-wide reply deadline.
+    conn.set_reply_deadline(None);
     let reply = tokio::time::timeout(timeout, conn.request(1, Command::Credentials { op }))
         .await
         .map_err(|_| CredentialError::Timeout)??;
