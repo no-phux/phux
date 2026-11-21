@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 import time
 
 STARTUP_SECONDS = 9
@@ -81,19 +82,51 @@ class Diagnostic:
         with (self.root / "wayland-ime-stages.log").open("a") as log:
             log.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-    def command(self, args, artifact, timeout=1):
-        self.event("command-start", argv=args, artifact=artifact, timeout_cap=timeout)
-        with (self.root / artifact).open("w") as out, (
-                self.root / (artifact + ".stderr.log")).open("w") as err:
-            remaining = self.deadline - time.monotonic()
-            if remaining <= 0:
-                raise RuntimeError("deadline expired before " + artifact)
-            timeout = min(timeout, remaining)
+    def remaining_timeout(self, artifact, timeout):
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            self.event("command-not-executed", artifact=artifact, status="deadline-expired")
+            raise RuntimeError("deadline expired before " + artifact)
+        return min(timeout, remaining)
+
+    def capture_command(self, args, artifact, timeout, stdout, stderr):
+        self.remaining_timeout(artifact, timeout)
+        with stdout.open("wb") as out, stderr.open("wb") as err:
+            timeout = self.remaining_timeout(artifact, timeout)
             result = subprocess.run(args, stdout=out, stderr=err,
                                     timeout=timeout, check=False)
         self.event("command-exit", argv=args, returncode=result.returncode, timeout=timeout)
         if result.returncode:
             raise RuntimeError(f"command failed ({result.returncode}): {args}")
+
+    def failed_attempt(self, artifact, stdout, stderr, error):
+        outputs = {}
+        for stream, source in (("stdout", stdout), ("stderr", stderr)):
+            destination = artifact + f".failed.{stream}.log"
+            if not source.exists():
+                source.touch()
+            source.replace(self.root / destination)
+            outputs[stream] = destination
+        self.event("command-observation-failed", artifact=artifact,
+                   status=type(error).__name__, error=str(error), **outputs)
+
+    def command(self, args, artifact, timeout=1):
+        # Canonical artifacts are the last completed successful observation,
+        # never in-progress output. Even an unexecuted probe must not erase one.
+        self.remaining_timeout(artifact, timeout)
+        self.event("command-start", argv=args, artifact=artifact, timeout_cap=timeout)
+        with tempfile.TemporaryDirectory(prefix="wayland-ime-command-", dir=self.root) as directory:
+            stdout, stderr = Path(directory) / "stdout", Path(directory) / "stderr"
+            try:
+                self.capture_command(args, artifact, timeout, stdout, stderr)
+            except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+                self.failed_attempt(artifact, stdout, stderr, error)
+                raise
+            # A zero exit publishes raw bytes even if a caller's parser rejects
+            # them. Each rename is atomic and stays on the scratch filesystem.
+            stdout.replace(self.root / artifact)
+            stderr.replace(self.root / (artifact + ".stderr.log"))
+            self.event("command-observation-published", artifact=artifact)
         return (self.root / artifact).read_text(errors="replace")
 
     def spawn(self, name, args, logfile):

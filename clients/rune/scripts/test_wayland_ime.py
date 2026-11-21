@@ -4,180 +4,143 @@ import importlib.util
 import json
 import os
 from pathlib import Path
-import signal
 import subprocess
-import sys
 import tempfile
-import time
 import unittest
 from unittest.mock import patch
 
-DRIVER = Path(__file__).with_name("qualify_wayland_ime.py")
+from wayland_ime_fixture import CommandObservationFixture, DRIVER, WaylandImeFixture
+
 SPEC = importlib.util.spec_from_file_location("wayland_ime", DRIVER)
 ime = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ime)
 
-# Every executable, including the server CLI and app, is a local test fake.
-# There is no route to an installed phux, production socket, or real display.
-FAKE = r'''
-import fcntl, json, os, signal, sys, time
-from pathlib import Path
-root = Path(os.environ["STATE"])
-name = Path(sys.argv[0]).name
-args = sys.argv[1:]
-mode = os.environ["MODE"]
-with (root / "calls").open("a") as out:
-    out.write(json.dumps([name, *args]) + "\n")
+class CommandObservationTests(CommandObservationFixture, unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR"))
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.artifact = "wayland-ime-seats-before.json"
+        with patch.object(ime.time, "monotonic", return_value=100):
+            self.driver = ime.Diagnostic(directory.name, "fake-app", "fake-phux", "socket", "session")
+        self.events = []
+        event_patch = patch.object(self.driver, "event", side_effect=self.record_event)
+        event_patch.start()
+        self.addCleanup(event_patch.stop)
+        self.previous_out = b'[{"name":"seat0","capabilities":0}]\n'
+        self.previous_err = b"previous stderr\xff\n"
+        self.next_out = b'[{"name":"seat0","capabilities":2}]\n'
+        self.next_err = b"new stderr\n"
+        self.returncode = 0
+        self.failure = None
 
-def seats_reply():
-    if mode == "malformed-seats":
-        return "not seat JSON"
-    countfile = root / "seat-count"
-    count = int(countfile.read_text()) + 1 if countfile.exists() else 1
-    countfile.write_text(str(count))
-    capabilities = 2
-    if mode == "late-seat":
-        capabilities = 0 if count < 3 else 2
-    if mode == "no-keyboard":
-        capabilities = 0
-    (root / "seat0-capabilities").write_text(str(capabilities))
-    with (root / "wayland-fixture-seats.log").open("a") as out:
-        out.write(json.dumps({"capabilities": capabilities,
-                              "app_exists": (root / "rune-fake.pid").exists()}) + "\n")
-    return json.dumps([{"name": "seat0", "capabilities": capabilities}])
+    def test_expired_deadline_preserves_previous_pair_without_execution(self):
+        self.seed_previous()
+        with patch.object(ime.time, "monotonic", return_value=109):
+            with patch.object(ime.subprocess, "run") as run:
+                with self.assertRaisesRegex(RuntimeError, "deadline expired"):
+                    self.driver.command(["fixture-only"], self.artifact)
+                run.assert_not_called()
+        self.assert_previous()
+        self.assertIn({"stage": "command-not-executed", "artifact": self.artifact,
+                       "status": "deadline-expired"}, self.events)
 
-if name in ("fcitx5", "rune-fake"):
-    pidfile = root / (name + ".pid")
-    pending = root / (name + ".pid.tmp")
-    pending.write_text(str(os.getpid()))
-    pending.replace(pidfile)
-    assert os.environ["WAYLAND_DEBUG"] == "1"
-    if mode == "dead-" + name:
-        sys.exit(7)
-    if name == "fcitx5":
-        assert not args, "fcitx must remain foreground"
-    else:
-        assert args == ["--socket", "fake.socket", "--session", "fresh-ime"]
-        assert int((root / "seat0-capabilities").read_text()) & 2, "app spawned without keyboard"
-        # The app and the fake keyboard both emit fixture protocol records.
-        fcntl.fcntl(1, fcntl.F_SETFL, fcntl.fcntl(1, fcntl.F_GETFL) | os.O_APPEND)
-        print("[1.0] zwp_text_input_v3@12.enter(wl_surface@4)", flush=True)
-        print("[1.1] -> zwp_text_input_v3@12.enable()", flush=True)
-    # Continuous cursor traffic must never become a quiet-frame readiness gate.
-    while True:
-        if name == "rune-fake":
-            print("[2.0] -> zwp_text_input_v3@12.set_cursor_rectangle(1, 2, 3, 4)", flush=True)
-            print("[2.1] -> zwp_text_input_v3@12.commit()", flush=True)
-        time.sleep(0.02)
-elif name == "dbus-send":
-    method = args[-2] if args[-1].startswith("string:") else args[-1]
-    if method.endswith("NameHasOwner"):
-        ready = (root / "fcitx5.pid").exists() and mode != "no-bus"
-        print("boolean " + ("true" if ready else "false"))
-    elif method.endswith("GetNameOwner"):
-        print('string ":1.0"')
-    elif method.endswith("GetConnectionUnixProcessID"):
-        pid = int((root / "fcitx5.pid").read_text())
-        print("uint32", pid + (1 if mode == "wrong-bus-pid" else 0))
-    else:
-        focus = 0 if mode == "no-context" else 1
-        frontend = "x11" if mode == "wrong-frontend" else "wayland_v2"
-        if mode == "split-context":
-            print("program:sh.phux.rune frontend:wayland_v2 cap:52 focus:0")
-            print("program:other frontend:wayland_v2 cap:52 focus:1")
-        else:
-            print(f'  string "IC program:sh.phux.rune frontend:{frontend} cap:52 focus:{focus}"')
-elif name == "swaymsg":
-    if args == ["-r", "-t", "get_seats"]:
-        print(seats_reply())
-        sys.exit(0)
-    if mode == "tree-command-fails":
-        sys.exit(6)
-    if mode == "hung-tree":
-        time.sleep(20)
-    pidfile = root / "rune-fake.pid"
-    pid = int(pidfile.read_text()) if pidfile.exists() else 0
-    stale = {"pid": pid + 1, "app_id": "sh.phux.rune", "focused": True}
-    node = {"pid": pid, "app_id": "sh.phux.rune", "focused": mode != "wrong-focus"}
-    if mode == "wrong-focus":
-        print(json.dumps({"nodes": [node, stale]}))
-    elif mode == "wrong-app-id":
-        print(json.dumps({**node, "app_id": "other.app"}))
-    else:
-        print(json.dumps({"floating_nodes": [node]}))
-elif name == "fcitx5-remote":
-    if mode == "activation-fails" and args == ["-o"]:
-        sys.exit(4)
-    if args == ["-n"]:
-        print("keyboard-us" if mode == "profile-only" else "pinyin")
-    elif not args:
-        print("1" if mode == "inactive" else "2")
-elif name == "wtype":
-    (root / "injected").write_text("once")
-    if mode == "typing-fails":
-        sys.exit(5)
-    if mode == "app-dies-during-composition":
-        os.kill(int((root / "rune-fake.pid").read_text()), signal.SIGTERM)
-        time.sleep(0.05)
-    with (root / "wayland-ime-app.log").open("a") as out:
-        # Segmentation is intentionally unlike the historical "ni hao".
-        out.write('[3.0] zwp_text_input_v3@12.preedit_string("ni’hao", 0, 6)\n')
-        if mode != "no-commit":
-            out.write('[3.1] zwp_text_input_v3@12.commit_string("你好")\n')
-        out.write('[3.2] zwp_text_input_v3@12.done(47)\n')
-elif name == "phux-fake":
-    assert args == ["--socket", "fake.socket", "snapshot", "fresh-ime"]
-    injected = (root / "injected").exists()
-    echo = "你好" if injected or mode == "stale-session" else ""
-    if injected:
-        echo = {"plain-ascii": "nihao", "wrong-chinese": "你号",
-                "no-echo": "", "empty-snapshot": ""}.get(mode, echo)
-    if mode != "empty-snapshot" or not injected:
-        print("│$ " + echo)
-        print("│full snapshot row beyond the old four-row truncation\n" * 12, end="")
-elif name == "grim":
-    Path(args[-1]).write_bytes(b"fake fixture, not an app screenshot")
-'''
+    def test_expired_deadline_without_observation_creates_no_canonical_files(self):
+        with patch.object(ime.time, "monotonic", return_value=109):
+            with patch.object(ime.subprocess, "run") as run:
+                with self.assertRaisesRegex(RuntimeError, "deadline expired"):
+                    self.driver.command(["fixture-only"], self.artifact)
+                run.assert_not_called()
+        self.assertEqual(list(self.root.iterdir()), [])
 
-class WaylandImeTests(unittest.TestCase):
-    def run_driver(self, mode="success"):
-        with tempfile.TemporaryDirectory(prefix="wayland-ime-", dir=os.environ.get("TMPDIR")) as directory:
-            root = Path(directory)
-            fake = root / "fake"
-            fake.write_text(f"#!{sys.executable}\n" + FAKE)
-            fake.chmod(0o755)
-            names = ("fcitx5", "rune-fake", "dbus-send", "swaymsg",
-                     "fcitx5-remote", "wtype", "phux-fake", "grim")
-            for name in names:
-                (root / name).symlink_to(fake)
-            env = {"PATH": f"{root}:/usr/bin:/bin", "HOME": directory,
-                   "STATE": directory, "MODE": mode, "LANG": "C.UTF-8"}
-            started = time.monotonic()
-            try:
-                result = subprocess.run(
-                    [sys.executable, "-B", str(DRIVER), directory,
-                     str(root / "rune-fake"), str(root / "phux-fake"),
-                     "fake.socket", "fresh-ime"],
-                    env=env, text=True, capture_output=True, timeout=20,
-                )
-                elapsed = time.monotonic() - started
-                calls = [json.loads(line) for line in (root / "calls").read_text().splitlines()]
-                stages = [json.loads(line) for line in
-                          (root / "wayland-ime-stages.log").read_text().splitlines()]
-                files = {p.name: p.read_text(errors="replace") for p in root.glob("wayland-*")}
-                for event in stages:
-                    if event["stage"] == "process-start":
-                        with self.assertRaises(ProcessLookupError, msg="owned children must be reaped"):
-                            os.kill(event["pid"], 0)
-                return result, calls, stages, files, elapsed
-            finally:
-                # Only fixture-owned PIDs, and only if a failed test left them.
-                for pidfile in root.glob("*.pid"):
-                    try:
-                        os.kill(int(pidfile.read_text()), signal.SIGTERM)
-                    except ProcessLookupError:
-                        pass
+    def test_deadline_expiring_after_entry_does_not_execute_or_replace(self):
+        self.seed_previous()
+        with patch.object(ime.time, "monotonic", side_effect=[108.999, 109]):
+            with patch.object(ime.subprocess, "run", side_effect=self.complete_command) as run:
+                with self.assertRaisesRegex(RuntimeError, "deadline expired"):
+                    self.driver.command(["fixture-only"], self.artifact)
+                run.assert_not_called()
+        self.assert_previous()
+        self.assertIn({"stage": "command-not-executed", "artifact": self.artifact,
+                       "status": "deadline-expired"}, self.events)
 
+    def test_tiny_remaining_timeout_preserves_pair_and_partial_output(self):
+        self.seed_previous()
+        self.failure = subprocess.TimeoutExpired(["fixture-only"], 0.001)
+        with patch.object(ime.time, "monotonic", return_value=108.999):
+            with patch.object(ime.subprocess, "run", side_effect=self.complete_command) as run:
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    self.driver.command(["fixture-only"], self.artifact)
+                self.assertAlmostEqual(run.call_args.kwargs["timeout"], 0.001)
+        self.assert_previous()
+        self.assert_failed_attempt("TimeoutExpired")
+
+    def test_nonzero_exit_retains_previous_pair_and_failed_attempt(self):
+        self.seed_previous()
+        self.returncode = 7
+        with patch.object(ime.time, "monotonic", return_value=108):
+            with patch.object(ime.subprocess, "run", side_effect=self.complete_command):
+                with self.assertRaisesRegex(RuntimeError, "command failed \\(7\\)"):
+                    self.driver.command(["fixture-only"], self.artifact)
+        self.assert_previous()
+        self.assert_failed_attempt("RuntimeError")
+        exits = [e for e in self.events if e["stage"] == "command-exit"]
+        self.assertEqual(exits[-1]["returncode"], 7)
+
+    def test_fresh_failure_records_raw_output_without_faking_canonical_reply(self):
+        self.returncode = 6
+        self.next_out = b"partial non-JSON reply\n"
+        with patch.object(ime.time, "monotonic", return_value=108):
+            with patch.object(ime.subprocess, "run", side_effect=self.complete_command):
+                with self.assertRaisesRegex(RuntimeError, "command failed \\(6\\)"):
+                    self.driver.command(["fixture-only"], self.artifact)
+        self.assertFalse((self.root / self.artifact).exists())
+        self.assertFalse((self.root / (self.artifact + ".stderr.log")).exists())
+        self.assert_failed_attempt("RuntimeError")
+
+    def test_completed_success_replaces_both_only_after_process_completion(self):
+        self.seed_previous()
+
+        def complete_after_checks(args, **options):
+            self.assert_previous()
+            result = self.complete_command(args, **options)
+            self.assert_previous()
+            return result
+
+        with patch.object(ime.time, "monotonic", return_value=108):
+            with patch.object(ime.subprocess, "run", side_effect=complete_after_checks):
+                reply = self.driver.command(["fixture-only"], self.artifact)
+        self.assertEqual(reply, self.next_out.decode())
+        self.assertEqual((self.root / self.artifact).read_bytes(), self.next_out)
+        self.assertEqual((self.root / (self.artifact + ".stderr.log")).read_bytes(), self.next_err)
+        self.assertEqual({p.name for p in self.root.iterdir()},
+                         {self.artifact, self.artifact + ".stderr.log"})
+
+    def test_completed_malformed_reply_is_published_for_parser_failure(self):
+        self.seed_previous()
+        self.next_out = b"not seat JSON\n"
+        with patch.object(ime.time, "monotonic", return_value=108):
+            with patch.object(ime.subprocess, "run", side_effect=self.complete_command):
+                reply = self.driver.command(["fixture-only"], self.artifact)
+        self.assertEqual((self.root / self.artifact).read_bytes(), self.next_out)
+        self.assertEqual((self.root / (self.artifact + ".stderr.log")).read_bytes(), self.next_err)
+        with self.assertRaises(ValueError):
+            ime.seat_keyboard_ready(reply)
+
+    def test_spawn_error_is_recorded_without_erasing_observation(self):
+        self.seed_previous()
+        self.next_out = b""
+        self.next_err = b""
+        self.failure = FileNotFoundError("fixture executable absent")
+        with patch.object(ime.time, "monotonic", return_value=108):
+            with patch.object(ime.subprocess, "run", side_effect=self.complete_command):
+                with self.assertRaises(FileNotFoundError):
+                    self.driver.command(["fixture-only"], self.artifact)
+        self.assert_previous()
+        self.assert_failed_attempt("FileNotFoundError")
+
+
+class WaylandImeTests(WaylandImeFixture, unittest.TestCase):
     def test_single_ascii_composition_with_real_echo_and_unrestricted_preedit(self):
         result, calls, stages, files, _ = self.run_driver()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -212,15 +175,6 @@ class WaylandImeTests(unittest.TestCase):
                 self.assertFalse(any(c[0] == "wtype" for c in calls))
                 self.assert_failure_evidence(stages, files)
                 self.assertLess(elapsed, 13, "one shared startup budget plus bounded failure capture")
-
-    def assert_failure_evidence(self, stages, files):
-        self.assertTrue(any(s["stage"] == "failure-liveness" for s in stages))
-        for artifact in ("seats-failure.json", "tree-failure.json", "context-failure.log",
-                         "engine-failure.log", "state-failure.log", "terminal-failure.log"):
-            self.assertIn("wayland-ime-" + artifact, files)
-        self.assertIn("full snapshot row", files["wayland-ime-terminal-failure.log"])
-        self.assertIn("wayland-ime-failed.png", files)
-        self.assertTrue(all("time" in s and "elapsed" in s for s in stages))
 
     def test_no_replay_or_false_success_after_composition(self):
         for mode in ("typing-fails", "app-dies-during-composition", "no-commit",
