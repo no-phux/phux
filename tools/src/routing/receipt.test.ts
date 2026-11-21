@@ -75,7 +75,7 @@ test("an exact-tree partial PR Linux receipt cannot replace full queue/main qual
   expect(find(full)).toBe(3);
 });
 
-test("the required ci queue or fallback PR caller attests only the exact native child receipt", () => {
+test("the required ci queue or release PR caller attests only the exact native child receipt", () => {
   const apple = {
     ...expected,
     workflow: ".github/workflows/rune-macos.yml",
@@ -94,7 +94,7 @@ test("the required ci queue or fallback PR caller attests only the exact native 
   expect(find(apple)).toBe(3);
   run["event"] = "pull_request";
   expect(find(apple)).toBe(3);
-  // A full fallback PR receipt is reusable, but never release push evidence.
+  // A full release PR receipt is reusable, but never release push evidence.
   expect(find(apple, String(run["head_sha"]))).toBeUndefined();
   files["receipt.json"] = JSON.stringify({ ...apple, coverage: "" });
   expect(find(apple)).toBeUndefined();

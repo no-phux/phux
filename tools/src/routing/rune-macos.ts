@@ -1,7 +1,7 @@
 // Which macOS legs one rune-macos.yml run launches.
 //
 // ci.yml's Rune lane is Linux-only. Standalone PRs report a cheap passing
-// check. ci's fallback PR child uses main policy, as does the queue child:
+// check. ci's release-PR child uses main policy, as does the queue child:
 // every selected qualifying run executes BOTH Apple legs.
 import type { Classification } from "./classify.ts";
 

@@ -182,8 +182,9 @@ test("the existing required ci check depends on real Apple qualification on the 
   const apple = job(ci, "queue-apple");
   expect(str(apple["name"])).toBe("queue-apple");
   expect(uses(apple)).toBe("./.github/workflows/rune-macos.yml");
-  // Pull requests never wait on the macOS pool; main pushes qualify Apple.
-  expect(str(apple["if"])).toBe("github.event_name == 'merge_group'");
+  // Only a release bot's PR waits on the macOS pool; main pushes qualify Apple.
+  expect(str(apple["if"])).toContain("github.event_name == 'merge_group'");
+  expect(str(apple["if"])).toContain("needs.plan.outputs.release_qualify == 'true'");
   expect(withInput(apple, "qualify")).toBe(true);
   expect(needs(job(ci, "ci"))).toContain("queue-apple");
   const mac = workflow("rune-macos.yml");
@@ -194,7 +195,7 @@ test("the existing required ci check depends on real Apple qualification on the 
   expect(table(mac["on"])["workflow_dispatch"]).toBeDefined();
 });
 
-test("a PR never admits Apple, and the required child's concurrency stays apart from the cheap check", () => {
+test("only a release PR admits Apple, and the required child's concurrency stays apart from the cheap check", () => {
   const pr = {
     ...push,
     event_name: "pull_request",
@@ -202,8 +203,17 @@ test("a PR never admits Apple, and the required child's concurrency stays apart 
     event: { pull_request: { head: { repo: { full_name: "no-phux/phux" } } } },
   };
   const apple = job(workflow("ci.yml"), "queue-apple");
-  for (const rune of ["true", "false"]) {
-    expect(evaluate(apple["if"], pr, { needs: { plan: { outputs: { rune } } } })).toBe(false);
+  for (const [release, rune, want] of [
+    ["true", "true", true],
+    ["false", "true", false],
+    ["", "true", false],
+    ["true", "false", false],
+  ] as const) {
+    expect(
+      evaluate(apple["if"], pr, {
+        needs: { plan: { outputs: { release_qualify: release, rune } } },
+      }),
+    ).toBe(want);
   }
   const mac = workflow("rune-macos.yml");
   const selected = { needs: { plan: { outputs: { macos: "true" } } } };

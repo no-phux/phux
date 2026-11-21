@@ -16,6 +16,7 @@ import {
   PERF_BASELINE_LABEL,
   plan,
   planOutputs,
+  releasePullRequest,
   reused,
   triggerFor,
   type PathScope,
@@ -65,6 +66,15 @@ function perfBaselineLabel(event: string, eventPath: string | undefined): boolea
   } catch (error) {
     console.error(`perf-baseline label unreadable; running icount: ${describe(error)}`);
     return true;
+  }
+}
+
+function releaseHead(eventPath: string | undefined, repository: string): boolean {
+  try {
+    return releasePullRequest(JSON.parse(readFileSync(eventPath ?? "", "utf8")), repository);
+  } catch (error) {
+    console.error(`pull request head unreadable; fast path: ${describe(error)}`);
+    return false;
   }
 }
 
@@ -123,14 +133,16 @@ export const commands: Record<string, Command> = {
       const detection = detect(event, eventPath);
       // Pull requests gate on their path-scoped Linux lanes only. Apple,
       // Linux packaging and the mandatory lanes qualify on the main push
-      // (docs/ci.md#native-apple-qualification). A merge group is main's
-      // tree before it lands: main policy.
-      const c = classifyDetection(detection);
+      // (docs/ci.md#native-apple-qualification). A release bot's PR keeps
+      // full qualification. A merge group is main's tree before it lands:
+      // main policy.
+      const release = event === "pull_request" && releaseHead(eventPath, repository);
+      const c = classifyDetection(detection, release ? "qualify-rune" : "skip");
       const scope = pathScope(detection);
       const p = plan(c, triggerFor(event), {
         scope,
         perfBaseline: perfBaselineLabel(event, eventPath),
-        pullRequestFast: true,
+        pullRequestFast: !release,
         runeQualify: event !== "pull_request",
         docsCatalog: docsCatalogSelected(detection),
       });
@@ -144,6 +156,7 @@ export const commands: Record<string, Command> = {
       );
       writeOutputs({
         ...outputs,
+        release_qualify: release,
         validated,
         receipt: JSON.stringify(receipt),
         receipt_name: artifactName(receipt),
@@ -157,7 +170,7 @@ export const commands: Record<string, Command> = {
       const event = process.env["GITHUB_EVENT_NAME"] ?? "";
       const repository = process.env["GITHUB_REPOSITORY"] ?? "";
       const c = classifyEvent(event, process.env["GITHUB_EVENT_PATH"], "qualify-rune");
-      // Only ci's required fallback child qualifies a PR; the standalone PR
+      // Only ci's required release-PR child qualifies a PR; the standalone PR
       // check stays cheap. The caller supplies the one policy decision.
       const pullRequest = event === "pull_request" && process.env["PHUX_RUNE_QUALIFY"] !== "true";
       const planned = runeMacosPlan(c, pullRequest ? "pull_request" : "push");

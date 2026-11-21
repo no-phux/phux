@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # The required ci check: plan succeeded, and every other job passed or was
-# not selected. A filtered skip passes. Main and the merge queue also
-# require native setup and rust icount; the merge queue requires Apple.
-# Pull requests gate on their selected lanes only: Apple, Linux packaging
-# and the mandatory lanes qualify on the main push.
+# not selected. A filtered skip passes. Main, the merge queue and a release
+# bot's PR also require native setup and rust icount. The queue and a
+# Rune-affecting release PR require Apple; a release PR also requires its
+# selected Rune Linux lane. Other pull requests gate on their selected lanes
+# only: Apple, Linux packaging and the mandatory lanes qualify on main.
 # A draft's skipped plan fails, so a stale draft ci never satisfies a ready PR.
 set -euo pipefail
 
@@ -15,10 +16,13 @@ if [[ "$(jq -r .plan.result <<<"$RESULTS")" == skipped ]]; then
     exit 1
 fi
 jq -e --arg event "$event" '
-  ($event == "push" or $event == "merge_group") as $mandatory |
-  ($event == "merge_group") as $apple |
+  ($event == "pull_request" and .plan.outputs.release_qualify == "true") as $release |
+  ($event == "push" or $event == "merge_group" or $release) as $mandatory |
+  ($release and .plan.outputs.rune == "true") as $linux |
+  ($event == "merge_group" or $linux) as $apple |
   .plan.result == "success" and
   ([.[].result] | all(. == "success" or . == "skipped"))
     and (($mandatory | not) or (.native.result == "success" and .icount.result == "success"))
     and (($apple | not) or .["queue-apple"].result == "success")
+    and (($linux | not) or .rune.result == "success")
 ' <<<"$RESULTS" >/dev/null

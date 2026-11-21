@@ -84,6 +84,7 @@ test("plan declares every output the planner writes, and jobs read only those", 
     "validated",
     "receipt",
     "receipt_name",
+    "release_qualify",
   ];
   const declared = Object.keys(table(job(CI, "plan")["outputs"]));
   const read = [...workflowText("ci.yml").matchAll(/needs\.plan\.outputs\.(\w+)/g)].map(

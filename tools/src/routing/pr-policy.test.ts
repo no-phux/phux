@@ -13,13 +13,13 @@ import { repoPath } from "../lib/repo.ts";
 import { classifyDetection } from "./detect.ts";
 import { runInNewContext } from "node:vm";
 
-function fixture() {
+function fixture(ref = "topic", headRepo = "no-phux/phux") {
   const dir = mkdtempSync(join(tmpdir(), "pr-policy-"));
   const sha = capture(["git", "rev-parse", "HEAD"]).trim();
   const event = {
     pull_request: {
       base: { sha, ref: "main", repo: { full_name: "no-phux/phux" } },
-      head: { sha, ref: "topic", repo: { full_name: "no-phux/phux" } },
+      head: { sha, ref, repo: { full_name: headRepo } },
     },
   };
   const eventPath = join(dir, "event.json");
@@ -37,8 +37,9 @@ function aggregate(event: string, results: Record<string, unknown>): number | nu
   }).exitCode;
 }
 
-test("a Rune pull request plans Linux only and its aggregate never waits on Apple", () => {
-  const { dir, eventPath } = fixture();
+/** The public ci-plan outputs for a Rune-only pull request from `ref`. */
+function planRunePullRequest(ref: string, headRepo?: string): Record<string, string> {
+  const { dir, eventPath } = fixture(ref, headRepo);
   try {
     // No gh on PATH: the PR plan must not read repository rules.
     writeFileSync(join(dir, "gh"), "#!/bin/sh\nexit 97\n", { mode: 0o755 });
@@ -59,7 +60,7 @@ test("a Rune pull request plans Linux only and its aggregate never waits on Appl
         GITHUB_OUTPUT: outputs,
       },
     });
-    const output = Object.fromEntries(
+    return Object.fromEntries(
       readFileSync(outputs, "utf8")
         .trim()
         .split("\n")
@@ -68,8 +69,29 @@ test("a Rune pull request plans Linux only and its aggregate never waits on Appl
           return [line.slice(0, index), line.slice(index + 1)];
         }),
     );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function appleAdmitted(output: Record<string, string>): boolean {
+  const appleGate = job(workflow("ci.yml"), "queue-apple")["if"];
+  return runInNewContext(String(appleGate), {
+    github: { event_name: "pull_request" },
+    needs: { plan: { outputs: output } },
+  }) as boolean;
+}
+
+test.each([
+  ["topic", "no-phux/phux"],
+  ["release-please--branches--main", "fork/phux"],
+])(
+  "a Rune pull request from %s (%s) plans Linux only and its aggregate never waits on Apple",
+  (ref, headRepo) => {
+    const output = planRunePullRequest(ref, headRepo);
     expect(output["queue_verified"]).toBeUndefined();
     expect(output).toMatchObject({
+      release_qualify: "false",
       rune: "true",
       rune_qualify: "false",
       native: "false",
@@ -77,13 +99,7 @@ test("a Rune pull request plans Linux only and its aggregate never waits on Appl
     });
     const receipt = JSON.parse(output["receipt"] ?? "{}") as { coverage: string };
     expect(receipt.coverage.includes("packaging")).toBe(false);
-    const appleGate = job(workflow("ci.yml"), "queue-apple")["if"];
-    expect(
-      runInNewContext(String(appleGate), {
-        github: { event_name: "pull_request" },
-        needs: { plan: { outputs: output } },
-      }),
-    ).toBe(false);
+    expect(appleAdmitted(output)).toBe(false);
     const baseline = {
       plan: { result: "success", outputs: output },
       native: { result: "skipped" },
@@ -98,10 +114,41 @@ test("a Rune pull request plans Linux only and its aggregate never waits on Appl
         expect([lane, state, result]).toEqual([lane, state, allowed ? 0 : 1]);
       }
     }
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}, 15_000);
+  },
+  15_000,
+);
+
+test.each(["release-please--branches--main", "rune-release/next"])(
+  "a release bot's PR from %s keeps full qualification, Apple included",
+  (ref) => {
+    const output = planRunePullRequest(ref);
+    expect(output).toMatchObject({
+      release_qualify: "true",
+      rune: "true",
+      rune_qualify: "true",
+      native: "true",
+      icount: "true",
+    });
+    const receipt = JSON.parse(output["receipt"] ?? "{}") as { coverage: string };
+    expect(receipt.coverage.includes("packaging")).toBe(true);
+    expect(appleAdmitted(output)).toBe(true);
+    const baseline = {
+      plan: { result: "success", outputs: output },
+      native: { result: "success" },
+      icount: { result: "success" },
+      "queue-apple": { result: "success" },
+      rune: { result: "success" },
+    };
+    expect(aggregate("pull_request", baseline)).toBe(0);
+    for (const lane of ["native", "icount", "queue-apple", "rune"]) {
+      expect([
+        lane,
+        aggregate("pull_request", { ...baseline, [lane]: { result: "skipped" } }),
+      ]).toEqual([lane, 1]);
+    }
+  },
+  15_000,
+);
 
 test.each(["native", "icount", "queue-apple"])(
   "the merge-group aggregate rejects a skipped %s",

@@ -3,7 +3,8 @@
 // A pull request runs exactly what its diff can affect. A push to main or a
 // merge group widens the Rust lanes to the full pool (a non-strict merge can
 // combine two green diffs into a red tree). Native setup and rust icount are
-// path-scoped only on fast-path PRs, otherwise mandatory, and never removed by reuse.
+// path-scoped only on fast-path PRs (every PR but a release bot's), otherwise
+// mandatory, and never removed by reuse.
 // Rune's Apple legs belong to rune-macos.yml, not this Linux lane receipt.
 // `just check` runs the PR plan through the same recipes the jobs call.
 import { list, str, table } from "../lib/value.ts";
@@ -57,6 +58,24 @@ export const LINUX_QUALIFY = ["linux-aarch64", "packaging"] as const;
 export const PERF_BASELINE_LABEL = "perf-baseline";
 
 /** Whether a pull_request payload carries `label`. Other events do not. */
+/** Release-bot heads: release-please and the Rune version train (clients/rune/scripts/release.py). */
+export const RELEASE_HEAD_PREFIXES = ["release-please--", "rune-release/"] as const;
+
+/**
+ * A same-repository release-bot pull request. Its merge commit is what gets
+ * tagged, so it keeps full qualification, Apple included: a red bump commit
+ * would wedge the release train. Bots merge these, so nobody waits on them.
+ */
+export function releasePullRequest(event: unknown, repository: string): boolean {
+  const head = table(table(table(event)["pull_request"])["head"]);
+  const ref = str(head["ref"]) ?? "";
+  return (
+    repository !== "" &&
+    str(table(head["repo"])["full_name"]) === repository &&
+    RELEASE_HEAD_PREFIXES.some((prefix) => ref.startsWith(prefix))
+  );
+}
+
 export function eventHasLabel(event: unknown, label: string): boolean {
   return list(table(table(event)["pull_request"])["labels"]).some(
     (item) => str(table(item)["name"]) === label,
