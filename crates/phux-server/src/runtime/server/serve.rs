@@ -125,7 +125,8 @@ impl ServerRuntime {
         let connector_consumer_tokens = load_connector_consumer_tokens(&connector_specs, env)?;
 
         let resume_blob = read_resume_blob(self.resume_fd, &self.inherited_upgrade)?;
-        let listener = adopt_or_bind_listener(
+        // Held until `serve` returns: one server per socket path.
+        let (listener, _socket_lock) = adopt_or_bind_listener(
             &socket_path,
             resume_blob.as_ref().map(|blob| blob.listener_fd),
         )
