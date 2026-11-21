@@ -105,7 +105,7 @@ impl std::fmt::Debug for ReloadingWorkloadRegistry {
 }
 
 impl ReloadingWorkloadRegistry {
-    /// Load strictly (a bad file refuses startup, §8; missing is empty) and
+    /// Load strictly (a bad file refuses startup; missing is empty) and
     /// start tracking.
     ///
     /// # Errors
@@ -151,7 +151,7 @@ impl ReloadingWorkloadRegistry {
     }
 
     /// The file's current state (valid, broken, or transient failure) for
-    /// the revocation watcher (§7).
+    /// the revocation watcher.
     #[must_use]
     pub fn observe(&self) -> RegistryObservation {
         let probe = self.probes.fetch_add(1, Ordering::SeqCst) + 1;

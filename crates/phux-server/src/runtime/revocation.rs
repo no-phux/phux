@@ -1,7 +1,7 @@
 //! Live revocation (`docs/remote.md#managing-credentials`, ADR-0116).
 //!
 //! The `Watcher` re-judges every withdrawable grant when the registry or a
-//! token store changes and at each expiry; `revoke_connection` then runs §7
+//! token store changes and at each expiry; `revoke_connection` then runs the revocation
 //! under one lock (mark revoked, release what it held, goodbye, cancel).
 //! Terminals are never killed and the owner socket is never watched. Only
 //! real verdicts count: a token store that loaded cleanly, and a broken
@@ -310,7 +310,7 @@ fn judge_grant(
 
 /// Whether `snapshot` is the registry state that minted or last confirmed
 /// `grant`. Keyed on the pair `(instance, generation)`, never the generation
-/// alone, and a registry with no instance id confirms nothing (§2). The
+/// alone, and a registry with no instance id confirms nothing. The
 /// caller also requires the very snapshot the grant was last judged
 /// against, so a hand edit that keeps the generation is still re-judged.
 fn confirmed_by(grant: &ConnectionGrant, snapshot: &WorkloadRegistry) -> bool {

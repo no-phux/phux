@@ -165,7 +165,7 @@ fn terminal_metadata_cannot_outlive_or_target_a_missing_terminal() {
     assert!(get(&state, &missing, "phux.test/v1").is_none());
 }
 
-/// ADR-0129 / L3 §2: an over-cap value is refused whole; a value exactly
+/// ADR-0129: an over-cap value is refused whole; a value exactly
 /// at the cap is stored.
 #[test]
 fn a_metadata_value_over_the_cap_is_refused_and_nothing_is_stored() {

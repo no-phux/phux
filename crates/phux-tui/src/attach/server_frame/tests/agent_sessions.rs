@@ -62,7 +62,7 @@ fn an_agent_stream_bootstraps_without_a_slot_and_dirties_the_chrome() {
             profile: phux_protocol::BootstrapStreamProfile::AgentEventsJsonlV1,
             cols: 0,
             rows: 0,
-            // L1 §4.8: base_seq is the record counter at the cut.
+            // `base_seq` is the record counter at the cut.
             base_seq: 1,
         })
         .expect("agent BEGIN at 0x0 is legal");

@@ -4,9 +4,9 @@
 //! ([`tokens`], synced by `brand.config.json`; never edit them here). This
 //! crate wraps them with what every port must compute the same way:
 //!
-//! - [`derive()`]: one terminal theme to the full role set (spec §2.2–2.3),
+//! - [`derive()`]: one terminal theme to the full role set,
 //!   bit for bit with phux-brand's `tools/derive.ts`;
-//! - [`tone_of`], [`plural`] and [`word`]: the status vocabulary (§1.3);
+//! - [`tone_of`], [`plural`] and [`word`]: the status vocabulary;
 //! - [`catalog()`]: the unified theme catalog (`tokens/themes.json`).
 //!
 //! `tests/vectors.rs` spot-checks it against a subset of phux-brand's golden

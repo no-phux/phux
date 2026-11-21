@@ -193,7 +193,7 @@ async fn answer(route: ListingRoute, path: String) -> DirectoryListingResult {
         ListingRoute::Relay(relay) => {
             relay_request(&RELAYED_LISTINGS, &RELAYED_PER_HOST, &relay, path).await
         }
-        // L3 §4.1: a refusal carries the full requested path.
+        // A refusal carries the full requested path.
         ListingRoute::Refused(message) => Err(listing_refusal(&path, message)),
     }
 }

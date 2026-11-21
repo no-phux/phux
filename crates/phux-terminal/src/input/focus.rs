@@ -21,7 +21,7 @@ impl PerTerminalFocusEncoder {
     }
 
     /// Encode a focus event into PTY bytes; `Ok(None)` when DEC 1004 is off
-    /// (dropped per SPEC §9.3).
+    /// (dropped).
     pub fn encode(
         &mut self,
         event: FocusEvent,

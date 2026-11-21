@@ -103,7 +103,7 @@ impl SpawnRequest {
         let durable = self.retain_secs.is_some() || self.idempotency_key.is_some();
         FrameKind::SpawnResource {
             request_id: 1,
-            // v0.1 servers expose the single default group (SPEC §3.1).
+            // v0.1 servers expose the single default group.
             group: GroupId::new(1),
             command: (!self.command.is_empty()).then(|| self.command.clone()),
             cwd: self.cwd.clone(),

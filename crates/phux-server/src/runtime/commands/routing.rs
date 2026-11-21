@@ -91,7 +91,7 @@ impl CommandContext {
 }
 
 /// Dispatch a `COMMAND` and reply with its correlated `COMMAND_RESULT`
-/// (SPEC §5). The result may follow frames the command triggered.
+///. The result may follow frames the command triggered.
 #[tracing::instrument(
     level = "info",
     name = "handle_command",
@@ -253,7 +253,7 @@ async fn route_command(
         return None;
     }
 
-    // L1 §5.1.1: keyed commands are admitted after routing; a satellite owns
+    // Keyed commands are admitted after routing; a satellite owns
     // the dedupe of what it runs.
     let claim = match super::super::keyed_ops::admit(state, &command).await {
         super::super::keyed_ops::KeyedAdmission::Unkeyed => None,

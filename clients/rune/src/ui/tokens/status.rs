@@ -1,4 +1,4 @@
-//! Status ink (§1.3): each tone's colour and companions, and each ladder
+//! Status ink: each tone's colour and companions, and each ladder
 //! state's mark, word and weight. Replaces the views' own mark colours.
 
 use phux_design::{Roles, State, Tone};
@@ -88,7 +88,7 @@ impl StatusInk {
     }
 }
 
-/// The vector mark for `state` (§1.3 rule 1).
+/// The vector mark for `state`.
 pub(crate) const fn icon(state: State) -> &'static Icon {
     match state {
         State::NeedsYou => &icons::STATUS_NEEDS_YOU,

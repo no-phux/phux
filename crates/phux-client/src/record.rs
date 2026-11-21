@@ -93,7 +93,7 @@ async fn record_on_connection(
     // Before the subscription exists there is nothing to tear down.
     let primed = subscribe(conn, &terminal_id).await?;
     let outcome = pump(conn, primed, max_duration, progress).await;
-    // Best-effort teardown: DETACH_RESOURCE is idempotent (L1 §5.1).
+    // Best-effort teardown: DETACH_RESOURCE is idempotent.
     let _ = conn
         .send(&FrameKind::Command {
             request_id: REQUEST_DETACH,

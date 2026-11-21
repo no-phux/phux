@@ -71,7 +71,7 @@ fn refuse_satellite_metadata_scope(
     true
 }
 
-/// Record an L3 metadata subscription for `client_id` (SPEC §7.4). The
+/// Record an L3 metadata subscription for `client_id`. The
 /// mailbox is captured so a consumer that never attached still receives
 /// `METADATA_CHANGED`.
 pub(super) fn handle_subscribe_metadata(
@@ -114,9 +114,9 @@ pub(super) fn handle_subscribe_metadata(
     });
 }
 
-/// Record an agent-event subscription for `client_id` (SPEC §7.5,
-/// ADR-0123): server-wide or per-pane, not tier-gated. With `after_seq` it
-/// replays from the journal first (L1 §7.3); what the mailbox cannot take
+/// Record an agent-event subscription for `client_id`
+/// (ADR-0123): server-wide or per-pane, not tier-gated. With `after_seq` it
+/// replays from the journal first; what the mailbox cannot take
 /// is owed as a `journal_gap` and delivered by the event pump.
 pub(super) fn handle_subscribe_events(
     state: &SharedState,

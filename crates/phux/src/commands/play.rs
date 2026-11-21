@@ -155,7 +155,7 @@ fn run_launcher(args: &Request<'_>) -> ExitCode {
     let request_id = 1_u32;
     let frame = FrameKind::SpawnResource {
         request_id,
-        // v0.1 servers expose the single default group (SPEC L1 §3.1).
+        // v0.1 servers expose the single default group.
         group: phux_protocol::ids::GroupId::new(1),
         command: Some(writer_argv(&exe, &file, &socket_path, args)),
         // No cwd: the writer reads one absolute file and writes to its own

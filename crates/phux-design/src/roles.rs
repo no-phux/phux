@@ -1,4 +1,4 @@
-//! The full colour role set (spec §1.2), owned so a derived theme can hold one.
+//! The full colour role set, owned so a derived theme can hold one.
 
 use crate::color::{Mode, Rgba8};
 use crate::tokens::{
@@ -57,7 +57,7 @@ impl Roles {
         Self::from_tokens(mode, pick(mode, &tokens::COLOR))
     }
 
-    /// The house look's increased-contrast variant (§1.11).
+    /// The house look's increased-contrast variant.
     #[must_use]
     pub fn house_contrast_more(mode: Mode) -> Self {
         Self::from_tokens(mode, pick(mode, &tokens::CONTRAST_MORE))
@@ -135,7 +135,7 @@ impl Roles {
     }
 }
 
-/// A status tone with its three companions (§1.2): the alpha lives in each.
+/// A status tone with its three companions: the alpha lives in each.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ToneInk {
     pub ink: Rgba8,

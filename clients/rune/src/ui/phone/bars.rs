@@ -193,7 +193,7 @@ pub(super) fn tab_pills(desk: &Desk, p: &Look) -> Option<El> {
     })
 }
 
-/// One tab: a 44-point pill, selected the one way (§1.10), with the
+/// One tab: a 44-point pill, selected the one way, with the
 /// needs-you mark and word when one of its terminals asks.
 fn tab_pill(desk: &Desk, index: usize, tab: &crate::desk::Tab, p: &Look) -> El {
     let s = &p.space;

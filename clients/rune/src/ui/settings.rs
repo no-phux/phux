@@ -1,7 +1,7 @@
 //! Settings has its own quiet surface and navigation, not a second palette.
 //!
 //! The desktop form is the OWN sheet at 840×600 with a category rail; the
-//! phone form is full bleed at `radius.xl` (§4.1.3). Everything is drawn
+//! phone form is full bleed at `radius.xl`. Everything is drawn
 //! from the window's [`Tokens`].
 
 use super::tokens::layout::SETTINGS as GEOMETRY;
@@ -19,7 +19,7 @@ mod theme_row;
 pub(super) use controls::{Toggle, grown, kit_button, section, toggle};
 
 /// Primary copy: a row's title. The phone reads a size up, `lead` for
-/// `body` (§4.1.3, the phone type bumps onto roles).
+/// `body` (the phone type bumps onto roles).
 pub(super) fn primary(desk: &Desk, t: &Tokens) -> TextStyle {
     if desk.phone.is_some() {
         t.ty.lead
@@ -260,7 +260,7 @@ fn detail(desk: &Desk, t: &Tokens) -> El {
 }
 
 /// The sheet's close: kit `IconButton`, ghost, as every sheet's is; no
-/// rest fill (`wash.current` is the keyboard cursor's, §1.10).
+/// rest fill (`wash.current` is the keyboard cursor's).
 fn close(t: &Tokens) -> El {
     let side = t.space.touch_min;
     super::icon_press(

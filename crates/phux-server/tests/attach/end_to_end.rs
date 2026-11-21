@@ -178,7 +178,7 @@ fn a_newer_minor_or_patch_of_the_same_major_is_admitted() {
 }
 
 /// Each case is a fresh connection whose frames end in a fatal protocol
-/// error: an `ERROR` with the expected code and message, then SPEC §14's
+/// error: an `ERROR` with the expected code and message, then the
 /// `DETACHED { PROTOCOL_ERROR }` and close.
 #[test]
 #[allow(clippy::too_many_lines, reason = "one table of handshake cases")]

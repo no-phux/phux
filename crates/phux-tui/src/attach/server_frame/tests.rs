@@ -663,7 +663,7 @@ fn path_results_reply_reaches_driver_for_generation_matching() {
 }
 
 /// A request-correlated reply whose awaiter already moved on arrives here as
-/// interleaved traffic and must be inert, not fatal (L1 §5). `C-a o` during
+/// interleaved traffic and must be inert, not fatal. `C-a o` during
 /// a concurrent layout drive once tore the client down over a success reply.
 #[test]
 fn raced_request_correlated_replies_are_inert_not_fatal() {
@@ -2105,7 +2105,7 @@ fn unfocused_holder_transition_yields_no_notice() {
     assert_eq!(h.mirror.panes[&background].input_holder, Some(holder));
 }
 
-/// No `ErrorCode`, correlated or not, ends the attach (SPEC §9: termination
+/// No `ErrorCode`, correlated or not, ends the attach (termination
 /// is `DETACHED` plus transport close). Uncorrelated codes raise one Warn
 /// notice naming the code; `SatelliteUnreachable` uses the degraded wording;
 /// correlated ones stay on their request path. Swept from the wire tables.

@@ -45,7 +45,7 @@ impl Topology {
             RelayedServer::start(d, relay.addr, &relay_pin, &TUNNEL_TOKEN, |cfg, paths| {
                 if paired {
                     // Naming the authority without `paired` refuses to start
-                    // (workload-auth §8), so only the paired server names it.
+                    //, so only the paired server names it.
                     cfg.policy_mode = Some(phux_config::PolicyMode::Paired);
                     cfg.env.workload_ca = Some(paths.ca_cert.clone());
                     cfg.env.workload_ca_key = Some(paths.ca_key.clone());

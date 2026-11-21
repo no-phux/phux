@@ -46,7 +46,7 @@ phux-core.workspace = true
 phux-config.workspace = true
 # The phux design language: the house look's roles, the theme-to-roles
 # solver the chrome slots are filled from, and the status ladder. No
-# dependencies of its own (spec §4.2).
+# dependencies of its own.
 phux-design.workspace = true
 # Status-bar `Cell::text` is built inline; matches phux-protocol's storage
 # type for `Cell::text` (see phux-x7a).

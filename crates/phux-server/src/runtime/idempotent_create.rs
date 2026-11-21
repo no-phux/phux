@@ -1,4 +1,4 @@
-//! Idempotent creates (ADR-0126, SPEC L1 §3.1, L3 §3.1): a keyed
+//! Idempotent creates (ADR-0126): a keyed
 //! `SPAWN_RESOURCE` and a token-bearing `phux.session.create/v1`, on the
 //! shared dedupe record.
 //!
@@ -92,7 +92,7 @@ pub(crate) fn bind_spawned(s: &ServerState, key: Option<IdempotencyKey>, id: &Wi
 
 /// Undo [`bind_spawned`] for a resource reaped before its spawner received
 /// a usable generation: a refused spawn binds nothing, so a retry spawns
-/// fresh (SPEC L1 §3.1). Call it in the step that reaps the resource. A key
+/// fresh. Call it in the step that reaps the resource. A key
 /// that has since been bound to something else is left alone.
 pub(crate) fn unbind_spawned(s: &ServerState, key: Option<IdempotencyKey>, id: &WireResourceId) {
     let Some(key) = key else {

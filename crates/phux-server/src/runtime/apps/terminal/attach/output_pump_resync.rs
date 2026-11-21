@@ -231,7 +231,7 @@ impl OutputPumpContext {
     }
 
     /// Publish the synthesized-VT replacement generation for a resync. A
-    /// live generation is tombstoned first (L1 §4.6), in the same queued
+    /// live generation is tombstoned first, in the same queued
     /// batch, so a deferred resync retires nothing.
     async fn republish_synthesized_generation(
         &self,

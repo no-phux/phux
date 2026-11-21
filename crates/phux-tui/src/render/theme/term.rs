@@ -1,4 +1,4 @@
-//! What the outer terminal can show (spec §4.2): its colour depth, the
+//! What the outer terminal can show: its colour depth, the
 //! background chrome text lands on, and whether the status ladder must fall
 //! back to ASCII.
 //!

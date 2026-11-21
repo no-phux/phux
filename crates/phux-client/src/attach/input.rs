@@ -1,5 +1,5 @@
 //! Stdin VT-byte parsing: turns the bytes a TTY puts on stdin into structured
-//! [`InputEvent`]s (SPEC §9). libghostty-vt only ships encoders, so this is a
+//! [`InputEvent`]s. libghostty-vt only ships encoders, so this is a
 //! small hand-rolled xterm/VT input lexer.
 //!
 //! Handled: printable ASCII and UTF-8, C0 controls (CR = Enter, LF = Ctrl-J,

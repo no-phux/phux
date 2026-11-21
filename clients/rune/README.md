@@ -292,14 +292,10 @@ each line; the window asks first (Return pastes, Esc cancels).
 - A question raised through a hook before the window connected has no text
   to show (the server keeps only that one is pending); its card opens the
   terminal instead. Title-sentinel asks always show.
-- A URL that fills a row is assumed to continue on the next one (frames
-  carry no soft-wrap flag yet); the title bar shows the joined target
-  before a ⌘-click.
 - Screen readers get Settings, the buttons and notices, but terminal text,
   the palette's results, tabs and sidebar rows don't read well yet.
 - A GIF with no loop extension loops in a typed document instead of
   playing once: `image` reads it as an infinite loop, and Rune trusts it.
-- No DMG yet; the ZIP is the macOS download.
 - On Wayland there is no middle-click paste, and only sway is checked; see
   [Install](#install).
 - The update check draws off-screen, so a build that only fails when opening a

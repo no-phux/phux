@@ -234,7 +234,7 @@ pub(super) fn current_viewport_or_default() -> ViewportInfo {
 pub(super) const HOST_CELL_PX_FALLBACK: (u16, u16) = (8, 16);
 
 /// The host's per-cell pixel size, floored exactly as the server derives it
-/// (SPEC L1 §9.2.1).
+///.
 pub(super) fn host_cell_px(viewport: &ViewportInfo) -> (u16, u16) {
     resize_cell_px(viewport).unwrap_or(HOST_CELL_PX_FALLBACK)
 }

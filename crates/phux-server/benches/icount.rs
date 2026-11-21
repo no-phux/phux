@@ -11,7 +11,7 @@
 //!   libghostty.
 //! - Organization commit: one `ResourceMove` through `ServerState` into a
 //!   SQLite store holding 5,000 resources in 200 sessions and a receipt
-//!   window at its cap (CONTRACTS §08).
+//!   window at its cap.
 //!
 //! The engine's own scenarios are `phux-terminal`'s `terminal_icount` bench;
 //! both report to `benchmarks/icount-baseline.json`.

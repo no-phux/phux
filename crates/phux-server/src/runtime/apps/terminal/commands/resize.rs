@@ -7,7 +7,7 @@
 use super::*;
 use phux_terminal_api::actor::TerminalResource as _;
 
-/// Handle a client's `RESIZE_TERMINAL` (L1 §3.1): set one Terminal's exact
+/// Handle a client's `RESIZE_TERMINAL`: set one Terminal's exact
 /// size (and, when carried, its cell pixel size), bypassing the window-size
 /// policy, so a headless caller or a layout-owning client can size a pane. A later view-derived recompute may supersede it (docs/architecture.md).
 /// There is no reply frame, so not-found paths log and drop.
@@ -68,7 +68,7 @@ fn resize_destination<'a>(
     match handle.terminal() {
         Ok(terminal) => Some(terminal),
         Err(error) => {
-            // L1 §1.1: no reply frame, so an uncorrelated ERROR.
+            // No reply frame, so an uncorrelated ERROR.
             send_wrong_kind_error(s, client_id, error);
             None
         }

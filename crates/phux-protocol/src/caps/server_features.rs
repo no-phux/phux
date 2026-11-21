@@ -1,12 +1,12 @@
 // -----------------------------------------------------------------------------
-// Layer / LayerSet — SPEC §6.2 conformance-tier bitset (ADR-0015).
+// Layer / LayerSet — conformance-tier bitset (ADR-0015).
 // -----------------------------------------------------------------------------
 
-/// A single conformance tier (SPEC §6.2 / §16).
+/// A single conformance tier.
 ///
 /// L1 is always implied; the negotiated set is the intersection of both peers'
 /// [`LayerSet`]s, and out-of-tier messages MUST surface as protocol errors
-/// (§16.4, ADR-0015).
+/// (ADR-0015).
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
@@ -14,9 +14,9 @@ pub enum Layer {
     /// Resource substrate: attach, streams, input, and resource lifecycle
     /// for every kind. Always implemented; always implied.
     L1 = 0x01,
-    /// Collection lifecycle (OPTIONAL). SPEC §7.3 / §11.L2.
+    /// Collection lifecycle (OPTIONAL).
     L2 = 0x02,
-    /// Metadata storage (OPTIONAL). SPEC §7.4 / §11.L3.
+    /// Metadata storage (OPTIONAL).
     L3 = 0x04,
 }
 

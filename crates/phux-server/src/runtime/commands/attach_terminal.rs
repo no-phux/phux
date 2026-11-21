@@ -6,7 +6,7 @@
 
 use super::*;
 
-/// Handle `ATTACH_RESOURCE` (SPEC §5.1): subscribe the caller to one
+/// Handle `ATTACH_RESOURCE`: subscribe the caller to one
 /// Terminal's content stream, snapshot first, without a session `ATTACH`.
 /// Idempotent: a re-attach re-sends a snapshot without a second pump. It
 /// never resizes; interactive callers follow with `RESIZE_TERMINAL`.
@@ -147,7 +147,7 @@ pub(crate) async fn bootstrap_attach_terminal(
 ///
 /// The mailbox is remembered with the subscription because a session-less
 /// subscriber has no other route for lifecycle fanout such as
-/// `RESOURCE_CLOSED` (L1 §3.1). `role` (ADR-0127) applies in the same
+/// `RESOURCE_CLOSED`. `role` (ADR-0127) applies in the same
 /// critical section; `None` leaves the role untouched (a `STREAM_BIND`).
 pub(crate) fn subscribe_attach_terminal(
     state: &SharedState,
@@ -163,7 +163,7 @@ pub(crate) fn subscribe_attach_terminal(
             .resource_from_wire(terminal_id)
             .ok_or_else(not_found)?;
         let handle = s.resources().handle(core).cloned().ok_or_else(not_found)?;
-        // The lease is a Terminal-facet concept (L1 §1.1), so a takeover of
+        // The lease is a Terminal-facet concept, so a takeover of
         // any other kind is refused the way `ACQUIRE_INPUT` refuses it.
         if role.is_some_and(RolePolicy::takes_over)
             && handle.kind != crate::resource::ResourceKind::Terminal
@@ -265,7 +265,7 @@ pub(super) fn invalid_agent_cursor() -> CommandResult {
 }
 
 /// `{ VIEWER, DELIBERATE }` on `ATTACH_RESOURCE` is `INVALID_COMMAND`
-/// (L1 §8.1): a viewer cannot take the wheel.
+///: a viewer cannot take the wheel.
 pub(super) fn refuse_invalid_role_policy(command: &Command) -> Option<CommandResult> {
     let Command::AttachResource {
         role_policy: Some(policy),

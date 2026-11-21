@@ -40,7 +40,7 @@ impl PaneCaptureContext<'_> {
     /// snapshot, so its cache is primed against the same state. When the
     /// actor tick-manages the consumer, its tick is the sole emitter and the
     /// broadcast pump must be suppressed (two `seq` streams on one mailbox
-    /// violate SPEC §12.2). Any failure falls back to the broadcast path.
+    /// leave a gap). Any failure falls back to the broadcast path.
     pub(super) async fn register_consumer(
         &self,
         handle: &ResourceHandle,

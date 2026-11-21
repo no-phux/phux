@@ -108,7 +108,7 @@ impl Session {
     ///
     /// On WebSocket the read also ping/pong probes an idle peer, so one
     /// that stops answering surfaces as [`SessionError::Disconnected`]. A
-    /// SPEC §5 framing violation is answered with `ERROR { FRAME_TOO_LARGE }`
+    /// framing violation is answered with `ERROR { FRAME_TOO_LARGE }`
     /// (best-effort) before [`SessionError::Framing`] is returned.
     ///
     /// # Errors
@@ -213,7 +213,7 @@ impl Session {
         Ok(())
     }
 
-    /// SPEC §5: send `ERROR { FRAME_TOO_LARGE }` before the caller drops
+    /// Framing (`docs/protocol.md#framing`): send `ERROR { FRAME_TOO_LARGE }` before the caller drops
     /// the connection, ahead of (and so dropping) any corked batch.
     /// Best-effort: a vanished peer cannot fail the close.
     async fn answer_framing_violation(&mut self, violation: FramingError) {

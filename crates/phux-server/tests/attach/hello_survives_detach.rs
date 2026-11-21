@@ -37,7 +37,7 @@ fn l1_only_consumer_still_fails_the_l3_gate_after_detach() {
         let server = SpawnedServer::start(Some("work"), |_| {});
         let mut stream = attach_then_detach(&server.socket, LayerSet::new()).await;
 
-        // A non-L3 consumer's GET_METADATA is dropped silently (§11.5); the
+        // A non-L3 consumer's GET_METADATA is dropped silently; the
         // in-order PONG proves it was already dispatched.
         let get = phux_server_testkit::get_metadata(
             7,

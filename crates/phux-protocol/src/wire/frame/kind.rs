@@ -186,7 +186,7 @@ impl FrameKind {
 
         // Backfill the length header. The length value excludes the four
         // header bytes themselves but includes the type byte and payload, per
-        // SPEC §5.
+        // docs/protocol.md#framing
         let body_len = out.len() - body_start;
         debug_assert!(
             u32::try_from(body_len).is_ok_and(|n| n <= MAX_FRAME_LEN),

@@ -224,7 +224,7 @@ pub struct TerminalActor {
     pty: Option<PtyOwned>,
     /// The grace the child gets on teardown.
     hangup: HangupPolicy,
-    /// Sink for agent events sourced from the PTY stream (SPEC §7.5), set by
+    /// Sink for agent events sourced from the PTY stream, set by
     /// the runtime's spawn path and drained into the event journal.
     /// Non-blocking: a full sink drops and counts, for a `source_gap`
     /// (ADR-0123).

@@ -20,7 +20,7 @@ fn live_session_probe(
 /// attaching viewport, or a spawn without `SPAWN_RESOURCE.initial_size`).
 pub(crate) const DEFAULT_SPAWN_DIMS: (u16, u16) = crate::state::HEADLESS_TERMINAL_DIMS;
 
-/// Journal a pane's `pane_spawned` (L1 §7.1) in the lock that registers its
+/// Journal a pane's `pane_spawned` in the lock that registers its
 /// actor, so it always takes a lower `seq` than the pane's `pane_closed`
 /// (ADR-0123).
 fn journal_pane_spawned(

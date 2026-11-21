@@ -197,7 +197,7 @@ impl ResolvesClientCert for PresentHeld {
 pub const REQUIRE_PAIRED_ENV: &str = "PHUX_WORKLOAD_REQUIRE_PAIRED";
 
 /// The handshake refusal for a server that did not request the client
-/// certificate (workload-auth §3 downgrade).
+/// certificate (a downgrade).
 pub const DOWNGRADE_REFUSED: &str = "the server did not request a client certificate; \
      refusing to continue without paired authority";
 

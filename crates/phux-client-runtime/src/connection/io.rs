@@ -1,4 +1,4 @@
-//! Framed I/O over one established link: the SPEC §5 frame stream every
+//! Framed I/O over one established link: the frame stream every
 //! client lane reads and writes.
 //!
 //! The reconnecting driver pumps an [`Io`] into the control plane; a
@@ -67,7 +67,7 @@ pub(crate) enum LinkError {
     Write(std::io::Error),
     /// A write made no progress for [`SEND_BUDGET`].
     Stalled,
-    /// The peer broke SPEC §5 framing.
+    /// The peer broke the framing rules (`docs/protocol.md#framing`).
     Framing(FramingError),
     /// The WebSocket lane failed (I/O, protocol, or liveness).
     Ws(DialError),

@@ -5,7 +5,7 @@
 //! Per connection: subscribe (from the cursor's `seq` when it belongs to this
 //! incarnation, else [`NO_REPLAY`]), then `GET_STATE`. An exit facet answers
 //! `exited`; a live pane waits for its exit or close event; an absence is
-//! `gone` once any replay has reached the snapshot's journal head (L1 §7.3),
+//! `gone` once any replay has reached the snapshot's journal head,
 //! since the state answer can overtake the replay. A replay gap marks
 //! evidence lost; a live gap resumes on a fresh connection from the last
 //! `seq` accounted for. Subscribing before the cut means every exit is in the
@@ -164,7 +164,7 @@ pub enum WaitFailure {
     )]
     PartialView(Vec<String>),
     /// The server refused the subscription or the state read (a scoped
-    /// connection without `OBSERVE`, workload-auth §7): no answer will come.
+    /// connection without `OBSERVE`): no answer will come.
     #[error("the server refused the wait: {0}")]
     Denied(String),
 }
@@ -896,7 +896,7 @@ mod tests {
         assert_eq!(wait.cursor.expect("cursor").seq(), 50);
     }
 
-    /// The head is per connection (L1 §7.3): events on other terminals do
+    /// The head is per connection: events on other terminals do
     /// not raise it, so a head at or below the cursor is caught up and a
     /// closed pane's absence answers `gone` at once, not at the deadline.
     #[tokio::test]
@@ -1146,7 +1146,7 @@ mod tests {
     }
 
     /// A refused state read, or a subscription refused with an uncorrelated
-    /// `PERMISSION_DENIED` (workload-auth §7), ends the wait at once as
+    /// `PERMISSION_DENIED`, ends the wait at once as
     /// denied rather than at the deadline.
     #[tokio::test]
     async fn a_refusal_ends_the_wait_promptly_as_denied() {

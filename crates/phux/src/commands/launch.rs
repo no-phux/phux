@@ -294,7 +294,7 @@ const fn spawn_resource_frame(
 ) -> FrameKind {
     FrameKind::SpawnResource {
         request_id,
-        // v0.1 servers expose the single default group (SPEC §3.1).
+        // v0.1 servers expose the single default group.
         group: GroupId::new(1),
         command: Some(command),
         cwd: Some(cwd),

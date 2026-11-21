@@ -70,7 +70,7 @@ pub(crate) use layout::SHEET_MAX_H;
 /// The chrome's mono face (bundled in `grid::FONTS`).
 pub(crate) const MONO: Family = Family::Named("Paper Mono");
 
-/// §1.8's springs as Rune pairs, the curves and loops, and the enter scale.
+/// The design springs as Rune pairs, the curves and loops, and the enter scale.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct MotionPairs {
     pub(crate) press: SpringPair,
@@ -147,7 +147,7 @@ impl MotionPairs {
     }
 }
 
-/// Icon and mark sizes at the chrome's text scale (§1.4 text scaling): a
+/// Icon and mark sizes at the chrome's text scale: a
 /// mark keeps its size against the label beside it, so the largest text
 /// never sets 30 pt words beside 10 pt marks. The 16 pt drawing grid is
 /// the icons' coordinate space, not a size, and stays.
@@ -213,7 +213,7 @@ pub(crate) struct Tokens {
     pub(crate) kit: rune_kit::Kit,
     /// The kit the selection controls build with ([`Self::controls`]).
     controls: [rune_kit::Kit; 2],
-    /// Every colour role (§1.2), the variant for increased contrast included.
+    /// Every colour role, the variant for increased contrast included.
     pub(crate) roles: Roles,
     pub(crate) space: tok::Space,
     pub(crate) radius: tok::Radius,
@@ -228,7 +228,7 @@ pub(crate) struct Tokens {
     pub(crate) glass: f32,
     pub(crate) increased_contrast: bool,
     pub(crate) reduce_transparency: bool,
-    /// The system's forced colours drew every role (§1.11).
+    /// The system's forced colours drew every role.
     pub(crate) forced: bool,
     /// Changes whenever anything a memo reads here does.
     pub(crate) version: u64,
@@ -285,7 +285,7 @@ fn solved(inputs: &Inputs) -> Roles {
 }
 
 /// `rgb` moved toward the mode's extreme, at most 50%, until it reads at
-/// 3:1 on the ground, the sidebar and raised surfaces (§1.2 identity).
+/// 3:1 on the ground, the sidebar and raised surfaces.
 pub(crate) fn ease_host(rgb: u32, roles: &Roles) -> Color {
     let lut = phux_design::Params::house().srgb_lut;
     let c = Rgb8::hex(rgb);
@@ -308,7 +308,7 @@ impl Tokens {
         let ty = Type::new(scale);
         let motion = MotionPairs::house();
         let forced = inputs.forced.is_some();
-        // Forced colours drop every shadow (§1.11).
+        // Forced colours drop every shadow.
         let tiers = if forced {
             Tiers::none(&roles)
         } else {
@@ -416,7 +416,7 @@ impl Tokens {
     }
 
     /// `tier` with the glow layer in `color` in place of its second drop
-    /// (§1.7): the focused card in its host colour, the waiting dot.
+    ///: the focused card in its host colour, the waiting dot.
     pub(crate) fn elevate_glowing(&self, e: El, tier: Tier, color: Color) -> El {
         self.tiers
             .glowing(tier, color)
@@ -468,14 +468,14 @@ impl Tokens {
         .paint()
     }
 
-    /// The radius of a surface nested `inset` inside one of `outer` (§1.5
-    /// nesting): the outer radius minus the inset, never under `xs`, so the
+    /// The radius of a surface nested `inset` inside one of `outer`:
+    /// the outer radius minus the inset, never under `xs`, so the
     /// two curves run parallel.
     pub(crate) fn nested(&self, outer: f32, inset: f32) -> f32 {
         (outer - inset).max(self.radius.xs)
     }
 
-    /// The one modal entry (§1.8): exits fade; entries scale up from
+    /// The one modal entry: exits fade; entries scale up from
     /// `enter_scale` on the pop spring.
     pub(crate) fn enter(&self) -> rune::Transition {
         rune::Transition::asymmetric(

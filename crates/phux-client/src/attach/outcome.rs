@@ -38,8 +38,8 @@ pub enum AttachError {
     #[error("protocol error: {0}")]
     Protocol(String),
 
-    /// A SPEC §5 framing violation, already answered with
-    /// `ERROR { FRAME_TOO_LARGE }` as §5 requires.
+    /// A framing violation, already answered with
+    /// `ERROR { FRAME_TOO_LARGE }` (`docs/protocol.md#framing`).
     #[error("protocol error: server sent a malformed frame: {0}")]
     Framing(#[from] FramingError),
 

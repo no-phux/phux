@@ -1,7 +1,7 @@
 //! The tab strip, shown once a session has more than one tab, and the
 //! rename dialog.
 //!
-//! Tabs are phux's own (§4.1.3 OWN), on tokens: kit `TabStrip` draws the
+//! Tabs are phux's own (OWN), on tokens: kit `TabStrip` draws the
 //! active tab as a pressed overlay with no lifted edge or elevation, sits
 //! at a fixed 28 points, colours busy dots with the accent and keys its
 //! tabs itself, where phux keeps `tab-N`, `Grab::Tab` and the menus.
@@ -159,7 +159,7 @@ fn loudest(desk: &Desk, tab: &Tab) -> Option<Mark> {
         .min_by_key(|m| state_of(*m).rank())
 }
 
-/// The tab's status mark (§1.3), named by its word. Needs-you glows, the
+/// The tab's status mark, named by its word. Needs-you glows, the
 /// one coloured shadow a mark may cast.
 fn status_mark(mark: Mark, t: &Tokens) -> El {
     let Face {
@@ -259,7 +259,7 @@ fn tab(desk: &Desk, tab: &Tab, index: usize, width: f32, t: &Tokens, state: Forc
     };
     let base = if tab.active {
         // The one you are on never gives up its name to a crowd. It is
-        // §1.10's selected treatment (`face_for`), lifted onto the raised
+        // The selected treatment (`face_for`), lifted onto the raised
         // tier.
         t.elevate(base, Tier::Raised)
             .max_w(width.max(FIT.active_least))
@@ -267,7 +267,7 @@ fn tab(desk: &Desk, tab: &Tab, index: usize, width: f32, t: &Tokens, state: Forc
         // `shrink` clears the floor, so the floor is set after it.
         base.max_w(width).shrink().min_w(FIT.narrowest.min(width))
     };
-    // Where a dragged tab would land (§1.10 drag).
+    // Where a dragged tab would land.
     let base = if target {
         base.border(s.hairline, t.roles.border.focus.paint())
     } else {

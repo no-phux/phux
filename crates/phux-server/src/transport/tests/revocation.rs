@@ -2,7 +2,7 @@ use super::*;
 mod credentials;
 
 /// ADR-0116: revoking a bearer ends its established session with the
-/// workload-auth §7 goodbye, refuses reconnection, and cleans up state.
+/// revocation goodbye, refuses reconnection, and cleans up state.
 #[allow(
     clippy::too_many_lines,
     reason = "one linear end-to-end connection lifecycle is clearer than stateful test helpers"

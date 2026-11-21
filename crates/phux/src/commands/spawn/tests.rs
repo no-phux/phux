@@ -289,7 +289,7 @@ async fn assert_no_writes(mut conn: MockConnection, listener: tokio::net::UnixLi
 }
 
 /// `phux spawn --json` pins `schema_version` 1 plus the two documented
-/// fields (§4.11) for both a local and a satellite-routed spawn.
+/// fields for both a local and a satellite-routed spawn.
 #[test]
 fn spawned_document_pins_the_contract_shape() {
     let doc = phux_client::spawn::spawned_document(&ResourceId::local(7), false);

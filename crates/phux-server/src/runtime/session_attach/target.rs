@@ -11,7 +11,7 @@ use crate::state::{Outbound, SharedState};
 /// Resolve `target` to the session the attach joins: the one the dispatch
 /// guard authorized, pinned by id before the first await, or the one a
 /// `CreateIfMissing` creates. No name is re-resolved after an await, so a
-/// concurrent rename cannot redirect the attach (workload-auth §5).
+/// concurrent rename cannot redirect the attach.
 pub(super) async fn resolve_attach_target(
     state: &SharedState,
     target: AttachTarget,

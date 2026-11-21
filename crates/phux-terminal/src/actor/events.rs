@@ -11,7 +11,7 @@ use crate::agent_detect::DetectedState;
 use phux_agent_session::asked::AskedPayload;
 
 impl TerminalActor {
-    /// Wire the agent-event sink (SPEC §7.5); the runtime drains it into the
+    /// Wire the agent-event sink; the runtime drains it into the
     /// event journal (ADR-0123). Set before `spawn_local`.
     pub fn set_event_sink(&mut self, sink: impl Into<phux_resource::event_sink::EventSink>) {
         self.event_sink = Some(sink.into());
@@ -26,7 +26,7 @@ impl TerminalActor {
     }
 
     /// Emit a signal's `terminal_control`, attributed to the client that
-    /// sent it and to its `operation_id` when keyed (L1 §5.1.1, §7.3).
+    /// sent it and to its `operation_id` when keyed.
     pub(super) fn emit_signal_control(
         &self,
         action: ControlAction,

@@ -46,7 +46,7 @@ pub(super) fn closed_frame(id: u32) -> FrameKind {
 #[tokio::test]
 async fn full_mailbox_retains_the_snapshot_so_a_delta_never_overtakes_it() {
     // A snapshot refused by a full mailbox is retained, so a later delta
-    // cannot reach the consumer first (L1 §9.1).
+    // cannot reach the consumer first.
     let mut session = RelaySession::new(host(), BootstrapLimits::default());
     let (out_tx, mut out_rx) = mpsc::channel(2);
     subscribe(&mut session, 9, ClientId(1), out_tx.clone());
@@ -159,7 +159,7 @@ async fn a_fresher_snapshot_replaces_a_retained_one() {
 #[test]
 fn a_second_attach_sees_its_snapshot_before_any_delta_of_the_ongoing_stream() {
     // B attaches while A streams: B must not see A's delta before its own
-    // snapshot (L1 §9.1).
+    // snapshot.
     let mut session = RelaySession::new(host(), BootstrapLimits::default());
     let (tx_a, mut rx_a) = mpsc::channel(8);
     let (tx_b, mut rx_b) = mpsc::channel(8);
@@ -245,7 +245,7 @@ fn a_gated_attach_still_receives_bell_and_terminal_closed() {
 
 /// Event-only subscriptions carry no snapshot, so they flow at once, and a
 /// re-subscribe does not re-gate them. The hub drops the satellite's
-/// journal stamp (L1 §7.3).
+/// journal stamp.
 #[test]
 fn an_event_only_subscription_flows_ungated_without_the_satellite_stamp() {
     let mut session = RelaySession::new(host(), BootstrapLimits::default());
@@ -275,7 +275,7 @@ fn an_event_only_subscription_flows_ungated_without_the_satellite_stamp() {
 #[test]
 fn subscribe_then_attach_upgrade_gates_deltas_until_the_attach_snapshot() {
     // An event subscriber upgrading to an attach is re-gated until the
-    // attach's snapshot (L1 §9.1).
+    // attach's snapshot.
     let mut session = RelaySession::new(host(), BootstrapLimits::default());
     let (out_tx, mut out_rx) = mpsc::channel(8);
 

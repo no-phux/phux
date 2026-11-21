@@ -79,7 +79,7 @@ fn reject_set_metadata(
         warn!(?client_id, request_id, %key, reason, "SET_METADATA: ignoring");
         return true;
     }
-    // ADR-0129 / L3 §2: an oversized value is refused whole.
+    // ADR-0129: an oversized value is refused whole.
     let cap = state.with(|s| s.config().metadata_value_bytes) as usize;
     if value.len() > cap {
         warn!(
@@ -279,7 +279,7 @@ pub(super) fn handle_set_metadata(
         key == phux_protocol::wire::frame::CONFIG_RELOAD_KEY && matches!(scope, Scope::Global);
     store_metadata_value(state, client_id, request_id, scope, key, value);
     // A hub is a doorbell consumer too: it re-reads its own `[[satellites]]`
-    // (L3 §3.8), before any later frame on this connection is handled, so a
+    //, before any later frame on this connection is handled, so a
     // writer's read-back barrier also covers the reload.
     if config_reload {
         crate::hub::reload_satellites(state);

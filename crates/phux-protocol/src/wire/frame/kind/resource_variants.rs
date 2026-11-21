@@ -9,8 +9,8 @@ use super::FrameKind;
 macro_rules! resource_frames {
     ($next:ident!($($rest:tt)*) $($done:tt)*) => {
         $next!($($rest)* $($done)*
-    // L3 metadata frames (SPEC §7.4). Values are opaque bytes; the server
-    // MUST NOT emit `MetadataChanged` to a non-L3 consumer (SPEC §16.4).
+    // L3 metadata frames. Values are opaque bytes; the server
+    // MUST NOT emit `MetadataChanged` to a non-L3 consumer.
     /// `GET_METADATA` — read the value at `(scope, key)`
     /// (`docs/protocol.md#commands-events-resources`); answered by `METADATA_VALUE`.
     GetMetadata {
@@ -19,7 +19,7 @@ macro_rules! resource_frames {
         /// Where to look the key up.
         scope: Scope,
         /// UTF-8 key name. Convention: `phux.<consumer>.<name>/<version>`
-        /// per SPEC §17 (non-normative).
+        /// (non-normative).
         key: String,
     },
 
@@ -121,7 +121,7 @@ macro_rules! resource_frames {
         result: DirectoryListingResult,
     },
 
-    /// Host-side one-level browse or recursive fuzzy path search (L3 §5).
+    /// Host-side one-level browse or recursive fuzzy path search.
     PathQuery {
         /// Correlates the reply.
         request_id: u32,
@@ -135,7 +135,7 @@ macro_rules! resource_frames {
         host: Option<SatelliteHost>,
     },
 
-    /// Correlated path rows, status, or typed refusal (L3 §5).
+    /// Correlated path rows, status, or typed refusal.
     PathResults {
         /// Correlates a `PATH_QUERY`.
         request_id: u32,
@@ -161,7 +161,7 @@ macro_rules! resource_frames {
         /// `TERM` in `env` still wins.
         term: Option<String>,
         /// Satellite host to spawn on via a federation hub (field 7,
-        /// ADR-0007 / L1 §9.1), or `None` for the receiving server.
+        /// ADR-0007), or `None` for the receiving server.
         satellite: Option<SatelliteHost>,
         /// Existing Terminal whose window hosts the new one (field 8): an
         /// ownership address, not focus or geometry.

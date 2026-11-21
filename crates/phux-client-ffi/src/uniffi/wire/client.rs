@@ -510,7 +510,7 @@ impl RemoteClient {
         let _ = self.with_terminal(&terminal_id, Client::kill_terminal);
     }
 
-    /// Write one client-owned `Global` metadata key (L3 §3): the push grant
+    /// Write one client-owned `Global` metadata key: the push grant
     /// `phux.push/v1/<device>` (ADR-0155), or any key the server stores as
     /// an ordinary value. Returns the request id, or 0 when offline (nothing
     /// is sent then). `SET_METADATA` has no success reply on the wire; a

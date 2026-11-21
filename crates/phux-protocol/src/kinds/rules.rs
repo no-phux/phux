@@ -36,7 +36,7 @@ macro_rules! rule_table {
 }
 
 rule_table! {
-    /// The client-frame table of workload-auth §6, in spec row order.
+    /// The client-frame table, in spec row order.
     ///
     /// [`classify_frame`] returns one of these rows for every decoded frame. It
     /// never returns the `COMMAND` row: the nested command decides.
@@ -142,7 +142,7 @@ rule_table! {
 }
 
 rule_table! {
-    /// The nested-command table of workload-auth §6, in spec row order.
+    /// The nested-command table, in spec row order.
     ///
     /// [`classify_command`] returns one of these rows for every decoded command.
     COMMAND_RULES;

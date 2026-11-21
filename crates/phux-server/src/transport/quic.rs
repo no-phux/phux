@@ -1,6 +1,6 @@
 //! QUIC transport ([ADR-0007]): the identical length-prefixed phux frames
 //! (`docs/protocol.md#framing`) over one bidirectional QUIC stream per
-//! connection, plus the per-Terminal stream multiplexer (§4.2).
+//! connection, plus the per-Terminal stream multiplexer.
 //!
 //! TLS 1.3 is intrinsic to QUIC. Routable consumers authenticate with a
 //! bearer-token **preamble** (`len: u32 BE` + token) as the first bytes of

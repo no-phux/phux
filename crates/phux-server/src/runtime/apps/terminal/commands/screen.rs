@@ -215,10 +215,10 @@ fn viewport_cells_json(screen_state: &phux_core::screen::ScreenState) -> Vec<ser
     viewport_cells
 }
 
-/// Make `process.exit` the record `GET_STATE` reports (ADR-0124, L1 §1.1):
+/// Make `process.exit` the record `GET_STATE` reports (ADR-0124):
 /// a retained pane's exit wins, and a pane still closing (a shutdown, a
 /// retained eviction) takes its ledger reason. A killed pane is reaped at
-/// its commit (L1 §5.2), so it never reaches here.
+/// its commit, so it never reaches here.
 fn reconcile_process_exit(
     state: &SharedState,
     terminal_id: &phux_protocol::ids::ResourceId,

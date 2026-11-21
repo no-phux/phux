@@ -1,4 +1,4 @@
-//! Live satellite reload (phux-lpn7.2, L3 §3.8): a running hub re-reads its
+//! Live satellite reload (phux-lpn7.2): a running hub re-reads its
 //! `[[satellites]]` registry when the `phux.config.reload/v1` doorbell rings,
 //! dialing added satellites and dropping removed ones with no restart, while
 //! unchanged links, their subscriptions, and the hub's own panes survive.

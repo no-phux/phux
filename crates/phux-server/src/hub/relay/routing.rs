@@ -115,7 +115,7 @@ pub(crate) fn route_to_satellite(command: &Command) -> Option<(SatelliteHost, Co
     }
     let (host, id) = satellite_route(single_target(command)?)?;
     // Everything but the target rides unchanged: a kill's precondition and
-    // every `operation_id` cross verbatim (ADR-0109, L1 §9.1).
+    // every `operation_id` cross verbatim (ADR-0109).
     let mut local = command.clone();
     *single_target_mut(&mut local)? = ResourceId::local(id);
     Some((host, local))
