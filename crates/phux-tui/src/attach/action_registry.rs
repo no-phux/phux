@@ -196,7 +196,7 @@ macro_rules! row {
 /// A row the palette omits: name, handler, and why, then the reference
 /// page's description and params.
 macro_rules! hidden {
-    ($name:literal, $run:expr, $reason:literal, $description:literal, $params:literal) => {
+    ($name:literal, $run:expr, $reason:expr, $description:literal, $params:literal) => {
         ActionSpec {
             name: $name,
             description: $description,

@@ -5,6 +5,10 @@ use super::{ActionSpec, Palette};
 use crate::attach::input_dispatch::run_action as run;
 use crate::attach::input_dispatch::session_management;
 
+/// Why the scroll actions have no palette row.
+const SCROLL: &str =
+    "made for a key, such as `\"S-PageUp\" = \"scroll-page-up\"` in `[keybindings.global]`";
+
 /// The actions with no palette row.
 pub(super) const HIDDEN_ROWS: &[ActionSpec] = &[
     hidden! { "approval-review", crate::attach::input_dispatch::approvals::queue,
@@ -19,6 +23,22 @@ pub(super) const HIDDEN_ROWS: &[ActionSpec] = &[
     "it only means something as an entry of `[keybindings.modes.copy-mode]`",
     "In the `copy-mode` key mode, make a key stand for a built-in copy-mode key",
     "`key` (the built-in key, e.g. `j` or `C-b`)" },
+    hidden! { "clear-selection", run::copy_mode_key,
+    "it only means something as an entry of `[keybindings.modes.copy-mode]`",
+    "In copy mode, drop the selection and stay where you are",
+    "" },
+    hidden! { "scroll-page-up", run::scroll, SCROLL,
+    "Scroll the focused pane's history up a page", "" },
+    hidden! { "scroll-page-down", run::scroll, SCROLL,
+    "Scroll the focused pane's history down a page", "" },
+    hidden! { "scroll-half-page-up", run::scroll, SCROLL,
+    "Scroll the focused pane's history up half a page", "" },
+    hidden! { "scroll-half-page-down", run::scroll, SCROLL,
+    "Scroll the focused pane's history down half a page", "" },
+    hidden! { "scroll-to-top", run::scroll, SCROLL,
+    "Scroll the focused pane to the top of its history", "" },
+    hidden! { "scroll-to-bottom", run::scroll, SCROLL,
+    "Scroll the focused pane back to the live screen", "" },
     hidden! { "copy-text", run::copy_text,
     "it is what a row of the link picker does; on its own it has no text to copy",
     "Copy the given text to the clipboard",

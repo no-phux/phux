@@ -21,7 +21,7 @@ const FIRST: [Shortcut; 12] = [
     Shortcut::Settings,
     Shortcut::Machines,
     Shortcut::CloseTab,
-    Shortcut::ScrollBottom,
+    Shortcut::ScrollToBottom,
 ];
 
 /// What needs a desktop's window, sidebar, updater or keyboard.

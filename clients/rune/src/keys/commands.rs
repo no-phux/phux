@@ -503,13 +503,13 @@ pub const COMMANDS: &[Command] = &[
         [l('0').alt()]
     ),
     row!(
-        Shortcut::ScrollTop,
+        Shortcut::ScrollToTop,
         "Scroll to Top of History",
         [Chord::cmd(Cap::Home)],
         [Chord::ctrl(Cap::Home).shift()]
     ),
     row!(
-        Shortcut::ScrollBottom,
+        Shortcut::ScrollToBottom,
         "Scroll to Bottom",
         [m('l'), Chord::cmd(Cap::End)],
         [l('l'), Chord::ctrl(Cap::End).shift()]
@@ -526,6 +526,12 @@ pub const COMMANDS: &[Command] = &[
         [Chord::cmd(Cap::Down).shift()],
         [Chord::ctrl(Cap::Down).shift()]
     ),
+    // Bound in `[rune.keys]`; no chord of their own.
+    row!(hidden Shortcut::ScrollPageUp, "Scroll Page Up", [], []),
+    row!(hidden Shortcut::ScrollPageDown, "Scroll Page Down", [], []),
+    row!(hidden Shortcut::ScrollHalfPageUp, "Scroll Half a Page Up", [], []),
+    row!(hidden Shortcut::ScrollHalfPageDown, "Scroll Half a Page Down", [], []),
+    row!(hidden Shortcut::ClearSelection, "Clear Selection", [], []),
     row!(hidden Shortcut::Palette, "Command Palette", [m('p'), m('k'), m('p').shift()], [l('p'), l('k')]),
     row!(hidden Shortcut::FindNext, "Find Next", [m('g')], [l('g')]),
     row!(hidden Shortcut::FindPrevious, "Find Previous", [m('g').shift()], [l('g').alt()]),
@@ -617,8 +623,14 @@ pub fn user_keys(
     let mut problems = Vec::new();
     let mut bound = Vec::new();
     for (chord, name) in keys {
+        // The names before `scroll-to-top` and `scroll-to-bottom`.
+        let name = match name.as_str() {
+            "scroll-top" => "scroll-to-top",
+            "scroll-bottom" => "scroll-to-bottom",
+            name => name,
+        };
         let action = COMMANDS.iter().map(|command| command.action);
-        match (name.as_str(), action.into_iter().find(|a| id(*a) == *name)) {
+        match (name, action.into_iter().find(|a| id(*a) == name)) {
             ("none", _) => bound.push((canonical(chord), None)),
             (_, Some(action)) => bound.push((canonical(chord), Some(action))),
             (_, None) => problems.push(format!("{chord}: no command named {name}")),
