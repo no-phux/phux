@@ -30,6 +30,7 @@ for script in claim verify release; do
     cp "${ROOT}/scripts/worktree-${script}.sh" "${REPO}/scripts/worktree-${script}.sh"
 done
 cp "${ROOT}/scripts/lib/worktree-owner.sh" "${REPO}/scripts/lib/worktree-owner.sh"
+cp "${ROOT}/scripts/lib/mbx-target.sh" "${REPO}/scripts/lib/mbx-target.sh"
 git -C "$REPO" init -q -b main
 git -C "$REPO" -c user.name=t -c user.email=t@t add -A
 git -C "$REPO" -c user.name=t -c user.email=t@t commit -q -m fixture
