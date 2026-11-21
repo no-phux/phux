@@ -122,8 +122,8 @@ session (or `--session NAME`). It never creates a session on its own.
   `notify-send`); clicking it goes there, and it is withdrawn when answered
   or seen. The Dock icon counts what's waiting.
 - **Tabs.** The session's arrangement groups, shared with the terminal UI.
-  ⌘T opens a terminal in a new tab, ⌘1–⌘9 switch, double-click renames, and
-  a drag reorders them on the server. The strip appears from two tabs up; a
+  ⌘T opens a terminal in a new tab, ⌘1–⌘9 switch, clicking the shown tab
+  goes back, double-click renames, and a drag reorders them on the server. The strip appears from two tabs up; a
   dot marks a tab that needs you, and a jump from anywhere lands on the
   right tab.
 - **Sidebar.** Every session and terminal on the server, each terminal with
@@ -259,8 +259,9 @@ session (or `--session NAME`). It never creates a session on its own.
 | ⌘] / ⌘[ | Next / previous terminal, any session |
 | ⌘B | Fold the sidebar |
 | ⌘F / ⌘G / ⌘⇧G / ⌘E | Find / older / newer / the selection |
-| ⌘⇧C | Copy mode: vi keys; `v` selects, `y` copies |
+| ⌘⇧C | Copy mode: vi keys, `/` `?` `n` `N` search; `v` selects, `y` copies |
 | ⌘-click | Open the link under it |
+| ⌥-click | Move a shell prompt's cursor there |
 | ⌘C / ⌘V | Copy the selection / paste (bracketed) |
 | ⌘= / ⌘- / ⌘0 | Bigger / smaller / default text |
 | ⌘⌥= / ⌘⌥- / ⌘⌥0 | Bigger / smaller / default interface (sidebar, tabs, palette, Settings) |
