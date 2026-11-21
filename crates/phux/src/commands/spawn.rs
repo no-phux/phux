@@ -94,7 +94,7 @@ pub(crate) fn run_spawn(
     let request_id = 1u32;
     let frame = FrameKind::SpawnResource {
         request_id,
-        // v0.1 servers expose the single default group (SPEC §3.1).
+        // v0.1 servers expose the single default group.
         group: GroupId::new(1),
         command: if command.is_empty() {
             None

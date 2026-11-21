@@ -35,7 +35,7 @@ pub trait PolicyEngine: Send + Sync + std::fmt::Debug {
     }
 }
 
-/// The closed-mode engine (§8): the owner socket gets the owner's grant;
+/// The closed-mode engine: the owner socket gets the owner's grant;
 /// `local` refuses everything else; `paired` admits TLS connections with an
 /// active registry credential and mints its ceiling.
 #[derive(Debug, Clone)]
@@ -163,11 +163,11 @@ fn scoped_grant(
         debug!(target: POLICY_TARGET, credential = %credential.id, "HELLO refused: ceiling does not parse");
         PolicyError::refused()
     })?;
-    // HELLO carries no scope request (workload-auth §5), so the request is
-    // the ceiling: one clause per ceiling grant (§5.1).
+    // HELLO carries no scope request, so the request is
+    // the ceiling: one clause per ceiling grant.
     let mut grant = ConnectionGrant::scoped(ceiling, Some(record.id.clone()))
         .map_err(|_| {
-            debug!(target: POLICY_TARGET, credential = %credential.id, "HELLO refused: effective set over the §5 bound");
+            debug!(target: POLICY_TARGET, credential = %credential.id, "HELLO refused: effective set over its bound");
             PolicyError::refused()
         })?
         // A paired device is a person; an automation is not (ADR-0163 §6).

@@ -2,8 +2,8 @@
 //! chrome, notifications, and the remaining scalar tables.
 
 use super::{
-    Applies, METADATA_VALUE_BYTES_MIN, NOTIFY_MODE, NOTIFY_PROTOCOL, SIDEBAR_POSITION,
-    STATUS_POSITION, SettingKind, SettingSection, SettingSpec, U16_MAX, U32_MAX,
+    Applies, FROM_PROGRAMS, METADATA_VALUE_BYTES_MIN, NOTIFY_MODE, NOTIFY_PROTOCOL,
+    SIDEBAR_POSITION, STATUS_POSITION, SettingKind, SettingSection, SettingSpec, U16_MAX, U32_MAX,
     VOICE_TIMEOUT_MAX_SECS, WHICH_KEY_DELAY_MAX_MS,
 };
 
@@ -258,6 +258,16 @@ pub(super) const ROWS: &[SettingSpec] = &[
         detail: "terminal mode also rings the bell; system mode asks the desktop notifier \
                  for its default sound. bell mode always rings.",
         applies: Applies::LiveReload,
+    },
+    SettingSpec {
+        key: "notifications.from-programs",
+        section: SettingSection::Notifications,
+        kind: SettingKind::Choice(FROM_PROGRAMS),
+        summary: "What OSC 9 and OSC 777 from a pane do",
+        detail: "off ignores them, so no escape sequence a pane prints raises a \
+                 notification. notes makes each one the pane's note, as phux notify would, \
+                 at most one a second per pane. Read by the server when it starts.",
+        applies: Applies::NextSpawn,
     },
     // -- [experimental] -----------------------------------------------------
     SettingSpec {

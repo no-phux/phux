@@ -178,6 +178,7 @@ pub(super) fn build_server_config(
         voice,
         restore: phux_config::RestoreCfg::default(),
         forward: phux_config::ForwardCfg::default(),
+        from_programs: phux_config::FromPrograms::Off,
         // Clamped up so the built-in agent-session record write always fits under
         // the generic metadata cap, whatever the config says.
         metadata_value_bytes: limits.metadata_value_bytes.max(
@@ -373,6 +374,7 @@ pub(crate) fn run_server(
     cfg.tailnet_owner = config.policy.tailnet_owner;
     cfg.restore = config.restore.clone();
     cfg.forward = config.forward.clone();
+    cfg.from_programs = config.notifications.from_programs;
     cfg.plugin_startup = Some(Box::new(phux_server::plugin_startup::config_from(
         &config_loader::config_path(),
         &config.plugins,

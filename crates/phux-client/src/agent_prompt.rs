@@ -2,7 +2,7 @@
 //! half of `phux agent prompt` and `phux agent send-keys`.
 //!
 //! `APPLY_INPUT`'s `OK` means every byte was written and flushed into the
-//! pane's tty input queue (L1 §6.2.1): more than `ROUTE_INPUT` attests, less
+//! pane's tty input queue: more than `ROUTE_INPUT` attests, less
 //! than consumption. Admission is per Terminal and held across a 5 s
 //! completion wait, so the submit deadline and the `RESOURCE_EXHAUSTED`
 //! backoff both outlast it; only a concurrent write to the same pane collides,

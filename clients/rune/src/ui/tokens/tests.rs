@@ -8,7 +8,7 @@ fn system(dark: bool) -> Rc<Tokens> {
     Tokens::resolve(&Inputs::system(dark))
 }
 
-/// §1.5 nesting, as the chrome's surfaces nest: a menu's items inside its
+/// Nesting, as the chrome's surfaces nest: a menu's items inside its
 /// `md` panel by `s1` land on `sm`; anything inset past its outer radius
 /// clamps to `xs`.
 #[test]
@@ -222,7 +222,7 @@ fn kit_components_paint_only_token_colours() {
         let t = system(dark);
         let mut allowed = role_colors(&t.roles);
         let c = &t.kit.c;
-        // Kit-only mixes the tokens define (§4.1.1): submit hover, the
+        // Kit-only mixes the tokens define: submit hover, the
         // contrast washes, the knob and its sheen, white and black.
         allowed.extend([
             c.submit_hover,

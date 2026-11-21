@@ -32,7 +32,7 @@ fn negotiated_response_payload_limits_reject_but_request_budgets_reach_the_host(
 
 /// The envelope is decode-invisible: a wrapped frame decodes to exactly the
 /// frame that was wrapped, with a byte-identical opaque payload — the property
-/// §6.2 requires of native records across server, transport, and relay.
+/// The protocol requires of native records across server, transport, and relay.
 #[test]
 fn compressed_bootstrap_chunk_round_trips_byte_identically() {
     use phux_protocol::caps::Compression;

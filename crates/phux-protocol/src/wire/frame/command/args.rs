@@ -24,7 +24,7 @@ pub enum ResourceEventType {
 }
 }
 
-/// Scope argument for [`Command::GetState`] (SPEC §5.1, ADR-0021).
+/// Scope argument for [`Command::GetState`] (ADR-0021).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum StateScope {

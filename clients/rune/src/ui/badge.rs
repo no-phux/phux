@@ -1,4 +1,4 @@
-//! Status marks and tone badges (§1.3, §4.1.3 OWN): colour, word and mark
+//! Status marks and tone badges (OWN): colour, word and mark
 //! together. Not a live region, so rows in long lists stay quiet; kit
 //! `Badge` cannot take a tone.
 

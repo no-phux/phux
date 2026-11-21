@@ -1,4 +1,4 @@
-//! What an `ATTACH` delivers about the pane (SPEC §13): a bootstrap that
+//! What an `ATTACH` delivers about the pane: a bootstrap that
 //! round-trips the canonical grid, a PTY resized to the client's viewport,
 //! and a session that survives its last shell exiting.
 

@@ -45,7 +45,7 @@ impl LinkReader for NetLinkConn {
                                     return Ok(None);
                                 }
                                 tokio_tungstenite::tungstenite::Message::Binary(data) => {
-                                    // One binary message is one frame (SPEC §5).
+                                    // One binary message is one frame.
                                     if let Err(violation) =
                                         phux_protocol::wire::framing::check_frame(&data)
                                     {
@@ -89,7 +89,7 @@ impl LinkReader for NetLinkConn {
                 }
             }
         };
-        // Best-effort SPEC §5 goodbye; never masks the real loss reason.
+        // Best-effort framing goodbye; never masks the real loss reason.
         let _ = send_bounded(self, &encode_frame_too_large(violation)).await;
         Err(framing_loss_reason(violation))
     }

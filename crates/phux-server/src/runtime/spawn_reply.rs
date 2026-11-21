@@ -38,7 +38,7 @@ pub(crate) async fn refuse_spawn(
         .await;
 }
 
-/// Relay one satellite-addressed spawn over the hub link (L1 §9.1); no route
+/// Relay one satellite-addressed spawn over the hub link; no route
 /// is the typed configuration refusal.
 async fn relay_spawn_to_satellite(
     state: &SharedState,

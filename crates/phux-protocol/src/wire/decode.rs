@@ -39,7 +39,7 @@ mod session_frames;
 mod spawn_rules;
 
 use caps::{decode_client_capabilities, decode_server_capabilities, negotiated_bootstrap_limits};
-pub use correlation::{frame_request_id, newer_server_fallback};
+pub use correlation::{frame_request_id, inflated_frame, newer_server_fallback};
 use resource_frames::decode_flag;
 
 /// `SPAWN_RESOURCE`'s per-kind field rules under `catalog`, for the
@@ -383,7 +383,7 @@ impl<'a> Decoder<'a> {
         let type_byte = self.read_u8()?;
         let frame = self.decode_body(type_byte)?;
 
-        // Unconsumed trailing bytes are skipped (SPEC §6); reading past the
+        // Unconsumed trailing bytes are skipped; reading past the
         // declared end is malformed.
         if self.pos > body_end {
             return Err(DecodeError::LengthOverflow);

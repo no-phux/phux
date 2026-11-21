@@ -48,6 +48,13 @@ The **Palette** column is the command-palette section the action is offered unde
 | `getting-started` | phux |  | Getting started: detach, return, the Agents list, and command discovery |
 | `copy-mode` | — |  | Enter copy-mode on the focused pane (scrollback navigation, search, selection, yank) |
 | `copy-mode-key` | — | `key` (the built-in key, e.g. `j` or `C-b`) | In the `copy-mode` key mode, make a key stand for a built-in copy-mode key |
+| `clear-selection` | — |  | In copy mode, drop the selection and stay where you are |
+| `scroll-page-up` | — |  | Scroll the focused pane's history up a page |
+| `scroll-page-down` | — |  | Scroll the focused pane's history down a page |
+| `scroll-half-page-up` | — |  | Scroll the focused pane's history up half a page |
+| `scroll-half-page-down` | — |  | Scroll the focused pane's history down half a page |
+| `scroll-to-top` | — |  | Scroll the focused pane to the top of its history |
+| `scroll-to-bottom` | — |  | Scroll the focused pane back to the live screen |
 | `detach` | phux |  | Detach this client from the session |
 | `next-pane` | Pane |  | Cycle focus to the next pane |
 | `previous-pane` | Pane |  | Cycle focus to the previous pane |
@@ -96,6 +103,13 @@ Why the dash rows have no palette entry:
 - `approval-review` — opened from the approvals picker.
 - `approval-decide` — committed by the approval review overlay.
 - `copy-mode-key` — it only means something as an entry of `[keybindings.modes.copy-mode]`.
+- `clear-selection` — it only means something as an entry of `[keybindings.modes.copy-mode]`.
+- `scroll-page-up` — made for a key, such as `"S-PageUp" = "scroll-page-up"` in `[keybindings.global]`.
+- `scroll-page-down` — made for a key, such as `"S-PageUp" = "scroll-page-up"` in `[keybindings.global]`.
+- `scroll-half-page-up` — made for a key, such as `"S-PageUp" = "scroll-page-up"` in `[keybindings.global]`.
+- `scroll-half-page-down` — made for a key, such as `"S-PageUp" = "scroll-page-up"` in `[keybindings.global]`.
+- `scroll-to-top` — made for a key, such as `"S-PageUp" = "scroll-page-up"` in `[keybindings.global]`.
+- `scroll-to-bottom` — made for a key, such as `"S-PageUp" = "scroll-page-up"` in `[keybindings.global]`.
 - `copy-text` — it is what a row of the link picker does; on its own it has no text to copy.
 - `command-palette` — it is an entry alias for the finder, so listing it inside the finder would recurse.
 - `show-help` — it is an entry alias for the same finder as `command-palette`, so listing it would duplicate that surface.

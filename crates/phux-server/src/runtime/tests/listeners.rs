@@ -111,7 +111,7 @@ async fn a_missing_overlay_address_is_reported_as_waiting_for_it() {
         serve_auto_overlay_listeners(true, ports, Vec::new, state.clone(), token.clone(), None);
     let read = async {
         tokio::time::sleep(Duration::from_secs(5)).await;
-        let report = state.with(|s| s.remote_listeners().clone());
+        let report = state.with(crate::state::ServerState::remote_listeners);
         token.cancel();
         report
     };

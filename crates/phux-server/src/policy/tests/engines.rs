@@ -154,7 +154,7 @@ fn posture_follows_the_mode_and_the_listeners() {
             Err(PostureError::LocalWithRemoteListener),
         ),
         // A named CA or registry location with no mode is refused, with or
-        // without a listener (workload-auth §8).
+        // without a listener.
         (
             None,
             false,

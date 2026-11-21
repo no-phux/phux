@@ -7,7 +7,7 @@
 use super::*;
 use phux_terminal_api::actor::TerminalResource as _;
 
-/// Handle [`AttachTarget::CreateIfMissing`] (SPEC §13): seed `name` as an
+/// Handle [`AttachTarget::CreateIfMissing`]: seed `name` as an
 /// ephemeral session when it does not exist. A server-wide seed command wins
 /// over the wire `command`; a stale wire `cwd` falls back. Spawn failure is
 /// `SessionNotFound`.

@@ -302,7 +302,7 @@ pub(super) fn decode_kill_precondition(
     })
 }
 
-/// Decode the agent affordances (SPEC §6). `command_body_len`, measured before
+/// Decode the agent affordances. `command_body_len`, measured before
 /// the tag byte, bounds `APPLY_INPUT`.
 pub(super) fn decode_live_affordance_command(
     tag: u8,

@@ -226,7 +226,7 @@ async fn glass_hosted_mode_clears_backdrop_borders_and_cursor_then_returns_opaqu
     client.close();
 }
 
-// --- Design-token fixtures (design spec §4.4, §5.2) --------------------------
+// --- Design-token fixtures --------------------------
 
 const PAGE: &str = include_str!("../index.html");
 const TOKENS: &str = include_str!("../assets/phux-tokens.css");

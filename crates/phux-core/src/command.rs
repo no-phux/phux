@@ -121,7 +121,7 @@ pub enum TerminateMode {
     Force,
 }
 
-/// Every mutation core knows how to apply (CONTRACTS §04, minus workspace
+/// Every mutation core knows how to apply (minus workspace
 /// commands), plus executor reports.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

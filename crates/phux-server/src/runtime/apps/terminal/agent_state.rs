@@ -109,7 +109,7 @@ fn drain_ask_sentinel(
 }
 
 /// A retained pane's process exited, so its agent is gone: withdraw its
-/// `phux.agent/v1` state to `unknown` (L3 §3.7) in the retaining lock, as the
+/// `phux.agent/v1` state to `unknown` in the retaining lock, as the
 /// drain's `Retract` arm does, and return the hook that owes.
 pub(crate) fn retract_on_retained_exit(
     s: &mut ServerState,
@@ -123,7 +123,7 @@ pub(crate) fn retract_on_retained_exit(
 }
 
 /// The drain's `Retract` arm: the pane's agent is confirmed gone. A declared
-/// record (L3 §3.7), or a detector record carrying a human's identity, is
+/// record, or a detector record carrying a human's identity, is
 /// withdrawn to `unknown` with its other fields kept; a record the detector
 /// wrote alone is deleted; anything else is not ours.
 fn drain_retract(

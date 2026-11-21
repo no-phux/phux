@@ -3,7 +3,8 @@
 Every upstream follower tick ships one contained, evidence-based visual or UX
 improvement, including bumps and quiet runs. Passing rendering tests, moving
 pins and preserving identical pixels are maintenance, not that improvement.
-Fix real friction, not arbitrary cosmetic churn.
+Fix real friction, not arbitrary cosmetic churn. [END_STATE](./END_STATE.md)
+says where every change is headed.
 
 Tests establish behavior and geometry, not an aesthetic score. Inspect the
 images and explain whether the experience improved.

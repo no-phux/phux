@@ -352,7 +352,7 @@ fn every_client_frame_type_has_a_classification() {
 fn unknown_and_retired_tags_classify_as_deny() {
     // SPAWN 0x00, RESIZE_TERMINAL 0x04, RUN_HOOK 0x06 (unallocated); 0x0a and
     // 0x0b (freed by the dissolved session verbs).
-    // 0x2f..=0x34 are reserved for the workspace commands (L1 §5.7).
+    // 0x2f..=0x34 are reserved for the workspace commands.
     for tag in [
         0x00, 0x04, 0x06, 0x0a, 0x0b, 0x2f, 0x30, 0x31, 0x32, 0x33, 0x34,
     ] {

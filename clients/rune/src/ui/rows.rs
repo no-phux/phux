@@ -1,4 +1,4 @@
-//! phux's own rows (§4.1.3 OWN): what kit `List` and `SidebarRow` cannot
+//! phux's own rows (OWN): what kit `List` and `SidebarRow` cannot
 //! express (details, marks, disclosure, drag), built only from tokens.
 //! Every row takes a [`State`], so the gallery can force each look.
 
@@ -7,7 +7,7 @@ use rune::{Cursor, El, el, row, text};
 use super::tokens::{Paint, Tokens};
 use crate::desk::Desk;
 
-/// A forced interaction state (§1.10). `Rest` is the live row: it shows
+/// A forced interaction state. `Rest` is the live row: it shows
 /// hover and press itself. The others paint that state still, for the
 /// gallery's `states` page.
 #[cfg_attr(
@@ -92,7 +92,7 @@ impl Row {
         self
     }
 
-    /// The selected row: the one §1.10 treatment.
+    /// The selected row: the one treatment.
     #[cfg_attr(
         not(test),
         allow(dead_code, reason = "the gallery's states page forces each look")
@@ -199,7 +199,7 @@ fn wash(e: El, t: &Tokens, selected: bool, current: bool, state: State) -> El {
     forced_face(e, base, state, t)
 }
 
-/// What an OWN row or tab rests on under its interaction (§1.10).
+/// What an OWN row or tab rests on under its interaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Base {
     Plain,
@@ -209,7 +209,7 @@ pub(crate) enum Base {
     Selected,
 }
 
-/// §1.10's states composed in one fixed order, for rows, tabs and the
+/// The states composed in one fixed order, for rows, tabs and the
 /// sidebar alike: the selected or current base first, the hover or press
 /// wash over it, then the invalid edge, which a selection never masks.
 /// `Rest` is the live element, which the caller makes wash itself under
@@ -250,7 +250,7 @@ pub(crate) fn forced_face(e: El, base: Base, state: State, t: &Tokens) -> El {
     }
 }
 
-/// §1.10's selected treatment: the selected wash, a lit edge from
+/// The selected treatment: the selected wash, a lit edge from
 /// `border.strong` to `border.muted`, and under increased contrast a
 /// leading accent bar, so selection never rests on a wash alone.
 pub(crate) fn lifted(e: El, t: &Tokens) -> El {

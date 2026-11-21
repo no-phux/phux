@@ -1,4 +1,4 @@
-//! L1 §5.2 through a hub (phux-t8nn): the hub answers a satellite kill only
+//! Kill visibility through a hub (phux-t8nn): the hub answers a satellite kill only
 //! after the satellite answered, and the satellite's reply follows its
 //! commit, so the hub's very next aggregated `GET_STATE` omits the killed
 //! Terminals. Each victim traps `SIGHUP`, so its process outlives the reply

@@ -1,4 +1,4 @@
-//! Typed terminal process facts for `GET_TERMINAL_STATE` (L1 §6.3).
+//! Typed terminal process facts for `GET_TERMINAL_STATE`.
 //!
 //! Also a Terminal child's exit outcome. Pure data shared by producer and consumers; an unobtainable fact is
 //! `None` (JSON `null`), never a guess.

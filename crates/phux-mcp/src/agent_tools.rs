@@ -32,10 +32,10 @@ use crate::cli_adapter::{CliAdapter, bounded_string, bounded_strings};
 use crate::tools::call_with_adapter;
 use crate::tools::{ToolError, ToolSpec};
 
-/// Lifecycle states a `phux.agent/v1` record can declare (L3 §3.7).
+/// Lifecycle states a `phux.agent/v1` record can declare.
 const DECLARED_STATES: &[&str] = &["unknown", "idle", "working", "blocked", "done"];
 
-/// Attention levels a record can declare (L3 §3.7).
+/// Attention levels a record can declare.
 const ATTENTION_LEVELS: &[&str] = &["none", "low", "normal", "high"];
 
 /// States `agent wait` accepts. `unknown` is absent on purpose: withdrawing

@@ -1,5 +1,6 @@
 //! The terminal area: the split tree, one floating glass card per leaf, the
-//! keyboard's card lit, and draggable gutters between them.
+//! keyboard's card raised a tier with no colour of its own, and draggable
+//! gutters between them. A lone pane with the sidebar folded goes flush.
 
 use std::time::Instant;
 
@@ -245,7 +246,7 @@ impl Lit {
     }
 }
 
-/// A floating card around `content` (§1.7): `radius.lg`, on the raised
+/// A floating card around `content`: `radius.lg`, on the raised
 /// tier at rest and lifted to floating when it has the keyboard, edged
 /// with a top-lit hairline rim that is firmer on the lifted card.
 /// `content` is clipped to the corners; the rim draws over it and never
@@ -278,7 +279,7 @@ pub(super) fn card(content: El, ground: Color, lit: Lit, ink: &Tokens) -> El {
 
 /// A pane's card, keyed by its terminal so it keeps its place as the tree
 /// changes: it enters from the enter scale on the list spring and fades
-/// out (§1.8).
+/// out.
 fn float(id: &ResourceId, card: El, t: &Tokens) -> El {
     card.key(format!("pane-{id}"))
         .transition(Transition::asymmetric(

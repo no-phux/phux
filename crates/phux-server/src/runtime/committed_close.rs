@@ -103,7 +103,7 @@ fn close_one(s: &mut ServerState, resource: CoreResourceId) -> Option<ClosedReso
     let parent = s
         .resource_parent(resource)
         .map(|parent| s.idspace.intern_resource(parent));
-    // Every subscriber, including `ATTACH_RESOURCE`-only ones (L1 §3.1).
+    // Every subscriber, including `ATTACH_RESOURCE`-only ones.
     let targets = s.terminal_fanout_targets(resource);
     let publication_fences = s.attach_publication_fences(resource);
     crate::runtime::connections::journal_pane_closed(

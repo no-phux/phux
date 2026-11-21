@@ -1,10 +1,9 @@
 //! Input lease acquire, expiry, and release.
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the split command modules share the parent command namespace"
-)]
 
-use super::*;
+use phux_protocol::wire::frame::{CommandResult, ControlAction, ErrorCode, InputMode};
+
+use crate::runtime::apps::terminal::commands::input_route::{LeaseGrant, terminal_handle};
+use crate::state::{ClientId, SharedState};
 
 /// Handle `ACQUIRE_INPUT` (ADR-0033): take the pane's exclusive input lease.
 /// `Cooperative` fails with `InputLeaseHeld` against another holder; `Seize`

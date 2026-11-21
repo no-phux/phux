@@ -11,7 +11,7 @@
 //! `SatelliteUnreachable` at once, and a silent satellite is bounded by
 //! `RELAY_COMMAND_TIMEOUT` and the link keepalive. **Backpressure**: every
 //! producer uses `try_send`; the one exception is the attach snapshot
-//! (L1 §9.1), retained per subscriber until it lands so a delta never
+//!, retained per subscriber until it lands so a delta never
 //! overtakes it.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -120,7 +120,7 @@ pub(crate) struct ProxySubscription {
     pub(crate) seq: u64,
     /// Whether this is a content stream (a relayed `ATTACH_RESOURCE`) that
     /// opens with its own snapshot. Such a subscriber starts gated until that
-    /// snapshot lands (L1 §9.1). Event-only subscriptions carry no snapshot
+    /// snapshot lands. Event-only subscriptions carry no snapshot
     /// and must flow at once.
     pub(crate) awaits_snapshot: bool,
     /// Known resource kind; `AgentSession` codecs are independent of the
@@ -240,7 +240,7 @@ pub(crate) enum RelayRequest {
         /// The frame to forward verbatim.
         frame: FrameKind,
     },
-    /// Relay a `SPAWN_RESOURCE` (L1 §3.1). The wire frame carries
+    /// Relay a `SPAWN_RESOURCE`. The wire frame carries
     /// `satellite: None`; the reply's new id is re-tagged to this host.
     Spawn {
         /// Spawn fields, with owner addressing already validated.
@@ -274,7 +274,7 @@ pub(crate) enum RelayRequest {
         reply: oneshot::Sender<PathQueryResult>,
     },
     /// Relay a keyed `COMMAND` (`APPLY_INPUT`, or a kill/signal with an
-    /// `operation_id`) from consumer `actor` (L1 §9.1): forwarded only to a
+    /// `operation_id`) from consumer `actor`: forwarded only to a
     /// satellite that evaluates it, never across a restart.
     Keyed {
         /// The command to forward, ids already satellite-local.
@@ -303,7 +303,7 @@ pub(crate) struct RelayMailbox {
     /// The hub state whose journal re-stamps relayed events (ADR-0123);
     /// `None` forwards the satellite's stamp.
     pub(crate) journal: Option<crate::state::SharedState>,
-    /// This satellite's incarnation fence (L1 §9.1); survives reconnects.
+    /// This satellite's incarnation fence; survives reconnects.
     pub(crate) operations: super::operation_fence::OperationFence,
     /// Kinds learned on this link, shared with its routing handle.
     pub(crate) resource_kinds: ResourceKindCatalog,

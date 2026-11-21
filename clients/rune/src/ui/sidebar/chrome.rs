@@ -1,22 +1,23 @@
 //! Search, inbox and creation controls around the session navigator.
 
 use phux_design::Tone;
-use rune::{El, el, row, text};
+use rune::{El, el, text};
 use rune_kit::{Button, ButtonVariant};
 
-use super::super::{Paint, Tokens, icon_press, icons, keycap, pressable, tip};
+use super::super::{Paint, Tokens, icon_press, icons, pressable, tip};
 use crate::desk::Desk;
 use crate::keys::Shortcut;
 
-/// The way to the palette: a press target drawn as a field is (the
-/// control outline, `radius.sm`), not a field itself. It names the chord
-/// that opens the palette from anywhere.
+/// The way to the palette: a press target drawn as a filled pill with the
+/// sidebar rows' radius, not an outlined field, since nothing is typed
+/// here. It names the chord that opens the palette from anywhere.
 pub(super) fn search(t: &Tokens) -> El {
     // ⌘K is the chord this field has always taught; ⌘P reaches it too.
-    let chord: &[&str] = if cfg!(target_os = "macos") {
-        &["⌘", "K"]
+    // Plain dim figures, as a menu writes a shortcut, not boxed keycaps.
+    let chord = if cfg!(target_os = "macos") {
+        "⌘K"
     } else {
-        &["Ctrl", "Shift", "K"]
+        "Ctrl+Shift+K"
     };
     let s = &t.space;
     let dim = t.roles.text.dim.paint();
@@ -25,10 +26,9 @@ pub(super) fn search(t: &Tokens) -> El {
         .h(s.row_h)
         .px(s.s2)
         .gap(s.icon_gap)
-        .radius(t.radius.sm)
+        .radius(t.radius.md)
         .items_center()
-        .fill(t.roles.layer.ground.paint())
-        .border(s.hairline, t.roles.border.control.paint())
+        .fill(t.roles.wash.hover.paint())
         .focusable(true)
         .role("button")
         .label("Jump to…")
@@ -40,11 +40,7 @@ pub(super) fn search(t: &Tokens) -> El {
         )
         .child(text("Jump to…").font(t.ty.label).color(dim).a11y_hidden())
         .child(el().grow(1.0))
-        .child(
-            row()
-                .gap(s.s0_5)
-                .children(chord.iter().map(|key| keycap(*key, t))),
-        )
+        .child(text(chord).font(t.ty.label).color(dim).a11y_hidden())
 }
 
 /// The way into the inbox, loud only when something waits: a dot in the
@@ -72,7 +68,8 @@ pub(super) fn inbox_button(waiting: usize, t: &Tokens) -> El {
 }
 
 /// Stable-width creation controls (kit ghost buttons); keyboard hints wait
-/// in the tooltip instead of moving labels.
+/// in the tooltip instead of moving labels. A click hands the keyboard back
+/// to the terminal, or the next Space would create another.
 pub(super) fn foot(
     label: &'static str,
     key: &'static str,
@@ -83,7 +80,10 @@ pub(super) fn foot(
     let button = Button::new(label)
         .variant(ButtonVariant::Ghost)
         .icon(&icons::PLUS)
-        .on_press(press)
+        .on_press_tx(move |d: &mut Desk, tx| {
+            press(d);
+            super::clicked(tx);
+        })
         .build(&t.kit)
         .key(key)
         .grow(1.0)

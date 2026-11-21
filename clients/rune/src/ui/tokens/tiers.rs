@@ -1,4 +1,4 @@
-//! Elevation (§1.7): four tiers of at most four shadow layers, rings
+//! Elevation: four tiers of at most four shadow layers, rings
 //! coloured `border.base` when the stack is built, glow the only colour.
 
 use std::hash::{Hash, Hasher};
@@ -67,7 +67,7 @@ impl Tiers {
         }
     }
 
-    /// No shadows at all: forced colours drop them (§1.11).
+    /// No shadows at all: forced colours drop them.
     pub(crate) fn none(roles: &Roles) -> Self {
         Self {
             raised: Vec::new(),

@@ -389,7 +389,14 @@ impl RenderOverlay for CopyModeOverlay {
         }
         // A key of yours stands for a built-in one; a search query is typed as is.
         let yours = keys::remap(key);
-        let key = yours.as_ref().unwrap_or(key);
+        let key = match &yours {
+            Some(keys::Yours::Key(yours)) => yours,
+            Some(keys::Yours::ClearSelection) => {
+                self.clear_selection();
+                return OverlayCommand::Stay;
+            }
+            None => key,
+        };
         match key.text.as_deref() {
             Some("/") => {
                 self.search_input = Some((LineEdit::default(), false));
@@ -458,6 +465,11 @@ impl RenderOverlay for CopyModeOverlay {
             }
             // Enter copies the two-corner selection and exits, tmux-style.
             PhysicalKey::Enter => OverlayCommand::Copy(self.copy_request()),
+            // Esc drops a selection first, as in vi and tmux; then it leaves.
+            PhysicalKey::Escape if self.has_selection() => {
+                self.clear_selection();
+                OverlayCommand::Stay
+            }
             PhysicalKey::Escape => OverlayCommand::Dismiss,
             _ => OverlayCommand::Stay,
         }

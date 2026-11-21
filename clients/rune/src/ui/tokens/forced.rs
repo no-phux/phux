@@ -1,4 +1,4 @@
-//! Forced colours (§1.11): with a system contrast theme on, every role
+//! Forced colours: with a system contrast theme on, every role
 //! resolves to one of its colours. Layers are the window, ink is its text,
 //! accent and selection its highlight; washes and shadows drop, and status
 //! keeps its mark and word in the text colour.

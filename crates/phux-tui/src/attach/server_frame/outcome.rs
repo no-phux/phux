@@ -148,6 +148,9 @@ pub(in crate::attach) struct FrameOutcome {
     pub(in crate::attach) agent_meta_terminal: Option<ResourceId>,
     /// A note a program posted for a pane, to toast.
     pub(in crate::attach) note: Option<crate::attach::jobs::Toast>,
+    /// A warn or error note, for a notification when its pane is out of
+    /// sight.
+    pub(in crate::attach) note_alert: Option<(ResourceId, crate::attach::notify::Note)>,
     /// ATTACHED's per-pane cwds, for the sidebar branch line.
     pub(in crate::attach) pane_cwds: Vec<(ResourceId, String)>,
     /// The config-reload doorbell rang.

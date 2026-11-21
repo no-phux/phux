@@ -1,5 +1,5 @@
-//! Shared sub-record payload types: attach targets (SPEC §13), viewport
-//! info, L3 metadata scope (SPEC §7.4), and spawn/move results (SPEC §10.1).
+//! Shared sub-record payload types: attach targets, viewport
+//! info, L3 metadata scope, and spawn/move results.
 
 use crate::ids::{
     ClientId, GroupId, IdempotencyKey, PrincipalId, ResourceId, ResourceKind, ServerInstance,
@@ -244,7 +244,7 @@ impl SpawnResource {
     }
 }
 
-/// Session the client wishes to attach to (SPEC §13).
+/// Session the client wishes to attach to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum AttachTarget {
@@ -268,7 +268,7 @@ pub enum AttachTarget {
     },
 }
 
-/// Viewport metrics the client advertises (SPEC §13).
+/// Viewport metrics the client advertises.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ViewportInfo {
@@ -303,7 +303,7 @@ impl ViewportInfo {
     }
 }
 
-/// Scope of an L3 metadata key (SPEC §7.4): a 1-byte tag (`0` resource,
+/// Scope of an L3 metadata key: a 1-byte tag (`0` resource,
 /// `1` group, `2` global) plus the id, if any.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -316,7 +316,7 @@ pub enum Scope {
     Global,
 }
 
-/// Why a spawn was refused (SPEC §7.2 / §10.1). An error tag a newer server
+/// Why a spawn was refused. An error tag a newer server
 /// allocated, or a result tag this build does not know, decodes as
 /// [`Self::Unknown`] so the spawn still settles.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -346,7 +346,7 @@ pub enum SpawnError {
     Unknown(crate::wire::UnreadableResult),
 }
 
-/// The `RESOURCE_SPAWNED` result (SPEC §7.2 / §10.1).
+/// The `RESOURCE_SPAWNED` result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SpawnResult {

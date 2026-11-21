@@ -5,7 +5,7 @@ use super::*;
 use crate::desk::machines::ssh::Offered;
 use crate::ui::tokens::Voice;
 
-/// A host name in the chrome's mono face (§1.4 voice).
+/// A host name in the chrome's mono face.
 fn host(name: String, t: &Tokens) -> El {
     text(name)
         .font(t.ty.label.semibold().machine())

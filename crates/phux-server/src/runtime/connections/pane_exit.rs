@@ -71,7 +71,7 @@ pub(crate) fn spawn_resource_exit_watcher(
     });
 }
 
-/// A kill reaped `pane` in its own commit (L1 §5.2) while the process ran
+/// A kill reaped `pane` in its own commit while the process ran
 /// its hangup grace: fire the `pane-exit` its exit still owes, with the
 /// status the process actually ended with. Nothing when another closer
 /// reaped it, as before.
@@ -126,7 +126,7 @@ struct RetainedExit {
 /// already closing it (ADR-0124 §2), all in one lock: record its exit facet,
 /// journal what it already queued and then `terminal_control { Exited }`,
 /// let its app withdraw what the exit invalidates (a Terminal's
-/// `phux.agent/v1` state, to `unknown`, L3 §3.7), and tell its engine to stop
+/// `phux.agent/v1` state, to `unknown`), and tell its engine to stop
 /// the detector and refuse input. No `RESOURCE_CLOSED`: the
 /// resource is still here. `None` leaves the pane to the close path.
 fn retain_exited_pane(
@@ -258,7 +258,7 @@ fn reap_exited_pane(
         .resource_parent(pane)
         .map(|parent| s.idspace.intern_resource(parent));
     let cascaded = cascade_children(s, pane, &wire_terminal_id);
-    // Every subscriber, including `ATTACH_RESOURCE`-only ones (L1 §3.1).
+    // Every subscriber, including `ATTACH_RESOURCE`-only ones.
     let targets: Vec<mpsc::Sender<Outbound>> = s.terminal_fanout_targets(pane);
     let mut drains = s.begin_terminal_output_drain(pane, wire_terminal_id.clone());
     drains.extend(s.attach_publication_fences(pane));
@@ -493,7 +493,7 @@ pub(in crate::runtime) fn journal_pane_closed(
     exit_status: Option<i32>,
     attribution: crate::state::CloseAttribution,
 ) {
-    // Nothing follows a close (L1 §7): withdraw held actions first (ADR-0128).
+    // Nothing follows a close: withdraw held actions first (ADR-0128).
     s.withdraw_approvals_naming(wire_terminal_id);
     let record = crate::state::EventRecord::new(
         Some(wire_terminal_id.clone()),

@@ -179,7 +179,7 @@ fn agent_entries_prefer_the_declared_record() {
     let workspace = ArrangementDoc::single(id.clone());
     let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
     let mut slot = PaneSlot::new_with_size(80, 24).expect("slot");
-    slot.terminal.vt_write(b"\x1b]2;codex resume\x07");
+    slot.last_title = "codex resume".to_owned();
     panes.insert(id.clone(), slot);
     let mut records: HashMap<ResourceId, AgentRecord> = HashMap::new();
     records.insert(

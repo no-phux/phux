@@ -3,7 +3,7 @@ use super::*;
 /// Every pre-handoff refusal happens before a write: a reused id with a
 /// new payload, an empty or oversized batch, an unsafe paste, encoded
 /// bytes past the body limit, and a satellite target, which also binds
-/// no id (L1 §9.1).
+/// no id.
 #[tokio::test(flavor = "current_thread")]
 async fn apply_input_refuses_before_handoff() {
     crate::runtime::test_support::local(async {

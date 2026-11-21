@@ -151,3 +151,20 @@ fn registering_a_host_in_the_production_config_is_refused() {
     assert_refused(&out);
     sandbox.assert_production_untouched();
 }
+
+/// A connect link's ticket is single-use, so the registry refusal comes
+/// before any dial: nothing is enrolled that the retry would need again.
+#[test]
+fn a_code_registration_is_refused_before_its_ticket_is_spent() {
+    let sandbox = Sandbox::new();
+    let (fp, ticket) = ("ab".repeat(32), "cd".repeat(32));
+    let link = format!(
+        "https://phux.sh/connect?url=wss://127.0.0.1:9&quic=quic://127.0.0.1:9&fp={fp}\
+         #enroll={ticket}&token=deadbeef"
+    );
+    let out = sandbox.phux(&[], &["host", "add", "mini", "--code", &link]);
+    assert_refused(&out);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("could not enroll"), "no dial: {stderr}");
+    sandbox.assert_production_untouched();
+}

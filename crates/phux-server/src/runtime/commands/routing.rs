@@ -1,10 +1,16 @@
 //! Command context, entry point, and routing ahead of local dispatch.
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the split command modules share the parent command namespace"
-)]
 
-use super::*;
+use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities};
+use phux_protocol::wire::frame::Command;
+use tokio_util::sync::CancellationToken;
+use tracing::debug;
+
+use crate::runtime::commands::attach_terminal::{invalid_agent_cursor, refuse_invalid_role_policy};
+use crate::runtime::commands::dispatch::dispatch_local;
+use crate::runtime::commands::lifecycle::{handle_shutdown, handle_upgrade};
+use crate::runtime::commands::satellite::{handle_satellite_command, note_local_use};
+use crate::runtime::reply;
+use crate::state::{ClientId, Outbound, SharedState};
 
 /// Stable, payload-free label for a [`Command`] variant: the `kind` field on
 /// the `handle_command` span, kept free of session names, env, and input.
@@ -91,7 +97,7 @@ impl CommandContext {
 }
 
 /// Dispatch a `COMMAND` and reply with its correlated `COMMAND_RESULT`
-/// (SPEC §5). The result may follow frames the command triggered.
+///. The result may follow frames the command triggered.
 #[tracing::instrument(
     level = "info",
     name = "handle_command",
@@ -253,7 +259,7 @@ async fn route_command(
         return None;
     }
 
-    // L1 §5.1.1: keyed commands are admitted after routing; a satellite owns
+    // Keyed commands are admitted after routing; a satellite owns
     // the dedupe of what it runs.
     let claim = match super::super::keyed_ops::admit(state, &command).await {
         super::super::keyed_ops::KeyedAdmission::Unkeyed => None,

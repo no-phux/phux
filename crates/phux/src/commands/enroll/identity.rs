@@ -160,7 +160,7 @@ pub(crate) const RENEW_WITHIN_SECONDS: i64 = 14 * SECONDS_PER_DAY;
 pub(super) const SECONDS_PER_DAY: i64 = 24 * 60 * 60;
 
 /// When the far host stops admitting the client certificate at `cert`, as
-/// Unix seconds. The registry expiry is authoritative (workload-auth §7)
+/// Unix seconds. The registry expiry is authoritative
 /// and a server's own issuance rounds the certificate's `notAfter` up to the
 /// next midnight after it, so admission ends within the day before
 /// `notAfter`; this answers the start of that day. A `notAfter` that is not

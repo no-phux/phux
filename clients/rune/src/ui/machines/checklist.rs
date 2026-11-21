@@ -13,7 +13,7 @@ use crate::ui::badge::mark;
 
 use crate::ui::tokens::{Paint, Tokens};
 
-/// The verdict as a status mark, colour, mark and word together (§1.3):
+/// The verdict as a status mark, colour, mark and word together:
 /// works is done, off failed, waiting working, unknown the dotted ring.
 const fn state(verdict: Verdict) -> (State, &'static str) {
     match verdict {

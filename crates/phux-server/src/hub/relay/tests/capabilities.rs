@@ -173,7 +173,7 @@ fn a_conditional_kill_reaches_only_a_satellite_that_evaluates_it() {
     assert_eq!(relayed, command, "the precondition crosses unchanged");
 }
 
-// --- keyed operations and the incarnation fence (L1 §9.1) -----------
+// --- keyed operations and the incarnation fence -----------
 
 pub(super) fn keyed_session(
     features: &[ServerFeature],

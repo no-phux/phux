@@ -1,4 +1,4 @@
-//! The pushed agent-event stream (SPEC §7.5): subscribers receive `EVENT`s as
+//! The pushed agent-event stream: subscribers receive `EVENT`s as
 //! a pane retitles, bells, runs an OSC-133-marked command, changes directory,
 //! and closes. Seeds are file-gated (see `common::gated_seed`) so no amount of
 //! server-startup latency can let a pane speak before its subscriber listens.

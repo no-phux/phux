@@ -63,6 +63,31 @@ fn a_group_writable_directory_is_not_an_owner_controlled_lock() {
     ));
 }
 
+/// phux's own state directory, left group-writable by a login umask of 002,
+/// is repaired by a write and by a read; any other such directory is still
+/// refused (above).
+#[test]
+fn phux_repairs_its_own_group_writable_state_directory() {
+    let root = tempfile::tempdir().unwrap();
+    let prev = std::env::var_os("XDG_STATE_HOME");
+    // Process-global env: nextest isolates tests.
+    unsafe { std::env::set_var("XDG_STATE_HOME", root.path()) };
+    let own = crate::telemetry::state_dir();
+    let mode = |dir: &Path| std::fs::metadata(dir).unwrap().permissions().mode() & 0o777;
+    std::fs::create_dir_all(&own).unwrap();
+    std::fs::set_permissions(&own, std::fs::Permissions::from_mode(0o775)).unwrap();
+    let path = own.join("workload-keys");
+    with_lock(&path, |held| atomic_replace(&path, b"{}", held)).unwrap();
+    assert_eq!(mode(&own), 0o755);
+    std::fs::set_permissions(&own, std::fs::Permissions::from_mode(0o777)).unwrap();
+    assert!(read_stable(&path, FileRole::Registry).unwrap().is_some());
+    assert_eq!(mode(&own), 0o755);
+    match prev {
+        Some(prev) => unsafe { std::env::set_var("XDG_STATE_HOME", prev) },
+        None => unsafe { std::env::remove_var("XDG_STATE_HOME") },
+    }
+}
+
 /// A reader refuses an owner-only file in a directory others can write:
 /// they could swap it between two reads.
 #[test]

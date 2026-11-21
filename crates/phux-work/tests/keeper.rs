@@ -227,3 +227,45 @@ fn without_a_launcher_a_missing_keeper_is_an_error() {
     });
     assert!(matches!(result, Err(Error::Keeper(_))), "{result:?}");
 }
+
+#[test]
+fn open_work_does_not_hold_a_keeper_whose_server_is_gone() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let endpoint = endpoint(root.path());
+    let server_alive = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let keeper = {
+        let endpoint = endpoint.clone();
+        let alive = server_alive.clone();
+        thread::spawn(move || {
+            phux_work::run_keeper_with(
+                &endpoint,
+                Duration::from_millis(200),
+                || {},
+                move || alive.load(std::sync::atomic::Ordering::SeqCst),
+            )
+        })
+    };
+    wait_for_socket(&endpoint);
+    let client = Client::new(endpoint, None);
+    let added = client.add(add("phux", "open")).expect("add");
+    client
+        .record_state(StateEdit {
+            alias: added.objective.alias,
+            state: ObjectiveState::Working,
+            expected_revision: added.objective.revision,
+            operation_id: OperationId::generate().expect("id"),
+            actor: "tester".to_owned(),
+            event_kind: None,
+        })
+        .expect("working");
+    thread::sleep(Duration::from_millis(400));
+    assert!(
+        !keeper.is_finished(),
+        "open work holds a keeper while the server lives"
+    );
+    server_alive.store(false, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        keeper.join().expect("join").expect("keeper"),
+        KeeperExit::Idle
+    );
+}

@@ -77,7 +77,7 @@ pub(crate) fn held_terminals(
 pub const POLICY_TARGET: &str = "phux_server::policy";
 
 /// At most one uncorrelated `PERMISSION_DENIED` per connection per interval
-/// (§7); denied frames are still dropped.
+///; denied frames are still dropped.
 pub const DENIAL_ERROR_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Why a live connection's authority was withdrawn (`docs/remote.md#managing-credentials`).

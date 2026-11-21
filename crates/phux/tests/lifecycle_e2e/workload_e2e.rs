@@ -1,7 +1,7 @@
 //! `phux workload` (ADR-0116, `docs/remote.md#who-can-connect`): the
 //! authority prints only its fingerprint and no key bytes reach stdout or
 //! stderr; a revoked credential's next connection is refused with no restart;
-//! and the startup refusals of workload-auth §8 (ADR-0179).
+//! and the startup refusals (ADR-0179).
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
@@ -132,7 +132,7 @@ fn register_loopback_remote(dir: &Path) {
 }
 
 /// `[policy] mode = "paired"` in the hermetic config, the one switch that
-/// serves enrolled workloads (workload-auth §8; `PHUX_WORKLOAD_MTLS` is
+/// serves enrolled workloads (`PHUX_WORKLOAD_MTLS` is
 /// retired, ADR-0179).
 fn paired(dir: &Path) {
     std::fs::write(

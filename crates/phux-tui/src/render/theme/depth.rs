@@ -1,4 +1,4 @@
-//! Fitting solved roles to the terminal's colour depth (spec §4.2).
+//! Fitting solved roles to the terminal's colour depth.
 //!
 //! - 256 colours: the nearest xterm entry in 16–255 by squared sRGB
 //!   distance, then re-checked against the bar on the quantised surface;

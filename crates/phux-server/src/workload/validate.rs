@@ -99,7 +99,7 @@ pub(super) fn parse_ceiling(scopes: &[String]) -> Result<TerminalScopeSet, Workl
         )
     })?;
     refuse_restartable_ids(scopes)?;
-    // Admission mints exactly this effective set (workload-auth §5.1), so a
+    // Admission mints exactly this effective set, so a
     // ceiling it cannot hold is refused here, at enrollment and load, rather
     // than at every HELLO.
     EffectiveScopeSet::unattenuated(&ceiling).map_err(|_| {
@@ -110,7 +110,7 @@ pub(super) fn parse_ceiling(scopes: &[String]) -> Result<TerminalScopeSet, Workl
 
 /// Refuse `group:` and `terminal:` selectors in a persisted ceiling: the ids
 /// they name restart with the server, so a registry record would come to name
-/// a different session or Terminal (workload-auth §5.1). The keyed
+/// a different session or Terminal. The keyed
 /// `session:` and `resource:` selectors name records that outlive it.
 fn refuse_restartable_ids(scopes: &[String]) -> Result<(), WorkloadError> {
     let restartable = |scope: &String| {

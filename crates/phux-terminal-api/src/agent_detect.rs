@@ -23,6 +23,13 @@ pub enum AgentDetectEvent {
     AskSentinel(Option<phux_agent_session::asked::AskedPayload>),
     Retract,
 }
+/// A desktop notification a program asked for (OSC 9 or OSC 777), as lossy
+/// UTF-8. The server decides whether it becomes the pane's note.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProgramNote {
+    pub title: String,
+    pub body: String,
+}
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct ProgramStatusRecord {
     pub id: String,

@@ -259,7 +259,7 @@ impl ScriptSpec {
         self
     }
 
-    /// Refuse every metadata request with a correlated `ERROR` (L1 §5).
+    /// Refuse every metadata request with a correlated `ERROR`.
     #[must_use]
     pub fn refuse_metadata(mut self, code: ErrorCode, message: &str) -> Self {
         self.metadata_error = Some((code, message.to_owned()));
@@ -291,7 +291,7 @@ impl ScriptSpec {
     }
 
     /// Refuse every `GET_STATE` with a *correlated* `ERROR`: a scoped
-    /// workload's inventory read that dispatch denies (workload-auth §7).
+    /// workload's inventory read that dispatch denies.
     #[must_use]
     pub fn refuse_state(mut self, code: ErrorCode, message: &str) -> Self {
         self.state_error = Some((code, message.to_owned()));

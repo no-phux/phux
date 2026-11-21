@@ -128,7 +128,8 @@ state, logs, and credentials.
 Press <kbd>C-a</kbd> <kbd>B</kbd> in the terminal UI. It writes a report with
 versions, logs, and the current screen to the state directory. From a shell,
 `phux report new` writes one without the screen, and `phux report show`
-prints the newest.
+prints the newest. `phux version` prints this client's and the server's
+package and protocol versions (`--remote HOST` for another machine).
 
 **A report can contain secrets.** The screen and logs may include whatever
 was in your panes. Read it, and remove anything private, before you share
@@ -249,6 +250,14 @@ name in it, pairing times out. Check in this order:
 
 If the two cannot share a network, pair through a
 [relay](./remote.md#relays).
+
+**A paired device that keeps reconnecting while the server looks fine.**
+If `phux doctor` warns `remote-replies`, the listener is bound and the
+pairing is good, but this machine cannot send its replies back to that
+device: it has no route to it. `route -n get <address>` (macOS) or
+`ip route get <address>` (Linux) shows which route a reply takes; a LAN or
+VPN route covering the private network's range is the usual cause. Fix the
+route; pairing again or restarting phux does not help.
 
 ## Keys, clipboard, and agents
 

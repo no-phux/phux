@@ -1,6 +1,6 @@
 //! Hub-only state (ADR-0007): the satellite table, relays, and link
 //! supervisors; what each satellite advertised; the satellite spawn ledger
-//! (ADR-0109); and the hub-side satellite input leases (L1 §9.1).
+//! (ADR-0109); and the hub-side satellite input leases.
 //!
 //! The table, relays, and links are installed together at startup and are
 //! `None` exactly when the server is not a hub; a registry reload swaps the
@@ -55,7 +55,7 @@ pub(crate) struct Federation {
     /// Who spawned each satellite resource and whether another consumer
     /// attached it since (ADR-0109).
     spawns: spawns::SatelliteSpawnLedger,
-    /// Hub-side lease per satellite terminal (L1 §9.1). All hub consumers
+    /// Hub-side lease per satellite terminal. All hub consumers
     /// share one identity on the satellite, so the hub gates relayed input
     /// and lease commands here before forwarding. Carries the holder's
     /// mailbox for SEIZE notifications.
@@ -331,7 +331,7 @@ impl Federation {
     }
 }
 
-// -- hub-side satellite leases (L1 §9.1) ----------------------------------
+// -- hub-side satellite leases ----------------------------------
 impl Federation {
     /// The hub consumer holding the satellite lease, if any.
     #[must_use]

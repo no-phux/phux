@@ -1,6 +1,6 @@
 //! QUIC dialer round trips (ADR-0007): a minimal quinn server with the real
 //! listener's TLS shape drives [`Connection::connect_quic`] end to end (TLS,
-//! the bearer-token preamble, SPEC §5 framing). `phux-server`'s
+//! the bearer-token preamble, framing). `phux-server`'s
 //! `transport::quic` tests are the mirror.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]

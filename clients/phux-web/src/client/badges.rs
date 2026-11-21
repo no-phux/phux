@@ -1,4 +1,4 @@
-//! Agent badges beside the canvas (design spec §1.3, §4.4): colour, mark
+//! Agent badges beside the canvas: colour, mark
 //! and word together, from the one status mapping, `phux_design::tone_of`.
 //!
 //! Each badge is `<span class="phux-agent-badge" data-tone=… data-status=…>`
@@ -145,7 +145,7 @@ fn svg(body: &str) -> String {
 }
 
 /// The text a screen reader hears when a pane enters `state`, if any:
-/// only `needs you`, `failed` and `lost` are announced (§1.3 rule 9).
+/// only `needs you`, `failed` and `lost` are announced.
 #[must_use]
 pub fn announcement(provider: &str, state: State) -> Option<String> {
     matches!(state, State::NeedsYou | State::Failed | State::Lost)
@@ -299,7 +299,7 @@ pub(super) fn bell_dot(document: &web_sys::Document) -> Option<web_sys::Element>
     dot.set_attribute("aria-label", word("bell").unwrap_or_default())
         .ok()?;
     dot.set_inner_html(&svg(BELL_MARK));
-    // Mark and word, never the mark alone (§1.3 rule 1).
+    // Mark and word, never the mark alone.
     let label = document.create_element("span").ok()?;
     label.set_class_name("phux-agent-word");
     label.set_text_content(Some(word("bell").unwrap_or_default()));

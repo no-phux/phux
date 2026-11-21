@@ -1,4 +1,4 @@
-//! The window chrome's own gallery (lane B, §5.2): the sidebar with every
+//! The window chrome's own gallery (lane B): the sidebar with every
 //! mark on the ladder, the tab strip, the confirm bar and the split cards,
 //! painted through Rune's real renderer in the house look's two modes,
 //! under increased contrast and in the +40% pseudo-locale.

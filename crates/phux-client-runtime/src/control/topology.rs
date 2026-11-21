@@ -381,8 +381,8 @@ pub(super) fn session_of(snapshot: &SessionSnapshot, info: &ResourceInfo) -> Opt
 }
 
 /// Which answer a snapshot is. Each is a view filtered by its own grant verb
-/// (`ATTACHED` by `OBSERVE`, `GET_STATE` by `INVENTORY`, workload-auth §6),
-/// and only a hub's `GET_STATE` lists satellite terminals (L1 §9.1).
+/// (`ATTACHED` by `OBSERVE`, `GET_STATE` by `INVENTORY`),
+/// and only a hub's `GET_STATE` lists satellite terminals.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum View {
     Attach,
@@ -449,7 +449,7 @@ impl Listings {
 }
 
 /// A satellite terminal whose host the snapshot does not report reachable:
-/// its absence says nothing about the terminal (L1 §9.1 degradation).
+/// its absence says nothing about the terminal (federation degradation).
 fn unlisted_host(snapshot: &SessionSnapshot, id: &ResourceId) -> bool {
     let ResourceId::Satellite { host, .. } = id else {
         return false;

@@ -301,6 +301,10 @@ can be reached your way. The emacs motions, for example:
 "C-g" = { action = "copy-mode-key", key = "Escape" }
 ```
 
+`clear-selection` is the other action this table takes: it drops the
+selection and keeps you where you are, as <kbd>Esc</kbd> does while
+something is selected (`"C-c" = "clear-selection"`).
+
 A key you bind replaces what that key did in copy mode; the built-in keys
 you leave alone keep working. While you type a search, keys are text as
 usual. The table is read when the config loads or reloads.

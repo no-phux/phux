@@ -83,6 +83,7 @@ fn routable_quic_without_a_pin_is_refused_after_resolution() {
     unpinned.token_file = None;
     let err = runtime
         .block_on(plan_quic_with_token(&unpinned, "192.0.2.1:8788", None))
+        .map_err(String::from)
         .expect_err("unpinned");
     assert!(err.contains("certificate pin"), "{err}");
     let loopback = runtime
@@ -105,6 +106,7 @@ fn a_relay_route_rides_the_tls_server_name_on_both_lanes() {
     // read the stream.
     let refused = runtime
         .block_on(plan_quic_with_token(&routed, "127.0.0.1:4433", None))
+        .map_err(String::from)
         .expect_err("a relay route without the server's CA");
     assert!(
         refused.contains("mini-route")

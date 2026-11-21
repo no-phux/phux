@@ -4,7 +4,7 @@
 //! `└`. They sit under the machine this window is on; the other machines
 //! follow, folded, each opening to a glance at its sessions.
 //!
-//! Rows are phux's own (§4.1.3 OWN), drawn only from the window's tokens:
+//! Rows are phux's own (OWN), drawn only from the window's tokens:
 //! the kit's `SidebarRow` has no disclosure on a draggable row, no status
 //! words and no variable pitch. They sit in one source list, as the kit's
 //! `Sidebar` keeps them: a single Tab stop whose arrows move the selection.
@@ -120,8 +120,9 @@ fn session_header(session: &Header, t: &Tokens) -> El {
         .children((session.color).map(|rgb| host_color::mark(rgb, dot_size(t), sidebar)))
         .children(session.branch.then(|| branch_mark(t)))
         .child(
+            // A group's name, a step quieter than the rows it holds.
             text(session.name.to_owned())
-                .font(t.ty.label.semibold())
+                .font(t.ty.caption.semibold())
                 .color(ink.paint())
                 .truncate(),
         );
@@ -241,7 +242,7 @@ fn pane_row(pane: &Row, t: &Tokens) -> El {
         let f = face(mark, t);
         let lit = tinted && !disabled;
         let ink = if lit { f.ink } else { quiet.paint() };
-        // What asks for you is set bold beside its mark (§1.3).
+        // What asks for you is set bold beside its mark.
         let font = if lit && f.bold {
             t.ty.caption.semibold()
         } else {
@@ -323,7 +324,7 @@ fn counts_by_session(desk: &Desk, topology: &Topology) -> HashMap<u32, Counts> {
 
 /// A click on a row picks it and hands the keyboard back to the shown
 /// terminal; only keys keep focus in the list, where arrows walk it.
-fn clicked(tx: &mut rune::Tx) {
+pub(super) fn clicked(tx: &mut rune::Tx) {
     if !tx.by_keys() {
         tx.blur();
     }

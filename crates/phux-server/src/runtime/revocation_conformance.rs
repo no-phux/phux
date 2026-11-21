@@ -1,5 +1,5 @@
 //! The live-revocation conformance sweep (`docs/remote.md#managing-credentials`).
-//! Each case withdraws the grant mid-operation and checks §7: only
+//! Each case withdraws the grant mid-operation and checks revocation: only
 //! `ERROR { PERMISSION_DENIED }` and `DETACHED { reason }` follow, nothing
 //! queued runs, holdings are released, and other connections carry on.
 
@@ -159,7 +159,7 @@ impl Fixture {
 }
 
 impl Connection {
-    /// §7 steps 3 and 4: the transport closed, and the last two frames on
+    /// Revocation steps 3 and 4: the transport closed, and the last two frames on
     /// it are the goodbye. Anything racing the revocation had its chance to
     /// land after it and did not.
     async fn assert_goodbye(&self, reason: DetachReason) {

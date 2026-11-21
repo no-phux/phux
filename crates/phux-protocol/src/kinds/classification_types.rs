@@ -62,7 +62,7 @@ impl Verb {
     }
 }
 
-/// A set of [`Verb`]s: the bitset a scope grant carries (workload-auth §5).
+/// A set of [`Verb`]s: the bitset a scope grant carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Verbs(u8);
 
@@ -78,7 +78,7 @@ impl Verbs {
     /// and a v1 grant carrying it is rejected, never ignored.
     pub const V1_KNOWN_BITS: u8 = 0x3F;
 
-    /// A v1 grant's verbs as schema v2 reads them (workload-auth §5):
+    /// A v1 grant's verbs as schema v2 reads them:
     /// `SIGNAL` implies `TERMINATE` and `CREATE` implies `ORGANIZE`, so a
     /// registry written before the split reaches the organization
     /// equivalents of what it could already do. Legacy commands keep their
@@ -150,7 +150,7 @@ impl Verbs {
     }
 }
 
-/// Why a row needs no grant at all (workload-auth §6 `*-exempt` rows).
+/// Why a row needs no grant at all (the `*-exempt` rows).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Exemption {
     /// `HELLO`: valid only before the handshake completes.
@@ -179,7 +179,7 @@ impl Exemption {
 
 /// Whose authority a classified frame or command needs.
 ///
-/// This is the subject-selector column of workload-auth §6 as a closed
+/// This is the subject-selector column of the scope tables as a closed
 /// vocabulary. A dispatch guard resolves the subject against server state,
 /// side-effect-free, before any routing or handler runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -189,7 +189,7 @@ pub enum Subject {
     /// The calling connection's own bindings only.
     CallingConnection,
     /// The Terminal the frame or command names. A child resource matches
-    /// when its parent matches (workload-auth §6, L1 §1.2).
+    /// when its parent matches.
     NamedTerminal,
     /// Every Terminal the command names, all-or-nothing.
     EveryNamedTerminal,
@@ -312,7 +312,7 @@ pub enum Classification {
     Deny,
 }
 
-/// One row of a workload-auth §6 classification table.
+/// One row of a classification table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Rule {
     /// The row's first cell, verbatim from the spec: the case it covers.

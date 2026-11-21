@@ -242,6 +242,9 @@ pub struct NotificationsCfg {
     pub suppress_focused: bool,
     /// Also ring the bell (`terminal`) or play the default sound (`system`).
     pub sound: bool,
+    /// What the server does with OSC 9 and OSC 777 from a pane. Read at
+    /// server start.
+    pub from_programs: FromPrograms,
 }
 
 impl Default for NotificationsCfg {
@@ -253,6 +256,7 @@ impl Default for NotificationsCfg {
             done: true,
             suppress_focused: true,
             sound: false,
+            from_programs: FromPrograms::Off,
         }
     }
 }
@@ -271,6 +275,18 @@ pub enum NotifyMode {
     Bell,
     /// No notifications.
     Off,
+}
+
+/// `[notifications] from-programs`: whether a pane's own desktop
+/// notification sequences (OSC 9, OSC 777) reach anyone.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum FromPrograms {
+    /// Ignored: no escape sequence a pane prints raises a notification.
+    #[default]
+    Off,
+    /// Each becomes the pane's note, as if the program ran `phux notify`.
+    Notes,
 }
 
 /// `[notifications] terminal-protocol`: the OSC dialect `terminal` mode

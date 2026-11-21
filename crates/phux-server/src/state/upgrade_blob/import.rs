@@ -89,7 +89,7 @@ pub(in crate::state) fn merge_carried(
     Ok((org, keyed, false))
 }
 
-/// Import a tree from an image that predates the records (MIGRATION §07):
+/// Import a tree from an image that predates the records:
 /// each session becomes a record awaiting organization, persistent when it
 /// was keep-empty; each window becomes a group of its arrangement; each pane
 /// becomes a Terminal bound to its running process as activation 1; each

@@ -216,7 +216,7 @@ async fn connect_attach_dial(
     dial: &Dial,
     probe_default_colors: bool,
 ) -> Result<Connection, AttachError> {
-    // Never query a terminal that is not where the frames go (spec §4.2).
+    // Never query a terminal that is not where the frames go.
     let default_colors = (probe_default_colors
         && std::io::IsTerminal::is_terminal(&std::io::stdout()))
     .then(crate::attach::terminal_probe::default_colors)

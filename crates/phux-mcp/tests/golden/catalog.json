@@ -1817,6 +1817,7 @@
           "type": "string"
         },
         "split": {
+          "description": "Where the new pane goes beside `target`: `horizontal` to the right (default), `vertical` below.",
           "enum": [
             "horizontal",
             "vertical"
@@ -2021,6 +2022,7 @@
           "type": "string"
         },
         "split": {
+          "description": "Where the new pane goes beside `target`: `horizontal` to the right (default), `vertical` below.",
           "enum": [
             "horizontal",
             "vertical"
@@ -2717,6 +2719,7 @@
           "type": "boolean"
         },
         "direction": {
+          "description": "The divider: `horizontal` stacks the panes, `vertical` places them side by side. The opposite of phux_spawn's `split`.",
           "enum": [
             "horizontal",
             "vertical"
@@ -2931,6 +2934,7 @@
           "type": "boolean"
         },
         "direction": {
+          "description": "The divider: `horizontal` stacks the panes, `vertical` places them side by side. The opposite of phux_spawn's `split`.",
           "enum": [
             "horizontal",
             "vertical"

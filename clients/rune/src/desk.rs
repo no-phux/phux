@@ -139,6 +139,7 @@ pub struct Desk {
     pub sidebar_open: bool,
     /// The window's width in points, from the root's last layout; 0 until then.
     pub window_w: f32,
+    window_h: f32,
     /// The sidebar shown over the preference in a window too narrow for it.
     pub sidebar_peek: bool,
     /// The link under the pointer while ⌘ is held.
@@ -187,6 +188,11 @@ pub struct Desk {
     /// restarted it (app clock seconds).
     pub blink_on: bool,
     blink_since: f64,
+    /// The shown terminal's grid size as last seen, until when (app clock)
+    /// the title bar shows it after a window resize, and whether it did.
+    size_seen: Option<(u16, u16)>,
+    size_until: f64,
+    size_was_shown: bool,
     clock: f64,
     /// Bumped by every frame change of the shown terminal, so the view runs.
     pub generation: u64,
@@ -276,6 +282,7 @@ impl Desk {
             theme_before: None,
             sidebar_open,
             window_w: 0.0,
+            window_h: 0.0,
             sidebar_peek: false,
             pointer: links::Pointer::default(),
             inbox: inbox::Inbox::default(),
@@ -302,6 +309,9 @@ impl Desk {
             activities: crate::activity::Activities::default(),
             blink_on: true,
             blink_since: 0.0,
+            size_seen: None,
+            size_until: 0.0,
+            size_was_shown: false,
             clock: 0.0,
             generation: 0,
             font_size,
@@ -396,7 +406,7 @@ impl Desk {
         // Also re-snaps cells after a display-scale change.
         self.fit();
         self.wake_phone_fit(tx);
-        changed | self.blink(&client, tx) | self.tend_link(tx)
+        changed | self.blink(&client, tx) | self.glance_size(&client, tx) | self.tend_link(tx)
     }
 }
 

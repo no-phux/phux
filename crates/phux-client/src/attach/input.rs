@@ -1,5 +1,5 @@
 //! Stdin VT-byte parsing: turns the bytes a TTY puts on stdin into structured
-//! [`InputEvent`]s (SPEC §9). libghostty-vt only ships encoders, so this is a
+//! [`InputEvent`]s. libghostty-vt only ships encoders, so this is a
 //! small hand-rolled xterm/VT input lexer.
 //!
 //! Handled: printable ASCII and UTF-8, C0 controls (CR = Enter, LF = Ctrl-J,
@@ -10,7 +10,8 @@
 //! by the server's encoder), focus reports, and bracketed paste. DCS / OSC /
 //! SOS / PM / APC strings are absorbed and dropped, except that the host
 //! terminal's OSC 52 clipboard answer is kept for
-//! [`StdinParser::take_clipboard_reply`].
+//! [`StdinParser::take_clipboard_reply`] and its OSC 10/11 colour answers
+//! for [`StdinParser::take_default_colors`].
 //!
 //! A bare ESC is ambiguous with the start of a sequence, so the parser stays
 //! timer-free: the driver arms an idle timer while [`StdinParser::esc_pending`]
@@ -24,6 +25,9 @@ use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 mod csi;
 mod key;
 mod osc52;
+mod osc_color;
+
+pub use osc_color::note_osc_color;
 
 use self::csi::{dispatch_csi, dispatch_legacy_mouse};
 use self::key::{c0_or_ascii_to_key, utf8_continuation_count};
@@ -67,6 +71,8 @@ pub struct StdinParser {
     paste_buf: Vec<u8>,
     /// The host terminal's OSC 52 clipboard answer, if one is arriving.
     osc52: osc52::Osc52Capture,
+    /// OSC 10/11 answers and DEC 2031 scheme reports.
+    colors: osc_color::ColorCapture,
 }
 
 impl Default for StdinParser {
@@ -84,6 +90,7 @@ impl StdinParser {
             buf: Vec::new(),
             paste_buf: Vec::new(),
             osc52: osc52::Osc52Capture::new(),
+            colors: osc_color::ColorCapture::new(),
         }
     }
 
@@ -118,6 +125,20 @@ impl StdinParser {
     /// terminal sent (`ESC ] 52 ; c ; <base64> ST`), once.
     pub const fn take_clipboard_reply(&mut self) -> Option<Vec<u8>> {
         self.osc52.take()
+    }
+
+    /// The host's default colours, once both its OSC 10 and 11 answers
+    /// have arrived.
+    pub const fn take_default_colors(
+        &mut self,
+    ) -> Option<phux_protocol::caps::TerminalDefaultColors> {
+        self.colors.take_colors()
+    }
+
+    /// Whether the host reported a colour-scheme change (DEC 2031) since the
+    /// last call.
+    pub const fn take_color_scheme_change(&mut self) -> bool {
+        self.colors.take_scheme_change()
     }
 
     /// Feed `bytes` and return any complete events.
@@ -182,6 +203,7 @@ impl StdinParser {
             // DCS / OSC / SOS / PM / APC — absorb until ST or BEL.
             b'P' | b']' | b'X' | b'^' | b'_' => {
                 self.osc52.begin(b == b']');
+                self.colors.begin(b == b']');
                 self.state = State::StringTerm { esc: false };
             }
             0x1B => {
@@ -245,6 +267,11 @@ impl StdinParser {
                 self.state = State::X10Mouse { bytes_seen: 0 };
                 return;
             }
+            // DEC 2031: `CSI ? 997 ; 1|2 n`, the host's scheme changed.
+            if final_byte == b'n' && params.starts_with(b"?997;") {
+                self.colors.note_scheme_change();
+                return;
+            }
             dispatch_csi(&params, final_byte, out);
             return;
         }
@@ -281,11 +308,13 @@ impl StdinParser {
     fn feed_string_term(&mut self, b: u8, esc: bool) {
         if esc || b == 0x07 {
             self.osc52.finish();
+            self.colors.finish();
             self.state = State::Ground;
         } else if b == 0x1B {
             self.state = State::StringTerm { esc: true };
         } else {
             self.osc52.push(b);
+            self.colors.push(b);
         }
     }
 

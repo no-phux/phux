@@ -15,7 +15,7 @@ pub(super) struct ProxySubscriber {
     pub(super) consumer_cancel: CancellationToken,
     /// Token of the registration held for this `(terminal, client)`.
     pub(super) seq: u64,
-    /// Snapshot-ordering gate (L1 §9.1); see [`SnapshotGate`].
+    /// Snapshot-ordering gate; see [`SnapshotGate`].
     pub(super) gate: SnapshotGate,
     /// Remove only after the queued `RESOURCE_CLOSED` is delivered.
     pub(super) retire_after_flush: bool,
@@ -25,7 +25,7 @@ pub(super) struct ProxySubscriber {
 }
 
 /// Per-subscriber return-leg gate: content deltas flow only after the
-/// subscriber's own attach snapshot lands (L1 §9.1), without stalling the
+/// subscriber's own attach snapshot lands, without stalling the
 /// link for one slow consumer.
 #[derive(Debug)]
 pub(super) enum SnapshotGate {
@@ -267,7 +267,7 @@ pub(crate) struct RelaySession {
     pub(super) journal: Option<crate::state::SharedState>,
     /// The satellite's `HELLO_OK.server_id` on this connection.
     pub(super) incarnation: crate::hub::operation_fence::Incarnation,
-    /// Incarnation fence shared with the link's other sessions (L1 §9.1).
+    /// Incarnation fence shared with the link's other sessions.
     pub(super) operations: crate::hub::operation_fence::OperationFence,
     pub(super) resource_kinds: Option<ResourceKindCatalog>,
 }

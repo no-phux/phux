@@ -147,7 +147,7 @@ impl core::fmt::Debug for ServerIncarnation {
 pub struct CloseAttribution {
     /// The connection that sent the kill.
     pub actor: Option<ClientId>,
-    /// The kill's `operation_id`, when it carried one (L1 §5.1.1).
+    /// The kill's `operation_id`, when it carried one.
     pub operation_id: Option<phux_protocol::ids::IdempotencyKey>,
 }
 
@@ -177,7 +177,7 @@ pub struct ServerState {
     /// Every core-id ↔ wire-id mapping and the wire-id allocators (see
     /// [`IdSpace`]).
     pub idspace: IdSpace,
-    /// Per-scope L3 metadata store (SPEC §7.4); values are opaque.
+    /// Per-scope L3 metadata store; values are opaque.
     metadata: MetadataStore,
     /// Boot-time configuration, built before the state and never changed;
     /// see [`config`].
@@ -219,6 +219,9 @@ pub struct ServerState {
     retained: retained::RetainedTable,
     /// Remote listener bind outcomes for `GET_STATE` and `phux doctor`.
     remote_listeners: phux_protocol::wire::RemoteListenersReport,
+    /// The configured QUIC listener's failed replies, read into
+    /// [`Self::remote_listeners`].
+    quic_replies: Option<std::sync::Arc<crate::transport::quic::ReplyFailures>>,
     /// The operation dedupe record (ADR-0053, ADR-0126), with its own lock
     /// so the input lane need not take this one.
     operation_dedupe: crate::runtime::operation_dedupe::OperationDedupe,

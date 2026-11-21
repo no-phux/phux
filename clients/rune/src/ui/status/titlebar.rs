@@ -1,6 +1,6 @@
 //! The band over the terminal (kit `WindowTitlebar`) and what it says:
 //! the session and terminal on screen, the tabs, the link's trouble, the
-//! terminal's size, and the toolbar that shows on hover.
+//! terminal's size while it changes, and the toolbar that shows on hover.
 
 use crate::ui::tokens::Voice;
 use phux_client_runtime::control::Status;
@@ -129,14 +129,13 @@ pub fn title_bar(desk: &Desk, p: &Tokens, lights: f32, trailing: f32) -> El {
 fn band(desk: &Desk, p: &Tokens, lights: f32, trailing: f32, fill: Color) -> El {
     let t = p;
     let s = &t.space;
+    // Only while a resize is fresh; at rest the bar says nothing about it.
+    // The words keep their room, so tabs never shift as they fade.
     let geometry = desk
-        .connection
-        .client
-        .as_ref()
-        .zip(desk.connection.shown.as_ref())
-        .and_then(|(client, shown)| client.acquire_view(shown.view?))
-        .map(|frame| format!("{}×{}", frame.cols, frame.rows))
+        .last_size()
+        .map(|(cols, rows)| format!("{cols}×{rows}"))
         .unwrap_or_default();
+    let sizing = desk.size_glance().is_some();
     let folded = !desk.sidebar_shown();
     let sidebar = icon_press(
         &icons::SIDEBAR,
@@ -203,6 +202,7 @@ fn band(desk: &Desk, p: &Tokens, lights: f32, trailing: f32, fill: Color) -> El 
         text(geometry)
             .font(geometry_type(t))
             .color(t.roles.text.dim.paint())
+            .opacity(if sizing { 1.0 } else { 0.0 })
             .a11y_hidden(),
     )
     .trailing(

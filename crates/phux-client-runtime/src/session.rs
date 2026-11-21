@@ -14,7 +14,7 @@
 //!
 //! # The interleave contract
 //!
-//! L1 §5 lets the server emit other frames before a reply, and it does so on
+//! The protocol lets the server emit other frames before a reply, and it does so on
 //! paths a client cannot avoid: `ATTACH_RESOURCE` pushes the bootstrap
 //! transcript before its ack, a federation hub pushes one uncorrelated
 //! `ERROR` per unreachable satellite before a `GET_STATE` reply, and any
@@ -128,17 +128,21 @@ impl Session {
     ///
     /// # Errors
     ///
-    /// A refused plan is [`SessionError::Connect`]; otherwise as
+    /// A refused plan is [`SessionError::Connect`], a name that did not
+    /// resolve [`SessionError::Unreachable`]; otherwise as
     /// [`Self::connect`].
     pub async fn connect_target(
         target: &crate::Target,
         client_name: String,
         client_caps: ClientCapabilities,
     ) -> Result<Self, SessionError> {
-        let dial = tokio::time::timeout(DIAL_TIMEOUT, target.plan())
+        let dial = tokio::time::timeout(DIAL_TIMEOUT, target.plan_dial())
             .await
             .map_err(|_| dial_timed_out())?
-            .map_err(SessionError::Connect)?;
+            .map_err(|error| match error {
+                crate::dial::PlanError::Refused(message) => SessionError::Connect(message),
+                crate::dial::PlanError::Unresolved(message) => SessionError::Unreachable(message),
+            })?;
         Self::connect(&dial, client_name, client_caps).await
     }
 

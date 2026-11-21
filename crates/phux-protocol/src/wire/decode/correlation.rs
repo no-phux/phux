@@ -1,11 +1,12 @@
 //! Correlating a frame that did not decode: its request id, and what a client reads in its place.
 
-use super::{DecodeError, Decoder, ErrorCode, FrameKind};
+use super::{DecodeError, Decoder, ErrorCode, FrameKind, MAX_FRAME_LEN, field};
 use crate::wire::frame::{
     TYPE_COMMAND, TYPE_COMMAND_RESULT, TYPE_DELETE_METADATA, TYPE_DIRECTORY_LISTING, TYPE_ERROR,
-    TYPE_GET_METADATA, TYPE_LIST_DIRECTORY, TYPE_LIST_METADATA, TYPE_METADATA_KEYS,
-    TYPE_METADATA_VALUE, TYPE_MOVE_RESOURCE, TYPE_PATH_QUERY, TYPE_PATH_RESULTS,
-    TYPE_RESOURCE_MOVED, TYPE_RESOURCE_SPAWNED, TYPE_SET_METADATA, TYPE_SPAWN_RESOURCE,
+    TYPE_FRAME_COMPRESSED, TYPE_GET_METADATA, TYPE_LIST_DIRECTORY, TYPE_LIST_METADATA,
+    TYPE_METADATA_KEYS, TYPE_METADATA_VALUE, TYPE_MOVE_RESOURCE, TYPE_PATH_QUERY,
+    TYPE_PATH_RESULTS, TYPE_RESOURCE_MOVED, TYPE_RESOURCE_SPAWNED, TYPE_SET_METADATA,
+    TYPE_SPAWN_RESOURCE,
 };
 
 /// Whether frames of `type_byte` carry their correlating `request_id` as
@@ -42,14 +43,7 @@ const fn carries_request_id(type_byte: u8) -> bool {
 /// decoder defaults it; an `ERROR` without one is uncorrelated (`None`).
 #[must_use]
 pub fn frame_request_id(framed: &[u8]) -> Option<u32> {
-    let mut dec = Decoder::new(framed);
-    let length = usize::try_from(dec.read_u32_be().ok()?).ok()?;
-    let body_end = length.checked_add(super::super::LENGTH_PREFIX_LEN)?;
-    if length == 0 || body_end > framed.len() {
-        return None;
-    }
-    dec.body_end = Some(body_end);
-    let type_byte = dec.read_u8().ok()?;
+    let (type_byte, mut dec) = open_frame(framed)?;
     if !carries_request_id(type_byte) {
         return None;
     }
@@ -60,6 +54,50 @@ pub fn frame_request_id(framed: &[u8]) -> Option<u32> {
         }
     }
     request_id
+}
+
+/// The type byte of one framed message and a decoder over its body, or
+/// `None` when the framing is broken.
+fn open_frame(framed: &[u8]) -> Option<(u8, Decoder<'_>)> {
+    let mut dec = Decoder::new(framed);
+    let length = usize::try_from(dec.read_u32_be().ok()?).ok()?;
+    let body_end = length.checked_add(super::super::LENGTH_PREFIX_LEN)?;
+    if length == 0 || body_end > framed.len() {
+        return None;
+    }
+    dec.body_end = Some(body_end);
+    Some((dec.read_u8().ok()?, dec))
+}
+
+/// The frame inside a `FRAME_COMPRESSED` envelope, length prefix included,
+/// so a frame that did not decode can be classified by its own type byte.
+///
+/// `None` for any other frame, a nested envelope, or one that does not
+/// inflate.
+#[must_use]
+pub fn inflated_frame(framed: &[u8]) -> Option<Vec<u8>> {
+    let (type_byte, mut dec) = open_frame(framed)?;
+    if type_byte != TYPE_FRAME_COMPRESSED {
+        return None;
+    }
+    let (mut length, mut payload) = (None, None);
+    while let Ok(Some((id, value))) = dec.read_field() {
+        match id {
+            field::frame_compressed::UNCOMPRESSED_LEN => {
+                length = Decoder::new(value).read_u32_be().ok();
+            }
+            field::frame_compressed::PAYLOAD => payload = Some(value),
+            _ => {}
+        }
+    }
+    let length = length.filter(|&n| n > 0 && n <= MAX_FRAME_LEN)?;
+    let body = crate::wire::compress::inflate(payload?, usize::try_from(length).ok()?).ok()?;
+    if body.first() == Some(&TYPE_FRAME_COMPRESSED) {
+        return None;
+    }
+    let mut inner = length.to_be_bytes().to_vec();
+    inner.extend_from_slice(&body);
+    Some(inner)
 }
 
 /// What a client reads in place of a server frame that failed to decode.
@@ -73,6 +111,7 @@ pub fn frame_request_id(framed: &[u8]) -> Option<u32> {
 /// - Any other frame carrying such a value (an unknown frame type, or an
 ///   uncorrelated frame) is `Ok(None)`: skip it, with a log, and keep the
 ///   connection.
+/// - A `FRAME_COMPRESSED` envelope is read as the frame inside it.
 /// - Malformed bytes are `Err(error)`, as before.
 ///
 /// A server sends a new frame type or enum value only to a client whose
@@ -89,6 +128,9 @@ pub fn newer_server_fallback(
 ) -> Result<Option<FrameKind>, DecodeError> {
     if !error.is_unsupported() {
         return Err(error);
+    }
+    if let Some(inner) = inflated_frame(framed) {
+        return newer_server_fallback(&inner, error);
     }
     let reply = framed
         .get(super::super::LENGTH_PREFIX_LEN)

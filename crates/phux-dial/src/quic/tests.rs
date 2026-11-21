@@ -110,7 +110,7 @@ async fn refused_token_surfaces_auth_close_not_connection_lost() {
     assert!(!classified.to_string().contains("connection lost"));
 }
 
-/// workload-auth §3 over QUIC: a client requiring paired authority fails
+/// The authority downgrade over QUIC: a client requiring paired authority fails
 /// the handshake against a listener that does not request a client
 /// certificate, so no bearer preamble and no phux frame is ever sent.
 #[tokio::test]

@@ -185,7 +185,7 @@ async fn detector_writes_respect_human_records() {
     }
 }
 
-/// A declared state outranks derivations (L3 §3.7), but a confirmed
+/// A declared state outranks derivations, but a confirmed
 /// departure withdraws it to `unknown`, never deletes it; afterwards the
 /// detector's writes land again (phux-w7z2.13: a `kill -9` must not pin
 /// the pane at `working`).
@@ -217,7 +217,7 @@ async fn a_retract_withdraws_a_declared_state_but_never_deletes_it() {
 }
 
 /// phux-w7z2.45: a shim pane declared `kind: claude` now running codex
-/// keeps the declared kind (L3 §3.7) and withholds codex's state, and
+/// keeps the declared kind and withholds codex's state, and
 /// every later contradicted tick writes nothing.
 #[tokio::test(flavor = "current_thread")]
 async fn a_shim_pane_never_takes_a_state_from_an_occupant_its_kind_denies() {

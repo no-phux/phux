@@ -139,7 +139,7 @@ async fn the_owner_socket_keeps_todays_behaviour() {
         .await;
 }
 
-/// workload-auth §6 `GET_STATE { SERVER }` over the client loop: a Group
+/// `GET_STATE { SERVER }` over the client loop: a Group
 /// grant holding INVENTORY is admitted and answered with its own session
 /// and Terminal only; a grant without INVENTORY is refused.
 #[tokio::test(flavor = "current_thread")]
@@ -199,7 +199,7 @@ fn fixture_with(engine: Engine, scope: &str) -> Fixture {
     fixture(engine, |_| vec![scope])
 }
 
-/// workload-auth §6 `ATTACH`: the `ATTACHED` snapshot a Group grant receives
+/// `ATTACH`: the `ATTACHED` snapshot a Group grant receives
 /// holds its own session and Terminal, never another session's.
 #[test]
 fn an_attach_snapshot_holds_only_observable_terminals() {
@@ -242,7 +242,7 @@ fn an_attach_snapshot_holds_only_observable_terminals() {
     );
 }
 
-/// The race workload-auth §5 forbids: the guard authorizes session `work`,
+/// The race the scope rules forbid: the guard authorizes session `work`,
 /// and while the attach awaits, `work` is renamed away and another session
 /// takes its name. The attach follows the id the guard pinned.
 #[test]

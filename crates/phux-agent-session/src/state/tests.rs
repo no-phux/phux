@@ -85,7 +85,7 @@ fn an_explicit_set_without_identity_fields_clears_the_mark() {
     );
 }
 
-// --- the explicit-kind bucket (L3 §3.7's preserve list) ----------------
+// --- the explicit-kind bucket (the preserve list) ----------------
 
 /// An explicit `kind` is preserved even though it is not identity.
 #[test]

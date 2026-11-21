@@ -94,7 +94,7 @@ pub fn channels(name: &str) -> [f32; 3] {
 
 /// `name`'s colour moved toward white or black just far enough to read at
 /// 3:1 on `ground`, at most 50% (olive on Windows 98 silver needs ~45%);
-/// the hue stays (§1.2 identity: `host_bar`, `host_ease_max`).
+/// the hue stays (identity: `host_bar`, `host_ease_max`).
 pub fn on(name: &str, ground: Color) -> Color {
     eased(entry(name).0, ground)
 }
