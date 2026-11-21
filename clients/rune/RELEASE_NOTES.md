@@ -4,9 +4,11 @@
 - Option-click at a shell prompt to move its cursor. Search copy mode with `/`, `?`, `n` and `N`, and copy the selected match. (#2814)
 - Show pane numbers, focus the sidebar from the keyboard, and explicitly toggle typing into every pane of the tab. (#2783)
 - Choose a default session and opt out of shipped keybindings in configuration. (#2773)
+- Explain when an action needs a newer server and offer a local server upgrade. (#2815)
 - Open the palette on your terminals first, with mirrors last. Draw jump-to as a filled pill and quiet the session header.
 - Show terminal dimensions only while the window resizes.
 - Return keyboard input to the terminal after clicking New session. (#2759)
 - Clear a copy selection with Escape before leaving copy mode, and support scroll actions. (#2755)
 - Distinguish temporary connection failures from credential refusals when reconnecting. (#2763)
 - Require live session and selected-terminal evidence in native iOS qualification. (#2741)
+- Keep real Wayland input-method qualification strict and retain focus, engine and protocol diagnostics when it fails. This is not a claim that the intermittent input-method failure is repaired.
