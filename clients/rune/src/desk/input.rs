@@ -75,6 +75,9 @@ impl Desk {
             return false;
         }
         phux_perf::echo_hop::record("stdin");
+        if self.pane_number_key(event) {
+            return true;
+        }
         let action = keys::shortcut(&event.key, event.mods, tx.physical_key());
         if let Some(modal) = self.modal() {
             self.modal_key(modal, event, action, tx);
@@ -219,9 +222,9 @@ impl Desk {
         ) else {
             return false;
         };
-        self.send_input(|control, terminal| match typed {
-            Typed::Text(text) => control.send_text(terminal, &text),
-            Typed::Key(atom) => control.send_key(terminal, atom),
+        self.send_input(|control, terminal| match &typed {
+            Typed::Text(text) => control.send_text(terminal, text),
+            Typed::Key(atom) => control.send_key(terminal, atom.clone()),
         });
         true
     }
@@ -229,8 +232,8 @@ impl Desk {
     /// Send typed input to the focused terminal, whole or not at all: it
     /// returns to the live tail first and clears a stale highlight, as
     /// Ghostty does. Input the connection can't take now is said, not dropped
-    /// quietly.
-    pub(super) fn send_input(&mut self, send: impl FnOnce(&mut ControlPlane, &ResourceId) -> bool) {
+    /// quietly. With `sync-panes` on, the tab's other terminals get it too.
+    pub(super) fn send_input(&mut self, send: impl Fn(&mut ControlPlane, &ResourceId) -> bool) {
         self.stop_coast();
         self.leave_copy_mode(false);
         let (Some(client), Some((terminal, Some(view)))) =
@@ -239,6 +242,7 @@ impl Desk {
             return;
         };
         let terminal = terminal.clone();
+        let others = self.sync_others(&terminal);
         let frame = client.acquire_view(view);
         let behind = frame.as_ref().is_some_and(|f| !f.scrollbar.at_tail());
         let sent = client.with_control(|control| {
@@ -248,7 +252,13 @@ impl Desk {
             if behind {
                 let _ = control.scroll_view(view, Scroll::Bottom);
             }
-            send(control, &terminal)
+            let sent = send(control, &terminal);
+            for other in &others {
+                if control.input_ready(other) {
+                    send(control, other);
+                }
+            }
+            sent
         });
         if !sent {
             return self.say(NoticeKind::Error, INPUT_PAUSED);

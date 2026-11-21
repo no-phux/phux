@@ -258,14 +258,8 @@ options for a mode that doesn't exist.
 ### Type in every pane at once
 
 `sync-panes` sends what you type, and what you paste, to every pane in the
-tab you are on, until you run it again. It is in the command palette
-(**Type in every pane of this tab (toggle)**) and has no key until you give
-it one:
-
-```toml
-[keybindings.prefix-table]
-"y" = "sync-panes"
-```
+tab you are on, until you run it again. Press the prefix, then
+<kbd>y</kbd>, or pick **Type in every pane** in the command palette.
 
 It belongs to that one tab: move to another tab and typing is ordinary
 there; come back and it is still on. phux says so each time it turns on or
@@ -274,6 +268,19 @@ title rule. Mouse input always goes to the pane under the pointer.
 
 To make the pane you are typing in stand out, `dim-unfocused = true` under
 `[chrome]` paints the other panes faint.
+
+### Jump to a pane by its number
+
+The prefix, then <kbd>i</kbd> (`display-panes`), draws a number over each
+pane in the tab. Press a number to focus that pane; any other key puts the
+numbers away. Panes are numbered in layout order, the first nine only.
+
+### Move the keyboard into the sidebar
+
+The prefix, then <kbd>e</kbd> (`focus-sidebar`), lights a row of the
+sidebar, opening it first if it is hidden. The arrows or <kbd>j</kbd> and
+<kbd>k</kbd> move, <kbd>Enter</kbd> does what a click on the row would, and
+<kbd>Esc</kbd> hands the keyboard back to the pane.
 
 ### Your own copy-mode keys
 

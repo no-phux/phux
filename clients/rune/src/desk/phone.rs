@@ -273,9 +273,9 @@ impl Desk {
             return;
         };
         self.restart_blink();
-        self.send_input(|control, terminal| match typed {
-            Typed::Text(text) => control.send_text(terminal, &text),
-            Typed::Key(atom) => control.send_key(terminal, atom),
+        self.send_input(|control, terminal| match &typed {
+            Typed::Text(text) => control.send_text(terminal, text),
+            Typed::Key(atom) => control.send_key(terminal, atom.clone()),
         });
     }
 
