@@ -449,6 +449,9 @@ mod native_2;
 #[path = "tests_lifecycle_native_3.rs"]
 mod native_3;
 
+#[path = "tests_lifecycle_publication.rs"]
+mod publication;
+
 #[path = "tests_lifecycle_history_1.rs"]
 mod history_1;
 

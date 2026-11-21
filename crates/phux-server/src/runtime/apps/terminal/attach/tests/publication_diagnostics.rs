@@ -115,3 +115,37 @@ async fn activation_refusal_and_actor_loss_are_not_capture_deadlines() {
             .contains("deadline")
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn superseded_activation_is_neither_refused_nor_activated() {
+    let (bytes, _guard) = capture();
+    let (handle, _, _, mut requests) = native_attach_handle();
+    let terminal = handle.terminal().unwrap();
+    let activate = activate_native_publication(
+        terminal,
+        7,
+        phux_protocol::ids::ResourceId::local(1),
+        two_pump_stream(),
+        two_pump_initial_generation(),
+        [9; 32],
+    );
+    tokio::pin!(activate);
+    let request = tokio::select! {
+        result = &mut activate => panic!("unexpected completion: {result:?}"),
+        request = requests.recv() => request.unwrap(),
+    };
+    request
+        .reply
+        .send(Err(
+            phux_terminal_api::native_state::NativeStateError::Resize,
+        ))
+        .unwrap();
+    assert!(matches!(activate.await, Ok(NativePublication::Superseded)));
+    assert_event(&bytes, "native_activation", "superseded");
+    let text = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+    for line in text.lines() {
+        let row: serde_json::Value = serde_json::from_str(line).unwrap();
+        let outcome = row["fields"]["outcome"].as_str().unwrap();
+        assert!(["started", "superseded"].contains(&outcome));
+    }
+}

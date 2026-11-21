@@ -34,6 +34,7 @@ pub(super) async fn next_wait(
     ctx: &OutputPumpContext,
     generation: &PumpGeneration,
     output_rx: &mut tokio::sync::broadcast::Receiver<ResourceOutput>,
+    draining: bool,
 ) -> Option<pump::PumpWait> {
     async fn cancelled(token: Option<&CancellationToken>) {
         match token {
@@ -43,7 +44,7 @@ pub(super) async fn next_wait(
     }
     tokio::select! {
         biased;
-        () = cancelled(ctx.drain.as_ref()) => Some(pump::PumpWait::FinalDrain),
+        () = cancelled(ctx.drain.as_ref()), if !draining => Some(pump::PumpWait::FinalDrain),
         wait = pump::next_event(generation, output_rx) => Some(wait),
         () = cancelled(ctx.cancel.as_ref()) => None,
     }
@@ -73,6 +74,17 @@ pub(crate) async fn run_started_output_pump(
     if let Some(live) = start.live {
         output_rx = live;
     }
+    if start.superseded {
+        if let Err(fault) = ctx
+            .retire_superseded_publication(&mut generation, start.published_cut)
+            .await
+        {
+            return Some(fault);
+        }
+        if let ControlFlow::Break(fault) = ctx.await_superseded_resync(&mut generation).await {
+            return fault;
+        }
+    }
     if let Err(fault) = ctx
         .forward_gated_replay(&mut generation, start.replay)
         .await
@@ -82,33 +94,49 @@ pub(crate) async fn run_started_output_pump(
     ctx.publish_last_seq(&generation);
     // The first live chunk waited behind the attach bootstrap and its replay.
     generation.restart_staleness_clock();
+    drive_output_pump(ctx, generation, output_rx).await
+}
+
+async fn drive_output_pump(
+    ctx: &OutputPumpContext,
+    mut generation: PumpGeneration,
+    mut output_rx: tokio::sync::broadcast::Receiver<ResourceOutput>,
+) -> Option<PumpFault> {
+    let mut draining = false;
     loop {
-        let received = match next_wait(ctx, &generation, &mut output_rx).await? {
-            pump::PumpWait::FinalDrain => {
-                return ctx
-                    .publish_final_generation(&mut generation, &mut output_rx)
-                    .await
-                    .err();
-            }
-            pump::PumpWait::Event(received) => received,
-            pump::PumpWait::RetryResync => {
-                if let ControlFlow::Break(fault) = ctx.retry_gap_resync(&mut generation).await {
-                    return fault;
-                }
-                continue;
-            }
-            pump::PumpWait::GapUnrecoverable => {
-                if let ControlFlow::Break(fault) = ctx.abandon_unanswered_gap(&generation).await {
-                    return fault;
-                }
-                continue;
-            }
-        };
+        let wait = next_wait(ctx, &generation, &mut output_rx, draining).await?;
         if let ControlFlow::Break(fault) =
-            dispatch_output(ctx, &mut generation, &mut output_rx, received).await
+            dispatch_wait(ctx, &mut generation, &mut output_rx, wait, &mut draining).await
         {
             return fault;
         }
+        if draining && generation.is_active() && !generation.is_fenced() {
+            return None;
+        }
+    }
+}
+
+async fn dispatch_wait(
+    ctx: &OutputPumpContext,
+    generation: &mut PumpGeneration,
+    output_rx: &mut tokio::sync::broadcast::Receiver<ResourceOutput>,
+    wait: pump::PumpWait,
+    draining: &mut bool,
+) -> ControlFlow<Option<PumpFault>> {
+    match wait {
+        pump::PumpWait::FinalDrain => {
+            *draining = true;
+            match ctx.publish_final_generation(generation, output_rx).await {
+                Ok(true) => ControlFlow::Break(None),
+                Ok(false) => ctx.await_superseded_resync(generation).await,
+                Err(fault) => ControlFlow::Break(Some(fault)),
+            }
+        }
+        pump::PumpWait::Event(received) => {
+            dispatch_output(ctx, generation, output_rx, received).await
+        }
+        pump::PumpWait::RetryResync => ctx.retry_gap_resync(generation).await,
+        pump::PumpWait::GapUnrecoverable => ctx.abandon_unanswered_gap(generation).await,
     }
 }
 

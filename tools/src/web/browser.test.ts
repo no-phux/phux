@@ -32,12 +32,13 @@ afterEach(() => {
 
 test("the demo server log filter names the target the server logs to", () => {
   const target = DEMO_SERVER_LOG.split("=", 1)[0] ?? "";
-  const source = readFileSync(
-    repoPath("crates/phux-server/src/runtime/apps/terminal/attach/output_pump_resync.rs"),
-    "utf8",
-  );
-  expect(source).toContain(`const LOG_TARGET: &str = "${target}";`);
-  expect(source).toMatch(/target: LOG_TARGET,[^;]*fell behind; skipping to a fresh checkpoint/);
+  const attach = "crates/phux-server/src/runtime/apps/terminal/attach";
+  const resync = readFileSync(repoPath(`${attach}/output_pump_resync.rs`), "utf8");
+  // The gap path logs under the resync module's target.
+  const gap = readFileSync(repoPath(`${attach}/output_pump_gap.rs`), "utf8");
+  expect(resync).toContain(`const LOG_TARGET: &str = "${target}";`);
+  expect(gap).toContain("use super::output_pump_resync::LOG_TARGET;");
+  expect(gap).toMatch(/target: LOG_TARGET,[^;]*fell behind; skipping to a fresh checkpoint/);
 });
 
 const running = { exitCode: null, signalCode: null };

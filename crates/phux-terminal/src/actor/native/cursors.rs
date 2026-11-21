@@ -32,31 +32,87 @@ impl TerminalActor {
         if let Some(pending) = self.pending_native_bootstrap.take() {
             self.fail_native_bootstrap(pending, crate::native_state::NativeStateError::Resize);
         }
+        let waiting: HashSet<_> = self
+            .native_publications
+            .values()
+            .flat_map(|publication| publication.waiting.iter().copied())
+            .collect();
         let bindings: Vec<_> = self.native_cursor_owners.drain().collect();
         self.native_publications.clear();
         let last_valid_seq = self.core.seq();
         let mut tombstoned = Vec::with_capacity(bindings.len());
         for (key, binding) in bindings {
-            tombstoned.push(phux_resource::ResyncTarget {
-                owner: key.owner,
-                stream_id: binding.stream_id,
-                bootstrap_id: binding.bootstrap_id,
-            });
+            if let Some(target) = self.retire_native_binding(
+                key,
+                binding,
+                reason,
+                last_valid_seq,
+                waiting.contains(&key),
+            ) {
+                tombstoned.push(target);
+            }
+        }
+        tombstoned
+    }
+
+    fn retire_native_binding(
+        &mut self,
+        key: NativeCursorKey,
+        mut binding: NativeCursorOwner,
+        reason: phux_protocol::wire::frame::TombstoneReason,
+        last_valid_seq: u64,
+        waiting: bool,
+    ) -> Option<phux_resource::ResyncTarget> {
+        let target = (!binding.superseded).then_some(phux_resource::ResyncTarget {
+            owner: key.owner,
+            stream_id: binding.stream_id,
+            bootstrap_id: binding.bootstrap_id,
+        });
+        if target.is_some() {
             self.publish_native_control(
                 key.owner,
                 FrameKind::BootstrapTombstone {
-                    terminal_id: binding.terminal_id,
+                    terminal_id: binding.terminal_id.clone(),
                     stream_id: binding.stream_id,
                     bootstrap_id: binding.bootstrap_id,
                     reason,
                     last_valid_seq,
                 },
             );
-            if let CanonicalTerminal::Native(manager) = &mut *self.terminal.borrow_mut() {
-                let _ = manager.release_generation(&binding.cursor);
-            }
         }
-        tombstoned
+        self.release_native_history_generation(&binding);
+        if reason == phux_protocol::wire::frame::TombstoneReason::Resize
+            && (waiting || binding.superseded)
+        {
+            binding.history_released = true;
+            binding.superseded = true;
+            self.native_cursor_owners.insert(key, binding);
+        }
+        target
+    }
+
+    /// FINISH ends progressive history, not the independent publication right.
+    pub(in crate::actor) fn finish_native_history(&mut self, key: NativeCursorKey) {
+        let Some(mut binding) = self.native_cursor_owners.remove(&key) else {
+            return;
+        };
+        self.release_native_history_generation(&binding);
+        binding.history_released = true;
+        let waiting = self
+            .native_publications
+            .get(&binding.cursor)
+            .is_some_and(|publication| publication.waiting.contains(&key));
+        if waiting || binding.superseded {
+            self.native_cursor_owners.insert(key, binding);
+        }
+    }
+
+    fn release_native_history_generation(&self, binding: &NativeCursorOwner) {
+        if !binding.history_released
+            && let CanonicalTerminal::Native(manager) = &mut *self.terminal.borrow_mut()
+        {
+            let _ = manager.release_generation(&binding.cursor);
+        }
     }
 
     pub(in crate::actor) fn invalidate_native_owner(
@@ -75,6 +131,9 @@ impl TerminalActor {
         let Some(binding) = self.unbind_native_cursor(key) else {
             return;
         };
+        if binding.superseded {
+            return;
+        }
         self.publish_native_control(
             owner,
             FrameKind::BootstrapTombstone {
@@ -143,9 +202,7 @@ impl TerminalActor {
                 self.native_publications.remove(&binding.cursor);
             }
         }
-        if let CanonicalTerminal::Native(manager) = &mut *self.terminal.borrow_mut() {
-            let _ = manager.release_generation(&binding.cursor);
-        }
+        self.release_native_history_generation(&binding);
         Some(binding)
     }
 
