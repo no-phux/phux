@@ -44,8 +44,15 @@ pub enum Shortcut {
     InterfaceBigger,
     InterfaceSmaller,
     InterfaceReset,
-    ScrollTop,
-    ScrollBottom,
+    ScrollToTop,
+    ScrollToBottom,
+    /// The focused pane's history by a page (its height less a row), or half.
+    ScrollPageUp,
+    ScrollPageDown,
+    ScrollHalfPageUp,
+    ScrollHalfPageDown,
+    /// In copy mode, drop the selection and stay where the cursor is.
+    ClearSelection,
     Palette,
     ToggleSidebar,
     JumpToAttention,

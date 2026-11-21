@@ -80,6 +80,9 @@ impl Desk {
             self.modal_key(modal, event, action, tx);
             return true;
         }
+        if action == Some(Shortcut::ClearSelection) && self.clear_copy_selection() {
+            return true;
+        }
         if self.copy_mode_key(event, tx) {
             return true;
         }
@@ -409,6 +412,22 @@ impl Desk {
         let Some(view) = shown.view else { return };
         let _ = client.with_control(|control| control.scroll_view(view, scroll));
         self.generation += 1;
+    }
+
+    /// Scroll the focused pane by `halves` half pages; a page is its height
+    /// less a row, as copy mode pages.
+    pub(super) fn scroll_page(&mut self, halves: i64) {
+        let view = self.connection.shown.as_ref().and_then(|s| s.view);
+        let rows = view
+            .and_then(|view| self.connection.client.as_ref()?.acquire_view(view))
+            .map_or(1, |frame| frame.rows);
+        let page = i64::from(rows.saturating_sub(1).max(1));
+        let rows = if halves.abs() == 2 {
+            page
+        } else {
+            (page / 2).max(1)
+        };
+        self.scroll(Scroll::Delta(rows * halves.signum()));
     }
 
     /// Back to the live tail of a pane scrolled into history.

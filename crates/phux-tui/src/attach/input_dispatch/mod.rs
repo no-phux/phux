@@ -24,6 +24,8 @@ mod tests_events;
 #[cfg(test)]
 mod tests_plugin_actions;
 #[cfg(test)]
+mod tests_scroll;
+#[cfg(test)]
 mod tests_slot_tabs;
 
 pub(super) use ctx::{DispatchCtx, DragGrab};

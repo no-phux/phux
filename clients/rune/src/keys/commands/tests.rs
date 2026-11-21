@@ -75,8 +75,13 @@ every_shortcut!(
     InterfaceBigger,
     InterfaceSmaller,
     InterfaceReset,
-    ScrollTop,
-    ScrollBottom,
+    ScrollToTop,
+    ScrollToBottom,
+    ScrollPageUp,
+    ScrollPageDown,
+    ScrollHalfPageUp,
+    ScrollHalfPageDown,
+    ClearSelection,
     Palette,
     ToggleSidebar,
     JumpToAttention,
@@ -218,6 +223,8 @@ fn config_keys_add_a_chord_take_one_away_and_report_a_bad_name() {
         ("cmd+d", "none"),
         ("cmd+y", "no-such-thing"),
         ("ctrl+9", "tab-3"),
+        ("shift+pageup", "scroll-page-up"),
+        ("cmd+home", "scroll-top"),
     ]
     .into_iter()
     .map(|(chord, name)| (chord.to_owned(), name.to_owned()))
@@ -232,6 +239,15 @@ fn config_keys_add_a_chord_take_one_away_and_report_a_bad_name() {
     assert_eq!(
         lookup(&user, Chord::ctrl(Cap::Char('9'))),
         Some(Shortcut::Tab(2))
+    );
+    assert_eq!(
+        lookup(&user, Chord::shifted(Cap::PageUp)),
+        Some(Shortcut::ScrollPageUp)
+    );
+    // The name before `scroll-to-top` still binds.
+    assert_eq!(
+        lookup(&user, Chord::cmd(Cap::Home)),
+        Some(Shortcut::ScrollToTop)
     );
     // Every command has a name, and no two share one.
     let mut ids: Vec<String> = COMMANDS.iter().map(|command| id(command.action)).collect();
