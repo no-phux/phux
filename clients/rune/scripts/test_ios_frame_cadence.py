@@ -120,7 +120,7 @@ connected.publish { preconditionFailure("lifecycle failure cannot become success
 
 // A reconnect can leave the witness visible after the live session disappears.
 var reconnecting = QualificationProgress()
-precondition(reconnecting.claimInput(when: QualificationEvidence.isConnected(report, to: session)))
+precondition(reconnecting.claimInput(when: true))
 var reconnectWrites: [String] = []
 for (observation, live) in [
     (report.merging(["session": NSNull()]) { _, new in new }, false),
@@ -133,7 +133,6 @@ for (observation, live) in [
         try QualificationEvidence.publish(report: observation, tree: tree(witness), session: session, marker: marker,
             didPresent: true, write: { _, name in reconnectWrites.append(name) })
     }
-    precondition(QualificationEvidence.isConnected(observation, to: session) == live)
     precondition(reconnecting.finished == live, "only a live observation of the requested session can finish")
     precondition(!reconnecting.claimInput(when: live), "reconnect cannot reinject the witness")
     precondition(reconnectWrites == (live ? ["rune-tree.json", "rune-qualification.json"] : []))

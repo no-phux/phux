@@ -141,7 +141,8 @@ final class QualificationProbe {
     }
 
     private func injectInput(_ report: [String: Any], input: RuneInput) {
-        let ready = QualificationEvidence.isConnected(report, to: session) &&
+        let ready = report["connected"] as? Bool == true &&
+              report["session"] as? String == session &&
               (report["frames"] as? UInt64 ?? 0) > 0 &&
               input.context?.kind == "terminal" && input.context?.wanted == true && input.isFirstResponder
         guard progress.claimInput(when: ready) else { return }
