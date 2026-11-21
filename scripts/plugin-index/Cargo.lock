@@ -242,6 +242,7 @@ dependencies = [
  "jiff",
  "phux-config-core",
  "phux-protocol",
+ "schemars",
  "serde",
  "serde_json",
  "serde_path_to_error",
@@ -256,6 +257,7 @@ name = "phux-config-core"
 version = "0.161.1"
 dependencies = [
  "nix",
+ "schemars",
  "serde",
  "thiserror",
  "toml",

@@ -38,6 +38,9 @@ thiserror.workspace = true
 tracing.workspace = true
 # Validates the `time` status-bar widget's strftime `format`.
 jiff.workspace = true
+# `json_schema`: the editor schemas under `docs/spec/`, derived from the
+# serde types (phux-protocol already builds it at this spec).
+schemars = "1.2.3"
 
 [dev-dependencies]
 insta.workspace = true

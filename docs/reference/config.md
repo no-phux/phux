@@ -77,6 +77,7 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `experimental.predictive-echo` | unset — the dial decides: on when the attach leaves the machine, off otherwise. `true` / `false` force it on every transport |
 | `forward.agent` | `false` |
 | `forward.tcp` | `true` |
+| `keybindings.defaults` | `true` |
 | `keybindings.prefix` | `"C-a"` |
 | `keybindings.which-key` | `true` |
 | `keybindings.which-key-delay-ms` | `400` |
@@ -206,9 +207,12 @@ clipboard-read = "deny"
 #   "home"                always $HOME
 #   "session-root"        the directory the session was created in
 #   "last-cwd-per-window" the last directory used in that tab
+#   "fixed"               always fixed-cwd ($HOME when unset), for new
+#                         sessions too
 # Following the focused pane needs your shell to report its directory
 # (OSC 7); most do.
 cwd-inheritance = "inherit-focused"
+# fixed-cwd = "~/notes"
 
 # spawn-on-attach: the command a plain `phux` runs when it creates its
 # first session, through `$SHELL -c`. `phux new` ignores it. Unset runs
@@ -220,6 +224,11 @@ cwd-inheritance = "inherit-focused"
 # their names in the session picker; ${random-name} is a word pair such as
 # drifting-cedar. Set "default" for one fixed name.
 session-name-template = "${cwd-basename}"
+
+# attach-session: the session a plain `phux`, `phux attach` and a new Rune
+# window open instead of the one used last, created when missing.
+# `phux attach NAME` and links still win.
+# attach-session = "scratch"
 
 # When two clients view one pane at different sizes, which size wins:
 #   "smallest" the smallest view; bigger ones get blank margins (like tmux)
@@ -244,6 +253,11 @@ keep-awake = "off"
 [keybindings]
 # The prefix. Press it, then a key from the prefix table below.
 prefix = "C-a"
+
+# false starts from an empty keymap: only your own bindings apply, plus the
+# command-palette keys (prefix then Space, : or ?) until you bind the
+# palette yourself. Rune's chords have their own switch, [rune] key-defaults.
+defaults = true
 
 # After the prefix, hesitate for which-key-delay-ms and a popup lists
 # every key you can press next, rebinds included. It never eats a key:

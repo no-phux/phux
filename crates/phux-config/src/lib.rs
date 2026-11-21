@@ -13,6 +13,7 @@ pub mod connector;
 pub mod distro;
 pub mod document;
 pub mod integration;
+pub mod json_schema;
 pub mod keybind;
 pub mod loader;
 pub mod mirror;

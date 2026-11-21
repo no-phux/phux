@@ -2,6 +2,11 @@
 # The prefix. Press it, then a key from the prefix table below.
 prefix = "C-a"
 
+# false starts from an empty keymap: only your own bindings apply, plus the
+# command-palette keys (prefix then Space, : or ?) until you bind the
+# palette yourself. Rune's chords have their own switch, [rune] key-defaults.
+defaults = true
+
 # After the prefix, hesitate for which-key-delay-ms and a popup lists
 # every key you can press next, rebinds included. It never eats a key:
 # whatever you press runs as if the popup were not there, and Esc cancels

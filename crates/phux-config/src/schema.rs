@@ -18,7 +18,7 @@ use crate::{
 };
 
 /// Top-level config (`docs/config.md`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     /// Server-wide defaults: shell, `TERM`, scrollback, spawn policy.
@@ -95,7 +95,7 @@ pub use restore::*;
 // ---------------------------------------------------------------------------
 
 /// `[status]` table: three widget slots plus the row the bar reserves.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct StatusCfg {
     /// Left slot.
@@ -109,7 +109,9 @@ pub struct StatusCfg {
 }
 
 /// Which row the status bar occupies.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, schemars::JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum StatusPosition {
     /// The bottom row.
@@ -120,7 +122,7 @@ pub enum StatusPosition {
 }
 
 /// `[sidebar]`: the vertical window list.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct SidebarCfg {
     /// Show the sidebar (default `true`).
@@ -179,7 +181,9 @@ impl Default for SidebarCfg {
 }
 
 /// Which edge the sidebar docks to.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, schemars::JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum SidebarPosition {
     /// Left (default).
@@ -191,7 +195,7 @@ pub enum SidebarPosition {
 
 /// `[chrome]`: responsive-chrome breakpoints (`docs/status-bar.md#breakpoints`).
 /// `0` disables a threshold; a very large value pins the opposite.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct ChromeCfg {
     /// Width at or below which overlays go full-bleed horizontally.
@@ -222,7 +226,7 @@ impl Default for ChromeCfg {
 /// `[notifications]`: how the TUI tells you an agent needs you or finished
 /// (`docs/status-bar.md#notifications`). Read by the client, live on
 /// reload.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 #[allow(
     clippy::struct_excessive_bools,
@@ -258,7 +262,9 @@ impl Default for NotificationsCfg {
 }
 
 /// `[notifications] mode`: the delivery channel.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, schemars::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum NotifyMode {
     /// An OSC notification to the outer terminal; survives SSH.
@@ -275,7 +281,9 @@ pub enum NotifyMode {
 
 /// `[notifications] terminal-protocol`: the OSC dialect `terminal` mode
 /// writes.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, schemars::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum NotifyProtocol {
     /// Pick from the environment: OSC 99 for kitty, OSC 777 for Ghostty,
@@ -292,7 +300,7 @@ pub enum NotifyProtocol {
 
 /// A status-bar widget: a bare kind (`"session"`) or an inline table with
 /// `kind` plus options (`docs/status-bar.md#widget-kinds`).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
 #[serde(untagged)]
 pub enum Widget {
     /// Shorthand for `{ kind = "..." }`.
@@ -317,21 +325,23 @@ impl Widget {
 
 /// Long-form widget spec; options are validated per kind by
 /// [`crate::widget::validate`].
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
 pub struct WidgetSpec {
     /// Widget kind (see `docs/reference/widgets.md`).
     pub kind: String,
     /// Remaining inline-table fields.
     #[serde(flatten)]
+    #[schemars(with = "BTreeMap<String, serde_json::Value>")]
     pub opts: BTreeMap<String, toml::Value>,
 }
 
 /// One `[[hooks.<event>]]` entry (`docs/hooks.md`).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct HookEntry {
     /// Match clauses; first match wins per event.
     #[serde(default)]
+    #[schemars(with = "BTreeMap<String, serde_json::Value>")]
     pub when: BTreeMap<String, toml::Value>,
     /// Action to fire on match.
     pub action: Action,
@@ -342,7 +352,7 @@ pub struct HookEntry {
 // ---------------------------------------------------------------------------
 
 /// `[experimental]`: opt-in flags that may change without a `SemVer` bump.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct ExperimentalCfg {
     /// Mosh-class predictive local echo (ADR-0090). Unset lets the transport
@@ -366,7 +376,7 @@ impl ExperimentalCfg {
 }
 
 /// `[theme]`: free-form `slot -> color` map; the renderer interprets it.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
 #[serde(transparent)]
 pub struct ThemeCfg {
     /// Slot to color string (e.g. `"fg" -> "#cdd6f4"`).
@@ -375,7 +385,9 @@ pub struct ThemeCfg {
 
 /// `[policy]`: the server's authorization posture
 /// (`docs/remote.md#who-can-connect`, ADR-0116). Read once at start.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema,
+)]
 #[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
 pub struct PolicyCfg {
     /// Unset is `local`, and a configured remote entry point or workload
@@ -388,7 +400,7 @@ pub struct PolicyCfg {
 }
 
 /// The two closed policy modes (`docs/remote.md#who-can-connect`).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, schemars::JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum PolicyMode {
     /// Owner's Unix socket only; a configured remote listener refuses start.
@@ -399,7 +411,7 @@ pub enum PolicyMode {
 
 /// `[voice]`: the server-side transcriber behind `TRANSCRIBE`. The server
 /// runs the configured command rather than embedding a model.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
 pub struct VoiceCfg {
     /// Transcriber argv. `{path}` is replaced by the clip's path (appended
