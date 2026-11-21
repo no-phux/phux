@@ -247,3 +247,27 @@ fn last_joins_an_untouched_session_on_a_seedless_server() {
         assert_eq!(focused_name(&attached(&mut stream).await), "untouched");
     });
 }
+
+/// A socket file deleted under a live server comes back: the server rebinds
+/// the path, and a new client reaches the same sessions through it.
+#[test]
+fn a_deleted_socket_path_is_rebound_to_the_live_server() {
+    run_local(async {
+        let seed = "survives-unlink";
+        let server = SpawnedServer::start(Some(seed), |_| {});
+        drop(server.connect().await);
+        std::fs::remove_file(&server.socket).expect("unlink the live socket");
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while UnixStream::connect(&server.socket).await.is_err() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the socket path was never rebound"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let mut stream = server.connect().await;
+        send_frame(&mut stream, &attach(AttachTarget::Last, 80, 24)).await;
+        assert_eq!(focused_name(&attached(&mut stream).await), seed);
+    });
+}

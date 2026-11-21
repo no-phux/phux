@@ -133,7 +133,10 @@ impl ServerRuntime {
         .await?;
 
         // Remember which inode we bound so shutdown only unlinks our socket.
-        let bound_socket = socket_identity(&socket_path);
+        let bound_socket: crate::runtime::connections::BoundSocket =
+            std::rc::Rc::new(std::cell::Cell::new(socket_identity(&socket_path)));
+        let guard_bound = std::rc::Rc::clone(&bound_socket);
+        let guard_socket_path = socket_path.clone();
 
         let runtime_flags = self.runtime_flags();
         let autosave = self.autosave;
@@ -306,6 +309,16 @@ impl ServerRuntime {
                         Some(input_lane_handle.clone()),
                     )));
                 }
+                accepts.push(Box::pin(
+                    crate::runtime::connections::SocketGuard {
+                        socket_path: guard_socket_path,
+                        bound: guard_bound,
+                        state: state.clone(),
+                        root_token: root_token.clone(),
+                        input_lane: Some(input_lane_handle.clone()),
+                    }
+                    .run(),
+                ));
                 accepts.push(Box::pin(serve_auto_overlay_listeners(
                     auto_overlay_gate,
                     auto_overlay_ports,
@@ -342,7 +355,7 @@ impl ServerRuntime {
 
         // Unlinking a socket another server now owns would strand that
         // server unreachable by path.
-        unlink_socket_if_ours(&socket_path, bound_socket);
+        unlink_socket_if_ours(&socket_path, bound_socket.get());
 
         result
     }

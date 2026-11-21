@@ -158,7 +158,9 @@ starts a fresh server. `phux kill --server` says
 `no server running at ... (reaped a stale socket)` in that case. A live
 server holds a lock beside its socket (`phux.sock.lock`) while it runs, so
 a busy server that briefly refuses connections is never mistaken for a dead
-one, and a second server on the same socket refuses to start.
+one, and a second server on the same socket refuses to start. If something
+deletes the socket file of a running server, the server puts it back within
+a couple of seconds.
 
 **Sessions are listed but every pane is gone, while the old shells still
 run.** A server from before the socket lock could lose its socket to a
