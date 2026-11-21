@@ -510,3 +510,31 @@ fn dead_views_are_recreated_and_closed_terminal_focus_uses_full_group() {
     assert!(!rt.state.layout_is_stale());
     no_input(&client);
 }
+
+#[test]
+fn a_cancelled_divider_drag_puts_its_ratio_back_and_writes_nothing() {
+    let (_client, mut rt) = fixture(false);
+    let ratio = |rt: &rune::Runtime<Desk>| match rt.state.connection.layout.as_ref() {
+        Some(&LayoutNode::Split { ratio, .. }) => ratio,
+        other => panic!("not a split: {other:?}"),
+    };
+    let (x, y) = rt.find("divider-[]").unwrap();
+    for cancel in [true, false] {
+        let writes = rt.state.connection.layout_ops.len();
+        rt.pointer_down(x, y);
+        rt.pointer_move(x + 60.0, y);
+        rt.frame(1.0 / 60.0);
+        assert!(ratio(&rt) > 0.25, "the drag previews");
+        if cancel {
+            rt.key(crate::keys::plain(rune::Key::Escape));
+        }
+        rt.pointer_up(x + 60.0, y);
+        settle(&mut rt);
+        assert!(rt.state.connection.dragging.is_none());
+        let wrote = rt.state.connection.layout_ops.len() > writes;
+        assert_eq!(wrote, !cancel, "only a finished drag writes");
+        if cancel {
+            assert_eq!(ratio(&rt), 0.25, "a cancel restores the ratio");
+        }
+    }
+}

@@ -162,13 +162,7 @@ impl Desk {
                 self.machines_key(event, tx);
             }
             Modal::Settings if action.is_none() => self.settings_key(event, tx),
-            Modal::Confirm => {
-                if self.clipboard_read_key(event, tx).is_none()
-                    && self.clipboard_write_key(event, tx).is_none()
-                {
-                    self.confirm_key(event);
-                }
-            }
+            Modal::Confirm => self.confirm_bar_key(event, tx),
             Modal::PhonePicker => {
                 self.phone_picker_key(event);
             }
@@ -192,6 +186,16 @@ impl Desk {
             tx.blur();
         }
         self.shortcut(action, tx);
+    }
+
+    /// A key while the confirm bar holds the keyboard: an answer or nothing,
+    /// never an edit to the field underneath or terminal input.
+    pub(super) fn confirm_bar_key(&mut self, event: &rune::KeyEvent, tx: &mut Tx) {
+        if self.clipboard_read_key(event, tx).is_none()
+            && self.clipboard_write_key(event, tx).is_none()
+        {
+            self.confirm_key(event);
+        }
     }
 
     /// The confirm bar's keys. True when `event` answered it.
@@ -357,30 +361,39 @@ impl Desk {
             );
             return;
         }
-        if !self.deliver_paste(terminal, text) {
-            self.say(NoticeKind::Error, "Not connected; nothing was pasted.");
+        if let Err(why) = self.deliver_paste(terminal, text) {
+            self.say(NoticeKind::Error, why);
         }
     }
 
     /// Paste as the user, remembering the receipt so a refused or unknown
-    /// delivery reaches them. False: the terminal can't take input now.
-    pub(super) fn deliver_paste(&mut self, terminal: &ResourceId, text: &str) -> bool {
+    /// delivery reaches them. `Err` says why nothing was written: the
+    /// terminal can't take input now, or the paste was refused outright
+    /// (behind an unresolved one, say), which is never reported as sent.
+    pub(super) fn deliver_paste(
+        &mut self,
+        terminal: &ResourceId,
+        text: &str,
+    ) -> Result<(), &'static str> {
+        const OFFLINE: &str = "Not connected; nothing was pasted.";
         if self.is_document(terminal) {
-            return false;
+            return Err(OFFLINE);
         }
         let Some(client) = self.connection.client.clone() else {
-            return false;
+            return Err(OFFLINE);
         };
         if !client.input_ready(terminal) {
-            return false;
+            return Err(OFFLINE);
         }
         // The server brackets it per DEC 2004 and classifies it. A paste too
         // large for acknowledged input goes as one atomic event, unreceipted.
+        // A refusal's receipt is left untracked: the caller says it instead.
         let receipt = client.with_control(|control| control.apply_user_paste(terminal, text));
+        client.wake();
+        let receipt = receipt.map_err(|_| "Paste refused; nothing was written.")?;
         self.connection.pastes.extend(receipt);
         self.reclaim_fits();
-        client.wake();
-        true
+        Ok(())
     }
 
     /// One acknowledged write resolved. Unknown is never retried: only the

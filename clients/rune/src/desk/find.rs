@@ -176,7 +176,8 @@ impl Desk {
     pub fn find_key(&mut self, event: &KeyEvent, tx: &mut Tx) -> bool {
         // This field holds the keyboard, so the confirm bar answers here.
         if self.pending.is_some() {
-            return self.confirm_key(event);
+            self.confirm_bar_key(event, tx);
+            return true;
         }
         match event.key {
             Key::Enter if event.mods.shift => self.step_find(1),
