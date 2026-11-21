@@ -44,18 +44,18 @@ pub(super) fn directory_listing_outcome(
 pub(super) fn handle_metadata_value<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
     request_id: u32,
-    value: Option<Vec<u8>>,
+    value: Option<&[u8]>,
 ) -> Result<FrameOutcome, AttachError> {
     // ADR-0040: a pending per-Terminal `phux.agent/v1` GET reply.
     // `value: None` (key absent) clears any stale record.
     if let Some(terminal) = ctx.agent_meta.asked_pending.remove(&request_id) {
-        return Ok(apply_asked_flag(ctx, terminal, value.as_deref()));
+        return Ok(apply_asked_flag(ctx, terminal, value));
     }
     if let Some(terminal) = ctx.agent_meta.occupant_pending.remove(&request_id) {
-        return Ok(apply_occupant(ctx, &terminal, value.as_deref()));
+        return Ok(apply_occupant(ctx, &terminal, value));
     }
     if let Some(terminal) = ctx.agent_meta.pending.remove(&request_id) {
-        let changed = ctx.agent_meta.apply(&terminal, value.as_deref());
+        let changed = ctx.agent_meta.apply(&terminal, value);
         if changed {
             note_agent_change(ctx.panes, ctx.focused_resource.as_ref(), &terminal);
         }
@@ -73,7 +73,6 @@ pub(super) fn handle_metadata_value<W: crate::attach::RenderSink>(
         return Ok(FrameOutcome::default());
     }
     let layout = value
-        .as_deref()
         .map(ArrangementDoc::decode_cbor)
         .transpose()
         .map_err(|err| layout_decode_refusal(&err))?;

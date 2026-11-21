@@ -377,7 +377,7 @@ fn dispatch_frame<W: crate::attach::RenderSink>(
             Ok(FrameOutcome::default())
         }
         FrameKind::MetadataValue { request_id, value } => {
-            handle_metadata_value(ctx, request_id, value)
+            handle_metadata_value(ctx, request_id, value.as_deref())
         }
         FrameKind::MetadataChanged {
             scope, key, value, ..
