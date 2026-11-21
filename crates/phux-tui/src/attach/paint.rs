@@ -1438,8 +1438,7 @@ mod tests {
             tree: None,
             focus: Some(id.clone()),
         };
-        let mut slot = PaneSlot::new_with_size(60, 23).expect("slot");
-        slot.terminal.vt_write(b"PANEBODY");
+        let slot = PaneSlot::new_with_size(60, 23).expect("slot");
         let panes = HashMap::from([(id, slot)]);
         let mut bar = build_painter();
         let mut strip = build_sidebar();
