@@ -62,6 +62,9 @@ rust_tools() {
         phux_warn 'mbx not on PATH; Cargo runs without the shared build cache'
         phux_hint 'mise install, or nix develop (docs/development.md#build-cache-mbx)'
     fi
+    # shellcheck source=lib/mbx-target.sh
+    . "$(dirname -- "${BASH_SOURCE[0]}")/lib/mbx-target.sh"
+    mbx_heal_target "$PWD" || phux_warn 'could not recreate a pruned mbx target directory'
     need cc 'Install platform compiler tools; see docs/development.md#platform-packages'
     rust_link_probe
     if [[ "$(uname -s)" == Linux ]]; then
