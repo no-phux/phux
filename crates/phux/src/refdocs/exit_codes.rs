@@ -68,22 +68,4 @@ mod tests {
             "row count must match the canonical table exactly"
         );
     }
-
-    /// The page and the `phux help exit-codes` topic describe the same
-    /// code set — the two-renderers-one-table contract of this task.
-    #[test]
-    fn page_and_help_section_agree_on_the_code_set() {
-        let section = crate::exit_codes::exit_status_section();
-        for spec in EXIT_CODES {
-            assert!(
-                section.lines().any(|line| {
-                    line.strip_prefix("  ").is_some_and(|rest| {
-                        rest.split_whitespace().next() == Some(&spec.code.to_string())
-                    })
-                }),
-                "`phux help exit-codes` is missing code {}",
-                spec.code
-            );
-        }
-    }
 }

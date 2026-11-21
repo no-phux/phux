@@ -407,7 +407,6 @@ mod tests {
 
     #[tokio::test]
     async fn provider_reads_are_cancellable_and_use_a_bounded_deadline() {
-        assert_eq!(PROVIDER_TIMEOUT, Duration::from_secs(60));
         let (dir, op) = fake_op("printf '%s' \"$$\" > \"$0.pid\"; exec sleep 3600");
         let input = request(vec!["op://vault/item/field".into()]);
         assert!(

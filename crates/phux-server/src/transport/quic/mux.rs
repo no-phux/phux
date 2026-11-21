@@ -64,7 +64,7 @@ pub(crate) enum QuicStreamEvent {
     /// A well-formed `STREAM_BIND` arrived; admission belongs to the client
     /// task, which receives everything needed to start the stream's pump.
     Bound {
-        /// The Terminal whose §4 frames ride this stream.
+        /// The Terminal whose frames ride this stream.
         terminal_id: phux_protocol::ids::ResourceId,
         /// The stream generation this stream opens under.
         stream_id: phux_protocol::ids::StreamId,

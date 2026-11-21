@@ -267,7 +267,17 @@ pub(super) const ROWS: &[SettingSpec] = &[
         detail: "Applies when a SPAWN_RESOURCE leaves cwd unset; an explicit cwd always \
                  wins. inherit-focused reads the focused pane's live PTY working directory \
                  (tmux behavior); home uses $HOME. session-root and last-cwd-per-window are \
-                 accepted but not yet resolved server-side.",
+                 accepted but not yet resolved server-side. fixed always uses \
+                 defaults.fixed-cwd, for new sessions too.",
+        applies: Applies::NextSpawn,
+    },
+    SettingSpec {
+        key: "defaults.fixed-cwd",
+        section: SettingSection::Defaults,
+        kind: SettingKind::OptionalText,
+        summary: "Start directory for cwd-inheritance = fixed",
+        detail: "Read at server start; ~/ expands. Unset means $HOME. Ignored unless \
+                 defaults.cwd-inheritance is fixed.",
         applies: Applies::NextSpawn,
     },
     SettingSpec {
@@ -293,6 +303,17 @@ pub(super) const ROWS: &[SettingSpec] = &[
                  becomes an underscore, as does a leading @, #, or % (a directory named \
                  @proj names the session _proj). Set \"default\" for a fixed name.",
         applies: Applies::NextSpawn,
+    },
+    SettingSpec {
+        key: "defaults.attach-session",
+        section: SettingSection::Defaults,
+        kind: SettingKind::OptionalText,
+        summary: "Session a bare phux and a new Rune window open",
+        detail: "Naked phux, phux attach with no name and a new Rune window open this \
+                 session instead of the one used last, creating it when missing \
+                 (in defaults.fixed-cwd under cwd-inheritance = fixed). An explicit \
+                 session name or link still wins.",
+        applies: Applies::NextAttach,
     },
     SettingSpec {
         key: "defaults.window-size",

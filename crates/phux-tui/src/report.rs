@@ -367,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn write_bundle_in_creates_markdown_and_latest_pointer() {
+    fn write_bundle_in_creates_a_listed_bundle() {
         let tmp = TempDir::new().expect("tmp");
         let written = write_bundle_in(tmp.path(), &draft("scrolling is wrong")).expect("write");
         assert!(written.dir.join("report.md").is_file());
@@ -375,10 +375,7 @@ mod tests {
         assert!(written.dir.join("screen.txt").is_file());
         let markdown = fs::read_to_string(written.dir.join("report.md")).expect("md");
         assert!(markdown.contains("scrolling is wrong"));
-        assert!(markdown.contains("phux report show"));
         assert!(markdown.contains("@7"));
-        let latest = latest_report(tmp.path()).expect("latest");
-        assert_eq!(latest.id, written.id);
         let listed = list_reports(tmp.path());
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, written.id);

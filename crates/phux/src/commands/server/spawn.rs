@@ -175,12 +175,14 @@ fn wait_until_accepting(
 ) -> std::io::Result<()> {
     let deadline = Instant::now() + AUTO_SPAWN_SOCKET_TIMEOUT;
     loop {
-        if socket::probe(socket_path) == SocketState::Live {
+        // Accepting, not merely live: a server holding the lock before its
+        // bind reads as live, and the caller's connect would then fail.
+        if socket::accepts(socket_path) {
             return Ok(());
         }
         if let Some(err) = exited() {
             // A loser of a bind race exits because another server is live.
-            if socket::probe(socket_path) == SocketState::Live {
+            if socket::accepts(socket_path) {
                 return Ok(());
             }
             return Err(err);
@@ -367,7 +369,7 @@ fn reconcile_version_skew(socket_path: &Path) {
     // Wait for the re-exec'd server so the caller's connect does not race it.
     let deadline = Instant::now() + AUTO_SPAWN_SOCKET_TIMEOUT;
     while Instant::now() < deadline {
-        if socket::probe(socket_path) == SocketState::Live {
+        if socket::accepts(socket_path) {
             return;
         }
         std::thread::sleep(AUTO_SPAWN_POLL_INTERVAL);

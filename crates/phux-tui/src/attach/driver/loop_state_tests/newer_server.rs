@@ -27,11 +27,11 @@ async fn newer_server_loop() -> (SessionLoop, Connection, tokio::net::UnixStream
 
 #[tokio::test(flavor = "current_thread")]
 async fn a_newer_servers_unknown_frames_and_values_do_not_end_the_attach() {
+    use phux_protocol::wire::UnreadableResult;
     use phux_protocol::wire::frame::{
         HistoryTombstoneReason, SpawnError, SpawnResult, TYPE_HISTORY_TOMBSTONE,
         TYPE_METADATA_CHANGED, TYPE_RESOURCE_SPAWNED,
     };
-    use phux_protocol::wire::UnreadableResult;
     use tokio::io::AsyncWriteExt as _;
 
     let (mut state, mut client, mut server, mut out) = Box::pin(newer_server_loop()).await;
@@ -72,7 +72,9 @@ async fn a_newer_servers_unknown_frames_and_values_do_not_end_the_attach() {
         spawned,
         FrameKind::ResourceSpawned {
             request_id: 77,
-            result: SpawnResult::Err(SpawnError::Unknown(UnreadableResult::from_wire([0x01, 0xFE]))),
+            result: SpawnResult::Err(SpawnError::Unknown(UnreadableResult::from_wire([
+                0x01, 0xFE
+            ]))),
         }
     );
     // The tombstone's reason maps onto the kernel's in `kernel_input`; this
@@ -91,36 +93,6 @@ async fn a_newer_servers_unknown_frames_and_values_do_not_end_the_attach() {
     assert!(!matches!(step, FrameStep::Exit(_)));
 }
 
-/// A newer server refuses a spawn it cannot read with a correlated `ERROR
-/// UNSUPPORTED`: the parked spawn settles as refused and the attach stays.
-#[tokio::test(flavor = "current_thread")]
-async fn a_spawn_answered_unsupported_settles_and_keeps_the_attach() {
-    use phux_protocol::wire::frame::ErrorCode;
-
-    let (mut state, mut client, _server, mut out) = Box::pin(newer_server_loop()).await;
-    state
-        .mirror
-        .pending_floating
-        .insert(9, "Agent Board".to_owned());
-    let step = state
-        .apply_server_frame(
-            &mut client,
-            &mut out,
-            None,
-            FrameKind::Error {
-                request_id: Some(9),
-                code: ErrorCode::Unsupported,
-                message: "unknown spawn kind".to_owned(),
-            },
-            false,
-            &mut RepaintAccumulator::default(),
-        )
-        .await
-        .expect("a correlated UNSUPPORTED is not a protocol fault");
-    assert!(!matches!(step, FrameStep::Exit(_)));
-    assert!(state.mirror.pending_floating.is_empty(), "the spawn settled");
-}
-
 /// A parked spawn answered with an unreadable reply, or with a newer
 /// server's unknown refusal, settles as an unknown outcome and keeps the
 /// attach.
@@ -136,7 +108,9 @@ async fn an_unreadable_spawn_answer_settles_as_unknown_and_keeps_the_attach() {
         },
         FrameKind::ResourceSpawned {
             request_id: 9,
-            result: SpawnResult::Err(SpawnError::Unknown(phux_protocol::wire::UnreadableResult::from_wire([0x01, 0xFE]))),
+            result: SpawnResult::Err(SpawnError::Unknown(
+                phux_protocol::wire::UnreadableResult::from_wire([0x01, 0xFE]),
+            )),
         },
     ] {
         let (mut state, mut client, _server, mut out) = Box::pin(newer_server_loop()).await;
@@ -156,7 +130,10 @@ async fn an_unreadable_spawn_answer_settles_as_unknown_and_keeps_the_attach() {
             .await
             .expect("an unknown spawn outcome is not a protocol fault");
         assert!(!matches!(step, FrameStep::Exit(_)));
-        assert!(state.mirror.pending_floating.is_empty(), "the spawn settled");
+        assert!(
+            state.mirror.pending_floating.is_empty(),
+            "the spawn settled"
+        );
     }
 }
 

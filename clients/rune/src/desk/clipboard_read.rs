@@ -200,14 +200,18 @@ mod tests {
 
     /// A window showing terminal 1, applying `policy`.
     fn window(policy: ClipboardRead) -> Runtime<Desk> {
-        let mut desk = Desk::new(&Resolved::offline("clipboard reads"));
+        let mut desk = Desk::with_preferences(
+            &Resolved::offline("clipboard reads"),
+            None,
+            rune::prefs::Prefs::memory(),
+        );
         desk.connection.resources.clipboard_reads = ClipboardReads::with_policy(policy);
         desk.connection.shown = Some(crate::desk::Shown {
             resource: id(1),
             view: phux_client_runtime::ViewId::from_raw(1),
         });
         desk.focused = true;
-        Runtime::new(desk, crate::ui::view, (800.0, 600.0), Env::new(true, 1.0))
+        crate::test_support::runtime(desk, crate::ui::view, (800.0, 600.0), Env::new(true, 1.0))
     }
 
     #[test]

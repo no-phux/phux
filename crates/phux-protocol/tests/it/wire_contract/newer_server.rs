@@ -222,7 +222,6 @@ fn newer_values_are_classified_and_malformed_bytes_are_not() {
         let error = FrameKind::decode(&bytes).unwrap_err();
         assert!(!error.is_unsupported(), "{error:?}");
     }
-    assert!(!DecodeError::UnexpectedEof.is_unsupported());
 }
 
 /// A correlated reply whose body carries a value no `Unknown` variant covers
@@ -261,6 +260,93 @@ fn the_newer_server_fallback_settles_replies_and_skips_the_rest() {
         newer_server_fallback(&malformed, error),
         Err(DecodeError::UnexpectedEof)
     );
+}
+
+/// A newer server's execution state, outcome, lifetime, or exit policy in an
+/// organization page reads as `Unknown` in that record; the page and its
+/// other records still decode. A request naming one is refused.
+#[test]
+fn a_newer_value_in_an_organization_record_reads_as_unknown_in_that_record() {
+    use phux_protocol::ids::{
+        ActivationId, AuthorityId, IdempotencyKey, ResourceKey, ServerInstance,
+    };
+    use phux_protocol::wire::frame::{
+        ActivationInfo, Command, ExecState, ExitPolicy, OrganizationPage, Outcome, ResourceRecord,
+        SessionLifetime, SessionRecord,
+    };
+
+    let session = SessionKey::new([2; 16]).unwrap();
+    let activation = ActivationInfo::new(
+        ActivationId::new(1),
+        ServerInstance::new([4; 16]),
+        ExecState::Unknown(9),
+    )
+    .with_outcome(Some(Outcome::Unknown(10)));
+    let newer = ResourceRecord::new(
+        ResourceKey::new([3; 16]).unwrap(),
+        session,
+        Revision::new(2),
+    )
+    .with_on_exit(ExitPolicy::Unknown(8))
+    .with_activation(Some(activation));
+    let known = ResourceRecord::new(
+        ResourceKey::new([5; 16]).unwrap(),
+        session,
+        Revision::new(2),
+    );
+    let page = OrganizationPage::new(AuthorityId::new([1; 16]).unwrap(), Revision::new(2), 2)
+        .with_sessions(vec![
+            SessionRecord::new(session, "s", Revision::new(1))
+                .with_lifetime(SessionLifetime::Unknown(7)),
+        ])
+        .with_resources(vec![newer, known]);
+    assert_round_trip(&FrameKind::CommandResult {
+        request_id: 7,
+        result: CommandResult::OkWith(CommandValue::OrganizationPage(Box::new(page))),
+    });
+
+    let request = encode(&FrameKind::Command {
+        request_id: 8,
+        command: Command::SessionCreate {
+            operation: IdempotencyKey::new([6; 16]).unwrap(),
+            name: "s".to_owned(),
+            lifetime: SessionLifetime::Unknown(7),
+            attrs: Vec::new(),
+            launch: None,
+        },
+    });
+    assert!(decode(&request).unwrap_err().is_unsupported());
+}
+
+/// A reply a server compressed in spite of the rule is read as the frame
+/// inside the envelope, so it still settles its request.
+#[test]
+fn an_unreadable_reply_inside_frame_compressed_still_settles() {
+    use phux_protocol::wire::decode::newer_server_fallback;
+
+    let mut listing = Vec::new();
+    tlv_field(&mut listing, 1, &7_u32.to_be_bytes());
+    tlv_field(&mut listing, 2, b"/srv");
+    tlv_field(&mut listing, 5, &[2]);
+    tlv_field(&mut listing, 99, &[0; 8192]);
+    let inner = framed_tlv(TYPE_DIRECTORY_LISTING, &listing);
+    let deflated = phux_protocol::wire::compress::deflate(&inner[4..]).unwrap();
+    let mut envelope = Vec::new();
+    tlv_field(&mut envelope, 1, &[1]);
+    tlv_field(&mut envelope, 2, &inner[..4]);
+    tlv_field(&mut envelope, 3, &deflated);
+    let compressed = framed_tlv(0x9A, &envelope);
+
+    let error = FrameKind::decode(&compressed).unwrap_err();
+    let Ok(Some(FrameKind::Error {
+        request_id: Some(7),
+        code,
+        ..
+    })) = newer_server_fallback(&compressed, error)
+    else {
+        panic!("a compressed correlated reply settles its request");
+    };
+    assert_eq!(code, ErrorCode::UNREADABLE_REPLY);
 }
 
 /// `frame` with `extra` appended to the value of its top-level field `id`.

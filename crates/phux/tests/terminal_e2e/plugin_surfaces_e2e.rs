@@ -118,6 +118,30 @@ fn palette_and_key_capture_the_same_invoking_selection() {
     let mut client = attach(&server);
     client.await_painted(&["E2E Panes", "Sessions"], DEADLINE);
 
+    let config = client.config.path();
+    let (code, keys, error) = common::phux_in(
+        [("XDG_CONFIG_HOME", config)],
+        &["config", "keys", "plugin-action", "--json"],
+    )
+    .into_parts();
+    assert_eq!(code, 0, "{error}");
+    let keys: serde_json::Value = serde_json::from_str(&keys).expect("effective keys JSON");
+    let binding = &keys["bindings"][0];
+    assert_eq!(binding["keys"], "C-a Y");
+    assert_eq!(binding["args"]["plugin"], "e2e.surfaces");
+    assert_eq!(binding["args"]["id"], "capture");
+
+    let (code, keys, error) =
+        common::phux_in([("XDG_CONFIG_HOME", config)], &["omarchy", "keys"]).into_parts();
+    assert_eq!(code, 0, "{error}");
+    assert!(
+        keys.lines().any(|line| {
+            line.split_once('→')
+                .is_some_and(|(key, _)| key.trim() == "C-a Y")
+        }),
+        "{keys}"
+    );
+
     client.send(PREFIX);
     client.send(b"Y");
     let _ = invocation_contexts(&client, 1);

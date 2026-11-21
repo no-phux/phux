@@ -9,7 +9,7 @@ impl RelaySession {
     /// Push `frame` to every proxy subscriber of terminal `id` via
     /// `try_send`.
     ///
-    /// A `TERMINAL_SNAPSHOT` anchors ordering (L1 §9.1): a new attacher waits
+    /// A `TERMINAL_SNAPSHOT` anchors ordering: a new attacher waits
     /// in [`SnapshotGate::AwaitingFirst`] and a refused snapshot is retained
     /// ([`SnapshotGate::Retained`]) and retried before any delta; a newer
     /// snapshot replaces it. `RESOURCE_CLOSED` and `BELL` bypass the gate

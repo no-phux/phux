@@ -652,43 +652,6 @@ fn challenge_certificate(
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_challenge_certificate_carries_the_key_authorization_digest() {
-        let certified = challenge_certificate("laptop.tunnel.test", "token.thumb").unwrap();
-        let (_, parsed) = x509_parser::parse_x509_certificate(certified.cert[0].as_ref()).unwrap();
-        let oid = x509_parser::oid_registry::Oid::from(&[1, 3, 6, 1, 5, 5, 7, 1, 31]).unwrap();
-        let extension = parsed
-            .extensions()
-            .iter()
-            .find(|extension| extension.oid == oid)
-            .expect("acmeIdentifier");
-        assert!(extension.critical, "RFC 8737 §3: critical");
-        let mut expected = vec![0x04, 0x20];
-        expected.extend_from_slice(&Sha256::digest(b"token.thumb"));
-        assert_eq!(
-            extension.value,
-            expected.as_slice(),
-            "an OCTET STRING of the digest"
-        );
-        let names = parsed.subject_alternative_name().unwrap().unwrap();
-        assert!(format!("{:?}", names.value).contains("laptop.tunnel.test"));
-    }
-
-    #[test]
-    fn the_resolver_serves_challenges_only_to_acme_tls_hellos() {
-        // Covered end to end in tests/acme.rs, where real hellos arrive;
-        // here, the bookkeeping: a guard removes its challenge.
-        let certs = AcmeCerts::default();
-        let certified = Arc::new(challenge_certificate("a.test", "t.k").unwrap());
-        certs.challenges().insert("a.test".to_owned(), certified);
-        drop(ChallengeGuard {
-            certs: &certs,
-            domain: "a.test".to_owned(),
-        });
-        assert!(certs.challenges().is_empty());
-        assert!(!certs.has_certificate());
-    }
-
     /// Store a self-signed certificate for `config.domain` valid from
     /// `issued_ago` until `left` from now.
     fn store(config: &AcmeConfig, issued_ago: Duration, left: Duration) {

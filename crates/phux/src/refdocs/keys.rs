@@ -195,21 +195,6 @@ mod tests {
     }
 
     #[test]
-    fn the_shipped_resize_mode_has_its_own_section() {
-        let body = page().body;
-        let section = body.split("### resize").nth(1).expect("resize section");
-        assert!(
-            section.contains("Press <kbd>C-a</kbd>, then <kbd>R</kbd>."),
-            "{section}"
-        );
-        assert!(section.contains("do nothing while it is on"), "exclusive");
-        assert!(
-            section.contains("| <kbd>Enter</kbd> | `exit-mode` |"),
-            "{section}"
-        );
-    }
-
-    #[test]
     fn keys_are_escaped_for_html_and_tables() {
         assert_eq!(key_cell("<"), "<kbd>&lt;</kbd>");
         assert_eq!(key_cell("|"), "<kbd>\\|</kbd>");

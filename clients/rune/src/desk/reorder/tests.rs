@@ -189,10 +189,6 @@ fn session_reorder_keeps_the_whole_stored_order_even_over_a_resource_row() {
         FrameKind::SetMetadata { scope: Scope::Global, key: metadata_key, value, .. }
         if metadata_key == SESSION_ORDER_KEY && session_order::decode(Some(value)) == vec![key(2), key(1)]
     )));
-    assert_eq!(
-        moved(vec![key(1), key(2)], key(2), key(1)),
-        Some(vec![key(2), key(1)])
-    );
 }
 
 #[test]

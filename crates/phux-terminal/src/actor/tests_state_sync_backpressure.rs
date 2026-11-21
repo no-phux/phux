@@ -17,8 +17,9 @@ fn drain_terminal_output(rx: &mut mpsc::Receiver<Outbound>) -> (Vec<u8>, Vec<u64
     (bytes, seqs)
 }
 
-/// A full mailbox never loses content: the permit is reserved before the
-/// diff advances the reference, so every marker survives once drained.
+/// A full mailbox never loses content or burns a `seq`: the permit is
+/// reserved before the diff advances the reference, so every marker
+/// survives once drained, in a contiguous seq stream.
 #[test]
 fn backpressured_consumer_loses_no_content_after_draining() {
     // More rounds than the mailbox holds so the tick's send hits `Full`.
@@ -46,13 +47,20 @@ fn backpressured_consumer_loses_no_content_after_draining() {
     // Drain, then keep ticking + draining so any content held back under
     // backpressure flows once there is room.
     let mut delivered = Vec::new();
-    let (chunk, _seqs) = drain_terminal_output(&mut rx);
-    delivered.extend_from_slice(&chunk);
-    for _ in 0..ROUNDS * 2 {
-        actor.tick_emit();
-        let (chunk, _seqs) = drain_terminal_output(&mut rx);
+    let mut all_seqs = Vec::new();
+    for round in 0..=ROUNDS * 2 {
+        if round > 0 {
+            actor.tick_emit();
+        }
+        let (chunk, seqs) = drain_terminal_output(&mut rx);
         delivered.extend_from_slice(&chunk);
+        all_seqs.extend(seqs);
     }
+    let contiguous: Vec<u64> = (1..=all_seqs.len() as u64).collect();
+    assert_eq!(
+        all_seqs, contiguous,
+        "a frame not shipped must not burn a seq (no gaps, SPEC §12.2)"
+    );
 
     for marker in &markers {
         assert!(
@@ -61,48 +69,6 @@ fn backpressured_consumer_loses_no_content_after_draining() {
                  under mailbox backpressure (reference advanced past a dropped \
                  frame). delivered={:?}",
             String::from_utf8_lossy(&delivered),
-        );
-    }
-}
-
-/// A frame not shipped does not consume a `seq` (no gaps, SPEC §12.2).
-#[test]
-fn backpressured_consumer_sees_contiguous_seq_stream() {
-    const ROUNDS: usize = 10;
-    let bundle = TerminalActor::new(80, 24).expect("new");
-    let mut actor = bundle.actor;
-    actor.enable_tick_emit_for_test();
-
-    let client = ClientId(1);
-    let (tx, mut rx) = mpsc::channel::<Outbound>(2);
-    actor
-        .register_consumer(client, tx, 11, false)
-        .expect("register");
-
-    for i in 0..ROUNDS {
-        actor.vt_write_for_test(format!("seqmark{i:03}\r\n").as_bytes());
-        actor.tick_emit();
-    }
-
-    let mut all_seqs = Vec::new();
-    let (_b, seqs) = drain_terminal_output(&mut rx);
-    all_seqs.extend(seqs);
-    for _ in 0..ROUNDS * 2 {
-        actor.tick_emit();
-        let (_b, seqs) = drain_terminal_output(&mut rx);
-        all_seqs.extend(seqs);
-    }
-
-    assert!(
-        !all_seqs.is_empty(),
-        "expected at least one delivered frame"
-    );
-    for (idx, seq) in all_seqs.iter().enumerate() {
-        let expected = u64::try_from(idx).expect("fits") + 1;
-        assert_eq!(
-            *seq, expected,
-            "delivered seq stream must be contiguous from 1 with no gaps; \
-                 a dropped-but-seq-burned frame leaves a hole. got={all_seqs:?}",
         );
     }
 }

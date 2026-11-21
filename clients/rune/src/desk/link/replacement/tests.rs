@@ -5,7 +5,12 @@ use crate::launch::Resolved;
 
 #[test]
 fn reconnect_keeps_settings_navigation_search_return_context_and_phone_form() {
-    let mut desk = Desk::new(&Resolved::offline("settings reconnect")).with_phone(true);
+    let mut desk = Desk::with_preferences(
+        &Resolved::offline("settings reconnect"),
+        None,
+        rune::prefs::Prefs::memory(),
+    )
+    .with_phone(true);
     desk.settings_open = true;
     desk.settings_category(crate::desk::SettingsCategory::Developer);
     desk.settings_ui.query = rune::TextEdit::new("logs");
@@ -26,7 +31,12 @@ fn reconnect_keeps_settings_navigation_search_return_context_and_phone_form() {
 #[test]
 fn replacing_a_machine_keeps_phone_preferences_not_old_panes_or_latches() {
     // Embedded launch never locates/spawns an installed CLI on the redial.
-    let mut desk = Desk::new(&Resolved::embedded(None)).with_phone(true);
+    let mut desk = Desk::with_preferences(
+        &Resolved::embedded(None),
+        None,
+        rune::prefs::Prefs::memory(),
+    )
+    .with_phone(true);
     desk.machines.current = Some("previous".into());
     let phone = desk.phone.as_mut().unwrap();
     phone.keyboard = false;
@@ -131,4 +141,33 @@ fn explicit_replacement_releases_old_view_leases_even_if_the_client_survives() {
     desk.connection.client = Some(client);
     assert!(!fence.is_current(&desk.connection));
     desk.replace_connection(Replacement::Retry);
+}
+
+#[test]
+fn a_replaced_client_retires_its_pending_answers_as_unknown() {
+    let (client, mut rt) = crate::test_support::input_fixture();
+    let terminal = rt.state.connection.shown.as_ref().unwrap().resource.clone();
+    rt.update(|d, _| {
+        d.inbox.reply.insert("yes");
+        d.answer(&terminal, "first", "yes");
+    });
+    let id = *rt.state.inbox.answers.keys().next().expect("pending");
+    assert!(rt.state.answering(&terminal));
+    rt.update(|d, _| d.renew());
+    assert!(!rt.state.answering(&terminal), "a retry may answer again");
+    assert_eq!(
+        crate::test_support::notice(&rt.state),
+        "The answer may not have landed; read the pane first."
+    );
+    assert_eq!(rt.state.inbox.reply.text, "yes", "the draft stays");
+    // The next client's receipt with the same id is not this answer's.
+    rt.state.dismiss_notice();
+    let event = phux_client_runtime::control::Event::InputDelivery {
+        delivery_id: id,
+        outcome: phux_client_runtime::control::DeliveryOutcome::Delivered,
+        code: None,
+        message: String::new(),
+    };
+    assert!(!rt.state.inbox_event(&client, &event));
+    assert!(rt.state.notice.is_none());
 }

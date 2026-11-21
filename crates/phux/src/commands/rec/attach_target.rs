@@ -38,26 +38,14 @@ async fn pane_session(
         .await
         .map_err(|err| json_err::Refusal::no_server(&err, socket_path, "rec"))?
         .into_snapshot_ignoring_degradation();
-    let name = session_name_of_pane(&snapshot, &pane).ok_or_else(|| {
-        json_err::Refusal::new(
-            json_err::codes::NO_SUCH_TARGET,
-            format!("{raw} is not in a local session that can be recorded"),
-            "pass a session name, or a pane selector in a local session",
-            1,
-        )
-    })?;
+    let name =
+        phux_client::spawn::session_name_for_terminal(&snapshot, &pane).ok_or_else(|| {
+            json_err::Refusal::new(
+                json_err::codes::NO_SUCH_TARGET,
+                format!("{raw} is not in a local session that can be recorded"),
+                "pass a session name, or a pane selector in a local session",
+                1,
+            )
+        })?;
     Ok(phux_protocol::wire::frame::AttachTarget::ByName(name))
-}
-
-/// The name of the session that holds `pane`.
-fn session_name_of_pane(
-    snapshot: &phux_protocol::wire::info::SessionSnapshot,
-    pane: &phux_protocol::ids::ResourceId,
-) -> Option<String> {
-    let session = phux_client::spawn::ownership_for_terminal(snapshot, pane)?;
-    snapshot
-        .sessions
-        .iter()
-        .find(|candidate| candidate.id == session)
-        .map(|session| session.name.clone())
 }

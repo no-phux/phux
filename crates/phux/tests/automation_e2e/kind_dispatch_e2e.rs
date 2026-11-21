@@ -211,15 +211,6 @@ fn wait_follows_a_tree_or_a_text_document() {
     );
 }
 
-#[test]
-#[ignore = "spawns a real phux server; run via `just e2e`."]
-fn send_keys_refuses_every_document_kind() {
-    let f = Fixture::start();
-    for id in [&f.tree, &f.notes, &f.surface] {
-        f.refused(&["send-keys", "--json", id, "Enter"], "wrong_resource_kind");
-    }
-}
-
 /// Every verb that reaches a Terminal only refuses a document or an agent
 /// session up front, as `send-keys` does, instead of failing downstream
 /// (`run`'s "no OSC-133 shell marks").
@@ -252,6 +243,7 @@ fn terminal_only_verbs_refuse_every_document_kind() {
         f.refused(&["signal", "--json", id, "kill"], "wrong_resource_kind");
         for args in [
             &["run", "--json", "--timeout", "5", id, "true"][..],
+            &["send-keys", "--json", id, "Enter"],
             &["paste", "--json", id, "hi"],
             &["resize", "--json", id, "80x24"],
             &["upload", "--json", id, file],

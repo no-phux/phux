@@ -38,8 +38,8 @@ pub enum AttachError {
     #[error("protocol error: {0}")]
     Protocol(String),
 
-    /// A SPEC §5 framing violation, already answered with
-    /// `ERROR { FRAME_TOO_LARGE }` as §5 requires.
+    /// A framing violation, already answered with
+    /// `ERROR { FRAME_TOO_LARGE }` (`docs/protocol.md#framing`).
     #[error("protocol error: server sent a malformed frame: {0}")]
     Framing(#[from] FramingError),
 
@@ -129,6 +129,33 @@ impl AttachError {
             self,
             Self::Io(_) | Self::Connect(_) | Self::Unreachable(_) | Self::Disconnected
         )
+    }
+
+    /// Whether nothing is listening at the socket (`ConnectionRefused` or
+    /// `NotFound` on connect): the signature every "no server" path keys on.
+    #[must_use]
+    pub fn is_no_server(&self) -> bool {
+        matches!(
+            self,
+            Self::Io(io) if matches!(
+                io.kind(),
+                std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound,
+            )
+        )
+    }
+
+    /// Whether the installed deadline expired before the server answered
+    /// (`connection::install_deadline`): the handshake or one request.
+    #[must_use]
+    pub fn is_timeout(&self) -> bool {
+        matches!(self, Self::Io(io) if io.kind() == std::io::ErrorKind::TimedOut)
+    }
+
+    /// Whether the server could not be reached: the deadline expired, or a
+    /// remote host never answered the dial. The CLI exits 4 for these.
+    #[must_use]
+    pub fn is_unreachable(&self) -> bool {
+        self.is_timeout() || matches!(self, Self::Unreachable(_))
     }
 
     /// Whether this is a transport refusal no retry with the same credentials

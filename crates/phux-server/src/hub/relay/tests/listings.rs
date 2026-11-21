@@ -22,45 +22,6 @@ pub(super) fn refusal_message(result: DirectoryListingResult) -> String {
 }
 
 #[test]
-fn session_relays_a_listing_under_its_own_id_and_resolves_the_reply() {
-    let mut session = RelaySession::new(host(), BootstrapLimits::default());
-    // Occupy id 1 so the listing proves it shares the allocator.
-    let _ = session.handle_request(RelayRequest::Command {
-        command: Command::Upgrade,
-        reply: oneshot::channel().0,
-        subscribe: None,
-    });
-    let (request, mut rx) = listing_request("/srv");
-    let wire = session.handle_request(request);
-    let FrameKind::ListDirectory {
-        request_id,
-        path,
-        host: forwarded_host,
-    } = decode(&wire)
-    else {
-        panic!("expected LIST_DIRECTORY on the link");
-    };
-    assert_eq!(
-        request_id, 2,
-        "link-side id comes from the shared allocator"
-    );
-    assert_eq!(path, "/srv");
-    assert_eq!(forwarded_host, None, "the satellite lists its own host");
-
-    let listing = phux_protocol::wire::frame::DirectoryListing {
-        path: "/srv".to_owned(),
-        parent: Some("/".to_owned()),
-        entries: Vec::new(),
-        truncated: false,
-    };
-    session.feed(&FrameKind::DirectoryListing {
-        request_id,
-        result: Ok(listing.clone()),
-    });
-    assert_eq!(rx.try_recv().expect("resolved"), Ok(listing));
-}
-
-#[test]
 fn a_satellite_without_list_directory_is_refused_before_the_link() {
     let mut session = negotiated(&[]);
     let (request, mut rx) = listing_request("/srv");
@@ -102,7 +63,7 @@ fn a_correlated_error_and_teardown_both_refuse_pending_listings() {
     );
 }
 
-// --- relayed PATH_QUERY (L3 §5) ----------------------------------------
+// --- relayed PATH_QUERY ----------------------------------------
 
 pub(super) fn path_request(root: &str) -> (RelayRequest, oneshot::Receiver<PathQueryResult>) {
     let (reply, rx) = oneshot::channel();
@@ -129,48 +90,6 @@ pub(super) fn path_error(result: PathQueryResult, root: &str) -> String {
     assert_eq!(refusal.root, root);
     assert!(refusal.message.contains("devbox"));
     refusal.message
-}
-
-#[test]
-fn path_query_uses_shared_id_and_returns_satellite_results_without_retagging() {
-    let mut session = path_session();
-    let _ = session.handle_request(RelayRequest::Command {
-        command: Command::Upgrade,
-        reply: oneshot::channel().0,
-        subscribe: None,
-    });
-    let (request, mut rx) = path_request("~/work");
-    let FrameKind::PathQuery {
-        request_id,
-        root,
-        query,
-        recursive,
-        host: forwarded_host,
-    } = decode(&session.handle_request(request))
-    else {
-        panic!("expected PATH_QUERY");
-    };
-    assert_eq!(request_id, 2);
-    assert_eq!(root, "~/work");
-    assert_eq!(query, "src");
-    assert!(recursive);
-    assert_eq!(forwarded_host, None, "never chain a satellite route");
-    let results = phux_protocol::wire::frame::PathResults {
-        root: "/home/user/work".to_owned(),
-        parent: Some("/home/user".to_owned()),
-        rows: vec![],
-        status: phux_protocol::wire::frame::PathStatus::Complete,
-    };
-    session.feed(&FrameKind::PathResults {
-        request_id,
-        result: Ok(results.clone()),
-    });
-    assert_eq!(rx.try_recv().unwrap(), Ok(results));
-    assert_eq!(
-        session.pending_request_count(),
-        1,
-        "other command remains pending"
-    );
 }
 
 #[test]

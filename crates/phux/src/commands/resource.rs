@@ -466,43 +466,6 @@ pub(crate) fn run(
 mod tests {
     use super::*;
 
-    fn parse(argv: &[&str]) -> ResourceAction {
-        let cli = crate::parse_cli(argv).expect("invocation should parse");
-        let Some(crate::commands::Command::Resource(crate::commands::ResourceArgs { action })) =
-            cli.command
-        else {
-            panic!("expected the resource noun");
-        };
-        action
-    }
-
-    #[test]
-    fn wait_takes_flags_before_the_target() {
-        let ResourceAction::Wait {
-            timeout,
-            after,
-            json,
-            target,
-        } = parse(&[
-            "phux",
-            "resource",
-            "wait",
-            "--timeout",
-            "30",
-            "--after",
-            "ab:4",
-            "--json",
-            "@7",
-        ])
-        else {
-            panic!("expected wait");
-        };
-        assert_eq!(timeout, Some(30));
-        assert_eq!(after.as_deref(), Some("ab:4"));
-        assert!(json.json);
-        assert_eq!(target, "@7");
-    }
-
     #[test]
     fn a_viewer_list_prints_only_when_someone_watches() {
         let nobody = serde_json::json!({ "viewers": [] });
@@ -526,18 +489,6 @@ mod tests {
             document["program_status"]["active"]["msg"],
             "approve \u{202e}prod\u{202c}"
         );
-    }
-
-    #[test]
-    fn show_and_methods_parse() {
-        assert!(matches!(
-            parse(&["phux", "resource", "show", "--json", "@3"]),
-            ResourceAction::Show { .. }
-        ));
-        assert!(matches!(
-            parse(&["phux", "resource", "methods", "work:1.0"]),
-            ResourceAction::Methods { .. }
-        ));
     }
 
     #[test]

@@ -2,11 +2,14 @@
 
 use std::time::Duration;
 
-use phux_core::Effect;
+use phux_core::ids::ResourceId;
+use phux_core::{ActivationId, Effect, ProcIdentity, Refusal, ResourceKey, TerminateMode};
+use phux_protocol::wire::frame::CloseReason;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
-use crate::state::SharedState;
+use crate::reconcile::{ProcessPresence, process_presence};
+use crate::state::{CloseAttribution, ClosePlan, ServerState, SharedState};
 
 use super::ORPHAN_GRACE;
 
@@ -22,10 +25,20 @@ pub(super) fn run_effect(state: &SharedState, effect: Effect, root_token: &Cance
         }
         Effect::Terminate {
             resource,
+            activation,
             mode,
             proc,
-            ..
-        } => terminate(state, resource, mode, proc),
+        } => {
+            if let Some(proc) = proc {
+                tokio::task::spawn_local(terminate_detached(
+                    state.clone(),
+                    resource,
+                    activation,
+                    mode,
+                    proc,
+                ));
+            }
+        }
     }
 }
 
@@ -47,18 +60,20 @@ fn launch(
     }) else {
         return;
     };
-    let result = if spec.kind() == kind {
-        crate::runtime::apps::launch(
-            kind,
-            crate::runtime::apps::ResourceLaunch {
-                state,
-                resource: id,
-                spec,
-                root_token,
-            },
-        )
-    } else {
-        Err("committed resource kind and launch spec disagree".to_owned())
+    let result = match (
+        spec.kind() == kind,
+        crate::runtime::apps::organization_launcher(kind),
+    ) {
+        (true, Some(launch)) => launch(crate::runtime::apps::ResourceLaunch {
+            state,
+            resource: id,
+            spec,
+            root_token,
+        }),
+        (true, None) => Err(format!(
+            "this {kind} projection must be opened by its producer"
+        )),
+        (false, _) => Err("committed resource kind and launch spec disagree".to_owned()),
     };
     if let Err(error) = result {
         fail_launch(state, resource, activation);
@@ -96,83 +111,172 @@ fn fail_launch(
     });
 }
 
-/// End an activation. A live engine closes through the legacy kill's
-/// teardown, its record left to its exit policy; `Force` kills the process
-/// group first. A lost process group (no engine here) is signalled after
-/// its identity is rechecked, and its end committed once it is gone.
-fn terminate(
-    state: &SharedState,
-    resource: phux_core::ResourceKey,
-    mode: phux_core::TerminateMode,
-    proc: Option<phux_core::ProcIdentity>,
-) {
-    let live = state.with_mut(|s| {
-        let id = s.registry().resource_id(&resource)?;
-        s.resources().handle(id)?;
-        if mode == phux_core::TerminateMode::Force {
-            kill_group(proc, nix::sys::signal::Signal::SIGKILL);
-        }
-        s.mark_terminating(id);
-        let _ = s.mark_and_cancel(
-            &[id],
-            phux_protocol::wire::frame::CloseReason::Killed,
-            crate::state::CloseAttribution::default(),
-        );
-        Some(())
-    });
-    if live.is_some() {
-        return;
-    }
-    let Some(proc) = proc else {
-        return;
-    };
-    let state = state.clone();
-    tokio::task::spawn_local(async move {
-        let first = match mode {
-            phux_core::TerminateMode::Graceful => nix::sys::signal::Signal::SIGHUP,
-            phux_core::TerminateMode::Force => nix::sys::signal::Signal::SIGKILL,
-        };
-        let mut sent = first;
-        kill_group(Some(proc), first);
-        if mode == phux_core::TerminateMode::Graceful {
-            tokio::time::sleep(ORPHAN_GRACE).await;
-            if still_running(proc) {
-                sent = nix::sys::signal::Signal::SIGKILL;
-                kill_group(Some(proc), sent);
-            }
-        }
-        for _ in 0..40 {
-            if !still_running(proc) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        if still_running(proc) {
-            warn!(pid = proc.pid, "lost process group survived termination");
-            return;
-        }
-        state.with_mut(|s| {
-            let Some(id) = s.registry().resource_id(&resource) else {
-                return;
-            };
-            s.activation_ended(id, phux_core::ExitOutcome::signaled(sent as i32), false);
-        });
-    });
+/// A live termination's admitted cancellation set. Keep it under the
+/// state lock through persistence and cancellation.
+pub(super) struct LiveTermination {
+    resource: ResourceId,
+    close: ClosePlan,
+    mode: TerminateMode,
+    proc: Option<ProcIdentity>,
 }
 
-/// Whether the recorded process still runs as itself.
-fn still_running(proc: phux_core::ProcIdentity) -> bool {
-    let now = crate::reconcile::observe(proc.pid);
-    now.alive && now.start_raw == Some(proc.start_raw)
+impl LiveTermination {
+    pub(super) fn plan(s: &ServerState, effects: &[Effect]) -> Result<Option<Self>, Refusal> {
+        let [
+            Effect::Terminate {
+                resource,
+                mode,
+                proc,
+                ..
+            },
+        ] = effects
+        else {
+            return Ok(None);
+        };
+        let Some(resource) = s.registry().resource_id(resource) else {
+            return Ok(None);
+        };
+        if s.resources().handle(resource).is_none() {
+            return Ok(None);
+        }
+        let close = s.plan_close(&[resource], CloseReason::Killed);
+        if let Some(tab) = close.locked_tab(s) {
+            return Err(Refusal::InvalidArgument {
+                field: "group",
+                reason: format!("{tab} is locked; unlock it first"),
+            });
+        }
+        Ok(Some(Self {
+            resource,
+            close,
+            mode: *mode,
+            proc: *proc,
+        }))
+    }
+
+    pub(super) fn start(&self, s: &mut ServerState) {
+        if self.mode == TerminateMode::Force {
+            kill_group(self.proc, nix::sys::signal::Signal::SIGKILL);
+        }
+        s.mark_terminating(self.resource);
+        s.cancel_close_plan(&self.close, CloseAttribution::default());
+    }
+}
+
+/// Terminate a lost process group after rechecking its OS identity.
+async fn terminate_detached(
+    state: SharedState,
+    resource: ResourceKey,
+    activation: ActivationId,
+    mode: TerminateMode,
+    proc: ProcIdentity,
+) {
+    let first = match mode {
+        phux_core::TerminateMode::Graceful => nix::sys::signal::Signal::SIGHUP,
+        phux_core::TerminateMode::Force => nix::sys::signal::Signal::SIGKILL,
+    };
+    kill_group(Some(proc), first);
+    if mode == TerminateMode::Graceful {
+        tokio::time::sleep(ORPHAN_GRACE).await;
+        kill_group(Some(proc), nix::sys::signal::Signal::SIGKILL);
+    }
+    let mut presence = process_presence(proc);
+    for _ in 0..40 {
+        if presence == ProcessPresence::Gone {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        presence = process_presence(proc);
+    }
+    if presence != ProcessPresence::Gone {
+        warn!(
+            pid = proc.pid,
+            ?presence,
+            "could not verify detached process termination"
+        );
+        return;
+    }
+    state.with_mut(|s| {
+        let same_process = s
+            .org()
+            .resource(&resource)
+            .and_then(|record| record.activation.as_ref())
+            .is_some_and(|current| current.id == activation && current.host_proc == Some(proc));
+        if same_process && let Some(id) = s.registry().resource_id(&resource) {
+            // A signal request and a disappearing pid do not reveal a wait status.
+            s.activation_ended(id, phux_core::ExitOutcome::UNKNOWN, false);
+        }
+    });
 }
 
 /// Signal the recorded process group, only while its leader is still the
-/// recorded process (a reused pid is never signalled).
-fn kill_group(proc: Option<phux_core::ProcIdentity>, signal: nix::sys::signal::Signal) {
-    let Some(proc) = proc.filter(|p| still_running(*p)) else {
+/// recorded process and was recorded as leading that group.
+fn kill_group(proc: Option<ProcIdentity>, signal: nix::sys::signal::Signal) {
+    let Some(proc) = proc.filter(|p| {
+        p.pid > 0 && p.pid == p.pgid && process_presence(*p) == ProcessPresence::Matching
+    }) else {
         return;
     };
-    if let Err(error) = nix::sys::signal::killpg(nix::unistd::Pid::from_raw(proc.pgid), signal) {
+    let pid = nix::unistd::Pid::from_raw(proc.pid);
+    let group = nix::unistd::Pid::from_raw(proc.pgid);
+    if nix::unistd::getpgid(Some(pid)) != Ok(group) {
+        return;
+    }
+    if let Err(error) = nix::sys::signal::killpg(group, signal) {
         debug!(pgid = proc.pgid, %error, "process group signal failed");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "test assertions")]
+mod tests {
+    use super::*;
+    use crate::state::TerminalTarget;
+    use phux_core::{
+        Actor, ExecState, ExitOutcome, ExitPolicy, Outcome, SessionLifetime, TerminalLaunch,
+    };
+
+    #[tokio::test]
+    async fn terminate_detached_respects_activation_and_reports_unknown_exit_status() {
+        let state = SharedState::new();
+        let gone = ProcIdentity {
+            pid: 0,
+            pgid: 0,
+            start_raw: 0,
+            boot_id: crate::reconcile::boot_id().unwrap(),
+        };
+        let key = state.with_mut(|s| {
+            let (_, id) = s
+                .create_terminal(
+                    TerminalTarget::NewSession {
+                        name: "detached",
+                        lifetime: SessionLifetime::Persistent,
+                    },
+                    TerminalLaunch::default(),
+                    ExitPolicy::Retain,
+                    &Actor::owner(),
+                )
+                .unwrap();
+            s.activation_started(id, Some(gone));
+            s.registry().resource_key(id).unwrap()
+        });
+        let activation =
+            || state.with(|s| s.org().resource(&key).unwrap().activation.clone().unwrap());
+
+        let first = activation();
+        terminate_detached(
+            state.clone(),
+            key,
+            first.id.next(),
+            TerminateMode::Force,
+            gone,
+        )
+        .await;
+        assert_eq!(activation(), first);
+
+        terminate_detached(state.clone(), key, first.id, TerminateMode::Force, gone).await;
+        let ended = activation();
+        assert_eq!(ended.state, ExecState::Completed);
+        assert_eq!(ended.outcome, Some(Outcome::Exit(ExitOutcome::UNKNOWN)));
     }
 }

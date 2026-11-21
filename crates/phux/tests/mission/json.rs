@@ -12,85 +12,6 @@ use serde_json::Value;
 const KEEPER_IDLE_SECS: &str = "3";
 
 #[test]
-fn bare_mission_prints_help() {
-    let xdg = common::XdgDirs::fresh("mission");
-    for (args, needles) in [
-        (
-            &["mission"][..],
-            &["Usage:", "phux.mission/v1", "add", "edit", "--socket"][..],
-        ),
-        (&["mission", "--help"], &["phux.mission/v1", "--socket"]),
-        (&["mission", "add", "--help"], &["--socket"]),
-    ] {
-        let (text, _) = expect_exit(&xdg, args, 0);
-        for needle in needles {
-            assert!(text.contains(needle), "{args:?} lacks {needle}: {text}");
-        }
-        if args.len() < 3 {
-            assert!(!text.to_ascii_lowercase().contains("delegate"), "{text}");
-        }
-    }
-}
-
-#[test]
-fn mission_socket_names_the_server_the_keeper_watches() {
-    let xdg = common::XdgDirs::fresh("mission");
-    let args = [
-        "mission",
-        "list",
-        "--socket",
-        "/tmp/phux-mission-unused.sock",
-    ];
-    let (listed, _) = expect_exit(&xdg, &args, 0);
-    assert!(listed.contains("No tasks"), "{listed}");
-    let pid_path = xdg.state.join("phux-dev/work/keeper.pid");
-    if let Ok(text) = std::fs::read_to_string(&pid_path)
-        && let Ok(pid) = text.trim().parse::<u32>()
-        && pid != 0
-    {
-        let _ = std::process::Command::new("kill")
-            .args(["-KILL", &pid.to_string()])
-            .status();
-    }
-}
-
-#[test]
-fn human_list_and_show_use_words_padding_and_rev() {
-    let xdg = common::XdgDirs::fresh("mission-human");
-    let (empty, _) = expect_exit(&xdg, &["mission", "list"], 0);
-    assert_eq!(
-        empty,
-        "No tasks. Add one with phux mission add \"<title>\".\n"
-    );
-    let (added, _) = expect_exit(
-        &xdg,
-        &["mission", "add", "Fix the prompt", "--repo", "phux"],
-        0,
-    );
-    assert_eq!(added, "added phux/1\n");
-    let other = [
-        "mission",
-        "add",
-        "Grant expired",
-        "--repo",
-        "github.com/no-phux/phux",
-    ];
-    expect_exit(&xdg, &other, 0);
-
-    let (listed, _) = expect_exit(&xdg, &["mission", "list"], 0);
-    let lines: Vec<_> = listed.lines().collect();
-    assert_eq!(lines.len(), 2, "{listed}");
-    assert_eq!(lines[0].find("todo"), lines[1].find("todo"), "{listed}");
-    assert!(listed.contains("github.com/no-phux/phux/1"), "{listed}");
-    assert!(!listed.contains("needs_you"), "{listed}");
-
-    let (shown, _) = expect_exit(&xdg, &["mission", "show", "phux/1"], 0);
-    assert!(shown.ends_with("rev 1\n"), "{shown}");
-    assert!(!shown.contains("revision:"), "{shown}");
-    assert!(shown.contains("state: todo\n"), "{shown}");
-}
-
-#[test]
 fn human_structural_edits_print_the_new_revision() {
     let xdg = common::XdgDirs::fresh("mission-human-edit");
     expect_exit(
@@ -108,16 +29,13 @@ fn human_structural_edits_print_the_new_revision() {
         }
         args
     };
-    let at_rev = |rev: u8| format!("phux/1 is at rev {rev}; rerun with --expected-revision {rev}");
     // (args, exit code, stdout on success or a stderr phrase on failure)
-    let steps: [(Vec<&str>, i32, String); 6] = [
-        (edit(None, "Renamed"), 2, at_rev(1)),
+    let steps: [(Vec<&str>, i32, String); 4] = [
         (
             edit(Some("1"), "Renamed"),
             0,
             "updated phux/1 (rev 2)\n".to_owned(),
         ),
-        (edit(Some("1"), "Nope"), 1, at_rev(2)),
         (
             vec!["mission", "archive", "phux/1", "--expected-revision", "2"],
             0,

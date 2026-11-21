@@ -19,10 +19,13 @@ fn showing_a_terminal_nothing_streams_asks_for_it() {
         session_recovery: SessionRecovery::CallerValidated,
         ..ControlOptions::default()
     }));
-    let mut desk = Desk::new(&Resolved::offline("unstreamed"));
-    desk.prefs = rune::prefs::Prefs::memory();
+    let mut desk = Desk::with_preferences(
+        &Resolved::offline("unstreamed"),
+        None,
+        rune::prefs::Prefs::memory(),
+    );
     desk.connection.client = Some(Arc::clone(&client));
-    let mut rt = rune::Runtime::new(
+    let mut rt = crate::test_support::runtime(
         desk,
         crate::ui::view,
         (1100.0, 720.0),

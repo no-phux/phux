@@ -325,11 +325,4 @@ mod tests {
                 }
         )));
     }
-
-    #[test]
-    fn a_nameless_target_still_gets_a_title() {
-        assert_eq!(window_menu(None, "", false).title, "Tab");
-        assert_eq!(pane_menu(None, false).title, "Pane");
-        assert_eq!(session_menu(None, "").title, "session");
-    }
 }

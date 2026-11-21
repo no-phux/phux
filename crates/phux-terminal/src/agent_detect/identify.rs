@@ -145,6 +145,7 @@ fn pane_occupant(pgid: i32, pane_child_pid: Option<i32>, argv: &[String]) -> Pan
         is_pane_shell: pane_child_pid == Some(pgid) && PANE_SHELLS.contains(&foreground.as_str()),
         foreground,
         background: false,
+        icon: None,
     }
 }
 

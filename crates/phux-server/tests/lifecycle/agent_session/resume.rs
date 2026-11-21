@@ -166,56 +166,6 @@ fn agent_resume_dispatches_suffix_empty_and_full_fallback_then_one_live_generati
 }
 
 #[test]
-fn agent_resume_dispatcher_handles_empty_zero_budget_and_evicted_boundaries() {
-    phux_server_testkit::run_local(async {
-        let (server, mut owner) = start(|cfg| cfg.agent_log_bytes = 0).await;
-        let (_parent, session) = parent_and_session(&mut owner, FOREVER).await;
-        let mut watcher = server.connect().await;
-        attach_after(&mut watcher, 100, &session, Some(0)).await;
-        let (_, profile, seq, payload) = bootstrap(&mut watcher, &session).await;
-        assert_eq!(
-            profile,
-            BootstrapStreamProfile::AgentEventsJsonlResumeV1 { after_seq: 0 }
-        );
-        assert_eq!(seq, 0);
-        assert!(payload.is_empty());
-        attach_resource(&mut watcher, 101, &session).await;
-        let (_, profile, _, payload) = bootstrap(&mut watcher, &session).await;
-        assert_eq!(profile, BootstrapStreamProfile::AgentEventsJsonlV1);
-        assert!(
-            payload.is_empty(),
-            "empty full replacement still reaches READY"
-        );
-        append(
-            &mut owner,
-            10,
-            &session,
-            "{\"type\":\"prompt\"}\n{\"type\":\"ask\"}\n{\"type\":\"stop\"}",
-        )
-        .await;
-        for (request, cursor, expected) in [
-            (102, 1, BootstrapStreamProfile::AgentEventsJsonlV1),
-            (
-                103,
-                2,
-                BootstrapStreamProfile::AgentEventsJsonlResumeV1 { after_seq: 2 },
-            ),
-        ] {
-            attach_after(&mut watcher, request, &session, Some(cursor)).await;
-            let (_, profile, seq, payload) = bootstrap(&mut watcher, &session).await;
-            assert_eq!(profile, expected);
-            assert_eq!(seq, 3);
-            assert_eq!(record_seqs(&payload), [3]);
-        }
-        append(&mut owner, 11, &session, "{\"type\":\"prompt\"}").await;
-        let (seq, payload) = next_output(&mut watcher, &session).await;
-        assert_eq!((seq, record_seqs(&payload)), (4, vec![4]));
-        drop((owner, watcher));
-        server.stop().await;
-    });
-}
-
-#[test]
 fn terminal_agent_cursor_is_invalid_before_role_or_content_subscription_changes() {
     use phux_protocol::input::InputEvent;
     use phux_protocol::input::focus::FocusEvent;

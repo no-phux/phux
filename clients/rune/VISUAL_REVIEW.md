@@ -3,7 +3,8 @@
 Every upstream follower tick ships one contained, evidence-based visual or UX
 improvement, including bumps and quiet runs. Passing rendering tests, moving
 pins and preserving identical pixels are maintenance, not that improvement.
-Fix real friction, not arbitrary cosmetic churn.
+Fix real friction, not arbitrary cosmetic churn. [END_STATE](./END_STATE.md)
+says where every change is headed.
 
 Tests establish behavior and geometry, not an aesthetic score. Inspect the
 images and explain whether the experience improved.
@@ -92,6 +93,12 @@ native-sized 2× viewports; desktop controls use the desktop's largest 140%
 text scale, not an iOS setting. Check both buttons' complete visible bounds,
 label/value containment and non-overlap, real touch/keyboard activation and
 range limits. A 44-point visible fragment of a taller button is not a pass.
+
+Theme-row cases use the integrated view at those same scales, with real search
+and palette preview/cancel/accept. Retain whole-row focus reveal **and** an
+explicit heading-aligned scroll: a description taller than the viewport can
+reveal its bottom on focus, hiding the title/value being judged. Heading frames
+show reading composition; they do not claim automatic whole-row reveal is fixed.
 
 ## Review behavior as well as pixels
 

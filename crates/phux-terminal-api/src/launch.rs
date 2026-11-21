@@ -244,7 +244,6 @@ mod tests {
         let cases: &[(&str, bool, &[&str])] = &[
             ("/bin/zsh", false, &["/bin/zsh"]),
             ("/bin/bash", true, &["/bin/bash", "-l"]),
-            ("/bin/zsh", true, &["/bin/zsh", "-l"]),
             ("sh", true, &["sh", "-l"]),
             (
                 "/opt/homebrew/bin/fish",
@@ -284,17 +283,6 @@ mod tests {
         ] {
             assert_eq!(command.get_env("TERM"), Some(OsStr::new(DEFAULT_TERM)));
         }
-    }
-
-    #[test]
-    fn strict_cwd_sets_the_directory_and_the_mark() {
-        let mut command = LaunchCommand::new("/bin/sh");
-        apply_strict_spawn_cwd(&mut command, std::path::Path::new("/gone"));
-        assert_eq!(
-            command.get_cwd().map(OsString::as_os_str),
-            Some(OsStr::new("/gone"))
-        );
-        assert_eq!(command.get_env(STRICT_CWD_KEY), Some(OsStr::new("1")));
     }
 
     #[test]

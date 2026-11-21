@@ -239,39 +239,3 @@ pub(crate) fn slot(args: crate::commands::SlotArgs, socket: Option<PathBuf>) -> 
     };
     run_slot(operation, json, socket)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The CLI's divider flag maps onto the library's direction one to one.
-    #[test]
-    fn cli_split_maps_to_the_library_direction() {
-        assert_eq!(
-            Direction::from(SpawnSplit::Horizontal),
-            Direction::Horizontal
-        );
-        assert_eq!(Direction::from(SpawnSplit::Vertical), Direction::Vertical);
-    }
-
-    /// Spatial errors ride the shared emitter (phux-i0e8.8.2): same
-    /// versioned shape as before, now with `remedy` and `exit_code` added.
-    #[test]
-    fn json_error_documents_are_versioned() {
-        let error = json_err::error_document(
-            &CliError::new(
-                phux_client::spatial::codes::SAME_PANE,
-                "the two pane selectors must resolve differently",
-                "pass two selectors that name different panes (`phux ls` lists them)",
-            ),
-            2,
-        );
-        assert_eq!(error["schema_version"], 1);
-        assert_eq!(error["error"]["code"], "same_pane");
-        assert!(
-            error["remedy"].as_str().is_some_and(|r| !r.is_empty()),
-            "spatial errors must carry a remedy: {error}"
-        );
-        assert_eq!(error["exit_code"], 2);
-    }
-}

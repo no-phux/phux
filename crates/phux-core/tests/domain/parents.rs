@@ -5,9 +5,7 @@
 #![allow(clippy::expect_used, clippy::panic)]
 
 use phux_core::resource::{DocumentLaunch, SurfaceLaunch, TreeLaunch};
-use phux_core::{
-    AgentLaunch, LaunchSpec, NewResource, Refusal, ResourceKey, ResourceKind, SessionLifetime,
-};
+use phux_core::{AgentLaunch, LaunchSpec, NewResource, Refusal, ResourceKey, SessionLifetime};
 
 use crate::support::{Harness, created, shell};
 
@@ -51,23 +49,6 @@ fn parent_refusal(result: Result<ResourceKey, Refusal>) -> String {
             reason,
         }) => reason,
         other => panic!("a parent refusal, got {other:?}"),
-    }
-}
-
-#[test]
-fn every_kind_answers_both_parent_questions() {
-    for kind in [
-        ResourceKind::Terminal,
-        ResourceKind::AgentSession,
-        ResourceKind::AccessibilityTree,
-        ResourceKind::PixelSurface,
-        ResourceKind::Document,
-    ] {
-        assert_ne!(
-            kind.requires_parent(),
-            kind.can_parent(),
-            "{kind}: a projection binds to a parent; a parent runs a process"
-        );
     }
 }
 

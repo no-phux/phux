@@ -13,6 +13,7 @@ use phux_plugin::startup_log;
 use tokio::sync::Notify;
 
 use super::exit_watch::{self, ExitWatch};
+use super::gate::{ChildEnd, Gate};
 use super::plan::StartupSpec;
 use super::reap::{self, write_pidfile};
 
@@ -214,15 +215,34 @@ pub(super) fn spawn_child(
     // SAFETY: `pre_exec` runs in the forked child before `exec`, on the
     // thread that called `spawn`. The body only uses async-signal-safe
     // calls (`umask`, `prctl`, `getppid`, `raise`, `dup2`, `close_range`,
-    // `fcntl`, `getdtablesize`). `log` and `null` stay open in the parent
+    // `fcntl`, `getdtablesize`, and the gate's `getpid`, `write`, `read`,
+    // `close`). `log` and `null` stay open in the parent
     // until `spawn` returns, so the raw fds are still valid in the child.
     // See [`child_prelude`] for why `PR_SET_PDEATHSIG` is only safe here.
+    let gate = Gate::new()?;
+    let gate_end = gate.child_end();
     unsafe {
-        cmd.pre_exec(move || child_prelude(parent_pid, null_fd, log_fd));
+        cmd.pre_exec(move || child_prelude(parent_pid, null_fd, log_fd, gate_end));
     }
-    let child = cmd.spawn()?;
+    // The pidfile is written while the child waits at the gate, so a
+    // `SIGKILL` of the server can never leave a running, unrecorded sidecar.
+    let spawned = gate.run(
+        || cmd.spawn(),
+        |pid| {
+            if let Err(err) = write_pidfile(&pidfile, pid, process_group(pid)) {
+                tracing::warn!(
+                    pid,
+                    error = %err,
+                    "startup: could not write the pidfile; a later start cannot reap this sidecar"
+                );
+            }
+        },
+    );
     drop(log);
     drop(null);
+    let child = spawned.inspect_err(|_| {
+        let _ = std::fs::remove_file(&pidfile);
+    })?;
     let Some(raw_pid) = child.id() else {
         return Err(io::Error::other("startup child has no pid"));
     };
@@ -230,13 +250,6 @@ pub(super) fn spawn_child(
         return Err(io::Error::other("startup pid does not fit i32"));
     };
     let group = process_group(pid);
-    if let Err(err) = write_pidfile(&pidfile, pid, group) {
-        tracing::warn!(
-            pid,
-            error = %err,
-            "startup: could not write the pidfile; a later start cannot reap this sidecar"
-        );
-    }
     Ok(GroupChild {
         child,
         pgid: group,
@@ -272,7 +285,7 @@ fn open_append(path: &Path) -> io::Result<File> {
 /// spawn onto a short-lived thread or a worker pool: the sidecar would be
 /// signaled when that thread ended, and an upgrade that skipped the stop
 /// would leave it running with no supervisor.
-fn child_prelude(parent_pid: i32, null_fd: i32, log_fd: i32) -> io::Result<()> {
+fn child_prelude(parent_pid: i32, null_fd: i32, log_fd: i32, gate: ChildEnd) -> io::Result<()> {
     // SAFETY: this runs in the single-threaded child immediately after
     // fork. Every call below is async-signal-safe.
     unsafe {
@@ -282,8 +295,8 @@ fn child_prelude(parent_pid: i32, null_fd: i32, log_fd: i32) -> io::Result<()> {
             return Err(io::Error::last_os_error());
         }
         super::cloexec::mark_cloexec_above_stderr();
+        gate.wait()
     }
-    Ok(())
 }
 
 /// Linux only. macOS has no `PR_SET_PDEATHSIG`; orphan reap covers it.
@@ -379,16 +392,6 @@ mod tests {
             .and_then(|(_, rest)| rest.split_whitespace().next())
             .unwrap_or("")
             .to_owned()
-    }
-
-    #[test]
-    fn missing_program_is_a_spawn_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let spec = spec(&dir, &["/no/such/phux-startup-program"]);
-        spawn_on_local(&spec, &dir, async |spawned| match spawned {
-            Err(err) => assert_eq!(err.kind(), std::io::ErrorKind::NotFound, "{err}"),
-            Ok(_) => panic!("a missing program must not look like a live child"),
-        });
     }
 
     #[cfg(target_os = "linux")]

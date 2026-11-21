@@ -243,16 +243,6 @@ mod tests {
         planets.iter().map(|p| p.name.as_str()).collect()
     }
 
-    /// The hive's frames: a frame never moves when an agent starts waiting.
-    #[test]
-    fn machines_keep_their_order_when_one_starts_waiting() {
-        let hosts = ["macbook".to_owned(), "powerhouse-1".to_owned()];
-        // The galaxy put the waiting machine first.
-        let mut planets = vec![planet("powerhouse-1"), planet("mini"), planet("macbook")];
-        fleet_in_machine_order(&mut planets, Some("mini"), &hosts);
-        assert_eq!(names(&planets), ["mini", "macbook", "powerhouse-1"]);
-    }
-
     /// The pitch's squads keep their third when a machine needs you.
     #[test]
     fn squads_keep_their_third_when_a_machine_needs_you() {

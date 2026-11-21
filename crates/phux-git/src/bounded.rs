@@ -320,15 +320,6 @@ mod tests {
     }
 
     #[test]
-    fn output_within_the_cap_is_whole() {
-        let out = sh("printf hello; printf oops >&2", Duration::from_secs(5), 16).unwrap();
-        assert!(out.status.success());
-        assert_eq!(out.stdout, b"hello");
-        assert!(!out.truncated);
-        assert_eq!(out.stderr, "oops");
-    }
-
-    #[test]
     fn output_past_the_cap_is_cut_and_the_writer_stopped() {
         let started = Instant::now();
         let out = sh("yes", Duration::from_secs(10), 1024).unwrap();
@@ -339,10 +330,11 @@ mod tests {
 
     #[test]
     fn output_exactly_at_the_cap_is_whole() {
-        let out = sh("printf 1234", Duration::from_secs(5), 4).unwrap();
+        let out = sh("printf 1234; printf oops >&2", Duration::from_secs(5), 4).unwrap();
         assert!(out.status.success());
         assert_eq!(out.stdout, b"1234");
         assert!(!out.truncated);
+        assert_eq!(out.stderr, "oops");
     }
 
     #[test]

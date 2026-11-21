@@ -1,7 +1,7 @@
 //! The Look step: colour scheme, sidebar, glass, and the theme strip.
 //!
 //! style-literals: illustration. The little windows and theme cards are
-//! drawings in their own colours (an art module, §5.1); the chrome around
+//! drawings in their own colours (an art module); the chrome around
 //! them (the choice rings, the groups and the glass slider) is on tokens.
 
 use super::*;
@@ -50,7 +50,7 @@ fn group(title: &'static str, body: El, t: &Tokens) -> El {
 }
 
 /// A choice's selected ring: the accent at the focus ring's width, an
-/// on/selected indicator (§1.2), around the art at `radius.md`.
+/// on/selected indicator, around the art at `radius.md`.
 fn ring(e: El, on: bool, t: &Tokens) -> El {
     let s = &t.space;
     e.radius(t.radius.md).padding(s.s0_5 + s.hairline).border(
@@ -135,13 +135,18 @@ pub(super) fn look(desk: &Desk, t: &Tokens) -> El {
         theme::color(art::LIGHT_GROUND),
         theme::color(art::DARK_GROUND),
     );
+    // One window, its right half in the dark: one set of lights, and the
+    // bars running on across the split in the other ink. Two half windows
+    // side by side each clipped and bordered their own corners.
     let half = art::WINDOW.0 / 2.0;
-    let auto = row()
-        .size(art::WINDOW.0, art::WINDOW.1)
-        .radius(art::WINDOW_RADIUS)
-        .clip_rounded(art::WINDOW_RADIUS)
-        .child(window(light, Color::BLACK, false).w(half).radius(0.0))
-        .child(window(dark, Color::WHITE, false).w(half).radius(0.0));
+    let night = col()
+        .pin(None, Some(0.0), Some(0.0), Some(0.0))
+        .w(half)
+        .fill(dark)
+        .pt(6.0 + art::LIGHTS + 5.0)
+        .pr(6.0)
+        .child(el().w_full().h(4.0).fill(Color::WHITE.alpha(0.25)));
+    let auto = window(light, Color::BLACK, false).child(night);
     let schemes = row()
         .gap(s.s3)
         .child(choice(
@@ -242,7 +247,7 @@ const GLASS_STEP: u8 = 5;
 
 /// The glass slider (an OWN slider: the kit has none): drag or click along
 /// the track, or use the arrow keys. Every value applies to the window as
-/// it changes, through §1.9's tint (`1 − g·(1 − tint_min)`), so the far end
+/// it changes, through the glass tint (`1 − g·(1 − tint_min)`), so the far end
 /// is the thinnest glass `verify` allows, never clear.
 fn glass_slider(percent: u8, t: &Tokens) -> El {
     let s = &t.space;

@@ -28,9 +28,17 @@ struct QualificationProgress {
 
 /// Qualification's readiness file must describe the frame whose tree was saved.
 enum QualificationEvidence {
-    static func publish(report: [String: Any], tree: [String: Any], marker: String,
+    /// A pre-consumer failure report also acknowledges that synchronous seal
+    /// cleanup returned. It is never rendered-input or lifecycle evidence.
+    static func preparationFailure(seal: () -> Void, publish: () -> Void) {
+        seal()
+        publish()
+    }
+
+    static func publish(report: [String: Any], tree: [String: Any], session: String, marker: String,
                         didPresent: Bool, write: ([String: Any], String) throws -> Void) throws -> Bool {
-        guard didPresent, report["marker_seen"] as? Bool == true,
+        guard didPresent, report["connected"] as? Bool == true, report["session"] as? String == session,
+              report["marker_seen"] as? Bool == true,
               let frames = report["frames"] as? UInt64, frames > 0,
               let terminal = report["terminal_id"] as? String, !terminal.isEmpty,
               let grid = grid(tree, key: "grid-\(terminal)"),

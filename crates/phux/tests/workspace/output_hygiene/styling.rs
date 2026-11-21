@@ -2,16 +2,11 @@
 #[test]
 fn human_output_color_policy_matches_help_in_pipes() {
     for (vars, colored) in [
+        // Precedence itself is `output::color_policy`'s unit test; these
+        // cases prove help and diagnostics read the same policy.
         (vec![], false),
         (vec![("CLICOLOR_FORCE", "1")], true),
-        (vec![("CLICOLOR_FORCE", "0")], false),
-        (vec![("CLICOLOR_FORCE", "")], false),
-        (vec![("CLICOLOR", "0")], false),
-        (vec![("CLICOLOR", "1")], false),
-        (vec![("CLICOLOR_FORCE", "1"), ("CLICOLOR", "0")], true),
         (vec![("NO_COLOR", "1"), ("CLICOLOR_FORCE", "1")], false),
-        (vec![("NO_COLOR", ""), ("CLICOLOR_FORCE", "1")], true),
-        (vec![("TERM", "dumb"), ("CLICOLOR_FORCE", "1")], false),
     ] {
         for args in [["help", "ls"], ["help", "not-a-topic"]] {
             let mut cmd = phux();
@@ -63,9 +58,7 @@ fn invalid_invocations_have_motif_without_coloring_message() {
 fn json_usage_errors_are_one_unstyled_line_even_when_color_is_forced() {
     for args in [
         vec!["ls", "--json", "--not-a-flag"],
-        vec!["ls", "--json=true", "--not-a-flag"],
         vec!["ls", "--json=false", "--not-a-flag"],
-        vec!["ls", "--json=", "--not-a-flag"],
         vec!["--capabilities", "--json", "extra"],
         vec!["server", "--json"],
     ] {
@@ -160,13 +153,7 @@ fn json_legacy_errors_remain_unstyled_when_color_is_forced() {
     std::fs::create_dir(&config).unwrap();
     std::fs::write(config.join("config.toml"), "[defaults\n").unwrap();
     // Attached values are presence flags in usage-rs, not boolean setters.
-    for json_flag in [
-        "--json",
-        "--json=true",
-        "--json=false",
-        "--json=",
-        "--json=other",
-    ] {
+    for json_flag in ["--json", "--json=false"] {
         for (args, status, message) in [
             (
                 vec!["pair", json_flag, "--expires", "nonsense"],

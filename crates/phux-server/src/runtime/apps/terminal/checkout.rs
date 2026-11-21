@@ -12,10 +12,11 @@ use phux_git::Area as GitArea;
 use phux_git::checkout::{self as git, Checkout, CheckoutError};
 use phux_protocol::checkout::{
     CheckoutAnswer, CheckoutArea, CheckoutBranch, CheckoutBranches, CheckoutCheck,
-    CheckoutCheckState, CheckoutCommit, CheckoutDiff, CheckoutEntry, CheckoutEntryKind,
-    CheckoutFile, CheckoutLog, CheckoutPrState, CheckoutPullRequest, CheckoutRefusal,
-    CheckoutRefusalCode, CheckoutRequest, CheckoutReviewDecision, CheckoutStatus, CheckoutTree,
-    CheckoutTreeEntry, MAX_CHECKOUT_ANSWER_BYTES, encoded_answer_len,
+    CheckoutCheckState, CheckoutCommit, CheckoutCommitDetail, CheckoutCommitFile, CheckoutDiff,
+    CheckoutEntry, CheckoutEntryKind, CheckoutFile, CheckoutLog, CheckoutPrState,
+    CheckoutPullRequest, CheckoutRefusal, CheckoutRefusalCode, CheckoutRequest,
+    CheckoutReviewDecision, CheckoutStatus, CheckoutTree, CheckoutTreeEntry,
+    MAX_CHECKOUT_ANSWER_BYTES, encoded_answer_len,
 };
 use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::{CommandResult, CommandValue};
@@ -36,6 +37,7 @@ pub(in crate::runtime) async fn handle(
     state: &SharedState,
     terminal_id: &WireResourceId,
     request: CheckoutRequest,
+    contract: u8,
 ) -> CommandResult {
     let handle = state.with(|s| {
         s.idspace
@@ -62,7 +64,9 @@ pub(in crate::runtime) async fn handle(
         ),
         Some(cwd) => run_bounded(PathBuf::from(cwd), request).await,
     };
-    CommandResult::OkWith(CommandValue::Checkout(Box::new(answer)))
+    CommandResult::OkWith(CommandValue::Checkout(Box::new(
+        answer.for_contract(contract),
+    )))
 }
 
 async fn run_bounded(cwd: PathBuf, request: CheckoutRequest) -> CheckoutAnswer {
@@ -152,13 +156,26 @@ fn dispatch(
         }
         CheckoutRequest::Stage { paths } => {
             checkout.stage(&paths)?;
-            CheckoutAnswer::Status(status(checkout)?)
+            refreshed(checkout)
         }
         CheckoutRequest::Unstage { paths } => {
             checkout.unstage(&paths)?;
-            CheckoutAnswer::Status(status(checkout)?)
+            refreshed(checkout)
         }
+        CheckoutRequest::Show { sha } => CheckoutAnswer::Commit(detail(checkout.show(&sha)?)),
     })
+}
+
+/// The status after a write that landed; a failed read says so instead of
+/// reading as a refused write.
+fn refreshed(checkout: &Checkout) -> CheckoutAnswer {
+    match status(checkout) {
+        Ok(status) => CheckoutAnswer::Status(status),
+        Err(error) => match refusal(&error) {
+            CheckoutAnswer::Refused(refusal) => CheckoutAnswer::Applied(refusal),
+            answer => answer,
+        },
+    }
 }
 
 fn status(checkout: &Checkout) -> Result<CheckoutStatus, CheckoutError> {
@@ -184,7 +201,12 @@ fn status(checkout: &Checkout) -> Result<CheckoutStatus, CheckoutError> {
             })
             .collect(),
         truncated: snapshot.truncated,
+        total: count(snapshot.total),
     })
+}
+
+fn count(total: Option<usize>) -> Option<u32> {
+    total.and_then(|total| u32::try_from(total).ok())
 }
 
 const fn git_area(area: CheckoutArea) -> Option<GitArea> {
@@ -208,20 +230,40 @@ const fn wire_area(area: GitArea) -> CheckoutArea {
 
 fn log(page: git::LogPage) -> CheckoutLog {
     CheckoutLog {
-        commits: page
-            .commits
+        commits: page.commits.into_iter().map(commit).collect(),
+        has_more: page.has_more,
+    }
+}
+
+fn commit(commit: git::Commit) -> CheckoutCommit {
+    CheckoutCommit {
+        sha: commit.sha,
+        short_sha: commit.short_sha,
+        subject: commit.subject,
+        author_name: commit.author_name,
+        author_email: commit.author_email,
+        time: commit.time,
+        refs: commit.refs,
+    }
+}
+
+fn detail(detail: git::CommitDetail) -> CheckoutCommitDetail {
+    CheckoutCommitDetail {
+        commit: commit(detail.commit),
+        message: detail.message,
+        files: detail
+            .files
             .into_iter()
-            .map(|commit| CheckoutCommit {
-                sha: commit.sha,
-                short_sha: commit.short_sha,
-                subject: commit.subject,
-                author_name: commit.author_name,
-                author_email: commit.author_email,
-                time: commit.time,
-                refs: commit.refs,
+            .map(|file| CheckoutCommitFile {
+                path: file.path,
+                from: file.from,
+                added: file.added,
+                deleted: file.deleted,
+                binary: file.binary,
             })
             .collect(),
-        has_more: page.has_more,
+        diff: detail.diff,
+        truncated: detail.truncated,
     }
 }
 
@@ -244,6 +286,7 @@ fn branches(list: git::BranchList) -> CheckoutBranches {
             })
             .collect(),
         truncated: list.truncated,
+        total: count(list.total),
     }
 }
 
@@ -265,6 +308,7 @@ fn tree(dir: String, listing: git::Listing) -> CheckoutTree {
             })
             .collect(),
         truncated: listing.truncated,
+        total: count(listing.total),
     }
 }
 
@@ -280,6 +324,7 @@ fn pull_request(pr: git::PullRequest) -> CheckoutPullRequest {
         },
         url: pr.url,
         head_ref: pr.head_ref,
+        base_ref: pr.base_ref,
         is_draft: pr.is_draft,
         review_decision: pr.review_decision.map(|decision| match decision {
             git::ReviewDecision::Approved => CheckoutReviewDecision::Approved,
@@ -319,6 +364,7 @@ fn refusal(error: &CheckoutError) -> CheckoutAnswer {
         CheckoutError::InvalidPath(_) => CheckoutRefusalCode::InvalidPath,
         CheckoutError::InvalidRequest(_) => CheckoutRefusalCode::InvalidRequest,
         CheckoutError::Timeout => CheckoutRefusalCode::Timeout,
+        CheckoutError::GitUnavailable => CheckoutRefusalCode::GitUnavailable,
         CheckoutError::Git(_) => CheckoutRefusalCode::GitFailed,
         CheckoutError::Io(_) => CheckoutRefusalCode::ReadFailed,
         CheckoutError::GhUnavailable => CheckoutRefusalCode::GhUnavailable,
@@ -383,7 +429,17 @@ fn shrink(answer: &mut CheckoutAnswer) {
             log.has_more = true;
         }
         CheckoutAnswer::PullRequest(pr) => halve(&mut pr.checks),
-        CheckoutAnswer::Refused(refusal) => halve_text(&mut refusal.message),
+        CheckoutAnswer::Commit(detail) => {
+            halve_text(&mut detail.diff);
+            if detail.diff.is_empty() {
+                halve(&mut detail.files);
+                halve_text(&mut detail.message);
+            }
+            detail.truncated = true;
+        }
+        CheckoutAnswer::Refused(refusal) | CheckoutAnswer::Applied(refusal) => {
+            halve_text(&mut refusal.message);
+        }
     }
 }
 
@@ -442,6 +498,10 @@ mod tests {
         assert_eq!(
             refused(CheckoutError::Io("denied".to_owned())),
             CheckoutRefusalCode::ReadFailed
+        );
+        assert_eq!(
+            refused(CheckoutError::GitUnavailable),
+            CheckoutRefusalCode::GitUnavailable
         );
         assert_eq!(git_area(CheckoutArea::Unknown), None);
     }

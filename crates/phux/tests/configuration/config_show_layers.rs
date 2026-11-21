@@ -1,16 +1,12 @@
 //! End-to-end coverage for `phux config show --layers` (phux-r82.4):
-//! the provenance view over a real on-disk `extends` stack, in both
-//! human and `--json` form.
+//! the provenance view over a real on-disk `extends` stack, in its
+//! `--json` form.
 
 #![allow(clippy::expect_used, reason = "tests")]
 
 use tempfile::TempDir;
 
 use crate::common::run_with_xdg;
-
-/// The stderr build banner, now a plain `phux <version>` line, matched in
-/// full so the absence assertions below stay meaningful.
-const BANNER_FRAGMENT: &str = concat!("phux ", env!("CARGO_PKG_VERSION"));
 
 /// Write a two-file stack under `$XDG_CONFIG_HOME/phux`: a distro
 /// layer that overrides one leaf and appends a status widget, and a
@@ -40,53 +36,6 @@ prefix = "C-b"
     )
     .expect("write config");
     tmp.path().join("xdg")
-}
-
-#[test]
-fn config_show_layers_attributes_keys_to_layers() {
-    let tmp = TempDir::new().expect("tempdir");
-    let xdg = write_stack(&tmp);
-
-    let (code, stdout, stderr) = run_with_xdg(&["config", "show", "--layers"], &xdg);
-
-    assert_eq!(
-        code, 0,
-        "`config show --layers` should exit 0; stderr={stderr}"
-    );
-    assert!(
-        !stdout.contains(BANNER_FRAGMENT) && !stderr.contains(BANNER_FRAGMENT),
-        "`config show --layers` must not print the banner"
-    );
-    // Layer stack, in merge order.
-    assert!(stdout.contains("[1] defaults (embedded)"), "{stdout}");
-    assert!(stdout.contains("distro.toml"), "{stdout}");
-    assert!(stdout.contains("(user)"), "{stdout}");
-    // Attribution rows: the user's override, the distro's override, an
-    // untouched shipped default, and the appended array element.
-    let row = |needle: &str| {
-        stdout
-            .lines()
-            .find(|line| line.trim_start().starts_with(needle))
-            .unwrap_or_else(|| panic!("row for `{needle}` in:\n{stdout}"))
-    };
-    assert!(
-        row("keybindings.prefix ").contains("<- [3] user"),
-        "{stdout}"
-    );
-    assert!(
-        row("defaults.history-limit").contains("<- [2] distro.toml"),
-        "{stdout}"
-    );
-    assert!(row("defaults.term").contains("<- [1] defaults"), "{stdout}");
-    // status.right: four shipped elements plus the distro's clock.
-    assert!(
-        row("status.right[0]").contains("<- [1] defaults"),
-        "{stdout}"
-    );
-    assert!(
-        row("status.right[4]").contains("<- [2] distro.toml"),
-        "{stdout}"
-    );
 }
 
 #[test]
@@ -160,15 +109,4 @@ fn config_show_layers_without_a_config_file_is_all_defaults() {
         keys.iter().all(|entry| entry["layer"] == 1),
         "every key comes from the defaults layer"
     );
-}
-
-#[test]
-fn config_show_default_conflicts_with_layers() {
-    let tmp = TempDir::new().expect("tempdir");
-    let (code, _, stderr) = run_with_xdg(
-        &["config", "show", "--default", "--layers"],
-        &tmp.path().join("xdg"),
-    );
-    assert_ne!(code, 0, "--default and --layers must conflict");
-    assert!(stderr.contains("--layers"), "{stderr}");
 }

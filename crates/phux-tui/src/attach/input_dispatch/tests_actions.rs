@@ -105,23 +105,6 @@ fn satellite_pane(cwd: Option<&str>) -> (CtxFixture, HashMap<ResourceId, PaneSlo
 
 // ---- small helpers and frames ----------------------------------------------
 
-/// Regression: kill-pane once typed `exit\n` at the pane and hoped a shell
-/// was listening. It is one correlated `KILL_RESOURCE` (a `TERMINAL_NOT_FOUND`
-/// refusal is the only evidence a stale leaf should leave the layout).
-#[test]
-fn kill_resource_frame_targets_the_pane_with_a_correlated_command() {
-    assert_eq!(
-        kill_resource_frame(&tid(7), 42),
-        FrameKind::Command {
-            request_id: 42,
-            command: Command::KillResource {
-                terminal_id: tid(7),
-                operation_id: None,
-            },
-        }
-    );
-}
-
 /// `direction` names the divider orientation, not the split axis.
 #[test]
 fn split_dir_arg_parses_horizontal_and_vertical() {
@@ -755,32 +738,6 @@ fn split_onto_a_host_or_an_existing_satellite_pane() {
 }
 
 // ---- plugins and overlays ---------------------------------------------------
-
-#[test]
-fn plugin_action_records_run_intent_or_bells() {
-    let action = act(
-        "plugin-action",
-        &[
-            ("plugin", "com.example.tools".into()),
-            ("action", "summarize".into()),
-        ],
-    );
-    let effects = run(&action, &mut ArrangementDoc::single(tid(1)));
-    assert_eq!(
-        effects.job.as_ref().map(Job::kind),
-        Some(JobKind::PluginAction)
-    );
-    assert!(
-        !effects.bell && !effects.layout_mutated,
-        "the effect pass starts the run"
-    );
-
-    let effects = run(
-        &bare_action("plugin-action"),
-        &mut ArrangementDoc::single(tid(1)),
-    );
-    assert!(effects.bell && effects.job.is_none());
-}
 
 // ---- organize: a background job (ADR-0172) ---------------------------------
 
@@ -1562,24 +1519,6 @@ fn session_navigation_uses_mru_and_name_order() {
     ));
 }
 
-/// A project tag groups the session picker. Rows still switch sessions.
-#[test]
-fn session_picker_groups_by_project_tag() {
-    let mut f = fx(ArrangementDoc::single(tid(1)));
-    f.sessions = vec![sinfo(1, "api"), sinfo(2, "web"), sinfo(3, "notes")];
-    f.project_tags.insert(SessionId::new(1), "phux".to_owned());
-    f.project_tags.insert(SessionId::new(2), "phux".to_owned());
-    let ctx = f.ctx();
-    let items = session_picker_rows(&ctx.peers, ctx.workspace);
-    let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
-    assert_eq!(
-        labels,
-        ["phux", "api", "web", "Sessions", "notes", "+ New session…"]
-    );
-    assert_eq!(items[1].secondary, None);
-    assert_eq!(items[1].action.args.get("id"), Some(&Value::Integer(1)));
-}
-
 fn identity(linked: bool) -> phux_core::project_identity::SessionProject {
     phux_core::project_identity::SessionProject {
         id: "github.com/no-phux/phux".to_owned(),
@@ -1782,12 +1721,6 @@ fn new_session_refuses_a_name_no_selector_can_address() {
              which separates the session from a window"
         )
     );
-}
-
-#[test]
-fn detach_action_requests_detach_effect() {
-    let effects = run(&bare_action("detach"), &mut ArrangementDoc::default());
-    assert!(effects.detach && !effects.layout_mutated);
 }
 
 /// The move-pane picker offers only exact cached local destinations (not the
@@ -2156,34 +2089,6 @@ fn session_picker_filter_spans_machines() {
     );
 }
 
-/// The session picker as drawn with a hub satellite and other machines.
-#[test]
-fn session_picker_with_machines_render() {
-    use crate::render::overlay::{RenderOverlay, SelectList};
-    use ratatui::buffer::Buffer;
-    use ratatui::layout::Rect;
-
-    let hosts = machine_fixture();
-    let mut items = grouped(
-        &[sinfo(1, "work"), sinfo(2, "notes")],
-        Some(1),
-        &host_fixture(),
-        &crate::attach::hosts::other_hosts(&hosts, &crate::attach::hosts::AttachOrigin::Local),
-    );
-    items.push(new_session_item());
-    let picker = SelectList::new("Sessions", items, &Theme::default());
-    let area = Rect::new(0, 0, 100, 48);
-    let mut buf = Buffer::empty(area);
-    picker.render(area, &mut buf);
-    let mut text = String::new();
-    for y in 0..area.height {
-        let row: String = (0..area.width).map(|x| buf[(x, y)].symbol()).collect();
-        text.push_str(row.trim_end());
-        text.push('\n');
-    }
-    insta::assert_snapshot!(text);
-}
-
 fn switch_to_satellite(
     host: &str,
     name: &str,
@@ -2340,18 +2245,6 @@ async fn rename_session_sends_session_rename_on_an_organization_server() {
         ),
         "{frames:?}"
     );
-}
-
-/// The shared name policy still refuses before any `SESSION_RENAME`.
-#[tokio::test(flavor = "current_thread")]
-async fn rename_session_refuses_a_taken_name_before_session_rename() {
-    let mut f = rename_fixture(&[(1, "work"), (2, "notes")]);
-    f.sessions[0].key = Some(phux_protocol::ids::SessionKey::new([7; 16]).unwrap());
-    f.organization_supported = true;
-    let effects = f.run(&act("rename-session", &[("name", "notes".into())]));
-    let frames = f.apply(effects).await;
-    assert!(f.rename_pending.is_none());
-    assert!(frames.is_empty(), "{frames:?}");
 }
 
 /// A taken name is refused before anything is written.

@@ -1,5 +1,5 @@
 //! The Terminal engine's answer to the `process` facet of
-//! `GET_TERMINAL_STATE` (L1 §6.3, PHA-406 D5).
+//! `GET_TERMINAL_STATE` (PHA-406 D5).
 //!
 //! Every fact is kernel-sourced or mark-sourced and best-effort: a failed
 //! query is `None`, never a guess. Only the PTY's own child and the tty's

@@ -188,7 +188,11 @@ mod tests {
 
     #[test]
     fn opening_the_galaxy_preserves_the_reef_state() {
-        let mut desk = Desk::new(&crate::launch::Resolved::offline("galaxy"));
+        let mut desk = Desk::with_preferences(
+            &crate::launch::Resolved::offline("galaxy"),
+            None,
+            rune::prefs::Prefs::memory(),
+        );
         let selected = ResourceId::local(7);
         desk.playground = Some(Playground::Reef);
         desk.reef.scene.selected = Some(selected.clone());

@@ -283,6 +283,7 @@ impl Desk {
         };
         // The old focus stays on screen if the layout still shows it.
         if let Some(old) = self.connection.shown.take() {
+            self.leaving(&old.resource, &target);
             self.connection.others.insert(old.resource, old.view);
             self.connection.painted.replace(None);
         }
@@ -322,7 +323,11 @@ mod tests {
     use crate::launch::Resolved;
 
     fn desk() -> Desk {
-        Desk::new(&Resolved::offline("not launched"))
+        Desk::with_preferences(
+            &Resolved::offline("not launched"),
+            None,
+            rune::prefs::Prefs::memory(),
+        )
     }
 
     #[test]

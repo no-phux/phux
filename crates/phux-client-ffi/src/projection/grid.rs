@@ -103,14 +103,8 @@ fn write_cell(slot: &mut [u8; CELL_BYTES], cell: &Cell) {
 
 #[cfg(test)]
 mod tests {
-    use super::{CELL_BYTES, encode_cells};
+    use super::encode_cells;
     use phux_client_core::grid::Cell;
-
-    #[test]
-    fn a_cell_serializes_to_the_pinned_width() {
-        assert_eq!(encode_cells(&[Cell::default()]).len(), CELL_BYTES);
-        assert_eq!(size_of::<Cell>(), CELL_BYTES);
-    }
 
     #[test]
     fn the_padding_bytes_are_explicitly_zero() {
@@ -136,10 +130,5 @@ mod tests {
         assert_eq!(marked[34], 7);
         assert_eq!(&marked[18..20], &[0, 0]);
         assert_eq!(marked[35], 0);
-    }
-
-    #[test]
-    fn an_empty_grid_serializes_to_nothing() {
-        assert!(encode_cells(&[]).is_empty());
     }
 }

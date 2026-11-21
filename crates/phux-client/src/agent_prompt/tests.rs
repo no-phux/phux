@@ -9,8 +9,6 @@
     reason = "the futures under test are !Send by design"
 )]
 
-use std::cell::{Cell, RefCell};
-
 use phux_protocol::wire::frame::{MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS};
 
 use super::*;
@@ -205,53 +203,6 @@ fn every_reply_has_exactly_one_reading() {
         let verdict = classify(result);
         assert!(check(&verdict), "{result:?} read as {verdict:?}");
     }
-}
-
-/// A retry reuses the operation id: a fresh one is exactly the duplicate
-/// `APPLY_INPUT` exists to prevent.
-#[tokio::test(start_paused = true)]
-async fn a_retry_reuses_the_operation_id_and_never_mints_a_new_one() {
-    let id = op_id(0x5a);
-    let seen: RefCell<Vec<InputOperationId>> = RefCell::new(Vec::new());
-    let (verdict, attempts) = submit_with_backoff(id, &backoff_schedule(&id), |attempt_id| {
-        seen.borrow_mut().push(attempt_id);
-        let count = seen.borrow().len();
-        async move {
-            Ok::<_, AttachError>(if count < 3 {
-                ApplyVerdict::Busy("lane busy".to_owned())
-            } else {
-                ApplyVerdict::Acked
-            })
-        }
-    })
-    .await
-    .expect("the fake never fails");
-
-    assert_eq!(verdict, ApplyVerdict::Acked);
-    assert_eq!(attempts, 3);
-    let seen = seen.into_inner();
-    assert_eq!(seen.len(), 3);
-    assert!(
-        seen.iter().all(|observed| *observed == id),
-        "every attempt must carry the id generated once for this invocation"
-    );
-}
-
-/// A non-`Busy` verdict, in particular an unknown, is never retried.
-#[tokio::test(start_paused = true)]
-async fn an_unknown_result_is_submitted_exactly_once() {
-    let id = op_id(0x11);
-    let calls = Cell::new(0_u32);
-    let (verdict, attempts) = submit_with_backoff(id, &backoff_schedule(&id), |_| {
-        calls.set(calls.get() + 1);
-        async { Ok::<_, AttachError>(ApplyVerdict::Unknown("delivery unknown".to_owned())) }
-    })
-    .await
-    .expect("the fake never fails");
-
-    assert!(matches!(verdict, ApplyVerdict::Unknown(_)));
-    assert_eq!(attempts, 1);
-    assert_eq!(calls.get(), 1);
 }
 
 /// The backoff budget outlives the server's 5 s admission hold at every

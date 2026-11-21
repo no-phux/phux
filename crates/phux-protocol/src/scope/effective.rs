@@ -27,7 +27,7 @@ pub struct EffectiveClause {
 }
 
 /// The requested set intersected with a ceiling, as conjunctive clauses
-/// (§5). A Group or Host ceiling stays a Group or Host clause: it is never
+///. A Group or Host ceiling stays a Group or Host clause: it is never
 /// laundered into a permanent Terminal grant.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct EffectiveScopeSet {
@@ -153,7 +153,7 @@ impl EffectiveScopeSet {
             .any(|clause| clause.verbs.contains(verb))
     }
 
-    /// The canonical bytes of §5.
+    /// The canonical bytes.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();

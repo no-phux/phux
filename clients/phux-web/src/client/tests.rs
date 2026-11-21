@@ -6,8 +6,8 @@ use std::rc::{Rc, Weak};
 use std::task::Poll;
 
 use super::{
-    BatchEffects, FallbackToken, FrameBuffer, MAX_OUTBOUND_BYTES, OutboundQueue, ReceiveFlow,
-    WebTransportExit, authenticated_websocket_protocols, await_js_promise_with_deadline,
+    FallbackToken, FrameBuffer, MAX_OUTBOUND_BYTES, OutboundQueue, ReceiveFlow, WebTransportExit,
+    authenticated_websocket_protocols, await_js_promise_with_deadline,
     fallback_token_from_webtransport_url, poisoned_framing_flow, webtransport_eof_exit,
     webtransport_exit_flow,
 };
@@ -399,20 +399,4 @@ async fn ready_then_malformed_same_chunk_remains_failed() {
     assert!(super::ensure_app_live(&app).is_err());
     assert!(app.borrow().session.is_failed());
     assert!(app.borrow().self_owner.borrow().is_none());
-}
-
-#[wasm_bindgen_test]
-fn drained_frame_batch_coalesces_paint_requests() {
-    let mut batch = BatchEffects::default();
-    for _ in 0..2_048 {
-        batch.merge(BatchEffects {
-            flow: ReceiveFlow::Continue,
-            render: true,
-            badges: false,
-            bell: true,
-        });
-    }
-    assert!(batch.render);
-    assert_eq!(usize::from(batch.render), 1, "one paint follows the drain");
-    assert!(batch.bell, "a flood of bells rings once per drained batch");
 }

@@ -66,15 +66,6 @@ fn plans_refuse_relative_identities_and_skip_disabled_entries() {
 }
 
 #[test]
-fn a_hub_endpoint_with_a_scheme_or_no_port_is_refused() {
-    assert!(validate_hub_endpoint("hub.example:8788").is_ok());
-    assert!(validate_hub_endpoint("[::1]:8788").is_ok());
-    for bad in ["quic://hub:8788", "hub", "hub:", "https://hub"] {
-        assert!(validate_hub_endpoint(bad).is_err(), "{bad}");
-    }
-}
-
-#[test]
 fn an_existing_uplinks_directory_is_made_owner_only() {
     use std::os::unix::fs::PermissionsExt as _;
     let root = tempfile::tempdir().unwrap();

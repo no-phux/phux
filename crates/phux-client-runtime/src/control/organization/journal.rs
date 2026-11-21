@@ -1,5 +1,8 @@
 //! Applying organization journal events to the replica.
 
+use phux_protocol::ids::{ActivationId, ArrangementKey, ResourceKey};
+use phux_protocol::wire::frame::{ExecState, Outcome};
+
 use super::{
     ActivationInfo, AgentEvent, ArrangementOwner, MAX_BUFFERED_EVENTS, OrganizationReplica,
     ReplicaAction, ReplicaState, ResourceRecord, Revision, SessionKey, SessionRecord, is_inactive,
@@ -9,39 +12,55 @@ use super::{
 impl OrganizationReplica {
     /// Apply one journal event, stamped `seq` when the server journals
     /// events. Returns what the control plane must do.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one arm per organization event, each a few record updates"
-    )]
     pub(crate) fn apply_event(&mut self, seq: Option<u64>, event: &AgentEvent) -> ReplicaAction {
+        if let Some(action) = self.refuse(seq, event) {
+            return action;
+        }
+        self.apply_admitted(event)
+    }
+
+    /// What the control plane must do instead when `event` does not reach
+    /// the records now: a gap, a non-organization event, an event buffered
+    /// behind an in-flight seed, a replica that is not live, or an event
+    /// already inside the seed's cut. `None` admits it.
+    fn refuse(&mut self, seq: Option<u64>, event: &AgentEvent) -> Option<ReplicaAction> {
         if matches!(event, AgentEvent::JournalGap { .. }) {
             if self.state != ReplicaState::Empty {
                 self.state = ReplicaState::Stale;
-                return ReplicaAction::Reseed;
+                return Some(ReplicaAction::Reseed);
             }
-            return ReplicaAction::None;
+            return Some(ReplicaAction::None);
         }
         if !is_organization_event(event) {
-            return ReplicaAction::None;
+            return Some(ReplicaAction::None);
         }
         if self.seed.is_some() {
             if self.buffered.len() >= MAX_BUFFERED_EVENTS {
                 self.buffered.clear();
-                return ReplicaAction::Reseed;
+                return Some(ReplicaAction::Reseed);
             }
             self.buffered.push((seq, event.clone()));
-            return ReplicaAction::None;
+            return Some(ReplicaAction::None);
         }
         if self.state != ReplicaState::Live {
-            return ReplicaAction::None;
+            return Some(ReplicaAction::None);
         }
         if let Some(seq) = seq {
             if seq <= self.journal_seq {
                 // Already part of the seed's cut.
-                return ReplicaAction::None;
+                return Some(ReplicaAction::None);
             }
             self.journal_seq = seq;
         }
+        None
+    }
+
+    /// Apply an admitted organization event to the records.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one arm per organization event, each a few record updates"
+    )]
+    fn apply_admitted(&mut self, event: &AgentEvent) -> ReplicaAction {
         match event {
             AgentEvent::SessionCreated {
                 session,
@@ -117,7 +136,7 @@ impl OrganizationReplica {
                 from_revision,
                 to_revision,
             } => {
-                if let Some(record) = self.resources.iter_mut().find(|r| r.key == *resource) {
+                if let Some(record) = self.resource_mut(resource) {
                     record.session = *to;
                 }
                 self.with_session(from, |s| {
@@ -165,33 +184,13 @@ impl OrganizationReplica {
                 activation,
                 state,
                 outcome,
-            } => {
-                let Some(record) = self.resources.iter_mut().find(|r| r.key == *resource) else {
-                    return ReplicaAction::None;
-                };
-                let instance = record.activation.map(|a| a.instance);
-                let fresh = record.activation.is_none_or(|a| a.id != *activation);
-                let info = ActivationInfo::new(
-                    *activation,
-                    instance.unwrap_or_else(|| phux_protocol::ids::ServerInstance::new([0; 16])),
-                    *state,
-                )
-                .with_outcome(*outcome);
-                record.activation = Some(info);
-                let session = record.session;
-                // A new activation runs under a new live handle and maybe a
-                // new server instance: read them.
-                if (fresh && !is_inactive(Some(*state))) || instance.is_none() {
-                    return ReplicaAction::RefetchSession(session);
-                }
-                ReplicaAction::Changed
-            }
+            } => self.activation_changed(resource, *activation, *state, *outcome),
             AgentEvent::ResourceRenamed {
                 resource,
                 name,
                 revision,
             } => {
-                if let Some(record) = self.resources.iter_mut().find(|r| r.key == *resource) {
+                if let Some(record) = self.resource_mut(resource) {
                     record.name.clone_from(name);
                     record.revision = *revision;
                 }
@@ -199,37 +198,71 @@ impl OrganizationReplica {
             }
             AgentEvent::ArrangementChanged {
                 arrangement,
-                owner,
+                owner: ArrangementOwner::Session(owner),
                 revision,
-            } => {
-                let ArrangementOwner::Session(owner) = *owner else {
-                    return ReplicaAction::None;
-                };
-                match revision {
-                    None => {
-                        self.arrangements.remove(arrangement);
-                        self.with_session(&owner, |s| {
-                            if s.arrangement == Some(*arrangement) {
-                                s.arrangement = None;
-                            }
-                        });
-                        ReplicaAction::Changed
-                    }
-                    Some(revision) => {
-                        self.with_session(&owner, |s| s.arrangement = Some(*arrangement));
-                        let stale = self
-                            .arrangements
-                            .get(arrangement)
-                            .is_some_and(|held| held.revision < *revision);
-                        if stale {
-                            ReplicaAction::RefetchArrangement(*arrangement)
-                        } else {
-                            ReplicaAction::Changed
-                        }
-                    }
-                }
-            }
+            } => self.arrangement_changed(*arrangement, *owner, *revision),
             _ => ReplicaAction::None,
+        }
+    }
+
+    fn resource_mut(&mut self, key: &ResourceKey) -> Option<&mut ResourceRecord> {
+        self.resources.iter_mut().find(|r| r.key == *key)
+    }
+
+    /// Record `resource`'s new activation state. A new activation runs under
+    /// a new live handle and maybe a new server instance: read them.
+    fn activation_changed(
+        &mut self,
+        resource: &ResourceKey,
+        activation: ActivationId,
+        state: ExecState,
+        outcome: Option<Outcome>,
+    ) -> ReplicaAction {
+        let Some(record) = self.resource_mut(resource) else {
+            return ReplicaAction::None;
+        };
+        let instance = record.activation.map(|a| a.instance);
+        let fresh = record.activation.is_none_or(|a| a.id != activation);
+        let info = ActivationInfo::new(
+            activation,
+            instance.unwrap_or_else(|| phux_protocol::ids::ServerInstance::new([0; 16])),
+            state,
+        )
+        .with_outcome(outcome);
+        record.activation = Some(info);
+        let session = record.session;
+        if (fresh && !is_inactive(Some(state))) || instance.is_none() {
+            return ReplicaAction::RefetchSession(session);
+        }
+        ReplicaAction::Changed
+    }
+
+    /// Follow a session-owned arrangement: forget a deleted one, and refetch
+    /// one held at an older revision.
+    fn arrangement_changed(
+        &mut self,
+        arrangement: ArrangementKey,
+        owner: SessionKey,
+        revision: Option<Revision>,
+    ) -> ReplicaAction {
+        let Some(revision) = revision else {
+            self.arrangements.remove(&arrangement);
+            self.with_session(&owner, |s| {
+                if s.arrangement == Some(arrangement) {
+                    s.arrangement = None;
+                }
+            });
+            return ReplicaAction::Changed;
+        };
+        self.with_session(&owner, |s| s.arrangement = Some(arrangement));
+        let stale = self
+            .arrangements
+            .get(&arrangement)
+            .is_some_and(|held| held.revision < revision);
+        if stale {
+            ReplicaAction::RefetchArrangement(arrangement)
+        } else {
+            ReplicaAction::Changed
         }
     }
 

@@ -136,3 +136,68 @@ async fn saturated_resync_mailbox_blocks_until_actor_accepts_request() {
         "closed actor mailbox fails instead of resuming delta forwarding"
     );
 }
+
+/// phux-c3aqw: under load the ring laps a fenced pump over the very
+/// `Resync` it asked for, again and again. A pane still broadcasting has a
+/// live actor, so that must not spend the gap budget and end the pump in
+/// `InternalError`; once the burst ends, the next answer lands.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn a_pump_lapped_past_its_answers_outlasts_the_gap_budget() {
+    crate::runtime::test_support::local(async {
+        let (output, _seed) = tokio::sync::broadcast::channel::<ResourceOutput>(4);
+        let (resize_tx, mut resize_rx) = ResizeSender::channel(8);
+        let mut laggard = spawn_two_pump_consumer(1, 0, 64, &output, &resize_tx);
+        let now = std::time::Instant::now();
+        let mut seq = 0;
+        // More than the ring holds, sent before the pump can run.
+        let burst = |seq: &mut u64| {
+            for _ in 0..5 {
+                *seq += 1;
+                output.send(live(*seq, now)).expect("pump subscribed");
+            }
+        };
+        burst(&mut seq);
+        let mut request = resync_request_from(&mut resize_rx, &mut laggard).await;
+
+        // Well past the ~11.5s an unanswered gap gets.
+        let started = tokio::time::Instant::now();
+        while started.elapsed() < std::time::Duration::from_secs(30) {
+            answer_gap_resync(&output, &request, seq);
+            burst(&mut seq);
+            request = resync_request_from(&mut resize_rx, &mut laggard).await;
+        }
+        assert_quiet(&mut laggard, "the lapped consumer").await;
+
+        let cut = seq;
+        answer_gap_resync(&output, &request, cut);
+        let replacement = next_bootstrap_id(two_pump_initial_generation());
+        assert_eq!(
+            frames_seen(&mut laggard, 4).await,
+            vec![
+                Seen::Tombstone,
+                Seen::Begin {
+                    generation: replacement,
+                    base_seq: cut
+                },
+                Seen::Chunk,
+                Seen::Ready {
+                    generation: replacement
+                },
+            ],
+            "the lapped consumer converges once an answer gets through",
+        );
+        output
+            .send(live(cut + 1, std::time::Instant::now()))
+            .expect("pump subscribed");
+        assert_eq!(
+            frames_seen(&mut laggard, 1).await,
+            vec![Seen::Output {
+                generation: replacement,
+                seq: cut + 1
+            }],
+        );
+        drop(output);
+        assert!(laggard.task.await.expect("pump task").is_none());
+    })
+    .await;
+}

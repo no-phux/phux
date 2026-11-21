@@ -238,6 +238,8 @@ fn offline_capture_replays_exactly_once_when_the_network_returns() {
     assert_eq!(files.len(), 1);
     let mode = fs::metadata(&files[0]).expect("meta").permissions().mode() & 0o777;
     assert_eq!(mode, 0o600);
+    let dir_mode = fs::metadata(&spool).expect("meta").permissions().mode() & 0o777;
+    assert_eq!(dir_mode, 0o700);
     let entry = load_entry(&files[0]).expect("entry");
     assert_eq!(entry.stored.body, body);
     let parsed = Uuid::parse_str(&entry.stored.idempotency_key).expect("uuid");
@@ -248,7 +250,11 @@ fn offline_capture_replays_exactly_once_when_the_network_returns() {
     let sent = deliver(&spool, &creds, &mock.url(), None, || 1_700_000_100).expect("replay");
     assert_eq!(sent.sent, vec!["01REPLAYCAPTUREID000000000".to_owned()]);
     assert_eq!(sent.queued, 0);
-    assert!(spool_files(&spool).is_empty());
+    let leftovers: Vec<_> = fs::read_dir(&spool).expect("spool").collect();
+    assert!(
+        leftovers.is_empty(),
+        "scratch files are removed after the post"
+    );
     let hits = mock.hits();
     assert_eq!(hits.len(), 1, "the queued idea is posted once");
     assert_eq!(header(&hits[0], "Idempotency-Key"), key);
@@ -323,43 +329,6 @@ fn private_tag_is_ensured_and_oversized_ideas_are_refused() {
     );
     assert!(prepare_body(&format!("{max}b"), false).is_err());
     assert!(prepare_body(&max, true).is_err());
-}
-
-#[test]
-fn private_tag_survives_spool_write_and_replay() {
-    let root = tempfile::tempdir().expect("temp");
-    let creds = creds(root.path());
-    let spool = root.path().join("ideas").join("spool");
-    let body = prepare_body("keep this off the triage model", true).expect("private");
-    assert_eq!(body, "#private\nkeep this off the triage model");
-    let queued = deliver(&spool, &creds, &closed_url(), Some(&body), unix_now).expect("queue");
-    assert_eq!(queued.queued, 1);
-    let mode = fs::metadata(&spool)
-        .expect("spool meta")
-        .permissions()
-        .mode()
-        & 0o777;
-    assert_eq!(mode, 0o700);
-    let files = spool_files(&spool);
-    assert_eq!(files.len(), 1);
-    let entry = load_entry(&files[0]).expect("spooled");
-    assert_eq!(entry.stored.body, body);
-
-    let mock = Mock::spawn(201, "Created", "{\"id\":\"01PRIVATETAGCAPTURE00000000\"}");
-    let sent = deliver(&spool, &creds, &mock.url(), None, || 1_700_000_300).expect("replay");
-    assert_eq!(sent.sent, vec!["01PRIVATETAGCAPTURE00000000".to_owned()]);
-    let hits = mock.hits();
-    assert_eq!(hits.len(), 1, "the queued private idea is posted once");
-    assert_eq!(hits[0].body, body.as_bytes());
-    assert!(spool_files(&spool).is_empty());
-    let leftovers: Vec<_> = fs::read_dir(&spool)
-        .expect("spool")
-        .map(|entry| entry.expect("entry").file_name())
-        .collect();
-    assert!(
-        leftovers.is_empty(),
-        "scratch files are removed after the post: {leftovers:?}"
-    );
 }
 
 #[test]
@@ -489,9 +458,4 @@ fn idea_command_parses_and_does_not_take_the_server_socket() {
             ..
         }))
     ));
-}
-
-#[test]
-fn capture_posts_to_the_ingest_endpoint() {
-    assert_eq!(CAPTURE_URL, "https://ingest.phux.sh/ideas/capture");
 }

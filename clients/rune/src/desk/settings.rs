@@ -1,9 +1,10 @@
 //! The settings window's state: what is remembered between launches and how
 //! changing it reaches the runtime.
 
-use phux_config_core::RuneCfg;
+use phux_config_core::rune::{TabBar, TitleBar};
+use phux_config_core::{ClientConfig, RuneCfg};
+use rune::Tx;
 use rune::prefs::Prefs;
-use rune::{Key, KeyEvent, Tx};
 
 use super::{Desk, NoticeKind};
 use crate::grid;
@@ -17,6 +18,7 @@ pub fn interface_size(size: Option<u16>) -> u16 {
     size.map_or(100, |s| s.clamp(INTERFACE_SIZES[0], INTERFACE_SIZES[7]))
 }
 
+mod bars;
 pub mod pair;
 
 /// Settings destinations, separate from preferences and connection state.
@@ -86,8 +88,10 @@ pub struct Settings {
     pub confirm_close: bool,
     /// How much Liquid Glass shows through the window chrome, 0 to 100.
     pub glass: u8,
-    /// The toolbar hides until the pointer reaches the window's top edge.
-    pub hover_toolbar: bool,
+    /// The title bar: shown, revealed at the top edge, or gone.
+    pub title_bar: TitleBar,
+    /// Where the terminal tabs go.
+    pub tab_bar: TabBar,
 }
 
 impl Settings {
@@ -105,7 +109,8 @@ impl Settings {
             wheel_arrows: prefs.get("wheel_arrows").unwrap_or(true),
             confirm_close: prefs.get("confirm_close").unwrap_or(false),
             glass: prefs.get::<u8>("glass").unwrap_or(0).min(100),
-            hover_toolbar: prefs.get("hover_toolbar").unwrap_or(false),
+            title_bar: bars::saved(prefs),
+            tab_bar: TabBar::Top,
         }
     }
 
@@ -122,21 +127,24 @@ impl Settings {
             wheel_arrows: file.wheel_arrows.unwrap_or(self.wheel_arrows),
             confirm_close: file.confirm_close.unwrap_or(self.confirm_close),
             glass: self.glass,
-            hover_toolbar: self.hover_toolbar,
+            title_bar: file.title_bar.unwrap_or(self.title_bar),
+            tab_bar: file.tab_bar.unwrap_or(self.tab_bar),
         }
     }
 }
 
-/// `config.toml`'s `[rune]` table, and what was wrong with the file if it
-/// did not load; its `[[sessions]]` colours are learned on the way. Tests
+/// `config.toml` as a client reads it, and what was wrong with the file if
+/// it did not load; its `[[sessions]]` colours and `[[icons]]` are learned on
+/// the way. Tests
 /// never read the real file.
-pub(super) fn load_file() -> (RuneCfg, Option<String>) {
+pub(super) fn load_file() -> (ClientConfig, Option<String>) {
     if cfg!(test) {
-        return (RuneCfg::default(), None);
+        return (ClientConfig::default(), None);
     }
     match phux_config_core::loader::load_client() {
-        Ok(config) => {
-            crate::session_color::learn(config.sessions);
+        Ok(mut config) => {
+            crate::session_color::learn(std::mem::take(&mut config.sessions));
+            phux_config_core::pane_icon::learn(std::mem::take(&mut config.icons));
             if let Some(socket) = config.rune.ssh_agent.as_deref().map(str::trim) {
                 let home = std::env::var_os("HOME").unwrap_or_default();
                 let socket = socket.strip_prefix("~/").map_or_else(
@@ -145,9 +153,9 @@ pub(super) fn load_file() -> (RuneCfg, Option<String>) {
                 );
                 phux_client_runtime::connection::set_ssh_agent(socket);
             }
-            (config.rune, None)
+            (config, None)
         }
-        Err(err) => (RuneCfg::default(), Some(err.to_string())),
+        Err(err) => (ClientConfig::default(), Some(err.to_string())),
     }
 }
 
@@ -177,6 +185,8 @@ impl Desk {
                 copy_on_select: Some(settings.copy_on_select),
                 wheel_arrows: Some(settings.wheel_arrows),
                 confirm_close: Some(settings.confirm_close),
+                tab_bar: Some(settings.tab_bar),
+                title_bar: Some(settings.title_bar),
                 ..RuneCfg::default()
             }
             .to_toml(),
@@ -275,16 +285,37 @@ impl Desk {
         }
     }
 
-    /// The root's layout: learn the window width, and post a frame when it
-    /// crosses the narrow line, since on_layout runs after poll.
-    pub fn window_laid_out(&mut self, width: f32) {
+    /// The window is one surface: a desk with its sidebar away and one pane
+    /// on screen. The pane loses its card and runs edge to edge, the
+    /// window's controls sitting on its ground, as a terminal window's do.
+    pub fn flush(&self) -> bool {
+        self.phone.is_none()
+            && !self.sidebar_shown()
+            && matches!(
+                self.connection.layout,
+                Some(phux_client_core::layout::LayoutNode::Leaf(_))
+            )
+    }
+
+    /// The root's layout: learn the window's size, and post a frame when it
+    /// crosses the narrow line or starts the size glance, since on_layout
+    /// runs after poll.
+    pub fn window_laid_out(&mut self, [width, height]: [f32; 2]) {
         let was = self.sidebar_narrow();
+        let resized = self.window_w > 0.0 && [width, height] != [self.window_w, self.window_h];
         self.window_w = width;
-        if was != self.sidebar_narrow() {
+        self.window_h = height;
+        let crossed = was != self.sidebar_narrow();
+        if crossed {
             self.sidebar_peek = false;
-            if let Some(waker) = &self.waker {
-                waker();
-            }
+        }
+        if resized {
+            self.glance_resize();
+        }
+        if (crossed || resized)
+            && let Some(waker) = &self.waker
+        {
+            waker();
         }
     }
 
@@ -317,70 +348,9 @@ impl Desk {
         self.settings_ui.query.focused = false;
     }
 
-    pub fn clear_settings_search(&mut self) {
-        self.settings_ui.query.clear();
-        self.focus_settings_search();
-    }
-
-    pub fn focus_settings_search(&mut self) {
-        self.settings_ui.query.focused = true;
-    }
-
-    pub fn blur_settings_search(&mut self, tx: &mut Tx) {
-        self.settings_ui.query.focused = false;
-        tx.blur();
-    }
-
     pub fn settings_themes(&mut self) {
         self.open_themes();
         self.settings_ui.return_from_themes = true;
-    }
-
-    pub fn settings_search_focused(&self) -> bool {
-        self.settings_open && self.settings_ui.query.focused
-    }
-
-    /// Native fields keep editing, selection, clipboard and Tab with Rune.
-    pub fn settings_field_key(&mut self, event: &KeyEvent, tx: &mut Tx) -> bool {
-        match event.key {
-            Key::Escape if !self.settings_ui.query.text.is_empty() => self.clear_settings_search(),
-            Key::Escape => self.settings_dismiss(),
-            Key::Enter => self.blur_settings_search(tx),
-            _ => return false,
-        }
-        if !self.settings_search_focused() {
-            tx.blur();
-        }
-        true
-    }
-
-    fn settings_dismiss(&mut self) {
-        if self.phone.is_some() && self.settings_ui.category.is_some() {
-            self.settings_back();
-        } else {
-            self.close_settings();
-        }
-    }
-
-    pub fn settings_escape(&mut self) {
-        if self.settings_ui.query.text.is_empty() {
-            self.settings_dismiss();
-        } else {
-            self.clear_settings_search();
-        }
-    }
-
-    /// Drawn keys edit this field now, never queued into a later frame where
-    /// the sheet may have closed and the terminal could have the keyboard.
-    pub fn settings_soft(&mut self, event: &KeyEvent, tx: &mut Tx) {
-        if !self.settings_search_focused() || self.settings_field_key(event, tx) {
-            return;
-        }
-        if event.key == Key::Tab {
-            self.blur_settings_search(tx);
-            return;
-        }
-        self.settings_ui.query.key(event, None);
     }
 
     /// Install the chosen palette on the runtime. Live panes repaint with it.
@@ -454,13 +424,6 @@ impl Desk {
         self.apply_theme();
     }
 
-    pub fn toggle_hover_toolbar(&mut self) {
-        self.settings.hover_toolbar = !self.settings.hover_toolbar;
-        let _ = self
-            .prefs
-            .set("hover_toolbar", &self.settings.hover_toolbar);
-    }
-
     pub fn toggle_notifications(&mut self) {
         if self.file_managed(self.file.notifications.is_some()) {
             return;
@@ -509,21 +472,6 @@ impl Desk {
             .set("confirm_close", &self.settings.confirm_close);
     }
 
-    /// Unhandled arrows never mutate preferences. Escape backs out of the
-    /// phone category before closing the sheet.
-    pub(super) fn settings_key(&mut self, event: &KeyEvent, tx: &mut Tx) {
-        if self.settings_search_focused() && tx.focused().is_none() {
-            self.settings_soft(event, tx);
-        } else if event.key == Key::Escape {
-            self.settings_dismiss();
-        } else if !self.settings_ui.query.focused && starts_search(event) {
-            // Typing anywhere but a field searches, as System Settings does:
-            // a focused button (the gear that opened the sheet) takes no text.
-            self.focus_settings_search();
-            self.settings_soft(event, tx);
-        }
-    }
-
     /// Selection finished: hand it to the clipboard when asked to.
     pub fn selection_done(&mut self, tx: &mut Tx) {
         if self.settings.copy_on_select {
@@ -532,11 +480,7 @@ impl Desk {
     }
 }
 
-/// A printable key with no chord modifier: the start of a search.
-fn starts_search(event: &KeyEvent) -> bool {
-    let chord = event.mods.cmd || event.mods.ctrl || event.mods.alt || event.mods.logo;
-    matches!(&event.key, Key::Text(t) if !chord && !t.chars().any(char::is_control))
-}
+mod search;
 
 #[cfg(test)]
 mod tests;

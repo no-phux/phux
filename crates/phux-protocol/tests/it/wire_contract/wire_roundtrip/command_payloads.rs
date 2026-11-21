@@ -179,28 +179,16 @@ fn command_put_file_and_ack_round_trip_with_limits() {
 
 #[test]
 fn get_file_and_file_chunk_round_trip_within_the_chunk_cap() {
-    let frame = FrameKind::Command {
+    // The digest-bearing chunk has a golden; the digest-less one does not.
+    let reply = FrameKind::CommandResult {
         request_id: 0x0a0b_0c0e,
-        command: Command::GetFile {
-            host: Some("mini".to_owned()),
-            path: "/Users/me/Decks/talk.pptx".to_owned(),
-            offset: 8 * 1024 * 1024,
-            max_bytes: 4096,
-        },
+        result: CommandResult::OkWith(CommandValue::FileChunk(FileChunk {
+            size: 9_000_000,
+            data: b"chunk".to_vec(),
+            sha256: None,
+        })),
     };
-    crate::common::assert_round_trip(&frame);
-
-    for sha256 in [None, Some([0x7d; 32])] {
-        let reply = FrameKind::CommandResult {
-            request_id: 0x0a0b_0c0e,
-            result: CommandResult::OkWith(CommandValue::FileChunk(FileChunk {
-                size: 9_000_000,
-                data: b"chunk".to_vec(),
-                sha256,
-            })),
-        };
-        crate::common::assert_round_trip(&reply);
-    }
+    crate::common::assert_round_trip(&reply);
 
     let over_request = FrameKind::Command {
         request_id: 3,
@@ -231,7 +219,7 @@ fn get_file_and_file_chunk_round_trip_within_the_chunk_cap() {
 }
 
 #[test]
-fn hello_ok_server_feature_round_trips_and_old_caps_default_empty() {
+fn hello_ok_server_feature_round_trips() {
     let frame = FrameKind::HelloOk {
         protocol_major: 0,
         protocol_minor: 5,
@@ -254,22 +242,6 @@ fn hello_ok_server_feature_round_trips_and_old_caps_default_empty() {
     let (decoded, tail) = FrameKind::decode(&encoded).unwrap();
     assert_eq!(decoded, frame);
     assert!(tail.is_empty());
-
-    let old = ServerCapabilities::new().with_layers(LayerSet::all());
-    assert!(old.features.is_empty());
-}
-
-/// The reason-less `DETACHED` is byte-identical to the empty body every
-/// pre-`0.7.0-draft.7` peer emits, in both directions (ADR-0061).
-#[test]
-fn detached_without_a_reason_is_the_legacy_empty_body() {
-    let unstated = FrameKind::Detached {
-        reason: None,
-        message: String::new(),
-    };
-    let buf = crate::common::encode(&unstated);
-    assert_eq!(buf.as_slice(), framed_tlv(0x82, &[]).as_slice());
-    assert_round_trip(&unstated);
 }
 
 /// A reason value allocated by a *later* draft must decode as unstated rather
@@ -309,13 +281,6 @@ fn detach_reason_wire_values_match_spec() {
     assert_eq!(DetachReason::AuthorizationRevoked.as_wire(), 6);
     assert_eq!(DetachReason::AuthorizationExpired.as_wire(), 7);
     assert_eq!(DetachReason::InternalError.as_wire(), 255);
-    for known in [5u8, 6, 7] {
-        assert_eq!(
-            DetachReason::from_wire(known).map(DetachReason::as_wire),
-            Some(known),
-            "workload-auth §7 reasons decode"
-        );
-    }
     for unallocated in [8u8, 42, 254] {
         assert_eq!(DetachReason::from_wire(unallocated), None);
     }

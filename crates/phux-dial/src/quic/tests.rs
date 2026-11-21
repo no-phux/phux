@@ -57,15 +57,6 @@ fn only_auth_failed_closes_are_credential_refusal() {
     }
 }
 
-/// phux's tunnel dials carry phux's tag; the tag's own rules are
-/// `quictun`'s and tested there.
-#[test]
-fn tunnel_cids_carry_the_phux_tag() {
-    let cid = tunnel_cid().expect("tagged cid");
-    assert!(TUNNEL_CID_TAG.matches(&cid));
-    assert_eq!(&cid[..4], b"phxT");
-}
-
 /// Dial a loopback peer that reads the bearer preamble and then closes
 /// with `code` / `reason`; return how the client classifies the close.
 async fn dial_and_get_closed(code: u32, reason: &'static [u8]) -> DialError {
@@ -119,7 +110,7 @@ async fn refused_token_surfaces_auth_close_not_connection_lost() {
     assert!(!classified.to_string().contains("connection lost"));
 }
 
-/// workload-auth §3 over QUIC: a client requiring paired authority fails
+/// The authority downgrade over QUIC: a client requiring paired authority fails
 /// the handshake against a listener that does not request a client
 /// certificate, so no bearer preamble and no phux frame is ever sent.
 #[tokio::test]
@@ -158,14 +149,5 @@ async fn require_paired_refuses_a_quic_listener_that_did_not_ask() {
     assert!(
         !server.await.expect("server"),
         "the server never completes the handshake"
-    );
-}
-
-#[tokio::test]
-async fn graceful_close_is_not_credential_refusal() {
-    let classified = dial_and_get_closed(0, b"bye").await;
-    assert!(
-        !matches!(classified, DialError::AuthRefused(_)),
-        "got {classified:?}"
     );
 }

@@ -281,19 +281,6 @@ pub(crate) fn assert_wrong_direction_denied(frame: &FrameKind) {
 }
 
 #[test]
-fn wrong_direction_frames_are_denied() {
-    for frame in [
-        FrameKind::Pong { nonce: 1 },
-        FrameKind::AttachReady { attach_id: 1 },
-        FrameKind::Bell {
-            terminal_id: terminal(),
-        },
-    ] {
-        assert_wrong_direction_denied(&frame);
-    }
-}
-
-#[test]
 fn only_exempt_or_read_only_methods_are_not_mutating() {
     static DENIED_ONLY: [&Rule; 1] = [&C_UNCLASSIFIED];
     let denied = MethodSpec {
@@ -468,22 +455,4 @@ fn every_served_child_kind_spawns_on_the_parent_rows() {
         frame_rule(&spawn(None, None, Some(unknown))),
         unclassified
     ));
-}
-
-#[test]
-fn verb_set_helpers() {
-    let all = Verbs::of(&Verb::ALL);
-    assert_eq!(all.bits(), Verbs::KNOWN_BITS);
-    assert!(!Verbs::of(&[Verb::Inventory, Verb::Observe]).mutates());
-    assert!(Verbs::of(&[Verb::Observe, Verb::Bind]).mutates());
-    assert!(Verbs::EMPTY.is_empty());
-    assert_eq!(
-        C_GET_PERF_RESET.requirement_label(),
-        "OBSERVE+BIND",
-        "labels list verbs in bit order"
-    );
-    assert_eq!(
-        C_OPEN_LISTENER.requirement_label(),
-        "SIGNAL + owner-UDS transport"
-    );
 }

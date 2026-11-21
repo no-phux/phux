@@ -388,18 +388,6 @@ mod tests {
     }
 
     #[test]
-    fn append_then_read_round_trips_in_order() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("nested").join(RUN_LOG_FILE);
-        append(&path, &sample("a")).unwrap();
-        append(&path, &sample("b")).unwrap();
-        let records = read(&path).unwrap();
-        let names: Vec<_> = records.iter().map(|r| r.name.as_str()).collect();
-        assert_eq!(names, ["a", "b"]);
-        assert_eq!(records[0], sample("a").with_time(records[0].at_unix_ms));
-    }
-
-    #[test]
     fn compaction_bounds_the_file_to_the_newest_records() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(RUN_LOG_FILE);
@@ -419,7 +407,7 @@ mod tests {
     #[test]
     fn read_caps_at_capacity_and_skips_garbage() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(RUN_LOG_FILE);
+        let path = dir.path().join("nested").join(RUN_LOG_FILE);
         for i in 0..8 {
             append(&path, &sample(&i.to_string())).unwrap();
         }
@@ -428,13 +416,6 @@ mod tests {
         let records = read_bounded(&path, 3).unwrap();
         let names: Vec<_> = records.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, ["5", "6", "7"]);
-    }
-
-    impl RunRecord {
-        fn with_time(mut self, at_unix_ms: u64) -> Self {
-            self.at_unix_ms = at_unix_ms;
-            self
-        }
     }
 }
 

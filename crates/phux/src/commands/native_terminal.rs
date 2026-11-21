@@ -61,9 +61,7 @@ pub(crate) fn run(args: NativeArgs, socket: Option<PathBuf>) -> ExitCode {
         if matches!(&args.action, TerminalAction::Create(_)) {
             super::server::ensure_server_unseeded(&socket, true)?;
         }
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
+        let rt = crate::commands::build_cli_runtime()?;
         let result = rt.block_on(async {
             let mut conn = phux_tui::attach::driver::native::connect(&socket).await?;
             let id = match args.action {

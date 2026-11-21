@@ -10,6 +10,12 @@ PHASES = frozenset((
     "attach_ready", "initial_deadline", "end_closed", "end_dropped", "end_refused",
     "end_resync", "session_ended", "resync_requested", "nudge_requested",
     "path_changed", "probe_deadline",
+    "enroll_runtime", "enroll_validate", "enroll_plan", "enroll_public_key", "enroll_csr",
+    "enroll_prepare", "enroll_connect", "enroll_relay_connect", "enroll_open_stream",
+    "enroll_write", "enroll_read", "enroll_drain", "enroll_decode", "enroll_chain",
+    "enroll_succeeded", "enroll_failed", "enroll_deadline", "enroll_refused",
+    "enroll_authority_changed", "enroll_unreachable", "enroll_stalled",
+    "enroll_exchange_failed",
 ))
 NUMBERS = ("connection", "attempt", "elapsed_ms", "process_elapsed_ms")
 FIELDS = frozenset((*NUMBERS, "phase"))
@@ -68,6 +74,8 @@ def validate_trace(data, require_ready=False):
     attempts = {}
     process_elapsed = 0
     deadlines = 0
+    enrollment_failures = 0
+    enrollment_deadlines = 0
     recovered_after_deadline = False
     for line in lines:
         row = diagnostic_row(line)
@@ -77,6 +85,8 @@ def validate_trace(data, require_ready=False):
         attempts[key] = advance_attempt(row, attempts.get(key, (0, set())))
         process_elapsed = row["process_elapsed_ms"]
         deadlines += row["phase"] == "initial_deadline"
+        enrollment_failures += row["phase"] == "enroll_failed"
+        enrollment_deadlines += row["phase"] == "enroll_deadline"
         if deadlines and row["phase"] == "topology_applied":
             recovered_after_deadline = True
     ready = {"dial_started", "dial_connected", "hello_sent", "hello_received",
@@ -84,9 +94,13 @@ def validate_trace(data, require_ready=False):
     ready_attempts = sum(ready <= phases for _, phases in attempts.values())
     if require_ready and not ready_attempts:
         raise ValueError("missing usable inventory diagnostic phases")
+    if require_ready and enrollment_failures:
+        raise ValueError("enrollment failure cannot be erased by later inventory")
     return {"events": len(lines), "attempts": len(attempts),
             "initial_deadlines": deadlines, "ready_attempts": ready_attempts,
-            "ready_after_initial_deadline": recovered_after_deadline}
+            "ready_after_initial_deadline": recovered_after_deadline,
+            "enrollment_failures": enrollment_failures,
+            "enrollment_deadlines": enrollment_deadlines}
 
 def validate_completion(data, events):
     try:
@@ -115,6 +129,11 @@ def finish_connection_diagnostics(self):
     # One state-changing request, never retry an uncertain lifecycle operation.
     self.diagnostic_sealed.add(prefix)
     stem = prefix + "rune-connection-diagnostics"
+    if prefix not in self.diagnostic_reports and preparation_failure_sealed(self, prefix, stem):
+        # Preparation publishes its first failure only AFTER synchronous sealing
+        # returns. No consumer exists to acknowledge a background transition.
+        # Preservation still validates the seal, event count and pending files.
+        return
     # Same readiness policy as cycle_scene: the native callback writes this
     # after sealing returns, so termination cannot interrupt receipt cleanup.
     background = self.documents / "rune-background.json"
@@ -124,7 +143,21 @@ def finish_connection_diagnostics(self):
     self.await_scene_report(self.documents / (stem + ".status.json"), self.diagnostic_pid,
                             "no sealed connection capture receipt before termination")
     self.await_scene_report(background, self.diagnostic_pid,
-                            "no post-seal native background acknowledgement")
+                             "no post-seal native background acknowledgement")
+
+
+def preparation_failure_sealed(self, prefix, stem):
+    if not (self.documents / (stem + ".status.json")).is_file():
+        return False
+    try:
+        report = json.loads((self.out / (prefix + "rune-qualification.json")).read_bytes(),
+                            object_pairs_hook=unique_fields)
+    except (OSError, ValueError):
+        return False
+    return (isinstance(report, dict) and report.keys() == {"schema", "error", "preparation_failed"}
+            and type(report["schema"]) is int and report["schema"] == 1
+            and report["preparation_failed"] is True
+            and type(report["error"]) is str and bool(report["error"]))
 
 
 # Bound by Qualification as methods. Keep its existing callable seams (including

@@ -92,13 +92,15 @@ pub const fn lifetime(l: phux_core::SessionLifetime) -> frame::SessionLifetime {
     }
 }
 
-/// A wire lifetime in core.
+/// A wire lifetime in core; `None` for one this build does not define,
+/// which the decoder already refuses.
 #[must_use]
-pub const fn core_lifetime(l: frame::SessionLifetime) -> phux_core::SessionLifetime {
-    match l {
+pub const fn core_lifetime(l: frame::SessionLifetime) -> Option<phux_core::SessionLifetime> {
+    Some(match l {
         frame::SessionLifetime::Persistent => phux_core::SessionLifetime::Persistent,
         frame::SessionLifetime::Ephemeral => phux_core::SessionLifetime::Ephemeral,
-    }
+        frame::SessionLifetime::Unknown(_) => return None,
+    })
 }
 
 /// An exit policy on the wire.
@@ -110,13 +112,15 @@ pub const fn exit_policy(p: phux_core::ExitPolicy) -> frame::ExitPolicy {
     }
 }
 
-/// A wire exit policy in core.
+/// A wire exit policy in core; `None` for one this build does not define,
+/// which the decoder already refuses.
 #[must_use]
-pub const fn core_exit_policy(p: frame::ExitPolicy) -> phux_core::ExitPolicy {
-    match p {
+pub const fn core_exit_policy(p: frame::ExitPolicy) -> Option<phux_core::ExitPolicy> {
+    Some(match p {
         frame::ExitPolicy::Remove => phux_core::ExitPolicy::Remove,
         frame::ExitPolicy::Retain => phux_core::ExitPolicy::Retain,
-    }
+        frame::ExitPolicy::Unknown(_) => return None,
+    })
 }
 
 /// A wire launch mode in core.
@@ -266,6 +270,8 @@ pub fn core_launch(
                 restore: spec.restore.clone(),
                 // Not an organization wire field: only PTY reports set it.
                 resume: None,
+                last_cwd: None,
+                pane_id: None,
             }))
         }
         phux_core::ResourceKind::AgentSession => {

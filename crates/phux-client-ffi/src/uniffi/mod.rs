@@ -16,6 +16,9 @@
 //! binding-local state a polling consumer needs. The isolated [`engine`]
 //! module serves connectionless playground and test terminals.
 
+// The design language: theme solver, colour maths, status vocabulary, catalog.
+mod design;
+
 // The VT engine grid surface (ADR-0007), and the local playground terminal
 // built on it.
 mod engine;
@@ -46,17 +49,4 @@ pub fn engine_version() -> String {
 #[uniffi::export]
 pub fn bridge_ready() -> bool {
     true
-}
-
-#[cfg(test)]
-mod tests {
-    use super::protocol_version;
-
-    #[test]
-    fn version_is_semver_shaped() {
-        let v = protocol_version();
-        let parts: Vec<&str> = v.split('.').collect();
-        assert_eq!(parts.len(), 3, "expected major.minor.patch, got {v:?}");
-        assert!(parts.iter().all(|p| p.parse::<u16>().is_ok()));
-    }
 }

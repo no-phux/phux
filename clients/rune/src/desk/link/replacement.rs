@@ -45,6 +45,7 @@ impl Desk {
             self.connection.wanted = wanted;
             self.connection.resources.returning = returning;
             self.connection.resources.dismissed = old.resources.dismissed;
+            self.retire_answers();
         } else {
             self.leave_machine_ui();
         }

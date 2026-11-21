@@ -161,6 +161,31 @@ a colour outside the palette fails the config load with the names to use.
 `phux config reload` applies an edit to an attached terminal UI; the
 desktop reads the table when it starts.
 
+## Pane icons
+
+A pane can wear an icon, an emoji or a Nerd Font symbol, before its name in
+the terminal UI's tab bar and the desktop's tabs, sidebar and palette. Your
+`config.toml` names icons by the foreground program or the folder:
+
+```toml
+[[icons]]
+icon = "🦀"
+process = "cargo"
+
+[[icons]]
+icon = "🏢"
+cwd = "~/work/*"
+```
+
+`process` matches the foreground program's name exactly. In `cwd`, `*`
+matches any run of characters, `/` included, and a leading `~` is your home
+folder. When an entry names both, both must match, and the first matching
+entry wins. An icon a program in the pane sets with
+[`OSC 1337 ; SetUserVar=phux_icon`](./program-sequences.md#pane-icon-osc-1337-setuservar)
+comes first. Like session colours, the table lives in your config:
+`phux config reload` applies an edit to an attached terminal UI, and the
+desktop reads it when it starts.
+
 ## Your own
 
 To put a phux terminal in your own app, see

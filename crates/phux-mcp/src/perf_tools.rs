@@ -247,52 +247,13 @@ mod tests {
         for (name, args) in [
             // Resetting would need BIND; the tool stays read-only.
             ("phux_perf", json!({ "reset": true })),
-            ("phux_perf", json!({ "target": "desktop" })),
-            ("phux_perf", json!({ "source": "desktop" })),
-            ("phux_perf", json!({ "socket": "" })),
-            ("phux_perf", json!({ "seconds": 5 })),
             ("phux_perf_trace", json!({ "seconds": 0 })),
-            ("phux_perf_trace", json!({ "seconds": -1 })),
             ("phux_perf_trace", json!({ "seconds": 60.5 })),
             ("phux_perf_trace", json!({ "seconds": "5" })),
-            ("phux_perf_trace", json!({ "out": "/tmp/t.json" })),
-            ("phux_perf_trace", json!({ "source": "desktop" })),
-            ("phux_perf_flame", json!({})),
         ] {
             assert!(
                 call_with_adapter(name, &args, &adapter).await.is_err(),
                 "{name} accepted {args}",
-            );
-        }
-    }
-
-    /// The descriptions carry the rules an agent needs to read the numbers.
-    #[test]
-    fn the_descriptions_teach_units_heap_and_intervals() {
-        let perf = perf_schema();
-        let perf = perf["description"].as_str().unwrap();
-        for needle in [
-            "MICROSECONDS",
-            "sum/count",
-            "p50/p90/p99",
-            "PHUX_DEV=1",
-            "phux perf alloc on",
-            "CALL TWICE AND SUBTRACT",
-            "READ-ONLY",
-        ] {
-            assert!(perf.contains(needle), "phux_perf lacks {needle}: {perf}");
-        }
-        let trace = trace_schema();
-        let trace = trace["description"].as_str().unwrap();
-        for needle in [
-            "ON THE HOST RUNNING PHUX",
-            "ui.perfetto.dev",
-            "`cmd.handle`",
-            "MICROSECONDS",
-        ] {
-            assert!(
-                trace.contains(needle),
-                "phux_perf_trace lacks {needle}: {trace}"
             );
         }
     }

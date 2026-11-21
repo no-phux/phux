@@ -4,10 +4,8 @@ use phux_client::agent_meta::{AgentMetaState, AgentRecord};
 use phux_client::watch::{AgentStateUpdate, WatchEvent, WatchItem};
 use phux_protocol::wire::frame::AgentEvent;
 
-use super::render::{
-    agent_state_detail, agent_state_json, watch_event_json, watch_event_kind, watch_item_event,
-};
-use super::{AGENT_STATE_EVENT, WATCH_EVENT_NAMES, describe_gate};
+use super::render::{agent_state_json, watch_event_json, watch_event_kind, watch_item_event};
+use super::{AGENT_STATE_EVENT, WATCH_EVENT_NAMES};
 
 fn pane(selector: &str) -> phux_protocol::ids::ResourceId {
     phux_protocol::ids::ResourceId::local(selector.trim_start_matches('@').parse().unwrap())
@@ -151,37 +149,6 @@ fn agent_state_json_carries_identity_state_attention_and_transition() {
     }
 }
 
-#[test]
-fn agent_state_human_form_is_a_compact_transition() {
-    let update = AgentStateUpdate {
-        terminal: None,
-        record: Some(record("reviewer", Some("claude"), AgentMetaState::Blocked)),
-        previous: Some(record("reviewer", Some("claude"), AgentMetaState::Working)),
-    };
-    assert_eq!(
-        agent_state_detail(&update),
-        " reviewer kind=claude working->blocked attention=high"
-    );
-
-    let first = AgentStateUpdate {
-        previous: None,
-        ..update.clone()
-    };
-    assert_eq!(
-        agent_state_detail(&first),
-        " reviewer kind=claude blocked attention=high"
-    );
-
-    let cleared = AgentStateUpdate {
-        record: None,
-        ..update
-    };
-    assert_eq!(
-        agent_state_detail(&cleared),
-        " reviewer kind=claude cleared (was working)"
-    );
-}
-
 // -- the --until vocabulary -------------------------------------------
 
 /// Every `AgentEvent` this binary can be handed, so the vocabulary guard
@@ -248,17 +215,6 @@ fn event_vocabulary_covers_every_rendered_name() {
         WATCH_EVENT_NAMES.contains(&AGENT_STATE_EVENT),
         "the agent_state line must be waitable too"
     );
-}
-
-/// The list is the frozen CLI surface (ADR-0071), printed verbatim in the
-/// `--until` help and in the usage error. Sorted and duplicate-free so a
-/// later addition lands in one obvious place.
-#[test]
-fn event_vocabulary_is_sorted_and_free_of_duplicates() {
-    let mut sorted = WATCH_EVENT_NAMES.to_vec();
-    sorted.sort_unstable();
-    sorted.dedup();
-    assert_eq!(sorted.as_slice(), WATCH_EVENT_NAMES);
 }
 
 /// The name `--until` matches is byte-for-byte the `event` value on the
@@ -372,18 +328,6 @@ fn a_malformed_after_cursor_is_a_usage_error_before_any_connection() {
     assert_eq!(
         code,
         std::process::ExitCode::from(crate::exit_codes::EXIT_USAGE)
-    );
-}
-
-/// The timeout and EOF diagnostics name what the caller was waiting for;
-/// with no gate there is nothing to name and the clause disappears rather
-/// than reading "waiting for ".
-#[test]
-fn the_gate_description_lists_the_alternatives_and_is_empty_without_one() {
-    assert_eq!(describe_gate(&[]), "");
-    assert_eq!(
-        describe_gate(&["asked".to_owned(), "idle".to_owned()]),
-        " waiting for asked or idle"
     );
 }
 

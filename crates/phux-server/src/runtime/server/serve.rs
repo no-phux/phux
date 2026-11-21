@@ -125,14 +125,18 @@ impl ServerRuntime {
         let connector_consumer_tokens = load_connector_consumer_tokens(&connector_specs, env)?;
 
         let resume_blob = read_resume_blob(self.resume_fd, &self.inherited_upgrade)?;
-        let listener = adopt_or_bind_listener(
+        // Held until `serve` returns: one server per socket path.
+        let (listener, _socket_lock) = adopt_or_bind_listener(
             &socket_path,
             resume_blob.as_ref().map(|blob| blob.listener_fd),
         )
         .await?;
 
         // Remember which inode we bound so shutdown only unlinks our socket.
-        let bound_socket = socket_identity(&socket_path);
+        let bound_socket: crate::runtime::connections::BoundSocket =
+            std::rc::Rc::new(std::cell::Cell::new(socket_identity(&socket_path)));
+        let guard_bound = std::rc::Rc::clone(&bound_socket);
+        let guard_socket_path = socket_path.clone();
 
         let runtime_flags = self.runtime_flags();
         let autosave = self.autosave;
@@ -166,10 +170,8 @@ impl ServerRuntime {
         let uplink_socket = socket_path.clone();
         // Input routing runs on its own OS thread (ADR-0044) so keystrokes
         // are not queued behind output broadcast; its `Drop` joins it.
-        let input_lane = crate::runtime::apps::start(&state)?;
-        let input_lane_handle = input_lane
-            .as_ref()
-            .map(crate::runtime::apps::RunningLane::handle);
+        let input_lane = crate::runtime::apps::terminal::start(&state)?;
+        let input_lane_handle = input_lane.handle();
         let local = LocalSet::new();
         // Parent of every per-client and per-pane token; `shutdown` is
         // folded into it.
@@ -192,7 +194,7 @@ impl ServerRuntime {
                     uplinks.arm(uplink_source, uplink_socket, root_token.clone());
                     uplinks.apply(uplink_specs);
                 });
-                // Live revocation (workload-auth §7).
+                // Live revocation.
                 revocation::spawn_revocation_watcher(&state, &root_token);
                 // Before any pane exists, so each is told the broker socket.
                 crate::runtime::forward::agent::start(&state, &root_token);
@@ -200,7 +202,7 @@ impl ServerRuntime {
                     connector_specs,
                     connector_consumer_tokens.as_ref(),
                     &state,
-                    input_lane_handle.as_ref(),
+                    Some(&input_lane_handle),
                     &root_token,
                 );
 
@@ -217,29 +219,42 @@ impl ServerRuntime {
                     listener
                 });
                 if let ListeningHook(Some(hook)) = on_listening {
-                    hook(&state.with(|s| s.remote_listeners().clone()));
+                    hook(&state.with(crate::state::ServerState::remote_listeners));
                 }
 
                 // ADR-0162 startup order: open the store, resume (or import)
                 // the upgrade blob, persist a first start, reconcile what a
                 // previous run left live, then seed. Nothing relaunches.
                 let cold_start = resume_blob.is_none();
-                open_org_store(&state, &org_store)?;
-                if let Some(blob) = &resume_blob {
-                    resume_session_tree(&state, blob, &root_token)?;
-                    crate::runtime::apps::resumed(&state);
-                    delegation::resume_delegations(
-                        &state,
-                        &blob.delegations,
-                        input_lane_handle.as_ref(),
-                        &root_token,
-                    );
+                let started = (|| -> Result<(), ServerError> {
+                    open_org_store(&state, &org_store)?;
+                    if let Some(blob) = &resume_blob {
+                        resume_session_tree(&state, blob, &root_token)?;
+                        crate::runtime::apps::retry_pending_agent_closures(&state);
+                        delegation::resume_delegations(
+                            &state,
+                            &blob.delegations,
+                            Some(&input_lane_handle),
+                            &root_token,
+                        );
+                    }
+                    // ADR-0163 §5: a credential the previous process held and
+                    // this one did not carry is revoked; drop its socket file.
+                    delegation::sweep_stale_sockets(&state);
+                    state.with_mut(crate::state::ServerState::persist_first_start)?;
+                    Ok(())
+                })();
+                if let Err(err) = started {
+                    // A resume can fail after spawning some engines; drain
+                    // them like a shutdown so no pane child outlives us.
+                    root_token.cancel();
+                    drain_engines(&state).await;
+                    return Err(err);
                 }
-                // ADR-0163 §5: a credential the previous process held and
-                // this one did not carry is revoked; drop its socket file.
-                delegation::sweep_stale_sockets(&state);
-                state.with_mut(crate::state::ServerState::persist_first_start)?;
                 let reconciled = state.with_mut(crate::state::ServerState::reconcile);
+                if cold_start {
+                    state.with_mut(crate::state::ServerState::reserve_pane_ids);
+                }
                 if reconciled != crate::state::Reconciled::default() {
                     info!(
                         lost = reconciled.lost,
@@ -286,7 +301,7 @@ impl ServerRuntime {
                     &listener,
                     &state,
                     &root_token,
-                    input_lane_handle.as_ref(),
+                    Some(&input_lane_handle),
                 );
                 #[cfg(feature = "webtransport")]
                 if let Some(wt) = &webtransport_listener {
@@ -294,18 +309,30 @@ impl ServerRuntime {
                         wt,
                         state.clone(),
                         root_token.clone(),
-                        input_lane_handle.clone(),
+                        Some(input_lane_handle.clone()),
                     )));
                 }
+                accepts.push(Box::pin(
+                    crate::runtime::connections::SocketGuard {
+                        socket_path: guard_socket_path,
+                        bound: guard_bound,
+                        state: state.clone(),
+                        root_token: root_token.clone(),
+                        input_lane: Some(input_lane_handle.clone()),
+                    }
+                    .run(),
+                ));
                 accepts.push(Box::pin(serve_auto_overlay_listeners(
                     auto_overlay_gate,
                     auto_overlay_ports,
                     overlay_detect,
                     state.clone(),
                     root_token.clone(),
-                    input_lane_handle.clone(),
+                    Some(input_lane_handle.clone()),
                 )));
-                crate::runtime::apps::keep_standing(&state, mirror_source, &root_token);
+                if let Some(source) = &mirror_source {
+                    crate::runtime::apps::terminal::standing::install(&state, source, &root_token);
+                }
                 let startup_task = plugin_startup.map(|cfg| {
                     crate::plugin_startup::install(&state, *cfg, startup_socket, root_token.clone())
                 });
@@ -331,7 +358,7 @@ impl ServerRuntime {
 
         // Unlinking a socket another server now owns would strand that
         // server unreachable by path.
-        unlink_socket_if_ours(&socket_path, bound_socket);
+        unlink_socket_if_ours(&socket_path, bound_socket.get());
 
         result
     }

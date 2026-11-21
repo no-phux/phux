@@ -1,8 +1,8 @@
 //! Real-QUIC acceptance for a pane spawned by an attached multi-stream client.
 //!
 //! The TUI's `new-window` and splits are `SPAWN_RESOURCE` from an attached
-//! connection. Under `QUIC_STREAMS` every L1 §4 frame rides the pane's own
-//! Terminal stream (L1 §4.9), so the spawned pane's content must wait for the
+//! connection. Under `QUIC_STREAMS` every frame rides the pane's own
+//! Terminal stream, so the spawned pane's content must wait for the
 //! client's `STREAM_BIND` rather than leak onto control, and once bound the
 //! pane must take the resize and input the TUI sends it straight away.
 

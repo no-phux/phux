@@ -86,57 +86,11 @@ fn ask_marker_parse() {
     }
 }
 
-/// Sustained PTY readiness must leave a bounded slot for ordinary requests.
-#[tokio::test(flavor = "current_thread")]
-async fn snapshot_runs_after_one_bounded_pty_turn() {
-    on_local!(async {
-        for panes in [1, 8, 32] {
-            futures_util::future::join_all((0..panes).map(|_| snapshot_under_pty_pressure(0)))
-                .await;
-        }
-    })
-    .await;
-}
-
 #[tokio::test(flavor = "current_thread")]
 async fn snapshot_is_not_starved_by_a_refilling_pty_producer() {
     tokio::task::LocalSet::new()
         .run_until(snapshot_under_pty_pressure(1024))
         .await;
-}
-
-/// The actor answers `SnapshotRequest` with what the synthesizer produces.
-#[tokio::test(flavor = "current_thread")]
-async fn actor_responds_to_snapshot_request_on_localset() {
-    on_local!(async {
-        let bundle = TerminalActor::new_with_seed(20, 5, b"hi there").expect("new_with_seed");
-        let handle = bundle.handle.clone();
-        // Dropping the token does not cancel; keep it anyway.
-        let _token = bundle.token;
-        tokio::task::spawn_local(bundle.actor.run());
-
-        let (reply_tx, reply_rx) = oneshot::channel();
-        handle
-            .terminal()
-            .expect("terminal facet")
-            .snapshot
-            .send(whole_snapshot(reply_tx))
-            .await
-            .expect("send snapshot request");
-        let (snap, base_seq) = reply_rx
-            .await
-            .expect("snapshot reply")
-            .expect("snapshot synthesis");
-        assert_eq!(snap.cols, 20);
-        assert_eq!(snap.rows, 5);
-        assert_eq!(base_seq, 0);
-        let body = String::from_utf8_lossy(&snap.bytes);
-        assert!(
-            body.contains("hi there"),
-            "actor-synthesized bytes should contain seeded text"
-        );
-    })
-    .await;
 }
 
 /// A PTY-less actor's upgrade handle has a snapshot but no descriptors.

@@ -137,11 +137,16 @@ fn fixture(records: &[ResourceRecord], doc: &ArrangementDoc) -> (Arc<Client>, Ru
         );
     }
     client.feed(FrameKind::AttachReady { attach_id }).unwrap();
-    let mut desk = Desk::new(&Resolved::offline("fixture only"));
+    let mut desk = Desk::with_preferences(
+        &Resolved::offline("fixture only"),
+        None,
+        rune::prefs::Prefs::memory(),
+    );
     desk.link.heard = true; // no first-run preferences write
     desk.connection.client = Some(Arc::clone(&client));
     desk.connection.resources.images = Some(rune::ImageCache::new(Arc::new(|| {})));
-    let mut rt = Runtime::new(desk, crate::ui::view, (800.0, 600.0), Env::new(true, 1.0));
+    let mut rt =
+        crate::test_support::runtime(desk, crate::ui::view, (800.0, 600.0), Env::new(true, 1.0));
     rt.on_key = Some(Desk::key);
     step(&mut rt);
     (client, rt)
@@ -336,7 +341,7 @@ fn document_focus_cannot_send_terminal_input_upload_history_resize_or_paint_ack(
         d.paste(&id(1), "unsafe\n");
         d.paste_clipboard(tx);
         d.drop_files(&id(1), &["/tmp/file".into()]);
-        d.shortcut(crate::keys::Shortcut::ScrollTop, tx);
+        d.shortcut(crate::keys::Shortcut::ScrollToTop, tx);
         d.open_find();
         d.laid_out(id(1), [0.0, 0.0, 800.0, 600.0]);
         d.drawn();

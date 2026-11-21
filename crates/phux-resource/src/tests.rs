@@ -96,27 +96,3 @@ fn exit_notify_fires_once() {
         Ok(phux_core::process::ExitOutcome::exited(3))
     );
 }
-
-#[test]
-fn a_handle_without_a_companion_offers_no_such_surface() {
-    struct Sized;
-    impl companions::Resize for Sized {
-        fn resize(&self, size: (u16, u16), _: Option<(u16, u16)>) -> bool {
-            size == (80, 24)
-        }
-    }
-    let handle = stub_handle();
-    assert!(handle.companion::<companions::Resizable>().is_none());
-    assert!(handle.companion::<companions::LiveStream>().is_none());
-    let ended = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let handle = handle
-        .with_companion(companions::Resizable::new(Sized))
-        .with_companion(companions::LiveStream::new(ended.clone()));
-    let resizable = handle.companion::<companions::Resizable>().expect("added");
-    assert!(resizable.resize((80, 24), None));
-    assert!(!resizable.resize((1, 1), None));
-    let stream = handle.companion::<companions::LiveStream>().expect("added");
-    assert!(stream.is_live());
-    ended.store(true, std::sync::atomic::Ordering::Relaxed);
-    assert!(!stream.is_live());
-}

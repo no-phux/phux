@@ -10,7 +10,7 @@ default-members = ["crates/phux", "crates/phux-mcp"]
 exclude = ["clients", ".claude"]
 
 [workspace.package]
-version = "0.159.0"
+version = "0.161.1"
 edition = "2024"
 rust-version = "1.99"
 license = "Apache-2.0"
@@ -59,6 +59,7 @@ phux-terminal-api = { path = "crates/phux-terminal-api" }
 phux-client = { path = "crates/phux-client" }
 phux-tui = { path = "crates/phux-tui" }
 phux-client-core = { path = "crates/phux-client-core" }
+phux-layout-codec = { path = "crates/phux-layout-codec" }
 phux-client-ffi = { path = "crates/phux-client-ffi" }
 phux-client-runtime = { path = "crates/phux-client-runtime" }
 phux-config = { path = "crates/phux-config" }
@@ -115,6 +116,9 @@ qrcode = { version = "0.14", default-features = false }
 # Only phux-tui links ratatui, for chrome; phux emits pane VT itself.
 # Recheck Paragraph::line_count on upgrades: its feature is semver-exempt.
 ratatui = { version = "0.30", default-features = false, features = ["std", "underline-color", "unstable-rendered-line-info"] }
+# ratcn: themeable components + interaction runtime over the same ratatui,
+# for TUI overlays. No backend feature: phux feeds it protocol input itself.
+ratcn = { version = "0.1", default-features = false }
 jiff = { version = "0.2.38", features = ["serde"] }
 # Agent restoration needs a provider-native session ID before spawn.
 uuid = { version = "1", features = ["v4"] }

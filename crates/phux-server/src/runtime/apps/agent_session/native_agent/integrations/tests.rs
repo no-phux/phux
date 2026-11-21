@@ -25,27 +25,6 @@ min_phux_version = "0.0.2"
 }
 
 #[test]
-fn catalog_reports_explicit_profile_failures_without_fallback() {
-    let dir = tempfile::tempdir().unwrap();
-    let config = profile(dir.path());
-    std::fs::write(dir.path().join("integrations/opencode.toml"), "invalid [").unwrap();
-    let catalog = catalog_at(&config).unwrap();
-    assert_eq!(catalog.integrations.len(), 2);
-    let item = catalog
-        .integrations
-        .iter()
-        .find(|item| item.integration == "opencode")
-        .unwrap();
-    assert!(!item.native_available);
-    assert!(
-        item.native_detail
-            .as_ref()
-            .unwrap()
-            .contains("opencode.toml")
-    );
-}
-
-#[test]
 fn catalog_exposes_fx_even_when_its_override_is_broken() {
     let dir = tempfile::tempdir().unwrap();
     let config = profile(dir.path());

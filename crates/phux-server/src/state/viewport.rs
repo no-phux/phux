@@ -56,6 +56,18 @@ impl ServerState {
         }
     }
 
+    /// Record `client`'s new outer default colours (`VIEWPORT_COLORS`), which
+    /// its later spawns inherit. No-op for an unattached client.
+    pub fn set_client_default_colors(
+        &mut self,
+        client: ClientId,
+        colors: phux_protocol::caps::TerminalDefaultColors,
+    ) {
+        if let Some(c) = self.clients.attached.get_mut(&client) {
+            c.client_caps.default_colors = Some(colors);
+        }
+    }
+
     /// `client` was just used (typed, clicked, pasted, gained focus). True
     /// when that makes it the most recently used view under the `active`
     /// policy, so its panes should take its size; false, and nothing
@@ -150,7 +162,7 @@ impl ServerState {
     /// Recompute a departed view's Terminals; with no usable viewport left
     /// they return to the headless size. `Manual` is left alone.
     ///
-    /// A view that cast no vote re-resolves nothing (L1 §9.2), so its
+    /// A view that cast no vote re-resolves nothing, so its
     /// explicit sizes outlive it. The exception (ADR-0145) is a Terminal it
     /// leaves with no subscriber at all and smaller than
     /// [`MIN_USABLE_TERMINAL_DIMS`] on either axis. Unwatched at that size,

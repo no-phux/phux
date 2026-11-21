@@ -150,6 +150,29 @@ async fn a_conflict_is_retried_against_fresh_revisions() {
     assert_eq!(removes, 3, "two conflicts, then the commit");
 }
 
+/// A miss on a session whose panes a restart ended names the restore; a
+/// session with nothing to restore, or a pane id, is an ordinary miss.
+#[tokio::test]
+async fn a_session_waiting_for_restore_is_named_on_a_miss() {
+    use crate::selector::Selector;
+    let mut fixture = OrgFixture::new();
+    let w3 = fixture.session("w3", SessionLifetime::Persistent);
+    let live = fixture.session("live", SessionLifetime::Persistent);
+    fixture.ended_by_restart(w3);
+    fixture.resource(live, Some(ExecState::Running));
+    let (mut conn, _server, _dir) = connect(org_spec(fixture)).await;
+    let view = fetch(&mut conn, OrgFilter::All, 1).await.unwrap();
+    let waiting = |target: &str| {
+        view.awaiting_restore(&crate::selector::parse(target).unwrap())
+            .map(str::to_owned)
+    };
+    assert_eq!(waiting("w3"), Some("w3".to_owned()));
+    assert_eq!(waiting("w3:0.1"), Some("w3".to_owned()));
+    assert_eq!(waiting("live"), None);
+    assert_eq!(waiting("nope"), None);
+    assert_eq!(view.awaiting_restore(&Selector::ResourceId(1)), None);
+}
+
 #[tokio::test]
 async fn a_deferred_create_is_dormant_until_restore_starts_it() {
     let mut fixture = OrgFixture::new();

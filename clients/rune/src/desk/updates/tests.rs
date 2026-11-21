@@ -113,8 +113,11 @@ fn channel_preferences_load_safely_and_preserve_the_installed_default() {
 
 #[test]
 fn selecting_a_channel_persists_without_installing_anything() {
-    let mut desk = Desk::new(&Resolved::offline("channel selection"));
-    desk.prefs = Prefs::memory();
+    let mut desk = Desk::with_preferences(
+        &Resolved::offline("channel selection"),
+        None,
+        Prefs::memory(),
+    );
     desk.updater = updater();
     // Disable network and subprocesses while exercising the public action.
     desk.updater.install = Err("test copy: no network");
@@ -137,7 +140,7 @@ fn settings_expose_the_local_cli_channel_and_external_ownership() {
     desk.updater = updater();
     desk.updater.cli = Some(cli("1.0"));
     desk.settings_category(crate::desk::SettingsCategory::About);
-    let mut rt = rune::Runtime::new(
+    let mut rt = crate::test_support::runtime(
         desk,
         crate::ui::view,
         (1100.0, 720.0),
@@ -177,7 +180,8 @@ fn channel_choices_fit_desktop_and_narrow_phone_settings() {
         let mut desk = crate::test_support::settings_window().with_phone(phone);
         desk.updater = updater();
         desk.settings_category(crate::desk::SettingsCategory::About);
-        let mut rt = rune::Runtime::new(desk, crate::ui::view, size, rune::Env::new(false, 1.0));
+        let mut rt =
+            crate::test_support::runtime(desk, crate::ui::view, size, rune::Env::new(false, 1.0));
         rt.frame(0.0);
         for key in [
             "phux-channel-installed",
@@ -201,15 +205,18 @@ fn channel_choices_fit_desktop_and_narrow_phone_settings() {
 
 #[test]
 fn management_toggles_cannot_discard_a_refused_handoff_or_unlock_channels() {
-    let mut desk = Desk::new(&Resolved::offline("pending handoff"));
-    desk.prefs = Prefs::memory();
+    let mut desk =
+        Desk::with_preferences(&Resolved::offline("pending handoff"), None, Prefs::memory());
     desk.updater = updater();
     desk.updater.cli = Some(cli("1.0"));
-    assert!(!desk.updater.server_done(Ok(Handoff {
-        done: false,
-        retry: true,
-        detail: "busy server".into(),
-    })));
+    assert!(!desk.updater.server_done(
+        Ok(Handoff {
+            done: false,
+            retry: true,
+            detail: "busy server".into(),
+        }),
+        true
+    ));
     // The public toggle actions must not provide an off/on escape hatch.
     desk.toggle_update_phux();
     desk.toggle_update_phux();
@@ -227,7 +234,8 @@ fn management_toggles_cannot_discard_a_refused_handoff_or_unlock_channels() {
 
 #[test]
 fn management_cannot_change_beneath_work_or_a_staged_app() {
-    let mut desk = Desk::new(&Resolved::offline("pending update"));
+    let mut desk =
+        Desk::with_preferences(&Resolved::offline("pending update"), None, Prefs::memory());
     desk.updater = updater();
     desk.updater.work = Work::Checking;
     desk.toggle_update_phux();
@@ -236,17 +244,6 @@ fn management_cannot_change_beneath_work_or_a_staged_app() {
     desk.updater.staged = Some("99.0.0".into());
     desk.toggle_update_phux();
     assert!(desk.updater.manage_phux);
-}
-
-#[test]
-fn nothing_due_offers_nothing() {
-    let mut updater = updater();
-    assert_eq!(updater.action(), None);
-    updater.release = Some(Release {
-        version: "0.0.1".to_owned(),
-        ..release("1.0")
-    });
-    assert_eq!(updater.action(), None);
 }
 
 #[test]
@@ -264,7 +261,8 @@ fn the_action_follows_what_is_due() {
 
 #[test]
 fn a_restart_mid_reconnect_returns_to_the_session_it_was_on() {
-    let mut desk = Desk::open(&Resolved::offline("not launched"), None);
+    let mut desk =
+        Desk::with_preferences(&Resolved::offline("not launched"), None, Prefs::memory());
     assert_eq!(desk.return_session(), None);
     desk.link.home = Some(("work".to_owned(), None));
     assert_eq!(desk.return_session().as_deref(), Some("work"));
@@ -287,11 +285,14 @@ fn server_only_and_its_retry() {
         updater.action(),
         Some(Action::UpdateServer { retry: false })
     );
-    assert!(!updater.server_done(Ok(Handoff {
-        done: false,
-        retry: true,
-        detail: "agents are mid-turn".to_owned(),
-    })));
+    assert!(!updater.server_done(
+        Ok(Handoff {
+            done: false,
+            retry: true,
+            detail: "agents are mid-turn".to_owned(),
+        }),
+        true
+    ));
     assert_eq!(updater.action(), Some(Action::UpdateServer { retry: true }));
     assert!(updater.message.as_deref().unwrap().contains("No session"));
 }
@@ -406,4 +407,54 @@ fn the_copied_mark_ends_on_its_own() {
     assert!(updater.copied);
     let done = updater.done.1.recv_timeout(Duration::from_secs(5));
     assert!(matches!(done, Ok(Done::CopiedShown)));
+}
+
+#[test]
+fn a_too_old_server_upgrades_in_place_or_installs_what_is_due() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let phux = dir.path().join("phux");
+    // No installed CLI or server: the stand-in records argv and answers the
+    // updater contract.
+    std::fs::write(
+        &phux,
+        "#!/bin/sh\nprintf '%s ' \"$@\" > \"$0.args\"\n\
+         echo '{\"schema_version\":2,\"server_handoff\":{\"result\":\"upgrading\"}}'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&phux, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let run = |manage_phux: bool, cli: Option<Cli>| {
+        let mut updater = updater();
+        updater.manage_phux = manage_phux;
+        updater.target = Some((phux.clone(), "/isolated/socket".into()));
+        updater.cli = cli;
+        updater.upgrade_server();
+        assert_eq!(updater.work, Work::Server);
+        assert!(updater.card_open());
+        let done = updater.done.1.recv_timeout(Duration::from_secs(10));
+        let Ok(Done::Server(Ok(handoff), false, installed)) = done else {
+            panic!("no handoff");
+        };
+        assert!(handoff.done);
+        let args = std::fs::read_to_string(dir.path().join("phux.args")).unwrap();
+        (installed, args)
+    };
+    // The installed phux may be newer than the server: an explicit click
+    // hot-swaps to it even with phux management off.
+    assert_eq!(
+        run(false, None),
+        (false, "--socket /isolated/socket upgrade ".into())
+    );
+    let (installed, args) = run(true, Some(cli("1.0")));
+    assert!(installed);
+    assert!(
+        args.starts_with("--socket /isolated/socket update --json"),
+        "{args}"
+    );
+    // A package-managed CLI is never reinstalled.
+    let managed = Cli {
+        mutable: false,
+        ..cli("1.0")
+    };
+    assert!(!run(true, Some(managed)).0);
 }

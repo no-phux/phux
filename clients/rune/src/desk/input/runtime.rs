@@ -7,7 +7,6 @@ mod scroll_keys;
 #[test]
 fn find_clipboard_commands_cannot_escape_to_the_terminal() {
     let (client, mut rt) = crate::test_support::input_fixture();
-    rt.state.prefs = rune::prefs::Prefs::memory();
     let board = rune::clipboard::memory();
     board.set_text("clipboard sentinel");
     rt.use_clipboard(&board);
@@ -92,7 +91,6 @@ fn find_clipboard_commands_cannot_escape_to_the_terminal() {
 fn native_field_ink_follows_live_themes_in_both_forms() {
     for phone in [false, true] {
         let (_, mut rt) = crate::test_support::input_fixture();
-        rt.state.prefs = rune::prefs::Prefs::memory();
         rt.state.phone = phone.then(crate::desk::phone::Phone::default);
         rt.set_viewport(
             if phone {
@@ -170,7 +168,6 @@ fn native_field_ink_follows_live_themes_in_both_forms() {
 fn native_field_context_menu_edits_only_its_find_field_in_both_forms() {
     for phone in [false, true] {
         let (client, mut rt) = crate::test_support::input_fixture();
-        rt.state.prefs = rune::prefs::Prefs::memory();
         rt.state.phone = phone.then(crate::desk::phone::Phone::default);
         rt.set_viewport(
             if phone {
@@ -232,4 +229,47 @@ fn native_field_context_menu_edits_only_its_find_field_in_both_forms() {
             "menu sent terminal input"
         );
     }
+}
+
+#[test]
+fn a_cancelled_selection_drag_copies_nothing() {
+    let rows = "selected words here\r\n".repeat(8);
+    let (_client, mut rt) = crate::test_support::input_fixture_showing(&rows);
+    let board = rune::clipboard::memory();
+    board.set_text("clipboard sentinel");
+    rt.use_clipboard(&board);
+    rt.state.settings.copy_on_select = true;
+    rt.frame(1.0);
+    rt.frame(1.0);
+    let rect = crate::ui::element(&rt, "pane-@1").rect;
+    let (x, y) = (rect[0] + 24.0, rect[1] + 24.0);
+    let held = |board: &rune::clipboard::MemoryClipboard| {
+        board.text().as_deref().map(String::as_str) == Some("clipboard sentinel")
+    };
+    for cancel in [true, false] {
+        rt.pointer_down(x, y);
+        rt.pointer_move(x + 160.0, y + 40.0);
+        rt.frame(0.0);
+        if cancel {
+            rt.key(crate::keys::plain(Key::Escape));
+        }
+        rt.pointer_up(x + 160.0, y + 40.0);
+        rt.frame(0.0);
+        assert_eq!(held(&board), cancel, "only a finished drag copies");
+    }
+}
+
+#[test]
+fn a_paste_refused_behind_an_unresolved_one_is_not_reported_sent() {
+    let (_client, mut rt) = crate::test_support::input_fixture();
+    rt.frame(1.0);
+    let terminal = rt.state.connection.shown.as_ref().unwrap().resource.clone();
+    assert_eq!(rt.state.deliver_paste(&terminal, "first"), Ok(()));
+    // Too large to go acknowledged, so it would overtake the first raw.
+    let large = "x".repeat(70 * 1024);
+    assert_eq!(
+        rt.state.deliver_paste(&terminal, &large),
+        Err("Paste refused; nothing was written.")
+    );
+    assert_eq!(rt.state.connection.pastes.len(), 1, "one receipt pending");
 }

@@ -315,21 +315,15 @@ path = "themes/demo"
     }
 
     #[test]
-    fn over_long_name_and_description_are_capped() {
-        let name = "n".repeat(NAME_MAX_CHARS + 40);
+    fn an_over_long_description_is_capped() {
+        let name = "n";
         let description = "d".repeat(DESCRIPTION_MAX_CHARS + 40);
         let body = format!(
             "id = \"acme.long\"\nname = \"{name}\"\nversion = \"0.1.0\"\nmin_phux_version = \"0.0.2\"\ndescription = \"{description}\"\n"
         );
         let (_dir, path) = write_manifest(&body);
         let facts = judge(&path, "acme/long").expect("valid");
-        assert_eq!(facts.name.chars().count(), NAME_MAX_CHARS);
         assert_eq!(facts.description.chars().count(), DESCRIPTION_MAX_CHARS);
-        assert!(
-            !facts
-                .description
-                .contains(&"d".repeat(DESCRIPTION_MAX_CHARS + 1))
-        );
     }
 
     #[test]

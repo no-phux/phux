@@ -3,6 +3,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
+use phux_config::plugin::actions::PluginActionEntry;
 use phux_protocol::ResourceId;
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::key::ModSet;
@@ -16,7 +17,6 @@ use crate::attach::focus::FocusHistory;
 use crate::attach::input_replay::InputReplayJournal;
 use crate::attach::paint::SidebarReservation;
 use crate::attach::pane_state::{AttachKernel, AttentionNavigation, PaneSlot, VcsIndex};
-use crate::attach::plugin_actions::PluginActionEntry;
 use crate::attach::plugin_panes::PluginPaneEntry;
 use crate::layout::{ArrangementDoc, SplitDir};
 use crate::predict::{PredictionState, PredictiveConfig};

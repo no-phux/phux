@@ -27,4 +27,19 @@ export default defineConfig({
       },
     ],
   },
+  overrides: [
+    {
+      // The design generator walks the token sources as plain JSON; the
+      // closed schema (phux.tokens.schema.json) checks their shape at run time.
+      files: ["src/design/**"],
+      rules: {
+        "typescript/no-explicit-any": "off",
+        "typescript/no-unsafe-assignment": "off",
+        "typescript/no-unsafe-argument": "off",
+        "typescript/no-unsafe-call": "off",
+        "typescript/no-unsafe-member-access": "off",
+        "typescript/no-unsafe-return": "off",
+      },
+    },
+  ],
 });

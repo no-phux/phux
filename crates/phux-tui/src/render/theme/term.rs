@@ -1,4 +1,4 @@
-//! What the outer terminal can show (spec §4.2): its colour depth, the
+//! What the outer terminal can show: its colour depth, the
 //! background chrome text lands on, and whether the status ladder must fall
 //! back to ASCII.
 //!
@@ -26,9 +26,10 @@ pub enum Depth {
 }
 
 /// Which column of the status ladder the chrome draws.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Glyphs {
     /// `● ✕ ◆ ◐ ○ · – •`.
+    #[default]
     Unicode,
     /// `* x + ~ o . - !`: a CJK or non-UTF-8 locale, where the ladder's
     /// East-Asian-Ambiguous marks may draw two cells wide. The whole ladder
@@ -99,17 +100,20 @@ impl Default for Outer {
 /// The OSC 10/11 reply the attach probe recorded, `(foreground, background)`.
 static REPORTED: Mutex<Option<(Rgb8, Rgb8)>> = Mutex::new(None);
 
-/// Record the outer terminal's default colours from the attach probe, so the
-/// next theme build solves against the background the chrome really sits on.
-pub fn record_reported(colors: phux_protocol::caps::TerminalDefaultColors) {
+/// Record the outer terminal's default colours; true when they changed.
+///
+/// The next theme build solves against the background the chrome really
+/// sits on, from the attach probe or a later answer after a theme switch.
+pub fn record_reported(colors: phux_protocol::caps::TerminalDefaultColors) -> bool {
     let rgb = |c: phux_protocol::caps::TerminalColor| Rgb8 {
         r: c.r,
         g: c.g,
         b: c.b,
     };
-    if let Ok(mut slot) = REPORTED.lock() {
-        *slot = Some((rgb(colors.foreground), rgb(colors.background)));
-    }
+    let new = Some((rgb(colors.foreground), rgb(colors.background)));
+    REPORTED
+        .lock()
+        .is_ok_and(|mut slot| std::mem::replace(&mut *slot, new) != new)
 }
 
 fn reported() -> Option<(Rgb8, Rgb8)> {

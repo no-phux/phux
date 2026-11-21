@@ -70,6 +70,14 @@ pub(super) fn connected() -> (Arc<Client>, Desk) {
             )
             .with_kind(ResourceKind::Terminal)
             .with_live(Some(terminal())),
+            // A terminal a split of `terminal()` can place beside it.
+            ResourceRecord::new(
+                ResourceKey::new([8; 16]).unwrap(),
+                session(1),
+                Revision::new(1),
+            )
+            .with_kind(ResourceKind::Terminal)
+            .with_live(Some(ResourceId::local(8))),
         ]);
     client
         .feed(FrameKind::CommandResult {

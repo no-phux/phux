@@ -58,7 +58,9 @@ impl super::SessionLoop {
     /// published grid.
     fn switch_view_ready(&self, sidebar: Option<SidebarReservation>) -> bool {
         let layout_settled = self.layout_read_complete
-            || (self.bootstrap_outbound.is_none() && self.layout_get_request_id.is_none());
+            || (self.bootstrap_outbound.is_none()
+                && self.layout_get_request_id.is_none()
+                && !self.arrangement_read_owed);
         if !layout_settled || self.pending_attach_ready.is_some() {
             return false;
         }

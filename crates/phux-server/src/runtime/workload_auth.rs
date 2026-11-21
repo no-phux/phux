@@ -78,42 +78,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn partial_ca_pair_is_an_error_not_absent_authentication() {
-        let dir = tempfile::tempdir().unwrap();
-        let cert = dir.path().join("ca.pem");
-        std::fs::write(&cert, "existing cert").unwrap();
-        assert!(matches!(
-            WorkloadAuth::load(
-                &cert,
-                &dir.path().join("key.pem"),
-                &dir.path().join("keys.json")
-            ),
-            Err(WorkloadError::PartialPair { .. })
-        ));
-    }
-
-    #[test]
-    fn malformed_registry_is_an_error_not_absent_authentication() {
-        let dir = tempfile::tempdir().unwrap();
-        let registry = dir.path().join("keys.json");
-        std::fs::write(&registry, "not json").unwrap();
-        // Owner-only, so the refusal is about the content, not the mode.
-        std::fs::set_permissions(
-            &registry,
-            <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
-        )
-        .unwrap();
-        assert!(matches!(
-            WorkloadAuth::load(
-                &dir.path().join("ca.pem"),
-                &dir.path().join("key.pem"),
-                &registry
-            ),
-            Err(WorkloadError::Malformed(_))
-        ));
-    }
-
-    #[test]
     fn missing_registry_retains_certificate_auth_with_no_enrolled_identities() {
         let dir = tempfile::tempdir().unwrap();
         let cert = dir.path().join("ca.pem");

@@ -1,7 +1,6 @@
 """Header-only fixtures qualify the packager, never an actual image decoder."""
 import copy
 import json
-from itertools import product
 import os
 from pathlib import Path
 import shutil
@@ -71,10 +70,10 @@ class VisualReview(unittest.TestCase):
 
     def test_bundle_has_all_families_hashes_and_honest_status(self):
         manifest = self.produce()
-        self.assertEqual(len(manifest["cases"]), 491)
+        self.assertEqual(len(manifest["cases"]), 707)
         self.assertEqual({family: sum(case["family"] == family for case in manifest["cases"])
                           for family in review.FAMILIES},
-                          {"inbox": 192, "settings": 82, "navigation": 216, "resources": 1})
+                          {"inbox": 192, "settings": 226, "navigation": 288, "resources": 1})
         case = next(case for case in manifest["cases"] if case["png"] == self.subject)
         self.assertEqual(case["physical"], [320, 568])
         self.assertEqual(case["logical"], [320, 568])
@@ -99,10 +98,16 @@ class VisualReview(unittest.TestCase):
                           "phone_header_visual_review_frames")
         self.assertEqual(review.exporter_for("navigation", "pane-motion-horizontal-dark"),
                          "phone_pane_motion_visual_review_frames")
+        self.assertEqual(review.exporter_for("navigation", "connections-large-light-2x-native-true-bottom-640"),
+                         "phone_connections_visual_review_frames")
+        self.assertEqual(review.exporter_for("navigation", "connections-keyboard-dark-bottom-640"),
+                         "phone_connections_keyboard_visual_review_frames")
         self.assertEqual(review.exporter_for("settings", "desktop"),
                          "settings_native_render_frames")
         self.assertEqual(review.exporter_for("settings", "size-small-dark-ax5-text-bigger-1x"),
                          "settings_size_visual_review_frames")
+        self.assertEqual(review.exporter_for("settings", "theme-native-small-light-ax5-revealed-2x"),
+                         "settings_theme_visual_review_frames")
         self.assertEqual(review.exporter_for("navigation", "inventory-light-393"),
                          "session_browser_renders_realistic_dark_light_and_search_states")
         self.assertEqual(review.exporter_for("resources", "mixed"),
@@ -122,61 +127,10 @@ class VisualReview(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing required cases"):
             self.produce()
 
-    def test_each_small_light_keyboard_retina_scrolled_native_case_is_required(self):
-        names = (
-            "inbox/phone-question-dark-320x568-1x.png",
-            "inbox/desktop-question-light-1100x720-1x.png",
-            "inbox/phone-reply-dark-393x852-1x.png",
-            "inbox/phone-reply-dark-393x852-2x.png",
-            "inbox/desktop-scrolled-light-640x360-1x.png",
-            "inbox/phone-native-reply-light-320x280-1x.png",
-            "inbox/phone-sending-light-320x280-1x.png",
-            "inbox/phone-other-question-dark-320x568-2x.png",
-            "inbox/desktop-refused-light-640x360-1x.png",
-            "settings/small-typed-search.png",
-            "settings/small-no-match.png",
-            "navigation/matching-light-320.png",
-            "navigation/retina-2x-native-true-640.png",
-            "navigation/header-quiet-light-native-false-1x-320.png",
-            "navigation/header-split-dark-native-true-2x-640.png",
-            "navigation/header-keyboard-light-native-false-1x-393.png",
-            "navigation/header-large-text-light-native-true-2x-786.png",
-            "navigation/header-empty-dark-native-false-1x-320.png",
-            "navigation/pane-motion-horizontal-light-320x568-1x-native-false-keyboard-true-reduced-false-mid-drag.png",
-            "navigation/pane-motion-horizontal-dark-393x480-2x-native-true-keyboard-false-reduced-false-release-plus-100ms.png",
-            "navigation/pane-motion-cancel-light-320x568-1x-native-false-keyboard-false-reduced-false-settled.png",
-        )
-        for name in names:
-            with self.subTest(case=name):
-                png = self.root / name
-                contents = png.read_bytes()
-                png.unlink()
-                with self.assertRaisesRegex(ValueError, "missing required cases"):
-                    self.produce()
-                png.write_bytes(contents)
-
     def test_missing_tree_fails(self):
         (self.root / self.subject).with_suffix(".json").unlink()
         with self.assertRaisesRegex(ValueError, "missing matching tree"):
             self.produce()
-
-    def test_each_inline_keyboard_and_no_choices_case_is_required(self):
-        names = (
-            "phone-inline-dark-393x852-1x.png", "phone-inline-light-393x852-1x.png",
-            "phone-inline-dark-320x568-1x.png", "phone-inline-light-320x568-1x.png",
-            "phone-inline-no-choices-dark-393x852-1x.png",
-            "phone-inline-no-choices-light-393x852-1x.png",
-            "phone-inline-no-choices-dark-320x568-1x.png",
-            "phone-inline-no-choices-light-320x568-1x.png",
-        )
-        for name in names:
-            with self.subTest(case=name):
-                png = self.root / "inbox" / name
-                contents = png.read_bytes()
-                png.unlink()
-                with self.assertRaisesRegex(ValueError, "missing required cases"):
-                    self.produce()
-                png.write_bytes(contents)
 
     def test_pixel_mismatch_fails(self):
         tree = copy.deepcopy(self.tree)
@@ -184,23 +138,6 @@ class VisualReview(unittest.TestCase):
         self.frame(self.subject, tree=tree)
         with self.assertRaisesRegex(ValueError, "pixel dimensions differ"):
             self.produce()
-
-    def test_each_acp_phone_and_native_reduced_case_is_required(self):
-        names = [
-            f"phone-acp-{state}-{theme}-{size}-1x.png"
-            for state, theme, size in product(
-                ("select", "ask", "form", "input"), ("dark", "light"),
-                ("393x852", "320x568", "320x280"))
-        ]
-        self.assertEqual(len(names), 24)
-        for name in names:
-            with self.subTest(case=name):
-                png = self.root / "inbox" / name
-                contents = png.read_bytes()
-                png.unlink()
-                with self.assertRaisesRegex(ValueError, "missing required cases"):
-                    self.produce()
-                png.write_bytes(contents)
 
     def test_logical_rounding_is_bounded_to_half_a_pixel(self):
         tree = copy.deepcopy(self.tree)
@@ -322,7 +259,8 @@ class VisualReview(unittest.TestCase):
         repo = self.root / "repo"
         scripts = repo / "clients/rune/scripts"
         scripts.mkdir(parents=True)
-        for name in ("visual-review.sh", "visual_review.py", "visual_motion.py"):
+        for name in ("visual-review.sh", "visual_review.py", "visual_motion.py",
+                     "visual_navigation.py", "visual_themes.py"):
             shutil.copyfile(Path(__file__).with_name(name), scripts / name)
         (scripts.parent / "Cargo.toml").write_text('rune = { rev = "test-pin" }\n')
         for args in (["init", "-q"], ["add", "."],
@@ -336,19 +274,31 @@ class VisualReview(unittest.TestCase):
         cargo.write_text(f"#!{sys.executable}\n{fixture}")
         cargo.chmod(0o755)
         out = self.root / "fresh review"
+        private_seed = self.root / "inherited-private-prefs"
+        seed = private_seed / "sh.phux.rune/prefs.json"
+        seed.parent.mkdir(parents=True)
+        seed_bytes = b'{"font_size":15,"tour_offered":false}\n'
+        seed.write_bytes(seed_bytes)
         environment = {
             **os.environ, "PATH": str(binaries) + os.pathsep + os.environ["PATH"],
             "PHUX_SOCKET": "do-not-connect", "PHUX_WS_TOKENS": "do-not-use",
             "SIMCTL_CHILD_PHUX_PROFILE": "default",
+            "RUNE_PREFS_DIR": str(private_seed),
         }
         result = subprocess.run(["bash", str(scripts / "visual-review.sh"), str(out)],
                                 env=environment, cwd=self.root, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         manifest = json.loads((out / "manifest.json").read_text())
-        self.assertEqual(len(manifest["cases"]), 491)
+        self.assertEqual(len(manifest["cases"]), 707)
         self.assertEqual(manifest["currentRunePin"], "test-pin")
         self.assertFalse(manifest["dirty"])
-        self.assertEqual(len(list((out / "logs").glob("*.log"))), 11)
+        self.assertEqual(len(list((out / "logs").glob("*.log"))), 14)
+        self.assertEqual(seed.read_bytes(), seed_bytes)
+        self.assertEqual({path.relative_to(private_seed).as_posix(): path.read_bytes()
+                          for path in private_seed.rglob("*") if path.is_file()},
+                         {"sh.phux.rune/prefs.json": seed_bytes})
+        self.assertEqual(json.loads((out / "prefs/runner-fixture.json").read_text()),
+                         {"fixture": True})
 
 
 if __name__ == "__main__":

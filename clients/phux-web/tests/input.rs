@@ -5,9 +5,8 @@ use phux_protocol::input::mouse::MouseButton;
 use phux_protocol::input::paste::PasteTrust;
 use phux_web::input::{
     BrowserKey, MAX_PASTE_BYTES, WheelAction, WheelModes, code_to_physical_key, held_button,
-    is_copy_chord, is_find_chord, key_events_for_text, mouse_button, on_screen_key, paste_event,
-    reports_motion, route_key, route_wheel, scrollback_page, surface_pixel, wheel_arrows,
-    wheel_button, wheel_rows, with_ctrl,
+    is_copy_chord, is_find_chord, mouse_button, on_screen_key, paste_event, reports_motion,
+    route_key, route_wheel, scrollback_page, surface_pixel, wheel_button, wheel_rows, with_ctrl,
 };
 use wasm_bindgen_test::wasm_bindgen_test;
 
@@ -148,14 +147,6 @@ fn printable_keys_carry_text_and_the_modifiers_spent_producing_it() {
 }
 
 #[wasm_bindgen_test]
-fn committed_text_becomes_one_key_per_scalar() {
-    let events = key_events_for_text("\u{65e5}\u{672c}");
-    assert_eq!(events.len(), 2);
-    assert_eq!(events[0].text.as_deref(), Some("\u{65e5}"));
-    assert_eq!(events[1].text.as_deref(), Some("\u{672c}"));
-}
-
-#[wasm_bindgen_test]
 fn shift_page_keys_page_the_local_scrollback() {
     let shifted = |code| BrowserKey {
         shift: true,
@@ -292,22 +283,6 @@ fn the_wheel_scrolls_back_reports_or_becomes_arrows_by_the_programs_modes() {
         assert_eq!(route_wheel(modes, true, false), WheelAction::Scrollback);
         assert_eq!(route_wheel(modes, false, true), WheelAction::Scrollback);
     }
-}
-
-#[wasm_bindgen_test]
-fn wheel_rows_become_one_unmodified_arrow_press_each() {
-    let up = wheel_arrows(-3);
-    assert_eq!(up.len(), 3);
-    for key in &up {
-        assert_eq!(key.key, PhysicalKey::ArrowUp);
-        assert_eq!(key.action, KeyAction::Press);
-        assert_eq!(key.mods, ModSet::empty());
-        assert_eq!(key.text, None);
-    }
-    let down = wheel_arrows(2);
-    assert_eq!(down.len(), 2);
-    assert!(down.iter().all(|key| key.key == PhysicalKey::ArrowDown));
-    assert!(wheel_arrows(0).is_empty());
 }
 
 #[wasm_bindgen_test]

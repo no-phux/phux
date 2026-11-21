@@ -108,15 +108,15 @@ fn append_arrays_attribute_each_element_to_its_contributor() {
     assert_eq!(plugins.elements.as_deref(), Some(&[1, 3][..]));
     assert_eq!(plugins.layer, 3, "last contributor owns the key");
 
-    // `status.right`: the shipped defaults carry four widgets (session
-    // name, clock, the `+ session` button, and the narrow-terminal `switch`
-    // chip); the distro appends a clock after them.
-    let shipped_len = 4;
+    // `status.right`: the shipped widgets, then the distro's clock.
     let right = origin(&provenance, "status.right");
-    assert_eq!(
-        right.elements.as_deref(),
-        Some(&[vec![0; shipped_len], vec![2]].concat()[..])
-    );
+    let (last, shipped) = right
+        .elements
+        .as_deref()
+        .and_then(<[usize]>::split_last)
+        .expect("elements");
+    assert_eq!(*last, 2);
+    assert!(!shipped.is_empty() && shipped.iter().all(|l| *l == 0));
     let merged_right = merged["status"]["right"]
         .as_array()
         .expect("status.right is an array");

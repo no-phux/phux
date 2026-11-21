@@ -25,6 +25,7 @@ pub(crate) fn dispatch(
         Some(Command::Server(args)) => commands::server::run(args, socket),
         Some(Command::Ls(args)) => commands::ls::run(args, socket),
         Some(Command::Whoami(args)) => commands::whoami::run(args, socket),
+        Some(Command::Version(args)) => commands::version::run(args, socket),
         Some(Command::Status(args)) => commands::status::run(args, socket),
         Some(Command::RuntimeInfo(args)) => commands::runtime_info::run(args.json.json),
         Some(Command::Perf(args)) => commands::perf::run(args, socket),
@@ -89,6 +90,7 @@ pub(crate) fn dispatch(
         Some(Command::SendKeys(args)) => commands::send_keys::run(args, socket),
         Some(Command::Upload(args)) => commands::upload::run(args, socket),
         Some(Command::Download(args)) => commands::download::run(args, socket),
+        Some(Command::Git(args)) => commands::git_checkout::run(args, socket),
         Some(Command::Forward(args)) => commands::forward::run(args, socket),
         Some(Command::Paste(args)) => commands::paste::run(args, socket),
         Some(Command::Wait(args)) => commands::wait::run(args, socket),
@@ -115,6 +117,7 @@ pub(crate) fn dispatch(
         Some(Command::Pair(args)) => commands::pair::run(args, socket),
         Some(Command::Workload(args)) => commands::workload::run(args),
         Some(Command::Completion(args)) => commands::completion::run(args),
+        Some(Command::Man(_)) => commands::man::run(),
         // Returned above, before process-global setup.
         Some(Command::Mcp(..)) => ExitCode::FAILURE,
         Some(Command::Skill(args)) => skill::dispatch(args.action, args.scope, socket),

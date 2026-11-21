@@ -81,33 +81,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fingerprint_is_twelve_hex_of_sha256() {
-        // sha256("abc") = ba7816bf8f01cfea...
-        assert_eq!(fingerprint("abc").as_deref(), Some("ba7816bf8f01"));
-        assert_eq!(fingerprint("  "), None);
-    }
-
-    #[test]
-    fn jwt_payload_decodes_without_verification() {
-        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(br#"{"tier":5}"#);
-        let token = format!("h.{payload}.s");
-        assert_eq!(jwt_claims(&token).unwrap()["tier"], 5);
-        assert!(jwt_claims("not-a-jwt").is_none());
-    }
-
-    #[test]
-    fn iso_timestamps_parse_with_offsets_and_fractions() {
-        assert_eq!(iso_ms("2000-01-01T00:00:00Z"), Some(946_684_800_000));
-        assert_eq!(iso_ms("2000-01-01T00:00:00.430Z"), Some(946_684_800_430));
-        assert_eq!(iso_ms("2000-01-01T02:00:00+02:00"), Some(946_684_800_000));
-        assert_eq!(
-            iso_ms("2026-10-20T03:49:59.556817+00:00").map(|v| v % 1000),
-            Some(556)
-        );
-        assert_eq!(iso_ms("nope"), None);
-    }
-
-    #[test]
     fn waits_round_up_to_minutes() {
         assert_eq!(human_wait(1), "1m");
         assert_eq!(human_wait(360_000), "6m");

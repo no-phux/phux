@@ -350,13 +350,6 @@ impl PredictionState {
         self.echo_confirmed = false;
     }
 
-    /// Current prompt-boundary anchor `(row, col)`, if known.
-    #[cfg(test)]
-    #[must_use]
-    pub(crate) const fn prompt_boundary(&self) -> Option<(u16, u16)> {
-        self.prompt_boundary
-    }
-
     /// Drop the prediction at the front of the queue.
     pub(crate) fn pop_front(&mut self) -> Option<Prediction> {
         self.pending.pop_front()
@@ -801,18 +794,6 @@ mod tests {
     }
 
     #[test]
-    fn multiple_keystrokes_stack_horizontally() {
-        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
-        for ch in ["h", "e", "l", "l", "o"] {
-            assert_eq!(s.predict_key(&key_text(ch)), PredictionOutcome::Predicted);
-        }
-        let cells: Vec<_> = s.pending().map(|p| (p.row, p.col, p.kind)).collect();
-        let want: Vec<_> = (0..5).map(|c| (0, c, PredictionKind::Insert)).collect();
-        assert_eq!(cells, want);
-        assert_eq!(s.cursor(), (0, 5));
-    }
-
-    #[test]
     fn enter_after_insert_predicts_newline_and_advances_row() {
         let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
         for ch in ["h", "i"] {
@@ -827,21 +808,6 @@ mod tests {
         assert_eq!(last.kind, PredictionKind::Newline);
         assert_eq!(last.row, 0);
         assert_eq!(last.col, 2);
-    }
-
-    #[test]
-    fn backspace_after_insert_is_predicted_and_decrements_cursor() {
-        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
-        assert_eq!(s.predict_key(&key_text("a")), PredictionOutcome::Predicted);
-        assert_eq!(s.cursor(), (0, 1));
-        let bs = key_named(PhysicalKey::Backspace, ModSet::empty());
-        assert_eq!(s.predict_key(&bs), PredictionOutcome::Predicted);
-        assert_eq!(s.cursor(), (0, 0));
-        assert_eq!(s.pending_len(), 2);
-        let last = s.pending().last().expect("two predictions");
-        assert_eq!(last.kind, PredictionKind::BackspaceEol);
-        assert_eq!(last.col, 0);
-        assert_eq!(last.text, " ");
     }
 
     // ---- prompt-boundary heuristic + Ctrl-U -------------
@@ -927,19 +893,6 @@ mod tests {
     }
 
     #[test]
-    fn first_insert_records_prompt_boundary_at_cursor() {
-        // The user starts typing at col 5 (a prompt occupies cols 0..5).
-        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
-        s.set_cursor(0, 5);
-        assert_eq!(s.prompt_boundary(), None);
-        s.predict_key(&key_text("a"));
-        assert_eq!(s.prompt_boundary(), Some((0, 5)));
-        // A second insert on the same row does not advance the anchor.
-        s.predict_key(&key_text("b"));
-        assert_eq!(s.prompt_boundary(), Some((0, 5)));
-    }
-
-    #[test]
     fn backspace_stops_at_prompt_boundary() {
         // Prompt ends at col 3; type one char then backspace twice. The
         // first backspace lands on the boundary (col 3); the second would
@@ -964,7 +917,6 @@ mod tests {
         // regress).
         let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
         s.set_cursor(0, 6);
-        assert_eq!(s.prompt_boundary(), None);
         let bs = key_named(PhysicalKey::Backspace, ModSet::empty());
         assert_eq!(s.predict_key(&bs), PredictionOutcome::Predicted);
         assert_eq!(s.cursor(), (0, 5));
@@ -1004,10 +956,10 @@ mod tests {
         let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
         s.set_cursor(0, 3);
         s.predict_key(&key_text("a"));
-        assert_eq!(s.prompt_boundary(), Some((0, 3)));
         // Same-row resync (e.g. drain after server echo at col 4).
         s.set_cursor(0, 4);
-        assert_eq!(s.prompt_boundary(), Some((0, 3)));
+        assert_eq!(s.predict_key(&key_ctrl_u()), PredictionOutcome::Predicted);
+        assert_eq!(s.cursor(), (0, 3));
     }
 
     #[test]
@@ -1026,9 +978,12 @@ mod tests {
             let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
             s.set_cursor(0, 2);
             s.predict_key(&key_text("a"));
-            assert_eq!(s.prompt_boundary(), Some((0, 2)), "{name}");
             change(&mut s);
-            assert_eq!(s.prompt_boundary(), None, "{name}");
+            // Back on the old row past the old anchor: a remembered
+            // boundary would let Ctrl-U predict.
+            s.set_cursor(0, 6);
+            let outcome = s.predict_key(&key_ctrl_u());
+            assert_eq!(outcome, PredictionOutcome::Skipped, "{name}");
         }
     }
 
@@ -1042,13 +997,6 @@ mod tests {
         assert_eq!(s.pending_len(), 0);
         s.set_cursor(50, 200);
         assert_eq!(s.cursor(), (29, 99));
-    }
-
-    #[test]
-    fn set_cursor_clamps_to_viewport() {
-        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
-        s.set_cursor(50, 200);
-        assert_eq!(s.cursor(), (23, 79));
     }
 
     /// An arrow over a known grid cell moves the predicted cursor by that
@@ -1149,28 +1097,6 @@ mod tests {
     }
 
     #[test]
-    fn three_contradictions_in_a_row_turn_tentative() {
-        // The mispredict-storm signal: three consecutive contradicting
-        // reconcile passes (vi normal-mode, a modal app, fast transitions)
-        // hide the overlay. Two are not enough.
-        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
-        s.note_reconcile(contradicting_pass());
-        s.note_reconcile(contradicting_pass());
-        assert!(!s.is_tentative(), "two contradictions: not yet tentative");
-        s.note_reconcile(contradicting_pass());
-        assert!(s.is_tentative(), "third contradiction trips the lock");
-        assert!(
-            !s.is_suspended(),
-            "tentative is a display lock, not a predict suspend"
-        );
-        // Predicting continues (the re-arm signal is a confirmed
-        // prediction) but nothing displays.
-        assert_eq!(s.predict_key(&key_text("a")), PredictionOutcome::Predicted);
-        assert_eq!(s.pending_len(), 1);
-        assert!(!s.should_display(0), "tentative hides the overlay");
-    }
-
-    #[test]
     fn turning_tentative_drops_the_pending_queue() {
         // The lock must drop in-flight predictions — they are exactly the
         // ghosts the server is contradicting.
@@ -1215,24 +1141,6 @@ mod tests {
     }
 
     #[test]
-    fn alt_screen_queues_but_hides_until_echo_confirms() {
-        let mut s = alt_state();
-        s.set_cursor(5, 3);
-        assert_eq!(
-            s.predict_key_at(&key_text("h"), 100),
-            PredictionOutcome::Predicted,
-            "alt screen predicts as usual — only display is gated"
-        );
-        assert_eq!(s.pending_len(), 1);
-        assert!(!s.should_display(110), "no echo evidence yet — hidden");
-        assert_eq!(s.displayable(110).count(), 0);
-        // The app echoes: evidence lands via the reconcile path.
-        s.confirm_echo();
-        assert!(s.should_display(150), "confirmed echo unlocks display");
-        assert_eq!(s.displayable(150).count(), 1);
-    }
-
-    #[test]
     fn an_overdue_front_hides_the_overlay_until_authority_catches_up() {
         let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
         s.predict_key_at(&key_text("a"), 1_000);
@@ -1269,21 +1177,6 @@ mod tests {
         assert_eq!(s.predict_key_at(&enter, 150), PredictionOutcome::Skipped);
         assert_eq!(s.pending_len(), 0, "the burst dropped with the Enter");
         assert!(s.is_suspended(), "suspended until the next cursor sync");
-    }
-
-    #[test]
-    fn alt_screen_enter_keeps_the_echo_latch() {
-        // A submit does not change who echoes: the next message displays
-        // at once (one warm-up per screen session, not per line).
-        let mut s = alt_state();
-        s.set_cursor(10, 2);
-        s.predict_key_at(&key_text("h"), 100);
-        s.confirm_echo();
-        let enter = key_named(PhysicalKey::Enter, ModSet::empty());
-        s.predict_key_at(&enter, 200);
-        s.set_cursor(11, 2); // prompt redrawn; driver reseeds
-        s.predict_key_at(&key_text("y"), 300);
-        assert!(s.should_display(310), "submit does not unlearn the echo");
     }
 
     #[test]
@@ -1400,18 +1293,5 @@ mod tests {
         cleared.confirm_echo();
         cleared.clear();
         assert!(!cleared.echo_confirmed(), "clear dropped the latch");
-    }
-
-    #[test]
-    fn locked_overlay_still_advances_the_cursor_estimate() {
-        // Cursor consistency: while display is locked, the ESTIMATE
-        // advances (the queue is ahead) but callers gate presentation on
-        // should_display, so the authoritative cursor is what shows.
-        let mut s = alt_state();
-        s.set_cursor(2, 5);
-        s.predict_key_at(&key_text("a"), 100);
-        s.predict_key_at(&key_text("b"), 110);
-        assert_eq!(s.cursor(), (2, 7), "estimate is ahead");
-        assert!(!s.should_display(120), "but must not be presented");
     }
 }

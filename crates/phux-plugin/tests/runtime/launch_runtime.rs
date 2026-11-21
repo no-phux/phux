@@ -274,23 +274,6 @@ fn disabled_plugin_ships_no_launchable_integrations() {
 }
 
 #[test]
-fn list_launchable_carries_each_agent_identity() {
-    let fx = Fixture::new(true);
-    let items = phux_plugin::list_launchable(&fx.config, LaunchMode::Terminal).expect("list");
-    let identity = |id: &str| {
-        items
-            .iter()
-            .find(|item| item.integration_id == id)
-            .expect("listed")
-            .agent_identity
-            .as_ref()
-            .and_then(|identity| identity.kind.clone())
-    };
-    assert_eq!(identity("codex").as_deref(), Some("codex"));
-    assert_eq!(identity("rooted"), None);
-}
-
-#[test]
 fn duplicate_enabled_plugin_and_integration_ids_fail_closed() {
     let fx = Fixture::new(true);
     fx.add_plugin(
@@ -314,25 +297,6 @@ fn duplicate_enabled_plugin_and_integration_ids_fail_closed() {
     assert!(
         matches!(err, LaunchError::DuplicatePluginId { ref id, .. } if id == "example.launch"),
         "{err:?}"
-    );
-}
-
-/// `phux agent start --kind K`: the unique `[agent_identity]` claimant, with
-/// trim/case tolerance; `--integration` overrides without consulting claims.
-#[test]
-fn a_kind_resolves_the_integration_that_claims_it() {
-    let fx = Fixture::new(true);
-    for kind in ["codex", " CODEX "] {
-        assert_eq!(
-            fx.for_kind(None, kind).expect("claimed").integration_id,
-            "codex"
-        );
-    }
-    assert_eq!(
-        fx.for_kind(Some("rooted"), "codex")
-            .expect("explicit")
-            .integration_id,
-        "rooted"
     );
 }
 

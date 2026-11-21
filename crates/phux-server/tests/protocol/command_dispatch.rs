@@ -1,4 +1,4 @@
-//! Dispatch of the generic `COMMAND` envelope (SPEC §5, ADR-0021) and of the
+//! Dispatch of the generic `COMMAND` envelope (ADR-0021) and of the
 //! L3 session create/rename keys, driven through the production read loop.
 
 use std::time::Duration;

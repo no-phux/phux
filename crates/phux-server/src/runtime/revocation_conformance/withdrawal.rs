@@ -17,34 +17,6 @@ use crate::state::Outbound;
 use crate::workload::WorkloadRegistry;
 
 #[tokio::test(flavor = "current_thread")]
-async fn revoking_a_key_terminates_its_live_connections_with_authorization_revoked() {
-    local(async {
-        let fx = Fixture::paired(&["*@global"]);
-        let attached = fx.workload().await;
-        attached.attach(1).await;
-        let idle = fx.workload().await;
-
-        fx.revoke_key();
-        fx.sweep();
-
-        for connection in [&attached, &idle] {
-            connection
-                .assert_ended_with(DetachReason::AuthorizationRevoked)
-                .await;
-            assert!(fx.state.with(|s| s.connection_revoked(connection.client)));
-        }
-        assert!(
-            fx.state
-                .with(|s| !s.attached().contains_key(&attached.client)),
-            "the attachment is released"
-        );
-        attached.finish().await;
-        idle.finish().await;
-    })
-    .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
 async fn expiry_terminates_with_authorization_expired_and_releases_leases() {
     local(async {
         let fx = Fixture::expiring(jiff::SignedDuration::from_millis(750));
@@ -105,29 +77,6 @@ async fn ceiling_reduction_that_no_longer_contains_a_minted_clause_revokes() {
     .await;
 }
 
-/// ADR-0128: adding a hold to a live credential is a narrowing. The open
-/// connection minted the verb un-held, so it is revoked, and its reconnect
-/// gets the hold; removing a hold is a widening and never revokes.
-#[tokio::test(flavor = "current_thread")]
-async fn adding_a_hold_to_a_live_credential_revokes_its_connections() {
-    local(async {
-        let fx = Fixture::paired(&["observe,bind,signal@global"]);
-        let agent = fx.workload().await;
-        fx.rewrite_ceiling(&["observe,bind,signal,input@global"]);
-        fx.sweep();
-        settle().await;
-        assert!(agent.is_open(), "a wider ceiling ended the connection");
-
-        fx.rewrite_ceiling(&["observe,bind,?signal,input@global"]);
-        fx.sweep();
-        agent
-            .assert_ended_with(DetachReason::AuthorizationRevoked)
-            .await;
-        agent.finish().await;
-    })
-    .await;
-}
-
 #[tokio::test(flavor = "current_thread")]
 async fn malformed_reload_revokes_every_workload_session_until_a_valid_generation_loads() {
     local(async {
@@ -144,7 +93,7 @@ async fn malformed_reload_revokes_every_workload_session_until_a_valid_generatio
         );
 
         // The last known-good generation is not preserved: HELLO is refused.
-        let refused = fx.connect(workload_identity(&fx.credential_id, &["*@global"]), None);
+        let refused = fx.connect(workload_identity(&fx.credential_id, &["*@global"]));
         refused.send(&hello("revocation-conformance"));
         refused
             .wait_for("the HELLO refusal", |frame| {

@@ -22,6 +22,16 @@ pub(super) fn select_window_action(index: usize) -> Option<phux_config::keybind:
     Some(action)
 }
 
+/// A click on tab `index`: `select-window { index, toggle = true }`, which
+/// goes back to the last tab when `index` is the one shown.
+pub(super) fn tab_click_action(index: usize) -> Option<phux_config::keybind::ResolvedAction> {
+    let mut action = select_window_action(index)?;
+    action
+        .args
+        .insert("toggle".to_owned(), toml::Value::Boolean(true));
+    Some(action)
+}
+
 /// `focus-pane { window, pane }`: the pane at DFS leaf ordinal `pane` of
 /// window `window`.
 pub(super) fn focus_pane_action(

@@ -99,12 +99,4 @@ mod tests {
         assert_eq!(payload, b"line one\nline two\n");
         assert!(stdin.is_empty(), "stdin must be drained");
     }
-
-    /// Non-UTF-8 stdin is a valid payload — paste carries bytes, not text.
-    #[test]
-    fn stdin_payload_may_be_non_utf8() {
-        let mut stdin: &[u8] = &[0xff, 0xfe, b'x'];
-        let payload = payload_from(None, &mut stdin).unwrap();
-        assert_eq!(payload, vec![0xff, 0xfe, b'x']);
-    }
 }

@@ -174,11 +174,19 @@ pub fn fixture(phone: bool) -> (Arc<Client>, Runtime<Desk>) {
         ..ControlOptions::default()
     }));
     boot(&client);
-    let mut desk = Desk::new(&Resolved::offline("spatial fixture")).with_phone(phone);
-    desk.prefs = Prefs::memory();
+    let mut desk =
+        Desk::with_preferences(&Resolved::offline("spatial fixture"), None, Prefs::memory())
+            .with_phone(phone);
+    assert_eq!(
+        desk.font_size,
+        crate::grid::DEFAULT_FONT_SIZE,
+        "isolated before the first frame"
+    );
+    assert!(!desk.prefs.is_persistent());
     desk.link.heard = true;
     desk.connection.client = Some(Arc::clone(&client));
-    let mut rt = Runtime::new(desk, crate::ui::view, (393.0, 852.0), Env::new(true, 2.0));
+    let mut rt =
+        crate::test_support::runtime(desk, crate::ui::view, (393.0, 852.0), Env::new(true, 2.0));
     rt.on_key = Some(Desk::key);
     poll(&mut rt);
     settle(&mut rt);

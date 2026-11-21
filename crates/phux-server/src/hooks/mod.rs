@@ -20,7 +20,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use phux_config::Action;
-use phux_config::plugin::PluginPlatform;
 use tokio::sync::{Semaphore, mpsc};
 use tracing::{debug, warn};
 
@@ -44,7 +43,7 @@ pub const HOOK_TIMEOUT: Duration = Duration::from_secs(30);
 /// The `to` value when the detector withdraws a record (the L3 `unknown`).
 pub const AGENT_STATE_UNKNOWN: &str = "unknown";
 
-/// One fired event: a §9 name plus context. Keys are kebab-case and reach the
+/// One fired event: an event name plus context. Keys are kebab-case and reach the
 /// child as `PHUX_<KEY>`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HookEvent {
@@ -502,27 +501,6 @@ fn log_outcome(label: &str, result: &std::io::Result<phux_plugin::CommandSpecOut
         Err(err) => {
             warn!(hook = %label, error = %err, "hook failed to spawn");
         }
-    }
-}
-
-/// Whether the current OS is allowed (`None` means every platform).
-pub(crate) fn platform_enabled(platforms: Option<&[PluginPlatform]>) -> bool {
-    let Some(platforms) = platforms else {
-        return true;
-    };
-    current_platform().is_some_and(|current| platforms.contains(&current))
-}
-
-/// The manifest-vocabulary name of the OS this server runs on.
-const fn current_platform() -> Option<PluginPlatform> {
-    if cfg!(target_os = "macos") {
-        Some(PluginPlatform::Macos)
-    } else if cfg!(target_os = "linux") {
-        Some(PluginPlatform::Linux)
-    } else if cfg!(target_os = "windows") {
-        Some(PluginPlatform::Windows)
-    } else {
-        None
     }
 }
 

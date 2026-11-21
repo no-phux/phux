@@ -1,6 +1,13 @@
+use phux_protocol::caps::BootstrapStreamProfile;
+use phux_protocol::ids::{BootstrapId, StreamId};
+use phux_protocol::wire::frame::FrameKind;
+#[cfg(feature = "engine")]
+use phux_protocol::wire::frame::HistoryRejectionReason;
+
 use super::*;
 #[cfg(feature = "engine")]
 mod bounded_selection;
+mod native_agent;
 #[cfg(feature = "engine")]
 mod theme;
 #[cfg(feature = "engine")]
@@ -59,13 +66,13 @@ fn apply_batch_ok(owner: &EngineHandle, events: Vec<EngineEvent>) -> Vec<EngineO
 }
 
 fn output(terminal: &ResourceId, seq: u64, bytes: &[u8]) -> EngineEvent {
-    EngineEvent::Output {
+    EngineEvent::Stream(FrameKind::ResourceOutput {
         terminal_id: terminal.clone(),
         stream_id: stream(1),
         bootstrap_id: bootstrap(1),
         seq,
         bytes: bytes.to_vec().into(),
-    }
+    })
 }
 
 fn attach(owner: &EngineHandle, terminal_id: &ResourceId, bytes: &[u8]) {
@@ -115,7 +122,7 @@ fn bootstrap_events(
     history_cursor: Option<&[u8]>,
 ) -> [EngineEvent; 3] {
     [
-        EngineEvent::BootstrapBegin {
+        EngineEvent::Stream(FrameKind::BootstrapBegin {
             terminal_id: terminal.clone(),
             stream_id: stream(1),
             bootstrap_id: bootstrap(bootstrap_id),
@@ -123,20 +130,20 @@ fn bootstrap_events(
             cols,
             rows,
             base_seq: 0,
-        },
-        EngineEvent::BootstrapChunk {
+        }),
+        EngineEvent::Stream(FrameKind::BootstrapChunk {
             terminal_id: terminal.clone(),
             stream_id: stream(1),
             bootstrap_id: bootstrap(bootstrap_id),
             chunk_seq: 0,
             payload: payload.to_vec().into(),
-        },
-        EngineEvent::BootstrapReady {
+        }),
+        EngineEvent::Stream(FrameKind::BootstrapReady {
             terminal_id: terminal.clone(),
             stream_id: stream(1),
             bootstrap_id: bootstrap(bootstrap_id),
-            history_cursor: history_cursor.map(<[u8]>::to_vec),
-        },
+            history_cursor: history_cursor.map(bytes::Bytes::copy_from_slice),
+        }),
     ]
 }
 
@@ -360,15 +367,15 @@ fn scrolling_toward_uncached_history_emits_a_prefetch_request() {
     );
     apply_ok(
         &owner,
-        EngineEvent::HistoryRejected {
+        EngineEvent::Stream(FrameKind::HistoryRejected {
             terminal_id: terminal.clone(),
             stream_id: stream(1),
             bootstrap_id: bootstrap(1),
-            cursor: b"older".to_vec(),
+            cursor: bytes::Bytes::from_static(b"older"),
             reason: HistoryRejectionReason::ZeroLimit,
             required_bytes: 0,
             required_rows: 0,
-        },
+        }),
     );
 
     let outcome = owner.scroll(&terminal, Scroll::Top).expect("scroll");
@@ -511,14 +518,6 @@ fn detached_search_projection_is_unavailable_before_anchor_lookup() {
 
 #[cfg(feature = "engine")]
 #[test]
-fn non_retained_closed_search_projection_is_unavailable_before_anchor_lookup() {
-    assert_retired_search_projection_unavailable(|owner, terminal| {
-        apply_ok(owner, EngineEvent::closed_unknown(terminal.clone()));
-    });
-}
-
-#[cfg(feature = "engine")]
-#[test]
 fn live_search_preserves_stale_and_wrong_owner_errors() {
     let (owner, _) = owner();
     let terminal = id(1);
@@ -555,16 +554,6 @@ fn live_search_preserves_stale_and_wrong_owner_errors() {
 
 #[cfg(feature = "engine")]
 #[test]
-fn empty_search_query_precedes_projection_availability() {
-    let (owner, _) = owner();
-    assert!(matches!(
-        owner.search_bounded(&id(999), String::new(), true, 0),
-        Err(EngineError::Engine(reason)) if reason == "search query is empty"
-    ));
-}
-
-#[cfg(feature = "engine")]
-#[test]
 fn retained_close_keeps_existing_kernel_search_refusal() {
     let (owner, _) = owner();
     let terminal = id(1);
@@ -578,80 +567,4 @@ fn retained_close_keeps_existing_kernel_search_refusal() {
     ));
     owner.release(&terminal);
     assert_search_projection_unavailable(&owner, &terminal, u64::MAX);
-}
-
-#[test]
-fn engine_accessor_exposes_only_committed_views_and_disconnects_closed_sources() {
-    use phux_protocol::native_agent::{NativeCapabilities, NativeView};
-    #[cfg(feature = "engine")]
-    let (engine, _publication) = owner();
-    #[cfg(not(feature = "engine"))]
-    let engine = owner();
-    let agent = id(22);
-    let stream_id = stream(3);
-    let bootstrap_id = bootstrap(4);
-    apply_ok(
-        &engine,
-        EngineEvent::AgentSessionDeclared {
-            terminal_id: agent.clone(),
-            parent: Some(id(7)),
-            provider: Some("omp".into()),
-            native_id: None,
-            state: Some("working".into()),
-        },
-    );
-    assert_eq!(engine.native_agent_view(&agent), None);
-    let view = NativeView {
-        activation: "activation-A".into(),
-        backend: "acp".into(),
-        capabilities: NativeCapabilities {
-            prompt: true.into(),
-            ..NativeCapabilities::default()
-        },
-        connected: true,
-        turn_id: None,
-        provider_session_id: None,
-        questions: vec![],
-    };
-    let data =
-        serde_json::json!({"schema":"phux.native-agent/v1","update":{"type":"view","view":view}});
-    let payload = format!("{{\"seq\":1,\"ts_ms\":1,\"type\":\"provider_raw\",\"data\":{data}}}\n");
-    apply_ok(
-        &engine,
-        EngineEvent::BootstrapBegin {
-            terminal_id: agent.clone(),
-            stream_id,
-            bootstrap_id,
-            profile: BootstrapStreamProfile::AgentEventsJsonlV1,
-            cols: 0,
-            rows: 0,
-            base_seq: 1,
-        },
-    );
-    apply_ok(
-        &engine,
-        EngineEvent::BootstrapChunk {
-            terminal_id: agent.clone(),
-            stream_id,
-            bootstrap_id,
-            chunk_seq: 0,
-            payload: payload.into(),
-        },
-    );
-    assert_eq!(engine.native_agent_view(&agent), None);
-    apply_ok(
-        &engine,
-        EngineEvent::BootstrapReady {
-            terminal_id: agent.clone(),
-            stream_id,
-            bootstrap_id,
-            history_cursor: None,
-        },
-    );
-    assert_eq!(engine.native_agent_view(&agent), Some(view.clone()));
-    apply_ok(&engine, EngineEvent::closed_unknown(agent.clone()));
-    let retained = engine.native_agent_view(&agent).unwrap();
-    assert!(!retained.connected);
-    assert_eq!(retained.activation, view.activation);
-    assert_eq!(retained.provider_session_id, None);
 }

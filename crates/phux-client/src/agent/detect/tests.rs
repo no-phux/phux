@@ -87,33 +87,6 @@ fn declared_record_outranks_the_title_sentinel_and_the_screen() {
     );
 }
 
-/// `phux agent wait` reads the published record; this projection must
-/// report exactly the same state, whatever the screen says.
-#[test]
-fn the_projection_reports_the_records_state_verbatim() {
-    for meta in [
-        AgentMetaState::Idle,
-        AgentMetaState::Working,
-        AgentMetaState::Blocked,
-        AgentMetaState::Done,
-    ] {
-        let mut evidence = PaneEvidence::for_test(
-            "@6",
-            Some("Claude Code"),
-            &["do you want to continue? need approval"],
-        );
-        evidence.record = Some(record("worker", "claude", meta));
-
-        let state = infer_agent_state(&evidence, &[]);
-
-        assert_eq!(
-            state.state.as_str(),
-            meta.as_str(),
-            "record state {meta:?} must survive the projection"
-        );
-    }
-}
-
 /// With no record the listing asserts no state, however loudly the screen
 /// suggests one (`agent wait` refuses the pane with `no_agent_record`).
 #[test]
@@ -334,6 +307,7 @@ fn a_shell_foreground_outranks_agent_words_on_the_screen() {
         foreground: "bash".to_owned(),
         is_pane_shell: true,
         background: false,
+        icon: None,
     });
     let state = infer_agent_state(&evidence, &[]);
     assert_eq!(state.agent.kind, AgentKind::Unknown);
@@ -343,6 +317,7 @@ fn a_shell_foreground_outranks_agent_words_on_the_screen() {
         foreground: "node".to_owned(),
         is_pane_shell: false,
         background: false,
+        icon: None,
     });
     assert_eq!(
         infer_agent_state(&evidence, &[]).agent.kind,

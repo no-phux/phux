@@ -1,5 +1,5 @@
-//! A single-line text field with readline keys: the editor behind the
-//! prompt modals and copy-mode search.
+//! A single-line text field with readline keys: the editor behind
+//! copy-mode search (the prompt modals use ratcn's `Input`).
 
 use phux_protocol::input::key::{KeyEvent, ModSet, PhysicalKey};
 use ratatui::style::{Modifier, Style};

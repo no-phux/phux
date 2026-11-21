@@ -8,6 +8,9 @@ pub struct PaneOccupant {
     pub foreground: String,
     pub is_pane_shell: bool,
     pub background: bool,
+    /// The icon a program in the pane set; the server fills it in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentReport {
@@ -19,9 +22,21 @@ pub struct AgentReport {
 pub enum AgentDetectEvent {
     Occupant(PaneOccupant),
     State(AgentReport),
-    Reidentified { kind: String, name: String },
+    Reidentified {
+        kind: String,
+        name: String,
+    },
     AskSentinel(Option<phux_agent_session::asked::AskedPayload>),
     Retract,
+    /// The icon a program set over OSC 1337 `phux_icon`; `None` clears it.
+    Icon(Option<String>),
+}
+/// A desktop notification a program asked for (OSC 9 or OSC 777), as lossy
+/// UTF-8. The server decides whether it becomes the pane's note.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProgramNote {
+    pub title: String,
+    pub body: String,
 }
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct ProgramStatusRecord {

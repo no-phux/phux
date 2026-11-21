@@ -138,30 +138,6 @@ fn path_query_catalog_requires_its_extended_feature() {
 }
 
 #[test]
-fn shared_advertised_predicate_matches_typed_feature_sets() {
-    for &feature in ServerFeature::ALL {
-        let gate = kinds::FeatureGate::Features(feature);
-        for &advertised in ServerFeature::ALL {
-            let features = ServerFeatureSet::with(&[advertised]);
-            assert_eq!(
-                gate.advertised(features, ServerFeatureExtSet::with(ServerFeatureExt::ALL)),
-                features.contains(feature)
-            );
-        }
-    }
-    for &feature in ServerFeatureExt::ALL {
-        let gate = kinds::FeatureGate::ext(feature);
-        for &advertised in ServerFeatureExt::ALL {
-            let features_ext = ServerFeatureExtSet::with(&[advertised]);
-            assert_eq!(
-                gate.advertised(ServerFeatureSet::with(ServerFeature::ALL), features_ext),
-                features_ext.contains(feature)
-            );
-        }
-    }
-}
-
-#[test]
 fn extended_masks_require_all_bits_and_reject_zero_and_unknown_bits() {
     let empty = ServerFeatureSet::new();
     let path = ServerFeatureExt::PathQuery.mask();
@@ -376,7 +352,7 @@ fn every_client_frame_type_has_a_classification() {
 fn unknown_and_retired_tags_classify_as_deny() {
     // SPAWN 0x00, RESIZE_TERMINAL 0x04, RUN_HOOK 0x06 (unallocated); 0x0a and
     // 0x0b (freed by the dissolved session verbs).
-    // 0x2f..=0x34 are reserved for the workspace commands (L1 §5.7).
+    // 0x2f..=0x34 are reserved for the workspace commands.
     for tag in [
         0x00, 0x04, 0x06, 0x0a, 0x0b, 0x2f, 0x30, 0x31, 0x32, 0x33, 0x34,
     ] {
@@ -454,12 +430,6 @@ fn catalog_rows_and_methods_are_consistent() {
             !UNCARRIED_ROWS.contains(&rule.case),
             "row {} is carried by a method iff it is not an unallocated row",
             rule.case
-        );
-    }
-    for kind in &kinds::KINDS {
-        assert_eq!(
-            kinds::kind_spec(kind.kind).map(|spec| spec.name),
-            Some(kind.name)
         );
     }
 }

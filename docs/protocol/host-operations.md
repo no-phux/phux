@@ -71,6 +71,34 @@ dispatcher under a deadline and an output cap, with
 `GIT_OPTIONAL_LOCKS=0`, `GIT_TERMINAL_PROMPT=0` and `GIT_LITERAL_PATHSPECS=1`.
 A hub relays a satellite Terminal's checkout only to a satellite that
 advertises `CHECKOUT`; otherwise it refuses `UNSUPPORTED_SATELLITE_ROUTE`.
+
+The command body ends with an optional contract byte, the answer contract
+the client reads; an older client writes none (contract 1) and an older
+server skips it. `features_ext.CHECKOUT_V2` (`0x40000000`) says the server
+answers contract 2:
+
+- `show` with a 4 to 64 hex digit `sha` answers `commit`: the commit, its
+  whole message, the files it changed against its first parent with line
+  counts, and that patch. A client MUST see the bit before sending it; a hub
+  refuses it for a satellite without the bit.
+- A stage or unstage whose write landed but whose refreshed status could
+  not be read answers `applied`, carrying why the read failed, instead of
+  that refusal. Read the status again.
+- A host without a working `git` refuses `git_unavailable`, not
+  `git_failed`.
+
+The server folds both back for a contract-1 command (`applied` becomes the
+status read's refusal, `git_unavailable` becomes `git_failed`), so an older
+client never sees them. The pull request carries `base_ref`, and status,
+branches and tree carry `total`, every entry there is, when the host
+counted them all; older clients skip both fields.
+
+Scripts and agents read a checkout without attaching through
+`phux git status|diff|log|branches|pr|show TARGET [--json]` and the MCP
+tool `phux_git`, which print the answer as
+`{"schema_version":1,"terminal_id":...,"answer":{...}}` and exit 1 (an MCP
+error) on a typed refusal, with the answer still printed.
+
 The [request and answer types](../../crates/phux-protocol/src/checkout.rs), the
 [server handler](../../crates/phux-server/src/runtime/apps/terminal/checkout.rs), and the
 shared [`phux-git`](../../crates/phux-git/src/checkout.rs) module own the

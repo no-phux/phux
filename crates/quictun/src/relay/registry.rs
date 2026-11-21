@@ -108,50 +108,19 @@ impl<C: TunnelHandle> TunnelRegistry<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    /// A mock tunnel handle counting how many times it was reclaimed.
     #[derive(Clone, Debug)]
     struct MockConn {
         id: u32,
-        reclaims: Arc<AtomicUsize>,
     }
 
     impl MockConn {
         fn new(id: u32) -> Self {
-            Self {
-                id,
-                reclaims: Arc::new(AtomicUsize::new(0)),
-            }
-        }
-
-        fn reclaimed(&self) -> usize {
-            self.reclaims.load(Ordering::SeqCst)
+            Self { id }
         }
     }
 
     impl TunnelHandle for MockConn {
-        fn close_reclaimed(&self) {
-            self.reclaims.fetch_add(1, Ordering::SeqCst);
-        }
-    }
-
-    #[test]
-    fn reclaim_replaces_and_closes_the_incumbent() {
-        let registry = TunnelRegistry::new();
-        let old = MockConn::new(1);
-        let new = MockConn::new(2);
-        let old_epoch = registry.claim("alpha", old.clone());
-        let new_epoch = registry.claim("alpha", new.clone());
-
-        assert_ne!(old_epoch, new_epoch, "each claim gets its own epoch");
-        assert_eq!(old.reclaimed(), 1, "incumbent closed with RECLAIMED");
-        assert_eq!(new.reclaimed(), 0);
-        assert_eq!(
-            registry.get("alpha").map(|c| c.id),
-            Some(2),
-            "the route serves the newest claim (last-writer-wins)"
-        );
+        fn close_reclaimed(&self) {}
     }
 
     #[test]

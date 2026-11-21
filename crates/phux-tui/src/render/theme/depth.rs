@@ -1,4 +1,4 @@
-//! Fitting solved roles to the terminal's colour depth (spec §4.2).
+//! Fitting solved roles to the terminal's colour depth.
 //!
 //! - 256 colours: the nearest xterm entry in 16–255 by squared sRGB
 //!   distance, then re-checked against the bar on the quantised surface;
@@ -69,6 +69,12 @@ const fn rgb_of(color: Color) -> Option<Rgb8> {
         Color::Rgb(r, g, b) => Some(Rgb8 { r, g, b }),
         _ => None,
     }
+}
+
+/// Whether `color` is a 24-bit colour (one only truecolor terminals render).
+#[must_use]
+pub const fn is_24_bit(color: Color) -> bool {
+    rgb_of(color).is_some()
 }
 
 /// Every 24-bit slot of `theme` on the 256 palette. Fills snap to nearest;

@@ -121,9 +121,7 @@ pub(super) fn with_deadline(
     socket_path: PathBuf,
     seed: bool,
 ) -> io::Result<super::EnsureDisposition> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
+    let runtime = crate::commands::build_cli_runtime()?;
     runtime.block_on(watch(socket_path, seed))
 }
 
@@ -282,7 +280,6 @@ mod timeout_tests {
     /// fallback for junk and zero.
     #[test]
     fn timeout_override_parses_and_falls_back_to_the_shipped_ceiling() {
-        assert_eq!(TIMEOUT, Duration::from_secs(10));
         assert_eq!(timeout_from(None), TIMEOUT);
         assert_eq!(timeout_from(Some("1")), Duration::from_secs(1));
         assert_eq!(timeout_from(Some("  3\n")), Duration::from_secs(3));

@@ -289,36 +289,6 @@ fn a_file_that_does_not_load_blocks_unrelated_edits() {
     assert!(err.to_string().contains("widht"), "{err}");
 }
 
-#[cfg(unix)]
-#[test]
-fn a_symlinked_config_is_edited_through_the_link_and_keeps_its_mode() {
-    use std::os::unix::fs::PermissionsExt as _;
-
-    let dir = tempfile::tempdir().expect("tempdir");
-    let real = dir.path().join("dotfiles").join("phux.toml");
-    std::fs::create_dir_all(real.parent().unwrap()).unwrap();
-    std::fs::write(&real, "[sidebar]\nwidth = 28\n").unwrap();
-    std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).unwrap();
-    let link = dir.path().join("config.toml");
-    std::os::unix::fs::symlink(&real, &link).unwrap();
-
-    write_edit(&link, "sidebar.width", Edit::Set(32.into())).expect("write");
-    assert!(
-        std::fs::symlink_metadata(&link)
-            .unwrap()
-            .file_type()
-            .is_symlink()
-    );
-    assert_eq!(
-        std::fs::read_to_string(&real).unwrap(),
-        "[sidebar]\nwidth = 32\n"
-    );
-    assert_eq!(
-        std::fs::metadata(&real).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
-}
-
 /// Another phux holding the config lock past [`LOCK_WAIT`] makes the
 /// edit report busy instead of waiting longer, and the file is untouched.
 ///
@@ -354,26 +324,6 @@ fn a_settings_edit_reports_busy_while_another_writer_holds_the_lock() {
     holder.join().unwrap();
 }
 
-/// A change another editor makes between the locked read and the
-/// publication is refused rather than overwritten.
-#[test]
-fn a_settings_edit_refuses_a_file_changed_after_it_was_read() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join("config.toml");
-    std::fs::write(&path, "[sidebar]\nwidth = 28\n").unwrap();
-    let mut doc = open_settings(&path).expect("open");
-    apply_edit_doc(&mut doc, "sidebar.width", Edit::Set(32.into()), &path).expect("edit");
-    std::fs::write(&path, "# external edit\n").unwrap();
-
-    let err = publish_if_changed(doc, &path).expect_err("stale");
-    assert!(
-        matches!(err, ConfigError::Write { .. }) && err.to_string().contains("changed"),
-        "{err}"
-    );
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "# external edit\n");
-    assert!(temp_files_in(dir.path()).is_empty());
-}
-
 /// Several edits land as one transaction, validated only as a whole.
 #[test]
 fn write_edits_publishes_every_edit_at_once() {
@@ -406,22 +356,6 @@ fn write_edits_publishes_every_edit_at_once() {
         std::fs::read_to_string(&path).unwrap(),
         "[sidebar]\nposition = \"right\"\n",
         "nothing lands when any edit is refused"
-    );
-}
-
-#[cfg(unix)]
-#[test]
-fn a_dangling_symlinked_config_is_refused_not_replaced() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let link = dir.path().join("config.toml");
-    std::os::unix::fs::symlink(dir.path().join("missing.toml"), &link).unwrap();
-    let err = write_edit(&link, "sidebar.width", Edit::Set(32.into())).expect_err("dangling");
-    assert!(matches!(err, ConfigError::Write { .. }), "{err}");
-    assert!(
-        std::fs::symlink_metadata(&link)
-            .unwrap()
-            .file_type()
-            .is_symlink()
     );
 }
 

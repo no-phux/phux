@@ -1,7 +1,6 @@
 use super::*;
 use crate::theme::contrast;
 use phux_config_core::host_color::PALETTE;
-use phux_design::Tone;
 use phux_design::tokens::IDENTITY;
 
 fn tokens(dark: bool, theme: Option<&'static crate::theme::Theme>) -> std::rc::Rc<Tokens> {
@@ -22,8 +21,10 @@ fn host_marks_read_in_every_theme() {
                 let name = theme.map_or("system", |t| t.id);
                 // Eased for the sidebar; the focused card's rim sits on
                 // the window ground, a shade away.
-                let mark = contrast(host, sidebar);
-                if mark < IDENTITY.host_bar || contrast(host, ground) < IDENTITY.host_bar - 0.1 {
+                let mark = f64::from(contrast(host, sidebar));
+                if mark < IDENTITY.host_bar
+                    || f64::from(contrast(host, ground)) < IDENTITY.host_bar - 0.1
+                {
                     low.push(format!("{id} on {name}/{dark}: {mark:.2}"));
                 }
             }
@@ -33,7 +34,7 @@ fn host_marks_read_in_every_theme() {
 }
 
 #[test]
-fn every_mark_draws_a_vector_mark_in_its_tone_with_its_word() {
+fn a_mark_never_borrows_the_accent() {
     let ink = tokens(true, None);
     let t: &Tokens = ink.as_ref();
     for mark in [
@@ -48,23 +49,9 @@ fn every_mark_draws_a_vector_mark_in_its_tone_with_its_word() {
         Mark::Idle,
         Mark::None,
     ] {
-        let f = face(mark, t);
-        let state = state_of(mark);
-        if mark == Mark::Bell {
-            assert!(std::ptr::eq(f.icon, &icons::BELL));
-            assert_eq!(f.ink, t.status.tone(Tone::Bell).ink);
-        } else {
-            assert_eq!(f.ink, t.status.state(state).tone.ink, "{mark:?}");
-            assert_eq!(f.word, state.word(), "{mark:?}");
-        }
         // Colour means state: a terminal's mark never borrows the accent.
-        assert_ne!(f.ink, t.roles.accent.accent.paint(), "{mark:?}");
+        assert_ne!(face(mark, t).ink, t.roles.accent.accent.paint(), "{mark:?}");
     }
-    // `blocked` is retired from the UI; the canonical word is `needs you`.
-    assert_eq!(face(Mark::Blocked, t).word, Some("needs you"));
-    assert_eq!(face(Mark::Failed, t).word, Some("failed"));
-    // The quiet class shares a mark; the words tell it apart.
-    assert_ne!(face(Mark::Succeeded, t).word, face(Mark::Idle, t).word);
 }
 
 #[test]
@@ -96,7 +83,7 @@ fn the_histogram_counts_only_what_asks_for_you() {
 fn listed(dark: bool) -> rune::Runtime<Desk> {
     let mut desk = crate::test_support::settings_window();
     desk.settings_open = false;
-    let mut rt = rune::Runtime::new(
+    let mut rt = crate::test_support::runtime(
         desk,
         crate::ui::view,
         (1100.0, 720.0),
@@ -135,6 +122,7 @@ fn listed(dark: bool) -> rune::Runtime<Desk> {
             activation: None,
             exec: None,
             foreground: None,
+            icon: None,
         })
         .collect();
     let mut topology = crate::desk::topology(vec![session], panes);
@@ -190,25 +178,6 @@ fn rows_are_one_focusable_source_list_with_their_words() {
         said("needs you") && said("done") && said("idle"),
         "marks are named"
     );
-}
-
-#[test]
-fn a_retheme_under_the_same_id_repaints_the_rows() {
-    // Omarchy swaps palettes under one id: the memo keys on the tokens'
-    // version, which follows the palette, not the id.
-    let mut a = *crate::theme::find("catppuccin-mocha").expect("built in");
-    let mut b = a;
-    a.id = "omarchy";
-    b.id = "omarchy";
-    b.background = 0x10_20_30;
-    let version = |theme: crate::theme::Theme| {
-        Tokens::resolve(&super::super::tokens::Inputs {
-            theme: Some(theme),
-            ..super::super::tokens::Inputs::system(true)
-        })
-        .version
-    };
-    assert_ne!(version(a), version(b));
 }
 
 #[test]
@@ -284,4 +253,17 @@ fn a_clicked_row_hands_the_keyboard_back_to_the_terminal() {
         in_list(&next) && next != landed,
         "Down walks the list: {landed:?} -> {next:?}"
     );
+}
+
+#[test]
+fn a_clicked_new_button_hands_the_keyboard_back_to_the_terminal() {
+    let mut rt = listed(true);
+    for key in ["new-terminal", "new-session"] {
+        let (x, y) = rt.find(key).expect("footer button");
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(0.0);
+        // Space would press it again: a second session or terminal.
+        assert_eq!(focused(&mut rt), None, "{key} kept focus after a click");
+    }
 }

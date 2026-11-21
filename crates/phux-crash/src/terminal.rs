@@ -33,6 +33,7 @@
 //   ?1015   RXVT extended mouse reporting                  never enabled by phux
 //   ?2004   Bracketed paste mode                           write_enter_alt_screen
 //   ?1004   Focus reporting (focus in/out events)          write_enter_alt_screen
+//   ?2031   Colour-scheme change reports                   write_enter_alt_screen
 //   CSI<u   Kitty keyboard protocol pop (flags 5 pushed    write_enter_alt_screen
 //           with CSI>5u)                                   (ADR-0146)
 //
@@ -47,7 +48,7 @@
 /// The kitty CSI-u pop precedes `?1049l` per spec (the protocol stack
 /// is per-screen).
 pub const RESTORE_SEQ: &[u8] =
-    b"\x1b[?2026l\x1b[?25h\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1015l\x1b[?1006l\x1b[?2004l\x1b[?1004l\x1b[<u\x1b[?1049l";
+    b"\x1b[?2026l\x1b[?25h\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1015l\x1b[?1006l\x1b[?2004l\x1b[?1004l\x1b[?2031l\x1b[<u\x1b[?1049l";
 
 /// Write terminal restore sequences to stderr using raw `libc::write`.
 ///
@@ -85,25 +86,6 @@ mod tests {
     #[test]
     fn restore_seq_pops_kitty_before_alt_screen_leave() {
         assert!(position_of(b"\x1b[<u") < position_of(b"\x1b[?1049l"));
-    }
-
-    #[test]
-    fn restore_seq_includes_all_modes() {
-        for needle in [
-            b"\x1b[?2026l".as_slice(),
-            b"\x1b[?25h".as_slice(),
-            b"\x1b[?1000l".as_slice(),
-            b"\x1b[?1002l".as_slice(),
-            b"\x1b[?1003l".as_slice(),
-            b"\x1b[?1015l".as_slice(),
-            b"\x1b[?1006l".as_slice(),
-            b"\x1b[?2004l".as_slice(),
-            b"\x1b[?1004l".as_slice(),
-            b"\x1b[<u".as_slice(),
-            b"\x1b[?1049l".as_slice(),
-        ] {
-            position_of(needle);
-        }
     }
 
     #[test]

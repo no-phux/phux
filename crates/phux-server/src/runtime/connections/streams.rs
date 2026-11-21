@@ -147,7 +147,7 @@ async fn bind_terminal_stream(
     selection: &NegotiatedConnection,
     token: &CancellationToken,
 ) {
-    // workload-auth §6: OBSERVE on the bound Terminal, before membership is
+    // OBSERVE on the bound Terminal, before membership is
     // consulted, so an unauthorized bind learns nothing about the Terminal.
     if crate::runtime::dispatch_guard::refuse_stream_bind(
         state,

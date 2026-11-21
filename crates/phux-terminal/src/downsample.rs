@@ -1,4 +1,4 @@
-//! Engine-owned per-client VT byte-stream rewriter (SPEC §6.2, ADR-0013).
+//! Engine-owned per-client VT byte-stream rewriter (ADR-0013).
 //!
 //! Raw PTY bytes are adapted to each client's capabilities: truecolor SGR
 //! (semicolon or ITU colon form) is quantised to its [`ColorSupport`]; sixel,
@@ -19,7 +19,7 @@ pub fn caps_pass_through(caps: ClientCapabilities) -> bool {
         && caps.hyperlinks
 }
 
-/// Rewrite an outbound VT stream for the full capability set (SPEC §6.2).
+/// Rewrite an outbound VT stream for the full capability set.
 #[must_use]
 pub fn rewrite_bytes_with_caps(input: &[u8], caps: ClientCapabilities) -> Vec<u8> {
     // Fast path: nothing to rewrite or drop. Hot path on capable clients.

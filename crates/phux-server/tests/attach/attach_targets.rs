@@ -1,4 +1,4 @@
-//! `ATTACH` target resolution (L1 §8, SPEC §14): `ByName`, `Last`, and
+//! `ATTACH` target resolution: `ByName`, `Last`, and
 //! `CreateIfMissing`, including the wire `cwd`.
 
 use std::time::Duration;
@@ -59,10 +59,7 @@ fn failed_attach_is_recoverable_and_create_if_missing_creates() {
         .await;
         let (code, message) = attach_error(&mut stream).await;
         assert_eq!(code, ErrorCode::SessionNotFound);
-        assert!(
-            message.to_lowercase().contains("no live session"),
-            "{message}"
-        );
+        assert!(message.contains("no session to attach"), "{message}");
         assert!(
             state(&mut stream, 9).await.sessions.is_empty(),
             "Last never creates"
@@ -210,5 +207,67 @@ fn attach_reports_wire_fallback_and_live_cwd() {
             .position(|p| p.id == snapshot.focused_resource)
             .unwrap();
         assert_eq!(canonical_cwd(&snapshot, pane), live_path);
+    });
+}
+
+/// `Last` joins a session nobody has touched yet (one created headless, or
+/// restored after a restart) instead of refusing while sessions exist.
+#[test]
+fn last_joins_an_untouched_session_on_a_seedless_server() {
+    run_local(async {
+        let (_server, mut stream) = spawn_server_connected(None).await;
+        let request = serde_json::json!({ "name": "untouched", "command": null, "cwd": null });
+        send_frame(
+            &mut stream,
+            &phux_server_testkit::set_metadata(
+                1,
+                phux_protocol::wire::frame::Scope::Global,
+                phux_protocol::wire::frame::SESSION_CREATE_KEY,
+                serde_json::to_vec(&request).unwrap(),
+            ),
+        )
+        .await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        for request_id in 10.. {
+            if state(&mut stream, request_id).await.sessions.len() == 1 {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "headless create never landed"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        send_frame(
+            &mut stream,
+            &with_attach_id(attach(AttachTarget::Last, 80, 24), 2),
+        )
+        .await;
+        assert_eq!(focused_name(&attached(&mut stream).await), "untouched");
+    });
+}
+
+/// A socket file deleted under a live server comes back: the server rebinds
+/// the path, and a new client reaches the same sessions through it.
+#[test]
+fn a_deleted_socket_path_is_rebound_to_the_live_server() {
+    run_local(async {
+        let seed = "survives-unlink";
+        let server = SpawnedServer::start(Some(seed), |_| {});
+        drop(server.connect().await);
+        std::fs::remove_file(&server.socket).expect("unlink the live socket");
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while UnixStream::connect(&server.socket).await.is_err() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the socket path was never rebound"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let mut stream = server.connect().await;
+        send_frame(&mut stream, &attach(AttachTarget::Last, 80, 24)).await;
+        assert_eq!(focused_name(&attached(&mut stream).await), seed);
     });
 }

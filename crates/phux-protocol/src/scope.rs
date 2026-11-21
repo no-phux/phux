@@ -6,7 +6,7 @@
 //! with a registry ceiling, keeping both selectors per clause so a Group or
 //! Host ceiling is never flattened into a Terminal grant.
 //!
-//! Both spellings are strict: the §5 canonical bytes (unsorted, duplicate,
+//! Both spellings are strict: the canonical bytes (unsorted, duplicate,
 //! unknown-bit, zero-verb, non-minimal, truncated, or trailing images are
 //! refused, never normalized) and the registry grammar
 //! `"<verb>[,<verb>...]@<selector>"`. The grammar may hold `?signal`,
@@ -31,10 +31,10 @@
 
 pub use crate::kinds::{Verb, Verbs};
 
-/// The scope schema this build writes (workload-auth §5).
+/// The scope schema this build writes.
 pub const SCOPE_SCHEMA_VERSION: u8 = ScopeSchema::CURRENT.version();
 
-/// One version of the closed scope schema (workload-auth §5).
+/// One version of the closed scope schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ScopeSchema {
     /// Six verbs, `0x01`..=`0x20`; bits `0xC0` are refused. Decoded grants
@@ -78,17 +78,17 @@ impl ScopeSchema {
     }
 }
 
-/// Most grants a [`TerminalScopeSet`] may hold (§5).
+/// Most grants a [`TerminalScopeSet`] may hold.
 pub const MAX_GRANTS: usize = 64;
 
-/// Most clauses an [`EffectiveScopeSet`] may hold (§5).
+/// Most clauses an [`EffectiveScopeSet`] may hold.
 pub const MAX_CLAUSES: usize = 64;
 
-/// Largest encoded [`EffectiveScopeSet`], in bytes (§5). A larger
+/// Largest encoded [`EffectiveScopeSet`], in bytes. A larger
 /// intersection denies admission rather than truncating authority.
 pub const MAX_EFFECTIVE_BYTES: usize = 32_768;
 
-/// Longest satellite host a selector may name, in bytes (§5).
+/// Longest satellite host a selector may name, in bytes.
 pub const MAX_HOST_BYTES: usize = 255;
 
 const TAG_GLOBAL: u8 = 0x00;
@@ -129,7 +129,7 @@ const HOLDABLE: Verbs = Verbs::of(&[Verb::Signal, Verb::Terminate, Verb::Input])
 // Errors.
 // -----------------------------------------------------------------------------
 
-/// Why a canonical scope image was refused (§5). No variant carries input
+/// Why a canonical scope image was refused. No variant carries input
 /// bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ScopeError {

@@ -4,7 +4,7 @@ use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities}
 use phux_protocol::ids::StreamId;
 use tokio_util::sync::CancellationToken;
 
-use super::lane::ConnectionLane;
+use super::ConnectionLane;
 use crate::resource::ResourceHandle;
 use crate::runtime::connections::hello::NegotiatedConnection;
 use crate::runtime::connections::plumbing::ClientPlumbing;

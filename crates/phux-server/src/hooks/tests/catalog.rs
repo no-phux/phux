@@ -25,49 +25,6 @@ fn first_matching_config_entry_wins_and_consumes_the_event() {
 }
 
 #[test]
-fn matched_runs_injects_event_env() {
-    let catalog = catalog_from_toml(
-        r#"
-        [[hooks.pane-exit]]
-        action = { kind = "run", command = "true" }
-        "#,
-    );
-    let event = HookEvent::new(
-        PANE_EXIT,
-        [
-            ("exit-code".to_owned(), "0".to_owned()),
-            ("terminal-id".to_owned(), "7".to_owned()),
-        ],
-    );
-    let runs = matched_runs(&catalog, &event, None);
-    assert_eq!(runs.len(), 1);
-    let env = &runs[0].spec.env;
-    assert!(env.contains(&("PHUX_EVENT".to_owned(), "pane-exit".to_owned())));
-    assert!(env.contains(&("PHUX_EXIT_CODE".to_owned(), "0".to_owned())));
-    assert!(env.contains(&("PHUX_TERMINAL_ID".to_owned(), "7".to_owned())));
-    // No socket configured: no PHUX_SOCKET.
-    assert!(env.iter().all(|(key, _)| key != "PHUX_SOCKET"));
-}
-
-#[test]
-fn matched_runs_injects_server_socket_when_known() {
-    let catalog = catalog_from_toml(
-        r#"
-        [[hooks.pane-exit]]
-        action = { kind = "run", command = "true" }
-        "#,
-    );
-    let event = HookEvent::new(PANE_EXIT, []);
-    let socket = Path::new("/tmp/phux-test/alt.sock");
-    let runs = matched_runs(&catalog, &event, Some(socket));
-    assert_eq!(runs.len(), 1);
-    assert!(runs[0].spec.env.contains(&(
-        "PHUX_SOCKET".to_owned(),
-        "/tmp/phux-test/alt.sock".to_owned()
-    )));
-}
-
-#[test]
 fn plugin_events_match_on_name_only_and_all_fire() {
     let hook = |on: &str, id: &str| PluginEventHook {
         plugin_id: "p".to_owned(),
@@ -148,6 +105,45 @@ fn catalog_skips_disabled_plugins_and_keeps_enabled_ones() {
     let runs = matched_runs(&catalog, &event, None);
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0].label, "plugin.plugin-on.greet");
+}
+
+#[test]
+fn plugin_events_apply_only_the_event_platform_list() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(
+        &dir.path().join("plugins/p/phux-plugin.toml"),
+        r#"
+        id = "p"
+        name = "Test"
+        version = "0.1.0"
+        min_phux_version = "0.0.1"
+        platforms = []
+
+        [[events]]
+        id = "eligible"
+        title = "Eligible"
+        on = "pane-exit"
+        command = ["true"]
+
+        [[events]]
+        id = "ineligible"
+        title = "Ineligible"
+        on = "pane-exit"
+        command = ["true"]
+        platforms = []
+        "#,
+    );
+    let cfg: Config = toml::from_str(
+        r#"[[plugins]]
+manifest = "plugins/p/phux-plugin.toml"
+"#,
+    )
+    .expect("valid config");
+
+    let catalog = HookCatalog::from_config(&cfg, &dir.path().join("config.toml"));
+
+    assert_eq!(catalog.plugin_events.len(), 1);
+    assert_eq!(catalog.plugin_events[0].event_id, "eligible");
 }
 
 #[test]

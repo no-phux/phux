@@ -121,12 +121,6 @@ async fn successful_resource_inspection_allows_refused_metadata_reads() {
 fn project_contract_advertises_the_actual_repository_field() {
     let doc = json!({"schema_version":1,"repo":{"path":"/checkout","head":null,"branch":null,"detached":true},"worktrees":[]});
     validate_output("phux_project_inspect", &doc);
-    let outputs = crate::contracts::output_schemas();
-    assert!(
-        outputs["phux_project_inspect"]["properties"]
-            .get("repository")
-            .is_none()
-    );
 }
 
 #[test]

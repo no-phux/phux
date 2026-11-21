@@ -97,10 +97,13 @@ pub const MAX_ORG_CURSOR_BYTES: usize = MAX_HISTORY_CURSOR_BYTES;
 /// Deepest split nesting an arrangement group may hold.
 pub const MAX_ARRANGEMENT_DEPTH: usize = crate::wire::info::MAX_LAYOUT_DEPTH;
 
-wire_enum! { to_u8 / from_u8;
+open_wire_enum! { u8; to_u8 / from_u8;
 /// Whether a session outlives its last resource.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum SessionLifetime {
+    /// A value this build does not define, from a newer server. A request
+    /// carrying one is refused `UNSUPPORTED`.
+    Unknown(u8),
     /// Survives empty; the default for a named session.
     #[default]
     Persistent = 0,
@@ -122,10 +125,13 @@ pub enum TerminateMode {
 }
 }
 
-wire_enum! { to_u8 / from_u8;
+open_wire_enum! { u8; to_u8 / from_u8;
 /// What happens to a resource record when its execution ends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ExitPolicy {
+    /// A value this build does not define, from a newer server. A request
+    /// carrying one is refused `UNSUPPORTED`.
+    Unknown(u8),
     /// Remove the record: an interactive shell closes when it exits.
     #[default]
     Remove = 0,
@@ -147,10 +153,12 @@ pub enum LaunchMode {
 }
 }
 
-wire_enum! { to_u8 / from_u8;
+open_wire_enum! { u8; to_u8 / from_u8;
 /// Where one activation is in its execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ExecState {
+    /// A value this build does not define, from a newer server.
+    Unknown(u8),
     /// Launch intent committed; the executor has not reported running.
     Starting = 0,
     /// Executing.

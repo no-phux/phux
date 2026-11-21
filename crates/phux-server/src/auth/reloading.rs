@@ -224,7 +224,7 @@ impl ReloadingTokenStore {
         }
     }
 
-    /// The store for the live revocation watcher (§7): a copy of the
+    /// The store for the live revocation watcher: a copy of the
     /// current generation only if it loaded cleanly with at least one
     /// credential. Anything else is no verdict (warned at most once a
     /// minute); new admissions still fail closed.

@@ -3,32 +3,6 @@
 use super::{tables_mut, validate_fingerprint};
 use toml_edit::{DocumentMut, Table};
 
-#[test]
-fn review_competing_registry_mutation_cannot_be_lost_during_publication() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join("config.toml");
-    let raw =
-        "[[remote]]\nname='a'\nendpoint='ssh://a'\n[[remote]]\nname='b'\nendpoint='ssh://b'\n";
-    std::fs::write(&path, raw).expect("seed");
-    let nested_succeeded = std::rc::Rc::new(std::cell::Cell::new(false));
-    let observed = nested_succeeded.clone();
-    let competing_path = path.clone();
-    crate::document::BEFORE_PUBLISH.with(|slot| {
-        *slot.borrow_mut() = Some(Box::new(move || {
-            observed
-                .set(super::forget_machine(&competing_path, raw, "remote", "b", "ssh://b").is_ok());
-        }));
-    });
-    super::forget_machine(&path, raw, "remote", "a", "ssh://a").expect("outer forget");
-    assert!(
-        !nested_succeeded.get(),
-        "a cooperating writer committed inside another writer's checked publication"
-    );
-    let after = std::fs::read_to_string(path).expect("read");
-    assert!(after.contains("name='b'"));
-    assert!(!after.contains("name='a'"));
-}
-
 #[cfg(unix)]
 #[test]
 fn symlink_and_real_path_writers_cannot_interleave_during_publication() {

@@ -13,7 +13,7 @@ use crate::mailbox::Outbound;
 /// stays under 500 even with ~150 panes.
 const MAX_SUBSCRIPTIONS_PER_CLIENT: usize = 512;
 
-/// Per-scope L3 metadata store (SPEC §7.4) and its subscription registry.
+/// Per-scope L3 metadata store and its subscription registry.
 #[derive(Debug, Default)]
 pub struct MetadataStore {
     /// Per-Terminal key → value, cleared when the Terminal closes.

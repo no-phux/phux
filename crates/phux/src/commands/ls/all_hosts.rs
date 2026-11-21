@@ -154,14 +154,7 @@ impl HostProbe {
 /// server behind it is "no server running", not an attach-loop I/O error.
 pub(super) fn unreachable_reason(err: &phux_client::attach::AttachError) -> String {
     match err {
-        phux_client::attach::AttachError::Io(io)
-            if matches!(
-                io.kind(),
-                std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
-            ) =>
-        {
-            "no server running".to_owned()
-        }
+        err if err.is_no_server() => "no server running".to_owned(),
         other => other.to_string(),
     }
 }

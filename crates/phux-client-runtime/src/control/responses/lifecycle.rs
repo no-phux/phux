@@ -131,6 +131,15 @@ impl ControlPlane {
                 });
             }
             Pending::Close => {
+                let error = match result {
+                    CommandResult::Ok => None,
+                    CommandResult::Error {
+                        code: ErrorCode::Unknown(_),
+                        message,
+                    } => Some(format!("outcome unknown: {message}")),
+                    CommandResult::Error { .. } => error,
+                    _ => Some("outcome unknown: unexpected close reply".to_owned()),
+                };
                 self.push_event(Event::TerminalsClosed { request_id, error });
             }
             Pending::NativeAgent {
@@ -336,7 +345,7 @@ impl ControlPlane {
             (None, extra) => extra.to_owned(),
         };
         self.error = Some(detail.clone());
-        // A refused HELLO ended with PROTOCOL_ERROR before workload-auth §7's
+        // A refused HELLO ended with PROTOCOL_ERROR before the revocation
         // AUTHENTICATION_FAILED was emitted; both stop retrying.
         let fatal = matches!(
             reason,

@@ -5,6 +5,7 @@
 #   kotlin/               generated + patched UniFFI Kotlin
 #   jniLibs/arm64-v8a/    libphux_client_ffi.so
 #   jniLibs/x86_64/       libphux_client_ffi.so
+#   design/               generated design tokens and resources, manifest.json
 #   provenance            source/toolchain/digest facts for atomic consumers
 #
 # The producer is crates/phux-client-ffi with --no-default-features
@@ -69,6 +70,7 @@ command -v zig >/dev/null || die "zig is required"
 command -v rustup >/dev/null || die "rustup is required"
 command -v cargo-ndk >/dev/null || die "cargo-ndk is required"
 command -v jq >/dev/null || die "jq is required"
+command -v bun >/dev/null || die "bun is required"
 : "${ANDROID_NDK_HOME:?ANDROID_NDK_HOME is required}"
 
 METADATA="$(cargo metadata --locked --format-version 1)"
@@ -112,6 +114,10 @@ for abi in arm64-v8a x86_64; do
     [[ -s "$OUT/jniLibs/$abi/$SO" ]] || die "missing $abi cdylib"
 done
 
+step "writing the design exports"
+bun tools/main.ts design-gen --check --mobile-out "$OUT/design"
+[[ -s "$OUT/design/manifest.json" ]] || die "design-gen wrote no design/manifest.json"
+
 step "writing provenance"
 phux_rev="$(git rev-parse HEAD)"
 engine_rev="$(sed -nE 's/^libghostty-vt[[:space:]]*=.*rev = "([0-9a-f]+)".*/\1/p' Cargo.toml)"
@@ -149,4 +155,5 @@ OUT="$DEST"
 phux_ok "build-mobile-ffi-android: wrote $OUT"
 phux_info "kotlin:     $OUT/kotlin/$KT_REL"
 phux_info "jniLibs:    $OUT/jniLibs/{arm64-v8a,x86_64}/$SO"
+phux_info "design:     $OUT/design/manifest.json"
 phux_info "provenance: $OUT/provenance"

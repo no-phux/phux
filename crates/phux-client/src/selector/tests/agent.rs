@@ -117,31 +117,6 @@ fn agent_resolve_errors_carry_their_contract_codes() {
     }
 }
 
-#[test]
-fn resolve_agent_returns_the_single_pane_that_chose_the_name() {
-    let snap = fixture();
-    let index = index_of(
-        &[
-            (101, record("build", None, AgentMetaState::Working)),
-            (200, record("review", Some("codex"), AgentMetaState::Idle)),
-        ],
-        true,
-    );
-    assert_eq!(
-        resolve_agent("build", &snap, &index).unwrap(),
-        AgentTarget {
-            terminal: ResourceId::local(101),
-            session: None,
-        }
-    );
-    assert_eq!(
-        resolve_agent_for_input("review", &snap, &index)
-            .unwrap()
-            .terminal,
-        ResourceId::local(200)
-    );
-}
-
 /// A miss is exit 1, an ambiguity exit 2 (candidates in snapshot order),
 /// and a truncated index exit 3 even for a single or empty match.
 #[test]

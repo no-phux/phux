@@ -1,10 +1,16 @@
 //! `ATTACH_RESOURCE` session state and generation setup.
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the split command modules share the parent command namespace"
-)]
 
-use super::*;
+use phux_protocol::caps::{BootstrapLimits, ClientCapabilities};
+use phux_protocol::wire::frame::FrameKind;
+use phux_terminal_api::actor::TerminalHandle;
+use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
+
+use crate::resource::ResourceHandle;
+use crate::runtime::commands::AttachResourceFailure;
+use crate::runtime::commands::attach_terminal::native_checkpoint_profile;
+use crate::runtime::pump;
+use crate::state::{ClientId, Outbound, SharedState};
 
 /// The pump generation an attach established, plus the handshake artifacts
 /// its bootstrap publication still has to consume.

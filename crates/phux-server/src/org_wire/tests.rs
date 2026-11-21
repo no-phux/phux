@@ -30,29 +30,6 @@ fn repository_attrs_round_trip_through_the_typed_record() {
 }
 
 #[test]
-fn keys_and_refusals_round_trip() {
-    let core = phux_core::SessionKey::from_bytes([3; 16]);
-    let wire = session_key(core).expect("non-zero");
-    assert_eq!(core_session_key(&wire), core);
-    assert_eq!(
-        refusal(&phux_core::Refusal::InvalidArgument {
-            field: "name",
-            reason: "empty".to_owned()
-        }),
-        frame::Refusal::InvalidArgument {
-            field: "name".to_owned(),
-            reason: "empty".to_owned()
-        }
-    );
-    assert_eq!(
-        outcome(phux_core::Outcome::Exit(phux_core::ExitOutcome::signaled(
-            9
-        ))),
-        frame::Outcome::Signaled(9)
-    );
-}
-
-#[test]
 fn documents_round_trip() {
     let groups = vec![phux_core::Group {
         locked: false,

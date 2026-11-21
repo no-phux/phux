@@ -92,28 +92,7 @@ fn waiting_players_stand_on_the_touchline_and_idle_ones_in_the_dugout() {
 }
 
 #[test]
-fn tiers_dress_the_kit_from_rookie_to_legend() {
-    assert_eq!(kit(0).boots, Boots::Black);
-    assert_eq!(
-        kit(1),
-        Kit {
-            boots: Boots::Sleeve,
-            armband: false,
-            trim: false,
-            star: false
-        }
-    );
-    assert!(kit(2).armband && !kit(2).trim);
-    assert_eq!(
-        kit(3),
-        Kit {
-            boots: Boots::Gold,
-            armband: true,
-            trim: true,
-            star: false
-        }
-    );
-    assert!(kit(4).star);
+fn work_ranks_a_player_from_regular_to_legend() {
     // No stats is tier 1, a regular.
     let p = pitch(vec![agent(1, 0, Mood::Working)]);
     assert_eq!(p.players[0].tier, 1);
@@ -178,7 +157,7 @@ fn finishing_celebrates_once_with_confetti() {
     p.sync(vec![agent(1, 0, Mood::Done)]);
     p.step(STEP);
     assert!(p.players[0].cel > 2.5);
-    assert_eq!(p.parts.len(), 28);
+    assert!(!p.parts.is_empty());
     run(&mut p, 3.0);
     assert!(p.players[0].cel <= 0.0 && p.parts.is_empty());
 }

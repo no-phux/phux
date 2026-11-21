@@ -2,11 +2,16 @@
 use super::*;
 
 fn window(client: &Arc<Client>) -> Runtime<Desk> {
-    let mut desk = Desk::new(&Resolved::offline("review fixture"));
+    let mut desk = Desk::with_preferences(
+        &Resolved::offline("review fixture"),
+        None,
+        rune::prefs::Prefs::memory(),
+    );
     desk.link.heard = true;
     desk.connection.client = Some(Arc::clone(client));
     desk.connection.resources.images = Some(rune::ImageCache::new(Arc::new(|| {})));
-    let mut rt = Runtime::new(desk, crate::ui::view, (800.0, 600.0), Env::new(true, 1.0));
+    let mut rt =
+        crate::test_support::runtime(desk, crate::ui::view, (800.0, 600.0), Env::new(true, 1.0));
     rt.on_key = Some(Desk::key);
     rt
 }

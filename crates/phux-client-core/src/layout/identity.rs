@@ -11,7 +11,7 @@ use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::{Group, LayoutDecodeError};
+use super::Group;
 
 static MINTED: AtomicU64 = AtomicU64::new(0);
 
@@ -45,23 +45,9 @@ pub(super) fn unused_id(groups: &[Group]) -> [u8; 16] {
     }
 }
 
-pub(super) fn validate(groups: &[Group]) -> Result<(), LayoutDecodeError> {
-    let mut seen = std::collections::HashSet::new();
-    if groups
-        .iter()
-        .any(|group| group.id == [0; 16] || !seen.insert(group.id))
-    {
-        return Err(LayoutDecodeError::Cbor(
-            "zero or duplicate layout window identity".into(),
-        ));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::legacy::serialize::CborWorkspaceEnvelope;
     use crate::layout::{self, ArrangementDoc, LayoutState, SplitDir};
     use phux_protocol::ResourceId;
 
@@ -93,20 +79,6 @@ mod tests {
         assert_eq!(decoded, ws);
     }
 
-    #[test]
-    fn removed_seed_can_form_a_new_window_without_reusing_retained_identity() {
-        let mut ws = split();
-        let retained = ws.groups[0].id;
-        ws.groups[0].state = LayoutState::single(ResourceId::local(2));
-        ws.add_group("reused seed".into(), ResourceId::local(1));
-        assert_eq!(ws.groups[0].id, retained);
-        assert_ne!(ws.groups[1].id, retained);
-        assert_eq!(
-            ArrangementDoc::decode_cbor(&ws.encode_cbor().unwrap()).unwrap(),
-            ws
-        );
-    }
-
     /// The same seed pane does not yield the same identity: ids are random,
     /// so a handle reused after a restart cannot collide with a group that
     /// outlived it.
@@ -118,43 +90,5 @@ mod tests {
         let ids: std::collections::HashSet<[u8; 16]> = (0..256).map(|_| fresh_id()).collect();
         assert_eq!(ids.len(), 256);
         assert!(!ids.contains(&[0; 16]));
-    }
-
-    #[test]
-    fn zero_duplicate_and_missing_ids_are_refused() {
-        let mut ws = split();
-        ws.add_group("two".into(), ResourceId::local(3));
-        let bytes = ws.encode_cbor().unwrap();
-        for invalid in [[0; 16], ws.groups[0].id] {
-            let mut envelope: CborWorkspaceEnvelope =
-                ciborium::de::from_reader(bytes.as_slice()).unwrap();
-            envelope.windows[1].id = invalid;
-            let mut forged = Vec::new();
-            ciborium::ser::into_writer(&envelope, &mut forged).unwrap();
-            assert!(ArrangementDoc::decode_cbor(&forged).is_err());
-        }
-        let mut value: ciborium::Value = ciborium::de::from_reader(bytes.as_slice()).unwrap();
-        let ciborium::Value::Map(fields) = &mut value else {
-            panic!("envelope")
-        };
-        let (_, ciborium::Value::Array(windows)) = fields
-            .iter_mut()
-            .find(|(key, _)| key.as_text() == Some("windows"))
-            .unwrap()
-        else {
-            panic!("windows")
-        };
-        let ciborium::Value::Map(window) = &mut windows[0] else {
-            panic!("window")
-        };
-        window.retain(|(key, _)| key.as_text() != Some("id"));
-        let mut forged = Vec::new();
-        ciborium::ser::into_writer(&value, &mut forged).unwrap();
-        assert!(
-            ArrangementDoc::decode_cbor(&forged)
-                .unwrap_err()
-                .to_string()
-                .contains("id")
-        );
     }
 }

@@ -193,42 +193,6 @@ fn chrome_never_paints_inside_a_pane() {
     );
 }
 
-/// Structural twin of the above: compose marks every interior cell skip
-/// and every divider cell with its glyph.
-#[test]
-fn compose_buffer_marks_pane_interiors_skip() {
-    let content = railed(80, 24);
-    let layout = split_layout(content);
-    let buf = compose_buffer(
-        &layout,
-        content,
-        rail_row(content),
-        Some(&t(1)),
-        &theme(),
-        |_| None,
-    );
-    for r in layout.rects.values() {
-        for y in r.y..r.y + r.h {
-            for x in r.x..r.x + r.w {
-                assert!(
-                    buf.cell((x, y)).unwrap().diff_option == CellDiffOption::Skip,
-                    "({x}, {y})"
-                );
-            }
-        }
-    }
-    for d in &layout.dividers {
-        let cell = buf.cell((d.x, d.y)).unwrap();
-        assert!(
-            cell.diff_option != CellDiffOption::Skip,
-            "({}, {})",
-            d.x,
-            d.y
-        );
-        assert_eq!(cell.symbol().chars().next(), Some(d.ch));
-    }
-}
-
 /// Focus is a colour, never a heavier stroke (mixed-weight junctions do
 /// not render); unfocused rules recede, and a lone pane is not tinted.
 #[test]
@@ -250,7 +214,7 @@ fn focus_tints_rules_and_nothing_else() {
 
 /// Rules and titles sit on the terminal's own background only when the
 /// roles were solved against it; otherwise every chrome cell carries the
-/// surface fill (spec §4.2).
+/// surface fill.
 #[test]
 fn an_unknown_ground_fills_rules_and_titles_with_the_surface() {
     let content = railed(80, 24);

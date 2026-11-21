@@ -5,17 +5,17 @@
 //!
 //! Everything here is inert against a server that does not advertise
 //! `ORGANIZATION`: no seed is read, submissions resolve
-//! [`OrgOutcome::NotSent`], and `close_terminals` keeps its legacy
-//! `CLOSE_TAB_RESOURCES` path.
+//! [`OrgOutcome::NotSent`], and `close_terminals` can use the advertised
+//! legacy `CLOSE_TAB_RESOURCES` path.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::time::Instant;
 
 use phux_client_core::org_ops::{
     ORG_JOURNAL_MAX_OPS, OrgJournal, OrgOutcome, OrgReport, OrganizationCommand, SubmitError,
 };
 use phux_protocol::caps::ServerFeatureExt;
-use phux_protocol::ids::{ArrangementKey, OperationId};
+use phux_protocol::ids::{ArrangementKey, OperationId, ResourceId};
 use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, CommandValue, FrameKind, OrgFilter, Refusal,
 };
@@ -33,7 +33,7 @@ use super::{ControlPlane, Event, Pending, Topology};
 #[derive(Debug)]
 pub(super) struct CloseBatch {
     request_id: u32,
-    operations: HashSet<OperationId>,
+    operations: HashMap<OperationId, ResourceId>,
     errors: Vec<String>,
 }
 
@@ -413,12 +413,15 @@ impl ControlPlane {
                 .org
                 .closes
                 .iter()
-                .position(|batch| batch.operations.contains(&report.operation))
+                .position(|batch| batch.operations.contains_key(&report.operation))
             {
                 let batch = &mut self.org.closes[position];
-                batch.operations.remove(&report.operation);
-                if !report.outcome.succeeded() {
-                    batch.errors.push(outcome_sentence(&report.outcome));
+                if let Some(id) = batch.operations.remove(&report.operation)
+                    && !report.outcome.succeeded()
+                {
+                    batch
+                        .errors
+                        .push(format!("{id}: {}", outcome_sentence(&report.outcome)));
                 }
                 if batch.operations.is_empty() {
                     let batch = self.org.closes.remove(position);

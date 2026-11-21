@@ -17,7 +17,7 @@ pub struct ReflowDiff {
     /// leaves.
     pub changed: Vec<(ResourceId, Rect)>,
     /// Some leaf renders with `w < 2` or `h < 1`: the viewport is below the
-    /// layout's aggregate minimums (§6.2 freezing disengaged). The caller
+    /// layout's aggregate minimums (freezing disengaged). The caller
     /// warns and renders anyway.
     pub too_small: bool,
 }

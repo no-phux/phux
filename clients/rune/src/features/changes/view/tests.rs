@@ -33,7 +33,7 @@ const PATCH: &str = "diff --git a/src/ui/overlay.rs b/src/ui/overlay.rs\n\
 pub fn toast() {}\n";
 
 fn sheet(dark: bool) -> Runtime<Desk> {
-    let mut rt = Runtime::new(
+    let mut rt = crate::test_support::runtime(
         crate::test_support::window(),
         crate::ui::view,
         SIZE,

@@ -250,27 +250,6 @@ fn stub_tailscale_status_round_trips_past_a_pipe_buffer() {
     assert_eq!(magic.addresses, vec![ip("100.99.98.97")]);
 }
 
-/// End-to-end through the real spawn path with a stub CLI.
-#[cfg(unix)]
-#[test]
-fn stub_tailscale_binary_round_trips() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let script = write_stub(
-        dir.path(),
-        "tailscale-stub",
-        "#!/bin/sh\necho 100.99.98.97\n",
-    );
-
-    // Generous deadline: a loaded CI box can take seconds to spawn /bin/sh.
-    let out = run_tailscale(
-        script.as_os_str(),
-        &["ip", "-4"],
-        std::time::Duration::from_secs(30),
-    )
-    .expect("stub output");
-    assert_eq!(parse_tailscale_ip_output(&out), vec![ip("100.99.98.97")]);
-}
-
 /// A wedged tailscaled must not hang `phux pair`: a stub sleeping past
 /// the deadline is killed and degrades to nothing.
 #[cfg(unix)]

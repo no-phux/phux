@@ -95,7 +95,10 @@ Two rules keep crates reusable across worktrees, both enforced by
 test code (read `CARGO_MANIFEST_DIR` at run time), and the Zig engine
 build stays outside `target/`. Rust `E0514` means the shell's toolchain
 changed under a build: check `rustc -V`, `cargo -V`, `mbx doctor`, then
-`mbx clean "$PWD"`.
+`mbx clean "$PWD"`. If GC removes a cache directory that a worktree
+`target` symlink still names, Cargo fails with "Not a directory". The
+next `just` recipe recreates that empty directory. It does not restore
+the deleted build outputs.
 
 ## Pick your work area
 
@@ -256,6 +259,9 @@ Things that fail CI and are easy to forget:
 
 - A CLI, config, or widget change without `just docs-gen`: the generated
   pages under `docs/reference/` are byte-compared by a unit test.
+- A design-token change without `just design-gen`: guards refuses exports
+  that differ from `crates/phux-design/tokens/src`
+  ([design language](./design-language.md)).
 - A wire change without regenerating `docs/spec/wire-schema.json`
   ([protocol](./protocol.md#changing-the-wire)).
 - A commit message that is not a conventional commit. `commitlint` checks

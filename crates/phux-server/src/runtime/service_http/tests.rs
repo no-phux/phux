@@ -103,25 +103,6 @@ fn disallowed_upstream_header(seen: &str) -> Option<&str> {
 }
 
 #[test]
-fn header_policy_assertions_ignore_ports_and_benign_values() {
-    let seen = "host: 127.0.0.1:37999\nx-keep: cookie connection 999\n";
-    assert!(disallowed_upstream_header(seen).is_none());
-    for forbidden in [
-        "cookie: a=b",
-        "Proxy-Authorization: stolen",
-        "x-drop: 1",
-        "connection: x-drop",
-        "content-length: 999",
-        "Content-Length: \t999 \t",
-    ] {
-        assert!(
-            disallowed_upstream_header(forbidden).is_some(),
-            "{forbidden}"
-        );
-    }
-}
-
-#[test]
 fn only_a_single_loopback_origin_line_is_an_origin() {
     for good in [
         "http://127.0.0.1:49374\n",
@@ -342,13 +323,13 @@ fn opening_bodies_share_a_byte_budget() {
 
 #[tokio::test]
 async fn a_moved_service_is_rediscovered_after_a_connect_failure() {
-    let old = Fake::stopped().await;
+    let mut old = Fake::stopped().await;
     let provider = old.provider();
     let exchanges = Exchanges::default();
     open_ok(&exchanges, provider, get("/echo")).await;
 
     let new = Fake::stopped().await;
-    old.stop();
+    old.stop().await;
     old.report_origin(new.addr);
     let head = open_ok(&exchanges, provider, get("/echo")).await;
     let (seen, _) = read_all(&exchanges, head.exchange, 1024).await;

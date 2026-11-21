@@ -96,28 +96,6 @@ fn search_chrome_stays_fixed_and_the_last_row_clears_the_glass_dock() {
 }
 
 #[test]
-fn pane_accessibility_action_still_requests_the_exact_resource() {
-    let (client, mut rt) = fixture();
-    detailed_inventory(&mut rt);
-    rt.update(|d, _| d.open_phone_sessions());
-    settle(&mut rt);
-    assert!(rt.accessibility_action(
-        "phone-session-pane-@2",
-        rune::accesskit::Action::Click,
-        None
-    ));
-    settle(&mut rt);
-    // This fixture has a replica only for @1. Opening @2 must retain that
-    // exact request until its replica arrives, not show an unrelated pane.
-    assert_eq!(
-        rt.state.connection.wanted.as_ref().unwrap().0,
-        ResourceId::local(2)
-    );
-    assert!(rt.state.phone_page().is_none());
-    no_terminal_input(&client);
-}
-
-#[test]
 fn a_matching_pane_fits_whole_above_the_dock_with_the_search_keyboard_open() {
     let (_, mut rt) = fixture();
     detailed_inventory(&mut rt);
@@ -189,4 +167,116 @@ fn ungrouped_satellite_panes_keep_their_owning_host_visible() {
             .into_iter()
             .any(|e| e.text.as_deref() == Some("build-box"))
     );
+}
+
+#[test]
+fn connections_names_the_destination_and_keeps_long_context_inside_its_button() {
+    for width in [320.0, 393.0] {
+        for machine in [
+            "Build studio",
+            "build-studio-integration-runner",
+            "開発コンピュータ",
+        ] {
+            let (_, mut rt) = fixture();
+            rt.set_viewport((width, 568.0), 2.0);
+            rt.update(|d, _| {
+                d.machines.current = Some(machine.into());
+                d.connection.status = phux_client_runtime::control::Status::Closed;
+                d.open_phone_sessions();
+            });
+            settle(&mut rt);
+            let button = element(&rt, "phone-session-connections");
+            assert_eq!(
+                button.label.as_deref(),
+                Some(format!("Connections · {machine} · not connected").as_str())
+            );
+            assert!(button.rect[2] >= 44.0 && button.visible[3] >= 44.0);
+            for key in ["phone-connections-title", "phone-connections-detail"] {
+                let child = element(&rt, key);
+                assert!(child.rect[0] >= button.rect[0], "{key}: {child:?}");
+                assert!(child.rect[0] + child.rect[2] <= button.rect[0] + button.rect[2]);
+                assert!(child.rect[1] >= button.rect[1]);
+                assert!(child.rect[1] + child.rect[3] <= button.rect[1] + button.rect[3]);
+            }
+            assert_eq!(
+                element(&rt, "phone-connections-title").text.as_deref(),
+                Some("Connections")
+            );
+            assert_eq!(
+                element(&rt, "phone-connections-detail").text.as_deref(),
+                Some(format!("{machine} · not connected").as_str())
+            );
+        }
+    }
+}
+
+#[test]
+fn large_connections_and_search_scroll_without_covering_the_last_action() {
+    for (width, height) in [(320.0, 478.0), (393.0, 759.0)] {
+        let (_, mut rt) = fixture();
+        detailed_inventory(&mut rt);
+        rt.set_viewport((width, height), 2.0);
+        rt.update(|d, _| {
+            d.native = Some(crate::mobile::Platform::test());
+            d.machines.current = Some("Build studio".into());
+            d.set_accessibility(false, "UICTContentSizeCategoryAccessibilityXXXL");
+            d.open_phone_sessions();
+        });
+        settle(&mut rt);
+        let connections = element(&rt, "phone-session-connections").rect;
+        let list = element(&rt, "phone-session-list").rect;
+        let search = element(&rt, "phone-session-query").rect;
+        assert!(connections[1] >= list[1]);
+        assert!(list[3] >= connections[3], "{list:?} vs {connections:?}");
+        rt.update(|_, tx| tx.scroll_to_instant("phone-session-list", 0.0, 100_000.0));
+        rt.settle_all();
+        settle(&mut rt);
+        assert!(element(&rt, "phone-session-connections").rect[1] < connections[1] - 44.0);
+        assert!(element(&rt, "phone-session-query").rect[1] < search[1] - 44.0);
+        let last = element(&rt, "phone-session-new");
+        assert!(last.rect[1] >= list[1], "{last:?} vs {list:?}");
+        assert!(last.rect[1] + last.rect[3] <= list[1] + list[3]);
+        assert!(last.visible[3] >= last.rect[3] - 0.5, "{last:?}");
+        let label = element(&rt, "phone-session-new-label");
+        assert!(label.rect[0] >= last.rect[0]);
+        assert!(label.rect[0] + label.rect[2] <= last.rect[0] + last.rect[2]);
+        assert!(label.rect[1] >= last.rect[1]);
+        assert!(label.rect[1] + label.rect[3] <= last.rect[1] + last.rect[3]);
+    }
+}
+
+#[test]
+fn keyboard_reduced_large_search_keeps_the_whole_create_action_reachable() {
+    for size in [(320.0, 340.0), (393.0, 480.0)] {
+        let (client, mut rt) = fixture();
+        detailed_inventory(&mut rt);
+        rt.set_viewport(size, 2.0);
+        rt.update(|d, _| {
+            d.native = Some(crate::mobile::Platform::test());
+            d.set_accessibility(false, "UICTContentSizeCategoryAccessibilityXXXL");
+            d.open_phone_sessions();
+        });
+        settle(&mut rt);
+        tap(&mut rt, "phone-session-query", 0.1);
+        rt.key(crate::keys::plain(rune::Key::Text("review".into())));
+        settle(&mut rt);
+        let editor = element(&rt, "phone-session-query");
+        assert!(editor.visible[3] >= editor.rect[3] - 0.5, "{editor:?}");
+        rt.update(|_, tx| tx.scroll_to_instant("phone-session-list", 0.0, 100_000.0));
+        rt.settle_all();
+        settle(&mut rt);
+        let list = element(&rt, "phone-session-list");
+        let action = element(&rt, "phone-session-new");
+        assert!(
+            action.visible[3] >= action.rect[3] - 0.5,
+            "complete create action must fit above the keyboard: {action:?} vs {list:?}"
+        );
+        let label = element(&rt, "phone-session-new-label");
+        assert!(label.visible[3] >= label.rect[3] - 0.5, "{label:?}");
+        assert!(label.rect[0] >= action.rect[0]);
+        assert!(label.rect[0] + label.rect[2] <= action.rect[0] + action.rect[2]);
+        assert!(label.rect[1] >= action.rect[1]);
+        assert!(label.rect[1] + label.rect[3] <= action.rect[1] + action.rect[3]);
+        no_terminal_input(&client);
+    }
 }

@@ -1,5 +1,5 @@
 //! Dedicated native broker wire contract, including hostile JSON bounds.
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::panic, reason = "tests")]
 use crate::common;
 
 use phux_protocol::ids::ResourceId;
@@ -285,17 +285,39 @@ fn native_outcomes_match_the_typed_wire_contract() {
     }
 }
 
+/// A disposition this build does not know still settles the operation, as
+/// `Unknown`; an oversized body is refused.
 #[test]
-fn future_native_outcome_is_opaque_but_oversized_body_is_refused() {
+fn future_native_disposition_reads_as_unknown_but_oversized_body_is_refused() {
     let mut body = vec![0, 0, 0, 0, 9];
     body.extend_from_slice(&u64::MAX.to_be_bytes());
-    body.extend_from_slice(&[0xFE, 0xAA, 0xBB]);
+    body.extend_from_slice(&[0xFE, 0]);
     let future = FrameKind::Event {
         terminal: None,
         event: AgentEvent::Unknown { tag: 0x1c, body },
         stamp: None,
     };
-    common::assert_round_trip(&future);
+    let AgentEvent::NativeAgentResult {
+        agent_session_id,
+        operation_id,
+        disposition,
+        detail,
+    } = (match common::decode(&common::encode(&future)).unwrap() {
+        FrameKind::Event { event, .. } => event,
+        other => panic!("{other:?}"),
+    })
+    else {
+        panic!("a newer disposition must still settle the operation");
+    };
+    assert_eq!(
+        (agent_session_id, operation_id, disposition, detail),
+        (
+            ResourceId::local(9),
+            u64::MAX,
+            NativeDisposition::Unknown,
+            None
+        )
+    );
     let oversized = FrameKind::Event {
         terminal: None,
         event: AgentEvent::NativeAgentResult {

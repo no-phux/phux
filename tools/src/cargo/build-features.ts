@@ -54,9 +54,11 @@ export function violations({ full, lean, mcp, server, terminalApi, config }: Gra
     !full.has("wtransport"),
     "wtransport is the test dialer; production uses wtransport-proto",
   );
+  // ratcn (the TUI overlay toolkit) enables ratatui's layout cache on its
+  // own ratatui dependency; nothing else may bring it back.
   expect.that(
-    !enables(full, "ratatui-core", "layout-cache", "full"),
-    "unused layout cache re-enabled",
+    !enables(full, "ratatui-core", "layout-cache", "full") || full.has("ratcn"),
+    "layout cache re-enabled without ratcn",
   );
   expect.that(
     !lean.has("wtransport-proto"),
@@ -68,6 +70,7 @@ export function violations({ full, lean, mcp, server, terminalApi, config }: Gra
     expect.that(!graph.has("ratatui-macros"), `${name}: unused TUI macros`);
     expect.that(!enables(graph, "rustls", "tls12", name), `${name}: TLS 1.2 re-enabled`);
   }
+  expect.that(!server.has("phux-client-core"), "server: production graph reaches client state");
   for (const [name, graph] of Object.entries({ server, terminalApi, config })) {
     for (const dependency of [
       "phux-terminal",

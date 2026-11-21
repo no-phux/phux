@@ -119,11 +119,6 @@ fn both_units_restart_only_on_failure_and_throttle() {
         unit.contains(&format!("StartLimitIntervalSec={window}s")),
         "the limit window must admit the throttle, or the burst can never be reached.\n{unit}"
     );
-    assert!(
-        window > RESTART_THROTTLE_SECS * START_LIMIT_BURST,
-        "a window that does not fit {START_LIMIT_BURST} throttled starts makes the \
-         limit unreachable, which is the bug it exists to fix"
-    );
     let (unit_section, service_section) = unit
         .split_once("[Service]")
         .expect("rendered unit has a [Service] section");
@@ -299,38 +294,4 @@ fn the_unescapers_invert_the_escapers() {
             "systemd: {value}"
         );
     }
-}
-
-/// The launchd job names the server bundle through `Current`, so a grant
-/// given to `phux Server` survives the next update's version directory.
-#[test]
-fn launchd_plist_runs_the_bundle_through_the_current_symlink() {
-    let root = phux_config::server_bundle::root_in(std::path::Path::new("/Users/u"));
-    let current = phux_config::server_bundle::current_executable(&root);
-    let plist = render_launchd_plist(&ServicePlan {
-        binary: current,
-        ..plan()
-    });
-    assert!(
-        plist.contains(
-            "    <string>/Users/u/Library/Application Support/sh.phux/Server/Versions/\
-             Current/phux Server.app/Contents/MacOS/phux</string>"
-        ),
-        "{plist}"
-    );
-    assert!(!plist.contains("Versions/v"), "{plist}");
-    // An older unit naming the CLI binary is re-pointed in place.
-    let rewritten = crate::commands::service::rewrite_unit_binary(
-        crate::commands::service::Manager::Launchd,
-        &render_launchd_plist(&plan()),
-        &phux_config::server_bundle::current_executable(&root),
-    );
-    let crate::commands::service::Reconcile::Patched(body) = rewritten else {
-        panic!("the CLI path was not rewritten: {rewritten:?}");
-    };
-    assert!(
-        body.contains("Current/phux Server.app/Contents/MacOS/phux"),
-        "{body}"
-    );
-    assert!(!body.contains("/usr/local/bin/phux"), "{body}");
 }

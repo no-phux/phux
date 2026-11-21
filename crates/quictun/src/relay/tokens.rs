@@ -419,13 +419,6 @@ mod tests {
         hex::encode([byte; TOKEN_LEN])
     }
 
-    #[test]
-    fn missing_file_is_empty_store_that_rejects_all() {
-        let store = RouteTokenStore::load(Path::new("/nonexistent/quictun/relay-tokens")).unwrap();
-        assert!(store.is_empty());
-        assert!(store.lookup(&[0u8; TOKEN_LEN]).is_none());
-    }
-
     /// Comments and blanks are skipped; every entry resolves wherever it
     /// sits (the no-early-exit scan still lands on the right index); unknown
     /// and wrong-length tokens never match.

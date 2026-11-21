@@ -209,7 +209,10 @@ impl Connection {
         let Some((last, _)) = rects.iter().rev().find(|(id, _)| self.is_document(id)) else {
             return;
         };
-        self.layout = self.layout.take().and_then(|layout| crate::panes::remove(layout, last));
+        self.layout = self
+            .layout
+            .take()
+            .and_then(|layout| crate::panes::remove(layout, last));
     }
 
     /// Mark a document whose stream faulted: the kernel retired it, and this

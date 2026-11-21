@@ -12,7 +12,7 @@
 //! `paired` for an embedder's server.
 //!
 //! The inner session offers the terminal ALPN and the enrollment ALPN, so a
-//! device behind a relay enrolls the same way (§8.2).
+//! device behind a relay enrolls the same way.
 
 use std::io;
 use std::sync::Arc;

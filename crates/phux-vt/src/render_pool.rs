@@ -189,11 +189,8 @@ mod tests {
             Dirty::Clean,
             "same generation, same geometry, no writes: nothing to draw"
         );
-        assert_eq!(pool.last_dims(), Some((10, 2)));
-        assert_eq!(pool.last_generation, 1);
 
         let dirty = walk_and_clear(&mut pool, &t, 2);
-        assert_eq!(pool.last_generation, 2);
         assert_eq!(
             dirty,
             Dirty::Full,

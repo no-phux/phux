@@ -15,7 +15,7 @@ use phux_dial::TlsClientIdentity;
 use tokio::sync::{Notify, watch};
 
 use crate::control::ControlPlane;
-use crate::dial::{DIAL_TIMEOUT, Dial, load_token, plan_quic_with_token, plan_ws};
+use crate::dial::{DIAL_TIMEOUT, Dial, PlanError, load_token, plan_quic_with_token, plan_ws};
 use crate::reconnect::Ladder;
 use crate::target::{AuthorityPin, Resolved, Transport as Lane};
 
@@ -180,11 +180,17 @@ impl Target {
     /// # Errors
     ///
     /// The operator-facing reason the plan was refused (a missing pin or
-    /// token, an unresolvable host). No retry changes it.
+    /// token, a host whose name did not resolve).
     pub async fn plan(&self) -> Result<Dial, String> {
+        self.plan_dial().await.map_err(String::from)
+    }
+
+    /// [`Self::plan`], keeping a name that did not resolve apart from a
+    /// refusal, so a reconnecting caller retries it.
+    pub(crate) async fn plan_dial(&self) -> Result<Dial, PlanError> {
         match &self.transport {
             Transport::Uds(path) => Ok(Dial::Uds(path.clone())),
-            Transport::Wsl { socket, phux } => wsl::plan(socket, phux),
+            Transport::Wsl { socket, phux } => Ok(wsl::plan(socket, phux)?),
             Transport::Ssh {
                 destination,
                 remote_phux,
@@ -199,7 +205,7 @@ impl Target {
                     Some(token) => Some(token),
                     None => load_token(&resolved)?,
                 };
-                plan_ws(&resolved, url, token).map(Dial::Ws)
+                Ok(plan_ws(&resolved, url, token).map(Dial::Ws)?)
             }
             Transport::Quic(authority) => {
                 let resolved =
@@ -341,6 +347,13 @@ mod establish;
 pub(crate) mod io;
 mod ssh;
 pub(crate) mod trace;
+
+/// Shared identity and clock for payload-free consumer and enrollment evidence.
+pub(crate) struct AttemptTrace {
+    connection: u64,
+    attempt: u32,
+    started: tokio::time::Instant,
+}
 mod wsl;
 
 pub(crate) use establish::{DialFailure, establish};

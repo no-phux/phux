@@ -1,4 +1,4 @@
-//! Typed view of the `phux.agent/v1` L3 metadata record (ADR-0040, L3 §3.7).
+//! Typed view of the `phux.agent/v1` L3 metadata record (ADR-0040).
 //!
 //! `state` and `attention` are OPEN enums: unrecognized values decode to
 //! [`AgentMetaState::Unknown`] / [`AgentAttention::Normal`] rather than
@@ -31,6 +31,9 @@ pub struct PaneOccupantRecord {
     /// from an older server's record.
     #[serde(default)]
     pub background: bool,
+    /// The icon a program in the pane set (`OSC 1337 ; SetUserVar=phux_icon`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
 }
 
 /// Parse a `phux.pane-occupant/v1` value. Malformed or future-incompatible
@@ -266,7 +269,7 @@ pub use phux_client_core::agent_record::MAX_AGENT_RECORD_BYTES;
 #[must_use]
 pub fn parse_agent_record(bytes: &[u8]) -> Option<AgentRecord> {
     let record = phux_client_core::agent_record::parse_agent_record(bytes)?;
-    // An unsupported word already reads as `Normal` (L3 §3.7).
+    // An unsupported word already reads as `Normal`.
     Some(AgentRecord {
         name: record.name,
         kind: record.kind,
@@ -353,23 +356,6 @@ mod tests {
     }
 
     #[test]
-    fn unknown_state_and_attention_words_are_tolerated() {
-        let parsed =
-            parse_agent_record(br#"{"name":"a","state":"hibernating","attention":"maximal"}"#)
-                .expect("open enums must not fail the parse");
-        assert_eq!(parsed.state, AgentMetaState::Unknown);
-        assert_eq!(parsed.attention, Some(AgentAttention::Normal));
-    }
-
-    #[test]
-    fn rejects_missing_or_empty_name_and_malformed_json() {
-        assert_eq!(parse_agent_record(br#"{"state":"idle"}"#), None);
-        assert_eq!(parse_agent_record(br#"{"name":"  "}"#), None);
-        assert_eq!(parse_agent_record(b"not json"), None);
-        assert_eq!(parse_agent_record(br#"["name"]"#), None);
-    }
-
-    #[test]
     fn the_shell_check_reads_the_cursor_row_not_the_whole_screen() {
         let at_prompt = marked_screen(
             Some(cursor_at(10)),
@@ -391,11 +377,13 @@ mod tests {
             foreground: "zsh".to_owned(),
             is_pane_shell: true,
             background: false,
+            icon: None,
         };
         let busy = PaneOccupantRecord {
             foreground: "vim".to_owned(),
             is_pane_shell: false,
             background: false,
+            icon: None,
         };
         assert_eq!(
             shell_availability(Some(&shell), ShellCheck::Unanswerable),

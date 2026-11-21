@@ -167,11 +167,19 @@ mod tests {
     #[test]
     fn exit_zero_does_not_restart_or_count() {
         let mut policy = Policy::new();
+        for n in 0..4 {
+            let _ = fail(&mut policy, Duration::ZERO, Duration::from_secs(n));
+        }
         assert_eq!(
-            policy.on_exit(Some(0), Duration::from_secs(1), Duration::from_secs(1)),
+            policy.on_exit(Some(0), Duration::ZERO, Duration::from_secs(4)),
             AfterExit::Clean
         );
-        assert!(policy.failures.is_empty());
-        assert_eq!(policy.backoff_index, 0);
+        assert_eq!(
+            fail(&mut policy, Duration::ZERO, Duration::from_secs(5)),
+            AfterExit::Restart {
+                delay: Duration::from_secs(16)
+            },
+            "the clean exit neither counted as a failure nor advanced the backoff"
+        );
     }
 }

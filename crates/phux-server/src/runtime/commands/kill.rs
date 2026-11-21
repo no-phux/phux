@@ -1,10 +1,11 @@
 //! Terminal kill and close-tab handling, including satellite partitions.
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the split command modules share the parent command namespace"
-)]
 
-use super::*;
+use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode};
+use tracing::debug;
+
+use crate::runtime::commands::results::terminal_not_found;
+use crate::runtime::committed_close::{CommittedClose, announce, commit_user_close};
+use crate::state::{ClientId, ServerInterceptedKey, SharedState};
 
 /// The attribution a kill stamps on the `pane_closed` of everything it
 /// closes: the sending connection and, when keyed, its `operation_id`.
@@ -18,28 +19,6 @@ pub(super) const fn kill_attribution(
     }
 }
 
-/// The refusal a kill gets when it would close a locked tab: one that would
-/// lose every member it shows. A whole batch is refused, killing nothing.
-// ponytail: checked under its own lock, not the kill's; a lock that lands
-// between the two is missed. Fold it into each kill's borrow if that matters.
-fn locked_tab_refusal(
-    state: &SharedState,
-    ids: &[phux_protocol::ids::ResourceId],
-) -> Option<CommandResult> {
-    let tab = state.with(|s| {
-        let keys: Vec<_> = ids
-            .iter()
-            .filter_map(|id| s.idspace.resource_from_wire(id))
-            .filter_map(|core| s.registry().resource_key(core))
-            .collect();
-        phux_core::arrangement::locked_tab_closed_by(s.org(), &keys)
-    })?;
-    Some(CommandResult::error(
-        ErrorCode::PreconditionFailed,
-        format!("{tab} is locked; unlock it first"),
-    ))
-}
-
 /// `KILL_RESOURCE`: close the pane through the same teardown a natural exit
 /// takes, so `RESOURCE_CLOSED` still fires.
 pub(super) fn handle_kill_terminal(
@@ -47,31 +26,17 @@ pub(super) fn handle_kill_terminal(
     terminal_id: &phux_protocol::ids::ResourceId,
     attribution: crate::state::CloseAttribution,
 ) -> CommandResult {
-    if let Some(refused) = locked_tab_refusal(state, std::slice::from_ref(terminal_id)) {
-        return refused;
-    }
-    state
-        .with(|s| s.idspace.resource_from_wire(terminal_id))
-        .map_or_else(
-            || terminal_not_found(terminal_id),
-            |core_id| {
-                // ADR-0104 §2: the target and its children close in one lock,
-                // and the commit is the teardown (L1 §5.2).
-                let committed = state.with_mut(|s| {
-                    super::super::committed_close::commit_close(
-                        s,
-                        &[core_id],
-                        phux_protocol::wire::frame::CloseReason::Killed,
-                        attribution,
-                    )
-                });
-                super::super::committed_close::announce(state, committed);
-                CommandResult::Ok
-            },
-        )
+    let admitted = state.with_mut(|s| {
+        let id = s
+            .idspace
+            .resource_from_wire(terminal_id)
+            .ok_or_else(|| terminal_not_found(terminal_id))?;
+        commit_user_close(s, &[id], attribution)
+    });
+    finish_close(state, admitted)
 }
 
-/// `KILL_RESOURCE_IF` (ADR-0109, L1 §5.2.1): check and kill under one lock so
+/// `KILL_RESOURCE_IF` (ADR-0109): check and kill under one lock so
 /// no attach lands between them. A refusal kills nothing.
 pub(super) fn handle_kill_resource_if(
     state: &SharedState,
@@ -79,24 +44,25 @@ pub(super) fn handle_kill_resource_if(
     precondition: &phux_protocol::wire::frame::KillPrecondition,
     attribution: crate::state::CloseAttribution,
 ) -> CommandResult {
-    if let Some(refused) = locked_tab_refusal(state, std::slice::from_ref(terminal_id)) {
-        return refused;
-    }
     let admitted = state.with_mut(|s| {
-        let core = s.admit_conditional_kill(terminal_id, precondition)?;
-        Ok(super::super::committed_close::commit_close(
-            s,
-            &[core],
-            phux_protocol::wire::frame::CloseReason::Killed,
-            attribution,
-        ))
+        let core = s
+            .admit_conditional_kill(terminal_id, precondition)
+            .map_err(|refusal| kill_if_refusal(terminal_id, refusal))?;
+        commit_user_close(s, &[core], attribution)
     });
+    finish_close(state, admitted)
+}
+
+fn finish_close(
+    state: &SharedState,
+    admitted: Result<CommittedClose, CommandResult>,
+) -> CommandResult {
     match admitted {
         Ok(committed) => {
-            super::super::committed_close::announce(state, committed);
+            announce(state, committed);
             CommandResult::Ok
         }
-        Err(refusal) => kill_if_refusal(terminal_id, refusal),
+        Err(refusal) => refusal,
     }
 }
 
@@ -114,22 +80,22 @@ fn kill_if_refusal(
     }
 }
 
-/// Handle `KILL_RESOURCES` (L1 §5.2): close every local id under one lock,
+/// Handle `KILL_RESOURCES`: close every local id under one lock,
 /// then relay each satellite's part and await every answer. An unkeyed batch
 /// answers `OK` (skips and relay failures are logged); a keyed batch
-/// (L1 §5.1.1) answers one outcome per id, merged across hops.
+/// answers one outcome per id, merged across hops.
 pub(crate) async fn handle_kill_terminals(
     state: &SharedState,
     client_id: ClientId,
     ids: &[phux_protocol::ids::ResourceId],
     operation_id: Option<phux_protocol::ids::IdempotencyKey>,
 ) -> CommandResult {
-    if let Some(refused) = locked_tab_refusal(state, ids) {
-        return refused;
-    }
-    let partitions = satellite_partitions(ids);
     let attribution = kill_attribution(client_id, operation_id);
-    let (killed, not_found) = kill_local_batch(state, ids, attribution, false);
+    let local = match kill_local_batch(state, ids, attribution, false) {
+        Ok(local) => local,
+        Err(refused) => return refused,
+    };
+    let partitions = satellite_partitions(ids);
     let relayed = futures_util::future::join_all(
         partitions
             .into_iter()
@@ -141,10 +107,10 @@ pub(crate) async fn handle_kill_terminals(
         return CommandResult::Ok;
     }
     let mut results = super::super::keyed_ops::KillResults::default();
-    for id in &killed {
+    for id in &local.killed {
         results.killed(id);
     }
-    for id in &not_found {
+    for id in &local.not_found {
         results.not_found(id);
     }
     for partition in &relayed {
@@ -153,18 +119,19 @@ pub(crate) async fn handle_kill_terminals(
     results.into_result()
 }
 
-/// `CLOSE_TAB_RESOURCES` (L1 §5.2.2, ADR-0114): the atomic local close of
+/// `CLOSE_TAB_RESOURCES` (ADR-0114): the atomic local close of
 /// [`handle_kill_terminals`] that keeps keep-empty sessions. Unkeyed; the
 /// satellite parts are relayed detached and not awaited.
 pub(crate) fn handle_close_tab_resources(
     state: &SharedState,
     ids: &[phux_protocol::ids::ResourceId],
 ) -> CommandResult {
-    if let Some(refused) = locked_tab_refusal(state, ids) {
+    if let Err(refused) =
+        kill_local_batch(state, ids, crate::state::CloseAttribution::default(), true)
+    {
         return refused;
     }
     relay_close_tab_partitions(state, ids);
-    let _ = kill_local_batch(state, ids, crate::state::CloseAttribution::default(), true);
     CommandResult::Ok
 }
 
@@ -195,6 +162,12 @@ fn satellite_local_ids(
         .collect()
 }
 
+#[derive(Default)]
+struct LocalKillResults {
+    killed: Vec<phux_protocol::ids::ResourceId>,
+    not_found: Vec<phux_protocol::ids::ResourceId>,
+}
+
 /// Close the local ids of a batch under one lock and return which named a
 /// live resource and which named nothing. `preserve_keep_empty` is
 /// `CLOSE_TAB_RESOURCES`.
@@ -203,25 +176,22 @@ fn kill_local_batch(
     ids: &[phux_protocol::ids::ResourceId],
     attribution: crate::state::CloseAttribution,
     preserve_keep_empty: bool,
-) -> (
-    Vec<phux_protocol::ids::ResourceId>,
-    Vec<phux_protocol::ids::ResourceId>,
-) {
+) -> Result<LocalKillResults, CommandResult> {
     let label = if preserve_keep_empty {
         "CLOSE_TAB_RESOURCES"
     } else {
         "KILL_RESOURCES"
     };
-    let (killed, not_found, committed) = state.with_mut(|s| {
+    let (results, committed) = state.with_mut(|s| {
         let mut targets = Vec::with_capacity(ids.len());
-        let (mut killed, mut not_found) = (Vec::new(), Vec::new());
+        let mut results = LocalKillResults::default();
         for wire_id in ids.iter().filter(|id| id.local_id().is_some()) {
             if let Some(core_id) = s.idspace.resource_from_wire(wire_id) {
                 targets.push(core_id);
-                killed.push(wire_id.clone());
+                results.killed.push(wire_id.clone());
             } else {
                 debug!(?wire_id, "{label}: unknown / dead id; skipping");
-                not_found.push(wire_id.clone());
+                results.not_found.push(wire_id.clone());
             }
         }
         // A batch naming every pane of a persistent session keeps its
@@ -232,14 +202,7 @@ fn kill_local_batch(
         } else {
             s.sessions_covered_by(&targets)
         };
-        // ADR-0104 §2: targets and their children close once, in this borrow,
-        // and the commit is the teardown (L1 §5.2).
-        let mut committed = super::super::committed_close::commit_close(
-            s,
-            &targets,
-            phux_protocol::wire::frame::CloseReason::Killed,
-            attribution,
-        );
+        let mut committed = commit_user_close(s, &targets, attribution)?;
         let actor = attribution
             .actor
             .map_or_else(phux_core::Actor::owner, |client| s.actor_for(client));
@@ -261,10 +224,10 @@ fn kill_local_batch(
             closed = committed.len(),
             "{label}: torn down local ids atomically"
         );
-        (killed, not_found, committed)
-    });
-    super::super::committed_close::announce(state, committed);
-    (killed, not_found)
+        Ok::<_, CommandResult>((results, committed))
+    })?;
+    announce(state, committed);
+    Ok(results)
 }
 
 /// `CLOSE_TAB_RESOURCES`'s satellite ids, forwarded detached to each host as

@@ -135,31 +135,23 @@ impl super::SessionLoop {
         })
         .await?;
         self.subscribe_global_session_keys(conn).await?;
-        if subscribe_layout
-            && let Some(session) = self.peers.focused_session
-            && self.open_arrangement_link(session)
-        {
-            // The arrangement record: read once this burst settles, then
-            // re-read on each `ARRANGEMENT_CHANGED` for this session.
-            self.layout_get_request_id = Some(self.take_request_id());
+        if subscribe_layout && let Some(session) = self.peers.focused_session {
             self.layout_read_complete = false;
-        } else if subscribe_layout && let Some(session) = self.peers.focused_session {
-            // Fetch and watch this session's persisted layout (best effort).
-            let key = layout_key(session);
-            let req_id = self.take_request_id();
-            self.layout_get_request_id = Some(req_id);
-            self.layout_read_complete = false;
-            conn.send(&FrameKind::GetMetadata {
-                request_id: req_id,
-                scope: Scope::Group(DEFAULT_GROUP_ID),
-                key: key.clone(),
-            })
-            .await?;
-            conn.send(&FrameKind::SubscribeMetadata {
-                scope: Scope::Group(DEFAULT_GROUP_ID),
-                key,
-            })
-            .await?;
+            self.layout_get_request_id = None;
+            if !self.open_arrangement_link(session) {
+                let key = layout_key(session);
+                let request_id = self.take_request_id();
+                self.layout_get_request_id = Some(request_id);
+                let scope = Scope::Group(DEFAULT_GROUP_ID);
+                conn.send(&FrameKind::GetMetadata {
+                    request_id,
+                    scope: scope.clone(),
+                    key: key.clone(),
+                })
+                .await?;
+                conn.send(&FrameKind::SubscribeMetadata { scope, key })
+                    .await?;
+            }
         }
         // ADR-0040: read + watch every bootstrap pane's agent record.
         self.sync_agent_meta(conn).await?;

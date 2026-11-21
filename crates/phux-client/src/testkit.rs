@@ -398,7 +398,7 @@ pub async fn hold_silent(listener: UnixListener) {
     }
 }
 
-/// Length-prefixed SPEC §5 frame I/O over the server half of a `UnixStream`.
+/// Length-prefixed frame I/O over the server half of a `UnixStream`.
 #[derive(Debug)]
 struct FrameLink {
     stream: UnixStream,

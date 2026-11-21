@@ -4,11 +4,16 @@
 # base branch does not verifiably enforce a merge queue (fallback PRs) still
 # require native setup and rust icount; the queue and Rune-affecting fallback
 # PRs require Apple, and fallback PRs require their selected Rune Linux lane.
+# A draft's skipped plan fails, so a stale draft ci never satisfies a ready PR.
 set -euo pipefail
 
 : "${RESULTS:?RESULTS is required}"
 jq -r 'to_entries[] | "\(.value.result)\t\(.key)"' <<<"$RESULTS"
 event="${EVENT_NAME:-}"
+if [[ "$(jq -r .plan.result <<<"$RESULTS")" == skipped ]]; then
+    echo "::error::plan was skipped (draft PR): ready the PR to run ci"
+    exit 1
+fi
 jq -e --arg event "$event" '
   ($event == "pull_request" and .plan.outputs.queue_verified != "true") as $fallback |
   ($event == "push" or $event == "merge_group" or $fallback) as $mandatory |

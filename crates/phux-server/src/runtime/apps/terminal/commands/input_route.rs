@@ -1,11 +1,14 @@
 //! Routed input destinations.
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the split command modules share the parent command namespace"
-)]
 
-use super::*;
-use phux_terminal_api::actor::TerminalResource as _;
+use phux_protocol::input::InputEvent;
+use phux_protocol::wire::frame::{CommandResult, ControlAction, ErrorCode};
+use phux_terminal_api::TerminalInput;
+use phux_terminal_api::actor::{TerminalHandle, TerminalResource as _};
+use tracing::{debug, warn};
+
+use crate::resource::ResourceHandle;
+use crate::runtime::commands::{terminal_not_found, wrong_resource_kind};
+use crate::state::{ClientId, Resolved, SharedState};
 
 /// A resolved, lease-checked local input destination.
 #[derive(Debug)]
@@ -25,7 +28,7 @@ pub(crate) fn with_route_input_destination<R>(
     action: impl FnOnce(InputDestination) -> R,
 ) -> Result<R, CommandResult> {
     state.with(|s| {
-        // workload-auth §7 step 2: nothing queued before a revocation lands.
+        // Revocation: nothing queued before a revocation lands.
         if s.connection_revoked(client_id) {
             return Err(CommandResult::error(
                 ErrorCode::PermissionDenied,
@@ -76,7 +79,7 @@ pub(crate) fn with_route_input_destination<R>(
 }
 
 /// Input to a Terminal whose process exited and which is retained read-only
-/// (ADR-0124): nothing was written, as for a pane with no PTY (L1 §6.2.1).
+/// (ADR-0124): nothing was written, as for a pane with no PTY.
 fn exited_input_refusal() -> CommandResult {
     CommandResult::error(
         ErrorCode::InputNotWritten,

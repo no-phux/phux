@@ -226,19 +226,16 @@ pub(crate) async fn release_aborted_consumers(client_id: ClientId, handles: &[Re
     let wire_client_id = crate::runtime::wire_client(client_id);
     let producer_deadline = std::time::Duration::from_secs(1);
     for handle in handles {
-        // Native history cuts are a Terminal facet lease.
-        if let Ok(terminal) = handle.terminal() {
-            let _ = tokio::time::timeout(
-                producer_deadline,
-                terminal
-                    .native_release
-                    .send(phux_terminal_api::actor::NativeReleaseRequest { owner: client_id.0 }),
-            )
-            .await;
-        }
         let Ok(terminal) = handle.terminal() else {
             continue;
         };
+        let _ = tokio::time::timeout(
+            producer_deadline,
+            terminal
+                .native_release
+                .send(phux_terminal_api::actor::NativeReleaseRequest { owner: client_id.0 }),
+        )
+        .await;
         let (reply, done) = oneshot::channel();
         if matches!(
             tokio::time::timeout(

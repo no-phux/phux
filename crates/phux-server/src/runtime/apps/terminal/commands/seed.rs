@@ -1,10 +1,13 @@
 //! Session seeding and PTY-backed pane spawns.
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the split command modules share the parent command namespace"
-)]
 
-use super::*;
+use tokio_util::sync::CancellationToken;
+
+use crate::runtime::apps::terminal::commands::spawn::{
+    DEFAULT_SPAWN_DIMS, exit_policy_for, launch_of, launch_pane_actor, register_pty_command,
+    set_agent_session, spawn_actor,
+};
+use crate::runtime::commands::{SeedOrigin, SpawnAttribution};
+use crate::state::SharedState;
 
 #[cfg(test)]
 mod composition_tests {
@@ -263,7 +266,7 @@ pub(in crate::runtime) fn stamp_spawn_cwd(
     }
 }
 
-/// Per-pane agent-event sink capacity (SPEC §7.5). A full sink drops and
+/// Per-pane agent-event sink capacity. A full sink drops and
 /// journals a `source_gap` rather than stalling the PTY pump.
 pub(crate) const EVENT_SINK_CAPACITY: usize = 64;
 

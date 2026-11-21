@@ -1,11 +1,12 @@
 # Architecture
 
-For people changing phux. [Concepts](./concepts.md) is the user-level model;
-[protocol](./protocol.md) is the wire. [Organization](./organization.md) owns
-durable records, activations and restore; [remote authority](./remote.md#who-can-do-what)
-owns grants and revocation; [embedding](./embedding.md#runtime-consumer-contract)
-owns the runtime consumer boundary. [Substrate](./substrate.md) covers
-principals, keeper authority, delegation, and adapter boundaries.
+[Concepts](./concepts.md) is the user model. [Protocol](./protocol.md)
+covers the wire, [organization](./organization.md) the durable records,
+[remote authority](./remote.md#who-can-do-what) the grants and revocation,
+[embedding](./embedding.md#runtime-consumer-contract) the consumer contract,
+and [substrate](./substrate.md) principals, delegation, and the keeper.
+The [architecture target](./architecture-target.md) describes the migration
+and how to verify it.
 
 Brand artwork and cross-repository release delivery are documented in
 [brand assets](./brand-assets.md).
@@ -60,14 +61,14 @@ and gets the server's view, which is what `phux snapshot` does.
 
 ## Crates
 
-All under `crates/`. Every crate is `publish = false` except
-`phux-protocol`. Rows are responsibilities; Cargo manifests define the
-dependency edges.
+Only `phux-protocol` is published. Cargo manifests define the dependency
+edges.
 
 | Crate | Role |
 | --- | --- |
 | `phux-protocol` | wire format, message catalog, codec, capabilities, the kind catalog (also the authorization classifier); pure Rust, no libghostty |
-| `phux-vt` | libghostty glue for native crates |
+| `phux-vt` | libghostty glue |
+| `phux-layout-codec` | legacy TUI layout metadata |
 | `phux-core` | domain records: sessions, resources, arrangements, and the pure `apply()` that organizes them; no I/O |
 | `phux-config-core` | config file location, `extends` layering, `[[remote]]`, `[organize]`, profile and socket paths |
 | `phux-design` | [design tokens](./design-language.md) |
@@ -85,7 +86,7 @@ dependency edges.
 | `phux-plugin` | plugin action runtime contracts |
 | `phux-usage` | plan-usage collector behind `phux agent usage`: vendor limit sources and the `phux.usage/v1` document; no wire |
 | `phux-frozen` | test support: frozen fixtures that hold persisted formats to what released images wrote |
-| `phux-client-runtime` | the one client orchestration layer: dial planning, reconnect, control plane, engine owner thread, grid publication |
+| `phux-client-runtime` | native connected client: dial planning, reconnect, control plane, engine owner thread, grid publication |
 | `phux-client` | headless client: the connection facade and the verbs behind the CLI and MCP |
 | `phux-client-ffi` | the one binding crate: the UniFFI Swift and Kotlin surface the phone apps link |
 | `phux-resource` | the kind-neutral substrate: output stream, lifecycle, opaque facets and companions, and per-consumer replicated-state delivery; names no kind's concepts (`tests/substrate_boundary.rs` enforces it) |
@@ -94,7 +95,7 @@ dependency edges.
 | `phux-terminal-api` | engine-independent Terminal contracts: launch intent, factory, input and presentation ports, opaque captures and report types; no VT or PTY implementation |
 | `phux-server` | the daemon: hosts resources and serves them to clients, including the replicated-document engine behind `AccessibilityTree`, `PixelSurface` and `Document`; links no VT library and no PTY directly |
 | `phux-agent-host` | guardian process for native agent sessions over ACP |
-| `phux-tui` | the terminal UI: attach driver, ratatui chrome, widget runtime, overlays; also the native VT driver sharing terminal restoration; the only crate that links ratatui |
+| `phux-tui` | the terminal UI: attach driver, ratatui chrome, ratcn widgets, overlays; also the native VT driver sharing terminal restoration; the only crate that links ratatui |
 | `phux-mcp` | the `phux-mcp` binary: MCP over stdio |
 | `phux-server-testkit` | fixtures for server wire tests; dev-only |
 | `phux-wire-fixtures` | frame builders for client-side tests; wasm-safe; dev-only |
@@ -121,13 +122,15 @@ comment-preserving config writer and `extends`, with existing user layers
 winning. No tmux syntax or compatibility behavior enters the loader,
 server, protocol or client runtime. See the [import contract](./tmux-import.md).
 
-`phux-client-core` is the part every client shares: a synchronous kernel
-that takes wire frames in and produces effects (paint this, send that),
-with no I/O of its own. `phux-client-runtime` wraps it with the async
-parts: dialing, reconnecting, the engine thread that owns libghostty
-replicas, and one publication table for terminal grids and whole
-documents. The TUI, the desktop app, and the FFI bindings sit on the
-runtime; the browser client sits on the core alone, doing its own I/O.
+`phux-client-core` is the synchronous kernel. It takes wire frames in
+and produces effects without I/O. `phux-client-runtime` adds native dialing,
+reconnect, an engine thread for the replicas and a publication table for grids
+and documents. Rune and the FFI bindings use the runtime's connected client.
+The TUI runs the kernel in its own attach loop over the shared headless
+connection. The browser also runs the kernel and owns its browser I/O.
+The runtime, TUI and browser share the kernel's translation of decoded
+bootstrap, output, and history frames. The TUI adopts typed arrangement reads
+directly and decodes layout metadata when attached to a legacy peer.
 
 The TUI paints pane interiors from libghostty through a cell-diffed front
 buffer and paints chrome with ratatui in disjoint regions. Phux Rune paints the
@@ -199,13 +202,13 @@ an unchanged prefix can remain reusable; pi's shared awareness stream emits a
 checkpoint, then only changes, with fresh checkpoints after compaction or tree
 movement. Provider caching itself remains the harness/provider's concern.
 
-OpenCode V2 currently defaults automatic fleet awareness off. Its opt-in path
-places full checkpoints in the per-request system context, not that persistent
-tail; do not assume it preserves the conversation prefix when fleet state
-changes (or even stays unchanged, since checkpoint sequence numbers advance).
+OpenCode V2 defaults fleet awareness off. Opt-in, it writes unsequenced fleet
+state to the session's `phux-fleet` instruction entry per prompt; OpenCode keeps
+the first value in the system prompt, appends each change as a durable system
+message, and carries the value through compaction and forks.
 The [bootload-cache research](./research/context-bootload-cache.md)
-records this difference from historical ADR-0067, measurements, and the cache
-ownership recommendation. No keeper bootload service exists today.
+records the earlier per-request design, measurements, and the cache ownership
+recommendation. No keeper bootload service exists today.
 
 ## Where to look
 
@@ -222,43 +225,42 @@ ownership recommendation. No keeper bootload service exists today.
 | authorization | `phux-server/src/policy.rs`, `workload.rs`, `phux-protocol/src/kinds.rs` |
 | remote access | `crates/phux/src/commands/enroll.rs`, `remote_target.rs`, `phux-client-runtime/src/dial.rs`, `phux-server/src/transport/` |
 
-A resource kind is an app. The host reaches one through `ResourceApp` in
-`phux-server/src/runtime/apps/`: `app_owning` routes a facet command, or a
-host method an app serves, by the catalog rows authorization uses, and
-`app_for` answers per-kind questions such as how a stream bootstraps. `state/` sits below the apps and never names
-them: it asks any resource only for its lifecycle (`ResourceOps`), and holds
-each app's own state in a typed slot it cannot read (`state/app_slots.rs`).
-A new kind does not compile until `app_for` names its app, and no
-`ResourceApp`, `InteractiveApp` or `ResourceOps` method has a default; a new kind
-also takes one `APP_KINDS` row, which a test holds to the catalog. A graceful
-upgrade goes through the apps too: at the cut each app writes the upgrade-blob
-fields its kind owns, and on resume it rebuilds them, in `APP_KINDS` order so
-a parent's kind comes first. A surface only some kinds offer (a size in
-cells, an input lease, a live record stream, an `AgentParent` mailbox) is a
+Each resource kind implements `ResourceApp` in
+`phux-server/src/runtime/apps/`. `app_owning` routes facet commands and
+app-owned host methods by the catalog rows authorization uses. `app_for`
+routes spawn, resource frames, stream bootstrap and upgrade by kind.
+`state/` sits below the apps. It accesses engine lifecycle through
+`ResourceOps` and holds app state in typed slots it cannot read
+(`state/app_slots.rs`).
+A new kind supplies an exhaustive `app_for` arm, every `ResourceApp` and
+`ResourceOps` method, and an `APP_KINDS` entry checked against the catalog.
+During a graceful upgrade each app writes the blob fields it owns, then
+rebuilds them in `APP_KINDS` order so a parent's kind comes first.
+A surface only some kinds offer (a size in cells, an input lease, a live
+record stream, an `AgentParent` mailbox) is a
 companion on the handle, typed by the crate that owns it, so the host uses
 it without naming an engine. The server's production dependency
 graph contains no Terminal engine, libghostty or PTY implementation. The
 executable explicitly injects a `TerminalEngineFactory`; no built-in engine is
 selected by the host. The private Terminal app uses `phux-terminal-api` ports;
 native encoding, ordered PTY writes and capability adaptation stay engine-owned.
-`seam_tests.rs` and the lint lane's `build-features-check` enforce this separation;
-`seam_ratchet_tests.rs` lists the kind references the host still makes, and
-that list only shrinks. The host
-holds a lossless OS-native `LaunchCommand`; deciding what a pane runs is the app's job.
-Organization launches also pass through the app: support is checked before
-commit, then the committed effect executes only through the recorded kind.
-Producer-bound projections refuse ordinary relaunch; no other kind inherits
-a default shell. Execution failure settles only the effect's exact activation.
+`seam_tests.rs` and the lint lane's `build-features-check` enforce this separation.
+The host holds a lossless OS-native `LaunchCommand`. The Terminal app
+decides what a pane runs, owns the input lane and publishes its own
+capabilities. Organization admission and effect execution both look up the
+recorded kind's launcher. Producer-bound projections open through their
+producer, and execution failure settles only the effect's exact activation.
+Native AgentSession closes and relaunch claims go to the native agent
+controller. Document input refusals go to the document audit log.
 Engine registration rejects absent records and record/handle kind mismatches
 before allocating a wire identity, replacing a handle, or spawning the actor.
 Stream and input frames reach their resource's app through
 `ResourceApp::frame`, after host authorization, connection/subscription gates
 and satellite routing. `runtime/session_attach` owns aggregate capture,
-accounting and publication, and names no kind: each kind's app fences,
-sizes and roles its own resources.
-Apps stage bounded bootstraps under the same
-generation, with live output and lifecycle closes held behind the aggregate
-barrier. The AgentSession app retains catalog membership but defers its stream
+accounting and publication. It calls the Terminal app to fence Terminal
+consumers, set colors and geometry, and apply input roles. Apps stage
+bounded bootstraps under the same generation, with live output and
+lifecycle closes held behind the aggregate barrier. The AgentSession app retains catalog membership but defers its stream
 to cursor-bearing `ATTACH_RESOURCE`: session `ATTACH` has no per-agent cursor
 and must not replace committed history with an unsolicited full cut.
 A document-only or agent-only session needs no Terminal codec; a mixed

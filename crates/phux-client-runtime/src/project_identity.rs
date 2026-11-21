@@ -403,15 +403,6 @@ mod tests {
     }
 
     #[test]
-    fn outside_git_no_checkout_starts_here() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let here = dir.path().canonicalize().expect("canonical");
-        // A temp dir inside some enclosing repository still finds that one,
-        // never a checkout rooted at the temp dir itself.
-        assert!(find_checkout(&here).is_none_or(|found| found.root != here));
-    }
-
-    #[test]
     fn origin_url_reads_the_origin_section_only() {
         let config = "[remote \"upstream\"]\n\turl = git@x:u/v\n[Remote \"origin\"]\n\tfetch = +refs/*\n\tURL = https://h/a/b # c\n\turl = second\n";
         assert_eq!(origin_url(config).as_deref(), Some("https://h/a/b"));

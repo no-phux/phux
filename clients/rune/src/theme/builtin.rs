@@ -1,5 +1,5 @@
 //! The built-in themes: the shared catalog's (`phux_design::catalog`,
-//! phux-brand's `tokens/themes.json`), the ones it marks as Rune's, in its
+//! `crates/phux-design/tokens/themes.json`), the ones it marks as Rune's, in its
 //! order. The house terminal (`phux`, `phux-light`) leads.
 
 use std::sync::OnceLock;

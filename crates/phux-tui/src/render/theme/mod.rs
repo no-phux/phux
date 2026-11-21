@@ -1,7 +1,7 @@
 //! Chrome and overlay color theme: one [`Theme`] of named slots.
 //!
 //! The slots are pinned to [`SLOT_SPECS`] by tests and filled from the phux
-//! design language (`phux_design`, spec §4.2).
+//! design language (`phux_design`).
 //!
 //! Theme sources layer in order:
 //!
@@ -26,7 +26,7 @@ pub use phux_config::theme_slots::SLOT_SPECS;
 use phux_design::{Mode, Rgb8, Rgba8, Roles};
 use ratatui::style::{Color, Modifier, Style};
 
-pub use depth::{identity_256, nearest_256, xterm_rgb};
+pub use depth::{identity_256, is_24_bit, nearest_256, xterm_rgb};
 pub use term::{Depth, Glyphs, Outer, Term, record_reported};
 
 /// Named color slots for chrome + overlay painting (ratatui [`Color`]s),
@@ -200,7 +200,7 @@ impl Theme {
     }
 
     /// Map a theme's colours onto the chrome slots through the one solver
-    /// (spec §4.2) for the terminal `outer`: bg ← `background`, fg ←
+    /// for the terminal `outer`: bg ← `background`, fg ←
     /// `foreground`, ANSI ← `color0..15`, accent ← `accent`, selection ←
     /// `selection`, cursor ← `cursor`.
     #[must_use]
@@ -225,7 +225,7 @@ impl Theme {
         Self::from_roles(&roles, outer, outer.background == Some(input.bg))
     }
 
-    /// The slot map of spec §4.2, fitted to `outer`'s depth.
+    /// The slot map, fitted to `outer`'s depth.
     #[must_use]
     pub fn from_roles(roles: &Roles, outer: &Outer, ground_known: bool) -> Self {
         let text = rgb(roles.text.text);

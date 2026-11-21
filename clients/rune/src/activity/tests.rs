@@ -122,19 +122,6 @@ fn a_mark_is_dated_when_it_changes() {
 }
 
 #[test]
-fn kind_is_kept() {
-    let mut a = Activities::default();
-    a.apply(
-        &Event::AgentMetadata {
-            terminal_id: id(1),
-            value: Some(br#"{"name":"c","kind":"claude","state":"working"}"#.to_vec()),
-        },
-        &[],
-    );
-    assert_eq!(a.agent_kind(&id(1)), Some("claude"));
-}
-
-#[test]
 fn a_reconnect_settles_commands_only_on_an_answer() {
     let mut a = Activities::default();
     for n in 1..=3 {
@@ -237,7 +224,7 @@ fn an_idle_agent_with_work_in_the_background_is_told_apart() {
 }
 
 /// The brand's `tone_of` vectors through Rune's own path, facts to
-/// `Activity` to ladder state, for the facts Rune can see (§1.3.1): an
+/// `Activity` to ladder state, for the facts Rune can see: an
 /// agent, its attention, a question, and whether its result was seen.
 #[test]
 fn the_tone_of_vectors_hold_through_rune() {

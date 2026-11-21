@@ -13,10 +13,10 @@ use std::time::Duration;
 use crate::render::chrome::status_bar::widgets::WidgetError;
 use phux_config::keybind::{BindingDiagnostic, Resolver};
 use phux_config::plugin::PluginManifest;
+use phux_config::plugin::actions::{self, PluginActionEntry};
 use phux_config::{Config, ConfigError, KeybindingsCfg, SidebarPosition};
 
 use crate::attach::paint::SidebarEdge;
-use crate::attach::plugin_actions::{self, PluginActionEntry};
 use crate::attach::plugin_panes::{self, PluginPaneEntry};
 use crate::attach::plugin_sidebar;
 use crate::render::chrome::sidebar::SidebarPainter;
@@ -93,6 +93,8 @@ pub struct TuiSettings {
     pub clipboard_read: phux_config::ClipboardRead,
     /// `[notifications]`: agent notification delivery. Live on reload.
     pub notifications: phux_config::NotificationsCfg,
+    /// `[chrome] title`: the outer window title format. Live on reload.
+    pub outer_title: String,
 }
 
 impl std::fmt::Debug for TuiSettings {
@@ -114,6 +116,7 @@ impl std::fmt::Debug for TuiSettings {
             .field("clipboard_write", &self.clipboard_write)
             .field("clipboard_read", &self.clipboard_read)
             .field("notifications", &self.notifications)
+            .field("outer_title", &self.outer_title)
             .finish()
     }
 }
@@ -177,6 +180,7 @@ impl TuiSettings {
         self.clipboard_write = new.clipboard_write;
         self.clipboard_read = new.clipboard_read;
         self.notifications = new.notifications;
+        self.outer_title = new.outer_title;
     }
 
     /// The seed when the config does not load: the shipped defaults, keys
@@ -209,7 +213,7 @@ impl TuiSettings {
                 Some(StatusBarPainter::error_line(config_error_line(&err)))
             }
         };
-        let plugin_actions = plugin_actions::entries_from_manifests(&manifests);
+        let plugin_actions = actions::entries_from_manifests(&manifests);
         let plugin_panes = plugin_panes::entries_from_manifests(&manifests);
         let plugin_sidebar = plugin_sidebar::specs_from_manifests(&manifests);
         let keybindings = merged_keybindings(cfg, &plugin_actions);
@@ -246,7 +250,7 @@ impl TuiSettings {
         // Widget composition is the one post-parse validation step that can
         // still reject the config.
         let status_bar = compose_status_bar(cfg, &manifests).map_err(|err| err.to_string())?;
-        let plugin_actions = plugin_actions::entries_from_manifests(&manifests);
+        let plugin_actions = actions::entries_from_manifests(&manifests);
         let plugin_panes = plugin_panes::entries_from_manifests(&manifests);
         let plugin_sidebar = plugin_sidebar::specs_from_manifests(&manifests);
         let keybindings = merged_keybindings(cfg, &plugin_actions);
@@ -295,6 +299,7 @@ impl TuiSettings {
         crate::attach::set_dim_unfocused(cfg.chrome.dim_unfocused);
         crate::attach::set_server_restores(cfg.restore.on_start);
         phux_client::session_order::set_recent_first(cfg.sidebar.recent_first);
+        phux_config::pane_icon::learn(cfg.icons.clone());
         Self {
             which_key: WhichKey {
                 enabled: keybindings.which_key,
@@ -320,6 +325,7 @@ impl TuiSettings {
             clipboard_write: cfg.defaults.clipboard_write,
             clipboard_read: cfg.defaults.clipboard_read,
             notifications: cfg.notifications,
+            outer_title: cfg.chrome.title.clone(),
         }
     }
 }
@@ -345,7 +351,7 @@ fn enabled_manifests(cfg: &Config) -> Vec<PluginManifest> {
 /// Keybindings with plugin `keys` merged in (user config wins), cached.
 fn merged_keybindings(cfg: &Config, plugin_actions: &[PluginActionEntry]) -> KeybindingsCfg {
     let mut kb = cfg.keybindings.clone();
-    plugin_actions::merge_plugin_bindings(&mut kb, plugin_actions);
+    actions::merge_plugin_bindings(&mut kb, plugin_actions);
     for problem in crate::render::overlay::copy_mode::set_copy_mode_keys(&kb.modes) {
         tracing::warn!("{problem}");
     }

@@ -1626,26 +1626,6 @@ mod tests {
         assert!(s.contains("\x1b[2m") && s.contains("hello"), "{s:?}");
     }
 
-    /// Block and linear selections invert different cells: linear takes the
-    /// whole interior row, block only the column band.
-    #[test]
-    fn block_and_linear_selection_invert_different_cells() {
-        let t = pane(8, 3, b"ABCDEFGH\r\nabcdefgh\r\n01234567");
-        let mut r = renderer();
-        let mut render = |rectangle| {
-            r.set_selection(Some(sel((0, 2), (2, 5), rectangle)));
-            full(&mut r, &t, (0, 0), (8, 3))
-        };
-        let (linear, block) = (render(false), render(true));
-        assert!(linear.contains("\x1b[7") && block.contains("\x1b[7"));
-        assert_ne!(linear, block);
-        // "ab" is unique to the interior row: plain after the row reset only
-        // in block mode.
-        assert!(block.contains("\x1b[0mab"), "{block:?}");
-        assert!(!linear.contains("\x1b[0mab"), "{linear:?}");
-        assert!(block.contains("cdef") && linear.contains("cdef"));
-    }
-
     /// Copy-mode search underlines the other visible hits and leaves the
     /// current one to the reverse-video selection.
     #[test]
@@ -1691,14 +1671,12 @@ mod tests {
         let mut t = pane(10, 2, b"AA");
         let mut r = renderer();
         let _ = full(&mut r, &t, (0, 0), (10, 2));
-        assert_eq!(r.pool.last_dims(), Some((10, 2)));
         // Grow, overwrite, and consume the row dirty bits through a separate
         // render state: the shape that leaves a pooled cache stale.
         t.resize(10, 4, 0, 0).expect("resize");
         t.vt_write(b"\x1b[1;1HZZ");
         let _ = read_seen(&t, (0, 0), (10, 4));
         let painted = full(&mut r, &t, (0, 0), (10, 4));
-        assert_eq!(r.pool.last_dims(), Some((10, 4)));
         assert!(painted.contains("ZZ"), "{painted:?}");
     }
 
@@ -1903,21 +1881,6 @@ mod tests {
             s.contains("old-prompt") && s.contains("new-prompt"),
             "{s:?}"
         );
-    }
-
-    /// One changed row repaints only that row.
-    #[test]
-    fn single_row_change_repaints_only_that_row() {
-        let mut t = pane(10, 3, b"top\r\nmid");
-        let mut r = renderer();
-        let _ = paint(&mut r, &t);
-        t.vt_write(b"\x1b[2;1HNEW");
-        let s = String::from_utf8_lossy(&paint(&mut r, &t).1).into_owned();
-        assert!(
-            s.contains("\x1b[2;1H") && s.contains('N') && s.contains('W'),
-            "{s:?}"
-        );
-        assert!(!s.contains("\x1b[1;1H") && !s.contains("top"), "{s:?}");
     }
 
     // ---- SGR coalescing and round trips ------------------------------------

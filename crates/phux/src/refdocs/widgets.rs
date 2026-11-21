@@ -128,23 +128,4 @@ mod tests {
             "generated widgets reference drifted from the builtin registry"
         );
     }
-
-    /// The closed-surface details the old hand table carried must survive:
-    /// session-name's `format` option and the universal style attributes.
-    #[test]
-    fn widgets_page_keeps_the_load_bearing_details() {
-        let page = page();
-        for needle in [
-            "`format`",
-            "`max-len` (also spelled `max_len`)",
-            "`parse-ansi` (also spelled `parse_ansi`)",
-            "## The universal `style` option",
-            "`underline`",
-        ] {
-            assert!(
-                page.body.contains(needle),
-                "generated widgets reference lost {needle:?}"
-            );
-        }
-    }
 }

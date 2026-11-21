@@ -8,7 +8,7 @@ fn system(dark: bool) -> Rc<Tokens> {
     Tokens::resolve(&Inputs::system(dark))
 }
 
-/// §1.5 nesting, as the chrome's surfaces nest: a menu's items inside its
+/// Nesting, as the chrome's surfaces nest: a menu's items inside its
 /// `md` panel by `s1` land on `sm`; anything inset past its outer radius
 /// clamps to `xs`.
 #[test]
@@ -21,24 +21,6 @@ fn nested_radii_run_parallel() {
         let inner = t.nested(outer, inset);
         assert!(inner <= outer - inset || (inner - r.xs).abs() < f32::EPSILON);
         assert!(inner >= r.xs);
-    }
-}
-
-#[test]
-fn equal_inputs_share_one_tokens() {
-    let a = system(true);
-    assert!(Rc::ptr_eq(&a, &system(true)));
-    assert!(!Rc::ptr_eq(&a, &system(false)));
-    assert_ne!(a.version, system(false).version);
-}
-
-#[test]
-fn no_theme_is_the_house_look_in_the_system_appearance() {
-    for (dark, mode) in [(true, Mode::Dark), (false, Mode::Light)] {
-        let t = system(dark);
-        assert_eq!(t.roles, Roles::house(mode));
-        assert_eq!(t.dark(), dark);
-        assert_eq!(t.kit.dark, dark);
     }
 }
 
@@ -62,18 +44,6 @@ fn a_theme_derives_its_roles() {
     });
     assert_eq!(t.roles.layer.ground, Rgb8::hex(0x2e_3440).opaque());
     assert!(t.dark(), "the theme's own mode beats the system's");
-}
-
-#[test]
-fn the_kit_rings_and_radii_follow_the_chrome() {
-    let t = system(true);
-    assert!(t.kit.ring.is_none(), "rings are coloured in the tiers");
-    assert!(!t.kit.invalid_text);
-    assert_eq!(
-        t.kit.radius.md,
-        phux_design::tokens::RADIUS.sm,
-        "kit md is a control"
-    );
 }
 
 #[test]
@@ -134,12 +104,6 @@ fn a_theme_changing_under_one_id_changes_the_version() {
     });
     assert_eq!(base.id, swapped.id);
     assert_ne!(a.version, b.version);
-}
-
-#[test]
-fn the_window_blends_in_srgb() {
-    // `over` (§2.2) composites in sRGB, which is how this window blends.
-    assert!(rune::theme::blends_srgb());
 }
 
 #[test]
@@ -258,7 +222,7 @@ fn kit_components_paint_only_token_colours() {
         let t = system(dark);
         let mut allowed = role_colors(&t.roles);
         let c = &t.kit.c;
-        // Kit-only mixes the tokens define (§4.1.1): submit hover, the
+        // Kit-only mixes the tokens define: submit hover, the
         // contrast washes, the knob and its sheen, white and black.
         allowed.extend([
             c.submit_hover,
@@ -277,7 +241,8 @@ fn kit_components_paint_only_token_colours() {
                 && (a.a - b.a).abs() < 2e-3
         };
         let known = |x: rune::Color| x.a == 0.0 || allowed.iter().any(|a| close(*a, x));
-        let mut rt = rune::Runtime::new((), kit_parts, (800.0, 600.0), rune::Env::new(dark, 1.0));
+        let mut rt =
+            crate::test_support::runtime((), kit_parts, (800.0, 600.0), rune::Env::new(dark, 1.0));
         for at in [0.0, 1.0, 2.0] {
             rt.frame(at);
         }

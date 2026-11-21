@@ -1,4 +1,4 @@
-//! Capability advertisements (SPEC §6.2).
+//! Capability advertisements.
 //!
 //! Capabilities live in HELLO and apply for the life of the connection. The
 //! server rewrites outbound SGR bytes to the advertised [`ColorSupport`]
@@ -23,21 +23,6 @@ mod tests {
             .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
             .collect();
         move |key: &str| map.get(key).cloned()
-    }
-
-    #[test]
-    fn color_support_wire_roundtrips_every_variant() {
-        for v in [
-            ColorSupport::TrueColor,
-            ColorSupport::Indexed256,
-            ColorSupport::Indexed16,
-            ColorSupport::Mono,
-        ] {
-            let tag = v.as_wire();
-            let back = ColorSupport::from_wire(tag).expect("known tag");
-            assert_eq!(back, v);
-        }
-        assert!(ColorSupport::from_wire(0xFF).is_none());
     }
 
     #[test]

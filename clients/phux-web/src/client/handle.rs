@@ -142,11 +142,11 @@ impl Client {
         pane_action(&self.app, PaneAction::CloseView)
     }
 
-    /// Kill the focused terminal, ending its process, while preserving the
-    /// other panes.
+    /// Request termination of the focused terminal.
     ///
     /// # Errors
-    /// Refuses the last pane or a pending operation.
+    /// Refuses the last pane, a pending operation, or missing session identity
+    /// on an organization peer.
     pub fn kill_pane(&self) -> Result<(), JsValue> {
         pane_action(&self.app, PaneAction::Kill)
     }

@@ -1,12 +1,12 @@
 // -----------------------------------------------------------------------------
-// Layer / LayerSet — SPEC §6.2 conformance-tier bitset (ADR-0015).
+// Layer / LayerSet — conformance-tier bitset (ADR-0015).
 // -----------------------------------------------------------------------------
 
-/// A single conformance tier (SPEC §6.2 / §16).
+/// A single conformance tier.
 ///
 /// L1 is always implied; the negotiated set is the intersection of both peers'
 /// [`LayerSet`]s, and out-of-tier messages MUST surface as protocol errors
-/// (§16.4, ADR-0015).
+/// (ADR-0015).
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
@@ -14,9 +14,9 @@ pub enum Layer {
     /// Resource substrate: attach, streams, input, and resource lifecycle
     /// for every kind. Always implemented; always implied.
     L1 = 0x01,
-    /// Collection lifecycle (OPTIONAL). SPEC §7.3 / §11.L2.
+    /// Collection lifecycle (OPTIONAL).
     L2 = 0x02,
-    /// Metadata storage (OPTIONAL). SPEC §7.4 / §11.L3.
+    /// Metadata storage (OPTIONAL).
     L3 = 0x04,
 }
 
@@ -85,6 +85,43 @@ impl Default for LayerSet {
 // gaps `0x1`..`0x8`, or at retired `0x1000`; the next feature goes in a
 // trailing `features_ext` u32.
 
+// Both words use one catalog for discriminants, iteration order, and wire
+// names. Only the original word also exports individual feature constants.
+macro_rules! define_server_feature_word {
+    (
+        $(#[$enum_attr:meta])*
+        $word:ident {
+            $(
+                $(#[$doc:meta])*
+                $variant:ident = $wire_name:ident = $bits:expr
+            ),* $(,)?
+        }
+    ) => {
+        $(#[$enum_attr])*
+        #[repr(u32)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        pub enum $word {
+            $(
+                $(#[$doc])*
+                $variant = $bits,
+            )*
+        }
+
+        impl $word {
+            /// Every known feature in this word, in bit order.
+            pub const ALL: &'static [Self] = &[$(Self::$variant),*];
+
+            /// The feature's name in the protocol capability catalog.
+            #[must_use]
+            pub const fn wire_name(self) -> &'static str {
+                match self {
+                    $(Self::$variant => stringify!($wire_name),)*
+                }
+            }
+        }
+    };
+}
+
 macro_rules! define_server_features {
     ($(
         $(#[$doc:meta])*
@@ -95,29 +132,18 @@ macro_rules! define_server_features {
             pub const $const_name: u32 = $bits;
         )*
 
-        /// An additive server-owned protocol feature.
-        #[repr(u32)]
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-        #[non_exhaustive]
-        pub enum ServerFeature {
-            $(
-                $(#[$doc])*
-                $variant = $const_name,
-            )*
+        define_server_feature_word! {
+            /// An additive server-owned protocol feature.
+            #[non_exhaustive]
+            ServerFeature {
+                $(
+                    $(#[$doc])*
+                    $variant = $const_name = $const_name,
+                )*
+            }
         }
 
         impl ServerFeature {
-            /// Every known feature, in bit order.
-            pub const ALL: &'static [Self] = &[$(Self::$variant),*];
-
-            /// The `docs/protocol.md#handshake` constant, e.g. `"ACKNOWLEDGED_INPUT"`.
-            #[must_use]
-            pub const fn wire_name(self) -> &'static str {
-                match self {
-                    $(Self::$variant => stringify!($const_name),)*
-                }
-            }
-
             /// [`Self::wire_name`] lower-cased, as `phux status --json` and
             /// `phux --capabilities --json` print it.
             #[must_use]
@@ -253,15 +279,7 @@ define_server_features! {
 pub struct ServerFeatureSet(u32);
 
 impl ServerFeatureSet {
-    const KNOWN: u32 = {
-        let mut bits = 0;
-        let mut i = 0;
-        while i < ServerFeature::ALL.len() {
-            bits |= ServerFeature::ALL[i] as u32;
-            i += 1;
-        }
-        bits
-    };
+    const KNOWN: u32 = Self::with(ServerFeature::ALL).0;
 
     /// Empty set for servers that advertise no additive features.
     #[must_use]

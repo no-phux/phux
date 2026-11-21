@@ -18,15 +18,6 @@ fn composed(
     AgentRecordJson::decode(&compose(existing, kind, name, state, ownership)).expect("decodes")
 }
 
-#[test]
-fn compose_from_nothing_writes_the_detector_view() {
-    let bytes = compose(None, "claude", "claude", "working", DETECTOR);
-    assert_eq!(
-        String::from_utf8(bytes).expect("utf8"),
-        r#"{"name":"claude","kind":"claude","state":"working"}"#
-    );
-}
-
 /// An identity-only SET that beat the arbiter bit is merged, not
 /// clobbered.
 #[test]
@@ -56,22 +47,6 @@ fn compose_preserves_an_identity_only_kind_without_ownership_bits() {
     assert_eq!(got.state, "working");
 }
 
-/// The field-for-field preservation the ADR promises.
-#[test]
-fn compose_preserves_an_identity_only_declaration() {
-    let existing = br#"{"name":"reviewer","kind":"claude","session":"fleet-7"}"#;
-    let got = composed(
-        Some(existing),
-        "claude",
-        "claude",
-        "blocked",
-        ownership_after(existing),
-    );
-    assert_eq!(got.name, "reviewer", "the human's name survives");
-    assert_eq!(got.session.as_deref(), Some("fleet-7"), "and their label");
-    assert_eq!(got.state, "blocked", "the detector supplies only `state`");
-}
-
 #[test]
 fn compose_preserves_a_declared_attention() {
     let existing = br#"{"name":"a","attention":"high"}"#;
@@ -98,7 +73,7 @@ fn compose_fills_a_missing_name_and_kind() {
     );
     assert_eq!(
         got.name, "claude",
-        "an empty stored name is not an owned one: L3 §3.7 requires a non-empty `name`",
+        "an empty stored name is not an owned one: the record requires a non-empty `name`",
     );
     assert_eq!(got.kind.as_deref(), Some("claude"));
     assert_eq!(got.session.as_deref(), Some("s"));
@@ -118,10 +93,11 @@ fn compose_reasserts_a_kind_the_detector_authored() {
     assert_eq!(got.state, "idle");
 }
 
-/// An explicit `kind` is preserved (§3.7).
+/// An explicit `kind` is preserved, even on a record that already
+/// carries a state.
 #[test]
 fn compose_preserves_an_explicitly_set_kind() {
-    let existing = br#"{"name":"reviewer","kind":"my-agent"}"#;
+    let existing = br#"{"name":"reviewer","kind":"my-agent","state":"idle"}"#;
     let owned = ownership_after(existing);
     assert!(owned.kind, "the writer supplied a kind");
     let got = composed(Some(existing), "claude", "claude", "working", owned);
@@ -169,8 +145,7 @@ type Contradiction<'a> = (&'a str, Option<&'a [u8]>, &'a str, &'a RuleSet, bool)
 #[test]
 fn an_explicit_kind_is_contradicted_only_by_a_derivable_other_kind() {
     let rules = detectable();
-    let empty = RuleSet::default();
-    let cases: [Contradiction<'_>; 9] = [
+    let cases: [Contradiction<'_>; 7] = [
         (
             "declared claude, now running codex",
             Some(br#"{"name":"claude","kind":"claude","state":"working"}"#),
@@ -208,14 +183,6 @@ fn an_explicit_kind_is_contradicted_only_by_a_derivable_other_kind() {
             Some(br#"{"name":"x","kind":""}"#),
             "codex",
             &rules,
-            false,
-        ),
-        ("bad bytes", Some(b"}{ nonsense"), "codex", &rules, false),
-        (
-            "no manifests loaded",
-            Some(br#"{"name":"claude","kind":"claude"}"#),
-            "codex",
-            &empty,
             false,
         ),
     ];

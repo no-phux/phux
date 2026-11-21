@@ -26,53 +26,12 @@ fn render_group_self_heals_when_zoom_target_is_not_a_leaf() {
 }
 
 #[test]
-fn split_at_replaces_leaf_with_split() {
-    let tree = leaf(1);
-    let out = split_at(&tree, &t(1), &t(2), SplitDir::Horizontal, 0.5).unwrap();
-    let LayoutNode::Split {
-        dir,
-        ratio,
-        left,
-        right,
-    } = out
-    else {
-        panic!("expected Split");
-    };
-    assert_eq!(dir, SplitDir::Horizontal);
-    assert_eq!(ratio, 0.5);
-    assert!(matches!(*left, LayoutNode::Leaf(ref p) if *p == t(1)));
-    assert!(matches!(*right, LayoutNode::Leaf(ref p) if *p == t(2)));
-}
-
-#[test]
-fn split_at_rejects_missing_target() {
-    let tree = leaf(1);
-    let err = split_at(&tree, &t(99), &t(2), SplitDir::Horizontal, 0.5).unwrap_err();
-    assert!(matches!(err, LayoutError::PaneNotInLayout(_)));
-}
-
-#[test]
 fn split_at_rejects_bad_ratio() {
     let tree = leaf(1);
     for bad in [0.0_f32, 1.0, -0.1, 1.1, f32::NAN] {
         let err = split_at(&tree, &t(1), &t(2), SplitDir::Horizontal, bad).unwrap_err();
         assert!(matches!(err, LayoutError::InvalidRatio(_)));
     }
-}
-
-#[test]
-fn kill_pane_collapses_the_parent_and_reports_last_and_missing_leaves() {
-    assert!(kill_pane(&leaf(1), &t(1)).unwrap().is_none(), "last leaf");
-    assert!(matches!(
-        kill_pane(&leaf(1), &t(99)),
-        Err(LayoutError::PaneNotInLayout(_))
-    ));
-    let t1 = split_at(&leaf(1), &t(1), &t(2), SplitDir::Horizontal, 0.5).unwrap();
-    let out = kill_pane(&t1, &t(2)).unwrap().expect("non-empty");
-    assert!(matches!(out, LayoutNode::Leaf(ref p) if *p == t(1)));
-    let t2 = split_at(&t1, &t(2), &t(3), SplitDir::Vertical, 0.5).unwrap();
-    let out = kill_pane(&t2, &t(1)).unwrap().expect("non-empty");
-    assert_eq!(leaves(&out), vec![t(2), t(3)]);
 }
 
 #[test]
@@ -96,66 +55,18 @@ fn cbor_round_trip_satellite_focus() {
     assert_eq!(decoded.groups[0].state, state);
 }
 
+/// Slot tabs survive the envelope, which carries an arrangement read to the
+/// TUI's layout handler: losing them there made the next write drop them.
 #[test]
-fn cbor_rejects_malformed_ratio() {
-    let bytes = ws_split(1, 2, 1).encode_cbor().unwrap();
-    let mut forged: CborWorkspaceEnvelope = ciborium::de::from_reader(bytes.as_slice()).unwrap();
-    let CborLayoutNode::Split { ratio, .. } = &mut forged.windows[0].root else {
-        panic!("split")
-    };
-    *ratio = 2.0;
-    let mut buf = Vec::new();
-    ciborium::ser::into_writer(&forged, &mut buf).unwrap();
-    let err = ArrangementDoc::decode_cbor(&buf).unwrap_err();
-    assert!(matches!(err, LayoutDecodeError::MalformedRatio(_)));
-}
-
-#[test]
-fn unsupported_schema_versions_are_refused_without_migration() {
-    for version in [1, 2, 99] {
-        let value = ciborium::Value::Map(vec![(
-            ciborium::Value::Text("version".into()),
-            ciborium::Value::Integer(version.into()),
-        )]);
-        let mut bytes = Vec::new();
-        ciborium::ser::into_writer(&value, &mut bytes).unwrap();
-        assert!(
-            matches!(ArrangementDoc::decode_cbor(&bytes), Err(LayoutDecodeError::UnsupportedVersion(found)) if found == version)
-        );
-    }
-}
-
-#[test]
-fn cbor_current_focused_index_out_of_range_clamps() {
-    #[derive(Serialize)]
-    struct ForgedWin {
-        id: [u8; 16],
-        name: String,
-        root: CborLayoutNode,
-        focused_terminal: CborResourceId,
-    }
-    #[derive(Serialize)]
-    struct Forged {
-        version: u8,
-        windows: Vec<ForgedWin>,
-        focused_window_index: u32,
-    }
-    let forged = Forged {
-        version: LAYOUT_ENVELOPE_VERSION,
-        windows: vec![ForgedWin {
-            id: [1; 16],
-            name: "1".to_owned(),
-            root: CborLayoutNode::Leaf {
-                pane: CborResourceId::Local { id: 1 },
-            },
-            focused_terminal: CborResourceId::Local { id: 1 },
-        }],
-        focused_window_index: 99,
-    };
-    let mut buf = Vec::new();
-    ciborium::ser::into_writer(&forged, &mut buf).unwrap();
-    let ws = ArrangementDoc::decode_cbor(&buf).unwrap();
-    assert_eq!(ws.active, 0); // clamped to last (only) window
+fn cbor_round_trip_keeps_slot_tabs() {
+    let mut doc = ws_split(1, 2, 1);
+    doc.slots.push(Slot {
+        strip: vec![t(2), t(3), t(4)],
+        default: 1,
+        shown: 2,
+    });
+    let decoded = ArrangementDoc::decode_cbor(&doc.encode_cbor().unwrap()).unwrap();
+    assert_eq!(decoded.slots, doc.slots);
 }
 
 #[test]

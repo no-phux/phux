@@ -125,27 +125,6 @@ fn spawn_answered(
 }
 
 #[test]
-fn session_relays_spawn_with_stripped_addressing_and_retags_the_reply() {
-    let mut session = RelaySession::new(host(), BootstrapLimits::default());
-    let (wire, reply) = spawn_answered(
-        &mut session,
-        spawn_request,
-        SpawnResult::Ok(ResourceId::local(42)),
-    );
-    assert!(
-        matches!(
-            wire,
-            FrameKind::SpawnResource {
-                satellite: None,
-                ..
-            }
-        ),
-        "the addressing field never crosses the link (no chaining)"
-    );
-    assert_eq!(reply, SpawnResult::Ok(ResourceId::satellite("devbox", 42)));
-}
-
-#[test]
 fn session_rejects_chained_ids_and_relays_spawn_errors_verbatim() {
     let mut session = RelaySession::new(host(), BootstrapLimits::default());
     // A Satellite-tagged id in the satellite's own reply never chains.

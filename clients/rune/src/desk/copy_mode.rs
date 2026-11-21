@@ -1,6 +1,6 @@
 //! Keyboard copy mode: a cursor over the focused pane, moved, extended and
 //! copied with the TUI's vi keys (`h j k l`, `w b e`, `0 ^ $`, `g G`,
-//! `H M L`, `C-u C-d C-b C-f`, `v V C-v`, `y`).
+//! `H M L`, `C-u C-d C-b C-f`, `v V C-v`, `y`, and `/ ? n N` ([`search`]).
 //!
 //! The cursor is a one-cell selection in the engine, so it paints as any
 //! selection does. A selection's fixed end is three engine anchors on the
@@ -16,8 +16,10 @@ use rune::{Key, KeyEvent, Tx};
 
 use super::{Desk, NoticeKind};
 
+pub(super) mod search;
+
 /// What the user is told on the way in.
-const HINT: &str = "Copy mode: h j k l move, v selects, y copies, Esc leaves.";
+const HINT: &str = "Copy mode: h j k l move, / searches, v selects, y copies, Esc leaves.";
 
 /// `EngineDocumentPoint::space` for the visible viewport.
 const VIEWPORT: u32 = 1;
@@ -48,6 +50,9 @@ pub struct CopyMode {
     pin: Option<Pin>,
     /// The engine anchors the shown selection runs between.
     ends: Vec<u64>,
+    /// The last search, and whether it went back (`?`).
+    query: Option<String>,
+    back: bool,
 }
 
 /// The codepoint in each cell of `row` (`0` for an empty cell).
@@ -106,6 +111,9 @@ impl Desk {
         else {
             return;
         };
+        // Find hands its current match over, selected.
+        let handed = self.find_match(&terminal);
+        self.close_find();
         let (col, row) = if frame.cursor.visible {
             (frame.cursor.col, frame.cursor.row)
         } else {
@@ -118,8 +126,13 @@ impl Desk {
             row,
             pin: None,
             ends: Vec::new(),
+            query: None,
+            back: false,
         });
         self.show_copy_cursor(frame.scrollbar.offset);
+        if let Some((start, end)) = handed {
+            self.copy_land(start, end, &frame);
+        }
         self.say(NoticeKind::Info, HINT);
     }
 
@@ -244,6 +257,29 @@ impl Desk {
         }
     }
 
+    /// Drop the selection, keeping the cursor and the viewport where they
+    /// are. False when nothing was selected.
+    pub(super) fn clear_copy_selection(&mut self) -> bool {
+        let Some(mode) = &mut self.connection.copy_mode else {
+            return false;
+        };
+        let (view, Some(pin)) = (mode.view, mode.pin.take()) else {
+            return false;
+        };
+        let Some(client) = self.connection.client.as_ref() else {
+            return true;
+        };
+        if let Some(engine) = client.engine() {
+            for anchor in pin.anchors {
+                let _ = engine.release_view_anchor(view, anchor);
+            }
+        }
+        if let Some(top) = client.acquire_view(view).map(|f| f.scrollbar.offset) {
+            self.show_copy_cursor(top);
+        }
+        true
+    }
+
     /// Copy what is selected and leave. With nothing selected, `word` takes
     /// the word under the cursor and otherwise the cursor's whole row.
     fn copy_and_leave(&mut self, word: bool, frame: &GridFrame, tx: &mut Tx) {
@@ -280,7 +316,7 @@ impl Desk {
         let Some(mode) = &self.connection.copy_mode else {
             return false;
         };
-        let (view, col, row) = (mode.view, mode.col, mode.row);
+        let (view, col, row, pinned) = (mode.view, mode.col, mode.row, mode.pin.is_some());
         let Some(frame) = self
             .connection
             .client
@@ -302,6 +338,11 @@ impl Desk {
         let along = |motion| (row_motion_target(&cells(), col, motion), row, None);
         let scrolled = |scroll| (col, row, Some(scroll));
         let (to_col, to_row, scroll) = match (&event.key, letter(event)) {
+            // Esc drops a selection first, as in vi and tmux; then it leaves.
+            (Key::Escape, _) if !ctrl && pinned => {
+                self.clear_copy_selection();
+                return true;
+            }
             (Key::Escape, _) | (_, Some(('q', _))) if !ctrl => {
                 self.leave_copy_mode(true);
                 return true;
@@ -322,6 +363,14 @@ impl Desk {
                 };
                 self.toggle_copy_selection(shape, &frame);
                 (col, row, None)
+            }
+            (_, Some((c @ ('/' | '?'), _))) if !ctrl => {
+                self.copy_search_prompt(c == '?');
+                return true;
+            }
+            (_, Some(('n', shift))) if !ctrl => {
+                self.copy_search_again(shift);
+                return true;
             }
             (_, Some(('u', _))) if ctrl => scrolled(Scroll::Delta(-(page / 2).max(1))),
             (_, Some(('d', _))) if ctrl => scrolled(Scroll::Delta((page / 2).max(1))),
@@ -434,6 +483,30 @@ mod tests {
         // The same key drops the selection; from the top row, down again.
         press(&mut rt, "VVj");
         assert_eq!(selected(&rt).as_deref(), Some("alpha beta\ngamma.delta"));
+    }
+
+    #[test]
+    fn escape_drops_the_selection_where_it_is_then_leaves() {
+        let (_client, mut rt) = fixture();
+        press(&mut rt, "kV");
+        let at = |rt: &rune::Runtime<Desk>| {
+            let mode = rt
+                .state
+                .connection
+                .copy_mode
+                .as_ref()
+                .expect("in copy mode");
+            (mode.col, mode.row, mode.pin.is_some())
+        };
+        let (col, row, _) = at(&rt);
+        assert_eq!(selected(&rt).as_deref(), Some("gamma.delta"));
+        rt.key(crate::keys::plain(Key::Escape));
+        rt.frame(0.0);
+        assert_eq!(at(&rt), (col, row, false), "the cursor stays put");
+        assert_eq!(selected(&rt).map(|text| text.chars().count()), Some(1));
+        rt.key(crate::keys::plain(Key::Escape));
+        rt.frame(0.0);
+        assert!(rt.state.connection.copy_mode.is_none());
     }
 
     #[test]

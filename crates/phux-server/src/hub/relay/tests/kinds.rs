@@ -128,17 +128,7 @@ fn agent_resume_relay_routes_cursors_only_with_support_and_a_sole_consumer() {
 }
 
 #[test]
-fn agent_resume_relay_rejects_unadvertised_resume_profiles_and_retags_the_cursor() {
-    let routed = route_to_satellite(&Command::attach_agent_session(
-        ResourceId::satellite(host(), 7),
-        None,
-        Some(42),
-    ))
-    .expect("satellite route");
-    assert_eq!(
-        routed.1,
-        Command::attach_agent_session(ResourceId::local(7), None, Some(42)),
-    );
+fn agent_resume_relay_rejects_unadvertised_resume_profiles() {
     let mut session = negotiated(&[ServerFeature::ResourceKinds]);
     assert!(
         session

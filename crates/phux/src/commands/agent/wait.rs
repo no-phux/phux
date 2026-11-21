@@ -240,19 +240,9 @@ async fn report_any(socket_path: &Path, result: &FleetAgentWaitResult, json: boo
             },
             "detection": provenance,
         });
-        match serde_json::to_string_pretty(&document) {
-            Ok(rendered) => outln!("{rendered}"),
-            Err(err) => {
-                return json_err::emit(
-                    true,
-                    &json_err::CliError::new(
-                        json_err::codes::JSON_SERIALIZE,
-                        format!("could not render fleet agent wait JSON: {err}"),
-                        "report this serialization failure",
-                    ),
-                    crate::exit_codes::EXIT_FAILURE,
-                );
-            }
+        let code = crate::output::json(&document);
+        if code != ExitCode::SUCCESS {
+            return code;
         }
     } else if let Some(matched) = matched {
         outln!(
@@ -312,20 +302,9 @@ fn report(
             // The detector's own evidence for the state the wait landed on.
             "detection": provenance,
         });
-        match serde_json::to_string_pretty(&document) {
-            Ok(rendered) => outln!("{rendered}"),
-            Err(err) => {
-                return json_err::emit(
-                    true,
-                    &json_err::CliError::new(
-                        json_err::codes::JSON_SERIALIZE,
-                        format!("could not render agent wait JSON: {err}"),
-                        "report this: a document of strings and numbers cannot fail to \
-                         serialize",
-                    ),
-                    crate::exit_codes::EXIT_FAILURE,
-                );
-            }
+        let code = crate::output::json(&document);
+        if code != ExitCode::SUCCESS {
+            return code;
         }
     } else if let Some(edge) = result.edge {
         let name = result

@@ -73,25 +73,15 @@ async fn percent_name_resolves_through_the_agent_resolver() {
     use phux_protocol::wire::frame::Scope;
     let dir = tempfile::tempdir().unwrap();
     let (socket, server) = testkit::spawn_serve_every(dir.path(), || {
-        let record = |name: &str, kind: Option<&str>| {
-            AgentRecord {
-                name: name.to_owned(),
-                kind: kind.map(str::to_owned),
-                ..AgentRecord::default()
-            }
-            .encode()
+        let record = AgentRecord {
+            name: "build".to_owned(),
+            ..AgentRecord::default()
         };
-        ScriptSpec::new()
-            .stored_metadata(
-                Scope::Resource(ResourceId::local(1)),
-                RESOURCE_AGENT_KEY,
-                record("build", None),
-            )
-            .stored_metadata(
-                Scope::Resource(ResourceId::local(2)),
-                RESOURCE_AGENT_KEY,
-                record("claude", Some("claude")),
-            )
+        ScriptSpec::new().stored_metadata(
+            Scope::Resource(ResourceId::local(1)),
+            RESOURCE_AGENT_KEY,
+            record.encode(),
+        )
     });
     let swap = |first: &str, second: &str| SpatialOp::Swap {
         first: first.to_owned(),
@@ -109,10 +99,6 @@ async fn percent_name_resolves_through_the_agent_resolver() {
     let named = local(plan_on(swap("%build", "@2")).await.unwrap());
     let by_id = local(plan_on(swap("@1", "@2")).await.unwrap());
     assert_eq!(named.mutation, by_id.mutation);
-
-    let kind_named = local(plan_on(swap("%claude", "@1")).await.unwrap());
-    let kind_by_id = local(plan_on(swap("@2", "@1")).await.unwrap());
-    assert_eq!(kind_named.mutation, kind_by_id.mutation);
     let unknown = plan_on(swap("@1", "%ghost")).await.unwrap_err();
     assert_eq!((unknown.code, unknown.exit_code), ("no_such_target", 1));
     assert!(

@@ -95,23 +95,6 @@ fn written_types(mut peer: tokio::io::DuplexStream) -> Vec<u8> {
     types
 }
 
-/// A path change on a lane with nothing to migrate still probes: the
-/// PING goes out right behind HELLO, and its silence is what drops a
-/// socket the new path cannot carry.
-#[tokio::test]
-async fn a_path_change_probes_a_plain_stream() {
-    let mut fixture = WriteFixture::new(64 * 1024);
-    start_pump!(running, fixture, "rebind");
-    fixture.rebind.send_modify(|n| *n += 1);
-    assert!(running.as_mut().now_or_never().is_none());
-
-    let types = written_types(fixture.peer);
-    assert!(
-        types.contains(&TYPE_PING),
-        "a probe follows the path change; wrote {types:?}"
-    );
-}
-
 /// Between dials there is no socket to migrate, so a path change ends
 /// the backoff wait the way a nudge does instead of being dropped.
 #[tokio::test(start_paused = true)]

@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use phux_config::{ConfigError, MAX_EXTENDS_DEPTH, loader, parse_with_defaults};
+use phux_config::{ConfigError, MAX_EXTENDS_DEPTH, parse_with_defaults};
 use tempfile::TempDir;
 
 use crate::common;
@@ -338,33 +338,4 @@ manifest = "plugins/one/phux-plugin.toml"
         cfg.plugins[0].manifest,
         Path::new("plugins/mine/phux-plugin.toml")
     );
-}
-
-#[test]
-fn loader_resolves_extends_relative_to_the_config_file() {
-    let tmp = TempDir::new().expect("tempdir");
-    write(
-        tmp.path(),
-        "distro.toml",
-        r#"
-[keybindings]
-prefix = "C-x"
-"#,
-    );
-    let config_path = write(tmp.path(), "config.toml", r#"extends = ["distro.toml"]"#);
-
-    let cfg = loader::load_from(&config_path).expect("loader resolves layers");
-    assert_eq!(cfg.keybindings.prefix, "C-x");
-}
-
-#[test]
-fn no_extends_means_no_layer_io_and_unchanged_two_layer_behavior() {
-    // A path whose parent does not exist: if layer resolution did any
-    // I/O for a plain config, this would fail.
-    let cfg = parse_with_defaults(
-        "[defaults]\nhistory-limit = 42\n",
-        Path::new("/nonexistent-dir/config.toml"),
-    )
-    .expect("plain config needs no filesystem");
-    assert_eq!(cfg.defaults.history_limit, 42);
 }

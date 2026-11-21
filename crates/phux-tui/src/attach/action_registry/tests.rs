@@ -147,48 +147,10 @@ fn palette_lists_split_below_beside_split_right() {
     assert_eq!(&pane_rows[..2], ["Split right", "Split below"]);
 }
 
-#[test]
-fn palette_items_show_no_chord_when_no_config() {
-    let items = palette_items(None, &[], &[]);
-    assert!(
-        items
-            .iter()
-            .filter(|i| !i.is_header())
-            .all(|i| i.secondary.is_none()),
-        "no config ⇒ no row claims a chord",
-    );
-}
-
-#[test]
-fn palette_items_group_under_category_headers() {
-    let items = palette_items(None, &[], &[]);
-    // Every category with members contributes exactly one header, in
-    // ORDER, each immediately followed by indented action rows.
-    let headers: Vec<&str> = items
-        .iter()
-        .filter(|i| i.is_header())
-        .map(|i| i.label.as_str())
-        .collect();
-    assert_eq!(headers, vec!["Pane", "Tab", "Session", "phux"]);
-
-    // Selectable rows are indented (nested under their header); headers
-    // are not.
-    for item in &items {
-        if item.is_header() {
-            assert!(!item.indented, "header `{}` must not indent", item.label);
-        } else {
-            assert!(item.indented, "row `{}` must indent", item.label);
-        }
-    }
-
-    // The first row is a header (Pane), not a bare action.
-    assert!(items[0].is_header(), "palette opens with a category header");
-}
-
 // ---------- phux-r82.5: dynamic plugin rows ----------
 
-fn plugin_entry(keys: Option<&str>) -> super::super::plugin_actions::PluginActionEntry {
-    super::super::plugin_actions::PluginActionEntry {
+fn plugin_entry(keys: Option<&str>) -> PluginActionEntry {
+    PluginActionEntry {
         plugin_id: "com.example.tools".to_owned(),
         plugin_name: "Agent Tools".to_owned(),
         action_id: "summarize".to_owned(),
@@ -231,7 +193,7 @@ fn plugin_actions_inject_namespaced_rows_under_plugin_header() {
 fn plugin_row_shows_merged_binding_chord() {
     let entry = plugin_entry(Some("g"));
     let mut kb = KeybindingsCfg::default();
-    super::super::plugin_actions::merge_plugin_bindings(&mut kb, std::slice::from_ref(&entry));
+    phux_config::plugin::actions::merge_plugin_bindings(&mut kb, std::slice::from_ref(&entry));
     let items = palette_items(Some(&kb), &[entry], &[]);
     let row = items
         .iter()

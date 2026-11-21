@@ -11,7 +11,7 @@ mod tests;
 
 pub(super) use engine_route::{attach_participants, emitted_resync_required, session_terminals};
 pub(super) use handler::pane_is_referenced;
-pub(super) use handler::{FrameEnv, handle_server_frame};
+pub(super) use handler::{FrameEnv, adopt_layout, handle_server_frame};
 // The composited output frame, shared with the driver's frame
 // pacer so a paced settle paints through exactly the same path a live
 // `RESOURCE_OUTPUT` does.
@@ -21,7 +21,7 @@ pub(in crate::attach) use outcome::pane_label;
 pub(super) use outcome::{FrameOutcome, ProjectTagFrame};
 
 #[cfg(test)]
-use engine_route::{attach_agent_sessions, route_engine_frame};
+use engine_route::route_engine_frame;
 #[cfg(test)]
 use handler::{handle_window_spawned, reconcile_loaded_workspace};
 #[cfg(test)]

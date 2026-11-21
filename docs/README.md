@@ -49,7 +49,7 @@ unshipped experiment, and the phone apps are in testing (Android on Google Play)
 
 ## Build for phux
 
-- [OSC 7501: report status from any program](./program-protocol.md): the Program Status Protocol sequence phux reads, and what a pane shows from it.
+- [Program Status Protocol (OSC 7501): report status from any program](./program-protocol.md): the sequence phux reads, and what a pane shows from it.
 - [Any program can report status](./any-program-status.md): a short OSC 7501 emitter, a demo with no hooks, and how phux ranks that report.
 - [Program sequences and agent reports](./program-sequences.md): titles, `phux-ask` questions, OSC 133, OSC 52, and the other sequences phux reads, plus the agent record.
 
@@ -90,6 +90,7 @@ Generated from the `phux` binary, so they match the code these docs describe.
 ## Work on phux
 
 - [Architecture](./architecture.md): the process model, crates, and clients.
+- The [architecture target](./architecture-target.md) defines shared rule ownership and the evidence for migration.
 - [libghostty in phux](./libghostty.md): the libghostty-vt terminal engine in the server and in a rendering client, and what it does not do.
 - [Decisions](./decisions.md): the constraints the code keeps, and why.
 - [Organization](./organization.md): how the server owns sessions and their contents.

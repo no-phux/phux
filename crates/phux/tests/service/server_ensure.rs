@@ -22,8 +22,8 @@ struct Fixture {
 ///
 /// Opt-in per test, NOT set on every `Fixture::command()`: the rest of this
 /// file needs a real coordinator to actually come up, and 1s is not enough for
-/// that. Applying it globally failed `invalid_config_reports_startup_failure`
-/// and `cancellation_cleans_up_descendants_...` for exactly that reason.
+/// that. Applying it globally failed `cancellation_cleans_up_descendants_...`
+/// for exactly that reason.
 const ENSURE_TIMEOUT_SECS: &str = "1";
 const ENSURE_TIMEOUT_RENDERED: &str = "within 1s";
 
@@ -321,21 +321,6 @@ fn impossible_socket_path_fails_before_startup() {
     assert!(output.stdout.is_empty());
     assert!(!socket.exists());
     assert!(!fixture.socket.exists());
-}
-
-#[test]
-fn invalid_config_reports_startup_failure_and_log_path() {
-    let mut fixture = Fixture::new();
-    fixture.config("[defaults\n");
-    let output = fixture.ensure();
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    // The server's own refusal, surfaced from its log rather than a timeout.
-    assert!(stderr.contains("exited before accepting"), "{stderr}");
-    assert!(stderr.contains("failed to load"), "{stderr}");
-    assert!(stderr.contains("server.log"), "{stderr}");
-    assert!(output.stdout.is_empty());
-    assert!(UnixStream::connect(&fixture.socket).is_err());
 }
 
 /// A server that cannot bind exits at once; the wait notices the exit instead

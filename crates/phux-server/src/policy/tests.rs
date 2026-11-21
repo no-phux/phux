@@ -51,10 +51,10 @@ include!("tests/world_samples.rs");
 include!("tests/verb_matrices.rs");
 
 // -----------------------------------------------------------------------------
-// The §6 tables, row by row: each row's verbs on its own subject selector.
+// The tables, row by row: each row's verbs on its own subject selector.
 // -----------------------------------------------------------------------------
 
-/// One §6 row as the guard must decide it: `frame` reaches the row; every
+/// One scope-table row as the guard must decide it: `frame` reaches the row; every
 /// grant set in `admit` is admitted; every set in `deny` is refused.
 struct Row {
     frame: FrameKind,

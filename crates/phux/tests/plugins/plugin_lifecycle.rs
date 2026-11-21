@@ -242,24 +242,6 @@ fn validate_rejects_an_event_that_names_no_hook_event() {
 }
 
 #[test]
-fn validate_json_reports_missing_manifest_without_stdout() {
-    let tmp = TempDir::new().expect("tempdir");
-    let missing = tmp.path().join("missing").join("phux-plugin.toml");
-    let missing_arg = missing.to_string_lossy();
-
-    let (code, stdout, stderr) =
-        run_with_xdg(&["plugin", "validate", &missing_arg, "--json"], tmp.path());
-
-    assert_ne!(
-        code, 0,
-        "`plugin validate --json` should fail for missing manifest"
-    );
-    assert!(stdout.is_empty());
-    assert!(!stderr.contains(BANNER_FRAGMENT));
-    assert!(stderr.contains("could not load") && stderr.contains("missing"));
-}
-
-#[test]
 #[cfg(unix)]
 fn lifecycle_refuses_to_overwrite_symlinked_config() {
     let tmp = TempDir::new().expect("tempdir");

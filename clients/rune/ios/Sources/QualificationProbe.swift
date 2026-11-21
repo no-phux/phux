@@ -125,7 +125,7 @@ final class QualificationProbe {
         report["input_contracts"] = inputContracts
         report["input_evidence"] = "UIKit insertText entry; not physical OS typing or IME automation"
         try progress.publish {
-            try QualificationEvidence.publish(report: report, tree: bridge.tree(),
+            try QualificationEvidence.publish(report: report, tree: bridge.tree(), session: session,
                 marker: marker, didPresent: didPresent, write: { try self.write($0, name: $1) })
         }
     }
@@ -175,6 +175,22 @@ final class QualificationProbe {
         if !phux_rune_ios_finish_connection_diagnostics() {
             NSLog("Qualification connection capture did not finish cleanly.")
         }
+        #endif
+    }
+
+    func preparationFailure(_ message: String) {
+        guard progress.claimFailure() else { return }
+        #if targetEnvironment(simulator)
+        // The awaited enrollment operation has returned, and open() has never
+        // run. Publish the original failure only after seal cleanup returns:
+        // report visibility then acknowledges finalization without a surface,
+        // invented frame counts, or a second OS-lifecycle path.
+        QualificationEvidence.preparationFailure(
+            seal: { _ = phux_rune_ios_finish_connection_diagnostics() },
+            publish: {
+                try? self.write(["schema": 1, "error": message, "preparation_failed": true],
+                                name: "rune-qualification.json")
+            })
         #endif
     }
 

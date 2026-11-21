@@ -1,4 +1,4 @@
-//! SPEC §12 merge half: keystrokes from two clients on one session merge
+//! Merge half: keystrokes from two clients on one session merge
 //! into the pane's PTY in arrival order. Sends are serialized (each waits for
 //! its `cat` echo) so the wire order is deterministic; the PTY is the merge
 //! point.

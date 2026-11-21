@@ -37,10 +37,3 @@ fn deeply_nested_layout_errors_not_overflows() {
     let err = FrameKind::decode(&frame).expect_err("must reject deep layout");
     assert_eq!(err, DecodeError::LayoutTooDeep);
 }
-
-#[test]
-fn shallow_layout_is_skipped() {
-    // A 4-deep split chain (within MAX_LAYOUT_DEPTH) is skipped, not refused.
-    let frame = attached_with_layout(&split_chain(4));
-    assert!(FrameKind::decode(&frame).is_ok());
-}

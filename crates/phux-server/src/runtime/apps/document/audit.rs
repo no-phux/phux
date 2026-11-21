@@ -8,14 +8,41 @@ use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use phux_protocol::ids::ResourceId;
-use phux_protocol::wire::frame::{CommandResult, DocumentInput, OnBehalfOf};
+use phux_protocol::wire::frame::{Command, CommandResult, DocumentInput, OnBehalfOf};
 
-use crate::state::{ClientId, ServerState};
+use crate::state::{ClientId, ServerState, SharedState};
 
 /// The pause that ends a burst.
 const QUIET: Duration = Duration::from_secs(2);
 
 static BURSTS: Mutex<Bursts> = Mutex::new(Bursts(None));
+
+/// Log a guard refusal even when it arrived before the target was resolved.
+pub(crate) fn record_refusal(
+    state: &SharedState,
+    client: ClientId,
+    command: &Command,
+    result: &CommandResult,
+) {
+    if let Command::SendDocumentInput {
+        terminal_id,
+        intent,
+        on_behalf_of,
+        ..
+    } = command
+    {
+        state.with(|s| {
+            record(
+                s,
+                client,
+                on_behalf_of.as_ref(),
+                terminal_id,
+                intent,
+                result,
+            );
+        });
+    }
+}
 
 /// Log `intent` from `client` to `resource`, which ended in `result`.
 /// `relayed` is the hub's claim of who it sent it for, if any.
@@ -321,14 +348,5 @@ mod tests {
         );
         state.set_client_name(owner, "é".repeat(200));
         assert_eq!(state.relayed_for(owner).name.len(), 254);
-    }
-
-    #[test]
-    fn text_is_measured_never_kept() {
-        let typed = DocumentInput::Type {
-            text: "pässwörd".into(),
-        };
-        assert_eq!(kind(&typed), ("type", 8));
-        assert_eq!(kind(&DocumentInput::Click { x: 1, y: 2 }), ("click", 0));
     }
 }

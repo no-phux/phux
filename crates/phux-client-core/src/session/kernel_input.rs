@@ -168,6 +168,29 @@ pub enum KernelInput<'a> {
     Action(KernelAction<'a>),
 }
 
+impl<'a> KernelInput<'a> {
+    /// The resource this input addresses, if it concerns a single stream.
+    #[inline]
+    #[must_use]
+    pub const fn resource_id(&self) -> Option<&'a ResourceId> {
+        match self {
+            Self::AttachStarted { .. } | Self::AttachReady { .. } => None,
+            Self::AgentSessionDeclared(declaration) => Some(declaration.terminal_id),
+            Self::BootstrapBegin { terminal_id, .. }
+            | Self::BootstrapChunk { terminal_id, .. }
+            | Self::BootstrapReady { terminal_id, .. }
+            | Self::HistoryPage { terminal_id, .. }
+            | Self::HistoryTombstone { terminal_id, .. }
+            | Self::HistoryRejected { terminal_id, .. }
+            | Self::ResourceOutput { terminal_id, .. }
+            | Self::Tombstone { terminal_id, .. }
+            | Self::ResourceClosed { terminal_id, .. }
+            | Self::Event { terminal_id, .. }
+            | Self::Action(KernelAction::Input { terminal_id, .. }) => Some(terminal_id),
+        }
+    }
+}
+
 /// Declared identity of one `AgentSession` resource, as the attach snapshot
 /// or a spawn reply states it before any record arrives.
 ///

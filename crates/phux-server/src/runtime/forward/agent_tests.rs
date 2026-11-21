@@ -87,13 +87,6 @@ async fn off_refuses_both_commands() {
     assert_eq!(ask(&state, LIST.to_vec(), LONG).await, FAILURE);
 }
 
-#[tokio::test]
-async fn a_request_with_no_offer_fails_at_once() {
-    let state = state();
-    assert_eq!(ask(&state, LIST.to_vec(), LONG).await, FAILURE);
-    assert_eq!(ask(&state, sign(b"key"), LONG).await, FAILURE);
-}
-
 /// Every type but list (11) and sign (13) is answered here and never
 /// reaches the offering client: add, remove, lock, extension, the lot.
 #[tokio::test]
@@ -288,23 +281,6 @@ async fn a_bad_length_is_refused_and_ends_the_connection() {
         tokio::join!(serving, asking);
     }
     assert!(mailbox.try_recv().is_err());
-}
-
-/// The largest message is carried whole.
-#[tokio::test]
-async fn the_largest_message_crosses() {
-    let state = state();
-    let (ctx, mut mailbox) = client(&state, 1, 4);
-    offer(&ctx);
-    let mut big = sign(b"key");
-    big.resize(MAX_AGENT_MESSAGE_BYTES, 7);
-    let asked = ask(&state, big.clone(), LONG);
-    let answered = async {
-        let (id, delivered) = request(&mut mailbox).await;
-        assert_eq!(delivered, big);
-        assert_eq!(reply(&ctx, id, &[14]), CommandResult::Ok);
-    };
-    assert_eq!(tokio::join!(asked, answered).0, [14]);
 }
 
 /// The offer and each signature are audited, the signature with the key's

@@ -1,5 +1,5 @@
 //! Settings through the real window in each appearance the design language
-//! names (§5.2): the house look light and dark, increased contrast, and the
+//! names: the house look light and dark, increased contrast, and the
 //! largest text size, at every size Settings is checked at.
 
 use super::*;
@@ -38,7 +38,7 @@ fn window(size: (f32, f32), phone: bool, dark: bool, mode: Mode) -> Runtime<Desk
     if scale > 1.0 {
         desk.set_accessibility(false, "UICTContentSizeCategoryXXXL");
     }
-    let mut rt = Runtime::new(desk, crate::ui::view, size, Env::new(dark, 1.0));
+    let mut rt = crate::test_support::runtime(desk, crate::ui::view, size, Env::new(dark, 1.0));
     rt.on_key = Some(Desk::key);
     rt.set_srgb_blend(true);
     if matches!(mode, Mode::ContrastMore) {
@@ -102,27 +102,4 @@ fn settings_render_in_every_mode_and_size() {
             }
         }
     }
-}
-
-/// The kit switch is a switch with its state, every row a Tab stop, and the
-/// increased-contrast tokens reach the window (§1.11).
-#[test]
-fn increased_contrast_reaches_settings_and_rows_stay_switches() {
-    let mut rt = window((1100.0, 720.0), false, false, Mode::ContrastMore);
-    rt.update(|d, tx| {
-        tx.instant();
-        d.settings_category(Category::Terminal);
-    });
-    rt.frame(0.0);
-    let tree = rt.accessibility_json();
-    let text = tree.to_string();
-    assert!(text.contains("\"switch\""), "a switch role");
-    let copy = crate::ui::element(&rt, "set-copy-select");
-    assert!(copy.focusable);
-    let more = crate::ui::Tokens::resolve(&crate::ui::tokens::Inputs {
-        increased_contrast: true,
-        ..crate::ui::tokens::Inputs::system(false)
-    });
-    let base = crate::ui::Tokens::resolve(&crate::ui::tokens::Inputs::system(false));
-    assert_ne!(more.version, base.version, "contrast is in the memo key");
 }

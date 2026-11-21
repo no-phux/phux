@@ -5,7 +5,7 @@ use super::naming::{
     RANDOM_NAME_ATTEMPTS, choose_session_name, fresh_session_name, requested_session_name,
     unique_session_name,
 };
-use super::{AttachTarget, new_session_json, new_session_target, seed_cwd};
+use super::{new_session_json, seed_cwd};
 use std::path::{Path, PathBuf};
 
 use phux_config::{NameRng, random_name};
@@ -146,6 +146,10 @@ fn seed_cwd_defaults_a_local_session_to_the_client_cwd() {
         .to_string_lossy()
         .into_owned();
     assert_eq!(seed_cwd(None, false), Some(expected));
+    assert_eq!(
+        seed_cwd(Some(PathBuf::from("/elsewhere")), false),
+        Some("/elsewhere".to_owned())
+    );
 }
 
 /// A remote server gets no client-cwd default (a local path names
@@ -156,24 +160,6 @@ fn seed_cwd_sends_only_an_explicit_cwd_to_a_remote() {
     assert_eq!(
         seed_cwd(Some(PathBuf::from("/srv/work")), true),
         Some("/srv/work".to_owned())
-    );
-}
-
-/// An explicit `--cwd` wins over the client-cwd default, and a
-/// non-empty command rides along unchanged.
-#[test]
-fn new_session_target_honors_explicit_cwd_and_command() {
-    assert_eq!(
-        new_session_target(
-            "proj".to_owned(),
-            vec!["vim".to_owned(), "notes.txt".to_owned()],
-            seed_cwd(Some(PathBuf::from("/somewhere/else")), false),
-        ),
-        AttachTarget::CreateIfMissing {
-            name: "proj".to_owned(),
-            command: Some(vec!["vim".to_owned(), "notes.txt".to_owned()]),
-            cwd: Some("/somewhere/else".to_owned()),
-        }
     );
 }
 

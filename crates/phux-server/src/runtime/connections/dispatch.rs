@@ -41,7 +41,7 @@ where
     W: FrameWriter + 'static,
 {
     debug!(?client_id, "client task started");
-    // Set when the connection's authority is withdrawn (workload-auth §7).
+    // Set when the connection's authority is withdrawn.
     let (revocation_tx, revocation_rx) = tokio::sync::watch::channel(None);
     state.with_mut(|server| {
         server.set_client_connection_cancellation(client_id, token.clone());
@@ -103,7 +103,7 @@ where
         };
 
         // A frame newer than this build is answered `Unsupported` and the
-        // frame guard (workload-auth §6) runs before any routing or handler.
+        // frame guard runs before any routing or handler.
         let admitted = admit_frame(
             &state,
             &framed,

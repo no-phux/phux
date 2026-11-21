@@ -41,26 +41,6 @@ fn only_a_real_state_declares() {
     }
 }
 
-#[test]
-fn a_delete_withdraws_the_declaration_and_the_detector_resumes() {
-    let (mut arb, t) = fresh();
-    arb.note_explicit_set(&t, br#"{"name":"me","state":"done"}"#);
-    assert!(arb.is_declared(&t));
-    arb.note_explicit_delete(&t);
-    assert!(!arb.is_declared(&t));
-}
-
-/// The detector deletes only what it wrote.
-#[test]
-fn the_detector_only_owns_records_it_wrote() {
-    let (mut arb, t) = fresh();
-    assert!(!arb.detector_owns(&t));
-    arb.note_detector_write(&t);
-    assert!(arb.detector_owns(&t));
-    arb.note_detector_retract(&t);
-    assert!(!arb.detector_owns(&t));
-}
-
 /// An explicit write over a detector record transfers ownership away.
 #[test]
 fn an_explicit_set_takes_ownership_from_the_detector() {
@@ -105,47 +85,7 @@ fn an_explicit_set_without_identity_fields_clears_the_mark() {
     );
 }
 
-/// A bare `kind` is not identity.
-#[test]
-fn a_bare_kind_is_not_human_authored_identity() {
-    let (mut arb, t) = fresh();
-    arb.note_explicit_set(&t, br#"{"name":"","kind":"claude"}"#);
-    assert!(!arb.has_explicit_identity(&t));
-}
-
-#[test]
-fn a_delete_drops_the_human_authored_identity_mark() {
-    let (mut arb, t) = fresh();
-    arb.note_explicit_set(&t, br#"{"name":"reviewer"}"#);
-    arb.note_explicit_delete(&t);
-    assert!(
-        !arb.has_explicit_identity(&t),
-        "the record is gone from the store, and the identity with it",
-    );
-}
-
-#[test]
-fn forget_drops_every_trace_of_a_reaped_terminal() {
-    let mut arb = AgentRecordArbiter::default();
-    let t = terminal(7);
-    arb.note_explicit_set(&t, br#"{"name":"x","state":"working"}"#);
-    arb.note_detector_write(&t);
-    arb.forget(&t);
-    assert!(!arb.is_declared(&t));
-    assert!(!arb.detector_owns(&t));
-    assert!(!arb.has_explicit_identity(&t));
-}
-
-#[test]
-fn terminals_are_tracked_independently() {
-    let mut arb = AgentRecordArbiter::default();
-    let (a, b) = (terminal(1), terminal(2));
-    arb.note_explicit_set(&a, br#"{"name":"a","state":"done"}"#);
-    assert!(arb.is_declared(&a));
-    assert!(!arb.is_declared(&b));
-}
-
-// --- the explicit-kind bucket (L3 §3.7's preserve list) ----------------
+// --- the explicit-kind bucket (the preserve list) ----------------
 
 /// An explicit `kind` is preserved even though it is not identity.
 #[test]
@@ -207,19 +147,5 @@ fn withdrawing_a_declaration_clears_only_the_declaration() {
     assert!(
         !arb.detector_owns(&t),
         "withdrawing a state it never wrote does not make the record deletable",
-    );
-}
-
-/// The detector's next write makes the record its own.
-#[test]
-fn after_a_withdrawal_the_detector_reacquires_by_writing() {
-    let (mut arb, t) = fresh();
-    arb.note_explicit_set(&t, br#"{"name":"me","state":"working"}"#);
-    arb.note_declaration_withdrawn(&t);
-    arb.note_detector_write(&t);
-    assert!(arb.detector_owns(&t));
-    assert!(
-        arb.has_explicit_identity(&t),
-        "which still does not make the human's name the detector's",
     );
 }

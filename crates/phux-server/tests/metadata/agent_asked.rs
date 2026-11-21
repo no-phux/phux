@@ -1,4 +1,4 @@
-//! `AgentEvent::Asked` (SPEC §7.5): a pending human-answerable question
+//! `AgentEvent::Asked`: a pending human-answerable question
 //! reaches `EVENT` subscribers from either a `phux-ask` title sentinel or a
 //! `REPORT_ASKED` hook, and one question from both sources is told once
 //! (ADR-0036 ladder).

@@ -46,7 +46,7 @@ pub(super) struct TerminalPoint {
     /// names; `None` for a satellite Terminal or one with no record.
     pub(super) key: Option<phux_protocol::ids::ResourceKey>,
     /// A child resource's parent Terminal: the child matches whatever its
-    /// parent matches (workload-auth §6, L1 §1.2).
+    /// parent matches.
     pub(super) parent: Option<Box<Self>>,
 }
 

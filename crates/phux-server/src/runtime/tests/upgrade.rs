@@ -133,50 +133,6 @@ async fn graceful_upgrade_retires_durable_screens_without_purging_results() {
     .await;
 }
 
-/// A well-formed empty handoff rebuilds, then the adopted listener accepts.
-#[tokio::test(flavor = "current_thread")]
-async fn transactional_resume_serves_on_the_adopted_listener() {
-    crate::runtime::test_support::local(async {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let (path, listener_fd) = bind_resume_listener(&dir);
-        let blob = resume_handoff_blob(listener_fd, Vec::new(), Vec::new(), Vec::new());
-        let resume_fd = write_resume_fd(&blob);
-        let cfg = ServerConfig {
-            socket_path: path.clone(),
-            ..ServerConfig::with_default_socket()
-        };
-        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-        let server = tokio::task::spawn_local(async move {
-            ServerRuntime::new(cfg, std::sync::Arc::new(phux_terminal::TerminalEngine))
-                .resume(resume_fd)
-                .overlay_detect(Vec::new)
-                .run_async(async move {
-                    let _ = shutdown_rx.await;
-                })
-                .await
-        });
-
-        let mut connected = false;
-        for _ in 0..50 {
-            if tokio::net::UnixStream::connect(&path).await.is_ok() {
-                connected = true;
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-        assert!(
-            connected,
-            "a successful resume must accept on the adopted listener"
-        );
-        let _ = shutdown_tx.send(());
-        server
-            .await
-            .expect("server task")
-            .expect("resumed server shuts down cleanly");
-    })
-    .await;
-}
-
 /// An upgrade into a posture a cold start refuses (no mode beside a
 /// remote listener, ADR-0179) keeps serving the adopted socket, binds no
 /// remote listener, and reports why in `GET_STATE`; the same

@@ -15,20 +15,6 @@ fn starts_a_job(action: &phux_config::keybind::ResolvedAction) -> bool {
 }
 
 #[test]
-fn plugin_action_runs_from_id_or_the_older_action_arg() {
-    for id_arg in ["id", "action"] {
-        let action = act(
-            "plugin-action",
-            &[
-                ("plugin", "com.example.tools".into()),
-                (id_arg, "summarize".into()),
-            ],
-        );
-        assert!(starts_a_job(&action), "`{id_arg}` names the action");
-    }
-}
-
-#[test]
 fn plugin_action_bound_in_config_runs() {
     let cfg = phux_config::parse_with_defaults(
         "[keybindings.prefix-table]\n\

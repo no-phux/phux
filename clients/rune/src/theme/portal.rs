@@ -36,13 +36,7 @@ pub fn watch(waker: Waker) {
     let _ = std::thread::Builder::new()
         .name("phux-appearance".into())
         .spawn(move || {
-            let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            else {
-                return;
-            };
-            runtime.block_on(follow(&waker));
+            async_io::block_on(follow(&waker));
         });
 }
 
@@ -51,8 +45,8 @@ pub fn watch(_waker: Waker) {}
 
 #[cfg(target_os = "linux")]
 async fn follow(waker: &Waker) -> Option<()> {
-    use futures_util::StreamExt;
-    use zbus::{Connection, OwnedVariant, Proxy};
+    use futures_lite::StreamExt;
+    use zbus::{Connection, Proxy, zvariant::OwnedValue};
     const NAMESPACE: &str = "org.freedesktop.appearance";
     const KEY: &str = "color-scheme";
 
@@ -68,7 +62,7 @@ async fn follow(waker: &Waker) -> Option<()> {
     // Subscribe first, so a change between the read and the subscription isn't lost.
     let mut changes = portal.receive_signal("SettingChanged").await.ok()?;
     let first = match portal
-        .call::<_, _, OwnedVariant>("ReadOne", &(NAMESPACE, KEY))
+        .call::<_, _, OwnedValue>("ReadOne", &(NAMESPACE, KEY))
         .await
     {
         Ok(value) => Some(value),
@@ -78,9 +72,8 @@ async fn follow(waker: &Waker) -> Option<()> {
         store(&value, waker);
     }
     while let Some(message) = changes.next().await {
-        if let Ok((namespace, key, value)) = message
-            .body()
-            .deserialize::<(String, String, OwnedVariant)>()
+        if let Ok((namespace, key, value)) =
+            message.body().deserialize::<(String, String, OwnedValue)>()
             && namespace == NAMESPACE
             && key == KEY
         {
@@ -93,14 +86,17 @@ async fn follow(waker: &Waker) -> Option<()> {
 /// `color-scheme` as a number. Portals answer `v`, and `Read` (before
 /// `ReadOne`) wraps it twice.
 #[cfg(target_os = "linux")]
-fn store(value: &zbus::Variant<'_>, waker: &Waker) {
-    fn scheme(value: &zbus::Variant<'_>) -> Option<u32> {
-        match value {
-            zbus::Variant::U32(x) => Some(*x),
-            zbus::Variant::Variant(inner) => scheme(inner),
-            _ => None,
-        }
+fn scheme(value: &zbus::zvariant::Value<'_>) -> Option<u32> {
+    use zbus::zvariant::Value;
+    match value {
+        Value::U32(x) => Some(*x),
+        Value::Value(inner) => scheme(inner),
+        _ => None,
     }
+}
+
+#[cfg(target_os = "linux")]
+fn store(value: &zbus::zvariant::Value<'_>, waker: &Waker) {
     let Some(scheme) = scheme(value) else { return };
     let scheme = u8::try_from(scheme).unwrap_or(0).min(2);
     if SCHEME.swap(scheme, Ordering::Relaxed) != scheme {
@@ -111,6 +107,19 @@ fn store(value: &zbus::Variant<'_>, waker: &Waker) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn portal_values_keep_numeric_and_legacy_nested_answers() {
+        use zbus::zvariant::Value;
+        for number in [0, 1, 2, u32::MAX] {
+            let direct = Value::U32(number);
+            assert_eq!(scheme(&direct), Some(number));
+            let nested = Value::Value(Box::new(Value::Value(Box::new(direct))));
+            assert_eq!(scheme(&nested), Some(number), "legacy Read wraps twice");
+        }
+        assert_eq!(scheme(&Value::from("not a color scheme")), None);
+    }
 
     /// GNOME's default style answers 0 and draws light; dark only on 1.
     #[test]

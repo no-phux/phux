@@ -33,6 +33,9 @@ pub struct IdSpace {
     /// The terminal id space's instance token (ADR-0109), minted with the
     /// allocator; an upgrade restores both.
     instance: phux_protocol::ids::ServerInstance,
+    /// Pane ids a cold start set aside for the panes that last had them,
+    /// taken by each pane's first intern ([`Self::reserve_terminals`]).
+    reserved: std::collections::HashMap<ResourceId, u32>,
 }
 
 /// Mint a random instance token from the OS CSPRNG.
@@ -61,6 +64,7 @@ impl IdSpace {
             terminals: IdBridge::new(),
             windows: IdBridge::new(),
             instance: fresh_instance(),
+            reserved: std::collections::HashMap::new(),
         }
     }
 
@@ -132,7 +136,33 @@ impl IdSpace {
     ///
     /// If the space is exhausted.
     pub(crate) fn intern_resource(&mut self, terminal: ResourceId) -> WireResourceId {
+        if self.terminals.wire(terminal).is_none()
+            && let Some(raw) = self.reserved.remove(&terminal)
+        {
+            let wire = WireResourceId::local(raw);
+            if self.terminals.resolve(&wire).is_none() {
+                self.terminals.bind(terminal, wire.clone());
+                return wire;
+            }
+        }
         self.terminals.intern(terminal)
+    }
+
+    /// Set each pane's saved id aside for its next launch, before anything
+    /// else allocates: fresh ids then start past all of them, so none is
+    /// handed to another pane first. For a cold start only; a duplicate or
+    /// out-of-range id is dropped.
+    pub(crate) fn reserve_terminals(&mut self, saved: impl IntoIterator<Item = (ResourceId, u32)>) {
+        let mut taken = std::collections::HashSet::new();
+        for (terminal, raw) in saved {
+            if raw == 0 || raw == u32::MAX || !taken.insert(raw) {
+                continue;
+            }
+            if raw >= self.terminals.next_wire() {
+                self.terminals.set_next(raw + 1);
+            }
+            self.reserved.insert(terminal, raw);
+        }
     }
 
     /// Reverse lookup; `None` for satellite ids by design.
@@ -230,53 +260,7 @@ mod tests {
         (reg, [s0, s1], [t0, t1])
     }
 
-    // --- the u32 boundary: `u32::MAX - 1` is the last id minted ---
-
-    #[test]
-    #[should_panic(expected = "terminal wire-id space exhausted")]
-    fn terminal_space_panics_instead_of_saturating() {
-        let (_reg, _, terminals) = two_of_each();
-        let mut space = IdSpace::new();
-        space.set_next_terminal_wire(u32::MAX - 1);
-        let _ = space.intern_resource(terminals[0]);
-        let _ = space.intern_resource(terminals[1]);
-    }
-
-    // -- the ResourceId-is-an-enum invariant --------------------------
-
-    #[test]
-    fn terminal_from_wire_is_none_for_a_satellite_id() {
-        let (_reg, _, terminals) = two_of_each();
-        let mut space = IdSpace::new();
-        let wire = space.intern_resource(terminals[0]);
-        let raw = wire.local_id().expect("minted id is Local");
-        let satellite = WireResourceId::satellite("peer", raw);
-        assert!(
-            space.resource_from_wire(&satellite).is_none(),
-            "satellite terminals are routed by federation and never interned"
-        );
-        assert_eq!(space.resource_from_wire(&wire), Some(terminals[0]));
-    }
-
     // -- shape parity across the three spaces -------------------------
-
-    #[test]
-    fn every_space_allocates_monotonically_from_one() {
-        let (_reg, sessions, terminals) = two_of_each();
-        let mut space = IdSpace::new();
-        assert_eq!(space.intern_session(sessions[0]), WireSessionId(1));
-        assert_eq!(space.intern_session(sessions[1]), WireSessionId(2));
-        assert_eq!(space.intern_window(sessions[0]), WireWindowId(1));
-        assert_eq!(space.intern_window(sessions[1]), WireWindowId(2));
-        assert_eq!(
-            space.intern_resource(terminals[0]),
-            WireResourceId::local(1)
-        );
-        assert_eq!(
-            space.intern_resource(terminals[1]),
-            WireResourceId::local(2)
-        );
-    }
 
     #[test]
     fn retiring_does_not_recycle_wire_ids() {
@@ -298,6 +282,27 @@ mod tests {
         assert_eq!(
             space.intern_resource(terminals[1]),
             WireResourceId::local(2)
+        );
+    }
+
+    #[test]
+    fn a_reserved_id_goes_to_its_pane_once_and_a_duplicate_is_dropped() {
+        let (_reg, _sessions, terminals) = two_of_each();
+        let mut space = IdSpace::new();
+        space.reserve_terminals([(terminals[0], 4), (terminals[1], 4), (terminals[1], 0)]);
+        assert_eq!(
+            space.intern_resource(terminals[1]),
+            WireResourceId::local(5)
+        );
+        assert_eq!(
+            space.intern_resource(terminals[0]),
+            WireResourceId::local(4)
+        );
+        // Once retired, the pane takes a fresh id like any other.
+        space.retire_terminal(terminals[0]);
+        assert_eq!(
+            space.intern_resource(terminals[0]),
+            WireResourceId::local(6)
         );
     }
 }

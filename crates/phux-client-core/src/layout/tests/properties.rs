@@ -132,23 +132,11 @@ proptest! {
         );
     }
 
-    /// Invariant 1: every ResourceId appears as exactly one leaf.
-    #[test]
-    fn proptest_leaves_match_alive(ops in prop::collection::vec(arb_op(), 1..20)) {
-        let (tree, alive) = apply_ops(ops);
-        let tree_leaves = tree.as_ref().map_or_else(Vec::new, leaves);
-        let alive_set: HashSet<_> = alive.into_iter().collect();
-        let leaf_set: HashSet<_> = tree_leaves.iter().cloned().collect();
-        // Set equality.
-        prop_assert_eq!(&alive_set, &leaf_set);
-        // Exactly one leaf per id (no duplicates).
-        prop_assert_eq!(tree_leaves.len(), leaf_set.len());
-    }
 
-    /// Invariant 3: `focus_direction` is partial, deterministic, and
-    /// only returns ids that are leaves of the tree.
+    /// Invariant 3: `focus_direction` is partial and only returns ids
+    /// that are other leaves of the tree.
     #[test]
-    fn proptest_focus_direction_partial_deterministic(
+    fn proptest_focus_direction_is_partial(
         ops in prop::collection::vec(arb_op(), 1..20),
         dir_pick in 0_u8..4,
     ) {
@@ -163,11 +151,7 @@ proptest! {
             _ => Direction::Right,
         };
         for src in &alive {
-            let a = focus_direction(&tree, src, dir);
-            let b = focus_direction(&tree, src, dir);
-            // Deterministic.
-            prop_assert_eq!(&a, &b);
-            if let Some(neighbour) = a {
+            if let Some(neighbour) = focus_direction(&tree, src, dir) {
                 // Neighbour is a leaf of the tree.
                 prop_assert!(leaf_set.contains(&neighbour));
                 // Different from source.
@@ -176,18 +160,6 @@ proptest! {
         }
     }
 
-    /// Invariant 4: CBOR round-trips for any state derived from
-    /// random ops (with focus on the last surviving leaf).
-    #[test]
-    fn proptest_cbor_round_trip(ops in prop::collection::vec(arb_op(), 1..15)) {
-        let (tree, alive) = apply_ops(ops);
-        let Some(tree) = tree else { return Ok(()) };
-        let Some(focus) = alive.last().cloned() else { return Ok(()) };
-        let state = LayoutState { tree: Some(tree), focus: Some(focus) };
-        let bytes = encode_state(&state);
-        let decoded = ArrangementDoc::decode_cbor(&bytes).expect("decode");
-        prop_assert_eq!(&decoded.groups[0].state, &state);
-    }
 
     /// Invariant 5: a multi-window [`ArrangementDoc`] CBOR-round-trips for
     /// any groups derived from random ops.

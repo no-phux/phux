@@ -1,6 +1,4 @@
-use super::run::{
-    broken_config_message, build_server_config, log_startup, open_server_log, select_connectors,
-};
+use super::run::{broken_config_message, build_server_config, open_server_log, select_connectors};
 use super::spawn::{SpawnLock, parse_auto_spawn_idle, server_is_older};
 use super::*;
 
@@ -132,46 +130,6 @@ fn broken_config_message_names_path_error_and_remedy() {
         "{msg}"
     );
     assert!(msg.contains("run `phux config check`"), "{msg}");
-}
-
-/// The startup line carries pid, version, and socket and passes the default
-/// filter into a file sink.
-#[test]
-#[allow(clippy::expect_used, reason = "test")]
-fn startup_line_lands_in_file_at_default_filter() {
-    use tracing_subscriber::layer::SubscriberExt as _;
-
-    let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join("server.log");
-    let file = std::fs::File::create(&path).expect("create sink");
-    let layer = tracing_subscriber::fmt::layer()
-        .with_writer(std::sync::Mutex::new(file))
-        .with_ansi(false);
-    let subscriber = tracing_subscriber::registry()
-            // Mirrors telemetry::DEFAULT_FILTER.
-            .with(tracing_subscriber::EnvFilter::new("phux=info,warn"))
-            .with(layer);
-    tracing::subscriber::with_default(subscriber, || {
-        log_startup(Path::new("/run/user/1000/phux/phux.sock"));
-    });
-
-    let contents = std::fs::read_to_string(&path).expect("read back log");
-    assert!(
-        contents.contains("phux server started"),
-        "startup line filtered out at the default filter: {contents}"
-    );
-    assert!(
-        contents.contains(&format!("pid={}", std::process::id())),
-        "pid missing: {contents}"
-    );
-    assert!(
-        contents.contains(&format!("version={}", env!("CARGO_PKG_VERSION"))),
-        "version missing: {contents}"
-    );
-    assert!(
-        contents.contains("socket=/run/user/1000/phux/phux.sock"),
-        "socket missing: {contents}"
-    );
 }
 
 /// The server log opens under a `0o700` parent at `0o600` (ADR-0028).

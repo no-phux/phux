@@ -5,21 +5,6 @@
     reason = "private command modules re-export crate-scoped handlers through this facade; pub would violate unreachable_pub"
 )]
 
-use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities};
-use phux_protocol::ids::ResourceId;
-use phux_protocol::wire::frame::RolePolicy;
-use phux_protocol::wire::frame::{
-    AgentEvent, Command, CommandResult, CommandValue, ControlAction, DetachReason, ErrorCode,
-    FrameKind, InputMode, ResourceLifecycle, StateScope,
-};
-use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, trace, warn};
-
-use crate::resource::ResourceHandle;
-use crate::runtime::pump;
-use crate::state::RoleEffects;
-use crate::state::{ClientId, Outbound, RelayRoute, ServerInterceptedKey, SharedState};
-
 pub(crate) mod attach_terminal;
 mod dispatch;
 mod kill;
@@ -31,29 +16,15 @@ mod satellite;
 pub(crate) mod satellite_lease;
 mod state_query;
 
-use super::reply;
 pub(crate) use attach_terminal::*;
-use attach_terminal::{
-    handle_attach_terminal, invalid_agent_cursor, refuse_invalid_role_policy,
-    subscribe_deferred_attach,
-};
-use dispatch::dispatch_local;
-pub(crate) use kill::*;
-use kill::{handle_kill_resource_if, handle_kill_terminal, kill_attribution};
+#[cfg(test)]
+pub(crate) use kill::handle_kill_terminals;
 pub(crate) use lifecycle::*;
-use lifecycle::{handle_shutdown, handle_upgrade};
-pub(crate) use resource_events::*;
 pub(crate) use results::*;
 pub(crate) use routing::*;
 pub(in crate::runtime) use satellite::*;
-use satellite::{handle_satellite_command, relay_stream_establishing};
 #[cfg(test)]
 use satellite::{reply_satellite_command, resolve_hub_detach_terminal};
-use satellite_lease::{
-    SatelliteLeaseTarget, relay_satellite_acquire_input, relay_satellite_attach,
-    relay_satellite_release_input, relay_satellite_route_input,
-};
-pub(crate) use state_query::*;
 #[cfg(test)]
 use state_query::{merge_satellite_resources, satellite_host_inventory};
 

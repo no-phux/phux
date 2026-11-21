@@ -1,4 +1,4 @@
-//! The overlays and modal surfaces on tokens (§4.1.3, Lane C): painted
+//! The overlays and modal surfaces on tokens (Lane C): painted
 //! through Rune's real renderer over a populated window, walked from the
 //! keyboard, and recorded by the motion gate. `RUNE_GALLERY_SNAP=DIR`
 //! writes each frame as `DIR/overlay-NAME.png`.
@@ -10,6 +10,7 @@ use crate::test_support::server::{self, agent, pane, session, settle};
 use crate::theme::Theme;
 
 use crate::test_support::SCALE;
+mod help;
 const DESKTOP: (f32, f32) = (1280.0, 800.0);
 
 const SCREEN: &str = "\x1b[2J\x1b[H\x1b[1;38;5;208m✻\x1b[0m Welcome to \x1b[1mClaude Code\x1b[0m\r\n\r\n\
@@ -42,7 +43,8 @@ fn window(dark: bool, theme: Option<&'static Theme>, waiting: bool) -> Runtime<D
         pane(4, &site, "docs build", None),
     ];
     let topology = crate::desk::topology(vec![phux, site], panes);
-    let mut rt = Runtime::new(desk, crate::ui::view, DESKTOP, Env::new(dark, SCALE));
+    let mut rt =
+        crate::test_support::runtime(desk, crate::ui::view, DESKTOP, Env::new(dark, SCALE));
     rt.on_key = Some(Desk::key);
     rt.frame(0.0);
     rt.update(move |d, _| {
@@ -275,6 +277,30 @@ fn the_context_menu_walks_from_the_keyboard_and_escape_returns_focus() {
     }
     assert!(rt.find("context-menu").is_none());
     assert_eq!(focused(&rt), before, "focus goes back where it was");
+}
+
+/// Every context row shows its whole title: the kit's fixed minimum width
+/// once cut "Screenshot to Terminal" to "Screenshot to…".
+#[test]
+fn the_context_menu_is_wide_enough_for_every_title() {
+    let mut rt = window(true, None, false);
+    settle(&mut rt);
+    open_menu(&mut rt);
+    settle(&mut rt);
+    let style = crate::ui::tokens_for(true, None).kit.ty.ui_compact;
+    let labels: Vec<_> = (rt.elements().into_iter())
+        .filter(|e| e.key.as_deref() == Some("label") && e.path.contains("context-item"))
+        .collect();
+    assert_eq!(labels.len(), crate::desk::CONTEXT_MENU.len());
+    for label in labels {
+        let words = label.text.clone().unwrap_or_default();
+        let (need, _) = rune::text::measure(&words, &[], style, None);
+        assert!(
+            label.rect[2] + 0.5 >= need,
+            "{words:?} is cut: {} of {need}",
+            label.rect[2]
+        );
+    }
 }
 
 /// A menu row runs its action and closes the menu; the tab menu disables

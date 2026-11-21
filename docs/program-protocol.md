@@ -1,28 +1,43 @@
 ---
-title: OSC 7501: report status from any program
+title: Program Status Protocol (OSC 7501): report status from any program
 description: phux supports OSC 7501, the escape sequence a program writes to report its status: working, blocked, done, or error.
 ---
 
-# OSC 7501: report status from any program
+# Program Status Protocol (OSC 7501): report status from any program
 
-phux supports OSC 7501, the escape sequence a program writes to report its status: working, blocked, done, or error. Support shipped in v0.53.0. To report working, run `printf '\033]7501;state=working\033\\'`.
+phux supports the Program Status Protocol, OSC 7501, the escape sequence a program writes to report its status: working, blocked, done, or error. Support shipped in v0.53.0.
 
-This page is for people who write programs that run inside a phux pane: build tools, deploy scripts, coding agents. It specifies how such a program tells phux what it is doing, and what phux does with that.
+This page specifies how a program in a phux pane tells phux what it is doing, and what phux does with that.
 
-A program writes that sequence to its terminal. phux records it, ranks it, and shows it as the pane's state in the sidebar, the agents view, notifications, and `phux agent list`. It needs no phux library and no socket.
+A program writes that sequence to its terminal. phux records it and ranks it. It needs no phux library and no socket.
 
 ```sh
 printf '\033]7501;state=working:app=deploy\033\\'
 ```
 
 [Any program can report status](./any-program-status.md) is a short
-walkthrough: one shell function, a demo that needs no hooks, and the
-`phux agent list` and `phux agent explain` output from a real run.
+walkthrough.
 
 [Program sequences and agent reports](./program-sequences.md) covers the
-other sequences phux reads (titles, the `phux-ask` title, OSC 133, OSC 9;4,
-OSC 52, BEL), the agent record, and the commands a program can run instead
+other sequences phux reads, and the commands a program can run instead
 of writing escapes.
+
+## Which programs support OSC 7501
+
+phux reads OSC 7501 reports and shows them as the pane's state in the
+sidebar, the agents view, notifications, and `phux agent list`.
+
+- [Otty](https://docs.otty.sh/vt/osc/osc-7501) supports OSC 7501 and shows
+  a pane's most urgent status in the tab badge, the Dock icon, the Inbox,
+  tab previews, and notifications.
+- [Rex](https://www.superlogical.com/rex/docs/build/program-status) uses
+  OSC 7501 and shows task status in the session picker and unfocused tab
+  headers; Lua scripts can react to `terminal.program_status_changed`.
+- [Solo](https://soloterm.com/docs/terminal/program-status) uses OSC 7501
+  for agent activity indicators and attention alerts, and holds automated
+  messages while a program waits for you.
+- [TUIOS](https://tuios.dev/docs/program-status) reads OSC 7501 and shows
+  the state in the rail, the Inbox, and the pane's title bar.
 
 ## Conventions
 
@@ -378,11 +393,10 @@ Read the reply from the terminal in raw mode; an answer starting
 - **OSC 9;4 (progress).** phux reads it for agent detection rules but does
   not turn it into OSC 7501 records, so it never overwrites a real report.
   A program MAY send both.
-- **OSC 9, OSC 777, OSC 99 (desktop notifications).** phux ignores these
-  from a pane. It sends its own notifications to your terminal when a
-  pane's state changes, so a program reports state and lets phux decide.
-  A program with something to say runs
-  [`phux notify`](./scripting.md#notes) instead.
+- **OSC 9, OSC 777, OSC 99 (desktop notifications).** Ignored from a pane
+  by default: a program reports state and phux decides when to notify. A
+  program with something to say runs [`phux notify`](./scripting.md#notes),
+  or the user opts OSC 9 and OSC 777 into notes there.
 - **OSC 133 (shell integration).** Emitted by the shell. OSC 133 `A` ends a
   pane's `working` and `blocked` records.
 - **OSC 0 and 2 (title).** Free-form. An OSC 7501 `title` labels a record

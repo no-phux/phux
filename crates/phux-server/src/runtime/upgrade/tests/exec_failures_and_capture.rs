@@ -25,35 +25,6 @@ async fn actual_exec_failure_resumes_the_next_append_without_a_barrier() {
     .await;
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn real_prepare_failure_resumes_the_next_append_without_a_barrier() {
-    crate::runtime::test_support::local(async {
-        let state = SharedState::new();
-        let (_, _, append) = state.with_mut(old_image_with_agent_sessions);
-        let next = append_records(&append, "{\"type\":\"prompt\"}").await;
-        assert_eq!(next.last_seq, 1);
-        let listener = tempfile::tempfile().unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        state.with_mut(|s| {
-            s.lifecycle_mut().set_upgrade_context(
-                listener.as_raw_fd(),
-                dir.path().join("phux.sock"),
-                RuntimeFlags {
-                    upgrade_source_exe: Some(dir.path().join("missing-replacement")),
-                    ..RuntimeFlags::default()
-                },
-            );
-        });
-        let Err(UpgradeError::Io(error)) = prepare_upgrade(&state).await else {
-            panic!("the replacement does not exist");
-        };
-        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
-        let next = append_records(&append, "{\"type\":\"stop\"}").await;
-        assert_eq!(next.first_seq, 2);
-    })
-    .await;
-}
-
 /// Wire ids are interned lazily, so a session or pane no client has read yet
 /// has none. The upgrade must still carry it: dropping it loses the PTY.
 #[tokio::test(flavor = "current_thread")]

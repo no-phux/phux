@@ -20,7 +20,6 @@ mod hello_survives_detach;
 mod lagged_attach_terminal_resync;
 mod reattach_multipane_input;
 mod reattach_other_session;
-mod reconnect_scenario;
 mod release_bootstrap_milestones;
 mod ws_attach;
 mod wt_attach;

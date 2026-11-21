@@ -2,7 +2,7 @@
 //! tokens: the readout along the foot (the fleet's counts, the next agent
 //! that needs you, the picked agent's card and the close button) and the
 //! `esc` chip in the titlebar band. Each chip floats over illustration, so
-//! it is opaque: the overlay layer at the floating tier (§1.7, §1.9's
+//! it is opaque: the overlay layer at the floating tier (the glass
 //! fallback), never a scene colour.
 
 use crate::ui::tokens::Voice;

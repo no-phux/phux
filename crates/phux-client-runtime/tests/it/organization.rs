@@ -21,6 +21,7 @@ use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot};
 
 use crate::embedded::{answer, commands, negotiate, opened, reopen, server_hello};
 
+mod close;
 mod empty_spawn;
 
 /// The fixture server, advertising `ORGANIZATION` (and the session verbs
@@ -363,50 +364,12 @@ fn without_organization_nothing_is_read_and_submissions_are_not_sent() {
         outcomes.as_slice(),
         [(op, OrgOutcome::NotSent { .. })] if *op == operation
     ));
-    // close_terminals keeps the legacy atomic batch.
-    plane.close_terminals(vec![ResourceId::local(1)]).unwrap();
-    assert!(
-        commands(&mut plane)
-            .iter()
-            .any(|(_, c)| matches!(c, Command::CloseTabResources { .. }))
-    );
     assert_eq!(plane.kill_session(skey(1)), Err(SubmitError::Unsupported));
     assert!(!plane.session_project_supported());
     assert_eq!(
         plane.set_session_project(skey(1), Some("phux")),
         Err(SubmitError::Unsupported)
     );
-}
-
-#[test]
-fn close_terminals_terminates_each_under_organization() {
-    let mut plane = seeded();
-    let request = plane.close_terminals(vec![ResourceId::local(1)]).unwrap();
-    let sent = commands(&mut plane);
-    let [
-        (
-            id,
-            Command::ResourceTerminate {
-                operation, target, ..
-            },
-        ),
-    ] = sent.as_slice()
-    else {
-        panic!("expected one terminate, got {sent:?}");
-    };
-    assert_eq!(target.resource, ResourceId::local(1));
-    assert_eq!(target.activation, ActivationId::new(1));
-    answer(
-        &mut plane,
-        *id,
-        CommandResult::Accepted {
-            operation: *operation,
-        },
-    );
-    assert!(plane.take_events().iter().any(|e| matches!(
-        e,
-        Event::TerminalsClosed { request_id, error: None } if *request_id == request
-    )));
 }
 
 #[test]

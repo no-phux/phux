@@ -931,6 +931,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "critical-section"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "790eea4361631c5e7d22598ecd5723ff611904e3344ce8720784c93e3d83d40b"
+
+[[package]]
 name = "crossbeam-channel"
 version = "0.5.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2935,7 +2941,7 @@ dependencies = [
 
 [[package]]
 name = "phux"
-version = "0.159.0"
+version = "0.161.1"
 dependencies = [
  "accessibility",
  "accessibility-sys",
@@ -2997,7 +3003,7 @@ dependencies = [
 
 [[package]]
 name = "phux-agent-host"
-version = "0.159.0"
+version = "0.161.1"
 dependencies = [
  "agent-client-protocol",
  "parking_lot 0.13.0",
@@ -3013,7 +3019,7 @@ dependencies = [
 
 [[package]]
 name = "phux-agent-rules"
-version = "0.159.0"
+version = "0.161.1"
 dependencies = [
  "regex",
  "serde",
@@ -3024,7 +3030,7 @@ dependencies = [
 
 [[package]]
 name = "phux-agent-session"
-version = "0.159.0"
+version = "0.161.1"
 dependencies = [
  "bytes",
  "phux-agent-rules",
@@ -3041,7 +3047,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client"
-version = "0.159.0"
+version = "0.161.1"
 dependencies = [
  "bytes",
  "futures-util",
@@ -3077,15 +3083,15 @@ dependencies = [
 
 [[package]]
 name = "phux-client-core"
-version = "0.159.0"
+version = "0.161.1"
 dependencies = [
  "bytes",
- "ciborium",
  "criterion",
  "insta",
  "libghostty-vt",
  "phux-core",
  "phux-frozen",
+ "phux-layout-codec",
  "phux-perf",
  "phux-protocol",
  "phux-vt",
@@ -3100,12 +3106,13 @@ dependencies = [
 
 [[package]]
 name = "phux-client-ffi"
-version = "0.159.0"
+version = "0.161.1"
 dependencies = [
  "libghostty-vt",
  "phux-client-core",
  "phux-client-runtime",
  "phux-config",
+ "phux-design",
  "phux-dial",
  "phux-protocol",
  "phux-server",
@@ -3121,7 +3128,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-runtime"
-version = "0.159.0"
+version = "0.161.1"
 dependencies = [
  "bytes",
  "core-foundation",
@@ -3155,12 +3162,13 @@ dependencies = [
 
 [[package]]
 name = "phux-config"
-version = "0.159.0"
+version = "0.161.1"
 dependencies = [
  "insta",
  "jiff",
  "phux-config-core",
  "phux-protocol",
+ "schemars 1.2.3",
  "serde",
  "serde_json",
  "serde_path_to_error",
@@ -3173,9 +3181,10 @@ dependencies = [
 
 [[package]]
 name = "phux-config-core"
-version = "0.159.0"
+version = "0.161.1"
 dependencies = [
  "nix 0.31.3",
+ "schemars 1.2.3",
  "serde",
  "tempfile",
  "thiserror 2.0.21",
@@ -3185,7 +3194,7 @@ dependencies = [
 
 [[package]]
 name = "phux-core"
-version = "0.159.0"
+version = "0.161.1"
 dependencies = [
  "phux-frozen",
  "proptest",
@@ -3198,23 +3207,23 @@ dependencies = [
 
 [[package]]
 name = "phux-crash"
-version = "0.159.0"
+version = "0.161.1"
 dependencies = [
  "libc",
- "tempfile",
  "tokio",
 ]
 
 [[package]]
 name = "phux-design"
-version = "0.159.0"
+version = "0.161.1"
 dependencies = [
  "serde_json",
+ "sha2 0.11.1",
 ]
 
 [[package]]
 name = "phux-dial"
-version = "0.159.0"
+version = "0.161.1"
 dependencies = [
  "futures-util",
  "hex",
@@ -3234,7 +3243,7 @@ dependencies = [
 
 [[package]]
 name = "phux-frozen"
-version = "0.159.0"
+version = "0.161.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -3243,7 +3252,7 @@ dependencies = [
 
 [[package]]
 name = "phux-git"
-version = "0.159.0"
+version = "0.161.1"
 dependencies = [
  "libc",
  "memchr",
@@ -3252,8 +3261,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "phux-layout-codec"
+version = "0.161.1"
+dependencies = [
+ "ciborium",
+ "phux-core",
+ "phux-protocol",
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "phux-mcp"
-version = "0.159.0"
+version = "0.161.1"
 dependencies = [
  "base64 0.23.1",
  "jsonschema",
@@ -3273,7 +3293,7 @@ dependencies = [
 
 [[package]]
 name = "phux-perf"
-version = "0.159.0"
+version = "0.161.1"
 dependencies = [
  "libc",
  "nix 0.31.3",
@@ -3283,7 +3303,7 @@ dependencies = [
 
 [[package]]
 name = "phux-plugin"
-version = "0.159.0"
+version = "0.161.1"
 dependencies = [
  "phux-config",
  "phux-frozen",
@@ -3296,7 +3316,7 @@ dependencies = [
 
 [[package]]
 name = "phux-protocol"
-version = "0.159.0"
+version = "0.161.1"
 dependencies = [
  "bitflags 2.13.2",
  "bytes",
@@ -3314,7 +3334,7 @@ dependencies = [
 
 [[package]]
 name = "phux-record"
-version = "0.159.0"
+version = "0.161.1"
 dependencies = [
  "gif",
  "libghostty-vt",
@@ -3327,7 +3347,7 @@ dependencies = [
 
 [[package]]
 name = "phux-resource"
-version = "0.159.0"
+version = "0.161.1"
 dependencies = [
  "bytes",
  "libc",
@@ -3344,7 +3364,7 @@ dependencies = [
 
 [[package]]
 name = "phux-server"
-version = "0.159.0"
+version = "0.161.1"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -3369,6 +3389,7 @@ dependencies = [
  "phux-dial",
  "phux-frozen",
  "phux-git",
+ "phux-layout-codec",
  "phux-perf",
  "phux-plugin",
  "phux-protocol",
@@ -3406,7 +3427,7 @@ dependencies = [
 
 [[package]]
 name = "phux-server-testkit"
-version = "0.159.0"
+version = "0.161.1"
 dependencies = [
  "bytes",
  "libghostty-vt",
@@ -3424,7 +3445,7 @@ dependencies = [
 
 [[package]]
 name = "phux-terminal"
-version = "0.159.0"
+version = "0.161.1"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -3461,7 +3482,7 @@ dependencies = [
 
 [[package]]
 name = "phux-terminal-api"
-version = "0.159.0"
+version = "0.161.1"
 dependencies = [
  "bytes",
  "phux-agent-rules",
@@ -3481,11 +3502,10 @@ dependencies = [
 
 [[package]]
 name = "phux-tui"
-version = "0.159.0"
+version = "0.161.1"
 dependencies = [
  "base64 0.23.1",
  "bytes",
- "insta",
  "jiff",
  "libghostty-vt",
  "phux-client",
@@ -3504,6 +3524,7 @@ dependencies = [
  "phux-wire-fixtures",
  "proptest",
  "ratatui",
+ "ratcn",
  "rustix",
  "serde",
  "serde_json",
@@ -3520,7 +3541,7 @@ dependencies = [
 
 [[package]]
 name = "phux-usage"
-version = "0.159.0"
+version = "0.161.1"
 dependencies = [
  "base64 0.23.1",
  "hex",
@@ -3533,7 +3554,7 @@ dependencies = [
 
 [[package]]
 name = "phux-vt"
-version = "0.159.0"
+version = "0.161.1"
 dependencies = [
  "bytes",
  "flate2",
@@ -3546,7 +3567,7 @@ dependencies = [
 
 [[package]]
 name = "phux-wire-fixtures"
-version = "0.159.0"
+version = "0.161.1"
 dependencies = [
  "bytes",
  "phux-protocol",
@@ -3554,7 +3575,7 @@ dependencies = [
 
 [[package]]
 name = "phux-work"
-version = "0.159.0"
+version = "0.161.1"
 dependencies = [
  "getrandom 0.4.3",
  "jiff",
@@ -3657,7 +3678,7 @@ dependencies = [
 
 [[package]]
 name = "portable-pty-adopt"
-version = "0.159.0"
+version = "0.161.1"
 dependencies = [
  "anyhow",
  "libc",
@@ -3805,7 +3826,7 @@ checksum = "a1d01941d82fa2ab50be1e79e6714289dd7cde78eba4c074bc5a4374f650dfe0"
 
 [[package]]
 name = "quictun"
-version = "0.159.0"
+version = "0.161.1"
 dependencies = [
  "base64 0.23.1",
  "getrandom 0.4.3",
@@ -3980,6 +4001,7 @@ checksum = "cbb175c433c8e28a809d1f5773a2ae96e68c0ce40db865cbab1020bf33ae479c"
 dependencies = [
  "bitflags 2.13.2",
  "compact_str",
+ "critical-section",
  "hashbrown 0.17.1",
  "itertools 0.14.0",
  "kasuari",
@@ -4027,6 +4049,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ratatui-textarea"
+version = "0.9.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6cf7263fbb7f37caa4bcfd00fc604ff1409f70456a833fbdff99282e88fdfe92"
+dependencies = [
+ "ratatui-core",
+ "ratatui-widgets",
+ "unicode-segmentation",
+ "unicode-width",
+]
+
+[[package]]
 name = "ratatui-widgets"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4042,6 +4076,18 @@ dependencies = [
  "serde",
  "strum",
  "time",
+ "unicode-segmentation",
+ "unicode-width",
+]
+
+[[package]]
+name = "ratcn"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "783d0998c2124353507bbc5a5b466715ed9102a501be5ce6b92b25db10998c5d"
+dependencies = [
+ "ratatui",
+ "ratatui-textarea",
  "unicode-segmentation",
  "unicode-width",
 ]

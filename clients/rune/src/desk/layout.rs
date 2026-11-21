@@ -25,15 +25,8 @@ impl Desk {
     /// The selected session's key, and its arrangement when the replica
     /// holds it (fetching it once when it does not).
     pub(super) fn arrangement(&mut self, client: &Client) -> Option<(SessionKey, ArrangementDoc)> {
-        let selected = client.selected_session()?;
-        let session = self
-            .connection
-            .topology
-            .as_ref()?
-            .sessions
-            .iter()
-            .find(|s| s.id == selected)?;
-        let key = session.key?;
+        let session = self.selected_entry(client)?;
+        let (key, held) = (session.key?, session.arrangement);
         if let Some((_, _, mut doc, _)) = client.organization().arrangement_document(&key) {
             // Edits land on what this window shows: its tabs, not the
             // stored defaults, which the write keeps.
@@ -44,7 +37,7 @@ impl Desk {
             super::tabs::focus_group(&mut doc, shown);
             return Some((key, doc));
         }
-        if let Some(arrangement) = session.arrangement
+        if let Some(arrangement) = held
             && self.connection.fetched.insert(arrangement)
         {
             let _ = client.fetch_arrangement(arrangement);
@@ -86,7 +79,9 @@ impl Desk {
         };
         self.place_pending_splits(client);
         let listed = self.listed_resources();
-        let arrangement = self.arrangement(client).map(|(key, mut doc)| {
+        let preview = self.split_preview(client);
+        let arrangement = self.arrangement(client).map(|(key, doc)| {
+            let mut doc = preview.unwrap_or(doc);
             self.choose_slot_tabs(&mut doc, &shown);
             (key, doc)
         });
@@ -238,6 +233,7 @@ impl Desk {
         };
         self.connection.resources.returning = None;
         if let Some(old) = self.connection.shown.take() {
+            self.leaving(&old.resource, id);
             self.connection.others.insert(old.resource, old.view);
         }
         self.activities.seen(id);
@@ -306,6 +302,16 @@ impl Desk {
             .get(path)
             // The divider's own width is not either side's.
             .map_or(0.0, |size| (if horizontal { size[0] } else { size[1] }) - phux_design::tokens::SPACE.card_gap)
+    }
+
+    /// A divider drag that ended without a drop (Escape, focus lost, a
+    /// system touch cancel): the preview goes back and nothing is written.
+    pub fn cancel_divider(&mut self) {
+        if self.connection.dragging.take().is_some()
+            && let Some(client) = self.connection.client.clone()
+        {
+            self.refresh_layout(&client);
+        }
     }
 
     /// A divider drag: preview the ratio locally, and write it on release.

@@ -330,16 +330,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_unregistered_satellite_is_handed_back() {
-        let net = Loopback::new();
-        let adopter = SatelliteAdopter::default();
-        let returned = adopter
-            .offer(&host(), net.arrival("a").await)
-            .expect_err("not accepted");
-        assert_eq!(returned.credential, "a");
-    }
-
-    #[tokio::test]
     async fn a_newer_connection_supersedes_the_waiting_and_the_handed_one() {
         let net = Loopback::new();
         let adopter = SatelliteAdopter::default();

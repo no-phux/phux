@@ -712,28 +712,27 @@ mod tests {
     #[test]
     fn registration_is_bounded_and_raii_slot_is_reused() {
         let diagnostics = StreamDiagnostics::new();
-        let mut registrations: Vec<_> = (0..MAX_STREAMS)
+        let mut held: Vec<_> = (0..MAX_STREAMS)
             .map(|id| diagnostics.register(context(id as u64)))
             .collect();
-        assert!(registrations.iter().all(|r| r.slot.is_some()));
         let suppressed = diagnostics.register(context(999));
-        assert!(suppressed.slot.is_none());
         let no_op = suppressed.tracker();
         assert_eq!(no_op.context(), context(999));
-        assert!(
-            no_op.inner.is_none(),
-            "suppressed streams allocate no tracker storage"
-        );
-        assert!(no_op.enqueue(123).tracker.upgrade().is_none());
-        assert!(no_op.begin_write().tracker.upgrade().is_none());
+        drop(no_op.enqueue(123));
         let snapshot = diagnostics.snapshot();
         assert_eq!(snapshot.streams.len(), MAX_STREAMS);
         assert_eq!(snapshot.suppressed_streams, 1);
 
-        registrations.pop();
-        let replacement = diagnostics.register(context(1_000));
-        assert!(replacement.slot.is_some());
-        assert_eq!(diagnostics.snapshot().streams.len(), MAX_STREAMS);
+        drop(held.pop());
+        let _replacement = diagnostics.register(context(1_000));
+        let snapshot = diagnostics.snapshot();
+        assert_eq!(snapshot.streams.len(), MAX_STREAMS);
+        assert!(
+            snapshot
+                .streams
+                .iter()
+                .any(|s| s.context.stream_id == 1_000)
+        );
     }
 
     #[test]

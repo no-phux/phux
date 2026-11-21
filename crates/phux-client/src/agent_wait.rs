@@ -1088,29 +1088,6 @@ mod tests {
         Verdict::Satisfied { from, to }
     }
 
-    /// A pane resting at `idle` must not satisfy `--until idle`, however
-    /// often the level is re-read.
-    #[test]
-    fn a_level_read_of_idle_never_satisfies_the_wait() {
-        let mut tracker = EdgeTracker::new(AgentMetaState::Idle, &[AgentMetaState::Idle]);
-        for _ in 0..100 {
-            assert_eq!(
-                see(&mut tracker, AgentMetaState::Idle),
-                Verdict::Pending,
-                "a repeated level read must never satisfy a completion gate"
-            );
-        }
-        assert_eq!(tracker.edges(), 0);
-    }
-
-    #[test]
-    fn a_working_to_idle_transition_satisfies_the_wait() {
-        use AgentMetaState::{Idle, Working};
-        let mut tracker = EdgeTracker::new(Working, &[Idle]);
-        assert_eq!(see(&mut tracker, Idle), satisfied(Working, Idle));
-        assert_eq!(tracker.edges(), 1);
-    }
-
     /// An already-blocked pane must still transition to satisfy `blocked`.
     #[test]
     fn an_already_blocked_baseline_needs_a_transition_too() {

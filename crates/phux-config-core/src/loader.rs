@@ -51,6 +51,8 @@ pub struct ClientConfig {
     pub organize: OrganizeCfg,
     /// `[[sessions]]`: the colour each named session is drawn in.
     pub sessions: Vec<SessionConfigEntry>,
+    /// `[[icons]]`: the icon a pane takes from its program or folder.
+    pub icons: Vec<crate::IconConfigEntry>,
     /// `[rune]`: the desktop app's file-managed settings.
     pub rune: RuneCfg,
     /// `[defaults]`: the few keys a client applies itself.

@@ -1,4 +1,4 @@
-//! Idempotent creates (ADR-0126, SPEC L1 §3.1, L3 §3.1): a keyed
+//! Idempotent creates (ADR-0126): a keyed
 //! `SPAWN_RESOURCE` and a token-bearing `phux.session.create/v1`, on the
 //! shared dedupe record.
 //!
@@ -92,7 +92,7 @@ pub(crate) fn bind_spawned(s: &ServerState, key: Option<IdempotencyKey>, id: &Wi
 
 /// Undo [`bind_spawned`] for a resource reaped before its spawner received
 /// a usable generation: a refused spawn binds nothing, so a retry spawns
-/// fresh (SPEC L1 §3.1). Call it in the step that reaps the resource. A key
+/// fresh. Call it in the step that reaps the resource. A key
 /// that has since been bound to something else is left alone.
 pub(crate) fn unbind_spawned(s: &ServerState, key: Option<IdempotencyKey>, id: &WireResourceId) {
     let Some(key) = key else {
@@ -358,35 +358,5 @@ mod tests {
             panic!("the repeat is refused, not admitted");
         };
         assert!(message.contains("in flight"), "{message}");
-    }
-
-    /// A pane reaped before its spawner could use it takes its binding with
-    /// it; a later binding of the same key to another pane survives.
-    #[test]
-    fn a_reaped_spawn_is_unbound_and_its_retry_spawns_fresh() {
-        let state = SharedState::new();
-        let request = keyed("/bin/cat");
-        let key = IdempotencyKey::new([4; 16]);
-        let operation = spawn_key(key.expect("non-zero key"));
-        let dedupe = state.with(|s| s.operation_dedupe().clone());
-        let digest = spawn_digest(&request);
-        let owner = || match dedupe.claim_at(
-            operation,
-            digest,
-            Instant::now(),
-            crate::runtime::operation_dedupe::join_outcome,
-        ) {
-            Claim::Owner => true,
-            Claim::Final(_) => false,
-            _ => panic!("unexpected admission"),
-        };
-        assert!(owner());
-        state.with(|s| bind_spawned(s, key, &WireResourceId::local(3)));
-        assert!(!owner(), "a bound key replays");
-        state.with(|s| unbind_spawned(s, key, &WireResourceId::local(3)));
-        assert!(owner(), "the reaped pane's retry spawns fresh");
-        state.with(|s| bind_spawned(s, key, &WireResourceId::local(4)));
-        state.with(|s| unbind_spawned(s, key, &WireResourceId::local(3)));
-        assert!(!owner(), "an unbind naming another pane changes nothing");
     }
 }

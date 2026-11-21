@@ -19,24 +19,6 @@ pub(super) fn read_data(data: Option<&str>) -> Result<serde_json::Value, AgentSe
         .map_err(|err| AgentSessionError::RecordInvalid(format!("--data is not JSON: {err}")))
 }
 
-pub(super) fn print_document(document: &serde_json::Value) -> ExitCode {
-    match serde_json::to_string_pretty(document) {
-        Ok(rendered) => {
-            outln!("{rendered}");
-            ExitCode::SUCCESS
-        }
-        Err(err) => json_err::emit(
-            true,
-            &json_err::CliError::new(
-                json_err::codes::JSON_SERIALIZE,
-                format!("could not render the document: {err}"),
-                "report this: a document of strings and numbers cannot fail to serialize",
-            ),
-            EXIT_FAILURE,
-        ),
-    }
-}
-
 /// Map a library failure onto the closed error-code vocabulary and exit.
 pub(super) fn report_session_error(
     json: bool,

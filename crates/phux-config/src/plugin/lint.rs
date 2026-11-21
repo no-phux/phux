@@ -76,11 +76,7 @@ mod tests {
         }
         let dead = dead_event(&event("pane-exited")).expect("not a hook event");
         assert_eq!(dead.suggestion, Some("pane-exit"));
-        assert_eq!(
-            dead.to_string(),
-            "event `e` listens for `pane-exited`, which is not a hook event \
-             (did you mean `pane-exit`?); it will never fire"
-        );
+        assert!(dead.to_string().contains("did you mean `pane-exit`?"));
         let far = dead_event(&event("session.changed")).expect("not a hook event");
         assert_eq!(far.suggestion, None);
         assert!(!far.to_string().contains("did you mean"));

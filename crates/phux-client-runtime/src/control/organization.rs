@@ -1,6 +1,5 @@
 //! The organization replica: sessions, resources, arrangements, and the
-//! Intake as one authority reports them (`docs/organization.md`, CONTRACTS
-//! §04-§07).
+//! Intake as one authority reports them (`docs/organization.md`).
 //!
 //! [`OrganizationReplica`] is sans-IO. It is seeded from paged
 //! `GET_ORGANIZATION` replies (`OrganizationReplica::begin_seed`,

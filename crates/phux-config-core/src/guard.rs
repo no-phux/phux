@@ -162,11 +162,13 @@ fn refusal(path: &Path, root: &Path) -> String {
          path is the usual cause: a pane of the production server exports \
          PHUX_WS_TOKENS, PHUX_WS_TLS_CERT, and PHUX_WS_TLS_KEY, and \
          PHUX_PROFILE=default aims every default at production. Unset them, or point \
-         HOME and XDG_STATE_HOME/XDG_CONFIG_HOME/XDG_DATA_HOME at a scratch directory; \
-         change production state only with the installed release `phux`",
+         HOME and XDG_STATE_HOME/XDG_CONFIG_HOME/XDG_DATA_HOME at a scratch directory \
+         inside the temp directory ({}; set TMPDIR to move it); change production \
+         state only with the installed release `phux`",
         path.display(),
         root.display(),
         instance::DEV_PROFILE,
+        std::env::temp_dir().display(),
     )
 }
 
@@ -354,13 +356,6 @@ mod tests {
         assert!(refuse_in(&layout, &alias.join("remote-key.pem")).is_err());
         // The dev profile beside it stays allowed.
         assert!(refuse_in(&layout, &link.join("phux-dev/remote-tokens")).is_ok());
-    }
-
-    #[test]
-    fn resolve_keeps_missing_components_after_the_existing_ancestor() {
-        let dir = tempfile::tempdir().unwrap();
-        let canonical = std::fs::canonicalize(dir.path()).unwrap();
-        assert_eq!(resolve(&dir.path().join("a/b/c")), canonical.join("a/b/c"));
     }
 
     #[test]

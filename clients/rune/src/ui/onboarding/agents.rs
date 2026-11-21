@@ -180,7 +180,7 @@ pub(super) fn agents(desk: &Desk, t: &Tokens) -> El {
 
 /// The sheet over the Agents step: each permission, why, and its pane.
 /// It is the OWN sheet's look (`layer.raised`, `radius.lg`, the overlay
-/// tier, the one scrim, the §1.8 entry) in its own composition: the window
+/// tier, the one scrim, the entry) in its own composition: the window
 /// docks System Settings beside this panel, so the panel reports its
 /// layout, which `Sheet::build` has no hook for.
 pub(super) fn grant_sheet(desk: &Desk, t: &Tokens) -> El {

@@ -60,7 +60,7 @@ async fn apply_input_on_the_input_lane_is_guarded() {
         };
 
         let refused = paired(&["observe@global"]);
-        let lane = crate::runtime::test_support::start_input_lane(&refused.state).unwrap();
+        let lane = crate::runtime::test_support::spawn_input_lane(refused.state.clone()).unwrap();
         let outcome = exchange(
             &refused.state,
             script(&[hello("scope-matrix"), apply(refused.alpha.clone())]),
@@ -76,7 +76,7 @@ async fn apply_input_on_the_input_lane_is_guarded() {
         drop(lane);
 
         let admitted = paired(&["input@global"]);
-        let lane = crate::runtime::test_support::start_input_lane(&admitted.state).unwrap();
+        let lane = crate::runtime::test_support::spawn_input_lane(admitted.state.clone()).unwrap();
         let outcome = exchange(
             &admitted.state,
             script(&[hello("scope-matrix"), apply(admitted.alpha.clone())]),

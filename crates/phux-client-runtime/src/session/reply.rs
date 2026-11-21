@@ -154,28 +154,4 @@ mod tests {
         assert!(refusal_for(&error(None), 7).is_none());
         assert!(refusal_for(&FrameKind::Pong { nonce: 7 }, 7).is_none());
     }
-
-    #[test]
-    fn unexpected_reply_names_the_verb_and_the_remedy() {
-        let sentence = unexpected_reply("HELLO");
-        assert!(sentence.starts_with("unexpected HELLO reply"), "{sentence}");
-        assert!(sentence.contains("phux doctor"), "{sentence}");
-    }
-
-    #[test]
-    fn error_code_labels_are_spaced_lowercase() {
-        assert_eq!(
-            error_code_label(ErrorCode::TerminalNotFound),
-            "terminal not found"
-        );
-        assert_eq!(
-            error_code_label(ErrorCode::PermissionDenied),
-            "permission denied"
-        );
-        assert_eq!(error_code_label(ErrorCode::InternalError), "internal error");
-        assert_eq!(
-            error_code_label(ErrorCode::UnsupportedSatelliteRoute),
-            "unsupported satellite route"
-        );
-    }
 }

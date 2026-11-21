@@ -1,33 +1,36 @@
 //! [`TerminalApp`]: the Terminal facet's commands and stream bootstrap.
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the split command modules share the parent command namespace"
-)]
 
 use futures_util::FutureExt as _;
 use futures_util::future::LocalBoxFuture;
-use phux_protocol::ids::{OperationId, ResourceKey, Revision};
-use phux_protocol::wire::frame::SpawnError;
+use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode, FrameKind};
 use phux_terminal_api::actor::TerminalResource as _;
 
-use super::*;
-use crate::resource::ResourceKind;
-use crate::runtime::apps::{
-    FrameAdmission, InteractiveApp, KindResume, NO_TERMINAL_PROFILE, ResourceApp, ResourceFrame,
-    ResourceLaunch, ResourceSpawn, RunningLane, SessionSeed, StreamBootstrap, UpgradeCut,
+use crate::runtime::apps::terminal::commands::agent_reports::{
+    handle_report_agent_state, handle_report_asked,
 };
+use crate::runtime::apps::terminal::commands::attach_resource::AttachResourceSession;
+use crate::runtime::apps::terminal::commands::input_lease::{
+    handle_acquire_input, handle_release_input,
+};
+use crate::runtime::apps::terminal::commands::input_route::handle_route_input;
+use crate::runtime::apps::terminal::commands::screen::{
+    handle_get_screen, handle_get_terminal_state,
+};
+use crate::runtime::apps::terminal::commands::signal::handle_signal_terminal;
+use crate::runtime::apps::{
+    FrameAdmission, KindResume, NO_TERMINAL_PROFILE, ResourceApp, ResourceFrame, ResourceSpawn,
+    StreamBootstrap, UpgradeCut,
+};
+use crate::runtime::commands::{AttachResourceFailure, CommandContext};
 use crate::runtime::connections::dispatch::FrameFlow;
 use crate::runtime::operation_dedupe::OperationClaim;
+use crate::state::SharedState;
 
-/// Serves [`ResourceKind::Terminal`].
+/// Serves [`ResourceKind::Terminal`](crate::resource::ResourceKind::Terminal).
 #[derive(Debug)]
 pub(crate) struct TerminalApp;
 
 impl ResourceApp for TerminalApp {
-    fn interactive(&self) -> Option<&'static dyn InteractiveApp> {
-        Some(&Self)
-    }
-
     fn stage_session<'a>(
         &'a self,
         capture: crate::runtime::session_attach::SessionCapture<'a>,
@@ -36,14 +39,6 @@ impl ResourceApp for TerminalApp {
     ) -> LocalBoxFuture<'a, Result<(), crate::runtime::session_attach::staging::CaptureFailure>>
     {
         super::super::attach::stage_session(capture, staging, pane).boxed_local()
-    }
-
-    fn resumes_from_cursor(&self) -> bool {
-        false
-    }
-
-    fn check_takeover(&self) -> Result<(), crate::resource::WrongResourceKind> {
-        Ok(())
     }
 
     fn command<'a>(
@@ -93,236 +88,6 @@ impl ResourceApp for TerminalApp {
     fn resume(&self, state: &SharedState) -> Box<dyn KindResume> {
         super::super::upgrade::resume(state)
     }
-
-    fn resumed(&self, _state: &SharedState) {
-        // Terminals come back whole from the blob: nothing waits on a resume.
-    }
-
-    fn resource_exited<'a>(
-        &'a self,
-        _state: &'a SharedState,
-        _resource: phux_core::ids::ResourceId,
-    ) -> LocalBoxFuture<'a, ()> {
-        // The host's pane-exit path retires a Terminal itself.
-        Box::pin(std::future::ready(()))
-    }
-
-    fn claim_relaunch(
-        &self,
-        _ctx: &CommandContext,
-        _operation: OperationId,
-        _resource: &ResourceKey,
-        _expected: Revision,
-    ) -> Option<CommandResult> {
-        // A Terminal relaunch is the organization path's.
-        None
-    }
-
-    fn command_refused(
-        &self,
-        _s: &crate::state::ServerState,
-        _client: ClientId,
-        _command: &Command,
-        _result: &CommandResult,
-    ) {
-    }
-}
-
-impl InteractiveApp for TerminalApp {
-    fn supports_organization_launch(&self) -> bool {
-        true
-    }
-
-    fn launch(&self, launch: ResourceLaunch<'_>) -> Result<(), String> {
-        super::super::launch::execute(launch)
-    }
-
-    fn refresh_for_attach<'a>(&'a self, state: &'a SharedState) -> LocalBoxFuture<'a, ()> {
-        super::super::attach::refresh_registry_cwds(state).boxed_local()
-    }
-
-    fn prepare_attach<'a>(
-        &'a self,
-        attach: crate::runtime::session_attach::SessionAttach<'a>,
-        panes: &'a [crate::state::AttachSnapshotPane],
-    ) -> LocalBoxFuture<'a, ()> {
-        async move {
-            if attach.same_session {
-                let client = crate::runtime::wire_client(attach.client_id);
-                super::super::attach::detach_prior_state_sync_consumers(
-                    panes,
-                    client,
-                    attach.client_caps,
-                )
-                .await;
-            }
-            let colors = attach.client_caps.default_colors;
-            super::super::attach::apply_client_default_colors(panes, colors).await;
-        }
-        .boxed_local()
-    }
-
-    fn attach_viewport(
-        &self,
-        s: &mut crate::state::ServerState,
-        panes: &[crate::state::AttachSnapshotPane],
-        viewport: phux_protocol::wire::frame::ViewportInfo,
-    ) {
-        super::super::attach::apply_panes_viewport(s, panes, viewport);
-    }
-
-    fn after_attach<'a>(
-        &'a self,
-        attach: crate::runtime::session_attach::SessionAttach<'a>,
-        panes: &'a [crate::state::AttachSnapshotPane],
-        role: phux_protocol::wire::frame::RolePolicy,
-    ) -> LocalBoxFuture<'a, ()> {
-        let (state, client, was_subscribed) = (attach.state, attach.client_id, attach.same_session);
-        super::super::attach::apply_session_role(state, client, panes, role, was_subscribed)
-            .boxed_local()
-    }
-
-    fn abort_attach<'a>(
-        &'a self,
-        client: ClientId,
-        handles: &'a [ResourceHandle],
-    ) -> LocalBoxFuture<'a, ()> {
-        super::super::attach::release_aborted_consumers(client, handles).boxed_local()
-    }
-
-    fn defers_stream_bootstrap(&self) -> bool {
-        true
-    }
-
-    fn metrics(&self, state: &SharedState) -> Vec<&'static [phux_perf::Metric]> {
-        // The injected engine's rows; the app keeps none of its own.
-        state
-            .terminal_engine()
-            .map(|engine| engine.metrics())
-            .into_iter()
-            .collect()
-    }
-
-    fn release_consumer(&self, handle: &ResourceHandle, client: ClientId) {
-        release_terminal_consumer(handle, client);
-    }
-
-    fn fence_consumer<'a>(
-        &'a self,
-        handle: &'a ResourceHandle,
-        client: ClientId,
-    ) -> LocalBoxFuture<'a, ()> {
-        fence_terminal_consumer(handle, client).boxed_local()
-    }
-
-    fn exit_retained(
-        &self,
-        s: &mut crate::state::ServerState,
-        wire: &phux_protocol::ids::ResourceId,
-    ) -> Option<crate::hooks::HookEvent> {
-        super::super::agent_state::retract_on_retained_exit(s, wire)
-    }
-
-    fn start(&self, state: &SharedState) -> std::io::Result<Option<RunningLane>> {
-        let lane = super::super::input_lane::start(state)?;
-        // Off the runtime thread: a large upload directory is a walk.
-        let upload_env = state.with(|s| s.config().server_env.clone());
-        drop(tokio::task::spawn_blocking(move || {
-            super::super::upload::sweep_stale_partials_at_startup(&upload_env);
-        }));
-        Ok(Some(lane))
-    }
-
-    fn bootstrap_capabilities(
-        &self,
-        state: &SharedState,
-    ) -> Option<phux_protocol::caps::BootstrapCapabilities> {
-        Some(super::super::bootstrap_capabilities(state))
-    }
-
-    fn seed_session<'a>(
-        &'a self,
-        seed: SessionSeed<'a>,
-    ) -> Result<LocalBoxFuture<'a, Option<String>>, SessionSeed<'a>> {
-        // The one kind that runs without a producer seeds a session.
-        Ok(super::super::attach::resolve_create_if_missing(seed).boxed_local())
-    }
-
-    fn viewport_resize(&self, state: &SharedState, client: ClientId, viewport: &ViewportInfo) {
-        handle_viewport_resize(state, client, viewport);
-    }
-
-    fn client_activity(&self, state: &SharedState, client: ClientId) {
-        handle_client_activity(state, client);
-    }
-
-    fn keep_standing(
-        &self,
-        state: &SharedState,
-        source: &crate::runtime::MirrorSource,
-        root_token: &CancellationToken,
-    ) -> bool {
-        super::super::standing::install(state, source, root_token);
-        true
-    }
-}
-
-/// The Terminal facet of a handle `app_for` routed here. A miss means the
-/// handle's kind and facet disagree, which leaks a consumer: say so.
-fn routed_terminal(handle: &ResourceHandle) -> Option<&phux_terminal_api::actor::TerminalHandle> {
-    handle
-        .terminal()
-        .inspect_err(|error| tracing::error!(%error, "consumer teardown skipped"))
-        .ok()
-}
-
-/// Free a client's native cut and consumer entry without blocking: a full
-/// mailbox is reaped by `tick_emit` when the client's mailbox closes.
-fn release_terminal_consumer(handle: &ResourceHandle, client_id: ClientId) {
-    let Some(terminal) = routed_terminal(handle) else {
-        return;
-    };
-    let _ = terminal
-        .native_release
-        .try_send(phux_terminal_api::actor::NativeReleaseRequest { owner: client_id.0 });
-    let (reply_tx, _reply_rx) = oneshot::channel();
-    match terminal
-        .consumer_detach
-        .try_send(phux_terminal_api::actor::ConsumerDetachRequest {
-            client_id: crate::runtime::wire_client(client_id),
-            reply: reply_tx,
-        }) {
-        Ok(()) => {}
-        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-            trace!(
-                ?client_id,
-                "consumer_detach mailbox full; entry reaped by tick_emit when its mailbox closes",
-            );
-        }
-        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-            trace!(
-                ?client_id,
-                "consumer_detach: pane actor gone; nothing to free"
-            );
-        }
-    }
-}
-
-/// Drop a consumer and wait for the actor's reply, so nothing it emitted can
-/// follow what the caller queues next.
-async fn fence_terminal_consumer(handle: &ResourceHandle, client_id: ClientId) {
-    let Some(terminal) = routed_terminal(handle) else {
-        return;
-    };
-    let (reply_tx, reply_rx) = oneshot::channel();
-    let _ = terminal
-        .consumer_detach
-        .send(phux_terminal_api::actor::ConsumerDetachRequest {
-            client_id: crate::runtime::wire_client(client_id),
-            reply: reply_tx,
-        })
-        .await;
-    let _ = reply_rx.await;
 }
 
 /// One flat arm per Terminal facet command keeps the catalog auditable.
@@ -340,10 +105,7 @@ async fn serve(
         state, client_id, ..
     } = ctx;
     let client_id = *client_id;
-    let input_lane = ctx
-        .input_lane
-        .as_ref()
-        .and_then(super::super::input_lane::handle_of);
+    let input_lane = ctx.input_lane.as_ref();
 
     match command {
         Command::Transcribe {
@@ -460,7 +222,11 @@ async fn serve(
         Command::Checkout {
             terminal_id,
             request,
-        } => crate::runtime::apps::terminal::checkout::handle(state, &terminal_id, request).await,
+            contract,
+        } => {
+            crate::runtime::apps::terminal::checkout::handle(state, &terminal_id, request, contract)
+                .await
+        }
         Command::ReportAsked {
             terminal_id,
             id,

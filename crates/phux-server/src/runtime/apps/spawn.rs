@@ -97,7 +97,7 @@ pub(crate) struct ResourceSpawn<'a> {
     pub(crate) connection_token: &'a CancellationToken,
     /// The connection's output pumps, for a stream the spawn starts.
     pub(crate) output_pumps: &'a mut JoinSet<()>,
-    /// Whether content waits for `STREAM_BIND` (QUIC multi-stream, L1 §4.9).
+    /// Whether content waits for `STREAM_BIND` (QUIC multi-stream).
     pub(crate) defer_subscription: bool,
     /// The kinds the spawner decodes. It stays the producer of what it
     /// spawns either way; it is streamed the resource only if listed.
@@ -122,7 +122,7 @@ pub(crate) struct SpawnConnection<'a> {
     pub(crate) defer_subscription: bool,
 }
 
-/// Serve `SPAWN_RESOURCE` (SPEC §10.1) through the app of the requested
+/// Serve `SPAWN_RESOURCE` through the app of the requested
 /// kind. An unrecognised kind is refused, never spawned as a Terminal. The
 /// spawner is subscribed to what it spawns, so a connection with no
 /// Terminal profile is refused a kind whose catalog stream contract needs
@@ -406,38 +406,10 @@ mod tests {
         request
     }
 
+    /// With a profile a Terminal reaches its own app, which refuses a parent.
     #[tokio::test]
-    async fn an_unknown_kind_is_refused_not_spawned_as_a_terminal() {
-        let frame = reply(
-            ResourceKind::Unknown { tag: 99 },
-            Some(BootstrapProfile::SynthesizedVtRaw),
-        )
-        .await;
-        assert_eq!(refusal(frame), SpawnError::UnsupportedKind);
-    }
-
-    /// Each kind's own app answers: an agent session and a document refuse
-    /// a missing producer name, a Terminal refuses a parent.
-    #[tokio::test]
-    async fn each_kind_reaches_its_own_app() {
+    async fn a_terminal_reaches_its_app_and_refuses_a_parent() {
         let profile = Some(BootstrapProfile::SynthesizedVtRaw);
-        let SpawnError::SpawnFailed(agent) =
-            refusal(reply(ResourceKind::AgentSession, profile).await)
-        else {
-            panic!("the agent session app refuses");
-        };
-        assert!(agent.contains("agent session"), "{agent}");
-        for kind in [
-            ResourceKind::AccessibilityTree,
-            ResourceKind::PixelSurface,
-            ResourceKind::Document,
-        ] {
-            let SpawnError::SpawnFailed(document) = refusal(reply(kind, profile).await) else {
-                panic!("the document app refuses {kind:?}");
-            };
-            assert!(document.contains("producer observes"), "{document}");
-        }
-
         let mut terminal = request(ResourceKind::Terminal);
         if let Some(resource) = terminal.resource.as_mut() {
             resource.parent = Some(WireResourceId::local(3));

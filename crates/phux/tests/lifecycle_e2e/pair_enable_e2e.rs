@@ -23,6 +23,11 @@ const UNSET_CONFIG: &str = "\
 width = 28
 ";
 
+/// A private address for the client to see, so the unset-mode question and
+/// refusals run on a CI host with no tailnet. Nothing binds it: the mode
+/// stays unset in these tests.
+const OVERLAY: (&str, &str) = ("PHUX_OVERLAY_ADDRS", "100.64.0.1");
+
 const PAIRED_CONFIG: &str = "\
 # keep-me
 [sidebar]
@@ -41,16 +46,13 @@ fn pair_without_a_terminal_names_enable_and_leaves_the_config() {
     let (_config, path, server) = unset_server("pairno");
 
     for args in [vec!["pair"], vec!["pair", "--qr"]] {
-        let (code, stdout, stderr) = server.run(&args);
+        let (code, stdout, stderr) =
+            common::Out::of(server.cmd(&args).env(OVERLAY.0, OVERLAY.1)).into_parts();
         assert_ne!(code, 0, "{args:?} should refuse: {stderr}");
         assert!(stdout.is_empty(), "{args:?} minted nothing: {stdout}");
         assert!(
             !stderr.contains("phones need paired mode"),
             "{args:?} prompted: {stderr}"
-        );
-        assert!(
-            !stderr.contains("PHUX_WS_ADDR") && !stderr.contains("overlay network"),
-            "{args:?} still prints the old refusal: {stderr}"
         );
         let errors: Vec<_> = stderr
             .lines()
@@ -91,36 +93,6 @@ fn pair_json_on_a_terminal_names_enable_and_leaves_the_config() {
     assert_config_unchanged(&path);
 }
 
-/// A terminal asks once. `n` and an empty answer leave the config alone
-/// and print the same one-line refusal. This is `phux pair --qr`, the
-/// first-phone command.
-#[test]
-#[ignore = "spawns a real phux server and a pty; run via `just e2e`."]
-fn pair_on_a_terminal_declines_without_changing_the_config() {
-    let (_config, path, server) = unset_server("pairask");
-
-    for reply in ["n\n", "\n"] {
-        let (code, transcript) = drive_pty(&server, &["--qr"], "phones need paired mode", reply);
-        assert_ne!(
-            code,
-            Some(0),
-            "reply {reply:?} should refuse:\n{transcript}"
-        );
-        assert!(
-            transcript.contains(
-                "phones need paired mode: the server will listen on your tailnet for enrolled devices only. turn it on and restart the server? (panes are kept) [y/N] "
-            ),
-            "{transcript}"
-        );
-        assert!(
-            transcript.contains("phux pair --enable")
-                && transcript.contains("[policy] mode = \"paired\""),
-            "{transcript}"
-        );
-        assert_config_unchanged(&path);
-    }
-}
-
 /// `--enable` with no terminal writes `paired`, restarts the server, and
 /// mints. The seed pane is still alive and the comment in the config stays.
 #[test]
@@ -132,21 +104,6 @@ fn pair_enable_writes_paired_mode_and_mints() {
     assert!(
         stdout.contains("Token written to"),
         "the mint should continue after the restart:\n{stdout}"
-    );
-    restarted.assert_paired_and_bound();
-}
-
-/// Answering yes is the same path as `--enable`: the config gains
-/// `mode = "paired"`, the server restarts, and the mint continues.
-#[test]
-#[ignore = "spawns a real phux server, a pty, and re-execs the server; run via `just e2e`."]
-fn pair_on_a_terminal_enables_paired_mode_and_mints() {
-    let restarted = server_with_unbound_listener("pairyes");
-    let (code, transcript) = drive_pty(&restarted.server, &[], "phones need paired mode", "y\n");
-    assert_eq!(code, Some(0), "{transcript}");
-    assert!(
-        transcript.contains("Token written to"),
-        "the mint should continue after yes:\n{transcript}"
     );
     restarted.assert_paired_and_bound();
 }
@@ -263,6 +220,7 @@ fn drive_pty(
     let mut client = common::PtyAttach::start_client("pair", &pair_args, (120, 40), |_, cmd| {
         cmd.env("XDG_STATE_HOME", &server.xdg.state);
         cmd.env("XDG_CONFIG_HOME", &server.xdg.config);
+        cmd.env(OVERLAY.0, OVERLAY.1);
     });
     let deadline = Instant::now() + Duration::from_secs(20);
     while !client.painted().contains(needle) {

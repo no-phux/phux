@@ -5,8 +5,8 @@ use std::process::ExitCode;
 
 use phux_config::keybind::{BindingDiagnostic, Resolver, binding_layer};
 use phux_config::loader as config_loader;
+use phux_config::plugin::actions as plugin_actions;
 use phux_config::{Action, ConfigProvenance, KeybindingsCfg, LayerSource};
-use phux_tui::attach::plugin_actions;
 
 /// One effective binding, as printed.
 struct Row {
@@ -43,11 +43,7 @@ pub(super) fn run_config_keys(filter: Option<&str>, json: bool) -> ExitCode {
     };
 
     // Plugin keys merge exactly as the terminal UI merges them.
-    let manifests = if cfg.plugins.is_empty() {
-        Vec::new()
-    } else {
-        phux_config::plugin::load_enabled_manifests(&path, &cfg.plugins)
-    };
+    let manifests = phux_config::plugin::load_enabled_manifests(&path, &cfg.plugins);
     let mut keybindings = cfg.keybindings;
     plugin_actions::merge_plugin_bindings(
         &mut keybindings,
@@ -310,19 +306,5 @@ mod tests {
             !rows.iter().any(|r| r.action == "plugin-action"),
             "a key you unbound stays unbound"
         );
-    }
-
-    #[test]
-    fn your_plugin_action_binding_names_your_file() {
-        let rows = rows_for(
-            "[keybindings.prefix-table]\n\
-             S = { action = \"plugin-action\", plugin = \"example.tools\", id = \"summarize\" }\n",
-        );
-        let row = rows.iter().find(|r| r.keys == "C-a S").expect("bound");
-        assert_eq!(
-            (row.action.as_str(), row.source.as_str()),
-            ("plugin-action", "config.toml")
-        );
-        assert_eq!(render_args(&row.args), "id=summarize plugin=example.tools");
     }
 }

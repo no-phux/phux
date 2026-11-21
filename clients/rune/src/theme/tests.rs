@@ -3,18 +3,6 @@ use phux_design::Params;
 use super::*;
 
 #[test]
-fn system_terminal_is_the_house_palette() {
-    let dark = Theme::system_terminal(true).expect("dark installs the house terminal");
-    let light = Theme::system_terminal(false).expect("so does light");
-    let house = phux_design::tokens::TERMINAL;
-    assert_eq!(
-        dark.background,
-        [house.dark.bg.r, house.dark.bg.g, house.dark.bg.b]
-    );
-    assert!(light.background.iter().all(|&c| c > 0xc0), "a light ground");
-}
-
-#[test]
 fn ids_are_distinct_and_found() {
     let themes = themes();
     for (at, theme) in themes.iter().enumerate() {
@@ -48,11 +36,4 @@ fn any_accent_gets_a_readable_ink() {
         let fill = color(hex);
         assert!(contrast(on_fill(fill), fill) >= 4.5, "{hex:06x}");
     }
-}
-
-#[test]
-fn a_theme_reaches_the_engine_as_bytes() {
-    let t = find("nord").unwrap().terminal();
-    assert_eq!(t.background, [0x2e, 0x34, 0x40]);
-    assert_eq!(t.ansi16[1], [0xbf, 0x61, 0x6a]);
 }

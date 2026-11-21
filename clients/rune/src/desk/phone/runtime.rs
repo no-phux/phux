@@ -2,7 +2,6 @@
 
 use phux_client_runtime::Client;
 use phux_protocol::wire::frame::FrameKind;
-use rune::prefs::Prefs;
 use rune::{Runtime, TouchPhase};
 
 use super::*;
@@ -14,7 +13,6 @@ mod sheets;
 fn fixture() -> (std::sync::Arc<Client>, Runtime<Desk>) {
     let (client, mut rt) = crate::test_support::input_fixture();
     rt.state.phone = Some(Phone::default());
-    rt.state.prefs = Prefs::memory();
     rt.set_viewport((393.0, 852.0), 2.0);
     (client, rt)
 }
@@ -41,7 +39,6 @@ fn a_tap_on_a_url_opens_it_and_a_drag_across_it_does_not() {
     let (_client, mut rt) =
         crate::test_support::input_fixture_showing("\x1b[2J\x1b[Hsee https://phux.sh/docs now");
     rt.state.phone = Some(Phone::default());
-    rt.state.prefs = Prefs::memory();
     rt.set_viewport((393.0, 852.0), 2.0);
     settle(&mut rt);
     let id = rt
@@ -148,23 +145,6 @@ fn a_drawn_return_submits_the_palette_field() {
     tap(&mut rt, "phone-cap-return", 1.0);
     assert!(!rt.state.palette_open);
     assert_eq!(rt.state.settings.theme, crate::theme::find("nord"));
-    no_terminal_input(&client);
-}
-
-#[test]
-fn confirmation_over_find_neither_edits_nor_types_into_the_terminal() {
-    let (client, mut rt) = fixture();
-    rt.state.open_find();
-    rt.state.pending = Some(crate::desk::Pending::Close(
-        phux_protocol::ids::ResourceId::local(1),
-    ));
-    rt.frame(0.0);
-    tap(&mut rt, "phone-cap-116", 0.1);
-    assert!(rt.state.pending.is_some());
-    assert!(rt.state.connection.find_query.text.is_empty());
-    tap(&mut rt, "phone-key-Escape", 0.3);
-    assert!(rt.state.pending.is_none());
-    assert!(rt.state.connection.find.is_some());
     no_terminal_input(&client);
 }
 

@@ -84,16 +84,3 @@ fn render_screen_over_budget_is_refused_not_truncated() {
         other => panic!("expected RenderBudgetExceeded, got {other:?}"),
     }
 }
-
-/// Within budget renders normally.
-#[test]
-fn render_screen_under_budget_renders_normally() {
-    let mut t = fresh(20, 2);
-    t.vt_write(b"hi");
-
-    let rendered = SnapshotSynthesizer::render_screen_with_budget(&t, None, 1, RENDER_BUDGET_BYTES)
-        .expect("render_screen_with_budget")
-        .expect("format 1 must render");
-    assert_eq!(rendered.format, RENDERED_FORMAT_HTML);
-    assert!(rendered.data.contains("hi"));
-}

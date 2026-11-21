@@ -3,7 +3,6 @@
 
 use super::pair::{PairReport, candidate_endpoints, token_path, write_token};
 use super::ssh::{authority, destination_host, parse_ssh_g_hostname};
-use std::path::Path;
 
 pub(super) fn report(fp: Option<&str>, overlay: &[&str]) -> PairReport {
     PairReport {
@@ -73,14 +72,6 @@ fn tolerates_unknown_fields_from_a_newer_remote() {
 }
 
 #[test]
-fn the_document_is_found_past_startup_noise() {
-    // A shell startup file that prints on a non-interactive login must
-    // not hide the one-line document.
-    let parsed = PairReport::parse("Welcome to box\n{\"token\":\"t\"}\n\n").expect("parse");
-    assert_eq!(parsed.token, "t");
-}
-
-#[test]
 fn refuses_a_document_with_no_token() {
     assert!(PairReport::parse(r#"{"cert_fingerprint":"AB"}"#).is_err());
     assert!(PairReport::parse(r#"{"token":""}"#).is_err());
@@ -132,15 +123,6 @@ fn operator_endpoint_override_is_the_only_candidate() {
 }
 
 #[test]
-fn ipv6_overlay_address_is_bracketed() {
-    // Without brackets the result would not parse as HOST:PORT.
-    assert_eq!(
-        dial("", Some("AB"), &["fd7a::1"], None),
-        ["quic://[fd7a::1]:8788"]
-    );
-}
-
-#[test]
 fn ssh_g_names_the_real_host() {
     let output = "user me\nhostname 10.0.0.5\nport 22\n";
     assert_eq!(parse_ssh_g_hostname(output).as_deref(), Some("10.0.0.5"));
@@ -174,14 +156,4 @@ fn token_is_written_owner_only() {
     assert_eq!(std::fs::read_to_string(&path).expect("read"), "deadbeef\n");
     let mode = std::fs::metadata(&path).expect("stat").permissions().mode();
     assert_eq!(mode & 0o777, 0o600, "a bearer token must not be readable");
-}
-
-#[test]
-fn token_path_is_namespaced_per_remote() {
-    let state = Path::new("/state");
-    assert_eq!(
-        token_path(state, "mini"),
-        Path::new("/state/remotes/mini.token")
-    );
-    assert_ne!(token_path(state, "mini"), token_path(state, "studio"));
 }

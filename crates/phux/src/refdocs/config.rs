@@ -140,6 +140,12 @@ const SECTIONS: &[Section] = &[
                   sidebar: `color` is one of the host palette's ids.",
     },
     Section {
+        key: "icons",
+        header: "[[icons]]",
+        summary: "An icon drawn before a pane's name, by foreground \
+                  `process` or `cwd` glob; a program-set icon comes first.",
+    },
+    Section {
         key: "theme",
         header: "[theme]",
         summary: "Free-form color slots (`slot = \"color\"`) consumed by \

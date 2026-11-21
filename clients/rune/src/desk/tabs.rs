@@ -40,6 +40,10 @@ pub struct Tabs {
     pub list: Vec<Tab>,
     /// The pane each tab last had the keyboard in.
     focus: HashMap<[u8; 16], ResourceId>,
+    /// The terminal the keyboard left last (`last-pane`).
+    pub last_pane: Option<ResourceId>,
+    /// The tab the keyboard left last (`last-tab`).
+    pub left_tab: Option<[u8; 16]>,
     pub renaming: Option<Renaming>,
     pub rename_field: TextEdit,
     /// The title bar's room for the strip, in points, once it is laid out:
@@ -182,7 +186,7 @@ impl Desk {
             cwd,
             env: None,
             session_id: client.selected_session(),
-            initial_size: None,
+            initial_size: self.tab_spawn_size(),
         });
         self.connection
             .pending_splits
@@ -256,8 +260,8 @@ impl Desk {
         }
         if terminals.iter().any(|id| self.asks_to_close(id)) {
             self.pending = Some(Pending::CloseTab(terminals));
-        } else if let Some(client) = &self.connection.client {
-            let _ = client.close_terminals(terminals);
+        } else {
+            self.request_terminal_close(terminals);
         }
     }
 
@@ -328,9 +332,30 @@ impl Desk {
         if self.is_document(terminal) {
             return self.hide_documents(std::slice::from_ref(terminal));
         }
-        if let Some(client) = &self.connection.client {
-            let _ = client.close_terminals(vec![terminal.clone()]);
+        self.request_terminal_close(vec![terminal.clone()]);
+    }
+
+    pub(super) fn request_terminal_close(&mut self, ids: Vec<ResourceId>) -> bool {
+        if ids.is_empty() {
+            return true;
         }
+        let request = self
+            .connection
+            .client
+            .as_ref()
+            .and_then(|client| client.close_terminals(ids));
+        self.report_close_submission(request)
+    }
+
+    pub(super) fn report_close_submission(&mut self, request: Option<u32>) -> bool {
+        if request.is_some() {
+            return true;
+        }
+        self.say(
+            NoticeKind::Error,
+            "Close unavailable on this connection. Check the pane before trying again.",
+        );
+        false
     }
 
     /// Lock the active tab, or unlock it if it is locked.
@@ -339,16 +364,7 @@ impl Desk {
             return;
         };
         let (group, locked) = (tab.id, !tab.locked);
-        let session = self.connection.client.as_ref().and_then(|client| {
-            let id = client.selected_session()?;
-            self.connection
-                .topology
-                .as_ref()?
-                .sessions
-                .iter()
-                .find(|s| s.id == id)?
-                .key
-        });
+        let session = self.selected_key();
         let (Some(client), Some(session)) = (&self.connection.client, session) else {
             return;
         };
@@ -358,20 +374,7 @@ impl Desk {
     }
 
     pub fn close_session(&mut self) {
-        let Some(id) = self
-            .connection
-            .client
-            .as_ref()
-            .and_then(|c| c.selected_session())
-        else {
-            return;
-        };
-        let key = self
-            .connection
-            .topology
-            .as_ref()
-            .and_then(|t| t.sessions.iter().find(|s| s.id == id)?.key);
-        if let Some(key) = key {
+        if let Some(key) = self.selected_key() {
             self.close_session_key(key);
         }
     }
@@ -398,16 +401,8 @@ impl Desk {
     }
 
     pub fn rename_selected_session(&mut self) {
-        let Some(id) = self
-            .connection
-            .client
-            .as_ref()
-            .and_then(|c| c.selected_session())
-        else {
-            return;
-        };
-        let session = self.connection.topology.as_ref().and_then(|t| {
-            let session = t.sessions.iter().find(|s| s.id == id)?;
+        let session = self.connection.client.as_ref().and_then(|client| {
+            let session = self.selected_entry(client)?;
             Some((session.key?, session.name.clone()))
         });
         if let Some((key, name)) = session {

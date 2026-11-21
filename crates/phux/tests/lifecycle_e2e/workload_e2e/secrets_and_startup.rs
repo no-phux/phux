@@ -125,7 +125,7 @@ fn workload_mode_starts_with_webtransport_and_reports_it_bound() {
 }
 
 /// A named workload CA or registry location with no `[policy] mode` is a
-/// startup error, not a silent owner grant (workload-auth §8): the operator
+/// startup error, not a silent owner grant: the operator
 /// pointed at workload authority without choosing to enforce it.
 #[test]
 #[ignore = "runs a real server start; runs in the e2e lane"]
@@ -139,27 +139,6 @@ fn an_unset_mode_beside_a_named_workload_registry_refuses_to_start() {
         &["--exit-after-idle", "5"],
         &[("PHUX_WORKLOAD_KEYS", registry)],
         &["[policy] mode", "PHUX_WORKLOAD_KEYS"],
-    );
-}
-
-/// No `[policy] mode` beside a remote listener is a startup error naming the
-/// remedy (ADR-0179): the transitional owner grant for remote consumers is
-/// gone, so nothing would authorize what the listener admits.
-#[test]
-#[ignore = "runs a real server start; runs in the e2e lane"]
-fn an_unset_mode_beside_a_remote_listener_refuses_to_start() {
-    let dir = TempDir::new().expect("tempdir");
-    prepare_dirs(dir.path());
-    assert_start_refused(
-        dir.path(),
-        &[
-            "--quic",
-            listeners::LOOPBACK_ANY_PORT,
-            "--exit-after-idle",
-            "5",
-        ],
-        &[],
-        &["[policy] mode", "paired"],
     );
 }
 

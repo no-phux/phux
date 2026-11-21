@@ -44,8 +44,7 @@ use facts::{ExitFact, exit_of, is_gap, is_spawn, observe, phase};
 /// Watch `server_socket` until the process exits. The socket is bound before
 /// this runs, and this thread does not open the store. A projector that
 /// stops or panics is logged and restarted with backoff.
-pub(crate) fn spawn(server_socket: Option<PathBuf>) {
-    let socket = server_socket.unwrap_or_else(default_server_socket);
+pub(crate) fn spawn(socket: PathBuf) {
     let _ = std::thread::Builder::new()
         .name("mission-project".to_owned())
         .spawn(move || supervise(&socket));
@@ -83,10 +82,7 @@ fn supervise(socket: &Path) {
 }
 
 fn drive(socket: PathBuf) {
-    let runtime = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
+    let runtime = match crate::commands::build_cli_runtime() {
         Ok(runtime) => runtime,
         Err(err) => {
             error!("mission projector runtime: {err}");
@@ -96,7 +92,7 @@ fn drive(socket: PathBuf) {
     runtime.block_on(watch_server(socket));
 }
 
-fn default_server_socket() -> PathBuf {
+pub(crate) fn default_server_socket() -> PathBuf {
     std::env::var_os("PHUX_SOCKET")
         .map_or_else(phux_config::socket::default_socket_path, PathBuf::from)
 }

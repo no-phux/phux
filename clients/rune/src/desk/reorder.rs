@@ -134,77 +134,69 @@ impl Desk {
 
     pub(super) fn drop_target(&self, held: Grab, point: [f32; 2]) -> Option<Grab> {
         // Tabs retain their strip's own reorder targets.
-        if matches!(held, Grab::Tab(_)) {
-            for tab in &self.connection.tabs.list {
-                let grab = Grab::Tab(tab.id);
-                if self
-                    .connection
-                    .reorder
-                    .rects
-                    .get(&grab)
-                    .is_some_and(|r| contains(*r, point))
-                {
-                    return Some(grab);
-                }
-            }
+        if matches!(held, Grab::Tab(_))
+            && let Some(tab) = self.tab_strip_target(point)
+        {
+            return Some(tab);
         }
         if let Grab::Resource(id, session) = held
             && let Some(pane) = self.slot_drop(id, session, point)
         {
             return Some(Grab::Pane(pane));
         }
-        if !self.sidebar_shown()
-            || !self
-                .connection
-                .reorder
-                .sidebar
-                .is_some_and(|r| contains(r, point))
-        {
+        self.sidebar_target(held, point)
+    }
+
+    /// Whether the remembered rectangle of `grab` holds `point`.
+    fn rect_hit(&self, grab: Grab, point: [f32; 2]) -> bool {
+        (self.connection.reorder.rects.get(&grab)).is_some_and(|r| contains(*r, point))
+    }
+
+    /// The strip tab under `point`.
+    fn tab_strip_target(&self, point: [f32; 2]) -> Option<Grab> {
+        (self.connection.tabs.list.iter())
+            .map(|tab| Grab::Tab(tab.id))
+            .find(|grab| self.rect_hit(*grab, point))
+    }
+
+    /// The sidebar session `held` would drop into at `point`. A resource row
+    /// is a target for its owning session, never a tab, and only rows and
+    /// sessions still listed count.
+    fn sidebar_target(&self, held: Grab, point: [f32; 2]) -> Option<Grab> {
+        let in_sidebar = self
+            .connection
+            .reorder
+            .sidebar
+            .is_some_and(|r| contains(r, point));
+        if !self.sidebar_shown() || !in_sidebar {
             return None;
         }
-        // A resource row is a target for its owning session, never a tab.
-        // Restrict remembered rectangles to resources/sessions still listed.
-        for session in self
-            .connection
-            .topology
-            .iter()
-            .flat_map(|topology| &topology.sessions)
-        {
+        // A tab cannot move into the session it is already in.
+        let selected =
+            (self.connection.client.as_ref()).and_then(|client| client.selected_session());
+        let sessions = self.connection.topology.iter().flat_map(|t| &t.sessions);
+        for session in sessions {
             if self.quick.is_none() && super::quick::hidden(&session.name) {
                 continue;
             }
-            if matches!(held, Grab::Tab(_))
-                && self
-                    .connection
-                    .client
-                    .as_ref()
-                    .and_then(|client| client.selected_session())
-                    == Some(session.id)
-            {
+            if matches!(held, Grab::Tab(_)) && selected == Some(session.id) {
                 continue;
             }
             let Some(key) = session.key else { continue };
             let grab = Grab::Session(key);
-            if self
-                .connection
-                .reorder
-                .rects
-                .get(&grab)
-                .is_some_and(|r| contains(*r, point))
-            {
+            if self.rect_hit(grab, point) {
                 return Some(grab);
             }
             if self.sidebar_collapsed.contains(&key) {
                 continue;
             }
-            for (row, rect) in &self.connection.reorder.rects {
-                if let Grab::Resource(id, owner) = *row
-                    && owner == key
-                    && self.resource_in_session(id, key, session.id)
+            let over_row = self.connection.reorder.rects.iter().any(|(row, rect)| {
+                matches!(*row, Grab::Resource(id, owner)
+                    if owner == key && self.resource_in_session(id, key, session.id))
                     && contains(*rect, point)
-                {
-                    return Some(grab);
-                }
+            });
+            if over_row {
+                return Some(grab);
             }
         }
         None
@@ -215,9 +207,7 @@ impl Desk {
     /// keeps slot tabs.
     fn slot_drop(&self, id: u32, session: SessionKey, point: [f32; 2]) -> Option<u32> {
         let client = self.connection.client.as_ref()?;
-        let selected = client.selected_session()?;
-        let topology = self.connection.topology.as_ref()?;
-        let shown = topology.sessions.iter().find(|s| s.id == selected)?;
+        let shown = self.selected_entry(client)?;
         if shown.key != Some(session) || !client.slot_tabs_supported() {
             return None;
         }

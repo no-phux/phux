@@ -6,7 +6,7 @@ use rune::{Env, Runtime};
 use crate::desk::Desk;
 
 fn palette(dark: bool) -> Runtime<Desk> {
-    let mut rt = Runtime::new(
+    let mut rt = crate::test_support::runtime(
         crate::test_support::window(),
         crate::ui::view,
         (1100.0, 720.0),

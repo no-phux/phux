@@ -15,7 +15,7 @@ if [[ -e "$out" || -L "$out" ]]; then
 fi
 # mkdir, without -p, also rejects concurrent claims of this exact output.
 mkdir "$out"
-mkdir "$out/logs" "$out/inbox" "$out/settings" "$out/navigation" "$out/resources"
+mkdir "$out/logs" "$out/inbox" "$out/settings" "$out/navigation" "$out/resources" "$out/prefs"
 cd "$repo/clients/rune"
 
 # Do not inherit a production server address or another run's export paths.
@@ -26,6 +26,7 @@ export RUNE_INBOX_SNAP="$out/inbox"
 export RUNE_SETTINGS_SNAP="$out/settings"
 export RUNE_NAVIGATION_SNAP="$out/navigation"
 export RUNE_RESOURCE_SNAP="$out/resources/mixed.png"
+export RUNE_PREFS_DIR="$out/prefs"
 
 render() {
     local filter="$1"
@@ -45,10 +46,13 @@ render phone_inbox_visual_review_frames
 render phone_acp_visual_review_frames
 render settings_native_render_frames
 render settings_size_visual_review_frames
+render settings_theme_visual_review_frames
 render mobile_appearance_and_real_theme_palette_render_accept_and_cancel
 render session_browser_renders_realistic_dark_light_and_search_states
 render retina_navigation_renders_in_native_safe_area_and_desktop_phone_viewports
 render phone_header_visual_review_frames
+render phone_connections_visual_review_frames
+render phone_connections_keyboard_visual_review_frames
 render phone_pane_motion_visual_review_frames
 render native_png_headless_renderer_smoke
 python3 -B "$scripts/visual_review.py" "$out" --repo "$repo" >"$out/logs/manifest.log" 2>&1 || {

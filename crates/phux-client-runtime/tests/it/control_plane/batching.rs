@@ -313,23 +313,9 @@ fn input_resumes_on_the_same_connection_after_a_killed_session() {
 fn a_batch_cannot_hide_a_fatal_error_behind_an_earlier_stale_generation() {
     let (mut plane, attach_id) = negotiated();
     attach(&mut plane, attach_id, b"ready");
+    let batch = [wire_output(2, 1, b"stale"), wire_output(1, 2, b"gap")];
     let error = plane
-        .apply_engine_events(vec![
-            EngineEvent::Output {
-                terminal_id: terminal(),
-                stream_id: StreamId::new(2).expect("stale stream"),
-                bootstrap_id: BootstrapId::new(1).expect("bootstrap"),
-                seq: 1,
-                bytes: b"stale".to_vec().into(),
-            },
-            EngineEvent::Output {
-                terminal_id: terminal(),
-                stream_id: StreamId::new(1).expect("stream"),
-                bootstrap_id: BootstrapId::new(1).expect("bootstrap"),
-                seq: 2,
-                bytes: b"gap".to_vec().into(),
-            },
-        ])
+        .feed_bytes_batch(&batch)
         .expect_err("the current generation has a fatal sequence gap");
 
     assert!(

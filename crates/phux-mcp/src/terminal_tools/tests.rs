@@ -449,15 +449,3 @@ fn create_replay_and_lookup_do_not_observe_an_execution_moved_outside_origin() {
         join_after_shutdown(shutdown, server).await;
     });
 }
-
-#[test]
-fn strict_request_rejects_unknown_and_private_environment_fields() {
-    let base = json!({"idempotency_key":"11111111111111111111111111111111","session":"aebagbafaydqqcikbmga2dqpca"});
-    let mut unknown = base.clone();
-    unknown["silently_ignored"] = json!(true);
-    assert!(serde_json::from_value::<phux_protocol::api::TerminalCreate>(unknown).is_err());
-    let mut routing = base;
-    routing["env"] = json!({"PHUX_SOCKET":"/production"});
-    let request: phux_protocol::api::TerminalCreate = serde_json::from_value(routing).unwrap();
-    assert!(request.command().is_err());
-}

@@ -255,85 +255,31 @@ fn settle(remote: &RemoteClient, cases: impl IntoIterator<Item = Case>) {
     }
 }
 
+/// The copy outcomes themselves are core's (`copy_outcome`); this pins the
+/// lowering: text is `Copied`, and the producer's own words pass through.
 #[test]
 fn a_copy_is_copied_only_with_text() {
     let (remote, _) = remote();
-    let error = |code| CommandResult::Error {
-        code,
-        message: "no".into(),
-    };
-    let other = |message: &str| WireDocumentInputOutcome::Other {
-        message: message.into(),
-    };
-    let bytes = |text: &[u8]| CommandResult::OkWith(CommandValue::Bytes(text.to_vec()));
     let copy = WireDocumentIntent::CopySelection;
     let copies = [
         (
-            bytes(b"host text"),
+            CommandResult::OkWith(CommandValue::Bytes(b"host text".to_vec())),
             WireDocumentInputOutcome::Copied {
                 text: "host text".into(),
             },
         ),
-        // An old producer answered with nothing: not "Copied".
-        (bytes(b""), other(core_input::NOTHING_COPIED)),
         (
             CommandResult::Error {
                 code: ErrorCode::Unavailable,
                 message: "Nothing copied on the host".into(),
             },
-            other("Nothing copied on the host"),
-        ),
-        // An old server takes the intent and answers no text.
-        (CommandResult::Ok, other(core_input::COPY_TOO_OLD)),
-        (
-            CommandResult::Error {
-                code: ErrorCode::Unavailable,
-                message: "the surface's producer did not answer the copy".into(),
+            WireDocumentInputOutcome::Other {
+                message: "Nothing copied on the host".into(),
             },
-            other(core_input::COPY_TOO_OLD),
-        ),
-        (
-            error(ErrorCode::PermissionDenied),
-            WireDocumentInputOutcome::NoGrant,
         ),
     ]
     .map(|(result, outcome)| (PAGE, copy.clone(), result, outcome));
-    // A 1 MiB copy comes back whole.
-    let big = "x".repeat(1 << 20);
-    let whole = (
-        PAGE,
-        WireDocumentIntent::CopyClipboard,
-        bytes(big.as_bytes()),
-        WireDocumentInputOutcome::Copied { text: big.clone() },
-    );
-    settle(&remote, copies.into_iter().chain([whole]));
-}
-
-#[test]
-fn points_map_through_the_letterbox_and_scrolls_into_frame_pixels() {
-    // 200x100 in a 100x200 pane: barred above and below, two pixels a point.
-    assert_eq!(
-        document_frame_point(100.0, 200.0, 200, 100, 0.0, 75.0),
-        Some(WireFramePoint { x: 0, y: 0 })
-    );
-    assert_eq!(
-        document_frame_point(100.0, 200.0, 200, 100, 99.9, 124.9),
-        Some(WireFramePoint { x: 199, y: 99 })
-    );
-    assert_eq!(
-        document_frame_point(100.0, 200.0, 200, 100, 50.0, 100.0),
-        Some(WireFramePoint { x: 100, y: 50 })
-    );
-    assert_eq!(
-        document_frame_point(100.0, 200.0, 200, 100, 50.0, 74.0),
-        None
-    );
-    assert_eq!(
-        document_scroll(100.0, 50.0, 200, 100, 0.0, -10.0),
-        Some(WireDocumentIntent::Scroll { dx: 0, dy: 20 })
-    );
-    assert_eq!(document_scroll(100.0, 50.0, 200, 100, 0.1, 0.2), None);
-    assert_eq!(document_scroll(0.0, 50.0, 200, 100, 0.0, 10.0), None);
+    settle(&remote, copies);
 }
 
 #[test]

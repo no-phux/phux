@@ -237,11 +237,12 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "phux-config"
-version = "0.159.0"
+version = "0.161.1"
 dependencies = [
  "jiff",
  "phux-config-core",
  "phux-protocol",
+ "schemars",
  "serde",
  "serde_json",
  "serde_path_to_error",
@@ -253,9 +254,10 @@ dependencies = [
 
 [[package]]
 name = "phux-config-core"
-version = "0.159.0"
+version = "0.161.1"
 dependencies = [
  "nix",
+ "schemars",
  "serde",
  "thiserror",
  "toml",
@@ -274,7 +276,7 @@ dependencies = [
 
 [[package]]
 name = "phux-protocol"
-version = "0.159.0"
+version = "0.161.1"
 dependencies = [
  "bitflags 2.13.2",
  "bytes",

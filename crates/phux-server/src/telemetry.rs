@@ -141,14 +141,10 @@ fn rotate_log(path: &Path, threshold: u64, max_generations: usize) -> std::io::R
     Ok(true)
 }
 
-/// One rotation check of the canonical server log with production limits
+/// One rotation check of the server log at `path` with production limits
 /// (the synchronous body of each [`run_log_rotation_task`] tick).
-fn rotate_server_log_if_needed() -> std::io::Result<bool> {
-    rotate_log(
-        &server_log_path(),
-        LOG_ROTATE_THRESHOLD_BYTES,
-        LOG_ROTATE_MAX_GENERATIONS,
-    )
+fn rotate_server_log_if_needed(path: &Path) -> std::io::Result<bool> {
+    rotate_log(path, LOG_ROTATE_THRESHOLD_BYTES, LOG_ROTATE_MAX_GENERATIONS)
 }
 
 /// Periodically rotate the canonical `server.log` while the server runs; spawn
@@ -161,7 +157,8 @@ pub async fn run_log_rotation_task() {
     let mut ticker = tokio::time::interval(LOG_ROTATE_CHECK_INTERVAL);
     loop {
         ticker.tick().await;
-        let outcome = tokio::task::spawn_blocking(rotate_server_log_if_needed).await;
+        let outcome =
+            tokio::task::spawn_blocking(|| rotate_server_log_if_needed(&server_log_path())).await;
         if let Ok(Err(err)) = outcome {
             tracing::debug!(error = %err, "server log rotation check failed");
         }
@@ -501,18 +498,6 @@ mod tests {
         assert_eq!(mode(&loose), 0o600);
     }
 
-    #[test]
-    fn shift_plan_orders_highest_generation_first_within_the_cap() {
-        let base = Path::new("/state/phux/server.log");
-        let shift = |from, to| (generation_path(base, from), generation_path(base, to));
-        assert_eq!(
-            shift_plan(base, 4),
-            vec![shift(3, 4), shift(2, 3), shift(1, 2)]
-        );
-        assert!(shift_plan(base, 1).is_empty());
-        assert!(shift_plan(base, 0).is_empty());
-    }
-
     /// Below the threshold nothing moves; above it `.1` gets the content at
     /// 0o600 and the live file is truncated in place (keeping its mode), so a `tail -f` reader
     /// keeps its inode.
@@ -555,18 +540,17 @@ mod tests {
         assert!(!generation_path(&path, 3).exists());
     }
 
-    /// The periodic check rotates the canonical path with production limits.
+    /// The periodic check rotates an oversized log with production limits.
+    /// The path is passed in, not set through `XDG_STATE_HOME`, so a raw
+    /// `cargo test` running env-reading tests alongside stays race-free.
     #[test]
-    fn rotate_server_log_if_needed_rotates_the_canonical_path_when_oversized() {
+    fn rotate_server_log_if_needed_rotates_an_oversized_log() {
         let dir = tempfile::tempdir().expect("tempdir");
-        with_env("XDG_STATE_HOME", Some(dir.path().as_os_str()), || {
-            let path = server_log_path();
-            std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
-            let oversized = usize::try_from(LOG_ROTATE_THRESHOLD_BYTES + 1).expect("fits");
-            std::fs::write(&path, vec![b'x'; oversized]).expect("seed");
-            assert!(rotate_server_log_if_needed().expect("rotation check"));
-            assert!(generation_path(&path, 1).exists());
-            assert_eq!(read(&path), "");
-        });
+        let path = dir.path().join("server.log");
+        let oversized = usize::try_from(LOG_ROTATE_THRESHOLD_BYTES + 1).expect("fits");
+        std::fs::write(&path, vec![b'x'; oversized]).expect("seed");
+        assert!(rotate_server_log_if_needed(&path).expect("rotation check"));
+        assert!(generation_path(&path, 1).exists());
+        assert_eq!(read(&path), "");
     }
 }

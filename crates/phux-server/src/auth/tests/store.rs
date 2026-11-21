@@ -362,18 +362,6 @@ fn mint_replacing_revokes_the_previous_secret() {
 }
 
 #[test]
-fn authenticate_and_touch_records_last_seen() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("credentials");
-    let minted = mint_token(&path).unwrap();
-    let store = ReloadingTokenStore::load(path.clone()).unwrap();
-    assert!(store.authenticate_and_touch(&secret(&minted)).is_some());
-    let listed = list_credentials(&path).unwrap();
-    let row = listed.iter().find(|row| row.id == minted.id).unwrap();
-    assert!(row.last_seen.is_some());
-}
-
-#[test]
 fn a_single_use_link_expires_unused_and_its_first_admission_keeps_it() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("credentials");

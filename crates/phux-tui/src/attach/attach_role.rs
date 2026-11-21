@@ -26,7 +26,7 @@ pub(super) fn attach_role_for(conn: &Connection) -> Result<Option<RolePolicy>, A
     let policy = RolePolicy::from_u8(ATTACH_ROLE.load(Ordering::Relaxed));
     let field = role_field(policy, advertises_roles(conn))?;
     // A takeover is one deliberate act: a reconnect or a session switch later
-    // must not seize again (L1 §8.1), so it is consumed by this attach.
+    // must not seize again, so it is consumed by this attach.
     if policy.takes_over() {
         set_attach_role(RolePolicy::PRIMARY);
     }

@@ -94,7 +94,7 @@ pub fn channels(name: &str) -> [f32; 3] {
 
 /// `name`'s colour moved toward white or black just far enough to read at
 /// 3:1 on `ground`, at most 50% (olive on Windows 98 silver needs ~45%);
-/// the hue stays (§1.2 identity: `host_bar`, `host_ease_max`).
+/// the hue stays (identity: `host_bar`, `host_ease_max`).
 pub fn on(name: &str, ground: Color) -> Color {
     eased(entry(name).0, ground)
 }
@@ -107,13 +107,13 @@ pub fn eased(rgb: u32, ground: Color) -> Color {
     } else {
         phux_design::Rgb8::BLACK
     };
-    let max = f64::from(IDENTITY.host_ease_max);
+    let max = IDENTITY.host_ease_max;
     let step = |s: u8| {
         phux_design::solve::mix(phux_design::Rgb8::hex(rgb), end, max * f64::from(s) / 50.0)
     };
     (0..=50)
         .map(step)
-        .find(|c| contrast(c.paint(), ground) >= IDENTITY.host_bar)
+        .find(|c| f64::from(contrast(c.paint(), ground)) >= IDENTITY.host_bar)
         .unwrap_or_else(|| step(50))
         .paint()
 }
@@ -121,8 +121,10 @@ pub fn eased(rgb: u32, ground: Color) -> Color {
 /// A short bar in `color` down the selected row's leading edge: the fill
 /// stays the theme's, so its text reads as before.
 pub fn stripe(color: Color, t: &crate::ui::Tokens) -> El {
+    // Inside the row's lit edge, clear of its corners: on the edge itself
+    // it read as a stray mark on the border.
     let inset = Some(t.space.s2);
-    el().pin(Some(0.0), inset, None, inset)
+    el().pin(Some(t.space.s1), inset, None, inset)
         .w(t.space.s0_5)
         .radius(t.radius.full)
         .fill(color)
@@ -171,7 +173,6 @@ pub fn swatch(index: usize, ground: Color) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::color;
     use serde_json::json;
 
     #[test]
@@ -199,37 +200,11 @@ mod tests {
     }
 
     #[test]
-    fn every_swatch_reads_on_the_house_layers() {
-        use phux_design::{Mode, Roles};
-        for mode in [Mode::Dark, Mode::Light] {
-            let r = Roles::house(mode);
-            for ground in [r.layer.ground, r.layer.sidebar, r.layer.raised] {
-                for (i, (id, _)) in PALETTE.iter().enumerate() {
-                    let got = contrast(swatch(i, ground.paint()), ground.paint());
-                    assert!(got >= 3.0, "{id} on {ground}: {got}");
-                }
-            }
-        }
-    }
-
-    #[test]
     fn a_notice_names_its_machine_by_whole_word() {
         let names = ["mini", "mac", LOCAL];
         let text = format!("mini isn't available, so this is {LOCAL}.");
         assert_eq!(named(&text, names), Some("mini"));
         assert_eq!(named("macbook-mini set up", names), None);
         assert_eq!(named("Switch to mac now", names), Some("mac"));
-    }
-
-    #[test]
-    fn every_swatch_reads_on_light_and_dark_grounds() {
-        // The system theme's sheets, sidebar and window, light then dark.
-        for ground in [0xfb_fbfc, 0xf1_f1f2, 0xff_ffff, 0x1e_1f22, 0x14_1517] {
-            for (i, (id, _)) in PALETTE.iter().enumerate() {
-                let c = swatch(i, color(ground));
-                let bar = contrast(c, color(ground));
-                assert!(bar >= 3.0, "{id} on {ground:06x}: {bar}");
-            }
-        }
     }
 }

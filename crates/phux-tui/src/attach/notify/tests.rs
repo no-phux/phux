@@ -67,15 +67,6 @@ fn done_fires_once_per_run() {
 }
 
 #[test]
-fn blocked_then_done_after_working_fires_done() {
-    let (t, _) = step(track(Phase::Working, true), Phase::Blocked, true);
-    assert_eq!(
-        step(Some(t), Phase::Settled, true).1,
-        Some(NotifyKind::Done)
-    );
-}
-
-#[test]
 fn ask_names_itself() {
     let mut asked = row(1, Phase::Blocked);
     asked.asking = true;
@@ -257,4 +248,26 @@ fn losing_window_focus_lets_the_focused_pane_notify() {
     done.viewing = true;
     n.observe(&[done], cfg(), t1);
     assert!(n.take_due(cfg(), t1 + COALESCE).is_some());
+}
+
+#[test]
+fn a_note_notifies_out_of_sight_once_per_rate_limit() {
+    let now = Instant::now();
+    let pane = ResourceId::local(3);
+    let mut notifier = Notifier::new(now);
+    assert!(!notifier.note_due(&pane, true, cfg(), now), "on screen");
+    assert!(notifier.note_due(&pane, false, cfg(), now));
+    assert!(!notifier.note_due(&pane, false, cfg(), now + COALESCE));
+    assert!(notifier.note_due(&pane, false, cfg(), now + RATE_LIMIT));
+    notifier.set_client_focused(false);
+    let other = ResourceId::local(4);
+    assert!(
+        notifier.note_due(&other, true, cfg(), now),
+        "window unfocused"
+    );
+    let off = NotificationsCfg {
+        mode: NotifyMode::Off,
+        ..cfg()
+    };
+    assert!(!notifier.note_due(&ResourceId::local(5), false, off, now));
 }

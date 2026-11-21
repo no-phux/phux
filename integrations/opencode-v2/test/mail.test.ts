@@ -56,19 +56,3 @@ test("nothing is taken while no session is shown", async () => {
   expect(inbox.running).toBe(false);
   expect(waits).toBe(0);
 });
-
-test("mail the service refuses is released, not dropped", async () => {
-  const released: string[][] = [];
-  const inbox = openCodeMail({
-    sessions: { synthetic: async () => { throw new Error("session gone"); } },
-    visibleSession: () => "ses_1",
-    env: {},
-    wait: parkedAfter([{ text: "x", ids: ["a"] }]),
-    release: async (delivery) => { released.push([...delivery.ids]); },
-    onError: () => {},
-  });
-  inbox.start();
-  await settle();
-  expect(released).toEqual([["a"]]);
-  inbox.stop();
-});

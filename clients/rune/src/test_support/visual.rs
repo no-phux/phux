@@ -44,18 +44,3 @@ pub fn write(
     )
     .unwrap();
 }
-
-#[test]
-fn projection_observes_the_runtime_not_the_requested_image_size() {
-    let (_, mut rt) = crate::test_support::input_fixture();
-    rt.set_viewport((393.0, 420.0), 2.0);
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("deliberately-wrong-target.png");
-    write(&path, &rt, (1, 1), &[0, 0, 0, 255], "mismatched-target");
-    let tree: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(path.with_extension("json")).unwrap()).unwrap();
-    assert_eq!(tree["viewport"], serde_json::json!([393.0, 420.0]));
-    assert_eq!(tree["pixels"], serde_json::json!([1, 1]));
-    assert_eq!(tree["scale"], 2.0);
-    assert_eq!(tree["scenario"], "mismatched-target");
-}

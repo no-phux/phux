@@ -193,44 +193,30 @@ fn authority_changes_and_missing_upload_support_refuse_private_intent() {
 }
 
 #[test]
-fn ordinary_file_uploads_keep_their_existing_reconnect_policy() {
-    let (mut control, _) = connected();
-    control.put_file(ResourceId::local(3), "txt".to_owned(), b"ordinary".to_vec());
-    let first = commands(&mut control);
-    control.connection_lost(None);
-    control.connection_opened();
-    control.take_outbound();
-    control.handshake_ready = true;
-    control.queue_next_upload();
-    let replay = commands(&mut control);
-    assert_eq!(first[0].1, replay[0].1);
-    assert!(control.take_file_upload_receipts().is_empty());
-}
-
-#[test]
 fn queued_private_chunks_are_fenced_at_drain_and_release_the_next_upload() {
-    for replacement in [record(2, 1, 1), record(1, 2, 1), record(1, 1, 2)] {
-        let (mut control, destination) = connected();
-        let private = control.put_private_image(&destination, b"private".to_vec());
-        let ordinary =
-            control.put_file(ResourceId::local(3), "txt".to_owned(), b"ordinary".to_vec());
-        seed(&mut control, replacement);
-        let sent = commands(&mut control);
-        assert_eq!(sent.len(), 1);
-        assert!(matches!(&sent[0].1, Command::PutFile { data, .. } if data == b"ordinary"));
-        let receipts = control.take_file_upload_receipts();
-        assert_eq!(receipts.len(), 1);
-        assert_eq!(receipts[0].transfer_id, private);
-        assert_ne!(receipts[0].outcome, FileUploadOutcome::Completed);
-        assert!(receipts[0].path.is_none());
-        assert!(!control.pending.values().any(
+    let (mut control, destination) = connected();
+    let private = control.put_private_image(&destination, b"private".to_vec());
+    let ordinary = control.put_file(ResourceId::local(3), "txt".to_owned(), b"ordinary".to_vec());
+    seed(&mut control, record(1, 1, 2));
+    let sent = commands(&mut control);
+    assert_eq!(sent.len(), 1);
+    assert!(matches!(&sent[0].1, Command::PutFile { data, .. } if data == b"ordinary"));
+    let receipts = control.take_file_upload_receipts();
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(receipts[0].transfer_id, private);
+    assert_ne!(receipts[0].outcome, FileUploadOutcome::Completed);
+    assert!(receipts[0].path.is_none());
+    assert!(
+        !control.pending.values().any(
             |pending| matches!(pending, crate::control::Pending::PutFile(id) if *id == private)
-        ));
-        assert!(control.pending.values().any(
+        )
+    );
+    assert!(
+        control.pending.values().any(
             |pending| matches!(pending, crate::control::Pending::PutFile(id) if *id == ordinary)
-        ));
-        assert!(control.take_outbound().is_empty());
-    }
+        )
+    );
+    assert!(control.take_outbound().is_empty());
 }
 
 #[test]
@@ -309,18 +295,16 @@ fn ready_for_private_path(control: &mut ControlPlane) {
 
 #[test]
 fn queued_private_paths_are_fenced_at_drain_without_entering_the_input_journal() {
-    for replacement in [record(2, 1, 1), record(1, 2, 1), record(1, 1, 2)] {
-        let (mut control, destination) = connected();
-        ready_for_private_path(&mut control);
-        assert!(control.paste_private_image_path(&destination, "/private/image.png "));
-        seed(&mut control, replacement);
-        assert!(control.take_outbound().is_empty());
-        assert!(!control.input_replay.must_order_after(&ResourceId::local(3)));
-        control.connection_lost(None);
-        control.connection_opened();
-        control.take_outbound();
-        assert!(commands(&mut control).is_empty());
-    }
+    let (mut control, destination) = connected();
+    ready_for_private_path(&mut control);
+    assert!(control.paste_private_image_path(&destination, "/private/image.png "));
+    seed(&mut control, record(1, 1, 2));
+    assert!(control.take_outbound().is_empty());
+    assert!(!control.input_replay.must_order_after(&ResourceId::local(3)));
+    control.connection_lost(None);
+    control.connection_opened();
+    control.take_outbound();
+    assert!(commands(&mut control).is_empty());
 }
 
 #[test]

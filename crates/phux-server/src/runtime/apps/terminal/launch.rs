@@ -89,8 +89,9 @@ pub(crate) fn seed_pane_command(
             state.with(|s| (s.config().shell.as_str().to_owned(), s.config().login_shell));
         engine_launch::default_shell_command(&shell, login_shell)
     });
-    let term = state.with(|s| s.config().term.as_str().to_owned());
+    let (term, fixed) = state.with(|s| (s.config().term.clone(), s.config().fixed_cwd.clone()));
     engine_launch::apply_term(&mut cmd, &term);
+    engine_launch::apply_spawn_cwd(&mut cmd, fixed.as_deref(), "seed");
     cmd
 }
 
@@ -132,18 +133,32 @@ pub(crate) fn seed_initial_session(
 }
 
 /// The command a Terminal launch spec runs: its argv, else the default
-/// shell, in its cwd, with its environment and the server's `TERM`.
-pub(crate) fn spec_command(s: &ServerState, launch: &phux_core::TerminalLaunch) -> LaunchCommand {
+/// shell, in its last directory (else its cwd), with its environment and
+/// the server's `TERM`. A `relaunch` never repeats an agent's one-shot
+/// task ([`super::resume::is_agent_task`]): it starts the shell instead.
+pub(crate) fn spec_command(
+    s: &ServerState,
+    launch: &phux_core::TerminalLaunch,
+    relaunch: bool,
+) -> LaunchCommand {
+    let cwd = launch.relaunch_cwd().map(std::path::Path::to_path_buf);
     let launch = launch.clone();
     // A program the user allowlisted picks up where it left off; it runs
     // as the pane's process, like any other recorded argv.
-    let argv = super::resume::argv(s, &launch).unwrap_or(launch.argv);
+    let argv = super::resume::argv(s, &launch).unwrap_or_else(|| {
+        if relaunch && super::resume::is_agent_task(&launch.argv) {
+            Vec::new()
+        } else {
+            launch.argv
+        }
+    });
     let mut cmd = argv_command((!argv.is_empty()).then_some(argv)).unwrap_or_else(|| {
         engine_launch::default_shell_command(s.config().shell.as_str(), s.config().login_shell)
     });
     // A recorded launch directory is intent, not a hint. If it disappears
     // after validation, fail the activation rather than execute elsewhere.
-    if let Some(cwd) = &launch.cwd {
+    // The last reported directory is used only while it still exists.
+    if let Some(cwd) = &cwd {
         engine_launch::apply_strict_spawn_cwd(&mut cmd, cwd);
     }
     for (key, value) in launch.env {
@@ -166,10 +181,16 @@ pub(crate) fn execute(launch: super::super::ResourceLaunch<'_>) -> Result<(), St
         return Err("the Terminal app received another kind's launch spec".to_owned());
     };
     let (scrollback, cmd) = state.with_mut(|s| {
+        // A later activation of the same record is a relaunch.
+        let relaunch = s
+            .registry()
+            .record(resource)
+            .and_then(|record| record.activation.as_ref())
+            .is_some_and(|activation| activation.id != phux_core::ActivationId::FIRST);
         let cmd = s
             .config()
             .attach_create_seeds_pty
-            .then(|| spec_command(s, spec));
+            .then(|| spec_command(s, spec, relaunch));
         let wire = s.idspace.intern_resource(resource);
         super::commands::set_agent_session(s, wire, spec.restore.clone());
         (s.config().scrollback, cmd)

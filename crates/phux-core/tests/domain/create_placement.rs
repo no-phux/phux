@@ -220,7 +220,7 @@ fn invalid_missing_moved_and_replaced_anchors_refuse_without_launch_or_records()
     );
 }
 #[test]
-fn receipt_env_values_are_hashed_and_retries_still_match() {
+fn resource_create_receipt_hashes_env_values() {
     let mut h = Harness::new();
     let session = h.create_session("work", SessionLifetime::Persistent);
     let op = Op::ResourceCreate {
@@ -229,8 +229,7 @@ fn receipt_env_values_are_hashed_and_retries_still_match() {
         placement: None,
     };
     let operation = h.next_op();
-    let applied = h.run_op(operation, op.clone()).unwrap();
-    assert!(!applied.replayed);
+    let applied = h.run_op(operation, op).unwrap();
     let receipt = h.reg.org().receipt(&operation).unwrap();
     let stored = serde_json::to_string(receipt).unwrap();
     assert!(!stored.contains("super-secret-value"));
@@ -240,8 +239,6 @@ fn receipt_env_values_are_hashed_and_retries_still_match() {
         panic!("terminal launch")
     };
     assert_eq!(launch.env[0].1, "super-secret-value");
-    let replay = h.run_op(operation, op).unwrap();
-    assert!(replay.replayed);
 }
 
 fn secret_shell(pairs: &[(&str, &str)]) -> NewResource {

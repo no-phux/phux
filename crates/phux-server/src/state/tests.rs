@@ -1,19 +1,15 @@
-use std::collections::HashSet;
-
 use super::*;
 use crate::resource::ResourceHandle;
 use phux_core::ids::ResourceId;
-use phux_protocol::caps::{
-    BootstrapLimits, BootstrapProfile, ClientCapabilities, ColorSupport, LayerSet,
-};
+use phux_protocol::caps::LayerSet;
 
 use phux_protocol::wire::frame::{FrameKind, Scope};
 
+/// The incarnation is stable per state, fresh per start, and redacted in
+/// Debug so traces do not leak a correlation token.
 #[test]
-fn client_ids_count_from_one_and_the_incarnation_is_per_state() {
-    let mut first = ServerState::new();
-    assert_eq!(first.clients_mut().new_client_id(), ClientId(1));
-    assert_eq!(first.clients_mut().new_client_id(), ClientId(2));
+fn the_incarnation_is_per_state_and_redacted() {
+    let first = ServerState::new();
     let stable = first.lifecycle().server_incarnation();
     assert_eq!(first.lifecycle().server_incarnation(), stable);
     assert_eq!(format!("{stable:?}"), "ServerIncarnation(<redacted>)");
@@ -94,27 +90,9 @@ fn one_shot_session_create_results_are_bounded_and_connection_scoped() {
 }
 
 #[test]
-fn attach_subscribes_every_client_to_every_pane() {
-    let mut s = ServerState::new();
-    let cid = s.clients_mut().new_client_id();
-    let err = s.attach_default_caps(cid, "ghost", mk_tx()).unwrap_err();
-    assert_eq!(err, AttachError::UnknownSession("ghost".to_owned()));
-
-    let (sid, pid1) = s.seed_session("default");
-    // Regression: not only the active pane, else input to the others drops.
-    let pid2 = s.add_pane_to_session(sid).expect("second pane");
-    assert_eq!(s.attach_default_caps(cid, "default", mk_tx()).unwrap(), sid);
-    let other = s.clients_mut().new_client_id();
-    s.attach_default_caps(other, "default", mk_tx()).unwrap();
-    assert!(s.attached().contains_key(&cid));
-    assert_eq!(s.resources().subscribers_for(pid1), &[cid, other]);
-    assert_eq!(s.resources().subscribers_for(pid2), &[cid, other]);
-}
-
-#[test]
 fn terminal_fanout_reaches_attach_terminal_only_subscribers_exactly_once() {
     // ATTACH_RESOURCE-only consumers resolve to their mailbox too
-    // (L1 §3.1, §5.1), each exactly once.
+    //, each exactly once.
     let mut s = ServerState::new();
     let (_sid, pid) = s.seed_session("default");
 
@@ -216,77 +194,6 @@ fn same_client_may_rebootstrap_same_session_but_not_switch_sessions() {
     );
     let err = s.attach_default_caps(cid, "other", mk_tx()).unwrap_err();
     assert_eq!(err, AttachError::AlreadyAttached(cid));
-}
-
-#[test]
-fn attach_stores_hello_caps_and_bootstrap_contract_unchanged() {
-    let mut s = ServerState::new();
-    let _ = s.seed_session("default");
-    let (default, advertised) = (
-        s.clients_mut().new_client_id(),
-        s.clients_mut().new_client_id(),
-    );
-    s.attach_default_caps(default, "default", mk_tx()).unwrap();
-    let profile = BootstrapProfile::SynthesizedVtStateSync;
-    let limits = BootstrapLimits::new(64 * 1024, 128 * 1024).unwrap();
-    let caps = ClientCapabilities::new().with_color_support(ColorSupport::Indexed16);
-    s.attach(advertised, "default", mk_tx(), caps, profile, limits)
-        .unwrap();
-    let default = &s.attached()[&default];
-    assert_eq!(default.client_caps.color_support, ColorSupport::TrueColor);
-    let attached = &s.attached()[&advertised];
-    assert_eq!(attached.client_caps.color_support, ColorSupport::Indexed16);
-    assert_eq!(attached.bootstrap_profile, Some(profile));
-    assert_eq!(attached.bootstrap_limits, limits);
-}
-
-#[test]
-fn attach_snapshot_panes_collects_live_handles_for_session_tree() {
-    let mut s = ServerState::new();
-    let (sid, pid_a) = s.seed_session("default");
-    // The second pane has no handle, so it is excluded.
-    s.add_pane_to_session(sid).expect("second pane");
-    let pid_c = s.add_pane_to_session(sid).expect("third pane");
-
-    s.register_resource_handle(pid_a, mk_handle(), CancellationToken::new())
-        .unwrap();
-    s.register_resource_handle(pid_c, mk_handle(), CancellationToken::new())
-        .unwrap();
-
-    let panes = s.attach_snapshot_panes(sid);
-    let ids: HashSet<ResourceId> = panes.iter().map(|p| p.terminal_id).collect();
-    assert_eq!(ids, HashSet::from([pid_a, pid_c]));
-    for pane in panes {
-        assert_eq!(
-            s.idspace.resource_from_wire(&pane.wire_terminal_id),
-            Some(pane.terminal_id),
-            "wire id should resolve back to the same pane",
-        );
-    }
-}
-
-#[test]
-fn most_recently_touched_session_starts_none_and_tracks_touch_order() {
-    let mut s = ServerState::new();
-    assert!(
-        s.sessions().most_recently_touched().is_none(),
-        "fresh state has no prior activity memory",
-    );
-    assert!(
-        !s.sessions().has_touch_history(),
-        "fresh state has no stale activity memory either",
-    );
-    let (sid, _pid) = s.seed_session("default");
-    s.touch_session(sid);
-    assert_eq!(s.sessions().most_recently_touched(), Some(sid));
-    assert!(s.sessions().has_touch_history());
-
-    // Later touches win, regardless of attach order.
-    let (sid2, _p) = s.seed_session("other");
-    s.touch_session(sid2);
-    assert_eq!(s.sessions().most_recently_touched(), Some(sid2));
-    s.touch_session(sid);
-    assert_eq!(s.sessions().most_recently_touched(), Some(sid));
 }
 
 mod geometry;

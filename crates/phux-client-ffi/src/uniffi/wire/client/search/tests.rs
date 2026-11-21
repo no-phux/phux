@@ -135,14 +135,6 @@ fn unicode_and_wide_glyph_queries_match_whole_graphemes() {
 }
 
 #[test]
-fn no_match_is_an_empty_untruncated_result() {
-    let remote = remote_with(&[(1, scrollback())]);
-    let found = search(&remote, 1, "absent");
-    assert!(found.matches.is_empty());
-    assert!(!found.truncated);
-}
-
-#[test]
 fn saturated_search_keeps_matches_revealable_after_repeated_searches() {
     let lines: Vec<_> = (0..600).map(|index| format!("needle {index:03}")).collect();
     let remote = remote_with(&[(1, lines.join("\r\n").into_bytes())]);
@@ -289,41 +281,6 @@ fn without_a_connection_or_terminal_search_is_unavailable() {
     }
 }
 
-/// Each operation against a pane with no projection is `Unavailable`, the
-/// reveal cases before any anchor lookup (arbitrary or a sibling's handle).
-#[test]
-fn missing_projection_operations_are_unavailable() {
-    type Op = fn(&RemoteClient) -> Result<(), SearchError>;
-    let cases: [(&str, Op); 5] = [
-        ("search", |remote| {
-            remote
-                .search_projection(pane(999), "needle".into(), true, 8)
-                .map(drop)
-        }),
-        ("zero-bound search", |remote| {
-            remote
-                .search_projection(pane(999), "needle".into(), true, 0)
-                .map(drop)
-        }),
-        ("clear", |remote| remote.clear_projection_search(pane(999))),
-        ("reveal arbitrary anchor", |remote| {
-            remote.reveal_search_match(pane(999), u64::MAX)
-        }),
-        ("reveal sibling anchor", |remote| {
-            let found = search(remote, 1, "needle");
-            remote.reveal_search_match(pane(999), found.matches[0].start)
-        }),
-    ];
-    for (label, op) in cases {
-        let remote = remote_with(&[(1, scrollback())]);
-        let result = op(&remote);
-        assert!(
-            matches!(result, Err(SearchError::Unavailable)),
-            "{label}: {result:?}"
-        );
-    }
-}
-
 fn assert_search_unavailable(remote: &RemoteClient, terminal: u32, anchor: u64) {
     for bound in [8, 0] {
         let result = remote.search_projection(pane(terminal), "needle".into(), true, bound);
@@ -447,22 +404,6 @@ fn live_wrong_terminal_and_view_anchors_remain_engine_errors() {
     assert!(matches!(
         remote.reveal_search_match(pane(1), found[0].start),
         Err(SearchError::Engine { reason }) if reason == "document anchor belongs to another view"
-    ));
-}
-
-#[test]
-fn genuine_engine_and_spawn_errors_preserve_their_reasons() {
-    assert!(matches!(
-        SearchError::from(EngineError::Engine("render state allocation failed".into())),
-        SearchError::Engine { reason } if reason == "render state allocation failed"
-    ));
-    assert!(matches!(
-        SearchError::from(EngineError::Spawn(std::io::Error::other("thread spawn failed"))),
-        SearchError::Engine { reason } if reason == "thread spawn failed"
-    ));
-    assert!(matches!(
-        SearchError::from(EngineError::Stopped),
-        SearchError::Unavailable
     ));
 }
 

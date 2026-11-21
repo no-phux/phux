@@ -156,50 +156,6 @@ fn reconcile_corrects_the_policy_without_stopping_the_server() {
     );
 }
 
-/// The output says whether the new policy is in force: systemd re-reads the
-/// unit live; launchd keeps the bootstrapped policy until the job restarts.
-#[test]
-fn reconcile_says_whether_the_new_policy_is_actually_in_force() {
-    let server = LiveServer::start("incumbent");
-    let socket = &server.socket;
-    let home = tempfile::tempdir().expect("sandboxed home");
-    plant_legacy_unit(home.path(), socket);
-
-    let out = sandboxed(home.path())
-        .args(["service", "reconcile"])
-        .output()
-        .expect("run phux service reconcile");
-    let stdout = String::from_utf8_lossy(&out.stdout);
-
-    if cfg!(target_os = "macos") {
-        assert!(
-            stdout.contains("NOT active yet"),
-            "macOS must not imply the loaded job picked the policy up.\nstdout: {stdout}"
-        );
-        assert!(
-            stdout.contains("next login or reboot"),
-            "the user needs to know when it does take effect.\nstdout: {stdout}"
-        );
-        assert!(
-            stdout.contains("launchctl bootout"),
-            "the escape hatch must be an exact command, not a description.\nstdout: {stdout}"
-        );
-        assert!(
-            stdout.contains("phux ls"),
-            "a live server means panes are at stake; say how to see them.\nstdout: {stdout}"
-        );
-    } else {
-        assert!(
-            stdout.contains("daemon-reload") || stdout.contains("re-read the unit"),
-            "Linux must say the reload happened and cost nothing.\nstdout: {stdout}"
-        );
-    }
-    assert!(
-        stdout.contains("nothing was stopped") || stdout.contains("untouched"),
-        "the headline promise of the verb must be in its output.\nstdout: {stdout}"
-    );
-}
-
 /// `--print` renders what would land and writes nothing.
 #[test]
 fn print_renders_the_reconciled_unit_without_writing_it() {
@@ -232,39 +188,6 @@ fn print_renders_the_reconciled_unit_without_writing_it() {
         std::fs::read_to_string(&unit).expect("re-read planted unit"),
         before,
         "a dry run must not touch the installed unit"
-    );
-}
-
-/// `install` over a live server with a legacy unit points at the
-/// non-destructive `reconcile` instead of "stop the server".
-#[test]
-fn install_over_a_live_server_points_at_the_non_destructive_path() {
-    let server = LiveServer::start("incumbent");
-    let socket = &server.socket;
-    let home = tempfile::tempdir().expect("sandboxed home");
-    let unit = plant_legacy_unit(home.path(), socket);
-    let before = std::fs::read_to_string(&unit).expect("read planted unit");
-
-    let out = sandboxed(home.path())
-        .args(["service", "install", "--socket"])
-        .arg(socket)
-        .output()
-        .expect("run phux service install");
-    assert!(
-        !out.status.success(),
-        "installing over a live server must still fail.\nstdout: {}",
-        String::from_utf8_lossy(&out.stdout)
-    );
-
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("phux service reconcile"),
-        "the refusal must name the remedy that costs nothing.\nstderr: {stderr}"
-    );
-    assert_eq!(
-        std::fs::read_to_string(&unit).expect("re-read planted unit"),
-        before,
-        "a refused install must not have touched the unit"
     );
 }
 

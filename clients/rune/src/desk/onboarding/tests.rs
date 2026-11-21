@@ -6,8 +6,7 @@ use super::*;
 use crate::launch::Resolved;
 
 fn desk(prefs: Prefs) -> Desk {
-    let mut desk = Desk::new(&Resolved::offline("onboarding"));
-    desk.prefs = prefs;
+    let mut desk = Desk::with_preferences(&Resolved::offline("onboarding"), None, prefs);
     desk.launch.aimed = false;
     desk
 }
@@ -75,6 +74,62 @@ fn quitting_mid_way_resumes_at_the_step() {
 }
 
 #[test]
+fn the_shared_step_is_where_another_client_resumes() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut first = desk(Prefs::memory());
+    first.onboarding_dir = Some(dir.path().to_path_buf());
+    first.first_run();
+    first.onboarding_continue();
+    first.onboarding_continue();
+    assert_eq!(first.onboarding.step, Step::Agents);
+    assert_eq!(
+        first.prefs.get::<String>(super::STEP_KEY).as_deref(),
+        Some(Step::Agents.id()),
+        "prefs stay a mirror"
+    );
+    assert_eq!(
+        phux_config::onboarding::read(dir.path()),
+        Some(phux_config::onboarding::OnboardingStep::Agents)
+    );
+    drop(first);
+
+    let mut again = desk(Prefs::memory());
+    again.onboarding_dir = Some(dir.path().to_path_buf());
+    again.first_run();
+    assert_eq!(
+        again.onboarding.step,
+        Step::Agents,
+        "shared step, empty prefs"
+    );
+    again.skip_onboarding();
+    assert_eq!(
+        phux_config::onboarding::read(dir.path()),
+        Some(phux_config::onboarding::OnboardingStep::Done)
+    );
+
+    let mut after = desk(Prefs::memory());
+    after.onboarding_dir = Some(dir.path().to_path_buf());
+    after.first_run();
+    assert!(!after.onboarding.open, "shared done suppresses first-run");
+}
+
+#[test]
+fn a_shared_done_step_suppresses_first_run_over_a_saved_step() {
+    let dir = tempfile::tempdir().unwrap();
+    phux_config::onboarding::write(dir.path(), phux_config::onboarding::OnboardingStep::Done)
+        .unwrap();
+    let mut prefs = Prefs::memory();
+    let _ = prefs.set(super::STEP_KEY, Step::Agents.id());
+    let mut desk = desk(prefs);
+    desk.onboarding_dir = Some(dir.path().to_path_buf());
+    desk.first_run();
+    assert!(
+        !desk.onboarding.open,
+        "shared done wins over the prefs step"
+    );
+}
+
+#[test]
 fn a_development_run_never_opens_it_on_its_own() {
     let mut desk = desk(Prefs::memory());
     desk.launch.aimed = true;
@@ -133,7 +188,7 @@ fn a_grant_coming_through_moves_on_to_the_next() {
             .to_vec(),
         ..Permissions::default()
     };
-    let mut rt = rune::Runtime::new(
+    let mut rt = crate::test_support::runtime(
         desk(Prefs::memory()),
         crate::ui::view,
         (1100.0, 720.0),

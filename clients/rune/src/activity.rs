@@ -110,7 +110,7 @@ impl Mark {
         matches!(self, Self::Working | Self::Running)
     }
 
-    /// The ladder state this mark draws as (§1.3); `None` for the bell,
+    /// The ladder state this mark draws as; `None` for the bell,
     /// an event with its own mark, not a state. A command that succeeded
     /// off screen is a result not yet seen, so `done`.
     pub const fn state(self) -> Option<State> {
@@ -250,7 +250,7 @@ impl Activity {
         }
     }
 
-    /// The terminal's facts as the design language's input (§1.3.1), for
+    /// The terminal's facts as the design language's input, for
     /// [`phux_design::tone_of`], the one mapping every client shares. A
     /// long shell command that ended off screen is the terminal's result:
     /// failed on a nonzero code, else done and not yet seen. A shell

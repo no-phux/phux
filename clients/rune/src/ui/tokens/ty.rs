@@ -1,12 +1,12 @@
 //! The type roles at a text scale and their weight and voice variants
-//! (§1.4).
+//!.
 
 use phux_design::tokens as tok;
 use rune::{Family, TextStyle};
 
 use super::MONO;
 
-/// The seven type roles (§1.4) at this window's text scale, plus the
+/// The seven type roles at this window's text scale, plus the
 /// machine voice: `mono` (`label` in the chrome's mono face, for machine
 /// nouns), `mono_caption` (the same at caption size) and `readout`
 /// (`mono_caption` with tabular figures, for numbers that change in place).
@@ -24,8 +24,8 @@ pub(crate) struct Type {
     pub(crate) readout: TextStyle,
 }
 
-/// A type role's weight and voice variants, derived here once (§1.4:
-/// emphasis by weight, never size; machine nouns in the mono face). Views
+/// A type role's weight and voice variants, derived here once
+/// (emphasis by weight, never size; machine nouns in the mono face). Views
 /// call these instead of rebuilding a `TextStyle`.
 pub(crate) trait Voice {
     /// The role at `type.weights.semibold`.
@@ -35,6 +35,10 @@ pub(crate) trait Voice {
     /// The role in the chrome's mono face (`Paper Mono`), for machine
     /// nouns: hosts, pane ids, paths.
     fn machine(self) -> Self;
+    /// The role for the machine called `name`: a host name is a machine
+    /// noun, in the mono face; this computer's own label ("This Mac") is
+    /// words, in the role's face.
+    fn host(self, name: &str) -> Self;
     /// The role with tabular figures, for numbers that change in place.
     fn figures(self) -> Self;
 }
@@ -61,6 +65,14 @@ impl Voice for TextStyle {
 
     fn machine(self) -> Self {
         self.family(MONO)
+    }
+
+    fn host(self, name: &str) -> Self {
+        if name == crate::machines::LOCAL {
+            self
+        } else {
+            self.machine()
+        }
     }
 
     fn figures(self) -> Self {

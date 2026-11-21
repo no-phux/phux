@@ -2,11 +2,12 @@
 //! keys have one text form.
 
 use crate::common::{assert_round_trip, decode, decode_state, encode, state_reply};
+use phux_protocol::caps::{ServerFeatureExt, ServerFeatureExtSet};
 use phux_protocol::ids::{
-    ClientId, IdempotencyKey, KEY_TEXT_LEN, PrincipalId, ResourceId, ResourceKey, Revision,
-    SessionId, SessionKey, WindowId,
+    ArrangementKey, IdempotencyKey, KEY_TEXT_LEN, ResourceId, ResourceKey, Revision, SessionId,
+    SessionKey, WindowId,
 };
-use phux_protocol::wire::frame::{ActorRef, AgentEvent, Command, FrameKind, SessionLifetime};
+use phux_protocol::wire::frame::{AgentEvent, ArrangementDoc, Command, FrameKind, SessionLifetime};
 use phux_protocol::wire::info::{
     ResourceInfo, SessionInfo, SessionSnapshot, TUI_LAYOUT_KEY_PREFIX, tui_layout_key,
     tui_layout_key_session,
@@ -16,49 +17,33 @@ use phux_protocol::wire::info::{
 // Older shapes stay byte-identical.
 // -----------------------------------------------------------------------------
 
-fn changed(actor: Option<ActorRef>) -> FrameKind {
-    FrameKind::MetadataChanged {
-        scope: phux_protocol::wire::frame::Scope::Global,
-        key: "phux.example/v1".to_owned(),
-        value: None,
-        actor,
-    }
-}
-
-/// R09: an actor without principals writes exactly its `0.9.0` bytes, and a
-/// pre-principal encoding decodes with both absent; with principals the pair
-/// trails the earlier fields, which an older decoder skips because the actor
-/// ends its container.
 #[test]
-fn actor_principals_trail_and_old_shapes_are_unchanged() {
-    let plain = ActorRef::new(ClientId::new(7)).with_client_name(Some("cli".to_owned()));
-    let with = plain
-        .clone()
-        .with_principal(PrincipalId::new([0x91; 16]))
-        .with_on_behalf_of(PrincipalId::new([0x92; 16]));
-    assert_round_trip(&changed(Some(with.clone())));
-    let only_obo = plain
-        .clone()
-        .with_on_behalf_of(PrincipalId::new([0x92; 16]));
-    assert_round_trip(&changed(Some(only_obo)));
-
-    let old = encode(&changed(Some(plain.clone())));
-    let new = encode(&changed(Some(with.clone())));
-    // The new encoding is the old one plus `1 || 16 || 1 || 16` trailing the
-    // actor (and four more length bytes in the frame header, and the field
-    // length), so stripping the trailing pair reproduces the old bytes.
-    assert_eq!(new.len(), old.len() + 34);
-    let decoded = decode(&old).unwrap();
-    let FrameKind::MetadataChanged {
-        actor: Some(actor), ..
-    } = decoded
-    else {
-        panic!("actor survives");
-    };
-    assert_eq!(actor, plain);
-    assert_eq!(actor.principal(), None);
-    assert_eq!(actor.on_behalf_of(), None);
-    assert_eq!(with.principal(), PrincipalId::new([0x91; 16]));
+fn replacement_slot_tabs_are_authoritative_only_with_peer_support() {
+    let operation = IdempotencyKey::new([1; 16]).unwrap();
+    let arrangement = ArrangementKey::new([2; 16]).unwrap();
+    let old = ServerFeatureExtSet::with(&[ServerFeatureExt::Organization]);
+    let new =
+        ServerFeatureExtSet::with(&[ServerFeatureExt::Organization, ServerFeatureExt::SlotTabs]);
+    for (features, expected_slot_tabs) in [(old, false), (new, true)] {
+        let command = Command::replace_arrangement(
+            operation,
+            arrangement,
+            Revision::new(3),
+            ArrangementDoc { groups: Vec::new() },
+            features,
+        );
+        let frame = FrameKind::Command {
+            request_id: 42,
+            command,
+        };
+        assert!(matches!(
+            decode(&encode(&frame)).unwrap(),
+            FrameKind::Command {
+                command: Command::ArrangementReplace { slot_tabs, .. },
+                ..
+            } if slot_tabs == expected_slot_tabs
+        ));
+    }
 }
 
 /// How recently a session was used rides the same `SESSION_STATE` as a
@@ -174,11 +159,10 @@ fn snapshot_session_link_and_lifetime_ride_the_extension_block() {
     assert_round_trip(&state(keep.with_sessions(keep_sessions)));
 }
 
-/// An organization event whose body names an unknown enum value or misses a
-/// required field stays opaque, like any unknown event, instead of failing the
-/// frame.
+/// An organization event naming a value this build does not define keeps
+/// its shape with that one value `Unknown`, instead of failing the frame.
 #[test]
-fn malformed_organization_events_are_opaque() {
+fn an_organization_event_with_a_newer_value_reads_it_as_unknown() {
     let frame = FrameKind::Event {
         terminal: None,
         event: AgentEvent::SessionLifetimeChanged {
@@ -200,7 +184,13 @@ fn malformed_organization_events_are_opaque() {
         panic!("event");
     };
     assert!(
-        matches!(event, AgentEvent::Unknown { tag: 0x13, .. }),
+        matches!(
+            event,
+            AgentEvent::SessionLifetimeChanged {
+                lifetime: SessionLifetime::Unknown(0x09),
+                ..
+            }
+        ),
         "{event:?}"
     );
 }

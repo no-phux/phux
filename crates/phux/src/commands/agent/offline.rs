@@ -245,21 +245,7 @@ fn emit_json(
         },
         "explain": explanation,
     });
-    match serde_json::to_string_pretty(&document) {
-        Ok(rendered) => {
-            outln!("{rendered}");
-            ExitCode::SUCCESS
-        }
-        Err(err) => json_err::emit(
-            true,
-            &CliError::new(
-                codes::JSON_SERIALIZE,
-                format!("could not render the explanation as JSON: {err}"),
-                "re-run without --json",
-            ),
-            EXIT_FAILURE,
-        ),
-    }
+    crate::output::json(&document)
 }
 
 fn emit_prose(
@@ -480,17 +466,7 @@ mod tests {
         assert_eq!(err.code, "unknown_agent_kind");
         assert!(err.message.contains("--kind is required"));
         assert!(err.remedy.contains("claude"), "roster: {}", err.remedy);
-    }
-
-    #[test]
-    fn a_binary_alias_resolves_to_its_kind() {
-        assert_eq!(
-            resolve_kind(Some("claude-code")).ok(),
-            Some("claude".into())
-        );
-        assert_eq!(resolve_kind(Some("claude")).ok(), Some("claude".into()));
         let err = resolve_kind(Some("nope")).expect_err("unknown kind");
         assert_eq!(err.code, "unknown_agent_kind");
-        assert!(err.remedy.contains("PHUX_AGENT_RULES_DIR"));
     }
 }

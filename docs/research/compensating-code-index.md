@@ -225,7 +225,7 @@ Base: the repository root.
 | One version across many locks | 850 | `tools/src/cargo/release-orchestration.ts` |
 | Release state by polling GitHub | 1,400 | `tools/src/release/` |
 | Engine from a fork with a prebuilt download | 550 | `scripts/check-ghostty-pin.sh` |
-| Boundaries enforced by text scans | 2,500 | `scripts/check-file-tokens.sh`, `crates/phux/tests/cli_no_raw_connections.rs` |
+| Boundaries enforced by text scans | 2,500 | `scripts/check-file-tokens.sh` |
 | Persisted formats are field names | 450 | `phux-frozen/src/lib.rs`, `scripts/check-frozen-fixtures.sh` |
 | Wrappers around unreliable services | 750 | `scripts/npm-audit-gate.mjs` |
 | Vendored brand assets | 500 | `scripts/brand.py` |

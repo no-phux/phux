@@ -18,7 +18,7 @@ use std::io;
 use tokio::sync::mpsc;
 use tracing::{debug, trace, warn};
 
-/// SPEC §5: a framing violation is answered with `FRAME_TOO_LARGE` before
+/// A framing violation is answered with `FRAME_TOO_LARGE` before
 /// closing. `None` for every other read error: the transport died.
 pub(super) fn framing_violation_close(
     err: &io::Error,
@@ -188,7 +188,7 @@ pub(super) async fn negotiate_hello(
         compression,
     });
     state.with_mut(|s| {
-        // SPEC §6.2: the L3 arms gate on the negotiated layer set.
+        // The L3 arms gate on the negotiated layer set.
         s.clients_mut().set_layers(client_id, client_caps.layers);
         // ADR-0123: an actor label, not an authenticated fact.
         s.set_client_name(client_id, client_name);
@@ -244,12 +244,14 @@ const fn runtime_server_features_ext() -> ServerFeatureExtSet {
         ServerFeatureExt::NativeAgent,
         ServerFeatureExt::NativeAgentLaunch,
         ServerFeatureExt::CurrentQuestions,
+        ServerFeatureExt::ViewportColors,
         ServerFeatureExt::PerfControl,
         ServerFeatureExt::SessionProject,
         ServerFeatureExt::TabLock,
         ServerFeatureExt::SlotTabs,
         ServerFeatureExt::FileDownload,
         ServerFeatureExt::Checkout,
+        ServerFeatureExt::CheckoutV2,
         ServerFeatureExt::HostServiceHttp,
         ServerFeatureExt::AccessibilityTree,
         ServerFeatureExt::PixelSurface,
@@ -268,7 +270,7 @@ const fn runtime_server_features_ext() -> ServerFeatureExtSet {
 /// the accepting transport. A missing registry entry is never equivalent to a
 /// local root peer. Every refusal here is HELLO's authentication outcome, so
 /// the peer gets `ERROR { PERMISSION_DENIED }` then `DETACHED {
-/// AUTHENTICATION_FAILED }` (workload-auth §7).
+/// AUTHENTICATION_FAILED }`.
 async fn authorize_hello(state: &SharedState, client_id: ClientId) -> Result<(), ConnectionClose> {
     let identity = state.with(|s| {
         let peer = s.clients().peer_identity(client_id).cloned()?;
@@ -290,7 +292,7 @@ async fn authorize_hello(state: &SharedState, client_id: ClientId) -> Result<(),
         });
     };
     // A bearer revoked or expired since its upgrade mints nothing
-    // (workload-auth §7).
+    //.
     let bearer = state.with(|s| s.bearer_admission(client_id).cloned());
     if bearer.is_some_and(|bearer| !matches!(bearer.standing(), Some(Standing::Active { .. }))) {
         warn!(
@@ -325,7 +327,7 @@ async fn authorize_hello(state: &SharedState, client_id: ClientId) -> Result<(),
         return Ok(());
     }
     let engine = state.with(|s| s.config().policy_engine.clone());
-    // workload-auth §5: the grant comes from the verified identity alone.
+    // The grant comes from the verified identity alone.
     match engine.authorize_hello(&peer, credential.as_ref()).await {
         Ok(grant) => {
             state.with_mut(|s| s.set_connection_grant(client_id, grant));
@@ -355,7 +357,7 @@ fn select_hello_profile(
     client_caps: &ClientCapabilities,
     client_id: ClientId,
 ) -> Result<(Option<BootstrapProfile>, BootstrapLimits), ConnectionClose> {
-    let server_bootstrap = crate::runtime::apps::bootstrap_capabilities(state);
+    let server_bootstrap = crate::runtime::apps::terminal::bootstrap_capabilities(state);
     if client_caps.bootstrap.profiles.as_wire() == 0 {
         debug!(
             ?client_id,

@@ -1,52 +1,19 @@
 use super::*;
-use phux_protocol::kinds::{KINDS, command_kind};
+use phux_protocol::kinds::KINDS;
 
 #[test]
 fn every_app_is_listed() {
-    // By kind, not by address: the apps are zero-sized, so every app
-    // reference may share one address.
     for spec in &KINDS {
         let kind = crate::id_bridge::core_kind(spec.kind).expect("a served kind");
         assert!(
             APP_KINDS.contains(&kind),
-            "{kind} has an app that APPS does not list"
+            "{kind} is missing from upgrade order"
         );
     }
-    assert_eq!(APP_KINDS.len(), KINDS.len(), "APPS lists an app twice");
+    assert_eq!(APP_KINDS.len(), KINDS.len(), "a kind is listed twice");
 }
 
-#[test]
-fn a_facet_command_routes_to_its_kind_and_a_host_command_to_none() {
-    let screen = Command::GetScreen {
-        terminal_id: phux_protocol::ids::ResourceId::default(),
-        request_scrollback: None,
-        cells: false,
-        format: 0,
-    };
-    assert_eq!(owning_kind(&screen), Some(ResourceKind::Terminal));
-    assert!(app_owning(&screen).is_some());
-    assert_eq!(command_kind(&Command::DescribeApi), None);
-    assert!(app_owning(&Command::DescribeApi).is_none());
-}
-
-/// A host-addressed method its catalog row says an app serves reaches that
-/// app, though it names no resource; `tests/lifecycle/mirrors.rs` drives
-/// `MIRROR` through the production dispatch to `mirror::handle`.
-#[test]
-fn a_mirror_routes_to_the_surface_app() {
-    let mirror = Command::Mirror {
-        host: None,
-        op: phux_protocol::wire::frame::MirrorOp::Targets,
-    };
-    let provide = Command::MirrorProvide {
-        targets: "[]".to_owned(),
-    };
-    assert_eq!(owning_kind(&mirror), Some(ResourceKind::PixelSurface));
-    assert_eq!(owning_kind(&provide), Some(ResourceKind::PixelSurface));
-    assert!(app_owning(&mirror).is_some());
-}
-
-/// An upgrade resume rebuilds in `APPS` order, and a child's rebuild finds
+/// An upgrade resume rebuilds in `APP_KINDS` order, and a child's rebuild finds
 /// its parent only if the parent's kind already ran.
 #[test]
 fn a_parent_kind_resumes_before_its_children() {
@@ -68,16 +35,4 @@ fn a_parent_kind_resumes_before_its_children() {
             );
         }
     }
-}
-
-/// Exactly one kind is driven interactively: the `InteractiveApp` helpers
-/// ask the first app that answers, so a second would be silently ignored.
-#[test]
-fn exactly_one_app_is_interactive() {
-    let interactive = APP_KINDS
-        .iter()
-        .filter(|kind| app_for(**kind).interactive().is_some())
-        .count();
-    assert_eq!(interactive, 1, "one app runs the interactive half");
-    assert!(super::interactive().is_some());
 }

@@ -218,21 +218,6 @@ pub(super) const fn fleet_projection_dirty(outcome: &FrameOutcome) -> bool {
         || outcome.sessions.is_some()
 }
 
-/// Warn notices for every replay report that did not end in delivery.
-pub(super) fn undelivered_notices(
-    reports: impl IntoIterator<Item = crate::attach::input_replay::ReplayReport>,
-) -> impl Iterator<Item = Notice> {
-    reports
-        .into_iter()
-        .filter(|report| {
-            !matches!(
-                report.disposition,
-                crate::attach::input_replay::ReplayDisposition::Delivered
-            )
-        })
-        .map(|report| Notice::warn(report.notice_line()))
-}
-
 /// What a whole-view paint drew: every tile at its rect, inside this viewport
 /// and sidebar reservation, with or without the floating box. Equal keys mean
 /// an in-place pane repaint covers every cell a clear would.
@@ -255,6 +240,9 @@ pub(super) struct SessionLoop {
     /// Whether the server advertised `ORGANIZATION`: the session's
     /// arrangement is a record edited over [`Self::arrangement`].
     organization_supported: bool,
+    /// Whether the server advertised `SLOT_TABS`, so a written arrangement
+    /// keeps its slot tabs.
+    slot_tabs_supported: bool,
     /// The attached session's arrangement record over a dedicated control
     /// connection; `None` keeps the legacy `phux.tui.layout/v1` key.
     arrangement: Option<crate::attach::arrangement_link::ArrangementLink>,
@@ -450,25 +438,6 @@ impl SessionLoop {
         id
     }
 
-    /// Put `notices` on the status bar, or trace them when there is no bar.
-    /// True when any was shown.
-    fn show_notices(&mut self, notices: impl IntoIterator<Item = Notice>) -> bool {
-        let now = std::time::Instant::now();
-        let mut shown = false;
-        for notice in notices {
-            if let Some(sb) = self.settings.status_bar.as_mut() {
-                shown |= sb.set_notice(notice, now);
-            } else {
-                tracing::info!(
-                    severity = ?notice.severity,
-                    text = %notice.text,
-                    "status-bar notice dropped: no status bar configured",
-                );
-            }
-        }
-        shown
-    }
-
     /// Build every session-scoped local for one attach entry.
     /// `carried_sidebar` is the sidebar state carried by a `switch-session`.
     #[allow(
@@ -515,6 +484,9 @@ impl SessionLoop {
             organization_supported: negotiated
                 .server_features_ext
                 .contains(phux_protocol::ServerFeatureExt::Organization),
+            slot_tabs_supported: negotiated
+                .server_features_ext
+                .contains(phux_protocol::ServerFeatureExt::SlotTabs),
             arrangement: None,
             peer_reader: None,
             arrangement_read_owed: false,
@@ -635,6 +607,8 @@ pub(super) use inventory::answers::{
     unexplained_unreachable_notices,
 };
 mod focus;
+mod notices;
+use notices::undelivered_notices;
 mod notify;
 mod paint;
 mod panes;

@@ -347,7 +347,7 @@ pub(crate) fn reload_satellites(state: &crate::state::SharedState) {
             return;
         }
         let ssh = state.with(|s| s.config().server_env.clone().ssh_program());
-        let bootstrap = crate::runtime::apps::bootstrap_capabilities(state);
+        let bootstrap = crate::runtime::apps::terminal::bootstrap_capabilities(state);
         if !state.with_mut(|s| s.federation_mut().ensure_links(ssh, bootstrap)) {
             tracing::warn!("hub: satellites are configured but this server cannot start links");
             return;

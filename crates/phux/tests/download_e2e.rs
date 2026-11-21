@@ -14,23 +14,7 @@ use common::ServerGuard;
 use serde_json::Value;
 
 #[test]
-fn download_help_and_malformed_arguments_do_not_connect_or_write() {
-    let help = common::phux_cmd(runner::phux_bin())
-        .args(["download", "--help"])
-        .output()
-        .unwrap();
-    assert!(help.status.success());
-    let text = String::from_utf8_lossy(&help.stdout);
-    for expected in [
-        "--force",
-        "--timeout",
-        "--json",
-        "--remote",
-        "SHA-256",
-        "HOST:/path",
-    ] {
-        assert!(text.contains(expected), "missing {expected}: {text}");
-    }
+fn malformed_download_arguments_do_not_connect_or_write() {
     let dir = tempfile::tempdir().unwrap();
     let existing = dir.path().join("taken");
     std::fs::write(&existing, b"keep").unwrap();

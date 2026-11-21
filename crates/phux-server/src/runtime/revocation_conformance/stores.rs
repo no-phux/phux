@@ -79,7 +79,7 @@ fn phone_identity(store: &Arc<ReloadingTokenStore>) -> ConnectionIdentity {
 }
 
 async fn phone(fx: &Fixture, store: &Arc<ReloadingTokenStore>) -> Connection {
-    let connection = fx.connect(phone_identity(store), None);
+    let connection = fx.connect(phone_identity(store));
     connection.hello().await;
     connection
 }
@@ -141,7 +141,7 @@ async fn a_bearer_revoked_since_its_upgrade_is_refused_at_hello() {
         let admitted = phone(&fx, &store).await;
 
         crate::auth::revoke_credential(&tokens, TOKEN_ID).unwrap();
-        let late = fx.connect(phone_identity(&store), None);
+        let late = fx.connect(phone_identity(&store));
         late.send(&hello("revocation-conformance"));
         late.wait_for("the HELLO refusal", |frame| {
             matches!(
@@ -153,7 +153,7 @@ async fn a_bearer_revoked_since_its_upgrade_is_refused_at_hello() {
             )
         })
         .await;
-        // workload-auth §7: HELLO's authentication outcome, not a revocation
+        // HELLO's authentication outcome, not a revocation
         // of authority this connection never held.
         late.wait_for("DETACHED { AUTHENTICATION_FAILED }", |frame| {
             matches!(

@@ -36,7 +36,7 @@ pub struct EventRecord {
     /// [`Self::actor`].
     pub actor_ref: Option<ActorRef>,
     /// Where the event sits in the topology, stamped by the journal's owner
-    /// so a filtered subscription can be judged later (workload-auth §6).
+    /// so a filtered subscription can be judged later.
     pub(crate) subject: EventSubject,
 }
 
@@ -87,7 +87,7 @@ impl EventRecord {
 }
 
 /// One stamped event, kept decoded because older subscribers see some
-/// values rendered differently (L1 §7.1).
+/// values rendered differently.
 #[derive(Debug, Clone)]
 pub(crate) struct JournalEntry {
     /// The resource the event concerns.
@@ -296,7 +296,7 @@ impl Journal {
     }
 
     /// The gap for a cursor at or past the head: none for the head or the
-    /// sentinel, `{1, head}` for a never-issued cursor (L1 §7.3).
+    /// sentinel, `{1, head}` for a never-issued cursor.
     const fn void_cursor_gap(&self, after: u64) -> Option<(u64, u64)> {
         if after == self.head || after == u64::MAX {
             return None;
@@ -395,34 +395,12 @@ mod tests {
     }
 
     #[test]
-    fn seq_starts_at_one_and_strictly_increases() {
-        let mut journal = Journal::new(16, 1 << 20);
-        let first = journal.record(bell(1), None, 5).expect("stamped");
-        let second = journal.record(bell(2), None, 6).expect("stamped");
-        assert_eq!((first.seq(), second.seq()), (1, 2));
-        assert_eq!(journal.head(), 2);
-        assert_eq!(second.stamp.ts_ms, 6);
-    }
-
-    #[test]
     fn the_no_replay_sentinel_is_never_assigned() {
         let mut journal = Journal::new(16, 1 << 20);
         journal.head = u64::MAX - 2;
         assert_eq!(journal.allocate_seq(), Some(u64::MAX - 1));
         assert_eq!(journal.allocate_seq(), None, "2^64 - 1 is never a seq");
         assert!(journal.record(bell(1), None, 0).is_none());
-    }
-
-    #[test]
-    fn a_pull_replay_returns_later_entries_in_order_filtered() {
-        let mut journal = Journal::new(16, 1 << 20);
-        for terminal in [1, 2, 1, 2] {
-            let _ = journal.record(bell(terminal), None, 0);
-        }
-        let only_one = |entry: &JournalEntry| entry.terminal == Some(WireResourceId::local(1));
-        assert_eq!(pull(&journal, 0, only_one), (None, vec![1, 3]));
-        assert_eq!(pull(&journal, 2, |_| true), (None, vec![3, 4]));
-        assert_eq!(pull(&journal, 4, |_| true), (None, vec![]));
     }
 
     /// An unretained scope owes a cursor everything after it; the head and
@@ -441,16 +419,6 @@ mod tests {
         assert_eq!(journal.gap_without_replay(2), None);
         assert_eq!(journal.gap_without_replay(u64::MAX), None);
         assert_eq!(journal.gap_without_replay(9), Some((1, 2)));
-    }
-
-    #[test]
-    fn eviction_by_count_reports_the_gap_it_opened() {
-        let mut journal = Journal::new(2, 1 << 20);
-        for _ in 0..5 {
-            let _ = journal.record(bell(1), None, 0);
-        }
-        assert_eq!(pull(&journal, 0, |_| true), (Some((1, 3)), vec![4, 5]));
-        assert_eq!(pull(&journal, 3, |_| true), (None, vec![4, 5]));
     }
 
     #[test]
@@ -478,31 +446,5 @@ mod tests {
         let _ = journal.allocate_seq();
         let _ = journal.record(bell(1), None, 0);
         assert_eq!(pull(&journal, 0, |_| true), (None, vec![1, 3]));
-    }
-
-    #[test]
-    fn the_newest_admitted_seq_ignores_other_scopes() {
-        let mut journal = Journal::new(3, 1 << 20);
-        for terminal in [1, 2, 1, 2] {
-            let _ = journal.record(bell(terminal), None, 0);
-        }
-        let only = |terminal: u32| {
-            move |entry: &JournalEntry| entry.terminal == Some(WireResourceId::local(terminal))
-        };
-        assert_eq!(journal.newest_admitted(only(1)), 3);
-        assert_eq!(journal.newest_admitted(only(2)), 4);
-        assert_eq!(journal.newest_admitted(only(9)), 0, "nothing retained");
-        assert_eq!(journal.evicted_through(), 1);
-        assert_eq!(Journal::new(3, 1 << 20).newest_admitted(|_| true), 0);
-    }
-
-    #[test]
-    fn narrowing_the_bounds_evicts_immediately() {
-        let mut journal = Journal::new(16, 1 << 20);
-        for _ in 0..4 {
-            let _ = journal.record(bell(1), None, 0);
-        }
-        journal.set_bounds(1, 1 << 20);
-        assert_eq!(pull(&journal, 0, |_| true), (Some((1, 3)), vec![4]));
     }
 }

@@ -9,9 +9,6 @@ use std::collections::HashSet;
 use proptest::prelude::*;
 
 use super::*;
-use crate::layout::legacy::LAYOUT_ENVELOPE_VERSION;
-use crate::layout::legacy::serialize::{CborLayoutNode, CborResourceId, CborWorkspaceEnvelope};
-use serde::Serialize;
 
 fn t(id: u32) -> ResourceId {
     ResourceId::local(id)

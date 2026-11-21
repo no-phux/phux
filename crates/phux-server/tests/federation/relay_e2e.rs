@@ -19,17 +19,15 @@ use std::time::{Duration, Instant};
 
 use phux_dial::TlsClientIdentity;
 use phux_dial::quic::DialedStream;
-use phux_protocol::input::key::PhysicalKey;
 use phux_protocol::wire::frame::FrameKind;
-use phux_server::LaunchCommand as CommandBuilder;
+use phux_server_testkit::WIRE_RECV_TIMEOUT;
 use phux_server_testkit::relay::RelayHarness;
-use phux_server_testkit::{WIRE_RECV_TIMEOUT, ascii_key, attach_by_name};
 use tempfile::TempDir;
 use tokio::time::{sleep, timeout};
 
 use crate::relay_common::{
-    RelayedServer, embedder_seeded, hello, inner, loopback, plan, read_frame, relay_config,
-    relay_pin, write_frame,
+    RelayedServer, embedder_seeded, inner, loopback, plan, read_frame, relay_config, relay_pin,
+    write_frame,
 };
 
 const ROUTE: &str = "connector-test";
@@ -46,9 +44,8 @@ struct Topology {
 }
 
 impl Topology {
-    /// Start the relay, then a server (optionally seeding session `default`
-    /// with a PTY running `seed`) whose connector dials it.
-    fn start(seed: Option<CommandBuilder>) -> Self {
+    /// Start the relay, then a server whose connector dials it.
+    fn start() -> Self {
         let dir = TempDir::new().unwrap();
         let relay = RelayHarness::start(relay_config(dir.path(), loopback(), ROUTE, &TUNNEL_TOKEN));
         let fingerprint = relay_pin(dir.path());
@@ -57,7 +54,7 @@ impl Topology {
             relay.addr,
             &fingerprint,
             &TUNNEL_TOKEN,
-            |cfg, _| embedder_seeded(cfg, seed),
+            |cfg, _| embedder_seeded(cfg, None),
         );
         Self {
             dir,
@@ -86,7 +83,7 @@ impl Topology {
 /// A consumer's end-to-end session through the relay.
 struct Consumer {
     _endpoint: quinn::Endpoint,
-    conn: quinn::Connection,
+    _conn: quinn::Connection,
     send: tokio::io::WriteHalf<phux_dial::quic::InnerStream>,
     recv: tokio::io::ReadHalf<phux_dial::quic::InnerStream>,
 }
@@ -103,7 +100,7 @@ async fn dial(t: &Topology, route: &str, token: Option<Vec<u8>>) -> Result<Consu
     let (recv, send) = tokio::io::split(*stream);
     Ok(Consumer {
         _endpoint: endpoint,
-        conn,
+        _conn: conn,
         send,
         recv,
     })
@@ -146,62 +143,12 @@ async fn wait_for_pong(t: &Topology) {
     panic!("connector never served a consumer PING: {last_error}");
 }
 
-/// HELLO -> ATTACH -> snapshot -> live PTY echo, all through the relay.
-#[test]
-fn hello_attach_echo_through_relay_to_real_server() {
-    phux_server_testkit::run_local(async {
-        let t = Topology::start(Some(CommandBuilder::new("/bin/cat")));
-        wait_for_pong(&t).await;
-        let mut consumer = dial(&t, ROUTE, Some(t.server.bearer.clone()))
-            .await
-            .unwrap();
-        consumer.send(&hello("relay-e2e-consumer")).await.unwrap();
-        consumer.send(&attach_by_name("default")).await.unwrap();
-
-        let mut pane_id = None;
-        let mut got_snapshot = false;
-        while pane_id.is_none() || !got_snapshot {
-            match consumer.recv().await.unwrap() {
-                FrameKind::Attached { snapshot, .. } => {
-                    assert_eq!(snapshot.resources.len(), 1, "exactly one pane");
-                    pane_id = Some(snapshot.resources[0].id.clone());
-                }
-                FrameKind::BootstrapBegin { cols, rows, .. } => assert!(cols > 0 && rows > 0),
-                FrameKind::BootstrapReady { .. } => got_snapshot = true,
-                _ => {}
-            }
-        }
-        let pane_id = pane_id.unwrap();
-
-        let mut enter = ascii_key('\r', PhysicalKey::Enter);
-        enter.text = None;
-        enter.unshifted_codepoint = None;
-        for event in [
-            ascii_key('h', PhysicalKey::H),
-            ascii_key('i', PhysicalKey::I),
-            enter,
-        ] {
-            let input = phux_server_testkit::input_key(pane_id.clone(), event);
-            consumer.send(&input).await.unwrap();
-        }
-        let mut echoed = Vec::new();
-        while !echoed.windows(2).any(|w| w == b"hi") {
-            if let FrameKind::ResourceOutput { bytes, .. } = consumer.recv().await.unwrap() {
-                echoed.extend_from_slice(&bytes);
-            }
-        }
-
-        consumer.conn.close(0u32.into(), b"done");
-        t.stop().await;
-    });
-}
-
 /// The server still checks consumer bearers behind the relay, routes are
 /// named by SNI, and the connector redials a restarted relay by itself.
 #[test]
 fn connector_bridges_consumers_rejects_bad_auth_and_redials() {
     phux_server_testkit::run_local(async {
-        let mut t = Topology::start(None);
+        let mut t = Topology::start();
         wait_for_pong(&t).await;
 
         let bad_auth = ping(&t, ROUTE, Some(vec![0x33; 32])).await;

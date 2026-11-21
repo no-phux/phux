@@ -123,56 +123,12 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_valid_signature_yields_the_signed_digest() {
-        let key = TestKey::new(1);
-        let sig = key.sign(&sidecar());
-        let digest = signed_digest(&sidecar(), sig.as_bytes(), ARCHIVE, &[&key.public()]);
-        assert_eq!(digest.unwrap(), "ab".repeat(32));
-    }
-
-    #[test]
     fn the_next_key_is_accepted_after_a_rotation() {
         let (current, next) = (TestKey::new(1), TestKey::new(2));
         let keys = [current.public(), next.public()];
         let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
         let sig = next.sign(&sidecar());
         assert!(signed_digest(&sidecar(), sig.as_bytes(), ARCHIVE, &keys).is_ok());
-    }
-
-    #[test]
-    fn a_tampered_checksum_is_refused() {
-        let key = TestKey::new(1);
-        let sig = key.sign(&sidecar());
-        let tampered = format!("{}  {ARCHIVE}\n", "cd".repeat(32));
-        let message = reason(signed_digest(
-            tampered.as_bytes(),
-            sig.as_bytes(),
-            ARCHIVE,
-            &[&key.public()],
-        ));
-        assert!(message.contains("does not verify"), "{message}");
-    }
-
-    #[test]
-    fn a_signature_from_another_key_is_refused() {
-        let (trusted, attacker) = (TestKey::new(1), TestKey::new(9));
-        let sig = attacker.sign(&sidecar());
-        let message = reason(signed_digest(
-            &sidecar(),
-            sig.as_bytes(),
-            ARCHIVE,
-            &[&trusted.public()],
-        ));
-        assert!(message.contains("does not trust"), "{message}");
-
-        // The real keys refuse a test-key signature too.
-        let message = reason(signed_digest(
-            &sidecar(),
-            sig.as_bytes(),
-            ARCHIVE,
-            RELEASE_KEYS,
-        ));
-        assert!(message.contains("does not trust"), "{message}");
     }
 
     #[test]

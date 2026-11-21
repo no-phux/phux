@@ -63,14 +63,7 @@ pub(super) fn reload_local_hub() -> HubReload {
     };
     match rt.block_on(ring_config_reload(&socket_path)) {
         Ok(()) => HubReload::Signalled,
-        Err(ReloadRingError::NoServer(phux_client::attach::AttachError::Io(err)))
-            if matches!(
-                err.kind(),
-                std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
-            ) =>
-        {
-            HubReload::NoServer
-        }
+        Err(ReloadRingError::NoServer(err)) if err.is_no_server() => HubReload::NoServer,
         Err(ReloadRingError::NoServer(err)) => HubReload::Failed(err.to_string()),
         Err(ReloadRingError::Unconfirmed(refusal)) => HubReload::Failed(refusal),
     }

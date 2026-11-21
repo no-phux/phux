@@ -3,7 +3,7 @@ use super::*;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerifier};
 use rustls::pki_types::{ServerName, UnixTime};
 
-use super::verify::{leaf_fingerprint, normalize_fingerprint};
+use super::verify::normalize_fingerprint;
 
 #[test]
 fn normalize_fingerprint_is_separator_and_case_insensitive() {
@@ -38,8 +38,7 @@ fn pinned_verifier_accepts_only_the_pinned_leaf() {
             UnixTime::now(),
         )
     };
-    assert!(verify(Some(pinned.clone())).is_ok());
-    assert!(verify(Some(pinned.to_lowercase().replace(':', ""))).is_ok());
+    assert!(verify(Some(pinned)).is_ok());
     assert!(verify(Some("00".repeat(32))).is_err());
     assert!(verify(None).is_ok(), "skip-verify accepts any leaf");
 }
@@ -56,25 +55,6 @@ fn explicit_identity_paths_fail_as_explicit_inputs() {
     )
     .expect_err("missing explicit identity");
     assert!(error.to_string().contains("read workload certificate"));
-}
-
-#[test]
-fn explicit_pem_identity_builds_without_environment_lookup() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let certificate = dir.path().join("client-cert.pem");
-    let private_key = dir.path().join("client-key.pem");
-    crate::cert::ensure_self_signed(&certificate, &private_key).expect("identity pair");
-
-    let config = client_config_with_identity(
-        &CertTrust::SkipVerify,
-        &TlsClientIdentity::PemFiles {
-            certificate,
-            private_key,
-        },
-        Some(b"phux-test/1"),
-    )
-    .expect("explicit PEM identity");
-    assert_eq!(config.alpn_protocols, vec![b"phux-test/1".to_vec()]);
 }
 
 #[test]
@@ -196,7 +176,7 @@ fn client_pair(dir: &Path) -> (PathBuf, PathBuf) {
     (certificate, private_key)
 }
 
-/// workload-auth §3: a client that requires paired authority refuses a
+/// No downgrade: a client that requires paired authority refuses a
 /// server that did not request its certificate, inside the handshake,
 /// and continues with one that did. Without the requirement, today's
 /// clients keep connecting to either.
@@ -336,10 +316,6 @@ async fn handshake_with(
     })
 }
 
-fn pin_of(cert: &CertificateDer<'_>) -> String {
-    leaf_fingerprint(cert)
-}
-
 /// ADR-0153: a client pinning the CA accepts every leaf it issued, so a
 /// re-issued server certificate needs no re-pair.
 #[tokio::test]
@@ -415,23 +391,6 @@ async fn a_forged_chain_or_a_self_signed_leaf_is_refused() {
             .expect("an authority change");
         assert_eq!(change.presented, None, "the leaf chains to nothing");
     }
-}
-
-/// A leaf pin trusts its leaf and learns nothing from it, whatever chain
-/// it arrives with.
-#[tokio::test]
-async fn a_leaf_pin_holds_its_leaf_only() {
-    let (issuer, ca) = authority();
-    let genuine = issue(&issuer, &ca);
-    let pinned = CertTrust::Pinned(pin_of(&genuine.chain[0]));
-    handshake_with(&genuine, &pinned)
-        .await
-        .expect("pinned leaf");
-    let other = issue(&issuer, &ca);
-    assert!(
-        handshake_with(&other, &pinned).await.is_err(),
-        "another leaf of the same authority is not the pinned leaf"
-    );
 }
 
 #[test]

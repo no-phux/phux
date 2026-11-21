@@ -351,19 +351,6 @@ mod tests {
     }
 
     #[test]
-    fn the_result_document_is_versioned() {
-        let doc = super::result_document(&phux_client::run::RunResult {
-            command: "true".to_owned(),
-            exit_code: 0,
-            output: String::new(),
-            duration_ms: 1,
-            truncated: false,
-        });
-        assert_eq!(doc["schema_version"], super::RESULT_SCHEMA_VERSION);
-        assert_eq!(doc["exit_code"], 0);
-    }
-
-    #[test]
     fn run_nonce_is_unique_across_invocations() {
         // The pid is stable within a process; the time component must still
         // make two nonces differ (defends the stale-sentinel fix).

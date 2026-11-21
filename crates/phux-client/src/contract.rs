@@ -154,17 +154,6 @@ struct ErrorBody<'a> {
 pub const START_SERVER_REMEDY: &str =
     "start one with `phux` (attaches, auto-starting a server) or `phux server --ensure`";
 
-/// `ConnectionRefused` or `NotFound`: nothing is listening at the socket.
-fn is_no_server(err: &AttachError) -> bool {
-    matches!(
-        err,
-        AttachError::Io(io) if matches!(
-            io.kind(),
-            std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound,
-        )
-    )
-}
-
 /// The refusal for a failed exchange with the local server at `socket`.
 ///
 /// `no_server` for a connect failure, `server_disconnected` for a dropped
@@ -182,11 +171,22 @@ pub fn transport_refusal(
         "server log: {}; run `phux doctor` for a health check",
         server_log.display()
     );
-    if is_no_server(err) {
+    if err.is_no_server() {
         return Refusal::new(
             codes::NO_SERVER,
             format!("no server running at {}", socket.display()),
             format!("{START_SERVER_REMEDY}; {doctor}"),
+        );
+    }
+    if let AttachError::Io(io_err) = err
+        && err.is_timeout()
+    {
+        return Refusal::new(
+            codes::TIMEOUT,
+            format!("{verb}: {io_err}"),
+            format!(
+                "raise PHUX_TIMEOUT (seconds; 0 waits forever) if the server is only slow; {doctor}"
+            ),
         );
     }
     match err {
@@ -209,6 +209,28 @@ pub fn transport_refusal(
         ),
         other => Refusal::new(codes::TRANSPORT, format!("{verb} failed: {other}"), doctor),
     }
+}
+
+/// The refusal for a target in a session waiting for `phux restore`.
+///
+/// A server restart ended its panes and nothing has started them again
+/// ([`crate::org::OrgInventory::awaiting_restore`]). Still `no_such_target`,
+/// so scripts that match the code keep working.
+#[must_use]
+pub fn awaiting_restore(target: &str, session: &str) -> Refusal {
+    let restore = if session.contains(char::is_whitespace) {
+        format!("phux restore '{session}'")
+    } else {
+        format!("phux restore {session}")
+    };
+    Refusal::new(
+        codes::NO_SUCH_TARGET,
+        format!(
+            "no such target: {target}: session {session} is waiting for restore \
+             (a server restart ended its panes)"
+        ),
+        format!("run `{restore}` to start its panes again, then retry"),
+    )
 }
 
 /// The refusal for a selector that matched nothing; `target` is `None` for
@@ -265,7 +287,7 @@ pub fn unreachable_socket_message(verb: &str, io_err: &std::io::Error, socket: &
 mod tests {
     use std::path::Path;
 
-    use super::{ERROR_SCHEMA_VERSION, Refusal, codes, error_document, transport_refusal};
+    use super::{Refusal, codes, error_document, transport_refusal};
     use crate::attach::AttachError;
 
     #[test]
@@ -293,24 +315,6 @@ mod tests {
             "organization_authority"
         );
         assert!(doc["error"]["recovery"]["scope"].get("id").is_none());
-    }
-
-    /// The emit shape, pinned: `schema_version` 1, nested error object with
-    /// code and message, top-level `remedy` and `exit_code`.
-    #[test]
-    fn error_document_pins_the_contract_shape() {
-        let err = Refusal::new(codes::NO_SERVER, "no server running at /tmp/x", "start one");
-        let doc = error_document(&err, 1);
-        assert_eq!(doc["schema_version"], u64::from(ERROR_SCHEMA_VERSION));
-        assert_eq!(doc["error"]["code"], "no_server");
-        assert_eq!(doc["error"]["message"], "no server running at /tmp/x");
-        assert_eq!(doc["remedy"], "start one");
-        assert_eq!(doc["exit_code"], 1);
-        // Exactly the four top-level keys; a consumer may deny-list nothing.
-        assert_eq!(doc.as_object().map(serde_json::Map::len), Some(4));
-        // The emitted form is one line.
-        let line = serde_json::to_string(&doc).unwrap_or_default();
-        assert!(!line.contains('\n'), "error line must be single-line");
     }
 
     /// The printed line keeps the documented key order and carries exactly

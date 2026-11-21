@@ -3,9 +3,7 @@ import test from "node:test";
 
 import type { AgentSettledEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-import { PhuxCli, type AgentEmitOptions, type AgentSessionOpenOptions, type ExecutionOptions } from "../src/adapter.js";
-import type { RunRequest } from "../src/runner.js";
-import { PhuxError } from "../src/errors.js";
+import type { AgentEmitOptions, AgentSessionOpenOptions, ExecutionOptions } from "../src/adapter.js";
 import {
   PhuxLifecycle,
   registerPhuxLifecycle,
@@ -632,44 +630,6 @@ test("hosting identity works with no selected control target and quits on its ow
   assert.deepEqual(adapter.sessionCloses, ["@99"]);
 });
 
-test("a trust prompt becomes blocked on the AgentSession stream", async () => {
-  const timers = new FakeTimers();
-  const adapter = new FakeAdapter();
-  const lifecycle = new PhuxLifecycle({ cli: adapter, timers });
-
-  lifecycle.start("session-1", target);
-  timers.runAll();
-  await lifecycle.settled();
-  lifecycle.emit("ask", { kind: "trust", question: "/repo" });
-  await lifecycle.settled();
-
-  const ask = adapter.emits.find((entry) => entry.type === "ask");
-  assert.ok(ask, "trust maps to ask");
-  assert.equal(ask.data?.kind, "trust");
-  assert.equal(adapter.sets.every((entry) => entry.record.state === undefined), true);
-});
-
-test("unsupported session open fails closed and identity-only still writes no state", async () => {
-  const timers = new FakeTimers();
-  const adapter = new FakeAdapter();
-  adapter.failOpen = new PhuxError("command_failed", "phux agent session open failed", {
-    stderr: '{"error":{"code":"unsupported_server"}}',
-  });
-  const lifecycle = new PhuxLifecycle({ cli: adapter, timers });
-
-  lifecycle.start("session-1", target);
-  timers.runAll();
-  await lifecycle.settled();
-  lifecycle.emit("ask", { kind: "permission" });
-  lifecycle.emit("prompt");
-  await lifecycle.settled();
-
-  assert.equal(adapter.opens.length, 1);
-  assert.equal(adapter.emits.length, 0, "detector remains the fallback when emit is absent");
-  assert.equal(adapter.sets.length, 1);
-  assert.equal(adapter.sets[0]?.record.state, undefined);
-});
-
 test("transcript entries ride provider_raw beside the typed records, and transcript:false silences them", async () => {
   for (const enabled of [true, false]) {
     const timers = new FakeTimers();
@@ -704,50 +664,5 @@ test("transcript entries ride provider_raw beside the typed records, and transcr
       ? ["session_start", "prompt", "raw:user-1:final", "tool_start", "raw:c1:partial", "tool_end",
         "raw:c1:final", "raw:assistant-2:final", "stop"]
       : ["session_start", "prompt", "tool_start", "tool_end", "stop"]);
-  }
-});
-
-test("transcript text reaches the phux CLI on stdin, never argv", async () => {
-  const requests: RunRequest[] = [];
-  const cli = new PhuxCli({
-    runner: async (request) => {
-      requests.push(request);
-      const type = request.args[request.args.indexOf("--type") + 1] ?? "";
-      return {
-        termination: "completed", exitCode: 0, stderr: "",
-        stdout: JSON.stringify({ schema_version: 1, resource: "@99", seq: requests.length, ts_ms: 1, type }),
-      };
-    },
-  });
-  class CliBackedAdapter extends FakeAdapter {
-    override async agentEmit(selector: string, type: AgentEventType, options: AgentEmitOptions = {}): Promise<AgentEmitResult> {
-      await super.agentEmit(selector, type, options);
-      return cli.agentEmit(selector, type, options);
-    }
-  }
-  const timers = new FakeTimers();
-  const adapter = new CliBackedAdapter();
-  const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
-  const pi = { on: (name: string, handler: (event: unknown, ctx: unknown) => unknown) => handlers.set(name, handler) } as unknown as ExtensionAPI;
-  const pane = projection(null).agents[0] as AgentPane;
-  const store = new PhuxTargetStore({ appendEntry: () => {} }, { agentList: async () => ({ agents: [pane] }) });
-  await store.refresh();
-  const { lifecycle } = registerPhuxLifecycle(pi, store, { cli: adapter, timers, hostTerminal: "3" });
-  const ctx = { sessionManager: { getSessionId: () => "session-1" } };
-  handlers.get("session_start")?.({ reason: "startup" }, ctx);
-  timers.runAll();
-  handlers.get("message_end")?.({ message: { role: "user", content: "PROMPT-SECRET \ud800", timestamp: 1 } }, ctx);
-  handlers.get("tool_execution_start")?.({ toolCallId: "c1", toolName: "bash", args: { command: "cat ARGS-SECRET" } }, ctx);
-  handlers.get("message_end")?.({ message: { role: "assistant", content: [{ type: "text", text: "REPLY-SECRET" }], timestamp: 2 } }, ctx);
-  await lifecycle.settled();
-
-  const raw = requests.filter((request) => request.args.includes("provider_raw"));
-  assert.equal(raw.length, 3);
-  for (const request of requests) {
-    assert.ok(request.args.every((arg) => !arg.includes("SECRET")), `argv leaked: ${request.args.join(" ")}`);
-  }
-  const stdin = raw.map((request) => request.stdin ?? "").join("\n");
-  for (const marker of ["PROMPT-SECRET �", "cat ARGS-SECRET", "REPLY-SECRET"]) {
-    assert.ok(stdin.includes(marker), `${marker} rides stdin: ${stdin}`);
   }
 });

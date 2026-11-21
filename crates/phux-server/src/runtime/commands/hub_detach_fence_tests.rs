@@ -1,5 +1,10 @@
+use phux_protocol::caps::BootstrapLimits;
+use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode, FrameKind};
+use tokio_util::sync::CancellationToken;
+
 use super::*;
 use crate::hub::relay::{HubRelays, RelayHandle, RelaySession};
+use crate::state::{ClientId, Outbound, SharedState};
 
 #[tokio::test]
 async fn cancellation_interrupts_a_blocked_satellite_reply() {
@@ -42,8 +47,9 @@ async fn cancellation_interrupts_a_blocked_satellite_reply() {
 
 #[tokio::test(start_paused = true)]
 async fn timed_out_hub_detach_preserves_resumed_generation_with_shared_observer() {
-    use crate::hub::relay::{ProxySubscription, RELAY_COMMAND_TIMEOUT, RelayRequest};
     use phux_protocol::ids::{BootstrapId, ResourceId, StreamId};
+
+    use crate::hub::relay::{ProxySubscription, RELAY_COMMAND_TIMEOUT, RelayRequest};
     let state = SharedState::new();
     let host = phux_protocol::ids::SatelliteHost::from("sat");
     let (handle, mut mailbox) = RelayHandle::new(host.clone());

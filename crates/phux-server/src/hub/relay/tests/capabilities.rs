@@ -27,6 +27,7 @@ fn ordinary_hub_admission_requires_each_commands_own_extended_bit() {
             Command::Checkout {
                 terminal_id: ResourceId::local(1),
                 request: CheckoutRequest::Status,
+                contract: phux_protocol::checkout::CHECKOUT_CONTRACT,
             },
             ServerFeatureExt::Checkout,
         ),
@@ -70,6 +71,31 @@ fn ordinary_hub_admission_requires_each_commands_own_extended_bit() {
             );
         }
     }
+}
+
+#[test]
+fn hub_forwards_checkout_show_only_to_a_satellite_with_checkout_v2() {
+    let show = Command::Checkout {
+        terminal_id: ResourceId::local(1),
+        request: phux_protocol::checkout::CheckoutRequest::Show {
+            sha: "abcd".to_owned(),
+        },
+        contract: phux_protocol::checkout::CHECKOUT_CONTRACT,
+    };
+    let mut session = negotiated(ServerFeature::ALL);
+    session.set_satellite_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Checkout]));
+    assert!(matches!(
+        session.command_rejection(&show),
+        Some(CommandResult::Error {
+            code: ErrorCode::UnsupportedSatelliteRoute,
+            ..
+        })
+    ));
+    session.set_satellite_features_ext(ServerFeatureExtSet::with(&[
+        ServerFeatureExt::Checkout,
+        ServerFeatureExt::CheckoutV2,
+    ]));
+    assert!(session.command_rejection(&show).is_none());
 }
 
 /// ADR-0124: `retain_secs` crosses only with `RETAIN_ON_EXIT`; the hub
@@ -173,7 +199,7 @@ fn a_conditional_kill_reaches_only_a_satellite_that_evaluates_it() {
     assert_eq!(relayed, command, "the precondition crosses unchanged");
 }
 
-// --- keyed operations and the incarnation fence (L1 §9.1) -----------
+// --- keyed operations and the incarnation fence -----------
 
 pub(super) fn keyed_session(
     features: &[ServerFeature],
@@ -237,6 +263,7 @@ fn hub_refuses_extended_commands_to_a_satellite_without_their_bit() {
     let (target, checkout) = route_to_satellite(&Command::Checkout {
         terminal_id: ResourceId::satellite(host(), 9),
         request: request.clone(),
+        contract: phux_protocol::checkout::CHECKOUT_CONTRACT,
     })
     .expect("CHECKOUT routes to its satellite");
     assert_eq!(target, host());
@@ -245,67 +272,26 @@ fn hub_refuses_extended_commands_to_a_satellite_without_their_bit() {
         Command::Checkout {
             terminal_id: ResourceId::local(9),
             request,
+            contract: phux_protocol::checkout::CHECKOUT_CONTRACT,
         }
     );
-    let get_file = Command::GetFile {
-        host: None,
-        path: "/tmp/deck.pptx".to_owned(),
-        offset: 0,
-        max_bytes: 1,
-    };
-    let read = Command::ServiceHttpRead {
-        exchange: 7,
-        max_bytes: 1,
-    };
-    for (command, bit, name) in [
-        (get_file, ServerFeatureExt::FileDownload, "FILE_DOWNLOAD"),
-        (read, ServerFeatureExt::HostServiceHttp, "HOST_SERVICE_HTTP"),
-        (checkout, ServerFeatureExt::Checkout, "CHECKOUT"),
-    ] {
-        let mut older = RelaySession::new(host(), BootstrapLimits::default());
-        let (wire, mut rx) = send_command(&mut older, command.clone());
-        assert!(wire.is_none(), "an older satellite never sees {command:?}");
-        assert!(matches!(
-            rx.try_recv().expect("typed refusal"),
-            CommandResult::Error {
-                code: ErrorCode::UnsupportedSatelliteRoute,
-                ref message,
-            } if message.contains(&format!("lacks {name}"))
-        ));
-        assert!(older.pending.is_empty());
+    let mut older = RelaySession::new(host(), BootstrapLimits::default());
+    let (wire, mut rx) = send_command(&mut older, checkout.clone());
+    assert!(wire.is_none(), "an older satellite never sees {checkout:?}");
+    assert!(matches!(
+        rx.try_recv().expect("typed refusal"),
+        CommandResult::Error {
+            code: ErrorCode::UnsupportedSatelliteRoute,
+            ref message,
+        } if message.contains("lacks CHECKOUT")
+    ));
+    assert!(older.pending.is_empty());
 
-        let mut newer = RelaySession::new(host(), BootstrapLimits::default());
-        newer.set_satellite_features_ext(ServerFeatureExtSet::with(&[bit]));
-        assert_eq!(
-            forwarded(send_command(&mut newer, command.clone()).0),
-            command
-        );
-    }
-}
-
-#[test]
-fn hub_forwards_keyed_apply_input_to_a_satellite_that_advertises_the_bit() {
-    let (target, command) = route_to_satellite(&apply_input_to(ResourceId::satellite(host(), 9)))
-        .expect("APPLY_INPUT routes to its satellite");
-    assert_eq!(target, host());
+    let mut newer = RelaySession::new(host(), BootstrapLimits::default());
+    newer.set_satellite_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Checkout]));
     assert_eq!(
-        command,
-        apply_input_to(ResourceId::local(9)),
-        "the batch and its operation id cross verbatim"
-    );
-    let fence = crate::hub::operation_fence::OperationFence::default();
-    let mut session = keyed_session(
-        &[ServerFeature::AcknowledgedInput, ServerFeature::KeyedSignal],
-        [1; 16],
-        &fence,
-    );
-    let (wire, _rx) = send_keyed(&mut session, command.clone(), ClientId(4));
-    assert_eq!(forwarded(wire), command);
-    let (wire, _rx) = send_keyed(&mut session, keyed_kill(3), ClientId(4));
-    assert_eq!(
-        forwarded(wire),
-        keyed_kill(3),
-        "a keyed kill crosses with its key; the satellite dedupes it"
+        forwarded(send_command(&mut newer, checkout.clone()).0),
+        checkout
     );
 }
 
@@ -349,14 +335,14 @@ fn satellite_restart_between_attempts_yields_incarnation_changed_and_no_forward(
     let fence = crate::hub::operation_fence::OperationFence::default();
     let features = [ServerFeature::AcknowledgedInput, ServerFeature::KeyedSignal];
     let mut before = keyed_session(&features, [1; 16], &fence);
-    let (wire, _rx) = send_keyed(&mut before, keyed_kill(5), ClientId(4));
-    assert!(wire.is_some(), "the first attempt reaches the satellite");
-    let (wire, _rx) = send_keyed(
-        &mut before,
-        apply_input_to(ResourceId::local(9)),
-        ClientId(4),
-    );
-    assert!(wire.is_some());
+    for first in [keyed_kill(5), apply_input_to(ResourceId::local(9))] {
+        let (wire, _rx) = send_keyed(&mut before, first.clone(), ClientId(4));
+        assert_eq!(
+            forwarded(wire),
+            first,
+            "the first attempt crosses verbatim, key included"
+        );
+    }
 
     let mut after = keyed_session(&features, [2; 16], &fence);
     for retry in [keyed_kill(5), apply_input_to(ResourceId::local(9))] {

@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
-use phux_config::plugin::{self, PluginManifest, PluginPlatform};
+use phux_config::plugin::{self, PluginManifest};
 use phux_plugin::{CommandSpec, PluginActionOutcome, run_command_spec};
 
 use super::lock::{
@@ -43,15 +43,6 @@ use source::{InstallSource, classify_source, source_from_lock};
 /// Per-build-step wall-clock bound. A plugin build that cannot finish in
 /// five minutes should ship prebuilt artifacts instead of hanging the CLI.
 const BUILD_TIMEOUT: Duration = Duration::from_secs(300);
-
-#[cfg(target_os = "linux")]
-const CURRENT_PLATFORM: Option<PluginPlatform> = Some(PluginPlatform::Linux);
-#[cfg(target_os = "macos")]
-const CURRENT_PLATFORM: Option<PluginPlatform> = Some(PluginPlatform::Macos);
-#[cfg(target_os = "windows")]
-const CURRENT_PLATFORM: Option<PluginPlatform> = Some(PluginPlatform::Windows);
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-const CURRENT_PLATFORM: Option<PluginPlatform> = None;
 
 /// `phux plugin install REF [--rev REV] [--subdir PATH] [--disabled] [--json]`.
 pub(super) fn run_install(
@@ -445,7 +436,7 @@ fn run_build_steps(
     manifest: &PluginManifest,
 ) -> Result<(), String> {
     for (index, step) in manifest.build.iter().enumerate() {
-        if !platform_matches(step.platforms.as_deref()) {
+        if !plugin::platforms_allow(step.platforms.as_deref()) {
             continue;
         }
         let label = format!("build step {} ({})", index + 1, step.command.join(" "));
@@ -483,14 +474,6 @@ fn run_build_steps(
         }
     }
     Ok(())
-}
-
-fn platform_matches(platforms: Option<&[PluginPlatform]>) -> bool {
-    match (platforms, CURRENT_PLATFORM) {
-        (None, _) => true,
-        (Some(list), Some(current)) => list.contains(&current),
-        (Some(_), None) => false,
-    }
 }
 
 /// Filesystem-safe directory name for a plugin id (ids allow `:` which

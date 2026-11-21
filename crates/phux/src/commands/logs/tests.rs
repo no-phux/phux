@@ -7,8 +7,7 @@ use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use super::{
-    client_log_target, client_logs_newest_first, client_pid, inventory, json_doc, render_human,
-    tail_file,
+    client_log_target, client_logs_newest_first, inventory, json_doc, render_human, tail_file,
 };
 /// Write a client log and pin its mtime, so "newest" is a controlled
 /// fact rather than a race against the filesystem clock.
@@ -155,14 +154,6 @@ fn json_inventory_schema_is_pinned_at_version_two() {
     assert_eq!(doc["server_log"]["exists"], false);
     assert!(doc["server_log"]["size_bytes"].is_null());
     assert!(doc["server_log"]["modified_unix"].is_null());
-}
-
-/// The pid parse takes exactly the shape the client writer produces.
-#[test]
-fn client_pid_parses_only_the_writers_naming() {
-    assert_eq!(client_pid(Path::new("/s/client-4242.log")), Some(4242));
-    assert_eq!(client_pid(Path::new("/s/client-x.log")), None);
-    assert_eq!(client_pid(Path::new("/s/server.log")), None);
 }
 
 /// A missing file fails with the caller's explanatory message instead
