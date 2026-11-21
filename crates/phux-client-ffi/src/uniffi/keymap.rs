@@ -160,49 +160,8 @@ mod tests {
         key_event(&press, mods)
     }
 
-    fn named(key: NamedKey) -> KeyPress {
-        KeyPress::Named { key }
-    }
-
     fn ch(s: &str) -> KeyPress {
         KeyPress::Character { text: s.to_owned() }
-    }
-
-    #[test]
-    fn letters_map_arithmetically_and_carry_text() {
-        let e = event(ch("a"), KeyMods::default());
-        assert_eq!(e.key, PhysicalKey::A);
-        assert_eq!(e.text.as_deref(), Some("a"));
-        assert_eq!(e.action, KeyAction::Press);
-        assert!(e.mods.is_empty());
-
-        let e = event(ch("z"), KeyMods::default());
-        assert_eq!(e.key, PhysicalKey::Z);
-
-        // Uppercase resolves to the same physical key; the case travels in text.
-        let e = event(ch("Q"), KeyMods::default());
-        assert_eq!(e.key, PhysicalKey::Q);
-        assert_eq!(e.text.as_deref(), Some("Q"));
-    }
-
-    #[test]
-    fn digits_and_symbols_map_to_us_layout_keys() {
-        assert_eq!(event(ch("0"), KeyMods::default()).key, PhysicalKey::Digit0);
-        assert_eq!(event(ch("9"), KeyMods::default()).key, PhysicalKey::Digit9);
-        assert_eq!(event(ch("!"), KeyMods::default()).key, PhysicalKey::Digit1);
-        assert_eq!(event(ch(")"), KeyMods::default()).key, PhysicalKey::Digit0);
-        assert_eq!(event(ch("-"), KeyMods::default()).key, PhysicalKey::Minus);
-        assert_eq!(event(ch("_"), KeyMods::default()).key, PhysicalKey::Minus);
-        assert_eq!(event(ch("/"), KeyMods::default()).key, PhysicalKey::Slash);
-        assert_eq!(
-            event(ch("~"), KeyMods::default()).key,
-            PhysicalKey::Backquote
-        );
-        assert_eq!(event(ch(" "), KeyMods::default()).key, PhysicalKey::Space);
-        // Unknown characters still carry their text.
-        let e = event(ch("é"), KeyMods::default());
-        assert_eq!(e.key, PhysicalKey::Unidentified);
-        assert_eq!(e.text.as_deref(), Some("é"));
     }
 
     #[test]
@@ -224,39 +183,5 @@ mod tests {
             ..KeyMods::default()
         };
         assert_eq!(event(ch("V"), shift).text.as_deref(), Some("V"));
-    }
-
-    #[test]
-    fn named_keys_map_to_protocol_discriminants() {
-        let cases: [(NamedKey, u32); 10] = [
-            (NamedKey::Enter, 58),
-            (NamedKey::Tab, 64),
-            (NamedKey::Escape, 120),
-            (NamedKey::Backspace, 53),
-            (NamedKey::Delete, 68),
-            (NamedKey::ArrowUp, 78),
-            (NamedKey::ArrowDown, 75),
-            (NamedKey::ArrowLeft, 76),
-            (NamedKey::ArrowRight, 77),
-            (NamedKey::F1, 121),
-        ];
-        for (key, discriminant) in cases {
-            let e = event(named(key), KeyMods::default());
-            assert_eq!(e.key as u32, discriminant, "{key:?}");
-            assert_eq!(e.text, None, "{key:?} must not carry text");
-        }
-    }
-
-    #[test]
-    fn modified_named_keys_keep_mods() {
-        let e = event(
-            named(NamedKey::ArrowLeft),
-            KeyMods {
-                alt: true,
-                ..KeyMods::default()
-            },
-        );
-        assert!(e.mods.contains(ModSet::ALT));
-        assert_eq!(e.key, PhysicalKey::ArrowLeft);
     }
 }

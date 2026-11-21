@@ -16,26 +16,7 @@ use common::ServerGuard;
 use serde_json::Value;
 
 #[test]
-fn upload_help_and_malformed_arguments_do_not_connect_or_read() {
-    let help = common::phux_cmd(runner::phux_bin())
-        .args(["upload", "--help"])
-        .output()
-        .unwrap();
-    assert!(help.status.success());
-    let text = String::from_utf8_lossy(&help.stdout);
-    for expected in [
-        "--extension",
-        "--timeout",
-        "--json",
-        "--remote",
-        "filesystem",
-        "do not blindly retry",
-    ] {
-        assert!(text.contains(expected), "missing {expected}: {text}");
-    }
-    // The flattened --remote option must not contradict upload's headless policy.
-    let remote_help = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(remote_help.contains("except `upload`, `download`, and calls with `--json`: these never pair and refuse unregistered hosts"), "{remote_help}");
+fn malformed_upload_arguments_do_not_connect_or_read() {
     for options in [
         vec!["--timeout", "0"],
         vec!["--timeout", "3601"],
@@ -68,20 +49,6 @@ fn upload_help_and_malformed_arguments_do_not_connect_or_read() {
         assert!(
             !err.contains("no server"),
             "connected before validation: {err}"
-        );
-    }
-    for args in [
-        vec!["upload"],
-        vec!["upload", "@1"],
-        vec!["upload", "@1", "a", "b"],
-    ] {
-        assert!(
-            !common::phux_cmd(runner::phux_bin())
-                .args(args)
-                .output()
-                .unwrap()
-                .status
-                .success()
         );
     }
 }

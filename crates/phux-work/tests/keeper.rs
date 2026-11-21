@@ -89,24 +89,6 @@ fn concurrent_callers_share_one_keeper_and_lose_nothing() {
 }
 
 #[test]
-fn replaying_an_operation_through_the_keeper_returns_the_first_result() {
-    let (_root, endpoint, keeper) = start_keeper(Duration::from_millis(300));
-    let client = Client::new(endpoint, None);
-    let request = add("phux", "once");
-    let first = client.add(request.clone()).expect("first");
-    let again = client.add(request).expect("replay");
-    assert!(!first.idempotent_replay);
-    assert!(again.idempotent_replay);
-    assert_eq!(first.objective.id, again.objective.id);
-    let missing = client.show(phux_work::Alias::parse("phux/9").expect("alias"));
-    assert!(
-        matches!(missing, Err(Error::NotFound { .. })),
-        "{missing:?}"
-    );
-    keeper.join().expect("join").expect("keeper");
-}
-
-#[test]
 fn a_second_keeper_for_the_same_store_steps_aside() {
     let (_root, endpoint, first) = start_keeper(Duration::from_millis(500));
     let second = run_keeper(&endpoint, Duration::from_secs(30)).expect("second");
@@ -244,4 +226,46 @@ fn without_a_launcher_a_missing_keeper_is_an_error() {
         archived: false,
     });
     assert!(matches!(result, Err(Error::Keeper(_))), "{result:?}");
+}
+
+#[test]
+fn open_work_does_not_hold_a_keeper_whose_server_is_gone() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let endpoint = endpoint(root.path());
+    let server_alive = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let keeper = {
+        let endpoint = endpoint.clone();
+        let alive = server_alive.clone();
+        thread::spawn(move || {
+            phux_work::run_keeper_with(
+                &endpoint,
+                Duration::from_millis(200),
+                || {},
+                move || alive.load(std::sync::atomic::Ordering::SeqCst),
+            )
+        })
+    };
+    wait_for_socket(&endpoint);
+    let client = Client::new(endpoint, None);
+    let added = client.add(add("phux", "open")).expect("add");
+    client
+        .record_state(StateEdit {
+            alias: added.objective.alias,
+            state: ObjectiveState::Working,
+            expected_revision: added.objective.revision,
+            operation_id: OperationId::generate().expect("id"),
+            actor: "tester".to_owned(),
+            event_kind: None,
+        })
+        .expect("working");
+    thread::sleep(Duration::from_millis(400));
+    assert!(
+        !keeper.is_finished(),
+        "open work holds a keeper while the server lives"
+    );
+    server_alive.store(false, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        keeper.join().expect("join").expect("keeper"),
+        KeeperExit::Idle
+    );
 }

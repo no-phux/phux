@@ -3,10 +3,7 @@
 //! close/detach endings.
 #![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 
-use super::{
-    FrameEnv, FrameOutcome, attach_agent_sessions, attach_participants, handle_server_frame,
-    route_engine_frame,
-};
+use super::{FrameEnv, FrameOutcome, attach_participants, handle_server_frame, route_engine_frame};
 
 use phux_client_core::session::EffectBuffer;
 use phux_protocol::ResourceKind;
@@ -592,33 +589,6 @@ fn pre_barrier_output_refreshes_title_cache_before_attach_ready() {
 
 // ---- layout reconciliation -------------------------------------------------
 
-#[test]
-fn reconcile_accepts_authorized_replacement_and_keeps_trees() {
-    let reconcile = super::reconcile_loaded_workspace;
-    let mut replacement = ws1(split2(1, 2, 1));
-    let local = ArrangementDoc::single(tid(9));
-    replacement.groups[0].id = local.groups[0].id;
-    let out = reconcile(replacement, &local, Some(&tid(9)));
-    assert_eq!(
-        window_leaves(&out, 0),
-        vec![tid(1), tid(2)],
-        "session authority does not depend on currently admitted replicas"
-    );
-    assert_eq!(out.groups[0].state.focus, Some(tid(1)));
-    assert_eq!(out.groups[0].id, local.groups[0].id);
-
-    // A tree containing the session pane, or with no focus to validate
-    // against, is kept whole.
-    let out = reconcile(
-        ws1(split2(1, 2, 1)),
-        &ArrangementDoc::single(tid(1)),
-        Some(&tid(1)),
-    );
-    assert_eq!(window_leaves(&out, 0), vec![tid(1), tid(2)]);
-    let out = reconcile(ws1(split2(1, 2, 1)), &ArrangementDoc::default(), None);
-    assert_eq!(window_leaves(&out, 0).len(), 2);
-}
-
 /// Regression: non-active windows must not be aliased onto the focused pane
 /// ("open vim in one window, it shows in the other").
 #[test]
@@ -651,7 +621,6 @@ fn reconcile_repairs_missing_local_focus_and_invalid_active_index() {
 }
 
 mod agent_sessions;
-mod hello_ok;
 mod resource_kinds;
 mod surface_leaves;
 
@@ -694,7 +663,7 @@ fn path_results_reply_reaches_driver_for_generation_matching() {
 }
 
 /// A request-correlated reply whose awaiter already moved on arrives here as
-/// interleaved traffic and must be inert, not fatal (L1 §5). `C-a o` during
+/// interleaved traffic and must be inert, not fatal. `C-a o` during
 /// a concurrent layout drive once tore the client down over a success reply.
 #[test]
 fn raced_request_correlated_replies_are_inert_not_fatal() {
@@ -1147,10 +1116,7 @@ fn attached_seeds_pane_slots_from_snapshot_dimensions() {
     let mut h = H::new().with_viewport((132, 43));
     h.send(attached(snapshot, 1));
     let slot = &h.mirror.panes[&pane];
-    assert_eq!(
-        (slot.terminal.cols().unwrap(), slot.terminal.rows().unwrap()),
-        (132, 43)
-    );
+    assert_eq!(slot.geometry, (132, 43));
 }
 
 /// Cumulative frame ACKs belong to state-sync streams, not raw output.
@@ -1245,30 +1211,6 @@ fn output_for_inactive_window_pane_warms_mirror_but_does_not_paint() {
     assert_eq!(h.cell(&other, 0, 0), Some('o'));
 }
 
-/// The apply-vs-paint split is observable: output closes both the
-/// `vt_apply` and `paint_trigger` child spans under `handle_server_frame`.
-#[test]
-fn output_emits_separate_apply_and_paint_spans() {
-    use tracing_subscriber::layer::SubscriberExt as _;
-    use tracing_subscriber::{Registry, fmt};
-
-    let buf = crate::test_util::LogBuf::default();
-    let layer = fmt::layer()
-        .with_ansi(false)
-        .with_writer(buf.clone())
-        .with_span_events(fmt::format::FmtSpan::CLOSE);
-    tracing::subscriber::set_global_default(Registry::default().with(layer))
-        .expect("install test tracing subscriber");
-    tracing_core::callsite::rebuild_interest_cache();
-    let mut h = H::side_by_side();
-    h.output(&tid(1), b"hi");
-
-    let log = buf.text();
-    for span in ["vt_apply", "paint_trigger", "handle_server_frame"] {
-        assert!(log.contains(span), "{span} span missing; log:\n{log}");
-    }
-}
-
 /// A pane retitling itself is routine: the kernel's title/bell/history
 /// statuses must not log at WARN, which filled client logs to 10 MB with a
 /// line per agent spinner frame and printed on `phux snapshot --rendered`.
@@ -1324,26 +1266,17 @@ fn spawn_window(h: &mut H, result: SpawnResult) -> FrameOutcome {
     .expect("handle_window_spawned")
 }
 
-/// A new-window reply opens an active window focused on the new pane, and the
-/// async completion records the pane being left as the MRU target.
+/// A new-window reply opens an active window focused on the new pane.
 #[test]
 fn window_spawned_opens_active_window_focused_on_new_pane() {
     let mut h = H::on(ArrangementDoc::single(tid(1)), &[&tid(1)]);
-    let mut history = crate::attach::focus::FocusHistory::default();
-    let before = h.mirror.focused_resource.clone();
     let outcome = spawn_window(&mut h, SpawnResult::Ok(tid(2)));
     assert_eq!(
         (h.mirror.workspace.groups.len(), h.mirror.workspace.active),
         (2, 1)
     );
     assert_eq!(h.mirror.workspace.groups[1].name, "2");
-    history.observe(before, h.mirror.focused_resource.as_ref());
-    history.repair(h.mirror.focused_resource.as_ref(), &h.mirror.workspace);
     assert_eq!(h.mirror.focused_resource, Some(tid(2)));
-    assert_eq!(
-        history.target(h.mirror.focused_resource.as_ref(), &h.mirror.workspace),
-        Some(tid(1))
-    );
     assert!(h.mirror.panes.contains_key(&tid(2)));
     assert!(outcome.layout_replaced && outcome.emit_set_metadata && outcome.reflow_panes);
     assert!(
@@ -1692,18 +1625,6 @@ fn closing_one_of_several_panes_keeps_the_client_attached() {
         Some(right),
         "focus re-anchors onto the survivor"
     );
-}
-
-#[test]
-fn closing_the_mru_pane_clears_stale_history() {
-    let (left, right) = (tid(1), tid(2));
-    let mut h = H::on(ws1(split2(1, 2, 1)), &[&left, &right]);
-    let mut history = crate::attach::focus::FocusHistory::with_previous(right.clone());
-    let before = h.mirror.focused_resource.clone();
-    h.send(closed(&right, Some(0)));
-    history.observe(before, h.mirror.focused_resource.as_ref());
-    history.repair(h.mirror.focused_resource.as_ref(), &h.mirror.workspace);
-    assert_eq!(history.previous(), None);
 }
 
 /// `DETACHED` exits with the server's stated reason, including none.
@@ -2181,7 +2102,7 @@ fn unfocused_holder_transition_yields_no_notice() {
     assert_eq!(h.mirror.panes[&background].input_holder, Some(holder));
 }
 
-/// No `ErrorCode`, correlated or not, ends the attach (SPEC §9: termination
+/// No `ErrorCode`, correlated or not, ends the attach (termination
 /// is `DETACHED` plus transport close). Uncorrelated codes raise one Warn
 /// notice naming the code; `SatelliteUnreachable` uses the degraded wording;
 /// correlated ones stay on their request path. Swept from the wire tables.

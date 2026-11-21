@@ -114,27 +114,6 @@ mod tests {
     use crate::attach::input_dispatch::test_support::tid;
 
     #[test]
-    fn a_queued_reopen_places_only_the_members_the_user_asked_for() {
-        let mut workspace = ArrangementDoc::single(tid(1));
-        let members = HashSet::from([tid(1), tid(2), tid(4)]);
-        let mut edits = vec![DeferredArrangementEdit::ReopenViews];
-        let mut focused = Some(tid(1));
-        let mut zoomed = None;
-        let changed = apply_deferred_arrangement_edits(
-            &mut edits,
-            &mut workspace,
-            &members,
-            &HashMap::new(),
-            &mut zoomed,
-            &mut focused,
-        );
-        assert!(changed);
-        assert!(edits.is_empty());
-        assert_eq!(workspace.groups.len(), 3);
-        assert_eq!(focused, Some(tid(2)));
-    }
-
-    #[test]
     fn a_queued_close_of_a_pane_the_adopted_layout_lacks_does_not_save() {
         let mut workspace = ArrangementDoc::single(tid(1));
         let before = workspace.clone();

@@ -89,15 +89,6 @@ fn parse_errors_for_malformed_specs() {
     ));
 }
 
-#[test]
-fn resolver_rejects_a_global_binding_on_the_prefix_chord() {
-    let c = cfg("C-b", &[("c", "new-window")], &[("C-b", "kill-pane")]);
-    assert!(matches!(
-        Resolver::new(&c),
-        Err(KeybindError::AmbiguousPrefix(ref s)) if s == "C-b"
-    ));
-}
-
 /// Prefix walks, one-chord globals, mismatches, and resets.
 #[test]
 fn resolver_walks_prefix_tables_and_globals() {

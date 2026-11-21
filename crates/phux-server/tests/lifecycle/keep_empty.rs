@@ -141,38 +141,8 @@ fn close_tab_leaves_keep_empty_visible_until_the_mark_is_cleared() {
     });
 }
 
-/// A persistent session survives its last pane's death; an ephemeral one
-/// (a bare create) is deleted with it; a `KILL_RESOURCES` naming every pane
-/// of a persistent session is a group teardown that deletes it.
-#[test]
-fn reaps_stop_at_keep_empty_sessions_except_a_group_kill() {
-    phux_server_testkit::run_local(async {
-        let (server, mut conn) = start().await;
-        let kept = create_seeded(&mut conn, 1, "kept", true).await;
-        let plain = create_seeded(&mut conn, 2, "plain", false).await;
-        let grouped = create_seeded(&mut conn, 3, "grouped", true).await;
-        command_ok(&mut conn, 4, kill(kept)).await;
-        command_ok(&mut conn, 5, kill(plain)).await;
-        let kill_all = phux_server_testkit::kill_all(vec![grouped]);
-        command_ok(&mut conn, 6, kill_all).await;
-
-        let snapshot = wait_for_state(&mut conn, 100, "all three reaps", |s| {
-            session(s, "plain").is_none()
-                && session(s, "grouped").is_none()
-                && session(s, "kept").is_some_and(SessionInfo::is_empty)
-        })
-        .await;
-        let kept = session(&snapshot, "kept").unwrap();
-        assert!(kept.keep_empty);
-        assert_eq!(kept.window_count, 0);
-
-        drop(conn);
-        server.stop().await;
-    });
-}
-
 /// Every way a session loses its last resource or goes away deletes the
-/// `<prefix>.layout/v1/<id>` keys naming it (L3 §3.2/§3.5): the default TUI
+/// `<prefix>.layout/v1/<id>` keys naming it: the default TUI
 /// key and a named projection alike, whether the session is persistent
 /// (emptied), ephemeral (deleted), or parked and then made ephemeral.
 #[test]

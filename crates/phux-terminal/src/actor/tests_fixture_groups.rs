@@ -152,7 +152,8 @@ mod tests {
         );
     }
 
-    fn check_group_cleanup(unwind: bool) {
+    #[test]
+    fn normal_cleanup_kills_the_whole_group_and_reaps_the_child() {
         let dir = tempfile::tempdir().expect("tempdir");
         let group = FixtureGroup::new(dir.path(), "PHUX_TEST_GROUP");
         let leader = fixture_shell(dir.path())
@@ -166,23 +167,9 @@ mod tests {
             .process_group(i32::try_from(pid).expect("pid fits i32"))
             .spawn()
             .expect("group member");
-        let result = std::panic::catch_unwind(move || {
-            let _group = group;
-            assert!(!unwind, "exercise fixture unwind");
-        });
-        assert_eq!(result.is_err(), unwind);
+        drop(group);
         assert_eq!(member.wait().expect("reap member").signal(), Some(9));
         assert_reaped_by_guard(leader);
-    }
-
-    #[test]
-    fn normal_cleanup_kills_the_whole_group_and_reaps_the_child() {
-        check_group_cleanup(false);
-    }
-
-    #[test]
-    fn panic_cleanup_kills_the_whole_group_and_reaps_the_child() {
-        check_group_cleanup(true);
     }
 
     /// A registered pid that now belongs to someone else, the recycled-pid

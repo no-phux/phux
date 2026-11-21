@@ -7,14 +7,10 @@ use std::f32::consts::{PI, TAU};
 use phux_protocol::ids::ResourceId;
 
 use super::{Bee, Cam, Forager, Hive, Pt, Task};
-use crate::playground::{Mood, Rng, hash};
+use crate::playground::{Mood, Rng, ease, hash};
 
 /// One fixed step of scene time: the same scene whatever the frame rate.
 pub const STEP: f32 = 1.0 / 60.0;
-
-fn ease(dt: f32, rate: f32) -> f32 {
-    1.0 - (-dt * rate).exp()
-}
 
 /// Turn angle `a` toward `b` by `k`, the short way round.
 fn ang_to(a: f32, b: f32, k: f32) -> f32 {

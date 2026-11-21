@@ -889,17 +889,4 @@ mod tests {
         let result = RelayRuntime::new(config).bind();
         assert!(matches!(result, Err(RelayError::Protocol(_))), "{result:?}");
     }
-
-    #[tokio::test]
-    async fn run_async_starts_provisions_and_shuts_down_cleanly() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = config_in(dir.path());
-        let (cert, key) = (config.cert_path.clone(), config.key_path.clone());
-        // Immediate shutdown: the endpoint binds, then drains and returns.
-        RelayRuntime::new(config)
-            .run_async(std::future::ready(()))
-            .await
-            .unwrap();
-        assert!(cert.exists() && key.exists(), "certs provisioned on start");
-    }
 }

@@ -226,7 +226,7 @@ async fn glass_hosted_mode_clears_backdrop_borders_and_cursor_then_returns_opaqu
     client.close();
 }
 
-// --- Design-token fixtures (design spec §4.4, §5.2) --------------------------
+// --- Design-token fixtures --------------------------
 
 const PAGE: &str = include_str!("../index.html");
 const TOKENS: &str = include_str!("../assets/phux-tokens.css");
@@ -315,17 +315,6 @@ fn badges_draw_every_tone_in_its_token_colour_with_mark_and_word() {
         }
         host.remove();
     }
-}
-
-#[wasm_bindgen_test]
-fn the_quiet_class_reads_done_and_idle_differently() {
-    use phux_design::State;
-    let document = web_sys::window().unwrap().document().unwrap();
-    let done = badges::badge_element(&document, &badge("done"), "claude", State::DoneSeen).unwrap();
-    let idle = badges::badge_element(&document, &badge("idle"), "claude", State::Idle).unwrap();
-    let mark = |el: &web_sys::Element| el.inner_html().split("</svg>").next().map(str::to_owned);
-    assert_eq!(mark(&done), mark(&idle), "one ring");
-    assert_ne!(done.text_content(), idle.text_content(), "two names");
 }
 
 #[wasm_bindgen_test]

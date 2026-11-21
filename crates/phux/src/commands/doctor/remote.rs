@@ -131,6 +131,54 @@ pub(super) fn remote_listeners_check(
     }
 }
 
+/// Are the replies of a bound listener leaving this host? A listener can be
+/// bound and answer a local probe while the host has no return route to its
+/// peers (a LAN route shadowing the tailnet one). `None` when the server
+/// reports no failed reply.
+pub(super) fn check_remote_replies(socket_path: &std::path::Path) -> Option<Check> {
+    if !socket_path.exists() {
+        return None;
+    }
+    let rt = cli_runtime().ok()?;
+    let view = rt
+        .block_on(phux_client::state::get_state(socket_path))
+        .ok()?;
+    remote_replies_check(view.snapshot().listeners()?)
+}
+
+/// The pure half of [`check_remote_replies`].
+pub(super) fn remote_replies_check(
+    report: &phux_protocol::wire::RemoteListenersReport,
+) -> Option<Check> {
+    let detail = report
+        .listeners
+        .iter()
+        .filter_map(|slot| {
+            let failure = slot.reply_failure.as_ref()?;
+            let at = slot
+                .addr
+                .as_ref()
+                .map_or_else(String::new, |addr| format!(" at {addr}"));
+            Some(format!("{}{at}: {failure}", slot.transport))
+        })
+        .collect::<Vec<_>>();
+    if detail.is_empty() {
+        return None;
+    }
+    Some(Check::warn(
+        "remote-replies",
+        format!(
+            "listening, but replies are not leaving this host ({})",
+            detail.join("; ")
+        ),
+        "the listener and the pairing are fine: this host has no working route back to that \
+         peer. Check which route it takes (`route -n get <peer>` on macOS, `ip route get \
+         <peer>` on Linux) and that the overlay's routes are installed (`tailscale status`); \
+         a LAN or VPN route covering the overlay's range is the usual cause. No re-pair or \
+         restart is needed",
+    ))
+}
+
 /// The remedy for the listeners `unhealthy` names, most specific cause first.
 pub(super) fn remote_listeners_hint(
     unhealthy: &[&phux_protocol::wire::RemoteListenerSlot],

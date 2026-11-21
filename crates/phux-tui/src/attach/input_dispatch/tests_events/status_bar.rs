@@ -19,6 +19,7 @@ fn painted_windows_bar(position: Position) -> StatusBarPainter {
         branch: None,
         exited: None,
         badge: None,
+        glyphs: crate::render::theme::Glyphs::default(),
     };
     painter.set_windows(vec![tab("bash", true), tab("vim", false)]);
     paint(&mut painter, 80);

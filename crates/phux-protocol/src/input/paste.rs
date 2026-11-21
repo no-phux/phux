@@ -1,6 +1,6 @@
 //! Paste input: `PasteEvent` and the caller's `PasteTrust` claim, which the
-//! server uses to gate `paste::is_safe` before `paste::encode` (SPEC §9.4,
-//! ADR-0008).
+//! server uses to gate `paste::is_safe` before `paste::encode`
+//! (ADR-0008).
 
 #![allow(clippy::module_name_repetitions)]
 
@@ -15,7 +15,7 @@ pub enum PasteTrust {
     Untrusted = 1,
 }
 
-/// A paste event from a client (SPEC §9.4). Bracketing is the server's call
+/// A paste event from a client. Bracketing is the server's call
 /// from the pane's DEC 2004 state. `Debug` never prints the payload
 /// (ADR-0028): clipboards carry secrets.
 #[derive(Clone, PartialEq, Eq)]

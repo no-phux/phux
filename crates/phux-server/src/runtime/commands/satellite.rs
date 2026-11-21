@@ -1,16 +1,20 @@
 //! Satellite command relay.
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the split command modules share the parent command namespace"
-)]
 
-use super::*;
+use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode, FrameKind};
+use tracing::debug;
+
+use crate::runtime::commands::routing::CommandContext;
+use crate::runtime::commands::satellite_lease::{
+    SatelliteLeaseTarget, relay_satellite_acquire_input, relay_satellite_attach,
+    relay_satellite_release_input, relay_satellite_route_input,
+};
+use crate::state::{ClientId, Outbound, SharedState};
 
 /// Relay one satellite-targeted command (already rewritten to `Local` ids)
 /// over the hub link and send the correlated `COMMAND_RESULT` (ADR-0007 §4).
 /// Stream-establishing commands register a hub-side proxy subscriber with
 /// the relay; `DETACH_RESOURCE` resolves hub-side. Every hub consumer is one
-/// identity on the satellite, so the hub owns lease exclusion (L1 §9.1).
+/// identity on the satellite, so the hub owns lease exclusion.
 #[allow(
     clippy::too_many_arguments,
     reason = "caller identity, routed command, mailbox, and negotiated bootstrap context"
@@ -96,7 +100,7 @@ pub(super) async fn handle_satellite_command(
                 )
                 .await
             }
-            // L1 §9.1: `APPLY_INPUT` crosses the same lease gate as
+            // `APPLY_INPUT` crosses the same lease gate as
             // `ROUTE_INPUT`, then the satellite owns its dedupe.
             Command::RouteInput { terminal_id, .. } | Command::ApplyInput { terminal_id, .. } => {
                 relay_satellite_route_input(
@@ -127,8 +131,9 @@ async fn refuse_satellite_watch(
     relay: &crate::hub::relay::RelayHandle,
     command: &Command,
 ) -> Option<CommandResult> {
-    use crate::policy::filter::admits_satellite_watch;
     use phux_protocol::wire::frame::ControlClass;
+
+    use crate::policy::filter::admits_satellite_watch;
     let (Command::AttachResource { terminal_id, .. }
     | Command::SubscribeResourceEvents { terminal_id, .. }
     | Command::GetScreen { terminal_id, .. }) = command
@@ -164,7 +169,7 @@ async fn refuse_satellite_watch(
     })
 }
 
-/// ADR-0109 (L1 §5.2.1): the resource `command` attaches, drives, or reads,
+/// ADR-0109: the resource `command` attaches, drives, or reads,
 /// which counts as attaching it for `UNATTACHED_SINCE_SPAWN` whether or not
 /// the command then succeeds.
 const fn used_resource(command: &Command) -> Option<&phux_protocol::ids::ResourceId> {
@@ -209,7 +214,7 @@ fn note_satellite_use(
 }
 
 /// Relay a `KILL_RESOURCE_IF` once the hub has checked the half of
-/// `UNATTACHED_SINCE_SPAWN` only it can see (ADR-0109, L1 §9.1); the
+/// `UNATTACHED_SINCE_SPAWN` only it can see (ADR-0109); the
 /// satellite checks the rest. A refusal never touches the link.
 async fn relay_conditional_kill(
     state: &SharedState,

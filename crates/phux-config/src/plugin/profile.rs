@@ -8,7 +8,7 @@ use super::{
     PluginManifestPane, PluginManifestProfile, PluginProfilePane,
 };
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RawPluginManifestProfile {
     id: String,
@@ -27,7 +27,7 @@ pub(super) struct RawPluginManifestProfile {
     panes: Vec<RawPluginProfilePane>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RawPluginProfilePane {
     id: String,

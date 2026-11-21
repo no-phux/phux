@@ -10,7 +10,7 @@ use tracing::{debug, info};
 use crate::org_wire as ow;
 use crate::state::{ClientId, ServerState, SharedState};
 
-use super::{answer, run_effect};
+use super::{answer, effects::LiveTermination, run_effect};
 
 /// Owner, expected revision, and group count of an arrangement replace,
 /// captured before `op` moves into the command.
@@ -47,14 +47,19 @@ pub(super) fn mutate(
             "arrangement save attempt"
         );
     }
-    // R17: a replaced session arrangement is published under the TUI layout
-    // key for older readers. A placed create publishes after its launch so
-    // the receipt observes the activation the effect recorded.
-    let republish = layout_publication_owner(&op);
+    // A placed create answers after its launch so the receipt observes the
+    // activation the effect recorded.
     let committed = state.with_mut(|s| {
         let actor = s.actor_for(client_id);
         let command = phux_core::Command { operation, op };
-        let commit = s.commit_command_from(&command, &actor, Some(client_id))?;
+        let prepared = s.prepare_commit(&command, &actor)?;
+        let live_termination = LiveTermination::plan(s, prepared.effects())?;
+        let persisted = s.persist_prepared(prepared, 0)?;
+        let mut commit = s.mirror_persisted(persisted, &actor, Some(client_id));
+        if let Some(termination) = live_termination {
+            termination.start(s);
+            commit.applied.effects.clear();
+        }
         let detached: Vec<_> = s
             .take_killed_sessions()
             .into_iter()
@@ -79,38 +84,7 @@ pub(super) fn mutate(
     for effect in std::mem::take(&mut applied.effects) {
         run_effect(state, effect, root_token);
     }
-    state.with_mut(|s| {
-        publish_committed_layout(s, republish, applied.replayed);
-        answer(s, &applied)
-    })
-}
-
-const fn layout_publication_owner(op: &Op) -> Option<phux_core::SessionKey> {
-    match op {
-        Op::ArrangementReplace {
-            owner: phux_core::ArrangementOwner::Session(key),
-            ..
-        } => Some(*key),
-        Op::ResourceCreate {
-            session,
-            placement: Some(_),
-            ..
-        } => *session,
-        _ => None,
-    }
-}
-
-fn publish_committed_layout(
-    s: &mut ServerState,
-    owner: Option<phux_core::SessionKey>,
-    replayed: bool,
-) {
-    if replayed {
-        return;
-    }
-    if let Some(session) = owner.and_then(|key| s.registry().session_id(&key)) {
-        s.publish_arrangement_as_layout(session);
-    }
+    state.with_mut(|s| answer(s, &applied))
 }
 
 /// App support is checked only for a new operation. Receipts remain the
@@ -158,9 +132,11 @@ fn projection_relaunch_refusal(
 }
 
 fn unsupported_launch(kind: phux_core::ResourceKind, capability: &str) -> Option<Refusal> {
-    (!crate::runtime::apps::supports_organization_launch(kind)).then(|| Refusal::Unsupported {
-        capability: capability.to_owned(),
-    })
+    crate::runtime::apps::organization_launcher(kind)
+        .is_none()
+        .then(|| Refusal::Unsupported {
+            capability: capability.to_owned(),
+        })
 }
 
 fn note_arrangement_result(
@@ -230,11 +206,11 @@ pub(super) fn session_kill(
         // journaled before the kill's own events, so the stored journal
         // position counts them. A `Terminate` for one of them would signal
         // the group again after the teardown, so those effects are dropped.
-        let closing = s.resources_closing_with(&live);
-        let leading = u64::try_from(closing.len()).unwrap_or(u64::MAX);
-        let closing_keys: HashSet<_> = closing
-            .iter()
-            .filter_map(|id| s.registry().resource_key(*id))
+        let plan = s.plan_close(&live, phux_protocol::wire::frame::CloseReason::Killed);
+        let leading = u64::try_from(plan.resources().len()).unwrap_or(u64::MAX);
+        let closing_keys: HashSet<_> = plan
+            .resources()
+            .filter_map(|id| s.registry().resource_key(id))
             .collect();
         let actor = s.actor_for(client_id);
         let command = phux_core::Command {
@@ -256,8 +232,7 @@ pub(super) fn session_kill(
         s.suppress_retirement(&member_keys);
         let mut closed = super::super::committed_close::commit_close(
             s,
-            &live,
-            phux_protocol::wire::frame::CloseReason::Killed,
+            plan,
             crate::state::CloseAttribution {
                 actor: Some(client_id),
                 operation_id: None,

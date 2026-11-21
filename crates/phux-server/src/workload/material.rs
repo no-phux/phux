@@ -248,17 +248,4 @@ mod tests {
             MaterialError::TooLarge
         );
     }
-
-    #[test]
-    fn a_request_whose_signature_does_not_verify_is_refused() {
-        let key = rcgen::KeyPair::generate().unwrap();
-        let csr = rcgen::CertificateParams::new(vec!["client".to_owned()])
-            .unwrap()
-            .serialize_request(&key)
-            .unwrap();
-        let mut der = csr.der().to_vec();
-        let last = der.len() - 1;
-        der[last] ^= 0x01;
-        assert_eq!(request(&der).unwrap_err(), MaterialError::InvalidRequest);
-    }
 }

@@ -96,26 +96,6 @@ fn ghostty_overrides_still_use_the_shared_last_line_order() {
 }
 
 #[test]
-fn functional_display_tails_are_not_discarded_during_migration() {
-    for tail in [
-        "display-message -I -t %1",
-        "display-message -I",
-        "display-message -t %1 hi",
-        "display -p hi",
-        "display-message -d 0 hi",
-        "display-message",
-        "display hi there",
-        "display-message '#(not-executed)'",
-        "display-message '#{pane_id}'",
-        "display hi \\; kill-session",
-    ] {
-        let line = format!("bind r source-file ~/.tmux.conf \\; {tail}");
-        let tmux = source(&line, false);
-        assert!(matches!(verdict(&tmux, &line), Verdict::Skip(_)), "{tail}");
-    }
-}
-
-#[test]
 fn clipboard_denial_is_written_and_allowance_remains_the_default() {
     for value in ["off", "external"] {
         let line = format!("set -g set-clipboard {value}");

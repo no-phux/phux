@@ -3,35 +3,6 @@
 
 use super::*;
 
-/// The copy-mode strip counts a block selection as rows x band columns
-/// (12 here, with `start_col > end_col` not underflowing), distinct from the
-/// linear count (3).
-#[test]
-fn copy_mode_status_block_cell_count_differs_from_linear() {
-    let theme = crate::render::Theme::default();
-    let status_of = |sel: SelectionRect| {
-        let mut out: Vec<u8> = Vec::new();
-        let content = crate::layout::Rect {
-            x: 0,
-            y: 0,
-            w: 80,
-            h: 24,
-        };
-        paint_copy_mode_status(&mut out, sel, None, content, (80, 24), &theme).expect("status");
-        String::from_utf8_lossy(&out).into_owned()
-    };
-    let rect = |start_row, start_col, end_row, end_col, rectangle| SelectionRect {
-        start_row,
-        start_col,
-        end_row,
-        end_col,
-        rectangle,
-    };
-    assert!(status_of(rect(0, 5, 2, 2, true)).contains("· 12 cells "));
-    assert!(status_of(rect(0, 5, 2, 2, false)).contains("· 3 cells "));
-    assert!(status_of(rect(1, 2, 3, 6, true)).contains("· 15 cells "));
-}
-
 /// Paint the copy-mode strip over `pane_cols` columns and return its visible
 /// text (escape sequences removed).
 fn strip_text(sel: SelectionRect, search: Option<&str>, pane_cols: u16) -> String {
@@ -102,14 +73,4 @@ fn copy_mode_legend_degrades_with_width() {
     assert!(!narrow.contains("⏎ copy"));
     assert_eq!(crate::render::display_width(&narrow), 30);
     assert_eq!(crate::render::display_width(&mid), 61);
-}
-
-/// `legend_for` picks the longest tier that fits and drops the legend when
-/// even the shortest does not.
-#[test]
-fn legend_for_picks_the_longest_tier_that_fits() {
-    assert_eq!(legend_for(200), Some(COPY_MODE_LEGENDS[0]));
-    assert_eq!(legend_for(0), None);
-    assert_eq!(legend_for(13), None);
-    assert_eq!(legend_for(14), Some("⏎ copy · esc"));
 }

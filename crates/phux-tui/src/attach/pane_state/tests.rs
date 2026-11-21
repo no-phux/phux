@@ -183,17 +183,6 @@ fn republish_at_same_geometry_serves_fresh_rows_without_force_full() {
     );
 }
 
-/// The driver holds exactly one client-local origin. A
-/// second attention jump cannot overwrite it, and return consumes it.
-#[test]
-fn attention_navigation_saves_once_and_consumes() {
-    let mut navigation = AttentionNavigation::default();
-    navigation.save_origin_once(Some(&ResourceId::local(1)));
-    navigation.save_origin_once(Some(&ResourceId::local(2)));
-    assert_eq!(navigation.take_origin(), Some(ResourceId::local(1)));
-    assert_eq!(navigation.take_origin(), None);
-}
-
 /// Input clears the asked flag once; repeats and unknown panes report
 /// false.
 #[test]
@@ -241,5 +230,15 @@ fn an_auto_numbered_window_is_named_after_its_foreground() {
     assert_eq!(
         display_window_name("api", Some(&id), &panes, &agents),
         "api"
+    );
+    // A program-set icon goes in front of either.
+    panes.get_mut(&id).unwrap().program_icon = Some("🦀".to_owned());
+    assert_eq!(
+        display_window_name("1", Some(&id), &panes, &agents),
+        "🦀 npm · phux"
+    );
+    assert_eq!(
+        display_window_name("api", Some(&id), &panes, &agents),
+        "🦀 api"
     );
 }

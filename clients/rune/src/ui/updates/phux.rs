@@ -70,7 +70,7 @@ fn channel_picker(desk: &Desk, t: &Tokens) -> El {
         }))
 }
 
-pub(super) fn settings(desk: &Desk, t: &Tokens, inset: f32) -> El {
+pub(super) fn settings(desk: &Desk, t: &Tokens) -> El {
     let s = &t.space;
     let dim = t.roles.text.dim.paint();
     let note = |words: String| text(words).font(secondary(desk, t)).color(dim).wrap();
@@ -95,7 +95,7 @@ pub(super) fn settings(desk: &Desk, t: &Tokens, inset: f32) -> El {
                 .color(dim)
                 .wrap_anywhere(),
         )
-        .child(toggle(desk, managed, t).px(inset));
+        .child(toggle(desk, managed, t).px(0.0));
     if let Some(cli) = updater.cli.as_ref().filter(|cli| !cli.mutable) {
         let command = cli
             .native_command

@@ -7,10 +7,10 @@
 use phux_core::ids::ResourceId as CoreResourceId;
 use phux_core::process::ExitOutcome;
 use phux_protocol::ids::ResourceId as WireResourceId;
-use phux_protocol::wire::frame::CloseReason;
+use phux_protocol::wire::frame::{CloseReason, CommandResult, ErrorCode};
 use tokio::sync::mpsc;
 
-use crate::state::{ClientId, CloseAttribution, Outbound, ServerState, SharedState};
+use crate::state::{ClientId, CloseAttribution, ClosePlan, Outbound, ServerState, SharedState};
 
 /// One resource a kill closed, captured under the commit lock for its
 /// off-lock `RESOURCE_CLOSED`.
@@ -51,21 +51,31 @@ impl CommittedClose {
     }
 }
 
-/// Close `targets` and every descendant under the caller's lock: mark why,
-/// cancel each actor into its hangup grace, journal each `pane_closed`, and
-/// reap each record, deleting an ephemeral session it empties.
-pub(super) fn commit_close(
+/// Admit a user close against its complete cascade and commit that same set.
+pub(super) fn commit_user_close(
     s: &mut ServerState,
     targets: &[CoreResourceId],
-    reason: CloseReason,
+    attribution: CloseAttribution,
+) -> Result<CommittedClose, CommandResult> {
+    let plan = s.plan_close(targets, CloseReason::Killed);
+    if let Some(tab) = plan.locked_tab(s) {
+        return Err(CommandResult::error(
+            ErrorCode::PreconditionFailed,
+            format!("{tab} is locked; unlock it first"),
+        ));
+    }
+    Ok(commit_close(s, plan, attribution))
+}
+
+/// Commit an admitted close. Session teardown can override tab locks.
+pub(super) fn commit_close(
+    s: &mut ServerState,
+    plan: ClosePlan,
     attribution: CloseAttribution,
 ) -> CommittedClose {
-    let closing = s.mark_and_cancel(targets, reason, attribution);
-    // Each resource follows its parent in `closing`; reversed, every child
-    // is journaled and reaped before the parent that names it.
-    let closes = closing
-        .into_iter()
-        .rev()
+    s.cancel_close_plan(&plan, attribution);
+    let closes = plan
+        .into_resources()
         .filter_map(|resource| close_one(s, resource))
         .collect();
     let killed_clients = s
@@ -82,7 +92,7 @@ pub(super) fn commit_close(
 /// Journal and reap one marked resource; `None` when another closer already
 /// reaped it.
 fn close_one(s: &mut ServerState, resource: CoreResourceId) -> Option<ClosedResource> {
-    let reason = s.begin_resource_close(resource)?;
+    let (reason, attribution) = s.begin_resource_close(resource)?;
     // ADR-0124: a retained pane's close reports the exit it was kept with.
     let exit = s
         .retained()
@@ -93,10 +103,9 @@ fn close_one(s: &mut ServerState, resource: CoreResourceId) -> Option<ClosedReso
     let parent = s
         .resource_parent(resource)
         .map(|parent| s.idspace.intern_resource(parent));
-    // Every subscriber, including `ATTACH_RESOURCE`-only ones (L1 §3.1).
+    // Every subscriber, including `ATTACH_RESOURCE`-only ones.
     let targets = s.terminal_fanout_targets(resource);
     let publication_fences = s.attach_publication_fences(resource);
-    let attribution = s.take_close_attribution(resource);
     crate::runtime::connections::journal_pane_closed(
         s,
         &wire_terminal_id,

@@ -1,25 +1,14 @@
 use phux_core::ids::{ResourceId, SessionId};
 use phux_core::process::ExitOutcome;
 use phux_protocol::ids::SessionId as WireSessionId;
+use phux_protocol::wire::info::projection_key_session;
 
 use super::ServerState;
 
-/// The layout-family key suffix `.layout/v1/<wire session id>` (docs/organization.md,
-/// §3.5), used to find every layout key naming a reaped session.
+/// The layout-family key suffix `.layout/v1/<wire session id>` (docs/organization.md),
+/// used to find every layout key naming a reaped session.
 fn layout_key_suffix(session: WireSessionId) -> String {
     format!(".layout/v1/{}", session.get())
-}
-
-/// The wire session id a `<prefix>.layout/v1/<id>` key names, or `None` for
-/// a non-layout key or a non-canonical id (which the reap would never
-/// match anyway).
-pub(crate) fn layout_key_session_id(key: &str) -> Option<u32> {
-    let (prefix, suffix) = key.rsplit_once(".layout/v1/")?;
-    if prefix.is_empty() || prefix.contains(".layout/v1/") {
-        return None;
-    }
-    let id = suffix.parse::<u32>().ok()?;
-    (suffix == id.to_string()).then_some(id)
 }
 
 impl ServerState {
@@ -36,11 +25,8 @@ impl ServerState {
         {
             return None;
         }
-        let wire_id = layout_key_session_id(key)?;
-        let live = self
-            .idspace
-            .resolve_session(WireSessionId::new(wire_id))
-            .is_some();
+        let wire = projection_key_session(key)?;
+        let live = self.idspace.resolve_session(wire).is_some();
         Some(!live)
     }
 }
@@ -51,7 +37,8 @@ impl ServerState {
     /// free its server-side bookkeeping, descendants included. Returns
     /// whether the server now executes nothing (R13). Idempotent.
     pub fn reap_resource(&mut self, pane: ResourceId) -> bool {
-        let (idle, token) = self.reap_terminal_inner(pane, ExitOutcome::UNKNOWN, false);
+        let token = self.reap_resource_deferring_actor_cancel(pane, ExitOutcome::UNKNOWN, false);
+        let idle = !self.has_live_activation();
         if let Some(token) = token {
             token.cancel();
         }
@@ -61,24 +48,13 @@ impl ServerState {
     /// Reap `pane` but leave its actor running until the caller cancels the
     /// returned token (so a fenced pump can publish the last screen).
     /// `outcome` is how its process ended, as its exit watcher saw it.
-    pub(crate) fn reap_terminal_deferring_actor_cancel(
+    pub(crate) fn reap_resource_deferring_actor_cancel(
         &mut self,
         pane: ResourceId,
         outcome: ExitOutcome,
         preserve_record: bool,
-    ) -> (bool, Option<tokio_util::sync::CancellationToken>) {
-        self.reap_terminal_inner(pane, outcome, preserve_record)
-    }
-
-    fn reap_terminal_inner(
-        &mut self,
-        pane: ResourceId,
-        outcome: ExitOutcome,
-        preserve_record: bool,
-    ) -> (bool, Option<tokio_util::sync::CancellationToken>) {
-        if self.sessions.registry.resource(pane).is_none() {
-            return (!self.has_live_activation(), None);
-        }
+    ) -> Option<tokio_util::sync::CancellationToken> {
+        self.sessions.registry.resource(pane)?;
         let parent = self.resource_parent(pane);
         // A bound descendant still here (no close cascade ran first, e.g. a
         // failed publication) must lose its record, handle, and engine too:
@@ -106,7 +82,7 @@ impl ServerState {
                 .mailbox
                 .try_send(phux_agent_session::parent::AgentParentRequest::RecordInvalidated);
         }
-        (!self.has_live_activation(), token)
+        token
     }
 
     /// Delete every default-Group `<prefix>.layout/v1/<id>` key for the
@@ -143,8 +119,7 @@ impl ServerState {
         // Subscriptions go now; draining pumps remain owned until close.
         // The actor stays available for their final checkpoint captures.
         let token = self.resources.forget_resource(pane);
-        // An unclaimed close reason must not outlive its id.
-        self.forget_close_reason(pane);
+        self.pending_closes.remove(&pane);
         self.retained.forget(pane);
         // No lease change can follow a removed pane.
         self.leases.forget_resource(pane);

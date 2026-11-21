@@ -14,6 +14,14 @@ sessions. A refused handoff offers **Retry server handoff**, without installing
 again. Even if the window shows a remote machine, this updates this computer's
 phux, not the remote server.
 
+An action the connected server is too old for (Lock Tab, Changes, Insert
+Path, What Works Here) sends nothing. The palette lists it as "server too old
+for …", and choosing it says so. On this computer the notice offers **Upgrade
+server**: it installs a due phux release, or else hot-swaps the server to the
+phux already installed (`phux upgrade`). Panes survive and the window
+reconnects on its own. A remote machine's server updates there, with `phux
+update`.
+
 **phux release channel** offers:
 
 - **Follow installed** (the default): keep the CLI's existing channel choice.

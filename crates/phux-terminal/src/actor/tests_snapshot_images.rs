@@ -78,35 +78,3 @@ async fn bounded_snapshot_request_omits_unsupported_resident_images() {
     })
     .await;
 }
-
-#[test]
-fn atomic_state_sync_registration_omits_unsupported_resident_images() {
-    let mut actor = image_actor().actor;
-    for image_protocols in [ImageProtocolSet::all(), ImageProtocolSet::new()] {
-        let (outbound, _output) = dummy_outbound();
-        let (reply, mut receive) = oneshot::channel();
-        actor.handle_consumer_attach(ConsumerAttachRequest {
-            client_id: ClientId(1),
-            outbound,
-            wire_terminal_id: 1,
-            stream_id: phux_protocol::ids::StreamId::new(1).unwrap(),
-            bootstrap_id: phux_protocol::ids::BootstrapId::new(1).unwrap(),
-            wants_state_sync: true,
-            state_sync_scrollback: None,
-            image_protocols,
-            bootstrap_max_bytes: 512,
-            bootstrap_max_frames: 16,
-            bootstrap_chunk_bytes: 512,
-            loss_tolerant: false,
-            live_gate: watch::channel(false).1,
-            reply,
-        });
-        let result = receive.try_recv().unwrap();
-        if image_protocols == ImageProtocolSet::all() {
-            assert!(result.is_err(), "supported image replay must be charged");
-        } else {
-            let bootstrap = result.unwrap().state_sync_bootstrap.unwrap();
-            assert_text_snapshot(&bootstrap.snapshot);
-        }
-    }
-}

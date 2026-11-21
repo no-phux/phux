@@ -47,10 +47,7 @@ fn incompatible_running_server(socket: &std::path::Path) -> bool {
     if !socket.exists() {
         return false;
     }
-    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    else {
+    let Ok(runtime) = crate::commands::build_cli_runtime() else {
         return false;
     };
     runtime

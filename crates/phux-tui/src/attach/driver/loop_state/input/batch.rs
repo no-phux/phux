@@ -1,8 +1,8 @@
 //! Stdin parsing, dispatch batches, and post-input side effects.
 
 use super::super::{
-    AttachError, CarriedSidebar, Connection, FrameKind, LoopExit, SidebarReservation, Step,
-    input_expects_a_reply, view_rects,
+    AttachError, CarriedSidebar, Connection, FrameKind, LoopExit, RepaintAccumulator,
+    SidebarReservation, Step, input_expects_a_reply, view_rects,
 };
 use super::PriorView;
 
@@ -29,6 +29,7 @@ impl super::super::SessionLoop {
         let mut events = std::mem::take(&mut self.input_events);
         self.parser.feed_into(&self.stdin_buf[..n], &mut events);
         self.send_clipboard_reply(conn).await?;
+        self.refresh_default_colors(conn, out, sidebar).await?;
         let step = self.dispatch_batch(conn, out, sidebar, events).await?;
         // A prompt answered in this batch may have allowed a read.
         self.flush_clipboard_query(out)?;
@@ -117,7 +118,12 @@ impl super::super::SessionLoop {
             .await?;
         self.finish_input_side_effects(conn, out, sidebar, &prior, layout_changed)
             .await?;
-        self.settle_input_arrangement(conn, out, sidebar).await
+        // A hidden-view action can request a retry on an otherwise quiet wire.
+        let mut repaint = RepaintAccumulator::default();
+        self.settle_arrangement_read(conn, out, sidebar, &mut repaint)
+            .await?;
+        self.drain_repaint(out, sidebar, &mut repaint);
+        Ok(Step::Continue)
     }
 
     /// Tell the bar whether the resolver is waiting at the prefix and which
@@ -184,6 +190,7 @@ impl super::super::SessionLoop {
         if self.reload_request {
             self.reload_request = false;
             self.reload_config(out, sidebar);
+            Self::query_default_colors(out)?;
         }
         self.handoff_requested_host(conn).await;
         Ok(())

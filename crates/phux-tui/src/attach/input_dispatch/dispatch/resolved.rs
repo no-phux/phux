@@ -3,6 +3,7 @@
 use super::{
     AttachError, ChordOutcome, DeferredArrangementEdit, EventEnv, InputEvent, StageOutcome,
     apply_action_effects, consume_chord, defers_for_layout_read, edits_workspace, run_action,
+    scroll_focused_pane_viewport,
 };
 
 #[allow(
@@ -81,7 +82,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         // ADR-0147: built-in actions first dismiss the floating overlay; for
         // `kill-pane` that is the whole action. An extension must not kill a
         // floating terminal as an implicit side effect of invocation.
-        let extension = resolved.action == crate::attach::plugin_actions::PLUGIN_ACTION_NAME;
+        let extension = resolved.action == phux_config::plugin::actions::PLUGIN_ACTION_NAME;
         let dismissed = if extension || resolved.action == "command-palette" {
             false
         } else {
@@ -99,9 +100,10 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         } else {
             self.focused_resource.as_ref()
         };
-        let effects = run_action(resolved, self.ctx, focused, self.panes);
+        let mut effects = run_action(resolved, self.ctx, focused, self.panes);
         self.ctx.plugin_action_source = phux_plugin::ActionSource::Tui;
-        Ok(apply_action_effects(
+        let scroll = effects.scroll_viewport.take();
+        let changed = apply_action_effects(
             effects,
             self.out,
             self.conn,
@@ -110,8 +112,16 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             self.predict,
             self.panes,
         )
-        .await?
-            || dismissed)
+        .await?;
+        let scrolled = scroll.is_some_and(|delta| {
+            scroll_focused_pane_viewport(
+                self.ctx.engine_kernel,
+                self.panes,
+                self.focused_resource.as_ref(),
+                delta,
+            )
+        });
+        Ok(changed || scrolled || dismissed)
     }
 
     fn block_for_arrangement(&mut self, action: &str) -> bool {

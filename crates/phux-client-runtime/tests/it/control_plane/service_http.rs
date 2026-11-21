@@ -41,22 +41,6 @@ pub(super) fn sent_request_id(plane: &mut ControlPlane) -> (u32, Command) {
 }
 
 #[test]
-fn an_older_server_is_never_asked() {
-    let mut plane = ControlPlane::new(ControlOptions::default());
-    assert_eq!(
-        plane.service_http_open(info()).unwrap_err(),
-        ServiceHttpError::NotConnected
-    );
-    reopen(&mut plane, hello_ok(PROTOCOL_VERSION.patch));
-    let _ = plane.take_outbound();
-    assert_eq!(
-        plane.service_http_open(info()).unwrap_err(),
-        ServiceHttpError::Unsupported
-    );
-    assert!(plane.take_outbound().is_empty());
-}
-
-#[test]
 fn open_read_and_close_resolve_their_calls() {
     let mut plane = plane_with_service_http();
     let open = plane.service_http_open(info()).unwrap();

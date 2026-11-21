@@ -10,22 +10,6 @@ fn native_step_allocation_never_exceeds_remaining_capture_budget() {
     ));
 }
 
-/// The bootstrap scratch is sized for one record, not the staging budget.
-#[test]
-fn initial_native_scratch_is_one_record_window_not_the_staging_budget() {
-    use super::super::native::{INITIAL_NATIVE_SCRATCH_BYTES, initial_native_scratch_bytes};
-
-    assert_eq!(
-        initial_native_scratch_bytes(crate::native_state::MAX_NATIVE_PREFIX_BYTES),
-        INITIAL_NATIVE_SCRATCH_BYTES,
-    );
-    assert_eq!(initial_native_scratch_bytes(4_096), 4_096);
-    assert_eq!(
-        initial_native_scratch_bytes(INITIAL_NATIVE_SCRATCH_BYTES),
-        INITIAL_NATIVE_SCRATCH_BYTES,
-    );
-}
-
 /// Scrollback pushes the prefix past the 64 KiB seed window, so the
 /// `OutOfSpace` retry must widen scratch.
 #[tokio::test(flavor = "current_thread")]

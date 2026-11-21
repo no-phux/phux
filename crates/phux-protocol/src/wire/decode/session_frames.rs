@@ -45,7 +45,7 @@ impl Decoder<'_> {
         });
         Ok(FrameKind::Detached {
             reason,
-            // Absent message field = empty, per §7.2.
+            // Absent message field = empty.
             message: message.unwrap_or_default(),
         })
     }

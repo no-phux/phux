@@ -42,7 +42,7 @@ fn code_ink(code: &str, t: &Tokens) -> Color {
     }
 }
 
-/// One file (§4.1.3 OWN row): its status letter, the path in the mono
+/// One file (an OWN row): its status letter, the path in the mono
 /// face, its state and counts; the picked file is the keyboard's cursor.
 fn file_row(file: &Row, index: usize, picked: bool, t: &Tokens) -> El {
     let name = match &file.from {

@@ -170,6 +170,9 @@ pub(super) fn build_server_config(
                 .min(phux_config::MAX_RETAIN_ON_EXIT_MAX),
         },
         cwd_inheritance: defaults.cwd_inheritance,
+        fixed_cwd: defaults
+            .fixed_start_dir()
+            .map(|dir| dir.to_string_lossy().into_owned()),
         term: defaults.term,
         shell,
         login_shell,
@@ -178,6 +181,7 @@ pub(super) fn build_server_config(
         voice,
         restore: phux_config::RestoreCfg::default(),
         forward: phux_config::ForwardCfg::default(),
+        from_programs: phux_config::FromPrograms::Off,
         // Clamped up so the built-in agent-session record write always fits under
         // the generic metadata cap, whatever the config says.
         metadata_value_bytes: limits.metadata_value_bytes.max(
@@ -209,18 +213,6 @@ pub(super) fn build_server_config(
         work_store: crate::commands::mission::client(false).ok().map(Box::new),
         plugin_startup: None,
     }
-}
-
-/// Build the current-thread tokio runtime, or report why it could not be
-/// built.
-fn build_runtime() -> Result<tokio::runtime::Runtime, ExitCode> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|err| {
-            error!("failed to build runtime: {err}");
-            ExitCode::FAILURE
-        })
 }
 
 /// The listener/feature suffix of the "phux server listening on ..." line:
@@ -385,13 +377,14 @@ pub(crate) fn run_server(
     cfg.tailnet_owner = config.policy.tailnet_owner;
     cfg.restore = config.restore.clone();
     cfg.forward = config.forward.clone();
+    cfg.from_programs = config.notifications.from_programs;
     cfg.plugin_startup = Some(Box::new(phux_server::plugin_startup::config_from(
         &config_loader::config_path(),
         &config.plugins,
         &phux_config::instance::state_dir(),
     )));
 
-    let rt = match build_runtime() {
+    let rt = match crate::commands::cli_runtime() {
         Ok(rt) => rt,
         Err(code) => return code,
     };

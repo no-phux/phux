@@ -208,21 +208,7 @@ fn report_delivered(json: bool, label: &str, outcome: &PromptOutcome, keys: usiz
         "operation_id": outcome.operation_id,
         "attempts": outcome.attempts,
     });
-    match serde_json::to_string_pretty(&document) {
-        Ok(rendered) => {
-            outln!("{rendered}");
-            ExitCode::SUCCESS
-        }
-        Err(err) => json_err::emit(
-            true,
-            &json_err::CliError::new(
-                json_err::codes::JSON_SERIALIZE,
-                format!("could not render agent send-keys JSON: {err}"),
-                "report this: a document of strings and numbers cannot fail to serialize",
-            ),
-            crate::exit_codes::EXIT_FAILURE,
-        ),
-    }
+    crate::output::json(&document)
 }
 
 /// Map a delivery failure onto its published (ADR-0076) reading.

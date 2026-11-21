@@ -241,7 +241,9 @@ fn fit(at: f32, size: f32, window: f32, gap: f32) -> f32 {
 /// groups.
 const fn group(action: Shortcut) -> u8 {
     match action {
-        Shortcut::Copy | Shortcut::Paste | Shortcut::SelectAll => 0,
+        // A screenshot goes in as Paste does, so it sits with the edits
+        // rather than splitting them with rules of its own.
+        Shortcut::Copy | Shortcut::Paste | Shortcut::Screenshot | Shortcut::SelectAll => 0,
         Shortcut::Find => 1,
         Shortcut::SplitRight | Shortcut::SplitDown => 2,
         Shortcut::LockTab | Shortcut::RenameTab => 3,
@@ -268,16 +270,22 @@ pub fn context_menu(desk: &Desk, at: PointerPress, p: &Tokens) -> El {
         .any(|tab| tab.active && tab.locked);
     let mut menu = kit_menu("context", el(), Some(at)).on_close(|d: &mut Desk| d.close_menu());
     let mut last = None;
+    let mut widest: f32 = 0.0;
     for &action in actions {
-        let Some(item) = context_item(action, locked) else {
+        let Some((title, hint)) = context_words(action, locked) else {
             continue;
         };
         if last.is_some_and(|g| g != group(action)) {
             menu = menu.separator();
         }
         last = Some(group(action));
-        menu = menu.item(item);
+        widest = widest.max(context_row_width(title, &hint, t));
+        menu = menu.item(context_item(action, title, hint, locked));
     }
+    // The kit holds a menu at a fixed minimum and truncates labels to fit,
+    // so "Screenshot to Terminal" read "Screenshot to…". Size it to its
+    // longest row instead, as a native menu fits its items.
+    let menu = menu.min_width(widest);
     let mut layer = Vec::new();
     let anchor = menu.build(&t.kit, &mut layer);
     for overlay in layer {
@@ -286,7 +294,8 @@ pub fn context_menu(desk: &Desk, at: PointerPress, p: &Tokens) -> El {
     anchor
 }
 
-fn context_item(action: Shortcut, locked: bool) -> Option<MenuItem> {
+/// What a context row says: its title and its chord.
+fn context_words(action: Shortcut, locked: bool) -> Option<(&'static str, String)> {
     let command = keys::command(action)?;
     // The lock row says which way it goes for the tab under it.
     let title = match action {
@@ -294,32 +303,42 @@ fn context_item(action: Shortcut, locked: bool) -> Option<MenuItem> {
         Shortcut::LockTab => "Lock Tab",
         _ => command.title,
     };
-    let hint = command.hint();
+    Some((title, command.hint()))
+}
+
+/// The width a kit menu row needs to show `title` and `hint` whole: the
+/// list's inset, the row's padding, the label, a clear gap and the chord,
+/// each in the face the kit sets them in.
+fn context_row_width(title: &str, hint: &str, t: &Tokens) -> f32 {
+    let ty = &t.kit.ty;
+    let (label, _) = rune::text::measure(title, &[], ty.ui_compact, None);
+    let chord = if hint.is_empty() {
+        0.0
+    } else {
+        rune::text::measure(hint, &[], ty.small_medium, None).0 + t.space.s6
+    };
+    // List inset (2 a side), row padding (12 leading, 6 trailing).
+    let chrome = 2.0 * 2.0 + 12.0 + 6.0;
+    (label + chord + chrome).ceil()
+}
+
+fn context_item(action: Shortcut, title: &'static str, hint: String, locked: bool) -> MenuItem {
     let item = MenuItem::new(title)
         .danger(matches!(action, Shortcut::CloseTerminal | Shortcut::CloseTab))
         // A locked tab refuses to close: say so before the press.
         .disabled(action == Shortcut::CloseTab && locked)
         .on_select_tx(move |d: &mut Desk, tx| d.context_pick(action, tx));
-    Some(if hint.is_empty() {
+    if hint.is_empty() {
         item
     } else {
         item.shortcut(hint)
-    })
-}
-
-fn kind_mark(kind: &str) -> &'static rune::Icon {
-    match kind {
-        "terminal" => &icons::PROMPT,
-        "session" => &icons::WINDOW,
-        "path" => &icons::FOLDER,
-        _ => &icons::BOLT,
     }
 }
 
-/// A command's own glyph, where one says it at a glance; the rest keep
-/// the generic action mark.
-fn action_mark(action: Shortcut) -> &'static rune::Icon {
-    match action {
+/// A command's own glyph, where one says it at a glance. The rest have
+/// none: one generic glyph repeated down every command row says nothing.
+fn action_mark(action: Shortcut) -> Option<&'static rune::Icon> {
+    Some(match action {
         Shortcut::NewTerminal | Shortcut::NewSession => &icons::PLUS,
         Shortcut::Paste | Shortcut::Copy => &icons::CLIPBOARD,
         Shortcut::Find | Shortcut::FindNext | Shortcut::FindPrevious => &icons::SEARCH,
@@ -337,17 +356,29 @@ fn action_mark(action: Shortcut) -> &'static rune::Icon {
         Shortcut::Settings => &icons::SETTINGS,
         Shortcut::Machines => &icons::MACHINES,
         Shortcut::CloseTerminal | Shortcut::CloseTab => &icons::CLOSE,
-        Shortcut::ScrollBottom => &icons::ARROW_DOWN,
-        Shortcut::ScrollTop => &icons::ARROW_UP,
+        Shortcut::ScrollToBottom => &icons::ARROW_DOWN,
+        Shortcut::ScrollToTop => &icons::ARROW_UP,
         Shortcut::Inbox => &icons::INBOX,
         Shortcut::ChangeTheme => &icons::PALETTE,
         Shortcut::RenameSession | Shortcut::RenameTab => &icons::PROMPT,
-        _ => &icons::BOLT,
+        _ => return None,
+    })
+}
+
+/// The glyph for a kind of place. An action without its own glyph has
+/// none, so its title stands alone in the column the glyphs keep aligned.
+fn kind_mark(kind: &str) -> Option<&'static rune::Icon> {
+    match kind {
+        "terminal" | "pane" => Some(&icons::PROMPT),
+        "session" => Some(&icons::WINDOW),
+        "path" => Some(&icons::FOLDER),
+        _ => None,
     }
 }
 
-/// What a row is: an icon, or for a theme a swatch of its colours.
-fn mark(hit: &Hit, washed: bool, t: &Tokens) -> El {
+/// What a row is: an icon, for a theme a swatch of its colours, or for an
+/// action without its own glyph nothing.
+fn mark(hit: &Hit, washed: bool, t: &Tokens) -> Option<El> {
     let size = t.icon.size.md;
     let Target::Theme(id) = hit.item.target else {
         let ink = if washed {
@@ -359,7 +390,7 @@ fn mark(hit: &Hit, washed: bool, t: &Tokens) -> El {
             Target::Action(action) => action_mark(action),
             _ => kind_mark(hit.item.kind),
         };
-        return rune::icon(glyph, size).color(ink.paint()).a11y_hidden();
+        return glyph.map(|glyph| rune::icon(glyph, size).color(ink.paint()).a11y_hidden());
     };
     let theme = id.and_then(crate::theme::find);
     let (fill, ring) = theme.map_or(
@@ -371,15 +402,17 @@ fn mark(hit: &Hit, washed: bool, t: &Tokens) -> El {
             )
         },
     );
-    el().w(size)
-        .h(size)
-        .radius(t.radius.full)
-        .fill(fill)
-        .border(t.space.s0_5, ring)
-        .a11y_hidden()
+    Some(
+        el().w(size)
+            .h(size)
+            .radius(t.radius.full)
+            .fill(fill)
+            .border(t.space.s0_5, ring)
+            .a11y_hidden(),
+    )
 }
 
-/// One ranked result (§4.1.3 OWN): its kind or swatch, the title with the
+/// One ranked result (OWN): its kind or swatch, the title with the
 /// matched characters in the accent's text ink one weight heavier, a
 /// detail, and for a screen its machine. The picked row is the keyboard's
 /// cursor.
@@ -411,11 +444,17 @@ fn hit_row(hit: &Hit, index: usize, picked: bool, phone: bool, t: &Tokens) -> El
         .py(s.s1)
         .px(s.s3)
         .gap(s.s3)
-        // Nested in the palette's `lg` panel by the list's inset (§1.5).
+        // Nested in the palette's `lg` panel by the list's inset.
         .radius(t.nested(t.radius.lg, s.s1))
         .items_center()
         .focusable(true)
         .focus_selected(picked);
+    // A tab's terminals sit indented under its heading.
+    let base = if hit.item.kind == "pane" {
+        base.pl(s.s3 + s.s6)
+    } else {
+        base
+    };
     let base = if picked {
         base.fill(r.wash.current.paint())
     } else {
@@ -426,7 +465,7 @@ fn hit_row(hit: &Hit, index: usize, picked: bool, phone: bool, t: &Tokens) -> El
         .interactive(base)
         .cursor(Cursor::Pointer)
         .on_press_tx(move |d: &mut Desk, tx| d.palette_run_target(target.clone(), tx))
-        .child(el().w(s.s6).center().child(mark(hit, picked, t)))
+        .child(el().w(s.s6).center().children(mark(hit, picked, t)))
         .child(
             rich(title.clone(), spans)
                 .font(t.ty.label)
@@ -447,7 +486,7 @@ fn hit_row(hit: &Hit, index: usize, picked: bool, phone: bool, t: &Tokens) -> El
         .child(detail_text(&hit.item.detail, detail.paint(), t))
 }
 
-/// A row's detail in its voices (§1.4): the session's name in the ui face,
+/// A row's detail in its voices: the session's name in the ui face,
 /// a pane id (`@N`) after it as a machine noun, mono with tabular figures.
 fn detail_text(detail: &str, ink: rune::Color, t: &Tokens) -> El {
     let words = |w: String, font| text(w).font(font).color(ink).truncate();

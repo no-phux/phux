@@ -405,6 +405,7 @@ pub(crate) fn command_samples() -> Vec<(Command, &'static Rule)> {
                 request: crate::checkout::CheckoutRequest::Stage {
                     paths: vec!["src/main.rs".to_owned()],
                 },
+                contract: crate::checkout::CHECKOUT_CONTRACT,
             },
             &C_CHECKOUT,
         ),

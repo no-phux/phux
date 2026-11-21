@@ -1,11 +1,13 @@
 //! One row's text runs as elements. ASCII stays one shaped string on the
 //! cell grid; everything else gets its column back: a line, shade, braille or
 //! Powerline character is drawn from the cell's edges, and any other glyph is
-//! shaped alone and clipped to its cells, so a fallback face's advance can't
-//! shift the text after it or spill onto its neighbours.
+//! shaped alone, set smaller when a fallback face's glyph is wider than its
+//! cells, and clipped to them, so it can't shift the text after it or spill
+//! onto its neighbours.
 
 use phux_client_runtime::draw::TextRun;
 use phux_client_runtime::draw::boxes::{self, Bend, Piece, Rect};
+use rune::text::advance;
 use rune::{Color, El, TextStyle, el, text};
 
 use super::{Metrics, faint, missing};
@@ -110,13 +112,15 @@ impl<'m> Marks<'m> {
         );
     }
 
-    /// A glyph alone, cut at the edges of its cells.
+    /// A glyph alone, fitted to and cut at the edges of its cells.
     fn glyph(&mut self, content: &str, col: u16, cells: u16, style: TextStyle, color: Color) {
         let m = self.metrics;
+        let room = f32::from(cells) * m.cell_w;
+        let style = fitted(content, style, room);
         perf::SHAPED.incr();
         self.els.push(
             el().absolute(f32::from(col) * m.cell_w, 0.0)
-                .size(f32::from(cells) * m.cell_w, m.cell_h)
+                .size(room, m.cell_h)
                 .clip_rounded(0.0)
                 .child(text(content).font(style).color(color).single_line()),
         );
@@ -180,6 +184,22 @@ impl<'m> Marks<'m> {
             Some(quad) => quad.rect.2 = rect.2,
             None => self.quads.push(Quad { rect, color }),
         }
+    }
+}
+
+/// `style` for `content` set alone in `room` points: smaller when its glyph,
+/// usually a fallback face's (⌘ from a font without it), is wider, as other
+/// terminals scale it, so it shows whole instead of cut off. The tracking
+/// that makes the chosen face's advance a cell only pads after a lone glyph.
+fn fitted(content: &str, style: TextStyle, room: f32) -> TextStyle {
+    let wide = advance(content, style);
+    // A hundredth of a point: the chosen face's own glyphs measure the cell.
+    if wide <= room + 0.01 {
+        return style;
+    }
+    TextStyle {
+        size: style.size * (room - style.tracking) / (wide - style.tracking),
+        ..style
     }
 }
 
@@ -293,6 +313,7 @@ mod tests {
     #[test]
     fn symbols_the_chosen_font_lacks_fall_back_to_a_system_face() {
         use super::super::{FAMILIES, FONT_CHOICES, FONTS, mono_family};
+        let _fonts = rune::text::with_families(FAMILIES.0, FAMILIES.1);
         let style = Metrics::new(13.0, 2.0).style(false, false);
         for family in FONT_CHOICES {
             let mut ts = rune::text::TextSystem::new(FONTS, (FAMILIES.0, &mono_family(family)));
@@ -320,6 +341,29 @@ mod tests {
                     "{symbol} in {family:?} is tofu"
                 );
             }
+        }
+    }
+
+    /// A symbol from a face wider than the cell is set smaller and shows
+    /// whole, in every family Settings offers; one that fits is untouched.
+    #[test]
+    fn a_glyph_wider_than_its_cells_is_set_smaller_to_fit() {
+        use super::super::{FAMILIES, FONT_CHOICES, mono_family};
+        for family in FONT_CHOICES {
+            let _fonts = rune::text::with_families(FAMILIES.0, &mono_family(family));
+            let m = Metrics::new(13.0, 2.0);
+            let style = m.style(false, false);
+            for symbol in ["⌘", "⌥", "⇧", "⌃", "M"] {
+                for room in [m.cell_w, m.cell_w / 2.0] {
+                    let fit = fitted(symbol, style, room);
+                    let wide = advance(symbol, fit);
+                    assert!(
+                        wide <= room + 0.01,
+                        "{symbol} in {family:?}: {wide} > {room}"
+                    );
+                }
+            }
+            assert_eq!(fitted("é", style, m.cell_w).size, style.size);
         }
     }
 

@@ -1,6 +1,6 @@
 //! The machines sheet, and the sidebar control that opens it.
 //!
-//! Machine rows are OWN rows on tokens (§4.1.3: kit `List` is label-only);
+//! Machine rows are OWN rows on tokens (kit `List` is label-only);
 //! their actions are kit buttons; the colour swatches are a radio group.
 
 use super::tokens::layout::MACHINES as GEOMETRY;
@@ -41,7 +41,7 @@ pub fn switch(desk: &Desk, p: &Tokens) -> El {
         ))
         .child(
             text(desk.machines.label().to_owned())
-                .font(t.ty.label.semibold().machine())
+                .font(t.ty.label.semibold().host(desk.machines.label()))
                 .color(t.roles.text.text.paint())
                 .truncate()
                 .a11y_hidden(),
@@ -82,7 +82,7 @@ fn chip(
         .min_h(reach(phone, t))
 }
 
-/// A destructive action: the kit danger button (§1.10).
+/// A destructive action: the kit danger button.
 fn danger(
     label: &'static str,
     key: String,
@@ -110,7 +110,7 @@ fn works(machine: Option<String>, phone: bool, t: &Tokens) -> El {
 
 /// What the current machine's row says: how the connection is, and a way
 /// to retry when it's down. Down is the `failed` tone with the word `lost`
-/// when the link is gone (§1.3).
+/// when the link is gone.
 fn current_state(desk: &Desk, t: &Tokens) -> Vec<El> {
     let word = desk.link_word();
     let up = word == "connected";
@@ -262,9 +262,9 @@ fn picker(name: &str, desk: &Desk, t: &Tokens) -> Option<El> {
     Some(group.child(auto))
 }
 
-/// An OWN row (§4.1.3): `row_h` tall at least, `radius.sm`, the hover and
+/// An OWN row: `row_h` tall at least, `radius.sm`, the hover and
 /// press washes, focusable; `current` is the window's own machine, drawn
-/// with §1.10's selected treatment.
+/// with the selected treatment.
 fn row_shell(key: String, current: bool, phone: bool, t: &Tokens) -> El {
     let s = &t.space;
     let shell = pressable(key, t)
@@ -294,8 +294,9 @@ fn row_h(phone: bool, t: &Tokens) -> f32 {
 }
 
 fn name(words: String, t: &Tokens) -> El {
+    let font = t.ty.label.host(&words);
     text(words)
-        .font(t.ty.label.machine())
+        .font(font)
         .color(t.roles.text.text.paint())
         .truncate()
         .min_w(0.0)
@@ -374,7 +375,7 @@ fn peer(peer: &Peer, phone: bool, t: &Tokens) -> El {
             .label(peer.name.clone())
             .on_press(move |d: &mut Desk| d.add_peer(&held))
     } else {
-        // Offline, it has nothing to press: the disabled row (§1.10).
+        // Offline, it has nothing to press: the disabled row.
         row()
             .key(key)
             .w_full()

@@ -115,10 +115,24 @@ pub(super) fn fixtures() -> Vec<(&'static str, FrameKind)> {
                 viewport: ViewportInfo::new(120, 40).with_pixels(Some(1920), Some(1080)),
             },
         ),
+        // VIEWPORT_COLORS — the outer terminal's new default colours.
+        (
+            "snap_viewport_colors",
+            FrameKind::ViewportColors {
+                colors: phux_protocol::caps::TerminalDefaultColors {
+                    foreground: phux_protocol::caps::TerminalColor { r: 1, g: 2, b: 3 },
+                    background: phux_protocol::caps::TerminalColor {
+                        r: 250,
+                        g: 251,
+                        b: 252,
+                    },
+                },
+            },
+        ),
         // ERROR — server-emitted structured error frames; sibling refusal
         // paths share the wire shape. The internal fixture exercises the
         // u16::MAX (=65535) wire value to lock in the high end of the
-        // ErrorCode encoding alongside SPEC §14's `INTERNAL_ERROR = 65535`.
+        // ErrorCode encoding alongside the `INTERNAL_ERROR = 65535`.
         (
             "snap_error_session_not_found",
             FrameKind::Error {

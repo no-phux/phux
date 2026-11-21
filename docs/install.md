@@ -267,7 +267,7 @@ On Arch, install `phux-bin` with pacman where a repository carries it.
 brew install no-phux/tap/phux
 ```
 
-One command. Homebrew taps `no-phux/tap` and installs `phux` and `phux-mcp`. On Homebrew 6 and later that fully qualified name trusts only the `phux` formula, so there is no separate `brew trust` step. Update with `brew upgrade no-phux/tap/phux`.
+Homebrew taps `no-phux/tap` and installs `phux` and `phux-mcp`. On Homebrew 6 and later that name trusts only the `phux` formula, so no `brew trust` step. Update with `brew upgrade no-phux/tap/phux`.
 
 To install by the short name after you have tapped the repository, trust the formula first, then install:
 
@@ -357,7 +357,9 @@ phux completion bash > ~/.local/share/bash-completion/completions/phux
 phux completion fish > ~/.config/fish/completions/phux.fish
 ```
 
-`elvish`, `nu`, and `powershell` work too. For zsh, `~/.zfunc` must be on your `$fpath`. Regenerate the script after an update, or it completes commands the new version doesn't have.
+`elvish`, `nu`, and `powershell` work too. For zsh, `~/.zfunc` must be on your `$fpath`. Regenerate after an update.
+
+Homebrew, the Linux packages and the install script also install `man phux`; `phux man | man -l -` reads it.
 
 ## Build from source
 

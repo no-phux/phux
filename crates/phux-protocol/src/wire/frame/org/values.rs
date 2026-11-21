@@ -32,7 +32,7 @@ pub(super) fn decode_session_record(value: &[u8]) -> Result<SessionRecord, Decod
     let f = Fields::read(value)?;
     Ok(SessionRecord {
         key: f.session()?,
-        lifetime: f.lifetime()?.unwrap_or_default(),
+        lifetime: f.reported_lifetime().unwrap_or_default(),
         name: req(f.name)?,
         awaiting_organization: f.awaiting.unwrap_or(false),
         arrangement: f.arrangement,
@@ -82,7 +82,7 @@ fn encode_evidence(activation: &ActivationInfo, enc: &mut Encoder<'_>) {
 
 pub(super) fn decode_resource_record(value: &[u8]) -> Result<ResourceRecord, DecodeError> {
     let f = Fields::read(value)?;
-    let state = f.state()?;
+    let state = f.state();
     let activation = match (f.activation, f.instance, state) {
         (Some(id), Some(instance), Some(state)) => Some(ActivationInfo {
             id,
@@ -98,7 +98,7 @@ pub(super) fn decode_resource_record(value: &[u8]) -> Result<ResourceRecord, Dec
     Ok(ResourceRecord {
         key: f.resource()?,
         session: f.session()?,
-        on_exit: f.on_exit()?.unwrap_or_default(),
+        on_exit: f.reported_on_exit().unwrap_or_default(),
         name: f.name,
         kind: f.kind.unwrap_or_default(),
         activation,
@@ -274,7 +274,7 @@ pub(in crate::wire) fn encode_committed(committed: &Committed, enc: &mut Encoder
 /// Read a `COMMITTED` value body.
 pub(in crate::wire) fn decode_committed(dec: &mut Decoder<'_>) -> Result<Committed, DecodeError> {
     let f = Fields::read(dec.read_bytes()?)?;
-    let state = f.state()?;
+    let state = f.state();
     Ok(Committed {
         operation: f.operation()?,
         revision: req(f.revision)?,

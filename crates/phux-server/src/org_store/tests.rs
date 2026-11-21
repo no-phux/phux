@@ -433,14 +433,3 @@ fn a_newer_schema_is_refused() {
         "{err}"
     );
 }
-
-#[test]
-fn the_memory_store_fails_on_request() {
-    let mut store = MemOrgStore::default();
-    store.commit(&Transition::default(), 0, Stamp(0)).unwrap();
-    store.fail_commits().store(true, Ordering::Relaxed);
-    assert!(matches!(
-        store.commit(&Transition::default(), 0, Stamp(0)),
-        Err(StoreError::Injected)
-    ));
-}

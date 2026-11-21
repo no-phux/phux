@@ -12,6 +12,9 @@ cp "$root"/scripts/{doctor,setup-rust,install-zig}.sh "$repo/scripts/"
 cp "$root/scripts/lib/dev-toolchain.sh" "$repo/scripts/lib/"
 cp "$root/scripts/lib/output.sh" "$repo/scripts/lib/"
 cp "$root/scripts/lib/apple-toolchain-env.sh" "$repo/scripts/lib/"
+# doctor.sh sources this during rust_tools. The fixture doctor fails closed
+# without the sibling file.
+cp "$root/scripts/lib/mbx-target.sh" "$repo/scripts/lib/"
 cp "$root/rust-toolchain.toml" "$repo/"
 cp "$root/mise.toml" "$repo/"
 cp "$root/.config/zig-toolchain.json" "$repo/.config/"

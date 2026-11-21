@@ -1,5 +1,5 @@
 //! `SPAWN_RESOURCE`: placement, the spawned child's environment and cwd,
-//! `RESOURCE_CLOSED` on exit, `RESIZE_TERMINAL`, and `initial_size`.
+//! `RESIZE_TERMINAL`, and `initial_size`.
 
 use phux_protocol::ids::{GroupId, ResourceId};
 use phux_protocol::input::key::PhysicalKey;
@@ -228,28 +228,6 @@ fn spawned_term_follows_env_then_field_then_default() {
     });
 }
 
-#[test]
-fn pty_exit_emits_resource_closed_with_the_status() {
-    phux_server_testkit::run_local(async {
-        let (server, mut stream) = attached().await;
-        let pane = spawned(&mut stream, 1, sh("read _; exit 42")).await;
-        release(&mut stream, &pane).await;
-        let status = wait_frame(&mut stream, "RESOURCE_CLOSED", |frame| match frame {
-            FrameKind::ResourceClosed {
-                terminal_id,
-                exit_status,
-                ..
-            } if terminal_id == pane => Some(exit_status),
-            _ => None,
-        })
-        .await;
-        assert_eq!(status, Some(42));
-
-        drop(stream);
-        server.stop().await;
-    });
-}
-
 /// `RESIZE_TERMINAL` updates the registry dims a later attach reports; a
 /// correlated `GET_STATE` on the same connection orders after it.
 #[test]
@@ -464,15 +442,15 @@ fn cwd_inheritance_modes_open_spawns_in_the_seed_panes_directory() {
             let dir = TempDir::new().unwrap();
             let dir = dir.path().canonicalize().unwrap();
             let mut seed = LaunchCommand::new("/bin/sh");
-            seed.args(["-c", &format!("cd '{}' && read _", dir.display())]);
+            seed.args(["-c", &format!("cd '{}' && pwd && read _", dir.display())]);
             let server = Server::start(Some("main"), |cfg| {
                 phux_server_testkit::seed_pty(cfg, seed);
                 cfg.cwd_inheritance = mode;
             });
             let mut stream = server.connect().await;
-            attach(&mut stream, "main").await;
-            // Let the seed shell run its `cd` before the server queries it.
-            tokio::time::sleep(std::time::Duration::from_millis(75)).await;
+            let seed = attach(&mut stream, "main").await.focused_resource;
+            // The seed shell's `pwd` proves its `cd` ran before the server queries it.
+            output_containing(&mut stream, &seed, dir.to_str().unwrap().as_bytes()).await;
             let pane = spawned(&mut stream, 1, sh("read _; pwd; read _")).await;
             release(&mut stream, &pane).await;
             output_containing(&mut stream, &pane, dir.to_str().unwrap().as_bytes()).await;

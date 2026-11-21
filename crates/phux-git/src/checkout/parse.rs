@@ -1,6 +1,8 @@
 //! Parsers for Git's machine output and text bounding, free of I/O.
 
-use super::{BINARY_SNIFF, BranchRef, Commit, FileText};
+use std::fmt::Write as _;
+
+use super::{BINARY_SNIFF, BranchRef, Commit, CommitFile, FileDiff, FileText};
 use crate::bounded::Bounded;
 
 /// Status output up to its last complete NUL-terminated record.
@@ -33,40 +35,49 @@ pub(super) struct Counts {
 }
 
 impl Counts {
-    /// `git diff --numstat -z`: `A\tD\tpath\0`, or for a rename
-    /// `A\tD\t\0from\0to\0`; binary files count `-`.
     pub(super) fn parse(out: &[u8], truncated: bool) -> Self {
-        let text = String::from_utf8_lossy(out);
-        let mut records = text.split('\0');
-        let mut by_path = std::collections::HashMap::new();
-        while let Some(record) = records.next() {
-            let mut fields = record.splitn(3, '\t');
-            let (Some(added), Some(deleted), Some(path)) =
-                (fields.next(), fields.next(), fields.next())
-            else {
-                continue;
-            };
-            let path = if path.is_empty() {
-                let _from = records.next();
-                match records.next() {
-                    Some(to) => to,
-                    None => continue,
-                }
-            } else {
-                path
-            };
-            let binary = added == "-" && deleted == "-";
-            by_path.insert(
-                path.to_owned(),
-                (added.parse().ok(), deleted.parse().ok(), binary),
-            );
-        }
+        let by_path = parse_numstat(out)
+            .into_iter()
+            .map(|file| (file.path, (file.added, file.deleted, file.binary)))
+            .collect();
         Self { by_path, truncated }
     }
 
     pub(super) fn get(&self, path: &str) -> Option<&(Option<u32>, Option<u32>, bool)> {
         self.by_path.get(path)
     }
+}
+
+/// `git diff --numstat -z`: `A\tD\tpath\0`, or for a rename
+/// `A\tD\t\0from\0to\0`; binary files count `-`.
+pub(super) fn parse_numstat(out: &[u8]) -> Vec<CommitFile> {
+    let text = String::from_utf8_lossy(out);
+    let mut records = text.split('\0');
+    let mut files = Vec::new();
+    while let Some(record) = records.next() {
+        let mut fields = record.splitn(3, '\t');
+        let (Some(added), Some(deleted), Some(path)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        let (from, path) = if path.is_empty() {
+            match (records.next(), records.next()) {
+                (Some(from), Some(to)) => (Some(from.to_owned()), to),
+                _ => continue,
+            }
+        } else {
+            (None, path)
+        };
+        files.push(CommitFile {
+            path: path.to_owned(),
+            from,
+            added: added.parse().ok(),
+            deleted: deleted.parse().ok(),
+            binary: added == "-" && deleted == "-",
+        });
+    }
+    files
 }
 
 pub(super) fn parse_commit(record: &str) -> Option<Commit> {
@@ -148,6 +159,87 @@ pub(super) fn text_at_line(bytes: &[u8], truncated: bool) -> (String, bool) {
         String::from_utf8_lossy(&bytes[..end]).into_owned(),
         truncated,
     )
+}
+
+/// A diff's text, cut at a line when capped, and whether Git called it binary.
+pub(super) fn file_diff(bytes: &[u8], truncated: bool) -> FileDiff {
+    let (text, truncated) = text_at_line(bytes, truncated);
+    let binary = text
+        .lines()
+        .any(|line| line.starts_with("Binary files ") || line == "GIT binary patch");
+    FileDiff {
+        text,
+        truncated,
+        binary,
+    }
+}
+
+/// The patch `git diff --no-index /dev/null <path>` prints for a new file
+/// with `mode` and contents `bytes`, minus its `index` line (Git omits it
+/// too when the new side comes from stdin). A symlink's bytes are its
+/// target.
+pub(super) fn new_file_patch(path: &str, mode: &str, bytes: &[u8]) -> Vec<u8> {
+    let (a, b) = (quoted("a/", path), quoted("b/", path));
+    let mut out = format!("diff --git {a} {b}\nnew file mode {mode}\n");
+    if bytes.is_empty() {
+        return out.into_bytes();
+    }
+    if is_binary(bytes) {
+        let _ = writeln!(out, "Binary files /dev/null and {b} differ");
+        return out.into_bytes();
+    }
+    let tab = if path.contains(' ') { "\t" } else { "" };
+    let lines = line_count(bytes);
+    let range = if lines == 1 {
+        "1".to_owned()
+    } else {
+        format!("1,{lines}")
+    };
+    let _ = write!(out, "--- /dev/null\n+++ {b}{tab}\n@@ -0,0 +{range} @@\n");
+    let mut out = out.into_bytes();
+    for line in bytes.split_inclusive(|byte| *byte == b'\n') {
+        out.push(b'+');
+        out.extend_from_slice(line);
+    }
+    if bytes.last() != Some(&b'\n') {
+        out.extend_from_slice(b"\n\\ No newline at end of file\n");
+    }
+    out
+}
+
+/// `prefix` and `path` as Git names them in a patch header: C-quoted when
+/// the path holds a quote, backslash, or control character
+/// (`quote_c_style` with `core.quotePath=false`).
+fn quoted(prefix: &str, path: &str) -> String {
+    let special = |c: char| c == '"' || c == '\\' || c.is_ascii_control();
+    if !path.chars().any(special) {
+        return format!("{prefix}{path}");
+    }
+    let mut out = format!("\"{prefix}");
+    for c in path.chars() {
+        let escape = match c {
+            '\x07' => "\\a",
+            '\x08' => "\\b",
+            '\t' => "\\t",
+            '\n' => "\\n",
+            '\x0b' => "\\v",
+            '\x0c' => "\\f",
+            '\r' => "\\r",
+            '"' => "\\\"",
+            '\\' => "\\\\",
+            c if special(c) => {
+                let _ = write!(out, "\\{:03o}", u32::from(c));
+                continue;
+            }
+            c => {
+                out.push(c);
+                continue;
+            }
+        };
+        out.push_str(escape);
+    }
+    out.push('"');
+    out
 }
 
 pub(super) fn is_binary(bytes: &[u8]) -> bool {

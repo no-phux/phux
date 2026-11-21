@@ -174,13 +174,13 @@ fn history_tombstone_reconciles_every_view_without_waiting_for_live_output() {
     let before = publication.acquire_view(a).unwrap();
     apply_ok(
         &owner,
-        EngineEvent::HistoryTombstone {
+        EngineEvent::Stream(FrameKind::HistoryTombstone {
             terminal_id: terminal.clone(),
             stream_id: stream(1),
             bootstrap_id: bootstrap(1),
-            cursor: b"older".to_vec(),
-            reason: HistoryUnavailableReason::Pruned,
-        },
+            cursor: bytes::Bytes::from_static(b"older"),
+            reason: phux_protocol::wire::frame::HistoryTombstoneReason::Pruned,
+        }),
     );
     for view in [a, b] {
         let frame = publication.acquire_view(view).unwrap();

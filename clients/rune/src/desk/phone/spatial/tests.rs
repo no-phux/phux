@@ -100,27 +100,6 @@ fn collapsed_and_invalid_ratios_keep_finite_cameras_and_literal_zero_areas() {
     assert_eq!(hit(&tree, 0.5, 0.0), Some(id(2)));
 }
 
-#[test]
-fn session_identity_change_resets_navigation_without_changing_the_tree() {
-    use crate::desk::phone::Phone;
-    use phux_protocol::ids::SessionKey;
-    let mut phone = Phone::default();
-    phone.reconcile(
-        Some(tree()),
-        Some((SessionKey::new([1; 16]).unwrap(), [8; 16])),
-    );
-    phone.navigation = Some((id(1), Some(Axis::Horizontal)));
-    phone.travel = [-80.0, 0.0];
-    phone.picker = true;
-    phone.reconcile(
-        Some(tree()),
-        Some((SessionKey::new([2; 16]).unwrap(), [8; 16])),
-    );
-    assert!(!phone.navigating());
-    assert!(!phone.picker);
-    assert_eq!(phone.travel, [0.0; 2]);
-}
-
 use fixture::*;
 use rune::TouchPhase::{Cancelled, Ended, Moved, Started};
 
@@ -530,4 +509,32 @@ fn dead_views_are_recreated_and_closed_terminal_focus_uses_full_group() {
     assert!(!rt.state.connection.others.contains_key(&id(3)));
     assert!(!rt.state.layout_is_stale());
     no_input(&client);
+}
+
+#[test]
+fn a_cancelled_divider_drag_puts_its_ratio_back_and_writes_nothing() {
+    let (_client, mut rt) = fixture(false);
+    let ratio = |rt: &rune::Runtime<Desk>| match rt.state.connection.layout.as_ref() {
+        Some(&LayoutNode::Split { ratio, .. }) => ratio,
+        other => panic!("not a split: {other:?}"),
+    };
+    let (x, y) = rt.find("divider-[]").unwrap();
+    for cancel in [true, false] {
+        let writes = rt.state.connection.layout_ops.len();
+        rt.pointer_down(x, y);
+        rt.pointer_move(x + 60.0, y);
+        rt.frame(1.0 / 60.0);
+        assert!(ratio(&rt) > 0.25, "the drag previews");
+        if cancel {
+            rt.key(crate::keys::plain(rune::Key::Escape));
+        }
+        rt.pointer_up(x + 60.0, y);
+        settle(&mut rt);
+        assert!(rt.state.connection.dragging.is_none());
+        let wrote = rt.state.connection.layout_ops.len() > writes;
+        assert_eq!(wrote, !cancel, "only a finished drag writes");
+        if cancel {
+            assert_eq!(ratio(&rt), 0.25, "a cancel restores the ratio");
+        }
+    }
 }

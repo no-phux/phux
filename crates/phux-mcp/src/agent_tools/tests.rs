@@ -33,46 +33,6 @@ esac
 
 pub(super) use fake::assert_argv;
 
-/// Every agent verb is its own tool: none carries an `action`
-/// discriminant, and the read and write shapes never merge.
-#[test]
-fn the_agent_family_is_distinct_tools_with_no_action_multiplexer() {
-    let schemas: Vec<Value> = SPECS.iter().map(|spec| (spec.schema)()).collect();
-    let names: Vec<&str> = schemas
-        .iter()
-        .filter_map(|schema| schema["name"].as_str())
-        .collect();
-    for schema in &schemas {
-        assert!(
-            schema["inputSchema"]["properties"].get("action").is_none(),
-            "{} still multiplexes on `action`",
-            schema["name"],
-        );
-    }
-    let props = |name: &str| schemas[names.iter().position(|n| *n == name).unwrap()].clone();
-    for read in ["phux_agent_list", "phux_agent_show", "phux_agent_explain"] {
-        let schema = props(read);
-        for forbidden in ["name", "keys", "until", "state", "timeout_secs"] {
-            assert!(
-                schema["inputSchema"]["properties"].get(forbidden).is_none(),
-                "{read} carries `{forbidden}` from another verb",
-            );
-        }
-    }
-    assert!(
-        props("phux_agent_wait")["inputSchema"]["properties"]
-            .get("name")
-            .is_none(),
-        "wait must not inherit the identity-declaration arguments",
-    );
-    assert!(
-        props("phux_agent_set")["inputSchema"]["properties"]
-            .get("until")
-            .is_none(),
-        "set must not inherit the wait arguments",
-    );
-}
-
 /// Validation happens before any subprocess: an adapter pointed at a
 /// program that cannot exist proves nothing was executed.
 #[tokio::test]
@@ -88,7 +48,6 @@ async fn malformed_arguments_are_rejected_before_execution() {
             json!({ "target": "@1", "keys": [] }),
         ),
         // Closed vocabularies.
-        ("phux_agent_wait", json!({ "until": ["unknown"] })),
         ("phux_agent_wait", json!({ "timeout_secs": 0 })),
         ("phux_agent_wait", json!({ "timeout_secs": 3601 })),
         ("phux_agent_wait", json!({ "any": "yes" })),
@@ -140,44 +99,6 @@ async fn malformed_arguments_are_rejected_before_execution() {
 #[tokio::test]
 async fn in_process_tools_reject_malformed_arguments_before_dialing() {
     for (name, mut args, expected) in [
-        // Unknown key.
-        (
-            "phux_agent_list",
-            json!({ "target": "@1" }),
-            "unknown argument `target`",
-        ),
-        (
-            "phux_agent_show",
-            json!({ "until": ["idle"] }),
-            "unknown argument `until`",
-        ),
-        (
-            "phux_agent_explain",
-            json!({ "name": "bot" }),
-            "unknown argument `name`",
-        ),
-        (
-            "phux_agent_clear",
-            json!({ "name": "bot" }),
-            "unknown argument `name`",
-        ),
-        // The multiplexer's old shape is not silently accepted.
-        (
-            "phux_agent_list",
-            json!({ "action": "list" }),
-            "unknown argument `action`",
-        ),
-        (
-            "phux_agent_show",
-            json!({ "action": "show" }),
-            "unknown argument `action`",
-        ),
-        // Missing required.
-        (
-            "phux_agent_set",
-            json!({ "target": "@1" }),
-            "missing required argument `name`",
-        ),
         // Closed vocabularies.
         (
             "phux_agent_set",

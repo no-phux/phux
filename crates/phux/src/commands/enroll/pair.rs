@@ -272,9 +272,7 @@ pub(crate) fn probe_within(
     identity: Option<TlsClientIdentity>,
     deadline: Duration,
 ) -> Result<(), String> {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
+    let rt = crate::commands::build_cli_runtime()
         .map_err(|err| format!("could not build a runtime: {err}"))?;
     let plan = super::super::attach::plan_quic_dial(
         &rt,

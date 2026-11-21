@@ -8,6 +8,7 @@ use phux_protocol::ids::ResourceId;
 
 use super::{Bubble, Fish, Mood, Pt, Reef, Ripple, Rng, Spark, Species, band, hash, lerp};
 use crate::creature::{self, TIERS, Work};
+use crate::playground::ease;
 
 /// One fixed step of scene time: the same scene whatever the frame rate.
 pub const STEP: f32 = 1.0 / 60.0;
@@ -32,10 +33,6 @@ pub struct Swimmer {
     pub lane: f32,
     /// Its work from its machine's agent stats, when published.
     pub work: Option<Work>,
-}
-
-fn ease(dt: f32, rate: f32) -> f32 {
-    1.0 - (-dt * rate).exp()
 }
 
 impl Reef {

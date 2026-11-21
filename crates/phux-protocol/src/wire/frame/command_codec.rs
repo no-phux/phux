@@ -1,5 +1,5 @@
-//! Control-plane command, command-result, and agent-event codecs (SPEC §5,
-//! ADR-0021; SPEC §7.5 / §10.3).
+//! Control-plane command, command-result, and agent-event codecs
+//! (ADR-0021).
 
 use bytes::BytesMut;
 
@@ -75,6 +75,6 @@ pub(in crate::wire) use result::{
 
 // `Command` and `CommandResult`: a tag, then a positional body.
 
-// `AgentEvent` (SPEC §7.5 / §10.3): `tag: u8` + a length-prefixed body, so an
+// `AgentEvent`: `tag: u8` + a length-prefixed body, so an
 // unknown tag is captured verbatim as `Unknown` and a known body is bounded
 // by its own length.

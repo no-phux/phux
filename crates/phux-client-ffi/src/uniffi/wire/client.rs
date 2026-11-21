@@ -510,7 +510,7 @@ impl RemoteClient {
         let _ = self.with_terminal(&terminal_id, Client::kill_terminal);
     }
 
-    /// Write one client-owned `Global` metadata key (L3 §3): the push grant
+    /// Write one client-owned `Global` metadata key: the push grant
     /// `phux.push/v1/<device>` (ADR-0155), or any key the server stores as
     /// an ordinary value. Returns the request id, or 0 when offline (nothing
     /// is sent then). `SET_METADATA` has no success reply on the wire; a
@@ -569,11 +569,10 @@ impl RemoteClient {
             .unwrap_or_default()
     }
 
-    /// Close several panes as one all-or-nothing `CLOSE_TAB_RESOURCES`
-    /// (a whole session, say: its panes from `topology()`). Returns the
-    /// request id the `WireEvent::TerminalsClosed` reply correlates by, or
-    /// 0 when the server does not offer the batch verb or an id does not
-    /// parse; nothing is sent then.
+    /// Request graceful close per live activation on organization peers,
+    /// or an advertised keep-empty batch on older peers. The id correlates
+    /// `WireEvent::TerminalsClosed`. Zero means no request was queued.
+    /// Pane lifecycle events report closure.
     pub fn close_terminals(&self, terminal_ids: Vec<String>) -> u32 {
         let Some(client) = self.runtime_client() else {
             return 0;

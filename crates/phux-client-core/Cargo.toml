@@ -36,9 +36,7 @@ phux-perf.workspace = true
 unicode-width = { workspace = true }
 # Grapheme clusters for predictive echo.
 unicode-segmentation = { workspace = true }
-# The CBOR layout envelope under L3 key `phux.tui.layout/v1` (ADR-0019).
-ciborium = "0.2"
-# Serde shims for that envelope; the wire types derive no serde.
+phux-layout-codec.workspace = true
 serde = { workspace = true }
 # AgentSession resources stream `AgentEventsJsonlV1` records (one JSON object
 # per line). The kernel decodes every line before a frontend sees it, so the

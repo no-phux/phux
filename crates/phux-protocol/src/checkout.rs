@@ -15,6 +15,13 @@
 
 use serde::{Deserialize, Serialize};
 
+mod commit;
+mod pull_request;
+pub use commit::{CheckoutCommit, CheckoutCommitDetail, CheckoutCommitFile, CheckoutLog};
+pub use pull_request::{
+    CheckoutCheck, CheckoutCheckState, CheckoutPrState, CheckoutPullRequest, CheckoutReviewDecision,
+};
+
 /// Largest encoded [`CheckoutRequest`].
 pub const MAX_CHECKOUT_REQUEST_BYTES: usize = 64 * 1024;
 /// Largest encoded [`CheckoutAnswer`].
@@ -28,6 +35,12 @@ pub const MAX_CHECKOUT_LOG_LIMIT: u32 = 100;
 pub const MAX_CHECKOUT_PATHS: usize = 1024;
 /// Most status entries, branches, or tree entries one answer lists.
 pub const MAX_CHECKOUT_ENTRIES: usize = 5000;
+/// The answer contract this build reads.
+///
+/// It rides after the request in the `CHECKOUT` command body. Contract 1 (an
+/// older client, which sends no byte) never sees an answer kind or refusal
+/// code added by contract 2: [`CheckoutAnswer::for_contract`] folds them back.
+pub const CHECKOUT_CONTRACT: u8 = 2;
 
 /// Which comparison a file's change belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -97,6 +110,12 @@ pub enum CheckoutRequest {
         /// Checkout-relative paths, at most [`MAX_CHECKOUT_PATHS`].
         paths: Vec<String>,
     },
+    /// One commit in full: message, files with line counts, and the patch,
+    /// against its first parent. Behind `features_ext.CHECKOUT_V2`.
+    Show {
+        /// A commit id or a prefix of one: 4 to 64 hex digits.
+        sha: String,
+    },
 }
 
 impl CheckoutRequest {
@@ -108,7 +127,7 @@ impl CheckoutRequest {
 }
 
 /// The answer to one [`CheckoutRequest`]. `Stage` and `Unstage` answer
-/// [`Self::Status`].
+/// [`Self::Status`], or [`Self::Applied`] when only the status read failed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CheckoutAnswer {
@@ -126,9 +145,38 @@ pub enum CheckoutAnswer {
     File(CheckoutFile),
     /// Reply to `pull_request`.
     PullRequest(CheckoutPullRequest),
+    /// Reply to `show` (contract 2).
+    Commit(CheckoutCommitDetail),
+    /// Reply to `stage` or `unstage` (contract 2) whose write landed but
+    /// whose refreshed status could not be read; the code and message say
+    /// why the read failed. Read the status again.
+    Applied(CheckoutRefusal),
     /// The operation did not run or did not finish; nothing was changed
     /// unless the code says otherwise.
     Refused(CheckoutRefusal),
+}
+
+impl CheckoutAnswer {
+    /// This answer as a client reading `contract` can: below 2, an
+    /// [`Self::Applied`] reads as the refusal of its status read (what
+    /// contract 1 always answered) and `git_unavailable` as `git_failed`.
+    #[must_use]
+    pub fn for_contract(self, contract: u8) -> Self {
+        if contract >= CHECKOUT_CONTRACT {
+            return self;
+        }
+        match self {
+            Self::Applied(refusal) => Self::Refused(refusal).for_contract(contract),
+            Self::Refused(CheckoutRefusal {
+                code: CheckoutRefusalCode::GitUnavailable,
+                message,
+            }) => Self::Refused(CheckoutRefusal {
+                code: CheckoutRefusalCode::GitFailed,
+                message,
+            }),
+            answer => answer,
+        }
+    }
 }
 
 /// Why a checkout operation produced no result.
@@ -153,6 +201,9 @@ pub enum CheckoutRefusalCode {
     Busy,
     /// Git refused; the message is Git's own.
     GitFailed,
+    /// The host has no working `git` (contract 2; contract 1 reads
+    /// `git_failed`).
+    GitUnavailable,
     /// The host could not read a file or directory (for example, permission
     /// denied).
     ReadFailed,
@@ -207,6 +258,10 @@ pub struct CheckoutStatus {
     /// More entries existed than [`MAX_CHECKOUT_ENTRIES`].
     #[serde(default)]
     pub truncated: bool,
+    /// Every changed entry there is; `None` when the host could not count
+    /// them all, or predates the field.
+    #[serde(default)]
+    pub total: Option<u32>,
 }
 
 /// One changed path in one area.
@@ -252,43 +307,6 @@ pub struct CheckoutDiff {
     pub binary: bool,
 }
 
-/// One commit.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CheckoutCommit {
-    /// Full commit id.
-    pub sha: String,
-    /// Abbreviated commit id.
-    #[serde(default)]
-    pub short_sha: String,
-    /// First line of the message.
-    #[serde(default)]
-    pub subject: String,
-    /// Author name.
-    #[serde(default)]
-    pub author_name: String,
-    /// Author email.
-    #[serde(default)]
-    pub author_email: String,
-    /// Author time, Unix seconds.
-    #[serde(default)]
-    pub time: i64,
-    /// Refs pointing at the commit, as `git log --decorate` names them, e.g.
-    /// `HEAD -> main`, `origin/main`, `tag: v1.0`.
-    #[serde(default)]
-    pub refs: Vec<String>,
-}
-
-/// One page of history.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CheckoutLog {
-    /// Newest first.
-    #[serde(default)]
-    pub commits: Vec<CheckoutCommit>,
-    /// Another page follows.
-    #[serde(default)]
-    pub has_more: bool,
-}
-
 /// One branch.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckoutBranch {
@@ -332,6 +350,10 @@ pub struct CheckoutBranches {
     /// More branches existed.
     #[serde(default)]
     pub truncated: bool,
+    /// Every branch there is; `None` when the host could not count them all,
+    /// or predates the field.
+    #[serde(default)]
+    pub total: Option<u32>,
 }
 
 /// What a tree entry is.
@@ -376,6 +398,10 @@ pub struct CheckoutTree {
     /// More entries existed than [`MAX_CHECKOUT_ENTRIES`].
     #[serde(default)]
     pub truncated: bool,
+    /// Every entry there is; `None` when the host could not count them all,
+    /// or predates the field.
+    #[serde(default)]
+    pub total: Option<u32>,
 }
 
 /// The start of one file.
@@ -396,99 +422,6 @@ pub struct CheckoutFile {
     /// UTF-8 content.
     #[serde(default)]
     pub text: String,
-}
-
-/// A pull request's state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CheckoutPrState {
-    /// Open.
-    Open,
-    /// Closed without merging.
-    Closed,
-    /// Merged.
-    Merged,
-    /// A value this build does not know.
-    #[serde(other)]
-    Unknown,
-}
-
-/// A pull request's review decision.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CheckoutReviewDecision {
-    /// Approved.
-    Approved,
-    /// Changes requested.
-    ChangesRequested,
-    /// A review is required.
-    ReviewRequired,
-    /// A value this build does not know.
-    #[serde(other)]
-    Unknown,
-}
-
-/// One check's state, folded from check runs and commit statuses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CheckoutCheckState {
-    /// Queued or running.
-    Pending,
-    /// Passed.
-    Success,
-    /// Failed, errored, or timed out.
-    Failure,
-    /// Finished without a verdict.
-    Neutral,
-    /// Skipped.
-    Skipped,
-    /// Cancelled.
-    Cancelled,
-    /// A value this build does not know.
-    #[serde(other)]
-    Unknown,
-}
-
-/// One CI check on the pull request's head.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CheckoutCheck {
-    /// Check or status context name.
-    pub name: String,
-    /// The workflow that ran it, when it is an Actions check.
-    #[serde(default)]
-    pub workflow: Option<String>,
-    /// Folded state.
-    pub state: CheckoutCheckState,
-    /// Details link.
-    #[serde(default)]
-    pub url: Option<String>,
-}
-
-/// The current branch's pull request.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CheckoutPullRequest {
-    /// Pull request number.
-    pub number: u64,
-    /// Title.
-    #[serde(default)]
-    pub title: String,
-    /// State.
-    pub state: CheckoutPrState,
-    /// Web link.
-    #[serde(default)]
-    pub url: String,
-    /// The head branch.
-    #[serde(default)]
-    pub head_ref: String,
-    /// A draft.
-    #[serde(default)]
-    pub is_draft: bool,
-    /// Review decision, when the repository requires reviews.
-    #[serde(default)]
-    pub review_decision: Option<CheckoutReviewDecision>,
-    /// Checks on the head commit.
-    #[serde(default)]
-    pub checks: Vec<CheckoutCheck>,
 }
 
 /// Encode a request. Serializing these plain records cannot fail.
@@ -553,67 +486,4 @@ pub(crate) enum CheckoutDecodeError {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn requests_are_tagged_by_op() {
-        let request = CheckoutRequest::Diff {
-            path: "src/main.rs".to_owned(),
-            area: CheckoutArea::Staged,
-        };
-        let bytes = encode_request(&request);
-        assert_eq!(
-            std::str::from_utf8(&bytes).unwrap(),
-            r#"{"op":"diff","path":"src/main.rs","area":"staged"}"#
-        );
-        assert!(matches!(decode_request(&bytes), Ok(decoded) if decoded == request));
-        // A newer op or field is refused, but as unsupported, not malformed.
-        assert!(matches!(
-            decode_request(br#"{"op":"exec","argv":["rm"]}"#),
-            Err(CheckoutDecodeError::Unsupported)
-        ));
-        assert!(matches!(
-            decode_request(br#"{"op":"read","path":"a","max_bytes":1,"extra":1}"#),
-            Err(CheckoutDecodeError::Unsupported)
-        ));
-        for malformed in [
-            br#"{"op":"read""#.as_slice(),
-            br#"{"op":"read"}"#,
-            br#"{"op":"read","path":1,"max_bytes":1}"#,
-        ] {
-            assert!(matches!(
-                decode_request(malformed),
-                Err(CheckoutDecodeError::Invalid)
-            ));
-        }
-    }
-
-    #[test]
-    fn answers_tolerate_future_fields_and_values() {
-        let decoded = decode_answer(
-            br#"{"kind":"refused","code":"quota_exceeded","message":"m","later":true}"#,
-        );
-        assert!(matches!(
-            decoded,
-            Ok(CheckoutAnswer::Refused(CheckoutRefusal {
-                code: CheckoutRefusalCode::Unknown,
-                ..
-            }))
-        ));
-        let status = decode_answer(br#"{"kind":"status","branch":"main","new_field":[1]}"#);
-        assert!(matches!(
-            status,
-            Ok(CheckoutAnswer::Status(CheckoutStatus { branch: Some(ref b), .. })) if b == "main"
-        ));
-    }
-
-    #[test]
-    fn oversized_payloads_are_refused_before_parsing() {
-        let big = vec![b' '; MAX_CHECKOUT_REQUEST_BYTES + 1];
-        assert!(matches!(
-            decode_request(&big),
-            Err(CheckoutDecodeError::TooLarge)
-        ));
-    }
-}
+mod tests;

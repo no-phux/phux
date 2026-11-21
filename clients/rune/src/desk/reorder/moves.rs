@@ -35,13 +35,25 @@ pub(super) struct Placing {
 const PLACEMENT_WAIT: Duration = Duration::from_secs(3);
 
 impl Desk {
-    pub(super) fn move_sidebar_resource(&mut self, id: u32, from: SessionKey, to: SessionKey) {
-        let Some(client) = self
-            .connection
+    /// The client, once it is attached and can carry an organization write.
+    pub(in crate::desk) fn attached_client(&self) -> Option<&Arc<Client>> {
+        self.connection
             .client
-            .clone()
-            .filter(|c| c.status() == Status::Attached)
-        else {
+            .as_ref()
+            .filter(|client| client.status() == Status::Attached)
+    }
+
+    /// Whether the keyboard still follows `live`: it is shown, and nothing
+    /// else has been asked for since. A move only carries the view along
+    /// when the person has not navigated away while it travelled.
+    fn follows(&self, live: &ResourceId) -> bool {
+        let shown = self.connection.shown.as_ref();
+        shown.is_some_and(|s| s.resource == *live)
+            && (self.connection.wanted.as_ref()).is_none_or(|(wanted, _)| wanted == live)
+    }
+
+    pub(super) fn move_sidebar_resource(&mut self, id: u32, from: SessionKey, to: SessionKey) {
+        let Some(client) = self.attached_client().cloned() else {
             return;
         };
         let live = ResourceId::local(id);
@@ -54,18 +66,7 @@ impl Desk {
         }
         match client.move_resource(resource.key, to) {
             Ok(operation) => {
-                let follow = self
-                    .connection
-                    .shown
-                    .as_ref()
-                    .filter(|s| s.resource == live)
-                    .filter(|_| {
-                        self.connection
-                            .wanted
-                            .as_ref()
-                            .is_none_or(|(wanted, _)| *wanted == live)
-                    })
-                    .map(|_| (live.clone(), to));
+                let follow = self.follows(&live).then(|| (live.clone(), to));
                 let placement = Placement {
                     to,
                     fallback: Arc::new(ArrangementDoc::single(live.clone())),
@@ -81,12 +82,7 @@ impl Desk {
     }
 
     pub(super) fn move_sidebar_tab(&mut self, id: [u8; 16], to: SessionKey) {
-        let Some(client) = self
-            .connection
-            .client
-            .clone()
-            .filter(|c| c.status() == Status::Attached)
-        else {
+        let Some(client) = self.attached_client().cloned() else {
             return;
         };
         let Some(tab) = self.connection.tabs.list.iter().find(|tab| tab.id == id) else {
@@ -111,13 +107,7 @@ impl Desk {
             .connection
             .shown
             .as_ref()
-            .filter(|s| tab.resources.contains(&s.resource))
-            .filter(|s| {
-                self.connection
-                    .wanted
-                    .as_ref()
-                    .is_none_or(|(wanted, _)| *wanted == s.resource)
-            })
+            .filter(|s| tab.resources.contains(&s.resource) && self.follows(&s.resource))
             .map(|s| (s.resource.clone(), to));
         let mut fallback = ArrangementDoc::default();
         let source_group = tab
@@ -220,16 +210,7 @@ impl Desk {
         placement.since = Instant::now();
         self.connection.reorder.placements.push(placement);
         if let Some((live, to)) = pending.follow
-            && self
-                .connection
-                .shown
-                .as_ref()
-                .is_some_and(|s| s.resource == live)
-            && self
-                .connection
-                .wanted
-                .as_ref()
-                .is_none_or(|(wanted, _)| *wanted == live)
+            && self.follows(&live)
             && let Some(session) = self
                 .connection
                 .topology

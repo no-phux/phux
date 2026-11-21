@@ -303,37 +303,3 @@ pub fn decode_one(bytes: &[u8]) -> FrameKind {
     assert!(rest.is_empty(), "one frame, no trailing bytes");
     frame
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_built_hello_round_trips() {
-        let hello = HelloOk::new([0xAB; 16], l3_caps()).patch(3).build();
-        assert_eq!(decode_one(&encode(&hello)), hello);
-    }
-
-    #[test]
-    fn a_bootstrap_transcript_carries_its_options() {
-        let options = BootstrapOptions {
-            history_cursor: Some(b"cursor".to_vec()),
-            base_seq: 4,
-            ..BootstrapOptions::default()
-        };
-        let [begin, _, ready] =
-            bootstrap_frames_with(&ResourceId::local(7), [2, 3], [20, 4], b"x", options);
-        assert!(matches!(
-            begin,
-            FrameKind::BootstrapBegin {
-                base_seq: 4,
-                cols: 20,
-                ..
-            }
-        ));
-        assert!(matches!(
-            ready,
-            FrameKind::BootstrapReady { history_cursor: Some(ref c), .. } if &c[..] == b"cursor"
-        ));
-    }
-}

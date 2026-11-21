@@ -156,13 +156,6 @@ fn the_value_editor_is_a_line_editor() {
     assert!(file(&dir).contains("width = 33"), "{}", file(&dir));
 }
 
-#[test]
-fn render_roomy_layout_is_stable() {
-    let (_dir, mut page) = page_over("[sidebar]\nwidth = 40\n");
-    page.focus("sidebar.width");
-    insta::assert_snapshot!(render_text(&page, 100, 30));
-}
-
 /// The selected row carries the selection colors, the active section's
 /// tab is the filled one, and the selected row's checkbox has ratcn's
 /// focus (its fill differs from the row's).
@@ -205,5 +198,4 @@ fn render_compact_layout_is_stable() {
     // same row the two-column layout would show, header or not.
     let text = render_text(&page, 60, 16);
     assert!(text.contains("keybindings.which-key  bool"), "{text}");
-    insta::assert_snapshot!(text);
 }

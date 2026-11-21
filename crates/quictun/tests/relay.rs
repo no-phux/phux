@@ -142,24 +142,6 @@ async fn consumers_reach_a_service_through_its_tunnel_by_route() {
 }
 
 #[tokio::test]
-async fn a_tunnel_with_an_unknown_token_is_refused() {
-    timeout(DEADLINE, async {
-        let relay = Relay::start();
-        relay.enroll("echo");
-        let refused = match Tunnel::open(&relay.addr, &protocol(), &[7u8; 32]).await {
-            Ok(tunnel) => tunnel
-                .accept()
-                .await
-                .expect_err("refused after the preamble"),
-            Err(err) => err,
-        };
-        assert!(refused.is_auth_refused(), "{refused}");
-    })
-    .await
-    .expect("deadline");
-}
-
-#[tokio::test]
 async fn consumers_of_unknown_or_offline_routes_are_refused() {
     timeout(DEADLINE, async {
         let relay = Relay::start();

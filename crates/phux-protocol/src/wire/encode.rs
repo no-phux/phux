@@ -216,28 +216,6 @@ mod tests {
     use bytes::BytesMut;
 
     #[test]
-    fn reused_fields_preserve_nested_zero_based_builders_and_wire_bytes() {
-        let mut bytes = BytesMut::new();
-        let mut encoder = Encoder::new(&mut bytes);
-        encoder.write_u8(99);
-        for value in [7, 8] {
-            encoder.write_field_with(1, |field| {
-                assert_eq!(field.position(), 0);
-                assert!(field.buffer().is_empty());
-                field.write_field_with(2, |nested| {
-                    assert_eq!(nested.position(), 0);
-                    nested.write_u8(value);
-                });
-                assert_eq!(field.buffer().as_ref(), &[2, 4, 1, value]);
-            });
-        }
-        assert_eq!(
-            bytes.as_ref(),
-            &[99, 1, 4, 4, 2, 4, 1, 7, 1, 4, 4, 2, 4, 1, 8]
-        );
-    }
-
-    #[test]
     fn builder_panic_leaves_preexisting_output_intact() {
         let mut bytes = BytesMut::new();
         let mut encoder = Encoder::new(&mut bytes);

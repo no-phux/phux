@@ -69,6 +69,7 @@ pub(crate) mod forward;
 mod forward_agent;
 pub(crate) mod gen_reference_docs;
 pub(crate) mod git;
+pub(crate) mod git_checkout;
 pub(crate) mod host;
 pub(crate) mod idea;
 pub(crate) mod json_err;
@@ -76,6 +77,7 @@ pub(crate) mod kill;
 pub(crate) mod launch;
 pub(crate) mod logs;
 pub(crate) mod ls;
+pub(crate) mod man;
 pub(crate) mod mcp;
 pub(crate) mod migrate;
 pub(crate) mod mission;
@@ -130,6 +132,7 @@ pub(crate) mod wait;
 // Stalled peers for the run/wait deadline tests.
 #[cfg(test)]
 mod stall_peer;
+pub(crate) mod version;
 pub(crate) mod watch;
 pub(crate) mod whoami;
 pub(crate) mod workload;
@@ -240,6 +243,7 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
         },
         Command::Workload(..) => Some("workload"),
         Command::Completion(..) => Some("completion"),
+        Command::Man(..) => Some("man"),
         Command::Mcp(..) => Some("mcp"),
         Command::Skill(..) => Some("skill"),
         Command::Logs(..) => Some("logs"),
@@ -295,14 +299,16 @@ pub(crate) fn cli_runtime() -> Result<tokio::runtime::Runtime, ExitCode> {
     })
 }
 
-fn build_cli_runtime() -> std::io::Result<tokio::runtime::Runtime> {
+/// A current-thread tokio runtime with IO and time enabled, the one every
+/// blocking CLI path drives its async client calls on.
+pub(crate) fn build_cli_runtime() -> std::io::Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
 }
 
 /// Send one command over `conn` and return the matching `COMMAND_RESULT`,
-/// reporting anything the server interleaved ahead of it (SPEC §5).
+/// reporting anything the server interleaved ahead of it.
 ///
 /// The CLI is a request/response consumer: it opens a connection, runs a
 /// verb, and exits without attaching or subscribing, so the only frames that

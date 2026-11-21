@@ -1,7 +1,7 @@
 //! Canonical scope encoding and the registry grammar
 //! (`docs/remote.md#who-can-do-what`).
 //!
-//! The goldens pin the §5 bytes, and every refusal rule the spec lists gets
+//! The goldens pin the bytes, and every refusal rule the spec lists gets
 //! its own image, so a lenient decoder cannot hide behind a normalizing
 //! round trip.
 

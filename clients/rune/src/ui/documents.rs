@@ -218,7 +218,7 @@ mod tests {
             let rows = |source: &str| {
                 let mut desk = crate::test_support::window();
                 desk.settings_ui.query.replace_text(source);
-                let mut rt = rune::Runtime::new(
+                let mut rt = crate::test_support::runtime(
                     desk,
                     |desk, _| {
                         let ink = crate::ui::tokens_for(true, None);

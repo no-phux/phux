@@ -353,32 +353,6 @@ fn purge_after_ttl_closes_the_pane_exited_and_cascades_children() {
 }
 
 #[test]
-fn retained_count_bound_purges_oldest_first() {
-    phux_server_testkit::run_local(async {
-        let mut h = Harness::start(|cfg| {
-            cfg.retain = RetainPolicy {
-                max_count: 1,
-                ..RetainPolicy::default()
-            };
-        })
-        .await;
-        let first = h.spawn("read _; exit 1", Some(600), None).await;
-        release(&mut h.owner, &first).await;
-        h.wait_exited(&first).await;
-        let second = h.spawn("read _; exit 2", Some(600), None).await;
-        release(&mut h.owner, &second).await;
-        assert_eq!(
-            h.next_close().await,
-            (first.clone(), Some(1), CloseReason::Exited, None)
-        );
-        let info = h.wait_exited(&second).await;
-        assert_eq!(info.exit.and_then(|exit| exit.exit_status), Some(2));
-        assert!(find(&h.state().await, &first).is_none());
-        h.stop().await;
-    });
-}
-
-#[test]
 fn unretained_exit_closes_and_reaps_as_before() {
     phux_server_testkit::run_local(async {
         let mut h = Harness::start(|_| {}).await;

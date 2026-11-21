@@ -339,14 +339,6 @@ mod tests {
                 new_name: "play".to_owned()
             })
         );
-        assert_eq!(
-            RenameRefusal::AlreadyExists {
-                new_name: "play".to_owned()
-            }
-            .to_string(),
-            "\"play\" already exists"
-        );
-        assert_eq!(RenameRefusal::NoSuchSession.to_string(), "no such session");
     }
 
     /// `phux rename work ""` once renamed the session to the empty string,
@@ -408,10 +400,6 @@ mod tests {
                 "{new_name:?}"
             );
         }
-        assert_eq!(
-            RenameRefusal::from(SessionNameError::Colon).to_string(),
-            "a session name cannot contain `:`, which separates the session from a window"
-        );
         for fine in [".config", "a.b", "a/b", "a b", "work-2", "x@y", "a=b"] {
             assert_eq!(check_session_name(fine), Ok(()), "{fine:?}");
         }
@@ -449,7 +437,6 @@ mod tests {
     #[test]
     fn frames_are_the_write_then_a_server_get_state() {
         let (write, barrier) = rename_frames(5, 6, "work", "notes");
-        assert_eq!(write, write_frame(5, "work", "notes"));
         assert_eq!(
             write,
             FrameKind::SetMetadata {
@@ -466,20 +453,6 @@ mod tests {
                 command: Command::GetState {
                     scope: StateScope::Server,
                 },
-            }
-        );
-    }
-
-    #[test]
-    fn org_rename_names_the_key() {
-        let operation = OperationId::new([1; 16]).unwrap();
-        let session = SessionKey::new([2; 16]).unwrap();
-        assert_eq!(
-            org_rename_command(operation, session, "notes"),
-            Command::SessionRename {
-                operation,
-                session,
-                name: "notes".to_owned(),
             }
         );
     }

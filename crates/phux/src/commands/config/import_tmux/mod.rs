@@ -66,9 +66,7 @@ fn import(
 ) -> Result<(translate::Plan, Option<std::path::PathBuf>), String> {
     // Keep acquisition failures as values until run() chooses human or JSON
     // rendering; cli_runtime() prints a human diagnostic on failure.
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
+    let rt = crate::commands::build_cli_runtime()
         .map_err(|err| format!("could not create inspection runtime: {err}"))?;
     let snapshot = rt.block_on(snapshot::read(socket))?;
     let plan = translate::translate(&snapshot)?;

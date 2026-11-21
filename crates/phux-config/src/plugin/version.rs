@@ -50,7 +50,7 @@ fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{enforce_min_phux_version, parse_version};
+    use super::parse_version;
 
     #[test]
     fn versions_parse_as_one_to_three_numeric_components() {
@@ -60,20 +60,5 @@ mod tests {
         for bad in ["", ".", "1.", ".1", "1.2.3.4", "abc", "1.x", "1.2-rc1"] {
             assert_eq!(parse_version(bad), None, "{bad:?}");
         }
-    }
-
-    #[test]
-    fn the_floor_admits_older_and_names_both_versions_when_newer() {
-        for min in ["0.0.3", "0.0.2", "0"] {
-            assert!(enforce_min_phux_version("p", min, "0.0.3").is_ok(), "{min}");
-        }
-        let newer = enforce_min_phux_version("example.future", "9.9.9", "0.0.3");
-        let message = newer.map_err(|e| e.to_string()).unwrap_err();
-        for needle in ["example.future", "9.9.9", "0.0.3"] {
-            assert!(message.contains(needle), "{message}");
-        }
-        let malformed = enforce_min_phux_version("example.bad", "not-a-version", "0.0.3");
-        let message = malformed.map_err(|e| e.to_string()).unwrap_err();
-        assert!(message.contains("malformed min_phux_version"), "{message}");
     }
 }

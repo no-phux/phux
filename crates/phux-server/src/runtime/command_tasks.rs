@@ -248,7 +248,7 @@ mod tests {
         .await;
     }
 
-    /// workload-auth §7 step 2: after revocation cancels the connection, a
+    /// Revocation: after revocation cancels the connection, a
     /// queued bulk command never starts.
     #[tokio::test]
     async fn cancellation_stops_queued_work_before_it_runs() {

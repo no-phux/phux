@@ -184,6 +184,7 @@ pub(crate) fn observation(activation: ActivationInfo) -> ExecutionObservation {
         ExecState::Failed => ExecutionState::Failed,
         ExecState::Lost => ExecutionState::Lost,
         ExecState::Abandoned => ExecutionState::Abandoned,
+        ExecState::Unknown(_) => ExecutionState::Unknown,
     };
     let outcome = activation.outcome.map(|outcome| match outcome {
         Outcome::Exited(code) => ExecutionOutcome::Exited { code },

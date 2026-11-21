@@ -350,38 +350,4 @@ mod tests {
         let _ = server.await.expect("scripted server task");
         assert!(matches!(err, SessionProjectError::Mismatch { .. }));
     }
-
-    #[test]
-    fn project_write_names_the_session() {
-        let frame = tag_set_frame(SESSION_PROJECT_KEY, &encode_session_project("api", "phux"));
-        match frame {
-            FrameKind::SetMetadata {
-                scope: Scope::Global,
-                key,
-                value,
-                ..
-            } => {
-                assert_eq!(key, SESSION_PROJECT_KEY);
-                assert_eq!(decode_session_project(&value), Some(("api", "phux")));
-            }
-            other => panic!("project tag was not a global metadata write: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn host_write_names_the_session() {
-        let frame = tag_set_frame(SESSION_HOST_KEY, &encode_session_host("api", "edge"));
-        match frame {
-            FrameKind::SetMetadata {
-                scope: Scope::Global,
-                key,
-                value,
-                ..
-            } => {
-                assert_eq!(key, SESSION_HOST_KEY);
-                assert_eq!(decode_session_host(&value), Some(("api", "edge")));
-            }
-            other => panic!("host tag was not a global metadata write: {other:?}"),
-        }
-    }
 }

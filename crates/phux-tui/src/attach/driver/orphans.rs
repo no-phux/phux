@@ -321,17 +321,6 @@ impl OrphanKills {
         self.in_flight.clear();
         self.switch_spawns.clear();
     }
-
-    /// Test seam: make every stray `by` older, as if it were recorded then.
-    #[cfg(test)]
-    pub(super) fn age_strays(&mut self, by: Duration) {
-        for stray in &mut self.strays {
-            stray.recorded_at = stray
-                .recorded_at
-                .checked_sub(by)
-                .unwrap_or(stray.recorded_at);
-        }
-    }
 }
 
 /// Whether `stray` is on one of `hosts` and was recorded no later than

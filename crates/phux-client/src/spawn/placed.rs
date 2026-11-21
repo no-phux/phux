@@ -47,6 +47,9 @@ pub enum PlacedSpawnError {
     /// The selector matched nothing in this view.
     #[error("no such target")]
     Miss(Degradation),
+    /// The selector names a session whose panes wait for `phux restore`.
+    #[error("session {0} is waiting for restore")]
+    AwaitingRestore(String),
     /// This server cannot place a Terminal beside another authority's pane.
     #[error("explicit spawn placement is local to the executing authority")]
     Satellite,
@@ -266,8 +269,17 @@ async fn resolve_local(
     match selector::pick_target_pane(&candidates, &snapshot.focused_resource) {
         Some(id @ ResourceId::Local { .. }) => Ok((id, degradation)),
         Some(_) => Err(PlacedSpawnError::Satellite),
-        None => Err(PlacedSpawnError::Miss(degradation)),
+        None => Err(awaiting_restore(conn, selector).await.map_or(
+            PlacedSpawnError::Miss(degradation),
+            PlacedSpawnError::AwaitingRestore,
+        )),
     }
+}
+
+/// The session a missed `selector` names, when it is waiting for restore.
+async fn awaiting_restore(conn: &mut Connection, selector: &Selector) -> Option<String> {
+    let inventory = org::fetch(conn, OrgFilter::All, 0x5310).await.ok()?;
+    inventory.awaiting_restore(selector).map(str::to_owned)
 }
 
 // Native provider env keys are validated integration inputs; these belong to
@@ -372,6 +384,9 @@ impl PlacedSpawnError {
     /// Project placement failures consistently on the CLI and MCP surfaces.
     #[must_use]
     pub fn refusal(&self, target: &str) -> (contract::Refusal, u8) {
+        if let Self::AwaitingRestore(session) = self {
+            return (contract::awaiting_restore(target, session), 1);
+        }
         let (code, remedy, exit) = match self {
             Self::Invalid(_) => (
                 codes::USAGE_ERROR,
@@ -385,7 +400,8 @@ impl PlacedSpawnError {
                 "check the server and its satellite connections",
                 3,
             ),
-            Self::Miss(_) => (
+            // `AwaitingRestore` returned above with its own refusal.
+            Self::Miss(_) | Self::AwaitingRestore(_) => (
                 codes::NO_SUCH_TARGET,
                 "run `phux ls` to see live sessions and panes",
                 1,

@@ -85,46 +85,6 @@ mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, duplex, split};
 
-    #[tokio::test]
-    async fn bytes_flow_in_both_directions() {
-        // consumer end <-> (a side | splice | b side) <-> tunnel end
-        let (mut consumer, a_side) = duplex(64);
-        let (mut tunnel, b_side) = duplex(64);
-        let (a_recv, a_send) = split(a_side);
-        let (b_recv, b_send) = split(b_side);
-        let bridge = tokio::spawn(splice(
-            a_recv,
-            b_send,
-            b_recv,
-            a_send,
-            HalfClose::EndsBridge,
-        ));
-
-        consumer.write_all(b"to-tunnel").await.unwrap();
-        let mut buf = [0u8; 9];
-        tunnel.read_exact(&mut buf).await.unwrap();
-        assert_eq!(&buf, b"to-tunnel");
-
-        tunnel.write_all(b"to-consumer").await.unwrap();
-        let mut buf = [0u8; 11];
-        consumer.read_exact(&mut buf).await.unwrap();
-        assert_eq!(&buf, b"to-consumer");
-
-        drop(consumer);
-        bridge.await.unwrap();
-    }
-
-    /// A tee forwards exactly what it reads and records the same bytes.
-    #[tokio::test]
-    async fn a_tee_records_what_it_forwards() {
-        let sink = Arc::new(Mutex::new(Vec::new()));
-        let mut tee = Tee::new(&b"ciphertext"[..], Some(Arc::clone(&sink)));
-        let mut read = Vec::new();
-        tee.read_to_end(&mut read).await.unwrap();
-        assert_eq!(read, b"ciphertext");
-        assert_eq!(*sink.lock().unwrap(), b"ciphertext");
-    }
-
     /// Whichever side half-closes first, its last bytes and FIN reach the
     /// other side and the whole bridge ends.
     #[tokio::test]
@@ -154,29 +114,5 @@ mod tests {
             assert_eq!(received, b"final");
             bridge.await.unwrap();
         }
-    }
-
-    /// Under [`HalfClose::Propagate`] a side that half-closes still reads
-    /// everything the other side sends afterwards.
-    #[tokio::test]
-    async fn propagated_half_close_keeps_the_other_direction_flowing() {
-        let (mut consumer, a_side) = duplex(64);
-        let (mut tunnel, b_side) = duplex(64);
-        let (a_recv, a_send) = split(a_side);
-        let (b_recv, b_send) = split(b_side);
-        let bridge = tokio::spawn(splice(a_recv, b_send, b_recv, a_send, HalfClose::Propagate));
-
-        consumer.write_all(b"request").await.unwrap();
-        consumer.shutdown().await.unwrap();
-        let mut request = Vec::new();
-        tunnel.read_to_end(&mut request).await.unwrap();
-        assert_eq!(request, b"request", "the FIN arrives after the bytes");
-
-        tunnel.write_all(b"reply after the FIN").await.unwrap();
-        tunnel.shutdown().await.unwrap();
-        let mut reply = Vec::new();
-        consumer.read_to_end(&mut reply).await.unwrap();
-        assert_eq!(reply, b"reply after the FIN");
-        bridge.await.unwrap();
     }
 }

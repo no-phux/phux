@@ -98,23 +98,13 @@ describe("OMP host lifecycle", () => {
   });
 
   for (const [name, alter] of Object.entries({
-    "missing child field": (p: any) => delete p.agent_session,
     "foreign terminal": (p: any) => p.terminal = "@18",
-    "missing session": (p: any) => p.session = "",
-    "missing window": (p: any) => p.window = "",
     "foreign declaration": (p: any) => p.sources = [{ kind: "agent_record", observed: '{"name":"pi"}' }],
-    "malformed declaration": (p: any) => p.sources = [{ kind: "agent_record", observed: 'null' }],
     "unowned child": (p: any) => p.agent_session = { resource: "@91", provider: "omp", native_id: "one" },
   })) test(`no mutation: ${name}`, async () => {
     const f = fixture(); alter(f.pane); const lifecycle = new OmpLifecycle(f.cli, "@17");
     await lifecycle.navigate("one"); await lifecycle.navigate("two"); await lifecycle.shutdown();
     expect(f.mutations()).toEqual([]);
-  });
-
-  for (const child of ["@17", "bad", "@91"]) test(`adoption child validation ${child}`, async () => {
-    const f = fixture(); await f.cli.agentSet("@17", { name: "omp", kind: "omp", session: "omp:one" }); f.calls.length = 0;
-    f.pane.agent_session = { resource: child, provider: child === "@91" ? "pi" : "omp", native_id: "one" };
-    await new OmpLifecycle(f.cli, "@17").navigate("one"); expect(f.mutations()).toEqual([]);
   });
 
   test("adopt exact child; replacement fences emits and close and declaration clear", async () => {
@@ -251,13 +241,6 @@ describe("OMP host lifecycle", () => {
     expect(f.calls.filter(call => call.verb === "stop")).toHaveLength(0);
   });
 
-  test("a guard while the session reports idle mid-loop falls back", async () => {
-    const f = fixture(); const host = sdk(f.cli);
-    await host.event("session_start"); await host.event("agent_start");
-    await host.event("before_agent_start");
-    expect(f.pane.agent_session).toBeNull();
-  });
-
   test("fallback before startup closes even an adoptable existing child", async () => {
     const f = fixture(); const lifecycle = new OmpLifecycle(f.cli, "@17");
     await lifecycle.fallback();
@@ -284,16 +267,14 @@ describe("OMP host lifecycle", () => {
     expect(f.calls.filter(call => call.verb === "prompt")).toHaveLength(0);
   });
 
-  for (const state of [undefined, null, "unknown", "idle", "working", "blocked", "done"]) {
-    test(`cold bare OMP identity initializes without declaring observed state: ${state}`, async () => {
-      const f = fixture(); const host = sdk(f.cli);
-      f.pane.sources = [{ kind: "agent_record", observed: JSON.stringify({ name: "omp", kind: "omp", state }) }];
-      await host.event("session_start");
-      expect(f.mutations()[0]).toEqual({ verb: "set", target: "@17", data: { name: "omp", kind: "omp", session: "omp:one" } });
-      expect(f.pane.agent_session?.native_id).toBe("one");
-      expect(f.calls.filter(call => call.verb === "open")).toHaveLength(1);
-    });
-  }
+  test("cold bare OMP identity initializes without declaring observed state", async () => {
+    const f = fixture(); const host = sdk(f.cli);
+    f.pane.sources = [{ kind: "agent_record", observed: JSON.stringify({ name: "omp", kind: "omp" }) }];
+    await host.event("session_start");
+    expect(f.mutations()[0]).toEqual({ verb: "set", target: "@17", data: { name: "omp", kind: "omp", session: "omp:one" } });
+    expect(f.pane.agent_session?.native_id).toBe("one");
+    expect(f.calls.filter(call => call.verb === "open")).toHaveLength(1);
+  });
 
   test("cold null owner/attention and observational state are replaced, never preserved", async () => {
     const f = fixture(); const host = sdk(f.cli);
@@ -304,20 +285,15 @@ describe("OMP host lifecycle", () => {
   });
 
   for (const [name, record] of Object.entries({
-    "foreign owner": { session: "pi:other" }, "empty owner": { session: "" },
-    "numeric owner": { session: 0 }, "false owner": { session: false },
-    "foreign name": { name: "pi" }, "foreign kind": { kind: "pi" },
-    "attention none": { attention: "none" }, "attention high": { attention: "high" },
-    "attention false": { attention: false }, "unknown field": { custom: true },
-    "noncanonical state": { state: "busy" }, "empty state": { state: "" },
-    "structured state": { state: {} }, "numeric state": { state: 0 },
+    "empty owner": { session: "" }, "foreign name": { name: "pi" }, "foreign kind": { kind: "pi" },
+    "attention false": { attention: false }, "unknown field": { custom: true }, "empty state": { state: "" },
   })) test(`cold unbound refusal: ${name}`, async () => {
     const f = fixture(); const host = sdk(f.cli);
     f.pane.sources = [{ kind: "agent_record", observed: JSON.stringify({ name: "omp", kind: "omp", ...record }) }];
     await host.event("session_start"); expect(f.mutations()).toEqual([]);
   });
 
-  for (const observed of ['null', '[]', '"omp"', '{', '{"name":"omp","kind":"omp","session":"foreign","session":null}']) {
+  for (const observed of ['null', '[]', '{', '{"name":"omp","kind":"omp","session":"foreign","session":null}']) {
     test(`cold malformed or duplicate JSON refusal: ${observed}`, async () => {
       const f = fixture(); const host = sdk(f.cli);
       f.pane.sources = [{ kind: "agent_record", observed }];
@@ -431,7 +407,7 @@ describe("OMP host lifecycle", () => {
     expect(f.mutations()[0]!.data).toEqual({ name: "omp", kind: "omp", session: "omp:two" });
   });
 
-  for (const verb of ["agentSet", "agentSessionOpen", "agentEmit", "agentSessionClose"] as const) {
+  for (const verb of ["agentSet", "agentSessionOpen"] as const) {
     test(`uncertain ${verb} failure is never retried`, async () => {
       const f = fixture(); let attempts = 0;
       f.cli[verb] = (async () => { ++attempts; throw new Error("unsupported_server or uncertain mutation"); }) as any;

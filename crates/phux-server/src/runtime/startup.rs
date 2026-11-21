@@ -2,7 +2,8 @@
 
 use crate::runtime::config::{ServerError, validate_socket_path_len};
 use crate::runtime::connections::{
-    handle_existing_socket, prepare_socket_dir, secure_socket_file, spawn_resource_exit_watcher,
+    SocketLock, handle_existing_socket, prepare_socket_dir, secure_socket_file,
+    spawn_resource_exit_watcher,
 };
 use crate::runtime::{ServerEnv, resume, upgrade};
 use crate::state::SharedState;
@@ -75,18 +76,24 @@ pub(in crate::runtime) fn read_resume_blob(
 }
 
 /// Adopt the listener inherited across a graceful upgrade (ADR-0032), or bind
-/// a fresh socket when this is a cold start.
+/// a fresh socket when this is a cold start. Either way the server holds the
+/// path's [`SocketLock`] (returned beside the listener) until it exits.
 pub(in crate::runtime) async fn adopt_or_bind_listener(
     socket_path: &Path,
     inherited_fd: Option<RawFd>,
-) -> Result<crate::transport::UdsListener, ServerError> {
+) -> Result<(crate::transport::UdsListener, Option<SocketLock>), ServerError> {
     if let Some(fd) = inherited_fd {
         let listener = resume::adopt_uds_listener(fd)?;
         info!(
             path = %socket_path.display(),
             "phux-server resumed; adopted the inherited UDS listener"
         );
-        return Ok(listener);
+        // The listener is already ours; refusing here would drop every pane.
+        // Re-take the lock the previous image released at exec.
+        let lock = SocketLock::acquire(socket_path)
+            .inspect_err(|err| warn!(error = %err, "resumed without the socket lock"))
+            .ok();
+        return Ok((listener, lock));
     }
     validate_socket_path_len(socket_path)?;
     // Before anything that could unlink a stale production socket.
@@ -97,12 +104,24 @@ pub(in crate::runtime) async fn adopt_or_bind_listener(
         ))
     })?;
     prepare_socket_dir(socket_path)?;
+    // The lock, not a connect probe, decides whether a server owns the path:
+    // a busy live server can fail a probe, and unlinking its socket strands
+    // its panes behind this one.
+    let lock = SocketLock::acquire(socket_path).map_err(|err| {
+        if err.kind() == std::io::ErrorKind::WouldBlock {
+            ServerError::SocketBusy(socket_path.to_path_buf())
+        } else {
+            // Creating the lock file is claiming the path: an unwritable
+            // socket directory is a bind failure.
+            ServerError::Bind(err)
+        }
+    })?;
     handle_existing_socket(socket_path).await?;
     let listener = UnixListener::bind(socket_path).map_err(ServerError::Bind)?;
     secure_socket_file(socket_path)?;
     let listener = crate::transport::UdsListener::new(listener);
     info!(path = %socket_path.display(), "phux-server listening on UDS");
-    Ok(listener)
+    Ok((listener, Some(lock)))
 }
 
 /// Open the organization store and install its records; a store that was
@@ -224,5 +243,37 @@ pub(in crate::runtime) fn seed_initial_session(
             pty = seed_with_pty,
             "pre-seeded session in registry"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// While another server holds the path's lock, a cold start refuses even
+    /// when the socket looks dead (a busy server's full backlog refuses a
+    /// connect too) and leaves the entry alone. Once the holder is gone, the
+    /// same stale entry is reaped and bound.
+    #[tokio::test]
+    async fn a_held_socket_lock_refuses_instead_of_unlinking() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join("phux.sock");
+        // Bound then dropped: the file stays, nothing accepts on it.
+        drop(std::os::unix::net::UnixListener::bind(&socket).expect("bind"));
+        let holder = SocketLock::acquire(&socket).expect("first lock");
+
+        let refused = adopt_or_bind_listener(&socket, None).await;
+        assert!(
+            matches!(refused, Err(ServerError::SocketBusy(_))),
+            "{:?}",
+            refused.err()
+        );
+        assert!(socket.exists(), "the lock holder's socket entry survives");
+
+        drop(holder);
+        let (_listener, lock) = adopt_or_bind_listener(&socket, None)
+            .await
+            .expect("an unheld stale socket is reaped");
+        assert!(lock.is_some());
     }
 }

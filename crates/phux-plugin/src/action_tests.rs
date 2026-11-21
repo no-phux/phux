@@ -102,8 +102,10 @@ async fn refuses_oversized_context_before_starting_the_child() {
 #[tokio::test]
 async fn refuses_an_action_unavailable_on_the_execution_platform() {
     let dir = fixture("platforms = ['windows']");
+    let config = dir.path().join("config.toml");
+    assert!(configured_actions(&config).expect("catalog").is_empty());
     let result = run_configured_action(
-        &dir.path().join("config.toml"),
+        &config,
         &request(ActionContext::supplied(
             ActionSource::Mcp,
             ActionTarget::default(),

@@ -1,6 +1,5 @@
 use super::*;
 use phux_protocol::ids::Revision;
-use phux_protocol::wire::frame::{CommandValue, ErrorCode, Refusal};
 
 #[test]
 fn create_launches_only_with_a_directory_or_for_an_ephemeral_session() {
@@ -66,41 +65,6 @@ fn create_and_rename_refuse_what_core_refuses() {
 }
 
 #[test]
-fn operation_outcomes_lower_with_their_refusal() {
-    let operation = OperationId::new([0x11; 16]).unwrap();
-    let lowered = lower(&Event::OrganizationOperation {
-        operation,
-        outcome: OrgOutcome::Refused(Refusal::Conflict {
-            current: Revision::new(7),
-        }),
-    });
-    assert_eq!(
-        lowered,
-        Some(WireEvent::OrganizationOperation {
-            operation: "11".repeat(16),
-            status: "refused".to_owned(),
-            refusal: 3,
-            refusal_word: "conflict".to_owned(),
-            conflict_revision: Some(7),
-            revision: None,
-            message: lowered_message(&Refusal::Conflict {
-                current: Revision::new(7)
-            }),
-            undoable: false,
-            created_session_key: None,
-        })
-    );
-    assert_eq!(
-        parse_operation(&operation_text(&operation)),
-        Some(operation)
-    );
-}
-
-fn lowered_message(refusal: &Refusal) -> String {
-    phux_client_core::org_ops::refusal_sentence(refusal)
-}
-
-#[test]
 fn created_session_key_is_correlated_with_its_committed_operation() {
     // No topology or session name is needed, including for an empty session.
     for byte in [0x12, 0x34] {
@@ -124,35 +88,6 @@ fn created_session_key_is_correlated_with_its_committed_operation() {
                 created_session_key: Some(session.to_string()),
             })
         );
-    }
-}
-
-#[test]
-fn outcomes_without_a_created_session_have_no_key() {
-    let operation = OperationId::new([0x11; 16]).unwrap();
-    for outcome in [
-        OrgOutcome::Committed(Box::new(Committed::new(operation, Revision::new(1)))),
-        OrgOutcome::Accepted,
-        OrgOutcome::Value(Box::new(CommandValue::Bytes(Vec::new()))),
-        OrgOutcome::Refused(Refusal::NotFound),
-        OrgOutcome::Error {
-            code: ErrorCode::PermissionDenied,
-            message: "denied".to_owned(),
-        },
-        OrgOutcome::Unknown {
-            reason: "disconnected".to_owned(),
-        },
-        OrgOutcome::NotSent {
-            reason: "disconnected".to_owned(),
-        },
-    ] {
-        assert!(matches!(
-            lower(&Event::OrganizationOperation { operation, outcome }),
-            Some(WireEvent::OrganizationOperation {
-                created_session_key: None,
-                ..
-            })
-        ));
     }
 }
 

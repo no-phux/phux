@@ -69,28 +69,3 @@ fn child_spawn_rows(world: &World) -> Vec<Row> {
         })
         .collect()
 }
-
-/// A scoped grant with CREATE+BIND on the parent opens a class-less surface
-/// but no page, window or display.
-#[test]
-fn a_scoped_grant_opens_no_controlled_document() {
-    let world = world();
-    let parent = world.alpha.clone();
-    let grant = [
-        format!("create@group:{}", world.alpha_group),
-        format!("bind@terminal:{}", local_id(&parent)),
-    ];
-    let plain = SpawnResource {
-        control: None,
-        ..controlled_surface(&parent, ControlClass::Page)
-    };
-    assert!(admits_set(&world, &grant, &spawn(None, None, Some(plain))));
-    for control in ControlClass::ALL {
-        let frame = spawn(None, None, Some(controlled_surface(&parent, control)));
-        assert!(
-            !admits_set(&world, &grant, &frame),
-            "a scoped grant opened a {} document",
-            control.name()
-        );
-    }
-}

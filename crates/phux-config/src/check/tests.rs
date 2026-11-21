@@ -39,13 +39,30 @@ fn valid_configs_check_clean() {
         "[status]\nleft = [{ kind = \"windows\", separator = \" | \" }]\n\
          center = [\"help-hints\"]\n\
          right = [{ kind = \"session-name\", format = \"[{name}]\", style = { fg = \"red\", bold = true } }, { kind = \"time\", format = \" %H:%M\" }]\n".to_owned(),
-        // `name` / `file` select a theme; every colour syntax the renderer reads.
-        "[theme]\nname = \"nord\"\nfile = \"~/x/colors.toml\"\naccent = \"#1e66f5\"\n\
+        // Every colour syntax the renderer reads.
+        "[theme]\naccent = \"#1e66f5\"\n\
          chord = \"light-green\"\ndim = \"244\"\nsurface = \"reset\"\npane_title_focus = \"Bright Cyan\"\n".to_owned(),
     ] {
         let report = run(&input);
         assert!(report.is_ok(), "false positives for {input:?}: {:?}", report.findings);
     }
+}
+
+/// A selected theme that loads checks clean, as `config reload` accepts it.
+#[test]
+fn a_loadable_theme_file_checks_clean() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("colors.toml");
+    let palette = (0..16)
+        .map(|n| format!("color{n} = \"#808080\"\n"))
+        .collect::<Vec<_>>()
+        .concat();
+    std::fs::write(&file, palette).expect("write");
+    let report = run(&format!(
+        "[theme]\nfile = {:?}\n",
+        file.display().to_string()
+    ));
+    assert!(report.is_ok(), "{:?}", report.findings);
 }
 
 /// Each fault class: located at its full path, classified, and carrying
@@ -216,6 +233,18 @@ fn each_mistake_is_located_classified_and_explained() {
             "theme.acent",
             Fault::UnknownName,
             &["unknown theme slot `acent` (did you mean `accent`?)"],
+        ),
+        (
+            "[theme]\nname = \"no-such-theme-xmi8j\"\n",
+            "theme.name",
+            Fault::UnknownName,
+            &["no theme named \"no-such-theme-xmi8j\""],
+        ),
+        (
+            "[theme]\nname = \"nord\"\nfile = \"/nonexistent/colors.toml\"\n",
+            "theme.file",
+            Fault::BadValue,
+            &["/nonexistent/colors.toml"],
         ),
         (
             "[theme]\naccent = \"lime\"\n",

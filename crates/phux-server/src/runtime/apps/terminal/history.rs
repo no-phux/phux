@@ -42,7 +42,7 @@ fn history_terminal(
     }
 }
 
-/// Answer one `HISTORY_REQUEST` from the pane's replica. SPEC L1 §4.5: every
+/// Answer one `HISTORY_REQUEST` from the pane's replica. Every
 /// failure tombstones the cursor rather than sending an uncorrelated `ERROR`.
 pub(in crate::runtime) async fn serve_history_request(
     state: &SharedState,

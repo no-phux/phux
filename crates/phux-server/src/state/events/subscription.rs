@@ -268,7 +268,7 @@ fn replay_start(after_seq: u64, head: u64, delivered: u64) -> Option<(u64, Optio
         return None;
     }
     if after_seq > head {
-        // Void: never issued by this incarnation (L1 §7.3).
+        // Void: never issued by this incarnation.
         return Some((head.max(delivered), Some((1, head))));
     }
     if after_seq < delivered {
@@ -299,7 +299,7 @@ const fn is_role_changed(event: &AgentEvent) -> bool {
 }
 
 /// How `event` reads to a subscriber: `EXPIRED` becomes actor-less
-/// `RELEASED` for one that never sent a cursor (L1 §7.1).
+/// `RELEASED` for one that never sent a cursor.
 fn render_for(event: &AgentEvent, journal_aware: bool) -> AgentEvent {
     match event {
         AgentEvent::TerminalControl {

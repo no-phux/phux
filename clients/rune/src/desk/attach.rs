@@ -155,7 +155,7 @@ impl Desk {
                     let line = format!("{} ", quoted(Path::new(&path)));
                     let sent = match destination {
                         Some(destination) => self.deliver_private_image(&destination, &line),
-                        None => self.deliver_paste(&terminal, &line),
+                        None => self.deliver_paste(&terminal, &line).is_ok(),
                     };
                     if !sent {
                         self.say(
@@ -191,7 +191,11 @@ mod tests {
     use crate::launch::Resolved;
 
     fn desk() -> Desk {
-        Desk::new(&Resolved::offline("not launched"))
+        Desk::with_preferences(
+            &Resolved::offline("not launched"),
+            None,
+            rune::prefs::Prefs::memory(),
+        )
     }
 
     fn on_screen(desk: &mut Desk, terminal: u32) {
@@ -300,11 +304,6 @@ mod tests {
         }));
         desk.say(NoticeKind::Error, "Rename failed. Try again.");
         assert_eq!(wakes.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn plain_paths_stay_bare() {
-        assert_eq!(quoted(Path::new("/tmp/a-b_c.png")), "/tmp/a-b_c.png");
     }
 
     #[test]

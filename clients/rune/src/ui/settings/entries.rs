@@ -2,6 +2,7 @@
 
 use crate::ui::tokens::Voice;
 use crate::ui::tokens::layout::SETTINGS_LINK as GEOMETRY;
+use phux_config_core::rune::TitleBar;
 use rune::{El, col, el, row, text};
 
 use super::super::{icons, pressable, updates};
@@ -150,7 +151,7 @@ impl Entry {
                 "" => "System".to_owned(),
                 family => family.to_owned(),
             },
-            Self::HoverToolbar => on(desk.settings.hover_toolbar),
+            Self::HoverToolbar => on(desk.settings.title_bar == TitleBar::Hover),
             Self::CopySelect => on(desk.settings.copy_on_select),
             Self::ConfirmClose => on(desk.settings.confirm_close),
             Self::OptionMeta => on(desk.settings.option_as_meta),
@@ -268,9 +269,9 @@ impl Entry {
         let (key, value, press, managed): (_, _, fn(&mut Desk), _) = match self {
             Self::HoverToolbar => (
                 "set-hover-toolbar",
-                desk.settings.hover_toolbar,
+                desk.settings.title_bar == TitleBar::Hover,
                 Desk::toggle_hover_toolbar,
-                false,
+                file.title_bar.is_some(),
             ),
             Self::CopySelect => (
                 "set-copy-select",
@@ -334,6 +335,9 @@ impl Entry {
         press: fn(&mut Desk),
         t: &Tokens,
     ) -> El {
+        if desk.phone.is_some() && matches!(self, Self::Theme) {
+            return super::theme_row::view(desk, &value, self.detail(), t);
+        }
         let s = &t.space;
         pressable(key, t)
             .w_full()

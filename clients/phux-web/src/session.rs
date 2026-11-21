@@ -19,9 +19,8 @@ use phux_client_core::engine::{
 use phux_client_core::handshake::{HelloOkError, validate_hello_ok};
 use phux_client_core::history::HistoryCacheConfig;
 use phux_client_core::session::{
-    AgentSessionDeclaration, EffectBuffer, HistoryRejectionReason as KernelHistoryRejectionReason,
-    HistoryUnavailableReason, InputEligibility, KernelAction, KernelEffect, KernelInput,
-    KernelSend, KernelStatus, SessionKernel,
+    AgentSessionDeclaration, EffectBuffer, InputEligibility, KernelAction, KernelEffect,
+    KernelInput, KernelSend, KernelStatus, SessionKernel,
 };
 use phux_protocol::caps::{
     BootstrapCapabilities, BootstrapLimits, BootstrapProfile, BootstrapProfileKind,
@@ -34,8 +33,8 @@ use phux_protocol::input::key::KeyEvent;
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
     AgentEvent, AttachTarget, Command, CommandResult, CommandValue, ErrorCode, FrameKind,
-    HistoryRejectionReason, HistoryTombstoneReason, LiveTarget, OrgFilter, OrganizationPage,
-    PathQueryResult, PathResults, SpawnResult, TerminateMode, ViewportInfo,
+    OrgFilter, OrganizationPage, PathQueryResult, PathResults, SpawnResult, TerminateMode,
+    ViewportInfo,
 };
 use phux_protocol::{PROTOCOL_VERSION, ResourceKind, Version};
 use phux_vt_web::{Grid, NativeCodecError, NativeDecoder, Terminal, Vt};
@@ -62,33 +61,6 @@ const HISTORY_LINES: u32 = 5_000;
 /// Staged READY prefix and parser-continuation bound, as native clients use.
 const NATIVE_DECODER_LIMIT: usize = 64 * 1024 * 1024;
 
-/// The kernel's reason for a history tombstone. A reason this build does
-/// not know (a newer server's) retires the cursor as `Released`.
-const fn history_unavailable_reason(reason: HistoryTombstoneReason) -> HistoryUnavailableReason {
-    match reason {
-        HistoryTombstoneReason::Stale => HistoryUnavailableReason::Stale,
-        HistoryTombstoneReason::Pruned => HistoryUnavailableReason::Pruned,
-        HistoryTombstoneReason::Reset => HistoryUnavailableReason::Reset,
-        HistoryTombstoneReason::Resize => HistoryUnavailableReason::Resize,
-        HistoryTombstoneReason::Expired => HistoryUnavailableReason::Expired,
-        HistoryTombstoneReason::Limit => HistoryUnavailableReason::Limit,
-        HistoryTombstoneReason::CodecFailure => HistoryUnavailableReason::CodecFailure,
-        // `Released`, and any reason a newer server added.
-        _ => HistoryUnavailableReason::Released,
-    }
-}
-
-/// The kernel's reason for a history rejection. A reason this build does not
-/// know (a newer server's) reads as `ZeroLimit`: the fetch is cancelled
-/// without a retry or a tombstone.
-const fn history_rejection_reason(reason: HistoryRejectionReason) -> KernelHistoryRejectionReason {
-    match reason {
-        HistoryRejectionReason::TooSmall => KernelHistoryRejectionReason::TooSmall,
-        HistoryRejectionReason::Busy => KernelHistoryRejectionReason::Busy,
-        // `ZeroLimit`, and any reason a newer server added.
-        _ => KernelHistoryRejectionReason::ZeroLimit,
-    }
-}
 /// The capability set phux-web advertises in `HELLO`.
 ///
 /// Synthesized compatibility remains unconditional. The official snapshot
@@ -199,9 +171,14 @@ pub struct Outcome {
 struct PendingKill {
     request_id: u32,
     target: ResourceId,
-    /// The session being read for the activation; `None` once the
-    /// terminate (or legacy kill) is on the wire.
-    resolving: Option<SessionKey>,
+    phase: KillPhase,
+}
+
+#[derive(Clone, Copy)]
+enum KillPhase {
+    Resolving(SessionKey),
+    Terminate(OperationId),
+    Legacy,
 }
 
 struct PendingSplit {
@@ -382,6 +359,7 @@ impl Connection {
     /// Permanently fail this connection after a transport or framing violation.
     pub fn fail_protocol(&mut self, _message: &str) {
         self.failed = true;
+        self.lose_pending_kill();
         self.approvals.disconnect();
         self.cancel_path_query();
     }
@@ -479,20 +457,4 @@ fn history_request_frame(send: &KernelSend) -> Option<Vec<u8>> {
         max_bytes: *max_bytes,
         max_rows: *max_rows,
     }))
-}
-
-/// The resource a terminal-stream frame addresses, when it addresses one.
-fn frame_resource_id(frame: &FrameKind) -> Option<&ResourceId> {
-    match frame {
-        FrameKind::BootstrapBegin { terminal_id, .. }
-        | FrameKind::BootstrapChunk { terminal_id, .. }
-        | FrameKind::BootstrapReady { terminal_id, .. }
-        | FrameKind::BootstrapTombstone { terminal_id, .. }
-        | FrameKind::HistoryPage { terminal_id, .. }
-        | FrameKind::HistoryTombstone { terminal_id, .. }
-        | FrameKind::HistoryRejected { terminal_id, .. }
-        | FrameKind::ResourceOutput { terminal_id, .. }
-        | FrameKind::ResourceClosed { terminal_id, .. } => Some(terminal_id),
-        _ => None,
-    }
 }

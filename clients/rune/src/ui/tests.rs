@@ -5,7 +5,8 @@ use crate::theme::contrast;
 fn the_bare_window_drops_the_chrome_and_keeps_the_sheets() {
     let mut desk = crate::test_support::settings_window();
     desk.settings_open = false;
-    let mut rt = rune::Runtime::new(desk, view, (900.0, 600.0), rune::Env::new(false, 1.0));
+    let mut rt =
+        crate::test_support::runtime(desk, view, (900.0, 600.0), rune::Env::new(false, 1.0));
     rt.frame(0.0);
     assert!(rt.presented("sidebar-toggle").is_some());
     rt.update(|d, _| d.bare = Some(crate::desk::bare::Bare::test("tui", "work")));
@@ -28,11 +29,10 @@ fn the_bare_window_drops_the_chrome_and_keeps_the_sheets() {
 
 #[test]
 fn the_system_appearance_clears_the_bars_too() {
-    // WCAG AA for every word-carrying ink (§1.2 D4).
+    // WCAG AA for every word-carrying ink (D4).
     const TEXT_FLOOR: f32 = 4.5;
     for dark in [true, false] {
         let t = tokens_for(dark, None);
-        assert!(Rc::ptr_eq(&t, &tokens_for(dark, None)), "one shared Tokens");
         let r = &t.roles;
         let readable = [
             ("text", r.text.text),

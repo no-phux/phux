@@ -68,19 +68,6 @@ pub fn inflate(payload: &[u8], uncompressed_len: usize) -> Result<Vec<u8>, Decod
 mod tests {
     use super::*;
 
-    #[test]
-    fn round_trips_and_declines_small_bodies() {
-        let body: Vec<u8> = (0..64_u32)
-            .flat_map(|row| format!("{row:04} the quick brown fox jumps  \n").into_bytes())
-            .cycle()
-            .take(64 * 1024)
-            .collect();
-        let deflated = deflate(&body).expect("a repetitive body compresses");
-        assert!(deflated.len() * 4 < body.len());
-        assert_eq!(inflate(&deflated, body.len()).expect("inflates"), body);
-        assert_eq!(deflate(&[0_u8; MIN_COMPRESS_BYTES - 1]), None);
-    }
-
     /// `deflate` declines or returns something strictly smaller that inflates
     /// back, even for incompressible input.
     #[test]

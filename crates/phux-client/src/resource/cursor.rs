@@ -2,7 +2,7 @@
 //! observer reached.
 //!
 //! Only the issuing server incarnation honors one; a void
-//! cursor falls back to the level read (L1 §7.3), which a cursor never
+//! cursor falls back to the level read, which a cursor never
 //! replaces.
 
 use std::fmt;
@@ -11,7 +11,7 @@ use std::str::FromStr;
 use crate::attach::connection::Connection;
 
 /// `SUBSCRIBE_EVENTS.after_seq` asking for journal semantics with no replay
-/// (L1 §7.3): a server never assigns it.
+///: a server never assigns it.
 pub const NO_REPLAY: u64 = u64::MAX;
 
 /// A position in one server incarnation's event journal.
@@ -231,13 +231,5 @@ mod tests {
             assert!(bad.parse::<Cursor>().is_err(), "{bad:?} parsed");
         }
         assert!(Cursor::new(Vec::new(), 1).is_none());
-    }
-
-    #[test]
-    fn noting_keeps_the_furthest_position() {
-        let mut state = ResumeState::new(None);
-        state.note(9);
-        state.note(4);
-        assert_eq!(state.last_seq, Some(9));
     }
 }

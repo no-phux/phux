@@ -83,7 +83,8 @@ and the rest keep running at the slot's size, so switching never reflows.
   Cmd+Shift+→ and Cmd+Shift+← on macOS (beside Cmd+← and Cmd+→, which walk
   terminals) and Ctrl+Shift+→ and Ctrl+Shift+← elsewhere. In Rune,
   dragging a terminal's sidebar row onto a pane of the same session makes
-  it that pane's slot's last tab. A slot with two
+  it that pane's slot's last tab. In the TUI, dragging a pane by its title
+  onto another pane does the same. A slot with two
   or more tabs shows a one-row strip of their titles and agent states.
 
 The pure [core apply function](../crates/phux-core/src/apply.rs) owns these
@@ -92,6 +93,28 @@ owns tree validity. Expected revisions, operation ids and live activation
 fences are concurrency/authority checks, not optional UI bookkeeping. The
 legacy TUI layout metadata adapter translates into this model; it does not
 supplant it.
+
+## Close intents
+
+Closing a view changes client presentation.
+
+| Request | Target and effect | Reply |
+| --- | --- | --- |
+| `KILL_RESOURCE` | Live handle and bound descendants. Session lifetime governs emptied sessions. | Close committed by the serving host. |
+| `KILL_RESOURCES` | Host-local groups. Naming all members can delete a persistent session. | Keyed replies report each id. Unkeyed skips and relay failures appear in server logs. |
+| `CLOSE_TAB_RESOURCES` | Host-local groups. Preserves keep-empty sessions. Requires its feature bit. | Skips missing locals and forwards satellite groups without waiting. |
+| `RESOURCE_TERMINATE` | Handle, instance, and activation on an organization peer. | Matching `Accepted` confirms admission. Lifecycle events report effects. Each request settles separately. |
+
+`KILL_RESOURCE_IF` checks allocation instance and use for delayed cleanup.
+`SESSION_KILL` ends the session and overrides tab locks. See
+[retry and incarnation rules](./protocol.md#receipts-retries-and-backpressure).
+
+Native `close_terminals` and browser `kill_pane` use graceful terminate on
+organization peers after verifying activation. Missing identity makes close
+unavailable or refused. On older peers, `close_terminals` requires advertised
+keep-empty support and the browser uses single kill. Native `kill_terminal`
+explicitly uses single kill. Lost or unreadable replies can leave outcomes
+unknown. Reconcile from the serving host's state and receipts.
 
 ## Complete creation intentions
 
@@ -114,6 +137,12 @@ A receipt row this binary cannot decode, as after a rollback past a new
 operation kind, does not stop the server. The row stays stored and its id is
 refused as a duplicate until it expires, because a missing receipt would let
 a retry run the operation twice.
+
+A replay of an activation-fenced terminate still needs its original live
+handle and server incarnation to resolve the target. After retirement or
+a cold restart, reconcile from the durable resource record if retained
+and from current inventory. Reusing an operation against a replacement
+activation is a different intent.
 
 The [server commit seam](../crates/phux-server/src/state/org.rs) separates
 `persist_command_from` from `mirror_persisted`; its
@@ -197,7 +226,9 @@ journal gap. Replaying the same derived observation ID writes nothing.
 `needs_you` keeps the agent slot. `done_unchecked` and `failed` free it, and
 the keeper then starts the oldest queued task through the same worktree and
 brief path as `mission start`. The keeper stays up while any task is
-`working` or `queued`. On exit it waits a short bounded grace and re-reads
+`working` or `queued` and its server still accepts connections; once the
+server is gone it exits at its idle limit and the next verb starts another.
+On exit it waits a short bounded grace and re-reads
 that terminal's agent record before recording `failed`, so a `done` that
 lands in the same moment becomes `done_unchecked`.
 

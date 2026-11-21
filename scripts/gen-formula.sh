@@ -117,6 +117,7 @@ EOF
   def install
     bin.install "phux"
     bin.install "phux-mcp"
+    (man1/"phux.1").write Utils.safe_popen_read(bin/"phux", "man")
   end
 
   test do

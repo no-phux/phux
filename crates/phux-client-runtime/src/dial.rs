@@ -17,6 +17,7 @@ use phux_dial::quic::{QuicDial, parse_token_hex};
 use phux_dial::ws::{WsDial, WsTarget};
 use phux_dial::{CertTrust, DialError};
 
+use crate::reconnect::HOST_REFUSED_TOKEN;
 use crate::target::{Resolved, read_token};
 
 /// A planned dial: how to reach one server, trust already decided.
@@ -62,6 +63,31 @@ impl Dial {
     }
 }
 
+/// Why a dial could not be planned.
+#[derive(Debug)]
+pub(crate) enum PlanError {
+    /// Configuration no retry changes: a missing pin or token, a bad
+    /// endpoint.
+    Refused(String),
+    /// The host's name did not resolve; it may once its network is up
+    /// (Tailscale `MagicDNS` still starting).
+    Unresolved(String),
+}
+
+impl From<String> for PlanError {
+    fn from(message: String) -> Self {
+        Self::Refused(message)
+    }
+}
+
+impl From<PlanError> for String {
+    fn from(error: PlanError) -> Self {
+        match error {
+            PlanError::Refused(message) | PlanError::Unresolved(message) => message,
+        }
+    }
+}
+
 /// Bound on name resolution plus transport establishment, so "connecting"
 /// never sits through a 75-second OS connect timeout.
 pub const DIAL_TIMEOUT: Duration = Duration::from_secs(15);
@@ -72,7 +98,7 @@ pub(crate) async fn plan_quic_with_token(
     resolved: &Resolved,
     authority: &str,
     token: Option<String>,
-) -> Result<QuicDial, String> {
+) -> Result<QuicDial, PlanError> {
     let name = resolved.name.as_str();
     let (bare, addr) = resolve_quic_addr(name, authority).await?;
     let trust = quic_trust(name, resolved, addr.ip().is_loopback())?;
@@ -194,7 +220,7 @@ pub fn unpinned_relay_route(name: &str, route: &str) -> String {
 async fn resolve_quic_addr<'a>(
     name: &str,
     authority: &'a str,
-) -> Result<(&'a str, SocketAddr), String> {
+) -> Result<(&'a str, SocketAddr), PlanError> {
     let (host, port) = authority
         .rsplit_once(':')
         .and_then(|(host, port)| Some((host, port.parse::<u16>().ok()?)))
@@ -203,10 +229,12 @@ async fn resolve_quic_addr<'a>(
     let addr = tokio::net::lookup_host((bare, port))
         .await
         .map_err(|err| {
-            format!("{name}: could not resolve {bare}: {err}; is its network connected?")
+            PlanError::Unresolved(format!(
+                "{name}: could not resolve {bare}: {err}; is its network connected?"
+            ))
         })?
         .next()
-        .ok_or_else(|| format!("{name}: {bare} resolved to no addresses"))?;
+        .ok_or_else(|| PlanError::Unresolved(format!("{name}: {bare} resolved to no addresses")))?;
     Ok((bare, addr))
 }
 
@@ -304,12 +332,12 @@ pub fn unpinned(name: &str) -> String {
     format!("{name} has no certificate pin in the registry; re-pair it with `phux host add {name}`")
 }
 
-/// A dial that outlasted [`DIAL_TIMEOUT`].
+/// A dial that outlasted `timeout`.
 #[must_use]
-pub fn timed_out(name: &str) -> String {
+pub fn timed_out(name: &str, timeout: Duration) -> String {
     format!(
         "{name} did not answer within {}s; check that it is up and its network is connected",
-        DIAL_TIMEOUT.as_secs()
+        timeout.as_secs_f64()
     )
 }
 
@@ -323,7 +351,7 @@ pub fn dial_message(name: &str, err: &DialError) -> String {
         ),
         DialError::Connect(detail) => format!("{name}: {detail}"),
         DialError::AuthRefused(detail) => format!(
-            "{name} refused the pairing token ({detail}); re-pair it with `phux host add {name}`"
+            "{name} {HOST_REFUSED_TOKEN} ({detail}); re-pair it with `phux host add {name}`"
         ),
         DialError::Io(detail) => format!("{name}: {detail}"),
         DialError::Stalled(detail) => format!("{name} stopped answering ({detail})"),

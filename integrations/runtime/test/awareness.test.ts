@@ -158,4 +158,5 @@ test("parses the opt-out environment and canonicalizes inherited terminal ids", 
   assert.equal(normalizeTerminalIdentity("65"), "@65");
   assert.equal(normalizeTerminalIdentity("host/@3"), "host/@3");
   assert.equal(normalizeTerminalIdentity(undefined), null);
+  assert.equal(normalizeTerminalIdentity("  "), null);
 });

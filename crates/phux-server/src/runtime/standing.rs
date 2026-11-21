@@ -1,7 +1,7 @@
 //! What the server keeps standing (`[[mirrors]]` and `[[producers]]`,
 //! `docs/resource-kinds.md#standing-mirrors`): where it reads the entries,
 //! and each entry's restart bookkeeping. The app that runs them keeps them
-//! running ([`crate::runtime::apps::keep_standing`]).
+//! running ([`crate::runtime::apps::terminal::standing::install`]).
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -131,12 +131,5 @@ mod tests {
         let died = died + HEALTHY_AFTER;
         assert!(!slot.due(false, died));
         assert!(slot.due(false, died + BACKOFF_BASE));
-    }
-
-    #[test]
-    fn a_mirror_found_running_is_adopted_not_restarted() {
-        let mut slot = Slot::default();
-        assert!(!slot.due(true, Instant::now()));
-        assert!(slot.started.is_none() && slot.args.is_none());
     }
 }

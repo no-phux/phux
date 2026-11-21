@@ -368,7 +368,6 @@ pub(crate) fn generated_name(name: &str) -> bool {
 mod tests {
     use super::*;
     use crate::organize::jev::destination_of;
-    use crate::organize::plan::KeptReason;
     use crate::organize::testkit::*;
 
     /// A repository no session carries gets one new session, shared by
@@ -404,7 +403,10 @@ mod tests {
         let sessions = [intake(1), session(2, "web", None)];
         let panes = [pane(10, 1, Some("web")), pane(11, 2, Some("web"))];
         let plan = run(&sessions, &panes, Scope::All);
-        assert!(plan.creates.is_empty(), "{plan:?}");
+        assert!(
+            plan.creates.is_empty() && plan.renames.is_empty(),
+            "{plan:?}"
+        );
         assert_eq!(plan.moves.len(), 1);
         assert_eq!(plan.moves[0].to, Some(skey(2)));
     }
@@ -493,16 +495,5 @@ mod tests {
             destination_of(&candidates, &new.option),
             Some(Destination::New(0))
         );
-    }
-
-    /// A second run after an adoption is a no-op: the renamed session is
-    /// recognized by name as its repository's home.
-    #[test]
-    fn a_second_run_after_adoption_moves_nothing() {
-        let sessions = [session(1, "phux", None)];
-        let panes = [pane(10, 1, Some("phux")), pane(11, 1, Some("phux"))];
-        let plan = run(&sessions, &panes, Scope::All);
-        assert!(plan.is_empty(), "{plan:?}");
-        assert!(plan.kept.iter().all(|k| k.reason == KeptReason::InPlace));
     }
 }

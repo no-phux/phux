@@ -49,7 +49,6 @@ fn question(kind: &str) -> NativeQuestion {
 
 fn fixture(size: (f32, f32), kind: &str) -> (Arc<Client>, Runtime<Desk>) {
     let (client, mut rt) = crate::test_support::input_fixture();
-    rt.text = rune::text::TextSystem::new(crate::grid::FONTS, crate::grid::FAMILIES);
     rt.set_viewport(size, 1.0);
     rt.set_system_reduced_motion(true);
     rt.update(|d, tx| {

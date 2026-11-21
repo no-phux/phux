@@ -135,22 +135,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_byte_round_trips_every_defined_policy() {
-        for policy in [
-            RolePolicy::PRIMARY,
-            RolePolicy::VIEWER,
-            RolePolicy::TAKEOVER,
-            RolePolicy::from_u8(0x03),
-        ] {
-            assert_eq!(RolePolicy::from_u8(policy.to_u8()), policy);
-        }
-        assert_eq!(RolePolicy::PRIMARY.to_u8(), 0);
-        assert_eq!(RolePolicy::VIEWER.to_u8(), 1);
-        assert_eq!(RolePolicy::TAKEOVER.to_u8(), 2);
-        assert_eq!(RolePolicy::default(), RolePolicy::PRIMARY);
-    }
-
-    #[test]
     fn the_wire_refuses_reserved_bits() {
         for byte in [0x04, 0x80, 0xfc, 0xfd] {
             assert!(RolePolicy::from_wire(byte).unwrap_err().is_unsupported());

@@ -161,7 +161,12 @@ fn bind_quic(
     let workload_mtls = state.with(|s| s.config().workload_mtls_required());
     let env = state.with(|s| s.config().server_env.clone());
     let (listener, slot) = build_quic_listener_for(addr, workload_mtls, &env);
-    state.with_mut(|s| s.record_remote_listener(slot));
+    state.with_mut(|s| {
+        s.record_remote_listener(slot);
+        if let Some(listener) = &listener {
+            s.watch_quic_replies(listener.replies());
+        }
+    });
     // The configured listener adopts satellites that dial in (ADR-0182); it
     // offers their ALPN only when it verifies workload certificates.
     listener.map(|listener| {

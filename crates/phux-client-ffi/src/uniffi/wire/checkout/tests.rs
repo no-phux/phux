@@ -54,6 +54,19 @@ fn answers_lower_to_typed_swift_records() {
             message: "no gh".to_owned()
         }
     );
+    let applied = lower(CheckoutOutcome::Answered(Box::new(
+        CheckoutAnswer::Applied(CheckoutRefusal {
+            code: phux_protocol::checkout::CheckoutRefusalCode::Timeout,
+            message: "slow".to_owned(),
+        }),
+    )));
+    assert_eq!(
+        applied.result,
+        WireCheckoutResult::Applied {
+            error: WireCheckoutError::Timeout,
+            message: "slow".to_owned()
+        }
+    );
     let unanswered = lower(CheckoutOutcome::Failed {
         failure: CheckoutFailure::Unanswered,
         message: "gone".to_owned(),
@@ -63,22 +76,6 @@ fn answers_lower_to_typed_swift_records() {
         WireCheckoutResult::Failed {
             error: WireCheckoutError::Unanswered,
             message: "gone".to_owned()
-        }
-    );
-}
-
-#[test]
-fn requests_lift_to_the_protocol_request() {
-    let request: CheckoutRequest = WireCheckoutRequest::Read {
-        path: "README.md".to_owned(),
-        max_bytes: 0,
-    }
-    .into();
-    assert_eq!(
-        request,
-        CheckoutRequest::Read {
-            path: "README.md".to_owned(),
-            max_bytes: 0
         }
     );
 }

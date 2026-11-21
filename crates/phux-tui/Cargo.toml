@@ -46,7 +46,7 @@ phux-core.workspace = true
 phux-config.workspace = true
 # The phux design language: the house look's roles, the theme-to-roles
 # solver the chrome slots are filled from, and the status ladder. No
-# dependencies of its own (spec §4.2).
+# dependencies of its own.
 phux-design.workspace = true
 # Status-bar `Cell::text` is built inline; matches phux-protocol's storage
 # type for `Cell::text` (see phux-x7a).
@@ -145,7 +145,6 @@ phux-wire-fixtures.workspace = true
 phux-server-testkit.workspace = true
 tempfile.workspace = true
 proptest.workspace = true
-insta.workspace = true
 # Test-only: capture the apply-vs-paint child spans `handle_server_frame`
 # emits into an in-memory buffer to prove the split is observable (the
 # flywheel's apply-ms vs paint-ms signal). A scoped `set_default`

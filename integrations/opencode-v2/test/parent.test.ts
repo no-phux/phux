@@ -1,16 +1,8 @@
 import { describe, expect, test } from "bun:test";
 
-import { parentPane } from "../src/parent.js";
 import { createPhuxTools, type PhuxToolRuntime } from "../../runtime/src/tools.js";
 
 describe("parent pane", () => {
-  test("normalizes the hosting terminal identity", () => {
-    expect(parentPane("7")).toBe("@7");
-    expect(parentPane("@7")).toBe("@7");
-    expect(parentPane(undefined)).toBeNull();
-    expect(parentPane("  ")).toBeNull();
-  });
-
   test("refuses every parent input path before calling the CLI", async () => {
     const calls: string[] = [];
     const tools = createPhuxTools(fakeRuntime(calls, "@7"));

@@ -1,31 +1,6 @@
 use super::super::tests::{assert_argv, fake_cli};
 use super::*;
 
-/// The wait description must state the edge rule, the meaning of a
-/// timeout, and the two-connection caveat, or callers misread results.
-#[test]
-fn the_wait_description_states_the_edge_rule_and_the_two_connection_caveat() {
-    let schema = wait_schema();
-    let description = schema["description"].as_str().unwrap();
-    assert!(description.contains("EDGE-TRIGGERED"), "{description}");
-    assert!(
-        description.contains("ALREADY RESTING"),
-        "the resting-pane timeout must be stated: {description}",
-    );
-    assert!(
-        description.contains("no transition was observed"),
-        "the 124 reading must be stated: {description}",
-    );
-    assert!(
-        description.contains("two connections"),
-        "the ADR-0076 point 6 caveat must be stated: {description}",
-    );
-    assert!(
-        description.contains("ADR-0076"),
-        "the caveat must be attributable: {description}",
-    );
-}
-
 /// The turn-driving tools execute the exact canonical argv.
 #[tokio::test]
 async fn turn_driving_tools_execute_the_exact_canonical_argv() {

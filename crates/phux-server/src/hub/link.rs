@@ -144,7 +144,7 @@ pub(crate) trait LinkConn {
         Ok(ServerFeatureExtSet::new())
     }
 
-    /// The satellite's `HELLO_OK.server_id` (L1 §9.1); `None` fences as one
+    /// The satellite's `HELLO_OK.server_id`; `None` fences as one
     /// incarnation.
     fn satellite_incarnation(&self) -> Option<[u8; 16]> {
         None

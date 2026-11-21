@@ -3,13 +3,16 @@
 
 use std::time::{Duration, Instant};
 
-use phux_client_core::layout::{LayoutNode, SplitDir, leaves, split_at};
+use phux_client_core::layout::{ArrangementDoc, LayoutNode, SplitDir, leaves, split_at};
 use phux_client_core::org_ops::OrgOutcome;
 use phux_client_runtime::Client;
 use phux_client_runtime::control::SpawnRequest;
 use phux_protocol::ids::{OperationId, ResourceId, Revision, SessionKey};
 
+use phux_design::tokens::SPACE;
+
 use super::{Desk, NoticeKind, Placement};
+use crate::ui::PAD;
 
 /// A terminal waiting for one session's arrangement, never whichever session
 /// happens to be selected when its replica or retry becomes ready.
@@ -27,6 +30,9 @@ pub(super) struct SplitWrite {
     refused: bool,
     /// The replica's revision it was written against.
     base: Option<Revision>,
+    /// A split's written arrangement, shown until the replica has it, so the
+    /// new pane appears when the write goes rather than when it is answered.
+    preview: Option<(SessionKey, ArrangementDoc)>,
     item: Unplaced,
 }
 
@@ -49,7 +55,7 @@ impl Desk {
             cwd: self.focused_cwd(),
             env: None,
             session_id: client.selected_session(),
-            initial_size: None,
+            initial_size: self.split_spawn_size(&shown.resource, dir),
         });
         self.connection.pending_splits.insert(
             request,
@@ -59,6 +65,43 @@ impl Desk {
             ),
         );
         self.connection.zoomed = None;
+    }
+
+    /// The cells the new half of `target` will get once split along `dir`,
+    /// so its program starts at that size rather than the server's default
+    /// and then redraws for a resize, as the terminal UI's splits do. `None`
+    /// while zoomed: the zoomed pane's area isn't the one it splits.
+    fn split_spawn_size(&self, target: &ResourceId, dir: SplitDir) -> Option<(u16, u16)> {
+        if self.connection.zoomed.is_some() {
+            return None;
+        }
+        let [w, h] = self.connection.areas.get(target).copied()?;
+        let half = |grid: f32| (grid + 2.0 * PAD - SPACE.card_gap) / 2.0 - 2.0 * PAD;
+        let area = match dir {
+            SplitDir::Horizontal => [half(w), h],
+            SplitDir::Vertical => [w, half(h)],
+        };
+        self.spawn_size(area)
+    }
+
+    /// A tab's terminal fills the terminal area inside its card's padding:
+    /// the split tree's, or the one pane's grid when there is no split.
+    pub(super) fn tab_spawn_size(&self) -> Option<(u16, u16)> {
+        let area = match &self.connection.layout {
+            Some(LayoutNode::Split { .. }) => self
+                .split_area()
+                .map(|[w, h]| [w - 2.0 * PAD, h - 2.0 * PAD]),
+            _ => self
+                .connection
+                .shown
+                .as_ref()
+                .and_then(|s| self.connection.areas.get(&s.resource).copied()),
+        }?;
+        self.spawn_size(area)
+    }
+
+    fn spawn_size(&self, area: [f32; 2]) -> Option<(u16, u16)> {
+        (area[0] >= 1.0 && area[1] >= 1.0).then(|| self.metrics().fit(area))
     }
 
     /// Keep the destination captured when the spawn or move was requested.
@@ -107,8 +150,16 @@ impl Desk {
             .split_write
             .take_if(|write| Some(write.item.session) != selected);
         let cancelled = before != self.connection.unplaced_splits.len() || write.is_some();
-        if let Some(operation) = write.and_then(|write| write.sent) {
-            self.connection.layout_ops.remove(&operation);
+        if let Some(write) = write {
+            // A previewed split asked for the keyboard; it stays where it is.
+            if write.preview.is_some() {
+                self.connection
+                    .wanted
+                    .take_if(|(terminal, _)| *terminal == write.item.terminal);
+            }
+            if let Some(operation) = write.sent {
+                self.connection.layout_ops.remove(&operation);
+            }
         }
         if cancelled {
             self.say(NoticeKind::Error, "Pending tab/split placement cancelled because the selected session changed. The terminal remains in its original session; open it from the palette.");
@@ -134,14 +185,20 @@ impl Desk {
             let item = self.connection.unplaced_splits.remove(0);
             let written = match &item.place {
                 Some((target, dir)) => self.write_split(client, target, &item.terminal, *dir),
-                None => self.write_tab(client, &item.terminal),
+                None => self.write_tab(client, &item.terminal).map(|op| (op, None)),
             };
             match written {
-                Some(operation) => {
+                Some((operation, preview)) => {
+                    // A previewed split is on screen: the keyboard follows it
+                    // now, as the terminal UI's does.
+                    if preview.is_some() {
+                        self.want(item.terminal.clone());
+                    }
                     self.connection.split_write = Some(SplitWrite {
                         sent: Some(operation),
                         refused: false,
                         base,
+                        preview,
                         item,
                     });
                 }
@@ -177,10 +234,19 @@ impl Desk {
         if (write.sent.is_some() || unseen) && !late {
             return;
         }
-        let Some(SplitWrite { refused, item, .. }) = self.connection.split_write.take() else {
+        let Some(SplitWrite {
+            refused,
+            preview,
+            item,
+            ..
+        }) = self.connection.split_write.take()
+        else {
             return;
         };
         match refused {
+            // A previewed split took the keyboard when it was written; it
+            // stays wherever the person has moved it since.
+            false if preview.is_some() => {}
             false => self.want(item.terminal),
             true if late => self.give_up_split(item.terminal),
             true => self.connection.unplaced_splits.insert(0, item),
@@ -286,13 +352,25 @@ impl Desk {
         }
     }
 
+    /// The arrangement a split in flight wrote, while the replica catches up.
+    /// A refused write shows the replica's again until it is retried.
+    pub(super) fn split_preview(&self, client: &Client) -> Option<ArrangementDoc> {
+        let write = self
+            .connection
+            .split_write
+            .as_ref()
+            .filter(|w| !w.refused)?;
+        let (session, doc) = write.preview.as_ref()?;
+        (self.placement_session(client) == Some(*session)).then(|| doc.clone())
+    }
+
     fn write_split(
         &mut self,
         client: &Client,
         target: &ResourceId,
         new: &ResourceId,
         dir: SplitDir,
-    ) -> Option<OperationId> {
+    ) -> Option<(OperationId, Option<(SessionKey, ArrangementDoc)>)> {
         let placed = self.arrangement(client).map(|(session, mut doc)| {
             // Split where the target lives. One no group holds gets its own
             // tab, so no other tab's tree is overwritten.
@@ -323,7 +401,10 @@ impl Desk {
             if let Ok(split) = split_at(&base, target, new, dir, 0.5) {
                 group.tree = Some(split);
                 group.focus = Some(new.clone());
-                written = self.submit_arrangement(client, session, &doc).ok();
+                written = self
+                    .submit_arrangement(client, session, &doc)
+                    .ok()
+                    .map(|operation| (operation, Some((session, doc))));
             }
         }
         written

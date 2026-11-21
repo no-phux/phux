@@ -29,7 +29,7 @@ use agents::{check_agent_shim, check_skill};
 use audit::check_audit;
 use credentials::{check_client_certs, check_token_store, check_workload_authority};
 use permissions::check_permissions;
-use remote::{check_remote_listeners, check_remote_reachable};
+use remote::{check_remote_listeners, check_remote_reachable, check_remote_replies};
 use remote_cert::{check_remote_cert, check_remote_cert_chain};
 use server_health::check_server_health;
 use supervision::check_supervision;
@@ -132,6 +132,7 @@ pub(crate) fn run_doctor(json: bool, socket: Option<PathBuf>) -> ExitCode {
         check_logs(),
         check_audit(&socket_path),
     ]);
+    checks.extend(check_remote_replies(&socket_path));
     checks.extend(check_remote_cert_chain());
     let checklist = checklist::items(&checklist::gather(&socket_path, &checks));
 
@@ -468,25 +469,11 @@ fn report_json(checks: &[Check], checklist: &[checklist::Item]) -> ExitCode {
         "checks": rows,
         "checklist": checklist::to_json(checklist),
     });
-    match serde_json::to_string_pretty(&doc) {
-        Ok(rendered) => {
-            outln!("{rendered}");
-            if failed == 0 {
-                ExitCode::SUCCESS
-            } else {
-                ExitCode::FAILURE
-            }
-        }
-        Err(err) => crate::commands::json_err::emit(
-            true,
-            &crate::commands::json_err::CliError::new(
-                crate::commands::json_err::codes::JSON_SERIALIZE,
-                format!("could not render doctor JSON: {err}"),
-                "this is a phux bug worth filing",
-            ),
-            1,
-        ),
+    let code = crate::output::json(&doc);
+    if code == ExitCode::SUCCESS && failed > 0 {
+        return ExitCode::FAILURE;
     }
+    code
 }
 
 /// Run `phux doctor` as parsed.

@@ -22,7 +22,7 @@ pub(super) use super::tokens::GlassSurface as Glass;
 
 /// `panel` on `layer`, or glass over the terminal when the look puts glass
 /// on this surface and the window lets it draw: the layer as a tint at the
-/// `Settings.glass` alpha, never thinner than the verified floor (§1.9).
+/// `Settings.glass` alpha, never thinner than the verified floor.
 /// Opaque under increased contrast, reduce transparency and forced
 /// colours, and on a phone, whose one blur is its dock.
 pub(super) fn glass(panel: El, t: &Tokens, layer: Rgba8, surface: Glass, phone: bool) -> El {
@@ -32,7 +32,7 @@ pub(super) fn glass(panel: El, t: &Tokens, layer: Rgba8, surface: Glass, phone: 
     t.glass_panel(panel, surface, layer, layer)
 }
 
-/// Exits fade; entries scale up from `enter_scale` on the pop spring (§1.8).
+/// Exits fade; entries scale up from `enter_scale` on the pop spring.
 pub(super) fn pop(t: &Tokens) -> Transition {
     t.enter()
 }
@@ -115,8 +115,8 @@ pub(super) fn notice_words(notice: &Notice, t: &Tokens) -> El {
 /// collapsed, and up to [`VISIBLE`] of them, newest nearest the edge,
 /// while the pointer holds it open (`Desk::toasts`). Timers pause while
 /// it is open. The inbox's footer says the front one instead while the
-/// drawer is open. Opaque: the house look keeps glass off toasts (§1.9
-/// `where`).
+/// drawer is open. Opaque: the house look keeps glass off toasts
+/// (`material.glass.where`).
 pub fn toast(desk: &Desk, p: &Tokens) -> Option<El> {
     let t = p;
     if desk.inbox.open {
@@ -245,7 +245,7 @@ fn toast_card(desk: &Desk, entry: &ToastEntry<Notice>, front: bool, t: &Tokens) 
 
 /// The find bar, top right of the pane find belongs to: a field, the
 /// match count, case and the steps. A query that matches nothing is the
-/// field's invalid state (§1.10).
+/// field's invalid state.
 pub fn find_bar(desk: &Desk, id: &ResourceId, area: [f32; 2], p: &Tokens) -> Option<El> {
     let t = p;
     let s = &t.space;
@@ -288,6 +288,14 @@ pub fn find_bar(desk: &Desk, id: &ResourceId, area: [f32; 2], p: &Tokens) -> Opt
         .absolute(left, PAD + s.s1)
         .w(width)
         .on_drag(keep_from_pane)
+        // Keyboard help makes the toolbar's buttons a natural stop. Escape
+        // belongs to Find there too, never to the terminal underneath it.
+        .on_key(|d: &mut Desk, event, tx| {
+            if event.key != rune::Key::Escape {
+                return false;
+            }
+            d.find_key(event, tx)
+        })
         .min_h(s.row_h + s.s2)
         .pl(s.s3)
         .pr(s.s1)
@@ -297,7 +305,17 @@ pub fn find_bar(desk: &Desk, id: &ResourceId, area: [f32; 2], p: &Tokens) -> Opt
         .border(s.hairline, edge.paint())
         .transition(pop(t))
         .child(field)
-        .child(text(status).font(t.ty.readout).color(count.paint()))
+        // A count ("3 of 12") changes in place, so it is a readout; the
+        // miss is words, in the caption's own face.
+        .child(
+            text(status)
+                .font(if miss {
+                    t.ty.caption
+                } else {
+                    t.ty.readout
+                })
+                .color(count.paint()),
+        )
         .child(case)
         .child(
             icon_press(&icons::ARROW_UP, "Older match", "find-older", p, |d| {

@@ -1,6 +1,4 @@
 //! Shared integration harness contracts.
-use std::path::PathBuf;
-
 use super::AutoSpawnedServer;
 
 /// The backstop must be the variable the server actually reads.
@@ -17,18 +15,6 @@ fn the_idle_backstop_names_the_variable_the_server_reads() {
             .is_ok_and(|secs| (1..=86_400).contains(&secs)),
         "the backstop must be in the range the server accepts: {value}"
     );
-}
-
-/// An unused guard must not hang or spawn `phux` looking for a daemon
-/// that was never started. Cleanup is a no-op only when there is no pid
-/// *and* no socket file — not whenever the pid is unknown.
-#[test]
-fn unused_guard_drop_does_not_require_a_pid() {
-    let server = AutoSpawnedServer::new(
-        "/nonexistent/phux-e4qx",
-        PathBuf::from("/nonexistent/phux-e4qx-absent.sock"),
-    );
-    drop(server);
 }
 
 /// A caller that clears the environment must not reopen the release check.

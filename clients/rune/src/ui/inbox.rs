@@ -40,9 +40,9 @@ fn mark_icon(mark: Mark, t: &Tokens) -> (El, rune::Color) {
     }
 }
 
-/// One suggested answer (§4.1.3 OWN chip): the selected wash inside the
+/// One suggested answer (an OWN chip): the selected wash inside the
 /// control outline. `index` is its ⌘ digit, while the row is picked. While
-/// the answer sends, every chip is disabled, not hidden (§1.10 loading). On
+/// the answer sends, every chip is disabled, not hidden. On
 /// a phone it is a full-width touch target whose answer wraps.
 fn chip(
     terminal: &ResourceId,
@@ -337,7 +337,7 @@ fn approval_card(approval: &Approval, phone: bool, t: &Tokens) -> El {
     for subject in &approval.subjects {
         body = body.child(approval_subject(subject, phone, t));
     }
-    // Deny is destructive; Approve is the one primary action (§1.10). A
+    // Deny is destructive; Approve is the one primary action. A
     // phone has no chords to show, and each is a full touch target.
     let decide = |decision, label: &'static str, chord: &'static str, variant| {
         let id = approval.id.clone();

@@ -461,10 +461,5 @@ fn session_name(socket: Option<PathBuf>, id: u32) -> Option<String> {
         .ok()?;
     let snapshot = state.into_snapshot_ignoring_degradation();
     let pane = phux_protocol::ids::ResourceId::local(id);
-    let session = phux_client::spawn::ownership_for_terminal(&snapshot, &pane)?;
-    snapshot
-        .sessions
-        .into_iter()
-        .find(|candidate| candidate.id == session)
-        .map(|session| session.name)
+    phux_client::spawn::session_name_for_terminal(&snapshot, &pane)
 }

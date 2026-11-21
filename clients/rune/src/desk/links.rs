@@ -273,7 +273,11 @@ mod tests {
     use crate::launch::Resolved;
 
     fn desk() -> Desk {
-        Desk::new(&Resolved::offline("links"))
+        Desk::with_preferences(
+            &Resolved::offline("links"),
+            None,
+            rune::prefs::Prefs::memory(),
+        )
     }
 
     #[test]

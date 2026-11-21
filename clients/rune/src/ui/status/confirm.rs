@@ -63,7 +63,7 @@ pub(super) fn question(pending: &Pending, touch: bool) -> (String, &'static str)
     }
 }
 
-/// The pane ids (`@N`) in `message`, set as machine nouns (§1.4 voice):
+/// The pane ids (`@N`) in `message`, set as machine nouns:
 /// the mono face, so `@4` reads as an address, not a word.
 fn pane_ids(message: &str) -> Vec<rune::Span> {
     let mut spans = Vec::new();
@@ -80,7 +80,7 @@ fn pane_ids(message: &str) -> Vec<rune::Span> {
 }
 
 /// Whether confirming `pending` ends something: the destructive verbs
-/// (Close, End session) draw as the danger button (§1.10).
+/// (Close, End session) draw as the danger button.
 pub(super) const fn destructive(pending: &Pending) -> bool {
     matches!(
         pending,
@@ -99,7 +99,7 @@ pub fn confirm_bar(desk: &Desk, p: &Tokens) -> Option<El> {
 }
 
 /// [`confirm_bar`], wherever its parent puts it: an opaque floating
-/// surface (it is past the blur budget, §1.9), Cancel outlined and the verb
+/// surface (it is past the blur budget), Cancel outlined and the verb
 /// the view's one primary action, or the danger button when it ends
 /// something.
 pub(in crate::ui) fn question_bar(desk: &Desk, p: &Tokens) -> Option<El> {

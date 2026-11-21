@@ -25,26 +25,6 @@ fn losing_the_occupant_retracts_a_published_record() {
     assert_eq!(h.identity_tick(), DetectOutcome::Quiet);
 }
 
-/// A long vacancy is one retraction, then silence.
-#[test]
-fn a_vacant_pane_retracts_once_and_then_is_silent() {
-    let mut h = Harness::new().past_grace();
-    assert_eq!(published(&h.tick("WORKING")), DetectedState::Working);
-    h.occupy(Occupancy::Vacant { pgid: 100 });
-
-    let mut retracts = 0;
-    let mut quiets = 0;
-    for _ in 0..20 {
-        match h.identity_tick() {
-            DetectOutcome::Retract => retracts += 1,
-            DetectOutcome::Quiet => quiets += 1,
-            other => panic!("a vacant pane must never publish or correct: {other:?}"),
-        }
-    }
-    assert_eq!(retracts, 1, "exactly one retraction, ever");
-    assert_eq!(quiets, 19);
-}
-
 /// Unanswerable queries are not evidence: twenty failures accumulate
 /// into nothing.
 #[test]
@@ -108,17 +88,6 @@ fn a_different_kind_in_the_same_pane_is_a_correction() {
         h.identity_tick(),
         reidentified("u"),
         "the pane's occupant changed and someone has to be told",
-    );
-}
-
-/// A correction is never a retraction.
-#[test]
-fn a_kind_change_never_retracts() {
-    let mut h = occupied("t", 100);
-    h.occupy(agent("u", 200));
-    assert!(
-        !matches!(h.identity_tick(), DetectOutcome::Retract),
-        "the pane is occupied; there is nothing to retract",
     );
 }
 

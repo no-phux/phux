@@ -156,6 +156,8 @@ impl ResourceTable {
     where
         F: Future<Output = ()> + 'static,
     {
+        // Reap finished engines so the set does not grow for the server's life.
+        while self.tasks.try_join_next().is_some() {}
         self.tasks.spawn_local(actor_future);
     }
 
@@ -276,13 +278,6 @@ impl ResourceTable {
             .filter(|(_, subs)| subs.contains(&client))
             .filter_map(|(terminal, _)| self.handle(*terminal).cloned())
             .collect()
-    }
-
-    /// Whether no pane has a subscriber (tests the empty-list GC).
-    #[cfg(test)]
-    #[must_use]
-    pub(super) fn subscriber_map_is_empty(&self) -> bool {
-        self.subscribers.is_empty()
     }
 
     // -- output task lifetimes and ATTACH_RESOURCE generations --------

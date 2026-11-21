@@ -12,15 +12,11 @@ use std::f32::consts::{PI, TAU};
 
 use super::{Bit, Car, Driver, Ember, GOLD, MINT, Mode, PitLane, at};
 use crate::creature;
-use crate::playground::{self, Mood, Rng, hash};
+use crate::playground::{self, Mood, Rng, ease, hash};
 
 /// One fixed step of scene time: the same race whatever the frame rate.
 pub const DT: f32 = 1.0 / 60.0;
 const MAX_EMBERS: usize = 600;
-
-fn ease(dt: f32, rate: f32) -> f32 {
-    1.0 - (-dt * rate).exp()
-}
 
 /// `x` moved toward `to` by at most `by`.
 fn toward(x: f32, to: f32, by: f32) -> f32 {

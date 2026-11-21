@@ -125,7 +125,7 @@ pub struct ConsumerAckRequest {
     pub stream_id: StreamId,
     /// Replica generation being acknowledged.
     pub bootstrap_id: BootstrapId,
-    /// Cumulative ack `seq` (SPEC §12.2); stale acks are dropped.
+    /// Cumulative ack `seq`; stale acks are dropped.
     pub seq: u64,
 }
 

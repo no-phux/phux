@@ -1,7 +1,7 @@
 //! Sheet rules reserve exactly the device pixels their borders paint.
 
 use super::*;
-use rune::{Env, Runtime};
+use rune::Env;
 
 fn sheet(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     let p = tokens_for(cx.system_dark(), desk.settings.theme);
@@ -33,7 +33,8 @@ fn sheet_palette_and_inbox_rules_take_whole_device_pixels() {
         for (phone, size) in [(false, (1100.0, 720.0)), (true, (393.0, 852.0))] {
             for (surface, name) in surfaces {
                 let desk = crate::test_support::settings_window().with_phone(phone);
-                let mut rt = Runtime::new(desk, surface, size, Env::new(false, scale));
+                let mut rt =
+                    crate::test_support::runtime(desk, surface, size, Env::new(false, scale));
                 rt.frame(0.0);
                 for edge in ["header", "footer"] {
                     let key = format!("{name}-{edge}-rule");

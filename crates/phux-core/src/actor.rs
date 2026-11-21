@@ -72,7 +72,7 @@ impl Actor {
     }
 }
 
-/// Permission category a command needs (CONTRACTS §03). Grants are
+/// Permission category a command needs. Grants are
 /// enforced by the server; core names the verb in refusals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

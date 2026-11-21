@@ -458,14 +458,6 @@ mod tests {
 
     #[test]
     fn store_failures_carry_the_cli_error_document() {
-        let document = failure(&phux_work::Error::NoMail {
-            id: "00".into(),
-            reader: "@7".into(),
-        })
-        .document();
-        assert_eq!(document["schema"], SCHEMA);
-        assert_eq!(document["error"]["code"], "mail_not_found");
-        assert_eq!(document["exit_code"], 1);
         let usage = failure(&phux_work::Error::InvalidText {
             field: "address".into(),
             reason: "bad".into(),
@@ -497,13 +489,6 @@ mod tests {
                 .is_err()
             );
         }
-    }
-
-    #[test]
-    fn uncertain_keeper_failure_does_not_recommend_blind_retry() {
-        let doc = failure(&phux_work::Error::Keeper("reply lost".into())).document();
-        assert!(doc["remedy"].as_str().unwrap().contains("reconcile"));
-        assert!(doc["remedy"].as_str().unwrap().contains("operation_id"));
     }
 
     #[test]

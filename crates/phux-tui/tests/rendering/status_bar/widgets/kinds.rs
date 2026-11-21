@@ -178,7 +178,7 @@ fn windows_widget_renders_tabs_and_markers() {
             "0:a 1:b !",
         ),
         (
-            "retained window gets the x suffix plus exit status",
+            "retained window gets the sidebar's failed mark plus exit status",
             vec![
                 win("a", true),
                 WindowInfo {
@@ -186,10 +186,10 @@ fn windows_widget_renders_tabs_and_markers() {
                     ..win("b", false)
                 },
             ],
-            "0:a 1:b x3",
+            "0:a 1:b \u{2715}3",
         ),
         (
-            "signal death and unknown exit still carry the x marker",
+            "signal death fails; an unreported exit ends quietly, as in the sidebar",
             vec![
                 WindowInfo {
                     exited: Some("sig9".to_owned()),
@@ -200,7 +200,16 @@ fn windows_widget_renders_tabs_and_markers() {
                     ..win("b", false)
                 },
             ],
-            "0:a xsig9 1:b x",
+            "0:a \u{2715}sig9 1:b \u{2013}",
+        ),
+        (
+            "the ascii column marks it the way the ascii sidebar does",
+            vec![WindowInfo {
+                exited: Some("3".to_owned()),
+                glyphs: phux_tui::render::theme::Glyphs::Ascii,
+                ..win("a", true)
+            }],
+            "0:a x3",
         ),
         ("empty list renders nothing", vec![], ""),
     ];
@@ -265,34 +274,6 @@ fn help_hints_widget_drops_whole_hints_as_it_narrows() {
     // No ellipsis ever appears in this widget's output.
     for budget in 0..70 {
         assert!(!at(budget).contains('…'), "clipped at budget {budget}");
-    }
-}
-
-#[test]
-fn windows_widget_stamps_hit_targets_on_tab_cells() {
-    // phux-foz.12: every cell of a tab segment carries its window's hit
-    // target (markers included); separator cells are inert. Cell-for-cell
-    // against the default format "0:a 1:b Z" (window 1 zoomed... use the
-    // attention marker on 1 to cover marker cells too).
-    let cells = render_windows(
-        &[],
-        &[
-            win("a", true),
-            WindowInfo {
-                attention: true,
-                ..win("bee", false)
-            },
-        ],
-    );
-    // "0:a 1:bee !" — columns 0..3 → window 0, column 3 separator, 4..11 → window 1.
-    assert_eq!(text_of(&cells), "0:a 1:bee !");
-    for (i, cell) in cells.cells.iter().enumerate() {
-        let expected = match i {
-            0..=2 => Some(CellHit::Window(0)),
-            3 => None, // separator
-            _ => Some(CellHit::Window(1)),
-        };
-        assert_eq!(cell.hit, expected, "cell {i} ({:?})", cell.text);
     }
 }
 

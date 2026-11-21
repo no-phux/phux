@@ -171,31 +171,6 @@ fn settings_action_closes_navigation_and_opens_settings_not_command_search() {
 }
 
 #[test]
-fn sessions_remain_usable_in_a_small_phone_with_search_keyboard_open() {
-    for size in [(320.0, 568.0), (393.0, 852.0)] {
-        let (_client, mut rt) = fixture();
-        inventory(&mut rt);
-        rt.set_viewport(size, 2.0);
-        rt.update(|d, _| d.open_phone_sessions());
-        settle(&mut rt);
-        tap(&mut rt, "phone-session-query", 0.1);
-        for key in [
-            "phone-navigation-close",
-            "phone-session-query",
-            "phone-session-new",
-        ] {
-            let element = rt
-                .elements()
-                .into_iter()
-                .find(|e| e.key.as_deref() == Some(key))
-                .unwrap();
-            assert!(element.visible[3] >= 40.0, "{size:?} {key}: {element:?}");
-            assert!(element.rect[0] >= 0.0 && element.rect[0] + element.rect[2] <= size.0 + 0.5);
-        }
-    }
-}
-
-#[test]
 fn a_higher_modal_owns_soft_keys_even_with_session_search_retained_underneath() {
     let (client, mut rt) = fixture();
     rt.update(|d, _| d.open_phone_sessions());

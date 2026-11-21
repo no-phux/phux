@@ -4,7 +4,7 @@
 //! `└`. They sit under the machine this window is on; the other machines
 //! follow, folded, each opening to a glance at its sessions.
 //!
-//! Rows are phux's own (§4.1.3 OWN), drawn only from the window's tokens:
+//! Rows are phux's own (OWN), drawn only from the window's tokens:
 //! the kit's `SidebarRow` has no disclosure on a draggable row, no status
 //! words and no variable pitch. They sit in one source list, as the kit's
 //! `Sidebar` keeps them: a single Tab stop whose arrows move the selection.
@@ -114,14 +114,15 @@ fn session_header(session: &Header, t: &Tokens) -> El {
         .min_w(0.0)
         .h(t.space.row_h)
         .gap(t.space.icon_gap)
-        .radius(t.radius.sm)
+        .radius(t.radius.md)
         .items_center()
         .children((session.host).map(|(host, _)| host_color::dot(host, dot_size(t), sidebar)))
         .children((session.color).map(|rgb| host_color::mark(rgb, dot_size(t), sidebar)))
         .children(session.branch.then(|| branch_mark(t)))
         .child(
+            // A group's name, a step quieter than the rows it holds.
             text(session.name.to_owned())
-                .font(t.ty.label.semibold())
+                .font(t.ty.caption.semibold())
                 .color(ink.paint())
                 .truncate(),
         );
@@ -168,7 +169,7 @@ fn session_header(session: &Header, t: &Tokens) -> El {
         .h(t.space.row_h)
         .px(t.space.icon_gap)
         .gap(t.space.s1)
-        .radius(t.radius.sm)
+        .radius(t.radius.md)
         .items_center()
         .children(key.map(|key| disclosure(session, key, t)))
         .child(heading)
@@ -241,7 +242,7 @@ fn pane_row(pane: &Row, t: &Tokens) -> El {
         let f = face(mark, t);
         let lit = tinted && !disabled;
         let ink = if lit { f.ink } else { quiet.paint() };
-        // What asks for you is set bold beside its mark (§1.3).
+        // What asks for you is set bold beside its mark.
         let font = if lit && f.bold {
             t.ty.caption.semibold()
         } else {
@@ -273,7 +274,7 @@ fn pane_row(pane: &Row, t: &Tokens) -> El {
         .pr(t.space.icon_gap)
         .py(t.space.s0_5)
         .gap(t.space.icon_gap)
-        .radius(t.radius.sm)
+        .radius(t.radius.md)
         .continuous_corners()
         .items_center()
         .focusable(!disabled)
@@ -323,7 +324,7 @@ fn counts_by_session(desk: &Desk, topology: &Topology) -> HashMap<u32, Counts> {
 
 /// A click on a row picks it and hands the keyboard back to the shown
 /// terminal; only keys keep focus in the list, where arrows walk it.
-fn clicked(tx: &mut rune::Tx) {
+pub(super) fn clicked(tx: &mut rune::Tx) {
     if !tx.by_keys() {
         tx.blur();
     }
@@ -331,7 +332,7 @@ fn clicked(tx: &mut rune::Tx) {
 
 /// The rows' source list (the kit `Sidebar`'s): one Tab stop that lands on
 /// the selected row; Up and Down move the selection, which follows focus,
-/// and typing a row's first letters jumps to it.
+/// typing a row's first letters jumps to it, and Esc leaves.
 fn source_list(t: &Tokens) -> El {
     col()
         .key("sidebar-list")
@@ -339,6 +340,14 @@ fn source_list(t: &Tokens) -> El {
         .label("Sessions")
         .focus_group()
         .focus_follows()
+        // Esc hands the keyboard back to the shown terminal.
+        .on_key(|_: &mut Desk, event, tx| {
+            let back = event.key == Key::Escape;
+            if back {
+                tx.blur();
+            }
+            back
+        })
         .w_full()
         .gap(t.space.s0_5)
         .px(t.space.s2)

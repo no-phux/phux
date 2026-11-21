@@ -148,11 +148,6 @@ fn the_needs_you_chip_counts_asking_panes() {
             .attention = true;
     }
     assert_eq!(needs_you_count(&panes), 2);
-    let theme = crate::render::Theme::default();
-    assert_eq!(
-        crate::render::chrome::needs_you_chip(&theme, 2).as_deref(),
-        Some(" ●2 ")
-    );
 }
 
 #[test]

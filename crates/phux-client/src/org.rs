@@ -173,11 +173,19 @@ pub async fn request(
     }
     let operation = command.idempotency_key().copied();
     let receipt_operation = operation.filter(|_| command.is_organization());
+    let terminate_operation = match &command {
+        Command::ResourceTerminate { operation, .. } => Some(*operation),
+        _ => None,
+    };
     match conn.request(request_id, command).await {
         Ok(reply) => {
             let (result, interleaved) = reply.into_parts();
+            let outcome = terminate_operation.map_or_else(
+                || OrgOutcome::from_result(&result),
+                |operation| OrgOutcome::from_terminate_reply(operation, &result),
+            );
             Ok((
-                checked_outcome(&result, receipt_operation)?,
+                checked_outcome(outcome, receipt_operation)?,
                 Degradation::from_interleaved(&interleaved),
             ))
         }
@@ -233,10 +241,9 @@ pub async fn accept(
 /// Keep ambiguous or foreign acknowledgements uncertain for every mutation caller,
 /// including session creation paths that inspect the raw organization outcome.
 fn checked_outcome(
-    result: &phux_protocol::wire::frame::CommandResult,
+    outcome: OrgOutcome,
     operation: Option<OperationId>,
 ) -> Result<OrgOutcome, OrgError> {
-    let outcome = OrgOutcome::from_result(result);
     match &outcome {
         OrgOutcome::Committed(receipt)
             if operation.is_some_and(|expected| expected != receipt.operation) =>

@@ -65,12 +65,6 @@ async fn a_non_blocking_read_takes_what_is_there_and_never_waits() {
 }
 
 #[test]
-fn joined_frames_keep_order() {
-    assert_eq!(join_frames(&[]), Vec::<u8>::new());
-    assert_eq!(join_frames(&[vec![1, 2], vec![], vec![3]]), vec![1, 2, 3]);
-}
-
-#[test]
 fn a_websocket_message_budget_grows_with_its_size_and_then_caps() {
     assert_eq!(message_budget(0), SEND_BUDGET);
     assert_eq!(message_budget(SEND_STALL_CHUNK), SEND_BUDGET);

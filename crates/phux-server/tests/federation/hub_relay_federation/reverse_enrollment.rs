@@ -1,9 +1,8 @@
 //! Reverse enrollment (ADR-0182, phux-lxov.3): a satellite with no listener
 //! at all enrolls with a ticket the hub minted, dials the hub's QUIC
 //! listener under `phux-satellite/1`, and the hub's link supervisor adopts
-//! that connection as the satellite's link. The ticket is single use, an
-//! expired or revoked one is refused, the satellite redials after the hub
-//! comes back, and revoking its credential ends the link.
+//! that connection as the satellite's link. The satellite redials after the
+//! hub comes back, and revoking its credential ends the link.
 
 use std::net::{Ipv4Addr, SocketAddr};
 
@@ -184,33 +183,13 @@ fn a_listenerless_satellite_enrolls_dials_out_and_is_adopted() {
         let d = dir.path();
         let hub = PairedHub::boot(d, 0).await;
 
-        // An expired ticket and a revoked one are refused, and spend nothing.
-        let expired = mint(d, 1);
-        tokio::time::sleep(Duration::from_millis(1_100)).await;
-        let late = join(&code(&hub, d, &expired), &d.join("sat-expired"))
-            .await
-            .expect_err("an expired ticket is refused");
-        assert!(late.contains("refused"), "{late}");
-        let revoked = mint(d, 600);
-        assert!(
-            tickets::revoke_ticket(&tickets::tickets_path(&hub_paths(d).registry), &revoked.id)
-                .unwrap()
-        );
-        let withdrawn = join(&code(&hub, d, &revoked), &d.join("sat-revoked"))
-            .await
-            .expect_err("a revoked ticket is refused");
-        assert!(withdrawn.contains("refused"), "{withdrawn}");
-
-        // A live ticket enrolls once; the same code cannot enroll again.
+        // Ticket expiry, revocation and single use are pinned by
+        // `workload::tickets`; this is the wire path a live ticket takes.
         let ticket = mint(d, 600);
         let join_code = code(&hub, d, &ticket);
         let joined = join(&join_code, &d.join("sat-state"))
             .await
             .expect("the ticket enrolls the satellite");
-        let replay = join(&join_code, &d.join("sat-again"))
-            .await
-            .expect_err("a ticket enrolls once");
-        assert!(replay.contains("refused"), "{replay}");
         let registry = WorkloadRegistry::load(&hub_paths(d).registry).unwrap();
         let record = registry
             .lookup_satellite(&joined.credential)

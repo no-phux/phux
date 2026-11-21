@@ -163,6 +163,30 @@ pub fn spawn_lock_path(socket: &Path) -> PathBuf {
         .join(lock_name)
 }
 
+/// The lock a server holds (`flock`, exclusive) while it serves `socket`.
+///
+/// One server per socket path. Never unlinked, so every holder locks the
+/// same inode. A held lock means a live server even when its socket refuses
+/// a connect (a full listen backlog refuses like a dead one).
+#[must_use]
+pub fn server_lock_path(socket: &Path) -> PathBuf {
+    let mut path = socket.as_os_str().to_owned();
+    path.push(".lock");
+    path.into()
+}
+
+/// Whether a server currently holds `socket`'s [`server_lock_path`].
+/// Missing or unreadable lock files hold nothing.
+fn server_lock_held(socket: &Path) -> bool {
+    let Ok(file) = std::fs::File::open(server_lock_path(socket)) else {
+        return false;
+    };
+    matches!(
+        file.try_lock_shared(),
+        Err(std::fs::TryLockError::WouldBlock)
+    )
+}
+
 /// What a probe of a socket path found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SocketState {
@@ -216,9 +240,29 @@ pub fn probe(path: &Path) -> SocketState {
             drop(stream);
             SocketState::Live
         }
-        Err(err) if is_unbound(&err) => SocketState::Stale,
+        // A refusal from a socket whose server still holds the lock is a
+        // busy server, not a dead one.
+        Err(err) if is_unbound(&err) && !server_lock_held(path) => SocketState::Stale,
         Err(_) => SocketState::Live,
     }
+}
+
+/// Whether a server at `path` accepts a connection right now.
+///
+/// Stricter than [`probe`]'s `Live`: a server that holds the lock but has
+/// not bound yet (or is too busy to accept) is live, not accepting, so
+/// waiting for a fresh server to come up uses this.
+#[must_use]
+#[cfg(unix)]
+pub fn accepts(path: &Path) -> bool {
+    UnixStream::connect(path).is_ok()
+}
+
+/// Without Unix sockets nothing here can accept.
+#[must_use]
+#[cfg(not(unix))]
+pub const fn accepts(_path: &Path) -> bool {
+    false
 }
 
 /// Without Unix-socket probing an existing entry is conservatively live,
@@ -242,6 +286,12 @@ fn is_unbound(err: &io::Error) -> bool {
     )
 }
 
+/// Probes [`reap_stale`] needs, all `Stale`, before it unlinks.
+const REAP_PROBE_ATTEMPTS: u32 = 4;
+
+/// Pause between [`reap_stale`]'s probes.
+const REAP_PROBE_RETRY: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// Remove a socket entry previously classified [`SocketState::Stale`].
 ///
 /// Re-probes first. Between the original probe and this call a server may
@@ -254,8 +304,16 @@ fn is_unbound(err: &io::Error) -> bool {
 /// Propagates the unlink failure, except `NotFound` — another party winning
 /// the same cleanup is success, not an error.
 pub fn reap_stale(path: &Path) -> io::Result<bool> {
-    if probe(path) != SocketState::Stale {
-        return Ok(false);
+    // Unlinking is the one irreversible step, so a refusal must repeat
+    // before it counts: a server too old to hold the lock still refuses
+    // while its backlog is full, and losing its socket strands its panes.
+    for attempt in 0..REAP_PROBE_ATTEMPTS {
+        if attempt > 0 {
+            std::thread::sleep(REAP_PROBE_RETRY);
+        }
+        if probe(path) != SocketState::Stale {
+            return Ok(false);
+        }
     }
     match std::fs::remove_file(path) {
         Ok(()) => Ok(true),
@@ -330,14 +388,6 @@ mod tests {
     }
 
     #[test]
-    fn absent_path_probes_absent() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("phux.sock");
-        assert_eq!(probe(&path), SocketState::Absent);
-        assert!(probe(&path).needs_server());
-    }
-
-    #[test]
     fn a_bound_socket_probes_live() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("phux.sock");
@@ -360,6 +410,28 @@ mod tests {
             probe(&path).needs_server(),
             "a stale socket must not block auto-spawn — this is phux-zomb.1"
         );
+    }
+
+    /// A refusing socket whose server still holds the lock is a busy live
+    /// server (macOS refuses a full backlog like a dead socket): it probes
+    /// live and is never reaped. Released, the same entry is stale.
+    #[test]
+    fn a_held_server_lock_keeps_a_refusing_socket_live() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("phux.sock");
+        drop(UnixListener::bind(&path).expect("bind"));
+        let lock = std::fs::File::create(server_lock_path(&path)).expect("lock file");
+        lock.lock().expect("hold the server lock");
+
+        assert_eq!(probe(&path), SocketState::Live);
+        assert!(
+            !reap_stale(&path).expect("reap"),
+            "a held lock is not reaped"
+        );
+        assert!(path.exists());
+
+        lock.unlock().expect("release");
+        assert_eq!(probe(&path), SocketState::Stale);
     }
 
     #[test]

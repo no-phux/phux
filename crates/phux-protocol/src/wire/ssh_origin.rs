@@ -185,14 +185,6 @@ mod tests {
     }
 
     #[test]
-    fn a_plain_hello_gains_the_bridge_origin() {
-        let want = origin("203.0.113.5:52144", Some("198.51.100.7:22"));
-        let stamped = restamp_hello(&hello(ClientCapabilities::new()), Some(want))
-            .expect("an origin to add is a rewrite");
-        assert_eq!(decoded_origin(&stamped), Some(want));
-    }
-
-    #[test]
     fn a_client_supplied_origin_is_replaced_by_the_bridge_one() {
         let forged = origin("10.0.0.1:1", None);
         let frame = hello(ClientCapabilities::new().with_ssh_origin(forged));

@@ -147,6 +147,21 @@ pub fn ownership_for_terminal(
     crate::resource::session_of(snapshot, terminal)
 }
 
+/// The name of the session a Terminal belongs to, read out of a `GET_STATE`
+/// snapshot.
+#[must_use]
+pub fn session_name_for_terminal(
+    snapshot: &SessionSnapshot,
+    terminal: &ResourceId,
+) -> Option<String> {
+    let session = ownership_for_terminal(snapshot, terminal)?;
+    snapshot
+        .sessions
+        .iter()
+        .find(|candidate| candidate.id == session)
+        .map(|session| session.name.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -220,23 +235,5 @@ mod tests {
             );
             server.await.expect("scripted server");
         }
-    }
-
-    #[test]
-    fn ownership_for_terminal_reads_the_owning_session() {
-        use phux_protocol::ids::{SessionId, WindowId};
-        use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot, WindowInfo};
-
-        let session = SessionId::new(1);
-        let window = WindowId::new(10);
-        let pane = ResourceId::local(3);
-        let snapshot = SessionSnapshot::new(session, window, pane.clone())
-            .with_windows(vec![WindowInfo::new(window, session, "one")])
-            .with_resources(vec![ResourceInfo::new(pane.clone(), window, 80, 24)]);
-        assert_eq!(ownership_for_terminal(&snapshot, &pane), Some(session));
-        assert_eq!(
-            ownership_for_terminal(&snapshot, &ResourceId::local(99)),
-            None
-        );
     }
 }

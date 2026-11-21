@@ -17,6 +17,9 @@ use super::{Desk, NoticeKind};
 use crate::alerts::{Alerts, Target};
 use crate::inbox::{self, Item, Key as ItemKey};
 
+/// An answer whose fate no receipt will tell: only the pane can.
+const UNKNOWN_ANSWER: &str = "The answer may not have landed; read the pane first.";
+
 /// Everything the alerts and the Dock are derived from. While it holds still
 /// there is nothing to post, take back or count, however busy the terminals.
 #[derive(Debug, PartialEq)]
@@ -260,6 +263,14 @@ impl Desk {
         );
     }
 
+    /// The client these answers' receipts belonged to ended, and its delivery
+    /// ids mean nothing to the next one: say how they stand, never resend.
+    pub(super) fn retire_answers(&mut self) {
+        if self.inbox.answers.drain().next().is_some() {
+            self.say(NoticeKind::Error, UNKNOWN_ANSWER);
+        }
+    }
+
     pub fn answering(&self, terminal: &ResourceId) -> bool {
         self.inbox.answers.values().any(|a| &a.terminal == terminal)
     }
@@ -359,10 +370,7 @@ impl Desk {
             DeliveryOutcome::Refused => {
                 self.say(NoticeKind::Error, format!("Answer not sent: {message}"));
             }
-            DeliveryOutcome::Unknown => self.say(
-                NoticeKind::Error,
-                "The answer may not have landed; read the pane first.",
-            ),
+            DeliveryOutcome::Unknown => self.say(NoticeKind::Error, UNKNOWN_ANSWER),
         }
         true
     }

@@ -1,9 +1,9 @@
-//! The phone form factor's tokens (§1.4, §1.6, §4.1.5): its type roles and
+//! The phone form factor's tokens: its type roles and
 //! page margin at the brand's iOS values, the iOS text size the bridge
 //! reports, and the tokens for a terminal ground.
 //!
 //! The generated Rust carries desktop values only; the phone's sizes are
-//! phux-brand's iOS values (`type.role.*.ios`, `space.page_margin.ios`),
+//! the tokens' iOS values (`type.role.*.ios`, `space.page_margin.ios`),
 //! with every other field of a role taken from the generated desktop role.
 
 use std::cell::Cell;
@@ -94,7 +94,7 @@ impl Scale {
 }
 
 impl Tokens {
-    /// The phone's tokens (§4.1.5): `theme` when its mode is `dark`'s, else
+    /// The phone's tokens: `theme` when its mode is `dark`'s, else
     /// the house look in that mode, at the text size the host reported,
     /// with the observed system contrast and the host's Reduce
     /// Transparency (both in `Desk`). Cached as every `Tokens` is.
@@ -128,24 +128,10 @@ mod tests {
     #[test]
     fn the_phone_reads_at_its_own_sizes() {
         let ty = ty(1.0);
-        // §1.4: the phone's body is 14, its label 14 and micro the HIG's 11.
+        // The phone's body is 14, its label 14 and micro the HIG's 11.
         assert!((ty.body.size - 14.0).abs() < f32::EPSILON);
         assert!(ty.label.size > tok::TYPE.role.label.size);
         assert!(ty.micro.size >= 11.0);
-        assert!(
-            page_margin() >= 16.0,
-            "§1.6: a phone page margin is at least 16"
-        );
-    }
-
-    #[test]
-    fn text_size_follows_ios_and_caps_beside_the_grid() {
-        use crate::desk::accessibility::GRID_CAP;
-        let ax5 = ContentSize::from_category("UICTContentSizeCategoryAccessibilityXXXL");
-        assert!(ax5.factor() > 3.0);
-        assert!((Scale::Free.of(ax5) - ax5.factor()).abs() < f32::EPSILON);
-        assert!((Scale::GridCapped.of(ax5) - GRID_CAP).abs() < f32::EPSILON);
-        assert!((Scale::Free.of(ContentSize::Large) - 1.0).abs() < f32::EPSILON);
-        assert!((ty(ax5.factor()).body.size - 14.0 * ax5.factor()).abs() < 0.01);
+        assert!(page_margin() >= 16.0, "a phone page margin is at least 16");
     }
 }

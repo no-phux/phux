@@ -92,18 +92,6 @@ fn the_new_document_carries_the_seed_terminal_id() {
     );
 }
 
-/// The document's session is the ADR-0054 derivation, or the `-s`
-/// override when given.
-#[test]
-fn the_document_reports_the_session_that_was_actually_bound() {
-    let path = Path::new("/src/phux-feat-auth");
-    let derived = binding_json(Some("feat/auth"), path, &session_name_for(path), 7);
-    assert_eq!(derived["session"], serde_json::json!("phux-feat-auth"));
-
-    let overridden = binding_json(Some("feat/auth"), path, "agent-3", 7);
-    assert_eq!(overridden["session"], serde_json::json!("agent-3"));
-}
-
 /// A detached checkout has no branch, and the document says `null` rather
 /// than inventing a name — `worktree open` can be pointed at one.
 #[test]
@@ -148,22 +136,6 @@ fn json_and_attach_are_mutually_exclusive_on_new_and_open() {
             args.join(" ")
         );
     }
-}
-
-/// The `--json` failure channel is the shared contract line, so a script
-/// that branches on `error.code` gets a code and not prose.
-#[test]
-fn a_json_failure_carries_a_stable_code_and_leaves_stdout_alone() {
-    let doc = crate::commands::json_err::error_document(
-        &crate::commands::json_err::CliError::new(
-            crate::commands::json_err::codes::WORKSPACE,
-            "not a git repository",
-            "run this inside a git repository, or point --repo at one",
-        ),
-        1,
-    );
-    assert_eq!(doc["error"]["code"], serde_json::json!("workspace"));
-    assert_eq!(doc["exit_code"], serde_json::json!(1));
 }
 
 /// The default checkout is a sibling of the repository, with the branch's

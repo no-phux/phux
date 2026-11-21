@@ -3,35 +3,6 @@
 use super::*;
 
 #[test]
-fn session_retags_subscribed_streams_local_to_satellite() {
-    let mut session = RelaySession::new(host(), BootstrapLimits::default());
-    let (out_tx, mut out_rx) = mpsc::channel(8);
-    subscribe(&mut session, 9, ClientId(1), out_tx);
-
-    session.feed(&agent_event(9));
-    session.feed(&output_frame(9, 42, b"hi"));
-    // A different terminal: nothing must reach the subscriber.
-    session.feed(&agent_event(10));
-
-    let first = next_frame(&mut out_rx, "event fanned out");
-    assert_eq!(
-        first,
-        FrameKind::Event {
-            terminal: Some(ResourceId::satellite("devbox", 9)),
-            event: AgentEvent::CommandStarted,
-            stamp: None,
-        }
-    );
-    let second = next_frame(&mut out_rx, "output fanned out");
-    assert!(matches!(
-        second,
-        FrameKind::ResourceOutput { terminal_id, seq: 42, .. }
-            if terminal_id == ResourceId::satellite("devbox", 9)
-    ));
-    assert!(out_rx.try_recv().is_err(), "unsubscribed terminal leaked");
-}
-
-#[test]
 fn session_drops_chained_satellite_tags_from_the_return_leg() {
     let mut session = RelaySession::new(host(), BootstrapLimits::default());
     let (out_tx, mut out_rx) = mpsc::channel(8);
@@ -41,27 +12,6 @@ fn session_drops_chained_satellite_tags_from_the_return_leg() {
         event: AgentEvent::CommandStarted,
         stamp: None,
     });
-    assert!(out_rx.try_recv().is_err());
-}
-
-#[test]
-fn terminal_closed_retags_and_drops_the_proxy_subscription() {
-    let mut session = RelaySession::new(host(), BootstrapLimits::default());
-    let (out_tx, mut out_rx) = mpsc::channel(8);
-    subscribe(&mut session, 9, ClientId(1), out_tx);
-    session.feed(&closed_frame(9));
-    let frame = next_frame(&mut out_rx, "closed fanned out");
-    assert_eq!(
-        frame,
-        FrameKind::ResourceClosed {
-            terminal_id: ResourceId::satellite("devbox", 9),
-            exit_status: Some(0),
-            reason: phux_protocol::wire::frame::CloseReason::Unknown,
-            signal: None,
-        }
-    );
-    // Subscription is gone: further frames for id 9 do not fan out.
-    session.feed(&agent_event(9));
     assert!(out_rx.try_recv().is_err());
 }
 

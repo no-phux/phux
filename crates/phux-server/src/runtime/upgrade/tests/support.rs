@@ -29,12 +29,6 @@ pub(super) fn fd_flags(fd: RawFd) -> rustix::io::FdFlags {
     rustix::io::fcntl_getfd(borrowed).unwrap()
 }
 
-pub(super) fn set_fd_flags(fd: RawFd, flags: rustix::io::FdFlags) {
-    // SAFETY: test callers keep the backing file open for this borrow.
-    let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
-    rustix::io::fcntl_setfd(borrowed, flags).unwrap();
-}
-
 pub(super) fn no_pty_handoff() -> ProcessHandoff {
     ProcessHandoff {
         master_fd: None,

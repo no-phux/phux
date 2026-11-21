@@ -7,7 +7,7 @@
 //! pure [`apply_mutation`], and writes it back with `ARRANGEMENT_REPLACE`
 //! naming the revision it read: a real compare-and-swap, retried on
 //! `CONFLICT` against a fresh read. Such a server gives every session an
-//! arrangement (SPEC L2 §2.2), so seeding is the same compare-and-swap:
+//! arrangement, so seeding is the same compare-and-swap:
 //! an arrangement with no groups takes the fallback.
 //!
 //! Against an older server, and always for a named projection key
@@ -77,14 +77,14 @@ pub enum LayoutKeyOwner {
 /// Whose layout `key` names, or `None` when it is not attributable.
 ///
 /// Only the TUI's own `phux.tui.layout/v1` family (docs/organization.md) is
-/// recognized: a named projection under another prefix (§3.5) is private to
+/// recognized: a named projection under another prefix is private to
 /// its writer and must never be adopted by the TUI.
 #[must_use]
 pub fn layout_key_session(key: &str) -> Option<LayoutKeyOwner> {
     if key == LAYOUT_KEY {
         return Some(LayoutKeyOwner::Legacy);
     }
-    let suffix = key.strip_prefix(&format!("{LAYOUT_KEY}/"))?;
+    let suffix = key.strip_prefix(phux_protocol::wire::info::TUI_LAYOUT_KEY_PREFIX)?;
     // An unparsable suffix is `None`, never `Legacy` (which reads as ours).
     Some(LayoutKeyOwner::Session(SessionId::new(
         suffix.parse::<u32>().ok()?,

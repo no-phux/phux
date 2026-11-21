@@ -1,4 +1,4 @@
-//! A `rune_kit::Kit` built from the tokens (§4.1.1): every palette and
+//! A `rune_kit::Kit` built from the tokens: every palette and
 //! type field assigned in an exhaustive literal, so a kit release that adds
 //! a field breaks this build instead of drawing an unset colour.
 
@@ -118,7 +118,7 @@ fn palette(r: &Roles, tiers: &Tiers) -> Palette {
     }
 }
 
-/// §4.1.1's type table, at `scale`.
+/// The kit type table, at `scale`.
 fn type_scale(scale: f32) -> Type {
     use phux_design::tokens::TYPE;
     let r = &TYPE.role;
@@ -159,10 +159,10 @@ const GLYPHS: Glyphs = Glyphs {
 
 /// The kit the chrome's selection controls build with (kit `Switch`,
 /// `Checkbox`, `Progress`): `kit` with each control's boundary drawn in
-/// `border.control`, opaque and at least 3:1 on every surface (§1.2,
-/// WCAG 1.4.11), and a checked box filled with the accent under an
+/// `border.control`, opaque and at least 3:1 on every surface
+/// (WCAG 1.4.11), and a checked box filled with the accent under an
 /// `on_accent` tick. `disabled` also dims a control's own label to
-/// `text.faint`, as every disabled OWN control is (§1.10).
+/// `text.faint`, as every disabled OWN control is.
 pub(super) fn controls(kit: &Kit, roles: &Roles, disabled: bool) -> Kit {
     let mut k = kit.clone();
     let control = roles.border.control.paint();
@@ -201,7 +201,7 @@ pub(super) fn build(roles: &Roles, tiers: &Tiers, motion: &MotionPairs, scale: f
     kit.dark = roles.mode.is_dark();
     kit.c = palette(roles, tiers);
     kit.ty = type_scale(scale);
-    // Kit's `md` means "control" (buttons, fields, rows, menus); §4.1.1.
+    // Kit's `md` means "control" (buttons, fields, rows, menus).
     kit.radius = Radius {
         xs: r.xs,
         sm: r.xs,

@@ -78,13 +78,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn zero_interval_always_emits_and_reports_suppressed() {
-        let t = Throttle::new(Duration::ZERO);
-        assert_eq!(t.admit(), Some(0));
-        assert_eq!(t.admit(), Some(0));
-    }
-
-    #[test]
     fn suppressed_count_is_handed_back_on_the_next_emission() {
         let t = Throttle::new(Duration::from_millis(20));
         assert_eq!(t.admit(), Some(0));

@@ -1,6 +1,6 @@
 //! Synthesize `TERMINAL_SNAPSHOT` replay bytes from a `libghostty_vt::Terminal`.
 //!
-//! The replay (ADR-0013, SPEC §8.4) is a self-contained VT sequence that
+//! The replay (ADR-0013) is a self-contained VT sequence that
 //! reproduces the grid on a fresh terminal of the same size. Order: reset, rows with SGR
 //! deltas (wide-cell tails skipped, soft wraps preserved), then cursor and
 //! mode bits. OSC 8 hyperlinks are not re-emitted.
@@ -41,8 +41,6 @@ mod projection;
 mod rendered;
 mod snapshot;
 
-#[cfg(test)]
-use encoding::cup_len;
 use encoding::{
     assemble_diff, emit_cell, emit_cell_bounded, emit_epilogue, emit_screen_mode,
     encode_graphemes_bounded, write_cup,

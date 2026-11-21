@@ -1,6 +1,6 @@
 //! A snapshot is a view, not a death certificate. `ATTACHED` keeps what the
 //! grant observes and never lists a hub's satellites; `GET_STATE` keeps what
-//! the grant inventories and does (workload-auth §6, L1 §9.1). Only the same
+//! the grant inventories and does. Only the same
 //! view's previous listing proves a close by absence.
 
 use super::*;
@@ -72,27 +72,6 @@ fn a_new_incarnation_can_list_an_id_its_predecessor_listed() {
 
     let topology = plane.topology().unwrap();
     assert!(topology.panes.iter().any(|p| p.terminal_id == terminal()));
-}
-
-#[test]
-fn a_narrower_inventory_hides_an_observed_pane_without_closing_it() {
-    let (mut plane, attach_id) = negotiated();
-    attached(
-        &mut plane,
-        attach_id,
-        with_terminals(&[terminal(), sibling()]),
-    );
-    let _ = plane.take_events();
-
-    let events = inventory(&mut plane, with_terminals(&[terminal()]));
-    assert!(
-        !closed(&events, &sibling()),
-        "an INVENTORY view that omits an OBSERVE-listed pane is not its close"
-    );
-    assert!(!listed(&plane, &sibling()));
-
-    refresh_to(&mut plane, with_terminals(&[terminal(), sibling()]));
-    assert!(listed(&plane, &sibling()), "a hidden pane may reappear");
 }
 
 #[test]

@@ -205,7 +205,7 @@ impl Desk {
         if self.quick.is_none() {
             self.machines.listen(waker.clone());
             for link in std::mem::take(&mut self.machines.pending) {
-                self.pair_from_link(&link);
+                self.open_system_link(&link);
             }
         }
         crate::theme::watch(waker.clone());

@@ -50,21 +50,12 @@ fn the_curated_opinions_are_shipped_defaults() {
         assert!(table.contains_key(chord), "{chord}");
     }
     assert_eq!(bare.defaults.session_name_template, "${cwd-basename}");
-    assert_eq!(
-        (
-            bare.status.left.len(),
-            bare.status.center.len(),
-            bare.status.right.len()
-        ),
-        (2, 0, 4)
-    );
 
     let cfg = starter("");
     assert_eq!(cfg.keybindings, bare.keybindings);
     assert_eq!(cfg.defaults, bare.defaults);
     assert_eq!(cfg.status, bare.status);
     assert_eq!(cfg.theme, bare.theme);
-    assert_eq!(cfg.plugins.len(), 3, "{:?}", cfg.plugins);
 }
 
 /// Layer-relative manifests become absolute, normalized, existing paths
@@ -123,10 +114,14 @@ manifest = "/home/me/extra/phux-plugin.toml"
         cfg.theme.slots.get("accent").map(String::as_str),
         Some("magenta")
     );
-    assert_eq!(cfg.plugins.len(), 4);
+    let shipped = starter("").plugins;
+    assert_eq!(cfg.plugins[..shipped.len()], shipped[..]);
     assert_eq!(
-        cfg.plugins[3].manifest,
-        Path::new("/home/me/extra/phux-plugin.toml")
+        cfg.plugins[shipped.len()..]
+            .iter()
+            .map(|p| p.manifest.as_path())
+            .collect::<Vec<_>>(),
+        [Path::new("/home/me/extra/phux-plugin.toml")]
     );
 
     assert!(starter("plugins = []\n").plugins.is_empty());

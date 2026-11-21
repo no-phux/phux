@@ -34,6 +34,7 @@ crate-check PACKAGE FEATURES="": worktree-claim
 [doc('Compile-free contracts: workflows, shell, tools, docs, installers, pins.')]
 guards: brand-check shellcheck tools-check docs-check install-surface-check
     actionlint .github/workflows/*.yml
+    bun tools/main.ts design-gen --check
     bash scripts/check-action-pins.sh
     bash scripts/check-file-tokens_test.sh
     bash scripts/ci/main-red_test.sh
@@ -166,6 +167,14 @@ docs-check:
 [doc('Regenerate reference pages from the CLI, config, and action catalogs.')]
 docs-gen:
     cargo run -q -p phux --bin phux -- gen-reference-docs
+
+
+# Regenerate the design-token exports after editing crates/phux-design/tokens/src
+# (`--check` refuses drift; guards runs it).
+[group('gates')]
+[doc('Regenerate the design-token exports from crates/phux-design/tokens/src.')]
+design-gen *ARGS:
+    bun tools/main.ts design-gen {{ARGS}}
 
 
 [group('gates')]

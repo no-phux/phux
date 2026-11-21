@@ -244,10 +244,10 @@ pub(super) fn bootstrap_changes(events: &[EngineEvent]) -> Vec<(usize, ResourceI
         .iter()
         .enumerate()
         .filter_map(|(index, event)| match event {
-            EngineEvent::BootstrapReady { terminal_id, .. } => {
+            EngineEvent::Stream(FrameKind::BootstrapReady { terminal_id, .. }) => {
                 Some((index, terminal_id.clone(), true))
             }
-            EngineEvent::BootstrapBegin { terminal_id, .. }
+            EngineEvent::Stream(FrameKind::BootstrapBegin { terminal_id, .. })
             | EngineEvent::Closed { terminal_id, .. } => Some((index, terminal_id.clone(), false)),
             _ => None,
         })

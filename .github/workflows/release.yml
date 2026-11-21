@@ -184,10 +184,15 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends rpm
           bash scripts/pack-linux-packages.sh "$TAG" dist
+      # The design tokens' CSS, for sites that pin a release instead of a commit.
+      - name: Stage the design-token CSS
+        run: |
+          cp clients/phux-web/assets/phux-tokens.css dist/
+          (cd dist && shasum -a 256 phux-tokens.css > phux-tokens.css.sha256)
       - name: Sign the checksums
         env:
           PHUX_MINISIGN_SECRET_KEY: ${{ secrets.PHUX_MINISIGN_SECRET_KEY }}
-        run: bash scripts/ci/sign-release.sh dist/phux-*.tar.gz.sha256 dist/phux*.deb.sha256 dist/phux*.rpm.sha256
+        run: bash scripts/ci/sign-release.sh dist/phux-*.tar.gz.sha256 dist/phux*.deb.sha256 dist/phux*.rpm.sha256 dist/phux-tokens.css.sha256
       # `gh release upload` adds assets and never touches the notes.
       - name: Attach every target and publish as Latest
         env:
@@ -204,13 +209,14 @@ jobs:
             test -f "dist/phux-server-${TAG}-aarch64-apple-darwin.tar.gz${suffix}"
           done
           test -f "dist/phux-${TAG}.cdx.json" && test -f "dist/phux-mcp-${TAG}.cdx.json"
+          for suffix in "" .sha256 .sha256.minisig; do test -f "dist/phux-tokens.css${suffix}"; done
           for package in "phux_${TAG#v}_amd64.deb" "phux_${TAG#v}_arm64.deb" \
             "phux-${TAG#v}-1.x86_64.rpm" "phux-${TAG#v}-1.aarch64.rpm"; do
             for suffix in "" .sha256 .sha256.minisig; do test -f "dist/${package}${suffix}"; done
           done
           gh release upload "$TAG" dist/phux-*.tar.gz dist/phux-*.tar.gz.sha256 dist/phux-*.tar.gz.sha256.minisig \
             dist/phux*.deb dist/phux*.rpm dist/phux*.deb.sha256* dist/phux*.rpm.sha256* \
-            dist/*.cdx.json --clobber
+            dist/*.cdx.json dist/phux-tokens.css* --clobber
           gh release edit "$TAG" --draft=false --latest
 
   # After the CLI is public: apt and dnf serve what the release carries.

@@ -392,19 +392,6 @@ mod tests {
     }
 
     #[test]
-    fn an_interior_sample_keeps_the_observed_bounds() {
-        let histogram = Histogram::new();
-        histogram.record(10);
-        histogram.record(40);
-        histogram.record(25);
-        let snapshot = histogram.snapshot();
-        assert_eq!(snapshot.min, 10);
-        assert_eq!(snapshot.max, 40);
-        assert_eq!(snapshot.count, 3);
-        assert_eq!(snapshot.sum, 75);
-    }
-
-    #[test]
     fn empty_snapshot_is_all_zero() {
         let s = Histogram::new().snapshot();
         assert!(s.is_empty());

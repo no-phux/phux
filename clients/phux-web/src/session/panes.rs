@@ -1,6 +1,7 @@
 //! Panes: geometry, focus, and the split, close, and kill requests.
 
 use super::*;
+use phux_client_core::org_ops::live_target;
 
 impl Connection {
     /// Overall canvas dimensions, independent of the focused terminal.
@@ -187,14 +188,14 @@ impl Connection {
         Ok(self.pane_resize_frames())
     }
 
-    /// Kill the focused terminal, ending its process; the pane stays visible
-    /// until `RESOURCE_CLOSED`. A server advertising `ORGANIZATION` receives
-    /// `RESOURCE_TERMINATE` for the terminal's current activation, read from
-    /// the session's organization page first; any other server receives
-    /// `KILL_RESOURCE`.
+    /// Request termination of the focused terminal. The pane remains visible
+    /// until `RESOURCE_CLOSED`. For an `ORGANIZATION` peer, read the session
+    /// inventory before sending `RESOURCE_TERMINATE` with the activation.
+    /// Older peers receive `KILL_RESOURCE`.
     ///
     /// # Errors
-    /// Refuses the last pane or another pending operation.
+    /// Refuses the last pane, another pending operation, or an organization
+    /// session whose stable key is unavailable.
     pub fn kill_pane_frame(&mut self) -> Result<Vec<u8>, String> {
         self.pane_operation_ready()?;
         if self.terminal_rects().len() <= 1 {
@@ -204,23 +205,27 @@ impl Connection {
         }
         let terminal_id = self.focused_pane().ok_or("No terminal is ready to kill.")?;
         let request_id = self.next_pane_request();
+        let (frame, phase) = if self.organization {
+            let session = self
+                .session_key
+                .ok_or("Cannot close this pane until the server identifies its session.")?;
+            (
+                Self::organization_page_frame(request_id, session, None),
+                KillPhase::Resolving(session),
+            )
+        } else {
+            (
+                Self::legacy_kill_frame(request_id, terminal_id.clone()),
+                KillPhase::Legacy,
+            )
+        };
         self.pane_error = None;
-        if self.organization
-            && let Some(session) = self.session_key
-        {
-            self.pending_kill = Some(PendingKill {
-                request_id,
-                target: terminal_id,
-                resolving: Some(session),
-            });
-            return Ok(Self::organization_page_frame(request_id, session, None));
-        }
         self.pending_kill = Some(PendingKill {
             request_id,
-            target: terminal_id.clone(),
-            resolving: None,
+            target: terminal_id,
+            phase,
         });
-        Ok(Self::legacy_kill_frame(request_id, terminal_id))
+        Ok(frame)
     }
 
     fn organization_page_frame(
@@ -262,48 +267,50 @@ impl Connection {
         OperationId::new(bytes).unwrap_or_else(|| unreachable!("the counter half is non-zero"))
     }
 
-    /// Advance a kill whose organization page arrived: terminate the
-    /// target's current activation, read the next page, or, when no page
-    /// names the target, fall back to `KILL_RESOURCE`, which a translating
-    /// server still honors as a kill.
+    /// Read until the target's live activation is identified. An exhausted
+    /// inventory lookup refuses the operation before any close is sent.
     pub(super) fn resolve_kill(&mut self, page: &OrganizationPage) -> Outcome {
         let Some(pending) = self.pending_kill.as_ref() else {
             return Outcome::default();
         };
-        let target = pending.target.clone();
-        let session = pending.resolving;
-        let request_id = self.next_pane_request();
-        let activation = page
+        let KillPhase::Resolving(session) = pending.phase else {
+            return Outcome::default();
+        };
+        let target = page
             .resources
             .iter()
-            .find(|record| record.live.as_ref() == Some(&target))
-            .and_then(|record| record.activation);
-        let (frame, resolving) = match (activation, &page.next_cursor, session) {
-            (Some(activation), _, _) => {
+            .find(|record| {
+                record.session == session && record.live.as_ref() == Some(&pending.target)
+            })
+            .and_then(live_target);
+        let request_id = self.next_pane_request();
+        let (frame, phase) = match (target, &page.next_cursor) {
+            (Some(target), _) => {
                 let operation = self.next_operation();
                 let frame = encode(&FrameKind::Command {
                     request_id,
                     command: Command::ResourceTerminate {
                         operation,
-                        target: LiveTarget {
-                            resource: target,
-                            instance: activation.instance,
-                            activation: activation.id,
-                        },
+                        target,
                         mode: TerminateMode::Graceful,
                     },
                 });
-                (frame, None)
+                (frame, KillPhase::Terminate(operation))
             }
-            (None, Some(cursor), Some(session)) => (
+            (None, Some(cursor)) => (
                 Self::organization_page_frame(request_id, session, Some(cursor.clone())),
-                Some(session),
+                KillPhase::Resolving(session),
             ),
-            (None, _, _) => (Self::legacy_kill_frame(request_id, target), None),
+            (None, None) => {
+                return self.pane_refusal(
+                    "Close unavailable. The pane's live activation could not be identified."
+                        .to_owned(),
+                );
+            }
         };
         if let Some(pending) = self.pending_kill.as_mut() {
             pending.request_id = request_id;
-            pending.resolving = resolving;
+            pending.phase = phase;
         }
         Outcome {
             send: vec![frame],

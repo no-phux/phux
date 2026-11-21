@@ -12,16 +12,14 @@ pub(super) fn pane_action(app: &Rc<RefCell<App>>, action: PaneAction<'_>) -> Res
         PaneAction::Next => app.session.focus_next_pane().map(|()| Vec::new()),
         PaneAction::Focus(id) => app.session.focus_pane(id).map(|()| Vec::new()),
     };
-    let result = result.and_then(|frames| {
-        if let Err(message) = app.send(frames) {
-            app.fail(&message);
-            return Err(message);
-        }
-        Ok(())
-    });
-    if let Err(message) = &result {
-        app.session.set_pane_error(message.clone());
-    }
+    let result = result
+        .inspect_err(|message| app.session.set_pane_error(message.clone()))
+        .and_then(|frames| {
+            app.send(frames).inspect_err(|message| {
+                app.session.set_pane_error(message.clone());
+                app.fail(message);
+            })
+        });
     if old_focus != app.session.focused_pane() {
         app.focus_changed(old_focus);
     }

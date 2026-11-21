@@ -16,21 +16,22 @@ use crate::status::{failure, parse_status};
 mod beneath;
 mod parse;
 mod pr;
+mod show;
 mod types;
 
 pub use beneath::relative;
 use beneath::{io_error, path_list};
-#[cfg(test)]
-use parse::tracking;
 use parse::{
-    Counts, complete_records, file_text, head_oid, is_binary, line_count, parse_branch,
-    parse_commit, text_at_line,
+    Counts, complete_records, file_diff, file_text, head_oid, is_binary, line_count,
+    new_file_patch, parse_branch, parse_commit,
 };
+#[cfg(test)]
+use parse::{text_at_line, tracking};
 pub use pr::{Check, CheckState, PrState, PullRequest, ReviewDecision};
 use types::Result;
 pub use types::{
-    BranchList, BranchRef, Change, CheckoutError, Commit, EntryKind, FileDiff, FileText, Listing,
-    ListingEntry, LogPage, Snapshot,
+    BranchList, BranchRef, Change, CheckoutError, Commit, CommitDetail, CommitFile, EntryKind,
+    FileDiff, FileText, Listing, ListingEntry, LogPage, Snapshot,
 };
 
 /// The longest a `git` read may run.
@@ -56,6 +57,9 @@ const MAX_COUNTED_UNTRACKED: usize = 200;
 const BINARY_SNIFF: usize = 8000;
 /// A directory with more entries than this is cut without sorting the rest.
 const MAX_SCANNED_ENTRIES: usize = 50_000;
+
+/// One commit as [`parse_commit`] reads it.
+const LOG_FORMAT: &str = "%H%x1f%h%x1f%an%x1f%ae%x1f%at%x1f%D%x1f%s";
 
 const GIT_ENV: [(&str, &str); 4] = [
     ("GIT_OPTIONAL_LOCKS", "0"),
@@ -119,6 +123,7 @@ impl Checkout {
         )?;
         let text = complete_records(&out);
         let status = parse_status(&text);
+        let total = (!out.truncated).then_some(status.entries.len());
         let unstaged = self.numstat(false);
         let staged = self.numstat(true);
         let mut counted_untracked = 0;
@@ -154,45 +159,34 @@ impl Checkout {
             behind: status.branch.behind,
             changes,
             truncated,
+            total,
         })
     }
 
     /// One file's unified diff in `area`; an untracked file shows whole.
     pub fn diff(&self, path: &str, area: Area) -> Result<FileDiff> {
         let path = relative(path)?;
-        let out = match area {
-            Area::Staged | Area::Unstaged | Area::Conflicted => {
-                let mut args = vec!["diff"];
-                if area == Area::Staged {
-                    args.push("--cached");
-                }
-                args.extend(DIFF_FLAGS);
-                args.extend(["--", path]);
-                self.git(&args, MAX_TEXT_BYTES)?
-            }
-            Area::Untracked => {
-                // `--no-index` reads the path itself; this check narrows,
-                // but cannot close, a swap racing it (phux bead).
-                self.resolve(path)?;
-                let mut args = vec!["diff", "--no-index"];
-                args.extend(DIFF_FLAGS);
-                args.extend(["--", "/dev/null", path]);
-                self.git(&args, MAX_TEXT_BYTES)?
-            }
-        };
-        // `--no-index` exits 1 when the files differ.
-        if !matches!(out.status.code(), Some(0 | 1)) {
+        if area == Area::Untracked {
+            // Read through the `openat` walk, never by name, so a component
+            // swapped for a symlink cannot redirect what the patch shows.
+            let (mode, bytes, cut) = beneath::read_entry(&self.root, path, MAX_TEXT_BYTES)
+                .map_err(|walk| walk.into_error(path))?;
+            let mut text = new_file_patch(path, mode, &bytes);
+            let truncated = cut || text.len() > MAX_TEXT_BYTES;
+            text.truncate(MAX_TEXT_BYTES);
+            return Ok(file_diff(&text, truncated));
+        }
+        let mut args = vec!["diff"];
+        if area == Area::Staged {
+            args.push("--cached");
+        }
+        args.extend(DIFF_FLAGS);
+        args.extend(["--", path]);
+        let out = self.git(&args, MAX_TEXT_BYTES)?;
+        if !out.status.success() {
             return Err(CheckoutError::Git(failure(&out.stderr, "")));
         }
-        let (text, truncated) = text_at_line(&out.stdout, out.truncated);
-        let binary = text
-            .lines()
-            .any(|line| line.starts_with("Binary files ") || line == "GIT binary patch");
-        Ok(FileDiff {
-            text,
-            truncated,
-            binary,
-        })
+        Ok(file_diff(&out.stdout, out.truncated))
     }
 
     /// `limit` commits after the newest `skip`, newest first; only those
@@ -205,13 +199,14 @@ impl Checkout {
         let limit = limit.clamp(1, MAX_LOG_LIMIT);
         let skip = format!("--skip={skip}");
         let count = format!("--max-count={}", limit + 1);
+        let format = format!("--format={LOG_FORMAT}");
         let mut args = vec![
             "-c",
             "log.showSignature=false",
             "log",
             "--no-color",
             "-z",
-            "--format=%H%x1f%h%x1f%an%x1f%ae%x1f%at%x1f%D%x1f%s",
+            &format,
             &skip,
             &count,
             "HEAD",
@@ -253,12 +248,14 @@ impl Checkout {
             .filter_map(|line| parse_branch(line, current.as_deref()))
             .partition(|branch| !branch.remote);
         local.extend(remote);
+        let total = (!out.truncated).then_some(local.len());
         let truncated = out.truncated || local.len() > MAX_ENTRIES;
         local.truncate(MAX_ENTRIES);
         Ok(BranchList {
             current,
             branches: local,
             truncated,
+            total,
         })
     }
 
@@ -272,7 +269,7 @@ impl Checkout {
             (dir, format!("{dir}/"))
         };
         let opened = beneath::open_dir(&self.root, rel).map_err(|walk| walk.into_error(dir))?;
-        let (found, mut truncated) = beneath::list(opened, MAX_SCANNED_ENTRIES)
+        let (found, scan_cut) = beneath::list(opened, MAX_SCANNED_ENTRIES)
             .map_err(|error| io_error(&format!("Could not list {dir}"), &error))?;
         let mut entries: Vec<ListingEntry> = found
             .into_iter()
@@ -296,10 +293,15 @@ impl Checkout {
             (a.kind != EntryKind::Directory, &a.name)
                 .cmp(&(b.kind != EntryKind::Directory, &b.name))
         });
-        truncated |= entries.len() > MAX_ENTRIES;
+        let total = (!scan_cut).then_some(entries.len());
+        let truncated = scan_cut || entries.len() > MAX_ENTRIES;
         entries.truncate(MAX_ENTRIES);
         self.mark_ignored(&prefix, &mut entries);
-        Ok(Listing { entries, truncated })
+        Ok(Listing {
+            entries,
+            truncated,
+            total,
+        })
     }
 
     /// Up to `max_bytes` (at most [`MAX_TEXT_BYTES`]; zero means that cap) of
@@ -423,25 +425,6 @@ impl Checkout {
         }
     }
 
-    /// `root/rel` with every component but the last checked not to be a
-    /// symlink; the last may be one, which Git shows as its target text.
-    fn resolve(&self, rel: &str) -> Result<PathBuf> {
-        let mut path = self.root.clone();
-        let components: Vec<_> = Path::new(rel).components().collect();
-        for (index, component) in components.iter().enumerate() {
-            path.push(component);
-            let meta = path
-                .symlink_metadata()
-                .map_err(|_| CheckoutError::NotFound(format!("{rel} does not exist")))?;
-            if meta.file_type().is_symlink() && index + 1 < components.len() {
-                return Err(CheckoutError::InvalidPath(format!(
-                    "{rel} crosses a symbolic link"
-                )));
-            }
-        }
-        Ok(path)
-    }
-
     fn git(&self, args: &[&str], max_stdout: usize) -> Result<Bounded> {
         run_git(&self.root, args, max_stdout, None, Mode::Read)
     }
@@ -514,7 +497,7 @@ fn run_git(
         Mode::Read => (GIT_TIMEOUT, Stop::Kill),
         Mode::Write(timeout) => (timeout, Stop::Terminate),
     };
-    Run {
+    let out = Run {
         program: "git",
         dir,
         args: &full,
@@ -527,9 +510,23 @@ fn run_git(
     .exec()
     .map_err(|error| match error {
         RunError::Timeout => CheckoutError::Timeout,
+        RunError::Spawn(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            CheckoutError::GitUnavailable
+        }
         RunError::Spawn(error) => CheckoutError::Git(format!("Could not run git: {error}")),
         RunError::Wait(message) => CheckoutError::Git(format!("git did not finish: {message}")),
-    })
+    })?;
+    // macOS's `/usr/bin/git` is a shim that fails this way without the
+    // Command Line Tools.
+    if !out.status.success()
+        && (out
+            .stderr
+            .contains("xcrun: error: invalid active developer path")
+            || out.stderr.contains("No developer tools were found"))
+    {
+        return Err(CheckoutError::GitUnavailable);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

@@ -61,3 +61,79 @@ fn metadata_get_and_list_replies_round_trip() {
         assert_eq!(keys, [LAYOUT_KEY, OTHER_KEY], "sorted");
     });
 }
+
+#[test]
+fn legacy_layout_metadata_write_commits_the_typed_arrangement() {
+    use phux_client_core::layout::{ArrangementDoc, Group, LayoutNode, LayoutState};
+    use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, OrgFilter};
+    use phux_server_testkit::{SpawnedServer, attach_focused, command, set_metadata, sh};
+
+    run_local(async {
+        let server = SpawnedServer::seeded("work", sh("read _line"));
+        let mut reader = server.connect().await;
+        let pane = attach_focused(&mut reader, "work").await;
+        let query = Command::GetOrganization {
+            filter: OrgFilter::All,
+            page_size: 0,
+            cursor: None,
+        };
+        let CommandResult::OkWith(CommandValue::OrganizationPage(page)) =
+            command(&mut reader, 1, query.clone()).await
+        else {
+            panic!("organization snapshot unavailable");
+        };
+        let session = page
+            .sessions
+            .iter()
+            .find(|session| session.name == "work")
+            .unwrap();
+        let key = phux_protocol::wire::info::tui_layout_key(session.live.unwrap());
+        let group_id = [7; 16];
+        let legacy = ArrangementDoc {
+            groups: vec![Group::with_id(
+                group_id,
+                "from old peer".to_owned(),
+                LayoutState {
+                    tree: Some(LayoutNode::Leaf(pane.clone())),
+                    focus: Some(pane),
+                },
+            )],
+            active: 0,
+            slots: Vec::new(),
+        };
+        let scope = Scope::Group(GroupId::new(1));
+        // Both frames use the same connection. The query is a barrier for
+        // the legacy write, whose wire contract has no reply.
+        send_frame(
+            &mut reader,
+            &set_metadata(2, scope, &key, legacy.encode_cbor().unwrap()),
+        )
+        .await;
+        let CommandResult::OkWith(CommandValue::OrganizationPage(page)) =
+            command(&mut reader, 3, query).await
+        else {
+            panic!("organization snapshot unavailable");
+        };
+        let session = page
+            .sessions
+            .iter()
+            .find(|session| session.name == "work")
+            .unwrap();
+        let query = Command::ArrangementGet {
+            arrangement: session.arrangement.unwrap(),
+        };
+        let CommandResult::OkWith(CommandValue::Arrangement(value)) =
+            command(&mut reader, 4, query).await
+        else {
+            panic!("translated arrangement unavailable");
+        };
+        assert_eq!(value.document.groups.len(), 1);
+        assert_eq!(value.document.groups[0].id, group_id);
+        assert_eq!(
+            value.document.groups[0].name.as_deref(),
+            Some("from old peer")
+        );
+        drop(reader);
+        server.stop().await;
+    });
+}

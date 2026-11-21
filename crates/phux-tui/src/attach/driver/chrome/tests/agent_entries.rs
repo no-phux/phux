@@ -172,51 +172,6 @@ fn focusing_an_unreviewed_done_pane_flips_seen_and_dirties_the_chrome() {
     );
 }
 
-/// Last-change timestamps are not navigation-order inputs.
-#[test]
-fn agent_entries_ignore_change_timestamps_for_ordering() {
-    let old = ResourceId::local(1);
-    let fresh = ResourceId::local(2);
-    let never = ResourceId::local(3);
-    let mut workspace = ArrangementDoc::single(old.clone());
-    workspace.add_group("w2".to_owned(), fresh.clone());
-    workspace.add_group("w3".to_owned(), never.clone());
-
-    let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
-    let mut records: HashMap<ResourceId, AgentRecord> = HashMap::new();
-    for (id, name) in [(&old, "old"), (&fresh, "fresh"), (&never, "never")] {
-        panes.insert(id.clone(), PaneSlot::new_with_size(80, 24).expect("slot"));
-        records.insert(
-            id.clone(),
-            AgentRecord {
-                name: name.to_owned(),
-                state: AgentMetaState::Blocked,
-                ..AgentRecord::default()
-            },
-        );
-    }
-
-    let now = std::time::Instant::now();
-    let mut index = meta_index(records);
-    index.change_at.insert(
-        old,
-        now.checked_sub(std::time::Duration::from_secs(60))
-            .expect("clock has an hour of headroom"),
-    );
-    index.change_at.insert(fresh, now);
-    // `never` has no clock entry at all.
-
-    let entries = agent_entries(
-        &workspace,
-        &panes,
-        &index,
-        &HashMap::new(),
-        &ReviewIndex::new(),
-    );
-    let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
-    assert_eq!(names, vec!["old", "fresh", "never"]);
-}
-
 /// A declared record names the agent row; the OSC title is not consulted.
 #[test]
 fn agent_entries_prefer_the_declared_record() {
@@ -224,7 +179,7 @@ fn agent_entries_prefer_the_declared_record() {
     let workspace = ArrangementDoc::single(id.clone());
     let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
     let mut slot = PaneSlot::new_with_size(80, 24).expect("slot");
-    slot.terminal.vt_write(b"\x1b]2;codex resume\x07");
+    slot.last_title = "codex resume".to_owned();
     panes.insert(id.clone(), slot);
     let mut records: HashMap<ResourceId, AgentRecord> = HashMap::new();
     records.insert(

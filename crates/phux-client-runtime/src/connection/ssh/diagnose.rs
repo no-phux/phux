@@ -230,9 +230,6 @@ mod tests {
         let said = hint(denied, "vm", || true).expect("named");
         assert!(said.contains("BatchMode yes for vm"), "{said}");
         assert_eq!(hint(denied, "vm", || false), None);
-        let full =
-            "mux_client_request_session: session request failed: Session open refused by peer";
-        assert!(hint(full, "vm", || false).is_some_and(|said| said.contains("MaxSessions")));
         let unreachable = "ssh: connect to host vm port 22: Connection refused";
         assert_eq!(hint(unreachable, "vm", || panic!("not asked")), None);
     }

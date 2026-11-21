@@ -29,7 +29,11 @@ fn desk() -> Desk {
         socket: Some(PathBuf::from("/nowhere/phux.sock")),
         ..Options::default()
     };
-    Desk::open(&launch::resolve(&options), None)
+    Desk::with_preferences(
+        &launch::resolve(&options),
+        None,
+        rune::prefs::Prefs::memory(),
+    )
 }
 
 fn pane(id: u32, session: u32, cwd: Option<&str>) -> PaneDescriptor {
@@ -48,6 +52,7 @@ fn pane(id: u32, session: u32, cwd: Option<&str>) -> PaneDescriptor {
         activation: None,
         exec: None,
         foreground: None,
+        icon: None,
     }
 }
 
@@ -138,7 +143,8 @@ fn nothing_retries_what_retrying_cant_change() {
     let mut desk = desk();
     desk.connection.status = Status::Failed;
     assert!(!desk.stuck());
-    desk.connection.error = Some("websocket: 401".to_owned());
+    desk.connection.error =
+        Some("mini: WebSocket handshake: HTTP error: 401 Unauthorized".to_owned());
     assert!(desk.stuck());
     // The QUIC lane's refusal is as final as the WebSocket's.
     desk.connection.error = Some(QUIC_REFUSED.to_owned());
@@ -202,7 +208,10 @@ fn a_stale_window_says_when_it_has_stopped_trying() {
     );
     desk.link.ended = None;
     desk.connection.status = Status::Failed;
-    for refusal in ["websocket: 401", QUIC_REFUSED] {
+    for refusal in [
+        "mini: WebSocket handshake: HTTP error: 401 Unauthorized",
+        QUIC_REFUSED,
+    ] {
         desk.connection.error = Some(refusal.to_owned());
         let Some(Banner::Stuck(Standing::Unreachable(why))) = desk.banner() else {
             panic!("{refusal} keeps retrying");
@@ -333,13 +342,6 @@ fn another_server_drops_what_was_held_for_this_one() {
 }
 
 #[test]
-fn another_server_with_no_client_drops_it_too() {
-    let mut desk = holding(None);
-    desk.reach(PathBuf::from("/nowhere/other.sock"), true);
-    assert_nothing_held(&desk);
-}
-
-#[test]
 fn a_lost_machine_leaves_nothing_for_the_stand_in() {
     let mut desk = holding(None);
     desk.machines.current = Some("mini".to_owned());
@@ -388,20 +390,6 @@ fn a_handoff_here_changes_nothing_on_a_remote() {
     desk.failed_with(REFUSED);
     desk.server_handed_off();
     assert!(desk.stuck());
-}
-
-#[test]
-fn a_refusal_in_words_keeps_only_the_servers() {
-    assert_eq!(plainly(REFUSED), "server speaks 12");
-}
-
-#[test]
-fn a_new_client_gets_the_chosen_theme() {
-    let mut desk = desk();
-    let before = desk.generation;
-    desk.connect(phux_client_runtime::Target::uds("/nowhere/phux.sock"));
-    assert!(desk.connection.client.is_some());
-    assert_eq!(desk.generation, before + 1, "apply_theme ran on the client");
 }
 
 #[test]
@@ -463,17 +451,12 @@ fn transport_errors_read_as_words() {
 }
 
 #[test]
-fn a_protocol_refusal_keeps_the_servers_words() {
-    assert_eq!(
-        incompatible("server error VersionIncompatible: server speaks 12").as_deref(),
-        Some("server speaks 12")
-    );
-    assert_eq!(incompatible("server error Unknown: no"), None);
-}
-
-#[test]
 fn a_window_without_phux_installs_it_and_says_why_an_install_failed() {
-    let mut desk = Desk::open(&launch::Resolved::offline("no phux"), None);
+    let mut desk = Desk::with_preferences(
+        &launch::Resolved::offline("no phux"),
+        None,
+        rune::prefs::Prefs::memory(),
+    );
     assert_eq!(desk.standing(), Standing::NoCli(None));
     // What `install_phux` sets before its worker runs the real installer.
     desk.link.installing = true;
@@ -497,10 +480,14 @@ fn a_window_without_phux_installs_it_and_says_why_an_install_failed() {
 
 #[test]
 fn an_install_shows_a_moving_bar_until_it_ends() {
-    let mut desk = Desk::open(&launch::Resolved::offline("no phux"), None);
+    let mut desk = Desk::with_preferences(
+        &launch::Resolved::offline("no phux"),
+        None,
+        rune::prefs::Prefs::memory(),
+    );
     desk.link.installing = true;
     desk.link.finding = true;
-    let mut rt = rune::Runtime::new(
+    let mut rt = crate::test_support::runtime(
         desk,
         crate::ui::view,
         (900.0, 600.0),

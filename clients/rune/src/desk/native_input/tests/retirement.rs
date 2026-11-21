@@ -26,7 +26,6 @@ fn retained_field_text_does_not_reauthorize_a_native_edit_from_the_old_runtime()
 fn unmounted_acp_focus_does_not_capture_later_terminal_accessory_input() {
     let (client, mut rt) = crate::test_support::input_fixture();
     native(&mut rt.state);
-    rt.state.prefs = rune::prefs::Prefs::memory();
     rt.state.connection.topology = client.with_control(|control| control.topology().cloned());
     let id = "acp-question:retained";
     let question = acp_question(id, "Editor", "Draft");

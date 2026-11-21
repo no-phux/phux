@@ -21,8 +21,6 @@ use crate::render::chrome::status_bar::Notice;
 
 // Re-exported so `main_loop`, `loop_state`, and the tests keep their
 // `entry::` paths.
-#[cfg(test)]
-pub(super) use super::loop_exit::is_local_detach;
 pub(super) use super::loop_exit::{
     CarriedSidebar, EntryPick, LoopExit, SwitchCarry, detached_loop_exit, finish_onboarding_claim,
     finish_return_onboarding_after_paint, seed_sidebar_enabled,
@@ -218,7 +216,7 @@ async fn connect_attach_dial(
     dial: &Dial,
     probe_default_colors: bool,
 ) -> Result<Connection, AttachError> {
-    // Never query a terminal that is not where the frames go (spec §4.2).
+    // Never query a terminal that is not where the frames go.
     let default_colors = (probe_default_colors
         && std::io::IsTerminal::is_terminal(&std::io::stdout()))
     .then(crate::attach::terminal_probe::default_colors)
@@ -229,7 +227,11 @@ async fn connect_attach_dial(
         crate::render::theme::record_reported(colors);
     }
     let client_caps = attach_client_caps(default_colors, dial);
-    Connection::connect_dial_with_hello(dial, attach_client_name(), client_caps).await
+    let mut conn =
+        Connection::connect_dial_with_hello(dial, attach_client_name(), client_caps).await?;
+    // The deadline bounds the handshake only; an attach is a long-lived stream.
+    conn.set_reply_deadline(None);
+    Ok(conn)
 }
 
 fn negotiated_output_mode(conn: &Connection) -> Result<OutputMode, AttachError> {
@@ -319,9 +321,15 @@ async fn attach_session<W: crate::attach::RenderSink>(
     let dial = match &start {
         AttachStart::Dial(dial) | AttachStart::Connection(_, dial) => *dial,
     };
-    let (mut conn, attached, output_mode) = handshake(start, target, probe_default_colors)
+    let handshake = handshake(start, target, probe_default_colors)
         .instrument(handshake_span)
-        .await?;
+        .await;
+    // Hand the tty back from an unfinished colour probe before anything
+    // snapshots termios (the crash hook, raw mode). A refusal exits on the
+    // cooked terminal, so it first swallows the late replies the shell would
+    // otherwise read as typed input; the raw-mode input loop absorbs them.
+    crate::attach::terminal_probe::settle(handshake.is_err());
+    let (mut conn, attached, output_mode) = handshake?;
     // Output mode is per-connection, so this holds across session switches;
     // raw consumers skip `FRAME_ACK` (the server drops their acks).
     let wants_state_sync = output_mode == OutputMode::StateSync;

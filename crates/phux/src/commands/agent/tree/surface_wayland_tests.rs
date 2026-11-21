@@ -1,8 +1,6 @@
 //! Tests for `surface_wayland`: the mapping and the bytes, since no
 //! compositor runs here.
 
-use phux_client::tree::DocumentKey;
-
 use super::*;
 
 const fn rect(x: f64, y: f64, w: f64, h: f64) -> Rect {
@@ -163,25 +161,6 @@ fn long_text_splits_where_the_keycodes_run_out() {
     assert_eq!(codes.len(), KEYMAP_KEYS);
     assert!(first.contains("maximum = 209;"));
     assert_eq!(keymap_and_codes(&got[1]).1, (1..=50).collect::<Vec<_>>());
-}
-
-#[test]
-fn every_key_presses_its_named_keysym() {
-    for (key, sym) in [
-        (DocumentKey::Enter, "Return"),
-        (DocumentKey::Tab, "Tab"),
-        (DocumentKey::Backspace, "BackSpace"),
-        (DocumentKey::Escape, "Escape"),
-        (DocumentKey::ArrowLeft, "Left"),
-        (DocumentKey::ArrowUp, "Up"),
-        (DocumentKey::ArrowRight, "Right"),
-        (DocumentKey::ArrowDown, "Down"),
-    ] {
-        let got = ops(&DocumentInput::Key { key }, (1, 1), None).unwrap();
-        let (keymap, codes) = keymap_and_codes(&got[0]);
-        assert_eq!(codes, [1]);
-        assert!(keymap.contains(&format!("key <K1> {{[{sym}]}};")), "{sym}");
-    }
 }
 
 #[test]

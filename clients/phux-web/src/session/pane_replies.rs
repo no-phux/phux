@@ -1,12 +1,16 @@
 //! Pane replies: spawned splits, kill answers, refusals, and the resized layout.
 
 use super::*;
+use phux_client_core::org_ops::OrgOutcome;
 use phux_protocol::wire::frame::SpawnError;
 
 /// A split whose spawn the server answered without saying whether it made a
 /// pane: not "nothing was created".
 const UNCERTAIN_SPLIT: &str = "The new pane's outcome is unknown: this page could not read the \
      server's answer, so a pane may exist. Reload to see it.";
+
+const UNCERTAIN_CLOSE: &str =
+    "The pane's close outcome is unknown. Check whether it is still running.";
 
 impl Connection {
     pub(super) fn restore_layout(&mut self) {
@@ -106,6 +110,40 @@ impl Connection {
         }
     }
 
+    pub(super) fn lose_pending_kill(&mut self) {
+        if let Some(pending) = self.pending_kill.take() {
+            let message = match pending.phase {
+                KillPhase::Resolving(_) => {
+                    "The connection ended before the pane's activation could be identified."
+                }
+                KillPhase::Terminate(_) | KillPhase::Legacy => UNCERTAIN_CLOSE,
+            };
+            self.pane_error = Some(message.to_owned());
+        }
+    }
+
+    fn kill_reply_phase(&self, request_id: Option<u32>) -> Option<KillPhase> {
+        self.pending_kill
+            .as_ref()
+            .filter(|pending| request_id == Some(pending.request_id))
+            .map(|pending| pending.phase)
+    }
+
+    fn terminate_reply(&mut self, operation: OperationId, result: &CommandResult) -> Outcome {
+        let reason = match OrgOutcome::from_terminate_reply(operation, result) {
+            OrgOutcome::Accepted => {
+                return Outcome {
+                    panes: true,
+                    ..Outcome::default()
+                };
+            }
+            OrgOutcome::Refused(refusal) => refusal.as_str().to_owned(),
+            OrgOutcome::Error { message, .. } => message,
+            _ => return self.pane_refusal(UNCERTAIN_CLOSE.to_owned()),
+        };
+        self.pane_refusal(format!("Pane operation refused: {reason}"))
+    }
+
     pub(super) fn reduce_pane_frame(&mut self, frame: &FrameKind) -> Option<Outcome> {
         match frame {
             FrameKind::ResourceSpawned { request_id, result }
@@ -134,15 +172,23 @@ impl Connection {
                 if spawning && matches!(code, ErrorCode::Unknown(_)) {
                     return Some(self.pane_refusal(UNCERTAIN_SPLIT.to_owned()));
                 }
-                let correlated = request_id.is_some_and(|id| {
-                    self.pending_split
-                        .as_ref()
-                        .is_some_and(|pending| pending.request_id == id)
-                        || self
-                            .pending_kill
+                let kill = self.kill_reply_phase(*request_id);
+                if let Some(KillPhase::Terminate(operation)) = kill {
+                    return Some(self.terminate_reply(
+                        operation,
+                        &CommandResult::error(*code, message.clone()),
+                    ));
+                }
+                if matches!(kill, Some(KillPhase::Legacy)) && matches!(code, ErrorCode::Unknown(_))
+                {
+                    return Some(self.pane_refusal(UNCERTAIN_CLOSE.to_owned()));
+                }
+                let correlated = kill.is_some()
+                    || request_id.is_some_and(|id| {
+                        self.pending_split
                             .as_ref()
                             .is_some_and(|pending| pending.request_id == id)
-                });
+                    });
                 if correlated {
                     Some(self.pane_refusal(message.clone()))
                 } else {
@@ -186,17 +232,24 @@ impl Connection {
             .pending_split
             .as_ref()
             .is_some_and(|pending| pending.request_id == request_id);
-        let kill = self
-            .pending_kill
-            .as_ref()
-            .filter(|pending| pending.request_id == request_id);
+        let kill = self.kill_reply_phase(Some(request_id));
+        if let Some(KillPhase::Terminate(operation)) = kill {
+            return Some(self.terminate_reply(operation, result));
+        }
         if !split && kill.is_none() {
             return None;
         }
-        let resolving = kill.is_some_and(|pending| pending.resolving.is_some());
+        let resolving = matches!(kill, Some(KillPhase::Resolving(_)));
         match result {
-            CommandResult::Error { message, .. } => {
-                return Some(self.pane_refusal(format!("Pane operation refused: {message}")));
+            CommandResult::Error { code, message } => {
+                let error = if matches!(kill, Some(KillPhase::Legacy))
+                    && matches!(code, ErrorCode::Unknown(_))
+                {
+                    UNCERTAIN_CLOSE.to_owned()
+                } else {
+                    format!("Pane operation refused: {message}")
+                };
+                return Some(self.pane_refusal(error));
             }
             CommandResult::Refused(refusal) => {
                 return Some(
@@ -211,6 +264,8 @@ impl Connection {
                     "Pane operation refused: the server did not list the session.".to_owned(),
                 ));
             }
+            CommandResult::Ok if matches!(kill, Some(KillPhase::Legacy)) => {}
+            _ if kill.is_some() => return Some(self.pane_refusal(UNCERTAIN_CLOSE.to_owned())),
             _ => {}
         }
         if split && let Some(pending) = self.pending_split.as_mut() {

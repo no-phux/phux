@@ -287,26 +287,6 @@ mod tests {
     }
 
     #[test]
-    fn block_and_linear_disagree_on_the_wrap_cell() {
-        // Same two corners, different modes: the interior-row cell outside the
-        // column band is in the linear selection but not the block one.
-        let linear = SelectionRect {
-            start_row: 0,
-            start_col: 1,
-            end_row: 1,
-            end_col: 2,
-            rectangle: false,
-        };
-        let block = SelectionRect {
-            rectangle: true,
-            ..linear
-        };
-        // Row 0, col 3 sits after `start` but outside the band.
-        assert!(linear.contains(0, 3), "linear spans to the row end");
-        assert!(!block.contains(0, 3), "block clips to the column band");
-    }
-
-    #[test]
     fn contains_block_normalizes_inverted_column_corners() {
         // A down-and-left block drag still selects the [2, 5] band per row.
         let sel = SelectionRect {
@@ -334,11 +314,6 @@ mod tests {
         assert!(r.rectangle);
         assert!(!SelectionRect::from_range(0, 0, 2, 4, SelectionMode::Char).rectangle);
         assert!(!SelectionRect::from_range(0, 0, 2, 4, SelectionMode::Line).rectangle);
-        // Corners are carried through untouched.
-        assert_eq!(
-            (r.start_row, r.start_col, r.end_row, r.end_col),
-            (0, 0, 2, 4)
-        );
     }
 
     /// A hit maps into the viewport by its document row, clipped to the

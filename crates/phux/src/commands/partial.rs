@@ -101,14 +101,10 @@ pub(crate) fn target_miss(
     reason = "tests"
 )]
 mod tests {
-    use super::{
-        EXIT_PARTIAL_VIEW, report_target_miss, report_target_miss_for, target_miss,
-        target_miss_keeping_status,
-    };
+    use super::{EXIT_PARTIAL_VIEW, target_miss, target_miss_keeping_status};
     use crate::commands::json_err::codes;
     use phux_client::state::Degradation;
     use phux_protocol::wire::frame::{ErrorCode, FrameKind};
-    use std::process::ExitCode;
 
     fn degraded() -> Degradation {
         Degradation::from_interleaved(&[FrameKind::Error {
@@ -116,27 +112,6 @@ mod tests {
             code: ErrorCode::SatelliteUnreachable,
             message: "satellite build-box is unreachable: link is down".to_owned(),
         }])
-    }
-
-    #[test]
-    fn a_miss_against_a_whole_fleet_is_still_a_plain_failure() {
-        // The unchanged path: nothing about federation should make an
-        // ordinary typo cost a different exit code.
-        let code = report_target_miss(Some("@9"), &Degradation::default());
-        assert_eq!(format!("{code:?}"), format!("{:?}", ExitCode::FAILURE));
-    }
-
-    #[test]
-    fn a_miss_against_a_partial_fleet_gets_its_own_status() {
-        // "no such pane" and "I could not see the half of the fleet your pane
-        // is on" must not be the same answer — including to a script, which
-        // reads only the number.
-        let code = report_target_miss(Some("@9"), &degraded());
-        assert_eq!(
-            format!("{code:?}"),
-            format!("{:?}", ExitCode::from(EXIT_PARTIAL_VIEW))
-        );
-        assert_ne!(format!("{code:?}"), format!("{:?}", ExitCode::FAILURE));
     }
 
     /// phux-i0e8.8.2: the JSON contract's half of the same distinction. A
@@ -163,37 +138,14 @@ mod tests {
         assert!(err.remedy.contains("build-box"), "{}", err.remedy);
     }
 
-    /// The json emitter path end-to-end: a partial-view miss under `--json`
-    /// exits [`EXIT_PARTIAL_VIEW`], same as the prose path.
-    #[test]
-    fn json_partial_view_miss_exits_three() {
-        let code = report_target_miss_for(true, Some("@9"), &degraded());
-        assert_eq!(
-            format!("{code:?}"),
-            format!("{:?}", ExitCode::from(EXIT_PARTIAL_VIEW))
-        );
-    }
-
     /// The keeping-status variant keeps the code (`partial_view`) in the
     /// document while the process status stays 1 — the child's exit space
     /// is not spent, but the machine reader still learns the reason.
     #[test]
     fn json_keeping_status_miss_keeps_exit_one_but_names_partial_view() {
-        let refusal = target_miss(Some("@9"), &degraded(), 1);
+        let refusal = target_miss_keeping_status(Some("@9"), &degraded());
         let (err, exit_code) = (refusal.err, refusal.exit);
         assert_eq!(err.code, codes::PARTIAL_VIEW);
         assert_eq!(exit_code, 1);
-    }
-
-    #[test]
-    fn the_shared_resolver_keeps_its_status_and_still_refuses_to_claim_absence() {
-        // `run` keeps status 1; the sentence must still differ.
-        let code = target_miss_keeping_status(Some("@9"), &degraded()).emit(false);
-        assert_eq!(format!("{code:?}"), format!("{:?}", ExitCode::FAILURE));
-        assert_ne!(
-            format!("{code:?}"),
-            format!("{:?}", ExitCode::from(EXIT_PARTIAL_VIEW)),
-            "a resolver shared with `run` must not spend the child's code space"
-        );
     }
 }

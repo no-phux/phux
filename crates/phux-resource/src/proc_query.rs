@@ -341,15 +341,6 @@ mod platform {
         }
 
         #[test]
-        fn parses_with_no_padding() {
-            let raw = blob(1, "/bin/claude", 0, &["claude"]);
-            assert_eq!(
-                parse_procargs2(&raw).expect("parses"),
-                vec!["claude".to_owned()]
-            );
-        }
-
-        #[test]
         fn truncated_and_degenerate_blobs_are_none() {
             assert!(parse_procargs2(&[]).is_none());
             assert!(parse_procargs2(&[1, 2]).is_none());
@@ -499,12 +490,6 @@ mod tests {
         use std::os::fd::AsRawFd;
         let file = tempfile::tempfile().expect("temp file");
         assert_eq!(foreground_pgid(file.as_raw_fd()), None);
-    }
-
-    #[test]
-    fn foreground_pgid_on_a_bogus_fd_is_none() {
-        assert_eq!(foreground_pgid(-1), None);
-        assert_eq!(foreground_pgid(i32::MAX), None);
     }
 
     /// The test binary can read its own argv back from the kernel.

@@ -7,16 +7,13 @@ use std::process::ExitCode;
 
 use phux_config::KeybindingsCfg;
 use phux_config::loader as config_loader;
-use phux_tui::attach::plugin_actions;
+use phux_config::plugin::actions as plugin_actions;
 use phux_tui::render::overlay::which_key::legend;
 
 pub(super) fn print() -> Result<ExitCode, String> {
     let cfg = config_loader::load().map_err(|err| err.to_string())?;
-    let manifests = if cfg.plugins.is_empty() {
-        Vec::new()
-    } else {
-        phux_config::plugin::load_enabled_manifests(&config_loader::config_path(), &cfg.plugins)
-    };
+    let manifests =
+        phux_config::plugin::load_enabled_manifests(&config_loader::config_path(), &cfg.plugins);
     let mut keybindings = cfg.keybindings;
     plugin_actions::merge_plugin_bindings(
         &mut keybindings,

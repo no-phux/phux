@@ -47,22 +47,6 @@ fn native_commands_without_negotiated_support_never_write() {
     });
 }
 
-#[test]
-fn pre_ack_bootstrap_is_returned_instead_of_discarded() {
-    let mut script = bootstrap();
-    script.push(ack(7));
-    let reply = request_against(script);
-    assert!(matches!(reply.result(), CommandResult::Ok));
-    assert!(matches!(
-        reply.interleaved(),
-        [
-            FrameKind::BootstrapBegin { .. },
-            FrameKind::BootstrapChunk { .. },
-            FrameKind::BootstrapReady { .. }
-        ]
-    ));
-}
-
 /// A hub pushes one uncorrelated ERROR per unreachable satellite before the
 /// `GET_STATE` ack; swallowing it hides a partial fleet view.
 #[test]

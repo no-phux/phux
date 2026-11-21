@@ -70,6 +70,7 @@ export function violations({ full, lean, mcp, server, terminalApi, config }: Gra
     expect.that(!graph.has("ratatui-macros"), `${name}: unused TUI macros`);
     expect.that(!enables(graph, "rustls", "tls12", name), `${name}: TLS 1.2 re-enabled`);
   }
+  expect.that(!server.has("phux-client-core"), "server: production graph reaches client state");
   for (const [name, graph] of Object.entries({ server, terminalApi, config })) {
     for (const dependency of [
       "phux-terminal",

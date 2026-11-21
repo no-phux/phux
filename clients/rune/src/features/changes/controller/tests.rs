@@ -18,6 +18,7 @@ use crate::desk::{Desk, Shown};
 use crate::features::changes::presentation::Line;
 use crate::keys::Shortcut;
 
+mod settle;
 mod wheel;
 
 fn fixture(checkout: bool) -> (Arc<Client>, Runtime<Desk>) {
@@ -41,7 +42,8 @@ fn fixture(checkout: bool) -> (Arc<Client>, Runtime<Desk>) {
         view: Some(replica.views[0]),
         resource: terminal,
     });
-    let mut rt = Runtime::new(desk, crate::ui::view, (1100.0, 720.0), Env::new(true, 2.0));
+    let mut rt =
+        crate::test_support::runtime(desk, crate::ui::view, (1100.0, 720.0), Env::new(true, 2.0));
     rt.on_key = Some(Desk::key);
     rt.frame(0.0);
     poll(&mut rt);
@@ -96,6 +98,7 @@ fn requests(client: &Client) -> Vec<(u32, CheckoutRequest)> {
                     Command::Checkout {
                         terminal_id,
                         request,
+                        ..
                     },
             } => {
                 assert_eq!(terminal_id, ResourceId::local(1));
@@ -344,18 +347,18 @@ fn closed_and_reopened_panels_ignore_the_previous_requests() {
 #[test]
 fn unsupported_and_disconnected_clients_explain_why_nothing_was_sent() {
     let (client, mut rt) = fixture(false);
-    open(&mut rt);
-    assert!(
-        refusal(rt.state.connection.changes.listing.as_ref()).contains("doesn't support changes")
-    );
-    assert!(rt.find("changes-message").is_some());
+    // A server without CHECKOUT: the action says so and opens nothing.
+    rt.update(|desk, tx| desk.shortcut(Shortcut::Changes, tx));
+    assert!(!rt.state.connection.changes.open);
+    assert!(crate::test_support::notice(&rt.state).contains("too old for changes"));
     assert!(requests(&client).is_empty());
     rt.update(|desk, _| {
         desk.connection.client = None;
         desk.connection.status = Status::Idle;
-        desk.refresh_changes();
     });
+    open(&mut rt);
     assert!(refusal(rt.state.connection.changes.listing.as_ref()).contains("Not connected"));
+    assert!(rt.find("changes-message").is_some());
 }
 
 #[test]

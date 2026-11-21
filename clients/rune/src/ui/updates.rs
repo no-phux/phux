@@ -16,7 +16,7 @@ use crate::desk::updates::{Action, Updater, Work};
 use crate::updates::VERSION;
 
 /// The update's one primary action, a kit `Submit` button in the Tab
-/// order (§4.1.3).
+/// order.
 fn act_button(action: Action, key: &'static str, t: &Tokens) -> El {
     kit_button(key, action.label(), ButtonVariant::Submit, t)
         .on_press_tx(|d: &mut Desk, tx| d.update_act(tx))
@@ -180,8 +180,6 @@ pub fn settings(desk: &Desk, t: &Tokens) -> El {
                 .font(secondary(desk, t)).color(dim).wrap());
     }
     let updater = &desk.updater;
-    // The containing phone card already supplies its row gutter.
-    let toggle_inset = if desk.phone.is_some() { 0.0 } else { s.s4 };
     let mut buttons = row().w_full().gap(s.s2).flex_wrap();
     if let Some(action) = updater.action() {
         let mut button = act_button(action, "update-act-settings", t).min_h(s.touch_min);
@@ -239,13 +237,15 @@ pub fn settings(desk: &Desk, t: &Tokens) -> El {
     };
     section = section
         .child(buttons)
-        .child(toggle(desk, automatic, t).px(toggle_inset));
-    section.child(phux::settings(desk, t, toggle_inset))
+        // The section's card supplies the row gutter, on a phone and a
+        // desk alike: the toggle lines up with the words above it.
+        .child(toggle(desk, automatic, t).px(0.0));
+    section.child(phux::settings(desk, t))
 }
 
 /// Failures and compatibility warnings stay in view even when search hides
 /// the About & Updates category. Informational update details stay there.
-/// The invalid treatment (§1.10): a `status.failed` edge, the words in
+/// The invalid treatment: a `status.failed` edge, the words in
 /// `text`.
 pub(super) fn warnings(desk: &Desk, t: &Tokens) -> Option<El> {
     let s = &t.space;
@@ -288,18 +288,26 @@ mod tests {
 
     #[test]
     fn nothing_extra_is_said_with_no_server_update_due() {
-        let desk = Desk::new(&Resolved::offline("not launched"));
+        let desk = Desk::with_preferences(
+            &Resolved::offline("not launched"),
+            None,
+            rune::prefs::Prefs::memory(),
+        );
         assert!(detail(&desk.updater, Some("mini")).is_empty());
     }
 
-    /// Every pressable is focusable (§1.10), the card's action included;
+    /// Every pressable is focusable, the card's action included;
     /// opening the card never moves focus into it.
     #[test]
     fn main_window_update_card_joins_tab_order_without_taking_focus() {
-        let mut desk = Desk::new(&Resolved::offline("update card focus"));
+        let mut desk = Desk::with_preferences(
+            &Resolved::offline("update card focus"),
+            None,
+            rune::prefs::Prefs::memory(),
+        );
         desk.updater.install = Ok("/not-an-installed-app".into());
         desk.updater.staged = Some("999.0.0".into());
-        let mut rt = rune::Runtime::new(
+        let mut rt = crate::test_support::runtime(
             desk,
             crate::ui::view,
             (1100.0, 720.0),

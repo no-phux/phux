@@ -1,7 +1,7 @@
 //! Snapshot tests for the organization commands, results, and events
 //! (`docs/organization.md`): one golden hex dump per shape, so a byte change
 //! to any of them surfaces in review; `wire_snapshots.rs` checks them. The
-//! frames outside §5.7 keep their goldens in `frame_wire_snapshots.rs`.
+//! frames outside organization keep their goldens in `frame_wire_snapshots.rs`.
 
 #![allow(
     clippy::unwrap_used,
@@ -9,41 +9,17 @@
     reason = "fixtures: unwrap a known-good key; helpers stay plain fns"
 )]
 
-use crate::common::dump_frame;
 use commands::command_fixtures;
 use events::event_fixtures;
 use phux_protocol::ids::{
-    ActivationId, ArrangementKey, AuthorityId, ClientId, IdempotencyKey, PrincipalId, ResourceId,
-    ResourceKey, Revision, SatelliteHost, ServerInstance, SessionKey,
+    ActivationId, ArrangementKey, ClientId, IdempotencyKey, PrincipalId, ResourceId, ResourceKey,
+    Revision, SatelliteHost, ServerInstance, SessionKey,
 };
 use phux_protocol::wire::frame::{
     ActorRef, AgentEvent, ArrangementDoc, ArrangementGroup, ArrangementNode, Command,
-    CommandResult, CommandValue, EntryRef, EntryTarget, FrameKind, LaunchSpec, LiveTarget,
-    OrganizationPage, SplitDirection,
+    CommandResult, EntryRef, EntryTarget, FrameKind, LaunchSpec, LiveTarget, SplitDirection,
 };
 use results::result_fixtures;
-
-#[test]
-fn intake_api_aliases_keep_legacy_wire_bytes() {
-    let legacy = command(Command::InboxResolve {
-        operation: op(),
-        session: session(),
-        expected: rev(4),
-    });
-    let preferred = command(Command::intake_resolve(op(), session(), rev(4)));
-    assert_eq!(dump_frame(&preferred), dump_frame(&legacy));
-
-    let page = OrganizationPage::new(AuthorityId::new([0xAA; 16]).unwrap(), rev(40), 77);
-    let legacy = page.clone().with_inbox(Some(other_session()));
-    let preferred = page.with_intake(Some(other_session()));
-    assert_eq!(preferred.intake(), legacy.inbox);
-    let frame = |page| {
-        result(CommandResult::OkWith(CommandValue::OrganizationPage(
-            Box::new(page),
-        )))
-    };
-    assert_eq!(dump_frame(&frame(preferred)), dump_frame(&frame(legacy)));
-}
 
 fn op() -> IdempotencyKey {
     IdempotencyKey::new([0x0A; 16]).unwrap()

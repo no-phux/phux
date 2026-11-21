@@ -142,10 +142,13 @@ Scroll a pane's history with the mouse wheel. For keyboard selection, press <kbd
 | <kbd>/</kbd>, <kbd>?</kbd>                    | search down, up; <kbd>n</kbd> and <kbd>N</kbd> repeat   |
 | <kbd>y</kbd>, <kbd>Enter</kbd>                | copy the selection and leave; with nothing selected, <kbd>y</kbd> copies the word |
 | <kbd>Y</kbd>, <kbd>A</kbd>                    | copy the line, or everything, and leave                 |
-| <kbd>q</kbd>, <kbd>Esc</kbd>                  | leave without copying                                   |
+| <kbd>Esc</kbd>                                | drop the selection and stay; with none, leave           |
+| <kbd>q</kbd>                                  | leave without copying                                   |
 | <kbd>]</kbd>                                  | copy the last command's output and leave                |
 
 Leaving copy mode from the keyboard puts the pane back on the live screen. Scrolling with the wheel stays where you left it until you type.
+
+To scroll from the keyboard without copy mode, bind the scroll actions ([keys](./keys.md)): `scroll-page-up`, `scroll-page-down`, `scroll-half-page-up`, `scroll-half-page-down`, `scroll-to-top` and `scroll-to-bottom`. Like the wheel, they stay where you leave them until you type. `"S-PageUp" = "scroll-page-up"` under `[keybindings.global]` gives you the usual key.
 
 Copies go to your system clipboard through your terminal (OSC 52), so they work over SSH too if your terminal allows it.
 
@@ -159,9 +162,10 @@ The mouse is on by default:
 
 - Click a pane to focus it.
 - Drag a divider to resize panes.
+- Drag a pane by its title (an untitled pane by the start of the line above it) onto another pane to make it a tab of that pane's slot.
 - Drag across text to copy it.
 - Right-click for a menu of actions for that pane, tab, or session.
-- Click a tab to switch to it; drag it to reorder.
+- Click a tab to switch to it, the tab you're on to go back to the last one; drag it to reorder.
 
 Programs that use the mouse themselves, such as `htop` or an editor, still get clicks over their own panes. To leave the mouse to your terminal's own selection instead, set `mouse = false` under `[defaults]` in your [config file](./config.md).
 
@@ -191,7 +195,8 @@ Most keys match tmux, with <kbd>C-a</kbd> where tmux uses <kbd>C-b</kbd>. What's
 | <kbd>x</kbd> asks before closing a pane     | <kbd>x</kbd> closes it right away                                      |
 | <kbd>&</kbd> closes a window                | <kbd>X</kbd> closes a tab (asks first)                                 |
 | <kbd>(</kbd> <kbd>)</kbd> previous, next session | <kbd>P</kbd> <kbd>N</kbd>; <kbd>)</kbd> is the last session         |
-| <kbd>q</kbd> shows pane numbers             | <kbd>q</kbd> jumps to the next pane that needs you                     |
+| <kbd>q</kbd> shows pane numbers             | <kbd>i</kbd>; <kbd>q</kbd> jumps to the next pane that needs you       |
+| `synchronize-panes` types into every pane   | <kbd>y</kbd> turns it on for the tab, and off again                    |
 | `send-prefix` sends the prefix through      | press the prefix twice: <kbd>C-a</kbd> <kbd>C-a</kbd> sends <kbd>C-a</kbd> to the program. Any key with no binding after the prefix goes to the program |
 | copy mode with vi or emacs keys             | vi keys and arrows; <kbd>y</kbd> or <kbd>Enter</kbd> copies to the system clipboard |
 | `tmux source-file ~/.tmux.conf`             | `phux config reload`                                                   |

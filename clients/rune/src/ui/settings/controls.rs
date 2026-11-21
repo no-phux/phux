@@ -13,7 +13,7 @@ use crate::grid::{MAX_FONT_SIZE, MIN_FONT_SIZE};
 use crate::ui::pressable;
 use crate::ui::tokens::{Paint, Tokens};
 
-/// A kit `Button` (§4.1.3 ADOPT) under phux's key, in the Tab order.
+/// A kit `Button` (ADOPT) under phux's key, in the Tab order.
 /// `Submit` is the one primary action per view; `Outline` the others.
 pub(in crate::ui) fn kit_button(
     key: impl Into<String>,
@@ -228,28 +228,32 @@ struct Stepper {
     limit: fn(&mut Desk, bool),
 }
 
-/// A stepper on the control outline, its value in `tnum`.
+/// A stepper: − value + joined in one capsule on the control outline, its
+/// value in `tnum`. Pointer-sized at a desk, touch-sized on a phone.
 fn stepper(desk: &Desk, t: &Tokens, spec: Stepper) -> El {
     let s = &t.space;
     let phone = desk.phone.is_some();
-    let button_h = if phone {
-        grown(t.ty.lead, s.s2).max(s.touch_min)
+    let (button_w, button_h, glyph_font) = if phone {
+        (
+            s.touch_min,
+            grown(t.ty.lead, s.s2).max(s.touch_min),
+            t.ty.lead,
+        )
     } else {
-        s.touch_min
+        (t.icon.button.md, s.row_h, t.ty.label)
     };
     let button = |glyph: &'static str, name: String, key: String, by: i32| {
         let step = spec.step;
         pressable(key, t)
-            .size(s.touch_min, button_h)
+            .size(button_w, button_h)
             .focusable(true)
-            .radius(t.radius.sm)
+            .radius(t.radius.full)
             .center()
-            .border(s.hairline, t.roles.border.control.paint())
             .label(name)
             .on_press(move |d: &mut Desk| step(d, by))
             .child(
                 text(glyph)
-                    .font(t.ty.lead)
+                    .font(glyph_font)
                     .color(t.roles.text.text.paint())
                     .a11y_hidden(),
             )
@@ -276,16 +280,19 @@ fn stepper(desk: &Desk, t: &Tokens, spec: Stepper) -> El {
     let value = el().min_w(t.icon.button.lg).center().child(
         text(spec.shown.clone())
             .font(if phone {
-                secondary(desk, t)
+                secondary(desk, t).figures()
             } else {
-                t.ty.micro
+                t.ty.caption.figures()
             })
             .color(t.roles.text.text.paint())
             .a11y_hidden(),
     );
     let controls = row()
-        .gap(s.s1)
         .items_center()
+        .px(s.hairline)
+        .py(s.hairline)
+        .radius(t.radius.full)
+        .border(s.hairline, t.roles.border.control.paint())
         .child(button(
             "−",
             format!("Smaller {lower}").replace(" size", ""),

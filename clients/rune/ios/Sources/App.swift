@@ -23,7 +23,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         root = controller
         if let url = options.urlContexts.first?.url { controller.importPairing(url) }
         let window = UIWindow(windowScene:scene)
-        // UIKit's own controls take the house accent (phux-brand's
+        // UIKit's own controls take the house accent (the generated
         // AccentColor, with its dark and increased-contrast appearances).
         window.tintColor = UIColor(named: "AccentColor")
         // Rune draws its own header; a UIKit bar above it would double the chrome.

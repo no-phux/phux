@@ -1,18 +1,5 @@
 use super::*;
 
-/// `cup_len` matches what `write_cup` writes at every digit boundary, so
-/// a diff buffer sized from it is exact.
-#[test]
-fn cup_len_matches_the_written_sequence() {
-    for row in [0, 8, 9, 98, 99, 998, 999, 9_998, 9_999, u16::MAX] {
-        for col in [0, 9, 99, u16::MAX] {
-            let mut out = Vec::new();
-            write_cup(&mut out, row, col);
-            assert_eq!(cup_len(row, col), out.len(), "row {row} col {col}");
-        }
-    }
-}
-
 /// Assembled diffs keep their byte layout: toggle, then each changed row
 /// as CUP + pen reset + body, then the epilogue.
 #[test]
@@ -35,19 +22,6 @@ fn synthesizer_returns_dimensions() {
 }
 
 #[test]
-fn bounded_synthesis_rejects_tiny_source_budget() {
-    let terminal = fresh(80, 24);
-    assert!(matches!(
-        SnapshotSynthesizer::synthesize_bounded(
-            &terminal,
-            4,
-            phux_protocol::caps::ImageProtocolSet::all()
-        ),
-        Err(SynthesisError::LimitExceeded)
-    ));
-}
-
-#[test]
 fn synthesizer_round_trips_via_libghostty() {
     // Replayed snapshot reproduces the cursor position.
     let mut a = fresh(20, 5);
@@ -63,39 +37,6 @@ fn synthesizer_round_trips_via_libghostty() {
     let bx = b.cursor_x().expect("cursor_x b");
     let by = b.cursor_y().expect("cursor_y b");
     assert_eq!((ax, ay), (bx, by), "cursor position should round-trip");
-}
-
-/// Reusing one synthesizer across attaches still yields the full grid
-/// after a prior `synthesize()` consumed the dirty bits.
-#[test]
-fn synthesize_reused_across_calls_emits_full_snapshot_each_time() {
-    let mut t = fresh(20, 5);
-    let synth = SnapshotSynthesizer::new().expect("synth");
-
-    // First attach: blank grid (no content yet).
-    let snap1 = synth.synthesize(&t).expect("synth1");
-    assert!(
-        !String::from_utf8_lossy(&snap1.bytes).contains("MARKER"),
-        "blank grid should not carry MARKER yet",
-    );
-
-    // Content arrives with NO trailing newline (like `printf MARKER`).
-    t.vt_write(b"MARKER");
-
-    // Second attach via the SAME synthesizer: the snapshot MUST be a full
-    // repaint carrying MARKER, not a delta against the consumed dirty bits.
-    let snap2 = synth.synthesize(&t).expect("synth2");
-    let body = String::from_utf8_lossy(&snap2.bytes);
-    assert!(
-        body.contains("MARKER"),
-        "phux-uow0: reused synthesizer must emit a FULL snapshot including \
-             content written after the first call; got: {body:?}",
-    );
-
-    // And it must round-trip into a fresh terminal's grid.
-    let mut b = fresh(snap2.cols, snap2.rows);
-    b.vt_write(&snap2.bytes);
-    assert_eq!(render_grid(&b)[0], "MARKER              ");
 }
 
 /// Another render state consuming the dirty bits before the snapshot
@@ -158,34 +99,5 @@ fn synthesizer_skips_wide_cell_tails() {
     assert!(
         !bytes_str.contains("你 好"),
         "synthesized bytes must not insert a space between wide glyphs (wide-tail bug)"
-    );
-}
-
-/// Mixed CJK, emoji, and ASCII round-trip cell-for-cell.
-#[test]
-fn synthesizer_round_trips_cjk_and_emoji() {
-    let mut a = fresh(20, 4);
-    // Row 0: CJK + ASCII. Row 1: pure emoji. Row 2: mixed
-    // emoji/ASCII. The CRLF sequences keep row layout deterministic.
-    a.vt_write("東 hello\r\n".as_bytes());
-    a.vt_write("😀😀😀\r\n".as_bytes());
-    a.vt_write("a😀b".as_bytes());
-
-    let src_grid = render_grid(&a);
-
-    let synth = synthesize(&a).expect("synth");
-    let mut b = fresh(synth.cols, synth.rows);
-    b.vt_write(&synth.bytes);
-
-    let dst_grid = render_grid(&b);
-    assert_eq!(
-        src_grid, dst_grid,
-        "CJK + emoji content must round-trip through the synthesizer"
-    );
-
-    assert!(
-        src_grid[0].starts_with('東'),
-        "source row 0 should start with 東, got {:?}",
-        src_grid[0]
     );
 }

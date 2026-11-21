@@ -1,10 +1,16 @@
 //! Command context, entry point, and routing ahead of local dispatch.
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the split command modules share the parent command namespace"
-)]
 
-use super::*;
+use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities};
+use phux_protocol::wire::frame::Command;
+use tokio_util::sync::CancellationToken;
+use tracing::debug;
+
+use crate::runtime::commands::attach_terminal::{invalid_agent_cursor, refuse_invalid_role_policy};
+use crate::runtime::commands::dispatch::dispatch_local;
+use crate::runtime::commands::lifecycle::{handle_shutdown, handle_upgrade};
+use crate::runtime::commands::satellite::{handle_satellite_command, note_local_use};
+use crate::runtime::reply;
+use crate::state::{ClientId, Outbound, SharedState};
 
 /// Stable, payload-free label for a [`Command`] variant: the `kind` field on
 /// the `handle_command` span, kept free of session names, env, and input.
@@ -91,7 +97,7 @@ impl CommandContext {
 }
 
 /// Dispatch a `COMMAND` and reply with its correlated `COMMAND_RESULT`
-/// (SPEC §5). The result may follow frames the command triggered.
+///. The result may follow frames the command triggered.
 #[tracing::instrument(
     level = "info",
     name = "handle_command",
@@ -124,7 +130,10 @@ fn refuses_agent_cursor(
     s.idspace
         .resource_from_wire(terminal_id)
         .and_then(|core| s.resources().handle(core))
-        .is_some_and(|handle| !crate::runtime::apps::app_for(handle.kind).resumes_from_cursor())
+        .is_some_and(|handle| {
+            phux_protocol::kinds::kind_spec(crate::id_bridge::wire_kind(handle.kind))
+                .is_none_or(|spec| spec.stream.resume.is_none())
+        })
 }
 
 /// Everything that answers a command before local dispatch: the
@@ -166,8 +175,9 @@ async fn route_command(
             resource,
             expected,
         } = &command
-            && let Some(result) =
-                crate::runtime::apps::claim_relaunch(ctx, *operation, resource, *expected)
+            && let Some(result) = crate::runtime::apps::claim_native_agent_relaunch(
+                ctx, *operation, resource, *expected,
+            )
         {
             reply::send(out_tx, request_id, result).await;
             return None;
@@ -249,7 +259,7 @@ async fn route_command(
         return None;
     }
 
-    // L1 §5.1.1: keyed commands are admitted after routing; a satellite owns
+    // Keyed commands are admitted after routing; a satellite owns
     // the dedupe of what it runs.
     let claim = match super::super::keyed_ops::admit(state, &command).await {
         super::super::keyed_ops::KeyedAdmission::Unkeyed => None,

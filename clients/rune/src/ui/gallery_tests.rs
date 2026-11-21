@@ -1,4 +1,4 @@
-//! The chrome's gallery (§5.2): the window's main surfaces with a populated
+//! The chrome's gallery: the window's main surfaces with a populated
 //! sidebar, painted through Rune's real renderer, on the desktop and the
 //! phone, over the design fixture: six themes, the accessibility modes,
 //! three locales and a page of forced states. `RUNE_GALLERY_SNAP=DIR` writes
@@ -50,14 +50,41 @@ fn window_on(
     locale: Locale,
     phone: bool,
 ) -> Runtime<Desk> {
-    let mut replica = crate::test_support::terminal::Replica::new(120, 40, 1);
+    window_with(size, dark, theme, locale, phone, false)
+}
+
+/// The window, its terminal split beside a second when `split`: the
+/// first keeps the keyboard.
+fn window_with(
+    size: (f32, f32),
+    dark: bool,
+    theme: Option<&'static Theme>,
+    locale: Locale,
+    phone: bool,
+    split: bool,
+) -> Runtime<Desk> {
+    use phux_client_core::layout::{LayoutNode, SplitDir};
+    let mut replica =
+        crate::test_support::terminal::Replica::new(120, 40, if split { 2 } else { 1 });
     replica.feed(SCREEN.to_owned());
     let mut desk = crate::test_support::window().with_phone(phone);
     desk.settings.theme = theme;
     desk.connection.client = Some(std::sync::Arc::clone(&replica.client));
-    desk.connection.layout = Some(phux_client_core::layout::LayoutNode::Leaf(
-        replica.terminal.clone(),
-    ));
+    let first = LayoutNode::Leaf(replica.terminal.clone());
+    desk.connection.layout = Some(if split {
+        let second = phux_protocol::ids::ResourceId::local(2);
+        desk.connection
+            .others
+            .insert(second.clone(), Some(replica.views[1]));
+        LayoutNode::Split {
+            dir: SplitDir::Horizontal,
+            ratio: 0.5,
+            left: Box::new(first),
+            right: Box::new(LayoutNode::Leaf(second)),
+        }
+    } else {
+        first
+    });
     desk.connection.shown = Some(crate::desk::Shown {
         resource: replica.terminal.clone(),
         view: Some(replica.views[0]),
@@ -89,7 +116,7 @@ fn window_on(
     ];
     let mut topology = crate::desk::topology(vec![phux, site, mobile], panes);
     server::terminal_resources(&mut topology);
-    let mut rt = Runtime::new(desk, crate::ui::view, size, Env::new(dark, SCALE));
+    let mut rt = crate::test_support::runtime(desk, crate::ui::view, size, Env::new(dark, SCALE));
     rt.on_key = Some(Desk::key);
     // The embedded client reports its own one-terminal graph on the first
     // frame; the fixture's replaces it after.
@@ -154,7 +181,88 @@ fn the_gallery_paints() {
     surfaces(&gpu, || window(DESKTOP, true, mocha, Locale::En), "mocha");
 }
 
-/// §1.5 nesting in the real tree: the palette's rows are inset in its
+/// Folding and unfolding the sidebar over one pane, stepped at 60 Hz: the
+/// drawer and the pane move together over frames, never in one, and land
+/// where they started.
+#[test]
+fn the_fold_moves_the_drawer_and_the_pane_together() {
+    let mut rt = window(DESKTOP, true, None, Locale::En);
+    settle(&mut rt);
+    let pane = format!("pane-host-{}", phux_protocol::ids::ResourceId::local(1));
+    let width = |rt: &Runtime<Desk>, key: &str| rt.presented(key).expect(key).0[2];
+    let open = (width(&rt, "sidebar-host"), width(&rt, &pane));
+    for shown in [false, true] {
+        rt.update(move |d, _| d.sidebar_open = shown);
+        let mut seen = Vec::new();
+        // `frame` takes the step since the last frame.
+        for _ in 0..90 {
+            rt.frame(1.0 / 60.0);
+            seen.push((width(&rt, "sidebar-host"), width(&rt, &pane)));
+        }
+        // One spring for the drawer and the gutters: the pane's far edge
+        // never runs past the window, nor opens a gap short of it.
+        let edge = open.0 + open.1;
+        for &(drawer, pane) in &seen {
+            let far = drawer + pane;
+            assert!(
+                far <= DESKTOP.0 + 0.5 && far >= edge - 0.5,
+                "the far edge holds: {seen:?}"
+            );
+        }
+        let mid = seen[5];
+        let (from, to) = if shown { (0.0, open.0) } else { (open.0, 0.0) };
+        let between = |x: f32, a: f32, b: f32| x > a.min(b) + 1.0 && x < a.max(b) - 1.0;
+        assert!(between(mid.0, from, to), "the drawer moves: {seen:?}");
+        let last = seen[seen.len() - 1];
+        assert!((last.0 - to).abs() < 0.5, "the drawer lands: {seen:?}");
+        if shown {
+            assert!(
+                (last.1 - open.1).abs() < 0.5,
+                "the pane lands back: {seen:?}"
+            );
+        } else {
+            assert!(
+                last.1 > open.1 + open.0,
+                "flush, the pane takes the gutters too: {seen:?}"
+            );
+            assert!(
+                between(mid.1, open.1, last.1),
+                "the pane moves with it: {seen:?}"
+            );
+        }
+    }
+}
+
+/// Two terminals side by side, the first with the keyboard, with the
+/// sidebar open and folded: how focus reads among panes without a colour
+/// of its own, and the split keeping its cards when the sidebar is away.
+#[test]
+fn the_gallery_paints_a_split() {
+    let gpu = rune::render::Gpu::headless();
+    for dark in [true, false] {
+        for folded in [false, true] {
+            let mut rt = window_with(DESKTOP, dark, None, Locale::En, false, true);
+            settle(&mut rt);
+            if folded {
+                rt.update(|d, _| d.sidebar_open = false);
+                settle(&mut rt);
+            }
+            let tone = if dark { "dark" } else { "light" };
+            let side = if folded { "-folded" } else { "" };
+            paint(&gpu, &mut rt, DESKTOP, &format!("split-{tone}{side}"));
+        }
+        // One pane, folded: the window is one surface (`Desk::flush`).
+        let mut rt = window(DESKTOP, dark, None, Locale::En);
+        settle(&mut rt);
+        rt.update(|d, _| d.sidebar_open = false);
+        settle(&mut rt);
+        assert!(rt.state.flush());
+        let tone = if dark { "dark" } else { "light" };
+        paint(&gpu, &mut rt, DESKTOP, &format!("flush-{tone}"));
+    }
+}
+
+/// Nesting in the real tree: the palette's rows are inset in its
 /// panel, their radius the panel's less the inset.
 #[test]
 fn the_palettes_rows_nest_inside_its_panel() {
@@ -175,7 +283,7 @@ fn the_palettes_rows_nest_inside_its_panel() {
 }
 
 /// Under reduced motion a modal opens and closes in place: no scale on
-/// its first frame, gone on the frame it closes (§1.11).
+/// its first frame, gone on the frame it closes.
 #[test]
 fn reduced_motion_opens_and_closes_without_movement() {
     let mut rt = window(DESKTOP, true, None, Locale::En);
@@ -196,7 +304,7 @@ fn reduced_motion_opens_and_closes_without_movement() {
     );
 }
 
-/// §1.9's budget over the gallery's surfaces with glass at its fullest:
+/// The glass budget over the gallery's surfaces with glass at its fullest:
 /// at most four blurs on the desktop, the modal's among them, none inside
 /// a one-layer ancestor; none at all under reduce transparency.
 #[test]

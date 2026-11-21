@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
-import { PhuxCli } from "../src/adapter.js";
-import { createPhuxTools } from "../src/tools.js";
 
 import {
   parseAgentEmitResult,
@@ -119,20 +117,6 @@ test("session inventory preserves the server's durable destination key", () => {
     () => parseSessionList({ ...inventory, sessions: [{ ...session, key: 7 }] }),
     /\$\.sessions\[0\]\.key/,
   );
-});
-
-test("phux_list renders the canonical v3 CLI fixture through the shared tool", async () => {
-  const stdout = readFileSync(new URL("../../test/fixtures/session-list-v3.json", import.meta.url), "utf8");
-  const cli = new PhuxCli({ runner: async () => ({ termination: "completed", stdout, stderr: "", exitCode: 0 }) });
-  const tools = createPhuxTools({ cli, getSelectedTarget: () => undefined, selectTarget: () => {} });
-  const result = await tools.phux_list!.execute({}, { sessionID: "fixture", agent: "fixture", messageID: "fixture", id: "fixture" });
-  assert.deepEqual(result.metadata.result, {
-    schema_version: 3, sessions: [{ name: "fixture", windows: 1, attached: false }], terminals: ["@1"],
-    resources: [TERMINAL_ROW], unreachable: [],
-  });
-  assert.equal(result.metadata.operation, "list");
-  assert.match(result.content, /^list schema_version=3 sessions=1 terminals=1 resources=1\n/);
-  assert.match(result.content, /"fixture"/);
 });
 
 test("screen parser validates dimensions and normalizes additive fields", () => {

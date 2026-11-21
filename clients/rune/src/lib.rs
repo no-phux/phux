@@ -59,6 +59,7 @@ mod wire_fixture;
 mod test_support;
 
 use desk::Desk;
+use phux_config_core::rune::NewWindowScreen;
 use rune::{AppSpec, Chrome};
 
 /// The desktop entry's name, and what `phux omarchy setup` tags as a terminal.
@@ -121,6 +122,18 @@ pub fn run_desktop() {
     } else {
         ((1100.0, 720.0), (640.0, 360.0))
     };
+    // The desktop window reopens at the size it closed at, and where it was
+    // unless `new-window-screen` names a display.
+    let frame = (!phone).then(desk::window_frame::saved).flatten();
+    let size = frame.map_or(size, |f| {
+        (f.size.0.max(min_size.0), f.size.1.max(min_size.1))
+    });
+    let screen = (phux_config_core::loader::load_client().ok())
+        .and_then(|config| config.rune.new_window_screen)
+        .unwrap_or_default();
+    let position = frame
+        .filter(|_| screen == NewWindowScreen::Current)
+        .map(|f| f.position);
     let spec = app_spec(size, min_size);
     perf::report_to_file();
     let mut app = desk::with_menus(rune::App::new(spec));
@@ -160,7 +173,15 @@ pub fn run_desktop() {
         // With the quick terminal's chord set, closing the window keeps the
         // app for the chord; the Dock brings the window back.
         .keep_running()
+        .on_window(move |window| {
+            if !phone {
+                desk::window_frame::opened(window);
+                desk::window_frame::place(window, screen);
+            }
+        })
+        .on_quit(|desk: &mut Desk, _| desk.save_frame())
         .on_close(|desk: &mut Desk, tx| {
+            desk.save_frame();
             desk.cancel_screenshot();
             if !desk.keeps_running() {
                 tx.quit();
@@ -170,13 +191,14 @@ pub fn run_desktop() {
         // chrome; the root paints it solid until glass is turned up.
         .window_options(rune::WindowOptions {
             transparent: cfg!(target_os = "macos"),
+            position,
             ..rune::WindowOptions::default()
         })
         // Rune's native host drops on_modifiers; keep logical events.
         .modifier_keys()
         .on_ime(|desk: &mut Desk, event, _| desk.ime(event))
         .on_focus(|desk: &mut Desk, focused, _| desk.focus_changed(focused))
-        .on_open_url(|desk: &mut Desk, url, _| desk.pair_from_link(url))
+        .on_open_url(|desk: &mut Desk, url, _| desk.open_system_link(url))
         .on_frame_drawn(|rt: &rune::Runtime<Desk>| rt.state.drawn());
     match perf::frame_hook() {
         Some(record) => app.on_frame_encoded(record).run(),

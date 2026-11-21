@@ -48,7 +48,7 @@ fn run_list(json: bool) -> ExitCode {
     let root = reports_dir();
     let reports = list_reports(&root);
     if json {
-        return emit_json(&json_inventory(&root, &reports));
+        return crate::output::json(&json_inventory(&root, &reports));
     }
     if reports.is_empty() {
         out!(
@@ -81,7 +81,7 @@ fn run_new(note: &[String], json: bool) -> ExitCode {
     match write_bundle(&draft) {
         Ok(written) => {
             if json {
-                return emit_json(&json_one(&written));
+                return crate::output::json(&json_one(&written));
             }
             outln!("{}", written.dir.display());
             ExitCode::SUCCESS
@@ -126,7 +126,7 @@ fn run_show(id: Option<String>, json: bool) -> ExitCode {
         return ExitCode::FAILURE;
     };
     if json {
-        return emit_json(&json_one(&report));
+        return crate::output::json(&json_one(&report));
     }
     let markdown = report.dir.join("report.md");
     match std::fs::read_to_string(&markdown) {
@@ -157,24 +157,6 @@ fn json_one(report: &WrittenReport) -> serde_json::Value {
         "path": report.dir.display().to_string(),
         "report": report.dir.join("report.md").display().to_string(),
     })
-}
-
-fn emit_json(value: &serde_json::Value) -> ExitCode {
-    match serde_json::to_string_pretty(value) {
-        Ok(rendered) => {
-            outln!("{rendered}");
-            ExitCode::SUCCESS
-        }
-        Err(err) => crate::commands::json_err::emit(
-            true,
-            &crate::commands::json_err::CliError::new(
-                crate::commands::json_err::codes::JSON_SERIALIZE,
-                format!("could not render the report as JSON: {err}"),
-                "this is a phux bug; run `phux doctor` and report it",
-            ),
-            1,
-        ),
-    }
 }
 
 /// Run `phux report` as parsed.

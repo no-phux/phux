@@ -495,23 +495,6 @@ mod tests {
         assert_eq!(store.release_claim(&cleanup).unwrap(), 0);
     }
     #[test]
-    fn handing_off_releases_then_acquires_a_new_fence() {
-        let (_dir, mut store) = store();
-        let first = granted(&mut store, "a", &["/r"]);
-        assert!(matches!(
-            take(&mut store, "b", &["/r/src"], true),
-            ClaimOutcome::Conflict(_)
-        ));
-        store
-            .release_claim(&ReleaseClaim {
-                holder: "a".into(),
-                fence: first[0].fence,
-            })
-            .unwrap();
-        let next = granted(&mut store, "b", &["/r/src"]);
-        assert!(next[0].fence > first[0].fence);
-    }
-    #[test]
     fn shared_leases_coexist_and_conflicting_batches_change_nothing() {
         let (_dir, mut store) = store();
         assert!(matches!(

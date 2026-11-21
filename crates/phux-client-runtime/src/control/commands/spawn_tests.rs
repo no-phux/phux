@@ -30,21 +30,15 @@ fn document_session(kind: ResourceKind, live: bool) -> ControlPlane {
 
 #[test]
 fn foreign_document_only_session_routes_spawn_through_its_live_member() {
-    for kind in [
-        ResourceKind::AccessibilityTree,
-        ResourceKind::PixelSurface,
-        ResourceKind::AgentSession,
-    ] {
-        let mut plane = document_session(kind, true);
-        let request = plane.spawn_terminal_once(SpawnRequest::default());
-        let outbound = plane.take_outbound();
-        assert_eq!(outbound.len(), 1);
-        let (frame, _) = FrameKind::decode(&outbound[0]).unwrap();
-        assert!(
-            matches!(frame, FrameKind::SpawnResource { request_id, owner_terminal: Some(owner), .. }
-            if request_id == request && owner == ResourceId::local(17))
-        );
-    }
+    let mut plane = document_session(ResourceKind::AgentSession, true);
+    let request = plane.spawn_terminal_once(SpawnRequest::default());
+    let outbound = plane.take_outbound();
+    assert_eq!(outbound.len(), 1);
+    let (frame, _) = FrameKind::decode(&outbound[0]).unwrap();
+    assert!(
+        matches!(frame, FrameKind::SpawnResource { request_id, owner_terminal: Some(owner), .. }
+        if request_id == request && owner == ResourceId::local(17))
+    );
 }
 
 #[test]

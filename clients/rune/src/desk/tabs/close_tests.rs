@@ -82,8 +82,11 @@ fn fixture() -> (Arc<Client>, Desk) {
     }
     client.attach_session(AttachTarget::ByName("selected".into()));
     assert_eq!(client.selected_session(), Some(1));
-    let mut desk = Desk::new(&Resolved::offline("session close"));
-    desk.prefs = rune::prefs::Prefs::memory();
+    let mut desk = Desk::with_preferences(
+        &Resolved::offline("session close"),
+        None,
+        rune::prefs::Prefs::memory(),
+    );
     desk.connection.client = Some(client.clone());
     desk.connection.status = Status::Attached;
     desk.connection.topology = Some(Topology::from_snapshot(&snapshot));
@@ -92,6 +95,44 @@ fn fixture() -> (Arc<Client>, Desk) {
     }
     let _ = sent(&client);
     (client, desk)
+}
+
+#[test]
+fn an_unavailable_terminal_close_is_visible_and_sends_nothing() {
+    let (client, mut desk) = fixture();
+    client.with_control(|control| control.connection_lost(None));
+
+    desk.close_now(&ResourceId::local(1));
+
+    assert!(sent(&client).is_empty());
+    assert!(crate::test_support::notice(&desk).contains("Close unavailable"));
+}
+
+#[test]
+fn a_partial_terminal_close_result_is_visible() {
+    use phux_client_runtime::control::Event;
+    use rune::Env;
+
+    let (client, desk) = fixture();
+    let mut rt = crate::test_support::runtime(
+        desk,
+        crate::ui::view,
+        crate::test_support::SIZE,
+        Env::new(true, crate::test_support::SCALE),
+    );
+    rt.update(|desk, tx| {
+        assert!(desk.apply(
+            &client,
+            Event::TerminalsClosed {
+                request_id: 5,
+                error: Some("@2: outcome unknown".into()),
+            },
+            tx,
+        ));
+    });
+
+    assert!(crate::test_support::notice(&rt.state).contains("@2: outcome unknown"));
+    assert!(sent(&client).is_empty());
 }
 
 fn killed(client: &Client) -> Vec<SessionKey> {

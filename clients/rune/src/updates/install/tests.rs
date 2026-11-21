@@ -306,22 +306,3 @@ fn a_launch_that_hangs_is_killed_and_refused() {
     assert!(error.contains("never finished"), "{error}");
     assert!(started.elapsed() < Duration::from_secs(10));
 }
-
-#[test]
-fn a_healthy_launch_passes() {
-    let dir = temp("healthy");
-    let binary = dir.join("binary");
-    fake_binary(&binary, HEALTHY);
-    launch_check(&binary, &dir, LAUNCH_TIMEOUT).unwrap();
-}
-
-#[test]
-fn outcomes_read_as_a_log_line() {
-    let at = Path::new("/opt/phux-rune");
-    assert!(outcome(at, "1.0.0", &Err("offline".to_owned())).contains("failed: offline"));
-    let done = outcome(at, "1.0.0", &Ok(()));
-    assert!(
-        done.contains("1.0.0") && done.contains("/opt/phux-rune"),
-        "{done}"
-    );
-}

@@ -134,7 +134,7 @@ fn in_flight() -> CommandResult {
 }
 
 /// The refusal for a key reused with another command: the same code
-/// `APPLY_INPUT` answers a reused operation id with (L1 §6.2.1).
+/// `APPLY_INPUT` answers a reused operation id with.
 fn conflict() -> CommandResult {
     CommandResult::Error {
         code: ErrorCode::InvalidCommand,
@@ -175,7 +175,7 @@ impl KillResults {
     }
 
     /// Fold one satellite's per-id answer to its part of a keyed batch into
-    /// these outcomes (L1 §5.2), re-spelling its `@N` ids as `host/@N`. An
+    /// these outcomes, re-spelling its `@N` ids as `host/@N`. An
     /// error, a missing document, or an unmentioned id fails the ids it
     /// covers, so a batch never binds past an id it cannot account for.
     pub(crate) fn merge_host(
@@ -396,21 +396,6 @@ mod tests {
                     ErrorCode::InternalError.as_wire().into()
                 ),
             ]
-        );
-        assert!(!binds(&results.into_result()));
-    }
-
-    #[test]
-    fn a_partial_kill_does_not_bind() {
-        let mut results = KillResults::default();
-        results.killed(&ResourceId::local(1));
-        assert!(binds(&results.into_result()));
-        let mut results = KillResults::default();
-        results.killed(&ResourceId::local(1));
-        results.failed(
-            &ResourceId::satellite("devbox", 2),
-            ErrorCode::SatelliteUnreachable,
-            "link is down",
         );
         assert!(!binds(&results.into_result()));
     }

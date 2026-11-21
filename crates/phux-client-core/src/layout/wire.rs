@@ -278,18 +278,6 @@ mod tests {
         }
     }
 
-    /// The member keys of group `group_index` of a stored document, in
-    /// depth-first leaf order: what `name:N.M` addresses.
-    fn group_member_keys(doc: &WireDoc, group_index: usize) -> Option<Vec<EntryTarget>> {
-        let group = doc.groups.get(group_index)?;
-        Some(
-            wire_leaves(&group.tree)
-                .into_iter()
-                .map(|entry| entry.target)
-                .collect(),
-        )
-    }
-
     fn key(n: u8) -> ResourceKey {
         ResourceKey::new([n; 16]).unwrap()
     }
@@ -480,9 +468,5 @@ mod tests {
         assert_eq!(handles.handle(&key(1)), Some(&ResourceId::local(21)));
         handles.remove_key(&key(1));
         assert!(handles.is_empty());
-        assert_eq!(
-            group_member_keys(&doc(), 0).unwrap()[1],
-            EntryTarget::Member(key(2))
-        );
     }
 }

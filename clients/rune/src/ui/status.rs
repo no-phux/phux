@@ -24,7 +24,7 @@ pub use confirm::confirm_bar;
 #[cfg(test)]
 use confirm::question;
 pub(in crate::ui) use confirm::question_bar;
-pub use titlebar::{hover_toolbar, title_bar};
+pub use titlebar::{hover_toolbar, tab_row, top};
 #[cfg(test)]
 mod chrome_gallery;
 
@@ -236,7 +236,7 @@ const fn retry() -> Act {
 }
 
 /// A placeholder's title: a failure leads with its mark and reads in the
-/// failed tone (§1.3: colour, word and mark together); anything else is
+/// failed tone (colour, word and mark together); anything else is
 /// quiet.
 fn title_line(title: String, failed: bool, t: &Tokens) -> El {
     let font = t.ty.lead.semibold();

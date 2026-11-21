@@ -68,6 +68,21 @@ fn an_input_event_record_grows_without_breaking_its_command() {
 }
 
 #[test]
+fn a_checkout_command_without_its_contract_byte_reads_as_contract_one() {
+    let older = FrameKind::Command {
+        request_id: 3,
+        command: Command::Checkout {
+            terminal_id: ResourceId::local(5),
+            request: phux_protocol::checkout::CheckoutRequest::Status,
+            contract: 1,
+        },
+    };
+    let mut body = field(&encode(&older), 2);
+    assert_eq!(body.pop(), Some(1));
+    assert_eq!(decode(&frame(TYPE_COMMAND, 3, &body)).unwrap(), older);
+}
+
+#[test]
 fn a_grown_kill_precondition_keeps_the_trailing_key_in_place() {
     let kill = FrameKind::Command {
         request_id: 4,

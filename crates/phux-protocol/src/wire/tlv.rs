@@ -223,6 +223,26 @@ impl TlvValue for ErrorCode {
     }
 }
 
+/// Six bytes: foreground then background RGB, as the `HELLO` palette.
+impl TlvValue for crate::caps::TerminalDefaultColors {
+    fn put(&self, enc: &mut Encoder<'_>, id: u32) {
+        let (fg, bg) = (self.foreground, self.background);
+        enc.write_field(id, &[fg.r, fg.g, fg.b, bg.r, bg.g, bg.b]);
+    }
+
+    fn take(value: &[u8], _field: &'static str) -> Result<Self, DecodeError> {
+        let [r, g, b, br, bgr, bb] = Decoder::new(value).read_array()?;
+        Ok(Self {
+            foreground: crate::caps::TerminalColor { r, g, b },
+            background: crate::caps::TerminalColor {
+                r: br,
+                g: bgr,
+                b: bb,
+            },
+        })
+    }
+}
+
 /// UTF-8 clipboard text, at most [`MAX_CLIPBOARD_TEXT`] bytes, checked
 /// before the text is copied.
 impl TlvValue for ClipboardData {

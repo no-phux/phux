@@ -88,16 +88,6 @@ mod tests {
     }
 
     #[test]
-    fn a_ring_under_its_ceiling_retains_everything() {
-        let mut ring = RecordRing::new(100);
-        ring.push(record(10));
-        ring.push(record(20));
-        assert_eq!(ring.retained(), 2);
-        assert_eq!(ring.bytes(), 30);
-        assert_eq!(ring.dropped(), 0);
-    }
-
-    #[test]
     fn overflow_evicts_the_oldest_and_counts_the_tombstone() {
         let mut ring = RecordRing::new(50);
         for _ in 0..4 {

@@ -89,6 +89,11 @@ and the runtime, the TUI, and the web client all apply it:
 - unknown spawn and move errors and tombstone, history, and rejection
   reasons decode as an `Unknown` variant (a reason as wire value `255`,
   which a client never encodes); a tombstoned stream reads as released;
+- an unknown execution state, outcome, session lifetime, or exit policy in
+  an organization record or event reads as `Unknown` there; the rest of the
+  page decodes, and a request naming one is still refused `UNSUPPORTED`;
+- a `NATIVE_AGENT_RESULT` with an unknown disposition settles its operation
+  as `Unknown`;
 - an unknown path status reads as truncated, and a path row of an unknown
   kind is dropped and marks the answer truncated;
 - unknown close reasons, detach reasons, error codes, and agent events
@@ -105,9 +110,10 @@ of its stream, and every other resource and the connection carry on; on
 one it knows as a Terminal or AgentSession it is malformed.
 
 A server never compresses a frame that settles a request (replies,
-`ERROR`, `ATTACHED`, `ATTACH_READY`), because a client could not find the
-type byte of one it cannot read; only bulk frames such as
-`BOOTSTRAP_CHUNK` and `HISTORY_PAGE` are compressed.
+`ERROR`, `ATTACHED`, `ATTACH_READY`), because an older client could not
+find the type byte of one it cannot read; only bulk frames such as
+`BOOTSTRAP_CHUNK` and `HISTORY_PAGE` are compressed. A current client and
+a hub read an unreadable frame by the type byte inside the envelope.
 
 ## Federation
 
@@ -123,6 +129,27 @@ uncorrelated `ERROR` from a satellite is logged and does not end the link.
 Malformed bytes still end the link. A hub relays a command to a satellite
 only when that satellite advertises the feature, and refuses
 `UNSUPPORTED_SATELLITE_ROUTE` otherwise.
+
+## Legacy TUI layouts
+
+An older client can still read and write the default
+`phux.tui.layout/v1/<session-id>` metadata key. A current server decodes the
+legacy v3 envelope at the metadata boundary and commits a session arrangement
+through the same authority as the typed API. It never stores the writer's
+bytes: a write that does not decode or is refused changes nothing. A `GET`
+encodes the current arrangement, live handles and split topology, and every
+arrangement change, whatever its source, is broadcast on the key. Current writers use the typed
+arrangement when both peers support it. Named projections remain opaque
+metadata for their own readers. The envelope can carry slot tabs as an
+optional field, which older readers skip. Clients of older servers still need the legacy
+codec and cannot infer typed support from an envelope.
+
+The bridge is part of the current wire major's compatibility promise. Its
+removal needs a wire-major compatibility change with an inventory of readers
+and writers and a tested migration for supported clients. Old upgrade blobs
+are a separate persisted format and retain their own readers and fixtures.
+The legacy codec shares the same shape between client and server without
+putting client presentation state in the server's production graph.
 
 ## Making a change compatible
 
@@ -162,8 +189,8 @@ only when that satellite advertises the feature, and refuses
 - JSON requests are decoded strictly by the server, so an older server
   refuses an unknown op or field as `UNSUPPORTED` rather than ignoring it.
   JSON a client reads (answers, agent stream updates, stored recipes) skips
-  unknown fields; native agent states and dispositions fold an unknown
-  value to `unknown`.
+  unknown fields; native agent states and dispositions, and a listener
+  row's disabled reason and transport, fold an unknown value to `unknown`.
 - Say in the PR what an older client sees, and what an older server does
   with the new request. The probes live in the [server's protocol
   tests](../crates/phux-server/tests/protocol) (`newer_client*.rs`) and the

@@ -10,7 +10,7 @@ default-members = ["crates/phux", "crates/phux-mcp"]
 exclude = ["clients", ".claude"]
 
 [workspace.package]
-version = "0.159.1"
+version = "0.161.1"
 edition = "2024"
 rust-version = "1.99"
 license = "Apache-2.0"
@@ -59,6 +59,7 @@ phux-terminal-api = { path = "crates/phux-terminal-api" }
 phux-client = { path = "crates/phux-client" }
 phux-tui = { path = "crates/phux-tui" }
 phux-client-core = { path = "crates/phux-client-core" }
+phux-layout-codec = { path = "crates/phux-layout-codec" }
 phux-client-ffi = { path = "crates/phux-client-ffi" }
 phux-client-runtime = { path = "crates/phux-client-runtime" }
 phux-config = { path = "crates/phux-config" }

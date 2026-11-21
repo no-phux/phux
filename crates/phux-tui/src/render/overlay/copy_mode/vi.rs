@@ -68,6 +68,14 @@ impl CopyModeOverlay {
         self.pinned_anchor = None;
     }
 
+    /// Close any selection and drop it, leaving the cursor and viewport
+    /// where they are (Esc with a selection, `clear-selection`).
+    pub(super) const fn clear_selection(&mut self) {
+        self.selecting = false;
+        self.mode = SelectionMode::Char;
+        self.collapse();
+    }
+
     /// The dispatcher's report of the full-screen row now on viewport row 0:
     /// a pinned anchor moves on screen by exactly what the viewport scrolled.
     pub(super) fn viewport_top_changed(&mut self, screen_top: u32) {
@@ -83,9 +91,7 @@ impl CopyModeOverlay {
     /// open selection to `mode`, or (the same key again) drop it.
     fn toggle_select(&mut self, mode: SelectionMode) {
         if self.selecting && self.mode == mode {
-            self.selecting = false;
-            self.mode = SelectionMode::Char;
-            self.collapse();
+            self.clear_selection();
             return;
         }
         if !self.selecting {
@@ -222,6 +228,29 @@ mod tests {
         press(&mut overlay, PhysicalKey::V, ModSet::CTRL);
         assert_eq!(overlay.mode, SelectionMode::Rect);
         assert!(overlay.selecting);
+    }
+
+    /// Esc drops a selection where it is (no scroll, cursor kept); only a
+    /// second Esc leaves.
+    #[test]
+    fn escape_clears_a_selection_before_it_leaves() {
+        let mut overlay = CopyModeOverlay::new(5, 5, 80, 24);
+        overlay.set_copy_viewport_top(100);
+        plain(&mut overlay, PhysicalKey::K);
+        press(&mut overlay, PhysicalKey::V, ModSet::SHIFT);
+        plain(&mut overlay, PhysicalKey::K);
+        assert!(overlay.has_selection());
+        assert_eq!(
+            plain(&mut overlay, PhysicalKey::Escape),
+            OverlayCommand::Stay
+        );
+        assert!(!overlay.has_selection());
+        assert_eq!(overlay.mode, SelectionMode::Char);
+        assert_eq!((overlay.cursor_row, overlay.cursor_col), (3, 5));
+        assert_eq!(
+            plain(&mut overlay, PhysicalKey::Escape),
+            OverlayCommand::Dismiss
+        );
     }
 
     #[test]

@@ -51,14 +51,6 @@ fn the_shortcut_list_fits_and_shows_only_bound_commands() {
 }
 
 #[test]
-fn close_and_step_tab_are_in_the_palette() {
-    let list = items(None, &[], &[]);
-    for action in [Shortcut::CloseTab, Shortcut::NextTab, Shortcut::PreviousTab] {
-        assert!(list.iter().any(|i| i.target == Target::Action(action)));
-    }
-}
-
-#[test]
 fn every_theme_is_a_row_and_its_name_finds_it() {
     let hits = rank(items(None, &[], &[]), "nord");
     assert_eq!(hits[0].item.target, Target::Theme(Some("nord")));
@@ -157,22 +149,48 @@ fn an_empty_query_keeps_list_order() {
     assert_eq!(hits[0].item, items[0]);
 }
 
-/// View → Playground lists the six scenes View no longer carries itself.
 #[test]
-fn the_playground_lists_its_six_scenes() {
-    let titles: Vec<String> = action_items(crate::keys::PLAYGROUND)
-        .into_iter()
-        .map(|item| item.title)
-        .collect();
+fn terminals_sit_under_their_tab_and_a_search_keeps_the_heading() {
+    let terminal = |n: u32, title: &str| Item {
+        title: title.to_owned(),
+        detail: format!("work · @{n}"),
+        kind: "terminal",
+        target: Target::Terminal {
+            id: ResourceId::local(n),
+            session: "work".to_owned(),
+        },
+    };
+    let tab = |title: &str, panes: [u32; 2]| TabGroup {
+        title: title.to_owned(),
+        session: "work".to_owned(),
+        panes: panes.map(ResourceId::local).to_vec(),
+    };
+    let items: Vec<_> = [(1, "vim"), (2, "zsh"), (3, "claude"), (4, "htop")]
+        .map(|(n, title)| terminal(n, title))
+        .into();
+    let tabs = [tab("editor", [1, 2]), tab("agents", [3, 4])];
+    let rows = |query| {
+        let hits = rank_grouped(items.clone(), &tabs, query);
+        hits.into_iter()
+            .map(|hit| (hit.item.kind, hit.item.title))
+            .collect::<Vec<_>>()
+    };
+    let row = |kind, title: &str| (kind, title.to_owned());
     assert_eq!(
-        titles,
+        rows(""),
         [
-            "Open Galaxy",
-            "Open Reef",
-            "Open Pitch",
-            "Open Kitchen",
-            "Open Pit Lane",
-            "Open Hive"
+            row("tab", "editor"),
+            row("pane", "vim"),
+            row("pane", "zsh"),
+            row("tab", "agents"),
+            row("pane", "claude"),
+            row("pane", "htop"),
         ]
+    );
+    // A pane brings its heading; a tab's title brings all its panes.
+    assert_eq!(rows("htop"), [row("tab", "agents"), row("pane", "htop")]);
+    assert_eq!(
+        rows("editor"),
+        [row("tab", "editor"), row("pane", "vim"), row("pane", "zsh")]
     );
 }

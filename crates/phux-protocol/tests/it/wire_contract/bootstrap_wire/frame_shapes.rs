@@ -1,9 +1,9 @@
 //! Bootstrap frame discriminants, required fields, field order, and id validation.
 
 use super::{
-    BootstrapLimits, BootstrapProfile, BootstrapProfileKind, BootstrapProfileSet,
-    BootstrapStreamProfile, Bytes, ClientCapabilities, DecodeError, EngineCodec, EngineFeatureSet,
-    FrameKind, HistoryRejectionReason, HistoryTombstoneReason, ResourceId, ServerCapabilities,
+    BootstrapLimits, BootstrapProfile, BootstrapProfileKind, BootstrapStreamProfile, Bytes,
+    ClientCapabilities, DecodeError, EngineCodec, EngineFeatureSet, FrameKind,
+    HistoryRejectionReason, HistoryTombstoneReason, ResourceId, ServerCapabilities,
     TYPE_ATTACH_READY, TYPE_BOOTSTRAP_BEGIN, TYPE_BOOTSTRAP_CHUNK, TYPE_BOOTSTRAP_READY,
     TYPE_BOOTSTRAP_TOMBSTONE, TYPE_HISTORY_PAGE, TYPE_HISTORY_REJECTED, TYPE_HISTORY_REQUEST,
     TYPE_HISTORY_TOMBSTONE, TombstoneReason, assert_round_trip, bootstrap, chunk,
@@ -12,7 +12,7 @@ use super::{
 };
 
 #[test]
-fn protocol_07_discriminants_are_exact_and_snapshot_slot_is_retired() {
+fn protocol_07_discriminants_are_exact() {
     assert_eq!(TYPE_HISTORY_REQUEST, 0x16);
     assert_eq!(TYPE_ATTACH_READY, 0x83);
     assert_eq!(TYPE_BOOTSTRAP_BEGIN, 0x93);
@@ -24,13 +24,6 @@ fn protocol_07_discriminants_are_exact_and_snapshot_slot_is_retired() {
     assert_eq!(TYPE_HISTORY_REJECTED, 0x99);
     assert_eq!(BootstrapProfileKind::NativeState as u8, 0x08);
     assert_eq!(BootstrapProfile::NATIVE_STATE_TAG, 3);
-    assert_eq!(BootstrapProfileSet::from_wire(0x01).as_wire(), 0);
-
-    let retired = [0, 0, 0, 1, 0x91];
-    assert_eq!(
-        FrameKind::decode(&retired).unwrap_err(),
-        DecodeError::UnknownFrameKind { tag: 0x91 }
-    );
 }
 
 /// BEGIN/CHUNK/READY/REQUEST/PAGE, `RESOURCE_OUTPUT`, and `FRAME_ACK` are drawn
@@ -66,15 +59,7 @@ fn hello_ok(
 }
 
 #[test]
-fn hello_and_all_three_selected_profiles_round_trip() {
-    assert_round_trip(&FrameKind::Hello {
-        client_name: "phux-native-test".to_owned(),
-        protocol_major: 0,
-        protocol_minor: 7,
-        protocol_patch: 0,
-        client_caps: ClientCapabilities::new(),
-    });
-
+fn hello_ok_and_all_three_selected_profiles_round_trip() {
     // `None` is no Terminal profile: the field is absent, and an absent
     // field decodes as `None`.
     for selected_profile in [

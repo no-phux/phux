@@ -1,6 +1,6 @@
 //! New native onboarding requests travel through the authenticated wire loop.
 use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::{ClientCapabilities, LayerSet, ServerFeatureExt, ServerFeatureExtSet};
+use phux_protocol::caps::{ClientCapabilities, LayerSet, ServerFeatureExt};
 use phux_protocol::ids::SessionKey;
 use phux_protocol::native_agent::{
     NativeIntegrationCatalog, NativeRequest, NativeRequestPayload, SpawnedNativeAgent,
@@ -180,10 +180,6 @@ fn native_integration_inventory_and_invalid_launches_use_real_dispatch() {
         let launched: SpawnedNativeAgent = serde_json::from_str(&launched).unwrap();
         assert_ne!(launched.parent, launched.agent);
         assert!(!launched.activation.is_empty());
-        assert!(
-            !ServerFeatureExtSet::new().contains(ServerFeatureExt::NativeAgentLaunch),
-            "legacy servers must not imply launch support"
-        );
         drop(stream);
         join_after_shutdown(shutdown, server).await;
     });

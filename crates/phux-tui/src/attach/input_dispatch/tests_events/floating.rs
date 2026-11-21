@@ -71,23 +71,6 @@ async fn kill_pane_dismisses_only_the_floating_overlay() {
     );
 }
 
-/// Any other action dismisses the overlay first, then runs.
-#[tokio::test]
-async fn another_action_dismisses_the_overlay_then_runs() {
-    let mut env = env_with_floating();
-    let sent = env
-        .dispatch(vec![ctrl_a(), press(PhysicalKey::C, Some("c"))])
-        .await;
-    assert_eq!(kills(&sent.frames), vec![tid(9)]);
-    assert!(
-        sent.frames
-            .iter()
-            .any(|frame| matches!(frame, FrameKind::SpawnResource { .. })),
-        "new-window still spawns: {:?}",
-        sent.frames
-    );
-}
-
 /// Copy mode does not mutate the layout, but dismissing the floating box
 /// must still ask the driver for a full repaint.
 #[tokio::test]

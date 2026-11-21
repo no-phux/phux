@@ -90,6 +90,7 @@ Generated from the `phux` binary, so they match the code these docs describe.
 ## Work on phux
 
 - [Architecture](./architecture.md): the process model, crates, and clients.
+- The [architecture target](./architecture-target.md) defines shared rule ownership and the evidence for migration.
 - [libghostty in phux](./libghostty.md): the libghostty-vt terminal engine in the server and in a rendering client, and what it does not do.
 - [Decisions](./decisions.md): the constraints the code keeps, and why.
 - [Organization](./organization.md): how the server owns sessions and their contents.

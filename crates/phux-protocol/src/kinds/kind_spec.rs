@@ -1,4 +1,4 @@
-/// One `AgentEvent` variant (L1 §7.1).
+/// One `AgentEvent` variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EventSpec {
     /// The spec's name for the event, e.g. `cwd_changed`.
@@ -7,7 +7,7 @@ pub struct EventSpec {
     pub tag: u8,
 }
 
-/// One resource kind and its facet (L1 §1.1): the methods, events, and
+/// One resource kind and its facet: the methods, events, and
 /// resource-scoped metadata keys only that kind answers, and the contracts
 /// its stream and its spawn keep.
 #[derive(Debug, Clone, Copy)]

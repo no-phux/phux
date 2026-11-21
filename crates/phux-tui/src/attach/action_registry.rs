@@ -8,10 +8,10 @@
 use std::collections::BTreeMap;
 
 use phux_config::keybind::ResolvedAction;
+use phux_config::plugin::actions::PluginActionEntry;
 use phux_config::{Action, KeybindingsCfg};
 
 use super::input_dispatch::run_action::ActionHandler;
-use super::plugin_actions::PluginActionEntry;
 use super::plugin_panes::PluginPaneEntry;
 use crate::render::overlay::select_list::SelectItem;
 
@@ -196,7 +196,7 @@ macro_rules! row {
 /// A row the palette omits: name, handler, and why, then the reference
 /// page's description and params.
 macro_rules! hidden {
-    ($name:literal, $run:expr, $reason:literal, $description:literal, $params:literal) => {
+    ($name:literal, $run:expr, $reason:expr, $description:literal, $params:literal) => {
         ActionSpec {
             name: $name,
             description: $description,
@@ -283,7 +283,10 @@ pub fn palette_items(
     let mut header_pushed = false;
     let plugin_rows = plugin_actions
         .iter()
-        .map(|entry| (entry.palette_label(), entry.resolved_action()))
+        .map(|entry| {
+            let label = format!("plugin: {}: {}", entry.plugin_name, entry.title);
+            (label, entry.resolved_action())
+        })
         .chain(
             plugin_panes
                 .iter()

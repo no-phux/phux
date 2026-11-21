@@ -42,9 +42,12 @@ use super::effects::{ChordOutcome, apply_action_effects, consume_chord};
 use super::run_action::run_action;
 
 mod mouse;
+mod sidebar_click;
 #[cfg(test)]
-pub(super) use mouse::{bar_click_action, sidebar_click_action};
+pub(super) use mouse::bar_click_action;
 pub(super) use mouse::{drag_resize, open_context_menu, quantize_cell};
+pub(super) use sidebar_click::sidebar_click_action;
+pub(in crate::attach) use sidebar_click::sidebar_rows;
 
 mod forwarding;
 mod geometry;

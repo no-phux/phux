@@ -1,4 +1,4 @@
-//! How a terminal's state draws (§1.3): its ladder state, tone, vector
+//! How a terminal's state draws: its ladder state, tone, vector
 //! mark and word, the counts a session shows, and the type weights the
 //! chrome's names use.
 
@@ -9,7 +9,7 @@ use super::super::{Paint, Tokens, badge, icons};
 use crate::activity::Mark;
 use crate::host_color;
 
-/// The ladder state a terminal's mark stands for (§1.3). A shell's own
+/// The ladder state a terminal's mark stands for. A shell's own
 /// command counts as work under way; a bell asks for you, as the pane's
 /// attention flag does.
 pub(in crate::ui) const fn state_of(mark: Mark) -> State {
@@ -46,7 +46,7 @@ pub(in crate::ui) fn face(mark: Mark, t: &Tokens) -> Face {
     }
 }
 
-/// A mark's colour: its tone's (§1.3), never a decoration.
+/// A mark's colour: its tone's, never a decoration.
 pub(in crate::ui) fn mark_color(mark: Mark, ink: &Tokens) -> Color {
     face(mark, ink).ink
 }
@@ -78,7 +78,7 @@ pub(super) fn lead(mark: Mark, session: Option<u32>, t: &Tokens) -> El {
         .child(mark)
 }
 
-/// What a session's terminals ask of you, loudest first (§1.3 rule 5):
+/// What a session's terminals ask of you, loudest first:
 /// how many need you, failed and finished unseen.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub(in crate::ui) struct Counts {

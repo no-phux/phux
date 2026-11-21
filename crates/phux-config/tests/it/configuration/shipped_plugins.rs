@@ -2,63 +2,31 @@
 
 use phux_config::plugin;
 
+fn repo_manifest(relative: &str) -> Result<std::path::PathBuf, &'static str> {
+    let crate_dir = std::env::var_os("CARGO_MANIFEST_DIR").ok_or("CARGO_MANIFEST_DIR is unset")?;
+    Ok(std::path::PathBuf::from(crate_dir)
+        .join("../..")
+        .join(relative))
+}
+
 #[test]
 fn theme_example_loads() -> Result<(), Box<dyn std::error::Error>> {
-    let manifest = std::path::PathBuf::from(
-        std::env::var_os("CARGO_MANIFEST_DIR").expect("the test runner sets CARGO_MANIFEST_DIR"),
-    )
-    .join("../../examples/plugins/theme-pack/phux-plugin.toml");
+    let manifest = repo_manifest("examples/plugins/theme-pack/phux-plugin.toml")?;
     let loaded = plugin::load_plugin_manifest(&manifest)?;
     assert_eq!(loaded.themes[0].name, "phux-dark");
     assert!(loaded.themes[0].path.join("colors.toml").is_file());
     Ok(())
 }
 
+/// Every first-party plugin's hooks listen for events the server fires.
 #[test]
-fn continuum_plugin_loads() -> Result<(), Box<dyn std::error::Error>> {
-    let manifest = std::path::PathBuf::from(
-        std::env::var_os("CARGO_MANIFEST_DIR").expect("the test runner sets CARGO_MANIFEST_DIR"),
-    )
-    .join("../../plugins/continuum/phux-plugin.toml");
-    let loaded = plugin::load_plugin_manifest(&manifest)?;
-    assert_eq!(loaded.id, "com.phux.demo.continuum");
-    assert!(loaded.actions.is_empty());
-    assert_eq!(loaded.events[0].id, "idle-autosave");
-    assert_eq!(loaded.events[1].on, "pane-exit");
-    for event in &loaded.events {
-        assert!(
-            phux_config::vocab::HOOK_EVENTS.contains(&event.on.as_str()),
-            "event `{}` listens for unknown `{}`",
-            event.id,
-            event.on
-        );
+fn first_party_plugins_hook_real_server_events() -> Result<(), Box<dyn std::error::Error>> {
+    for name in ["continuum", "agent-stats", "usage"] {
+        let manifest = repo_manifest(&format!("plugins/{name}/phux-plugin.toml"))?;
+        let loaded = plugin::load_plugin_manifest(&manifest)?;
+        assert!(!loaded.events.is_empty(), "{name}");
+        let dead = plugin::dead_events(&loaded);
+        assert!(dead.is_empty(), "{name}: {dead:?}");
     }
-    assert_eq!(loaded.profiles[0].id, "continuum");
-    assert!(loaded.profiles[0].actions.is_empty());
-    assert_eq!(
-        loaded.profiles[0].events,
-        ["idle-autosave", "session-autosave"]
-    );
-    Ok(())
-}
-
-#[test]
-fn agent_stats_plugin_hooks_real_server_events() -> Result<(), Box<dyn std::error::Error>> {
-    let manifest = std::path::PathBuf::from(
-        std::env::var_os("CARGO_MANIFEST_DIR").expect("the test runner sets CARGO_MANIFEST_DIR"),
-    )
-    .join("../../plugins/agent-stats/phux-plugin.toml");
-    let loaded = plugin::load_plugin_manifest(&manifest)?;
-    assert_eq!(loaded.id, "com.phux.agent-stats");
-    assert!(loaded.actions.is_empty());
-    let hooks: Vec<&str> = loaded.events.iter().map(|e| e.on.as_str()).collect();
-    assert_eq!(
-        hooks,
-        ["agent-state-changed", "pane-exit", "client-attached"]
-    );
-    for on in hooks {
-        assert!(phux_config::vocab::HOOK_EVENTS.contains(&on), "{on}");
-    }
-    assert!(loaded.plugin_root.join("scripts/publish.sh").is_file());
     Ok(())
 }

@@ -24,7 +24,7 @@ use phux_core::{
 mod sqlite;
 pub use sqlite::{SCHEMA_VERSION, SqliteOrgStore};
 
-/// Receipts older than this are pruned (CONTRACTS §06).
+/// Receipts older than this are pruned.
 pub const RECEIPT_HORIZON_MS: u64 = 24 * 60 * 60 * 1000;
 
 /// At most this many receipts are kept; the oldest go first.
@@ -34,7 +34,7 @@ pub const RECEIPT_CAP: usize = 10_000;
 pub const TOMBSTONE_HORIZON_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 
 /// The migration receipt naming the first-start import of a live registry
-/// (MIGRATION §07). The import runs only for a handoff that carries no
+///. The import runs only for a handoff that carries no
 /// records; the receipt records that it happened.
 pub const LIVE_IMPORT_MIGRATION: &str = "import-live-registry/v1";
 

@@ -177,7 +177,7 @@ final class QualificationProbe {
         report["input_contracts"] = inputContracts
         report["input_evidence"] = "UIKit insertText entry; not physical OS typing or IME automation"
         try progress.publish {
-            try QualificationEvidence.publish(report: report, tree: bridge.tree(),
+            try QualificationEvidence.publish(report: report, tree: bridge.tree(), session: session,
                 marker: marker, didPresent: didPresent, write: { try self.write($0, name: $1) })
         }
     }

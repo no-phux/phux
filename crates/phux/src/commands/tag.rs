@@ -85,7 +85,7 @@ fn print_rows(json: bool, rows: &[(ResourceId, Vec<String>)]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// The `phux tag --json` document (agents.md §4.17), shared by `ls` and the
+/// The `phux tag --json` document (`docs/agents.md`), shared by `ls` and the
 /// post-write state of `add` / `rm`: one row per Terminal with its canonical
 /// selector and its full tag list as read back from the server.
 fn tags_document(rows: &[(ResourceId, Vec<String>)]) -> serde_json::Value {

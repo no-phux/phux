@@ -48,6 +48,7 @@ fn sweep_args(tool: &str) -> Value {
         "phux_send_keys" => json!({ "target": "@1", "keys": ["x"] }),
         "phux_paste" | "phux_document_type" => json!({ "target": "@1", "text": "x" }),
         "phux_upload" => json!({ "target": "@1", "path": "local.bin" }),
+        "phux_git" => json!({ "target": "@1", "op": "status" }),
         "phux_kill" | "phux_rm" => json!({ "target": "@1", "confirm": true }),
         "phux_detach" => json!({ "confirm": true }),
         "phux_ask" => json!({ "target": "@1", "id": "q", "question": "ok?" }),

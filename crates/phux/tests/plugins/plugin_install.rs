@@ -10,7 +10,7 @@
 
 use std::process::Command;
 
-use crate::support::{TestHome, init_repo, write_fixture_plugin};
+use crate::support::{TestHome, write_fixture_plugin};
 
 const BUILD_OK: &str = r#"
 [[build]]
@@ -164,38 +164,6 @@ fn install_from_tarball_extracts_and_links() {
     );
 }
 
-/// Installing from a git URL clones with the system git and records the
-/// resolved commit in plugins.lock.
-#[test]
-fn install_from_git_url_records_resolved_commit() {
-    let home = TestHome::new();
-    let repo = home.scratch.join("repo");
-    write_fixture_plugin(&repo, "example.install-git", "0.1.0", "0.0.1", "");
-    let url = init_repo(&repo, "fixture");
-
-    let (code, stdout, stderr) = home.run(&["plugin", "install", &url, "--json"]);
-
-    assert_eq!(code, 0, "git install should exit 0; stderr={stderr}");
-    let value: serde_json::Value = serde_json::from_str(&stdout).expect("install stdout is JSON");
-    assert_eq!(value["installed"]["id"], "example.install-git");
-    assert_eq!(value["installed"]["source"], "git");
-    let rev = value["installed"]["rev"].as_str().expect("resolved rev");
-    assert_eq!(rev.len(), 40, "rev should be a full commit hash: {rev}");
-    assert!(rev.bytes().all(|b| b.is_ascii_hexdigit()));
-
-    let lock = std::fs::read_to_string(home.lockfile()).expect("read lockfile");
-    assert!(lock.contains(&format!(r#"rev = "{rev}""#)), "{lock}");
-    // The managed copy is a snapshot, not a working clone (ADR-0041).
-    assert!(
-        !home
-            .plugins_dir()
-            .join("example.install-git")
-            .join(".git")
-            .exists(),
-        "managed git install must not retain .git"
-    );
-}
-
 /// The `min_phux_version` gate (phux-r82.2) refuses an install whose floor
 /// is newer than this phux, naming both versions, and leaves no trace:
 /// no managed dir, no lockfile entry, no config link.
@@ -293,19 +261,6 @@ fn update_refetches_from_recorded_source() {
         value["plugins"][0]["version"], "0.2.0",
         "linked manifest should now be the updated copy"
     );
-}
-
-/// Updating a name that was never installed is a clear, named error.
-#[test]
-fn update_unknown_plugin_is_a_named_error() {
-    let home = TestHome::new();
-
-    let (code, stdout, stderr) = home.run(&["plugin", "update", "example.ghost"]);
-
-    assert_ne!(code, 0);
-    assert!(stdout.is_empty());
-    assert!(stderr.contains("example.ghost"), "{stderr}");
-    assert!(stderr.contains("plugins.lock"), "{stderr}");
 }
 
 /// Reinstalling an already-installed plugin points at update instead of

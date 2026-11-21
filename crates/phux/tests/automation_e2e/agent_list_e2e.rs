@@ -152,25 +152,3 @@ fn agent_list_filters_preserve_record_and_addressability() {
     let both: serde_json::Value = serde_json::from_str(&both).expect("both states JSON");
     assert_eq!(both["agents"].as_array().unwrap().len(), 2);
 }
-
-#[test]
-fn agent_list_rejects_invalid_state_and_documents_filters() {
-    let output = common::phux_cmd(crate::runner::phux_bin())
-        .args(["agent", "list", "--state", "sleeping"])
-        .output()
-        .expect("invalid filter");
-    assert_eq!(
-        output.status.code(),
-        Some(2),
-        "invalid state must fail parsing before any server access"
-    );
-    assert!(String::from_utf8_lossy(&output.stderr).contains("sleeping"));
-    let help = common::phux_cmd(crate::runner::phux_bin())
-        .args(["agent", "list", "--help"])
-        .output()
-        .expect("list help");
-    assert!(help.status.success());
-    let help = String::from_utf8_lossy(&help.stdout);
-    assert!(help.contains("--state"));
-    assert!(help.contains("--query"));
-}

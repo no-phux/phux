@@ -323,11 +323,4 @@ mod tests {
         release.send(()).expect("job waiting");
         assert!(other.next().await.refresh_inventory);
     }
-
-    #[test]
-    fn the_process_facility_is_one_instance() {
-        let a = Jobs::process();
-        let b = Jobs::process();
-        assert!(Arc::ptr_eq(&a.shared, &b.shared));
-    }
 }

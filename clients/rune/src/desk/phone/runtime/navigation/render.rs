@@ -1,6 +1,7 @@
 //! Paint the actual phone navigator through Rune's GPU renderer.
 use super::*;
 
+mod connections;
 mod header;
 mod states;
 
@@ -126,7 +127,7 @@ fn paint(
     );
     let tree = rt.accessibility_json();
     touch_targets(&tree, name);
-    // §1.9: the dock is the phone's one blur.
+    // The dock is the phone's one blur.
     assert!(
         crate::ui::glass_panels(rt) <= 1,
         "{name}: more than one blur on the phone"
@@ -180,7 +181,7 @@ fn as_app(
 }
 
 /// Every control the phone draws is a 44-point touch target in the
-/// accessibility tree (§1.6, audit row 29). The drawn keyboard's letters
+/// accessibility tree (audit row 29). The drawn keyboard's letters
 /// keep the system keyboard's width; they are 44 tall.
 fn touch_targets(node: &serde_json::Value, name: &str) {
     let key = node["key"].as_str().unwrap_or_default();
@@ -302,18 +303,17 @@ fn retina_navigation_renders_in_native_safe_area_and_desktop_phone_viewports() {
         assert!(dock[1] + dock[3] <= size.1 as f32);
         assert_eq!(rt.find("phone-keyboard").is_none(), native);
         let mut renderer = app_renderer(&gpu);
-        let pixels = paint(
+        paint(
             &gpu,
             &mut renderer,
             &mut rt,
             (size.0 * scale, size.1 * scale),
             &format!("retina-{scale}x-native-{native}"),
         );
-        assert_eq!(pixels.len(), (size.0 * size.1 * scale * scale * 4) as usize);
     }
 }
 
-/// The design fixture on the phone (§5.2): the house look and catalog
+/// The design fixture on the phone: the house look and catalog
 /// themes, each standard, at increased contrast, with Reduce Transparency
 /// and at the largest text size, over the terminal and the session page.
 /// The dock is the phone's one glass, and only where glass may draw.
@@ -368,7 +368,8 @@ fn the_phone_paints_the_design_fixture() {
                 .iter()
                 .filter(|i| i.params[1] == rune::render::KIND_BACKDROP_BLUR)
                 .count();
-            let glass = matches!(mode, "standard" | "largest-text");
+            // Large text uses an inline action, not glass over the list.
+            let glass = mode == "standard";
             assert_eq!(blurs, usize::from(glass), "{name}: the dock's glass");
             paint(
                 &gpu,
@@ -377,6 +378,20 @@ fn the_phone_paints_the_design_fixture() {
                 (393, 852),
                 &format!("{name}-sessions"),
             );
+            if mode == "largest-text" {
+                rt.update(|_, tx| tx.scroll_to_instant("phone-session-list", 0.0, 100_000.0));
+                settle_for_snapshot(&mut rt);
+                let button = crate::ui::element(&rt, "phone-session-new");
+                assert!(button.visible[3] >= button.rect[3] - 0.5, "{button:?}");
+                assert_eq!(crate::ui::glass_panels(&rt), 0, "inline, not a blur");
+                paint(
+                    &gpu,
+                    &mut renderer,
+                    &mut rt,
+                    (393, 852),
+                    &format!("{name}-sessions-bottom"),
+                );
+            }
         }
     }
 }

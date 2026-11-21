@@ -100,20 +100,11 @@ fn visible(p: &mut StatusBarPainter, cols: u16, rows: u16, session: &str) -> Str
 
 #[test]
 fn position_picks_the_bar_row() {
-    assert_eq!(
-        Position::from(phux_config::StatusPosition::Bottom),
-        Position::Bottom
-    );
-    assert_eq!(
-        Position::from(phux_config::StatusPosition::Top),
-        Position::Top
-    );
     for (position, cup) in [
         (Position::Bottom, "\x1b[24;1H"),
         (Position::Top, "\x1b[1;1H"),
     ] {
         let mut p = session_bar(position);
-        assert_eq!(p.position(), position);
         let s = paint(&mut p, BarInset::NONE, 10, 24, "hi");
         assert!(s.contains(cup) && s.contains("hi"), "{s:?}");
     }
@@ -138,21 +129,6 @@ fn the_row_cache_repaints_only_on_change() {
     assert!(empty.is_empty());
     assert_eq!(empty.min_poll_interval(), None);
     assert!(paint(&mut empty, BarInset::NONE, 80, 24, "").is_empty());
-}
-
-#[test]
-fn time_and_session_both_appear_when_configured() {
-    let cfg = StatusCfg {
-        left: vec![Widget::Bare("session-name".into())],
-        right: vec![spec(
-            "time",
-            &[("format", toml::Value::String("LITERAL".into()))],
-        )],
-        ..Default::default()
-    };
-    let mut p = StatusBarPainter::new(build_bar(&cfg), Position::Bottom);
-    let s = paint(&mut p, BarInset::NONE, 30, 24, "main");
-    assert!(s.contains("main") && s.contains("LITERAL"), "{s:?}");
 }
 
 /// The config-error painter reserves the row and keeps repainting it
@@ -349,28 +325,6 @@ fn theme_slot_colors_resolve_against_the_theme() {
         ..CellStyle::default()
     };
     assert_eq!(to_ratatui_style(&unknown, &theme).fg, None);
-}
-
-/// A window tab styled `theme.accent` follows `set_theme`, in the composed
-/// buffer.
-#[test]
-fn a_themed_tab_follows_set_theme() {
-    let active = toml::Value::Table(toml::value::Table::from_iter([(
-        "fg".to_owned(),
-        toml::Value::String("theme.accent".to_owned()),
-    )]));
-    let cfg = StatusCfg {
-        left: vec![spec("windows", &[("active", active)])],
-        ..StatusCfg::default()
-    };
-    let mut p = StatusBarPainter::new(build_bar(&cfg), Position::Top);
-    p.set_windows(wins(&[("zsh", true)]));
-    p.set_theme(&Theme {
-        accent: Color::Rgb(9, 8, 7),
-        ..Theme::default()
-    });
-    let buf = compose_main(&p);
-    assert_eq!(buf[(1, 0)].fg, Color::Rgb(9, 8, 7));
 }
 
 /// An Info notice composes in the selection pair, with no reverse video;

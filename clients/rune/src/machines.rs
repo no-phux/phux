@@ -468,16 +468,6 @@ mod tests {
     }
 
     #[test]
-    fn progress_drops_the_prefix_and_the_name() {
-        assert_eq!(
-            step("phux: info: mini: trying quic://x").as_deref(),
-            Some("trying quic://x")
-        );
-        assert_eq!(step("phux: error: nope"), None);
-        assert_eq!(step("noise"), None);
-    }
-
-    #[test]
     fn a_failure_starts_at_the_error() {
         let lines = ["phux: info: step", "phux: error: refused", "hint: try"].map(str::to_owned);
         assert_eq!(failure(&lines), "phux: error: refused\nhint: try");

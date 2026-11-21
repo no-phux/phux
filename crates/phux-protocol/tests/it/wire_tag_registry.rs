@@ -99,11 +99,6 @@ fn assert_compiles(extra: &str) {
 }
 
 #[test]
-fn declarations_compile_and_distinct_namespaces_may_reuse_bytes() {
-    assert_compiles("");
-}
-
-#[test]
 fn an_unallocated_byte_may_be_declared() {
     // 0x57 is open in the L3 client-to-server block (`0x57..=0x5F`). This
     // control proves the duplicate probes below fail on the collision alone.

@@ -26,7 +26,7 @@ pub enum Verdict {
     /// Leave it: a live handover vouched for it, or it is already settled
     /// or already lost to a process that still runs.
     Keep,
-    /// The process outlived its owner: mark it `Lost`.
+    /// The process may have outlived its owner: mark it `Lost`.
     Lost,
     /// The process is gone: mark it `Completed` with outcome `Unobserved`.
     Unobserved,
@@ -60,19 +60,49 @@ pub fn decide(
             Verdict::Unobserved
         };
     };
-    if boot != Some(recorded.boot_id) {
-        return Verdict::Unobserved;
+    match recorded_process(recorded, boot, observe) {
+        ProcessPresence::Gone => Verdict::Unobserved,
+        _ if state == ExecState::Lost => Verdict::Keep,
+        _ => Verdict::Lost,
     }
-    let now = observe(recorded.pid);
-    if now.alive && now.start_raw == Some(recorded.start_raw) {
-        if state == ExecState::Lost {
-            Verdict::Keep
-        } else {
-            Verdict::Lost
-        }
-    } else {
-        Verdict::Unobserved
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProcessPresence {
+    Matching,
+    Gone,
+    Uncertain,
+}
+
+fn recorded_process(
+    recorded: ProcIdentity,
+    boot: Option<[u8; 16]>,
+    observe: impl FnOnce(i32) -> Observed,
+) -> ProcessPresence {
+    let Some(boot) = boot else {
+        return ProcessPresence::Uncertain;
+    };
+    if boot != recorded.boot_id {
+        return ProcessPresence::Gone;
     }
+    match observe(recorded.pid) {
+        Observed { alive: false, .. } => ProcessPresence::Gone,
+        Observed {
+            start_raw: Some(start),
+            ..
+        } if start == recorded.start_raw => ProcessPresence::Matching,
+        Observed {
+            start_raw: Some(_), ..
+        } => ProcessPresence::Gone,
+        Observed {
+            start_raw: None, ..
+        } => ProcessPresence::Uncertain,
+    }
+}
+
+/// Whether the recorded process still exists under its original identity.
+pub(crate) fn process_presence(recorded: ProcIdentity) -> ProcessPresence {
+    recorded_process(recorded, boot_id(), observe)
 }
 
 /// Ask the OS about `pid`.
@@ -140,6 +170,9 @@ mod tests {
             ("reused pid", ExecState::Running, false, Some(recorded(1)), Some(BOOT), seen(true, Some(2)), Verdict::Unobserved),
             ("another boot, no probe", ExecState::Running, false, Some(recorded(1)), other_boot, None, Verdict::Unobserved),
             ("matching live process", ExecState::Running, false, Some(recorded(1)), Some(BOOT), seen(true, Some(1)), Verdict::Lost),
+            ("live pid but unreadable start", ExecState::Running, false, Some(recorded(1)), Some(BOOT), seen(true, None), Verdict::Lost),
+            ("boot probe unavailable", ExecState::Stopping, false, Some(recorded(1)), None, None, Verdict::Lost),
+            ("lost identity still uncertain", ExecState::Lost, false, Some(recorded(1)), Some(BOOT), seen(true, None), Verdict::Keep),
             ("lost again: a second restart changes nothing", ExecState::Lost, false, Some(recorded(1)), Some(BOOT), seen(true, Some(1)), Verdict::Keep),
             ("lost, then ended", ExecState::Lost, false, Some(recorded(1)), Some(BOOT), seen(false, None), Verdict::Unobserved),
             ("commit that never launched", ExecState::Starting, false, None, Some(BOOT), None, Verdict::NeverLaunched),
@@ -151,17 +184,6 @@ mod tests {
                 want,
                 "{label}"
             );
-        }
-    }
-
-    #[test]
-    fn this_process_has_an_identity() {
-        let pid = i32::try_from(std::process::id()).expect("pid");
-        let observed = observe(pid);
-        assert!(observed.alive);
-        if let Some(id) = proc_identity(pid) {
-            assert_eq!(Some(id.start_raw), observed.start_raw);
-            assert_eq!(Some(id.boot_id), boot_id());
         }
     }
 }

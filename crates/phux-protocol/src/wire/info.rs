@@ -63,7 +63,31 @@ pub fn tui_layout_key(session: SessionId) -> String {
 /// is a canonical `u32` decimal (no sign, no leading zero).
 #[must_use]
 pub fn tui_layout_key_session(key: &str) -> Option<SessionId> {
-    let digits = key.strip_prefix(TUI_LAYOUT_KEY_PREFIX)?;
+    canonical_layout_session_id(key.strip_prefix(TUI_LAYOUT_KEY_PREFIX)?)
+}
+
+/// Parse the session a `<prefix>.layout/v1/<session-id>` key names.
+///
+/// `None` when `key` does not match the grammar. The `<session-id>` segment
+/// must be the session's **canonical** decimal form — no leading zero
+/// (other than `"0"`), no leading `+`, and only ASCII digits.
+/// Without this rule, `myapp.layout/v1/07` and `myapp.layout/v1/7` would
+/// both name session 7 but compare unequal as strings: the server's reap
+/// cleanup matches the literal key `*.layout/v1/7`, so a non-canonical key
+/// that slipped past a looser check would never be deleted when its session
+/// reaps. `<prefix>` must also not itself contain the `.layout/v1/`
+/// separator, so a key with two occurrences (`a.layout/v1/b.layout/v1/7`)
+/// is rejected rather than silently matched on its last one.
+#[must_use]
+pub fn projection_key_session(key: &str) -> Option<SessionId> {
+    let (prefix, suffix) = key.rsplit_once(".layout/v1/")?;
+    if prefix.is_empty() || prefix.contains(".layout/v1/") {
+        return None;
+    }
+    canonical_layout_session_id(suffix)
+}
+
+fn canonical_layout_session_id(digits: &str) -> Option<SessionId> {
     let canonical = !digits.is_empty()
         && digits.bytes().all(|b| b.is_ascii_digit())
         && (digits == "0" || !digits.starts_with('0'));
@@ -186,4 +210,53 @@ pub(super) fn encode_client_id(id: ClientId, enc: &mut Encoder<'_>) {
 
 pub(super) fn decode_client_id(dec: &mut Decoder<'_>) -> Result<ClientId, DecodeError> {
     Ok(ClientId::new(dec.read_u32_be()?))
+}
+
+#[cfg(test)]
+mod layout_key_tests {
+    use super::*;
+
+    #[test]
+    fn projection_key_session_accepts_the_adr_0129_grammar() {
+        assert_eq!(
+            projection_key_session("phux.tui.layout/v1/7"),
+            Some(SessionId::new(7))
+        );
+        assert_eq!(
+            projection_key_session("myapp.layout/v1/7"),
+            Some(SessionId::new(7))
+        );
+        assert_eq!(
+            projection_key_session("a.b.c.layout/v1/0"),
+            Some(SessionId::new(0))
+        );
+    }
+
+    #[test]
+    fn projection_key_session_rejects_empty_prefix_and_foreign_shapes() {
+        assert_eq!(projection_key_session(".layout/v1/7"), None);
+        assert_eq!(projection_key_session("not-a-layout-key"), None);
+        assert_eq!(projection_key_session("phux.tui.layout/v1"), None);
+        assert_eq!(projection_key_session("layout/v1/7"), None);
+    }
+
+    #[test]
+    fn projection_key_session_id_must_be_canonical_decimal() {
+        for non_canonical in [
+            "myapp.layout/v1/07",
+            "myapp.layout/v1/+7",
+            "myapp.layout/v1/7 ",
+        ] {
+            assert_eq!(
+                projection_key_session(non_canonical),
+                None,
+                "{non_canonical:?} must not resolve to any session"
+            );
+        }
+    }
+
+    #[test]
+    fn projection_key_prefix_must_not_contain_the_separator_itself() {
+        assert_eq!(projection_key_session("a.layout/v1/b.layout/v1/7"), None);
+    }
 }

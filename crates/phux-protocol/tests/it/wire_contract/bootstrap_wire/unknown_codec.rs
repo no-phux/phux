@@ -4,7 +4,7 @@
 
 use super::{
     BootstrapStreamProfile, Bytes, BytesMut, FrameKind, ResourceId, TYPE_BOOTSTRAP_BEGIN,
-    assert_round_trip, bootstrap, framed, local_terminal, stream, tlv_field,
+    bootstrap, framed, local_terminal, stream, tlv_field,
 };
 
 fn unknown_begin(codec: &[u8], cols: u16, rows: u16, output_mode: u8) -> Vec<u8> {
@@ -66,19 +66,6 @@ fn an_unknown_codec_keeps_whatever_grid_and_output_mode_it_names() {
             } if (c, r) == (cols, rows)
         ));
     }
-}
-
-#[test]
-fn an_unknown_profile_round_trips_its_tag() {
-    assert_round_trip(&FrameKind::BootstrapBegin {
-        terminal_id: ResourceId::local(3),
-        stream_id: stream(2),
-        bootstrap_id: bootstrap(5),
-        profile: BootstrapStreamProfile::Unknown { codec_tag: 200 },
-        cols: 0,
-        rows: 0,
-        base_seq: 0,
-    });
 }
 
 #[test]

@@ -20,6 +20,7 @@ pub fn negotiated_features(server: &ServerInfo) -> Vec<String> {
         [
             (ServerFeatureExt::PathQuery, "path-query"),
             (ServerFeatureExt::Checkout, "checkout"),
+            (ServerFeatureExt::CheckoutV2, "checkout-v2"),
             (ServerFeatureExt::HostServiceHttp, "service-http"),
             (ServerFeatureExt::Mirrors, "mirrors"),
             (ServerFeatureExt::HostChecklist, "host-checklist"),

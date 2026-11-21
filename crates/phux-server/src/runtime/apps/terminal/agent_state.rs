@@ -26,6 +26,10 @@ pub(crate) fn spawn_agent_state_drain(
     use phux_terminal_api::agent_detect::AgentDetectEvent;
 
     tokio::task::spawn_local(async move {
+        // The occupant record carries the program-set icon, so the drain
+        // keeps both and rewrites the record when either changes.
+        let mut occupant = None;
+        let mut icon = None;
         while let Some(event) = rx.recv().await {
             let _publish_span = tracing::debug_span!("agent_publish", ?wire_terminal_id,).entered();
             let metrics = state
@@ -45,14 +49,14 @@ pub(crate) fn spawn_agent_state_drain(
                 // Skip reading the prior record when no hook can run.
                 let hooks_live = s.hook_dispatcher().is_some();
                 match event {
-                    AgentDetectEvent::Occupant(occupant) => {
-                        if let Ok(bytes) = serde_json::to_vec(&occupant) {
-                            s.metadata_set(
-                                &scope,
-                                phux_protocol::wire::frame::RESOURCE_PANE_OCCUPANT_KEY,
-                                bytes,
-                            );
-                        }
+                    AgentDetectEvent::Occupant(next) => {
+                        occupant = Some(next);
+                        publish_occupant(s, &scope, occupant.as_ref(), icon.as_ref());
+                        None
+                    }
+                    AgentDetectEvent::Icon(next) => {
+                        icon = next;
+                        publish_occupant(s, &scope, occupant.as_ref(), icon.as_ref());
                         None
                     }
                     AgentDetectEvent::Retract => {
@@ -78,6 +82,27 @@ pub(crate) fn spawn_agent_state_drain(
             }
         }
     });
+}
+
+/// Write the pane's `phux.pane-occupant/v1` record with the program-set
+/// icon in it. Before the detector's first reading there is no record to
+/// write; the icon joins it then.
+fn publish_occupant(
+    s: &mut ServerState,
+    scope: &Scope,
+    occupant: Option<&phux_terminal_api::agent_detect::PaneOccupant>,
+    icon: Option<&String>,
+) {
+    let Some(occupant) = occupant else { return };
+    let mut record = occupant.clone();
+    record.icon = icon.cloned();
+    if let Ok(bytes) = serde_json::to_vec(&record) {
+        s.metadata_set(
+            scope,
+            phux_protocol::wire::frame::RESOURCE_PANE_OCCUPANT_KEY,
+            bytes,
+        );
+    }
 }
 
 /// The drain's `AskSentinel` arm: the pane's `phux-ask` title changed
@@ -109,19 +134,21 @@ fn drain_ask_sentinel(
 }
 
 /// A retained pane's process exited, so its agent is gone: withdraw its
-/// `phux.agent/v1` state to `unknown` (L3 §3.7) in the retaining lock, as the
+/// `phux.agent/v1` state to `unknown` in the retaining lock, as the
 /// drain's `Retract` arm does, and return the hook that owes.
-pub(super) fn retract_on_retained_exit(
+pub(crate) fn retract_on_retained_exit(
     s: &mut ServerState,
+    pane: phux_core::ids::ResourceId,
     wire_terminal_id: &WireResourceId,
 ) -> Option<HookEvent> {
+    s.registry().terminal(pane)?;
     let scope = Scope::Resource(wire_terminal_id.clone());
     let hooks_live = s.hook_dispatcher().is_some();
     drain_retract(s, wire_terminal_id, &scope, hooks_live)
 }
 
 /// The drain's `Retract` arm: the pane's agent is confirmed gone. A declared
-/// record (L3 §3.7), or a detector record carrying a human's identity, is
+/// record, or a detector record carrying a human's identity, is
 /// withdrawn to `unknown` with its other fields kept; a record the detector
 /// wrote alone is deleted; anything else is not ours.
 fn drain_retract(

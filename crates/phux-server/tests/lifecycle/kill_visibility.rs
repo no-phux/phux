@@ -1,4 +1,4 @@
-//! L1 §5.2: a kill's reply follows its commit, and the commit is the whole
+//! A kill's reply follows its commit, and the commit is the whole
 //! teardown any observer sees (phux-t8nn). Each victim traps `SIGHUP`, so its
 //! process outlives the reply by the full pane-kill grace; before the fix
 //! `GET_STATE` kept listing it, as `running`, until the reap.
@@ -173,7 +173,7 @@ fn get_state_after_any_kill_reply_omits_the_killed_resources() {
 
 /// The kill's `pane_closed` is journaled in its commit, so a `GET_STATE`
 /// that omits the pane carries a `JOURNAL_HEAD` that already covers the
-/// close (L1 §7.3): a consumer that catches up to the head has seen it. An
+/// close: a consumer that catches up to the head has seen it. An
 /// `ATTACH_RESOURCE` subscriber gets exactly one `RESOURCE_CLOSED { KILLED }`.
 #[test]
 fn a_kill_journals_its_close_before_the_reply_and_closes_subscribers_once() {

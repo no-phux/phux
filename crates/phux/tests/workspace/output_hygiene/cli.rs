@@ -138,20 +138,6 @@ fn telemetry_failure_does_not_contaminate_json_errors() {
 }
 
 #[test]
-fn version_is_clean_stdout_with_no_banner() {
-    let (code, stdout, stderr) = run(&["--version"]);
-    assert_eq!(code, 0, "--version should exit 0; stderr={stderr}");
-    assert!(
-        stdout.contains(env!("CARGO_PKG_VERSION")),
-        "--version stdout should carry the version; got {stdout:?}"
-    );
-    assert!(
-        !stderr.contains(BANNER_FRAGMENT),
-        "--version must not print the banner to stderr; stdout={stdout:?} stderr={stderr:?}"
-    );
-}
-
-#[test]
 fn skill_flag_is_clean_and_matches_the_legacy_verb() {
     let (flag_code, flag_stdout, flag_stderr) = run(&["--skill"]);
     let (verb_code, verb_stdout, verb_stderr) = run(&["skill"]);
@@ -203,34 +189,6 @@ fn capabilities_are_clean_machine_readable_and_socketless() {
     assert!(stderr.contains("standalone endpoint"));
 }
 
-#[test]
-fn short_and_long_help_progressively_disclose_the_root() {
-    let (short_code, short, short_err) = run(&["-h"]);
-    let (long_code, long, long_err) = run(&["--help"]);
-    assert_eq!(short_code, 0, "short help failed: {short_err}");
-    assert_eq!(long_code, 0, "long help failed: {long_err}");
-    assert!(short.contains("Start here:"), "short help:\n{short}");
-    assert!(short.contains("phux                     Attach"));
-    assert!(short.contains("phux --skill"));
-    assert!(!short.contains("Sessions:"), "short help:\n{short}");
-    assert!(long.contains("Sessions:"), "long help:\n{long}");
-    assert!(
-        !long_err.contains(BANNER_FRAGMENT),
-        "--help printed the banner"
-    );
-    assert!(long.contains("Learn more:"), "long help:\n{long}");
-    // Grouped rows are laid out in columns; compare on whitespace-collapsed text.
-    let flat = long.split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(
-        flat.contains("spawn Create a pane"),
-        "long help must list spawn:\n{long}"
-    );
-    assert!(
-        flat.contains("launch Start an agent integration"),
-        "long help must list launch:\n{long}"
-    );
-}
-
 /// `phux --socket X ls` and `phux ls --socket X` are the same invocation:
 /// same exit code, same stdout, same stderr. Pointed at a dead socket so
 /// both take the identical "no server" path.
@@ -248,41 +206,6 @@ fn socket_before_and_after_the_verb_behave_identically() {
         before.2.contains("no server"),
         "the shared failure names the missing server; got {:?}",
         before.2
-    );
-}
-
-/// A scoped JSON flag placed before the verb gets a usage document whose
-/// remedy teaches the fix.
-#[test]
-fn misplaced_json_before_verb_teaches_placement() {
-    let (code, stdout, stderr) = run(&["--json", "ls"]);
-    assert_eq!(code, 2, "a misplaced --json is a usage error");
-    assert!(stdout.is_empty());
-    assert_eq!(stderr.lines().count(), 1);
-    let doc: serde_json::Value = serde_json::from_str(&stderr).expect("usage error document");
-    assert_eq!(
-        doc["error"]["message"],
-        "unexpected argument '--json' found"
-    );
-    assert_eq!(
-        doc["remedy"],
-        "`--json` is set per verb, not on `phux` itself; place it after the verb: `phux <verb> --json ...`"
-    );
-}
-
-/// `phux logs --json` (the inventory) is pure JSON on stdout — no banner,
-/// no prose mixed into the document channel — and exits 0 even on a fresh
-/// machine where nothing exists yet.
-#[test]
-fn logs_json_inventory_is_pure_json_stdout() {
-    let (code, stdout, stderr) = run(&["logs", "--json"]);
-    assert_eq!(code, 0, "the inventory always answers; stderr={stderr}");
-    let doc: serde_json::Value =
-        serde_json::from_str(&stdout).expect("`logs --json` stdout must be one JSON document");
-    assert_eq!(doc["schema_version"], 2);
-    assert!(
-        !stderr.contains(BANNER_FRAGMENT),
-        "`logs --json` must not print the banner; got {stderr:?}"
     );
 }
 

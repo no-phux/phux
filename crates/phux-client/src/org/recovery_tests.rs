@@ -13,7 +13,7 @@ fn foreign_commit_keeps_original_recovery_identity_instead_of_false_success() {
         key(2),
         Revision::new(1),
     ))));
-    let error = checked_outcome(&result, Some(original)).unwrap_err();
+    let error = checked_outcome(OrgOutcome::from_result(&result), Some(original)).unwrap_err();
     assert!(matches!(error, OrgError::OutcomeUnknown { operation: Some(id) } if id == original));
     assert_eq!(error.recovery().operation_id, Some(original.to_hex()));
 }
@@ -25,7 +25,7 @@ fn unreadable_mutation_reply_preserves_identity_and_uncertainty() {
         code: phux_protocol::wire::frame::ErrorCode::Unknown(65535),
         message: "unreadable reply".into(),
     };
-    let error = checked_outcome(&result, Some(original)).unwrap_err();
+    let error = checked_outcome(OrgOutcome::from_result(&result), Some(original)).unwrap_err();
     assert_eq!(error.code(), "outcome_unknown");
     assert_eq!(error.recovery().operation_id, Some(original.to_hex()));
 }
@@ -38,7 +38,7 @@ fn matching_commit_remains_successful_and_read_only_errors_are_not_reclassified(
         Revision::new(1),
     ))));
     assert!(matches!(
-        checked_outcome(&result, Some(original)).unwrap(),
+        checked_outcome(OrgOutcome::from_result(&result), Some(original)).unwrap(),
         OrgOutcome::Committed(_)
     ));
     let unreadable = CommandResult::Error {
@@ -46,12 +46,12 @@ fn matching_commit_remains_successful_and_read_only_errors_are_not_reclassified(
         message: "unreadable read".into(),
     };
     assert!(matches!(
-        checked_outcome(&unreadable, None).unwrap(),
+        checked_outcome(OrgOutcome::from_result(&unreadable), None).unwrap(),
         OrgOutcome::Unknown { .. }
     ));
     let value = CommandResult::OkWith(CommandValue::Json("read result".into()));
     assert!(matches!(
-        checked_outcome(&value, None).unwrap(),
+        checked_outcome(OrgOutcome::from_result(&value), None).unwrap(),
         OrgOutcome::Value(_)
     ));
 }
@@ -138,5 +138,52 @@ async fn bare_acceptance_without_creation_receipt_retains_original_identity() {
         let error = rejected_payload(caller, CommandResult::Ok, operation).await;
         assert_eq!(error.code(), "outcome_unknown");
         assert_eq!(error.recovery().operation_id, Some(operation.to_hex()));
+    }
+}
+
+#[tokio::test]
+async fn a_foreign_terminate_acknowledgement_preserves_the_submitted_operation() {
+    use crate::testkit::{ScriptSpec, serve_one};
+    use phux_protocol::caps::ServerFeatureExtSet;
+    use phux_protocol::ids::{ActivationId, ResourceId, ServerInstance};
+    use phux_protocol::wire::frame::{FrameKind, LiveTarget, TerminateMode};
+
+    let operation = key(1);
+    let target = LiveTarget {
+        resource: ResourceId::satellite("worker", 1),
+        instance: ServerInstance::new([3; 16]),
+        activation: ActivationId::new(4),
+    };
+    for reply in [
+        CommandResult::Accepted { operation: key(2) },
+        CommandResult::Ok,
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let spec = ScriptSpec::new()
+            .server_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Organization]))
+            .mutation_reply(reply);
+        let (socket, server) = serve_one(root.path(), spec);
+        let mut conn = Connection::connect(&socket).await.unwrap();
+        let command = Command::ResourceTerminate {
+            operation,
+            target: target.clone(),
+            mode: TerminateMode::Force,
+        };
+        let error = accept(&mut conn, 1, command.clone()).await.unwrap_err();
+        assert!(
+            matches!(error, OrgError::OutcomeUnknown { operation: Some(id) } if id == operation)
+        );
+        assert_eq!(error.recovery().operation_id, Some(operation.to_hex()));
+        drop(conn);
+        let sent = server.await.unwrap();
+        assert_eq!(
+            sent.into_iter()
+                .filter_map(|frame| match frame {
+                    FrameKind::Command { command, .. } => Some(command),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            [command],
+        );
     }
 }

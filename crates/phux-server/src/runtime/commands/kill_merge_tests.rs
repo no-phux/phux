@@ -1,11 +1,13 @@
-use super::*;
+use phux_protocol::ids::{IdempotencyKey, ResourceId, SatelliteHost};
+use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode};
+use tokio::sync::oneshot;
+
 use crate::hub::relay::{HubRelays, RelayHandle, RelayMailbox, RelayRequest};
 use crate::runtime::apps::terminal::commands::signal::{commit_signal, record_signal_failure};
 use crate::runtime::apps::terminal::test_support::ControlRequest;
+use crate::runtime::commands::kill::handle_kill_terminals;
 use crate::runtime::keyed_ops::{KeyedAdmission, admit};
-use phux_protocol::ids::{IdempotencyKey, ResourceId, SatelliteHost};
-use phux_protocol::wire::frame::CommandValue;
-use tokio::sync::oneshot;
+use crate::state::{ClientId, SharedState};
 
 /// A hub whose satellite `up` has a live link, answered by the test, and
 /// whose satellite `down` has none.
@@ -29,7 +31,7 @@ fn outcomes(result: CommandResult) -> serde_json::Value {
     serde_json::from_str(&document).expect("json")
 }
 
-/// L1 §5.2: a keyed batch split across hosts awaits every host, and is
+/// A keyed batch split across hosts awaits every host, and is
 /// keyed at every hop: the satellite's own per-id outcome is merged, so a
 /// stale satellite id is `not_found`, not `killed`.
 #[tokio::test(flavor = "current_thread")]
@@ -157,7 +159,7 @@ async fn committed_signal() -> CommittedSignal {
     }
 }
 
-/// L1 §5.1.1: a connection cancelled before the reply does not release
+/// A connection cancelled before the reply does not release
 /// the key, so the retry answers the first result and nothing is
 /// delivered twice.
 #[tokio::test(flavor = "current_thread")]

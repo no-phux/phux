@@ -1,15 +1,12 @@
 //! Kernel ownership, queries, projection, and publication.
 
 use super::TerminalTheme;
-use super::apply::apply_event;
-#[cfg(feature = "engine")]
-use super::apply::frame_colors;
 #[cfg(feature = "engine")]
 use super::predict::Predictor;
 use super::{
     Adapter, Command, EffectBuffer, EngineApplyError, EngineEvent, EngineOutcome, HashSet,
-    InputBlockReason, InputEligibility, KernelDamageKind, KernelEffect, Lifecycle, Query,
-    QueuedCommand, ResourceId, SessionKernel, mpsc,
+    InputBlockReason, InputEligibility, KernelDamageKind, KernelEffect, KernelInput, Lifecycle,
+    Query, QueuedCommand, ResourceId, SessionKernel, mpsc,
 };
 #[cfg(feature = "engine")]
 use super::{

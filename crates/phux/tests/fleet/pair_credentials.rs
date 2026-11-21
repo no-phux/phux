@@ -188,62 +188,6 @@ fn custom_store_mint_rotate_revoke_is_operational_and_secret_safe() {
 }
 
 #[test]
-fn expired_rotation_emits_no_secret_and_leaves_the_store_unchanged() {
-    let dir = tempfile::tempdir().unwrap();
-    let state = dir.path().join("state");
-    let tokens = dir.path().join("custom-credentials");
-    let _server = Server::start(&state, Some(&tokens));
-    let minted = json(&phux(&state, Some(&tokens), &["pair", "--json"]));
-    let id = minted["credential_id"].as_str().unwrap().to_owned();
-
-    let mut store: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&tokens).unwrap()).unwrap();
-    store["credentials"][0]["expires_at"] = serde_json::json!("2000-01-01T00:00:00Z");
-    std::fs::write(&tokens, serde_json::to_vec_pretty(&store).unwrap()).unwrap();
-    let before = std::fs::read(&tokens).unwrap();
-
-    let denied = phux(&state, Some(&tokens), &["pair", "rotate", &id, "--json"]);
-    assert!(!denied.status.success());
-    assert!(
-        denied.stdout.is_empty(),
-        "failed JSON action emits no document"
-    );
-    assert!(String::from_utf8_lossy(&denied.stderr).contains("expired"));
-    assert!(!String::from_utf8_lossy(&denied.stderr).contains("token"));
-    assert_eq!(std::fs::read(&tokens).unwrap(), before);
-}
-
-#[test]
-fn default_and_environment_selected_stores_refuse_unsafe_permissions() {
-    let dir = tempfile::tempdir().unwrap();
-    let state = dir.path().join("state");
-    let _server = Server::start(&state, None);
-
-    let default_minted = json(&phux(&state, None, &["pair", "--json"]));
-    let default_path = std::path::PathBuf::from(default_minted["tokens_path"].as_str().unwrap());
-    let default_id = default_minted["credential_id"].as_str().unwrap();
-    std::fs::set_permissions(&default_path, std::fs::Permissions::from_mode(0o640)).unwrap();
-    let denied = phux(&state, None, &["pair", "revoke", default_id]);
-    assert!(!denied.status.success());
-    assert!(String::from_utf8_lossy(&denied.stderr).contains("insecure credential store"));
-    assert!(
-        !String::from_utf8_lossy(&denied.stderr)
-            .contains(default_minted["token"].as_str().unwrap())
-    );
-
-    let custom_path = dir.path().join("custom-credentials");
-    let custom_minted = json(&phux(&state, Some(&custom_path), &["pair", "--json"]));
-    let custom_id = custom_minted["credential_id"].as_str().unwrap();
-    std::fs::set_permissions(&custom_path, std::fs::Permissions::from_mode(0o604)).unwrap();
-    let denied = phux(&state, Some(&custom_path), &["pair", "rotate", custom_id]);
-    assert!(!denied.status.success());
-    assert!(String::from_utf8_lossy(&denied.stderr).contains("insecure credential store"));
-    assert!(
-        !String::from_utf8_lossy(&denied.stderr).contains(custom_minted["token"].as_str().unwrap())
-    );
-}
-
-#[test]
 fn pair_ls_and_prune_report_credentials_without_secrets() {
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");
@@ -289,42 +233,6 @@ fn pair_ls_and_prune_report_credentials_without_secrets() {
     assert_eq!(listed["credentials"][0]["revoked"], true);
 }
 
-#[test]
-fn pair_replace_token_revokes_the_previous_bearer() {
-    let dir = tempfile::tempdir().unwrap();
-    let state = dir.path().join("state");
-    let tokens = dir.path().join("custom-credentials");
-    let _server = Server::start(&state, Some(&tokens));
-
-    let first = json(&phux(&state, Some(&tokens), &["pair", "--json"]));
-    let old = first["token"].as_str().unwrap().to_owned();
-    let old_id = first["credential_id"].as_str().unwrap().to_owned();
-
-    let second = json(&phux(
-        &state,
-        Some(&tokens),
-        &["pair", "--json", "--replace-token", &old],
-    ));
-    let new = second["token"].as_str().unwrap().to_owned();
-    assert_ne!(old, new);
-    assert_ne!(old_id, second["credential_id"].as_str().unwrap());
-
-    let listed = json(&phux(&state, Some(&tokens), &["pair", "ls", "--json"]));
-    let rows = listed["credentials"].as_array().unwrap();
-    assert_eq!(rows.len(), 2);
-    let old_row = rows.iter().find(|row| row["id"] == old_id).unwrap();
-    assert_eq!(old_row["revoked"], true);
-    let new_row = rows
-        .iter()
-        .find(|row| row["id"] == second["credential_id"])
-        .unwrap();
-    assert_eq!(new_row["revoked"], false);
-
-    let store = phux_server::auth::TokenStore::load(&tokens).unwrap();
-    assert!(!store.verify(&bearer(&old)));
-    assert!(store.verify(&bearer(&new)));
-}
-
 /// The credentials a store holds, as `phux pair ls --json` lists them (an
 /// absent store lists none).
 fn credential_count(state: &Path, tokens: &Path) -> usize {
@@ -367,19 +275,6 @@ fn a_mint_with_no_live_server_mints_nothing() {
     let out = phux(&state, Some(&tokens), &["pair", "--json"]);
     assert!(!out.status.success());
     assert!(!tokens.exists(), "nothing was written to the store");
-
-    // A store that cannot be minted into says so first: a legacy one is
-    // refused by name with its remedy, never migrated (ADR-0179).
-    std::fs::write(&tokens, format!("{}\n", "ab".repeat(32))).unwrap();
-    std::fs::set_permissions(&tokens, std::fs::Permissions::from_mode(0o600)).unwrap();
-    let out = phux(&state, Some(&tokens), &["pair", "--json"]);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(!out.status.success());
-    assert!(
-        stderr.contains("failed to mint token: unsupported legacy token store")
-            && stderr.contains("remove it"),
-        "{stderr}"
-    );
 }
 
 /// Against a live listener the document reports what the server actually

@@ -5,12 +5,12 @@ use rune::{Color, El, text};
 
 use super::{Desk, Look, control};
 use crate::ui::icons;
-use crate::ui::tokens::{GlassSurface, Tier, Voice};
+use crate::ui::tokens::{GlassSurface, Paint, Tier, Voice};
 
 /// New session, or Open or create `name` while a search names one; inert
-/// until a connection can run it.
-pub(super) fn footer(desk: &Desk, name: &str, ink: Color, p: &Look) -> El {
-    let s = &p.space;
+/// until a connection can run it. At large text sizes it is an opaque
+/// action at the end of the list, not glass floating over its text.
+pub(super) fn footer(desk: &Desk, name: &str, ink: Color, large_text: bool, p: &Look) -> El {
     let create = if name.is_empty() {
         "New session".to_owned()
     } else {
@@ -26,7 +26,9 @@ pub(super) fn footer(desk: &Desk, name: &str, ink: Color, p: &Look) -> El {
     })
     .w_full()
     .radius(p.radius.full);
-    let footer = if super::super::native_glass(desk, p) {
+    let footer = if large_text {
+        labelled(footer, title, ink, p).fill(p.roles.layer.raised.paint())
+    } else if super::super::native_glass(desk, p) {
         let control = crate::mobile::Control {
             key: "phone-session-new".to_owned(),
             label: create,
@@ -41,25 +43,7 @@ pub(super) fn footer(desk: &Desk, name: &str, ink: Color, p: &Look) -> El {
         };
         super::super::hosted(desk, footer, control)
     } else {
-        frosted(
-            footer
-                .gap(s.s2)
-                .center()
-                .child(
-                    rune::icon(&icons::PLUS, p.icon.size.lg)
-                        .color(ink)
-                        .a11y_hidden(),
-                )
-                .child(
-                    text(title)
-                        .key("phone-session-new-label")
-                        .font(p.ty.label.medium())
-                        .color(ink)
-                        .truncate()
-                        .a11y_hidden(),
-                ),
-            p,
-        )
+        frosted(labelled(footer, title, ink, p), p)
     };
     if desk.connection.client.is_some() {
         footer
@@ -68,8 +52,30 @@ pub(super) fn footer(desk: &Desk, name: &str, ink: Color, p: &Look) -> El {
     }
 }
 
+/// Rune's own plus and title on the control, wrapping at large text.
+fn labelled(footer: El, title: &str, ink: Color, p: &Look) -> El {
+    footer
+        .gap(p.space.s2)
+        .center()
+        .child(
+            rune::icon(&icons::PLUS, p.icon.size.lg)
+                .color(ink)
+                .a11y_hidden(),
+        )
+        .child(
+            text(title)
+                .key("phone-session-new-label")
+                .font(p.ty.label.medium())
+                .color(ink)
+                .wrap()
+                .min_w(0.0)
+                .shrink()
+                .a11y_hidden(),
+        )
+}
+
 /// The session dock: glass over the scrolling list, the phone's one
-/// backdrop blur (§1.9). Opaque under increased contrast, Reduce
+/// backdrop blur. Opaque under increased contrast, Reduce
 /// Transparency and forced colours. The native host draws it as the
 /// system's Liquid Glass instead ([`footer`]).
 fn frosted(e: El, p: &Look) -> El {

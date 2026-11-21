@@ -76,7 +76,7 @@ impl fmt::Display for ScopeGrant {
     }
 }
 
-/// A canonical set of grants (§5): at most [`MAX_GRANTS`], each selector
+/// A canonical set of grants: at most [`MAX_GRANTS`], each selector
 /// once, nonzero verbs, strictly increasing by selector bytes.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TerminalScopeSet {
@@ -84,7 +84,7 @@ pub struct TerminalScopeSet {
 }
 
 impl TerminalScopeSet {
-    /// Canonicalize `grants` the way §5's encoder does: merge equal
+    /// Canonicalize `grants` the way the canonical encoder does: merge equal
     /// selectors by OR-ing their verbs, drop empty entries, and sort.
     ///
     /// # Errors
@@ -158,7 +158,7 @@ impl TerminalScopeSet {
         self.grants.is_empty()
     }
 
-    /// The canonical bytes of §5.
+    /// The canonical bytes.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();

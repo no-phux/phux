@@ -2,8 +2,10 @@
 
 use phux_protocol::ids::SessionKey;
 use rune::{El, el};
+use rune_kit::{IconButton, IconButtonVariant};
 
-use super::super::{Tokens, icon_press, icons};
+use super::super::{Tokens, icons};
+use crate::desk::Desk;
 
 /// A fixed close slot for local sessions. Satellites have no supported
 /// session mutation on this connection, so expose no misleading button.
@@ -12,13 +14,14 @@ pub(super) fn session_controls(key: Option<SessionKey>, name: &str, t: &Tokens) 
     let label = format!("Close session {name}");
     // Its own press handler owns the hit, including pointer moves: Rune
     // does not forward a child button's gesture to its draggable parent.
-    icon_press(
-        &icons::CLOSE,
-        "Close session",
-        format!("session-close-{key}"),
-        t,
-        move |d| d.close_session_key(key),
-    )
+    // Muted (kit `GhostMuted`): a close on every header is a lot of ink
+    // beside the names it sits with; the hover wash still marks it.
+    IconButton::new(&icons::CLOSE)
+        .variant(IconButtonVariant::GhostMuted)
+        .label("Close session")
+        .on_press(move |d: &mut Desk| d.close_session_key(key))
+        .build(&t.kit)
+        .key(format!("session-close-{key}"))
     .size(t.space.pointer_min, t.space.pointer_min)
     .radius(t.radius.sm)
     // Pointer only: the list's arrows press what they reach, so a Tab stop
@@ -36,7 +39,7 @@ mod tests {
     use phux_client_runtime::control::Topology;
     use phux_protocol::ids::{ResourceId, SessionId, WindowId};
     use phux_protocol::wire::info::{SessionInfo, SessionSnapshot};
-    use rune::{Cx, Env, Runtime, row};
+    use rune::{Cx, Env, row};
 
     fn key() -> SessionKey {
         SessionKey::new([2; 16]).unwrap()
@@ -76,7 +79,7 @@ mod tests {
             .unwrap();
         desk.connection.topology = Some(Topology::from_snapshot(&snapshot));
         desk.connection.topology.as_mut().unwrap().sessions[1].key = Some(key());
-        let mut rt = Runtime::new(desk, header, (240.0, 80.0), Env::new(true, 1.0));
+        let mut rt = crate::test_support::runtime(desk, header, (240.0, 80.0), Env::new(true, 1.0));
         rt.frame(0.0);
         let button = format!("session-close-{}", key());
         let (x, y) = rt.find(&button).expect("an always-visible close control");
@@ -135,7 +138,8 @@ mod tests {
             session_controls(None, "satellite", ink.as_ref())
         }
         let desk = crate::test_support::window();
-        let mut rt = Runtime::new(desk, satellite, (80.0, 30.0), Env::new(true, 1.0));
+        let mut rt =
+            crate::test_support::runtime(desk, satellite, (80.0, 30.0), Env::new(true, 1.0));
         rt.frame(0.0);
         assert!(!rt.accessibility_action(
             &format!("session-close-{}", key()),

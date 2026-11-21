@@ -1,0 +1,37 @@
+name: design-pin
+on:
+  push:
+    branches: [main]
+    paths:
+      - clients/phux-web/assets/phux-tokens.css
+      - crates/phux-design/tokens/src/vocabulary.json
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: design-consumer-pins
+  cancel-in-progress: true
+jobs:
+  pin:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: consumers
+        with:
+          client-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: no-phux
+          repositories: |
+            website
+            phux-org
+            phux-hud
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Propose consumer pins
+        env:
+          GH_TOKEN: ${{ steps.consumers.outputs.token }}
+        run: python3 -B scripts/design-pin.py "$GITHUB_SHA"

@@ -2,24 +2,6 @@
 
 use super::*;
 
-#[test]
-fn hit_test_maps_rows_to_targets() {
-    let rect = r(0, 0, 20, 14);
-    let c = SidebarCounts {
-        active_session: Some(0),
-        rule: SidebarRule::Trailing,
-        agents_share: 0,
-        ..counts(0, 2, 1)
-    };
-    assert_eq!(hit_test(rect, c, 3, 0), Some(SidebarHit::Sessions));
-    assert_eq!(hit_test(rect, c, 3, 3), Some(SidebarHit::Window(0)));
-    assert_eq!(hit_test(rect, c, 3, 4), Some(SidebarHit::Window(1)));
-    // Padding rows miss.
-    assert_eq!(hit_test(rect, c, 3, 5), None);
-    // Footer row.
-    assert_eq!(hit_test(rect, c, 3, 13), Some(SidebarHit::NewWindow));
-}
-
 /// Agent and session rows retain their own destinations under overflow.
 #[test]
 fn hit_test_maps_the_new_zones() {

@@ -129,14 +129,10 @@ fn a_typed_bootstrap_names_the_content_type_of_every_later_document() {
 
 #[test]
 fn an_old_server_is_told_apart_by_the_kind_it_lacks() {
-    assert_eq!(
-        TreeError::Unsupported(Some(Kind::Surface)).to_string(),
-        "this server does not serve pixel surfaces (needs PIXEL_SURFACE)"
-    );
-    assert_eq!(
-        TreeError::Unsupported(Some(Kind::Tree)).to_string(),
-        "this server does not serve accessibility trees (needs ACCESSIBILITY_TREE)"
-    );
+    let surface = TreeError::Unsupported(Some(Kind::Surface)).to_string();
+    assert!(surface.contains("PIXEL_SURFACE"), "{surface}");
+    let tree = TreeError::Unsupported(Some(Kind::Tree)).to_string();
+    assert!(tree.contains("ACCESSIBILITY_TREE"), "{tree}");
     assert!(
         TreeError::Unsupported(None)
             .to_string()

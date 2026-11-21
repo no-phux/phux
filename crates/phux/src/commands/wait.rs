@@ -319,21 +319,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_valid_regex_parses_and_reaches_the_command() {
-        let cmd =
-            parse_wait(["phux", "wait", "--regex", r"^test result: ok\.", "build"].as_slice());
-        let crate::commands::Command::Wait(crate::commands::WaitArgs { regex, until, .. }) = cmd
-        else {
-            panic!("expected the wait variant");
-        };
-        assert_eq!(
-            regex.expect("a compiled pattern").as_str(),
-            r"^test result: ok\."
-        );
-        assert!(until.is_none());
-    }
-
     /// The two text conditions are alternatives, not a precedence puzzle the
     /// operator has to remember.
     #[test]
@@ -374,23 +359,6 @@ mod tests {
             panic!("expected the wait variant");
         };
         assert_eq!(tail, Some(phux_core::screen::ROW_WINDOW_ALL));
-    }
-
-    /// The scope the flags build is what drives the read: no `--tail` means
-    /// no history request, and no `--output-only` means no cells — the poll
-    /// stays as cheap as it has always been unless asked otherwise.
-    #[test]
-    fn flags_build_the_match_scope() {
-        let bare = MatchScope::default();
-        assert_eq!(bare.history_request(), None);
-        assert!(!bare.wants_cells());
-
-        let scoped = MatchScope {
-            tail: Some(200),
-            output_only: true,
-        };
-        assert_eq!(scoped.history_request(), Some(200));
-        assert!(scoped.wants_cells());
     }
 }
 

@@ -153,7 +153,11 @@ impl App {
         // The transport is gone: the agents on screen are lost, not still
         // working. Painted before the kernel is failed.
         self.paint_badges();
+        let pane_pending = self.session.pane_pending();
         self.session.fail_protocol(message);
+        if pane_pending && !self.session.pane_pending() {
+            self.publish_panes();
+        }
         super::approvals::retain_uncertainty(&self.canvas, self.session.approval_status());
         let refused = self.session.is_version_refused();
         if refused {

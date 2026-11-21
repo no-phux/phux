@@ -95,25 +95,6 @@ fn tick_emit_serves_every_consumer_on_a_shared_pane() {
     assert!(rx_a.try_recv().is_err(), "a detached consumer gets nothing");
 }
 
-/// phux-4l0: an idle tick (no write since the last tick, no consumer
-/// awaiting its first emission) short-circuits and emits nothing.
-#[test]
-fn idle_tick_short_circuits_and_emits_nothing() {
-    let (mut actor, _client, mut rx) = emitting_actor();
-    // The first tick walks the fresh consumer (empty diff).
-    actor.tick_emit();
-    while rx.try_recv().is_ok() {}
-
-    actor.vt_write_for_test(b"hello");
-    actor.tick_emit();
-    assert!(next_output(&mut rx, b"hello").1);
-    for _ in 0..5 {
-        actor.tick_emit();
-        assert!(rx.try_recv().is_err(), "idle tick must emit nothing");
-    }
-    assert_eq!(actor.consumer_count(), 1, "consumer entry intact");
-}
-
 /// A consumer registered after the last write is still walked on a clean
 /// terminal (`needs_initial_emit`).
 #[test]

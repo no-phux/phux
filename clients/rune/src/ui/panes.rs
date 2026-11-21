@@ -1,11 +1,12 @@
 //! The terminal area: the split tree, one floating glass card per leaf, the
-//! keyboard's card lit, and draggable gutters between them.
+//! keyboard's card raised a tier with no colour of its own, and draggable
+//! gutters between them. A lone pane with the sidebar folded goes flush.
 
 use std::time::Instant;
 
 use phux_client_core::layout::{LayoutNode, SplitDir};
 use phux_protocol::ids::ResourceId;
-use rune::{Color, Cx, El, Key, Phase, PointerButton, Transition, col, el, row};
+use rune::{Color, Cx, El, Phase, PointerButton, Transition, col, el, row};
 
 use super::status::placeholder;
 use super::tokens::Tier;
@@ -15,6 +16,11 @@ use crate::desk::{Desk, Grab, SplitPath};
 use crate::ui::Cover;
 use crate::{grid, perf};
 use phux_design::tokens::SPACE;
+
+mod divider;
+use divider::divider;
+#[cfg(test)]
+use divider::step_of;
 
 pub fn view(desk: &Desk, ink: &Tokens, cx: &mut Cx<Desk>) -> El {
     let t = ink;
@@ -153,107 +159,44 @@ fn node(
             right,
         ))
 }
-
-/// A divider: the clear gutter between two cards, with a grip in
-/// `border.strong` that turns to the machine's colour under the pointer.
-/// Drag it to move it, live, and the new ratio is written on release; or
-/// focus it and step it with the arrows along its axis.
-fn divider(path: SplitPath, horizontal: bool, ratio: f32, t: &Tokens) -> El {
-    let s = &t.space;
-    let (across, along) = (s.s1, s.s10);
-    let grip = || {
-        let grip = if horizontal {
-            el().size(across, along)
-        } else {
-            el().size(along, across)
-        };
-        grip.radius(t.radius.full).inert()
-    };
-    let host = if horizontal {
-        el().w(SPACE.card_gap).h_full()
-    } else {
-        el().w_full().h(SPACE.card_gap)
-    };
-    let stepped = path.clone();
-    host.key(format!("divider-{path:?}"))
-        .center()
-        .role("separator")
-        .label(if horizontal {
-            "Resize the panes side by side"
-        } else {
-            "Resize the panes above and below"
-        })
-        .range_value(f64::from(ratio), 0.0, 1.0)
-        .focusable(true)
-        .cursor(if horizontal {
-            rune::Cursor::ResizeColumn
-        } else {
-            rune::Cursor::ResizeRow
-        })
-        .hover_group()
-        .on_key(move |d: &mut Desk, event, _| {
-            let Some(step) = step_of(&event.key, horizontal) else {
-                return false;
-            };
-            d.drag_divider(stepped.clone(), ratio + step, true);
-            true
-        })
-        .on_drag(move |d: &mut Desk, drag, _| {
-            if drag.phase == Phase::Down {
-                // The ratio at the press, kept for the whole gesture.
-                drag.data = ratio;
-            }
-            let span = d.split_span(&path, horizontal).max(1.0);
-            let travel = if horizontal { drag.dx } else { drag.dy };
-            d.drag_divider(
-                path.clone(),
-                drag.data + travel / span,
-                drag.phase == Phase::Up,
-            );
-        })
-        .child(grip().fill(t.roles.border.strong.paint()))
-        .child(
-            el().cover()
-                .center()
-                .inert()
-                .child(super::reveal(grip().fill(t.host), true)),
-        )
-}
-
-/// How far one arrow press moves a divider, as a share of its split, and
-/// which way: Left and Up shrink the first side, Right and Down grow it.
-fn step_of(key: &Key, horizontal: bool) -> Option<f32> {
-    let step = 0.05;
-    match (key, horizontal) {
-        (Key::Left, true) | (Key::Up, false) => Some(-step),
-        (Key::Right, true) | (Key::Down, false) => Some(step),
-        _ => None,
-    }
-}
-
-/// How a card is lit: the keyboard's, among several, glows in the window's
-/// machine colour.
+/// How a card is lit: the keyboard's, among several, stands one tier
+/// higher with a firmer rim. Focus adds no colour of its own, and the
+/// cards without the keyboard stay at full strength, as legible as it.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Lit {
     Resting,
     Focused,
+    /// The window's one surface ([`Desk::flush`]): no rim and no lift, the
+    /// card's ground continuous with the window's.
+    Flush,
 }
 
-/// A floating card around `content` (§1.7): `radius.lg`, on the raised
-/// tier at rest, lifted to floating with the machine's glow in place of
-/// its second drop when it has the keyboard, and edged with a top-lit
-/// hairline rim. `content` is clipped to the corners; the rim draws over
-/// it and never takes the pointer.
+impl Lit {
+    /// How the pane with or without the keyboard is lit in `desk`.
+    fn of(desk: &Desk, several: bool, focused: bool) -> Self {
+        if desk.flush() {
+            Self::Flush
+        } else if several && focused {
+            Self::Focused
+        } else {
+            Self::Resting
+        }
+    }
+}
+
+/// A floating card around `content`: `radius.lg`, on the raised
+/// tier at rest and lifted to floating when it has the keyboard, edged
+/// with a top-lit hairline rim that is firmer on the lifted card.
+/// `content` is clipped to the corners; the rim draws over it and never
+/// takes the pointer.
 pub(super) fn card(content: El, ground: Color, lit: Lit, ink: &Tokens) -> El {
     let t = ink;
     let r = t.radius.lg;
-    let (top, bottom) = match lit {
-        Lit::Resting => (t.roles.border.strong, t.roles.border.muted),
-        Lit::Focused => (t.roles.border.strong, t.roles.border.base),
-    };
-    let top = match lit {
-        Lit::Resting => top.paint(),
-        Lit::Focused => t.host,
+    let b = &t.roles.border;
+    let (top, bottom, tier) = match lit {
+        Lit::Resting => (b.base.paint(), b.muted.paint(), Tier::Raised),
+        Lit::Focused => (b.strong.paint(), b.base.paint(), Tier::Floating),
+        Lit::Flush => (Color::TRANSPARENT, Color::TRANSPARENT, Tier::Flat),
     };
     let lifted = el()
         .w_full()
@@ -261,24 +204,20 @@ pub(super) fn card(content: El, ground: Color, lit: Lit, ink: &Tokens) -> El {
         .radius(r)
         .continuous_corners()
         .fill(ground);
-    let lifted = match lit {
-        Lit::Resting => t.elevate(lifted, Tier::Raised),
-        Lit::Focused => t.elevate_glowing(lifted, Tier::Floating, t.host),
-    };
-    lifted
+    t.elevate(lifted, tier)
         .child(content.radius(r).continuous_corners().clip_rounded(r))
         .child(
             el().cover()
                 .radius(r)
                 .continuous_corners()
-                .border_gradient(t.space.hairline, top, bottom.paint())
+                .border_gradient(t.space.hairline, top, bottom)
                 .inert(),
         )
 }
 
 /// A pane's card, keyed by its terminal so it keeps its place as the tree
 /// changes: it enters from the enter scale on the list spring and fades
-/// out (§1.8).
+/// out.
 fn float(id: &ResourceId, card: El, t: &Tokens) -> El {
     card.key(format!("pane-{id}"))
         .transition(Transition::asymmetric(
@@ -294,11 +233,7 @@ pub(super) fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Tokens) ->
         .as_ref()
         .is_some_and(|s| &s.resource == id);
     if desk.is_document(id) {
-        let lit = if focused && several {
-            Lit::Focused
-        } else {
-            Lit::Resting
-        };
+        let lit = Lit::of(desk, several, focused);
         let t = ink;
         let ground = t.roles.layer.ground.paint();
         return float(
@@ -347,7 +282,11 @@ fn terminal_pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Tokens) -> E
                 .color(t.roles.text.dim.paint())
         };
         let opening = host.fill(ground).center().child(words);
-        return float(id, framed(desk, opening, ground, Lit::Resting, t), t);
+        return float(
+            id,
+            framed(desk, opening, ground, Lit::of(desk, several, false), t),
+            t,
+        );
     };
     if focused {
         // The exact frame this build paints, for the drawn receipt.
@@ -360,11 +299,7 @@ fn terminal_pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Tokens) -> E
     let editing = question.as_ref().is_some_and(|card| card.editing);
     let grid_layer = terminal_layer(desk, id, &frame, focused, editing, ink);
     let ground = grid::background(&frame);
-    let lit = if several && focused {
-        Lit::Focused
-    } else {
-        Lit::Resting
-    };
+    let lit = Lit::of(desk, several, focused);
     let joining = id
         .local_id()
         .is_some_and(|n| desk.connection.reorder.target() == Some(Grab::Pane(n)));
@@ -374,11 +309,7 @@ fn terminal_pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Tokens) -> E
         .children(overlay::find_bar(desk, id, area, ink))
         .children(question.map(|card| card.content))
         .children(tab_badge(desk, id, t))
-        // Panes without the keyboard sit back a little, under the scrim.
-        .children(
-            (several && !focused)
-                .then(|| el().cover().fill(t.roles.layer.scrim.paint()).inert()),
-        )
+        .children(super::pane_marks::marks(desk, id, t))
         // Outlined while a dragged terminal would join its slot as a tab.
         .children(joining.then(|| {
             el().cover()
@@ -530,8 +461,10 @@ fn terminal_input(host: El, desk: &Desk, id: &ResourceId) -> El {
                 mods,
                 button: tx.button(),
             };
+            // A cancelled gesture still releases the program's mouse, but
+            // copies nothing.
             d.pointer(&press, &step, tx);
-            if drag.phase == Phase::Up {
+            if drag.phase == Phase::Up && !drag.cancelled() {
                 d.selection_done(tx);
             }
         }
@@ -541,6 +474,7 @@ fn terminal_input(host: El, desk: &Desk, id: &ResourceId) -> El {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rune::Key;
 
     fn leaf(n: u32) -> LayoutNode {
         LayoutNode::Leaf(ResourceId::local(n))

@@ -65,7 +65,8 @@ enum Done {
     Checked(Result<Release, String>, Option<Result<Cli, String>>),
     Progress(Progress),
     Staged(Result<Release, String>),
-    Server(Result<Handoff, String>, bool),
+    /// The handoff, whether to restart after it, and whether it installed.
+    Server(Result<Handoff, String>, bool, bool),
     CopiedShown,
 }
 
@@ -132,17 +133,7 @@ impl Updater {
     }
 
     fn worker(&self, job: impl FnOnce(&dyn Fn(Done)) + Send + 'static) {
-        let sender = self.done.0.clone();
-        let waker = self.waker.clone();
-        std::thread::spawn(move || {
-            let send = |done| {
-                let _ = sender.send(done);
-                if let Some(waker) = &waker {
-                    waker();
-                }
-            };
-            job(&send);
-        });
+        super::worker::spawn(self.done.0.clone(), self.waker.clone(), job);
     }
 
     /// Rune's setup hook: clear what a reboot left, check now, and every six
@@ -297,20 +288,36 @@ impl Updater {
     }
 
     fn update_server(&mut self, restart_after: bool) {
-        let Some((phux, socket)) = self.managed() else {
+        self.hand_off(self.managed(), !self.pending_handoff, restart_after);
+    }
+
+    /// The server is too old for a feature: install the newer release when
+    /// one is due, else hot-swap the server to the installed phux, which may
+    /// be newer than the image it runs. Panes survive either way, and the
+    /// card shows the work and any refusal.
+    pub fn upgrade_server(&mut self) {
+        let due = self.cli.as_ref().is_some_and(|c| c.available && c.mutable);
+        self.asked = true;
+        self.dismissed = None;
+        self.hand_off(self.target.clone(), due && !self.pending_handoff, false);
+    }
+
+    /// Install and hand off (`phux update`), or only hand off to the binary
+    /// already installed (`phux upgrade`).
+    fn hand_off(&mut self, target: Option<(PathBuf, PathBuf)>, install: bool, restart: bool) {
+        let Some((phux, socket)) = target.filter(|_| !self.busy()) else {
             return;
         };
-        let retry = self.pending_handoff;
         let channel = self.phux_channel;
         self.work = Work::Server;
         self.message = None;
         self.worker(move |send| {
-            let result = if retry {
-                phux::retry(&phux, &socket)
-            } else {
+            let result = if install {
                 phux::install(&phux, &socket, channel)
+            } else {
+                phux::retry(&phux, &socket)
             };
-            send(Done::Server(result, restart_after));
+            send(Done::Server(result, restart, install));
         });
     }
 
@@ -366,7 +373,7 @@ impl Updater {
         self.sync_hold();
     }
 
-    fn server_done(&mut self, result: Result<Handoff, String>) -> bool {
+    fn server_done(&mut self, result: Result<Handoff, String>, installed: bool) -> bool {
         self.work = Work::Idle;
         let handoff = match result {
             Ok(handoff) => handoff,
@@ -381,7 +388,7 @@ impl Updater {
             &format!("server update: done={} {}", handoff.done, handoff.detail),
         );
         self.pending_handoff = handoff.retry;
-        if let Some(cli) = &mut self.cli {
+        if let Some(cli) = self.cli.as_mut().filter(|_| installed) {
             cli.current = cli.target.clone();
             cli.available = false;
             cli.protocol_current = cli.protocol_target.clone().or(cli.protocol_current.take());
@@ -426,8 +433,8 @@ impl Desk {
                     }
                 }
                 Done::CopiedShown => updater.copied = false,
-                Done::Server(result, restart_after) => {
-                    match (updater.server_done(result), restart_after) {
+                Done::Server(result, restart_after, installed) => {
+                    match (updater.server_done(result, installed), restart_after) {
                         (true, true) => self.restart(tx),
                         (true, false) => self.server_handed_off(),
                         (false, _) => {}

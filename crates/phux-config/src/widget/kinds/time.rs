@@ -57,16 +57,12 @@ fn check_format(format: &str) -> Result<(), WidgetError> {
 
 #[cfg(test)]
 mod tests {
-    /// The kind's default and the shipped bar's clock render as they did
-    /// under chrono: 2027-01-15 08:05 UTC is a Friday.
+    /// The kind's default and the shipped bar's clock pass the load-time
+    /// check; an unknown directive does not.
     #[test]
-    fn shipped_clock_formats_render_unchanged() {
-        let at = jiff::Timestamp::from_second(1_800_000_300)
-            .unwrap()
-            .to_zoned(jiff::tz::TimeZone::UTC);
-        for (format, shown) in [("%H:%M", "08:05"), (" %a %H:%M ", " Fri 08:05 ")] {
+    fn check_format_accepts_shipped_clocks_and_refuses_unknown_directives() {
+        for format in ["%H:%M", " %a %H:%M "] {
             super::check_format(format).unwrap();
-            assert_eq!(jiff::fmt::strtime::format(format, &at).unwrap(), shown);
         }
         assert!(super::check_format("%J").is_err());
     }

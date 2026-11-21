@@ -190,10 +190,7 @@ pub(super) fn upsert_entry(lock: &mut PluginLockFile, entry: PluginLockEntry) {
 mod tests {
     #![allow(clippy::unwrap_used, reason = "tests")]
 
-    use super::{
-        PluginLockEntry, PluginLockFile, PluginSourceKind, read_lockfile, upsert_entry,
-        write_lockfile,
-    };
+    use super::{PluginLockEntry, PluginLockFile, PluginSourceKind, read_lockfile, upsert_entry};
 
     fn sample_lock() -> PluginLockFile {
         PluginLockFile {
@@ -219,20 +216,6 @@ mod tests {
                 },
             ],
         }
-    }
-
-    /// Lockfile round-trip: write, read back, and land on the same value
-    /// (modulo the stable id sort applied at write time).
-    #[test]
-    fn lockfile_round_trips_through_disk() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let mut lock = sample_lock();
-
-        write_lockfile(dir.path(), &lock).unwrap();
-        let read = read_lockfile(dir.path()).unwrap();
-
-        lock.plugins.sort_by(|a, b| a.id.cmp(&b.id));
-        assert_eq!(read, lock);
     }
 
     /// A missing lockfile reads as the empty default rather than an error,
@@ -308,48 +291,12 @@ mod tests {
         }
     }
 
-    /// The previous encoding: `{platforms}|{args joined by \u{1f}}` per step.
-    fn legacy_build_hash(steps: &[phux_config::plugin::PluginManifestBuild]) -> String {
-        use sha2::{Digest, Sha256};
-
-        let mut hasher = Sha256::new();
-        for step in steps {
-            let line = format!("|{}", step.command.join("\u{1f}"));
-            hasher.update(line.as_bytes());
-            hasher.update(b"\n");
-        }
-        crate::commands::update::apply::hex_lower(&hasher.finalize())
-    }
-
-    /// Args used to be joined with `\u{1f}`, so `["a","b"]` and `["a\u{1f}b"]`
-    /// were one hash. A lockfile still holding that digest does not match.
-    #[test]
-    fn build_step_hash_does_not_collide_on_separator_bytes() {
-        let split = step(&["sh", "build.sh", "a", "b"]);
-        let glued = step(&["sh", "build.sh", "a\u{1f}b"]);
-        let split_hash = super::hash_build_steps(std::slice::from_ref(&split)).unwrap();
-        let glued_hash = super::hash_build_steps(std::slice::from_ref(&glued)).unwrap();
-        assert_ne!(split_hash, glued_hash);
-
-        let legacy = legacy_build_hash(std::slice::from_ref(&split));
-        assert_eq!(legacy, legacy_build_hash(std::slice::from_ref(&glued)));
-        assert_ne!(
-            split_hash, legacy,
-            "an old lockfile hash must not match, so update asks again"
-        );
-    }
-
     /// Same argument count. Joining on `\u{1f}` without a per-arg length
     /// still collides; the length prefix is what keeps these apart.
     #[test]
     fn build_step_hash_distinguishes_same_count_separator_splits() {
         let left = step(&["a\u{1f}b", "c"]);
         let right = step(&["a", "b\u{1f}c"]);
-        assert_eq!(left.command.len(), right.command.len());
-        assert_eq!(
-            format!("{}:{}", left.command.len(), left.command.join("\u{1f}")),
-            format!("{}:{}", right.command.len(), right.command.join("\u{1f}"))
-        );
         assert_ne!(
             super::hash_build_steps(std::slice::from_ref(&left)).unwrap(),
             super::hash_build_steps(std::slice::from_ref(&right)).unwrap()

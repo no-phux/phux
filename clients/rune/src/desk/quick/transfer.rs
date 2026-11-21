@@ -2,7 +2,7 @@
 //! server receipt may dismiss the panel, replace its shell or raise main.
 
 use phux_client_core::org_ops::OrgOutcome;
-use phux_client_runtime::{Client, control::Status};
+use phux_client_runtime::Client;
 use phux_protocol::ids::{OperationId, ResourceId, SessionId, SessionKey};
 use phux_protocol::wire::frame::AttachTarget;
 
@@ -66,14 +66,9 @@ impl Desk {
                     .to_owned(),
             );
         }
-        let client = self
-            .connection
-            .client
-            .as_ref()
-            .filter(|client| client.status() == Status::Attached)
-            .ok_or(
-                "Connect the main window to this computer first, then move the quick terminal.",
-            )?;
+        let client = self.attached_client().ok_or(
+            "Connect the main window to this computer first, then move the quick terminal.",
+        )?;
         let session = self.quick_destination(client).ok_or(
             "Open a session in the main window first, then move the quick terminal to it.",
         )?;
@@ -91,14 +86,7 @@ impl Desk {
     }
 
     fn quick_destination(&self, client: &Client) -> Option<SessionKey> {
-        let selected = client.selected_session()?;
-        let session = self
-            .connection
-            .topology
-            .as_ref()?
-            .sessions
-            .iter()
-            .find(|s| s.id == selected)?;
+        let session = self.selected_entry(client)?;
         session.key.filter(|_| session.name != super::SESSION)
     }
 

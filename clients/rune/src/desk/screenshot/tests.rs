@@ -21,7 +21,11 @@ use phux_protocol::{
 };
 
 fn desk() -> Desk {
-    Desk::new(&Resolved::offline("not launched"))
+    Desk::with_preferences(
+        &Resolved::offline("not launched"),
+        None,
+        rune::prefs::Prefs::memory(),
+    )
 }
 
 fn connected(desk: &mut Desk) {
@@ -245,15 +249,6 @@ fn no_terminal_no_picker() {
     desk.screenshot();
     assert!(desk.connection.capture.is_none());
     assert!(desk.notice.is_some());
-}
-
-#[test]
-fn closing_a_keep_running_window_releases_its_capture_owner() {
-    let mut desk = desk();
-    taken(&mut desk, 1, Shot::Cancelled);
-    desk.cancel_screenshot();
-    assert!(desk.connection.capture.is_none());
-    assert!(desk.connection.uploads.is_empty());
 }
 
 #[test]

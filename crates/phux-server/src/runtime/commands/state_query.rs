@@ -1,10 +1,12 @@
 //! Perf and state queries, including federated satellite state.
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the split command modules share the parent command namespace"
-)]
 
-use super::*;
+use phux_protocol::wire::frame::{
+    Command, CommandResult, CommandValue, ErrorCode, FrameKind, StateScope,
+};
+use tracing::{debug, warn};
+
+use crate::runtime::commands::results::empty_session_snapshot;
+use crate::state::{ClientId, Outbound, SharedState};
 
 /// `GET_PERF`: the server's telemetry as a JSON `phux_perf::PerfReport`,
 /// with registry gauges refreshed first; `reset` zeroes metrics afterwards.
@@ -50,12 +52,12 @@ pub(crate) fn handle_get_state(
                     .unwrap_or_else(empty_session_snapshot);
                 // An empty registry still reports listeners for `phux doctor`.
                 if snapshot.listeners().is_none() && s.has_remote_listener_report() {
-                    snapshot = snapshot.with_listeners(s.remote_listeners().clone());
+                    snapshot = snapshot.with_listeners(s.remote_listeners());
                 }
-                // L1 §7.3: the viewer's journal head at the cut, read under
+                // The viewer's journal head at the cut, read under
                 // the snapshot's lock.
                 let snapshot = snapshot.with_journal_head(Some(s.journal_head_for(viewer)));
-                // workload-auth §6: only what the viewer may INVENTORY.
+                // Only what the viewer may INVENTORY.
                 match viewer {
                     Some(viewer) => crate::policy::filter::filter_snapshot(
                         s,
@@ -72,7 +74,7 @@ pub(crate) fn handle_get_state(
     }
 }
 
-/// `GET_STATE` with federation aggregation (L1 §9.1): on a hub, merge every
+/// `GET_STATE` with federation aggregation: on a hub, merge every
 /// satellite's terminals (retagged `Satellite { host, id }`, queried
 /// concurrently) into the local snapshot. Satellite sessions and windows do
 /// not merge; each satellite contributes one `HostInventory` row instead,
@@ -89,7 +91,7 @@ pub(crate) async fn handle_get_state_federated(
     if !matches!(scope, StateScope::Server) {
         return local;
     }
-    // workload-auth §6: only the satellites the viewer may inventory are
+    // Only the satellites the viewer may inventory are
     // asked, so another host's name and health never reach it.
     let relays: Vec<_> = state.with(|s| {
         s.federation()
@@ -129,7 +131,7 @@ pub(crate) async fn handle_get_state_federated(
     }
     hosts.sort_by(|a, b| a.host.as_str().cmp(b.host.as_str()));
     mirror_federated_agent_metadata(state, &snapshot);
-    // workload-auth §6: the satellites' rows and Terminals, filtered too.
+    // The satellites' rows and Terminals, filtered too.
     let snapshot = state.with(|s| {
         crate::policy::filter::filter_snapshot(
             s,
@@ -164,7 +166,7 @@ fn mirror_federated_agent_metadata(
 /// Fold one satellite's `GET_STATE` answer into the hub's aggregate: merge
 /// its resources into `snapshot` and return its inventory row. An error
 /// answer becomes an unreachable row plus the un-correlated degradation
-/// `ERROR` pushed ahead of the `COMMAND_RESULT` (L1 §9.1).
+/// `ERROR` pushed ahead of the `COMMAND_RESULT`.
 async fn fold_satellite_state(
     state: &SharedState,
     snapshot: &mut phux_protocol::wire::info::SessionSnapshot,
@@ -223,7 +225,7 @@ async fn fold_satellite_state(
 }
 
 /// Append a satellite's resources to the hub's aggregate, re-tagged into the
-/// hub's id space (L1 §9.1). A Satellite-tagged id is dropped (no chaining).
+/// hub's id space. A Satellite-tagged id is dropped (no chaining).
 /// The satellite's window and client ids are its own: `window_id` becomes
 /// `WindowId(0)` (no hub window owns the row; the satellite's windows are not
 /// aggregated), the input-lease holder becomes the hub consumer in
@@ -358,7 +360,7 @@ fn session_active_resource(
 
 /// Retag a satellite's `Local { id }` as `Satellite { host, id }`. A
 /// `Satellite`-tagged id has no hub-side form: hub-and-spoke does not chain
-/// (L1 §9.1).
+///.
 fn retag_satellite_resource_id(
     host: &phux_protocol::ids::SatelliteHost,
     id: Option<&phux_protocol::ids::ResourceId>,

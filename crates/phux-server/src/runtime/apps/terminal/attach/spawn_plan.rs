@@ -111,7 +111,7 @@ pub(super) async fn refuse_vanished_pane_handle(
     .await;
 }
 
-/// A zero axis means "geometry unknown" (SPEC §10.5): use the default.
+/// A zero axis means "geometry unknown": use the default.
 pub(super) fn usable_initial_size(initial_size: Option<(u16, u16)>) -> Option<(u16, u16)> {
     initial_size.filter(|&(cols, rows)| cols > 0 && rows > 0)
 }

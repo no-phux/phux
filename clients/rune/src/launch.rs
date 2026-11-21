@@ -51,8 +51,8 @@ pub struct Options {
     pub phux: Option<PathBuf>,
     /// The phone form: a phone-sized window with a drawn keyboard.
     pub phone: bool,
-    /// Connect links to pair from (`phux://connect?...`), as a desktop
-    /// entry's `%u` passes them.
+    /// Links to pair from (`phux://connect?...`) or panes to reveal
+    /// (`phux://pane/@N`), as a desktop entry's `%u` passes them.
     pub links: Vec<crate::machines::Secret>,
 }
 

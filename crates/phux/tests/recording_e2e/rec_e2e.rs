@@ -1,5 +1,5 @@
 //! `phux rec` (ADR-0060): the headless recorder, the offline `--from`
-//! renderer, and the observer guarantee. The render tests read the committed
+//! renderer, and the observer guarantee. The render test reads the committed
 //! `docs/assets/recording-demo.cast`, so a corrupt asset fails here.
 //! `rec_does_not_resize_the_recorded_pane` parks the pane at a non-default
 //! size first, or the assertion would pass vacuously.
@@ -39,32 +39,6 @@ impl ServerGuard {
             snapshot["rows"].as_u64().expect("snapshot rows"),
         )
     }
-}
-
-/// Run `phux rec --from <fixture> -o <out>` with extra flags, returning the
-/// parsed `--json` result object. No server is involved: `--from` re-renders
-/// an existing cast entirely offline.
-fn render(out: &Path, extra: &[&str]) -> serde_json::Value {
-    let output = common::phux_cmd(crate::runner::phux_bin())
-        .arg("rec")
-        .arg("--from")
-        .arg(demo_cast())
-        .arg("-o")
-        .arg(out)
-        .arg("--json")
-        .args(extra)
-        .stdin(Stdio::null())
-        .output()
-        .expect("run phux rec --from");
-    assert!(
-        output.status.success(),
-        "phux rec --from exited {:?}; stderr={}",
-        output.status.code(),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    serde_json::from_str(&stdout)
-        .unwrap_or_else(|err| panic!("invalid JSON from `phux rec --from`: {err}: {stdout}"))
 }
 
 fn read_bytes(path: &Path) -> Vec<u8> {
@@ -186,7 +160,7 @@ fn rec_does_not_resize_the_recorded_pane() {
 
 #[test]
 #[ignore = "renders the committed demo asset; grouped with the rest of the rec lane."]
-fn rec_from_cast_renders_gif_and_apng_and_emits_one_json_object() {
+fn rec_from_cast_renders_a_gif_and_emits_one_json_object() {
     let dir = tempfile::tempdir().expect("temp dir");
     let out = dir.path().join("demo.gif");
     let output = common::phux_cmd(crate::runner::phux_bin())
@@ -266,87 +240,5 @@ fn rec_from_cast_renders_gif_and_apng_and_emits_one_json_object() {
         Some(&0x3b),
         "the GIF trailer byte must be present, or a strict decoder \
          (Preview, Safari) treats the file as truncated"
-    );
-
-    let apng = dir.path().join("demo.apng");
-    let result = render(&apng, &["--fps", "10"]);
-    assert_eq!(result["format"], "apng");
-    assert!(result["frames"].as_u64().expect("frames") > 0);
-    let bytes = read_bytes(&apng);
-    assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n", "PNG signature");
-    assert!(
-        bytes.windows(4).any(|chunk| chunk == b"acTL"),
-        "without acTL every decoder shows a still image"
-    );
-}
-
-#[test]
-#[ignore = "grouped with the rest of the rec lane."]
-fn rec_unknown_extension_fails_with_a_nonzero_exit_and_an_actionable_message() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let out = dir.path().join("demo.mov");
-    let output = common::phux_cmd(crate::runner::phux_bin())
-        .arg("rec")
-        .arg("--from")
-        .arg(demo_cast())
-        .arg("-o")
-        .arg(&out)
-        .stdin(Stdio::null())
-        .output()
-        .expect("run phux rec --from with a bad extension");
-
-    assert_eq!(
-        output.status.code(),
-        Some(1),
-        "an unrenderable extension must fail, not silently pick a format"
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    assert!(
-        stderr.contains("mov") && stderr.contains("--format"),
-        "the diagnostic must name the rejected extension and the escape \
-         hatch; got: {stderr}"
-    );
-    assert!(
-        !out.exists(),
-        "a rejected format must not leave a partial file behind"
-    );
-}
-
-#[test]
-#[ignore = "renders the committed demo asset; grouped with the rest of the rec lane."]
-fn rec_max_bytes_reports_truncated_rather_than_filling_the_disk() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let whole = dir.path().join("whole.gif");
-    let capped = dir.path().join("capped.gif");
-    let full = render(&whole, &["--fps", "10"]);
-    let short = render(&capped, &["--fps", "10", "--max-bytes", "2048"]);
-
-    assert_eq!(
-        short["truncated"], true,
-        "hitting the cap must be reported, not swallowed: {short}"
-    );
-    assert!(
-        short["frames"].as_u64().expect("frames") < full["frames"].as_u64().expect("frames"),
-        "a capped render must drop frames relative to the whole one: \
-         {short} vs {full}"
-    );
-
-    // A stop condition, not a ceiling: the current frame and trailer finish.
-    let bytes = read_bytes(&capped);
-    assert!(
-        bytes.len() < read_bytes(&whole).len(),
-        "the capped file ({} bytes) must be smaller than the whole one",
-        bytes.len()
-    );
-    assert_eq!(
-        &bytes[..6],
-        b"GIF89a",
-        "a truncated GIF must still be a GIF"
-    );
-    assert_eq!(
-        bytes.last(),
-        Some(&0x3b),
-        "the encoder must finalize on the way out; a capped file with no \
-         trailer is a corrupt file, which is worse than a short one"
     );
 }

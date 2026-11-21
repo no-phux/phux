@@ -139,51 +139,84 @@ fn session_kill_store_failure_closes_nothing() {
 }
 
 #[test]
-fn terminate_is_accepted_and_a_stale_target_refused() {
+fn terminate_checks_identity_and_starts_only_after_commit() {
+    use std::sync::atomic::Ordering;
+
+    use crate::org_store::MemOrgStore;
+
     run(async {
         let state = crate::runtime::apps::terminal::test_support::terminal_state();
         let root = CancellationToken::new();
-        let (_, pane) = state.with_mut(|s| s.seed_session("work"));
-        let target = |activation| LiveTarget {
-            resource: state.with_mut(|s| s.idspace.intern_resource(pane)),
-            instance: state.with(|s| s.idspace.instance()),
-            activation: phux_protocol::ids::ActivationId::new(activation),
-        };
-        let terminate = |n, activation| Command::ResourceTerminate {
-            operation: op(n),
-            target: target(activation),
+        let receipt = committed(handle(
+            &state,
+            CLIENT,
+            session_create(1, "work", true),
+            &root,
+        ));
+        let target = receipt.target.expect("a launched engine");
+        let pane = state.with(|s| s.idspace.resource_from_wire(&target.resource).unwrap());
+        let stale_request = Command::ResourceTerminate {
+            operation: op(2),
+            target: LiveTarget {
+                activation: phux_protocol::ids::ActivationId::new(7),
+                ..target.clone()
+            },
             mode: TerminateMode::Graceful,
         };
         assert!(matches!(
-            handle(&state, CLIENT, terminate(1, 7), &root),
+            handle(&state, CLIENT, stale_request, &root),
             CommandResult::Refused(WireRefusal::Stale { .. })
         ));
-        assert_eq!(
-            handle(&state, CLIENT, terminate(2, 1), &root),
-            CommandResult::Accepted { operation: op(2) }
-        );
-        let record = state.with(|s| s.registry().record(pane).cloned()).unwrap();
-        assert_eq!(
-            record.activation.unwrap().state,
-            phux_core::ExecState::Stopping,
-            "the outcome follows as ActivationChanged"
-        );
-    });
-}
 
-#[test]
-fn organization_events_are_journaled_with_their_actor() {
-    run(async {
-        let state = crate::runtime::apps::terminal::test_support::terminal_state();
-        state.with_mut(|s| s.set_client_name(CLIENT, "agent".to_owned()));
-        let before = state.with(ServerState::journal_head);
-        let create = session_create(1, "work", false);
-        let _ = committed(handle(&state, CLIENT, create, &CancellationToken::new()));
-        let after = state.with(ServerState::journal_head);
-        assert_eq!(
-            after,
-            before + 2,
-            "SessionCreated and its ArrangementChanged"
-        );
+        let terminate = Command::ResourceTerminate {
+            operation: op(3),
+            target,
+            mode: TerminateMode::Graceful,
+        };
+        let store = MemOrgStore::default();
+        let fail = store.fail_commits();
+        state.with_mut(|s| s.set_org_store(Box::new(store)));
+        fail.store(true, Ordering::Relaxed);
+        let head = state.with(ServerState::journal_head);
+        assert!(matches!(
+            handle(&state, CLIENT, terminate.clone(), &root),
+            CommandResult::Refused(WireRefusal::StoreFailure { .. })
+        ));
+        state.with(|s| {
+            assert!(s.resources().handle(pane).is_some());
+            assert!(s.pending_close_reason(pane).is_none());
+            assert_eq!(s.journal_head(), head);
+        });
+
+        fail.store(false, Ordering::Relaxed);
+        let accepted = CommandResult::Accepted { operation: op(3) };
+        assert_eq!(handle(&state, CLIENT, terminate.clone(), &root), accepted);
+        state.with(|s| {
+            let record = s.registry().record(pane).unwrap();
+            assert_eq!(
+                record.activation.as_ref().unwrap().state,
+                phux_core::ExecState::Stopping,
+                "the outcome follows as ActivationChanged"
+            );
+            assert!(s.pending_close_reason(pane).is_some());
+        });
+        let head = state.with(ServerState::journal_head);
+        state.with_mut(|s| {
+            let launch = phux_core::LaunchSpec::Agent(phux_core::resource::AgentLaunch {
+                provider: "test".to_owned(),
+                native_id: None,
+            });
+            assert!(matches!(
+                s.create_child(
+                    pane,
+                    phux_core::NewResource::child(launch, None),
+                    &phux_core::Actor::owner(),
+                ),
+                Err(phux_core::Refusal::NotFound)
+            ));
+            assert!(s.registry().children(pane).is_empty());
+        });
+        assert_eq!(handle(&state, CLIENT, terminate, &root), accepted);
+        assert_eq!(state.with(ServerState::journal_head), head);
     });
 }

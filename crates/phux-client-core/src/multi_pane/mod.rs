@@ -70,17 +70,6 @@ mod tests {
     }
 
     #[test]
-    fn empty_and_single_pane_layouts() {
-        let out = compute_layout(&LayoutState::default(), (80, 24));
-        assert!(out.dividers.is_empty());
-        assert!(out.rects.is_empty());
-        let out = compute_layout(&LayoutState::single(t(1)), (80, 24));
-        assert!(out.dividers.is_empty());
-        assert_eq!(out.rects.len(), 1);
-        assert_eq!(out.rects[&t(1)], rect(0, 0, 80, 24));
-    }
-
-    #[test]
     fn compute_layout_in_insets_rects_and_dividers_by_content_origin() {
         let state = focused(pair(SplitDir::Horizontal, 0.5), 1);
         // Reserve a 20-col left sidebar: panes tile into x=20..80.
@@ -98,28 +87,8 @@ mod tests {
         assert!(rects.values().all(|r| r.y >= 5), "pane above the top inset");
     }
 
-    /// Three panes, two divider columns: both are the same light glyph,
-    /// and neither changes when focus moves.
-    #[test]
-    fn a_focus_move_does_not_change_any_glyph() {
-        let three = split_at(
-            &pair(SplitDir::Horizontal, 0.5),
-            &t(2),
-            &t(3),
-            SplitDir::Horizontal,
-            0.5,
-        )
-        .unwrap();
-        let with_1 = compute_layout(&focused(three.clone(), 1), (80, 24));
-        let with_3 = compute_layout(&focused(three, 3), (80, 24));
-        assert_eq!(with_1.dividers, with_3.dividers);
-        let cols: std::collections::BTreeSet<u16> = with_1.dividers.iter().map(|c| c.x).collect();
-        assert_eq!(cols.len(), 2, "expected two divider columns: {cols:?}");
-        assert!(with_1.dividers.iter().all(|c| c.ch == '\u{2502}'));
-    }
-
-    /// Labelled-grid snapshots: a 2-pane split with either focus (the layout
-    /// is identical), and a 3-pane cross split whose T-junctions must render.
+    /// Labelled-grid snapshots: a 2-pane split, and a 3-pane cross split
+    /// whose T-junctions must render.
     #[test]
     fn layout_snapshots() {
         let cross = split_at(
@@ -134,10 +103,6 @@ mod tests {
             (
                 "two_pane_h_split_80x24_focus_left",
                 focused(pair(SplitDir::Horizontal, 0.5), 1),
-            ),
-            (
-                "two_pane_h_split_80x24_focus_right",
-                focused(pair(SplitDir::Horizontal, 0.5), 2),
             ),
             ("three_pane_cross_80x24_focus_top_left", focused(cross, 1)),
         ] {

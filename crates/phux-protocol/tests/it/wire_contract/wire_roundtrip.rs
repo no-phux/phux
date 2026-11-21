@@ -88,11 +88,11 @@ use strategies::{arb_frame_kind, arb_resource_info, arb_resource_kind};
 // -----------------------------------------------------------------------------
 
 // -----------------------------------------------------------------------------
-// L3 metadata frames — SPEC §7.4 / §11.L3 (phux-4li.2).
+// L3 metadata frames (phux-4li.2).
 // -----------------------------------------------------------------------------
 
 // -----------------------------------------------------------------------------
-// L1 Terminal lifecycle frames — SPEC §7.2 / §10.1 (phux-4li.10).
+// L1 Terminal lifecycle frames (phux-4li.10).
 //
 // Wire substrate for split-pane / kill-pane (phux-4li.5) and post-SIGWINCH
 // per-pane `ioctl(TIOCSWINSZ)` (phux-4li.9). Server-side handler + client-
@@ -100,7 +100,7 @@ use strategies::{arb_frame_kind, arb_resource_info, arb_resource_kind};
 // -----------------------------------------------------------------------------
 
 // -----------------------------------------------------------------------------
-// Agent-event frames — SPEC §7.5 (phux-y2t).
+// Agent-event frames (phux-y2t).
 // -----------------------------------------------------------------------------
 
 // -----------------------------------------------------------------------------

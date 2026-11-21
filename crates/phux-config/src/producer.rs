@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 /// One command the server keeps running in its own session, named by
 /// [`Self::session_name`]. The command runs in that session's pane, so it
 /// opens its documents under the pane it finds in `PHUX_TERMINAL_ID`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ProducerConfigEntry {
     /// The producer's name; its session is `producer-` and the name.

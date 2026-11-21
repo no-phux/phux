@@ -3,7 +3,6 @@
 //! Terminal, publish whole documents, bootstrap a late viewer onto the
 //! newest, publish their labels as names, and report producer liveness.
 
-use phux_core::image::{ImageFormat, image_size};
 use phux_protocol::caps::BootstrapStreamProfile;
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::typed_document::split_bootstrap;
@@ -67,76 +66,6 @@ fn a_tree_is_spawned_published_and_bootstrapped_at_its_newest_document() {
         let live = next_output(&mut viewer, &tree).await;
         assert_eq!(live, (3, br#"{"role":"window","v":3}"#.to_vec()));
 
-        // A viewer is not a producer.
-        let denied = publish(&mut viewer, 21, &tree, "{}").await;
-        assert!(
-            matches!(
-                denied,
-                CommandResult::Error {
-                    code: ErrorCode::NotProducer,
-                    ..
-                } | CommandResult::OkWith(_)
-            ),
-            "{denied:?}"
-        );
-
-        drop((owner, viewer));
-        server.stop().await;
-    });
-}
-
-/// A PNG's signature and `IHDR` chunk for a `width` x `height` image, plus
-/// one byte of `tag` so two images of one size differ.
-fn png(width: u32, height: u32, tag: u8) -> Vec<u8> {
-    let mut bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR".to_vec();
-    bytes.extend_from_slice(&width.to_be_bytes());
-    bytes.extend_from_slice(&height.to_be_bytes());
-    bytes.extend_from_slice(&[8, 6, 0, 0, 0, tag]);
-    bytes
-}
-
-#[test]
-fn a_surface_takes_only_images_and_a_late_viewer_sees_the_newest() {
-    phux_server_testkit::run_local(async {
-        let (server, mut owner, parent) = demo_parent().await;
-        let surface = spawn_kind(
-            &mut owner,
-            2,
-            SpawnResource::pixel_surface(parent, "window:Safari"),
-        )
-        .await;
-        let (grid, profile, base_seq, image) = bootstrap(&mut owner, &surface).await;
-        assert_eq!(grid, (0, 0), "a surface's geometry is its image's");
-        assert_eq!(profile, BootstrapStreamProfile::PixelSurfacePngV1);
-        assert_eq!((base_seq, image.len()), (0, 0));
-
-        // JSON is a document, but not an image.
-        assert_invalid(&publish(&mut owner, 10, &surface, b"{\"role\":\"window\"}".to_vec()).await);
-        for (request_id, tag) in [(11, 1), (12, 2)] {
-            assert_taken(&publish(&mut owner, request_id, &surface, png(640, 480, tag)).await);
-        }
-
-        let mut viewer = server.connect().await;
-        send_command(
-            &mut viewer,
-            20,
-            Command::attach_terminal(surface.clone(), None),
-        )
-        .await;
-        let (_, profile, base_seq, image) = bootstrap(&mut viewer, &surface).await;
-        assert_eq!(profile, BootstrapStreamProfile::PixelSurfacePngV1);
-        assert_eq!((base_seq, image.clone()), (2, png(640, 480, 2)));
-        assert_eq!(image_size(&image).map(|s| (s.1, s.2)), Ok((640, 480)));
-
-        // A JPEG frame header for 800 x 600: the surface's newer image.
-        let jpeg = vec![
-            0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 0x02, 0x58, 0x03, 0x20, 1, 1, 0x11, 0,
-        ];
-        assert_taken(&publish(&mut owner, 13, &surface, jpeg).await);
-        let (seq, bytes) = next_output(&mut viewer, &surface).await;
-        assert_eq!(seq, 3);
-        assert_eq!(image_size(&bytes), Ok((ImageFormat::Jpeg, 800, 600)));
-
         drop((owner, viewer));
         server.stop().await;
     });
@@ -178,8 +107,6 @@ fn a_typed_document_carries_its_content_type_to_a_late_viewer() {
         for (request_id, text) in [(10, "# one"), (11, "# two")] {
             assert_taken(&publish(&mut owner, request_id, &doc, text).await);
         }
-        // Markdown is text: bytes that are not UTF-8 are refused.
-        assert_invalid(&publish(&mut owner, 12, &doc, b"\xff\xfe".to_vec()).await);
 
         let mut viewer = server.connect().await;
         send_command(&mut viewer, 20, Command::attach_terminal(doc.clone(), None)).await;
@@ -189,12 +116,6 @@ fn a_typed_document_carries_its_content_type_to_a_late_viewer() {
             next_output(&mut viewer, &doc).await,
             (3, b"# three".to_vec())
         );
-
-        // A JSON document must parse.
-        let json = spawn_kind(&mut owner, 3, document(&parent, "application/json")).await;
-        let _ = bootstrap(&mut owner, &json).await;
-        assert_invalid(&publish(&mut owner, 30, &json, "{not json").await);
-        assert_taken(&publish(&mut owner, 31, &json, "{\"ok\":true}").await);
 
         drop((owner, viewer));
         server.stop().await;

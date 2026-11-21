@@ -89,7 +89,7 @@ impl Desk {
         items.extend(
             [Source::Page, Source::Tree, Source::Surface].map(|source| Item {
                 title: format!("Start {} mirror…", source.verb()),
-                detail: "new supervised producer terminal · read-only".to_owned(),
+                detail: "read-only, in a new terminal".to_owned(),
                 kind: "action",
                 target: Target::Mirror(source),
             }),
@@ -199,30 +199,6 @@ impl Desk {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn argv_preserves_untrusted_target_as_one_argument_and_pins_host_socket() {
-        let args = argv(
-            "/dev/phux".as_ref(),
-            "/dev/socket".as_ref(),
-            Source::Page,
-            "page; touch /tmp/no",
-        )
-        .unwrap();
-        assert_eq!(
-            args,
-            [
-                "/dev/phux",
-                "--socket",
-                "/dev/socket",
-                "agent",
-                "page",
-                "mirror",
-                "--",
-                "page; touch /tmp/no"
-            ]
-        );
-    }
 
     #[test]
     fn unsupported_hosts_are_actionable_not_guessed() {

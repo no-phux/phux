@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "locale": "en",
+  "words": {
+    "needs_you": "needs you",
+    "working": "working",
+    "done": "done",
+    "failed": "failed",
+    "lost": "lost",
+    "idle": "idle",
+    "ended": "ended",
+    "bell": "bell"
+  },
+  "plurals": {
+    "count.needs_you": "{count, plural, one {# needs you} other {# need you}}",
+    "count.failed": "{count, plural, one {# failed} other {# failed}}",
+    "count.done": "{count, plural, one {# done} other {# done}}"
+  }
+}

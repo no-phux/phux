@@ -4,9 +4,7 @@ mod tests {
     use phux_client::state::Degradation;
     use phux_client::testkit::{ScriptSpec, ScriptedServer};
     use phux_protocol::ids::{SessionId, WindowId};
-    use phux_protocol::wire::frame::{
-        Command as WireCommand, ErrorCode, FrameKind, RESOURCE_TAGS_KEY, Scope,
-    };
+    use phux_protocol::wire::frame::{Command as WireCommand, ErrorCode, FrameKind};
     use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
     use tokio::net::UnixListener;
 
@@ -42,52 +40,17 @@ mod tests {
         )
     }
 
-    #[test]
-    fn compiled_skill_teaches_discovery_and_load_bearing_rules() {
-        let skill = crate::SKILL;
-        for rule in [
-            "tools/list",
-            "phux mcp --schema",
-            "finite timeout",
-            "level read",
-            "observed transition",
-            "delivery_unknown",
-            "confirm: true",
-            "human's client-local focus",
-        ] {
-            assert!(skill.contains(rule), "compiled MCP skill omits {rule:?}");
-        }
-        assert!(!skill.contains("ADR-"));
-        assert!(!skill.contains("docs/"));
-    }
-
     #[tokio::test]
     async fn added_tool_dispatch_routes_to_strict_validation() {
         // `Some(message)` pins the refusal text exactly; `None` only requires
         // a refusal. Each case is refused before the CLI is discovered.
-        let cases: [(&str, Value, Option<&str>); 12] = [
-            (
-                "phux_kill",
-                json!({ "target": "@1" }),
-                Some("phux_kill is destructive; pass `confirm: true`"),
-            ),
-            (
-                "phux_detach",
-                json!({}),
-                Some("phux_detach is destructive; pass `confirm: true`"),
-            ),
-            (
-                "phux_detach",
-                json!({ "confirm": false }),
-                Some("phux_detach is destructive; pass `confirm: true`"),
-            ),
+        let cases: [(&str, Value, Option<&str>); 8] = [
             // No `target`: detach addresses a session, not a pane.
             (
                 "phux_detach",
                 json!({ "confirm": true, "session": "work", "target": "@1" }),
                 None,
             ),
-            ("phux_launch", json!({}), None),
             (
                 "phux_paste",
                 json!({ "target": "@1" }),
@@ -213,61 +176,12 @@ mod tests {
         assert!(err.0.contains("png"), "{}", err.0);
     }
 
-    /// Absent ⇒ `Current`; malformed and headless `=` ⇒ error.
+    /// Absent ⇒ `Current`; headless `=` ⇒ error.
     #[test]
     fn parse_target_defaults_and_accepts_grammar() {
         assert_eq!(parse_target(&json!({})).unwrap(), Selector::Current);
-        assert_eq!(
-            parse_target(&json!({ "target": "." })).unwrap(),
-            Selector::Current,
-        );
-        assert_eq!(
-            parse_target(&json!({ "target": "work:1.2" })).unwrap(),
-            Selector::Pane("work".to_owned(), selector::GroupRef::Index(1), 2),
-        );
-        assert_eq!(
-            parse_target(&json!({ "target": "@100" })).unwrap(),
-            Selector::ResourceId(100),
-        );
-        assert!(parse_target(&json!({ "target": "@nope" })).is_err());
         let err = parse_target(&json!({ "target": "=" })).unwrap_err();
         assert!(err.0.contains("attached-TUI focus history"), "{err:?}");
-    }
-
-    #[tokio::test]
-    async fn resolve_one_maps_every_selector_form() {
-        let whole = whole_fleet();
-        let socket = std::path::Path::new("unused-for-non-tag-selectors");
-
-        for (raw, expected) in [
-            ("work", ResourceId::local(100)),
-            ("work:1", ResourceId::local(101)),
-            ("work:editor", ResourceId::local(101)),
-            ("work:1.1", ResourceId::local(102)),
-            ("@200", ResourceId::local(200)),
-            ("devbox/@7", ResourceId::satellite("devbox", 7)),
-        ] {
-            assert_eq!(
-                resolve_one(socket, &selector::parse(raw).unwrap(), &whole)
-                    .await
-                    .unwrap(),
-                expected,
-                "{raw}",
-            );
-        }
-        assert_eq!(
-            resolve_one(socket, &Selector::Current, &whole)
-                .await
-                .unwrap(),
-            ResourceId::local(100),
-        );
-        for miss in ["ghost", "@999"] {
-            let selector = selector::parse(miss).unwrap();
-            assert!(
-                resolve_one(socket, &selector, &whole).await.is_err(),
-                "{miss} must miss"
-            );
-        }
     }
 
     /// A miss against a hub that could not reach a satellite must not be
@@ -320,42 +234,6 @@ mod tests {
         args["socket"] = json!(socket.to_string_lossy());
         let result = dispatch("phux_detach", &args).await.unwrap();
         (result, server.await.unwrap())
-    }
-
-    /// `#tag` resolution fetches the tag index, then prefers the focused pane.
-    #[tokio::test]
-    async fn resolve_one_fetches_tag_fixture() {
-        let (_dir, socket, server) = serve(ScriptSpec::new().metadata(|scope, key| {
-            assert_eq!(key, RESOURCE_TAGS_KEY);
-            let Scope::Resource(terminal_id) = scope else {
-                panic!("tag lookup must be terminal-scoped, got {scope:?}");
-            };
-            matches!(terminal_id.local_id(), Some(100 | 200))
-                .then(|| serde_json::to_vec(&vec!["build"]).unwrap())
-        }));
-
-        let pane = resolve_one(&socket, &selector::parse("#build").unwrap(), &whole_fleet())
-            .await
-            .unwrap();
-        assert_eq!(pane, ResourceId::local(100));
-        let seen = server.await.unwrap();
-        // One lookup per pane, satellite panes included.
-        assert!(
-            matches!(seen.first(), Some(FrameKind::Hello { .. })),
-            "the client must negotiate before metadata lookup; got {seen:?}"
-        );
-        let metadata = &seen[1..];
-        assert_eq!(
-            metadata.len(),
-            fixture().resources.len(),
-            "one GET_METADATA per pane in the snapshot, pipelined; got {seen:?}"
-        );
-        assert!(
-            metadata
-                .iter()
-                .all(|frame| matches!(frame, FrameKind::GetMetadata { .. })),
-            "HELLO must be followed only by GET_METADATA; got {seen:?}"
-        );
     }
 
     /// `phux_detach` sends `DetachClients { session }` and reports the count

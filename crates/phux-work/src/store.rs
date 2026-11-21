@@ -514,15 +514,6 @@ impl Store {
     }
 
     #[cfg(test)]
-    pub(crate) fn table_names(&self) -> Result<Vec<String>, Error> {
-        let mut statement = self.conn.prepare(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
-        )?;
-        let rows = statement.query_map([], |row| row.get(0))?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(Error::from)
-    }
-
-    #[cfg(test)]
     pub(crate) fn event_kinds(&self) -> Result<Vec<String>, Error> {
         let mut statement = self.conn.prepare("SELECT kind FROM event ORDER BY seq")?;
         let rows = statement.query_map([], |row| row.get(0))?;
@@ -1073,22 +1064,6 @@ mod tests {
         let (journal, synchronous) = store.durability().expect("pragmas");
         assert_eq!(journal.to_ascii_lowercase(), "wal");
         assert_eq!(synchronous, 2);
-        let tables = store.table_names().expect("tables");
-        for name in [
-            "alias_counter",
-            "binding",
-            "event",
-            "objective",
-            "operation",
-            "run",
-            "signal",
-            "launch_intent",
-        ] {
-            assert!(
-                tables.iter().any(|table| table == name),
-                "{tables:?} missing {name}"
-            );
-        }
         assert_eq!(mode(&path), 0o600);
         assert_eq!(mode(dir.path()), 0o700);
         let lock = {

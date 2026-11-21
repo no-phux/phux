@@ -116,8 +116,12 @@ mod tests {
             let mut desk = crate::test_support::settings_window().with_phone(phone);
             desk.settings_open = false;
             desk.news.unread = true;
-            let mut rt =
-                rune::Runtime::new(desk, crate::ui::view, size, rune::Env::new(false, 1.0));
+            let mut rt = crate::test_support::runtime(
+                desk,
+                crate::ui::view,
+                size,
+                rune::Env::new(false, 1.0),
+            );
             rt.frame(0.0);
             assert!(rt.accessibility_action(bell, Action::Click, None), "{bell}");
             rt.frame(0.0);
@@ -136,7 +140,7 @@ mod tests {
         let mut desk = crate::test_support::settings_window().with_phone(true);
         desk.settings_open = false;
         desk.toggle_news();
-        let mut rt = rune::Runtime::new(
+        let mut rt = crate::test_support::runtime(
             desk,
             crate::ui::view,
             (393.0, 852.0),

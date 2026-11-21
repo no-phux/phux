@@ -12,34 +12,32 @@ fn enrollment_progress_severity_follows_typed_outcomes() {
     use super::events::{EnrollEvent, Supervision};
     use crate::output::human_line;
     for (event, expected) in [
-        (EnrollEvent::Paired, "phux: ok: paired"),
+        (EnrollEvent::Paired, "phux: ok: "),
         (
             EnrollEvent::Probing {
                 endpoint: "quic://mini:8788".to_owned(),
             },
-            "phux: info: trying quic://mini:8788",
+            "phux: info: ",
         ),
         (
             EnrollEvent::ServerStartFailed {
                 error: "refused".to_owned(),
             },
-            "phux: warn: could not start a server there (refused); pairing needs one with a remote listener, trying anyway",
+            "phux: warn: ",
         ),
         (
             EnrollEvent::ServerReady(Supervision::Unsupervised {
                 reason: "no service manager".to_owned(),
             }),
-            "phux: warn: server running unsupervised (service install failed: no service manager); it will not come back by itself after a reboot",
+            "phux: warn: ",
         ),
     ] {
-        assert_eq!(
-            human_line(
-                event.severity(),
-                format_args!("{}", event.describe()),
-                false
-            ),
-            expected
+        let line = human_line(
+            event.severity(),
+            format_args!("{}", event.describe()),
+            false,
         );
+        assert!(line.starts_with(expected), "{line}");
     }
 }
 

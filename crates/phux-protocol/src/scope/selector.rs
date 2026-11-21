@@ -16,7 +16,7 @@ use std::fmt;
 /// A satellite host as a selector names it.
 ///
 /// It is 1..=255 UTF-8 bytes with no NUL or control character, compared
-/// byte-for-byte (§5): the federation host key `ResourceId::Satellite`
+/// byte-for-byte: the federation host key `ResourceId::Satellite`
 /// carries, never a DNS name.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Host(Box<str>);
@@ -44,7 +44,7 @@ impl Host {
     }
 }
 
-/// Whose resources a grant covers (§5).
+/// Whose resources a grant covers.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Selector {
     /// Every subject.
@@ -72,7 +72,7 @@ pub enum Selector {
 }
 
 impl Selector {
-    /// The canonical bytes of §5.
+    /// The canonical bytes.
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
@@ -80,7 +80,7 @@ impl Selector {
         out
     }
 
-    /// Append the canonical bytes of §5 to `out`.
+    /// Append the canonical bytes to `out`.
     pub fn encode_into(&self, out: &mut Vec<u8>) {
         match self {
             Self::Global => out.push(TAG_GLOBAL),
@@ -320,7 +320,7 @@ fn parse_host(name: &str) -> Result<Host, ScopeGrammarError> {
     Host::new(name).map_err(|_| ScopeGrammarError::InvalidHost)
 }
 
-/// One spelling per value: a key's full lowercase text form (L1 §5.7.1),
+/// One spelling per value: a key's full lowercase text form,
 /// never a shortened prefix or the uppercase a key reader also accepts.
 fn parse_key<K: fmt::Display>(
     text: &str,

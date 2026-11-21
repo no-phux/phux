@@ -70,6 +70,8 @@ fn write_enter_alt_screen<W: Write>(out: &mut W, mouse: bool) -> io::Result<()> 
     out.write_all(b"\x1b[?25l")?;
     out.write_all(b"\x1b[?2004h")?;
     out.write_all(b"\x1b[?1004h")?;
+    // DEC 2031: the host reports a light/dark theme switch.
+    out.write_all(b"\x1b[?2031h")?;
     if mouse {
         out.write_all(b"\x1b[?1002h\x1b[?1006h")?;
         MOUSE_CAPTURE_ACTIVE.store(true, Ordering::SeqCst);
@@ -125,12 +127,72 @@ pub(super) fn sync_hover_tracking<W: Write>(out: &mut W, want: bool) -> io::Resu
     out.flush()
 }
 
+/// The window title this client set on the host (`[chrome] title`), or
+/// `None` when it set none and owes no pop.
+static OUTER_TITLE: Mutex<Option<String>> = Mutex::new(None);
+
+/// XTWINOPS: save the host's window title on its title stack, and restore it.
+const PUSH_TITLE: &[u8] = b"\x1b[22;2t";
+const POP_TITLE: &[u8] = b"\x1b[23;2t";
+
+/// `[chrome] title` with `{session}` and `{window}` filled in once (a name
+/// containing `{window}` stays literal). Characters that must never reach a
+/// VT emitter are dropped, since names and pane titles are untrusted.
+#[allow(
+    clippy::literal_string_with_formatting_args,
+    reason = "`{session}` and `{window}` are the option's own placeholders"
+)]
+pub(super) fn outer_title(format: &str, session: &str, window: &str) -> String {
+    let mut title = String::new();
+    let mut rest = format;
+    while let Some(at) = rest.find('{') {
+        title.push_str(&rest[..at]);
+        let tail = &rest[at..];
+        if let Some(after) = tail.strip_prefix("{session}") {
+            title.push_str(session);
+            rest = after;
+        } else if let Some(after) = tail.strip_prefix("{window}") {
+            title.push_str(window);
+            rest = after;
+        } else {
+            title.push('{');
+            rest = &tail[1..];
+        }
+    }
+    title.push_str(rest);
+    title.retain(|ch| crate::render::chrome::status_bar::widgets::cell_width(ch).is_some());
+    title
+}
+
+/// Set the host's window title to `title` (OSC 2), saving the old one the
+/// first time; an empty `title` hands the old one back. A no-op when
+/// unchanged.
+pub(super) fn sync_outer_title<W: Write>(out: &mut W, title: &str) -> io::Result<()> {
+    let Ok(mut current) = OUTER_TITLE.lock() else {
+        return Ok(());
+    };
+    if current.as_deref().unwrap_or_default() == title {
+        return Ok(());
+    }
+    if title.is_empty() {
+        out.write_all(POP_TITLE)?;
+    } else {
+        if current.is_none() {
+            out.write_all(PUSH_TITLE)?;
+        }
+        write!(out, "\x1b]2;{title}\x07")?;
+    }
+    *current = (!title.is_empty()).then(|| title.to_owned());
+    out.flush()
+}
+
 /// Restore the outer terminal; idempotent. Every teardown (Drop, signal,
 /// panic hook, detach exit, switch-host hand-off) routes through here.
 pub fn write_terminal_reset<W: Write>(out: &mut W) -> io::Result<()> {
     write_reset(out)?;
     out.write_all(b"\x1b[?2004l")?;
     out.write_all(b"\x1b[?1004l")?;
+    out.write_all(b"\x1b[?2031l")?;
     out.flush()?;
     if HOVER_TRACKING_ACTIVE.swap(false, Ordering::SeqCst) {
         out.write_all(b"\x1b[?1003l")?;
@@ -139,6 +201,16 @@ pub fn write_terminal_reset<W: Write>(out: &mut W) -> io::Result<()> {
     // Before leaving the alt screen, so native selection returns on detach.
     if MOUSE_CAPTURE_ACTIVE.swap(false, Ordering::SeqCst) {
         out.write_all(b"\x1b[?1006l\x1b[?1002l")?;
+        out.flush()?;
+    }
+    // `try_lock`: a panic inside `sync_outer_title` must not deadlock here.
+    if OUTER_TITLE
+        .try_lock()
+        .ok()
+        .and_then(|mut t| t.take())
+        .is_some()
+    {
+        out.write_all(POP_TITLE)?;
         out.flush()?;
     }
     if ALT_SCREEN_ACTIVE.swap(false, Ordering::SeqCst) {

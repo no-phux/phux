@@ -1,4 +1,5 @@
 //! Key identities, legacy controls, modifiers, and UTF-8 byte classification.
+use phux_client_core::keys::physical_key_for_char;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 
 /// Map a single byte to a [`KeyEvent`] for the printable / C0 region.
@@ -9,7 +10,7 @@ pub(super) fn c0_or_ascii_to_key(b: u8) -> Option<KeyEvent> {
         // Printable ASCII.
         0x20..=0x7E => Some(KeyEvent {
             action: KeyAction::Press,
-            key: ascii_to_physical(b),
+            key: physical_key_for_char(char::from(b)),
             mods: ascii_shift_mods(b),
             consumed_mods: ascii_shift_mods(b),
             composing: false,
@@ -62,34 +63,8 @@ pub const fn make_named_key(key: PhysicalKey, mods: ModSet) -> KeyEvent {
     }
 }
 
-/// Map a printable ASCII byte to a [`PhysicalKey`]. Punctuation goes through
-/// [`phux_config::keybind::punct_to_key`] so it matches the key the chord
-/// parser builds for the same glyph, or punctuation keybinds never fire.
-const fn ascii_to_physical(b: u8) -> PhysicalKey {
-    match b {
-        b' ' => PhysicalKey::Space,
-        b'0'..=b'9' => match b {
-            b'0' => PhysicalKey::Digit0,
-            b'1' => PhysicalKey::Digit1,
-            b'2' => PhysicalKey::Digit2,
-            b'3' => PhysicalKey::Digit3,
-            b'4' => PhysicalKey::Digit4,
-            b'5' => PhysicalKey::Digit5,
-            b'6' => PhysicalKey::Digit6,
-            b'7' => PhysicalKey::Digit7,
-            b'8' => PhysicalKey::Digit8,
-            _ => PhysicalKey::Digit9,
-        },
-        b'A'..=b'Z' | b'a'..=b'z' => letter_key(b.to_ascii_uppercase()),
-        _ => match phux_config::keybind::punct_to_key(b as char) {
-            Some((key, _shift)) => key,
-            None => PhysicalKey::Unidentified,
-        },
-    }
-}
-
 /// `SHIFT` for uppercase letters and shifted punctuation, which also goes in
-/// `consumed_mods` (SPEC §9.1.3) so the encoder does not apply it twice.
+/// `consumed_mods` so the encoder does not apply it twice.
 const fn ascii_shift_mods(b: u8) -> ModSet {
     if ascii_unshifted(b) == b {
         ModSet::empty()
@@ -168,7 +143,7 @@ pub(super) fn kitty_modifier_code(code: u32) -> ModSet {
     clippy::too_many_lines,
     reason = "flat keycode table — the size IS the spec"
 )]
-pub(super) const fn kitty_keycode_to_physical(cp: u32) -> Option<PhysicalKey> {
+pub(super) fn kitty_keycode_to_physical(cp: u32) -> Option<PhysicalKey> {
     Some(match cp {
         27 => PhysicalKey::Escape,
         13 => PhysicalKey::Enter,
@@ -177,7 +152,7 @@ pub(super) const fn kitty_keycode_to_physical(cp: u32) -> Option<PhysicalKey> {
         #[allow(clippy::cast_possible_truncation, reason = "range-checked u32 -> u8")]
         // Printable ASCII, punctuation included: under the host kitty flags
         // Ctrl+] arrives as `CSI 93;5u` and must stay `BracketRight`.
-        c @ 0x20..=0x7E => ascii_to_physical(c as u8),
+        c @ 0x20..=0x7E => physical_key_for_char(char::from(c as u8)),
         // Functional keys (kitty PUA range).
         57348 => PhysicalKey::Insert,
         57349 => PhysicalKey::Delete,
@@ -294,5 +269,21 @@ const fn letter_key(b: u8) -> PhysicalKey {
         b'Y' => PhysicalKey::Y,
         b'Z' => PhysicalKey::Z,
         _ => PhysicalKey::Unidentified,
+    }
+}
+
+#[cfg(test)]
+mod table_tests {
+    use super::physical_key_for_char;
+
+    /// Typed punctuation must land on the key the chord parser builds for
+    /// the same glyph, or punctuation keybinds never fire.
+    #[test]
+    fn typed_punctuation_matches_the_chord_parser() {
+        for ch in (0x20u8..=0x7E).map(char::from) {
+            if let Some((key, _shift)) = phux_config::keybind::punct_to_key(ch) {
+                assert_eq!(physical_key_for_char(ch), key, "{ch:?}");
+            }
+        }
     }
 }

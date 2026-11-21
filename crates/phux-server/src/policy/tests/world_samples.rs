@@ -301,6 +301,7 @@ fn samples(world: &World, agent: &WireResourceId) -> Vec<FrameKind> {
         FrameKind::ViewportResize {
             viewport: ViewportInfo::new(80, 24),
         },
+        viewport_colors(),
         spawn(Some("h"), None, None),
         spawn(None, None, None),
         spawn(None, Some(t.clone()), None),
@@ -475,6 +476,7 @@ fn samples(world: &World, agent: &WireResourceId) -> Vec<FrameKind> {
         command(Command::Checkout {
             terminal_id: t.clone(),
             request: phux_protocol::checkout::CheckoutRequest::Status,
+            contract: phux_protocol::checkout::CHECKOUT_CONTRACT,
         }),
         command(Command::ServiceHttpClose { exchange: 1 }),
         command(Command::Forward {
@@ -527,4 +529,31 @@ fn samples(world: &World, agent: &WireResourceId) -> Vec<FrameKind> {
     .chain(native_samples(world, agent))
     .chain(question_samples(world))
     .collect()
+}
+
+/// A `VIEWPORT_COLORS` frame (black on white).
+fn viewport_colors() -> FrameKind {
+    let (black, white) = (
+        phux_protocol::caps::TerminalColor::default(),
+        phux_protocol::caps::TerminalColor { r: 255, g: 255, b: 255 },
+    );
+    FrameKind::ViewportColors {
+        colors: phux_protocol::caps::TerminalDefaultColors {
+            foreground: black,
+            background: white,
+        },
+    }
+}
+
+/// `VIEWPORT_COLORS` is gated exactly as `VIEWPORT_RESIZE`: `BIND` on the
+/// Terminals the connection views.
+fn viewport_colors_row(rows: &[Row]) -> Option<Row> {
+    let resize = rows
+        .iter()
+        .find(|row| matches!(row.frame, FrameKind::ViewportResize { .. }))?;
+    Some(Row {
+        frame: viewport_colors(),
+        admit: resize.admit.clone(),
+        deny: resize.deny.clone(),
+    })
 }

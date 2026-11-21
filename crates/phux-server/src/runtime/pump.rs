@@ -269,6 +269,16 @@ impl PumpGeneration {
         false
     }
 
+    /// The ring lapped this fenced pump, maybe over the `Resync` it asked
+    /// for. A pane still broadcasting has a live actor, so the window spends
+    /// none of the budget; only quiet, unanswered windows do. The deadline
+    /// stays put, so the next retry still goes out on time.
+    pub(super) const fn refund_lapped_gap(&mut self) {
+        if let Some(gap) = &mut self.gap {
+            gap.attempts = 0;
+        }
+    }
+
     /// Record that a resync request went out for the current gap; a pump
     /// that is not fenced has no gap to spend on.
     pub(super) fn note_resync_requested(&mut self) {

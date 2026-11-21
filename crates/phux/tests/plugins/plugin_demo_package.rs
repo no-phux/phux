@@ -29,31 +29,6 @@ fn stdout_from_json(output: &serde_json::Value) -> &str {
 }
 
 #[test]
-fn checked_in_plugin_demo_lists_configured_actions() {
-    let (code, stdout, stderr) = run_demo(&["config", "plugins"]);
-    assert_eq!(code, 0, "config plugins should succeed; stderr={stderr}");
-    assert_eq!(stdout.trim(), format!("{PLUGIN_ID} 0.1.0 (enabled)"));
-
-    let (code, stdout, stderr) = run_demo(&["config", "plugins", "--json"]);
-    assert_eq!(
-        code, 0,
-        "config plugins --json validates the manifest; stderr={stderr}"
-    );
-    let plugins: serde_json::Value = serde_json::from_str(&stdout).expect("plugins stdout is JSON");
-    assert_eq!(plugins["plugins"][0]["id"], PLUGIN_ID);
-    assert_eq!(plugins["plugins"][0]["enabled"], true);
-    let actions = plugins["plugins"][0]["actions"]
-        .as_array()
-        .expect("actions array");
-    for action in [INSPECT_ACTION, LIST_ACTION, VALIDATE_ACTION, DETECT_ACTION] {
-        assert!(
-            actions.iter().any(|item| item["id"] == action),
-            "plugin manifest should expose {action}"
-        );
-    }
-}
-
-#[test]
 fn inspect_action_reports_runtime_context() {
     let (code, stdout, stderr) = run_demo(&["config", "run", PLUGIN_ID, INSPECT_ACTION]);
     assert_eq!(code, 0, "config run should succeed; stderr={stderr}");

@@ -79,7 +79,10 @@ impl super::super::SessionLoop {
 
     /// Adopt the initial read and replay held edits only onto a loaded layout.
     /// A successful retry must settle edits retained across an earlier failure.
-    fn settle_layout_outcome(&mut self, outcome: &mut FrameOutcome) {
+    pub(in crate::attach::driver::loop_state) fn settle_layout_outcome(
+        &mut self,
+        outcome: &mut FrameOutcome,
+    ) {
         if outcome.layout_get_answered {
             self.layout_read_complete = true;
             self.layout_get_request_id = None;

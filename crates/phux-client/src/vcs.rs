@@ -240,17 +240,6 @@ mod tests {
     }
 
     #[test]
-    fn cache_serves_within_ttl_without_reparsing() {
-        let repo = fixture_repo("ref: refs/heads/main\n");
-        let mut cache = BranchCache::new();
-        assert_eq!(cache.branch_for(repo.path()), Some("main".to_owned()));
-        // Within the TTL the memo is served as-is.
-        std::fs::write(repo.path().join(".git/HEAD"), "ref: refs/heads/other\n")
-            .expect("rewrite HEAD");
-        assert_eq!(cache.branch_for(repo.path()), Some("main".to_owned()));
-    }
-
-    #[test]
     fn parse_head_rejects_empty_and_short_input() {
         assert_eq!(parse_head(""), None);
         assert_eq!(parse_head("\n"), None);

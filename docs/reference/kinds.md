@@ -28,6 +28,7 @@ Addressed to the server or the connection rather than to one resource.
 | `ATTACH` | frame `0x02` | OBSERVE, CREATE, BIND | yes | none | shipped |
 | `DETACH` | frame `0x03` | exempt: cleanup | no | none | shipped |
 | `VIEWPORT_RESIZE` | frame `0x20` | BIND | yes | none | shipped |
+| `VIEWPORT_COLORS` | frame `0x2b` | BIND | yes | `viewport_colors` (features_ext) | shipped |
 | `COMMAND` | frame `0x31` | nested | yes | none | shipped |
 | `LIST_DIRECTORY` | frame `0x55` | INVENTORY | no | `list_directory` | shipped |
 | `PATH_QUERY` | frame `0x56` | INVENTORY | no | `path_query` (features_ext) | shipped |
@@ -288,6 +289,7 @@ Every client-originated frame lands on exactly one row.
 | `SUBSCRIBE` (unallocated) | deny | `None` |
 | `INPUT_KEY`, `INPUT_PASTE`, `INPUT_MOUSE`, `INPUT_RAW`, `INPUT_FOCUS`, `INPUT_TERMINAL_REPLY`, `CLIPBOARD_REPLY` | INPUT | `NamedTerminal` |
 | `VIEWPORT_RESIZE` | BIND | `AttachedTerminals` |
+| `VIEWPORT_COLORS` | BIND | `AttachedTerminals` |
 | `SPAWN_RESOURCE { satellite: Some, owner_terminal: None }` | CREATE | `SatelliteHost` |
 | `SPAWN_RESOURCE { satellite: None, owner_terminal: None }` | CREATE | `PayloadGroup` |
 | `SPAWN_RESOURCE { satellite: None, owner_terminal: Some }` | CREATE+BIND | `OwnerTerminalGroup` |
