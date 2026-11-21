@@ -105,6 +105,11 @@ define_server_feature_word! {
         SlotTabs = SLOT_TABS = 0x0800_0000,
         /// Current question reads, exact structured responses, and receipt lookup.
         CurrentQuestions = CURRENT_QUESTIONS = 0x1000_0000,
+        /// The server answers `CHECKOUT` contract 2: the `show` operation, and
+        /// the `applied` answer and `git_unavailable` refusal for a client whose
+        /// command carries contract 2. Advertised only beside
+        /// [`Self::Checkout`]; a client MUST see the bit before sending `show`.
+        CheckoutV2 = CHECKOUT_V2 = 0x2000_0000,
     }
 }
 
