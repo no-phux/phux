@@ -11,6 +11,7 @@ use crate::desk::surfaces::Surface;
 use crate::features::changes;
 
 mod badge;
+mod chief;
 mod controls;
 pub(crate) use controls::{
     Cover, Sheet, button, icon_press, keep_from_pane, keycap, lifted, pressable, reveal, scrim,
@@ -276,6 +277,7 @@ fn surface_view(
         Surface::Changes => Some(changes::view(desk, p)),
         Surface::Popup => popup::view(desk, p),
         Surface::Rename => tabs::rename_sheet(desk, p),
+        Surface::Chief => Some(chief::view(desk, p, tokens::layout::OVERLAY.palette_top)),
         Surface::Palette => Some(palette::view(
             desk,
             p,

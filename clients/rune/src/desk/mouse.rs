@@ -59,6 +59,7 @@ impl Desk {
     /// A press, drag or release over a pane.
     pub fn pointer(&mut self, terminal: &ResourceId, press: &Press, tx: &mut Tx) {
         if press.phase == Phase::Down {
+            self.chief.disarm();
             self.focus_pane(terminal);
         }
         let captured = self.capture_terminal() == Some(terminal);

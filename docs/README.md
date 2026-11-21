@@ -41,6 +41,7 @@ unshipped experiment, and the phone apps are in testing (Android on Google Play)
 - [Mail across a hub](./hub-mail.md): shared mail and path claims between a hub and the machines joined to it.
 - [Agent skill setup](./agent-skill.md): `phux skill setup` teaches every installed agent about phux.
 - [ACP sessions](./acp.md): run an agent through the Agent Client Protocol, and answer its permission requests yourself.
+- [Chief of staff](./chief-of-staff.md): tap the right ⌘ key in the desktop app, speak or type, and hand it to one ACP agent as a typed prompt.
 
 ## Build on phux
 

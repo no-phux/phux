@@ -110,6 +110,7 @@ pub enum Surface {
     Popup,
     Rename,
     Palette,
+    Chief,
     /// A terminal's or a tab's context menu at the pointer.
     ContextMenu,
     /// The toast region: painted, but never the keyboard's owner.
@@ -131,6 +132,7 @@ impl Surface {
             Self::Popup => Modal::Popup,
             Self::Rename => Modal::Rename,
             Self::Palette => Modal::Palette,
+            Self::Chief => Modal::Chief,
             Self::ContextMenu => Modal::ContextMenu,
             Self::Toasts => return None,
         })
@@ -164,6 +166,7 @@ impl Desk {
                 .as_ref()
                 .map(|_| Surface::Rename),
             self.palette_open.then_some(Surface::Palette),
+            self.chief.open.then_some(Surface::Chief),
             self.toasts_surface(),
             self.pointer.menu.map(|_| Surface::ContextMenu),
         ]

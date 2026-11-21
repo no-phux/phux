@@ -305,8 +305,9 @@ impl Desk {
                 detail,
                 ..
             } => {
-                let questions = &mut self.inbox.questions;
-                questions.receipt(*operation_id, *disposition, detail.as_deref())
+                let detail = detail.as_deref();
+                self.chief.receipt(*operation_id, *disposition, detail)
+                    || (self.inbox.questions).receipt(*operation_id, *disposition, detail)
             }
             Event::AgentPublication { .. }
             | Event::AgentSessionClosed { .. }
@@ -314,6 +315,7 @@ impl Desk {
             | Event::StatusChanged(_) => {
                 let lost = matches!(event, Event::StatusChanged(s) if *s != Status::Attached);
                 let unknown = lost && self.inbox.questions.disconnected();
+                let unknown = (lost && self.chief.disconnected()) | unknown;
                 self.inbox
                     .questions
                     .refresh(client, self.connection.topology.as_ref());

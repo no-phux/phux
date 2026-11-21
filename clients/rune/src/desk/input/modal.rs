@@ -22,6 +22,8 @@ pub enum Modal {
     Settings,
     Rename,
     Palette,
+    /// The chief of staff's composer: its field owns typing and paste.
+    Chief,
     Onboarding,
     FindField,
     Confirm,
@@ -62,6 +64,7 @@ impl Modal {
             | Self::News
             | Self::Changes
             | Self::Rename
+            | Self::Chief
             | Self::Confirm
             | Self::PhoneNavigation
             | Self::PhonePicker => false,
