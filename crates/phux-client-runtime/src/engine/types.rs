@@ -9,6 +9,8 @@ use super::{
     KernelError, KernelStatus, ResourceId,
 };
 use phux_client_core::session::{AgentSessionDeclaration, KernelInput};
+#[cfg(feature = "engine")]
+use phux_protocol::BootstrapStreamProfile;
 use phux_protocol::wire::frame::FrameKind;
 
 /// What the control plane hands to the engine owner.
