@@ -171,9 +171,10 @@ pub const RESOURCE_LINK_KEY: &str = "phux.link/v1";
 /// Stored opaquely.
 pub const RESOURCE_NOTE_KEY: &str = "phux.note/v1";
 
-/// Terminal-scoped key holding the pane's notify mode, UTF-8 `on`,
-/// `unread-only`, or `off` ([`PaneNotify`], `docs/status-bar.md#muting-a-pane`).
-/// Absent is `on`. The server refuses any other value and keeps the mode on
+/// Terminal-scoped key holding the pane's notify mode ([`PaneNotify`]).
+///
+/// UTF-8 `on`, `unread-only`, or `off` (`docs/status-bar.md#muting-a-pane`);
+/// absent is `on`. The server refuses any other value and keeps the mode on
 /// the pane's record, so it survives upgrades and restarts.
 pub const RESOURCE_NOTIFY_KEY: &str = "phux.notify/v1";
 

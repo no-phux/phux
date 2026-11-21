@@ -133,7 +133,7 @@ pub enum Delta {
     /// Delete a session.
     DeleteSession(SessionKey),
     /// Insert or replace a resource.
-    PutResource(Resource),
+    PutResource(Box<Resource>),
     /// Remove a resource; the store writes a tombstone.
     RemoveResource(ResourceKey),
     /// Insert or replace an arrangement.
@@ -484,7 +484,7 @@ impl Org {
                     self.sessions.remove(k);
                 }
                 Delta::PutResource(r) => {
-                    self.resources.insert(r.key, r.clone());
+                    self.resources.insert(r.key, (**r).clone());
                 }
                 Delta::RemoveResource(k) => {
                     self.resources.remove(k);
