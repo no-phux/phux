@@ -69,6 +69,7 @@ pub(crate) mod forward;
 mod forward_agent;
 pub(crate) mod gen_reference_docs;
 pub(crate) mod git;
+pub(crate) mod git_checkout;
 pub(crate) mod host;
 pub(crate) mod idea;
 pub(crate) mod json_err;

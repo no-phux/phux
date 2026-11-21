@@ -68,6 +68,7 @@ const REGISTRY: &[&[ToolSpec]] = &[
     crate::document_tools::apps::SPECS,
     crate::approval_tools::SPECS,
     crate::terminal_tools::SPECS,
+    crate::git_tool::SPECS,
 ];
 
 /// Every registered tool, in catalog order.
