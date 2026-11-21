@@ -185,12 +185,18 @@ right = [
 # `dim-unfocused`: in a tab with several panes, the ones without focus
 # are painted faint. How faint is up to your terminal.
 #
+# `title`: the window title of the terminal phux runs in, which your
+# window manager and window switcher show. `{session}` is the session
+# name and `{window}` the tab in view. The old title comes back on
+# detach; "" leaves the title alone.
+#
 # [chrome]
 # compact-cols = 64
 # compact-rows = 18
 # min-pane-cols = 40
 # new-tab-after-current = false
 # dim-unfocused = false
+# title = "{session}: {window}"
 
 # Agent notifications. The TUI
 # posts one when an agent becomes blocked or asks for you, and when an

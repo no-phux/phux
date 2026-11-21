@@ -959,11 +959,7 @@ mod tests {
         painter.set_windows(vec![WindowInfo {
             name: "editor".to_owned(),
             active: true,
-            zoomed: false,
-            attention: false,
-            branch: None,
-            exited: None,
-            badge: None,
+            ..WindowInfo::default()
         }]);
         painter
     }

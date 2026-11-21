@@ -93,6 +93,8 @@ pub struct TuiSettings {
     pub clipboard_read: phux_config::ClipboardRead,
     /// `[notifications]`: agent notification delivery. Live on reload.
     pub notifications: phux_config::NotificationsCfg,
+    /// `[chrome] title`: the outer window title format. Live on reload.
+    pub outer_title: String,
 }
 
 impl std::fmt::Debug for TuiSettings {
@@ -114,6 +116,7 @@ impl std::fmt::Debug for TuiSettings {
             .field("clipboard_write", &self.clipboard_write)
             .field("clipboard_read", &self.clipboard_read)
             .field("notifications", &self.notifications)
+            .field("outer_title", &self.outer_title)
             .finish()
     }
 }
@@ -177,6 +180,7 @@ impl TuiSettings {
         self.clipboard_write = new.clipboard_write;
         self.clipboard_read = new.clipboard_read;
         self.notifications = new.notifications;
+        self.outer_title = new.outer_title;
     }
 
     /// The seed when the config does not load: the shipped defaults, keys
@@ -320,6 +324,7 @@ impl TuiSettings {
             clipboard_write: cfg.defaults.clipboard_write,
             clipboard_read: cfg.defaults.clipboard_read,
             notifications: cfg.notifications,
+            outer_title: cfg.chrome.title.clone(),
         }
     }
 }
