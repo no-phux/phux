@@ -1,9 +1,10 @@
 //! The full colour role set, owned so a derived theme can hold one.
 
-use crate::color::{Mode, Rgba8};
+use crate::color::{Mode, Rgb8, Rgba8};
+use crate::solve::{mix, worst};
 use crate::tokens::{
     self, AccentRoles, BorderRoles, DiffRoles, FlatLayer, FlatRoles, LayerRoles, MatchRoles,
-    SelectionRoles, StatusRoles, TextRoles, WashRoles,
+    Params, SelectionRoles, StatusRoles, TextRoles, WashRoles,
 };
 
 /// Every colour role, for one mode.
@@ -106,6 +107,37 @@ impl Roles {
             Layer::Raised => &self.flat.raised,
             Layer::Overlay => &self.flat.overlay,
         }
+    }
+
+    /// A host's identity colour on this look: moved toward the mode's extreme
+    /// just far enough to read at `identity.host_bar` on the ground, sidebar
+    /// and raised layers, at most `identity.host_ease_max` of the way, by
+    /// bisection; the hue stays. The mobile apps draw host colours by it.
+    #[must_use]
+    pub fn ease_host(&self, c: Rgb8) -> Rgb8 {
+        let p = Params::house();
+        let layers = [self.layer.ground, self.layer.sidebar, self.layer.raised].map(Rgba8::rgb);
+        let bar = tokens::IDENTITY.host_bar;
+        let max = tokens::IDENTITY.host_ease_max;
+        let extreme = self.mode.extreme();
+        let clears = |x: Rgb8| worst(x, &layers, p.srgb_lut) >= bar;
+        if clears(c) {
+            return c;
+        }
+        let farthest = mix(c, extreme, max);
+        if !clears(farthest) {
+            return farthest;
+        }
+        let (mut low, mut high) = (0.0, max);
+        for _ in 0..p.iterations {
+            let mid = f64::midpoint(low, high);
+            if clears(mix(c, extreme, mid)) {
+                high = mid;
+            } else {
+                low = mid;
+            }
+        }
+        mix(c, extreme, high)
     }
 
     /// A tone and its companions.

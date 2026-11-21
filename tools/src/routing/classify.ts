@@ -87,6 +87,9 @@ export const CONTENT_PATHS = [
   "scripts/{install,install-desktop,export-product-skills}.sh",
   "scripts/product-skills",
   "scripts/skills-package/**",
+  // The website's design tokens, fetched from phux by revision.
+  "clients/phux-web/assets/phux-tokens.css",
+  "crates/phux-design/tokens/src/vocabulary.json",
 ];
 
 /**
@@ -101,6 +104,8 @@ function mobileFfiPaths(root: string): string[] {
     ].map((dir) => `${dir}/**`),
     "scripts/build-mobile-ffi-{xcframework,android}.sh",
     "scripts/ci/setup-android-ndk.sh",
+    // The generator writes the archives' design/ directory.
+    "tools/src/design/**",
     ".github/workflows/ffi-{android,xcframework}.yml",
   ];
 }

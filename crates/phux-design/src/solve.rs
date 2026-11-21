@@ -1,10 +1,10 @@
 //! One terminal theme to every colour role, solver
 //! `phux-derive/2`.
 //!
-//! This is phux-brand's `tools/derive.ts` statement for statement: IEEE-754
+//! This is the generator's `tools/src/design/derive.ts` statement for statement: IEEE-754
 //! binary64 evaluated as written, luminance through the shipped LUT (never
 //! `powf`), `round` half away from zero. `tests/vectors.rs` holds it to the
-//! brand's golden vectors byte for byte, so change both together or neither.
+//! generated golden vectors byte for byte, so change both together or neither.
 
 // `a·b + c` stays two roundings: the spec forbids FMA contraction.
 #![allow(clippy::suboptimal_flops)]

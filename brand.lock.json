@@ -41,22 +41,6 @@
       "destination": "clients/rune/assets/brand/fox/still.png",
       "sha256": "6656ece802cb23de95e4559c9fed7a3796edc6b2f57459938a0fa2d5f7c366e7"
     },
-    "tokens/css/phux-tokens.css": {
-      "destination": "clients/phux-web/assets/phux-tokens.css",
-      "sha256": "ed2a32faea5811d074b6ae25c054c5e91e0b0891cb043bd6ea7d968964746fbb"
-    },
-    "tokens/ios/AccentColor.colorset/Contents.json": {
-      "destination": "clients/rune/ios/Assets/AccentColor.colorset/Contents.json",
-      "sha256": "f30c65d08246111295503c0c31842627c51f35e8bd6951a81d08e1d0553d0156"
-    },
-    "tokens/rust/phux_tokens.rs": {
-      "destination": "crates/phux-design/src/generated/tokens.rs",
-      "sha256": "29968dc39158007780594eb4f24a7e5017ed656b068039bb0efc345c8dce2954"
-    },
-    "tokens/themes.json": {
-      "destination": "crates/phux-design/tokens/themes.json",
-      "sha256": "ccaf7cc773caeb5ba89b3a18140dbc46109aed0ea57b1d138655943c421ac51c"
-    },
     "tooling/brand.py": {
       "destination": "scripts/brand.py",
       "sha256": "c8b49c7cfe3c0e1fb7fc57e540b231880984f80844340a8b8af3e4b1e800419b"

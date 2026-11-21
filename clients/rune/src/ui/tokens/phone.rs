@@ -3,7 +3,7 @@
 //! reports, and the tokens for a terminal ground.
 //!
 //! The generated Rust carries desktop values only; the phone's sizes are
-//! phux-brand's iOS values (`type.role.*.ios`, `space.page_margin.ios`),
+//! the tokens' iOS values (`type.role.*.ios`, `space.page_margin.ios`),
 //! with every other field of a role taken from the generated desktop role.
 
 use std::cell::Cell;
