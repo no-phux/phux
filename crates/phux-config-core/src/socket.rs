@@ -247,6 +247,24 @@ pub fn probe(path: &Path) -> SocketState {
     }
 }
 
+/// Whether a server at `path` accepts a connection right now.
+///
+/// Stricter than [`probe`]'s `Live`: a server that holds the lock but has
+/// not bound yet (or is too busy to accept) is live, not accepting, so
+/// waiting for a fresh server to come up uses this.
+#[must_use]
+#[cfg(unix)]
+pub fn accepts(path: &Path) -> bool {
+    UnixStream::connect(path).is_ok()
+}
+
+/// Without Unix sockets nothing here can accept.
+#[must_use]
+#[cfg(not(unix))]
+pub const fn accepts(_path: &Path) -> bool {
+    false
+}
+
 /// Without Unix-socket probing an existing entry is conservatively live,
 /// never stale: callers must not unlink an unprobeable path.
 #[must_use]
