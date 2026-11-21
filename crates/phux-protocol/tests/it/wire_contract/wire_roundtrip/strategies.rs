@@ -223,6 +223,16 @@ pub(super) fn arb_frame_kind_simple() -> impl Strategy<Value = FrameKind> {
                 message,
             }),
         arb_viewport_info().prop_map(|viewport| FrameKind::ViewportResize { viewport }),
+        any::<[u8; 6]>().prop_map(|[r, g, b, br, bg, bb]| FrameKind::ViewportColors {
+            colors: phux_protocol::caps::TerminalDefaultColors {
+                foreground: phux_protocol::caps::TerminalColor { r, g, b },
+                background: phux_protocol::caps::TerminalColor {
+                    r: br,
+                    g: bg,
+                    b: bb
+                },
+            },
+        }),
     ]
 }
 

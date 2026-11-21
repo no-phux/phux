@@ -196,7 +196,7 @@ phux answers these queries itself, without asking the user's terminal:
 | `OSC 7501 ; ? ST` | [Feature detection](./program-protocol.md#feature-detection) |
 | `CSI c` (primary device attributes) | `CSI ? ... c` |
 | `CSI > q` (XTVERSION) | `libghostty`. Do not detect phux by this. |
-| `OSC 10 ; ? ST`, `OSC 11 ; ? ST` | The default colours of the user's terminal, as phux saw them at attach |
+| `OSC 10 ; ? ST`, `OSC 11 ; ? ST` | The default colours of the user's terminal, as phux saw them at attach or after its last theme switch |
 | `CSI 14 t`, `CSI 16 t`, `CSI 18 t` | The pane's size, from a cell size of 8 by 16 pixels when the real one is unknown |
 
 Not answered: `CSI 21 t`, ENQ, and `CSI ? 996 n`. `OSC 52` reads are

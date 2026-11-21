@@ -181,6 +181,10 @@ Event = TYPE_EVENT 0xB3, "EVENT", "event", decode_event;
 /// `docs/program-sequences.md#clipboard-osc-52`).
 ClipboardReply = TYPE_CLIPBOARD_REPLY 0x18, "CLIPBOARD_REPLY", "clipboard_reply",
     decode_clipboard_reply;
+/// Discriminant for `VIEWPORT_COLORS` (client to server, `docs/protocol.md`):
+/// the outer terminal's default colours changed mid-attach.
+ViewportColors = TYPE_VIEWPORT_COLORS 0x2B, "VIEWPORT_COLORS", "viewport_colors",
+    decode_viewport_colors;
         }
     };
 }

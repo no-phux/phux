@@ -35,6 +35,30 @@ pub(crate) fn handle_viewport_resize(
     });
 }
 
+/// An attached client's outer terminal changed its default colours: later
+/// spawns take them, and every Terminal it views answers OSC 10/11 with them.
+pub(crate) async fn handle_viewport_colors(
+    state: &SharedState,
+    client_id: ClientId,
+    colors: phux_protocol::caps::TerminalDefaultColors,
+) {
+    let terminals: Vec<_> = state.with_mut(|s| {
+        s.set_client_default_colors(client_id, colors);
+        s.viewport_terminals(client_id)
+            .into_iter()
+            .filter_map(|id| s.resources().handle(id).cloned())
+            .collect()
+    });
+    for handle in terminals {
+        let Ok(terminal) = handle.terminal() else {
+            continue;
+        };
+        let (reply, _done) = tokio::sync::oneshot::channel();
+        let request = phux_terminal_api::actor::SetDefaultColorsRequest { colors, reply };
+        let _ = terminal.set_default_colors.send(request).await;
+    }
+}
+
 /// `client_id` used one of its panes. Under the `active` window-size policy
 /// a view that wasn't already the last one used takes its panes back to
 /// its own size; otherwise nothing happens.
