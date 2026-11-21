@@ -68,6 +68,17 @@ fn render(home: &Path, sources: &[super::sources::Source]) -> String {
 }
 
 #[test]
+fn the_agent_still_opens_to_the_right() {
+    use phux_client::layout::SplitDir;
+
+    assert_eq!(super::OPEN_TO_THE_RIGHT, super::SpawnSplit::Vertical);
+    assert_eq!(
+        crate::commands::spawn::split_dir(super::OPEN_TO_THE_RIGHT),
+        SplitDir::Horizontal
+    );
+}
+
+#[test]
 fn prompt_for_tmux_and_ghostty_matches_the_golden() {
     let home = fixture_home();
     let sources = discover(&home, None, &[], None, &Setup::default());

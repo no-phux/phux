@@ -423,6 +423,9 @@ fn own_pane(socket: Option<&Path>) -> Option<u32> {
     (inherited == target).then_some(id)
 }
 
+/// Side by side with this pane, so the agent opens to the right.
+const OPEN_TO_THE_RIGHT: SpawnSplit = SpawnSplit::Vertical;
+
 /// Start `argv` in a split to the right of this pane, or in a new session
 /// named `migrate` (attached on a terminal). Returns the `launched` JSON.
 fn launch(
@@ -453,7 +456,7 @@ fn launch(
             1,
             "migrate",
             &format!("@{pane}"),
-            SpawnSplit::Horizontal,
+            OPEN_TO_THE_RIGHT,
             0.5,
             None,
             None,
