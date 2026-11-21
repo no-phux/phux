@@ -42,11 +42,13 @@ fn cell_layout_is_pinned() {
 /// `CellMetadata`'s size and field offsets are pinned like `Cell`'s.
 #[test]
 fn cell_metadata_layout_is_pinned() {
-    assert_eq!(size_of::<CellMetadata>(), 4);
+    assert_eq!(size_of::<CellMetadata>(), 6);
     assert_eq!(offset_of!(CellMetadata, foreground_kind), 0);
     assert_eq!(offset_of!(CellMetadata, foreground_palette_index), 1);
-    assert_eq!(offset_of!(CellMetadata, underline_color_is_default), 2);
-    assert_eq!(offset_of!(CellMetadata, background_color_is_default), 3);
+    assert_eq!(offset_of!(CellMetadata, underline_kind), 2);
+    assert_eq!(offset_of!(CellMetadata, underline_palette_index), 3);
+    assert_eq!(offset_of!(CellMetadata, background_kind), 4);
+    assert_eq!(offset_of!(CellMetadata, background_palette_index), 5);
 }
 
 #[test]

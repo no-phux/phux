@@ -175,7 +175,7 @@ fn cell_record(
         underline_b: underline_color.b,
         reserved: 0,
     };
-    Ok((record, cell_metadata(style, content_tag)))
+    Ok((record, cell_metadata(raw, style, content_tag)?))
 }
 
 /// Append screen row `y` (history plus active area) to `buffer.fringe`,
@@ -381,28 +381,35 @@ const fn style_flags(style: Style) -> u32 {
 }
 
 /// The provenance record for one cell's style and content tag.
-const fn cell_metadata(style: Style, content: CellContentTag) -> CellMetadata {
-    let (foreground_kind, foreground_palette_index) = match style.fg_color {
+fn cell_metadata(
+    raw: RawCell,
+    style: Style,
+    content: CellContentTag,
+) -> Result<CellMetadata, GridError> {
+    let (foreground_kind, foreground_palette_index) = color_kind(style.fg_color);
+    let (underline_kind, underline_palette_index) = color_kind(style.underline_color);
+    let (background_kind, background_palette_index) = match content {
+        CellContentTag::BgColorPalette => (COLOR_KIND_PALETTE, raw.bg_color_palette()?.0),
+        CellContentTag::BgColorRgb => (COLOR_KIND_RGB, 0),
+        CellContentTag::Codepoint | CellContentTag::CodepointGrapheme => color_kind(style.bg_color),
+    };
+    Ok(CellMetadata {
+        foreground_kind,
+        foreground_palette_index,
+        underline_kind,
+        underline_palette_index,
+        background_kind,
+        background_palette_index,
+    })
+}
+
+/// A style color's `COLOR_KIND_*` and palette index.
+const fn color_kind(color: StyleColor) -> (u8, u8) {
+    match color {
         StyleColor::None => (COLOR_KIND_DEFAULT, 0),
         StyleColor::Palette(index) => (COLOR_KIND_PALETTE, index.0),
         StyleColor::Rgb(_) => (COLOR_KIND_RGB, 0),
-    };
-    CellMetadata {
-        foreground_kind,
-        foreground_palette_index,
-        underline_color_is_default: matches!(style.underline_color, StyleColor::None),
-        background_color_is_default: default_background(style, content),
     }
-}
-
-const fn default_background(style: Style, content: CellContentTag) -> bool {
-    if matches!(
-        content,
-        CellContentTag::BgColorPalette | CellContentTag::BgColorRgb
-    ) {
-        return false;
-    }
-    matches!(style.bg_color, StyleColor::None)
 }
 
 #[cfg(test)]
