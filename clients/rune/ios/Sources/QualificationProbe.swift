@@ -125,7 +125,7 @@ final class QualificationProbe {
         report["input_contracts"] = inputContracts
         report["input_evidence"] = "UIKit insertText entry; not physical OS typing or IME automation"
         try progress.publish {
-            try QualificationEvidence.publish(report: report, tree: bridge.tree(),
+            try QualificationEvidence.publish(report: report, tree: bridge.tree(), session: session,
                 marker: marker, didPresent: didPresent, write: { try self.write($0, name: $1) })
         }
     }
@@ -141,8 +141,7 @@ final class QualificationProbe {
     }
 
     private func injectInput(_ report: [String: Any], input: RuneInput) {
-        let ready = report["connected"] as? Bool == true &&
-              report["session"] as? String == session &&
+        let ready = QualificationEvidence.isConnected(report, to: session) &&
               (report["frames"] as? UInt64 ?? 0) > 0 &&
               input.context?.kind == "terminal" && input.context?.wanted == true && input.isFirstResponder
         guard progress.claimInput(when: ready) else { return }

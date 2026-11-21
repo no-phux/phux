@@ -35,9 +35,13 @@ enum QualificationEvidence {
         publish()
     }
 
-    static func publish(report: [String: Any], tree: [String: Any], marker: String,
+    static func isConnected(_ report: [String: Any], to session: String) -> Bool {
+        report["connected"] as? Bool == true && report["session"] as? String == session
+    }
+
+    static func publish(report: [String: Any], tree: [String: Any], session: String, marker: String,
                         didPresent: Bool, write: ([String: Any], String) throws -> Void) throws -> Bool {
-        guard didPresent, report["marker_seen"] as? Bool == true,
+        guard didPresent, isConnected(report, to: session), report["marker_seen"] as? Bool == true,
               let frames = report["frames"] as? UInt64, frames > 0,
               let terminal = report["terminal_id"] as? String, !terminal.isEmpty,
               let grid = grid(tree, key: "grid-\(terminal)"),
