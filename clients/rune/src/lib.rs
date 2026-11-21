@@ -176,7 +176,7 @@ pub fn run_desktop() {
         .modifier_keys()
         .on_ime(|desk: &mut Desk, event, _| desk.ime(event))
         .on_focus(|desk: &mut Desk, focused, _| desk.focus_changed(focused))
-        .on_open_url(|desk: &mut Desk, url, _| desk.pair_from_link(url))
+        .on_open_url(|desk: &mut Desk, url, _| desk.open_system_link(url))
         .on_frame_drawn(|rt: &rune::Runtime<Desk>| rt.state.drawn());
     match perf::frame_hook() {
         Some(record) => app.on_frame_encoded(record).run(),

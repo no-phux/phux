@@ -64,6 +64,7 @@ mod quick_look;
 pub mod reef;
 mod reorder;
 pub mod resources;
+mod reveal;
 mod scene_host;
 mod screenshot;
 mod sessions;
