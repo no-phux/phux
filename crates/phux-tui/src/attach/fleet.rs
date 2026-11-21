@@ -56,8 +56,14 @@ pub(super) fn collect_pane_meta(
     panes
         .iter()
         .map(|(id, slot)| {
-            let title =
-                (!slot.last_title.trim().is_empty()).then(|| slot.last_title.trim().to_owned());
+            // Same label the rail draws: a program title stands, a shell
+            // prompt (`user@host:path`) becomes the place it was hiding.
+            let title = phux_client_core::pane_label::rail_label(
+                Some(slot.last_title.as_str()),
+                slot.foreground.as_deref(),
+                slot.cwd.as_deref(),
+            )
+            .filter(|title| !title.is_empty());
             // Prefer the live cwd (refined by cwd_changed events); fall
             // back to the snapshot-seeded index the sidebar branch uses.
             let branch = slot

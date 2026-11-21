@@ -67,9 +67,14 @@ impl super::super::SessionLoop {
                 ReadAction::Ask => {
                     let mut label = crate::attach::server_frame::pane_label(&pane);
                     if let Some(slot) = self.mirror.panes.get(&pane)
-                        && !slot.last_title.is_empty()
+                        && let Some(title) = phux_client_core::pane_label::rail_label(
+                            Some(slot.last_title.as_str()),
+                            slot.foreground.as_deref(),
+                            slot.cwd.as_deref(),
+                        )
+                        .filter(|title| !title.is_empty())
                     {
-                        label = format!("{label} ({})", slot.last_title);
+                        label = format!("{label} ({title})");
                     }
                     self.overlays.push(Box::new(ClipboardReadOverlay::new(
                         pane,

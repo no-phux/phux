@@ -94,6 +94,37 @@ fn a_fresh_input_origin_badges_the_label_until_it_expires() {
     );
 }
 
+/// Omarchy's bash writes `user@host:path` into every pane. The rail must
+/// show the folder, not the user and host that `clip_text` would keep.
+#[test]
+fn a_shell_prompt_title_shows_the_folder_on_the_rail() {
+    let id = ResourceId::local(1);
+    let mut slot = PaneSlot::new().expect("slot");
+    slot.last_title = "drspeedracer@powerhouse:~/Workspace/no-phux".to_owned();
+    slot.cwd = Some("/home/drspeedracer/Workspace/no-phux".to_owned());
+    let mut panes = HashMap::from([(id.clone(), slot)]);
+    let (kernel, _, _) = published_test_state(&[]);
+    assert_eq!(
+        pane_label(&kernel, &panes, &id)
+            .expect("label")
+            .text
+            .as_ref(),
+        "no-phux"
+    );
+
+    let slot = panes.get_mut(&id).expect("slot");
+    slot.last_title = "Polish omarchy TUI".to_owned();
+    slot.foreground = Some("opencode".to_owned());
+    assert_eq!(
+        pane_label(&kernel, &panes, &id)
+            .expect("label")
+            .text
+            .as_ref(),
+        "Polish omarchy TUI",
+        "a program title stands even when a foreground is known"
+    );
+}
+
 /// A republish at unchanged geometry must serve fresh rows through an
 /// incremental paint: the kernel's new token reaches the renderer. (The
 /// deterministic guard lives in `phux_vt::render_pool::tests`.)

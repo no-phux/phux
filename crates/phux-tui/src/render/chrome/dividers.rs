@@ -13,6 +13,7 @@
 //! interior (the ADR-0020 skip-cell carve-out: libghostty owns those cells)
 //! and leaves the cursor to the focused pane's render.
 
+use std::borrow::Cow;
 use std::io::{self, Write};
 
 use phux_protocol::ResourceId;
@@ -38,10 +39,11 @@ const CELL_BYTES: usize = 16;
 
 /// What to write into one pane's top rule, borrowed from the caller's cached
 /// title.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct PaneLabel<'a> {
-    /// The pane's display name — its OSC-2 title in practice.
-    pub text: &'a str,
+    /// The pane's display name. A program's OSC title, or the folder a
+    /// shell prompt was hiding (`user@host:path` clips to the user).
+    pub text: Cow<'a, str>,
     /// The pane's place among its slot's tabs, `(position, count)` from 1,
     /// drawn as `2/3` ahead of the title.
     pub slot_tab: Option<(usize, usize)>,
