@@ -11,11 +11,15 @@ use crate::keybind::KeyChord;
 
 /// `[keybindings]` table: prefix key, prefix-table, global table, and key
 /// modes.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct KeybindingsCfg {
     /// Prefix chord (default `C-a`; some emulators swallow `C-Space`).
     pub prefix: String,
+    /// Keep the shipped bindings. `false` starts from an empty keymap: only
+    /// your own layers' bindings apply, plus the shipped `command-palette`
+    /// keys unless you bind the palette yourself.
+    pub defaults: bool,
     /// Bindings that fire after the prefix.
     #[serde(rename = "prefix-table")]
     pub prefix_table: BTreeMap<String, Action>,
@@ -46,6 +50,7 @@ impl Default for KeybindingsCfg {
     fn default() -> Self {
         Self {
             prefix: "C-a".to_owned(),
+            defaults: true,
             prefix_table: BTreeMap::new(),
             global: BTreeMap::new(),
             modes: BTreeMap::new(),
@@ -59,7 +64,9 @@ impl Default for KeybindingsCfg {
 
 /// `[keybindings.mode-options.<name>]`: how a key mode treats keys it does
 /// not bind.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema,
+)]
 #[serde(default, deny_unknown_fields)]
 pub struct ModeOptions {
     /// Swallow keys the mode does not bind instead of handling them as they
@@ -69,7 +76,7 @@ pub struct ModeOptions {
 
 /// An action attached to a binding, hook, or status slot: a bare name or an
 /// inline table (`docs/config.md`).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
 #[serde(untagged)]
 pub enum Action {
     /// `"detach"`.
@@ -80,12 +87,13 @@ pub enum Action {
 
 /// Parameterized action. Per-action argument validation lives in the
 /// dispatcher, not here.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
 pub struct ParamAction {
     /// The action name. Hooks spell it `kind`; both are accepted.
     #[serde(alias = "kind")]
     pub action: String,
     /// Remaining inline-table fields.
     #[serde(flatten)]
+    #[schemars(with = "BTreeMap<String, serde_json::Value>")]
     pub args: BTreeMap<String, toml::Value>,
 }

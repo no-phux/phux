@@ -115,6 +115,16 @@ path to check a draft before you move it into place:
 `--json` prints the same findings as a stable JSON document, so the check
 can gate a dotfiles CI run.
 
+### Editor completion
+
+With this first line, taplo and Even Better TOML complete keys, show their
+docs and flag unknown ones; `docs/spec/plugin.schema.json` does the same
+for `phux-plugin.toml`.
+
+```toml
+#:schema https://raw.githubusercontent.com/no-phux/phux/main/docs/spec/config.schema.json
+```
+
 ### Findings
 
 Each line is the key path, the kind of problem, and the detail:
@@ -359,7 +369,8 @@ is a command, or `"none"` to take a built-in chord away:
 
 Modifiers are `cmd`, `ctrl`, `alt` and `shift`; `cmd` is the Super key off
 macOS. A built-in chord keeps working until you bind it to
-something else or to `"none"`. Menus and the shortcut list still show the
+something else or to `"none"`. `key-defaults = false` in `[rune]` keeps
+only yours, plus the palette and Settings chords until you bind those. Menus and the shortcut list still show the
 built-in chords. The TUI's `[keybindings]` are separate: Rune's commands
 are the app's own.
 

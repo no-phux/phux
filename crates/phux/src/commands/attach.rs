@@ -22,7 +22,7 @@ use phux_tui::attach::{self, record::SessionRecorder, status_bar::Notice};
 
 use crate::commands::rec::RecordSpec;
 use crate::commands::remote::{self, Endpoint, RemoteEntry};
-use crate::commands::{DEFAULT_SESSION_NAME, print_attach_error, server::ensure_server};
+use crate::commands::{print_attach_error, server::ensure_server};
 
 /// A live `--rec` recorder, shared so a graceful-upgrade reconnect continues
 /// the same recording.
@@ -109,8 +109,9 @@ fn finalize_recording(rec: Option<&RecordSpec>) {
 }
 
 /// Naked `phux`: attach to the user's server, auto-spawning it if the socket
-/// is missing, and send `ATTACH { target: Last }`. A refusal from an older
-/// server permits one lookup-only `ByName` retry; attach never creates.
+/// is missing, and send `ATTACH { target: Last }`, or `CreateIfMissing` for
+/// `defaults.attach-session`. A refusal from an older server permits one
+/// lookup-only `ByName` retry; `Last` never creates.
 pub(crate) fn run_naked(socket: Option<PathBuf>, rec: Option<&RecordSpec>) -> ExitCode {
     // No build banner on attach paths: the alt screen would wipe it.
 
@@ -129,9 +130,12 @@ pub(crate) fn run_naked(socket: Option<PathBuf>, rec: Option<&RecordSpec>) -> Ex
         return code;
     }
 
-    // Resolve the auto-spawn seed from `defaults.session-name-template`.
-    // After startup the server owns this identity; ATTACH sends only `Last`.
-    let default_name = resolved_default_session_name();
+    // `defaults.attach-session`, else `Last` with the name template's seed
+    // for a server this starts; after startup the server owns that identity.
+    let home = home::configured_target();
+    let default_name = home
+        .as_ref()
+        .map_or_else(resolved_default_session_name, |h| h.0.clone());
 
     if let Err(err) = ensure_server(
         &socket_path,
@@ -153,7 +157,7 @@ pub(crate) fn run_naked(socket: Option<PathBuf>, rec: Option<&RecordSpec>) -> Ex
     let result = rt.block_on(attach_with_reconnect(
         &dial,
         None,
-        AttachTarget::Last,
+        home.map_or(AttachTarget::Last, |h| h.1),
         predict_cfg,
         fallback_lookup_name(&default_name),
         rec,
@@ -174,76 +178,6 @@ pub(crate) fn run_naked(socket: Option<PathBuf>, rec: Option<&RecordSpec>) -> Ex
             ExitCode::FAILURE
         }
     }
-}
-
-/// `name` as the lookup-only retry for a server that cannot resolve
-/// `Last`, or `None` when the template draws `${random-name}`: a fresh
-/// pick names no existing session, so retrying it would only print a name
-/// nobody chose (phux-c2td.6).
-fn fallback_lookup_name(name: &str) -> Option<&str> {
-    let template = configured_session_name_template();
-    (!phux_config::template_has_random_name(&template)).then_some(name)
-}
-
-/// Resolve the auto-created default session's name from
-/// `defaults.session-name-template` (`${cwd-basename}`, `${random-name}`),
-/// falling back to [`DEFAULT_SESSION_NAME`] when the config or cwd is
-/// unreadable or the template renders empty.
-pub(crate) fn resolved_default_session_name() -> String {
-    let cwd = std::env::current_dir().unwrap_or_default();
-    render_default_session_name(
-        &configured_session_name_template(),
-        &cwd,
-        &mut phux_config::NameRng::from_entropy(),
-    )
-}
-
-/// The configured `defaults.session-name-template`, or
-/// [`DEFAULT_SESSION_NAME`] when the config can't be loaded.
-pub(crate) fn configured_session_name_template() -> String {
-    config_loader::load().map_or_else(
-        |_| DEFAULT_SESSION_NAME.to_owned(),
-        |cfg| cfg.defaults.session_name_template,
-    )
-}
-
-/// Render `template` against `cwd` with `rng` for `${random-name}`,
-/// rewritten so a selector can address it (a directory named `@proj` must
-/// not name a session every verb reads as a pane id), falling back to
-/// [`DEFAULT_SESSION_NAME`] when it renders empty.
-pub(crate) fn render_default_session_name(
-    template: &str,
-    cwd: &std::path::Path,
-    rng: &mut phux_config::NameRng,
-) -> String {
-    let name = phux_client::rename::addressable_session_name(
-        &phux_config::render_session_name_template_with(template, cwd, rng),
-    );
-    if name.trim().is_empty() {
-        DEFAULT_SESSION_NAME.to_owned()
-    } else {
-        name
-    }
-}
-
-/// Read `defaults.spawn-on-attach`: the auto-spawned seed pane's program.
-/// `None` runs the user's `$SHELL`.
-pub(crate) fn configured_spawn_on_attach() -> Option<String> {
-    config_loader::load().ok()?.defaults.spawn_on_attach
-}
-
-/// Build the sole attach target for an optional session selector.
-///
-/// An omitted name remains `Last`; the server owns default-seed resolution.
-/// This path never upgrades an attach into `CreateIfMissing`.
-fn requested_attach_target(session: Option<String>) -> AttachTarget {
-    session.map_or(AttachTarget::Last, AttachTarget::ByName)
-}
-
-/// Build the compatibility fallback for a server that cannot resolve an
-/// untouched `Last`. The fallback can only look up an existing session.
-fn default_lookup_target(default_name: &str) -> AttachTarget {
-    AttachTarget::ByName(default_name.to_owned())
 }
 
 /// Drive one attach attempt against `socket_path` with `target`, picking
@@ -585,9 +519,12 @@ pub(crate) fn run_attach_rec(
         return code;
     }
     // Resolve only the auto-spawn seed before moving `session` into the wire
-    // target. With no explicit name this uses the configured template; after
-    // startup the server owns that seed identity and resolves `Last`.
-    let default_name = resolved_default_session_name();
+    // target. With no name this is `defaults.attach-session`, else the
+    // configured template; the server owns that seed and resolves `Last`.
+    let home = session.is_none().then(home::configured_target).flatten();
+    let default_name = home
+        .as_ref()
+        .map_or_else(resolved_default_session_name, |h| h.0.clone());
     let session_for_spawn = session.clone().unwrap_or_else(|| default_name.clone());
     // phux-07y: only the no-name (naked-`phux`-equivalent) case seeds with
     // `defaults.spawn-on-attach`. An explicit `phux attach NAME` is like
@@ -598,7 +535,7 @@ pub(crate) fn run_attach_rec(
         None
     };
     let explicit_name = session.clone();
-    let target = requested_attach_target(session);
+    let target = home.map_or_else(|| requested_attach_target(session), |h| h.1);
 
     // Best-effort auto-spawn, pre-seeded with the session being attached to;
     // the attach below surfaces any connect error.
@@ -1311,8 +1248,14 @@ const fn remote_repair(result: &Result<AttachEnd, AttachError>) -> Repair {
     }
 }
 
+mod home;
 mod reconnect;
 mod stdio;
+pub(crate) use home::{
+    configured_session_name_template, configured_spawn_on_attach, render_default_session_name,
+    resolved_default_session_name,
+};
+use home::{default_lookup_target, fallback_lookup_name, requested_attach_target};
 use reconnect::attach_with_reconnect;
 pub(crate) use stdio::run_attach_stdio;
 

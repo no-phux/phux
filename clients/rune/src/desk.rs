@@ -246,8 +246,18 @@ impl Desk {
         machine: Option<String>,
         prefs: rune::prefs::Prefs,
     ) -> Self {
-        let (file, file_error) = settings::load_file();
-        let key_problems = crate::keys::bind(&file.keys);
+        let (config, file_error) = settings::load_file();
+        let file = config.rune;
+        // `defaults.attach-session` opens this computer's server unless a
+        // flag or link named a session.
+        let mut launch = resolved.clone();
+        if machine.is_none() && launch.session.is_none() {
+            launch.session = config
+                .defaults
+                .attach_session
+                .filter(|s| !s.trim().is_empty());
+        }
+        let key_problems = crate::keys::bind(&file.keys, file.key_defaults != Some(false));
         phux_client_runtime::session_order::set_recent_first(file.recent_first.unwrap_or(false));
         let file_error = file_error.or_else(|| {
             (!key_problems.is_empty()).then(|| format!("[rune.keys] {}", key_problems.join("; ")))
@@ -303,7 +313,7 @@ impl Desk {
             updater: updates::Updater::new(&prefs, resolved),
             machines: machines::Machines::new(machine, resolved.phux.clone()),
             link: link::Link::default(),
-            launch: resolved.clone(),
+            launch,
             waker: None,
             prefs,
             activities: crate::activity::Activities::default(),

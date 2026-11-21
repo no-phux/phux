@@ -22,6 +22,16 @@ pub(super) const ROWS: &[SettingSpec] = &[
         applies: Applies::LiveReload,
     },
     SettingSpec {
+        key: "keybindings.defaults",
+        section: SettingSection::Keybindings,
+        kind: SettingKind::Bool,
+        summary: "Keep the shipped key bindings",
+        detail: "false starts from an empty keymap: only bindings from your own config \
+                 layers apply. The shipped command-palette keys stay as the way out \
+                 until you bind command-palette yourself.",
+        applies: Applies::LiveReload,
+    },
+    SettingSpec {
         key: "keybindings.which-key",
         section: SettingSection::Keybindings,
         kind: SettingKind::Bool,

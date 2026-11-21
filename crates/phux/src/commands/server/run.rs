@@ -170,6 +170,9 @@ pub(super) fn build_server_config(
                 .min(phux_config::MAX_RETAIN_ON_EXIT_MAX),
         },
         cwd_inheritance: defaults.cwd_inheritance,
+        fixed_cwd: defaults
+            .fixed_start_dir()
+            .map(|dir| dir.to_string_lossy().into_owned()),
         term: defaults.term,
         shell,
         login_shell,

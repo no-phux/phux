@@ -74,6 +74,8 @@ pub(crate) struct StateConfig {
     pub(crate) metadata_value_bytes: u32,
     /// How a new pane picks its cwd (`defaults.cwd-inheritance`).
     pub(crate) cwd_inheritance: phux_config::CwdInheritance,
+    /// The start directory under `cwd-inheritance = "fixed"`.
+    pub(crate) fixed_cwd: Option<String>,
     /// `TERM` for server-spawned panes (`defaults.term`); a per-spawn
     /// `SPAWN_RESOURCE.env` entry for `TERM` overrides it.
     pub(crate) term: String,
@@ -133,6 +135,7 @@ impl Default for StateConfig {
             from_programs: phux_config::FromPrograms::Off,
             metadata_value_bytes: phux_config::DEFAULT_METADATA_VALUE_BYTES,
             cwd_inheritance: phux_config::CwdInheritance::default(),
+            fixed_cwd: None,
             term: phux_config::DefaultsCfg::default().term,
             shell: phux_config::shell::resolve_shell(None),
             login_shell: false,
@@ -176,6 +179,7 @@ impl StateConfig {
             from_programs: cfg.from_programs,
             metadata_value_bytes: cfg.metadata_value_bytes,
             cwd_inheritance: cfg.cwd_inheritance,
+            fixed_cwd: cfg.fixed_cwd.clone(),
             term: cfg.term.clone(),
             shell: cfg.shell.clone(),
             login_shell: cfg.login_shell,

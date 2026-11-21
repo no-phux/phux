@@ -206,6 +206,26 @@ types an `x`.
 **An unbound key stays unbound.** A plugin whose manifest `keys` names it
 doesn't get it, whatever spelling either of you uses.
 
+## Starting from an empty keymap
+
+To build your own keymap instead of unbinding the defaults one by one,
+turn the shipped bindings off:
+
+```toml
+[keybindings]
+defaults = false
+
+[keybindings.prefix-table]
+"d" = "detach"
+```
+
+Only bindings from your own files apply, in every table and key mode. The
+shipped `command-palette` keys (<kbd>C-a</kbd> then <kbd>Space</kbd>,
+<kbd>:</kbd> or <kbd>?</kbd>) stay as the way out, since the palette runs
+every action, until you bind `command-palette` yourself. The prefix stays
+<kbd>C-a</kbd> unless you set it. Rune has its own switch,
+[`[rune] key-defaults`](config.md#rune).
+
 ## Key modes
 
 A key mode is a set of keys that work without the prefix while the mode

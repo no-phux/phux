@@ -3167,6 +3167,7 @@ dependencies = [
  "jiff",
  "phux-config-core",
  "phux-protocol",
+ "schemars 1.2.3",
  "serde",
  "serde_json",
  "serde_path_to_error",
@@ -3182,6 +3183,7 @@ name = "phux-config-core"
 version = "0.161.1"
 dependencies = [
  "nix 0.31.3",
+ "schemars 1.2.3",
  "serde",
  "tempfile",
  "thiserror 2.0.21",
