@@ -53,8 +53,25 @@ pub fn switch(desk: &Desk, p: &Tokens) -> El {
         )
 }
 
+/// The least height a row's action takes: its label's line, or on a phone
+/// the 44-point touch target (§1.6).
+fn reach(phone: bool, t: &Tokens) -> f32 {
+    let line = grown(t.ty.caption, t.space.icon_gap);
+    if phone {
+        line.max(t.space.touch_min)
+    } else {
+        line
+    }
+}
+
 /// A small action in a row: a kit ghost button, in the Tab order.
-fn chip(label: &'static str, key: String, t: &Tokens, press: impl Fn(&mut Desk) + 'static) -> El {
+fn chip(
+    label: &'static str,
+    key: String,
+    phone: bool,
+    t: &Tokens,
+    press: impl Fn(&mut Desk) + 'static,
+) -> El {
     Button::new(label)
         .variant(ButtonVariant::Ghost)
         .control_size(ControlSize::Small)
@@ -62,11 +79,17 @@ fn chip(label: &'static str, key: String, t: &Tokens, press: impl Fn(&mut Desk) 
         .build(&t.kit)
         .key(key)
         .focusable(true)
-        .min_h(grown(t.ty.caption, t.space.icon_gap))
+        .min_h(reach(phone, t))
 }
 
 /// A destructive action: the kit danger button.
-fn danger(label: &'static str, key: String, t: &Tokens, press: impl Fn(&mut Desk) + 'static) -> El {
+fn danger(
+    label: &'static str,
+    key: String,
+    phone: bool,
+    t: &Tokens,
+    press: impl Fn(&mut Desk) + 'static,
+) -> El {
     Button::new(label)
         .variant(ButtonVariant::Danger)
         .control_size(ControlSize::Small)
@@ -74,13 +97,13 @@ fn danger(label: &'static str, key: String, t: &Tokens, press: impl Fn(&mut Desk
         .build(&t.kit)
         .key(key)
         .focusable(true)
-        .min_h(grown(t.ty.caption, t.space.icon_gap))
+        .min_h(reach(phone, t))
 }
 
 /// Opens or closes the machine's What works here.
-fn works(machine: Option<String>, t: &Tokens) -> El {
+fn works(machine: Option<String>, phone: bool, t: &Tokens) -> El {
     let key = format!("machine-works-{}", machine.as_deref().unwrap_or(LOCAL));
-    chip("What works", key, t, move |d: &mut Desk| {
+    chip("What works", key, phone, t, move |d: &mut Desk| {
         d.toggle_checklist(machine.clone());
     })
 }
@@ -97,28 +120,43 @@ fn current_state(desk: &Desk, t: &Tokens) -> Vec<El> {
     }
     vec![
         super::badge::tone_badge(t, phux_design::State::Lost, Some(word.to_owned())),
-        chip("Retry", "machine-retry".to_owned(), t, Desk::reconnect),
+        chip(
+            "Retry",
+            "machine-retry".to_owned(),
+            desk.phone.is_some(),
+            t,
+            Desk::reconnect,
+        ),
     ]
 }
 
 /// A registered machine's removal, asked once.
 fn removal(name: &str, desk: &Desk, t: &Tokens) -> Vec<El> {
+    let phone = desk.phone.is_some();
     if desk.machines.removing.as_deref() != Some(name) {
         let held = name.to_owned();
         let ask = move |d: &mut Desk| d.ask_remove(Some(held.clone()));
-        return vec![chip("Remove", format!("machine-remove-{name}"), t, ask)];
+        return vec![chip(
+            "Remove",
+            format!("machine-remove-{name}"),
+            phone,
+            t,
+            ask,
+        )];
     }
     let held = name.to_owned();
     vec![
         danger(
             "Remove for good",
             format!("machine-remove-yes-{name}"),
+            phone,
             t,
             move |d: &mut Desk| d.remove_machine(held.clone()),
         ),
         chip(
             "Keep",
             format!("machine-remove-no-{name}"),
+            phone,
             t,
             |d: &mut Desk| d.ask_remove(None),
         ),
@@ -126,9 +164,13 @@ fn removal(name: &str, desk: &Desk, t: &Tokens) -> Vec<El> {
 }
 
 /// The row's colour, pressed to show the swatches.
-fn color_button(name: &str, t: &Tokens) -> El {
+fn color_button(name: &str, phone: bool, t: &Tokens) -> El {
     let held = name.to_owned();
-    let side = t.space.pointer_min;
+    let side = if phone {
+        t.space.touch_min
+    } else {
+        t.space.pointer_min
+    };
     pressable(format!("machine-color-{name}"), t)
         .size(side, side)
         .radius(t.radius.full)
@@ -223,11 +265,11 @@ fn picker(name: &str, desk: &Desk, t: &Tokens) -> Option<El> {
 /// An OWN row: `row_h` tall at least, `radius.sm`, the hover and
 /// press washes, focusable; `current` is the window's own machine, drawn
 /// with the selected treatment.
-fn row_shell(key: String, current: bool, t: &Tokens) -> El {
+fn row_shell(key: String, current: bool, phone: bool, t: &Tokens) -> El {
     let s = &t.space;
     let shell = pressable(key, t)
         .w_full()
-        .min_h(s.row_h)
+        .min_h(row_h(phone, t))
         .px(s.row_inset_x)
         .py(s.s1)
         .gap(s.s2)
@@ -239,6 +281,15 @@ fn row_shell(key: String, current: bool, t: &Tokens) -> El {
         super::lifted(shell, t)
     } else {
         shell
+    }
+}
+
+/// A row's least height: a phone's rows are touch rows.
+fn row_h(phone: bool, t: &Tokens) -> f32 {
+    if phone {
+        t.space.row_h_touch
+    } else {
+        t.space.row_h
     }
 }
 
@@ -254,13 +305,14 @@ fn name(words: String, t: &Tokens) -> El {
 
 fn local_machine(desk: &Desk, t: &Tokens) -> El {
     let current = desk.machines.current.is_none();
-    row_shell(format!("machine-{LOCAL}"), current, t)
+    let phone = desk.phone.is_some();
+    row_shell(format!("machine-{LOCAL}"), current, phone, t)
         .label(LOCAL)
         .on_press(|d: &mut Desk| d.switch_machine(None))
-        .child(color_button(LOCAL, t))
+        .child(color_button(LOCAL, phone, t))
         .child(name(LOCAL.to_owned(), t))
         .child(el().grow(1.0))
-        .child(works(None, t))
+        .child(works(None, phone, t))
         .children(
             current
                 .then(|| current_state(desk, t))
@@ -279,7 +331,9 @@ fn machine(host: &Host, desk: &Desk, t: &Tokens) -> El {
             .font(t.ty.caption)
             .color(t.roles.text.dim.paint())
     };
-    let shell = row_shell(format!("machine-{host_name}"), current, t).label(host_name.clone());
+    let phone = desk.phone.is_some();
+    let shell =
+        row_shell(format!("machine-{host_name}"), current, phone, t).label(host_name.clone());
     // A paused machine is not dialed, so its row opens nothing.
     let shell = if paused {
         shell
@@ -287,15 +341,19 @@ fn machine(host: &Host, desk: &Desk, t: &Tokens) -> El {
         shell.on_press(move |d: &mut Desk| d.switch_machine(Some(held.clone())))
     };
     shell
-        .child(color_button(&host_name, t))
+        .child(color_button(&host_name, phone, t))
         .child(name(host_name.clone(), t))
         .child(el().grow(1.0))
         .children(host.ssh_only.then(|| detail("over ssh")))
         .children(paused.then(|| detail("paused")))
-        .children((current || !paused && !host.ssh_only).then(|| works(Some(host_name.clone()), t)))
+        .children(
+            (current || !paused && !host.ssh_only)
+                .then(|| works(Some(host_name.clone()), phone, t)),
+        )
         .child(chip(
             if paused { "Resume" } else { "Pause" },
             format!("machine-pause-{host_name}"),
+            phone,
             t,
             move |d: &mut Desk| d.pause_machine(pausing.clone(), !paused),
         ))
@@ -308,12 +366,12 @@ fn machine(host: &Host, desk: &Desk, t: &Tokens) -> El {
         .children(removal(&host_name, desk, t))
 }
 
-fn peer(peer: &Peer, t: &Tokens) -> El {
+fn peer(peer: &Peer, phone: bool, t: &Tokens) -> El {
     let s = &t.space;
     let held = peer.clone();
     let key = format!("peer-{}", peer.name);
     let shell = if peer.online {
-        row_shell(key, false, t)
+        row_shell(key, false, phone, t)
             .label(peer.name.clone())
             .on_press(move |d: &mut Desk| d.add_peer(&held))
     } else {
@@ -321,7 +379,7 @@ fn peer(peer: &Peer, t: &Tokens) -> El {
         row()
             .key(key)
             .w_full()
-            .min_h(s.row_h)
+            .min_h(row_h(phone, t))
             .px(s.row_inset_x)
             .py(s.s1)
             .gap(s.s2)
@@ -356,7 +414,7 @@ fn ssh_host(alias: &str, desk: &Desk, t: &Tokens) -> El {
             .font(t.ty.caption)
             .color(r.accent.accent_text.paint()),
     };
-    row_shell(format!("ssh-host-{alias}"), false, t)
+    row_shell(format!("ssh-host-{alias}"), false, desk.phone.is_some(), t)
         .label(alias.to_owned())
         .on_press(move |d: &mut Desk| d.add_ssh_host(&held))
         .child(name(alias.to_owned(), t))
@@ -369,6 +427,8 @@ fn ssh_host(alias: &str, desk: &Desk, t: &Tokens) -> El {
 fn field(desk: &Desk, t: &Tokens) -> El {
     let s = &t.space;
     let r = &t.roles;
+    let phone = desk.phone.is_some();
+    let tall = |least: f32| if phone { least.max(s.touch_min) } else { least };
     row()
         .w_full()
         .gap(s.s2)
@@ -377,7 +437,7 @@ fn field(desk: &Desk, t: &Tokens) -> El {
             row()
                 .grow(1.0)
                 .min_w(0.0)
-                .min_h(s.pointer_min + s.s1)
+                .min_h(tall(s.pointer_min + s.s1))
                 .px(s.s2)
                 .py(s.s1)
                 .radius(t.radius.sm)
@@ -405,7 +465,7 @@ fn field(desk: &Desk, t: &Tokens) -> El {
                 .build(&t.kit)
                 .key("machine-add")
                 .focusable(true)
-                .min_h(grown(t.ty.body, t.space.s2)),
+                .min_h(tall(grown(t.ty.body, t.space.s2))),
         )
 }
 
@@ -489,7 +549,7 @@ pub fn sheet(desk: &Desk, p: &Tokens) -> Option<El> {
     if !list.peers.is_empty() {
         body = body.child(head("On your tailnet"));
         for tailnet in &list.peers {
-            body = body.child(self::peer(tailnet, t));
+            body = body.child(self::peer(tailnet, desk.phone.is_some(), t));
         }
     }
     let config: Vec<_> = list.unregistered_ssh().collect();
@@ -519,16 +579,19 @@ pub fn sheet(desk: &Desk, p: &Tokens) -> Option<El> {
         Some(Err(why)) => body = body.child(outcome(why.clone(), phux_design::Tone::Failed, t)),
         None => {}
     }
-    let foot = row()
-        .w_full()
-        .gap(s.icon_gap)
-        .items_center()
-        .child(super::keycap("esc", t))
-        .child(
-            text("close")
-                .font(t.ty.caption)
-                .color(t.roles.text.dim.paint()),
-        );
+    // A phone has no Escape: its sheet closes from the header's button.
+    let foot = desk.phone.is_none().then(|| {
+        row()
+            .w_full()
+            .gap(s.icon_gap)
+            .items_center()
+            .child(super::keycap("esc", t))
+            .child(
+                text("close")
+                    .font(t.ty.caption)
+                    .color(t.roles.text.dim.paint()),
+            )
+    });
     let sheet = Sheet {
         key: "machines",
         title: "Machines",

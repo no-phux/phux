@@ -170,6 +170,9 @@ pub(crate) struct Status {
     /// The reconnect banner, and the same with an update in it.
     pub(crate) banner_w: f32,
     pub(crate) update_banner_w: f32,
+    /// A phone's message measure: comfortable lines on a 393-point screen,
+    /// the whole width less margins on a 320-point one.
+    pub(crate) phone_measure: f32,
 }
 
 pub(crate) const STATUS: Status = Status {
@@ -177,6 +180,7 @@ pub(crate) const STATUS: Status = Status {
     placeholder_w: SPACE.s16 * 8.0,
     banner_w: SPACE.s16 * 7.0,
     update_banner_w: SPACE.s16 * 9.0,
+    phone_measure: SPACE.s10 * 7.5,
 };
 
 /// The phone's own components.

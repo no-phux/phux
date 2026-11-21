@@ -22,6 +22,11 @@ icon!(
     "M2 4h12M2 8h12M2 12h12M5 2.5v3M11 6.5v3M6 10.5v3"
 );
 icon!(CLOSE, "phux-close", "M4.5 4.5l7 7M11.5 4.5l-7 7");
+icon!(
+    PENCIL,
+    "phux-pencil",
+    "M10.5 3l2.5 2.5-7 7H3.5V10zM9 4.5l2.5 2.5"
+);
 icon!(PLUS, "phux-plus", "M8 4v8M4 8h8");
 icon!(
     LOCK,
@@ -80,6 +85,7 @@ icon!(
 icon!(CHECK, "phux-check", "M3.5 8.5l3 3 6-7");
 icon!(ARROW_UP, "phux-arrow-up", "M8 13V3M4 7l4-4 4 4");
 icon!(ARROW_DOWN, "phux-arrow-down", "M8 3v10M4 9l4 4 4-4");
+icon!(BOLT, "phux-bolt", "M9 2L3.5 9h4L7 14l5.5-7h-4z");
 icon!(
     WINDOW,
     "phux-window",
@@ -126,6 +132,27 @@ icon!(
     BELL,
     "phux-bell",
     "M4 11.5V7a4 4 0 0 1 8 0v4.5l1 1H3zM6.5 14h3"
+);
+
+icon!(
+    CLIPBOARD,
+    "phux-clipboard",
+    "M6 2.5h4v2H6zM10 3.5h1.5a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1v-8a1 1 0 0 1 1-1H6M6 8h4M6 10.5h2.5"
+);
+icon!(
+    SPLIT_RIGHT,
+    "phux-split-right",
+    "M3.5 2.5h9a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1zM8 2.5v11"
+);
+icon!(
+    SPLIT_DOWN,
+    "phux-split-down",
+    "M3.5 2.5h9a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1zM2.5 8h11"
+);
+icon!(
+    TEXT_SIZE,
+    "phux-text-size",
+    "M1.5 13l3.5-9 3.5 9M2.7 10h4.6M9 13l2.5-6 2.5 6M9.8 11h3.4"
 );
 
 /// A mark drawn from filled shapes rather than one stroke.

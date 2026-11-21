@@ -247,10 +247,12 @@ pub unsafe extern "C" fn phux_rune_ios_frame(pointer: *mut c_void) -> *mut c_cha
         let input = host.input.snapshot(host.layer.runtime());
         let requests = mobile::take_requests(host.layer.runtime_mut());
         let ground = mobile::edge_srgb(host.layer.runtime());
+        // Only a drawn frame moves them; otherwise UIKit keeps the last.
+        let controls = frame.drew.then(|| mobile::controls(host.layer.runtime()));
         string(
             json!({"drew":frame.drew,"animating":frame.animating || reconciled,
             "wake_after_secs":frame.wake_after_secs,"input":input,"requests":requests,
-            "ground":ground}),
+            "ground":ground,"controls":controls}),
         )
     })
 }
@@ -332,6 +334,17 @@ pub unsafe extern "C" fn phux_rune_ios_touch(
         }
         Ok(())
     });
+}
+
+/// A tap on the native control `id` names: true when it ran its press.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_rune_ios_press(pointer: *mut c_void, id: *const c_char) -> bool {
+    attempt(|| {
+        let host = unsafe { host(pointer)? };
+        Ok(mobile::press(host.layer.runtime_mut(), unsafe {
+            text(id)?
+        }))
+    })
 }
 
 #[unsafe(no_mangle)]
