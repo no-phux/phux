@@ -9,6 +9,7 @@ use phux_protocol::ids::ResourceId;
 use rune::{Key, KeyEvent, TextEdit, Tx};
 
 use super::Desk;
+use super::copy_mode::search::{Spot, spot};
 use super::input::selection::Selected;
 
 pub struct Find {
@@ -159,6 +160,21 @@ impl Desk {
         self.generation += 1;
     }
 
+    /// The current match's ends, when find is open on `terminal`.
+    pub(super) fn find_match(&self, terminal: &ResourceId) -> Option<(Spot, Spot)> {
+        let find = self
+            .connection
+            .find
+            .as_ref()
+            .filter(|f| &f.terminal == terminal)?;
+        let &(start, end) = find.matches.get(find.index?)?;
+        let engine = self.connection.client.as_ref()?.engine()?;
+        Some((
+            spot(&engine, find.view, start)?,
+            spot(&engine, find.view, end)?,
+        ))
+    }
+
     /// Close find, leaving the history where the last match put it.
     pub fn close_find(&mut self) {
         let Some(find) = self.connection.find.take() else {
@@ -179,12 +195,15 @@ impl Desk {
             return self.confirm_key(event);
         }
         match event.key {
+            // Over copy mode the field reads its search (`/`, `?`).
+            Key::Enter if self.copy_search_commit() => tx.blur(),
             Key::Enter if event.mods.shift => self.step_find(1),
             Key::Enter => self.step_find(-1),
             Key::Up => self.step_find(-1),
             Key::Down => self.step_find(1),
             Key::Escape => {
                 self.close_find();
+                self.copy_cursor_again();
                 tx.blur();
             }
             _ => return false,

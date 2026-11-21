@@ -268,6 +268,9 @@ pub const COMMANDS: &[Command] = &[
         [m('[').shift()],
         [Chord::ctrl(Cap::PageUp).shift()]
     ),
+    // Bound in `[rune.keys]`, or reached from the palette.
+    row!(Shortcut::LastPane, "Last Pane", [], []),
+    row!(Shortcut::LastTab, "Last Tab", [], []),
     // Shift beside Command+Left/Right, which walk the session's terminals.
     row!(
         Shortcut::NextSlotTab,
