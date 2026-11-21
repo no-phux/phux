@@ -227,7 +227,11 @@ pub fn session_json(
     let mut exec = ExecCounts::default();
     let (lifetime, members) = if let (Some(record), Some(org)) = (record, organization) {
         for member in org.members(&record.key) {
-            exec.add(member.activation.map(|a| core_exec_state(a.state)));
+            match member.activation.map(|a| core_exec_state(a.state)) {
+                // A newer server's state is not counted under any of ours.
+                Some(None) => {}
+                state => exec.add(state.flatten()),
+            }
         }
         (Some(record.lifetime), record.members)
     } else {
@@ -254,7 +258,7 @@ pub fn session_json(
         attached_clients: s.attached_client_count,
         keep_empty,
         empty,
-        lifetime: lifetime.map(core_lifetime),
+        lifetime: lifetime.and_then(core_lifetime),
         members,
         exec,
         project: record

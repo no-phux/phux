@@ -183,7 +183,7 @@ pub(super) fn org_event(tag: u8, body: &[u8]) -> Result<AgentEvent, DecodeError>
     let event = match tag {
         EVENT_TAG_SESSION_CREATED => AgentEvent::SessionCreated {
             session: f.session()?,
-            lifetime: f.lifetime()?.unwrap_or_default(),
+            lifetime: f.reported_lifetime().unwrap_or_default(),
             revision: req(f.revision)?,
             name: req(f.name)?,
         },
@@ -204,7 +204,7 @@ pub(super) fn org_event(tag: u8, body: &[u8]) -> Result<AgentEvent, DecodeError>
         },
         EVENT_TAG_SESSION_LIFETIME_CHANGED => AgentEvent::SessionLifetimeChanged {
             session: f.session()?,
-            lifetime: req(f.lifetime()?)?,
+            lifetime: req(f.reported_lifetime())?,
             revision: req(f.revision)?,
         },
         EVENT_TAG_MEMBERSHIP_CHANGED => AgentEvent::MembershipChanged {
@@ -226,7 +226,7 @@ pub(super) fn org_event(tag: u8, body: &[u8]) -> Result<AgentEvent, DecodeError>
         },
         EVENT_TAG_ACTIVATION_CHANGED => AgentEvent::ActivationChanged {
             resource: f.resource()?,
-            state: req(f.state()?)?,
+            state: req(f.state())?,
             activation: req(f.activation)?,
             outcome: f.outcome,
         },

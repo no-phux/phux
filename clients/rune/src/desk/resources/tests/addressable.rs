@@ -99,3 +99,23 @@ fn stepping_in_session_walks_tabs_then_panes_and_wraps() {
         );
     }
 }
+
+#[test]
+fn an_empty_palette_leads_with_terminals_and_leaves_the_mirrors_last() {
+    let records = [record(1, ResourceKind::Terminal)];
+    let (_client, rt) = fixture(&records, &doc(LayoutNode::Leaf(id(1))));
+    let hits = rt.state.palette_hits();
+    assert_eq!(hits.first().map(|h| h.item.kind), Some("terminal"));
+    let mirrors = hits
+        .iter()
+        .position(|h| h.item.title.starts_with("Mirror a screen"))
+        .expect("the screens row is listed");
+    assert!(
+        hits[mirrors..]
+            .iter()
+            .all(|h| h.item.kind == "action" || h.item.kind == "theme"),
+        "nothing but the remaining rows follows the mirrors"
+    );
+    let first_command = hits.iter().position(|h| h.item.kind == "action").unwrap();
+    assert!(first_command < mirrors, "everyday commands come first");
+}

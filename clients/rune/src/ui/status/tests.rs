@@ -176,7 +176,7 @@ fn a_narrow_window_folds_the_sidebar_and_the_toggle_peeks() {
     assert!(width(&rt) > 0.0, "the toggle peeks");
     // A peek is not a preference: a wide window still shows the sidebar.
     assert!(rt.state.sidebar_open);
-    rt.state.window_laid_out(1100.0);
+    rt.state.window_laid_out([1100.0, 720.0]);
     assert!(!rt.state.sidebar_peek && rt.state.sidebar_shown());
 }
 

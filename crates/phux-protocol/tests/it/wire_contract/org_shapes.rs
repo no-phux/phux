@@ -80,7 +80,7 @@ fn lifetime() -> impl Strategy<Value = SessionLifetime> {
     ]
 }
 fn exec_state() -> impl Strategy<Value = ExecState> {
-    (0_u8..=6).prop_map(|b| ExecState::from_u8(b).unwrap())
+    (0_u8..=6).prop_map(ExecState::from_u8)
 }
 fn outcome() -> impl Strategy<Value = Outcome> {
     prop_oneof![

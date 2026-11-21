@@ -29,6 +29,10 @@ pub enum ListenerDisabledReason {
     /// `local`), so a server resumed across an upgrade left it unbound
     /// rather than exit and end its panes (ADR-0179).
     PolicyModeRefused,
+    /// A reason this build does not know, from a newer server; only that
+    /// row reads it, the rest of the report stays readable.
+    #[serde(other)]
+    Unknown,
 }
 
 impl ListenerDisabledReason {
@@ -43,6 +47,7 @@ impl ListenerDisabledReason {
             Self::OverlayGateClosed => "overlay_gate_closed",
             Self::NoOverlayAddress => "no_overlay_address",
             Self::PolicyModeRefused => "policy_mode_refused",
+            Self::Unknown => "unknown",
         }
     }
 }
@@ -64,6 +69,9 @@ pub enum RemoteListenerTransport {
     Quic,
     /// WebTransport (HTTP/3 over QUIC).
     Wt,
+    /// A transport this build does not know, from a newer server.
+    #[serde(other)]
+    Unknown,
 }
 
 impl RemoteListenerTransport {
@@ -74,6 +82,7 @@ impl RemoteListenerTransport {
             Self::Wss => "wss",
             Self::Quic => "quic",
             Self::Wt => "wt",
+            Self::Unknown => "unknown",
         }
     }
 }
@@ -259,6 +268,35 @@ impl RemoteListenersReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A newer server's reason or transport folds to `Unknown` in its own
+    /// row instead of dropping the whole report.
+    #[test]
+    fn an_unknown_reason_or_transport_reads_as_unknown_in_its_row() {
+        let report = RemoteListenersReport::from_json(
+            r#"{"schema_version":1,"listeners":[
+                {"transport":"quic","expected":true,"bound":false,"disabled_reason":"later"},
+                {"transport":"carrier_pigeon","expected":true,"bound":true,"addr":"x"},
+                {"transport":"wss","expected":true,"bound":true,"addr":"y"}]}"#,
+        )
+        .expect("one unknown value must not drop the report");
+        let rows: Vec<_> = report
+            .listeners
+            .iter()
+            .map(|row| (row.transport, row.disabled_reason))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                (
+                    RemoteListenerTransport::Quic,
+                    Some(ListenerDisabledReason::Unknown)
+                ),
+                (RemoteListenerTransport::Unknown, None),
+                (RemoteListenerTransport::Wss, None),
+            ]
+        );
+    }
 
     #[test]
     fn waiting_slot_round_trips_and_reads_as_bind_failed_without_the_field() {

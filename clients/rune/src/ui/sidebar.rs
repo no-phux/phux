@@ -120,8 +120,9 @@ fn session_header(session: &Header, t: &Tokens) -> El {
         .children((session.color).map(|rgb| host_color::mark(rgb, dot_size(t), sidebar)))
         .children(session.branch.then(|| branch_mark(t)))
         .child(
+            // A group's name, a step quieter than the rows it holds.
             text(session.name.to_owned())
-                .font(t.ty.label.semibold())
+                .font(t.ty.caption.semibold())
                 .color(ink.paint())
                 .truncate(),
         );

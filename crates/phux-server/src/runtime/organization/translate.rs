@@ -8,6 +8,15 @@ use phux_protocol::wire::frame::{
 use crate::org_wire as ow;
 use crate::state::ServerState;
 
+/// A request's lifetime in core, or the refusal for one core cannot express.
+fn request_lifetime(
+    lifetime: phux_protocol::wire::frame::SessionLifetime,
+) -> Result<phux_core::SessionLifetime, Refusal> {
+    ow::core_lifetime(lifetime).ok_or_else(|| Refusal::Unsupported {
+        capability: "this session lifetime".to_owned(),
+    })
+}
+
 /// The wire command as a core operation, or the refusal for an argument
 /// core cannot express. `None` for a read or a non-organization command.
 #[allow(clippy::too_many_lines, reason = "one arm per organization command")]
@@ -25,9 +34,9 @@ pub(super) fn translate(
             launch,
         } => (
             ow::core_operation(&operation),
-            Ok(Op::SessionCreate {
+            request_lifetime(lifetime).map(|lifetime| Op::SessionCreate {
                 name,
-                lifetime: ow::core_lifetime(lifetime),
+                lifetime,
                 attrs: ow::core_attrs(&attrs),
                 resource: launch.map(|launch| phux_core::NewResource {
                     kind: ResourceKind::Terminal,
@@ -67,9 +76,9 @@ pub(super) fn translate(
             lifetime,
         } => (
             ow::core_operation(&operation),
-            Ok(Op::SessionSetLifetime {
+            request_lifetime(lifetime).map(|lifetime| Op::SessionSetLifetime {
                 session: ow::core_session_key(&session),
-                lifetime: ow::core_lifetime(lifetime),
+                lifetime,
             }),
         ),
         Command::SessionDelete { operation, session } => (
@@ -106,7 +115,14 @@ pub(super) fn translate(
                 .ok_or_else(|| Refusal::Unsupported {
                     capability: "this resource kind".to_owned(),
                 })
-                .map(|kind| Op::ResourceCreate {
+                .and_then(|kind| {
+                    let on_exit =
+                        ow::core_exit_policy(on_exit).ok_or_else(|| Refusal::Unsupported {
+                            capability: "this exit policy".to_owned(),
+                        })?;
+                    Ok((kind, on_exit))
+                })
+                .map(|(kind, on_exit)| Op::ResourceCreate {
                     placement: placement.as_deref().map(core_placement),
                     session: Some(ow::core_session_key(&session)),
                     resource: phux_core::NewResource {
@@ -122,7 +138,7 @@ pub(super) fn translate(
                                     )
                                 })
                             }),
-                        on_exit: ow::core_exit_policy(on_exit),
+                        on_exit,
                         parent: None,
                         launch_mode: ow::core_launch_mode(launch_mode),
                     },
