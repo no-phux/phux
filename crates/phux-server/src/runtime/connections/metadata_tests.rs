@@ -186,8 +186,8 @@ fn a_metadata_value_over_the_cap_is_refused_and_nothing_is_stored() {
     );
 }
 
-/// ADR-0129: the TUI's post-close layout republish can land after the
-/// reap; it must not resurrect the dead session's layout key.
+/// ADR-0129: a projection's post-close layout republish can land after
+/// the reap; it must not resurrect the dead session's layout key.
 #[test]
 fn a_late_layout_write_for_a_reaped_session_is_not_stored() {
     let state = SharedState::new();
@@ -204,7 +204,7 @@ fn a_late_layout_write_for_a_reaped_session_is_not_stored() {
         .expect("ephemeral session")
     });
     let wire = state.with_mut(|s| s.idspace.intern_session(session));
-    let key = format!("phux.tui.layout/v1/{}", wire.get());
+    let key = format!("myapp.layout/v1/{}", wire.get());
     let scope = Scope::Group(crate::state::DEFAULT_GROUP_ID);
     set(&state, &scope, &key, b"live");
     assert_eq!(get(&state, &scope, &key), Some(b"live".to_vec()));
@@ -212,6 +212,20 @@ fn a_late_layout_write_for_a_reaped_session_is_not_stored() {
     assert!(state.with(|s| s.registry().session(session).is_none()));
     set(&state, &scope, &key, b"late republish");
     assert!(get(&state, &scope, &key).is_none());
+}
+
+/// L3 §3.2: a live session's TUI layout key never stores the writer's
+/// bytes; one that does not decode changes nothing.
+#[test]
+fn a_tui_layout_write_is_translated_never_stored() {
+    let state = SharedState::new();
+    let (session, _) = state.with_mut(|s| s.seed_session("legacy"));
+    let wire = state.with_mut(|s| s.idspace.intern_session(session));
+    let key = phux_protocol::wire::info::tui_layout_key(wire);
+    let scope = Scope::Group(crate::state::DEFAULT_GROUP_ID);
+    let before = get(&state, &scope, &key);
+    set(&state, &scope, &key, b"not-cbor");
+    assert_eq!(get(&state, &scope, &key), before);
 }
 
 /// Server-owned records and the owner-only create-result namespace refuse

@@ -269,7 +269,9 @@ pub(super) fn handle_set_metadata(
             _ => {}
         }
     }
-    translate_layout_metadata(state, client_id, request_id, scope, key, &value);
+    if translate_layout_metadata(state, client_id, request_id, scope, key, &value) {
+        return;
+    }
     if !register_push_grant(state, client_id, request_id, scope, key, &value) {
         return;
     }
@@ -287,7 +289,10 @@ pub(super) fn handle_set_metadata(
     }
 }
 
-/// Commit a TUI layout's arrangement before storing and broadcasting its metadata.
+/// Commit a write of a live session's TUI layout key as its arrangement;
+/// `true` when `key` is one, so the writer's bytes are never stored. The
+/// commit republishes the arrangement under the key; a refused write
+/// changes nothing and broadcasts nothing.
 fn translate_layout_metadata(
     state: &SharedState,
     client_id: ClientId,
@@ -295,40 +300,42 @@ fn translate_layout_metadata(
     scope: &Scope,
     key: &str,
     value: &[u8],
-) {
+) -> bool {
     // R17: the TUI layout key is translated into the session's arrangement,
-    // attributed to the writer, then stored and broadcast as before.
-    if let Some(session) = state.with(|s| s.tui_layout_session(scope, key)) {
-        let translated = state.with_mut(|s| {
-            let actor = s.actor_for(client_id);
-            s.translate_layout_write(session, value, &actor)
-        });
+    // attributed to the writer.
+    let Some(session) = state.with(|s| s.tui_layout_session(scope, key)) else {
+        return false;
+    };
+    let translated = state.with_mut(|s| {
+        let actor = s.actor_for(client_id);
+        s.translate_layout_write(session, value, &actor)
+    });
+    debug!(
+        ?client_id,
+        request_id,
+        %key,
+        path = "metadata",
+        "arrangement save attempt"
+    );
+    if let Err(reason) = translated {
+        info!(
+            ?client_id,
+            request_id,
+            %key,
+            reason = %reason,
+            path = "metadata",
+            "arrangement save refused"
+        );
+    } else {
         debug!(
             ?client_id,
             request_id,
             %key,
             path = "metadata",
-            "arrangement save attempt"
+            "arrangement save committed"
         );
-        if let Err(reason) = translated {
-            info!(
-                ?client_id,
-                request_id,
-                %key,
-                reason = %reason,
-                path = "metadata",
-                "arrangement save refused"
-            );
-        } else {
-            debug!(
-                ?client_id,
-                request_id,
-                %key,
-                path = "metadata",
-                "arrangement save committed"
-            );
-        }
     }
+    true
 }
 
 /// Register the writer of a valid push grant before publishing that grant.
