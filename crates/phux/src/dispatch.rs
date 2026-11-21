@@ -93,6 +93,7 @@ pub(crate) fn dispatch(
         Some(Command::SendKeys(args)) => commands::send_keys::run(args, socket),
         Some(Command::Upload(args)) => commands::upload::run(args, socket),
         Some(Command::Download(args)) => commands::download::run(args, socket),
+        Some(Command::Git(args)) => commands::git_checkout::run(args, socket),
         Some(Command::Forward(args)) => commands::forward::run(args, socket),
         Some(Command::Paste(args)) => commands::paste::run(args, socket),
         Some(Command::Wait(args)) => commands::wait::run(args, socket),

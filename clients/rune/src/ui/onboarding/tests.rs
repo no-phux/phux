@@ -185,6 +185,19 @@ fn every_step_renders_its_parts() {
     }
     assert!(has(&rt, "pair-qr") && !has(&rt, "pair-devices"));
     snap(&mut rt, "5-done-pair");
+    let mut rt = window(Step::Done);
+    rt.update(|d, _| {
+        d.settings_ui.pairing.code = Some(Err(
+            "phux: error: pair: the server at /s has no remote listener bound, and this computer \
+             has no private network address (no tailnet) for paired mode to bind"
+                .to_owned(),
+        ));
+    });
+    settle(&mut rt);
+    rt.update(|_, tx| tx.scroll_into_view("pair-recheck"));
+    settle(&mut rt);
+    assert!(has(&rt, "pair-tailscale") && !has(&rt, "pair-allow"));
+    snap(&mut rt, "5-done-pair-no-tailnet");
     if KEEP_ALIVE {
         let mut rt = window(Step::Done);
         assert!(rt.state.onboarding.keep_alive, "on by default");

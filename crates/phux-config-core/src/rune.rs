@@ -16,7 +16,11 @@ pub struct RuneCfg {
     /// Size of the sidebar, tabs, palette and Settings in percent, 80 to
     /// 200; the terminal's text keeps `font-size`. 100 when unset.
     pub interface_size: Option<u16>,
-    /// Terminal font family; `""` is the built-in face.
+    /// Terminal font family, or families tried in order before the built-in
+    /// faces: a list, or one string with commas between names. `""` is the
+    /// built-in face.
+    #[serde(deserialize_with = "families")]
+    #[schemars(with = "Option<Families>")]
     pub font_family: Option<String>,
     /// Post desktop notifications for agents that need attention.
     pub notifications: Option<bool>,
@@ -31,6 +35,15 @@ pub struct RuneCfg {
     pub confirm_close: Option<bool>,
     /// List the session used last first, instead of in the arranged order.
     pub recent_first: Option<bool>,
+    /// Where the terminal tabs go: `"top"` in the title bar, `"bottom"` under
+    /// the panes, or `"hidden"`.
+    pub tab_bar: Option<TabBar>,
+    /// The title bar: `"shown"`, `"hover"` (hidden until the pointer reaches
+    /// the window's top edge) or `"hidden"`.
+    pub title_bar: Option<TitleBar>,
+    /// The display a new window opens on: `"current"` (where the window was
+    /// when it closed), `"mouse"` (the one under the pointer) or `"main"`.
+    pub new_window_screen: Option<NewWindowScreen>,
     /// Global chord that shows and hides the quick terminal, such as
     /// `"ctrl+backquote"`; unset or `"none"` leaves it off.
     pub quick_terminal: Option<String>,
@@ -68,6 +81,67 @@ pub enum QuickTerminalEdge {
     Bottom,
 }
 
+/// `[rune] tab-bar`: where the terminal tabs go.
+#[derive(
+    Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum TabBar {
+    /// In the title bar.
+    #[default]
+    Top,
+    /// Under the panes.
+    Bottom,
+    /// Nowhere; the palette and shortcuts still switch tabs.
+    Hidden,
+}
+
+/// `[rune] title-bar`: whether the band over the panes shows.
+#[derive(
+    Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum TitleBar {
+    /// Always.
+    #[default]
+    Shown,
+    /// While the pointer is at the window's top edge.
+    Hover,
+    /// Never; a thin strip along the top still moves the window.
+    Hidden,
+}
+
+/// `[rune] new-window-screen`: the display a new window opens on.
+#[derive(
+    Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum NewWindowScreen {
+    /// Where the window was when it closed, on a display still connected.
+    #[default]
+    Current,
+    /// The display under the pointer.
+    Mouse,
+    /// The main display.
+    Main,
+}
+
+/// `font-family` as written: one string or a list.
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+enum Families {
+    One(String),
+    List(Vec<String>),
+}
+
+/// `font-family` as one string or a list, kept as one comma-separated string.
+fn families<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(Some(match Families::deserialize(d)? {
+        Families::One(family) => family,
+        Families::List(list) => list.join(", "),
+    }))
+}
+
 impl RuneCfg {
     /// This table as a `[rune]` block to paste into `config.toml`.
     #[must_use]
@@ -103,6 +177,17 @@ mod tests {
         let rune = parsed.expect("parses").rune;
         assert_eq!(rune.quick_terminal_size, Some(0.5));
         assert_eq!(rune.quick_terminal_edge, Some(QuickTerminalEdge::Bottom));
+        let listed = "[rune]\nfont-family = [\"Berkeley Mono\", \"Symbols Nerd Font\"]\n";
+        let parsed = crate::loader::parse_client(listed, std::path::Path::new("config.toml"));
+        let family = parsed.expect("parses").rune.font_family;
+        assert_eq!(family.as_deref(), Some("Berkeley Mono, Symbols Nerd Font"));
+        let bars = "[rune]\ntab-bar = \"bottom\"\ntitle-bar = \"hidden\"\n";
+        let rune = crate::loader::parse_client(bars, std::path::Path::new("config.toml"));
+        let rune = rune.expect("parses").rune;
+        assert_eq!(
+            (rune.tab_bar, rune.title_bar),
+            (Some(TabBar::Bottom), Some(TitleBar::Hidden))
+        );
         let sideways = "[rune]\nquick-terminal-edge = \"left\"\n";
         assert!(crate::loader::parse_client(sideways, std::path::Path::new("c.toml")).is_err());
     }

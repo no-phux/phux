@@ -64,6 +64,7 @@ mod quick_look;
 pub mod reef;
 mod reorder;
 pub mod resources;
+mod reveal;
 mod scene_host;
 mod screenshot;
 mod sessions;
@@ -73,6 +74,7 @@ mod splits;
 pub mod surfaces;
 mod tabs;
 pub mod updates;
+pub(crate) mod window_frame;
 mod worker;
 mod worktree;
 

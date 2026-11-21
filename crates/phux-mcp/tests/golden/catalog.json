@@ -13203,6 +13203,209 @@
   },
   {
     "annotations": {
+      "destructiveHint": true,
+      "readOnlyHint": false
+    },
+    "description": "Read the Git checkout a pane is in, resolved by the server from the pane's live working directory (a satellite pane reads that host's checkout). op: status (branch, upstream, changed files with line counts), diff (one file's patch; needs path, area defaults to unstaged), log (newest first; skip, limit, optional path), branches, pr (current branch's pull request and checks via the host's gh), show (one commit; needs sha). A typed refusal (not_a_repository, git_unavailable, no_pull_request, ...) is an error carrying the answer.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": [
+            "target"
+          ]
+        },
+        {
+          "required": [
+            "resource_id"
+          ]
+        }
+      ],
+      "if": {
+        "properties": {
+          "background": {
+            "const": true
+          }
+        },
+        "required": [
+          "background"
+        ]
+      },
+      "not": {
+        "required": [
+          "target",
+          "resource_id"
+        ]
+      },
+      "properties": {
+        "area": {
+          "description": "diff only. Default unstaged.",
+          "enum": [
+            "unstaged",
+            "staged",
+            "untracked"
+          ],
+          "type": "string"
+        },
+        "background": {
+          "description": "Return an operation receipt immediately instead of waiting (including server approval holds). Requires idempotency_key. Observe with phux_operation_status; cancellation only ends observation. Adapter exit loses the ledger and cancels unfinished work; effects may already have happened.",
+          "type": "boolean"
+        },
+        "idempotency_key": {
+          "description": "Nonzero 32-hex-digit retry key. Same tool and arguments replay one invocation during this adapter's lifetime (128 keys, no eviction). Not durable across reconnect/restart. phux_new/spawn/kill/signal additionally forward server-backed keys. Reconcile state before retrying after a disconnect.",
+          "maxLength": 32,
+          "minLength": 32,
+          "pattern": "^[0-9a-fA-F]{32}$",
+          "type": "string"
+        },
+        "limit": {
+          "description": "log only. Default 20.",
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "op": {
+          "enum": [
+            "status",
+            "diff",
+            "log",
+            "branches",
+            "pr",
+            "show"
+          ],
+          "type": "string"
+        },
+        "path": {
+          "description": "Checkout-relative path: the file for diff, an optional filter for log.",
+          "type": "string"
+        },
+        "resource_id": {
+          "description": "Exact resource ID (@N or host/@N). Preferred over target selectors; mutually exclusive with target. IDs belong to one server incarnation.",
+          "maxLength": 4096,
+          "minLength": 2,
+          "pattern": "^(.+/)?@[0-9]+$",
+          "type": "string"
+        },
+        "sha": {
+          "description": "show only. A commit id or a 4-64 hex digit prefix.",
+          "type": "string"
+        },
+        "skip": {
+          "description": "log only. Commits to skip from HEAD.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "socket": {
+          "type": "string"
+        },
+        "target": {
+          "description": "For resource_show, a full ^KEY inspects the durable record/current activation without a live engine (schema 2). Otherwise prefer a direct resource ID returned by inventory (@N or host/@N), or use resource_id. Selector strings remain supported for compatibility; names, tags, and focus can resolve differently over time.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "op"
+      ],
+      "then": {
+        "required": [
+          "idempotency_key"
+        ]
+      },
+      "type": "object"
+    },
+    "name": "phux_git",
+    "outputSchema": {
+      "anyOf": [
+        {
+          "properties": {
+            "answer": {
+              "description": "The typed checkout answer, tagged by `kind`.",
+              "type": "object"
+            },
+            "schema_version": {
+              "type": "integer"
+            },
+            "terminal_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "answer"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "adapter_receipt_id": {
+              "type": "string"
+            },
+            "approval_check": {
+              "type": "object"
+            },
+            "error": {
+              "type": "object"
+            },
+            "operation_id": {
+              "description": "Legacy alias of adapter_receipt_id, not a backend operation identity.",
+              "type": "string"
+            },
+            "request": {
+              "additionalProperties": false,
+              "properties": {
+                "tool": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "tool"
+              ],
+              "type": "object"
+            },
+            "result": {},
+            "schema_version": {
+              "const": 1,
+              "type": "integer"
+            },
+            "scope": {
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "mcp_adapter",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            "state": {
+              "enum": [
+                "pending",
+                "completed",
+                "failed"
+              ],
+              "type": "string"
+            },
+            "status_tool": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "schema_version",
+            "operation_id",
+            "state"
+          ],
+          "type": "object"
+        }
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "annotations": {
       "destructiveHint": false,
       "readOnlyHint": true
     },

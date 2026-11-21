@@ -209,15 +209,28 @@ pub fn needs_enable(error: &str) -> bool {
     error.contains("[policy] mode is unset")
 }
 
-/// The CLI's own words, without the command line and prefixes around them.
-pub fn reason(error: &str) -> String {
-    let words = error.split_once("failed: ").map_or(error, |(_, rest)| rest);
-    let words = words.strip_prefix("phux: error: ").unwrap_or(words);
-    words
-        .strip_prefix("pair: ")
-        .unwrap_or(words)
-        .trim()
-        .to_owned()
+/// No address a phone can reach: the CLI found no private network
+/// (tailnet) address for paired mode to bind, the server waits for one, or
+/// the link has no address to name.
+pub fn no_address(error: &str) -> bool {
+    [
+        "private network address",
+        "no_overlay_address",
+        "no address to give it",
+    ]
+    .iter()
+    .any(|words| error.contains(words))
+}
+
+/// A refusal in one sentence. The CLI's own words stay behind Copy details.
+pub fn trouble(error: &str) -> &'static str {
+    if error.contains("phux is not installed") {
+        "phux isn't installed on this computer, so it can't make a code."
+    } else if error.contains("no server is running") {
+        "The phux server on this computer isn't running. Open a session, then try again."
+    } else {
+        "Couldn't make a code."
+    }
 }
 
 /// `9:05` left, `1:02:03` past an hour; `None` once it has run out.
@@ -372,12 +385,31 @@ mod tests {
     }
 
     #[test]
-    fn errors_read_as_the_cli_wrote_them() {
+    fn errors_read_as_sentences_not_as_the_cli_wrote_them() {
         let error = "`phux --socket /s pair --json --enroll` failed: phux: error: pair: the server \
                      at /s has no remote listener bound because [policy] mode is unset, so none was minted";
         assert!(needs_enable(error));
-        assert!(reason(error).starts_with("the server at /s"));
-        assert_eq!(reason("phux is not installed"), "phux is not installed");
+        assert!(!no_address(error));
+        assert_eq!(trouble(error), "Couldn't make a code.");
+        assert!(trouble("phux is not installed").starts_with("phux isn't installed"));
+        assert!(trouble("phux: error: no server is running at /s").starts_with("The phux server"));
+    }
+
+    #[test]
+    fn every_no_address_refusal_is_recognized() {
+        // This CLI, before it changes anything.
+        let unset = "phux: error: pair: the server at /s has no remote listener bound, and this \
+                     computer has no private network address (no tailnet) for paired mode to bind";
+        // An older CLI, after it turned paired mode on and restarted.
+        let waiting = "phux: error: pair: the server at /run/user/1000/phux/phux.sock has no \
+                       remote listener bound (wss at ? waiting for a private network address), \
+                       so none was minted; pass `--listen HOST:PORT` or `--quic HOST:PORT`";
+        let older = "has no remote listener bound (quic at ? disabled (no_overlay_address))";
+        let unlinked = parse_code(br#"{"connect_link":null}"#).unwrap_err();
+        for error in [unset, waiting, older, unlinked.as_str()] {
+            assert!(no_address(error), "{error}");
+            assert!(!needs_enable(error), "{error}");
+        }
     }
 
     #[test]

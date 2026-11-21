@@ -377,6 +377,11 @@ impl OutputPumpContext {
     ) -> ControlFlow<Option<PumpFault>> {
         crate::perf::PUMP_LAGGED.incr();
         if generation.fence_for_gap() {
+            // Under load the answer can be lapped too; that is not an
+            // actor that never answers.
+            if matches!(cause, GapCause::Dropped(_)) {
+                generation.refund_lapped_gap();
+            }
             debug!(
                 terminal_id = ?self.wire_terminal_id,
                 %cause,

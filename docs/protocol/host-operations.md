@@ -92,6 +92,13 @@ status read's refusal, `git_unavailable` becomes `git_failed`), so an older
 client never sees them. The pull request carries `base_ref`, and status,
 branches and tree carry `total`, every entry there is, when the host
 counted them all; older clients skip both fields.
+
+Scripts and agents read a checkout without attaching through
+`phux git status|diff|log|branches|pr|show TARGET [--json]` and the MCP
+tool `phux_git`, which print the answer as
+`{"schema_version":1,"terminal_id":...,"answer":{...}}` and exit 1 (an MCP
+error) on a typed refusal, with the answer still printed.
+
 The [request and answer types](../../crates/phux-protocol/src/checkout.rs), the
 [server handler](../../crates/phux-server/src/runtime/apps/terminal/checkout.rs), and the
 shared [`phux-git`](../../crates/phux-git/src/checkout.rs) module own the

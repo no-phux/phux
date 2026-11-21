@@ -52,6 +52,7 @@ Panes:
   terminal      Create and place terminals; inspect creation receipts
   resource      Inspect a resource or wait for its process to exit
   slot          Keep several panes in one layout slot, as tabs
+  git           Read the Git checkout a pane is in
 
 Agents:
   agent         See and drive the agents running in panes
@@ -3089,6 +3090,166 @@ Flags:
 Global flags:
       --socket <PATH>             Server socket to dial (default:
                                   `$PHUX_SOCKET`)
+```
+
+## `phux git`
+
+```text
+Read the Git checkout a pane is in
+
+The server that owns the pane resolves the checkout from the pane's live working
+directory and runs Git there, so a pane on a satellite reads that host's
+checkout. Nothing attaches. A typed refusal (`not_a_repository`,
+`git_unavailable`, `no_pull_request`, ...) exits 1 with the answer still printed
+under `--json`.
+
+Usage: phux git <SUBCOMMAND>
+
+Commands:
+  branches  Local and remote-tracking branches.
+  diff      One file's unified diff (unstaged unless --staged or --untracked).
+  log       One page of history, newest first.
+  pr        The current branch's pull request and its checks, from the host's
+            `gh`.
+  show      One commit: message, files with line counts, and the patch.
+  status    Branch, upstream, and every changed file with line counts.
+  help      Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux git branches`
+
+```text
+Local and remote-tracking branches.
+
+Usage: phux git branches [--json] <TARGET>
+
+Arguments:
+  <TARGET>  Target selector, as for `status`.
+
+Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux git diff`
+
+```text
+One file's unified diff (unstaged unless --staged or --untracked).
+
+Usage: phux git diff [FLAGS] <TARGET> <PATH>
+
+Arguments:
+  <TARGET>  Target selector, as for `status`.
+  <PATH>    Checkout-relative path.
+
+Flags:
+      --staged         The index against `HEAD`.
+      --untracked      An untracked file, as a whole new file.
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux git log`
+
+```text
+One page of history, newest first.
+
+Usage: phux git log [FLAGS] <TARGET> [PATH]
+
+Arguments:
+  <TARGET>  Target selector, as for `status`.
+  [PATH]    Only commits touching this checkout-relative path.
+
+Flags:
+      --skip <N>       Commits to skip from `HEAD`.
+                       (default: 0)
+      --limit <N>      Commits to return, 1 to 100.
+                       (default: 20)
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux git pr`
+
+```text
+The current branch's pull request and its checks, from the host's `gh`.
+
+Usage: phux git pr [--json] <TARGET>
+
+Arguments:
+  <TARGET>  Target selector, as for `status`.
+
+Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux git show`
+
+```text
+One commit: message, files with line counts, and the patch.
+
+Usage: phux git show [--json] <TARGET> <SHA>
+
+Arguments:
+  <TARGET>  Target selector, as for `status`.
+  <SHA>     A commit id or a prefix of one (4 to 64 hex digits).
+
+Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux git status`
+
+```text
+Branch, upstream, and every changed file with line counts.
+
+Usage: phux git status [--json] <TARGET>
+
+Arguments:
+  <TARGET>  Target selector: session, session:group, session:group.pane, @id, or
+            `.` (focused).
+
+Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux give`
