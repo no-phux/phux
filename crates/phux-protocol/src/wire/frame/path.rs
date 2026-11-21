@@ -1,4 +1,4 @@
-//! Host-side browse and fuzzy-search request/reply payloads (L3 §5).
+//! Host-side browse and fuzzy-search request/reply payloads.
 
 use crate::ids::SatelliteHost;
 use crate::wire::{

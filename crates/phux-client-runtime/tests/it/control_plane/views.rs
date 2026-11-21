@@ -1,6 +1,6 @@
 //! A snapshot is a view, not a death certificate. `ATTACHED` keeps what the
 //! grant observes and never lists a hub's satellites; `GET_STATE` keeps what
-//! the grant inventories and does (workload-auth §6, L1 §9.1). Only the same
+//! the grant inventories and does. Only the same
 //! view's previous listing proves a close by absence.
 
 use super::*;

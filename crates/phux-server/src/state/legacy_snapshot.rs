@@ -62,7 +62,7 @@ impl ServerState {
                 .is_some_and(|a| a.state.is_current())
     }
 
-    /// Build the `ATTACHED` [`SessionSnapshot`] (SPEC §13), interning wire
+    /// Build the `ATTACHED` [`SessionSnapshot`], interning wire
     /// ids as needed. Focus falls back to the session's default pane; an
     /// empty session carries `0` sentinels. `None` if `focus_session` is
     /// unknown.

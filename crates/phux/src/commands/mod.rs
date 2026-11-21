@@ -304,7 +304,7 @@ pub(crate) fn build_cli_runtime() -> std::io::Result<tokio::runtime::Runtime> {
 }
 
 /// Send one command over `conn` and return the matching `COMMAND_RESULT`,
-/// reporting anything the server interleaved ahead of it (SPEC §5).
+/// reporting anything the server interleaved ahead of it.
 ///
 /// The CLI is a request/response consumer: it opens a connection, runs a
 /// verb, and exits without attaching or subscribing, so the only frames that

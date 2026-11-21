@@ -139,7 +139,7 @@ macro_rules! shape {
     };
 }
 
-// The status ladder's marks (§1.3): shape carries the state, so each still
+// The status ladder's marks: shape carries the state, so each still
 // reads in monochrome. `done` (seen) and `idle` share the ring; their words
 // tell them apart.
 shape!(

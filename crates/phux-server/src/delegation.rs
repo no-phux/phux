@@ -1,4 +1,4 @@
-//! Delegated agent credentials (ADR-0163 §5, CONTRACTS §03).
+//! Delegated agent credentials (ADR-0163 §5).
 //!
 //! A launcher mints a credential an agent acts through: at most
 //! [`AGENT_VERBS`], on the launcher's session only, `on_behalf_of` the

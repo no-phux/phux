@@ -147,7 +147,7 @@ impl core::fmt::Debug for ServerIncarnation {
 pub struct CloseAttribution {
     /// The connection that sent the kill.
     pub actor: Option<ClientId>,
-    /// The kill's `operation_id`, when it carried one (L1 §5.1.1).
+    /// The kill's `operation_id`, when it carried one.
     pub operation_id: Option<phux_protocol::ids::IdempotencyKey>,
 }
 
@@ -177,7 +177,7 @@ pub struct ServerState {
     /// Every core-id ↔ wire-id mapping and the wire-id allocators (see
     /// [`IdSpace`]).
     pub idspace: IdSpace,
-    /// Per-scope L3 metadata store (SPEC §7.4); values are opaque.
+    /// Per-scope L3 metadata store; values are opaque.
     metadata: MetadataStore,
     /// Boot-time configuration, built before the state and never changed;
     /// see [`config`].

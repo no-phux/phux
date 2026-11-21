@@ -22,7 +22,7 @@ tlv_body! {
         /// `ClientCapabilities` blob (positional sub-record).
         pub const CLIENT_CAPS: u32 = 5;
         /// Frame compressions the client accepts (`u8` bitset); absent = none.
-        /// Top-level because the `CLIENT_CAPS` byte order is fixed (§6.2).
+        /// Top-level because the `CLIENT_CAPS` byte order is fixed.
         pub const COMPRESSION: u32 = 6;
         // Ids 7 and 8 are retired-unshipped (ADR-0116) and stay reserved.
         /// Positional `SshOrigin` stamped by `phux stdio-bridge`

@@ -31,7 +31,7 @@ pub(super) fn resource(handle: El, id: &ResourceId, session: SessionKey) -> El {
 }
 
 /// `handle` dragging the session `key` names, outlined in the focus ring's
-/// colour while a drop would land on it (§1.10 drag). A handle with no key
+/// colour while a drop would land on it. A handle with no key
 /// (a satellite's) stays put.
 pub(super) fn reorderable(handle: El, key: Option<SessionKey>, target: bool, t: &Tokens) -> El {
     let Some(key) = key else { return handle };

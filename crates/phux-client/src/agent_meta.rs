@@ -1,4 +1,4 @@
-//! Typed view of the `phux.agent/v1` L3 metadata record (ADR-0040, L3 §3.7).
+//! Typed view of the `phux.agent/v1` L3 metadata record (ADR-0040).
 //!
 //! `state` and `attention` are OPEN enums: unrecognized values decode to
 //! [`AgentMetaState::Unknown`] / [`AgentAttention::Normal`] rather than
@@ -266,7 +266,7 @@ pub use phux_client_core::agent_record::MAX_AGENT_RECORD_BYTES;
 #[must_use]
 pub fn parse_agent_record(bytes: &[u8]) -> Option<AgentRecord> {
     let record = phux_client_core::agent_record::parse_agent_record(bytes)?;
-    // An unsupported word already reads as `Normal` (L3 §3.7).
+    // An unsupported word already reads as `Normal`.
     Some(AgentRecord {
         name: record.name,
         kind: record.kind,

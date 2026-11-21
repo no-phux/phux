@@ -190,7 +190,7 @@ impl ServerRuntime {
                     uplinks.arm(uplink_source, uplink_socket, root_token.clone());
                     uplinks.apply(uplink_specs);
                 });
-                // Live revocation (workload-auth §7).
+                // Live revocation.
                 revocation::spawn_revocation_watcher(&state, &root_token);
                 // Before any pane exists, so each is told the broker socket.
                 crate::runtime::forward::agent::start(&state, &root_token);

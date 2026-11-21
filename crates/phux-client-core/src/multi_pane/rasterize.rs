@@ -447,10 +447,10 @@ pub(super) fn split_dim(total: u16, ratio: f32) -> u16 {
     }
 }
 
-/// Minimum inner-content width of a leaf pane, in cells (TUI doc §6.2).
+/// Minimum inner-content width of a leaf pane, in cells.
 pub(super) const MIN_LEAF_COLS: u16 = 2;
 
-/// Minimum inner-content height of a leaf pane, in cells (TUI doc §6.2).
+/// Minimum inner-content height of a leaf pane, in cells.
 pub(super) const MIN_LEAF_ROWS: u16 = 1;
 
 /// The smallest `(cols, rows)` giving every leaf of `node` its minimum.

@@ -134,7 +134,7 @@ impl FrameReader for WsReader {
                     framing::check_frame(&data)?;
                     return Ok(Some(BytesMut::from(&data[..])));
                 }
-                // Over the size cap: the same §5 violation as an oversized
+                // Over the size cap: the same framing violation as an oversized
                 // length header, so the peer gets FRAME_TOO_LARGE.
                 Some(Err(WebSocketError::Capacity(CapacityError::MessageTooLong {
                     size, ..

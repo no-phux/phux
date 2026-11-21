@@ -150,7 +150,7 @@ impl ServerState {
     /// Recompute a departed view's Terminals; with no usable viewport left
     /// they return to the headless size. `Manual` is left alone.
     ///
-    /// A view that cast no vote re-resolves nothing (L1 §9.2), so its
+    /// A view that cast no vote re-resolves nothing, so its
     /// explicit sizes outlive it. The exception (ADR-0145) is a Terminal it
     /// leaves with no subscriber at all and smaller than
     /// [`MIN_USABLE_TERMINAL_DIMS`] on either axis. Unwatched at that size,

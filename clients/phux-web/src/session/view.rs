@@ -84,7 +84,7 @@ impl Connection {
     /// Set the pixel size of one cell as the client draws it and reports
     /// pointer positions in. The next `ATTACH` or `VIEWPORT_RESIZE` reports
     /// the viewport's size in those pixels, from which the server sizes the
-    /// cells its mouse encoder divides positions by (SPEC L1 §9.2.1);
+    /// cells its mouse encoder divides positions by;
     /// without it the server uses another client's cells or its 8x16
     /// default.
     pub fn set_cell_size(&mut self, width: u16, height: u16) {

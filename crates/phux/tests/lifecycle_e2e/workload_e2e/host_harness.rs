@@ -9,7 +9,7 @@ impl FarHost {
         let root = dir.join("far");
         prepare_dirs(&root);
         // `mode = "paired"`: every TLS connection must present a workload
-        // certificate the registry admits (workload-auth §8).
+        // certificate the registry admits.
         std::fs::write(
             root.join("config/phux/config.toml"),
             "[policy]\nmode = \"paired\"\n",

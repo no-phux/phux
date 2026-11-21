@@ -29,7 +29,7 @@ fn outcomes(result: CommandResult) -> serde_json::Value {
     serde_json::from_str(&document).expect("json")
 }
 
-/// L1 §5.2: a keyed batch split across hosts awaits every host, and is
+/// A keyed batch split across hosts awaits every host, and is
 /// keyed at every hop: the satellite's own per-id outcome is merged, so a
 /// stale satellite id is `not_found`, not `killed`.
 #[tokio::test(flavor = "current_thread")]
@@ -157,7 +157,7 @@ async fn committed_signal() -> CommittedSignal {
     }
 }
 
-/// L1 §5.1.1: a connection cancelled before the reply does not release
+/// A connection cancelled before the reply does not release
 /// the key, so the retry answers the first result and nothing is
 /// delivered twice.
 #[tokio::test(flavor = "current_thread")]

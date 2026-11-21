@@ -39,10 +39,10 @@ pub(crate) struct ClientTable {
     /// Next [`ClientId`]: monotonic from 1 (0 reads as a placeholder),
     /// never reused, saturating rather than wrapping.
     next_id: u64,
-    /// Negotiated [`LayerSet`] from HELLO, gating L3 frames (SPEC §16.4).
+    /// Negotiated [`LayerSet`] from HELLO, gating L3 frames.
     /// Defaults to [`LayerSet::all`] without a HELLO. Connection-scoped.
     pub(super) layers: HashMap<ClientId, LayerSet>,
-    /// Agent-event subscriptions (SPEC §7.5) with their mailboxes, since a
+    /// Agent-event subscriptions with their mailboxes, since a
     /// `watch` client subscribes without attaching.
     pub(super) event_subscriptions: HashMap<ClientId, EventSubscription>,
     /// Mailboxes of L3 metadata subscribers (headless consumers subscribe
@@ -50,8 +50,8 @@ pub(crate) struct ClientTable {
     /// prefers `attached`, so each client gets one delivery.
     pub(super) metadata_mailboxes: HashMap<ClientId, mpsc::Sender<Outbound>>,
     /// Mailboxes of `ATTACH_RESOURCE` subscribers, which need no session
-    /// `ATTACH` (L1 §5.1), so terminal-scoped fanout such as
-    /// `RESOURCE_CLOSED` (L1 §3.1) can reach them. Fanout prefers
+    /// `ATTACH`, so terminal-scoped fanout such as
+    /// `RESOURCE_CLOSED` can reach them. Fanout prefers
     /// `attached`, so each client resolves to one mailbox.
     pub(super) terminal_mailboxes: HashMap<ClientId, mpsc::Sender<Outbound>>,
     /// Transport-stamped peer identities. Connection-scoped.
@@ -63,7 +63,7 @@ pub(crate) struct ClientTable {
     /// enforced at every dispatch; no entry means everything is refused.
     pub(super) grants: HashMap<ClientId, crate::policy::ConnectionGrant>,
     /// Revocation signal per connection: once a goodbye is set, the writer
-    /// drops its queue, says goodbye, and closes (§7).
+    /// drops its queue, says goodbye, and closes.
     pub(super) revocation_signals: HashMap<ClientId, watch::Sender<Option<crate::policy::Goodbye>>>,
     /// Wakes the revocation watcher when a connection gets its grant.
     pub(super) revocation_wake: Arc<Notify>,
@@ -258,7 +258,7 @@ impl ClientTable {
         let grants = &self.grants;
         self.event_subscriptions.entry(client).or_insert_with(|| {
             *epoch += 1;
-            // workload-auth §6: a scoped grant's subscription is filtered.
+            // A scoped grant's subscription is filtered.
             let observe = crate::policy::filter::event_filter(grants.get(&client));
             EventSubscription::new(tx, *epoch, observe)
         })
@@ -448,7 +448,7 @@ impl ClientTable {
                 actor: actor.cloned(),
             };
             // `try_send`: we hold the lock; a dropped notification is
-            // acceptable (SPEC §7.4).
+            // acceptable.
             if tx.try_send(Outbound::Frame(frame)).is_ok() {
                 delivered.push(*client_id);
             }

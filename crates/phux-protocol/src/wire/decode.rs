@@ -383,7 +383,7 @@ impl<'a> Decoder<'a> {
         let type_byte = self.read_u8()?;
         let frame = self.decode_body(type_byte)?;
 
-        // Unconsumed trailing bytes are skipped (SPEC §6); reading past the
+        // Unconsumed trailing bytes are skipped; reading past the
         // declared end is malformed.
         if self.pos > body_end {
             return Err(DecodeError::LengthOverflow);

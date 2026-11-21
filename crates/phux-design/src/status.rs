@@ -1,4 +1,4 @@
-//! The status vocabulary (spec §1.3): one mapping from pane facts to a
+//! The status vocabulary: one mapping from pane facts to a
 //! ladder state, the state's tone, mark and word, and English plurals.
 
 use crate::tokens::{self, StatusMark};
@@ -20,12 +20,9 @@ pub enum Link {
     Lost,
 }
 
-/// What a client knows about a pane (§1.3.1).
+/// What a client knows about a pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "the independent pane facts of §1.3.1"
-)]
+#[allow(clippy::struct_excessive_bools, reason = "the independent pane facts")]
 pub struct ToneInput {
     pub agent: Option<Agent>,
     pub attention: bool,

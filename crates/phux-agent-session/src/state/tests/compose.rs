@@ -73,7 +73,7 @@ fn compose_fills_a_missing_name_and_kind() {
     );
     assert_eq!(
         got.name, "claude",
-        "an empty stored name is not an owned one: L3 §3.7 requires a non-empty `name`",
+        "an empty stored name is not an owned one: the record requires a non-empty `name`",
     );
     assert_eq!(got.kind.as_deref(), Some("claude"));
     assert_eq!(got.session.as_deref(), Some("s"));
@@ -93,7 +93,7 @@ fn compose_reasserts_a_kind_the_detector_authored() {
     assert_eq!(got.state, "idle");
 }
 
-/// An explicit `kind` is preserved (§3.7), even on a record that already
+/// An explicit `kind` is preserved, even on a record that already
 /// carries a state.
 #[test]
 fn compose_preserves_an_explicitly_set_kind() {

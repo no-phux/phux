@@ -1,5 +1,5 @@
 wire_enum! { as_wire / from_wire;
-/// A client's color tier (SPEC §6.2), most to least permissive. The server
+/// A client's color tier, most to least permissive. The server
 /// rewrites outbound VT bytes to fit; `TrueColor` is the default so an
 /// unadvertised client is never silently downgraded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -18,7 +18,7 @@ pub enum ColorSupport {
 }
 
 wire_enum! { as_wire / from_wire else Raw;
-/// How the server emits terminal content to this consumer (SPEC §6.2).
+/// How the server emits terminal content to this consumer.
 ///
 /// Either the byte-faithful raw PTY broadcast, or a per-consumer synthesized
 /// state-sync tick for agent / remote consumers that want a coherent grid
@@ -52,7 +52,7 @@ wire_enum! { as_u8 / from_u8 else None;
 /// A frame-payload compression algorithm (`docs/protocol.md#framing`).
 ///
 /// Decode-invisible: `FRAME_COMPRESSED` inflates back to the exact inner
-/// frame bytes, so native records stay byte-identical end to end (§6.2).
+/// frame bytes, so native records stay byte-identical end to end.
 /// An unknown algorithm reads as `None`, so an out-of-contract peer fails on
 /// its first wrapped frame instead of being misread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]

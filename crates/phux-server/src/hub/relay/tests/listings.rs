@@ -63,7 +63,7 @@ fn a_correlated_error_and_teardown_both_refuse_pending_listings() {
     );
 }
 
-// --- relayed PATH_QUERY (L3 §5) ----------------------------------------
+// --- relayed PATH_QUERY ----------------------------------------
 
 pub(super) fn path_request(root: &str) -> (RelayRequest, oneshot::Receiver<PathQueryResult>) {
     let (reply, rx) = oneshot::channel();

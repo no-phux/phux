@@ -107,7 +107,7 @@ fn keyed_spawn_replays_its_result_across_connections_and_refuses_a_new_payload()
 
 /// A spawner that vanishes right after a keyed spawn may lose its reply and
 /// have its pane reaped; the retry must then spawn fresh or replay a pane
-/// that still exists, never a reaped one (L1 §3.1).
+/// that still exists, never a reaped one.
 #[test]
 fn a_retry_after_the_spawner_vanished_never_replays_a_reaped_pane() {
     phux_server_testkit::run_local(async {

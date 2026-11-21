@@ -27,7 +27,7 @@ fn the_shipped_config_lists_every_slot_at_its_house_value() {
     }
 }
 
-/// Spec §5.1: no chrome code paints a literal colour. Every `Color::Rgb`
+/// No chrome code paints a literal colour. Every `Color::Rgb`
 /// or `Color::Indexed` under `src/render` lives in the theme or the SGR
 /// emitter; test code is exempt.
 #[test]

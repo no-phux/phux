@@ -1,4 +1,4 @@
-//! Onboarding in each appearance the design language names (§5.2).
+//! Onboarding in each appearance the design language names.
 
 use super::*;
 

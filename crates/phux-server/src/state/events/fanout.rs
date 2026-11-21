@@ -42,11 +42,11 @@ impl ServerState {
         self.record_relayed_event_as(terminal, event, satellite, None)
     }
 
-    /// Stamp and deliver an event a hub relays from a satellite (L1 §7.3),
+    /// Stamp and deliver an event a hub relays from a satellite,
     /// with this server's `seq`, to that satellite Terminal's subscribers.
     /// The satellite's actor does not cross (it names a satellite
     /// connection); `actor` is the consumer whose keyed operation caused it
-    /// (L1 §9.1), when known. A relayed `RESOURCE_CLOSED` first withdraws
+    ///, when known. A relayed `RESOURCE_CLOSED` first withdraws
     /// holds on that Terminal (ADR-0128). Not retained: satellite cursors are
     /// answered with a gap.
     pub fn record_relayed_event_as(
@@ -56,7 +56,7 @@ impl ServerState {
         satellite: Option<&EventStamp>,
         actor: Option<super::ClientId>,
     ) -> Option<u64> {
-        // Nothing follows a close (L1 §7): withdraw holds first.
+        // Nothing follows a close: withdraw holds first.
         if matches!(event, AgentEvent::ResourceClosed { .. }) {
             self.withdraw_approvals_naming(&terminal);
         }
@@ -77,7 +77,7 @@ impl ServerState {
         self.journal.head()
     }
 
-    /// The journal head `GET_STATE` reports to `client` (L1 §7.3): with
+    /// The journal head `GET_STATE` reports to `client`: with
     /// subscriptions, the newest `seq` their replay will deliver (gaps
     /// included) so catch-up always completes; otherwise the global head.
     #[must_use]
@@ -126,7 +126,7 @@ impl ServerState {
             .insert(EventScope::Terminal(terminal), filter);
     }
 
-    /// Install a cursor subscription and start its replay (L1 §7.3). What
+    /// Install a cursor subscription and start its replay. What
     /// the mailbox takes is queued now; the pump pulls the rest.
     pub fn subscribe_events_after(
         &mut self,
@@ -144,7 +144,7 @@ impl ServerState {
         sub.fill(&self.journal);
     }
 
-    /// Install a hub consumer's satellite Terminal scope (L1 §7.3); relayed
+    /// Install a hub consumer's satellite Terminal scope; relayed
     /// events are not retained, so a missing cursor range is owed a gap.
     /// Returns the prior scope for [`Self::restore_satellite_scope`].
     pub fn subscribe_satellite_events(

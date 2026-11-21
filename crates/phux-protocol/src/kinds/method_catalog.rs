@@ -188,7 +188,7 @@ impl MethodSpec {
     }
 }
 
-/// `INPUT_RAW`'s frame type: allocated in L1 §2 but spec-only, so the codec
+/// `INPUT_RAW`'s frame type: allocated but spec-only, so the codec
 /// declares no constant for it.
 const INPUT_RAW_RESERVED_TYPE: u8 = 0x13;
 
@@ -296,12 +296,12 @@ pub static SERVER_METHODS: &[MethodSpec] = methods! {
     "GET_PERF" => Command(COMMAND_TAG_GET_PERF) [C_GET_PERF, C_GET_PERF_RESET] feature(GetPerf);
     "PERF_CONTROL" => Command(COMMAND_TAG_PERF_CONTROL) [C_PERF_CONTROL] ext(PerfControl);
     SESSION_CREATE_KEY => Metadata(SESSION_CREATE_KEY) [F_SESSION_CREATE];
-    // Session rename is server-intercepted, but §6 gives it no row of its
+    // Session rename is server-intercepted, but the scope table gives it no row of its
     // own: a write lands on the ordinary metadata-write row (BIND on Global).
     SESSION_NAME_KEY => Metadata(SESSION_NAME_KEY) [F_METADATA_WRITE];
     SESSION_KEEP_EMPTY_KEY => Metadata(SESSION_KEEP_EMPTY_KEY)
         [F_KEEP_EMPTY_MARK, F_KEEP_EMPTY_CLEAR, F_KEEP_EMPTY_OTHER] feature(KeepEmptySessions);
-    // A TUI doorbell: the server stores the nonce like any value, and §6
+    // A TUI doorbell: the server stores the nonce like any value, and the scope table
     // classifies the write as SIGNAL because it makes consumers reload.
     CONFIG_RELOAD_KEY => Metadata(CONFIG_RELOAD_KEY) [F_CONFIG_RELOAD] dangerous;
     // A decision is server-intercepted and stored nowhere. Approving one
@@ -310,7 +310,7 @@ pub static SERVER_METHODS: &[MethodSpec] = methods! {
     APPROVAL_DECIDE_KEY_PREFIX => Metadata(APPROVAL_DECIDE_KEY_PREFIX)
         [F_APPROVAL_DECIDE, F_APPROVAL_DECIDE_OTHER] feature(Approvals) dangerous;
     WHOAMI_KEY => Metadata(WHOAMI_KEY) [F_WHOAMI] feature(Whoami);
-    // The organization commands (L1 §5.7): records named by keys, edited
+    // The organization commands: records named by keys, edited
     // under expected revisions, answered with receipts or refusals.
     "GET_ORGANIZATION" => Command(COMMAND_TAG_GET_ORGANIZATION) [C_GET_ORGANIZATION]
         ext(Organization);

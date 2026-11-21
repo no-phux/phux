@@ -5,8 +5,8 @@ use phux_protocol::wire::frame::{FrameKind, Scope};
 use tokio::sync::mpsc;
 use tracing::{debug, trace};
 
-// L3 metadata dispatch (SPEC §7.4 / §11.L3). Replies are gated on
-// `ClientTable::speaks_l3` (SPEC §16.4): a non-L3 consumer gets silence.
+// L3 metadata dispatch. Replies are gated on
+// `ClientTable::speaks_l3`: a non-L3 consumer gets silence.
 
 pub(super) async fn handle_get_metadata(
     state: &SharedState,

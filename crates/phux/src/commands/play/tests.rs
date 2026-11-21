@@ -38,7 +38,7 @@ fn args(file: &Path, passes: Option<u32>, idle: Option<f64>) -> Request<'_> {
 }
 
 /// `phux play --json` pins `schema_version` 1 plus the documented result
-/// fields (§4.16).
+/// fields.
 #[test]
 fn play_json_pins_the_contract_shape() {
     let file = Path::new("/home/me/demo.cast");

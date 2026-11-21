@@ -1,4 +1,4 @@
-/// Every row of both §6 tables a client can reach, with the narrowest grant
+/// Every row of both tables a client can reach, with the narrowest grant
 /// that admits it and the near misses that must not.
 #[allow(
     clippy::too_many_lines,

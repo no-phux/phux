@@ -69,7 +69,7 @@ pub(crate) async fn handle_signal_terminal(
 }
 
 /// A command's local Terminal target as `(pane, handle)`, or the refusal for
-/// a satellite route, an unknown id, or another resource kind (L1 §1.1).
+/// a satellite route, an unknown id, or another resource kind.
 pub(in crate::runtime) fn local_terminal(
     resolved: ResolvedOwned,
     terminal_id: &phux_protocol::ids::ResourceId,
@@ -89,7 +89,7 @@ pub(in crate::runtime) fn local_terminal(
 }
 
 /// A queued signal that failed replaces the success its key was committed
-/// with, so a retry answers the failure (L1 §5.1.1).
+/// with, so a retry answers the failure.
 pub(in crate::runtime) fn record_signal_failure(
     commit: Option<&crate::runtime::operation_dedupe::OperationClaim>,
     result: &CommandResult,
@@ -101,7 +101,7 @@ pub(in crate::runtime) fn record_signal_failure(
     }
 }
 
-/// Queue a signal and commit its key at once (L1 §5.1.1): the actor delivers
+/// Queue a signal and commit its key at once: the actor delivers
 /// it even if this handler is cancelled before the reply. `false` when the
 /// actor is gone.
 pub(in crate::runtime) async fn commit_signal(

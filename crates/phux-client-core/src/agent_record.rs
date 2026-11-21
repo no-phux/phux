@@ -1,4 +1,4 @@
-//! The one `phux.agent/v1` record reader (L3 §3.7, ADR-0040/0046).
+//! The one `phux.agent/v1` record reader (ADR-0040/0046).
 //!
 //! Every client surface that reads the record calls [`parse_agent_record`]
 //! and adapts the result to its own types, so "is there a declared agent,
@@ -65,7 +65,7 @@ impl AgentState {
         }
     }
 
-    /// The conventional attention for an undeclared `attention` (L3 §3.7):
+    /// The conventional attention for an undeclared `attention`:
     /// `blocked` is high, `working` normal, `done`/`unknown` low, `idle` none.
     #[must_use]
     pub const fn default_attention(self) -> AgentAttention {

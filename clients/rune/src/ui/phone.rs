@@ -5,7 +5,7 @@
 //!
 //! Every control is a touch target of `space.touch_min` on an opaque
 //! surface: the phone spends its one backdrop blur on the session dock
-//! (§1.9), so nothing here fakes glass.
+//!, so nothing here fakes glass.
 
 use std::ops::Deref;
 use std::rc::Rc;
@@ -28,7 +28,7 @@ use accessory::accessory;
 use bars::{tab_pills, top_bar};
 use keyboard::keyboard;
 
-/// What the phone styles with: tokens for a ground (§4.1.5) and the
+/// What the phone styles with: tokens for a ground and the
 /// phone's own type roles at the reported text size. Reads as its
 /// [`Tokens`].
 pub(super) struct Look {
@@ -153,7 +153,7 @@ pub(super) fn page_look(desk: &Desk) -> Look {
 
 /// The controls beside the terminal: their mode is the ground's, so they
 /// read on the terminal they sit beside; a theme of that mode colours
-/// them (§4.1.5). Capped beside the grid.
+/// them. Capped beside the grid.
 pub(super) fn ground_look(desk: &Desk) -> Look {
     let dark = Tokens::dark_ground(terminal_ground(desk));
     Look::new(Tokens::for_phone(
@@ -182,7 +182,7 @@ pub(crate) fn edge_color(desk: &Desk) -> Color {
 
 /// Sheets, then the kit's overlays (menus, selects, toasts) this run built,
 /// all inside the content box, so the phone's keyboards stay after them
-/// (§4.1.4). The window root's kit layer is then empty on the phone.
+///. The window root's kit layer is then empty on the phone.
 fn overlays(root: El, desk: &Desk, ink: &Tokens, top: f32, cx: &mut Cx<Desk>) -> El {
     let root = root.children(status::banner(desk, ink));
     let root = super::floating_surfaces(root, desk, ink, top, cx);
@@ -220,7 +220,7 @@ fn phone_stage(desk: &Desk, p: &Look, cx: &mut Cx<Desk>) -> El {
 }
 
 /// An opaque control surface over the terminal's ground: the raised layer
-/// on the raised tier, its ring the edge (§1.7). Only the session dock is
+/// on the raised tier, its ring the edge. Only the session dock is
 /// glass on a phone.
 pub(super) fn surface(e: El, p: &Look) -> El {
     p.elevate(

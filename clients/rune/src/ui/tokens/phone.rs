@@ -1,4 +1,4 @@
-//! The phone form factor's tokens (§1.4, §1.6, §4.1.5): its type roles and
+//! The phone form factor's tokens: its type roles and
 //! page margin at the brand's iOS values, the iOS text size the bridge
 //! reports, and the tokens for a terminal ground.
 //!
@@ -94,7 +94,7 @@ impl Scale {
 }
 
 impl Tokens {
-    /// The phone's tokens (§4.1.5): `theme` when its mode is `dark`'s, else
+    /// The phone's tokens: `theme` when its mode is `dark`'s, else
     /// the house look in that mode, at the text size the host reported,
     /// with the observed system contrast and the host's Reduce
     /// Transparency (both in `Desk`). Cached as every `Tokens` is.
@@ -128,13 +128,10 @@ mod tests {
     #[test]
     fn the_phone_reads_at_its_own_sizes() {
         let ty = ty(1.0);
-        // §1.4: the phone's body is 14, its label 14 and micro the HIG's 11.
+        // The phone's body is 14, its label 14 and micro the HIG's 11.
         assert!((ty.body.size - 14.0).abs() < f32::EPSILON);
         assert!(ty.label.size > tok::TYPE.role.label.size);
         assert!(ty.micro.size >= 11.0);
-        assert!(
-            page_margin() >= 16.0,
-            "§1.6: a phone page margin is at least 16"
-        );
+        assert!(page_margin() >= 16.0, "a phone page margin is at least 16");
     }
 }

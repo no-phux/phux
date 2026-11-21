@@ -4,7 +4,7 @@
 //! `└`. They sit under the machine this window is on; the other machines
 //! follow, folded, each opening to a glance at its sessions.
 //!
-//! Rows are phux's own (§4.1.3 OWN), drawn only from the window's tokens:
+//! Rows are phux's own (OWN), drawn only from the window's tokens:
 //! the kit's `SidebarRow` has no disclosure on a draggable row, no status
 //! words and no variable pitch. They sit in one source list, as the kit's
 //! `Sidebar` keeps them: a single Tab stop whose arrows move the selection.
@@ -241,7 +241,7 @@ fn pane_row(pane: &Row, t: &Tokens) -> El {
         let f = face(mark, t);
         let lit = tinted && !disabled;
         let ink = if lit { f.ink } else { quiet.paint() };
-        // What asks for you is set bold beside its mark (§1.3).
+        // What asks for you is set bold beside its mark.
         let font = if lit && f.bold {
             t.ty.caption.semibold()
         } else {

@@ -118,7 +118,7 @@ pub(super) fn fixtures() -> Vec<(&'static str, FrameKind)> {
         // ERROR — server-emitted structured error frames; sibling refusal
         // paths share the wire shape. The internal fixture exercises the
         // u16::MAX (=65535) wire value to lock in the high end of the
-        // ErrorCode encoding alongside SPEC §14's `INTERNAL_ERROR = 65535`.
+        // ErrorCode encoding alongside the `INTERNAL_ERROR = 65535`.
         (
             "snap_error_session_not_found",
             FrameKind::Error {

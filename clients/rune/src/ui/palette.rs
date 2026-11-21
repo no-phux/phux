@@ -338,7 +338,7 @@ fn mark(hit: &Hit, washed: bool, t: &Tokens) -> Option<El> {
     )
 }
 
-/// One ranked result (§4.1.3 OWN): its kind or swatch, the title with the
+/// One ranked result (OWN): its kind or swatch, the title with the
 /// matched characters in the accent's text ink one weight heavier, a
 /// detail, and for a screen its machine. The picked row is the keyboard's
 /// cursor.
@@ -370,7 +370,7 @@ fn hit_row(hit: &Hit, index: usize, picked: bool, phone: bool, t: &Tokens) -> El
         .py(s.s1)
         .px(s.s3)
         .gap(s.s3)
-        // Nested in the palette's `lg` panel by the list's inset (§1.5).
+        // Nested in the palette's `lg` panel by the list's inset.
         .radius(t.nested(t.radius.lg, s.s1))
         .items_center()
         .focusable(true)
@@ -406,7 +406,7 @@ fn hit_row(hit: &Hit, index: usize, picked: bool, phone: bool, t: &Tokens) -> El
         .child(detail_text(&hit.item.detail, detail.paint(), t))
 }
 
-/// A row's detail in its voices (§1.4): the session's name in the ui face,
+/// A row's detail in its voices: the session's name in the ui face,
 /// a pane id (`@N`) after it as a machine noun, mono with tabular figures.
 fn detail_text(detail: &str, ink: rune::Color, t: &Tokens) -> El {
     let words = |w: String, font| text(w).font(font).color(ink).truncate();

@@ -1,5 +1,5 @@
 //! The system's display preferences Rune has no API for: reduce
-//! transparency and the text size (§1.9, §1.4 "Text scaling").
+//! transparency and the text size.
 //!
 //! - macOS: `NSWorkspace.accessibilityDisplayShouldReduceTransparency`,
 //!   read at launch and again whenever AppKit posts
@@ -25,7 +25,7 @@ pub const TEXT_SCALES: [f32; 5] = [1.0, 1.1, 1.2, 1.3, 1.4];
 const TEXT_SCALE_PREF: &str = "chrome_text_scale";
 
 /// Chrome next to the terminal grid grows at most this much on a phone
-/// (`ChromeScale.gridCapped`, mobile's §1.4 rule).
+/// (`ChromeScale.gridCapped`, mobile's rule).
 pub const GRID_CAP: f32 = 1.35;
 
 /// iOS's text-size setting, `UIContentSizeCategory`.
@@ -88,7 +88,7 @@ impl ContentSize {
         body / 17.0
     }
 
-    /// The factor for chrome beside the terminal grid, capped (§1.4).
+    /// The factor for chrome beside the terminal grid, capped.
     pub fn grid_capped(self) -> f32 {
         self.factor().min(GRID_CAP)
     }

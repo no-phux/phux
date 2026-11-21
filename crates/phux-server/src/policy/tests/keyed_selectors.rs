@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------------
-// Keyed selectors (§5.1): record keys that outlive the server process.
+// Keyed selectors: record keys that outlive the server process.
 // -----------------------------------------------------------------------------
 
 #[test]

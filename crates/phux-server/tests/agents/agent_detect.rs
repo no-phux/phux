@@ -194,8 +194,8 @@ fn deadline(within: Duration) -> tokio::time::Instant {
 }
 
 /// A live dialog is `blocked`, identified as `claude` from the process group,
-/// with the manifest's name and no detector-written `attention` (L3 §3.7
-/// derives it). A watcher that never attaches (`phux watch`) receives the
+/// with the manifest's name and no detector-written `attention` (the
+/// server derives it). A watcher that never attaches (`phux watch`) receives the
 /// same record: fanout once resolved mailboxes through attached clients only.
 /// Hook evidence (`REPORT_AGENT_STATE`) enters the same pipeline.
 #[test]

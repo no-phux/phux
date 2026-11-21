@@ -136,7 +136,7 @@ pub(super) async fn dispatch_local(
             })
             .await
         }
-        // A known-but-unwired tag of the `#[non_exhaustive]` catalog (SPEC §5).
+        // A known-but-unwired tag of the `#[non_exhaustive]` catalog.
         _ => CommandResult::error(
             ErrorCode::InvalidCommand,
             "command not supported by this server",

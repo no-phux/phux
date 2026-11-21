@@ -1,4 +1,4 @@
-//! Glass (§1.9): where it draws, its blur and tint, and the one place a
+//! Glass: where it draws, its blur and tint, and the one place a
 //! view gets a backdrop blur.
 
 use phux_design::Rgba8;
@@ -10,7 +10,7 @@ use super::{Paint, Tokens};
 /// The trace name every glass panel carries ([`Tokens::glass_panel`]).
 pub(crate) const GLASS_TRACE: &str = "phux-glass";
 
-/// A surface glass may draw on (§1.9 `material.glass.where`).
+/// A surface glass may draw on (`material.glass.where`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GlassSurface {
     /// The find bar.
@@ -42,7 +42,7 @@ impl GlassSurface {
 
 impl Tokens {
     /// Glass may draw: off under increased contrast and reduce
-    /// transparency (§1.9).
+    /// transparency.
     pub(crate) const fn glass_allowed(&self) -> bool {
         !self.increased_contrast && !self.reduce_transparency && !self.forced
     }
@@ -64,7 +64,7 @@ impl Tokens {
     }
 
     /// Glass for `surface` over `layer`: its backdrop blur and the layer as
-    /// a tint, or `None` where it draws opaque (§1.9). Glass draws only on
+    /// a tint, or `None` where it draws opaque. Glass draws only on
     /// the surfaces `material.glass.where` lists, never under increased
     /// contrast, reduce transparency or forced colours, and never thinner
     /// than the verified floor. A desktop surface's tint follows the
@@ -90,7 +90,7 @@ impl Tokens {
     }
 
     /// `panel` as glass for `surface` over `layer` ([`Self::glass`]),
-    /// traced as [`GLASS_TRACE`] so the §1.9 budget test can count it;
+    /// traced as [`GLASS_TRACE`] so the budget test can count it;
     /// else filled with `opaque`. The one place a view gets a backdrop blur.
     pub(crate) fn glass_panel(
         &self,
@@ -107,7 +107,7 @@ impl Tokens {
 
     /// The glass tint's alpha for the `Settings.glass` fraction `g`:
     /// `1 − g·(1 − tint_min)`, so full glass stops at the verified floor
-    /// (§1.9). Opaque when glass may not draw.
+    ///. Opaque when glass may not draw.
     pub(crate) fn glass_tint_alpha(&self, g: f32) -> f32 {
         if !self.glass_allowed() || g <= 0.0 {
             return 1.0;

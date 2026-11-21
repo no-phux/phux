@@ -1,4 +1,4 @@
-//! The increased-contrast variant (§1.11), solved from a role set.
+//! The increased-contrast variant, solved from a role set.
 
 use super::complete::complete;
 use super::{Core, Floors, byte, contrast, floor, on_fill, over, reach, reach_tone, tiers, washes};

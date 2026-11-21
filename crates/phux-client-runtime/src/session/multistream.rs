@@ -9,9 +9,9 @@
 //!
 //! Every frame carries its origin (Terminal, `StreamId`, and the binding's
 //! liveness flag), and is dropped at consumption if that binding has since
-//! been retired: §4.2 requires rejecting queued frames from retired
+//! been retired: the protocol requires rejecting queued frames from retired
 //! bindings. A server-side stream end races `RESOURCE_CLOSED` on control
-//! (L1 §4.9), so frames still addressed to an ended Terminal are dropped,
+//!, so frames still addressed to an ended Terminal are dropped,
 //! not failed.
 
 use std::collections::{HashMap, HashSet};
@@ -105,7 +105,7 @@ pub(super) struct Multistream {
     /// Live Terminal streams by Terminal.
     bindings: HashMap<ResourceId, MuxBinding>,
     /// Next app-level `StreamId`: monotonic, never zero; a re-bind gets a new
-    /// one (a new generation, L1 §4.6).
+    /// one (a new generation).
     next_stream_id: u64,
     /// Merged items from every bound Terminal stream's pump task.
     items_rx: mpsc::Receiver<MuxItem>,
@@ -355,7 +355,7 @@ impl Multistream {
 
 /// Pump complete frames from one Terminal stream into the merged queue,
 /// then report its end. A broken stream is reported as a failed frame
-/// first, so the framing error survives the multiplexer (§4.2).
+/// first, so the framing error survives the multiplexer.
 async fn pump_terminal_stream(
     mut recv: quinn::RecvStream,
     origin: Origin,

@@ -94,7 +94,7 @@ impl ConnectionGrant {
     /// # Errors
     ///
     /// [`ScopeError::TooLarge`] when the effective set would encode larger
-    /// than §5 allows.
+    /// than the canonical bound allows.
     pub fn scoped(
         granted: TerminalScopeSet,
         credential_id: Option<String>,
@@ -293,7 +293,7 @@ fn session_key(
 
 /// A local Group (session) as a scope subject: its wire session id, which a
 /// `group:` selector names, and its record's persistent key, which a
-/// `session:` selector names (workload-auth §5.1).
+/// `session:` selector names.
 ///
 /// The two are independent: a session gets its wire id lazily but its
 /// record key at creation, so a

@@ -14,7 +14,7 @@
 //!
 //! # The interleave contract
 //!
-//! L1 §5 lets the server emit other frames before a reply, and it does so on
+//! The protocol lets the server emit other frames before a reply, and it does so on
 //! paths a client cannot avoid: `ATTACH_RESOURCE` pushes the bootstrap
 //! transcript before its ack, a federation hub pushes one uncorrelated
 //! `ERROR` per unreachable satellite before a `GET_STATE` reply, and any

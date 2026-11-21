@@ -42,7 +42,7 @@ fn send_reply(desk: &Desk, t: &Tokens) -> El {
     let busy = (desk.picked_index(&items))
         .and_then(|i| items.get(i))
         .is_some_and(|item| matches!(item, Item::Terminal(w) if desk.answering(&w.terminal)));
-    // Off, it takes the kit's disabled look (§1.10), never an opacity.
+    // Off, it takes the kit's disabled look, never an opacity.
     let off = busy || desk.inbox.reply.text.trim().is_empty();
     let (fill, ink) = if off {
         (r.layer.sidebar.paint(), r.text.faint.paint())

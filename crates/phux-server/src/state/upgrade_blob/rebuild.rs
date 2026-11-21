@@ -98,7 +98,7 @@ impl ServerState {
             Some(carried) => merge_carried(current, loaded, carried, blob, instance)?,
             None => import_tree(current, blob, instance)?,
         };
-        // Every session has an arrangement (SPEC L2 §2.2); a carried session
+        // Every session has an arrangement; a carried session
         // written before that rule gets its missing one now, and the store
         // learns it after the rebuild.
         let arranged_now = org.sessions().any(|s| s.arrangement.is_none());

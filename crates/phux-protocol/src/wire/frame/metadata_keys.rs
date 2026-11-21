@@ -215,7 +215,7 @@ pub const RESOURCE_PANE_OCCUPANT_KEY: &str = "phux.pane-occupant/v1";
 /// Clients must not set or delete it.
 pub const RESOURCE_CONTROLLER_KEY: &str = "phux.controller/v1";
 
-/// Server-owned OSC 7501 record index and active status (L3 §3.7.3).
+/// Server-owned OSC 7501 record index and active status.
 pub const RESOURCE_PROGRAM_STATUS_KEY: &str = "phux.program-status/v1";
 
 /// Server-owned OSC 7501 records; the empty suffix addresses the root.

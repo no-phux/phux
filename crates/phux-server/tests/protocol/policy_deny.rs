@@ -50,7 +50,7 @@ fn server(engine: Option<Arc<dyn PolicyEngine>>) -> SpawnedServer {
         .start()
 }
 
-/// workload-auth §7: a refused HELLO is a post-HELLO authentication outcome,
+/// A refused HELLO is a post-HELLO authentication outcome,
 /// so the goodbye is `ERROR { PERMISSION_DENIED }`, `DETACHED {
 /// AUTHENTICATION_FAILED }`, and the transport closes.
 #[test]

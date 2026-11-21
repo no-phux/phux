@@ -1,8 +1,8 @@
-//! The colours the canvas paints with (design spec §4.4), and their CSS forms.
+//! The colours the canvas paints with, and their CSS forms.
 //!
 //! The canvas chrome (backdrop, pane borders, search marks, the bell) takes
 //! its roles from the pane's own terminal palette through the one solver,
-//! `phux_design::derive`, so the chrome matches the terminal (§4.1.5). A
+//! `phux_design::derive`, so the chrome matches the terminal. A
 //! pane with no palette of its own paints the house terminal palette, whose
 //! roles are the authored house look. The DOM around the canvas reads the
 //! same roles from `assets/phux-tokens.css` (`var(--phux-…)`).
@@ -18,7 +18,7 @@ use phux_design::solve::{mode_of, over, with_alpha};
 use phux_design::{Layer, Mode, Params, Rgb8, Rgba8, Roles, Theme, contrast_more, derive, tokens};
 use phux_vt_web::{Grid, Rgb};
 
-/// The bell wash's alpha over the canvas (§1.11 "Flash": `status.bell` at
+/// The bell wash's alpha over the canvas (`status.bell` at
 /// α 0.18 for `curve.fade`).
 pub const BELL_WASH_ALPHA: f64 = 0.18;
 
@@ -35,7 +35,7 @@ thread_local! {
     static MORE_CONTRAST: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Whether the canvas paints the increased-contrast variant (§1.11): the
+/// Whether the canvas paints the increased-contrast variant: the
 /// client sets it from `prefers-contrast: more` before each paint.
 pub fn set_more_contrast(more: bool) {
     MORE_CONTRAST.with(|flag| flag.set(more));

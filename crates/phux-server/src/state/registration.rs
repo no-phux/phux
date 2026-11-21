@@ -69,7 +69,7 @@ impl ServerState {
     }
 
     /// Every subscriber's mailbox for terminal-scoped fanout
-    /// (`RESOURCE_CLOSED`, L1 §3.1), one per client whether attached or
+    /// (`RESOURCE_CLOSED`), one per client whether attached or
     /// `ATTACH_RESOURCE`-only. Closed mailboxes are skipped.
     #[must_use]
     pub fn terminal_fanout_targets(&self, terminal: ResourceId) -> Vec<mpsc::Sender<Outbound>> {

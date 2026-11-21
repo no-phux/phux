@@ -224,7 +224,7 @@ async fn deferred_session_attach_applies_the_declared_role() {
 /// phux-ginr: a pane that closes between the attach's snapshot and its
 /// capture (here, an actor whose mailboxes are already closed, as after a
 /// reap) is published as closed beside its live neighbour, and the attach
-/// still reaches `ATTACH_READY` (L1 §8: READY *or closed*). Before the
+/// still reaches `ATTACH_READY` (READY *or closed*). Before the
 /// fix it failed the whole attach and cancelled the connection.
 #[tokio::test(flavor = "current_thread")]
 async fn a_pane_closed_mid_capture_is_published_closed_not_a_failed_attach() {

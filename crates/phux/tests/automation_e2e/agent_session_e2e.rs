@@ -158,7 +158,7 @@ impl ServerGuard {
     }
 
     /// `phux agent session open PARENT --provider P [--native-id ID] --json`,
-    /// asserting the §4.19 document and returning the new resource id.
+    /// asserting the document and returning the new resource id.
     fn session_open(&self, parent: &str, provider: &str, native_id: Option<&str>) -> String {
         let mut args = vec!["agent", "session", "open", parent, "--provider", provider];
         if let Some(native_id) = native_id {
@@ -236,7 +236,7 @@ fn resource_named<'a>(
 }
 
 /// One session, opened and fed by the binary, read back through four verbs:
-/// `session open` returns the §4.19 document and its own resource id; `emit`
+/// `session open` returns the document and its own resource id; `emit`
 /// stamps dense `seq` and server `ts_ms`; a watch started before the first emit
 /// sees `working` then `done` on a pane that never painted; `log --tail 3`
 /// replays the records; `ls --json` lists it under `resources` (never
@@ -469,7 +469,7 @@ fn killing_the_parent_pane_cascades_the_session_closed() {
 }
 
 /// Every producer refusal exits 2, writes nothing, and returns the
-/// `record_invalid` / `no_agent_session` document (agents.md §2), including an
+/// `record_invalid` / `no_agent_session` document (`docs/agents.md`), including an
 /// unknown `--type`.
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]

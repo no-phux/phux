@@ -68,7 +68,7 @@ fn a_hub_relayed_retained_spawn_is_kept_on_the_satellite_after_exit() {
             "retain_secs crossed the link: {exit:?}"
         );
         // The exit resync tombstoned the hub's generation before replacing
-        // it (L1 §4.6), so the link survived and the grid reads through it.
+        // it, so the link survived and the grid reads through it.
         let screen =
             get_screen_via_hub(&mut hub, 9200, ResourceId::satellite("sat", retained)).await;
         assert!(matches!(screen, CommandResult::OkWith(_)), "{screen:?}");

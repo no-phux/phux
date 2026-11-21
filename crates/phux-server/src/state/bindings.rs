@@ -7,7 +7,7 @@
 //! reason before cancelling, and the resource's exit watcher claims it:
 //! [`ServerState::begin_resource_close`] returns `None` for an already-reaped
 //! resource, so exactly one closer emits each `RESOURCE_CLOSED`. A kill
-//! reaps in its own lock (L1 §5.2) while the process is still in its hangup
+//! reaps in its own lock while the process is still in its hangup
 //! grace; the exit-watch ledger lets that process's watcher finish the rest.
 //!
 //! [`Registry::children`]: phux_core::registry::Registry::children

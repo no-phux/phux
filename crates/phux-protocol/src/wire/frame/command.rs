@@ -1,5 +1,5 @@
-//! Control-plane command, result, and agent-event types — SPEC §5
-//! (ADR-0021) and SPEC §7.5 (ADR-0022).
+//! Control-plane command, result, and agent-event types
+//! (ADR-0021, ADR-0022).
 
 use crate::caps::{ServerFeatureExt, ServerFeatureExtSet};
 use crate::ids::{
@@ -42,7 +42,7 @@ pub use mirror::{MAX_MIRROR_TARGET, MAX_MIRROR_TARGETS, MirrorOp};
 macro_rules! command_enum {
     ($($variants:tt)*) => {
 /// A typed control-plane command carried by
-/// [`FrameKind::Command`](super::FrameKind::Command) (SPEC §5.1).
+/// [`FrameKind::Command`](super::FrameKind::Command).
 ///
 /// Unknown tags decode as [`DecodeError::UnknownEnumValue`](crate::wire::error::DecodeError::UnknownEnumValue).
 #[derive(Debug, Clone, PartialEq)]
@@ -72,7 +72,7 @@ impl Command {
         }
     }
 
-    /// Subscribe to a Terminal content stream (SPEC §5.1).
+    /// Subscribe to a Terminal content stream.
     ///
     /// Carries no agent cursor. Send a non-default `role_policy` only to a
     /// server advertising `ATTACH_ROLES`. `None` is `{ PRIMARY, NEVER }` and
@@ -89,7 +89,7 @@ impl Command {
         }
     }
 
-    /// Subscribe to an `AgentSession` record stream (SPEC §5.1, ADR-0159).
+    /// Subscribe to an `AgentSession` record stream (ADR-0159).
     ///
     /// `after_seq` is the last committed record, or `None` for a full
     /// bootstrap. Send a cursor only when the server advertises
@@ -132,7 +132,7 @@ impl Command {
 
     /// The operation id of a keyed supervisory command
     /// (`docs/protocol.md#receipts-retries-and-backpressure`) or of a mutating organization command
-    /// (§5.7), or `None`.
+    ///, or `None`.
     #[must_use]
     pub const fn idempotency_key(&self) -> Option<&crate::ids::IdempotencyKey> {
         match self {
@@ -194,7 +194,7 @@ impl Command {
     }
 }
 
-/// A successful command's payload (SPEC §5, `CommandValue`).
+/// A successful command's payload (`CommandValue`).
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum CommandValue {
@@ -205,7 +205,7 @@ pub enum CommandValue {
     /// A Group identifier (opaque grouping key).
     GroupId(GroupId),
     /// A server-state snapshot (reply to `GET_STATE`). Reuses the
-    /// `ATTACHED` snapshot shape — see the wire-bytes note in SPEC §7.
+    /// `ATTACHED` snapshot shape — see the wire-bytes note.
     State(SessionSnapshot),
     /// A structured JSON return, for commands whose result is open-shaped.
     Json(String),
@@ -238,7 +238,7 @@ pub enum CommandValue {
 }
 
 /// The outcome of a [`Command`], carried by
-/// [`FrameKind::CommandResult`](super::FrameKind::CommandResult) (SPEC §5).
+/// [`FrameKind::CommandResult`](super::FrameKind::CommandResult).
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum CommandResult {

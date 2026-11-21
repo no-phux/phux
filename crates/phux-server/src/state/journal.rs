@@ -36,7 +36,7 @@ pub struct EventRecord {
     /// [`Self::actor`].
     pub actor_ref: Option<ActorRef>,
     /// Where the event sits in the topology, stamped by the journal's owner
-    /// so a filtered subscription can be judged later (workload-auth §6).
+    /// so a filtered subscription can be judged later.
     pub(crate) subject: EventSubject,
 }
 
@@ -87,7 +87,7 @@ impl EventRecord {
 }
 
 /// One stamped event, kept decoded because older subscribers see some
-/// values rendered differently (L1 §7.1).
+/// values rendered differently.
 #[derive(Debug, Clone)]
 pub(crate) struct JournalEntry {
     /// The resource the event concerns.
@@ -296,7 +296,7 @@ impl Journal {
     }
 
     /// The gap for a cursor at or past the head: none for the head or the
-    /// sentinel, `{1, head}` for a never-issued cursor (L1 §7.3).
+    /// sentinel, `{1, head}` for a never-issued cursor.
     const fn void_cursor_gap(&self, after: u64) -> Option<(u64, u64)> {
         if after == self.head || after == u64::MAX {
             return None;

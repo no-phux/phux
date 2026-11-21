@@ -142,7 +142,7 @@ fn close_tab_leaves_keep_empty_visible_until_the_mark_is_cleared() {
 }
 
 /// Every way a session loses its last resource or goes away deletes the
-/// `<prefix>.layout/v1/<id>` keys naming it (L3 §3.2/§3.5): the default TUI
+/// `<prefix>.layout/v1/<id>` keys naming it: the default TUI
 /// key and a named projection alike, whether the session is persistent
 /// (emptied), ephemeral (deleted), or parked and then made ephemeral.
 #[test]

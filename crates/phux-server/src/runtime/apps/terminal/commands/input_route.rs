@@ -25,7 +25,7 @@ pub(crate) fn with_route_input_destination<R>(
     action: impl FnOnce(InputDestination) -> R,
 ) -> Result<R, CommandResult> {
     state.with(|s| {
-        // workload-auth §7 step 2: nothing queued before a revocation lands.
+        // Revocation: nothing queued before a revocation lands.
         if s.connection_revoked(client_id) {
             return Err(CommandResult::error(
                 ErrorCode::PermissionDenied,
@@ -76,7 +76,7 @@ pub(crate) fn with_route_input_destination<R>(
 }
 
 /// Input to a Terminal whose process exited and which is retained read-only
-/// (ADR-0124): nothing was written, as for a pane with no PTY (L1 §6.2.1).
+/// (ADR-0124): nothing was written, as for a pane with no PTY.
 fn exited_input_refusal() -> CommandResult {
     CommandResult::error(
         ErrorCode::InputNotWritten,

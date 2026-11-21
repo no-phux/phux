@@ -1,4 +1,4 @@
-//! The design fixture every platform's gallery paints (§5.2): the same six
+//! The design fixture every platform's gallery paints: the same six
 //! looks, the accessibility modes and three locales.
 
 use std::sync::OnceLock;

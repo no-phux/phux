@@ -351,7 +351,7 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
             self.root_token,
             self.token,
             &mut self.plumbing.output_pumps,
-            // QUIC multi-stream: content starts at STREAM_BIND (L1 §4.9).
+            // QUIC multi-stream: content starts at STREAM_BIND.
             selection.quic_streams(),
         )
         .await;

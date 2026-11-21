@@ -1,5 +1,5 @@
 //! The visual bell never flashes more than once a second, and never under
-//! reduce motion (design spec §1.11 "Flash", audit row 28).
+//! reduce motion (audit row 28).
 
 use phux_web::bell::{BellGate, MIN_INTERVAL_MS, Ring, wash_ms};
 use wasm_bindgen_test::wasm_bindgen_test;

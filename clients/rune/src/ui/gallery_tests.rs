@@ -1,4 +1,4 @@
-//! The chrome's gallery (§5.2): the window's main surfaces with a populated
+//! The chrome's gallery: the window's main surfaces with a populated
 //! sidebar, painted through Rune's real renderer, on the desktop and the
 //! phone, over the design fixture: six themes, the accessibility modes,
 //! three locales and a page of forced states. `RUNE_GALLERY_SNAP=DIR` writes
@@ -262,7 +262,7 @@ fn the_gallery_paints_a_split() {
     }
 }
 
-/// §1.5 nesting in the real tree: the palette's rows are inset in its
+/// Nesting in the real tree: the palette's rows are inset in its
 /// panel, their radius the panel's less the inset.
 #[test]
 fn the_palettes_rows_nest_inside_its_panel() {
@@ -283,7 +283,7 @@ fn the_palettes_rows_nest_inside_its_panel() {
 }
 
 /// Under reduced motion a modal opens and closes in place: no scale on
-/// its first frame, gone on the frame it closes (§1.11).
+/// its first frame, gone on the frame it closes.
 #[test]
 fn reduced_motion_opens_and_closes_without_movement() {
     let mut rt = window(DESKTOP, true, None, Locale::En);
@@ -304,7 +304,7 @@ fn reduced_motion_opens_and_closes_without_movement() {
     );
 }
 
-/// §1.9's budget over the gallery's surfaces with glass at its fullest:
+/// The glass budget over the gallery's surfaces with glass at its fullest:
 /// at most four blurs on the desktop, the modal's among them, none inside
 /// a one-layer ancestor; none at all under reduce transparency.
 #[test]

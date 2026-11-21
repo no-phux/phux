@@ -81,7 +81,7 @@ impl RelaySession {
 
     /// A keyed operation reaches only a satellite that dedupes it
     /// (`ACKNOWLEDGED_INPUT` / `KEYED_SIGNAL`), else
-    /// `UNSUPPORTED_SATELLITE_ROUTE` (L1 §9.1).
+    /// `UNSUPPORTED_SATELLITE_ROUTE`.
     pub(super) fn keyed_capability_rejection(&self, command: &Command) -> Option<CommandResult> {
         let (needed, name) = match command {
             Command::ApplyInput { .. } => (ServerFeature::AcknowledgedInput, "ACKNOWLEDGED_INPUT"),
@@ -103,7 +103,7 @@ impl RelaySession {
         })
     }
 
-    /// The incarnation fence (L1 §9.1): an operation id already sent to an
+    /// The incarnation fence: an operation id already sent to an
     /// earlier incarnation is refused `INCARNATION_CHANGED`; a new id is
     /// recorded with `actor`.
     pub(super) fn fence_rejection(
@@ -290,7 +290,7 @@ impl RelaySession {
             // Keep the freshest token.
             existing.seq = existing.seq.max(seq);
             // An upgrade from an `Open` stream to a snapshot attach re-gates
-            // until this attach's snapshot lands (L1 §9.1). Other gates
+            // until this attach's snapshot lands. Other gates
             // already suppress deltas; event-only re-subscribes leave it.
             if awaits_snapshot && matches!(existing.gate, SnapshotGate::Open) {
                 existing.gate = SnapshotGate::AwaitingFirst;

@@ -5,7 +5,7 @@
 /// environment. Re-enrolling replaces the pair and revokes the old
 /// credential in one registry write. `phux pair revoke` of the enrolled id
 /// ends a live connection with `DETACHED { AUTHORIZATION_REVOKED }` and
-/// refuses the next one at the transport (workload-auth §7). No key byte
+/// refuses the next one at the transport. No key byte
 /// reaches argv, stdout, stderr, or the far host.
 #[test]
 #[ignore = "spawns a real server with a paired QUIC listener; runs in the e2e lane"]
@@ -188,7 +188,7 @@ fn assert_reenrollment(
 }
 
 /// The live connection ended: the server closed it (not a read timeout), and
-/// the `DETACHED` it flushes first, best effort (workload-auth §7), names the
+/// the `DETACHED` it flushes first, best effort, names the
 /// revocation when it arrives before the close.
 fn assert_revoked(live: &mut RawSession) {
     use phux_protocol::wire::frame::{DetachReason, FrameKind};

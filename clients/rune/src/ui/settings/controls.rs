@@ -13,7 +13,7 @@ use crate::grid::{MAX_FONT_SIZE, MIN_FONT_SIZE};
 use crate::ui::pressable;
 use crate::ui::tokens::{Paint, Tokens};
 
-/// A kit `Button` (§4.1.3 ADOPT) under phux's key, in the Tab order.
+/// A kit `Button` (ADOPT) under phux's key, in the Tab order.
 /// `Submit` is the one primary action per view; `Outline` the others.
 pub(in crate::ui) fn kit_button(
     key: impl Into<String>,

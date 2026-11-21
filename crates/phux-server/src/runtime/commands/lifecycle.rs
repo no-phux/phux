@@ -6,7 +6,7 @@
 
 use super::*;
 
-/// Handle `DETACH_RESOURCE` (SPEC §5.1): drop every output task and the
+/// Handle `DETACH_RESOURCE`: drop every output task and the
 /// event subscription the caller holds on the terminal. Idempotent, so a
 /// detach never races a natural close into an error.
 pub(crate) async fn handle_detach_terminal(
@@ -38,7 +38,7 @@ pub(crate) async fn handle_detach_terminal(
 }
 
 /// Handle `SHUTDOWN`: cancel the root token, the same shutdown idle-exit and
-/// signals take, after acking. Accepted on the Unix socket only (L1 §5.1):
+/// signals take, after acking. Accepted on the Unix socket only:
 /// whether a remote peer may stop the host is an unanswered policy question.
 pub(super) async fn handle_shutdown(
     state: &SharedState,

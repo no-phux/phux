@@ -263,7 +263,7 @@ pub(in crate::runtime) fn stamp_spawn_cwd(
     }
 }
 
-/// Per-pane agent-event sink capacity (SPEC §7.5). A full sink drops and
+/// Per-pane agent-event sink capacity. A full sink drops and
 /// journals a `source_gap` rather than stalling the PTY pump.
 pub(crate) const EVENT_SINK_CAPACITY: usize = 64;
 

@@ -89,7 +89,7 @@ impl ServerState {
         None
     }
 
-    /// Note that `client` used `terminal` in a verb (ADR-0109, L1 §5.2.1);
+    /// Note that `client` used `terminal` in a verb (ADR-0109);
     /// satellite or unknown ids are ignored.
     pub fn note_resource_use(&mut self, terminal: &WireResourceId, client: super::ClientId) {
         if let Some(core) = self.idspace.resource_from_wire(terminal) {

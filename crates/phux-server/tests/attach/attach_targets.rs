@@ -1,4 +1,4 @@
-//! `ATTACH` target resolution (L1 §8, SPEC §14): `ByName`, `Last`, and
+//! `ATTACH` target resolution: `ByName`, `Last`, and
 //! `CreateIfMissing`, including the wire `cwd`.
 
 use std::time::Duration;

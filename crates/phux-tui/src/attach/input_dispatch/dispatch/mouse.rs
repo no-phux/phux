@@ -673,7 +673,7 @@ pub(in crate::attach::input_dispatch) fn open_context_menu(
     )));
 }
 
-/// Quantise an f64 pointer position (1 px per cell, SPEC §9.2.1) to a cell,
+/// Quantise an f64 pointer position (1 px per cell) to a cell,
 /// saturating into `u16`.
 #[allow(
     clippy::cast_possible_truncation,

@@ -213,7 +213,7 @@ pub fn process_exit(facet: &ExitFacet) -> ProcessExit {
 }
 
 /// A close reason in the snake-case vocabulary `process.exit.reason` uses
-/// (L1 §6.3).
+///.
 #[must_use]
 pub const fn close_reason_name(reason: CloseReason) -> &'static str {
     match reason {
