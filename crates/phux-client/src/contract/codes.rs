@@ -9,6 +9,9 @@ pub const CONFIRMATION_REQUIRED: &str = "confirmation_required";
 pub const NO_SERVER: &str = "no_server";
 /// The server was there and closed the connection mid-command.
 pub const SERVER_DISCONNECTED: &str = "server_disconnected";
+/// The server did not answer the handshake or a request within the
+/// `PHUX_TIMEOUT` deadline. Exit 4.
+pub const TIMEOUT: &str = "timeout";
 /// Any other transport or protocol failure while talking to the server.
 pub const TRANSPORT: &str = "transport";
 /// The local coordinator did not become available inside the bounded

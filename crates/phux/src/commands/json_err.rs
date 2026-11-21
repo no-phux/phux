@@ -1,7 +1,7 @@
 //! The stable JSON error contract shared by every `--json` verb (ADR-0065
 //! §4): a failure is one JSON line on stderr, stdout stays empty, and exit
 //! codes are unchanged (`0` success, `1` miss / no server, `2` refusal / usage,
-//! `3` partial view, `124`/`125` timeouts):
+//! `3` partial view, `4` server timed out / unreachable, `124`/`125` timeouts):
 //!
 //! ```json
 //! {"schema_version":1,"error":{"code":"no_server","message":"..."},"remedy":"...","exit_code":1}
@@ -80,11 +80,11 @@ impl Refusal {
 
     /// The no-server refusal for a failed exchange with the local server at
     /// `socket_path`: [`no_server_error`] under `--json`, the shared
-    /// no-server diagnostic otherwise, exit 1.
+    /// no-server diagnostic otherwise, exit 1 (4 when it never answered).
     pub(crate) fn no_server(err: &AttachError, socket_path: &Path, verb: &str) -> Self {
         Self::from_error(
             no_server_error(err, socket_path, verb),
-            crate::exit_codes::EXIT_FAILURE,
+            crate::exit_codes::transport_exit(err),
         )
         .with_human(crate::commands::diagnostics::report_lines(
             err,
@@ -145,7 +145,8 @@ pub(crate) fn emit(json: bool, err: &CliError, exit_code: u8) -> ExitCode {
 
 /// Json-aware [`crate::commands::report_no_server`]: shared human diagnostics
 /// otherwise; under `json`, `no_server` for a connect failure or
-/// `server_disconnected` / `transport` otherwise, always exit 1.
+/// `timeout`, `server_disconnected` or `transport` otherwise; exit 1, or 4
+/// when the server never answered.
 pub(crate) fn report_no_server(
     json: bool,
     err: &AttachError,

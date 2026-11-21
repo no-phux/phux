@@ -33,6 +33,24 @@ fn parse_terminal_id(raw: &str) -> Option<u32> {
     digits.parse::<u32>().ok().filter(|id| *id != 0)
 }
 
+/// The deadline on every server exchange; see [`deadline_from`].
+pub(crate) const TIMEOUT_ENV: &str = "PHUX_TIMEOUT";
+
+/// The server-exchange deadline from a [`TIMEOUT_ENV`] value: whole or
+/// fractional seconds, `0` for none. Unset or unparseable is the 10-second
+/// default, so a typo never uncaps the wait.
+pub(crate) fn deadline_from(raw: Option<&str>) -> Option<std::time::Duration> {
+    const DEFAULT: std::time::Duration = std::time::Duration::from_secs(10);
+    let parsed = raw
+        .and_then(|raw| raw.trim().trim_end_matches('s').parse::<f64>().ok())
+        .and_then(|secs| std::time::Duration::try_from_secs_f64(secs).ok());
+    match parsed {
+        Some(deadline) if deadline.is_zero() => None,
+        Some(deadline) => Some(deadline),
+        None => Some(DEFAULT),
+    }
+}
+
 /// Every environment variable the binary reads, in the order the topic
 /// lists them: the socket first, then the remote listeners, then the
 /// helper programs, then logging.
@@ -44,6 +62,15 @@ pub(crate) const ENV_VARS: &[EnvVarSpec] = &[
             "overrides it. Default: $XDG_RUNTIME_DIR/phux/phux.sock; when",
             "XDG_RUNTIME_DIR is unset, /run/user/<uid>/phux/phux.sock if",
             "that directory exists, else /tmp/phux-$USER/phux.sock.",
+        ],
+    },
+    EnvVarSpec {
+        name: TIMEOUT_ENV,
+        lines: &[
+            "Seconds to wait for the server to answer the handshake and",
+            "each request (default 10; `0` waits forever). On expiry the",
+            "verb exits 4. Streams (attach, watch, forward) are bounded",
+            "only until their handshake.",
         ],
     },
     EnvVarSpec {
@@ -245,7 +272,22 @@ pub(crate) fn environment_section() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ENV_VARS, environment_section};
+    use super::{ENV_VARS, deadline_from, environment_section};
+
+    #[test]
+    fn deadline_reads_seconds_and_zero_disables() {
+        use std::time::Duration;
+        let ten = Some(Duration::from_secs(10));
+        assert_eq!(deadline_from(None), ten);
+        assert_eq!(deadline_from(Some("nope")), ten);
+        assert_eq!(deadline_from(Some("-1")), ten);
+        assert_eq!(deadline_from(Some("0")), None);
+        assert_eq!(deadline_from(Some("3")), Some(Duration::from_secs(3)));
+        assert_eq!(
+            deadline_from(Some("1.5s")),
+            Some(Duration::from_millis(1500))
+        );
+    }
 
     /// Every variable lands on its own line, in table order, and the
     /// rendered block stays inside an 80-column terminal.

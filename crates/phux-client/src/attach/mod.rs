@@ -11,6 +11,7 @@ pub mod connection;
 pub mod input;
 pub mod input_replay;
 pub mod outcome;
+mod reply_deadline;
 
 pub use connection::{CertTrust, Dial, QuicDial, WsDial};
 pub use input_replay::{InputReplayJournal, mint_input_operation_id};

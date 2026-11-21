@@ -66,7 +66,7 @@ pub(crate) fn report_no_server(err: &AttachError, socket_path: &Path, verb: &str
             .iter()
             .map(String::as_str),
     );
-    ExitCode::FAILURE
+    ExitCode::from(crate::exit_codes::transport_exit(err))
 }
 
 /// The lines [`report_no_server`] prints, against this process's server log.
