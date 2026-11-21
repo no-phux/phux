@@ -24,6 +24,7 @@ pub mod accessibility;
 mod attach;
 pub(crate) mod bare;
 mod changes;
+pub mod chief;
 mod clipboard_read;
 mod clipboard_write;
 mod compat;
@@ -155,6 +156,8 @@ pub struct Desk {
     pub pointer: links::Pointer,
     /// Everything waiting on you, and the system's view of it.
     pub inbox: inbox::Inbox,
+    /// The chief of staff's composer.
+    pub chief: chief::Chief,
     /// The fleet as a galaxy, while open.
     pub galaxy: galaxy::Galaxy,
     /// The fleet as a reef, while open.
@@ -310,6 +313,7 @@ impl Desk {
             sync_tab: None,
             pointer: links::Pointer::default(),
             inbox: inbox::Inbox::default(),
+            chief: chief::Chief::default(),
             galaxy: galaxy::Galaxy::default(),
             reef: reef::Reef::default(),
             pitch: pitch::Pitch::default(),

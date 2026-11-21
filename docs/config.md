@@ -354,6 +354,14 @@ tab, and the quick session starts a fresh shell for next time. On macOS,
 while the chord is on, closing the main window keeps Rune running for the
 chord; clicking its Dock icon brings the window back.
 
+A tap of the right <kbd>⌘</kbd> key opens a composer for one designated ACP
+agent, the [chief of staff](./chief-of-staff.md). `chief` names its session:
+
+```toml
+[rune]
+chief = "staff"   # "chief" when unset; "none" turns the tap off
+```
+
 `ssh-agent` names the socket of the SSH agent Rune's `ssh://` hosts use. An
 app opened from the Dock doesn't see your shell's `SSH_AUTH_SOCK`, so a key
 held only in an agent such as 1Password's is otherwise not offered

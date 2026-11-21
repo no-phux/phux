@@ -59,6 +59,9 @@ pub struct RuneCfg {
     /// Markdown renderer argv: UTF-8 Markdown on stdin, plain UTF-8 on stdout.
     /// `{width}` expands to columns. Unset uses bundled tmd; `[]` shows source.
     pub markdown_viewer: Option<Vec<String>>,
+    /// The phux session whose ACP agent a tap of the right Command key
+    /// prompts; `"chief"` when unset, `"none"` turns the tap off.
+    pub chief: Option<String>,
     /// `false` drops the built-in chords: only `[rune.keys]` acts, plus the
     /// palette and Settings chords until you bind those commands.
     pub key_defaults: Option<bool>,
