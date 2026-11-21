@@ -202,13 +202,13 @@ an unchanged prefix can remain reusable; pi's shared awareness stream emits a
 checkpoint, then only changes, with fresh checkpoints after compaction or tree
 movement. Provider caching itself remains the harness/provider's concern.
 
-OpenCode V2 currently defaults automatic fleet awareness off. Its opt-in path
-places full checkpoints in the per-request system context, not that persistent
-tail; do not assume it preserves the conversation prefix when fleet state
-changes (or even stays unchanged, since checkpoint sequence numbers advance).
+OpenCode V2 defaults fleet awareness off. Opt-in, it writes unsequenced fleet
+state to the session's `phux-fleet` instruction entry per prompt; OpenCode keeps
+the first value in the system prompt, appends each change as a durable system
+message, and carries the value through compaction and forks.
 The [bootload-cache research](./research/context-bootload-cache.md)
-records this difference from historical ADR-0067, measurements, and the cache
-ownership recommendation. No keeper bootload service exists today.
+records the earlier per-request design, measurements, and the cache ownership
+recommendation. No keeper bootload service exists today.
 
 ## Where to look
 

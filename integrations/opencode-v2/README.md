@@ -201,10 +201,13 @@ The CLI companion keeps that owner in sync with the visible tab even when the
 service is shared or multiple terminal clients show different sessions.
 
 Fleet context is off by default; `phux_panes` answers on demand. Set
-`PHUX_CONTEXT_AWARENESS=1` or `contextAwareness: true` to add a full fleet
-checkpoint to every request. It costs one `phux agent list` per request and
-changes the system prompt whenever any pane changes state. Options also include
-`maxTerminals`, `lifecycleTimeoutMs`, and `contextTimeoutMs`.
+`PHUX_CONTEXT_AWARENESS=1` or `contextAwareness: true` to keep a bounded fleet
+inventory in the session's `phux-fleet` instruction entry. It costs one
+`phux agent list` per prompt. OpenCode keeps the first value in the session's
+system prompt and appends each change as a durable system message, so the
+cached prefix and earlier conversation stay intact; an unchanged fleet adds
+nothing. Options also include `maxTerminals`, `lifecycleTimeoutMs`, and
+`contextTimeoutMs`.
 
 The plugin does not hook OpenCode's shell, replace the terminal widget or PTY
 API, or tunnel the OpenCode server. Use `phux attach` for a remote view.
