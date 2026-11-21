@@ -193,6 +193,9 @@ fn divider(path: SplitPath, horizontal: bool, ratio: f32, t: &Tokens) -> El {
                 // The ratio at the press, kept for the whole gesture.
                 drag.data = ratio;
             }
+            if drag.cancelled() {
+                return d.cancel_divider();
+            }
             let span = d.split_span(&path, horizontal).max(1.0);
             let travel = if horizontal { drag.dx } else { drag.dy };
             d.drag_divider(
@@ -520,8 +523,10 @@ fn terminal_input(host: El, desk: &Desk, id: &ResourceId) -> El {
                 mods,
                 button: tx.button(),
             };
+            // A cancelled gesture still releases the program's mouse, but
+            // copies nothing.
             d.pointer(&press, &step, tx);
-            if drag.phase == Phase::Up {
+            if drag.phase == Phase::Up && !drag.cancelled() {
                 d.selection_done(tx);
             }
         }

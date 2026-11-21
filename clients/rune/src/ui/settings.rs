@@ -7,6 +7,7 @@
 use super::tokens::layout::SETTINGS as GEOMETRY;
 use crate::ui::tokens::Voice;
 use rune::{El, TextStyle, col, el, row, text, text_input};
+use rune_kit::{IconButton, IconButtonVariant};
 
 use super::tokens::{Paint, Tier, Tokens};
 use super::{icons, pressable, updates};
@@ -72,7 +73,8 @@ fn search(desk: &Desk, t: &Tokens) -> El {
         .color(t.roles.text.text.paint())
         .placeholder("Search settings", t.roles.text.faint.paint())
         .on_edit(|d: &mut Desk| &mut d.settings_ui.query)
-        .on_input_key(Desk::settings_field_key);
+        .on_input_key(Desk::settings_field_key)
+        .on_input_change(|d: &mut Desk, tx| d.settings_search_edited(tx));
     row()
         .w_full()
         .min_h(s.touch_min)
@@ -90,16 +92,15 @@ fn search(desk: &Desk, t: &Tokens) -> El {
         )
         .child(field)
         .children((!desk.settings_ui.query.text.is_empty()).then(|| {
-            super::icon_press(
-                &icons::CLOSE,
-                "Clear search",
-                "settings-clear",
-                t,
-                Desk::clear_settings_search,
-            )
-            .min_w(s.touch_min)
-            .min_h(s.touch_min)
-            .preserve_focus_on_press(true)
+            IconButton::new(&icons::CLOSE)
+                .variant(IconButtonVariant::Ghost)
+                .label("Clear search")
+                .on_press_tx(Desk::clear_settings_search)
+                .build(&t.kit)
+                .key("settings-clear")
+                .min_w(s.touch_min)
+                .min_h(s.touch_min)
+                .preserve_focus_on_press(true)
         }))
 }
 
@@ -366,7 +367,7 @@ fn phone(desk: &Desk, t: &Tokens) -> El {
         .w_full()
         .h_full()
         .min_h(0.0)
-        .modal(true, Desk::settings_escape)
+        .modal_tx(true, Desk::settings_escape)
         .label("Settings")
         .fill(ground)
         .child(
@@ -442,12 +443,14 @@ fn desktop(desk: &Desk, t: &Tokens) -> El {
                         .child(scroller(desk, t)),
                 ),
         );
+    // Clearing a search moves its results, so the dismissal needs the Tx.
     super::scrim(
         col().key("settings-scrim").padding(s.s8).center(),
         "Settings",
-        Some(Desk::settings_escape),
+        None,
         t,
     )
+    .modal_tx(true, Desk::settings_escape)
     .child(t.elevate(panel, Tier::Overlay))
 }
 
