@@ -20,6 +20,8 @@ use super::org::{
 mod args;
 mod document_input;
 mod event;
+#[macro_use]
+mod host;
 mod mirror;
 #[macro_use]
 mod organization;
@@ -55,7 +57,7 @@ pub enum Command {
 
 // One file per variant family keeps each source file small; each family
 // macro appends its variants, in declaration order, and hands the list on.
-supervisory_commands!(organization_commands!(command_enum!()));
+supervisory_commands!(host_commands!(organization_commands!(command_enum!())));
 
 impl Command {
     /// Clear an imported session's Intake mark with the existing `0x2b` wire tag.

@@ -3,8 +3,7 @@
 
 use phux_protocol::caps::ServerFeatureExt;
 use phux_protocol::checkout::{
-    CHECKOUT_CONTRACT, CheckoutAnswer, CheckoutArea, CheckoutRequest, MAX_CHECKOUT_REQUEST_BYTES,
-    encoded_request_len,
+    CheckoutAnswer, CheckoutArea, CheckoutRequest, MAX_CHECKOUT_REQUEST_BYTES, encoded_request_len,
 };
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode, FrameKind};
@@ -75,11 +74,7 @@ impl ControlPlane {
             .insert(request_id, Pending::Checkout(terminal_id.clone()));
         self.queue_frame(&FrameKind::Command {
             request_id,
-            command: Command::Checkout {
-                terminal_id,
-                request,
-                contract: CHECKOUT_CONTRACT,
-            },
+            command: Command::checkout(terminal_id, request),
         });
         request_id
     }
