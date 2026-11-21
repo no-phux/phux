@@ -191,6 +191,7 @@ pub(in crate::state) fn import_tree(
                 env: Vec::new(),
                 restore: None,
                 resume: None,
+                notify: None,
                 last_cwd: None,
                 pane_id: None,
             })),

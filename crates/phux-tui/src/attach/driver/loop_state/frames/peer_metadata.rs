@@ -27,6 +27,9 @@ impl super::super::SessionLoop {
         frame: FrameKind,
         repaint: &mut RepaintAccumulator,
     ) -> Result<Option<FrameKind>, AttachError> {
+        let Some(frame) = self.take_notify_mode(frame) else {
+            return Ok(None);
+        };
         let Some(frame) = self.take_serving_host_metadata(frame) else {
             return Ok(None);
         };

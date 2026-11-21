@@ -288,7 +288,13 @@ where
         Ok(())
     }
 
-    fn restore(&mut self, _state: &mut ServerState, _blob: &StateBlob) {}
+    /// Pane metadata does not cross an upgrade; the notify mode lives on
+    /// the record, so put it back before any client attaches.
+    fn restore(&mut self, state: &mut ServerState, blob: &StateBlob) {
+        for p in &blob.panes {
+            super::notify_mode::reinstall(state, &WireResourceId::local(p.wire_id));
+        }
+    }
 }
 
 impl<B, W> KindResume for TerminalResume<B, W>

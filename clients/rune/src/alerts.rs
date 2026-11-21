@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use phux_protocol::ids::ResourceId;
+use phux_protocol::wire::frame::PaneNotify;
 use rune::Waker;
 #[cfg(not(target_os = "linux"))]
 use rune_notify::{self as notify, Notification};
@@ -204,8 +205,24 @@ impl Alerts {
         self.quiet_until = Some(Instant::now() + SETTLE);
     }
 
-    pub fn sync(&mut self, items: &[Item], visible: impl Fn(&Target) -> bool, enabled: bool) {
-        let alerts = items.iter().filter_map(alert).collect();
+    /// Fold the inbox in. A pane whose `mode` is not `on` raises no alert,
+    /// and one that is `off` leaves the Dock's count too.
+    pub fn sync(
+        &mut self,
+        items: &[Item],
+        visible: impl Fn(&Target) -> bool,
+        mode: impl Fn(&ResourceId) -> PaneNotify,
+        enabled: bool,
+    ) {
+        let mode_of = |item: &Item| match item {
+            Item::Terminal(waiting) => mode(&waiting.terminal),
+            Item::Approval(_) => PaneNotify::On,
+        };
+        let alerts = items
+            .iter()
+            .filter(|item| mode_of(item).alerts())
+            .filter_map(alert)
+            .collect();
         let quiet = !enabled || self.quiet_until.is_some_and(|t| Instant::now() < t);
         let changes = self.tracker.sync(alerts, visible, quiet);
         for alert in changes.post {
@@ -219,8 +236,12 @@ impl Alerts {
         linux::remove(&gone);
         #[cfg(not(target_os = "linux"))]
         notify::remove(&gone);
-        if items.len() != self.badge {
-            self.badge = items.len();
+        let counted = items
+            .iter()
+            .filter(|item| mode_of(item) != PaneNotify::Off)
+            .count();
+        if counted != self.badge {
+            self.badge = counted;
             crate::dock::badge(self.badge);
         }
     }

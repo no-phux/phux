@@ -1,7 +1,8 @@
 //! The `Agents` verbs.
 
 use crate::commands::{
-    JsonOpt, NoteLevelArg, SignalArg, SpawnSplit, agent, coord, mission::MissionAction,
+    JsonOpt, NoteLevelArg, NotifyModeArg, SignalArg, SpawnSplit, agent, coord,
+    mission::MissionAction,
 };
 use usage::Args;
 
@@ -146,6 +147,34 @@ pub(crate) struct NotifyArgs {
     /// The pane the note is about (a selector). Default: this pane.
     #[usage(long, value_name = "TARGET")]
     pub(crate) pane: Option<String>,
+
+    #[usage(flatten)]
+    pub(crate) json: JsonOpt,
+}
+
+/// Mute or unmute a pane's notifications.
+#[derive(Debug, Args)]
+#[usage(
+    about = "Mute or unmute a pane's notifications",
+    long_about = "Set a pane's notify mode.\n\n\
+            `unread-only` keeps the pane's state, badges and counts but raises \
+            no toast, sound or system notification. `off` also leaves it out \
+            of counts such as the Dock's. `on` restores notifications. The \
+            server keeps the mode, so every client honours it, and it \
+            survives upgrades and restarts. A session, group or tag target \
+            sets every pane it holds now.\n\n\
+            Examples:\n  \
+            phux notify-mode @4 off\n  \
+            phux notify-mode work unread-only\n  \
+            phux notify-mode '#watchers' on"
+)]
+pub(crate) struct NotifyModeArgs {
+    /// The pane, or the session, group or tag whose panes to set.
+    pub(crate) target: String,
+
+    /// The mode.
+    #[usage(value_enum)]
+    pub(crate) mode: NotifyModeArg,
 
     #[usage(flatten)]
     pub(crate) json: JsonOpt,

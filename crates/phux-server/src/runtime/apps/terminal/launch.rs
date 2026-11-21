@@ -192,7 +192,8 @@ pub(crate) fn execute(launch: super::super::ResourceLaunch<'_>) -> Result<(), St
             .attach_create_seeds_pty
             .then(|| spec_command(s, spec, relaunch));
         let wire = s.idspace.intern_resource(resource);
-        super::commands::set_agent_session(s, wire, spec.restore.clone());
+        super::commands::set_agent_session(s, wire.clone(), spec.restore.clone());
+        super::notify_mode::install(s, &wire, spec);
         (s.config().scrollback, cmd)
     });
     let cmd = cmd.map(|mut cmd| {

@@ -93,7 +93,7 @@ async fn graceful_upgrade_retires_durable_screens_without_purging_results() {
         record.on_exit = ExitPolicy::Retain;
         record.durable_result = true;
         old.registry_mut().commit(&Transition {
-            deltas: vec![Delta::PutResource(record)],
+            deltas: vec![Delta::PutResource(Box::new(record))],
             ..Transition::default()
         });
         old.activation_ended(pane, phux_core::ExitOutcome::exited(5), false);

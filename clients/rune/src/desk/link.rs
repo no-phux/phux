@@ -273,7 +273,12 @@ impl Desk {
         self.pending = None;
         self.connection.wanted = None;
         // Notifications from the machine being left would open nothing here.
-        self.inbox.alerts.sync(&[], |_| true, false);
+        self.inbox.alerts.sync(
+            &[],
+            |_| true,
+            |_| phux_protocol::wire::frame::PaneNotify::On,
+            false,
+        );
     }
 
     fn connect(&mut self, mut target: Target) {
