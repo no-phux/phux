@@ -402,15 +402,20 @@ pub fn resolve_attach_session(
     }
 }
 
+/// The session `AttachTarget::Last` joins: the most recently touched one,
+/// else the configured seed, else [`ServerState::fallback_session`]. Any
+/// existing session beats a refusal: sessions restored after a restart, or
+/// outliving every touched one, carry no touch stamp yet are still there to
+/// join, and refusing them leaves bare `phux` unusable.
 fn last_session(s: &ServerState) -> Option<phux_core::ids::SessionId> {
-    if let Some(session) = s.sessions().most_recently_touched() {
-        return Some(session);
-    }
-    if s.sessions().has_touch_history() {
-        return None;
-    }
-    s.config().pre_seeded_session()
-        .and_then(|name| s.sessions().find_by_name(name))
+    s.sessions()
+        .most_recently_touched()
+        .or_else(|| {
+            s.config()
+                .pre_seeded_session()
+                .and_then(|name| s.sessions().find_by_name(name))
+        })
+        .or_else(|| s.fallback_session())
 }
 
 fn session_point(s: &ServerState, session: Option<phux_core::ids::SessionId>) -> Point {
