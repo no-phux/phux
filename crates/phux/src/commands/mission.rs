@@ -319,9 +319,18 @@ fn keeper(idle_exit: Option<u64>, server_socket: Option<std::path::PathBuf>) -> 
     let idle = idle_exit
         .or_else(|| std::env::var(KEEPER_IDLE_ENV).ok()?.parse().ok())
         .map_or(KEEPER_IDLE_EXIT, Duration::from_secs);
-    match phux_work::run_keeper_with(&endpoint(), idle, move || {
-        super::mission_project::spawn(server_socket);
-    }) {
+    let socket = server_socket.unwrap_or_else(super::mission_project::default_server_socket);
+    let watched = socket.clone();
+    // A server that is gone for good (a stopped daemon, a test's temp
+    // socket) no longer holds the keeper up for its open work; the next
+    // verb starts another keeper.
+    let server_alive = move || std::os::unix::net::UnixStream::connect(&watched).is_ok();
+    match phux_work::run_keeper_with(
+        &endpoint(),
+        idle,
+        move || super::mission_project::spawn(socket),
+        server_alive,
+    ) {
         Ok(KeeperExit::StoreFailed) => ExitCode::from(1),
         Ok(KeeperExit::Idle | KeeperExit::AlreadyRunning | KeeperExit::Stale) => ExitCode::SUCCESS,
         Err(err) => {

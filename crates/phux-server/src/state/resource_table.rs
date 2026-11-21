@@ -156,6 +156,8 @@ impl ResourceTable {
     where
         F: Future<Output = ()> + 'static,
     {
+        // Reap finished engines so the set does not grow for the server's life.
+        while self.tasks.try_join_next().is_some() {}
         self.tasks.spawn_local(actor_future);
     }
 

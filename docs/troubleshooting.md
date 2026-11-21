@@ -128,7 +128,8 @@ state, logs, and credentials.
 Press <kbd>C-a</kbd> <kbd>B</kbd> in the terminal UI. It writes a report with
 versions, logs, and the current screen to the state directory. From a shell,
 `phux report new` writes one without the screen, and `phux report show`
-prints the newest.
+prints the newest. `phux version` prints this client's and the server's
+package and protocol versions (`--remote HOST` for another machine).
 
 **A report can contain secrets.** The screen and logs may include whatever
 was in your panes. Read it, and remove anything private, before you share

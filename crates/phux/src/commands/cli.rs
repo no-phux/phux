@@ -58,6 +58,9 @@ pub(crate) enum Command {
     #[usage(help_heading = "More", display_order = 63)]
     Whoami(WhoamiArgs),
 
+    #[usage(help_heading = "More", display_order = 63)]
+    Version(VersionArgs),
+
     #[usage(help_heading = "Maintain", display_order = 50)]
     Status(StatusArgs),
 
@@ -286,6 +289,9 @@ pub(crate) enum Command {
     Service(ServiceArgs),
     #[usage(help_heading = "More", display_order = 70)]
     Completion(CompletionArgs),
+
+    #[usage(help_heading = "More", display_order = 70)]
+    Man(ManArgs),
 
     #[usage(help_heading = "More", display_order = 68)]
     Mcp(McpArgs),
