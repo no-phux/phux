@@ -80,6 +80,8 @@ export function eventHasLabel(event: unknown, label: string): boolean {
  *
  * `scripts/lib/apple-toolchain-env.sh` is copied into the setup fixture and
  * never sourced. The copy fails if the file is gone, so it stays on the list.
+ * `scripts/lib/mbx-target.sh` is copied because `doctor.sh` sources it; a
+ * missing sibling fails `doctor.sh core`.
  * `clients/phux-vt-web/vendor/ghostty-vt.wasm` is not: the fixture creates its
  * own empty stand-in. `just/setup.just` is not: the job calls bash, not just.
  */
@@ -114,6 +116,7 @@ export const NATIVE_SETUP_PATHS = [
   "scripts/lib/dev-toolchain.sh",
   "scripts/lib/output.sh",
   "scripts/lib/apple-toolchain-env.sh",
+  "scripts/lib/mbx-target.sh",
 ] as const;
 
 /**
