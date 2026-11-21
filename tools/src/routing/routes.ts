@@ -134,7 +134,7 @@ const ROUTES: Record<string, Surface[]> = {
   // Brand release plumbing is verified by guards. Changed application artwork
   // still routes through its destination's packaging/build checks.
   "brand.{config,lock}.json": [],
-  "scripts/{brand,update-brand,test_brand_update}.py": [],
+  "scripts/{brand,update-brand,test_brand_update,design-pin}.py": [],
   "scripts/{export-product-skills.sh,product-skills}": [],
   "scripts/skills-package/**": [],
   "scripts/build-mobile-ffi-android.sh": [],
