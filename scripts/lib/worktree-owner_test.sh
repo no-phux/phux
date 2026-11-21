@@ -6,6 +6,7 @@
 set -euo pipefail
 
 ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+bash "$ROOT/scripts/lib/mbx-target_test.sh"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/worktree-owner-test.XXXXXX")"
 WORK="$(cd "$WORK" && pwd -P)"
 trap 'rm -rf -- "$WORK"' EXIT
@@ -30,6 +31,7 @@ for script in claim verify release; do
     cp "${ROOT}/scripts/worktree-${script}.sh" "${REPO}/scripts/worktree-${script}.sh"
 done
 cp "${ROOT}/scripts/lib/worktree-owner.sh" "${REPO}/scripts/lib/worktree-owner.sh"
+cp "${ROOT}/scripts/lib/mbx-target.sh" "${REPO}/scripts/lib/mbx-target.sh"
 git -C "$REPO" init -q -b main
 git -C "$REPO" -c user.name=t -c user.email=t@t add -A
 git -C "$REPO" -c user.name=t -c user.email=t@t commit -q -m fixture

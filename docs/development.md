@@ -95,7 +95,10 @@ Two rules keep crates reusable across worktrees, both enforced by
 test code (read `CARGO_MANIFEST_DIR` at run time), and the Zig engine
 build stays outside `target/`. Rust `E0514` means the shell's toolchain
 changed under a build: check `rustc -V`, `cargo -V`, `mbx doctor`, then
-`mbx clean "$PWD"`.
+`mbx clean "$PWD"`. If GC removes a cache directory that a worktree
+`target` symlink still names, Cargo fails with "Not a directory". The
+next `just` recipe recreates that empty directory. It does not restore
+the deleted build outputs.
 
 ## Pick your work area
 

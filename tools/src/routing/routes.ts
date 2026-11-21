@@ -139,6 +139,10 @@ const ROUTES: Record<string, Surface[]> = {
   "scripts/skills-package/**": [],
   "scripts/build-mobile-ffi-android.sh": [],
   "scripts/ci/setup-android-ndk.sh": [],
+  // The worktree lease and the mbx target heal are guards. They do not
+  // change what any product lane compiles.
+  "scripts/worktree-{claim,verify,release}.sh": [],
+  "scripts/lib/{worktree-owner,worktree-owner_test,mbx-target,mbx-target_test}.sh": [],
 };
 
 /**
