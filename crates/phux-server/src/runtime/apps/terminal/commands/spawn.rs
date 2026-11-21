@@ -125,11 +125,15 @@ pub(in crate::runtime) fn launch_pane_actor_with_failure_policy(
     let has_pty = cmd.is_some();
     let terminal_token = root_token.child_token();
     let reports = engine_reports(state, terminal);
-    let built = state
-        .terminal_engine()
-        .ok_or_else(|| {
-            phux_terminal_api::TerminalActorError::Refused("no Terminal engine supplied".into())
-        })
+    // A spawn racing shutdown would start a child the engine drain may
+    // already have passed; refuse it before anything forks.
+    let engine = if root_token.is_cancelled() {
+        Err("the server is shutting down")
+    } else {
+        state.terminal_engine().ok_or("no Terminal engine supplied")
+    };
+    let built = engine
+        .map_err(|why| phux_terminal_api::TerminalActorError::Refused(why.into()))
         .and_then(|engine| {
             engine.build(phux_terminal_api::EngineBuild {
                 cols,

@@ -67,11 +67,19 @@ const ENGINE_DRAIN_TIMEOUT: Duration = Duration::from_secs(3);
 /// Dropping the `LocalSet` instead aborts a pane inside its hangup grace,
 /// before the `SIGKILL` backstop, so a child that ignores `SIGHUP` outlives
 /// the server holding its PTY. That includes a pane already killed, whose
-/// reply precedes the grace.
+/// reply precedes the grace. An engine spawned during the drain (a late
+/// accept on a delegated or ephemeral listener) lands in the table again;
+/// the next pass retires it too.
 pub(in crate::runtime) async fn drain_engines(state: &SharedState) {
-    let mut engines = state.with_mut(|s| s.resources_mut().retire_engines());
+    let mut engines = tokio::task::JoinSet::new();
     let drained = tokio::time::timeout(ENGINE_DRAIN_TIMEOUT, async {
-        while engines.join_next().await.is_some() {}
+        loop {
+            engines = state.with_mut(|s| s.resources_mut().retire_engines());
+            if engines.is_empty() {
+                return;
+            }
+            while engines.join_next().await.is_some() {}
+        }
     })
     .await;
     if drained.is_err() {
@@ -243,4 +251,71 @@ pub(in crate::runtime) fn spawn_connector_supervisors(
         return;
     };
     crate::connector::spawn_connectors(specs, tokens, &inner, state, input_lane, root_token);
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "tests")]
+mod tests {
+    use super::drain_engines;
+    use crate::runtime::apps::document::engine::{DocumentActor, TreeDocument};
+    use crate::state::SharedState;
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use tokio_util::sync::CancellationToken;
+
+    /// An engine spawned while the drain runs (a late accept on a delegated
+    /// listener) is drained too, not left in a fresh set for the `LocalSet`
+    /// drop to abort mid-teardown.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_engine_spawned_during_the_drain_is_drained() {
+        let state = SharedState::new();
+        let (parent, first, late) = state.with_mut(|s| {
+            let (_, parent) = s.seed_session("work");
+            let mut tree = || {
+                s.create_document(
+                    parent,
+                    phux_core::LaunchSpec::Tree(phux_core::resource::TreeLaunch {
+                        target: "test-app".into(),
+                    }),
+                    &phux_core::Actor::owner(),
+                )
+                .unwrap()
+            };
+            (parent, tree(), tree())
+        });
+        let torn_down = Rc::new(Cell::new(false));
+        let first_token = CancellationToken::new();
+        let first_bundle = DocumentActor::<TreeDocument>::build(parent, "a", first_token.clone());
+        // The first engine spawns the late one once the drain cancels it.
+        let spawner = {
+            let (state, torn_down, token) = (state.clone(), torn_down.clone(), first_token.clone());
+            async move {
+                token.cancelled().await;
+                let late_token = CancellationToken::new();
+                let bundle = DocumentActor::<TreeDocument>::build(parent, "b", late_token.clone());
+                let teardown = {
+                    let token = late_token.clone();
+                    async move {
+                        token.cancelled().await;
+                        tokio::task::yield_now().await;
+                        torn_down.set(true);
+                    }
+                };
+                state.with_mut(|s| {
+                    s.spawn_resource_actor(late, bundle.handle, late_token, teardown)
+                        .unwrap();
+                });
+            }
+        };
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                state.with_mut(|s| {
+                    s.spawn_resource_actor(first, first_bundle.handle, first_token, spawner)
+                        .unwrap();
+                });
+                drain_engines(&state).await;
+            })
+            .await;
+        assert!(torn_down.get(), "the late engine was not drained");
+    }
 }
