@@ -247,7 +247,7 @@ bells, and command boundaries from shell integration.
 `PERF_CONTROL` (command tag `0x39`) is gated on
 `features_ext.PERF_CONTROL` (`0x80`). Its positional body is one op byte:
 trace start (`0`), trace stop (`1`), heap accounting on (`2`), or off (`3`).
-Undefined ops decode and receive `INVALID_COMMAND`. The ordinary owner
+An undefined op is refused `UNSUPPORTED`. The ordinary owner
 socket alone can use it: traces write files on the server host and heap
 accounting affects every allocation. Delegated and remote grants cannot
 enable it. Older servers do not advertise the bit; clients check before
