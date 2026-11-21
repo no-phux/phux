@@ -7,13 +7,19 @@ use phux_protocol::wire::frame::{ExecState, ExitPolicy, SessionLifetime};
 /// The stable word for a session lifetime.
 #[must_use]
 pub const fn lifetime_word(lifetime: SessionLifetime) -> &'static str {
-    core_lifetime(lifetime).as_str()
+    match core_lifetime(lifetime) {
+        Some(lifetime) => lifetime.as_str(),
+        None => "unknown",
+    }
 }
 
 /// The stable word for an activation's execution state.
 #[must_use]
 pub const fn exec_word(state: ExecState) -> &'static str {
-    core_exec_state(state).as_str()
+    match core_exec_state(state) {
+        Some(state) => state.as_str(),
+        None => "unknown",
+    }
 }
 
 /// The stable word for a resource kind (`terminal`, `agent_session`,
@@ -37,6 +43,7 @@ pub const fn exit_policy_word(policy: ExitPolicy) -> &'static str {
     match policy {
         ExitPolicy::Remove => "remove",
         ExitPolicy::Retain => "retain",
+        ExitPolicy::Unknown(_) => "unknown",
     }
 }
 
