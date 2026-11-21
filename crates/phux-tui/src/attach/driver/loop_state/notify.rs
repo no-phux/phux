@@ -3,6 +3,9 @@
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::focus::FocusEvent;
 
+use phux_protocol::ids::ResourceId;
+
+use crate::attach::notify::Note;
 use crate::attach::notify::deliver::{self, Delivery};
 
 impl super::SessionLoop {
@@ -46,8 +49,33 @@ impl super::SessionLoop {
         let Some(note) = self.notifier.take_due(cfg, tokio::time::Instant::now()) else {
             return;
         };
+        self.deliver(out, &note);
+    }
+
+    /// A warn or error note for `terminal`: notify unless its pane is on
+    /// screen (`docs/scripting.md#notes`).
+    pub(super) fn alert_note<W: crate::attach::RenderSink>(
+        &mut self,
+        out: &mut W,
+        terminal: &ResourceId,
+        note: &Note,
+    ) {
+        let seen = (self.mirror.workspace.active_group())
+            .and_then(|window| window.tree.as_ref())
+            .is_some_and(|tree| crate::layout::leaves(tree).contains(terminal));
+        let now = tokio::time::Instant::now();
+        if self
+            .notifier
+            .note_due(terminal, seen, self.settings.notifications, now)
+        {
+            self.deliver(out, note);
+        }
+    }
+
+    fn deliver<W: crate::attach::RenderSink>(&mut self, out: &mut W, note: &Note) {
+        let cfg = self.settings.notifications;
         self.notify_seq = self.notify_seq.wrapping_add(1);
-        match deliver::plan(&note, cfg, self.notify_env, self.notify_seq) {
+        match deliver::plan(note, cfg, self.notify_env, self.notify_seq) {
             Some(Delivery::Terminal(bytes)) => {
                 if let Err(err) = out.write_all(&bytes).and_then(|()| out.flush()) {
                     tracing::debug!(%err, "notification write failed");

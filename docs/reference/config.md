@@ -83,6 +83,7 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `limits.metadata-value-bytes` | `262144` |
 | `notifications.blocked` | `true` |
 | `notifications.done` | `true` |
+| `notifications.from-programs` | `"off"` |
 | `notifications.mode` | `"terminal"` |
 | `notifications.sound` | `false` |
 | `notifications.suppress-focused` | `true` |
@@ -830,6 +831,14 @@ right = [
 # "osc99" if auto guesses wrong. Inside tmux the sequence is wrapped for
 # passthrough (tmux needs `set -g allow-passthrough on`).
 #
+# A note a program posts with `phux notify` shows as a toast; a warn or
+# error note for a pane you can't see also notifies, the same way.
+#
+# `from-programs`: "off" ignores OSC 9 and OSC 777 from panes, so no
+# escape sequence a pane prints raises a notification. "notes" makes each
+# one the pane's note, at most one a second per pane. The server reads it
+# when it starts.
+#
 # [notifications]
 # mode = "terminal"
 # terminal-protocol = "auto"
@@ -837,6 +846,7 @@ right = [
 # done = true
 # suppress-focused = true
 # sound = false
+# from-programs = "off"
 
 # Authorization posture. Read once
 # at server start; a change needs a restart.

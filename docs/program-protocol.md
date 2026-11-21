@@ -394,10 +394,13 @@ Read the reply from the terminal in raw mode; an answer starting
   not turn it into OSC 7501 records, so it never overwrites a real report.
   A program MAY send both.
 - **OSC 9, OSC 777, OSC 99 (desktop notifications).** phux ignores these
-  from a pane. It sends its own notifications to your terminal when a
-  pane's state changes, so a program reports state and lets phux decide.
-  A program with something to say runs
-  [`phux notify`](./scripting.md#notes) instead.
+  from a pane by default. It sends its own notifications to your terminal
+  when a pane's state changes, so a program reports state and lets phux
+  decide. A program with something to say runs
+  [`phux notify`](./scripting.md#notes) instead. With
+  `notifications.from-programs = "notes"`, read when the server starts,
+  OSC 9 and OSC 777 become the pane's note, at most one a second per pane;
+  OSC 99 stays ignored.
 - **OSC 133 (shell integration).** Emitted by the shell. OSC 133 `A` ends a
   pane's `working` and `blocked` records.
 - **OSC 0 and 2 (title).** Free-form. An OSC 7501 `title` labels a record

@@ -67,6 +67,8 @@ pub(crate) struct StateConfig {
     pub(crate) restore: phux_config::RestoreCfg,
     /// `[forward]`: whether `FORWARD_*` is served and what it may dial.
     pub(crate) forward: phux_config::ForwardCfg,
+    /// `notifications.from-programs`: whether OSC 9 / OSC 777 become notes.
+    pub(crate) from_programs: phux_config::FromPrograms,
     /// Largest L3 metadata value the server stores at one key
     /// (`limits.metadata-value-bytes`, ADR-0129).
     pub(crate) metadata_value_bytes: u32,
@@ -128,6 +130,7 @@ impl Default for StateConfig {
             voice: phux_config::VoiceCfg::default(),
             restore: phux_config::RestoreCfg::default(),
             forward: phux_config::ForwardCfg::default(),
+            from_programs: phux_config::FromPrograms::Off,
             metadata_value_bytes: phux_config::DEFAULT_METADATA_VALUE_BYTES,
             cwd_inheritance: phux_config::CwdInheritance::default(),
             term: phux_config::DefaultsCfg::default().term,
@@ -170,6 +173,7 @@ impl StateConfig {
             voice: cfg.voice.clone(),
             restore: cfg.restore.clone(),
             forward: cfg.forward.clone(),
+            from_programs: cfg.from_programs,
             metadata_value_bytes: cfg.metadata_value_bytes,
             cwd_inheritance: cfg.cwd_inheritance,
             term: cfg.term.clone(),
