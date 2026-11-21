@@ -144,6 +144,20 @@ impl AttachError {
         )
     }
 
+    /// Whether the installed deadline expired before the server answered
+    /// (`connection::install_deadline`): the handshake or one request.
+    #[must_use]
+    pub fn is_timeout(&self) -> bool {
+        matches!(self, Self::Io(io) if io.kind() == std::io::ErrorKind::TimedOut)
+    }
+
+    /// Whether the server could not be reached: the deadline expired, or a
+    /// remote host never answered the dial. The CLI exits 4 for these.
+    #[must_use]
+    pub fn is_unreachable(&self) -> bool {
+        self.is_timeout() || matches!(self, Self::Unreachable(_))
+    }
+
     /// Whether this is a transport refusal no retry with the same credentials
     /// can change (a refused pairing token, ADR-0031). Applies the
     /// `phux-client-runtime::reconnect` rule to the flattened detail.
