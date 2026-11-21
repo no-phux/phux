@@ -1,5 +1,6 @@
 //! The terminal area: the split tree, one floating glass card per leaf, the
-//! keyboard's card lit, and draggable gutters between them.
+//! keyboard's card raised a tier with no colour of its own, and draggable
+//! gutters between them. A lone pane with the sidebar folded goes flush.
 
 use std::time::Instant;
 
