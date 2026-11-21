@@ -10,7 +10,7 @@ use rune_kit::ButtonVariant;
 use super::settings::{kit_button, primary, secondary};
 use super::tokens::{Paint, Tokens};
 use crate::desk::Desk;
-use crate::pair::{self, countdown, last_seen, needs_enable};
+use crate::pair::{self, countdown, last_seen, needs_enable, no_address, trouble};
 
 pub(super) const DETAIL: &str =
     "Scan a code with the phux app to reach this computer's sessions from your phone.";
@@ -19,6 +19,11 @@ pub(super) const DETAIL: &str =
 const ENABLE: &str = "Phones can't connect to this computer yet. Allowing it turns on paired \
      mode: only devices you pair can connect, on your tailnet address, and nothing is opened \
      to your local network or the internet. The server restarts; your sessions keep running.";
+
+/// No tailnet here, so no address a phone can reach. Nothing was changed.
+const NO_ADDRESS: &str = "Phones reach this computer over Tailscale, and it isn't on a tailnet \
+     yet. Install Tailscale here and on your phone, and sign in to the same account on both. \
+     The code appears when you come back.";
 
 /// A kit button at the touch target: `Submit` for the step's one primary
 /// action, `Outline` for the rest.
@@ -85,11 +90,49 @@ fn code(desk: &Desk, t: &Tokens) -> El {
                 button("pair-allow", "Allow phones to connect", true, t)
                     .on_press(Desk::allow_phones),
             ),
-        Some(Err(error)) => col()
+        Some(Err(error)) if no_address(error) => col()
             .w_full()
             .gap(s.s3)
-            .child(words(error.clone(), desk, t).key("pair-error"))
-            .child(button("pair-retry", "Try again", false, t).on_press(Desk::new_pair_code)),
+            .child(words(NO_ADDRESS, desk, t).key("pair-no-address"))
+            .child(
+                row()
+                    .w_full()
+                    .gap(s.s2)
+                    .flex_wrap()
+                    .child(
+                        button("pair-tailscale", "Get Tailscale", true, t)
+                            .on_press_tx(|d: &mut Desk, tx| d.get_tailscale(tx)),
+                    )
+                    .child(
+                        button("pair-recheck", "Check again", false, t)
+                            .on_press(Desk::new_pair_code),
+                    ),
+            ),
+        Some(Err(error)) => {
+            let details = if pairing.copied {
+                "Copied"
+            } else {
+                "Copy details"
+            };
+            col()
+                .w_full()
+                .gap(s.s3)
+                .child(words(trouble(error), desk, t).key("pair-error"))
+                .child(
+                    row()
+                        .w_full()
+                        .gap(s.s2)
+                        .flex_wrap()
+                        .child(
+                            button("pair-retry", "Try again", false, t)
+                                .on_press(Desk::new_pair_code),
+                        )
+                        .child(
+                            button("pair-details", details, false, t)
+                                .on_press_tx(|d: &mut Desk, tx| d.copy_pair_details(tx)),
+                        ),
+                )
+        }
         Some(Ok(code)) => {
             let now = pair::now();
             let left = code.expires_at.map(|at| countdown(at - now));
@@ -155,7 +198,9 @@ fn devices(desk: &Desk, t: &Tokens) -> Option<El> {
     );
     let now = pair::now();
     let devices: Vec<_> = match listed {
-        Err(error) => return Some(list.child(words(error.clone(), desk, t))),
+        Err(_) => {
+            return Some(list.child(words("Couldn't list the paired devices.", desk, t)));
+        }
         // An older CLI lists the code on screen too, until a phone uses it.
         Ok(devices) => devices
             .iter()

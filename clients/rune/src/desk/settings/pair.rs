@@ -21,6 +21,8 @@ const SLOW: Duration = Duration::from_secs(60);
 const WATCH_EVERY: f64 = 3.0;
 /// The QR's smallest side in pixels: crisp at its 2x display size.
 pub const QR_PIXELS: u32 = 440;
+/// Where a computer with no tailnet gets one.
+const TAILSCALE: &str = "https://tailscale.com/download";
 
 enum Done {
     Code(Result<Code, String>),
@@ -135,6 +137,34 @@ impl Desk {
         }
     }
 
+    /// The CLI's words behind a refusal the card says in a sentence.
+    pub fn copy_pair_details(&mut self, tx: &mut Tx) {
+        if let Some(Err(error)) = &self.settings_ui.pairing.code {
+            tx.copy(error.clone());
+            self.settings_ui.pairing.copied = true;
+        }
+    }
+
+    /// Tailscale's download page, where installing starts its sign-in.
+    pub fn get_tailscale(&mut self, tx: &mut Tx) {
+        if let Err(error) = tx.open_url(TAILSCALE) {
+            self.say(
+                NoticeKind::Error,
+                format!("Couldn't open {TAILSCALE}: {error}"),
+            );
+        }
+    }
+
+    /// Back at the window after setting up Tailscale: ask again, so the
+    /// code appears without another press. Never turns anything on.
+    pub(crate) fn recheck_pairing(&mut self) {
+        let waiting = matches!(&self.settings_ui.pairing.code,
+            Some(Err(error)) if pair::no_address(error));
+        if waiting && self.pairing_shown() {
+            self.new_pair_code();
+        }
+    }
+
     /// From the palette: Settings at Remote Hosts, with a code up.
     pub fn open_pairing(&mut self) {
         if self.phone.is_some() {
@@ -166,8 +196,7 @@ impl Desk {
                         let (side, rgba) = pair::qr_rgba(&code.link, QR_PIXELS)?;
                         Some(cache.rgba(side, side, rgba))
                     });
-                    self.settings_ui.pairing.code =
-                        Some(result.map_err(|error| pair::reason(&error)));
+                    self.settings_ui.pairing.code = Some(result);
                 }
                 Done::Devices(result) => {
                     self.settings_ui.pairing.listing = false;
@@ -184,8 +213,7 @@ impl Desk {
                         self.settings_ui.pairing.qr = None;
                         self.say(NoticeKind::Info, "Phone paired.");
                     }
-                    self.settings_ui.pairing.devices =
-                        Some(result.map_err(|error| pair::reason(&error)));
+                    self.settings_ui.pairing.devices = Some(result);
                 }
                 Done::Revoked(_, Ok(())) => {
                     self.say(
@@ -195,10 +223,15 @@ impl Desk {
                     );
                     self.list_devices();
                 }
-                Done::Revoked(id, Err(error)) => {
+                Done::Revoked(id, Err(_)) => {
+                    let name = Device {
+                        id,
+                        last_seen: None,
+                    }
+                    .name();
                     self.say(
                         NoticeKind::Error,
-                        format!("Could not revoke {id}: {}", pair::reason(&error)),
+                        format!("Couldn't revoke {name}. Try again."),
                     );
                 }
             }
