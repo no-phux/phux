@@ -249,3 +249,20 @@ fn losing_window_focus_lets_the_focused_pane_notify() {
     n.observe(&[done], cfg(), t1);
     assert!(n.take_due(cfg(), t1 + COALESCE).is_some());
 }
+
+#[test]
+fn a_muted_pane_never_posts_and_unmuting_restores_it() {
+    let t0 = Instant::now();
+    let mut n = primed_working(t0);
+    let t1 = t0 + ATTACH_GRACE;
+    n.observe(&[row(1, Phase::Settled)], cfg(), t1);
+    // Muting drops what was already queued, and nothing new queues.
+    n.set_mode(ResourceId::local(1), PaneNotify::UnreadOnly);
+    assert_eq!(n.take_due(cfg(), t1 + COALESCE), None);
+    n.observe(&[row(1, Phase::Working)], cfg(), t1);
+    n.observe(&[row(1, Phase::Blocked)], cfg(), t1);
+    assert_eq!(n.deadline(), None);
+    n.set_mode(ResourceId::local(1), PaneNotify::On);
+    n.observe(&[row(1, Phase::Settled)], cfg(), t1);
+    assert!(n.take_due(cfg(), t1 + COALESCE).is_some());
+}

@@ -181,6 +181,7 @@ pub static KINDS: [KindSpec; 5] = [
             RESOURCE_TAGS_KEY,
             RESOURCE_LINK_KEY,
             crate::wire::frame::RESOURCE_NOTE_KEY,
+            crate::wire::frame::RESOURCE_NOTIFY_KEY,
         ],
     },
     KindSpec {

@@ -22,7 +22,8 @@ impl super::SessionLoop {
             &mut self.mirror.agent_meta,
             &mut self.next_request_id,
         )
-        .await
+        .await?;
+        self.watch_notify_modes(conn).await
     }
 
     /// Refresh peer arrangements (read off the loop with a peer reader, else

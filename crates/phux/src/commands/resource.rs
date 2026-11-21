@@ -337,6 +337,7 @@ fn print_show(details: &ResourceDetails, json: bool) -> ExitCode {
         "viewers",
         "process",
         "tags",
+        "notify",
         "agent",
         "program_status",
         "controller",

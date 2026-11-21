@@ -34,7 +34,8 @@ impl super::SessionLoop {
     ) -> Result<(), AttachError> {
         self.peers
             .sweep_agents(conn, &mut self.next_request_id, &self.review)
-            .await
+            .await?;
+        self.watch_notify_modes(conn).await
     }
 
     /// Take over the review index an earlier entry on this

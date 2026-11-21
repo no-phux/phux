@@ -372,6 +372,16 @@ vim.notify = function(msg, level)
 end
 ```
 
+A pane muted with `phux notify-mode @N unread-only` (or `off`) shows no
+toast and raises no notification for its notes
+([muting a pane](./status-bar.md#muting-a-pane)). To start a quiet
+watcher, mute it right after you create it:
+
+```sh
+id=$(phux new --json -s watch -- cargo watch | jq -r .terminal_id)
+phux notify-mode "@$id" off
+```
+
 phux still ignores OSC 9, 777 and 99 from panes
 ([program protocol](./program-protocol.md#relationship-to-other-sequences)),
 so no escape sequence a pane prints can raise a notification.

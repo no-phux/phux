@@ -418,7 +418,7 @@ impl<'a> Tx<'a> {
         let mut resource_deletes = Vec::new();
         for (k, slot) in self.resources {
             match slot {
-                Some(r) => puts.push(Delta::PutResource(r)),
+                Some(r) => puts.push(Delta::PutResource(Box::new(r))),
                 None if org.resource(&k).is_some() => {
                     resource_deletes.push(Delta::RemoveResource(k));
                 }

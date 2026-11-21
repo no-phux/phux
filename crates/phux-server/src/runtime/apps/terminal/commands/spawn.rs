@@ -296,6 +296,7 @@ pub(crate) fn launch_of(
         env: Vec::new(),
         restore: None,
         resume: None,
+        notify: None,
     }
 }
 
