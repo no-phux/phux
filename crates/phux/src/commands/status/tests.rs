@@ -26,6 +26,8 @@ fn fabricated() -> StatusReport {
         since_unix_secs: Some(1_754_000_000),
         protocol: (1, 2, 3),
         client_protocol: (1, 2, 3),
+        server_version: Some("0.9.0".to_owned()),
+        client_version: "0.9.0",
         features: vec!["acknowledged_input", "report_agent_state"],
         sessions: vec![session("scratch", 1, 0), session("work", 3, 2)],
         satellite_terminals: vec!["build-box/@1".to_owned()],
@@ -100,6 +102,8 @@ fn json_render_is_pinned() {
             "since_unix_secs": 1_754_000_000_i64,
             "protocol": { "major": 1, "minor": 2, "patch": 3 },
             "client_protocol": { "major": 1, "minor": 2, "patch": 3 },
+            "server_version": "0.9.0",
+            "client_version": "0.9.0",
             "features": ["acknowledged_input", "report_agent_state"],
             "clients": 2,
             "sessions": [
@@ -127,6 +131,19 @@ fn a_skewed_server_reports_its_version_and_the_clients() {
     assert_eq!(doc["protocol"]["minor"], 0, "the server's, not ours");
     assert_eq!(doc["client_protocol"]["minor"], 4);
     assert_eq!(doc["client_protocol"]["patch"], 2);
+}
+
+/// A server on another release prints both versions; the installer reads
+/// them from the JSON document to decide on a hand-over.
+#[test]
+fn a_server_on_another_release_names_both_versions() {
+    let mut report = fabricated();
+    report.server_version = Some("0.8.1".to_owned());
+    let lines = render_human(&report, 1_754_000_000);
+    assert_eq!(lines[3], "version: 0.8.1 (this client: 0.9.0)");
+    let doc = status_document(&report);
+    assert_eq!(doc["server_version"], "0.8.1");
+    assert_eq!(doc["client_version"], "0.9.0");
 }
 
 /// A degraded fleet view surfaces in both formats: an indented
