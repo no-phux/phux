@@ -82,10 +82,41 @@ pub(super) fn layout_key_scope_session(scope: &Scope, key: &str) -> Option<Layou
     layout_key_session(key)
 }
 
+/// Adopt a layout after the caller establishes its session. An initial read
+/// with no layout keeps the bootstrap; an existing empty layout is real.
+pub(in crate::attach) fn adopt_layout(
+    workspace: &mut ArrangementDoc,
+    focus: &mut Option<ResourceId>,
+    panes: &HashMap<ResourceId, PaneSlot>,
+    surface: SurfaceLeaves<'_>,
+    incoming: Option<ArrangementDoc>,
+    initial: bool,
+) -> FrameOutcome {
+    let mut outcome = FrameOutcome {
+        layout_get_answered: initial,
+        ..FrameOutcome::default()
+    };
+    let Some(incoming) = incoming else {
+        return outcome;
+    };
+    outcome.layout_replaced = true;
+    if initial && layout_names_only_absent_panes(&incoming, panes, surface) {
+        tracing::debug!("persisted layout names only panes absent from the snapshot; discarding");
+        return outcome;
+    }
+    *workspace = reconcile_loaded_workspace(incoming, workspace, focus.as_ref());
+    *focus = workspace
+        .active_group()
+        .and_then(|group| group.focus.clone());
+    outcome.attach_panes = unknown_layout_leaves(workspace, panes, surface);
+    outcome.reflow_panes = true;
+    outcome
+}
+
 /// Whether a persisted layout names panes and none is in the `ATTACHED`
 /// snapshot (ADR-0105): a stale tree of dead panes that would hide the empty
 /// state. A known non-Terminal leaf (a document's placeholder) is present.
-pub(super) fn layout_names_only_absent_panes(
+fn layout_names_only_absent_panes(
     incoming: &ArrangementDoc,
     panes: &HashMap<ResourceId, PaneSlot>,
     surface: SurfaceLeaves<'_>,
@@ -103,7 +134,7 @@ pub(super) fn layout_names_only_absent_panes(
 /// Leaves this client holds no pane for and must attach. A known
 /// non-Terminal leaf is already streamed by the session attach and only
 /// tiles a placeholder, so it is never attached as a Terminal.
-pub(super) fn unknown_layout_leaves(
+fn unknown_layout_leaves(
     incoming: &ArrangementDoc,
     panes: &HashMap<ResourceId, PaneSlot>,
     surface: SurfaceLeaves<'_>,

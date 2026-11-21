@@ -12,7 +12,7 @@ use phux_protocol::wire::info::SessionInfo;
 
 use super::actions::{PendingSplit, PendingWindow};
 use super::pane_state::{AttachKernel, PaneSlot};
-use super::server_frame::AgentMetaIndex;
+use super::server_frame::{AgentMetaIndex, FrameOutcome, adopt_layout};
 use super::surface_leaf::{LeafBook, SurfaceLeaves};
 use crate::layout::ArrangementDoc;
 use crate::predict::PredictionState;
@@ -65,6 +65,21 @@ pub(in crate::attach) struct SessionMirror {
 }
 
 impl SessionMirror {
+    pub(in crate::attach) fn adopt_layout(
+        &mut self,
+        layout: Option<ArrangementDoc>,
+        initial: bool,
+    ) -> FrameOutcome {
+        adopt_layout(
+            &mut self.workspace,
+            &mut self.focused_resource,
+            &self.panes,
+            SurfaceLeaves::new(&self.engine_kernel, &self.leaves),
+            layout,
+            initial,
+        )
+    }
+
     /// Members that hold no leaf in the arrangement and are not the floating
     /// overlay: terminals that keep running with no view, sorted.
     pub(in crate::attach) fn unarranged_members(&self) -> Vec<ResourceId> {

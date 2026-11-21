@@ -1,14 +1,11 @@
 //! The attached session's arrangement record on an `ORGANIZATION` server.
 //!
-//! A read reaches the frame handler as the value the legacy layout key would
-//! carry, so both paths share one reconciliation.
+//! Correlated control reads settle the attach's layout independently of
+//! the legacy metadata subscription.
 
 use phux_protocol::ids::SessionId;
 
-use super::{
-    AttachError, Connection, DEFAULT_GROUP_ID, FrameKind, Notice, RepaintAccumulator,
-    SidebarReservation, Step, encode_layout_or_log, layout_key,
-};
+use super::{AttachError, Connection, Notice, RepaintAccumulator, SidebarReservation};
 use crate::attach::arrangement_link::ArrangementLink;
 use crate::layout::ArrangementDoc;
 
@@ -40,84 +37,50 @@ impl super::SessionLoop {
         true
     }
 
-    /// Read the arrangement record when a read is owed and adopt it through
-    /// the frame handler: as the attach's layout reply before the first read
-    /// completed, as a layout change after. `Some` ends the attach.
+    /// Settle the initial read, or apply a subsequent arrangement change.
     pub(super) async fn settle_arrangement_read<W: crate::attach::RenderSink>(
         &mut self,
         conn: &mut Connection,
         out: &mut W,
         sidebar: Option<SidebarReservation>,
         repaint: &mut RepaintAccumulator,
-    ) -> Result<Option<Step>, AttachError> {
+    ) -> Result<(), AttachError> {
         if !std::mem::take(&mut self.arrangement_read_owed) {
-            return Ok(None);
+            return Ok(());
         }
         let Some(link) = self.arrangement.as_mut() else {
-            return Ok(None);
+            return Ok(());
         };
         let session = link.session();
-        let read = link.read().await;
-        // The first successful read after a failure must settle held edits
-        // as an initial read, including healing an authoritatively absent
-        // layout. A failed read still releases only the bootstrap fence.
-        if read.is_ok()
-            && self.layout_get_request_id.is_none()
-            && !self.deferred_arrangement_edits.is_empty()
-        {
-            self.layout_get_request_id = Some(self.take_request_id());
-        }
-        let frame = match (read, self.layout_get_request_id) {
-            // The attach's first read: the reply the layout GET would carry.
-            (Ok(document), Some(request_id)) => FrameKind::MetadataValue {
-                request_id,
-                value: document.as_ref().and_then(encode_layout_or_log),
-            },
-            (Ok(Some(document)), None) => match encode_layout_or_log(&document) {
-                Some(bytes) => layout_change(session, bytes),
-                None => return Ok(None),
-            },
-            // No record yet, outside the first read: nothing to adopt.
-            (Ok(None), None) => return Ok(None),
-            (Err(err), first) => {
+        let initial = !self.layout_read_complete;
+        let (document, initial) = match link.read().await {
+            // A successful retry must also settle any edits held across the
+            // failure, even when the stored layout is absent.
+            Ok(document) => (
+                document,
+                initial || !self.deferred_arrangement_edits.is_empty(),
+            ),
+            Err(err) => {
                 tracing::warn!(%session, error = %err, reason = %err, "arrangement read failed");
                 self.apply_notices(
                     vec![Notice::warn(format!("layout not loaded: {err}"))],
                     repaint,
                 );
-                // The first read still has to release the input fence; the
-                // link stays unloaded, so the frame handler neither heals
-                // nor writes, and nothing is saved until a read succeeds.
-                let Some(request_id) = first else {
-                    return Ok(None);
-                };
-                FrameKind::MetadataValue {
-                    request_id,
-                    value: None,
-                }
+                // Release the bootstrap fence only. The unread link still
+                // prevents healing, replaying held edits, and saving.
+                (None, initial)
             }
         };
-        self.apply_frame_step(conn, out, sidebar, frame, false, repaint)
-            .await
-    }
-
-    /// A hidden-view action can owe a retry on an otherwise quiet wire.
-    /// Settle it after uncorking rather than waiting for an unrelated frame.
-    pub(super) async fn settle_input_arrangement<W: crate::attach::RenderSink>(
-        &mut self,
-        conn: &mut Connection,
-        out: &mut W,
-        sidebar: Option<SidebarReservation>,
-    ) -> Result<Step, AttachError> {
-        let mut repaint = RepaintAccumulator::default();
-        if let Some(exit) = self
-            .settle_arrangement_read(conn, out, sidebar, &mut repaint)
-            .await?
-        {
-            return Ok(exit);
+        if document.is_none() && !initial {
+            return Ok(());
         }
-        self.drain_repaint(out, sidebar, &mut repaint);
-        Ok(Step::Continue)
+        let prev_rects = self.leaf_rects(sidebar);
+        let focused_before = self.mirror.focused_resource.clone();
+        let mut outcome = self.mirror.adopt_layout(document, initial);
+        self.settle_layout_outcome(&mut outcome);
+        self.record_frame_focus(focused_before);
+        self.fold_frame_outcome(conn, out, sidebar, outcome, prev_rects.as_ref(), repaint)
+            .await
     }
 
     /// Hand the peer arrangement reads a sweep or an `ARRANGEMENT_CHANGED`
@@ -188,15 +151,5 @@ impl super::SessionLoop {
             );
         }
         true
-    }
-}
-
-/// The change broadcast a legacy server sends for this session's layout key.
-fn layout_change(session: SessionId, bytes: Vec<u8>) -> FrameKind {
-    FrameKind::MetadataChanged {
-        scope: phux_protocol::wire::frame::Scope::Group(DEFAULT_GROUP_ID),
-        key: layout_key(session),
-        value: Some(bytes),
-        actor: None,
     }
 }

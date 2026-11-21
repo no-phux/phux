@@ -1,8 +1,8 @@
 //! Stdin parsing, dispatch batches, and post-input side effects.
 
 use super::super::{
-    AttachError, CarriedSidebar, Connection, FrameKind, LoopExit, SidebarReservation, Step,
-    input_expects_a_reply, view_rects,
+    AttachError, CarriedSidebar, Connection, FrameKind, LoopExit, RepaintAccumulator,
+    SidebarReservation, Step, input_expects_a_reply, view_rects,
 };
 use super::PriorView;
 
@@ -117,7 +117,12 @@ impl super::super::SessionLoop {
             .await?;
         self.finish_input_side_effects(conn, out, sidebar, &prior, layout_changed)
             .await?;
-        self.settle_input_arrangement(conn, out, sidebar).await
+        // A hidden-view action can request a retry on an otherwise quiet wire.
+        let mut repaint = RepaintAccumulator::default();
+        self.settle_arrangement_read(conn, out, sidebar, &mut repaint)
+            .await?;
+        self.drain_repaint(out, sidebar, &mut repaint);
+        Ok(Step::Continue)
     }
 
     /// Tell the bar whether the resolver is waiting at the prefix and which
