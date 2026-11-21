@@ -143,6 +143,10 @@ The solver moves each colour toward black or white only as far as it
 needs to reach 4.5:1 on every panel. When a theme already clears that, its
 colours come through unchanged.
 
+A grey accent can only stand out by lightness. When it would read quieter
+than unfocused labels, as in Omarchy's Vantablack, the focused pane is
+drawn in body text instead, so focus is never the dimmest thing on screen.
+
 ## Status marks
 
 An agent's state is shown by a mark and a colour together, and the mark
