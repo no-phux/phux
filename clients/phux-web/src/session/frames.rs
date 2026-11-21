@@ -16,8 +16,17 @@ impl Connection {
         if let Some(outcome) = self.approvals.on_frame(&frame) {
             return outcome;
         }
-        if frame_resource_id(&frame).is_some_and(|id| self.retiring_panes.contains(id))
-            && !matches!(&frame, FrameKind::ResourceClosed { .. })
+        if let FrameKind::PathResults { request_id, result } = frame {
+            self.accept_path_results(request_id, result);
+            return Outcome::default();
+        }
+        let stream = KernelInput::from_stream_frame(&frame);
+        let resource = match &frame {
+            FrameKind::ResourceClosed { terminal_id, .. } => Some(terminal_id),
+            _ => stream.as_ref().and_then(KernelInput::resource_id),
+        };
+        if resource.is_some_and(|id| self.retiring_panes.contains(id))
+            && !matches!(frame, FrameKind::ResourceClosed { .. })
         {
             return Outcome::default();
         }
@@ -32,10 +41,6 @@ impl Connection {
                 .features_ext
                 .contains(ServerFeatureExt::Organization);
         }
-        if let FrameKind::PathResults { request_id, result } = frame {
-            self.accept_path_results(request_id, result);
-            return Outcome::default();
-        }
         if let FrameKind::Error {
             request_id: Some(request_id),
             message,
@@ -46,16 +51,19 @@ impl Connection {
             return Outcome::default();
         }
         // A document's fault likewise costs only its tile, which says so.
-        let optional = frame_resource_id(&frame)
+        let optional = resource
             .filter(|id| self.is_agent_session(id) || self.is_document(id))
             .cloned();
-        let split_frame = frame_resource_id(&frame).is_some_and(|id| {
+        let split_frame = resource.is_some_and(|id| {
             self.pending_split
                 .as_ref()
                 .and_then(|pending| pending.resource.as_ref())
                 == Some(id)
         });
-        let mut outcome = self.reduce_frame(frame);
+        let mut outcome = match stream {
+            Some(input) => self.reduce_stream(input),
+            None => self.reduce_frame(frame),
+        };
         if let Some(id) = &optional
             && outcome.fatal.take().is_some()
         {
@@ -165,159 +173,6 @@ impl Connection {
                 snapshot,
                 ..
             } => self.accept_snapshot(attach_id, snapshot),
-            FrameKind::BootstrapBegin {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                profile,
-                cols,
-                rows,
-                base_seq,
-            } => {
-                let (outcome, applied) = self.apply_kernel(KernelInput::BootstrapBegin {
-                    terminal_id: &terminal_id,
-                    stream_id,
-                    bootstrap_id,
-                    profile,
-                    geometry: CanonicalGeometry { cols, rows },
-                    base_seq,
-                });
-                let refused = matches!(
-                    profile,
-                    phux_protocol::BootstrapStreamProfile::Unknown { .. }
-                );
-                if applied
-                    && !refused
-                    && !self.is_agent_session(&terminal_id)
-                    && !self.is_document(&terminal_id)
-                {
-                    self.focused_terminal
-                        .get_or_insert_with(|| terminal_id.clone());
-                }
-                outcome
-            }
-            FrameKind::BootstrapChunk {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                chunk_seq,
-                payload,
-            } => {
-                self.apply_kernel(KernelInput::BootstrapChunk {
-                    terminal_id: &terminal_id,
-                    stream_id,
-                    bootstrap_id,
-                    chunk_seq,
-                    payload: &payload,
-                })
-                .0
-            }
-            FrameKind::BootstrapReady {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                history_cursor,
-            } => {
-                self.apply_kernel(KernelInput::BootstrapReady {
-                    terminal_id: &terminal_id,
-                    stream_id,
-                    bootstrap_id,
-                    history_cursor: history_cursor.as_deref(),
-                })
-                .0
-            }
-            FrameKind::HistoryPage {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                page_seq,
-                rows,
-                cursor,
-                next_cursor,
-                payload,
-            } => {
-                self.apply_kernel(KernelInput::HistoryPage {
-                    terminal_id: &terminal_id,
-                    stream_id,
-                    bootstrap_id,
-                    page_seq,
-                    rows,
-                    payload: &payload,
-                    cursor: &cursor,
-                    next_cursor: next_cursor.as_deref(),
-                })
-                .0
-            }
-            FrameKind::HistoryTombstone {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                cursor,
-                reason,
-            } => {
-                let reason = history_unavailable_reason(reason);
-                self.apply_kernel(KernelInput::HistoryTombstone {
-                    terminal_id: &terminal_id,
-                    stream_id,
-                    bootstrap_id,
-                    cursor: &cursor,
-                    reason,
-                })
-                .0
-            }
-            FrameKind::HistoryRejected {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                cursor,
-                reason,
-                required_bytes,
-                required_rows,
-            } => {
-                let reason = history_rejection_reason(reason);
-                self.apply_kernel(KernelInput::HistoryRejected {
-                    terminal_id: &terminal_id,
-                    stream_id,
-                    bootstrap_id,
-                    cursor: &cursor,
-                    reason,
-                    required_bytes,
-                    required_rows,
-                })
-                .0
-            }
-            FrameKind::ResourceOutput {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                seq,
-                bytes,
-            } => {
-                self.apply_kernel(KernelInput::ResourceOutput {
-                    terminal_id: &terminal_id,
-                    stream_id,
-                    bootstrap_id,
-                    seq,
-                    payload: &bytes,
-                })
-                .0
-            }
-            FrameKind::BootstrapTombstone {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                reason,
-                last_valid_seq,
-            } => {
-                self.apply_kernel(KernelInput::Tombstone {
-                    terminal_id: &terminal_id,
-                    stream_id,
-                    bootstrap_id,
-                    reason,
-                    last_valid_seq,
-                })
-                .0
-            }
             FrameKind::ResourceClosed {
                 terminal_id,
                 exit_status,
@@ -332,6 +187,27 @@ impl Connection {
             } => self.reduce_resource_event(&id, &event),
             _ => Outcome::default(),
         }
+    }
+
+    fn reduce_stream(&mut self, input: KernelInput<'_>) -> Outcome {
+        let initial_focus = match &input {
+            KernelInput::BootstrapBegin {
+                terminal_id,
+                profile,
+                ..
+            } if !matches!(profile, BootstrapStreamProfile::Unknown { .. }) => Some(*terminal_id),
+            _ => None,
+        };
+        let (outcome, applied) = self.apply_kernel(input);
+        if applied
+            && let Some(terminal_id) = initial_focus
+            && !self.is_agent_session(terminal_id)
+            && !self.is_document(terminal_id)
+        {
+            self.focused_terminal
+                .get_or_insert_with(|| terminal_id.clone());
+        }
+        outcome
     }
 
     /// Fail on a protocol-major mismatch, marked so the page stops redialing.
