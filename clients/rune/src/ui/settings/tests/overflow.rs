@@ -129,3 +129,47 @@ fn minimum_desktop_category_rail_has_directional_overflow_cues() {
     wheel(&mut rt, "settings-navigation", -100_000.0);
     assert_edges(&rt, "settings-navigation", 16.0, 0.0);
 }
+
+/// Where the content stands: scrolled (a top fade) or not, and whether more
+/// waits below.
+fn edges(rt: &Runtime<Desk>) -> (bool, bool) {
+    let masks = fades(rt, "settings-content");
+    (
+        masks.iter().any(|f| f[1] > 0.5),
+        masks.iter().any(|f| f[3] < -0.5),
+    )
+}
+
+#[test]
+fn a_changed_search_starts_at_its_first_result_in_both_forms() {
+    for (phone, size) in [(false, (640.0, 360.0)), (true, (393.0, 852.0))] {
+        let mut rt = runtime(size, phone);
+        assert!(rt.accessibility_action("settings-query", Action::Focus, None));
+        rt.frame(0.0);
+        rt.key(crate::keys::plain(rune::Key::Text("a".into())));
+        settle(&mut rt);
+        let scroll_down = |rt: &mut Runtime<Desk>| {
+            wheel(rt, "settings-content", -60.0);
+            assert!(edges(rt).0, "scrolled into the results");
+        };
+        scroll_down(&mut rt);
+        // A caret move keeps the place.
+        rt.key(crate::keys::plain(rune::Key::Left));
+        rt.frame(0.0);
+        assert!(edges(&rt).0, "a caret move keeps the offset");
+        rt.key(crate::keys::plain(rune::Key::End));
+        rt.key(crate::keys::plain(rune::Key::Text("t".into())));
+        rt.frame(0.0);
+        assert_eq!(rt.state.settings_ui.query.text, "at");
+        assert_eq!(
+            edges(&rt),
+            (false, true),
+            "typed: first result, first frame"
+        );
+        scroll_down(&mut rt);
+        rt.key(crate::keys::plain(rune::Key::Escape));
+        rt.frame(0.0);
+        assert_eq!(rt.state.settings_ui.query.text, "");
+        assert!(!edges(&rt).0, "cleared: back at the top, first frame");
+    }
+}

@@ -115,7 +115,7 @@ fn empty_search_first_unicode_character_clear_and_retype_keep_valid_accessibilit
         rt.frame(0.0);
         assert_short_search(&rt, "");
         for input in ["🦀", "", "e\u{301}日本語"] {
-            rt.update(|d, _| d.clear_settings_search());
+            rt.update(|d, tx| d.clear_settings_search(tx));
             if !input.is_empty() {
                 rt.key(crate::keys::plain(Key::Text(input.into())));
             }
