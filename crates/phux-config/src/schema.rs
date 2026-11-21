@@ -205,6 +205,9 @@ pub struct ChromeCfg {
     pub new_tab_after_current: bool,
     /// Paint the panes you are not typing in faint.
     pub dim_unfocused: bool,
+    /// The outer terminal's window title while attached: `{session}` and
+    /// `{window}` are substituted; empty leaves the title alone.
+    pub title: String,
 }
 
 impl Default for ChromeCfg {
@@ -215,6 +218,7 @@ impl Default for ChromeCfg {
             min_pane_cols: 40,
             new_tab_after_current: false,
             dim_unfocused: false,
+            title: "{session}: {window}".to_owned(),
         }
     }
 }

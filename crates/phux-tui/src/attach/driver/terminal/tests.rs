@@ -252,3 +252,39 @@ fn desired_mouse_capture_follows_focused_pane_optout() {
     // Gate on but the focused pane opted out ⇒ capture drops.
     assert!(!desired_mouse_capture(true, Some(&t2), &optout));
 }
+
+/// `[chrome] title` fills each placeholder once and drops control bytes, so
+/// a pane title cannot end the OSC early.
+#[test]
+fn outer_title_fills_placeholders_and_drops_controls() {
+    assert_eq!(
+        outer_title("{session}: {window}", "work", "vim"),
+        "work: vim"
+    );
+    assert_eq!(outer_title("{session}", "{window}", "vim"), "{window}");
+    assert_eq!(outer_title("{x} {window", "s", "w"), "{x} {window");
+    assert_eq!(outer_title("{window}", "s", "a\x07\x1b]2;b"), "a]2;b");
+    assert_eq!(outer_title("", "s", "w"), "");
+}
+
+/// The first title saves the host's, a change rewrites only the title, an
+/// empty format hands the old one back, and so does the reset.
+#[test]
+fn outer_title_pushes_once_and_pops_on_reset() {
+    let _guard = reset_lock();
+    *OUTER_TITLE.lock().expect("title") = None;
+    let mut out = Vec::new();
+    sync_outer_title(&mut out, "s: a").expect("write");
+    sync_outer_title(&mut out, "s: a").expect("write");
+    sync_outer_title(&mut out, "s: b").expect("write");
+    assert_eq!(out, b"\x1b[22;2t\x1b]2;s: a\x07\x1b]2;s: b\x07");
+    out.clear();
+    sync_outer_title(&mut out, "").expect("write");
+    sync_outer_title(&mut out, "").expect("write");
+    assert_eq!(out, b"\x1b[23;2t");
+    out.clear();
+    sync_outer_title(&mut out, "s: c").expect("write");
+    write_terminal_reset(&mut out).expect("reset");
+    assert!(out.starts_with(b"\x1b[22;2t\x1b]2;s: c\x07"), "{out:?}");
+    assert!(out.ends_with(b"\x1b[23;2t"), "{out:?}");
+}
