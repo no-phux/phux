@@ -56,6 +56,11 @@
           "default": false,
           "description": "Open a new tab right after the one in view instead of at the end.",
           "type": "boolean"
+        },
+        "title": {
+          "default": "{session}: {window}",
+          "description": "The outer terminal's window title while attached: `{session}` and\n`{window}` are substituted; empty leaves the title alone.",
+          "type": "string"
         }
       },
       "type": "object"
@@ -1636,7 +1641,8 @@
         "compact-rows": 18,
         "dim-unfocused": false,
         "min-pane-cols": 40,
-        "new-tab-after-current": false
+        "new-tab-after-current": false,
+        "title": "{session}: {window}"
       },
       "description": "Responsive-chrome breakpoints (`[chrome]`)."
     },
