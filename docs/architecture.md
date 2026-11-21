@@ -86,7 +86,7 @@ edges.
 | `phux-plugin` | plugin action runtime contracts |
 | `phux-usage` | plan-usage collector behind `phux agent usage`: vendor limit sources and the `phux.usage/v1` document; no wire |
 | `phux-frozen` | test support: frozen fixtures that hold persisted formats to what released images wrote |
-| `phux-client-runtime` | the one client orchestration layer: dial planning, reconnect, control plane, engine owner thread, grid publication |
+| `phux-client-runtime` | native connected client: dial planning, reconnect, control plane, engine owner thread, grid publication |
 | `phux-client` | headless client: the connection facade and the verbs behind the CLI and MCP |
 | `phux-client-ffi` | the one binding crate: the UniFFI Swift and Kotlin surface the phone apps link |
 | `phux-resource` | the kind-neutral substrate: output stream, lifecycle, opaque facets and companions, and per-consumer replicated-state delivery; names no kind's concepts (`tests/substrate_boundary.rs` enforces it) |
@@ -128,6 +128,9 @@ reconnect, an engine thread for the replicas and a publication table for grids
 and documents. Rune and the FFI bindings use the runtime's connected client.
 The TUI runs the kernel in its own attach loop over the shared headless
 connection. The browser also runs the kernel and owns its browser I/O.
+The runtime and TUI share the kernel's translation of decoded bootstrap,
+output, and history frames. The TUI adopts typed arrangement reads directly
+and decodes layout metadata when attached to a legacy peer.
 
 The TUI paints pane interiors from libghostty through a cell-diffed front
 buffer and paints chrome with ratatui in disjoint regions. Phux Rune paints the
