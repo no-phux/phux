@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use phux_client::layout::SplitDir;
+use phux_client::spatial::Direction;
 use phux_config::socket::default_socket_path;
 use phux_protocol::ids::{GroupId, IdempotencyKey, ResourceId, SatelliteHost};
 use phux_protocol::wire::frame::{FrameKind, SpawnError, SpawnResource, SpawnResult};
@@ -204,12 +205,9 @@ pub(crate) fn dispatch_spawn_placed(
             json_err::emit(json, &refusal, exit)
         }
     };
-    let dir = match split {
-        SpawnSplit::Horizontal => SplitDir::Horizontal,
-        SpawnSplit::Vertical => SplitDir::Vertical,
-    };
-    let spawn = PlacedSpawn::from_spawn_frame(frame, dir, ratio, projection, agent_session)
-        .map_err(report)?;
+    let spawn =
+        PlacedSpawn::from_spawn_frame(frame, split_dir(split), ratio, projection, agent_session)
+            .map_err(report)?;
     let selector = parse_target(Some(target_text)).map_err(|refusal| refusal.emit(json))?;
     let (result, degradation) = cli_runtime()?
         .block_on(spawn.run(socket_path, &selector, request_id))
@@ -220,6 +218,12 @@ pub(crate) fn dispatch_spawn_placed(
         }
     }
     Ok(result)
+}
+
+/// `--split` names the divider, the same word `mv` and `insert-pane` use.
+/// Horizontal stacks the new pane below; vertical places it to the right.
+pub(crate) fn split_dir(split: SpawnSplit) -> SplitDir {
+    Direction::from(split).wire()
 }
 
 /// Print the freshly spawned Terminal id — human line or the stable JSON

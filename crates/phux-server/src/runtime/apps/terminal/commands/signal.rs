@@ -1,11 +1,12 @@
 //! Terminal signal delivery.
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the split command modules share the parent command namespace"
-)]
 
-use super::*;
-use phux_terminal_api::actor::TerminalResource as _;
+use phux_protocol::wire::frame::{CommandResult, ErrorCode, TerminalSignal};
+use phux_terminal_api::actor::{ControlRequest, TerminalResource as _};
+use tokio::sync::oneshot;
+
+use crate::resource::ResourceHandle;
+use crate::runtime::commands::{actor_reply, terminal_not_found, wrong_resource_kind};
+use crate::state::{ClientId, ResolvedOwned, SharedState};
 
 /// Handle `SIGNAL_TERMINAL` (ADR-0033): signal the pane's process group via
 /// its actor, leaving the pane addressable.

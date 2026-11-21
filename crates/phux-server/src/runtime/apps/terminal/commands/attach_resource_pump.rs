@@ -1,10 +1,16 @@
 //! `ATTACH_RESOURCE` output pump and bootstrap completion.
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the split command modules share the parent command namespace"
-)]
 
-use super::*;
+use phux_protocol::wire::frame::ErrorCode;
+use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
+use tracing::debug;
+
+use crate::runtime::apps::terminal::commands::attach_resource::{
+    AttachResourceGeneration, AttachResourcePumpChannels, AttachResourceSession,
+};
+use crate::runtime::commands::AttachResourceFailure;
+use crate::runtime::commands::attach_terminal::native_checkpoint_profile;
+use crate::runtime::pump;
 
 impl AttachResourceSession<'_> {
     /// Start the raw broadcast pump for one generation. An unrecoverable

@@ -56,7 +56,8 @@ pub(super) const HIDDEN_ROWS: &[ActionSpec] = &[
                  collect; the tab picker is the surface for \"jump to \
                  tab N\"",
     "Focus the tab at a given index",
-    "`index` (0-based tab position)" },
+    "`index` (0-based tab position); `toggle = true` goes to the last tab when \
+     `index` is the one shown" },
     hidden! { "move-window", run::move_window,
     "parameterized by direction; bound to `<` and `>` under the leader, \
                  offered in the tab context menu, and done by dragging a tab \

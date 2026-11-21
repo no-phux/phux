@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// A key set here wins over the app's saved choice and cannot be changed
 /// from Settings; an unset key stays the app's to remember.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
 #[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
 pub struct RuneCfg {
     /// Theme id, as the theme picker lists them; `""` follows the system.
@@ -20,6 +20,7 @@ pub struct RuneCfg {
     /// faces: a list, or one string with commas between names. `""` is the
     /// built-in face.
     #[serde(deserialize_with = "families")]
+    #[schemars(with = "Option<Families>")]
     pub font_family: Option<String>,
     /// Post desktop notifications for agents that need attention.
     pub notifications: Option<bool>,
@@ -58,6 +59,9 @@ pub struct RuneCfg {
     /// Markdown renderer argv: UTF-8 Markdown on stdin, plain UTF-8 on stdout.
     /// `{width}` expands to columns. Unset uses bundled tmd; `[]` shows source.
     pub markdown_viewer: Option<Vec<String>>,
+    /// `false` drops the built-in chords: only `[rune.keys]` acts, plus the
+    /// palette and Settings chords until you bind those commands.
+    pub key_defaults: Option<bool>,
     /// `[rune.keys]`: a chord such as `"cmd+shift+d"` and the command it
     /// runs, or `"none"` to take a built-in chord away.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
@@ -65,7 +69,9 @@ pub struct RuneCfg {
 }
 
 /// `[rune] quick-terminal-edge`: where the quick terminal opens.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum QuickTerminalEdge {
     /// Across the top of the display.
@@ -76,7 +82,9 @@ pub enum QuickTerminalEdge {
 }
 
 /// `[rune] tab-bar`: where the terminal tabs go.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum TabBar {
     /// In the title bar.
@@ -89,7 +97,9 @@ pub enum TabBar {
 }
 
 /// `[rune] title-bar`: whether the band over the panes shows.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum TitleBar {
     /// Always.
@@ -102,7 +112,9 @@ pub enum TitleBar {
 }
 
 /// `[rune] new-window-screen`: the display a new window opens on.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum NewWindowScreen {
     /// Where the window was when it closed, on a display still connected.
@@ -114,14 +126,16 @@ pub enum NewWindowScreen {
     Main,
 }
 
+/// `font-family` as written: one string or a list.
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+enum Families {
+    One(String),
+    List(Vec<String>),
+}
+
 /// `font-family` as one string or a list, kept as one comma-separated string.
 fn families<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum Families {
-        One(String),
-        List(Vec<String>),
-    }
     Ok(Some(match Families::deserialize(d)? {
         Families::One(family) => family,
         Families::List(list) => list.join(", "),

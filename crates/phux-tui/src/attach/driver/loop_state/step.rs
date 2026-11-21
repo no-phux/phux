@@ -6,6 +6,7 @@ use super::{
     desired_mouse_capture, exit_on_signal, mark_focused_seen, peer_gone, sleep_for_or_pending,
     sleep_until_or_pending, sync_hover_tracking, sync_mouse_capture, update_which_key_deadline,
 };
+use crate::attach::driver::terminal::{outer_title, sync_outer_title};
 
 mod kitty_heal;
 
@@ -75,6 +76,22 @@ impl super::SessionLoop {
         sync_mouse_capture(out, want_capture).map_err(AttachError::Io)?;
         // Hover reporting follows the overlay stack (context menus).
         sync_hover_tracking(out, self.overlays.wants_pointer_hover()).map_err(AttachError::Io)?;
+        // The host's window title names the session and the tab in view.
+        let ws = &self.mirror.workspace;
+        let window = ws.groups.get(ws.active).map_or_else(String::new, |w| {
+            crate::attach::pane_state::display_window_name(
+                &w.name,
+                w.state.focus.as_ref(),
+                &self.mirror.panes,
+                &self.mirror.agent_meta.records,
+            )
+        });
+        let title = outer_title(
+            &self.settings.outer_title,
+            &self.mirror.session_name,
+            &window,
+        );
+        sync_outer_title(out, &title).map_err(AttachError::Io)?;
         self.repaint_after_resync(out, sidebar, needs_resync);
         crate::attach::render_prof::tick();
         Ok(())

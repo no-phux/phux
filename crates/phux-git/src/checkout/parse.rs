@@ -2,7 +2,7 @@
 
 use std::fmt::Write as _;
 
-use super::{BINARY_SNIFF, BranchRef, Commit, FileDiff, FileText};
+use super::{BINARY_SNIFF, BranchRef, Commit, CommitFile, FileDiff, FileText};
 use crate::bounded::Bounded;
 
 /// Status output up to its last complete NUL-terminated record.
@@ -35,40 +35,49 @@ pub(super) struct Counts {
 }
 
 impl Counts {
-    /// `git diff --numstat -z`: `A\tD\tpath\0`, or for a rename
-    /// `A\tD\t\0from\0to\0`; binary files count `-`.
     pub(super) fn parse(out: &[u8], truncated: bool) -> Self {
-        let text = String::from_utf8_lossy(out);
-        let mut records = text.split('\0');
-        let mut by_path = std::collections::HashMap::new();
-        while let Some(record) = records.next() {
-            let mut fields = record.splitn(3, '\t');
-            let (Some(added), Some(deleted), Some(path)) =
-                (fields.next(), fields.next(), fields.next())
-            else {
-                continue;
-            };
-            let path = if path.is_empty() {
-                let _from = records.next();
-                match records.next() {
-                    Some(to) => to,
-                    None => continue,
-                }
-            } else {
-                path
-            };
-            let binary = added == "-" && deleted == "-";
-            by_path.insert(
-                path.to_owned(),
-                (added.parse().ok(), deleted.parse().ok(), binary),
-            );
-        }
+        let by_path = parse_numstat(out)
+            .into_iter()
+            .map(|file| (file.path, (file.added, file.deleted, file.binary)))
+            .collect();
         Self { by_path, truncated }
     }
 
     pub(super) fn get(&self, path: &str) -> Option<&(Option<u32>, Option<u32>, bool)> {
         self.by_path.get(path)
     }
+}
+
+/// `git diff --numstat -z`: `A\tD\tpath\0`, or for a rename
+/// `A\tD\t\0from\0to\0`; binary files count `-`.
+pub(super) fn parse_numstat(out: &[u8]) -> Vec<CommitFile> {
+    let text = String::from_utf8_lossy(out);
+    let mut records = text.split('\0');
+    let mut files = Vec::new();
+    while let Some(record) = records.next() {
+        let mut fields = record.splitn(3, '\t');
+        let (Some(added), Some(deleted), Some(path)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        let (from, path) = if path.is_empty() {
+            match (records.next(), records.next()) {
+                (Some(from), Some(to)) => (Some(from.to_owned()), to),
+                _ => continue,
+            }
+        } else {
+            (None, path)
+        };
+        files.push(CommitFile {
+            path: path.to_owned(),
+            from,
+            added: added.parse().ok(),
+            deleted: deleted.parse().ok(),
+            binary: added == "-" && deleted == "-",
+        });
+    }
+    files
 }
 
 pub(super) fn parse_commit(record: &str) -> Option<Commit> {

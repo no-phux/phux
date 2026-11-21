@@ -178,6 +178,17 @@ pub fn transport_refusal(
             format!("{START_SERVER_REMEDY}; {doctor}"),
         );
     }
+    if let AttachError::Io(io_err) = err
+        && err.is_timeout()
+    {
+        return Refusal::new(
+            codes::TIMEOUT,
+            format!("{verb}: {io_err}"),
+            format!(
+                "raise PHUX_TIMEOUT (seconds; 0 waits forever) if the server is only slow; {doctor}"
+            ),
+        );
+    }
     match err {
         AttachError::Disconnected => Refusal::new(
             codes::SERVER_DISCONNECTED,
@@ -198,6 +209,28 @@ pub fn transport_refusal(
         ),
         other => Refusal::new(codes::TRANSPORT, format!("{verb} failed: {other}"), doctor),
     }
+}
+
+/// The refusal for a target in a session waiting for `phux restore`.
+///
+/// A server restart ended its panes and nothing has started them again
+/// ([`crate::org::OrgInventory::awaiting_restore`]). Still `no_such_target`,
+/// so scripts that match the code keep working.
+#[must_use]
+pub fn awaiting_restore(target: &str, session: &str) -> Refusal {
+    let restore = if session.contains(char::is_whitespace) {
+        format!("phux restore '{session}'")
+    } else {
+        format!("phux restore {session}")
+    };
+    Refusal::new(
+        codes::NO_SUCH_TARGET,
+        format!(
+            "no such target: {target}: session {session} is waiting for restore \
+             (a server restart ended its panes)"
+        ),
+        format!("run `{restore}` to start its panes again, then retry"),
+    )
 }
 
 /// The refusal for a selector that matched nothing; `target` is `None` for

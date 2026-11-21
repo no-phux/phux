@@ -2,6 +2,11 @@
 # The prefix. Press it, then a key from the prefix table below.
 prefix = "C-a"
 
+# false starts from an empty keymap: only your own bindings apply, plus the
+# command-palette keys (prefix then Space, : or ?) until you bind the
+# palette yourself. Rune's chords have their own switch, [rune] key-defaults.
+defaults = true
+
 # After the prefix, hesitate for which-key-delay-ms and a popup lists
 # every key you can press next, rebinds included. It never eats a key:
 # whatever you press runs as if the popup were not there, and Esc cancels
@@ -34,6 +39,8 @@ which-key-delay-ms = 400
 "o" = "next-pane"
 ";" = "previous-pane"
 "=" = "last-pane"
+# i numbers every pane for a moment; press a number to jump to that pane.
+"i" = "display-panes"
 
 # Tabs inside one split (`phux slot add` makes them): } and { show the
 # focused slot's next or previous tab, in this client only.
@@ -43,8 +50,10 @@ which-key-delay-ms = 400
 # Zoom the focused pane to fill the tab, and back.
 "z" = "toggle-zoom"
 
-# Show or hide the sidebar.
+# Show or hide the sidebar. e moves the keyboard into it: arrows or j/k
+# move, Enter opens the row, Esc goes back to the pane.
 "b" = "toggle-sidebar"
+"e" = "focus-sidebar"
 
 # Copy mode: scroll back, search, select, and copy. Vi keys and arrows move, y
 # copies, Esc leaves.
@@ -133,6 +142,10 @@ which-key-delay-ms = 400
 "g" = "give-input"
 "f" = { action = "signal-terminal", signal = "freeze" }
 "u" = { action = "signal-terminal", signal = "resume" }
+
+# y types into every pane of this tab at once, until you press it again;
+# each pane's title rule says [sync] while it is on.
+"y" = "sync-panes"
 
 # Resize the focused pane by 5 cells. R enters resize mode, below, to
 # keep resizing without pressing the prefix each time.

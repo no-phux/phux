@@ -146,6 +146,7 @@ impl Field {
             Self::Palette => d.palette_edited(),
             Self::Find => d.run_search(),
             Self::PhoneSessions => d.phone_search_edited(tx),
+            Self::Settings => d.settings_search_edited(tx),
             _ => {}
         }
     }

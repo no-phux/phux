@@ -155,7 +155,21 @@ network listener configured while `[policy] mode` is unset. Set it to
 **Stale socket.** A server that died without cleaning up leaves its socket
 file behind. The next command notices nothing answers, removes it, and
 starts a fresh server. `phux kill --server` says
-`no server running at ... (reaped a stale socket)` in that case.
+`no server running at ... (reaped a stale socket)` in that case. A live
+server holds a lock beside its socket (`phux.sock.lock`) while it runs, so
+a busy server that briefly refuses connections is never mistaken for a dead
+one, and a second server on the same socket refuses to start. If something
+deletes the socket file of a running server, the server puts it back within
+a couple of seconds.
+
+**Sessions are listed but every pane is gone, while the old shells still
+run.** A server from before the socket lock could lose its socket to a
+second server while it was busy. The old server keeps running with your panes, but no
+client can reach it. `phux doctor` then shows the remote listeners failing to
+bind (the old server still holds those ports). `ps -axo pid,command | grep
+'phux server'` lists both servers. Stop the newer, empty one with
+`phux kill --server`. Then end the older one with `kill -TERM <pid>`; its
+sessions come back on the next `phux`, but the programs in its panes don't.
 
 **The server keeps restarting.** `phux doctor` reports
 `the server started N times in the last M minutes — it is crash-looping`,
@@ -250,6 +264,14 @@ name in it, pairing times out. Check in this order:
 
 If the two cannot share a network, pair through a
 [relay](./remote.md#relays).
+
+**A paired device that keeps reconnecting while the server looks fine.**
+If `phux doctor` warns `remote-replies`, the listener is bound and the
+pairing is good, but this machine cannot send its replies back to that
+device: it has no route to it. `route -n get <address>` (macOS) or
+`ip route get <address>` (Linux) shows which route a reply takes; a LAN or
+VPN route covering the private network's range is the usual cause. Fix the
+route; pairing again or restarting phux does not help.
 
 ## Keys, clipboard, and agents
 

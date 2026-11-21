@@ -136,6 +136,16 @@ pub enum Shortcut {
     PromptDown,
     /// One pane, the terminal UI in it, and none of the window's chrome.
     Bare,
+    /// A number over each pane of the tab; the next digit focuses that pane.
+    DisplayPanes,
+    /// The keyboard into the sidebar's rows; Esc hands it back.
+    FocusSidebar,
+    /// Typing goes to every terminal of the tab, until toggled off.
+    SyncPanes,
+    /// Back to the terminal the keyboard left last.
+    LastPane,
+    /// Back to the tab the keyboard left last.
+    LastTab,
 }
 
 impl Shortcut {

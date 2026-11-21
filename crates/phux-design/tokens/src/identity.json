@@ -1,0 +1,29 @@
+{
+  "source": "host_palette moved from phux crates/phux-config-core/src/host_color.rs (ids are stable: never reorder, only append; the first auto_count are hashed to). Sessions draw in the same palette. Provider tiles from phux-mobile PaneIconTile.swift.",
+  "host_palette": [
+    { "id": "blue", "color": "#4F8BF0" },
+    { "id": "violet", "color": "#9A78E8" },
+    { "id": "magenta", "color": "#D9629F" },
+    { "id": "sky", "color": "#3BAFDA" },
+    { "id": "coral", "color": "#E8715A" },
+    { "id": "olive", "color": "#A8B545" },
+    { "id": "slate", "color": "#7C8DA6" },
+    { "id": "copper", "color": "#C9926B" },
+    { "id": "green", "color": "#3DAA5C" },
+    { "id": "navy", "color": "#2F55C4" }
+  ],
+  "auto_count": 8,
+  "session_palette": ["blue", "violet", "magenta", "sky", "coral", "olive", "slate", "copper", "green", "navy"],
+  "provider": {
+    "claude": "#D6693D",
+    "codex": "#297869",
+    "cursor": "#303640",
+    "neovim": "#268ABF",
+    "opencode": "#384259",
+    "python": "#3D73A6",
+    "shell": "#1C2126"
+  },
+  "host_bar": 3.0,
+  "host_ease_max": 0.5,
+  "glow_alpha": 0.22
+}

@@ -34,7 +34,9 @@ fn pastes(frames: &[Vec<u8>]) -> Vec<(bool, PasteEvent)> {
 fn a_paste_past_the_frame_cap_is_refused_and_never_sent() {
     let mut plane = acknowledging();
     let text = "x".repeat(17 << 20);
-    let refused = plane.apply_user_paste(&terminal(), &text).expect("receipt");
+    let refused = plane
+        .apply_user_paste(&terminal(), &text)
+        .expect_err("refused");
     assert!(pastes(&plane.take_outbound()).is_empty());
     assert!(plane.take_events().iter().any(|event| matches!(event,
         Event::InputDelivery { delivery_id, message, .. }
@@ -46,7 +48,10 @@ fn a_paste_past_the_frame_cap_is_refused_and_never_sent() {
 fn a_user_paste_is_trusted_so_multiline_text_is_not_refused() {
     let mut plane = acknowledging();
     let delivery = plane.apply_user_paste(&terminal(), "echo a\necho b\n");
-    assert!(delivery.is_some(), "one command's worth is acknowledged");
+    assert!(
+        matches!(delivery, Ok(Some(_))),
+        "one command's worth is acknowledged"
+    );
     let sent = pastes(&plane.take_outbound());
     assert_eq!(sent.len(), 1);
     let (acknowledged, paste) = &sent[0];
@@ -73,12 +78,17 @@ fn a_program_paste_stays_untrusted() {
 #[test]
 fn a_large_user_paste_never_overtakes_unresolved_input() {
     let mut plane = acknowledging();
-    plane.apply_user_paste(&terminal(), "first");
+    assert!(matches!(
+        plane.apply_user_paste(&terminal(), "first"),
+        Ok(Some(_))
+    ));
     plane.take_outbound();
     // A raw event could reach the PTY before the unresolved paste, so the
     // large one is refused, with a receipt, rather than reordered.
     let text = "x".repeat(70 * 1024);
-    let refused = plane.apply_user_paste(&terminal(), &text).expect("receipt");
+    let refused = plane
+        .apply_user_paste(&terminal(), &text)
+        .expect_err("refused");
     assert!(pastes(&plane.take_outbound()).is_empty());
     assert!(plane.take_events().iter().any(|event| matches!(
         event,
@@ -91,7 +101,7 @@ fn a_large_user_paste_never_overtakes_unresolved_input() {
 fn a_user_paste_into_a_satellite_pane_goes_as_one_paste_event() {
     let mut plane = acknowledging();
     let satellite = ResourceId::satellite("peer", 3);
-    assert_eq!(plane.apply_user_paste(&satellite, "ls\npwd\n"), None);
+    assert_eq!(plane.apply_user_paste(&satellite, "ls\npwd\n"), Ok(None));
     let sent = pastes(&plane.take_outbound());
     assert_eq!(sent.len(), 1);
     assert!(!sent[0].0, "APPLY_INPUT is local-only");
@@ -118,14 +128,17 @@ fn a_user_paste_over_the_batch_rule_goes_as_one_paste_event() {
 
     let mut plane = acknowledging();
     let text = "x".repeat(largest);
-    assert!(plane.apply_user_paste(&terminal(), &text).is_some());
+    assert!(matches!(
+        plane.apply_user_paste(&terminal(), &text),
+        Ok(Some(_))
+    ));
     let sent = pastes(&plane.take_outbound());
     assert_eq!(sent.len(), 1);
     assert!(sent[0].0, "the largest admitted paste goes acknowledged");
 
     let mut plane = acknowledging();
     let text = "x".repeat(largest + 1);
-    assert_eq!(plane.apply_user_paste(&terminal(), &text), None);
+    assert_eq!(plane.apply_user_paste(&terminal(), &text), Ok(None));
     let sent = pastes(&plane.take_outbound());
     assert_eq!(sent.len(), 1, "never split (docs/protocol.md#input)");
     assert!(!sent[0].0, "one byte more goes as a raw paste");

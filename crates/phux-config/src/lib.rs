@@ -13,9 +13,11 @@ pub mod connector;
 pub mod distro;
 pub mod document;
 pub mod integration;
+pub mod json_schema;
 pub mod keybind;
 pub mod loader;
 pub mod mirror;
+pub mod onboarding;
 pub mod overlay;
 pub mod plugin;
 pub mod producer;
@@ -42,9 +44,10 @@ pub use mirror::MirrorConfigEntry;
 pub use phux_config_core::guard as production;
 use phux_config_core::layer;
 pub use phux_config_core::{
-    ConfigError, ConfigProvenance, KeyOrigin, LayerSource, MAX_EXTENDS_DEPTH, OrganizeCfg,
-    RemoteConfigEntry, RuneCfg, SessionConfigEntry, byte_offset_to_line_col, host_color, instance,
-    known_authorities, remote, server_bundle, session_color, socket,
+    ConfigError, ConfigProvenance, IconConfigEntry, KeyOrigin, LayerSource, MAX_EXTENDS_DEPTH,
+    OrganizeCfg, RemoteConfigEntry, RuneCfg, SessionConfigEntry, byte_offset_to_line_col,
+    host_color, instance, known_authorities, pane_icon, remote, server_bundle, session_color,
+    socket,
 };
 pub use producer::ProducerConfigEntry;
 pub use project::ProjectConfigEntry;
@@ -55,7 +58,7 @@ pub use schema::{
     DEFAULT_APPROVAL_TTL_SECS, DEFAULT_EVENT_JOURNAL_BYTES, DEFAULT_EVENT_JOURNAL_ENTRIES,
     DEFAULT_HISTORY_BYTES, DEFAULT_METADATA_VALUE_BYTES, DEFAULT_RETAIN_ON_EXIT_MAX,
     DEFAULT_RETAIN_ON_EXIT_MAX_SECS, DEFAULT_RETAIN_ON_EXIT_SECS, DefaultsCfg, ExperimentalCfg,
-    ForwardCfg, HookEntry, KeepAwake, KeybindingsCfg, LimitsCfg, MAX_AGENT_LOG_BYTES,
+    ForwardCfg, FromPrograms, HookEntry, KeepAwake, KeybindingsCfg, LimitsCfg, MAX_AGENT_LOG_BYTES,
     MAX_APPROVAL_MAX_PENDING, MAX_APPROVAL_MAX_PENDING_TOTAL, MAX_APPROVAL_TTL_SECS,
     MAX_EVENT_JOURNAL_BYTES, MAX_EVENT_JOURNAL_ENTRIES, MAX_HISTORY_BYTES, MAX_RETAIN_ON_EXIT_MAX,
     NotificationsCfg, NotifyMode, NotifyProtocol, ParamAction, PolicyCfg, PolicyMode,

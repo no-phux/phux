@@ -196,8 +196,13 @@ fn face_for(base: El, active: bool, state: Forced, t: &Tokens) -> El {
 
 /// What a live tab answers to: select, rename, its menu and a drag.
 fn handled(base: El, index: usize, grab: Grab) -> El {
-    base.on_press(move |d: &mut Desk| d.select_tab(index))
-        .on_double_press(move |d: &mut Desk| d.rename_tab(index))
+    base.on_press(move |d: &mut Desk| d.click_tab(index))
+        // Each press of a double click ran `click_tab`; the tab renamed
+        // is the one shown.
+        .on_double_press(move |d: &mut Desk| {
+            d.select_tab(index);
+            d.rename_tab(index);
+        })
         .on_secondary_press_local(move |d: &mut Desk, event, _| {
             d.open_tab_menu(index, event.window());
         })

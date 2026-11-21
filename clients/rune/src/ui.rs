@@ -33,6 +33,7 @@ mod overlay;
 pub(crate) use overlay::key_hint;
 mod pair;
 mod palette;
+mod pane_marks;
 mod panes;
 mod phone;
 pub(crate) use phone::edge_color as phone_edge_color;

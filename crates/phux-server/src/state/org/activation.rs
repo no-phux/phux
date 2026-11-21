@@ -117,6 +117,23 @@ impl ServerState {
         out
     }
 
+    /// Cold start: each Terminal record gets back the `@N` its pane last had
+    /// when it next launches, so ids held by scripts and agents keep naming
+    /// the same pane across a restart and `phux restore`.
+    pub fn reserve_pane_ids(&mut self) {
+        let saved: Vec<(ResourceId, u32)> = self
+            .org()
+            .resources()
+            .filter_map(|r| match r.launch.as_ref()? {
+                LaunchSpec::Terminal(launch) => {
+                    Some((self.sessions.registry.resource_id(&r.key)?, launch.pane_id?))
+                }
+                _ => None,
+            })
+            .collect();
+        self.idspace.reserve_terminals(saved);
+    }
+
     /// Whether any activation is current: the server still executes work
     /// (R13).
     #[must_use]

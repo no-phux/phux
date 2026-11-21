@@ -170,6 +170,9 @@ impl Owner {
             Query::ReleaseAnchor(id, anchor, reply) => {
                 let _ = reply.send(self.release_anchor(&id, anchor));
             }
+            Query::AnchorPoint(id, anchor, reply) => {
+                let _ = reply.send(self.anchor_history_point(&id, anchor));
+            }
             Query::ClearPresentation(id, stream, bootstrap, reply) => {
                 let _ = reply.send(self.clear_presentation(&id, stream, bootstrap));
             }

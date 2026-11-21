@@ -87,7 +87,7 @@ pub fn mark(theme: &Theme, state: State) -> &'static str {
     column(theme.term.glyphs, state)
 }
 
-fn column(glyphs: Glyphs, state: State) -> &'static str {
+pub(crate) fn column(glyphs: Glyphs, state: State) -> &'static str {
     let row = state.mark();
     match glyphs {
         Glyphs::Unicode => row.glyph,

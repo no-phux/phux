@@ -118,6 +118,7 @@ else
   install_cli "$pin" "$pin_sha256"
 fi
 [ "$dry_run" -eq 1 ] || offer_service
+[ "$dry_run" -eq 1 ] || [ "$rune" -eq 1 ] || hand_over_server
 if [ "$dry_run" -eq 1 ]; then
   :
 elif [ -n "$rune_installed" ]; then

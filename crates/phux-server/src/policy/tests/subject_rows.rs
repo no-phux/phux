@@ -414,12 +414,12 @@ fn rows(world: &mut World) -> Vec<Row> {
             "input",
         ),
         on_terminal(
-            command(Command::Checkout {
-                terminal_id: t.clone(),
-                request: phux_protocol::checkout::CheckoutRequest::Stage {
+            command(Command::checkout(
+                t.clone(),
+                phux_protocol::checkout::CheckoutRequest::Stage {
                     paths: vec!["a.txt".to_owned()],
                 },
-            }),
+            )),
             "input",
         ),
         on_terminal(
@@ -579,6 +579,7 @@ fn rows(world: &mut World) -> Vec<Row> {
     rows.extend(mirror_rows());
     rows.extend(child_spawn_rows(world));
     rows.extend(credential_rows());
+    rows.extend(viewport_colors_row(&rows));
     rows.extend(question_rows(world));
     rows
 }

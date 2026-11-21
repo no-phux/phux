@@ -233,6 +233,7 @@ impl Desk {
         };
         self.connection.resources.returning = None;
         if let Some(old) = self.connection.shown.take() {
+            self.leaving(&old.resource, id);
             self.connection.others.insert(old.resource, old.view);
         }
         self.activities.seen(id);
@@ -301,6 +302,16 @@ impl Desk {
             .get(path)
             // The divider's own width is not either side's.
             .map_or(0.0, |size| (if horizontal { size[0] } else { size[1] }) - phux_design::tokens::SPACE.card_gap)
+    }
+
+    /// A divider drag that ended without a drop (Escape, focus lost, a
+    /// system touch cancel): the preview goes back and nothing is written.
+    pub fn cancel_divider(&mut self) {
+        if self.connection.dragging.take().is_some()
+            && let Some(client) = self.connection.client.clone()
+        {
+            self.refresh_layout(&client);
+        }
     }
 
     /// A divider drag: preview the ratio locally, and write it on release.

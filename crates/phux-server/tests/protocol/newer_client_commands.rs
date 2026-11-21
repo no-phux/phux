@@ -32,6 +32,7 @@ fn checkout_body(json: &[u8]) -> Vec<u8> {
     let tag = command_body(Command::Checkout {
         terminal_id: ResourceId::local(1),
         request: CheckoutRequest::Status,
+        contract: phux_protocol::checkout::CHECKOUT_CONTRACT,
     })[0];
     let mut body = vec![tag];
     body.extend_from_slice(&LOCAL_1);

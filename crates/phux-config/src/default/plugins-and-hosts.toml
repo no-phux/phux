@@ -191,3 +191,18 @@
 # name = "api"
 # color = "coral"
 
+# Pane icons: a glyph (an emoji or a Nerd Font symbol) drawn before a
+# pane's name in the tab bar and the desktop's lists. The first entry whose
+# `process` (the foreground program's name) and `cwd` (a folder, `*` for
+# any run of characters, `~` for home) all match wins. A program in the
+# pane can set its own icon, which comes first
+# (docs/program-sequences.md). An older phux refuses this table.
+#
+# [[icons]]
+# icon = "🦀"
+# process = "cargo"
+#
+# [[icons]]
+# icon = "🏢"
+# cwd = "~/work/*"
+

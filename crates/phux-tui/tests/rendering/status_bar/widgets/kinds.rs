@@ -178,7 +178,7 @@ fn windows_widget_renders_tabs_and_markers() {
             "0:a 1:b !",
         ),
         (
-            "retained window gets the x suffix plus exit status",
+            "retained window gets the sidebar's failed mark plus exit status",
             vec![
                 win("a", true),
                 WindowInfo {
@@ -186,10 +186,10 @@ fn windows_widget_renders_tabs_and_markers() {
                     ..win("b", false)
                 },
             ],
-            "0:a 1:b x3",
+            "0:a 1:b \u{2715}3",
         ),
         (
-            "signal death and unknown exit still carry the x marker",
+            "signal death fails; an unreported exit ends quietly, as in the sidebar",
             vec![
                 WindowInfo {
                     exited: Some("sig9".to_owned()),
@@ -200,7 +200,16 @@ fn windows_widget_renders_tabs_and_markers() {
                     ..win("b", false)
                 },
             ],
-            "0:a xsig9 1:b x",
+            "0:a \u{2715}sig9 1:b \u{2013}",
+        ),
+        (
+            "the ascii column marks it the way the ascii sidebar does",
+            vec![WindowInfo {
+                exited: Some("3".to_owned()),
+                glyphs: phux_tui::render::theme::Glyphs::Ascii,
+                ..win("a", true)
+            }],
+            "0:a x3",
         ),
         ("empty list renders nothing", vec![], ""),
     ];

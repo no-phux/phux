@@ -21,7 +21,8 @@ in phux-brand, inspect its preview, and publish a new approved version.
 Consumer CI rejects edits that drift from the pin. Product code continues
 to own behavior, animation, and platform resource packaging.
 
-Design tokens arrive the same way; see [Design language](./design-language.md).
+Design tokens are not brand assets: they are authored and generated in this
+repository; see [Design language](./design-language.md).
 
 ## Wordmark surfaces
 
@@ -62,8 +63,8 @@ payloads as part of an artwork update.
 
 ## Choosing branding in the apps
 
-In the mobile app, open **Settings → Appearance → Brand profile** to choose Flat
-Fox, Silver Fox or Classic Prompt. All choices ship offline and are saved on the
+In the mobile app, open **Settings → Appearance → Brand profile** to choose
+Embossed Fox, Emblem Fox, Flat Fox, Silver Fox or Classic Prompt. All choices ship offline and are saved on the
 device. Changing a host or account does not reset it. The picker reports icon or
 preference-save failures. Phux Rune ships the selected default icon and has no
 picker.
@@ -73,10 +74,10 @@ selected in-app marks.
 
 ## Selecting the release default
 
-The private library's `profiles.json.selected` sets the shared release default for
-Flat Fox, Silver Fox or Classic Prompt. Run `just profile <id>` there to
-render the chosen profile for every platform, then review and publish its kit.
-Flat Fox is the default. Here the selected app icon lands in
+The private library's `profiles.json.selected` sets the shared release default
+among those profiles. Run `just profile <id>` there to render the chosen
+profile for every platform, then review and publish its kit. Embossed Fox is
+the default. Here the selected app icon lands in
 `clients/rune/packaging/AppIcon.{png,svg}`, which Phux Rune's packager reads,
 and the docs wordmark in `docs/assets`. Mobile drawing and launch silhouettes
 use their native brand interface over the selected geometry and finish. Clients

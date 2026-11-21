@@ -193,29 +193,34 @@ impl ControlPlane {
     /// resolves [`Event::InputDelivery`]). A larger one, or one for a
     /// satellite pane (acknowledged input is local-only), goes as one atomic
     /// `INPUT_PASTE` event, never split (docs/protocol.md#input), and has no receipt:
-    /// `None`. Unresolved acknowledged input for the terminal refuses the
-    /// raw event with a receipt rather than let it reach the PTY first.
-    pub fn apply_user_paste(&mut self, terminal_id: &ResourceId, text: &str) -> Option<u64> {
+    /// `Ok(None)`. Unresolved acknowledged input for the terminal refuses the
+    /// raw event rather than let it reach the PTY first: `Err` carries the
+    /// refusal's receipt, so a caller never reports a refused paste as sent.
+    pub fn apply_user_paste(
+        &mut self,
+        terminal_id: &ResourceId,
+        text: &str,
+    ) -> Result<Option<u64>, u64> {
         if matches!(terminal_id, ResourceId::Local { .. }) {
             // The journal's batch rule is the gate that refuses, so it alone
             // decides; a paste it would refuse goes raw instead.
             let events = paste(text, PasteTrust::Trusted);
             if validate_apply_input_batch(&events).is_ok() {
-                return Some(self.begin_acknowledged_input(terminal_id, events));
+                return Ok(Some(self.begin_acknowledged_input(terminal_id, events)));
             }
         }
         if text.len() > MAX_RAW_PASTE {
-            return Some(self.refuse_acknowledged_input("the paste is larger than 16 MB"));
+            return Err(self.refuse_acknowledged_input("the paste is larger than 16 MB"));
         }
         if self.input_replay.must_order_after(terminal_id) {
-            return Some(
-                self.refuse_acknowledged_input("an earlier paste to this terminal is unresolved"),
+            return Err(
+                self.refuse_acknowledged_input("an earlier paste to this terminal is unresolved")
             );
         }
         if !self.send_paste(terminal_id, text.as_bytes().to_vec(), PasteTrust::Trusted) {
-            return Some(self.refuse_acknowledged_input("delivery to this terminal is fenced"));
+            return Err(self.refuse_acknowledged_input("delivery to this terminal is fenced"));
         }
-        None
+        Ok(None)
     }
 
     /// Atomically flush a draft and press Tab through the acknowledged

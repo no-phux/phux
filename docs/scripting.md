@@ -86,15 +86,10 @@ phux spawn --retain=600 -- make test
 | `-- COMMAND` | Runs a command instead of your shell. |
 | `-c DIR` | Sets the working directory. |
 | `--target PANE` | Places the new pane beside an existing one. |
-| `--split horizontal` / `vertical` | For `spawn` and `launch`, `horizontal` places the new pane to the right (the default); `vertical` stacks it below. Needs `--target`. |
+| `--split horizontal` / `vertical` | `horizontal` stacks the panes (the new pane below); `vertical` places them side by side (the new pane to the right). The same meaning for `spawn`, `launch`, `insert-pane`, and `mv`. `spawn` and `launch` need `--target`. |
 | `--ratio F` | The fraction of the split the target keeps. Needs `--target`. |
 | `--retain=SECS` | Keeps the exit status and last screen readable after an unplaced spawn exits. |
 | `--idempotency-key HEX32` | Makes a retry return the first pane instead of spawning another. |
-
-Existing-pane edits (`insert-pane` and `mv`) instead name the divider:
-`horizontal` stacks panes and `vertical` places them side by side. These
-existing spellings are retained for compatibility; check the command's help
-rather than transferring a split direction between the two command groups.
 
 With `--target`, `spawn` and `launch` create and place a pane in one server
 operation. The target must be a split leaf in the executing authority's
@@ -357,8 +352,10 @@ phux notify --level error "build failed" "3 errors in src/lib.rs"
 ```
 
 Rune and the terminal UI show a note as a toast. When the note's pane is out
-of sight, a `warn` or `error` note also raises a system notification from
-Rune. Each note replaces the pane's last one, so a progress note can be
+of sight, a `warn` or `error` note also raises a notification: Rune posts a
+system notification, and the terminal UI delivers it the way
+`[notifications] mode` says, following `suppress-focused`, at most once
+every ten seconds per pane. Each note replaces the pane's last one, so a progress note can be
 updated in place. Inside a pane the note is about that pane; `--pane @N`
 names another. The note is stored in the pane's `phux.note/v1` metadata as
 `{"level", "title", "body", "at"}`.
@@ -372,9 +369,20 @@ vim.notify = function(msg, level)
 end
 ```
 
-phux still ignores OSC 9, 777 and 99 from panes
+By default phux ignores OSC 9, 777 and 99 from panes
 ([program protocol](./program-protocol.md#relationship-to-other-sequences)),
-so no escape sequence a pane prints can raise a notification.
+so no escape sequence a pane prints can raise a notification. For programs
+that already print OSC 9 or OSC 777, opt in with:
+
+```toml
+[notifications]
+from-programs = "notes"
+```
+
+Each one then becomes the pane's `info` note: OSC 9's text is the title,
+OSC 777's title and body are the note's. The server writes at most one a
+second per pane, keeping the newest, and reads the setting when it starts,
+so restart the server after changing it. OSC 99 stays ignored.
 
 ## JSON output and errors
 
@@ -430,18 +438,13 @@ mail and adapter-ledger rules.
 
 ## Exit codes
 
-Every command uses the same codes:
-
-| Code | Means |
-| --- | --- |
-| `0` | Success. |
-| `1` | Failure: no server, no such target, or the command failed. |
-| `2` | Usage error, or the server refused the request. |
-| `3` | A linked machine didn't answer, so the target couldn't be resolved. Retry later. |
-| `124` | `wait`, `watch`, or `resource wait` timed out. |
-| `125` | `run` timed out. Otherwise `run` exits with the command's own status. |
-
-[Exit codes](./reference/exit-codes.md) has the full reference.
+Every command uses the same codes. `0` is success; `1` a failure: no
+server, no such target, or the command failed; `2` a usage error or a
+refused request. `3` and `4` mean nobody answered, so retry later: `3` a
+linked machine, `4` the server within `PHUX_TIMEOUT` seconds (default 10).
+`124` is a `wait`, `watch` or `resource wait` timeout and `125` a `run`
+timeout; otherwise `run` exits with the command's own status. [Exit codes](./reference/exit-codes.md) has the
+full table.
 
 ## Not touching the person's view
 

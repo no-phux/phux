@@ -56,7 +56,7 @@ def git(root, *args):
     return run(["git", "-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential", *args], cwd=root)
 
 
-def public_kit(root, archive, checksum, manifest):
+def public_kit(root, archive, checksum, manifest, revision):
     version = manifest["version"]
     target = root / "public/brand/releases" / version
     target.mkdir(parents=True, exist_ok=True)
@@ -68,7 +68,7 @@ def public_kit(root, archive, checksum, manifest):
     (target / "manifest.json").write_bytes(brand.encode(manifest))
     index_path = root / "public/brand/index.json"
     index = json.loads(index_path.read_bytes()) if index_path.exists() else {"schema": 1, "releases": {}}
-    index["releases"][version] = {"sha256": checksum, "source_revision": manifest["source_revision"]}
+    index["releases"][version] = {"sha256": checksum, "source_revision": revision}
     index_path.write_bytes(brand.encode(index))
 
 
@@ -76,7 +76,7 @@ def newer(proposed, current):
     return tuple(map(int, proposed.split("."))) > tuple(map(int, current.split(".")))
 
 
-def propose(directory, repository, archive, checksum, manifest, rollback=False):
+def propose(directory, repository, archive, checksum, manifest, revision, rollback=False):
     root = directory / repository
     git(directory, "clone", "--quiet", "--depth", "1", "--branch", "main", f"https://github.com/no-phux/{repository}.git", str(root))
     old = brand.check(root)
@@ -96,7 +96,7 @@ def propose(directory, repository, archive, checksum, manifest, rollback=False):
     brand.install(root, archive, checksum)
     brand.check(root)
     if repository == "website":
-        public_kit(root, archive, checksum, manifest)
+        public_kit(root, archive, checksum, manifest, revision)
     targets = ["brand.lock.json", *json.loads((root / "brand.config.json").read_bytes())["targets"].values()]
     if repository == "website":
         targets.extend(["public/brand/releases", "public/brand/index.json"])
@@ -106,7 +106,7 @@ def propose(directory, repository, archive, checksum, manifest, rollback=False):
     git(root, "-c", "core.hooksPath=/dev/null", "push", "origin", branch)
     body = directory / f"{repository}-body.md"
     body.write_text(f"Update approved PHUX brand assets from {old['version']} to {version}.\n\n"
-                    f"Source revision: `{manifest['source_revision']}`.\n"
+                    f"Source revision: `{revision}`.\n"
                     f"Archive SHA-256: `{checksum}`.\n\n"
                     "Verified the complete release manifest and this consumer's committed assets. "
                     "Normal builds require no private repository access. Consumer CI remains the merge gate.\n")
@@ -128,12 +128,14 @@ def main():
         archive = directory / "phux-brand.zip"
         manifest, _ = brand.read_bundle(archive, checksum)
         revision = api(f"repos/{SOURCE}/commits/{tag}")["sha"]
-        if manifest["version"] != tag[1:] or manifest["source_revision"] != revision:
+        # 2.x archives carry no revision, so the same files build the same
+        # bytes; the tag names the commit.
+        if manifest["version"] != tag[1:] or manifest.get("source_revision", revision) != revision:
             raise ValueError("brand manifest does not match the published release tag")
         failures = []
         for repository in REPOSITORIES:
             try:
-                print(propose(directory, repository, archive, checksum, manifest, args.allow_rollback))
+                print(propose(directory, repository, archive, checksum, manifest, revision, args.allow_rollback))
             except (ValueError, OSError, subprocess.CalledProcessError) as error:
                 failures.append(f"{repository}: {error}")
         if failures:

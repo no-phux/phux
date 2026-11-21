@@ -9,7 +9,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::host_color::{PALETTE, index_of};
 
 /// One coloured session in `config.toml`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionConfigEntry {
     /// The session's name, matched exactly. The first entry for a name wins.

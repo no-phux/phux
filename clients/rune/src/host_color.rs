@@ -107,13 +107,13 @@ pub fn eased(rgb: u32, ground: Color) -> Color {
     } else {
         phux_design::Rgb8::BLACK
     };
-    let max = f64::from(IDENTITY.host_ease_max);
+    let max = IDENTITY.host_ease_max;
     let step = |s: u8| {
         phux_design::solve::mix(phux_design::Rgb8::hex(rgb), end, max * f64::from(s) / 50.0)
     };
     (0..=50)
         .map(step)
-        .find(|c| contrast(c.paint(), ground) >= IDENTITY.host_bar)
+        .find(|c| f64::from(contrast(c.paint(), ground)) >= IDENTITY.host_bar)
         .unwrap_or_else(|| step(50))
         .paint()
 }

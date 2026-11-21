@@ -19,10 +19,12 @@ const ZIG: Surface[] = ["native", "web_engine"];
  * the root changelog. These leave the docs-only fast path.
  */
 const DOC_INPUTS: Record<string, Surface[]> = {
-  // README and the wire schema are Rust inputs. Other files under
-  // docs/spec, including the plugin index schema, are documentation.
+  // README, the wire schema and the config editor schemas are Rust inputs.
+  // Other files under docs/spec, including the plugin index schema, are
+  // documentation.
   "README.md": ["phux"],
   "docs/spec/wire-schema.json": ["phux"],
+  "docs/spec/{config,plugin}.schema.json": ["phux"],
   "docs/{reference,assets}/**": ["phux"],
   "docs/agents.md": ["phux"],
   // examples_e2e runs this page's automation example.
@@ -132,11 +134,15 @@ const ROUTES: Record<string, Surface[]> = {
   // Brand release plumbing is verified by guards. Changed application artwork
   // still routes through its destination's packaging/build checks.
   "brand.{config,lock}.json": [],
-  "scripts/{brand,update-brand,test_brand_update}.py": [],
+  "scripts/{brand,update-brand,test_brand_update,design-pin}.py": [],
   "scripts/{export-product-skills.sh,product-skills}": [],
   "scripts/skills-package/**": [],
   "scripts/build-mobile-ffi-android.sh": [],
   "scripts/ci/setup-android-ndk.sh": [],
+  // The worktree lease and the mbx target heal are guards. They do not
+  // change what any product lane compiles.
+  "scripts/worktree-{claim,verify,release}.sh": [],
+  "scripts/lib/{worktree-owner,worktree-owner_test,mbx-target,mbx-target_test}.sh": [],
 };
 
 /**

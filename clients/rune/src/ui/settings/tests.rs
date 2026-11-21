@@ -352,14 +352,14 @@ fn settings_native_render_frames() {
         rt.key(crate::keys::plain(Key::Text("clipboard".into())));
         rt.frame(0.0);
         camera.shoot(&mut rt, "-typed-search");
-        rt.update(|d, _| d.clear_settings_search());
+        rt.update(|d, tx| d.clear_settings_search(tx));
         rt.key(crate::keys::plain(Key::Text("no-such-setting".into())));
         rt.frame(0.0);
         camera.shoot(&mut rt, "-no-match");
         if !phone {
             rt.update(|d, tx| {
                 tx.instant();
-                d.clear_settings_search();
+                d.clear_settings_search(tx);
                 d.blur_settings_search(tx);
             });
             rt.frame(0.0);

@@ -43,6 +43,27 @@ pub(in crate::attach::input_dispatch) fn sidebar_click_action(
     Some(bare_action(action))
 }
 
+/// Every row of `strip` a press would act on, top to bottom, as
+/// `(strip-relative row, action)`; a target spanning rows keeps its first.
+/// The `focus-sidebar` cursor walks these.
+pub(in crate::attach) fn sidebar_rows(
+    strip: crate::layout::Rect,
+    targets: &crate::render::chrome::sidebar::SidebarTargets,
+) -> crate::render::overlay::SidebarRows {
+    // The middle column: never the rule, which sits at either edge.
+    let x = strip.x + strip.w / 2;
+    let mut rows: crate::render::overlay::SidebarRows = Vec::new();
+    for row in 0..strip.h {
+        let Some(action) = sidebar_click_action(strip, targets, x, strip.y + row) else {
+            continue;
+        };
+        if rows.last().is_none_or(|(_, last)| *last != action) {
+            rows.push((row, action));
+        }
+    }
+    rows
+}
+
 /// A filter chip picks its scope; the `@` chip steps the machine.
 fn agents_filter_action(
     chip: crate::render::chrome::sidebar::FilterChip,

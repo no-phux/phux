@@ -31,6 +31,9 @@ pub struct PaneOccupantRecord {
     /// from an older server's record.
     #[serde(default)]
     pub background: bool,
+    /// The icon a program in the pane set (`OSC 1337 ; SetUserVar=phux_icon`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
 }
 
 /// Parse a `phux.pane-occupant/v1` value. Malformed or future-incompatible
@@ -374,11 +377,13 @@ mod tests {
             foreground: "zsh".to_owned(),
             is_pane_shell: true,
             background: false,
+            icon: None,
         };
         let busy = PaneOccupantRecord {
             foreground: "vim".to_owned(),
             is_pane_shell: false,
             background: false,
+            icon: None,
         };
         assert_eq!(
             shell_availability(Some(&shell), ShellCheck::Unanswerable),

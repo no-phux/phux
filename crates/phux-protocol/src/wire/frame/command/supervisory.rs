@@ -91,7 +91,7 @@ macro_rules! supervisory_commands {
         cells: bool,
         /// Rendering for `ScreenState.rendered`: low 7 bits select
         /// ([`GET_SCREEN_FORMAT_SELECTOR_MASK`]; `0` none, `1` HTML, `2` VT,
-        /// others `INVALID_COMMAND`), high bit
+        /// others refused `UNSUPPORTED`), high bit
         /// ([`GET_SCREEN_FORMAT_UNWRAP`]) joins soft-wrapped rows. Trailing
         /// `u8`; absent decodes as `0`. An older peer ignores it, which the
         /// client detects from an absent `rendered`.
@@ -157,7 +157,8 @@ macro_rules! supervisory_commands {
     /// Stop the server with a clean exit, so a supervisor keeps it stopped
     /// (ADR-0080). **Local only**: refused off the Unix socket. A client MUST
     /// see [`ServerFeature::Shutdown`](crate::caps::ServerFeature::Shutdown)
-    /// first, since an older server drops the tag silently.
+    /// first: a 1.x server without it answers `UNSUPPORTED` and keeps
+    /// running.
     Shutdown,
     /// Take an exclusive input lease on `terminal_id` (ADR-0033): only the
     /// holder's input reaches the PTY; others are acked and dropped.
@@ -185,73 +186,6 @@ macro_rules! supervisory_commands {
         /// [`Command::KillResource::operation_id`]: a repeat answers the
         /// first result and delivers nothing.
         operation_id: Option<crate::ids::IdempotencyKey>,
-    },
-    /// Write one acknowledged chunk into the host's server-owned upload
-    /// sandbox (ADR-0059); the server chooses the path. Retries are
-    /// idempotent, and the final chunk carries the SHA-256 digest.
-    PutFile {
-        /// Non-zero client-generated identifier stable across chunk retries.
-        upload_id: FileUploadId,
-        /// A Terminal on the host that must be able to read the completed file.
-        terminal_id: ResourceId,
-        /// Filename extension without a leading dot.
-        extension: String,
-        /// Byte offset at which this chunk begins.
-        offset: u64,
-        /// Raw file bytes for this chunk.
-        data: Vec<u8>,
-        /// Whether this is the final chunk.
-        final_chunk: bool,
-        /// Expected whole-file SHA-256 digest; required on the final chunk.
-        sha256: Option<[u8; 32]>,
-    },
-    /// Read one bounded chunk of a file the serving user can read, on this
-    /// server or on the named satellite. The reply is
-    /// [`CommandValue::FileChunk`]; the chunk that reaches the end carries
-    /// the whole-file SHA-256.
-    GetFile {
-        /// A satellite of the serving hub whose filesystem is read; `None`
-        /// reads the serving server's own.
-        host: Option<String>,
-        /// Absolute UTF-8 path on that host.
-        path: String,
-        /// Byte offset at which this chunk begins.
-        offset: u64,
-        /// Most bytes to return, at most
-        /// [`MAX_FILE_UPLOAD_CHUNK`](super::MAX_FILE_UPLOAD_CHUNK).
-        max_bytes: u32,
-    },
-    /// One typed Git operation on the checkout `terminal_id` is in, resolved
-    /// from the Terminal's live working directory by the server that owns
-    /// it. The reply is [`CommandValue::Checkout`].
-    Checkout {
-        /// The Terminal whose working directory selects the checkout.
-        terminal_id: ResourceId,
-        /// The operation.
-        request: crate::checkout::CheckoutRequest,
-    },
-    /// Send one HTTP request to a service on this server's host, or on the
-    /// named satellite's (`docs/host-services.md`). The reply is
-    /// [`CommandValue::ServiceHttpHead`], sent once the response head
-    /// arrives; the body is pulled with [`Command::ServiceHttpRead`].
-    ServiceHttpOpen {
-        /// The request.
-        request: Box<crate::service_http::ServiceHttpRequest>,
-    },
-    /// Read the next body bytes of an open exchange. The reply is
-    /// [`CommandValue::ServiceHttpChunk`]: at least one byte, the end, or,
-    /// after an idle deadline, nothing.
-    ServiceHttpRead {
-        /// The exchange [`CommandValue::ServiceHttpHead`] named.
-        exchange: u64,
-        /// Most bytes to return, at most
-        /// [`MAX_SERVICE_HTTP_READ_BYTES`](crate::service_http::MAX_SERVICE_HTTP_READ_BYTES).
-        max_bytes: u32,
-    },
-    /// End an exchange and release its upstream connection. Idempotent.
-    ServiceHttpClose {
-        /// The exchange [`CommandValue::ServiceHttpHead`] named.
-        exchange: u64,
     },
     /// One step of a TCP forward, gated on `features_ext.FORWARD_TCP`, or
     /// of ssh-agent forwarding, gated on `features_ext.FORWARD_AGENT`

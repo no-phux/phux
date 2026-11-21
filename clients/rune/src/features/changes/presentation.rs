@@ -186,6 +186,7 @@ pub fn refusal(refusal: &CheckoutRefusal) -> String {
             return with_detail(words, &refusal.message);
         }
         Code::GitFailed => return with_detail("Git failed.", &refusal.message),
+        Code::GitUnavailable => "Git is not installed on the server's host.",
         Code::ReadFailed => {
             let words = "The host could not read that (permission denied, perhaps).";
             return with_detail(words, &refusal.message);

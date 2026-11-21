@@ -1,10 +1,12 @@
 //! Perf and state queries, including federated satellite state.
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the split command modules share the parent command namespace"
-)]
 
-use super::*;
+use phux_protocol::wire::frame::{
+    Command, CommandResult, CommandValue, ErrorCode, FrameKind, StateScope,
+};
+use tracing::{debug, warn};
+
+use crate::runtime::commands::results::empty_session_snapshot;
+use crate::state::{ClientId, Outbound, SharedState};
 
 /// `GET_PERF`: the server's telemetry as a JSON `phux_perf::PerfReport`,
 /// with registry gauges refreshed first; `reset` zeroes metrics afterwards.
@@ -50,7 +52,7 @@ pub(crate) fn handle_get_state(
                     .unwrap_or_else(empty_session_snapshot);
                 // An empty registry still reports listeners for `phux doctor`.
                 if snapshot.listeners().is_none() && s.has_remote_listener_report() {
-                    snapshot = snapshot.with_listeners(s.remote_listeners().clone());
+                    snapshot = snapshot.with_listeners(s.remote_listeners());
                 }
                 // The viewer's journal head at the cut, read under
                 // the snapshot's lock.

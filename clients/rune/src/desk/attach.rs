@@ -155,7 +155,7 @@ impl Desk {
                     let line = format!("{} ", quoted(Path::new(&path)));
                     let sent = match destination {
                         Some(destination) => self.deliver_private_image(&destination, &line),
-                        None => self.deliver_paste(&terminal, &line),
+                        None => self.deliver_paste(&terminal, &line).is_ok(),
                     };
                     if !sent {
                         self.say(

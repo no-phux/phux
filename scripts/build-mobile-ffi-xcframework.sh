@@ -12,6 +12,7 @@
 # Output under --out (default target/mobile-ffi-xcframework/Artifacts):
 #   PhuxFFI.xcframework/  engine-bearing device, simulator, and macOS slices
 #   Generated/            matching UniFFI Swift source
+#   design/               generated design tokens and resources, manifest.json
 #   provenance            source/toolchain/digest facts for atomic consumers
 #
 # Usage: scripts/build-mobile-ffi-xcframework.sh [--full|--dev]
@@ -105,6 +106,7 @@ command -v zig >/dev/null || die "zig is required"
 command -v rustup >/dev/null || die "rustup is required"
 command -v xcodebuild >/dev/null || die "full Xcode is required"
 command -v jq >/dev/null || die "jq is required"
+command -v bun >/dev/null || die "bun is required"
 
 METADATA="$(cargo metadata --locked --format-version 1)"
 TARGET_DIR="$(jq -r .target_directory <<<"$METADATA")"
@@ -164,6 +166,10 @@ for target in "${TARGETS[@]}"; do
     [[ -s "$archive" ]] || die "missing $identifier archive"
     [[ "$(lipo -archs "$archive")" == arm64 ]] || die "$identifier is not arm64-only"
 done
+
+step "writing the design exports"
+bun tools/main.ts design-gen --check --mobile-out "$OUT/design"
+[[ -s "$OUT/design/manifest.json" ]] || die "design-gen wrote no design/manifest.json"
 
 step "writing provenance"
 phux_rev="$(git rev-parse HEAD)"
@@ -235,4 +241,5 @@ GENERATED="$OUT/Generated"
 step "mobile xcframework complete"
 phux_info "framework: $OUT/PhuxFFI.xcframework"
 phux_info "bindings:  $GENERATED/PhuxFFI.swift"
+phux_info "design:    $OUT/design/manifest.json"
 phux_info "provenance: $OUT/provenance"
