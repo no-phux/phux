@@ -1,9 +1,8 @@
-**Phux Rune 0.1.46**: clearer Connections and more room for large-text phone sessions, plus desktop polish since 0.1.45.
+**Phux Rune 0.1.47**: quieter session chrome, clearer terminal navigation and reliable keyboard handoff.
 
-- Phone Sessions now names **Connections** above its machine and link state. Long names wrap. At large text sizes, search, Connections and **New session** scroll with the inventory; focused search keeps the complete New session action reachable above the keyboard. (#2732)
-- Find buttons show keyboard-focus help and route Escape through Find without leaking input into the terminal. (#2732)
-- Update Rune to `dc8f7f72`, bringing exact-pixel-centre effects, native Metal libraries, focus-entry tracking, disabled-control focus rescue and keyboard tooltips. All ten manifest pins and 23 locked Rune packages move together. (#2732)
-- Fold the desktop sidebar into one window surface with one spring, round its rows, and inset the host stripe inside the selected edge.
-- Show pane focus without a coloured rim or dimming other panes, and show splits at their real size without waiting on the server. (#2725)
-- Make the local machine label and Find misses readable in words. Drop the repeated action glyph from the palette and mute session-close controls.
-- Fit context menus to their longest title and group their edits. Join Settings steppers into one capsule, align update toggles with their card, and preview Auto scheme as one window split light and dark.
+- Open the palette on your terminals first, with mirrors last. Draw jump-to as a filled pill and quiet the session header.
+- Show terminal dimensions only while the window resizes.
+- Return keyboard input to the terminal after clicking New session. (#2759)
+- Clear a copy selection with Escape before leaving copy mode, and support scroll actions. (#2755)
+- Distinguish temporary connection failures from credential refusals when reconnecting. (#2763)
+- Require live session and selected-terminal evidence in native iOS qualification. (#2741)
