@@ -514,20 +514,6 @@ fn replace_attached(plane: &mut ControlPlane, snapshot: SessionSnapshot) {
     attach_ready_to(plane, attach_id, snapshot);
 }
 
-fn declare_agent(plane: &mut ControlPlane) {
-    plane
-        .apply_engine_events(vec![
-            phux_client_runtime::engine::EngineEvent::AgentSessionDeclared {
-                terminal_id: ResourceId::local(AGENT),
-                parent: Some(terminal()),
-                provider: Some("claude".into()),
-                native_id: None,
-                state: Some("working".into()),
-            },
-        ])
-        .unwrap();
-}
-
 fn publish_agent(plane: &mut ControlPlane) {
     agent_bootstrap(plane, 1, None, &[(1, "prompt"), (2, "ask")]);
 }
@@ -548,7 +534,7 @@ fn option_false_omitted_attach_withholds_until_explicit_declare() {
         Some(cursor),
         "a partial ATTACHED must not drop the owner cursor"
     );
-    declare_agent(&mut plane);
+    replace_attached(&mut plane, with_agent(terminal()));
     assert_eq!(take_agent_records(&mut plane), [(vec![1, 2], true)]);
 }
 
@@ -572,7 +558,7 @@ fn option_false_authoritative_omit_forgets_the_cursor_and_does_not_resurrect() {
             if *terminal_id == ResourceId::local(AGENT)
     )));
         assert!(agent_info(&plane).is_none());
-        declare_agent(&mut plane);
+        replace_attached(&mut plane, with_agent(terminal()));
         assert!(
             take_agent_records(&mut plane).is_empty(),
             "discarded rows must not resurrect on re-admit"

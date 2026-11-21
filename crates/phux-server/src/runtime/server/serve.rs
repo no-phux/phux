@@ -166,10 +166,8 @@ impl ServerRuntime {
         let uplink_socket = socket_path.clone();
         // Input routing runs on its own OS thread (ADR-0044) so keystrokes
         // are not queued behind output broadcast; its `Drop` joins it.
-        let input_lane = crate::runtime::apps::start(&state)?;
-        let input_lane_handle = input_lane
-            .as_ref()
-            .map(crate::runtime::apps::RunningLane::handle);
+        let input_lane = crate::runtime::apps::terminal::start(&state)?;
+        let input_lane_handle = input_lane.handle();
         let local = LocalSet::new();
         // Parent of every per-client and per-pane token; `shutdown` is
         // folded into it.
@@ -200,7 +198,7 @@ impl ServerRuntime {
                     connector_specs,
                     connector_consumer_tokens.as_ref(),
                     &state,
-                    input_lane_handle.as_ref(),
+                    Some(&input_lane_handle),
                     &root_token,
                 );
 
@@ -227,11 +225,11 @@ impl ServerRuntime {
                 open_org_store(&state, &org_store)?;
                 if let Some(blob) = &resume_blob {
                     resume_session_tree(&state, blob, &root_token)?;
-                    crate::runtime::apps::resumed(&state);
+                    crate::runtime::apps::retry_pending_agent_closures(&state);
                     delegation::resume_delegations(
                         &state,
                         &blob.delegations,
-                        input_lane_handle.as_ref(),
+                        Some(&input_lane_handle),
                         &root_token,
                     );
                 }
@@ -286,7 +284,7 @@ impl ServerRuntime {
                     &listener,
                     &state,
                     &root_token,
-                    input_lane_handle.as_ref(),
+                    Some(&input_lane_handle),
                 );
                 #[cfg(feature = "webtransport")]
                 if let Some(wt) = &webtransport_listener {
@@ -294,7 +292,7 @@ impl ServerRuntime {
                         wt,
                         state.clone(),
                         root_token.clone(),
-                        input_lane_handle.clone(),
+                        Some(input_lane_handle.clone()),
                     )));
                 }
                 accepts.push(Box::pin(serve_auto_overlay_listeners(
@@ -303,9 +301,11 @@ impl ServerRuntime {
                     overlay_detect,
                     state.clone(),
                     root_token.clone(),
-                    input_lane_handle.clone(),
+                    Some(input_lane_handle.clone()),
                 )));
-                crate::runtime::apps::keep_standing(&state, mirror_source, &root_token);
+                if let Some(source) = &mirror_source {
+                    crate::runtime::apps::terminal::standing::install(&state, source, &root_token);
+                }
                 let startup_task = plugin_startup.map(|cfg| {
                     crate::plugin_startup::install(&state, *cfg, startup_socket, root_token.clone())
                 });

@@ -105,7 +105,6 @@ impl DocumentApi for TypedDocument {
     const PROFILE: BootstrapStreamProfile = BootstrapStreamProfile::DocumentTypedV1;
     const WIRE_KIND: phux_protocol::ids::ResourceKind = phux_protocol::ids::ResourceKind::Document;
     const LABEL: &'static str = "document";
-    const AUDITS_REFUSED_INPUT: bool = true;
 
     fn launch_target(launch: &phux_core::LaunchSpec) -> Option<&str> {
         match launch {

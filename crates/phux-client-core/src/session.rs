@@ -52,6 +52,7 @@ mod output;
 mod queries;
 mod replicas;
 mod staging_rules;
+mod stream_input;
 mod terminal_lane;
 mod unsupported;
 mod update;

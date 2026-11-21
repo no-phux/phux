@@ -41,8 +41,7 @@ impl ServerState {
             // Mints this process's incarnation and starts the idle clock —
             // see `Lifecycle::new`.
             lifecycle: Lifecycle::new(),
-            close_reasons: std::collections::HashMap::new(),
-            close_attributions: std::collections::HashMap::new(),
+            pending_closes: std::collections::HashMap::new(),
             exit_watches: std::collections::HashMap::new(),
             retained: super::retained::RetainedTable::default(),
             remote_listeners: phux_protocol::wire::RemoteListenersReport::new(),

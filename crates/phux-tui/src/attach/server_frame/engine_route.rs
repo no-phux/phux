@@ -17,10 +17,6 @@ use crate::render::chrome::status_bar::Notice;
 
 use super::outcome::pane_label;
 
-mod kernel_input;
-
-use kernel_input::kernel_input_for;
-
 #[derive(Default)]
 pub(super) struct KernelRoute {
     pub(super) ack: Option<(ResourceId, StreamId, BootstrapId, u64)>,
@@ -121,6 +117,34 @@ pub(in crate::attach) fn session_terminals(
         })
         .map(|pane| pane.id.clone())
         .collect()
+}
+
+/// The attach barrier and process closure, alongside the shared stream inputs.
+fn kernel_input_for<'a>(
+    frame: &'a FrameKind,
+    terminals: &'a [ResourceId],
+) -> Option<KernelInput<'a>> {
+    match frame {
+        FrameKind::Attached { attach_id, .. } => Some(KernelInput::AttachStarted {
+            attach_id: *attach_id,
+            terminals,
+        }),
+        FrameKind::AttachReady { attach_id } => Some(KernelInput::AttachReady {
+            attach_id: *attach_id,
+        }),
+        FrameKind::ResourceClosed {
+            terminal_id,
+            exit_status,
+            reason,
+            signal,
+        } => Some(KernelInput::ResourceClosed {
+            terminal_id,
+            exit_status: *exit_status,
+            signal: *signal,
+            reason: *reason,
+        }),
+        _ => KernelInput::from_stream_frame(frame),
+    }
 }
 
 /// Route one inbound wire frame through the session kernel and fold its

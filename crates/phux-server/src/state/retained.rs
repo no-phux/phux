@@ -17,7 +17,7 @@ use phux_protocol::wire::frame::CloseReason;
 use phux_protocol::wire::info::ExitFacet;
 use tokio_util::sync::CancellationToken;
 
-use super::ServerState;
+use super::{CloseAttribution, ServerState};
 
 /// The operator's retention settings (`defaults.retain-on-exit*`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,7 +168,7 @@ impl ServerState {
         now_ms: u64,
     ) -> Option<Retention> {
         let secs = *self.retained.requested.get(&pane)?;
-        let closing = self.close_reasons.contains_key(&pane);
+        let closing = self.pending_close_reason(pane).is_some();
         if closing || self.config.retain.max_count == 0 {
             return None;
         }
@@ -194,16 +194,9 @@ impl ServerState {
             let Some(oldest) = self.retained.order.pop_front() else {
                 return;
             };
-            self.mark_resource_closing(oldest, CloseReason::Exited);
+            self.mark_resource_closing(oldest, CloseReason::Exited, CloseAttribution::default());
             self.resources_mut().detach_actor(oldest);
         }
-    }
-
-    /// Why `pane` is leaving, when a closer recorded it and the close has not
-    /// been emitted yet.
-    #[must_use]
-    pub fn pending_close_reason(&self, pane: ResourceId) -> Option<CloseReason> {
-        self.close_reasons.get(&pane).copied()
     }
 }
 
@@ -274,7 +267,7 @@ mod tests {
             s.retained_mut().note_request(pane, 30);
             panes.push(pane);
         }
-        s.mark_resource_closing(panes[0], CloseReason::Killed);
+        s.mark_resource_closing(panes[0], CloseReason::Killed, CloseAttribution::default());
         assert!(
             s.retain_exited(panes[0], ExitOutcome::exited(0), 1)
                 .is_none(),

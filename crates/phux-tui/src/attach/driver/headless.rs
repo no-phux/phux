@@ -138,36 +138,17 @@ impl HeadlessSession {
         &mut self,
         frame: FrameKind,
         focused_session: Option<SessionId>,
-        layout_get_request_id: Option<u32>,
     ) -> Result<FrameOutcome, AttachError> {
         let env = FrameEnv {
             focused_session,
             status_bar: self.status_bar.as_mut(),
             sidebar: self.sidebar,
             viewport_dims: self.viewport_dims,
-            pending_layout_request: layout_get_request_id,
+            pending_layout_request: None,
             overlay_active: false,
             defer_paint: true,
         };
         handle_server_frame(&mut self.mirror, env, &mut self.sink, frame)
-    }
-
-    /// Ingest an arrangement read as the reply the layout GET would carry.
-    fn ingest_layout(
-        &mut self,
-        document: Option<&crate::layout::ArrangementDoc>,
-        session_id: SessionId,
-    ) -> Result<(), AttachError> {
-        let value = document.and_then(crate::attach::input_dispatch::encode_layout_or_log);
-        self.ingest(
-            FrameKind::MetadataValue {
-                request_id: LAYOUT_REQUEST_ID,
-                value,
-            },
-            Some(session_id),
-            Some(LAYOUT_REQUEST_ID),
-        )?;
-        Ok(())
     }
 
     /// Whether every metadata and explicit agent-stream reply has landed.
@@ -245,13 +226,7 @@ impl HeadlessSession {
     }
 }
 
-/// Request id of the layout read the completion barrier waits on.
-const LAYOUT_REQUEST_ID: u32 = 1;
-
-/// Read (never watch) this session's layout: on an `ORGANIZATION` server its
-/// arrangement record over a second connection, ingested here (`Ok(None)`:
-/// nothing left to wait for); otherwise a GET of the layout key, returning
-/// the request id to wait on.
+/// Read this session's arrangement once over a dedicated connection.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -261,21 +236,19 @@ async fn request_layout(
     session: &mut HeadlessSession,
     subscribe_layout: bool,
     focused_session: Option<SessionId>,
-) -> Result<(), AttachError> {
-    if !subscribe_layout {
-        return Ok(());
-    }
-    let Some(session_id) = focused_session else {
-        return Ok(());
+) {
+    let Some(session_id) = focused_session.filter(|_| subscribe_layout) else {
+        return;
     };
-    let read = tokio::time::timeout(ATTACH_READY_DEADLINE, read_arrangement(socket, session_id))
+    match tokio::time::timeout(ATTACH_READY_DEADLINE, read_arrangement(socket, session_id))
         .await
-        .unwrap_or_else(|_| Err("timed out".to_owned()));
-    let document = read.unwrap_or_else(|err| {
-        tracing::warn!(error = %err, "arrangement read failed; no layout");
-        None
-    });
-    session.ingest_layout(document.as_ref(), session_id)
+        .unwrap_or_else(|_| Err("timed out".to_owned()))
+    {
+        Ok(document) => {
+            session.mirror.adopt_layout(document, true);
+        }
+        Err(err) => tracing::warn!(error = %err, "arrangement read failed; no layout"),
+    }
 }
 
 /// Read the session's arrangement record over a dedicated connection:
@@ -344,7 +317,7 @@ async fn drain_until_settled(
     loop {
         let frame = conn.recv().await?;
         completion.observe_frame(&frame, *attach_id);
-        let outcome = session.ingest(frame, focused_session, None)?;
+        let outcome = session.ingest(frame, focused_session)?;
         if outcome.resync_required {
             *attach_id = restart_attach(conn, &session.mirror.session_name, completion).await?;
             continue;
@@ -402,7 +375,7 @@ pub async fn run_headless_rendered(
 
     // Replay ATTACHED once. The composite does not watch layout changes;
     // its only layout input is the GET answer it asked for.
-    let outcome = session.ingest(attached, None, None)?;
+    let outcome = session.ingest(attached, None)?;
     session.vcs.apply_snapshot(outcome.pane_cwds);
     let focused_session = outcome.sessions.map(|(_, focused)| focused);
 
@@ -413,7 +386,7 @@ pub async fn run_headless_rendered(
         outcome.subscribe_layout,
         focused_session,
     )
-    .await?;
+    .await;
 
     let mut completion = HeadlessCompletion::default();
     let settled = tokio::time::timeout(

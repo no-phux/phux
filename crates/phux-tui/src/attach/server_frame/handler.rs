@@ -47,6 +47,7 @@ pub(in crate::attach) fn set_new_tab_after_current(on: bool) {
 }
 use replies::{command_result_outcome, error_frame_outcome};
 use spawned::handle_terminal_spawned;
+pub(in crate::attach) use windows::adopt_layout;
 #[cfg(test)]
 pub(super) use windows::{handle_window_spawned, reconcile_loaded_workspace};
 
@@ -133,6 +134,17 @@ struct FrameCtx<'a, W: crate::attach::RenderSink> {
 }
 
 impl<W: crate::attach::RenderSink> FrameCtx<'_, W> {
+    fn adopt_layout(&mut self, layout: Option<ArrangementDoc>, initial: bool) -> FrameOutcome {
+        adopt_layout(
+            self.workspace,
+            self.focused_resource,
+            self.panes,
+            SurfaceLeaves::new(self.engine_kernel, self.leaves),
+            layout,
+            initial,
+        )
+    }
+
     /// Known non-Terminal resources never acquire a VT slot or a TTY output
     /// path; as layout leaves they tile a placeholder. Unknown ids still take
     /// the strict Terminal validation path.
@@ -365,7 +377,7 @@ fn dispatch_frame<W: crate::attach::RenderSink>(
             Ok(FrameOutcome::default())
         }
         FrameKind::MetadataValue { request_id, value } => {
-            handle_metadata_value(ctx, request_id, value)
+            handle_metadata_value(ctx, request_id, value.as_deref())
         }
         FrameKind::MetadataChanged {
             scope, key, value, ..

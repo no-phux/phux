@@ -1,7 +1,7 @@
 //! What the server keeps standing (`[[mirrors]]` and `[[producers]]`,
 //! `docs/resource-kinds.md#standing-mirrors`): where it reads the entries,
 //! and each entry's restart bookkeeping. The app that runs them keeps them
-//! running ([`crate::runtime::apps::keep_standing`]).
+//! running ([`crate::runtime::apps::terminal::standing::install`]).
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};

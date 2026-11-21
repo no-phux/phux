@@ -166,9 +166,12 @@ pub(crate) fn subscribe_attach_terminal(
         // The lease is a Terminal-facet concept (L1 §1.1), so a takeover of
         // any other kind is refused the way `ACQUIRE_INPUT` refuses it.
         if role.is_some_and(RolePolicy::takes_over)
-            && let Err(error) = crate::runtime::apps::app_for(handle.kind).check_takeover()
+            && handle.kind != crate::resource::ResourceKind::Terminal
         {
-            return Err(wrong_resource_kind(error));
+            return Err(wrong_resource_kind(crate::resource::WrongResourceKind {
+                required: crate::resource::ResourceKind::Terminal,
+                actual: handle.kind,
+            }));
         }
         let was_subscribed = s.resources().subscribers_for(core).contains(&client_id);
         let was_viewer = s.clients().is_viewer(client_id, terminal_id);

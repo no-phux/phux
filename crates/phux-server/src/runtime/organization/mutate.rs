@@ -165,9 +165,11 @@ fn projection_relaunch_refusal(
 }
 
 fn unsupported_launch(kind: phux_core::ResourceKind, capability: &str) -> Option<Refusal> {
-    (!crate::runtime::apps::supports_organization_launch(kind)).then(|| Refusal::Unsupported {
-        capability: capability.to_owned(),
-    })
+    crate::runtime::apps::organization_launcher(kind)
+        .is_none()
+        .then(|| Refusal::Unsupported {
+            capability: capability.to_owned(),
+        })
 }
 
 fn note_arrangement_result(

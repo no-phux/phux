@@ -18,7 +18,13 @@ use phux_core::ids::ResourceId;
 use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::CloseReason;
 
-use super::ServerState;
+use super::{CloseAttribution, ServerState};
+
+#[derive(Debug)]
+pub(super) struct PendingClose {
+    reason: CloseReason,
+    attribution: CloseAttribution,
+}
 
 /// Exact set a close will cancel and reap, with descendants before parents.
 pub(crate) struct ClosePlan(Vec<(ResourceId, CloseReason)>);
@@ -96,35 +102,39 @@ impl ServerState {
             })
     }
 
-    /// Record why `resource` is closing. First writer wins; an unmarked
-    /// resource closes as `Exited`.
-    pub fn mark_resource_closing(&mut self, resource: ResourceId, reason: CloseReason) {
-        self.close_reasons.entry(resource).or_insert(reason);
+    /// Preserve the first close reason and the first attribution supplied.
+    pub(crate) fn mark_resource_closing(
+        &mut self,
+        resource: ResourceId,
+        reason: CloseReason,
+        attribution: CloseAttribution,
+    ) {
+        let close = self.pending_closes.entry(resource).or_insert(PendingClose {
+            reason,
+            attribution,
+        });
+        if close.attribution == CloseAttribution::default() {
+            close.attribution = attribution;
+        }
     }
 
-    /// Claim the close of `resource` and its recorded reason. `None` when
-    /// already reaped (emit nothing); `Exited` when nobody recorded one.
-    pub fn begin_resource_close(&mut self, resource: ResourceId) -> Option<CloseReason> {
+    /// Take the facts for `RESOURCE_CLOSED` and `pane_closed` before reaping.
+    /// Return `None` if already reaped. An unmarked resource closes as `Exited`.
+    pub(crate) fn begin_resource_close(
+        &mut self,
+        resource: ResourceId,
+    ) -> Option<(CloseReason, CloseAttribution)> {
         self.sessions.registry.resource(resource)?;
-        Some(
-            self.close_reasons
-                .remove(&resource)
-                .unwrap_or(CloseReason::Exited),
-        )
+        Some(self.pending_closes.remove(&resource).map_or_else(
+            || (CloseReason::Exited, CloseAttribution::default()),
+            |close| (close.reason, close.attribution),
+        ))
     }
 
-    /// Forget a reaped resource's recorded close reason.
-    pub(super) fn forget_close_reason(&mut self, resource: ResourceId) {
-        self.close_reasons.remove(&resource);
-        self.close_attributions.remove(&resource);
-    }
-
-    /// Take the attribution a kill recorded for `resource`, for its
-    /// `pane_closed`; the default (nobody, no key) when none did.
-    pub fn take_close_attribution(&mut self, resource: ResourceId) -> super::CloseAttribution {
-        self.close_attributions
-            .remove(&resource)
-            .unwrap_or_default()
+    /// Why `resource` is leaving when a closer has marked it.
+    #[must_use]
+    pub fn pending_close_reason(&self, resource: ResourceId) -> Option<CloseReason> {
+        self.pending_closes.get(&resource).map(|close| close.reason)
     }
 
     /// Close `targets` and every descendant in one borrow (ADR-0104 §2).
@@ -186,12 +196,7 @@ impl ServerState {
         attribution: super::CloseAttribution,
     ) {
         for &(resource, reason) in plan.0.iter().rev() {
-            self.mark_resource_closing(resource, reason);
-            if attribution != super::CloseAttribution::default() {
-                self.close_attributions
-                    .entry(resource)
-                    .or_insert(attribution);
-            }
+            self.mark_resource_closing(resource, reason, attribution);
             self.resources_mut().detach_actor(resource);
         }
     }
@@ -228,9 +233,11 @@ impl ServerState {
         self.exit_watches.get(&resource).cloned().flatten()
     }
 
-    /// End `resource`'s exit watch: its process is gone.
-    pub(crate) fn end_exit_watch(&mut self, resource: ResourceId) {
+    /// End the watch once the process is gone and check whether the server
+    /// may now exit.
+    pub(crate) fn end_exit_watch(&mut self, resource: ResourceId) -> bool {
         self.exit_watches.remove(&resource);
+        self.self_exit_due()
     }
 
     /// Whether self-exit may run now (R13): the server has served a client,
@@ -253,7 +260,7 @@ mod tests {
     use phux_protocol::wire::frame::CloseReason;
     use tokio_util::sync::CancellationToken;
 
-    use crate::state::ServerState;
+    use crate::state::{ClientId, CloseAttribution, ServerState};
 
     fn agent(provider: &str) -> AgentFacet {
         AgentFacet {
@@ -315,6 +322,34 @@ mod tests {
             state.resource_descendants(grandparent),
             vec![child, grandchild]
         );
+    }
+
+    #[test]
+    fn late_attribution_keeps_the_original_close_reason() {
+        let mut state = ServerState::new();
+        let (_, pane) = state.seed_session("main");
+        let first = CloseAttribution {
+            actor: Some(ClientId(1)),
+            operation_id: None,
+        };
+        let later = CloseAttribution {
+            actor: Some(ClientId(2)),
+            operation_id: None,
+        };
+        state.mark_resource_closing(
+            pane,
+            CloseReason::ServerShutdown,
+            CloseAttribution::default(),
+        );
+        state.close_resources_attributed(&[pane], CloseReason::Killed, first);
+        state.close_resources_attributed(&[pane], CloseReason::Killed, later);
+
+        assert_eq!(
+            state.begin_resource_close(pane),
+            Some((CloseReason::ServerShutdown, first))
+        );
+        state.reap_resource(pane);
+        assert_eq!(state.begin_resource_close(pane), None);
     }
 
     /// phux-twft: reaping a parent directly (no close cascade first, as a

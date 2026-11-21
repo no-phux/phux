@@ -11,7 +11,7 @@ mod tests;
 
 pub(super) use engine_route::{attach_participants, emitted_resync_required, session_terminals};
 pub(super) use handler::pane_is_referenced;
-pub(super) use handler::{FrameEnv, handle_server_frame};
+pub(super) use handler::{FrameEnv, adopt_layout, handle_server_frame};
 // The composited output frame, shared with the driver's frame
 // pacer so a paced settle paints through exactly the same path a live
 // `RESOURCE_OUTPUT` does.

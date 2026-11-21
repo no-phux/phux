@@ -17,22 +17,6 @@ pub(super) struct EngineApply {
 impl ControlPlane {
     // ----- the kernel --------------------------------------------------
 
-    /// Apply a pump's queued typed events in order and project each damaged
-    /// terminal once after the whole batch. Every outcome is still processed
-    /// in event order, including acknowledgements and resync evidence.
-    pub fn apply_engine_events(&mut self, events: Vec<EngineEvent>) -> Result<(), ControlError> {
-        if events.is_empty() {
-            return Ok(());
-        }
-        let EngineApply {
-            engine,
-            events,
-            geometry,
-        } = self.prepare_engine_apply(events)?;
-        let outcomes = engine.apply_batch(events);
-        self.complete_engine_apply(geometry, outcomes)
-    }
-
     /// The control-plane half before an engine batch: note what the events
     /// announce and hand back what the owner thread must apply. The caller
     /// may release the control lock for the round trip itself.
@@ -111,7 +95,13 @@ impl ControlPlane {
     }
 
     pub(super) fn apply_engine(&mut self, event: EngineEvent) -> Result<(), ControlError> {
-        self.apply_engine_events(vec![event])
+        let EngineApply {
+            engine,
+            events,
+            geometry,
+        } = self.prepare_engine_apply(vec![event])?;
+        let outcomes = engine.apply_batch(events);
+        self.complete_engine_apply(geometry, outcomes)
     }
 
     /// Execute every declarative effect before considering the update

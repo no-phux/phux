@@ -126,9 +126,7 @@ impl super::super::SessionLoop {
     }
 
     /// Apply one frame and surface an exit, if this frame ended the attach.
-    pub(in crate::attach::driver::loop_state) async fn apply_frame_step<
-        W: crate::attach::RenderSink,
-    >(
+    async fn apply_frame_step<W: crate::attach::RenderSink>(
         &mut self,
         conn: &mut Connection,
         out: &mut W,
@@ -176,12 +174,8 @@ impl super::super::SessionLoop {
     ) -> Result<Step, AttachError> {
         // Only a burst that did not end the attach may spend.
         self.emit_deferred_bootstrap_outbound(conn).await?;
-        if let Some(exit) = self
-            .settle_arrangement_read(conn, out, sidebar, repaint)
-            .await?
-        {
-            return Ok(exit);
-        }
+        self.settle_arrangement_read(conn, out, sidebar, repaint)
+            .await?;
         self.drain_repaint(out, sidebar, repaint);
         // Settle the pacer's debt here when the timer cannot be trusted (see
         // [`burst_settles_debt`]). After `drain_repaint`, so a full repaint

@@ -7,7 +7,7 @@ use super::*;
 #[test]
 fn every_holdable_command_routes_to_the_handler() {
     use phux_protocol::wire::frame::TerminalSignal;
-    let running = crate::runtime::test_support::start_input_lane(&crate::state::SharedState::new())
+    let running = crate::runtime::test_support::spawn_input_lane(crate::state::SharedState::new())
         .expect("input lane");
     let terminal = WireResourceId::local(3);
     for held in [

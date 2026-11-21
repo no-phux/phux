@@ -228,7 +228,7 @@ async fn deferred_session_attach_applies_the_declared_role() {
 /// fix it failed the whole attach and cancelled the connection.
 #[tokio::test(flavor = "current_thread")]
 async fn a_pane_closed_mid_capture_is_published_closed_not_a_failed_attach() {
-    crate::runtime::test_support::local(async {
+    crate::runtime::test_support::local(Box::pin(async {
         let state = crate::state::SharedState::new();
         let (window, live) = state.with_mut(|s| s.seed_session("closing"));
         let token = CancellationToken::new();
@@ -296,6 +296,6 @@ async fn a_pane_closed_mid_capture_is_published_closed_not_a_failed_attach() {
             "RESOURCE_CLOSED for the closed pane precedes ATTACH_READY: {frames:?}"
         );
         token.cancel();
-    })
+    }))
     .await;
 }

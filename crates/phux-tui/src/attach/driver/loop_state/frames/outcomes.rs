@@ -26,12 +26,7 @@ impl super::super::SessionLoop {
         let prev_rects = self.leaf_rects(sidebar);
         let focused_before_frame = self.mirror.focused_resource.clone();
         let outcome = self.handle_frame(out, frame, sidebar, defer_paint)?;
-        self.focus_history
-            .observe(focused_before_frame, self.mirror.focused_resource.as_ref());
-        self.focus_history.repair(
-            self.mirror.focused_resource.as_ref(),
-            &self.mirror.workspace,
-        );
+        self.record_frame_focus(focused_before_frame);
         if outcome.exit {
             let end = outcome
                 .exit_reason
@@ -47,6 +42,18 @@ impl super::super::SessionLoop {
         self.fold_frame_outcome(conn, out, sidebar, outcome, prev_rects.as_ref(), repaint)
             .await?;
         Ok(FrameStep::Done)
+    }
+
+    pub(in crate::attach::driver::loop_state) fn record_frame_focus(
+        &mut self,
+        focused_before: Option<ResourceId>,
+    ) {
+        self.focus_history
+            .observe(focused_before, self.mirror.focused_resource.as_ref());
+        self.focus_history.repair(
+            self.mirror.focused_resource.as_ref(),
+            &self.mirror.workspace,
+        );
     }
 
     /// Fold one non-terminal frame outcome into the loop: attach what it

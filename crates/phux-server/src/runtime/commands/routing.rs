@@ -124,7 +124,10 @@ fn refuses_agent_cursor(
     s.idspace
         .resource_from_wire(terminal_id)
         .and_then(|core| s.resources().handle(core))
-        .is_some_and(|handle| !crate::runtime::apps::app_for(handle.kind).resumes_from_cursor())
+        .is_some_and(|handle| {
+            phux_protocol::kinds::kind_spec(crate::id_bridge::wire_kind(handle.kind))
+                .is_none_or(|spec| spec.stream.resume.is_none())
+        })
 }
 
 /// Everything that answers a command before local dispatch: the
@@ -166,8 +169,9 @@ async fn route_command(
             resource,
             expected,
         } = &command
-            && let Some(result) =
-                crate::runtime::apps::claim_relaunch(ctx, *operation, resource, *expected)
+            && let Some(result) = crate::runtime::apps::claim_native_agent_relaunch(
+                ctx, *operation, resource, *expected,
+            )
         {
             reply::send(out_tx, request_id, result).await;
             return None;

@@ -3,15 +3,14 @@
 use super::subscriptions::Origin;
 use bytes::Bytes;
 use phux_client_core::newer_server::read_undecodable_frame;
+use phux_client_core::session::KernelInput;
 use phux_protocol::wire::DecodeError;
 
 use super::{AgentEvent, ControlError, ControlPlane, EngineEvent, Event, FrameKind};
 
-mod classify;
 mod stepped;
 
-use classify::{ClassifiedFrame, classify_engine_frame};
-use stepped::{BatchStep, SharedBatch};
+use stepped::{BatchStep, FrameBatch};
 
 /// A decoded frame. For one that did not decode, what a newer 1.x server's
 /// value reads as ([`read_undecodable_frame`]): a correlated reply becomes an
@@ -71,35 +70,9 @@ impl ControlPlane {
     /// Decode a transport read's complete frames in order, applying each
     /// contiguous run of engine events as one projection batch.
     pub fn feed_bytes_batch(&mut self, frames: &[impl AsRef<[u8]>]) -> Result<(), ControlError> {
-        let mut engine_events = Vec::new();
-        let mut deferred_error = None;
-        for bytes in frames {
-            let frame = match self.decode_frame(bytes.as_ref()) {
-                Ok(Some(frame)) => frame,
-                Ok(None) => continue,
-                Err(error) => {
-                    return self.error_after_engine_batch(
-                        &mut engine_events,
-                        &mut deferred_error,
-                        error,
-                    );
-                }
-            };
-            self.queue_or_feed_frame(frame, &mut engine_events, &mut deferred_error)?;
-        }
-        self.finish_batch(engine_events, deferred_error)
-    }
-
-    fn finish_batch(
-        &mut self,
-        mut engine_events: Vec<EngineEvent>,
-        mut deferred_error: Option<ControlError>,
-    ) -> Result<(), ControlError> {
-        Self::continue_after_nonfatal(
-            &mut deferred_error,
-            self.flush_engine_batch(&mut engine_events),
-        )?;
-        deferred_error.map_or(Ok(()), Err)
+        self.feed_frame_batch(FrameBatch::new(frames.iter(), |plane, bytes| {
+            plane.decode_frame(bytes.as_ref())
+        }))
     }
 
     fn decode_frame(&self, bytes: &[u8]) -> Result<Option<FrameKind>, ControlError> {
@@ -138,63 +111,23 @@ impl ControlPlane {
     /// Holds `&mut self` across each engine round trip; the connection driver
     /// steps the same batch instead and releases the control lock for them.
     pub fn feed_shared_batch(&mut self, frames: &[Bytes]) -> Result<(), ControlError> {
-        let mut batch = SharedBatch::new(frames.to_vec());
-        let mut step = self.step_shared_batch(&mut batch);
+        self.feed_frame_batch(FrameBatch::new(frames.iter(), Self::decode_shared_frame))
+    }
+
+    fn feed_frame_batch(
+        &mut self,
+        mut batch: FrameBatch<impl Iterator>,
+    ) -> Result<(), ControlError> {
+        let mut step = self.step_frame_batch(&mut batch);
         loop {
             match step {
                 BatchStep::Done(result) => return result,
                 BatchStep::Apply(apply) => {
                     let outcomes = apply.engine.apply_batch(apply.events);
-                    step = self.complete_shared_apply(&mut batch, apply.geometry, outcomes);
+                    step = self.complete_frame_apply(&mut batch, apply.geometry, outcomes);
                 }
             }
         }
-    }
-
-    fn queue_or_feed_frame(
-        &mut self,
-        frame: FrameKind,
-        engine_events: &mut Vec<EngineEvent>,
-        deferred_error: &mut Option<ControlError>,
-    ) -> Result<(), ControlError> {
-        if !self.handshake_ready && !allowed_before_handshake(&frame) {
-            let error = ControlError::Protocol("server frame arrived before HELLO_OK".to_owned());
-            return self.error_after_engine_batch(engine_events, deferred_error, error);
-        }
-        match classify_engine_frame(frame) {
-            ClassifiedFrame::Engine(event) => {
-                engine_events.push(event);
-                Ok(())
-            }
-            ClassifiedFrame::Other(frame) => {
-                Self::continue_after_nonfatal(
-                    deferred_error,
-                    self.flush_engine_batch(engine_events),
-                )?;
-                Self::continue_after_nonfatal(deferred_error, self.feed(frame))
-            }
-        }
-    }
-
-    fn flush_engine_batch(
-        &mut self,
-        engine_events: &mut Vec<EngineEvent>,
-    ) -> Result<(), ControlError> {
-        self.apply_engine_events(std::mem::take(engine_events))
-    }
-
-    fn error_after_engine_batch(
-        &mut self,
-        engine_events: &mut Vec<EngineEvent>,
-        deferred_error: &mut Option<ControlError>,
-        error: ControlError,
-    ) -> Result<(), ControlError> {
-        if let Err(pending_error) =
-            Self::continue_after_nonfatal(deferred_error, self.flush_engine_batch(engine_events))
-        {
-            return Err(ControlError::prefer(Some(pending_error), error));
-        }
-        Err(ControlError::prefer(deferred_error.take(), error))
     }
 
     fn continue_after_nonfatal(
@@ -360,12 +293,11 @@ impl ControlPlane {
         let Some(frame) = self.take_global_metadata_frame(frame) else {
             return Ok(());
         };
-        match classify_engine_frame(frame) {
-            ClassifiedFrame::Engine(event) => self.apply_engine(event),
-            ClassifiedFrame::Other(frame) => {
-                self.push_event(Event::Frame(Box::new(frame)));
-                Ok(())
-            }
+        if KernelInput::from_stream_frame(&frame).is_some() {
+            self.apply_engine(EngineEvent::Stream(frame))
+        } else {
+            self.push_event(Event::Frame(Box::new(frame)));
+            Ok(())
         }
     }
 

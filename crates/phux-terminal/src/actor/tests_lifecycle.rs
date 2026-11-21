@@ -132,88 +132,27 @@ fn apply_native_wire_frame(
     frame: &FrameKind,
     effects: &mut phux_client_core::session::EffectBuffer,
 ) {
-    use phux_client_core::engine::CanonicalGeometry;
     use phux_client_core::session::KernelInput;
 
     let mut encoded = (&[][..]).into();
     frame.encode(&mut encoded);
     let (decoded, tail) = FrameKind::decode(&encoded).expect("public wire decode");
     assert!(tail.is_empty());
-    let input = match &decoded {
-        FrameKind::BootstrapBegin {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            profile,
-            cols,
-            rows,
-            base_seq,
-        } => KernelInput::BootstrapBegin {
-            terminal_id,
-            stream_id: *stream_id,
-            bootstrap_id: *bootstrap_id,
-            profile: *profile,
-            geometry: CanonicalGeometry::new(*cols, *rows).expect("geometry"),
-            base_seq: *base_seq,
-        },
-        FrameKind::BootstrapChunk {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            chunk_seq,
-            payload,
-        } => KernelInput::BootstrapChunk {
-            terminal_id,
-            stream_id: *stream_id,
-            bootstrap_id: *bootstrap_id,
-            chunk_seq: *chunk_seq,
-            payload,
-        },
-        FrameKind::BootstrapReady {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            history_cursor,
-        } => KernelInput::BootstrapReady {
-            terminal_id,
-            stream_id: *stream_id,
-            bootstrap_id: *bootstrap_id,
-            history_cursor: history_cursor.as_deref(),
-        },
-        FrameKind::HistoryPage {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            page_seq,
-            cursor,
-            next_cursor,
-            payload,
-            rows,
-        } => KernelInput::HistoryPage {
-            terminal_id,
-            stream_id: *stream_id,
-            bootstrap_id: *bootstrap_id,
-            page_seq: *page_seq,
-            rows: *rows,
-            payload,
-            cursor,
-            next_cursor: next_cursor.as_deref(),
-        },
-        FrameKind::ResourceOutput {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            seq,
-            bytes,
-        } => KernelInput::ResourceOutput {
-            terminal_id,
-            stream_id: *stream_id,
-            bootstrap_id: *bootstrap_id,
-            seq: *seq,
-            payload: bytes,
-        },
-        other => panic!("unexpected native flow frame: {other:?}"),
-    };
+    let input = KernelInput::from_stream_frame(&decoded)
+        .unwrap_or_else(|| panic!("unexpected native flow frame: {decoded:?}"));
+    match &input {
+        KernelInput::BootstrapBegin { geometry, .. } => {
+            assert!(
+                geometry.cols > 0 && geometry.rows > 0,
+                "native terminal geometry"
+            );
+        }
+        KernelInput::BootstrapChunk { .. }
+        | KernelInput::BootstrapReady { .. }
+        | KernelInput::HistoryPage { .. }
+        | KernelInput::ResourceOutput { .. } => {}
+        _ => panic!("unexpected native flow frame: {decoded:?}"),
+    }
     kernel
         .update(input, effects)
         .expect("kernel accepts server wire frame");

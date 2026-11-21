@@ -11,10 +11,7 @@ use phux_protocol::wire::frame::{
 
 use super::closed::{apply_keep_empty_broadcast, apply_session_rename_broadcast};
 use super::spawned::window_holding_pane;
-use super::windows::{
-    layout_key_scope_session, layout_names_only_absent_panes, reconcile_loaded_workspace,
-    unknown_layout_leaves,
-};
+use super::windows::layout_key_scope_session;
 use super::{FrameCtx, FrameOutcome, note_agent_change};
 use crate::attach::outcome::{AttachEnd, AttachError};
 use crate::layout::ArrangementDoc;
@@ -47,18 +44,18 @@ pub(super) fn directory_listing_outcome(
 pub(super) fn handle_metadata_value<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
     request_id: u32,
-    value: Option<Vec<u8>>,
+    value: Option<&[u8]>,
 ) -> Result<FrameOutcome, AttachError> {
     // ADR-0040: a pending per-Terminal `phux.agent/v1` GET reply.
     // `value: None` (key absent) clears any stale record.
     if let Some(terminal) = ctx.agent_meta.asked_pending.remove(&request_id) {
-        return Ok(apply_asked_flag(ctx, terminal, value.as_deref()));
+        return Ok(apply_asked_flag(ctx, terminal, value));
     }
     if let Some(terminal) = ctx.agent_meta.occupant_pending.remove(&request_id) {
-        return Ok(apply_occupant(ctx, &terminal, value.as_deref()));
+        return Ok(apply_occupant(ctx, &terminal, value));
     }
     if let Some(terminal) = ctx.agent_meta.pending.remove(&request_id) {
-        let changed = ctx.agent_meta.apply(&terminal, value.as_deref());
+        let changed = ctx.agent_meta.apply(&terminal, value);
         if changed {
             note_agent_change(ctx.panes, ctx.focused_resource.as_ref(), &terminal);
         }
@@ -75,36 +72,11 @@ pub(super) fn handle_metadata_value<W: crate::attach::RenderSink>(
         );
         return Ok(FrameOutcome::default());
     }
-    let Some(bytes) = value else {
-        return Ok(FrameOutcome {
-            layout_get_answered: true,
-            ..FrameOutcome::default()
-        });
-    };
-    match ArrangementDoc::decode_cbor(&bytes) {
-        Ok(new_ws) if layout_names_only_absent_panes(&new_ws, ctx.panes, ctx.surface_leaves()) => {
-            tracing::debug!(
-                "persisted layout names only panes absent from the snapshot; discarding"
-            );
-            Ok(FrameOutcome {
-                layout_replaced: true,
-                layout_get_answered: true,
-                ..FrameOutcome::default()
-            })
-        }
-        Ok(new_ws) => {
-            let attach_panes = adopt_workspace(ctx, new_ws);
-            Ok(FrameOutcome {
-                layout_replaced: true,
-                layout_get_answered: true,
-                // Every restored leaf's rect moved; reflow the PTYs.
-                reflow_panes: true,
-                attach_panes,
-                ..FrameOutcome::default()
-            })
-        }
-        Err(err) => Err(layout_decode_refusal(&err)),
-    }
+    let layout = value
+        .map(ArrangementDoc::decode_cbor)
+        .transpose()
+        .map_err(|err| layout_decode_refusal(&err))?;
+    Ok(ctx.adopt_layout(layout, true))
 }
 
 /// A pending metadata GET answered with a correlated `ERROR`: the request
@@ -226,19 +198,8 @@ pub(super) fn handle_metadata_changed<W: crate::attach::RenderSink>(
             ..FrameOutcome::default()
         });
     };
-    match ArrangementDoc::decode_cbor(&bytes) {
-        Ok(new_ws) => {
-            let attach_panes = adopt_workspace(ctx, new_ws);
-            Ok(FrameOutcome {
-                layout_replaced: true,
-                // A peer's topology change reshapes our tiles too.
-                reflow_panes: true,
-                attach_panes,
-                ..FrameOutcome::default()
-            })
-        }
-        Err(err) => Err(layout_decode_refusal(&err)),
-    }
+    let layout = ArrangementDoc::decode_cbor(&bytes).map_err(|err| layout_decode_refusal(&err))?;
+    Ok(ctx.adopt_layout(Some(layout), false))
 }
 
 fn layout_decode_refusal(error: &crate::layout::LayoutDecodeError) -> AttachError {
@@ -310,20 +271,6 @@ fn apply_agent_broadcast<W: crate::attach::RenderSink>(
         agent_meta_terminal: Some(terminal.clone()),
         ..FrameOutcome::default()
     }
-}
-
-/// Replace the local workspace with a decoded envelope's topology, re-anchor
-/// focus, and report leaves this client has never seen.
-fn adopt_workspace<W: crate::attach::RenderSink>(
-    ctx: &mut FrameCtx<'_, W>,
-    incoming: ArrangementDoc,
-) -> Vec<ResourceId> {
-    let reconciled =
-        reconcile_loaded_workspace(incoming, ctx.workspace, ctx.focused_resource.as_ref());
-    *ctx.workspace = reconciled;
-    let attach_panes = unknown_layout_leaves(ctx.workspace, ctx.panes, ctx.surface_leaves());
-    *ctx.focused_resource = ctx.workspace.active_group().and_then(|ls| ls.focus.clone());
-    attach_panes
 }
 
 /// A program posted a note for a pane (`phux notify`): toast it, naming the

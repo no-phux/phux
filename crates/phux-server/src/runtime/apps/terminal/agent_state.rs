@@ -111,10 +111,12 @@ fn drain_ask_sentinel(
 /// A retained pane's process exited, so its agent is gone: withdraw its
 /// `phux.agent/v1` state to `unknown` (L3 §3.7) in the retaining lock, as the
 /// drain's `Retract` arm does, and return the hook that owes.
-pub(super) fn retract_on_retained_exit(
+pub(crate) fn retract_on_retained_exit(
     s: &mut ServerState,
+    pane: phux_core::ids::ResourceId,
     wire_terminal_id: &WireResourceId,
 ) -> Option<HookEvent> {
+    s.registry().terminal(pane)?;
     let scope = Scope::Resource(wire_terminal_id.clone());
     let hooks_live = s.hook_dispatcher().is_some();
     drain_retract(s, wire_terminal_id, &scope, hooks_live)
