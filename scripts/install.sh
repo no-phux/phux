@@ -523,7 +523,11 @@ unpack_cli() {
 }
 
 # Publish phux and phux-mcp into install_dir by rename, restoring the
-# previous pair if anything is interrupted.
+# previous pair if anything is interrupted. The backup is a hard link (a copy
+# where links fail), never a move: a running server's /proc/<pid>/exe follows
+# a moved file into the backup, which is deleted, and `phux upgrade` then
+# re-execs a path that is gone. Renaming over the old path leaves it
+# "<path> (deleted)", which the server strips back to the new binary.
 publish_cli() {
   mkdir -p "$install_dir"
   cli_lock="${install_dir}/.phux-install.lock"
@@ -544,8 +548,12 @@ publish_cli() {
   done
   cli_publishing=1
   for binary in phux phux-mcp; do
-    if [ -e "${install_dir}/${binary}" ] || [ -L "${install_dir}/${binary}" ]; then
-      mv "${install_dir}/${binary}" "${cli_publish}/backup/${binary}"
+    target_path="${install_dir}/${binary}"
+    if [ -L "$target_path" ]; then
+      cp -P "$target_path" "${cli_publish}/backup/${binary}"
+    elif [ -e "$target_path" ]; then
+      ln "$target_path" "${cli_publish}/backup/${binary}" 2>/dev/null \
+        || cp -p "$target_path" "${cli_publish}/backup/${binary}"
     fi
   done
   for binary in phux phux-mcp; do
@@ -559,10 +567,17 @@ publish_cli() {
 
 rollback_cli() {
   [ "$cli_publishing" -eq 1 ] || return 0
-  for binary in $cli_published; do rm -f "${install_dir}/${binary}"; done
-  for binary in phux phux-mcp; do
-    if [ -e "${cli_publish}/backup/${binary}" ] || [ -L "${cli_publish}/backup/${binary}" ]; then
-      mv -f "${cli_publish}/backup/${binary}" "${install_dir}/${binary}"
+  # Only a published name changed; the others still hold the old binary.
+  for binary in $cli_published; do
+    backup="${cli_publish}/backup/${binary}"
+    # Still the backup's own inode: the rename never happened (GNU mv
+    # refuses to move a file onto another link of itself).
+    if [ "$backup" -ef "${install_dir}/${binary}" ]; then
+      continue
+    elif [ -e "$backup" ] || [ -L "$backup" ]; then
+      mv -f "$backup" "${install_dir}/${binary}"
+    else
+      rm -f "${install_dir}/${binary}"
     fi
   done
 }
@@ -642,6 +657,32 @@ offer_service() {
   fi
   "$phux" service install --adopt \
     || phux_message warn "the server is not supervised; retry with: $(shell_quote "$phux") service install --adopt"
+}
+
+# Whether release $1 is older than release $2. A build that is not X.Y.Z
+# cannot be ordered, so any difference counts, as `phux` itself decides.
+older_release() {
+  [ "$1" != "$2" ] || return 1
+  matches "$1" "$SEMVER" && matches "$2" "$SEMVER" || return 0
+  printf '%s.%s\n' "$1" "$2" \
+    | awk -F. '{ for (i = 1; i <= 3; i++) if ($i != $(i + 3)) exit !($i < $(i + 3)); exit 1 }'
+}
+
+# A server already running an older release keeps running it until it is
+# handed over, so do that in place (`phux upgrade`: panes survive). Best
+# effort and quiet; on a refusal the old server keeps running.
+hand_over_server() {
+  phux="${install_dir}/phux"
+  [ -x "$phux" ] || return 0
+  status="$("$phux" status --json 2>/dev/null </dev/null)" || return 0
+  theirs="$(printf '%s\n' "$status" | sed -n 's/^  "server_version": "\([^"]*\)",*$/\1/p')"
+  ours="$(printf '%s\n' "$status" | sed -n 's/^  "client_version": "\([^"]*\)",*$/\1/p')"
+  [ -n "$theirs" ] && [ -n "$ours" ] && older_release "$theirs" "$ours" || return 0
+  if "$phux" upgrade </dev/null >/dev/null 2>&1; then
+    detail ok "handed the running server over from ${theirs} to ${ours}"
+  else
+    phux_message warn "the running server is still ${theirs}; hand it over with: $(shell_quote "$phux") upgrade"
+  fi
 }
 
 # Best effort: `man` reads <dir>/../share/man for a <dir> on PATH, so
@@ -1116,6 +1157,7 @@ else
   install_cli "$pin" "$pin_sha256"
 fi
 [ "$dry_run" -eq 1 ] || offer_service
+[ "$dry_run" -eq 1 ] || [ "$rune" -eq 1 ] || hand_over_server
 if [ "$dry_run" -eq 1 ]; then
   :
 elif [ -n "$rune_installed" ]; then
