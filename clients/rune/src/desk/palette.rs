@@ -265,14 +265,20 @@ impl Desk {
                 palette::rank(items, query)
             }
             Mode::All => {
-                let mut items = self.resource_items();
-                // The quick terminal's own action.
-                items.extend(self.quick.is_some().then(|| palette::Item {
-                    title: "Move to a Tab".to_owned(),
-                    detail: "into the main window".to_owned(),
-                    kind: "action",
-                    target: Target::MoveToTab,
-                }));
+                // The quick terminal's own action leads; then terminals,
+                // sessions and commands; the mirrors, which few reach for,
+                // wait at the end until a query names them.
+                let mut items: Vec<palette::Item> = self
+                    .quick
+                    .is_some()
+                    .then(|| palette::Item {
+                        title: "Move to a Tab".to_owned(),
+                        detail: "into the main window".to_owned(),
+                        kind: "action",
+                        target: Target::MoveToTab,
+                    })
+                    .into_iter()
+                    .collect();
                 items.extend(palette::items(
                     topology,
                     &self.addressable(),
@@ -280,6 +286,7 @@ impl Desk {
                 ));
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
                 items.extend(self.plugin_actions.items());
+                items.extend(self.resource_items());
                 palette::rank(items, query)
             }
             Mode::Mirror(source) => self.mirror_items(source, query),

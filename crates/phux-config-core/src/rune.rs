@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// A key set here wins over the app's saved choice and cannot be changed
 /// from Settings; an unset key stays the app's to remember.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
 #[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
 pub struct RuneCfg {
     /// Theme id, as the theme picker lists them; `""` follows the system.
@@ -46,6 +46,9 @@ pub struct RuneCfg {
     /// Markdown renderer argv: UTF-8 Markdown on stdin, plain UTF-8 on stdout.
     /// `{width}` expands to columns. Unset uses bundled tmd; `[]` shows source.
     pub markdown_viewer: Option<Vec<String>>,
+    /// `false` drops the built-in chords: only `[rune.keys]` acts, plus the
+    /// palette and Settings chords until you bind those commands.
+    pub key_defaults: Option<bool>,
     /// `[rune.keys]`: a chord such as `"cmd+shift+d"` and the command it
     /// runs, or `"none"` to take a built-in chord away.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
@@ -53,7 +56,9 @@ pub struct RuneCfg {
 }
 
 /// `[rune] quick-terminal-edge`: where the quick terminal opens.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum QuickTerminalEdge {
     /// Across the top of the display.

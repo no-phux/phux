@@ -1,10 +1,10 @@
 //! Resource-scoped event subscriptions.
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the split command modules share the parent command namespace"
-)]
 
-use super::*;
+use phux_protocol::wire::frame::CommandResult;
+use tracing::debug;
+
+use crate::runtime::commands::results::terminal_not_found;
+use crate::state::{ClientId, Outbound, SharedState};
 
 /// Handle `SUBSCRIBE_RESOURCE_EVENTS`: a Terminal-scoped `SUBSCRIBE_EVENTS`
 /// with a type filter in the same registry (ADR-0123); a repeat replaces the

@@ -58,6 +58,7 @@ rule_table! {
         NamedTerminal,
     );
     F_VIEWPORT_RESIZE = verbs("`VIEWPORT_RESIZE`", [Bind], AttachedTerminals);
+    F_VIEWPORT_COLORS = verbs("`VIEWPORT_COLORS`", [Bind], AttachedTerminals);
     F_SPAWN_SATELLITE = verbs(
         "`SPAWN_RESOURCE { satellite: Some, owner_terminal: None }`", [Create], SatelliteHost
     );

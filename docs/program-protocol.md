@@ -393,11 +393,10 @@ Read the reply from the terminal in raw mode; an answer starting
 - **OSC 9;4 (progress).** phux reads it for agent detection rules but does
   not turn it into OSC 7501 records, so it never overwrites a real report.
   A program MAY send both.
-- **OSC 9, OSC 777, OSC 99 (desktop notifications).** phux ignores these
-  from a pane. It sends its own notifications to your terminal when a
-  pane's state changes, so a program reports state and lets phux decide.
-  A program with something to say runs
-  [`phux notify`](./scripting.md#notes) instead.
+- **OSC 9, OSC 777, OSC 99 (desktop notifications).** Ignored from a pane
+  by default: a program reports state and phux decides when to notify. A
+  program with something to say runs [`phux notify`](./scripting.md#notes),
+  or the user opts OSC 9 and OSC 777 into notes there.
 - **OSC 133 (shell integration).** Emitted by the shell. OSC 133 `A` ends a
   pane's `working` and `blocked` records.
 - **OSC 0 and 2 (title).** Free-form. An OSC 7501 `title` labels a record

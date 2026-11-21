@@ -120,8 +120,9 @@ fn session_header(session: &Header, t: &Tokens) -> El {
         .children((session.color).map(|rgb| host_color::mark(rgb, dot_size(t), sidebar)))
         .children(session.branch.then(|| branch_mark(t)))
         .child(
+            // A group's name, a step quieter than the rows it holds.
             text(session.name.to_owned())
-                .font(t.ty.label.semibold())
+                .font(t.ty.caption.semibold())
                 .color(ink.paint())
                 .truncate(),
         );
@@ -331,7 +332,7 @@ pub(super) fn clicked(tx: &mut rune::Tx) {
 
 /// The rows' source list (the kit `Sidebar`'s): one Tab stop that lands on
 /// the selected row; Up and Down move the selection, which follows focus,
-/// and typing a row's first letters jumps to it.
+/// typing a row's first letters jumps to it, and Esc leaves.
 fn source_list(t: &Tokens) -> El {
     col()
         .key("sidebar-list")
@@ -339,6 +340,14 @@ fn source_list(t: &Tokens) -> El {
         .label("Sessions")
         .focus_group()
         .focus_follows()
+        // Esc hands the keyboard back to the shown terminal.
+        .on_key(|_: &mut Desk, event, tx| {
+            let back = event.key == Key::Escape;
+            if back {
+                tx.blur();
+            }
+            back
+        })
         .w_full()
         .gap(t.space.s0_5)
         .px(t.space.s2)

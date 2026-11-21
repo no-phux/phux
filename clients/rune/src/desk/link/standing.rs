@@ -6,24 +6,15 @@ use phux_client_runtime::reconnect::{AUTHORITY_CHANGED, is_fatal_refusal_detail}
 
 use super::{BANNER_AFTER, Desk, incompatible};
 
-/// How the QUIC lane words a refused pairing token, which the runtime's own
-/// detail rule doesn't read back.
-const QUIC_TOKEN_REFUSED: &str = "refused the pairing token";
-
 /// What the phone app says once its computer has refused its credential.
 pub(super) const UNPAIRED: &str = "This computer no longer accepts this phone. Pair again.";
-
-/// Retrying can't change this refusal: the pairing has to be made again.
-pub(super) fn refused_for_good(detail: &str) -> bool {
-    is_fatal_refusal_detail(detail) || detail.contains(QUIC_TOKEN_REFUSED)
-}
 
 /// A failure in words, without the transport's.
 pub fn plainly(error: &str) -> String {
     let lower = error.to_ascii_lowercase();
     if let Some(words) = incompatible(error) {
         words
-    } else if refused_for_good(error) {
+    } else if is_fatal_refusal_detail(error) {
         "This machine no longer accepts this computer. Set it up again from Machines.".to_owned()
     } else if lower.contains("refused") || lower.contains("no such file") {
         "The server isn't answering.".to_owned()
@@ -54,7 +45,7 @@ pub fn plainly_on_phone(error: &str, name: &str) -> String {
         format!(
             "{name} isn't the computer this phone paired with. Pair again if you set it up again."
         )
-    } else if refused_for_good(error) {
+    } else if is_fatal_refusal_detail(error) {
         UNPAIRED.to_owned()
     } else if says(&[
         "could not resolve",
@@ -231,7 +222,7 @@ impl Desk {
         self.connection
             .error
             .as_deref()
-            .is_some_and(refused_for_good)
+            .is_some_and(is_fatal_refusal_detail)
     }
 
     /// A word for the current machine's row.

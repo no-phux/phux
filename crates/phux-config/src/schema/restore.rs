@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 pub const RESUME_TOKEN_PLACEHOLDER: &str = "${PHUX_RESUME_TOKEN}";
 
 /// `[restore]` table: bringing panes back after a reboot or a crash.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
 pub struct RestoreCfg {
     /// Run `phux restore` when the server starts: relaunch every pane a
@@ -21,7 +21,7 @@ pub struct RestoreCfg {
 }
 
 /// One `[[restore.program]]` entry.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct RestoreProgram {
     /// The OSC 7501 `app` this entry resumes.

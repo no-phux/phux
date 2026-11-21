@@ -1,11 +1,11 @@
 //! Terminal resize handling.
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the split command modules share the parent command namespace"
-)]
 
-use super::*;
-use phux_terminal_api::actor::TerminalResource as _;
+use phux_protocol::wire::frame::{ErrorCode, FrameKind};
+use phux_terminal_api::actor::{ResizeRequest, TerminalHandle, TerminalResource as _};
+use tracing::debug;
+
+use crate::resource::{ResourceHandle, WrongResourceKind};
+use crate::state::{ClientId, Outbound, ResolvedOwned, SharedState};
 
 /// Handle a client's `RESIZE_TERMINAL`: set one Terminal's exact
 /// size (and, when carried, its cell pixel size), bypassing the window-size

@@ -45,6 +45,7 @@ impl ServerState {
             exit_watches: std::collections::HashMap::new(),
             retained: super::retained::RetainedTable::default(),
             remote_listeners: phux_protocol::wire::RemoteListenersReport::new(),
+            quic_replies: None,
             operation_dedupe: crate::runtime::operation_dedupe::OperationDedupe::default(),
             approvals: super::approvals::ApprovalTable::new(config.approval_limits),
             config,

@@ -450,6 +450,7 @@ fn wired(
                 bundle.agent_state,
                 bundle.program_status,
                 bundle.resume,
+                bundle.program_note,
             ),
         })
     }

@@ -73,10 +73,12 @@ pub enum KeeperExit {
 ///
 /// The lock, socket, or poll failed before or while serving.
 pub fn run_keeper(endpoint: &Endpoint, idle_exit: Duration) -> Result<KeeperExit, Error> {
-    run_keeper_with(endpoint, idle_exit, || {})
+    run_keeper_with(endpoint, idle_exit, || {}, || true)
 }
 
-/// [`run_keeper`] with a hook invoked once this process is the keeper.
+/// [`run_keeper`] with a hook invoked once this process is the keeper, and
+/// `server_alive`, asked at each idle deadline: open work holds the keeper
+/// only while the server it projects for is still there.
 ///
 /// # Errors
 ///
@@ -85,6 +87,7 @@ pub fn run_keeper_with(
     endpoint: &Endpoint,
     idle_exit: Duration,
     on_serving: impl FnOnce() + Send,
+    server_alive: impl Fn() -> bool,
 ) -> Result<KeeperExit, Error> {
     if let Some(parent) = nonempty_parent(&endpoint.store) {
         fs::create_dir_all(parent)?;
@@ -135,7 +138,7 @@ pub fn run_keeper_with(
             Event::HungUp(gone) => waiters.forget(&gone),
             Event::Deadline => waiters.expire(Instant::now()),
             Event::Idle => {
-                if store.has_open_work().unwrap_or(true) {
+                if store.has_open_work().unwrap_or(true) && server_alive() {
                     continue;
                 }
                 return Ok(KeeperExit::Idle);

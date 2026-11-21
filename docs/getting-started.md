@@ -195,7 +195,8 @@ Most keys match tmux, with <kbd>C-a</kbd> where tmux uses <kbd>C-b</kbd>. What's
 | <kbd>x</kbd> asks before closing a pane     | <kbd>x</kbd> closes it right away                                      |
 | <kbd>&</kbd> closes a window                | <kbd>X</kbd> closes a tab (asks first)                                 |
 | <kbd>(</kbd> <kbd>)</kbd> previous, next session | <kbd>P</kbd> <kbd>N</kbd>; <kbd>)</kbd> is the last session         |
-| <kbd>q</kbd> shows pane numbers             | <kbd>q</kbd> jumps to the next pane that needs you                     |
+| <kbd>q</kbd> shows pane numbers             | <kbd>i</kbd>; <kbd>q</kbd> jumps to the next pane that needs you       |
+| `synchronize-panes` types into every pane   | <kbd>y</kbd> turns it on for the tab, and off again                    |
 | `send-prefix` sends the prefix through      | press the prefix twice: <kbd>C-a</kbd> <kbd>C-a</kbd> sends <kbd>C-a</kbd> to the program. Any key with no binding after the prefix goes to the program |
 | copy mode with vi or emacs keys             | vi keys and arrows; <kbd>y</kbd> or <kbd>Enter</kbd> copies to the system clipboard |
 | `tmux source-file ~/.tmux.conf`             | `phux config reload`                                                   |

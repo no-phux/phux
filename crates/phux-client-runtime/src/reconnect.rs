@@ -95,14 +95,27 @@ pub(crate) const TOKEN_REFUSED: &str = "pairing token refused";
 /// [`is_fatal_refusal_detail`] reads it back.
 pub const AUTHORITY_CHANGED: &str = "certificate authority changed";
 
+/// How [`crate::dial::dial_message`] words [`DialError::AuthRefused`];
+/// [`is_fatal_refusal_detail`] reads it back.
+pub(crate) const HOST_REFUSED_TOKEN: &str = "refused the pairing token";
+
 /// [`is_fatal_refusal`] for a consumer holding only the rendered detail of
 /// a connect failure.
+///
+/// A WebSocket refusal is matched as tungstenite renders
+/// the upgrade's status, so a port, address, or fingerprint that happens to
+/// contain `401` is not read as one.
 #[must_use]
 pub fn is_fatal_refusal_detail(detail: &str) -> bool {
-    detail.contains("401")
-        || detail.contains("403")
-        || detail.contains(TOKEN_REFUSED)
-        || detail.contains(AUTHORITY_CHANGED)
+    [
+        "HTTP error: 401",
+        "HTTP error: 403",
+        TOKEN_REFUSED,
+        HOST_REFUSED_TOKEN,
+        AUTHORITY_CHANGED,
+    ]
+    .iter()
+    .any(|phrase| detail.contains(phrase))
 }
 
 #[cfg(test)]
@@ -209,6 +222,19 @@ mod tests {
         assert!(!is_fatal_refusal_detail(
             "did not answer (connection refused)"
         ));
+        // The QUIC lane's own wording, as a consumer holding only the
+        // rendered message sees it.
+        let quic = DialError::AuthRefused("unauthorized".to_owned());
+        assert!(is_fatal_refusal_detail(&crate::dial::dial_message(
+            "mini", &quic
+        )));
+        // Digits in a port, address, or fingerprint are not a status.
+        for detail in [
+            "mini: dial 100.64.0.1:8401: connection reset",
+            "mini: fingerprint mismatch (pinned ab401c, got cd403e)",
+        ] {
+            assert!(!is_fatal_refusal_detail(detail), "{detail}");
+        }
     }
 
     #[test]

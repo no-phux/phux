@@ -33,6 +33,7 @@ fn win(name: &str, active: bool) -> WindowInfo {
         branch: None,
         exited: None,
         badge: None,
+        glyphs: crate::render::theme::Glyphs::default(),
     }
 }
 

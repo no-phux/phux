@@ -7,7 +7,7 @@ pub use phux_config_core::{ClipboardRead, ClipboardWrite};
 use serde::{Deserialize, Serialize};
 
 /// `[defaults]` table. See `docs/reference/config.md` for shipped values.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -113,6 +113,11 @@ pub struct DefaultsCfg {
     #[serde(rename = "cwd-inheritance")]
     pub cwd_inheritance: CwdInheritance,
 
+    /// The directory `cwd-inheritance = "fixed"` starts new panes and
+    /// sessions in; `~/` expands. Unset is `$HOME`.
+    #[serde(rename = "fixed-cwd")]
+    pub fixed_cwd: Option<String>,
+
     /// Command to spawn when `phux` auto-creates a session on attach.
     /// `None` uses [`Self::shell`].
     #[serde(rename = "spawn-on-attach")]
@@ -123,6 +128,12 @@ pub struct DefaultsCfg {
     /// through verbatim.
     #[serde(rename = "session-name-template")]
     pub session_name_template: String,
+
+    /// The session a bare `phux` or `phux attach` and a new Rune window
+    /// open, created when missing. `--session` and links still win. Unset
+    /// opens the session used last.
+    #[serde(rename = "attach-session")]
+    pub attach_session: Option<String>,
 
     /// Which size wins when concurrent views of one Terminal disagree
     /// (ADR-0027). Governs views only: an explicit `RESIZE_TERMINAL` always
@@ -159,8 +170,10 @@ impl Default for DefaultsCfg {
             clipboard_write: ClipboardWrite::default(),
             clipboard_read: ClipboardRead::default(),
             cwd_inheritance: CwdInheritance::default(),
+            fixed_cwd: None,
             spawn_on_attach: None,
             session_name_template: "${cwd-basename}".to_owned(),
+            attach_session: None,
             window_size: WindowSize::default(),
             keep_awake: KeepAwake::default(),
         }
@@ -172,6 +185,14 @@ impl DefaultsCfg {
     #[must_use]
     pub const fn scrollback_limits(&self) -> ScrollbackLimits {
         ScrollbackLimits::new(self.history_limit, self.history_bytes)
+    }
+
+    /// Where new panes and sessions start under `cwd-inheritance = "fixed"`
+    /// (`fixed-cwd`, else `$HOME`); `None` under any other policy.
+    #[must_use]
+    pub fn fixed_start_dir(&self) -> Option<std::path::PathBuf> {
+        (self.cwd_inheritance == CwdInheritance::Fixed)
+            .then(|| crate::theme::expand_home(self.fixed_cwd.as_deref().unwrap_or("~/")))
     }
 }
 
@@ -214,7 +235,7 @@ pub const DEFAULT_APPROVAL_MAX_PENDING_TOTAL: u32 = 1024;
 pub const MAX_APPROVAL_MAX_PENDING_TOTAL: u32 = 65_536;
 
 /// `[limits]` table: server-enforced ceilings on shared resources.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
 pub struct LimitsCfg {
     /// Largest L3 metadata value stored at one key (`docs/protocol.md#commands-events-resources`),
@@ -236,7 +257,9 @@ pub const DEFAULT_METADATA_VALUE_BYTES: u32 = 256 * 1024;
 
 /// How a newly-spawned pane chooses its working directory
 /// (`defaults.cwd-inheritance`).
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(
+    Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash, schemars::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum CwdInheritance {
     /// The focused pane's live working directory (default, as tmux).
@@ -248,11 +271,15 @@ pub enum CwdInheritance {
     SessionRoot,
     /// The last working directory used in the window.
     LastCwdPerWindow,
+    /// Always `defaults.fixed-cwd` (else `$HOME`), for new sessions too.
+    Fixed,
 }
 
 /// Which geometry wins when concurrent views of one Terminal disagree on
 /// size (`defaults.window-size`, ADR-0027). Mirrors tmux's `window-size`.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(
+    Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash, schemars::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum WindowSize {
     /// The smallest view's size; larger views letterbox (default).
@@ -272,7 +299,9 @@ pub enum WindowSize {
 
 /// When the server keeps the machine from idle-sleeping
 /// (`defaults.keep-awake`).
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(
+    Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash, schemars::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum KeepAwake {
     /// Never (default).

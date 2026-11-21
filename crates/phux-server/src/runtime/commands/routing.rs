@@ -1,10 +1,16 @@
 //! Command context, entry point, and routing ahead of local dispatch.
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the split command modules share the parent command namespace"
-)]
 
-use super::*;
+use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities};
+use phux_protocol::wire::frame::Command;
+use tokio_util::sync::CancellationToken;
+use tracing::debug;
+
+use crate::runtime::commands::attach_terminal::{invalid_agent_cursor, refuse_invalid_role_policy};
+use crate::runtime::commands::dispatch::dispatch_local;
+use crate::runtime::commands::lifecycle::{handle_shutdown, handle_upgrade};
+use crate::runtime::commands::satellite::{handle_satellite_command, note_local_use};
+use crate::runtime::reply;
+use crate::state::{ClientId, Outbound, SharedState};
 
 /// Stable, payload-free label for a [`Command`] variant: the `kind` field on
 /// the `handle_command` span, kept free of session names, env, and input.

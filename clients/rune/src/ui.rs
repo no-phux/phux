@@ -32,6 +32,7 @@ mod overlay;
 pub(crate) use overlay::key_hint;
 mod pair;
 mod palette;
+mod pane_marks;
 mod panes;
 mod phone;
 pub(crate) use phone::edge_color as phone_edge_color;
@@ -206,7 +207,7 @@ fn window(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     // saw the key. ⌘V and Edit ▸ Paste come to `Desk::key` instead, which
     // answers to the modal and keeps the terminal asked for.
     let root = ground(el().w_full().h_full(), desk.glass(), &t)
-        .on_layout(|d: &mut Desk, rect| d.window_laid_out(rect[2]))
+        .on_layout(|d: &mut Desk, rect| d.window_laid_out([rect[2], rect[3]]))
         .child(main);
     floating(root, desk, p, band, cx)
 }

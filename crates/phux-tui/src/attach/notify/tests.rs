@@ -266,3 +266,25 @@ fn a_muted_pane_never_posts_and_unmuting_restores_it() {
     n.observe(&[row(1, Phase::Settled)], cfg(), t1);
     assert!(n.take_due(cfg(), t1 + COALESCE).is_some());
 }
+
+#[test]
+fn a_note_notifies_out_of_sight_once_per_rate_limit() {
+    let now = Instant::now();
+    let pane = ResourceId::local(3);
+    let mut notifier = Notifier::new(now);
+    assert!(!notifier.note_due(&pane, true, cfg(), now), "on screen");
+    assert!(notifier.note_due(&pane, false, cfg(), now));
+    assert!(!notifier.note_due(&pane, false, cfg(), now + COALESCE));
+    assert!(notifier.note_due(&pane, false, cfg(), now + RATE_LIMIT));
+    notifier.set_client_focused(false);
+    let other = ResourceId::local(4);
+    assert!(
+        notifier.note_due(&other, true, cfg(), now),
+        "window unfocused"
+    );
+    let off = NotificationsCfg {
+        mode: NotifyMode::Off,
+        ..cfg()
+    };
+    assert!(!notifier.note_due(&ResourceId::local(5), false, off, now));
+}

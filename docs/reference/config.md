@@ -52,6 +52,7 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `chrome.dim-unfocused` | `false` |
 | `chrome.min-pane-cols` | `40` |
 | `chrome.new-tab-after-current` | `false` |
+| `chrome.title` | `"{session}: {window}"` |
 | `defaults.agent-log-bytes` | `4194304` |
 | `defaults.approval-max-pending` | `64` |
 | `defaults.approval-max-pending-total` | `1024` |
@@ -77,12 +78,14 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `experimental.predictive-echo` | unset — the dial decides: on when the attach leaves the machine, off otherwise. `true` / `false` force it on every transport |
 | `forward.agent` | `false` |
 | `forward.tcp` | `true` |
+| `keybindings.defaults` | `true` |
 | `keybindings.prefix` | `"C-a"` |
 | `keybindings.which-key` | `true` |
 | `keybindings.which-key-delay-ms` | `400` |
 | `limits.metadata-value-bytes` | `262144` |
 | `notifications.blocked` | `true` |
 | `notifications.done` | `true` |
+| `notifications.from-programs` | `"off"` |
 | `notifications.mode` | `"terminal"` |
 | `notifications.sound` | `false` |
 | `notifications.suppress-focused` | `true` |
@@ -206,9 +209,12 @@ clipboard-read = "deny"
 #   "home"                always $HOME
 #   "session-root"        the directory the session was created in
 #   "last-cwd-per-window" the last directory used in that tab
+#   "fixed"               always fixed-cwd ($HOME when unset), for new
+#                         sessions too
 # Following the focused pane needs your shell to report its directory
 # (OSC 7); most do.
 cwd-inheritance = "inherit-focused"
+# fixed-cwd = "~/notes"
 
 # spawn-on-attach: the command a plain `phux` runs when it creates its
 # first session, through `$SHELL -c`. `phux new` ignores it. Unset runs
@@ -220,6 +226,11 @@ cwd-inheritance = "inherit-focused"
 # their names in the session picker; ${random-name} is a word pair such as
 # drifting-cedar. Set "default" for one fixed name.
 session-name-template = "${cwd-basename}"
+
+# attach-session: the session a plain `phux`, `phux attach` and a new Rune
+# window open instead of the one used last, created when missing.
+# `phux attach NAME` and links still win.
+# attach-session = "scratch"
 
 # When two clients view one pane at different sizes, which size wins:
 #   "smallest" the smallest view; bigger ones get blank margins (like tmux)
@@ -244,6 +255,11 @@ keep-awake = "off"
 [keybindings]
 # The prefix. Press it, then a key from the prefix table below.
 prefix = "C-a"
+
+# false starts from an empty keymap: only your own bindings apply, plus the
+# command-palette keys (prefix then Space, : or ?) until you bind the
+# palette yourself. Rune's chords have their own switch, [rune] key-defaults.
+defaults = true
 
 # After the prefix, hesitate for which-key-delay-ms and a popup lists
 # every key you can press next, rebinds included. It never eats a key:
@@ -277,6 +293,8 @@ which-key-delay-ms = 400
 "o" = "next-pane"
 ";" = "previous-pane"
 "=" = "last-pane"
+# i numbers every pane for a moment; press a number to jump to that pane.
+"i" = "display-panes"
 
 # Tabs inside one split (`phux slot add` makes them): } and { show the
 # focused slot's next or previous tab, in this client only.
@@ -286,8 +304,10 @@ which-key-delay-ms = 400
 # Zoom the focused pane to fill the tab, and back.
 "z" = "toggle-zoom"
 
-# Show or hide the sidebar.
+# Show or hide the sidebar. e moves the keyboard into it: arrows or j/k
+# move, Enter opens the row, Esc goes back to the pane.
 "b" = "toggle-sidebar"
+"e" = "focus-sidebar"
 
 # Copy mode: scroll back, search, select, and copy. Vi keys and arrows move, y
 # copies, Esc leaves.
@@ -376,6 +396,10 @@ which-key-delay-ms = 400
 "g" = "give-input"
 "f" = { action = "signal-terminal", signal = "freeze" }
 "u" = { action = "signal-terminal", signal = "resume" }
+
+# y types into every pane of this tab at once, until you press it again;
+# each pane's title rule says [sync] while it is on.
+"y" = "sync-panes"
 
 # Resize the focused pane by 5 cells. R enters resize mode, below, to
 # keep resizing without pressing the prefix each time.
@@ -805,12 +829,18 @@ right = [
 # `dim-unfocused`: in a tab with several panes, the ones without focus
 # are painted faint. How faint is up to your terminal.
 #
+# `title`: the window title of the terminal phux runs in, which your
+# window manager and window switcher show. `{session}` is the session
+# name and `{window}` the tab in view. The old title comes back on
+# detach; "" leaves the title alone.
+#
 # [chrome]
 # compact-cols = 64
 # compact-rows = 18
 # min-pane-cols = 40
 # new-tab-after-current = false
 # dim-unfocused = false
+# title = "{session}: {window}"
 
 # Agent notifications. The TUI
 # posts one when an agent becomes blocked or asks for you, and when an
@@ -830,6 +860,14 @@ right = [
 # "osc99" if auto guesses wrong. Inside tmux the sequence is wrapped for
 # passthrough (tmux needs `set -g allow-passthrough on`).
 #
+# A note a program posts with `phux notify` shows as a toast; a warn or
+# error note for a pane you can't see also notifies, the same way.
+#
+# `from-programs`: "off" ignores OSC 9 and OSC 777 from panes, so no
+# escape sequence a pane prints raises a notification. "notes" makes each
+# one the pane's note, at most one a second per pane. The server reads it
+# when it starts.
+#
 # [notifications]
 # mode = "terminal"
 # terminal-protocol = "auto"
@@ -837,6 +875,7 @@ right = [
 # done = true
 # suppress-focused = true
 # sound = false
+# from-programs = "off"
 
 # Authorization posture. Read once
 # at server start; a change needs a restart.

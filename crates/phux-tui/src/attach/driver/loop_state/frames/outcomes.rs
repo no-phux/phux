@@ -309,6 +309,9 @@ impl super::super::SessionLoop {
         if outcome.agent_meta_changed || review_changed {
             self.note_chrome_change(repaint);
         }
+        if let Some((terminal, alert)) = &outcome.note_alert {
+            self.alert_note(out, terminal, alert);
+        }
         if let Some(note) = &outcome.note {
             self.overlays.push(Box::new(ToastOverlay::new(
                 note.title.clone(),
@@ -320,6 +323,8 @@ impl super::super::SessionLoop {
         // The `phux config reload` doorbell rang.
         if outcome.config_reload {
             self.reload_config(out, sidebar);
+            // A theme switch rings it (the Omarchy hook): re-ask the colours.
+            let _ = Self::query_default_colors(out);
         }
         // Raised, not called: the fleet refresh repaints over a full frame, so
         // the accumulator collapses a burst into one.

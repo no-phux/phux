@@ -1,11 +1,12 @@
 //! Screen and terminal-state queries.
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the split command modules share the parent command namespace"
-)]
 
-use super::*;
-use phux_terminal_api::actor::TerminalResource as _;
+use phux_protocol::wire::frame::{CommandResult, CommandValue, ErrorCode};
+use phux_terminal_api::actor::{ScreenReply, ScreenRequest, TerminalHandle, TerminalResource as _};
+use tokio::sync::oneshot;
+
+use crate::runtime::apps::terminal::commands::input_route::terminal_handle;
+use crate::runtime::commands::wrong_resource_kind;
+use crate::state::SharedState;
 
 /// Highest `GET_SCREEN.format` selector (low 7 bits) this build renders:
 /// `1` HTML, `2` VT.

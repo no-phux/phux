@@ -105,6 +105,10 @@ define_server_feature_word! {
         SlotTabs = SLOT_TABS = 0x0800_0000,
         /// Current question reads, exact structured responses, and receipt lookup.
         CurrentQuestions = CURRENT_QUESTIONS = 0x1000_0000,
+        /// The server accepts `VIEWPORT_COLORS`: an attached client's new
+        /// outer default colours become its panes' OSC 10/11 answers
+        /// mid-attach. A client MUST see the bit before sending the frame.
+        ViewportColors = VIEWPORT_COLORS = 0x2000_0000,
     }
 }
 

@@ -215,28 +215,38 @@ impl ServerRuntime {
                     listener
                 });
                 if let ListeningHook(Some(hook)) = on_listening {
-                    hook(&state.with(|s| s.remote_listeners().clone()));
+                    hook(&state.with(crate::state::ServerState::remote_listeners));
                 }
 
                 // ADR-0162 startup order: open the store, resume (or import)
                 // the upgrade blob, persist a first start, reconcile what a
                 // previous run left live, then seed. Nothing relaunches.
                 let cold_start = resume_blob.is_none();
-                open_org_store(&state, &org_store)?;
-                if let Some(blob) = &resume_blob {
-                    resume_session_tree(&state, blob, &root_token)?;
-                    crate::runtime::apps::retry_pending_agent_closures(&state);
-                    delegation::resume_delegations(
-                        &state,
-                        &blob.delegations,
-                        Some(&input_lane_handle),
-                        &root_token,
-                    );
+                let started = (|| -> Result<(), ServerError> {
+                    open_org_store(&state, &org_store)?;
+                    if let Some(blob) = &resume_blob {
+                        resume_session_tree(&state, blob, &root_token)?;
+                        crate::runtime::apps::retry_pending_agent_closures(&state);
+                        delegation::resume_delegations(
+                            &state,
+                            &blob.delegations,
+                            Some(&input_lane_handle),
+                            &root_token,
+                        );
+                    }
+                    // ADR-0163 §5: a credential the previous process held and
+                    // this one did not carry is revoked; drop its socket file.
+                    delegation::sweep_stale_sockets(&state);
+                    state.with_mut(crate::state::ServerState::persist_first_start)?;
+                    Ok(())
+                })();
+                if let Err(err) = started {
+                    // A resume can fail after spawning some engines; drain
+                    // them like a shutdown so no pane child outlives us.
+                    root_token.cancel();
+                    drain_engines(&state).await;
+                    return Err(err);
                 }
-                // ADR-0163 §5: a credential the previous process held and
-                // this one did not carry is revoked; drop its socket file.
-                delegation::sweep_stale_sockets(&state);
-                state.with_mut(crate::state::ServerState::persist_first_start)?;
                 let reconciled = state.with_mut(crate::state::ServerState::reconcile);
                 if reconciled != crate::state::Reconciled::default() {
                     info!(

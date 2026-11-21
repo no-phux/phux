@@ -58,6 +58,16 @@ pub(super) fn paint_active_overlay<W: crate::attach::RenderSink>(
     let painted = base.map_or(StatusBarPaint::NotPublished, |ls| {
         paint_full_frame(out, ls, panes, engine_kernel, focused, chrome)
     });
+    // `display-panes`: each shown pane's number over it.
+    if let (Some(numbered), Some(ls)) = (overlays.pane_numbers(), base) {
+        let content = chrome.content_layout().rect;
+        let shown = crate::multi_pane::compute_layout_in(ls, content, viewport_dims).rects;
+        let spots = (1..).zip(numbered).filter_map(|(n, id)| {
+            let rect = *shown.get(id)?;
+            Some((n, rect, Some(id) == focused))
+        });
+        let _ = crate::render::overlay::pane_picks::paint_numbers(out, spots, chrome.theme);
+    }
     let shadow = chrome.theme.shadow;
     let _ = overlays.paint_clipped(out, viewport_dims, overlay_content, clip, shadow);
     // The box sits over pane cells; forget their fronts (free insurance).

@@ -1,6 +1,6 @@
 //! Explicit application composition; there is no built-in/default engine.
 
-use crate::agent_detect::{AgentDetectEvent, LiveSessionProbe, ProgramStatusRecord};
+use crate::agent_detect::{AgentDetectEvent, LiveSessionProbe, ProgramNote, ProgramStatusRecord};
 use crate::launch::LaunchCommand;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
@@ -80,6 +80,9 @@ pub struct EngineBundle {
     pub program_status: watch::Receiver<Vec<ProgramStatusRecord>>,
     /// The OSC 7501 `resume=` token: server-only, so not in a record.
     pub resume: watch::Receiver<Option<phux_core::ResumeToken>>,
+    /// The latest OSC 9 / OSC 777 notification; the newest replaces any
+    /// the server has not read yet.
+    pub program_note: watch::Receiver<Option<ProgramNote>>,
 }
 impl std::fmt::Debug for EngineBundle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

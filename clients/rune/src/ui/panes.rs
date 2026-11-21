@@ -368,6 +368,7 @@ fn terminal_pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Tokens) -> E
         .children(overlay::find_bar(desk, id, area, ink))
         .children(question.map(|card| card.content))
         .children(tab_badge(desk, id, t))
+        .children(super::pane_marks::marks(desk, id, t))
         // Outlined while a dragged terminal would join its slot as a tab.
         .children(joining.then(|| {
             el().cover()

@@ -2,6 +2,23 @@
 
 use super::*;
 
+/// A pane renderer over its own isolated terminal, outside the kernel.
+struct Pane {
+    terminal: GhosttyTerminal<'static, 'static>,
+    renderer: TerminalRenderer<'static>,
+    geometry: (u16, u16),
+}
+
+impl Pane {
+    fn new(cols: u16, rows: u16) -> Self {
+        Self {
+            terminal: fixture_terminal(cols, rows).expect("terminal"),
+            renderer: TerminalRenderer::new().expect("renderer"),
+            geometry: (cols, rows),
+        }
+    }
+}
+
 /// A 1x1 red RGBA image transmitted and placed at the cursor as `id`.
 fn red(id: u32) -> Vec<u8> {
     format!("\x1b_Ga=T,f=32,s=1,v=1,i={id},q=2;/wAA/w==\x1b\\").into_bytes()
@@ -12,11 +29,11 @@ fn kitty_commands(bytes: &[u8], action: &[u8]) -> usize {
     bytes.windows(needle.len()).filter(|w| *w == needle).count()
 }
 
-fn paint_slot(slot: &mut PaneSlot) -> Vec<u8> {
+fn paint_slot(slot: &mut Pane) -> Vec<u8> {
     paint_at(slot, (0, 0))
 }
 
-fn paint_at(slot: &mut PaneSlot, origin: (u16, u16)) -> Vec<u8> {
+fn paint_at(slot: &mut Pane, origin: (u16, u16)) -> Vec<u8> {
     let mut out = Vec::new();
     let clip = slot.geometry;
     slot.renderer
@@ -30,11 +47,11 @@ fn paint_at(slot: &mut PaneSlot, origin: (u16, u16)) -> Vec<u8> {
     out
 }
 
-fn outer(slot: &PaneSlot, pane_id: u32) -> u32 {
+fn outer(slot: &Pane, pane_id: u32) -> u32 {
     slot.renderer.kitty_outer_id(pane_id).expect("mapped id")
 }
 
-fn pixels(slot: &PaneSlot, id: u32) -> Option<Vec<u8>> {
+fn pixels(slot: &Pane, id: u32) -> Option<Vec<u8>> {
     let graphics = slot
         .terminal
         .kitty_graphics()
@@ -43,7 +60,7 @@ fn pixels(slot: &PaneSlot, id: u32) -> Option<Vec<u8>> {
     Some(graphics.image(id)?.data().unwrap()?.to_vec())
 }
 
-fn placed_ids(slot: &PaneSlot) -> Vec<(u32, bool)> {
+fn placed_ids(slot: &Pane) -> Vec<(u32, bool)> {
     let graphics = slot
         .terminal
         .kitty_graphics()
@@ -64,11 +81,11 @@ fn placed_ids(slot: &PaneSlot) -> Vec<(u32, bool)> {
 
 #[test]
 fn first_live_kitty_render_restores_a_visible_image() {
-    let mut slot = PaneSlot::new_with_size(10, 5).expect("slot");
+    let mut slot = Pane::new(10, 5);
     slot.terminal.vt_write(&red(77));
     let out = paint_slot(&mut slot);
     let id = outer(&slot, 77);
-    let mut receiver = PaneSlot::new_with_size(10, 5).expect("receiver");
+    let mut receiver = Pane::new(10, 5);
     receiver.terminal.vt_write(&out);
     assert_eq!(pixels(&receiver, id).expect("replayed"), [255, 0, 0, 255]);
     let graphics = receiver
@@ -97,7 +114,7 @@ fn first_live_kitty_render_restores_a_visible_image() {
 /// buffer, so the keystroke repaints only its own cells.
 #[test]
 fn kitty_images_are_sent_once_not_on_every_repaint() {
-    let mut slot = PaneSlot::new_with_size(10, 5).expect("slot");
+    let mut slot = Pane::new(10, 5);
     slot.terminal.vt_write(&red(77));
     slot.terminal.vt_write(b"\r\n\r\n$ ");
     let first = paint_slot(&mut slot);
@@ -122,7 +139,7 @@ fn kitty_images_are_sent_once_not_on_every_repaint() {
 /// lost its images and re-send them once.
 #[test]
 fn kitty_residency_resets_on_forced_paint_and_invalidation() {
-    let mut slot = PaneSlot::new_with_size(10, 5).expect("slot");
+    let mut slot = Pane::new(10, 5);
     slot.terminal.vt_write(&red(77));
     let _ = paint_slot(&mut slot);
 
@@ -146,9 +163,9 @@ fn kitty_residency_resets_on_forced_paint_and_invalidation() {
 /// An image deleted inside the pane is deleted from the outer terminal.
 #[test]
 fn a_deleted_kitty_image_is_deleted_from_the_outer_terminal() {
-    let mut slot = PaneSlot::new_with_size(10, 5).expect("slot");
+    let mut slot = Pane::new(10, 5);
     slot.terminal.vt_write(&red(77));
-    let mut receiver = PaneSlot::new_with_size(10, 5).expect("receiver");
+    let mut receiver = Pane::new(10, 5);
     receiver.terminal.vt_write(&paint_slot(&mut slot));
     let id = outer(&slot, 77);
     assert!(pixels(&receiver, id).is_some());
@@ -165,12 +182,12 @@ fn a_deleted_kitty_image_is_deleted_from_the_outer_terminal() {
 /// one pane deleting its image leaves the other's on the outer terminal.
 #[test]
 fn panes_with_colliding_image_ids_each_show_their_own_image() {
-    let mut a = PaneSlot::new_with_size(10, 4).expect("pane a");
-    let mut b = PaneSlot::new_with_size(10, 4).expect("pane b");
+    let mut a = Pane::new(10, 4);
+    let mut b = Pane::new(10, 4);
     a.terminal.vt_write(&red(77));
     b.terminal
         .vt_write(b"\x1b_Ga=T,f=32,s=1,v=1,i=77,q=2;AP8A/w==\x1b\\");
-    let mut outer_terminal = PaneSlot::new_with_size(10, 8).expect("outer");
+    let mut outer_terminal = Pane::new(10, 8);
     outer_terminal.terminal.vt_write(&paint_at(&mut a, (0, 0)));
     outer_terminal.terminal.vt_write(&paint_at(&mut b, (0, 4)));
 
@@ -191,8 +208,8 @@ fn panes_with_colliding_image_ids_each_show_their_own_image() {
 /// pane A's image with the same pane id.
 #[test]
 fn a_placeholder_in_pane_b_is_drawn_with_bs_pixels() {
-    let mut a = PaneSlot::new_with_size(10, 4).expect("pane a");
-    let mut b = PaneSlot::new_with_size(10, 4).expect("pane b");
+    let mut a = Pane::new(10, 4);
+    let mut b = Pane::new(10, 4);
     a.terminal.vt_write(&red(77));
     // Image 77 with a virtual placement, shown by one placeholder cell whose
     // 256-colour foreground spells the id.
@@ -200,7 +217,7 @@ fn a_placeholder_in_pane_b_is_drawn_with_bs_pixels() {
         .vt_write(b"\x1b_Ga=T,f=32,s=1,v=1,i=77,U=1,c=1,r=1,q=2;AP8A/w==\x1b\\");
     b.terminal
         .vt_write("\x1b[38;5;77m\u{10EEEE}\u{0305}\u{0305}\x1b[39m".as_bytes());
-    let mut outer_terminal = PaneSlot::new_with_size(10, 8).expect("outer");
+    let mut outer_terminal = Pane::new(10, 8);
     outer_terminal.terminal.vt_write(&paint_at(&mut a, (0, 0)));
     let painted = paint_at(&mut b, (0, 4));
     outer_terminal.terminal.vt_write(&painted);
