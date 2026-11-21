@@ -38,8 +38,8 @@ use self::encode::{
 };
 pub(crate) use self::handle::InputLaneHandle;
 pub(crate) use self::handle::arm_pane_lane;
-pub(crate) use self::host::{handle_of, parts_of, start};
-pub(crate) use self::lane::spawn_input_lane;
+pub(crate) use self::host::ConnectionLane;
+pub(crate) use self::lane::{InputLane, spawn_input_lane};
 use self::process::{
     acknowledged_not_written, acknowledged_resource_exhausted, invalid_command,
     process_apply_input, process_attached, process_headless, unsupported_satellite_route,

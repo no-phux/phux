@@ -11,7 +11,6 @@ use engine::{
 use futures_util::FutureExt as _;
 use futures_util::future::LocalBoxFuture;
 use phux_protocol::caps::BootstrapStreamProfile;
-use phux_protocol::ids::{OperationId, ResourceKey, Revision};
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode, FrameKind};
 use tokio::sync::oneshot;
 
@@ -20,7 +19,7 @@ use crate::resource::{ResourceHandle, ResourceKind, WrongResourceKind};
 use crate::runtime::commands::{AttachResourceFailure, CommandContext};
 use crate::runtime::connections::dispatch::FrameFlow;
 use crate::runtime::operation_dedupe::OperationClaim;
-use crate::state::{ClientId, ServerState, SharedState};
+use crate::state::{ServerState, SharedState};
 
 mod attach;
 pub(crate) mod audit;
@@ -53,9 +52,6 @@ pub(crate) trait DocumentApi: DocumentKind {
     /// The target a record of this kind was opened on; `None` for a
     /// record of another kind.
     fn launch_target(launch: &phux_core::LaunchSpec) -> Option<&str>;
-    /// Whether this kind's app logs a refused `SEND_DOCUMENT_INPUT`. One
-    /// does, for every kind: a refusal can precede resolving its target.
-    const AUDITS_REFUSED_INPUT: bool = false;
     /// Create the registry record under `parent`, running, named `name`;
     /// a tree or surface is named for what it observes.
     fn create(
@@ -91,11 +87,6 @@ pub(crate) static SURFACE_APP: DocumentApp<SurfaceDocument> = DocumentApp(std::m
 pub(crate) static DOCUMENT_APP: DocumentApp<TypedDocument> = DocumentApp(std::marker::PhantomData);
 
 impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
-    fn interactive(&self) -> Option<&'static dyn super::InteractiveApp> {
-        // A producer feeds it: no client launches, sizes or seeds one.
-        None
-    }
-
     fn stage_session<'a>(
         &'a self,
         capture: super::super::session_attach::SessionCapture<'a>,
@@ -103,17 +94,6 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
         pane: crate::state::AttachSnapshotPane,
     ) -> LocalBoxFuture<'a, Result<(), super::super::session_attach::staging::CaptureFailure>> {
         attach::stage_session::<A>(capture, staging, pane).boxed_local()
-    }
-
-    fn resumes_from_cursor(&self) -> bool {
-        false
-    }
-
-    fn check_takeover(&self) -> Result<(), WrongResourceKind> {
-        Err(WrongResourceKind {
-            required: ResourceKind::Terminal,
-            actual: A::KIND,
-        })
     }
 
     fn begin_upgrade(&self, _state: &SharedState) -> Option<Box<dyn super::UpgradeCut>> {
@@ -124,56 +104,8 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
         upgrade::DocumentResume::<A>::begin()
     }
 
-    fn resumed(&self, _state: &SharedState) {}
-
-    fn resource_exited<'a>(
-        &'a self,
-        _state: &'a SharedState,
-        _resource: phux_core::ids::ResourceId,
-    ) -> LocalBoxFuture<'a, ()> {
-        Box::pin(std::future::ready(()))
-    }
-
-    fn claim_relaunch(
-        &self,
-        _ctx: &CommandContext,
-        _operation: OperationId,
-        _resource: &ResourceKey,
-        _expected: Revision,
-    ) -> Option<CommandResult> {
-        // The producer spawns a fresh document. Ordinary relaunch falls
-        // through to the host's app-support refusal before any commit.
-        None
-    }
-
     fn spawn<'a>(&'a self, spawn: ResourceSpawn<'a>) -> LocalBoxFuture<'a, ()> {
         spawn_document::<A>(spawn).boxed_local()
-    }
-
-    fn command_refused(
-        &self,
-        s: &ServerState,
-        client: ClientId,
-        command: &Command,
-        result: &CommandResult,
-    ) {
-        if let Command::SendDocumentInput {
-            terminal_id,
-            intent,
-            on_behalf_of,
-            ..
-        } = command
-            && A::AUDITS_REFUSED_INPUT
-        {
-            audit::record(
-                s,
-                client,
-                on_behalf_of.as_ref(),
-                terminal_id,
-                intent,
-                result,
-            );
-        }
     }
 
     fn command<'a>(

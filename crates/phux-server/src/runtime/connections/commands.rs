@@ -21,7 +21,7 @@ fn spawn_input_receipt(
     slot: tokio::sync::OwnedSemaphorePermit,
     out_tx: mpsc::Sender<Outbound>,
     request_id: u32,
-    receipt: futures_util::future::LocalBoxFuture<'static, CommandResult>,
+    receipt: crate::runtime::apps::terminal::input_lane::InputReceipt,
 ) {
     receipts.spawn_local(async move {
         let _slot = slot;
@@ -151,7 +151,7 @@ pub(in crate::runtime) enum Route {
 /// The route an admitted command takes. An approved held command asks the
 /// same question (ADR-0128), so it routes as it would have unheld.
 pub(in crate::runtime) fn route(command: &Command, input_lane: Option<&InputLane>) -> Route {
-    if input_lane.is_some_and(|lane| lane.rides(command)) {
+    if input_lane.is_some() && InputLane::rides(command) {
         return Route::InputLane;
     }
     // A copy or paste waits on the producer's clipboard, and a mirror

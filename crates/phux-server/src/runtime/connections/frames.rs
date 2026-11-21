@@ -226,7 +226,11 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
                 rows = viewport.rows,
                 "VIEWPORT_RESIZE"
             );
-            crate::runtime::apps::viewport_resize(self.state, self.client_id, &viewport);
+            crate::runtime::apps::terminal::commands::handle_viewport_resize(
+                self.state,
+                self.client_id,
+                &viewport,
+            );
             return FrameFlow::Continue(());
         }
         let ctx = ResourceFrame {

@@ -11,8 +11,9 @@ use phux_protocol::wire::frame::{AttachTarget, ErrorCode, FrameKind, RolePolicy,
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
+use super::apps::{self, terminal};
 use super::pump::initial_bootstrap_id;
-use super::{apps, send_error, stream_id_from};
+use super::{send_error, stream_id_from};
 use crate::resource::ResourceHandle;
 use crate::state::{AttachSnapshotPane, ClientId, Outbound, SharedState};
 use prepare::{is_same_session_reattach, prepare_attach_or_refuse};
@@ -28,14 +29,14 @@ mod target;
 #[cfg(test)]
 mod tests;
 
-/// One session `ATTACH`, as the apps see it around staging.
+/// One session `ATTACH`'s context around staging.
 #[derive(Clone, Copy)]
-pub(crate) struct SessionAttach<'a> {
-    pub(crate) state: &'a SharedState,
-    pub(crate) client_id: ClientId,
-    pub(crate) client_caps: ClientCapabilities,
+struct SessionAttach<'a> {
+    state: &'a SharedState,
+    client_id: ClientId,
+    client_caps: ClientCapabilities,
     /// The client re-attaches the session it already had.
-    pub(crate) same_session: bool,
+    same_session: bool,
 }
 
 /// The immutable generation and remaining resource ceilings lent to an app.
@@ -142,9 +143,8 @@ fn attach_refusal(
     None
 }
 
-/// Fence the client's earlier streams of `panes`, then let each interactive
-/// kind's app fence its own consumers and apply the client's presentation
-/// and viewport.
+/// Fence the client's earlier streams of `panes`, then prepare Terminal
+/// consumers, palettes and sizes before staging.
 async fn prepare_panes(
     attach: SessionAttach<'_>,
     panes: &[AttachSnapshotPane],
@@ -155,18 +155,19 @@ async fn prepare_panes(
     for pane in panes {
         super::pump::stop_output(attach.state, attach.client_id, pane.terminal_id).await;
     }
-    let by_kind = apps::interactive_by_kind(panes, |pane| pane.handle.kind);
-    for (app, of_kind) in &by_kind {
-        app.prepare_attach(attach, of_kind).await;
-    }
+    terminal::attach::prepare_consumers(
+        panes,
+        attach.client_id,
+        attach.client_caps,
+        attach.same_session,
+    )
+    .await;
     if viewport.cols == 0 || viewport.rows == 0 {
         return;
     }
     attach.state.with_mut(|s| {
         s.set_client_viewport(attach.client_id, viewport);
-        for (app, of_kind) in &by_kind {
-            app.attach_viewport(s, of_kind, viewport);
-        }
+        terminal::attach::apply_panes_viewport(s, panes, viewport);
     });
 }
 
@@ -191,19 +192,24 @@ pub(crate) fn prepare_panes_now(
         .expect("a first attach with no palette prepares without waiting");
 }
 
-/// Record the declared role, then let each interactive kind's app apply it.
+/// Record the declared session role and apply it to Terminal leases.
 async fn apply_role(attach: SessionAttach<'_>, panes: &[AttachSnapshotPane], role: RolePolicy) {
     attach
         .state
         .with_mut(|s| s.set_attached_viewer(attach.client_id, role.is_viewer()));
-    for (app, of_kind) in apps::interactive_by_kind(panes, |pane| pane.handle.kind) {
-        app.after_attach(attach, &of_kind, role).await;
-    }
+    terminal::attach::apply_session_role(
+        attach.state,
+        attach.client_id,
+        panes,
+        role,
+        attach.same_session,
+    )
+    .await;
 }
 
 /// Roll back a session `ATTACH` that failed before publication: stop every
-/// staged and committed pump, let each interactive kind release its
-/// consumers, drop the client's consumer state, then end the connection with
+/// staged and committed pump, release Terminal consumers, drop the
+/// client's consumer state, then end the connection with
 /// a fatal error.
 #[allow(
     clippy::too_many_arguments,
@@ -223,9 +229,7 @@ async fn fail_prepublication(
     staged_pumps.abort_all();
     while staged_pumps.join_next().await.is_some() {}
     super::connections::abort_output_pumps(committed_pumps, client_id, "failed ATTACH").await;
-    for (app, of_kind) in apps::interactive_by_kind(staged_handles, |handle| handle.kind) {
-        app.abort_attach(client_id, &of_kind).await;
-    }
+    terminal::attach::release_aborted_consumers(client_id, staged_handles).await;
     super::connections::detach_and_release_consumer_state(state, client_id);
 
     // The writer closes right after this terminal ERROR, discarding anything
@@ -294,7 +298,7 @@ pub(crate) async fn handle_attach(
     else {
         return false;
     };
-    apps::refresh_for_attach(state).await;
+    terminal::attach::refresh_registry_cwds(state).await;
     let same_session = is_same_session_reattach(state, client_id, session);
     let Some((snapshot, initial_client_id, panes, closed, _publication_guard)) =
         prepare_attach_or_refuse(

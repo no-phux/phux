@@ -204,7 +204,9 @@ pub(super) async fn guard_command(
                     ),
                 }
             };
-            state.with(|s| crate::runtime::apps::command_refused(s, client_id, command, &result));
+            crate::runtime::apps::document::audit::record_refusal(
+                state, client_id, command, &result,
+            );
             let _ = out_tx
                 .send(Outbound::Frame(FrameKind::CommandResult {
                     request_id,

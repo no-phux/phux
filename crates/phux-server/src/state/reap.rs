@@ -37,7 +37,8 @@ impl ServerState {
     /// free its server-side bookkeeping, descendants included. Returns
     /// whether the server now executes nothing (R13). Idempotent.
     pub fn reap_resource(&mut self, pane: ResourceId) -> bool {
-        let (idle, token) = self.reap_terminal_inner(pane, ExitOutcome::UNKNOWN, false);
+        let token = self.reap_resource_deferring_actor_cancel(pane, ExitOutcome::UNKNOWN, false);
+        let idle = !self.has_live_activation();
         if let Some(token) = token {
             token.cancel();
         }
@@ -47,24 +48,13 @@ impl ServerState {
     /// Reap `pane` but leave its actor running until the caller cancels the
     /// returned token (so a fenced pump can publish the last screen).
     /// `outcome` is how its process ended, as its exit watcher saw it.
-    pub(crate) fn reap_terminal_deferring_actor_cancel(
+    pub(crate) fn reap_resource_deferring_actor_cancel(
         &mut self,
         pane: ResourceId,
         outcome: ExitOutcome,
         preserve_record: bool,
-    ) -> (bool, Option<tokio_util::sync::CancellationToken>) {
-        self.reap_terminal_inner(pane, outcome, preserve_record)
-    }
-
-    fn reap_terminal_inner(
-        &mut self,
-        pane: ResourceId,
-        outcome: ExitOutcome,
-        preserve_record: bool,
-    ) -> (bool, Option<tokio_util::sync::CancellationToken>) {
-        if self.sessions.registry.resource(pane).is_none() {
-            return (!self.has_live_activation(), None);
-        }
+    ) -> Option<tokio_util::sync::CancellationToken> {
+        self.sessions.registry.resource(pane)?;
         let parent = self.resource_parent(pane);
         // A bound descendant still here (no close cascade ran first, e.g. a
         // failed publication) must lose its record, handle, and engine too:
@@ -92,7 +82,7 @@ impl ServerState {
                 .mailbox
                 .try_send(phux_agent_session::parent::AgentParentRequest::RecordInvalidated);
         }
-        (!self.has_live_activation(), token)
+        token
     }
 
     /// Delete every default-Group `<prefix>.layout/v1/<id>` key for the

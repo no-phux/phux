@@ -355,7 +355,7 @@ fn select_hello_profile(
     client_caps: &ClientCapabilities,
     client_id: ClientId,
 ) -> Result<(Option<BootstrapProfile>, BootstrapLimits), ConnectionClose> {
-    let server_bootstrap = crate::runtime::apps::bootstrap_capabilities(state);
+    let server_bootstrap = crate::runtime::apps::terminal::bootstrap_capabilities(state);
     if client_caps.bootstrap.profiles.as_wire() == 0 {
         debug!(
             ?client_id,

@@ -194,7 +194,7 @@ pub(in crate::runtime) fn spawn_hub_links(
     let relays = crate::hub::relay::HubRelays::default();
     let ssh_program = state.with(|s| s.config().server_env.clone().ssh_program());
     let adopter = state.with(|s| s.federation().adopter());
-    let bootstrap = crate::runtime::apps::bootstrap_capabilities(state);
+    let bootstrap = crate::runtime::apps::terminal::bootstrap_capabilities(state);
     let mut links = crate::hub::link::HubLinks::new(
         relays.clone(),
         root_token,

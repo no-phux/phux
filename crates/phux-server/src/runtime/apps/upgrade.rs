@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use futures_util::future::LocalBoxFuture;
 
-use super::APPS;
+use super::{APP_KINDS, app_for};
 use crate::runtime::connections::pane_events::PaneEvents;
 use crate::runtime::upgrade::UpgradeError;
 use crate::state::upgrade_blob::{KindRebuild, RebuildError, RebuiltTree};
@@ -55,15 +55,21 @@ pub(crate) trait KindResume: KindRebuild {
 
 /// Begin carrying every kind, or `None` while another upgrade holds one.
 pub(crate) fn begin(state: &SharedState) -> Option<Vec<Box<dyn UpgradeCut>>> {
-    APPS.iter().map(|app| app.begin_upgrade(state)).collect()
+    APP_KINDS
+        .into_iter()
+        .map(|kind| app_for(kind).begin_upgrade(state))
+        .collect()
 }
 
 /// Every kind's half of a resume, made before the rebuild takes the lock.
 pub(crate) fn resumes(state: &SharedState) -> Vec<Box<dyn KindResume>> {
-    APPS.iter().map(|app| app.resume(state)).collect()
+    APP_KINDS
+        .into_iter()
+        .map(|kind| app_for(kind).resume(state))
+        .collect()
 }
 
-/// Rebuild `blob` into `state` through `resumes`, in [`APPS`] order: the
+/// Rebuild `blob` into `state` through `resumes`, in [`APP_KINDS`] order: the
 /// Terminal, every other kind's parent, comes first.
 ///
 /// # Errors

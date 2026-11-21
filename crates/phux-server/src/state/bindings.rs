@@ -233,9 +233,11 @@ impl ServerState {
         self.exit_watches.get(&resource).cloned().flatten()
     }
 
-    /// End `resource`'s exit watch: its process is gone.
-    pub(crate) fn end_exit_watch(&mut self, resource: ResourceId) {
+    /// End the watch once the process is gone and check whether the server
+    /// may now exit.
+    pub(crate) fn end_exit_watch(&mut self, resource: ResourceId) -> bool {
         self.exit_watches.remove(&resource);
+        self.self_exit_due()
     }
 
     /// Whether self-exit may run now (R13): the server has served a client,

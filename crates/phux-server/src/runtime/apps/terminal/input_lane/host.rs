@@ -1,18 +1,14 @@
-//! The lane as the host carries it ([`Lane`]): which commands ride it, each
-//! connection's input credits, and starting it for the server.
+//! Commands sharing the Terminal input lane and a connection's credit state.
 
-use futures_util::FutureExt as _;
-use futures_util::future::LocalBoxFuture;
 use phux_protocol::ids::ResourceId as WireResourceId;
-use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode};
+use phux_protocol::wire::frame::{Command, CommandResult};
 
-use super::{InputCredits, InputLaneHandle, InputStalled, spawn_input_lane};
-use crate::runtime::apps::lane::{ConnectionLane, InputLane, Lane, LaneCommand, RunningLane};
-use crate::state::SharedState;
+use super::{InputCredits, InputLaneHandle, InputReceipt, InputStalled};
+use crate::state::{ClientId, SharedState};
 
-impl Lane for InputLaneHandle {
-    /// Acknowledged and routed input to a local Terminal.
-    fn rides(&self, command: &Command) -> bool {
+impl InputLaneHandle {
+    /// Acknowledged and routed input to a local Terminal rides the lane.
+    pub(crate) const fn rides(command: &Command) -> bool {
         matches!(
             command,
             Command::ApplyInput { terminal_id, .. } | Command::RouteInput { terminal_id, .. }
@@ -20,55 +16,58 @@ impl Lane for InputLaneHandle {
         )
     }
 
-    fn connect(&self) -> Box<dyn std::any::Any> {
-        Box::new(InputCredits::default())
-    }
-
-    fn begin<'a>(
-        &'a self,
-        on: LaneCommand<'a>,
-        command: Command,
-    ) -> LocalBoxFuture<'a, Result<LocalBoxFuture<'static, CommandResult>, CommandResult>> {
-        async move {
-            let receipt = match command {
-                Command::ApplyInput {
-                    operation_id,
-                    terminal_id,
-                    events,
-                } => self.begin_apply(on.state, on.client_id, operation_id, terminal_id, events),
-                Command::RouteInput { terminal_id, event } => {
-                    let Some(credits) = on.connection.downcast_mut::<InputCredits>() else {
-                        return Err(CommandResult::error(
-                            ErrorCode::InternalError,
-                            "input lane connection state unavailable",
-                        ));
-                    };
-                    // Same FIFO and the same wait as `INPUT_*` (ADR-0144).
-                    let Ok(credit) = credits.acquire(on.state, &terminal_id).await else {
-                        return Err(InputStalled::result(&terminal_id));
-                    };
-                    self.begin_route(on.state, on.client_id, terminal_id, event, credit)
-                }
-                _ => unreachable!("guarded input command"),
-            };
-            Ok(receipt.boxed_local())
+    /// Open a connection's credit state on the shared input lane.
+    pub(crate) fn connect(&self) -> ConnectionLane {
+        ConnectionLane {
+            lane: self.clone(),
+            credits: InputCredits::default(),
         }
-        .boxed_local()
     }
 }
 
-/// The server's input lane, on its own OS thread.
-pub(crate) fn start(state: &SharedState) -> std::io::Result<RunningLane> {
-    let lane = spawn_input_lane(state.clone())?;
-    Ok(RunningLane::new(InputLane::new(lane.handle()), lane))
+/// The common FIFO and the credit state of one connection's read loop.
+#[derive(Debug)]
+pub(crate) struct ConnectionLane {
+    lane: InputLaneHandle,
+    credits: InputCredits,
 }
 
-/// This app's handle on `lane`.
-pub(crate) fn handle_of(lane: &InputLane) -> Option<&InputLaneHandle> {
-    lane.get()
-}
+impl ConnectionLane {
+    pub(crate) const fn lane(&self) -> &InputLaneHandle {
+        &self.lane
+    }
 
-/// A connection's lane handle and input credits.
-pub(crate) fn parts_of(lane: &mut ConnectionLane) -> Option<(&InputLaneHandle, &mut InputCredits)> {
-    lane.parts()
+    pub(crate) const fn parts(&mut self) -> (&InputLaneHandle, &mut InputCredits) {
+        (&self.lane, &mut self.credits)
+    }
+
+    /// Begin a command already selected by [`InputLaneHandle::rides`].
+    pub(crate) async fn begin(
+        &mut self,
+        state: &SharedState,
+        client_id: ClientId,
+        command: Command,
+    ) -> Result<InputReceipt, CommandResult> {
+        match command {
+            Command::ApplyInput {
+                operation_id,
+                terminal_id,
+                events,
+            } => Ok(self
+                .lane
+                .begin_apply(state, client_id, operation_id, terminal_id, events)),
+            Command::RouteInput { terminal_id, event } => {
+                // Same FIFO and the same wait as `INPUT_*` (ADR-0144).
+                let credit = self
+                    .credits
+                    .acquire(state, &terminal_id)
+                    .await
+                    .map_err(|_| InputStalled::result(&terminal_id))?;
+                Ok(self
+                    .lane
+                    .begin_route(state, client_id, terminal_id, event, credit))
+            }
+            _ => unreachable!("guarded input command"),
+        }
+    }
 }

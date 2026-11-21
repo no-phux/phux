@@ -2,15 +2,14 @@
 
 use futures_util::FutureExt as _;
 use futures_util::future::LocalBoxFuture;
-use phux_protocol::ids::{OperationId, ResourceKey, Revision};
 use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode, FrameKind};
 
 use super::{FrameAdmission, ResourceApp, ResourceFrame, ResourceSpawn, StreamBootstrap};
-use crate::resource::{ResourceKind, WrongResourceKind};
+use crate::resource::ResourceKind;
 use crate::runtime::commands::{AttachResourceFailure, CommandContext};
 use crate::runtime::connections::dispatch::FrameFlow;
 use crate::runtime::operation_dedupe::OperationClaim;
-use crate::state::{ClientId, SharedState};
+use crate::state::SharedState;
 
 mod append;
 mod attach;
@@ -18,6 +17,8 @@ mod frames;
 mod native_agent;
 pub(super) mod spawn;
 pub(crate) mod upgrade;
+
+pub(crate) use native_agent::{claim_relaunch, retry_pending_closures, source_exited};
 
 /// Payload budget for one `BOOTSTRAP_CHUNK` when the connection negotiated
 /// none. Records are at most 16 KiB, so this fits several per chunk.
@@ -28,11 +29,6 @@ const DEFAULT_AGENT_CHUNK_BYTES: usize = 64 * 1024;
 pub(crate) struct AgentSessionApp;
 
 impl ResourceApp for AgentSessionApp {
-    fn interactive(&self) -> Option<&'static dyn super::InteractiveApp> {
-        // A producer feeds it: no client launches, sizes or seeds one.
-        None
-    }
-
     fn stage_session<'a>(
         &'a self,
         _capture: super::super::session_attach::SessionCapture<'a>,
@@ -43,18 +39,6 @@ impl ResourceApp for AgentSessionApp {
         // but let ATTACH_RESOURCE request the committed suffix instead of
         // overwriting it with an unsolicited full retained bootstrap.
         std::future::ready(Ok(())).boxed_local()
-    }
-
-    fn resumes_from_cursor(&self) -> bool {
-        true
-    }
-
-    fn check_takeover(&self) -> Result<(), WrongResourceKind> {
-        // The input lease is a Terminal-facet concept (L1 §1.1).
-        Err(WrongResourceKind {
-            required: ResourceKind::Terminal,
-            actual: ResourceKind::AgentSession,
-        })
     }
 
     fn frame_admission(&self, frame: &FrameKind) -> FrameAdmission {
@@ -82,15 +66,6 @@ impl ResourceApp for AgentSessionApp {
         frame: FrameKind,
     ) -> LocalBoxFuture<'a, FrameFlow> {
         std::future::ready(frames::serve(&ctx, &frame)).boxed_local()
-    }
-
-    fn command_refused(
-        &self,
-        _s: &crate::state::ServerState,
-        _client: ClientId,
-        _command: &Command,
-        _result: &CommandResult,
-    ) {
     }
 
     fn command<'a>(
@@ -154,27 +129,5 @@ impl ResourceApp for AgentSessionApp {
 
     fn resume(&self, _state: &SharedState) -> Box<dyn super::KindResume> {
         Box::new(upgrade::AgentSessionResume)
-    }
-
-    fn resumed(&self, state: &SharedState) {
-        native_agent::retry_pending_closures(state);
-    }
-
-    fn resource_exited<'a>(
-        &'a self,
-        state: &'a SharedState,
-        resource: phux_core::ids::ResourceId,
-    ) -> LocalBoxFuture<'a, ()> {
-        native_agent::source_exited(state, resource).boxed_local()
-    }
-
-    fn claim_relaunch(
-        &self,
-        ctx: &CommandContext,
-        operation: OperationId,
-        resource: &ResourceKey,
-        expected: Revision,
-    ) -> Option<CommandResult> {
-        native_agent::claim_relaunch(ctx, operation, resource, expected)
     }
 }

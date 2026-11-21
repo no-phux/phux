@@ -222,43 +222,42 @@ ownership recommendation. No keeper bootload service exists today.
 | authorization | `phux-server/src/policy.rs`, `workload.rs`, `phux-protocol/src/kinds.rs` |
 | remote access | `crates/phux/src/commands/enroll.rs`, `remote_target.rs`, `phux-client-runtime/src/dial.rs`, `phux-server/src/transport/` |
 
-A resource kind is an app. The host reaches one through `ResourceApp` in
-`phux-server/src/runtime/apps/`: `app_owning` routes a facet command, or a
-host method an app serves, by the catalog rows authorization uses, and
-`app_for` answers per-kind questions such as how a stream bootstraps. `state/` sits below the apps and never names
-them: it asks any resource only for its lifecycle (`ResourceOps`), and holds
-each app's own state in a typed slot it cannot read (`state/app_slots.rs`).
-A new kind does not compile until `app_for` names its app, and no
-`ResourceApp`, `InteractiveApp` or `ResourceOps` method has a default; a new kind
-also takes one `APP_KINDS` row, which a test holds to the catalog. A graceful
-upgrade goes through the apps too: at the cut each app writes the upgrade-blob
-fields its kind owns, and on resume it rebuilds them, in `APP_KINDS` order so
-a parent's kind comes first. A surface only some kinds offer (a size in
-cells, an input lease, a live record stream, an `AgentParent` mailbox) is a
+Each resource kind implements `ResourceApp` in
+`phux-server/src/runtime/apps/`. `app_owning` routes facet commands and
+app-owned host methods by the catalog rows authorization uses. `app_for`
+routes spawn, resource frames, stream bootstrap and upgrade by kind.
+`state/` sits below the apps. It accesses engine lifecycle through
+`ResourceOps` and holds app state in typed slots it cannot read
+(`state/app_slots.rs`).
+A new kind supplies an exhaustive `app_for` arm, every `ResourceApp` and
+`ResourceOps` method, and an `APP_KINDS` entry checked against the catalog.
+During a graceful upgrade each app writes the blob fields it owns, then
+rebuilds them in `APP_KINDS` order so a parent's kind comes first.
+A surface only some kinds offer (a size in cells, an input lease, a live
+record stream, an `AgentParent` mailbox) is a
 companion on the handle, typed by the crate that owns it, so the host uses
 it without naming an engine. The server's production dependency
 graph contains no Terminal engine, libghostty or PTY implementation. The
 executable explicitly injects a `TerminalEngineFactory`; no built-in engine is
 selected by the host. The private Terminal app uses `phux-terminal-api` ports;
 native encoding, ordered PTY writes and capability adaptation stay engine-owned.
-`seam_tests.rs` and the lint lane's `build-features-check` enforce this separation;
-`seam_ratchet_tests.rs` lists the kind references the host still makes, and
-that list only shrinks. The host
-holds a lossless OS-native `LaunchCommand`; deciding what a pane runs is the app's job.
-Organization launches also pass through the app: support is checked before
-commit, then the committed effect executes only through the recorded kind.
-Producer-bound projections refuse ordinary relaunch; no other kind inherits
-a default shell. Execution failure settles only the effect's exact activation.
+`seam_tests.rs` and the lint lane's `build-features-check` enforce this separation.
+The host holds a lossless OS-native `LaunchCommand`. The Terminal app
+decides what a pane runs, owns the input lane and publishes its own
+capabilities. Organization admission and effect execution both look up the
+recorded kind's launcher. Producer-bound projections open through their
+producer, and execution failure settles only the effect's exact activation.
+Native AgentSession closes and relaunch claims go to the native agent
+controller. Document input refusals go to the document audit log.
 Engine registration rejects absent records and record/handle kind mismatches
 before allocating a wire identity, replacing a handle, or spawning the actor.
 Stream and input frames reach their resource's app through
 `ResourceApp::frame`, after host authorization, connection/subscription gates
 and satellite routing. `runtime/session_attach` owns aggregate capture,
-accounting and publication, and names no kind: each kind's app fences,
-sizes and roles its own resources.
-Apps stage bounded bootstraps under the same
-generation, with live output and lifecycle closes held behind the aggregate
-barrier. The AgentSession app retains catalog membership but defers its stream
+accounting and publication. It calls the Terminal app to fence Terminal
+consumers, set colors and geometry, and apply input roles. Apps stage
+bounded bootstraps under the same generation, with live output and
+lifecycle closes held behind the aggregate barrier. The AgentSession app retains catalog membership but defers its stream
 to cursor-bearing `ATTACH_RESOURCE`: session `ATTACH` has no per-agent cursor
 and must not replace committed history with an unsolicited full cut.
 A document-only or agent-only session needs no Terminal codec; a mixed

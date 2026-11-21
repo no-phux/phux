@@ -27,6 +27,23 @@ pub(crate) mod voice;
 
 pub(crate) use commands::TerminalApp;
 
+/// Start the input lane and schedule cleanup of stale uploads off the runtime thread.
+pub(crate) fn start(state: &crate::state::SharedState) -> std::io::Result<input_lane::InputLane> {
+    let lane = input_lane::spawn_input_lane(state.clone())?;
+    let upload_env = state.with(|s| s.config().server_env.clone());
+    drop(tokio::task::spawn_blocking(move || {
+        upload::sweep_stale_partials_at_startup(&upload_env);
+    }));
+    Ok(lane)
+}
+
+/// The injected engine's metric table, if there is an engine.
+pub(crate) fn metric_table(
+    state: &crate::state::SharedState,
+) -> Option<&'static [phux_perf::Metric]> {
+    state.terminal_engine().map(|engine| engine.metrics())
+}
+
 /// The native bootstrap profiles this build can offer.
 pub(crate) fn bootstrap_capabilities(
     state: &crate::state::SharedState,
