@@ -251,3 +251,16 @@ fn a_clicked_row_hands_the_keyboard_back_to_the_terminal() {
         "Down walks the list: {landed:?} -> {next:?}"
     );
 }
+
+#[test]
+fn a_clicked_new_button_hands_the_keyboard_back_to_the_terminal() {
+    let mut rt = listed(true);
+    for key in ["new-terminal", "new-session"] {
+        let (x, y) = rt.find(key).expect("footer button");
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(0.0);
+        // Space would press it again: a second session or terminal.
+        assert_eq!(focused(&mut rt), None, "{key} kept focus after a click");
+    }
+}
