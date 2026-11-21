@@ -2,6 +2,7 @@
 //! changing it reaches the runtime.
 
 use phux_config_core::RuneCfg;
+use phux_config_core::rune::{TabBar, TitleBar};
 use rune::prefs::Prefs;
 use rune::{Key, KeyEvent, Tx};
 
@@ -17,6 +18,7 @@ pub fn interface_size(size: Option<u16>) -> u16 {
     size.map_or(100, |s| s.clamp(INTERFACE_SIZES[0], INTERFACE_SIZES[7]))
 }
 
+mod bars;
 pub mod pair;
 
 /// Settings destinations, separate from preferences and connection state.
@@ -86,8 +88,10 @@ pub struct Settings {
     pub confirm_close: bool,
     /// How much Liquid Glass shows through the window chrome, 0 to 100.
     pub glass: u8,
-    /// The toolbar hides until the pointer reaches the window's top edge.
-    pub hover_toolbar: bool,
+    /// The title bar: shown, revealed at the top edge, or gone.
+    pub title_bar: TitleBar,
+    /// Where the terminal tabs go.
+    pub tab_bar: TabBar,
 }
 
 impl Settings {
@@ -105,7 +109,8 @@ impl Settings {
             wheel_arrows: prefs.get("wheel_arrows").unwrap_or(true),
             confirm_close: prefs.get("confirm_close").unwrap_or(false),
             glass: prefs.get::<u8>("glass").unwrap_or(0).min(100),
-            hover_toolbar: prefs.get("hover_toolbar").unwrap_or(false),
+            title_bar: bars::saved(prefs),
+            tab_bar: TabBar::Top,
         }
     }
 
@@ -122,7 +127,8 @@ impl Settings {
             wheel_arrows: file.wheel_arrows.unwrap_or(self.wheel_arrows),
             confirm_close: file.confirm_close.unwrap_or(self.confirm_close),
             glass: self.glass,
-            hover_toolbar: self.hover_toolbar,
+            title_bar: file.title_bar.unwrap_or(self.title_bar),
+            tab_bar: file.tab_bar.unwrap_or(self.tab_bar),
         }
     }
 }
@@ -177,6 +183,8 @@ impl Desk {
                 copy_on_select: Some(settings.copy_on_select),
                 wheel_arrows: Some(settings.wheel_arrows),
                 confirm_close: Some(settings.confirm_close),
+                tab_bar: Some(settings.tab_bar),
+                title_bar: Some(settings.title_bar),
                 ..RuneCfg::default()
             }
             .to_toml(),
@@ -473,13 +481,6 @@ impl Desk {
             .prefs
             .set("theme", &theme.map_or(String::new(), |t| t.id.to_owned()));
         self.apply_theme();
-    }
-
-    pub fn toggle_hover_toolbar(&mut self) {
-        self.settings.hover_toolbar = !self.settings.hover_toolbar;
-        let _ = self
-            .prefs
-            .set("hover_toolbar", &self.settings.hover_toolbar);
     }
 
     pub fn toggle_notifications(&mut self) {

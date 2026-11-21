@@ -70,13 +70,18 @@ pub const FONT_CHOICES: &[&str] = &[
     "Liberation Mono",
 ];
 
-/// The mono slot with `family` in front, quoted so it is one literal name.
-/// One that isn't installed falls through to the default faces behind it.
+/// The mono slot with `family`, a comma-separated list, in front, each name
+/// quoted so it is one literal. One that isn't installed, or lacks a glyph,
+/// falls through to the next and then to the default faces behind them.
 pub fn mono_family(family: &str) -> String {
-    match family.replace(['"', '\\'], "").trim() {
-        "" => FAMILIES.1.to_owned(),
-        family => format!("\"{family}\", {}", FAMILIES.1),
-    }
+    let named: Vec<String> = family
+        .replace(['"', '\\'], "")
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(|name| format!("\"{name}\", "))
+        .collect();
+    format!("{}{}", named.concat(), FAMILIES.1)
 }
 
 /// One cell's size in points, snapped to whole device pixels.

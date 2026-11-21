@@ -4,6 +4,7 @@
 
 use crate::ui::tokens::Voice;
 use phux_client_runtime::control::Status;
+use phux_config_core::rune::{TabBar, TitleBar};
 use phux_design::State;
 use rune::{ChromeInsets, Color, El, TextStyle, el, row, text};
 use rune_kit::WindowTitlebar;
@@ -91,7 +92,7 @@ fn place(desk: &Desk, t: &Tokens) -> El {
 pub fn hover_toolbar(desk: &Desk, p: &Tokens, lights: f32, trailing: f32) -> Option<El> {
     let t = p;
     let shown = desk.pointer.toolbar;
-    desk.settings.hover_toolbar.then(|| {
+    (desk.settings.title_bar == TitleBar::Hover).then(|| {
         el().key("toolbar-reveal")
             .absolute(0.0, 0.0)
             .w_full()
@@ -117,6 +118,52 @@ pub fn hover_toolbar(desk: &Desk, p: &Tokens, lights: f32, trailing: f32) -> Opt
                 .transition(rune::Transition::opacity())
             }))
     })
+}
+
+/// What sits where the title bar would: the band itself, or with
+/// `title-bar = "hidden"` the tabs as a row of their own (`tab-bar = "top"`)
+/// or a thin strip, either of which still moves the window.
+pub fn top(desk: &Desk, p: &Tokens, lights: f32, trailing: f32) -> Option<El> {
+    match desk.settings.title_bar {
+        TitleBar::Shown => Some(title_bar(desk, p, lights, trailing)),
+        TitleBar::Hover => None,
+        TitleBar::Hidden => {
+            // Clear of the traffic lights, which sit here while the sidebar is folded.
+            let lead = if desk.sidebar_shown() { 0.0 } else { lights };
+            let tabs = tab_row(desk, p, TabBar::Top).map(|row| row.pl(p.space.card_gap.max(lead)));
+            let strip = || el().key("window-drag").w_full().h(p.space.s2);
+            Some(tabs.unwrap_or_else(strip).window_drag())
+        }
+    }
+}
+
+/// The tabs on a row of their own at `at`: under the panes with
+/// `tab-bar = "bottom"`, or along the top with the title bar hidden.
+pub fn tab_row(desk: &Desk, p: &Tokens, at: TabBar) -> Option<El> {
+    let s = desk.settings;
+    let here = s.tab_bar == at && (at == TabBar::Bottom || s.title_bar == TitleBar::Hidden);
+    let strip = here.then(|| tabs::strip(desk, p)).flatten()?;
+    Some(
+        row()
+            .key(if at == TabBar::Bottom {
+                "tab-bar-bottom"
+            } else {
+                "tab-bar-top"
+            })
+            .w_full()
+            .h(p.space.titlebar_h)
+            .px(p.space.card_gap)
+            .items_center()
+            .child(
+                row()
+                    .grow(1.0)
+                    .min_w(0.0)
+                    .h_full()
+                    .items_center()
+                    .on_layout(|d: &mut Desk, rect| d.connection.tabs.room = rect[2])
+                    .child(strip),
+            ),
+    )
 }
 
 /// The band over the terminal (kit `WindowTitlebar`): draggable, under the
@@ -169,8 +216,17 @@ fn band(desk: &Desk, p: &Tokens, lights: f32, trailing: f32, fill: Color) -> El 
         .h_full()
         .gap(s.s2)
         .items_center()
-        .on_layout(|d: &mut Desk, rect| d.connection.tabs.room = rect[2])
-        .children(tabs::strip(desk, p).or_else(|| Some(place(desk, t))))
+        .on_layout(|d: &mut Desk, rect| {
+            if d.settings.tab_bar == TabBar::Top {
+                d.connection.tabs.room = rect[2];
+            }
+        })
+        .children(
+            (desk.settings.tab_bar == TabBar::Top)
+                .then(|| tabs::strip(desk, p))
+                .flatten()
+                .or_else(|| Some(place(desk, t))),
+        )
         .child(
             row()
                 .grow(1.0)

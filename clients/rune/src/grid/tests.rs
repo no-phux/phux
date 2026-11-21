@@ -7,6 +7,10 @@ fn a_missing_font_family_falls_back_to_the_default() {
         mono_family(" Menlo\" "),
         format!("\"Menlo\", {}", FAMILIES.1)
     );
+    assert_eq!(
+        mono_family("Berkeley Mono, ,Symbols Nerd Font"),
+        format!("\"Berkeley Mono\", \"Symbols Nerd Font\", {}", FAMILIES.1)
+    );
     let width = |mono: &str| {
         let _scope = rune::text::with_families(FAMILIES.0, mono);
         Metrics::new(DEFAULT_FONT_SIZE, 2.0).cell_w

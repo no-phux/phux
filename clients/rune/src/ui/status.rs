@@ -23,7 +23,7 @@ pub use confirm::confirm_bar;
 #[cfg(test)]
 use confirm::question;
 pub(in crate::ui) use confirm::question_bar;
-pub use titlebar::{hover_toolbar, title_bar};
+pub use titlebar::{hover_toolbar, tab_row, top};
 #[cfg(test)]
 mod chrome_gallery;
 
