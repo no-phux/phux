@@ -80,9 +80,10 @@ pub(super) fn resource_row(desk: &Desk, resource: &Addressable, p: &Look) -> El 
                     .wrap()
                     .a11y_hidden()
             })),
-        el().size(p.icon.grid, p.icon.grid)
+        // The check grows with the row's text, as the search magnifier does.
+        el().size(p.icon.grid * p.type_scale, p.icon.grid * p.type_scale)
             .children(current.then(|| {
-                rune::icon(&icons::CHECK, p.icon.grid)
+                rune::icon(&icons::CHECK, p.icon.grid * p.type_scale)
                     .color(p.roles.accent.accent_text.paint())
                     .a11y_hidden()
             })),

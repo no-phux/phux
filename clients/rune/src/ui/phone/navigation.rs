@@ -207,8 +207,10 @@ fn sessions(desk: &Desk, p: &Look) -> El {
                 p.roles.border.muted.paint()
             },
         )
+        // The magnifier grows with the field's text, or the largest size
+        // leaves a speck beside a headline-sized placeholder.
         .child(
-            rune::icon(&icons::SEARCH, p.icon.grid)
+            rune::icon(&icons::SEARCH, p.icon.grid * p.type_scale)
                 .color(dim)
                 .a11y_hidden(),
         )
