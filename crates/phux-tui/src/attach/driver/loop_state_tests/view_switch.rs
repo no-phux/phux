@@ -72,6 +72,37 @@ async fn dismissing_the_palette_clears_its_box() {
     drop(server);
 }
 
+/// Output owed to a pane under a floating overlay (the palette, the welcome
+/// card) repaints the pane under it at the pacer's settle; it used to wait
+/// until the overlay closed, hiding a first-run prompt behind the card.
+#[tokio::test(flavor = "current_thread")]
+async fn owed_output_repaints_under_a_floating_overlay() {
+    let (mut state, mut client, server, mut out) = side_by_side_loop(&[]).await;
+    let sidebar = state.sidebar();
+    state
+        .dispatch_batch(
+            &mut client,
+            &mut out,
+            sidebar,
+            vec![chord_press("C-a"), chord_press("?")],
+        )
+        .await
+        .expect("open palette");
+    assert!(state.overlay_floats(), "the palette floats over the panes");
+
+    out.clear();
+    state.pacer.withhold(&ResourceId::local(2));
+    state.settle_withheld_panes(&mut out, sidebar);
+    let painted = String::from_utf8_lossy(&out);
+    assert!(
+        painted.contains("right pane"),
+        "the owed pane repaints under the palette: {painted:?}"
+    );
+    assert!(state.overlays.is_active(), "the palette stays open");
+    drop(client);
+    drop(server);
+}
+
 /// A loop over one published 80x22 pane, with the shipped chrome, whose
 /// layout read already settled: the view a held switch is waiting for.
 async fn published_single_pane_loop() -> (SessionLoop, Connection, Connection, ResourceId) {
