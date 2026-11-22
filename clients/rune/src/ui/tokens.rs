@@ -412,15 +412,25 @@ impl Tokens {
 
     /// `e` lifted to `tier`: its shadow layers, rings already coloured.
     pub(crate) fn elevate(&self, e: El, tier: Tier) -> El {
-        self.tiers.of(tier).iter().fold(e, |e, s| e.box_shadow(*s))
+        // Tiers retain CSS front-to-back order, as Kit's elevation does.
+        self.tiers
+            .of(tier)
+            .iter()
+            .rev()
+            .fold(e, |e, s| e.box_shadow(*s))
     }
 
     /// `tier` with the glow layer in `color` in place of its second drop
     ///: the focused card in its host colour, the waiting dot.
     pub(crate) fn elevate_glowing(&self, e: El, tier: Tier, color: Color) -> El {
+        // A cleared role must not regain alpha from the normal glow metadata.
+        if self.forced || color.a <= 0.0 {
+            return self.elevate(e, tier);
+        }
         self.tiers
             .glowing(tier, color)
             .into_iter()
+            .rev()
             .fold(e, El::box_shadow)
     }
 

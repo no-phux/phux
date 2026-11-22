@@ -4,6 +4,8 @@ use phux_design::{Mode, Roles};
 
 use super::*;
 
+mod shadows;
+
 fn system(dark: bool) -> Rc<Tokens> {
     Tokens::resolve(&Inputs::system(dark))
 }
