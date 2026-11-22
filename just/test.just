@@ -235,11 +235,12 @@ agents-fleet-live: worktree-claim
 # sequence documented in plugins/agent-tools/README.md.
 [group('test')]
 [doc('Run the checked-in plugin package through discover, validate, and run.')]
-plugin-demo:
+plugin-demo: worktree-claim
     #!/usr/bin/env bash
     set -euo pipefail
     export XDG_CONFIG_HOME="{{justfile_directory()}}/plugins/agent-tools/config"
-    demo() { bash scripts/test-env-runner.sh --all cargo run -q -p phux --bin phux -- "$@"; }
+    cargo build --locked -p phux --bin phux
+    demo() { bash scripts/test-env-runner.sh --all "${CARGO_TARGET_DIR:-target}/debug/phux" "$@"; }
     demo config plugins
     demo config plugins --json
     demo config run com.phux.demo.agent-tools inspect

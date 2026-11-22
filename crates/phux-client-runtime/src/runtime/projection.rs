@@ -1,8 +1,8 @@
 //! Published-grid and engine query methods.
 
 #[cfg(feature = "engine")]
-use super::{Arc, GridFrame, Publication, Scroll, TerminalPublication};
-use super::{Client, ResourceId, lock};
+use super::{Arc, GridFrame, Publication, Scroll, TerminalPublication, lock};
+use super::{Client, ResourceId};
 
 impl Client {
     /// Create an independent tail-following presentation at canonical PTY size.
