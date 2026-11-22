@@ -24,6 +24,7 @@ impl ControlPlane {
             options,
             offered_caps,
             connection_epoch: 0,
+            attempt_trace: None,
             live_connection_epoch: None,
             status: Status::Idle,
             handshake_ready: false,

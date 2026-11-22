@@ -128,6 +128,8 @@ pub struct Desk {
     pub notice: Option<Notice>,
     /// Every toast, newest in front, and the kit stack's state.
     toasts: notice::Toasts,
+    /// Typed input the shown terminal turned away, for qualification evidence.
+    pub(crate) input_refusals: u64,
     /// State the rune-kit components keep between runs: the open menu and
     /// select.
     /// The system's reduce-transparency and text-size reads.
@@ -297,6 +299,7 @@ impl Desk {
             pending: None,
             notice: None,
             toasts: notice::Toasts::default(),
+            input_refusals: 0,
             accessibility: accessibility::Accessibility::load(&prefs),
             palette_open: false,
             palette_query: rune::TextEdit::new(""),

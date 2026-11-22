@@ -256,12 +256,14 @@ impl Desk {
         let behind = frame.as_ref().is_some_and(|f| !f.scrollbar.at_tail());
         let sent = client.with_control(|control| {
             if !control.input_ready(&terminal) {
+                control.trace_input(false);
                 return false;
             }
             if behind {
                 let _ = control.scroll_view(view, Scroll::Bottom);
             }
             let sent = send(control, &terminal);
+            control.trace_input(sent);
             for other in &others {
                 if control.input_ready(other) {
                     send(control, other);
@@ -270,6 +272,7 @@ impl Desk {
             sent
         });
         if !sent {
+            self.input_refusals += 1;
             return self.say(NoticeKind::Error, INPUT_PAUSED);
         }
         phux_perf::echo_hop::record("send");

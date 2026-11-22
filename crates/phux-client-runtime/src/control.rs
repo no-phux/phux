@@ -60,6 +60,7 @@ mod geometry;
 mod global_metadata;
 mod input;
 mod input_delivery;
+mod input_trace;
 mod kernel;
 pub mod keys;
 mod lifecycle;
@@ -208,6 +209,9 @@ pub struct ControlPlane {
     /// per-connection state on its own client's identity uses this instead
     /// once the runtime owns the reconnect.
     connection_epoch: u64,
+    /// The driver attempt this connection opened under, for payload-free
+    /// input evidence; absent on an embedded control plane.
+    attempt_trace: Option<crate::connection::AttemptTrace>,
     /// The epoch authorized to deliver inbound frames; absent after loss.
     live_connection_epoch: Option<u64>,
     offered_caps: ClientCapabilities,

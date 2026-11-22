@@ -61,6 +61,8 @@ void phux_rune_ios_active(void *host, bool active);
 // UIContentSizeCategory raw value; an unknown one reads as the default.
 void phux_rune_ios_traits(void *host, bool dark, bool reduced_motion, bool increased_contrast,
                           bool reduce_transparency, const char *content_size);
+// Qualification log: the probe observed input_ready and is about to type.
+void phux_rune_ios_trace_input_ready(void *host);
 char *phux_rune_ios_report(void *host, const char *marker);
 char *phux_rune_ios_tree(void *host);
 // Read an error synchronously on the SAME OS THREAD as the failing call,

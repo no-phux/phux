@@ -349,6 +349,7 @@ mod ssh;
 pub(crate) mod trace;
 
 /// Shared identity and clock for payload-free consumer and enrollment evidence.
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct AttemptTrace {
     connection: u64,
     attempt: u32,

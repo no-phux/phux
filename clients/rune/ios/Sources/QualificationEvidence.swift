@@ -6,11 +6,28 @@ struct QualificationProgress {
     private(set) var injected = false
     private(set) var finished = false
     private var failed = false
+    /// The client's refusal count when input was claimed on `input_ready`.
+    private var refusalsAtInput: UInt64?
 
     mutating func claimInput(when ready: Bool) -> Bool {
         guard ready, !finished, !injected else { return false }
         injected = true
         return true
+    }
+
+    /// A drawn frame can precede the shown terminal's attach (PHUX-834):
+    /// input is claimed only once the client also reports `input_ready`.
+    mutating func claimInput(shown: Bool, inputReady: Bool, refusals: UInt64) -> Bool {
+        guard claimInput(when: shown && inputReady) else { return false }
+        refusalsAtInput = refusals
+        return true
+    }
+
+    /// Input claimed on `input_ready` must never be refused; one refusal is
+    /// a hard failure, not something to retry.
+    func refusedAfterReady(refusals: UInt64) -> Bool {
+        guard let refusalsAtInput else { return false }
+        return refusals > refusalsAtInput
     }
 
     mutating func publish(_ write: () throws -> Bool) rethrows {

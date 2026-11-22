@@ -109,6 +109,8 @@ final class NativeBridge {
     func report(marker: String) throws -> [String: Any] {
         try marker.withCString { try Self.object(phux_rune_ios_report(pointer, $0)) }
     }
+    /// Qualification log only. Call immediately before the probe types.
+    func traceInputReady() { phux_rune_ios_trace_input_ready(pointer) }
     func tree() throws -> [String: Any] { try Self.object(phux_rune_ios_tree(pointer)) }
     func input(_ operation: [String: Any], context: InputContext) throws -> [String: Any] {
         var operation = operation

@@ -108,6 +108,19 @@ precondition(!expired.claimInput(when: true), "late recovery cannot inject the r
 expired.publish { preconditionFailure("late ready cannot overwrite the failed report") }
 precondition(!expired.claimFailure(), "a later error cannot overwrite the first failure")
 precondition(expired.finished && !expired.injected, "failure is latched")
+// PHUX-834: a drawn frame before the attach is acknowledged types nothing,
+// however long it waits; input_ready alone arms the one-shot.
+var attaching = QualificationProgress()
+for _ in 0..<3 {
+    precondition(!attaching.claimInput(shown: true, inputReady: false, refusals: 0),
+        "a frame without input_ready is not ready")
+}
+precondition(!attaching.injected && !attaching.refusedAfterReady(refusals: 0))
+precondition(!attaching.claimInput(shown: false, inputReady: true, refusals: 0))
+precondition(attaching.claimInput(shown: true, inputReady: true, refusals: 2))
+precondition(!attaching.claimInput(shown: true, inputReady: true, refusals: 2), "still one-shot")
+precondition(!attaching.refusedAfterReady(refusals: 2), "earlier refusals are not this input's")
+precondition(attaching.refusedAfterReady(refusals: 3), "a refusal after input_ready fails")
 var connected = QualificationProgress()
 precondition(connected.claimInput(when: true))
 precondition(!connected.claimInput(when: true), "a live connection injects only once")
