@@ -53,7 +53,7 @@ const ROUTES: Record<string, Surface[]> = {
   "scripts/agent-verify/**": ["phux"],
   "scripts/test-agent-examples.py": ["phux"],
   // Workflow infrastructure is compile-free (guards only), except ci.yml and
-  // its shared actions: a change to how lanes run reruns every lane.
+  // shared actions: route each action to the lanes that actually consume it.
   ".github/workflows/*.{yml,yaml}": [],
   ".github/{actionlint.yaml,dependabot.yml}": [],
   // Commit-message policy is enforced by commitlint, not product builds.
@@ -62,7 +62,11 @@ const ROUTES: Record<string, Surface[]> = {
   // Issue forms are GitHub metadata, not a product input.
   ".github/ISSUE_TEMPLATE/**": [],
   ".github/workflows/ci.yml": [...SURFACES],
-  ".github/actions/**": [...SURFACES],
+  ".github/actions/setup-rust-lane/**": ["phux"],
+  ".github/actions/setup-web-cache/**": ["web"],
+  ".github/actions/rune-host/**": ["rune"],
+  // Also used by docs-catalog and release workflows outside the lane model.
+  ".github/actions/setup-bun/**": [...SURFACES],
   "scripts/ci/setup-linux-release-userspace.sh": [],
   "scripts/ci/prune-build-cache.sh": [],
   // The separate Windows WSL workflow exercises PowerShell and real WSL;

@@ -178,7 +178,7 @@ jobs:
           cache-key: phux-web-vt
           workspaces: clients/phux-vt-web
           record-main-cache: "true"
-      - run: nix develop .#browser -c just web-vt-check
+      - run: nix develop -c just web-vt-check
 
   web-client:
     name: warm web client and browser
