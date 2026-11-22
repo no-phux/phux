@@ -79,7 +79,7 @@ class EvidenceTests(unittest.TestCase):
             lane.documents = documents
             lane.require_alive = Mock()
             lane.cycle_scene = Mock()
-            lane.simctl = Mock(side_effect=lambda *args: Path(args[-1]).write_bytes(b"screenshot"))
+            lane.simctl = Mock(side_effect=lambda *args, **_: Path(args[-1]).write_bytes(b"screenshot"))
             with patch.object(qualify.time, "sleep") as sleep:
                 self.assertEqual(lane.collect_report(123, resumed=True), report)
             sleep.assert_called_once_with(3)
@@ -88,6 +88,9 @@ class EvidenceTests(unittest.TestCase):
             self.assertEqual(json.loads((root / "resume-rune-tree.json").read_text()), tree)
             self.assertEqual(json.loads((root / "resume-rune-qualification.json").read_text()), report)
             self.assertTrue((root / "resume-ios-native.png").is_file())
+            # A screenshot only writes our file, so a stalled one is retried.
+            for call in lane.simctl.call_args_list:
+                self.assertEqual(call.kwargs, {"attempts": qualify.QUERY_ATTEMPTS})
 
     def test_valid_initial_and_resumed_pairs(self):
         for marker in (qualify.MARKER, qualify.MARKER + "_RESUMED"):

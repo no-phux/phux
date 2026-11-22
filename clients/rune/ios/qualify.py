@@ -54,7 +54,8 @@ XCRUN = "/usr/bin/xcrun"
 # The data-container lookup: tries, and seconds each.
 CONTAINER_ATTEMPTS = 3
 CONTAINER_TIMEOUT = 60
-# Other read-only simulator queries: tries of the default 30s each.
+# Other read-only simulator queries and screenshots: tries of the default
+# 30s each. A screenshot only writes our file, so a retry is safe.
 QUERY_ATTEMPTS = 3
 
 
@@ -249,11 +250,13 @@ class Qualification:
         marker = MARKER + "_RESUMED" if resumed else MARKER
         validate_tree(json.loads((self.out / (prefix + tree.name)).read_text()), report, marker)
         self.require_alive(pid)
-        self.simctl("io", self.udid, "screenshot", self.out / (prefix + "ios-system-keyboard.png"))
+        self.simctl("io", self.udid, "screenshot", self.out / (prefix + "ios-system-keyboard.png"),
+                    attempts=QUERY_ATTEMPTS)
         self.cycle_scene(documents, pid, prefix)
         time.sleep(3)
         self.require_alive(pid)
-        self.simctl("io", self.udid, "screenshot", self.out / (prefix + "ios-native.png"))
+        self.simctl("io", self.udid, "screenshot", self.out / (prefix + "ios-native.png"),
+                    attempts=QUERY_ATTEMPTS)
         if not (self.out / (prefix + "ios-native.png")).stat().st_size:
             raise ValueError("empty simulator screenshot")
         self.diagnostic_reports.add(prefix)
