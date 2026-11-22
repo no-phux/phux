@@ -212,31 +212,52 @@ fn form(mut panel: El, draft: &Draft, at: &At, t: &Tokens) -> El {
             t,
         ));
     };
+    // The panel already leaves s2 before its actions; this margin makes that
+    // separation s4 too, without changing the question's heading or message.
+    let mut fields = col().w_full().gap(t.space.s4).mb(t.space.s2);
     for (id, schema) in properties {
-        let title = schema.get("title").and_then(Value::as_str).unwrap_or(id);
-        let star = if response::required(question, id) {
-            " *"
+        if at.phone {
+            let group = col()
+                .key(format!("acp-form-{}-{id}", at.question))
+                .w_full()
+                .gap(t.space.s2);
+            fields = fields.child(form_field(group, draft, id, schema, at, t));
         } else {
-            ""
-        };
-        panel = panel.child(say(&format!("{title}{star}"), at.font(t.ty.caption, t), t));
-        if let Some(about) = schema.get("description").and_then(Value::as_str) {
-            panel = panel.child(
-                text(about.to_owned())
-                    .font(at.font(t.ty.caption, t))
-                    .color(t.roles.text.dim.paint())
-                    .wrap(),
-            );
+            // Keep the desktop's original flat children and spacing.
+            panel = form_field(panel, draft, id, schema, at, t);
         }
-        panel = match draft.options.get(id) {
-            Some(offered) => {
-                let multi = schema.get("type").and_then(Value::as_str) == Some("array");
-                panel.child(choices(at, draft, id, offered, multi, t))
-            }
-            None => panel.children(field(at, draft, id, title, false, t)),
-        };
     }
-    panel
+    if at.phone && !properties.is_empty() {
+        panel.child(fields)
+    } else {
+        panel
+    }
+}
+
+/// One field's heading, help and control, grouped only by the phone caller.
+fn form_field(mut group: El, draft: &Draft, id: &str, schema: &Value, at: &At, t: &Tokens) -> El {
+    let title = schema.get("title").and_then(Value::as_str).unwrap_or(id);
+    let star = if response::required(&draft.question, id) {
+        " *"
+    } else {
+        ""
+    };
+    group = group.child(say(&format!("{title}{star}"), at.font(t.ty.caption, t), t));
+    if let Some(about) = schema.get("description").and_then(Value::as_str) {
+        group = group.child(
+            text(about.to_owned())
+                .font(at.font(t.ty.caption, t))
+                .color(t.roles.text.dim.paint())
+                .wrap(),
+        );
+    }
+    match draft.options.get(id) {
+        Some(offered) => {
+            let multi = schema.get("type").and_then(Value::as_str) == Some("array");
+            group.child(choices(at, draft, id, offered, multi, t))
+        }
+        None => group.children(field(at, draft, id, title, false, t)),
+    }
 }
 
 fn labelled(option: &NativeOption) -> String {
@@ -261,9 +282,8 @@ fn action(at: &At, id: &str, label: &str, answer: Option<Value>, kind: Kind, t: 
     let key = format!("acp-{}-{id}", at.question);
     if at.phone {
         let on = matches!(kind, Kind::Primary);
-        return touch_row(at, key, label, on, t)
-            .role("button")
-            .on_press(press);
+        let row = touch_row(at, key, label, on, t).role("button");
+        return if at.held { row } else { row.on_press(press) };
     }
     let variant = match kind {
         Kind::Primary => ButtonVariant::Submit,

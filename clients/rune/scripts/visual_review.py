@@ -16,6 +16,7 @@ import struct
 import subprocess
 from urllib.parse import quote
 
+from visual_acp import EXPORTER as ACP_FORM_EXPORTER, form_inventory
 from visual_motion import MOTION_FRAMES, motion_frames, pane_motion_inventory
 from visual_navigation import navigation_exporter, navigation_inventory
 from visual_themes import theme_inventory
@@ -187,6 +188,7 @@ def inbox_inventory():
         for state, theme, (width, height) in product(
             ("select", "ask", "form", "input"), THEMES, ((393, 852), (320, 568), (320, 280)))
     })
+    cases.update(form_inventory(THEMES))
     return cases
 
 
@@ -218,7 +220,7 @@ def settings_inventory():
 
 
 def required_inventory():
-    """1013 required cases: 192 Inbox, 226 Settings, 594 navigation, 1 resource.
+    """1165 required cases: 344 Inbox, 226 Settings, 594 navigation, 1 resource.
 
     Values are (logical width, logical height, scale); additional cases are
     welcome, but cannot replace any maintained case.
@@ -237,6 +239,8 @@ def required_label(tree, key, path):
 
 
 def inbox_exporter_for(stem):
+    if stem.startswith("acp-form-"):
+        return ACP_FORM_EXPORTER
     if stem.startswith("phone-acp-"):
         return "phone_acp_visual_review_frames"
     return "phone_inbox_visual_review_frames"

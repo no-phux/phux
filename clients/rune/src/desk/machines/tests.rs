@@ -36,6 +36,68 @@ fn desk() -> Desk {
 }
 
 #[test]
+fn hidden_machine_listings_stop_their_timer_and_refresh_on_show() {
+    struct Probe {
+        machines: Machines,
+        seen: Vec<bool>,
+    }
+    let host = Some("mini".to_owned());
+    let mut machines = Machines::new(None, None);
+    machines.expanded.insert(host.clone());
+    machines.glanced.insert(host.clone(), -GLANCE_EVERY - 1.0);
+    let mut rt = rune::Runtime::new(
+        Probe {
+            machines,
+            seen: Vec::new(),
+        },
+        |_, _| rune::el(),
+        (100.0, 50.0),
+        rune::Env::new(true, 1.0),
+    );
+    // Establish the window before installing the listing poll, so there is
+    // no earlier refresh timer to confuse with a newly scheduled hidden one.
+    rt.frame(0.0);
+    rt.poll = Some(|probe, clock, tx| {
+        probe.seen.push(tx.window_visible());
+        probe.machines.tick_glances(clock, tx);
+        false
+    });
+    rt.set_live_visible(false);
+    assert!(rt.wake_deadline().is_some(), "hiding wakes the poll");
+    rt.frame(0.0);
+    assert_eq!(rt.state.seen, [false]);
+    assert_eq!(
+        rt.wake_deadline(),
+        None,
+        "hidden listings schedule no timer"
+    );
+
+    let private = tempfile::tempdir().unwrap();
+    rt.update(|probe, _| {
+        // A private missing executable can never reach an installed CLI.
+        probe.machines.phux = Some(private.path().join("not-a-cli"));
+    });
+    rt.frame(0.0);
+    assert!(rt.state.machines.peeking.is_empty());
+    assert_eq!(rt.state.machines.glanced[&host], -GLANCE_EVERY - 1.0);
+    assert_eq!(rt.wake_deadline(), None);
+
+    rt.set_live_visible(true);
+    assert!(rt.wake_deadline().is_some(), "showing wakes stale listings");
+    rt.frame(0.0);
+    assert_eq!(rt.state.seen, [false, false, true]);
+    assert!(rt.state.machines.peeking.contains(&host));
+    assert!(rt.state.machines.glanced[&host] >= 0.0);
+    let due = rt.wake_deadline().expect("visible refresh timer");
+    rt.set_live_visible(true);
+    assert_eq!(
+        rt.wake_deadline(),
+        Some(due),
+        "unchanged sight adds no wake"
+    );
+}
+
+#[test]
 fn a_slow_listing_cant_undo_a_newer_one() {
     let mut desk = desk();
     let list = |refresh, name: &str| {
