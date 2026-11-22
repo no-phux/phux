@@ -8,5 +8,10 @@ cd "$here"
 cargo fmt --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-features
+# The Wayland cursor cache lives in the patched dependency, so the client's
+# own unit tests alone would never execute its regression tests.
+if [[ "$(uname -s)" == Linux ]]; then
+    cargo test --locked -p winit --lib
+fi
 python3 -B -m unittest discover -s scripts -p 'test_*.py'
 bun test scripts/notice-texts.test.ts

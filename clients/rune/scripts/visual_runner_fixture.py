@@ -31,6 +31,8 @@ filters = {
     "phone_states_visual_review_frames": "RUNE_NAVIGATION_SNAP",
     "phone_connections_visual_review_frames": "RUNE_NAVIGATION_SNAP",
     "phone_connections_keyboard_visual_review_frames": "RUNE_NAVIGATION_SNAP",
+    "phone_accessory_visual_review_frames": "RUNE_NAVIGATION_SNAP",
+    "phone_accessory_resize_visual_review_frames": "RUNE_NAVIGATION_SNAP",
     "phone_pane_motion_visual_review_frames": "RUNE_NAVIGATION_SNAP",
     "native_png_headless_renderer_smoke": "RUNE_RESOURCE_SNAP",
 }
@@ -51,11 +53,12 @@ for relative, (width, height, scale) in review.required_inventory().items():
         "scenario": "exported fixture", "theme": "dark",
         "elements": [{"path": "root"}], "accessibility": {},
     }
-    if path.stem.startswith("pane-motion-"):
-        stage = next(stage for stage in review.MOTION_FRAMES if path.stem.endswith(f"-{stage}"))
+    if path.stem.startswith(("pane-motion-", "accessory-resize-")):
+        frames = review.motion_frames(path.stem)
+        stage = next(stage for stage in frames if path.stem.endswith(f"-{stage}"))
         scenario = path.stem[:-(len(stage) + 1)]
         tree["scenario"] = scenario
-        frame = review.MOTION_FRAMES[stage]
+        frame = frames[stage]
         path.with_suffix(".motion.json").write_text(json.dumps({
             "schema": 1, "scenario": scenario, "stage": stage,
             "frame": frame, "elapsed_ms": frame * 1000.0 / 60.0,

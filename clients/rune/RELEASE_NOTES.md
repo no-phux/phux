@@ -1,5 +1,6 @@
 **Phux Rune 0.1.47**: quieter session chrome, clearer terminal navigation and reliable keyboard handoff.
 
+- Keep Settings' keyboard dismissal and accessory keys readable at large phone text sizes. Done stays whole, and an overflow indicator makes the remaining keys discoverable.
 - Jump back to the last pane or tab, click the shown tab to return to the previous one, and find terminals grouped by tab in the palette. (#2814)
 - Option-click at a shell prompt to move its cursor. Search copy mode with `/`, `?`, `n` and `N`, and copy the selected match. (#2814)
 - Show pane numbers, focus the sidebar from the keyboard, and explicitly toggle typing into every pane of the tab. (#2783)

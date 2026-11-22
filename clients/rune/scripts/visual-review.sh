@@ -54,6 +54,8 @@ render phone_header_visual_review_frames
 render phone_states_visual_review_frames
 render phone_connections_visual_review_frames
 render phone_connections_keyboard_visual_review_frames
+render phone_accessory_visual_review_frames
+render phone_accessory_resize_visual_review_frames
 render phone_pane_motion_visual_review_frames
 render native_png_headless_renderer_smoke
 python3 -B "$scripts/visual_review.py" "$out" --repo "$repo" >"$out/logs/manifest.log" 2>&1 || {

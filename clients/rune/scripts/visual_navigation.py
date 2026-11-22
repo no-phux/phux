@@ -1,7 +1,7 @@
 """Maintained navigation exporter matrix: reading, focus, scrolling and motion."""
 from itertools import product
 
-from visual_motion import pane_motion_inventory
+from visual_motion import accessory_resize_inventory, pane_motion_inventory
 from visual_states import states_inventory
 
 
@@ -35,7 +35,21 @@ def navigation_inventory(themes=("dark", "light")):
     })
     cases.update(states_inventory(themes))
     cases.update(pane_motion_inventory(themes))
+    cases.update(accessory_inventory(themes))
+    cases.update(accessory_resize_inventory(themes))
     return cases
+
+
+def accessory_inventory(themes):
+    return {
+        f"navigation/accessory-{flow}-{text}-{theme}-native-{native}-"
+        f"{width}x{height}-{scale}x-{edge}-{width * scale}.png": (width, height, scale)
+        for flow, text, theme, (width, height, scale, native), edge in product(
+            ("sessions", "settings"), ("standard", "ax2", "ax3", "ax5"), themes,
+            ((393, 852, 1, "false"), (320, 568, 1, "false"),
+             (393, 480, 2, "true"), (320, 340, 2, "true")),
+            ("leading", "trailing", "tab-revealed"))
+    }
 
 
 def connections_inventory(themes):
@@ -53,6 +67,8 @@ def connections_inventory(themes):
 
 def navigation_exporter(stem):
     for prefix, exporter in (
+        ("accessory-resize-", "phone_accessory_resize_visual_review_frames"),
+        ("accessory-", "phone_accessory_visual_review_frames"),
         ("connections-keyboard-", "phone_connections_keyboard_visual_review_frames"),
         ("connections-", "phone_connections_visual_review_frames"),
         ("pane-motion-", "phone_pane_motion_visual_review_frames"),

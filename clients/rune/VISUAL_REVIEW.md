@@ -100,6 +100,25 @@ explicit heading-aligned scroll: a description taller than the viewport can
 reveal its bottom on focus, hiding the title/value being judged. Heading frames
 show reading composition; they do not claim automatic whole-row reveal is fixed.
 
+Accessory cases use integrated Settings editing at standard, AX2, AX3 and
+AX5 text sizes, both strip edges and a fully revealed Tab, both phone widths
+and native keyboard-reduced 2× viewports. Check the complete pinned contextual
+action/Done targets, their text/icon containment, and every strip control
+revealed individually. Retain Sessions editing as a surrounding composition
+check: Sessions and Actions deliberately have no accessory bar, and Return
+finishes their search without clearing it or changing the terminal keyboard.
+Check that the persistent overflow indicator appears only when needed,
+follows the actual offset and consumes only the existing bottom inset, never
+the keys' hit area or more content height.
+Reveal the pad, then exercise its hold/drag/cancel without scrolling its
+ancestor or leaking input into the terminal. Done preserves the field draft,
+sheet and terminal keyboard preference. Use Settings-to-terminal transitions
+for the fixed-clock resize check; retain the older list transitions too.
+Retain the whole-create-action check
+above the native keyboard, not just a visible fragment. Keep the desktop
+drawn-keyboard cases too; their inherited large-text glyph clipping is not
+native UIKit behavior or evidence that the accessory fix repaired that stand-in.
+
 ## Review behavior as well as pixels
 
 Use the trees and behavior tests to check focus/name/role, clipping/scroll

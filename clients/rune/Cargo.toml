@@ -87,8 +87,9 @@ skrifa = "0.44"
 
 [patch.crates-io]
 # Git dependencies do not inherit Rune's workspace patches. Track all six
-# at the same rev: native IME, Wayland frame corners, shaping/bidi, GPU and AX.
-winit = { git = "https://github.com/anomalyco/rune", rev = "dc8f7f7213cbe43af45212de6998d530d0945187" }
+# at the same upstream base: IME, frame corners, shaping/bidi, GPU and AX.
+# Keep the upstream base; only Wayland cursor publication differs in this fork.
+winit = { git = "https://github.com/no-phux/rune", rev = "142017670b03815d3bd5299e94c210dd463dae77" }
 sctk-adwaita = { git = "https://github.com/anomalyco/rune", rev = "dc8f7f7213cbe43af45212de6998d530d0945187" }
 parley_engine = { git = "https://github.com/anomalyco/rune", rev = "dc8f7f7213cbe43af45212de6998d530d0945187" }
 wgpu-hal = { git = "https://github.com/anomalyco/rune", rev = "dc8f7f7213cbe43af45212de6998d530d0945187" }
