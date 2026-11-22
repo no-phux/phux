@@ -84,8 +84,26 @@ pub(in crate::attach) fn palette_rows(src: &PaletteSources<'_>) -> Vec<SelectIte
     );
     let mut items = recent_rows(&recent, &commands);
     items.extend(commands);
-    items.extend(places);
+    items.extend(named_switches(places));
     items
+}
+
+/// The tab picker's "switch to this session" row (a session whose tabs this
+/// client has not loaded) says the session's name instead: in a mixed
+/// palette the row has to stand on its own.
+fn named_switches(places: Vec<SelectItem>) -> Vec<SelectItem> {
+    let mut session = String::new();
+    places
+        .into_iter()
+        .map(|mut item| {
+            if item.is_header() {
+                session.clone_from(&item.label);
+            } else if item.action.action == "switch-session" && !session.is_empty() {
+                item.label.clone_from(&session);
+            }
+            item
+        })
+        .collect()
 }
 
 /// A "Recent" band of the commands run lately (newest first), shown only

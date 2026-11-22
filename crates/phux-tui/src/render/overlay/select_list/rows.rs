@@ -110,13 +110,19 @@ impl SelectList {
         let rows: Vec<usize> = (0..self.items.len())
             .filter(|&i| !self.items[i].is_header() && !self.items[i].browse_only)
             .collect();
+        let header_of = self.section_headers();
+        // A row also answers to its section's name: typing a session's name
+        // finds the tabs listed under it.
         let aliases: Vec<Vec<&str>> = rows
             .iter()
             .map(|&i| {
-                self.items[i]
-                    .keywords
-                    .as_deref()
-                    .map_or_else(Vec::new, |k| k.split_whitespace().collect())
+                let keywords = self.items[i].keywords.as_deref().unwrap_or_default();
+                let section = header_of[i].map_or("", |h| self.items[h].label.as_str());
+                keywords
+                    .split_whitespace()
+                    .chain([section])
+                    .filter(|w| !w.is_empty())
+                    .collect()
             })
             .collect();
         let ranked: Vec<usize> = rank(
@@ -137,7 +143,6 @@ impl SelectList {
         if !self.items.iter().any(SelectItem::is_header) {
             return ranked;
         }
-        let header_of = self.section_headers();
         group(&ranked, |i| header_of[i])
             .into_iter()
             .flat_map(|(header, rows)| header.into_iter().chain(rows))
