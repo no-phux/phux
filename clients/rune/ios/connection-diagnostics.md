@@ -132,3 +132,32 @@ Delivery acknowledgement is not proof the phone validated or saved the chain.
 These debug events change neither the enrollment exchange nor its budgets.
 
 See [Build and qualify](./README.md#build-and-qualify) for the owned fixture.
+
+## One-off hosted command-stall diagnosis
+
+Dispatch the registered `rune-macos.yml` on the diagnostic branch with
+`native_diagnostic=true`; its reusable `rune-native-diagnose.yml` job is **not a
+qualification or release gate**. Explicit diagnostic dispatch skips the normal
+plan/build, cannot cancel normal lanes, and does not produce a passing
+`rune-macos` aggregate or validation receipt. Normal triggers/defaults are unchanged.
+It verifies artifact 14755772123's API provenance, immutable size/SHA-256
+and safe archive entries, then reuses its original simulator app. The root server
+and qualifier must remain source-equivalent to the original run; only release
+metadata and the diagnostic files may differ. There is no native rebuild,
+distribution signing, phone operation, or production-server access.
+
+`diagnose_commands.py` subclasses only the command runner and records the
+owned app's identity. It invokes the unmodified QUIC sequence, then WSS only if
+QUIC completes, with the same commands, assertions, retries and budgets. Commands
+still running after ten seconds get bounded sampling of recorded owned command,
+app and server PIDs, with microsecond start-identity rechecks. Shared services
+are never sampled or signalled. Resource snapshots omit process arguments;
+CoreSimulator logs are restricted to the owned device. Each diagnostic helper
+has a two-second limit and is cancelled/reaped when its command finishes.
+
+Sampling briefly suspends its targets, so even successful output is **diagnostic
+counterevidence, not pristine timing or release acceptance**. Receipts are renamed
+`DIAGNOSTIC-ONLY-evidence.json`; status files explicitly deny release qualification.
+The separate artifact is `diagnostic-ios-command-stalls`. Compare its recorded
+host image and simulator runtime with the original: a hosted image can drift,
+and a successful run on another image/runtime does not explain the original stall.

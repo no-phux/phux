@@ -28,6 +28,11 @@ on:
     # After cache-warm's 06:17 UTC, so the two macOS passes do not start together.
     - cron: "47 11 * * *"
   workflow_dispatch:
+    inputs:
+      native_diagnostic:
+        description: Diagnostic-only original native command sampling; never qualification.
+        type: boolean
+        default: false
 
 concurrency:
   # Preserve every push SHA, including a pending native change followed by
@@ -35,19 +40,23 @@ concurrency:
   # Prefix differs from the calling ci workflow, so it cannot cancel itself.
   # Colon-delimited modes cannot be confused with a fork's repository name.
   group: >-
-    rune-macos-${{ github.event_name == 'pull_request' && inputs.qualify && 'required:' || 'standalone:' }}${{ github.event_name == 'push' && github.sha
+    rune-macos-${{ github.event_name == 'workflow_dispatch' && inputs.native_diagnostic && 'diagnostic:' || '' }}${{ github.event_name == 'pull_request' && inputs.qualify && 'required:' || 'standalone:' }}${{ github.event_name == 'push' && github.sha
     || github.event_name == 'pull_request' && format('{0}:refs/heads/{1}', github.event.pull_request.head.repo.full_name, github.head_ref)
     || github.event_name == 'workflow_dispatch' && format('{0}:{1}', github.repository, github.ref)
     || github.ref }}
-  cancel-in-progress: ${{ github.event_name != 'push' }}
+  cancel-in-progress: ${{ github.event_name != 'push' && !(github.event_name == 'workflow_dispatch' && inputs.native_diagnostic) }}
 
 permissions:
   actions: read
   contents: read
 
 jobs:
+  native-diagnostic:
+    if: github.event_name == 'workflow_dispatch' && inputs.native_diagnostic
+    uses: ./.github/workflows/rune-native-diagnose.yml
+
   plan:
-    if: github.event.action != 'closed'
+    if: github.event.action != 'closed' && !(github.event_name == 'workflow_dispatch' && inputs.native_diagnostic)
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:

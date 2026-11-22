@@ -1,0 +1,65 @@
+name: Rune native command diagnostics (NOT qualification)
+
+on:
+  workflow_call:
+
+permissions:
+  actions: read
+  contents: read
+
+# Intentionally no push/PR trigger or concurrency group: never cancel another lane.
+jobs:
+  diagnose:
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Test diagnostic harness (inert native stubs only)
+        run: python3 -B -m unittest discover -s clients/rune/scripts -p test_ios_command_diagnostics.py -v
+      - name: Acquire and verify immutable original simulator app
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 -B clients/rune/ios/diagnose_artifact.py --out "$RUNNER_TEMP/native-original"
+      - name: Record diagnostic host image (no runner identity or environment dump)
+        run: |
+          mkdir -p "$RUNNER_TEMP/native-host"
+          sw_vers > "$RUNNER_TEMP/native-host/macos.txt"
+          xcodebuild -version > "$RUNNER_TEMP/native-host/xcode.txt"
+          printf '%s\n' "$ImageOS" "$ImageVersion" > "$RUNNER_TEMP/native-host/image.txt"
+      - name: Root server toolchains only
+        run: |
+          bash scripts/setup-rust.sh core
+          bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
+          printf '#!/bin/sh\nGIT_DIR=/nonexistent exec zig "$@"\n' > "$RUNNER_TEMP/zig-no-git"
+          chmod +x "$RUNNER_TEMP/zig-no-git"
+          echo "ZIG=$RUNNER_TEMP/zig-no-git" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: . -> target
+          shared-key: rune-ios-native
+          save-if: "false"
+          cache-on-failure: "false"
+      - name: Build source-equivalent isolated server (no native app rebuild or signing)
+        run: cargo build --locked -p phux
+      - name: DIAGNOSTIC ONLY — original QUIC sequence, then WSS only if QUIC completes
+        run: |
+          python3 -B clients/rune/ios/diagnose_commands.py \
+            --app "$RUNNER_TEMP/native-original/original/ios-simulator/Phux Rune.app" \
+            --phux "$PWD/target/debug/phux" --out "$RUNNER_TEMP/native-diagnostic"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: diagnostic-ios-command-stalls
+          path: |
+            ${{ runner.temp }}/native-diagnostic
+            ${{ runner.temp }}/native-host
+            ${{ runner.temp }}/native-original/provenance.json
+          if-no-files-found: warn
+          retention-days: 14
