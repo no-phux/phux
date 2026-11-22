@@ -38,8 +38,12 @@ use crate::render::{ChromeBreakpoints, Theme, clip_left};
 /// Blank columns between a row's label and its secondary.
 const GAP: usize = 1;
 
-/// Modal rows that are not list rows: two borders and the query line.
-const CHROME_ROWS: u16 = 3;
+/// Modal rows that are not list rows: two borders, the query line and the
+/// hairline under it.
+const CHROME_ROWS: u16 = 4;
+
+/// What an empty query field says when a list gives it nothing better.
+const DEFAULT_PLACEHOLDER: &str = "Type to filter";
 
 /// Rows the selection moves per wheel detent (matches copy-mode).
 pub const WHEEL_SCROLL_ROWS: usize = 3;
@@ -85,6 +89,8 @@ pub struct SelectList {
     session_management: bool,
     /// Replaces the `N of M` footer status when set (clipped from the left to fit).
     footer_status: Option<String>,
+    /// What the empty query field says.
+    placeholder: &'static str,
     /// The tallest box painted so far: a list sized to its rows never
     /// shrinks while it is up, so a live list whose refresh brings fewer
     /// rows (a path search between keystrokes) keeps its frame still.
@@ -112,6 +118,7 @@ impl Clone for SelectList {
             vi_navigation: self.vi_navigation,
             session_management: self.session_management,
             footer_status: self.footer_status.clone(),
+            placeholder: self.placeholder,
             tallest: Cell::new(self.tallest.get()),
             breakpoints: self.breakpoints,
             model: self.model.clone(),
@@ -140,6 +147,7 @@ impl SelectList {
             vi_navigation: true,
             session_management: false,
             footer_status: None,
+            placeholder: DEFAULT_PLACEHOLDER,
             tallest: Cell::new(0),
             breakpoints: ChromeBreakpoints::default(),
             model: Model::new(),
@@ -170,6 +178,13 @@ impl SelectList {
     #[must_use]
     pub fn with_footer_status(mut self, status: impl Into<String>) -> Self {
         self.footer_status = Some(status.into());
+        self
+    }
+
+    /// Say `placeholder` in the empty query field (what can be searched).
+    #[must_use]
+    pub const fn with_placeholder(mut self, placeholder: &'static str) -> Self {
+        self.placeholder = placeholder;
         self
     }
 
@@ -229,6 +244,13 @@ impl RenderOverlay for SelectList {
             .footer(status, keys)
             .render_into(modal, buf);
         self.paint_surface(buf, modal);
+        paint::rule_under_query(buf, modal, &self.theme);
+        if let Some(row) = self
+            .cursor_row(&indices)
+            .and_then(|row| row.checked_sub(offset))
+        {
+            paint::selection_bar(buf, modal, Self::rows_area(modal), row, &self.theme);
+        }
         paint_scrollbar(
             buf,
             Self::scrollbar_track(modal),

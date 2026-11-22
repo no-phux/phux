@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratcn::runtime::{DeclareCtx, Event, EventResult, FocusState, KeyCode, Ratcn};
 use ratcn::{Input, InputState, List, ListItem, ListItemState};
@@ -100,15 +100,23 @@ impl SelectList {
         let theme = self.theme;
         let (query_area, rows_area) = (Self::query_area(modal), Self::rows_area(modal));
         let width = rows_area.width;
+        let placeholder = self.placeholder;
+        let empty = format!("No matches for \u{201c}{}\u{201d}", self.query().trim());
         move |ctx| {
-            let prompt = Span::styled(">", Style::default().fg(theme.dim));
+            let prompt = Span::styled(
+                "›",
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            );
             let input = Input::new()
                 .value(|m: &Model| &m.query, Msg::Query)
                 .prefix(prompt)
+                .placeholder(placeholder)
                 .style(input_style);
             ctx.component(QUERY, input, query_area);
             if rows.is_empty() {
-                let none = Line::styled("(no matches)", Style::default().fg(theme.dim));
+                let none = Line::styled(empty.clone(), Style::default().fg(theme.dim));
                 ctx.paint_widget(none, rows_area);
                 return;
             }

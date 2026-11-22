@@ -206,7 +206,7 @@ impl SelectList {
     }
 
     /// The modal rect: a box just tall enough for every row, up to half the
-    /// viewport (min 30 wide; see `centered_panel`), centered. A compact
+    /// viewport (min 30 wide; see `centered_panel`), in the upper third. A compact
     /// viewport takes the full height either way. The box never shrinks
     /// below the tallest one this list has painted.
     pub(super) fn modal_area(&self, outer: Rect) -> Rect {
@@ -221,8 +221,10 @@ impl SelectList {
             .max(self.tallest.get())
             .min(roomy.height);
         self.tallest.set(fit);
+        // Anchored in the upper third, where the eye starts, as every
+        // palette is: results grow downward and the field never jumps.
         let slack = roomy.height - fit;
-        Rect::new(roomy.x, roomy.y + slack / 2, roomy.width, fit)
+        Rect::new(roomy.x, roomy.y + slack / 3, roomy.width, fit)
     }
 
     /// The query field: the first interior row, inside the padding.
