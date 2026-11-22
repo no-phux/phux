@@ -285,7 +285,7 @@ export function plan(
     coverage: [...chosen(covered), ...(runeQualify ? LINUX_QUALIFY : [])].join(","),
     unitMode: push ? "workspace" : c.unitMode,
     unitTargets: push ? "" : c.unitTargets,
-    testFilterset: push ? "" : c.testFilterset,
+    testFilterset: !push && c.unitMode === "rdeps" ? c.testFilterset : "",
     docsCatalog: docsCatalogNeeded(options),
   };
 }
