@@ -54,6 +54,16 @@ impl super::super::SessionLoop {
         if let Some(terminal_id) = outcome.painted_output.as_ref() {
             self.clear_delivery_fence_after_paint(terminal_id);
         }
+        // Output under a floating overlay (the welcome card, the palette) is
+        // owed to the pacer, which repaints panes and overlay together at
+        // frame cadence; dropping it froze the panes until the overlay closed.
+        // A burst-deferred frame counts too: the later frame it deferred to is
+        // suppressed under the overlay as well.
+        if outcome.painted_output.is_none() && self.overlay_floats() {
+            for terminal_id in &outcome.authoritative_damage {
+                self.pacer.withhold(terminal_id);
+            }
+        }
         self.retire_closed_terminal_input(retired_terminal, &mut outcome);
         self.settle_layout_outcome(&mut outcome);
         Ok(outcome)

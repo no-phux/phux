@@ -47,6 +47,8 @@ pub(in crate::attach) use sessions::{
     switch_session,
 };
 pub(in crate::attach) use spawn::{find_path, go_to_directory, insert_path, new_window};
+#[cfg(test)]
+pub(in crate::attach) use views::waiting_elsewhere;
 pub(in crate::attach) use views::{
     agents_filter, focus_pane, next_attention, push_action_finder, push_agent_fleet,
     push_context_menu, push_copy_mode, push_getting_started, push_session_picker, push_settings,

@@ -93,6 +93,8 @@ fn no_unregistered_hidden_cli_surface() {
         // Auto-spawn / upgrade plumbing on `phux server`.
         "phux server --daemonize",
         "phux server --seed-command",
+        // The auto-spawning client's cwd for the seed pane.
+        "phux server --seed-cwd",
         "phux server --resume",
         // `phux new --empty` starts its server unseeded (ADR-0105).
         "phux server --no-seed",

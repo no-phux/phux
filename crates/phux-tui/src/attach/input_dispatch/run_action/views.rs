@@ -2,6 +2,7 @@
 //! the agent fleet and attention, and sidebar filters.
 
 use crate::attach::copy::extract_selection_text;
+use crate::attach::input_dispatch::ReattachTarget;
 use crate::attach::input_dispatch::args::{
     focus_terminal, ordered_workspace_panes, str_arg, usize_arg,
 };
@@ -13,6 +14,7 @@ use crate::attach::input_dispatch::pickers::{
 };
 use crate::attach::pane_state::published_terminal;
 use crate::render::overlay::{CopyRequest, SelectItem, SelectList, SelectionGrab, ToastOverlay};
+use phux_protocol::ids::ResourceId;
 
 use super::{ActionCall, focus_in_window};
 
@@ -341,7 +343,12 @@ pub(in crate::attach) fn next_attention(
         })
         .map(|(_, (window, id))| (*window, id.clone()));
     let Some((window, target)) = target else {
-        effects.bell = true;
+        // Nothing waits here: go to a waiting pane in another session, as
+        // the status bar's count promised, instead of ringing the bell.
+        match waiting_elsewhere(&ctx.peers) {
+            Some(reattach) => effects.reattach = Some(reattach),
+            None => effects.bell = true,
+        }
         return;
     };
 
@@ -349,6 +356,38 @@ pub(in crate::attach) fn next_attention(
     focus_terminal(ctx.workspace, window, target.clone());
     effects.layout_mutated = true;
     effects.set_focus = Some(target);
+}
+
+/// A switch to the first pane needing a human in another session, in the
+/// server's session order, then pane order; `None` when none waits.
+pub(in crate::attach) fn waiting_elsewhere(
+    peers: &crate::attach::sidebar_zones::PeerInputs<'_>,
+) -> Option<ReattachTarget> {
+    peers
+        .sessions
+        .iter()
+        .filter(|session| Some(session.id) != peers.focused_session)
+        .find_map(|session| {
+            let mut waiting: Vec<&ResourceId> = peers
+                .resources
+                .iter()
+                .filter(|info| peers.foreign_attention.contains(&info.id))
+                .filter(|info| {
+                    crate::attach::sidebar_zones::resource_session(info, peers.windows)
+                        == Some(session.id)
+                })
+                .map(|info| &info.id)
+                .collect();
+            waiting.sort();
+            let resource = waiting.first()?;
+            Some(ReattachTarget::Existing {
+                name: session.name.clone(),
+                id: Some(session.id),
+                window: None,
+                pane: None,
+                resource: Some((*resource).clone()),
+            })
+        })
 }
 
 /// Jump back to the saved origin, consuming it even when that pane is gone
