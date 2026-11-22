@@ -77,7 +77,11 @@ from evidence, state the assumption in the PR, and keep going.
   `env -u PHUX_SOCKET -u PHUX_TERMINAL_ID -u PHUX_PROFILE` with an explicit
   short `--socket` under `/tmp`, as `clients/rune/README.md` (Develop) shows.
 - Write scratch output (snapshots, logs) under `../scratch/` (the home's, not
-  a worktree's), never inside a worktree.
+  a worktree's), never inside a worktree. Before the run ends, delete the
+  build outputs you put there (cargo targets, packaged apps, simulator
+  derived data) and keep only the captures and logs your PR or journal cites.
+  The tick deletes scratch nothing has touched for a day; a run once left
+  100 GB and filled the disk.
 - `AGENTS.md` applies: conventional commits that pass commitlint, the file
   token budget, `just docs-gen` when a CLI or config surface changes. Your
   scope is `clients/rune` plus what a Rune change mechanically implies (a new
