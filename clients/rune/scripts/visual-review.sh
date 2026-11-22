@@ -44,6 +44,7 @@ render() {
 
 render phone_inbox_visual_review_frames
 render phone_acp_visual_review_frames
+render acp_form_visual_review_frames
 render settings_native_render_frames
 render settings_size_visual_review_frames
 render settings_theme_visual_review_frames

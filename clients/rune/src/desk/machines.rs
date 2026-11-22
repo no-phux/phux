@@ -159,6 +159,9 @@ impl Machines {
 
     /// Relist expanded machines whose listing has gone stale, and wake for the next.
     pub(super) fn tick_glances(&mut self, clock: f64, tx: &mut Tx) {
+        if !tx.window_visible() {
+            return;
+        }
         let mut next = None::<f64>;
         for host in self.expanded.clone() {
             let due = self
