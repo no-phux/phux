@@ -1,6 +1,6 @@
 # The one validation workflow: every pull request, merge group and main push.
 #
-# Execution, required lanes, and receipt reuse: docs/ci-plan.md.
+# Execution, required lanes, and receipt reuse: docs/ci.md.
 name: ci
 
 on:
@@ -227,7 +227,7 @@ jobs:
           PHUX_UNIT_TARGETS: *unit-targets
           PHUX_TEST_ARCHIVE: ${{ runner.temp }}/phux-tests.tar.zst
           PHUX_NEXTEST_PARTITION: count:${{ matrix.shard }}/3
-        run: nix develop -c just test
+        run: nix develop .#test-archive -c just test
 
   # Serial e2e took 185 s on one runner (41886342790); split across two.
   e2e:
@@ -258,7 +258,7 @@ jobs:
           PHUX_UNIT_TARGETS: *unit-targets
           PHUX_TEST_ARCHIVE: ${{ runner.temp }}/phux-tests.tar.zst
           PHUX_NEXTEST_PARTITION: count:${{ matrix.shard }}/2
-        run: nix develop -c just e2e
+        run: nix develop .#test-archive -c just e2e
 
   # phux-client-ffi with the mobile artifact's features shares no artifacts
   # with the unit pool.
