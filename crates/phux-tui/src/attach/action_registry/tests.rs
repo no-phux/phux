@@ -199,7 +199,7 @@ fn plugin_row_shows_merged_binding_chord() {
         .iter()
         .find(|i| i.label.starts_with("plugin: "))
         .expect("plugin row present");
-    assert_eq!(row.secondary.as_deref(), Some("C-a g"));
+    assert_eq!(row.secondary.as_deref(), Some("⌃A g"));
 }
 
 // ---------- phux-r82.7: dynamic plugin pane rows ----------

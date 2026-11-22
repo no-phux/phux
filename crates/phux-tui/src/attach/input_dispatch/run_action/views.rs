@@ -16,22 +16,6 @@ use crate::render::overlay::{CopyRequest, SelectItem, SelectList, SelectionGrab,
 
 use super::{ActionCall, focus_in_window};
 
-/// Open the fuzzy finder; `show-help` and `command-palette` are aliases. The
-/// marker row shows only while a recording is live.
-pub(in crate::attach) fn push_action_finder(ActionCall { ctx, .. }: ActionCall<'_, '_>) {
-    let mut items = crate::attach::action_registry::palette_items(
-        ctx.keybindings,
-        ctx.plugin_actions,
-        ctx.plugin_panes,
-    );
-    if !phux_record::recording_live() {
-        items.retain(|item| item.action.action != "rec-mark");
-    }
-    ctx.overlays.push(Box::new(
-        SelectList::new("Commands", items, ctx.theme).without_vi_navigation(),
-    ));
-}
-
 /// Explicit reload; the driver re-reads after the batch because `ctx`
 /// borrows exactly the state a reload replaces.
 pub(in crate::attach) const fn reload_config(ActionCall { effects, .. }: ActionCall<'_, '_>) {

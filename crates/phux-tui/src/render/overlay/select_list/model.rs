@@ -185,6 +185,9 @@ impl SelectList {
             Msg::Pick(item) => {
                 self.model.cursor = Some(item);
                 if let Some(item) = self.cursor_item() {
+                    if let Some(path) = &self.recents {
+                        crate::attach::palette_recent::note(path, &item.action);
+                    }
                     return OverlayCommand::Commit(item.action.clone());
                 }
             }

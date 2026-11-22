@@ -38,6 +38,7 @@ mod kitty_heal;
 mod notify;
 mod onboarding;
 pub mod paint;
+pub mod palette_recent;
 mod restore_hint;
 // `PaneSlot` and the client-local indices built over it. Shared
 // vocabulary the driver and its siblings both read; see the module doc.

@@ -91,6 +91,8 @@ pub struct SelectList {
     footer_status: Option<String>,
     /// What the empty query field says.
     placeholder: &'static str,
+    /// Where a committed row is remembered as recent (the command palette).
+    recents: Option<std::path::PathBuf>,
     /// The tallest box painted so far: a list sized to its rows never
     /// shrinks while it is up, so a live list whose refresh brings fewer
     /// rows (a path search between keystrokes) keeps its frame still.
@@ -119,6 +121,7 @@ impl Clone for SelectList {
             session_management: self.session_management,
             footer_status: self.footer_status.clone(),
             placeholder: self.placeholder,
+            recents: self.recents.clone(),
             tallest: Cell::new(self.tallest.get()),
             breakpoints: self.breakpoints,
             model: self.model.clone(),
@@ -148,6 +151,7 @@ impl SelectList {
             session_management: false,
             footer_status: None,
             placeholder: DEFAULT_PLACEHOLDER,
+            recents: None,
             tallest: Cell::new(0),
             breakpoints: ChromeBreakpoints::default(),
             model: Model::new(),
@@ -185,6 +189,14 @@ impl SelectList {
     #[must_use]
     pub const fn with_placeholder(mut self, placeholder: &'static str) -> Self {
         self.placeholder = placeholder;
+        self
+    }
+
+    /// Remember each committed row at `path`, so the palette learns what
+    /// this user runs.
+    #[must_use]
+    pub fn with_recents(mut self, path: std::path::PathBuf) -> Self {
+        self.recents = Some(path);
         self
     }
 

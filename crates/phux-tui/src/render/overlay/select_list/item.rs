@@ -32,6 +32,9 @@ pub struct SelectItem {
     /// Added to the row's match score: recent use, waiting attention. Close
     /// matches reorder; a far better match still wins.
     pub boost: i32,
+    /// Shown only while the query is empty (a "Recent" copy of a row that
+    /// also sits in its own section), so a search never lists it twice.
+    pub browse_only: bool,
 }
 
 impl SelectItem {
@@ -47,6 +50,7 @@ impl SelectItem {
             attention: false,
             keywords: None,
             boost: 0,
+            browse_only: false,
         }
     }
 
@@ -62,6 +66,7 @@ impl SelectItem {
             attention: false,
             keywords: None,
             boost: 0,
+            browse_only: false,
         }
     }
 
@@ -83,6 +88,13 @@ impl SelectItem {
     #[must_use]
     pub const fn boosted(mut self, boost: i32) -> Self {
         self.boost = boost;
+        self
+    }
+
+    /// Show this row only while nothing is typed (see [`Self::browse_only`]).
+    #[must_use]
+    pub const fn browse_only(mut self) -> Self {
+        self.browse_only = true;
         self
     }
 

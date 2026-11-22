@@ -16,6 +16,7 @@ use super::effects::ActionEffects;
 use super::pickers::switch_window;
 
 mod modes;
+mod palette;
 mod panes;
 mod placeholders;
 mod plugins;
@@ -36,6 +37,9 @@ pub(in crate::attach) use sync::sync_panes;
 mod worktree;
 
 pub(in crate::attach) use modes::{enter_mode, exit_mode};
+pub(in crate::attach) use palette::{
+    PALETTE_LIVE_KEY, PaletteSources, palette_rows, push_action_finder,
+};
 pub(in crate::attach) use panes::{
     focus_direction, give_input, kill_focused_pane, last_pane, move_pane, next_pane, next_slot_tab,
     previous_pane, previous_slot_tab, resize_pane, set_pane, signal_terminal, split_pane,
@@ -48,10 +52,9 @@ pub(in crate::attach) use sessions::{
 };
 pub(in crate::attach) use spawn::{find_path, go_to_directory, insert_path, new_window};
 pub(in crate::attach) use views::{
-    agents_filter, focus_pane, next_attention, push_action_finder, push_agent_fleet,
-    push_context_menu, push_copy_mode, push_getting_started, push_session_picker, push_settings,
-    push_window_picker, rec_mark, reload_config, report_bug, return_from_attention, scroll,
-    toggle_project_group,
+    agents_filter, focus_pane, next_attention, push_agent_fleet, push_context_menu, push_copy_mode,
+    push_getting_started, push_session_picker, push_settings, push_window_picker, rec_mark,
+    reload_config, report_bug, return_from_attention, scroll, toggle_project_group,
 };
 #[cfg(test)]
 pub(super) use windows::kill_window_confirm;

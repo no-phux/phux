@@ -108,7 +108,7 @@ impl SelectList {
             return (0..self.items.len()).collect();
         }
         let rows: Vec<usize> = (0..self.items.len())
-            .filter(|&i| !self.items[i].is_header())
+            .filter(|&i| !self.items[i].is_header() && !self.items[i].browse_only)
             .collect();
         let aliases: Vec<Vec<&str>> = rows
             .iter()
