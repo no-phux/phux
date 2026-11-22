@@ -8,6 +8,7 @@ use rune::{Runtime, TouchPhase};
 use super::*;
 
 mod a11y;
+mod form;
 
 const ID: &str = "acp-question:phone";
 const LONG: &str =
