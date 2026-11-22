@@ -13,7 +13,7 @@ function select(specs: string): string[] {
       "-euo",
       "pipefail",
       "-c",
-      'source scripts/lib/e2e-selection.sh; e2e_select; printf "%s\\n" "$e2e_filter" "${e2e_targets[@]}"',
+        'source scripts/lib/e2e-selection.sh; e2e_select; printf "%s\\n" "$e2e_filter" "${e2e_targets[@]}" "${e2e_partition_extra[@]}"',
     ],
     { cwd: ROOT, env: { ...process.env, PHUX_UNIT_TARGETS: specs } },
   )
@@ -30,8 +30,10 @@ test("a narrow archive builds exactly the e2e binaries the runner selects, plus 
     "recording_e2e",
     "--test",
     "perf",
+    "--no-tests=warn",
   ]);
   expect(select("phux:service")).toEqual(select(""));
+  expect(select("")).not.toContain("--no-tests=warn");
 });
 
 test("shared fixtures fail closed to the complete unit and e2e suites", () => {

@@ -142,7 +142,9 @@ e2e: worktree-claim && (worktree-verify "e2e")
       source=(--archive-file "$PHUX_TEST_ARCHIVE" --workspace-remap "{{justfile_directory()}}")
       # One CI shard (see `test`).
       if [[ -n "${PHUX_NEXTEST_PARTITION:-}" ]]; then
-        source+=(--partition "$PHUX_NEXTEST_PARTITION" --no-tests=warn)
+        source+=(--partition "$PHUX_NEXTEST_PARTITION")
+        # A narrowed lane can contain just one test split across two shards.
+        source+=(${e2e_partition_extra[@]+"${e2e_partition_extra[@]}"})
       fi
     else
       source=(--workspace {{TEST_FEATURES}} "${e2e_targets[@]}")
