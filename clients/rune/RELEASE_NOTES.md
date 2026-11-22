@@ -3,6 +3,7 @@
 Includes improvements prepared for 0.1.47 and 0.1.48, which were not published.
 
 - Update URL handling to fix the nested-blob origin stack overflow (RUSTSEC-2026-0592), without suppressing the security advisory.
+- Let native phone controls settle without repeatedly reordering UIKit views or rebuilding Rune for unchanged accessibility settings. Preserve real geometry, ordering and accessibility changes.
 - Keep waiting-agent marks crisp in forced colours, without restoring grey halos. Status words, marks and keyboard focus remain; ordinary shadows follow Rune Kit's CSS layer order.
 - Polish phone navigation and native glass controls. Keep Settings' keyboard dismissal and accessory keys readable at large text sizes: Done stays whole, keys fit their labels, and an overflow indicator makes the remaining keys discoverable.
 - Jump back to the last pane or tab, click the shown tab to return to the previous one, and find terminals grouped by tab in the palette. (#2814)
