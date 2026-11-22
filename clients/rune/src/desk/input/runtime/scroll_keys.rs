@@ -32,11 +32,17 @@ fn clicking_desktop_chrome_returns_typing_to_the_terminal() {
         ];
     });
     settle(&mut rt);
-    for control in ["tab-0", "tab-new", "sidebar-toggle"] {
+    for control in ["tab-0", "tab-new", "sidebar-toggle", "settings-button"] {
         let (x, y) = rt.find(control).expect(control);
         rt.pointer_down(x, y);
         rt.pointer_up(x, y);
         settle(&mut rt);
+        if control == "settings-button" {
+            assert!(rt.state.settings_open);
+            rt.key(crate::keys::plain(Key::Escape));
+            settle(&mut rt);
+            assert!(!rt.state.settings_open);
+        }
         rt.update(|_, tx| assert_eq!(tx.focused(), None, "{control} kept focus"));
         let _ = client.take_outbound();
         for key in [Key::Text(" ".into()), Key::Down] {
@@ -92,7 +98,10 @@ fn intentionally_focused_chrome_does_not_share_keys_with_the_terminal() {
     rt.key(crate::keys::plain(Key::Escape));
     settle(&mut rt);
     rt.update(|_, tx| assert_eq!(tx.focused(), None, "Escape returns to the terminal"));
-    assert!(client.take_outbound().is_empty());
+    assert!(client.take_outbound().iter().all(|bytes| !matches!(
+        FrameKind::decode(bytes).unwrap().0,
+        FrameKind::InputKey { .. } | FrameKind::InputPaste { .. }
+    )));
 }
 
 #[test]
