@@ -130,10 +130,22 @@ heading_anchors() {
     ' "$1"
 }
 
-# Not `grep -q`: it quits at the first match, and under pipefail the awk it
-# cut off (SIGPIPE) would fail a page whose anchors outrun one pipe write.
+# Bash 3.2 has no associative arrays. Each page's cached list has newline
+# boundaries so a prefix is not mistaken for its complete heading.
+anchor_pages=()
+anchor_lists=()
 has_anchor() {
-    heading_anchors "$1" | grep -Fx -- "$2" >/dev/null
+    local file="$1" anchor="$2" index headings
+    for index in "${!anchor_pages[@]}"; do
+        if [[ "${anchor_pages[index]}" == "$file" ]]; then
+            [[ "${anchor_lists[index]}" == *$'\n'"$anchor"$'\n'* ]]
+            return
+        fi
+    done
+    headings=$'\n'"$(heading_anchors "$file")"$'\n'
+    anchor_pages+=("$file")
+    anchor_lists+=("$headings")
+    [[ "$headings" == *$'\n'"$anchor"$'\n'* ]]
 }
 
 # `-e` alone passes `INSTALL.md` for `install.md` on a case-insensitive
@@ -146,8 +158,10 @@ exact_child() {
     return 1
 }
 
+known_paths=$'\n'
 exists_exact() {
     local path="$1" parent=/ component
+    [[ "$known_paths" == *$'\n'"$path"$'\n'* ]] && return 0
     local components=()
     IFS=/ read -r -a components <<<"$path"
     for component in "${components[@]}"; do
@@ -160,13 +174,14 @@ exists_exact() {
                 ;;
         esac
     done
-    [[ -e "$parent" ]]
+    [[ -e "$parent" ]] || return 1
+    known_paths+="$path"$'\n'
 }
 
 gate_links() {
     local file dir lineno link path anchor resolved
     for file in "${FILES[@]}"; do
-        dir="$(dirname "$file")"
+        dir="${file%/*}"
         while IFS=$'\t' read -r lineno link; do
             case "$link" in
                 *://*|mailto:*|tel:*) continue ;;
@@ -237,32 +252,34 @@ extract_commands() {
 }
 
 gate_commands() {
-    local paths recipes file lineno tool first second
+    local paths recipes groups file lineno tool first second
     paths="$(cli_paths)"
-    recipes="$(just_recipes)"
     if [[ -z "$paths" ]]; then
         violate commands "$ROOT/docs/reference/cli.md" "no command headings; run \`just docs-gen\`"
         return
     fi
+    paths=$'\n'"$paths"$'\n'
+    recipes=$'\n'"$(just_recipes)"$'\n'
+    groups=$'\n'"$(sed -n 's/^Usage: phux \([a-z][a-z0-9-]*\) <SUBCOMMAND>.*/\1/p' "$ROOT/docs/reference/cli.md")"$'\n'
     for file in "${FILES[@]}"; do
         while IFS=$'\t' read -r lineno tool first second; do
             [[ -z "$first" || "$first" == -* || ! "$first" =~ ^[a-z][a-z0-9-]*$ ]] && continue
             if [[ "$tool" == just ]]; then
-                grep -Fqx -- "$first" <<<"$recipes" ||
+                [[ "$recipes" == *$'\n'"$first"$'\n'* ]] ||
                     violate commands "$file" "line $lineno: \`just $first\` is not a recipe"
                 continue
             fi
             [[ "$first" == help ]] && continue
-            if ! grep -Fqx -- "$first" <<<"$paths"; then
+            if [[ "$paths" != *$'\n'"$first"$'\n'* ]]; then
                 violate commands "$file" "line $lineno: \`phux $first\` is not a command"
                 continue
             fi
             # A word after a command group must be one of its subcommands,
             # unless the group itself takes arguments.
-            if [[ "$second" =~ ^[a-z][a-z-]*$ ]] &&
-                grep -q "^$first " <<<"$paths" &&
-                ! grep -Fqx -- "$first $second" <<<"$paths" &&
-                grep -q "^Usage: phux $first <SUBCOMMAND>" "$ROOT/docs/reference/cli.md"; then
+            if [[ "$second" =~ ^[a-z][a-z-]*$ &&
+                "$paths" == *$'\n'"$first "* &&
+                "$paths" != *$'\n'"$first $second"$'\n'* &&
+                "$groups" == *$'\n'"$first"$'\n'* ]]; then
                 violate commands "$file" "line $lineno: \`phux $first $second\` is not a command"
             fi
         done < <(extract_commands "$file")
