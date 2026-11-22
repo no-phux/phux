@@ -110,6 +110,16 @@ impl super::SessionLoop {
     pub(super) fn peers_for_switch(&mut self) -> CarriedPeers {
         let mut agents = std::mem::take(&mut self.peers.foreign_agents);
         agents.extend(self.mirror.agent_meta.records.drain());
+        // The panes being left that need a human stay marked from the next
+        // session, which sees them as foreign.
+        let mut attention = std::mem::take(&mut self.peers.foreign_attention);
+        attention.extend(
+            self.mirror
+                .panes
+                .iter()
+                .filter(|(_, slot)| slot.attention)
+                .map(|(id, _)| id.clone()),
+        );
         let mut layouts = std::mem::take(&mut self.peers.foreign_layouts);
         if let Some(session) = self.peers.focused_session
             && !self.mirror.workspace.groups.is_empty()
@@ -120,7 +130,7 @@ impl super::SessionLoop {
             serving_host: self.peers.serving_host.take(),
             layouts,
             agents,
-            attention: std::mem::take(&mut self.peers.foreign_attention),
+            attention,
             project_tags: std::mem::take(&mut self.peers.project_tags),
             hosts: std::mem::take(&mut self.peers.hosts),
             session_history: self.focus_history.take_sessions(),
@@ -159,6 +169,21 @@ impl super::SessionLoop {
         for id in local {
             if let Some(record) = self.peers.foreign_agents.remove(&id) {
                 self.mirror.agent_meta.records.insert(id, record);
+            }
+        }
+        // A carried mark on one of this session's own panes becomes that
+        // pane's mark again; left in the foreign set it showed nowhere.
+        let own: Vec<ResourceId> = self
+            .peers
+            .foreign_attention
+            .iter()
+            .filter(|id| self.mirror.panes.contains_key(*id))
+            .cloned()
+            .collect();
+        for id in own {
+            self.peers.foreign_attention.remove(&id);
+            if let Some(slot) = self.mirror.panes.get_mut(&id) {
+                slot.attention = true;
             }
         }
     }

@@ -118,6 +118,36 @@ async fn a_switch_carries_the_session_history_for_last_session() {
     assert_eq!(entering.focus_history.session_names(), ["work", "api"]);
 }
 
+/// A pane that needs a human keeps its mark across switches: the session
+/// being left hands its own marked panes over as foreign, and the session
+/// being entered turns a carried mark on its own pane back into the pane's.
+#[tokio::test(flavor = "current_thread")]
+async fn a_switch_keeps_needs_you_marks_both_ways() {
+    let (mut leaving, _client, _server, a) = published_single_pane_loop().await;
+    leaving.mirror.panes.get_mut(&a).expect("pane").attention = true;
+    let carried = leaving.peers_for_switch();
+
+    let (mut elsewhere, _c2, _s2, _b) = published_single_pane_loop().await;
+    elsewhere.mirror.panes.clear();
+    elsewhere.seed_carried_peers(carried);
+    elsewhere.adopt_carried_local_agents();
+    assert!(
+        elsewhere.peers.foreign_attention.contains(&a),
+        "another session sees the left pane's mark as foreign"
+    );
+    let back = elsewhere.peers_for_switch();
+
+    let (mut returning, _c3, _s3, a_again) = published_single_pane_loop().await;
+    assert_eq!(a_again, a);
+    returning.seed_carried_peers(back);
+    returning.adopt_carried_local_agents();
+    assert!(
+        returning.mirror.panes[&a].attention,
+        "the mark is the pane's own again"
+    );
+    assert!(!returning.peers.foreign_attention.contains(&a));
+}
+
 /// A loop over one published 80x22 pane, with the shipped chrome, whose
 /// layout read already settled: the view a held switch is waiting for.
 async fn published_single_pane_loop() -> (SessionLoop, Connection, Connection, ResourceId) {
