@@ -44,6 +44,11 @@ fn scrollbar_spans_the_list_rows_and_spares_the_border() {
     let bottom = modal.y + modal.height - 1;
     assert_eq!(
         buf[(right, modal.y + 2)].symbol(),
+        "┤",
+        "the rule under the query joins the border"
+    );
+    assert_eq!(
+        buf[(right, modal.y + 3)].symbol(),
         "┃",
         "thumb on the first list row"
     );
@@ -57,10 +62,10 @@ fn scrollbar_spans_the_list_rows_and_spares_the_border() {
 #[test]
 fn page_home_end_and_wheel_move_the_selection() {
     let mut sl = long_list(40);
-    // 40x16 is compact: full-bleed, 16 - 3 chrome rows = 13 visible.
+    // 40x16 is compact: full-bleed, 16 - 4 chrome rows = 12 visible.
     render_to_string(&sl, 40, 16);
     key(&mut sl, PhysicalKey::PageDown);
-    assert_eq!(selected(&sl), 13, "a page is the visible rows");
+    assert_eq!(selected(&sl), 12, "a page is the visible rows");
     key(&mut sl, PhysicalKey::PageUp);
     assert_eq!(selected(&sl), 0);
     key(&mut sl, PhysicalKey::End);
@@ -133,7 +138,7 @@ fn clicking_a_row_commits_it() {
     }
     let (x, y) = find(&buf, "Window");
     assert_eq!(click(&mut sl, x, y), OverlayCommand::Stay, "header");
-    let (x, y) = find(&buf, ">");
+    let (x, y) = find(&buf, "›");
     assert_eq!(click(&mut sl, x + 2, y), OverlayCommand::Stay, "query");
     assert_eq!(click(&mut sl, 0, 0), OverlayCommand::Stay, "outside");
     assert_eq!(
@@ -164,16 +169,19 @@ fn the_query_edits_at_its_caret() {
     assert_eq!(commit(&mut sl), None);
 }
 
-/// Above the compact breakpoint the picker floats: a centered box with
-/// panes visible around it, not a screen, and only as tall as its rows
-/// need (three rows: the query line, the rows, and the two borders).
+/// Above the compact breakpoint the picker floats: a box with panes visible
+/// around it, not a screen, only as tall as its rows need (the query line,
+/// its rule, the rows, and the two borders), and in the upper third.
 #[test]
 fn roomy_viewport_render_still_floats() {
     let sl = sample();
     let area = Rect::new(0, 0, 100, 30);
     let bounds = sl.bounds(area).expect("bounded");
-    assert_eq!((bounds.width, bounds.height), (50, 6));
+    assert_eq!((bounds.width, bounds.height), (50, 7));
     assert!(bounds.x > 0 && bounds.y > 0);
+    let above = bounds.y - area.y;
+    let below = area.bottom() - bounds.bottom();
+    assert!(above < below, "anchored high: {above} above, {below} below");
 }
 
 /// A long list stops at half the viewport and scrolls; a list that
@@ -184,9 +192,9 @@ fn box_height_caps_at_half_and_never_shrinks() {
     let long = long_list(40);
     assert_eq!(long.bounds(area).expect("bounded").height, 15);
     let mut live = long_list(8).with_live_key("agent-fleet");
-    assert_eq!(live.bounds(area).expect("bounded").height, 11);
+    assert_eq!(live.bounds(area).expect("bounded").height, 12);
     assert!(live.refresh_items("agent-fleet", &[SelectItem::header("Searching…")]));
-    assert_eq!(live.bounds(area).expect("bounded").height, 11);
+    assert_eq!(live.bounds(area).expect("bounded").height, 12);
 }
 
 #[test]
@@ -278,6 +286,10 @@ fn long_query_keeps_its_tail_without_changing_the_filter() {
     type_str(&mut sl, query);
     assert_eq!(sl.query(), query);
     let out = render_to_string(&sl, 40, 16);
-    assert!(out.contains("words-xyz"), "{out}");
-    assert!(!out.contains("item-2-and"), "{out}");
+    let field = out
+        .lines()
+        .find(|line| line.contains('›'))
+        .expect("the query line");
+    assert!(field.contains("words-xyz"), "{out}");
+    assert!(!field.contains("item-2-and"), "{out}");
 }

@@ -483,7 +483,16 @@ fn hit_row(hit: &Hit, index: usize, picked: bool, phone: bool, t: &Tokens) -> El
             }
             _ => None,
         })
-        .child(detail_text(&hit.item.detail, detail.paint(), t))
+        .child(shortcut_or_detail(hit, detail.paint(), t))
+}
+
+/// An action's keys as a key cap (`⇧⌘P`), like every shortcut Rune shows;
+/// any other row's detail (its session, a pane id) as words.
+fn shortcut_or_detail(hit: &Hit, ink: rune::Color, t: &Tokens) -> El {
+    if hit.item.kind == "action" && !hit.item.detail.is_empty() {
+        return super::keycap(hit.item.detail.clone(), t);
+    }
+    detail_text(&hit.item.detail, ink, t)
 }
 
 /// A row's detail in its voices: the session's name in the ui face,

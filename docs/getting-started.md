@@ -54,7 +54,7 @@ Keys you press without the prefix go to the program in the pane. phux binds none
 You don't need to memorize anything on this page. Two things show you the keys as you go:
 
 - **The which-key popup.** Press <kbd>C-a</kbd> and wait a moment. A popup lists every key you can press next, grouped into Pane, Tab, Session, and phux. It never eats a key: press one and it runs as if the popup weren't there. <kbd>Esc</kbd> cancels the prefix.
-- **The command palette.** Press <kbd>C-a</kbd> <kbd>Space</kbd> (or <kbd>:</kbd> or <kbd>?</kbd>) to search every action by name. Each row shows its key, so the palette is also how you learn them.
+- **The command palette.** Press <kbd>C-a</kbd> <kbd>Space</kbd> (or <kbd>:</kbd> or <kbd>?</kbd>) to run any action or jump to any session or tab. Type any words of a name in any order, or its initials (`ns` finds **New session**), or a word you'd reach for (`quit` finds **Detach**). Each row shows its key, so the palette is also how you learn them, and what you run most comes first.
 
 [Default key bindings](./reference/keys.md) lists every key on one page.
 
