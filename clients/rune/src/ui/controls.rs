@@ -139,12 +139,44 @@ pub(crate) fn icon_press(
     p: &Tokens,
     press: impl Fn(&mut Desk) + 'static,
 ) -> El {
+    icon_press_tx(glyph, name, key, p, move |d, _| press(d))
+}
+
+/// A toolbar button that hands typing back to the terminal after a click.
+pub(super) fn terminal_icon_press(
+    glyph: &'static rune::Icon,
+    name: &'static str,
+    key: &'static str,
+    p: &Tokens,
+    press: impl Fn(&mut Desk) + 'static,
+) -> El {
+    icon_press_tx(glyph, name, key, p, move |d, tx| {
+        press(d);
+        return_to_terminal_on_click(tx);
+    })
+}
+
+fn icon_press_tx(
+    glyph: &'static rune::Icon,
+    name: &'static str,
+    key: impl Into<String>,
+    p: &Tokens,
+    press: impl Fn(&mut Desk, &mut rune::Tx) + 'static,
+) -> El {
     IconButton::new(glyph)
         .variant(IconButtonVariant::Ghost)
         .label(name)
-        .on_press(press)
+        .on_press_tx(press)
         .build(&p.kit)
         .key(key)
+}
+
+/// The terminal takes keys when no Rune control is focused. A mouse click
+/// hands them back; keyboard activation leaves focus available for navigation.
+pub(super) fn return_to_terminal_on_click(tx: &mut rune::Tx) {
+    if !tx.by_keys() {
+        tx.blur();
+    }
 }
 
 /// Covering the whole of its parent, over what came before it.

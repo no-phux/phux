@@ -35,7 +35,7 @@ The home defaults to `rune-upstream` beside the primary checkout:
 | `PHONE.json` | Optional private phone-delivery configuration; never committed. An installation order in steering enables the delivery phase |
 | `JOURNAL.md` | The agent's memory between runs, and the first place a `BLOCKED:` line shows up |
 | `rune.git` | A mirror of upstream for reading ranges |
-| `scratch/` | Snapshots and logs a run makes |
+| `scratch/` | Snapshots and logs a run makes. Each tick deletes entries untouched for `RUNE_UPSTREAM_SCRATCH_KEEP_HOURS` (24) that no process holds open, except `RUNE_UPSTREAM_SCRATCH_KEEP` (`phone-*`) |
 | `tick.log` | What each tick did |
 
 Rerun `install.sh` after `tick.sh` changes; it keeps the worktree, journal and
