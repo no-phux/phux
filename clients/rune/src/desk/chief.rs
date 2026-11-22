@@ -165,7 +165,7 @@ impl Desk {
         if pressed {
             // Alone: another modifier already down makes it a chord.
             let alone = !(event.mods.shift || event.mods.ctrl || event.mods.alt);
-            self.chief.armed = right_command && alone && self.chief_can_open();
+            self.chief.armed = right_command && alone && self.chief_can_open(tx);
             return false;
         }
         let tapped = right_command
@@ -174,7 +174,7 @@ impl Desk {
         if !right_command {
             self.chief.disarm();
         }
-        if !(tapped && self.chief_can_open()) {
+        if !(tapped && self.chief_can_open(tx)) {
             return false;
         }
         self.open_chief();
@@ -183,9 +183,10 @@ impl Desk {
 
     /// Only over the terminal: a field or sheet with the keyboard may be
     /// taking chords Rune never sees.
-    fn chief_can_open(&self) -> bool {
+    fn chief_can_open(&self, tx: &Tx) -> bool {
         self.phone.is_none()
             && self.focused
+            && tx.focused().is_none()
             && self.modal().is_none()
             && self.chief_session().is_some()
     }

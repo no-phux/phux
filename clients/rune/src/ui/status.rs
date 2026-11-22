@@ -10,7 +10,7 @@ use rune_kit::{Button, ButtonVariant, ControlSize, Progress};
 use super::Tokens;
 
 use super::tokens::{MONO, Tier};
-use super::{Paint, badge, button, icon_press, icons, keep_from_pane, tabs, tip};
+use super::{Paint, badge, button, icons, keep_from_pane, tabs, tip};
 use crate::desk::link::{Banner, Standing};
 use crate::desk::{Desk, Pending};
 use crate::keys::Shortcut;

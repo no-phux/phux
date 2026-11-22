@@ -5,6 +5,7 @@ use rune::{El, el, text};
 use rune_kit::{Button, ButtonVariant};
 
 use super::super::{Paint, Tokens, icon_press, icons, pressable, tip};
+use super::return_to_terminal_on_click;
 use crate::desk::Desk;
 use crate::keys::Shortcut;
 
@@ -82,7 +83,7 @@ pub(super) fn foot(
         .icon(&icons::PLUS)
         .on_press_tx(move |d: &mut Desk, tx| {
             press(d);
-            super::clicked(tx);
+            return_to_terminal_on_click(tx);
         })
         .build(&t.kit)
         .key(key)
