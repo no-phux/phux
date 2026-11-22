@@ -96,6 +96,11 @@ fn kept_terminal_refusing_reports(
     rusqlite::Connection,
 ) {
     let path = dir.path().join("org.sqlite3");
+    drop(SqliteOrgStore::open(&path).unwrap());
+    let db = rusqlite::Connection::open(&path).unwrap();
+    // Install the failure before the owner opens its snapshot. External DDL
+    // after that point deliberately fences the owner, just like a data write.
+    db.execute_batch(REJECT_REPORT).unwrap();
     let state = SharedState::new();
     let (session, id) = state.with_mut(|server| {
         server.set_org_store(Box::new(SqliteOrgStore::open(&path).unwrap()));
@@ -112,8 +117,6 @@ fn kept_terminal_refusing_reports(
             )
             .unwrap()
     });
-    let db = rusqlite::Connection::open(&path).unwrap();
-    db.execute_batch(REJECT_REPORT).unwrap();
     (state, session, id, db)
 }
 
@@ -175,6 +178,24 @@ fn a_commit_wakes_a_backing_off_report_retry() {
             tokio::time::advance(Duration::from_secs(3)).await;
             db.execute_batch("DROP TRIGGER reject_report;").unwrap();
             state.with_mut(|server| {
+                // Only the injection schema changed; reload and prove the
+                // stored records still match before replacing the test owner.
+                let mut store =
+                    SqliteOrgStore::open(std::path::Path::new(db.path().unwrap())).unwrap();
+                let stored = crate::org_store::OrgStore::load(&mut store)
+                    .unwrap()
+                    .unwrap();
+                let org = phux_core::Org::restore(
+                    stored.authority,
+                    server.instance_id(),
+                    stored.sessions,
+                    stored.resources,
+                    stored.arrangements,
+                    stored.receipts,
+                )
+                .unwrap();
+                assert_eq!(&org, server.org());
+                server.set_org_store(Box::new(store));
                 let key = server.registry().session_key(session).unwrap();
                 server
                     .commit(
