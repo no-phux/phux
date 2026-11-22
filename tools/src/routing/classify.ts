@@ -195,11 +195,11 @@ export class Classifier {
     return {
       unitMode: "narrow",
       unitTargets: [...new Set(targets)].sort().join(","),
-      e2eNeeded: productive.some(isE2ePath),
+      e2eNeeded: productive.some(isE2ePath) || targets.includes("phux-server:perf:measure"),
     };
   }
 
-  /** `package:binary[:features]`, `package:*` for every test, or undefined. */
+  /** `package:binary[:features]`, or undefined when the consumer is uncertain. */
   private narrowTarget(path: string): string | undefined {
     if (nonLibraryKind(path) !== "tests") return undefined;
     const [, dir = "", , first = "", ...rest] = path.split("/");
@@ -209,7 +209,8 @@ export class Classifier {
     const single =
       (rest.length === 0 && first.endsWith(".rs")) ||
       existsSync(join(this.root, "crates", dir, "tests", binary, "main.rs"));
-    if (!single) return `${name}:*`;
+    // Shared fixtures can also be included by lib tests or other harnesses.
+    if (!single) return undefined;
     const features = gatingFeatures(dir, binary, this.root);
     return [name, binary, ...(features ? [features] : [])].join(":");
   }

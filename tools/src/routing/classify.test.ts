@@ -177,6 +177,22 @@ test("the unit plan narrows to the integration test a diff touches", () => {
   expect(plan(["crates/phux-server/tests/stress/stress_churn.rs"])[1]).toBe(
     "phux-server:stress:stress",
   );
+  expect(plan(["crates/phux/tests/recording_e2e/rec_e2e.rs"])).toEqual([
+    "narrow",
+    "phux:recording_e2e",
+    true,
+  ]);
+  expect(plan(["crates/phux-server/tests/perf/main.rs"])).toEqual([
+    "narrow",
+    "phux-server:perf:measure",
+    true,
+  ]);
+  for (const shared of [
+    "crates/phux/tests/common/mod.rs",
+    "crates/phux-server/tests/fixtures/upgrade-blob/0001.json",
+  ]) {
+    expect(plan([shared])).toEqual(["workspace", "", true]);
+  }
   expect(plan(["crates/phux-server/src/lib.rs"])).toEqual(["rdeps", "", true]);
   expect(plan(["Cargo.toml"])).toEqual(["workspace", "", true]);
   expect(plan(["docs/development.md"])).toEqual(["skip", "", false]);

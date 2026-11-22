@@ -6,8 +6,7 @@
 # THE HOLE THIS CLOSES. `#[ignore]`d tests do not run in the default pool
 # (`cargo nextest run --workspace`, which is CI's unit step). They run only
 # where a lane passes `--run-ignored` and names their binary. `just e2e`
-# names binaries explicitly with `binary_id(...)`, and that list is
-# hand-maintained. A new `*_e2e.rs` full of `#[ignore]`d tests therefore
+# reads a hand-maintained list of binary IDs. A new `*_e2e.rs` full of `#[ignore]`d tests therefore
 # compiles, passes review, and then never executes anywhere -- green forever,
 # testing nothing. That is not hypothetical: phux/tests/upgrade_e2e.rs
 # shipped with a module doc claiming "run via `just e2e`" while absent from
@@ -57,20 +56,18 @@ if [ ! -f justfile ]; then
     exit 1
 fi
 
-# The lane recipes: everything from `e2e:` to the end of `stress:`. Reading
-# every recipe file would let a `binary_id(...)` mentioned in a comment
-# elsewhere satisfy the gate; restricting to the recipe bodies keeps the
-# evidence to text nextest actually receives. `just --dump` is not used on
-# purpose -- it needs `just` on PATH, and this gate runs in jobs that have
-# only bash.
+# shellcheck source=scripts/lib/e2e-selection.sh
+source scripts/lib/e2e-selection.sh
+# Only the stress recipe names candidates independently. This check does not
+# need just or nextest installed.
 lanes="$(cat "${RECIPE_FILES[@]}" | awk '
-    /^(e2e|stress):/            { inrecipe = 1 }
-    inrecipe && /^[^ \t#]/ && !/^(e2e|stress):/ { inrecipe = 0 }
-    inrecipe                    { print }
+    /^stress:/                      { inrecipe = 1 }
+    inrecipe && /^[^ \t#]/ && !/^stress:/ { inrecipe = 0 }
+    inrecipe                        { print }
 ')"
 
 if [ -z "$lanes" ]; then
-    phux_error "found no e2e/stress recipe bodies in just/test.just"
+    phux_error "found no stress recipe body in just/test.just"
     phux_hint "if those recipes were renamed, update this gate to match."
     exit 1
 fi
@@ -110,11 +107,10 @@ while IFS= read -r path; do
         continue
     fi
 
-    if printf '%s' "$lanes" | grep -Fq "binary_id(${binary_id})"; then
+    if printf '%s\n' "${E2E_BINARIES[@]}" | grep -Fxq "$binary_id"; then
         continue
     fi
-    # `just stress` selects by `--test <name>` rather than by binary id.
-    if printf '%s' "$lanes" | grep -Eq -- "--test[[:space:]]+${harness}([[:space:]]|$)"; then
+    if printf '%s' "$lanes" | grep -Fq "binary_id(${binary_id})"; then
         continue
     fi
 
@@ -125,8 +121,7 @@ while IFS= read -r path; do
     phux_hint "names the binary. This one is named nowhere, so it never executes"
     phux_hint "in CI and will stay green no matter what it asserts."
     echo "" >&2
-    phux_hint "Fix by adding it to the fast PR lane in just/test.just (recipe \`e2e\`):"
-    phux_hint "  -E '... + binary_id(${binary_id})'"
+    phux_hint "Fix by adding ${binary_id} to E2E_BINARIES in scripts/lib/e2e-selection.sh,"
     phux_hint "or, if it is too slow for the PR critical path, to the \`stress\`"
     phux_hint "recipe (run locally with \`just stress\`)."
     echo "" >&2
