@@ -1,15 +1,18 @@
 //! `phux notify` — post a note for a pane: the `phux.note/v1` record, which
 //! clients show as a toast, and as a system notification when the pane is
-//! out of sight (`docs/scripting.md#notes`).
+//! out of sight (`docs/scripting.md#notes`). `phux notify-mode` sets a pane's
+//! `phux.notify/v1` mode (`docs/status-bar.md#muting-a-pane`).
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use phux_client_core::note::{MAX_NOTE_BYTES, Note, NoteLevel, parse_note};
 
-use super::record::with_target_pane;
+use phux_protocol::wire::frame::PaneNotify;
+
+use super::record::{with_target_pane, with_targets};
 use crate::commands::json_err::{self, CliError, codes};
-use crate::commands::{NoteLevelArg, warn_interleaved_degradation};
+use crate::commands::{NoteLevelArg, NotifyModeArg, warn_interleaved_degradation};
 use crate::exit_codes::{EXIT_FAILURE, EXIT_USAGE};
 
 /// Write the note to TARGET (default: the pane this runs in, else the
@@ -71,6 +74,62 @@ pub(crate) fn run_notify(
                         "schema_version": 1,
                         "terminal": selector,
                         "note": note,
+                    })));
+                }
+                Ok(ExitCode::SUCCESS)
+            })
+        },
+    )
+}
+
+/// Set the notify mode of every pane TARGET names (one pane, or each pane
+/// of a session, group or tag), each confirmed with a read-back.
+pub(crate) fn run_notify_mode(
+    target: &str,
+    mode: NotifyModeArg,
+    json: bool,
+    socket: Option<PathBuf>,
+) -> ExitCode {
+    let mode = match mode {
+        NotifyModeArg::On => PaneNotify::On,
+        NotifyModeArg::UnreadOnly => PaneNotify::UnreadOnly,
+        NotifyModeArg::Off => PaneNotify::Off,
+    };
+    with_targets(
+        Some(target),
+        socket,
+        "notify-mode",
+        None,
+        json,
+        true,
+        move |conn, panes| {
+            Box::pin(async move {
+                let mut set = Vec::with_capacity(panes.len());
+                let mut request_id = 100_u32;
+                for pane in panes {
+                    let (held, degradation) =
+                        phux_client::note::set_mode(conn, request_id, &pane, mode).await?;
+                    request_id = request_id.wrapping_add(2);
+                    warn_interleaved_degradation(&degradation);
+                    let selector = phux_client::selector::format_terminal_id(&pane);
+                    if !held {
+                        return Ok(json_err::emit(
+                            json,
+                            &CliError::new(
+                                codes::AGENT_RECORD_UNCONFIRMED,
+                                format!("the notify mode of {selector} could not be confirmed"),
+                                "retry; run `phux doctor` if it keeps failing",
+                            ),
+                            EXIT_FAILURE,
+                        ));
+                    }
+                    set.push(selector);
+                }
+                if json {
+                    return Ok(crate::output::json(&serde_json::json!({
+                        "schema_version": 1,
+                        "terminals": set,
+                        "mode": mode.as_str(),
                     })));
                 }
                 Ok(ExitCode::SUCCESS)

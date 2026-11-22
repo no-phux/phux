@@ -3,6 +3,7 @@ use super::*;
 
 mod connections;
 mod header;
+mod states;
 
 #[test]
 fn session_browser_renders_realistic_dark_light_and_search_states() {
@@ -68,6 +69,35 @@ fn session_browser_renders_realistic_dark_light_and_search_states() {
                 &mut rt,
                 size,
                 &format!("search-{appearance}"),
+            );
+            rt.update(|d, tx| {
+                d.close_phone_navigation();
+                d.open_phone_actions();
+                tx.instant();
+            });
+            settle_for_snapshot(&mut rt);
+            paint(
+                &gpu,
+                &mut renderer,
+                &mut rt,
+                size,
+                &format!("actions-{appearance}"),
+            );
+            // Before the first inventory: placeholders, not an empty page.
+            rt.update(|d, tx| {
+                d.close_phone_navigation();
+                d.connection.topology = None;
+                d.open_phone_sessions();
+                tx.instant();
+            });
+            settle_for_snapshot(&mut rt);
+            assert!(rt.find("phone-session-loading").is_some());
+            paint(
+                &gpu,
+                &mut renderer,
+                &mut rt,
+                size,
+                &format!("loading-{appearance}"),
             );
         }
     }

@@ -51,12 +51,12 @@ pub(crate) const CELL_PROTECTED: u32 = 1 << 9;
 /// `Cell::hyperlink_offset` and `Cell::hyperlink_len`.
 pub const CELL_HYPERLINK: u32 = 1 << 10;
 
-/// `CellMetadata::foreground_kind`: the terminal's default foreground.
+/// `CellMetadata` color kind: the terminal's default color.
 pub const COLOR_KIND_DEFAULT: u8 = 0;
-/// `CellMetadata::foreground_kind`: a 256-color palette index.
+/// `CellMetadata` color kind: a 256-color palette index.
 pub const COLOR_KIND_PALETTE: u8 = 1;
-/// `CellMetadata::foreground_kind`: a direct RGB color.
-pub(crate) const COLOR_KIND_RGB: u8 = 2;
+/// `CellMetadata` color kind: a direct RGB color.
+pub const COLOR_KIND_RGB: u8 = 2;
 
 /// One viewport cell, flattened: text and hyperlink URI as spans into the
 /// owning [`GridBuffer`]'s UTF-8 arena, every color palette-resolved to RGB.
@@ -120,12 +120,18 @@ pub struct CellMetadata {
     pub foreground_kind: u8,
     /// Meaningful only for `COLOR_KIND_PALETTE`.
     pub foreground_palette_index: u8,
-    /// The style named no underline color; `underline_*` fell back to the
-    /// resolved foreground.
-    pub underline_color_is_default: bool,
-    /// Neither the style nor a background-only content tag named a
-    /// background; `background_*` is the terminal default.
-    pub background_color_is_default: bool,
+    /// One of the `COLOR_KIND_*` values. `COLOR_KIND_DEFAULT`: the style named
+    /// no underline color and `underline_*` fell back to the resolved
+    /// foreground.
+    pub underline_kind: u8,
+    /// Meaningful only for `COLOR_KIND_PALETTE`.
+    pub underline_palette_index: u8,
+    /// One of the `COLOR_KIND_*` values, from a background-only content tag
+    /// or else the style. `COLOR_KIND_DEFAULT`: `background_*` is the
+    /// terminal default.
+    pub background_kind: u8,
+    /// Meaningful only for `COLOR_KIND_PALETTE`.
+    pub background_palette_index: u8,
 }
 
 /// The cursor shape libghostty reports for the viewport, numbered as the C

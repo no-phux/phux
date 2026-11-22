@@ -124,6 +124,8 @@ final class NativeBridge {
     func touch(_ identity: UInt64, phase: UInt32, point: CGPoint, seconds: Double) {
         phux_rune_ios_touch(pointer, identity, phase, point.x, point.y, seconds)
     }
+    /// A tap on the frame's native control `id`: true when Rune ran its press.
+    func press(_ id: String) -> Bool { id.withCString { phux_rune_ios_press(pointer, $0) } }
     func paste(_ text: String) {
         // A C string ends at its first NUL; a pasteboard's text need not.
         text.replacingOccurrences(of: "\0", with: "").withCString { phux_rune_ios_paste(pointer, $0) }

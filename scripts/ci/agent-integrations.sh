@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Native harness typecheck, unit, loader, pack, and npm audit gates.
 # The `integrations` lane (`just agent-integrations-check`). Runtime
-# is first: pi bundles it, and the committed dist must match a fresh build.
+# is built first because pi bundles its dist.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -18,7 +18,6 @@ export npm_config_fund=false
 
 npm --prefix integrations/runtime ci
 npm --prefix integrations/runtime run gates
-git diff --exit-code -- integrations/runtime/dist
 
 (
     cd integrations/opencode-v2

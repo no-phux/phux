@@ -5,12 +5,13 @@
 
 pub(super) mod deliver;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use phux_client::agent_meta::AgentMetaState;
 use phux_config::{NotificationsCfg, NotifyMode};
 use phux_protocol::ids::ResourceId;
+use phux_protocol::wire::frame::PaneNotify;
 use tokio::time::Instant;
 
 /// How long an edge waits before it posts: a flap back inside this window
@@ -246,6 +247,11 @@ pub(super) struct Notifier {
     /// The outer terminal window's focus, from `?1004` reports. A terminal
     /// that never reports counts as focused.
     client_focused: bool,
+    /// Panes whose `phux.notify/v1` mode is not `on`; they never post.
+    muted: HashMap<ResourceId, PaneNotify>,
+    /// Panes whose mode is watched, and the reads still in flight.
+    pub(in crate::attach) mode_watched: HashSet<ResourceId>,
+    pub(in crate::attach) mode_reads: HashMap<u32, ResourceId>,
 }
 
 impl Notifier {
@@ -258,7 +264,25 @@ impl Notifier {
             last_sent: HashMap::new(),
             primed_at: now + ATTACH_GRACE,
             client_focused: true,
+            muted: HashMap::new(),
+            mode_watched: HashSet::new(),
+            mode_reads: HashMap::new(),
         }
+    }
+
+    /// Fold a pane's `phux.notify/v1` mode; muting drops what it queued.
+    pub(in crate::attach) fn set_mode(&mut self, key: ResourceId, mode: PaneNotify) {
+        if mode.alerts() {
+            self.muted.remove(&key);
+        } else {
+            self.pending.retain(|post| post.key != key);
+            self.muted.insert(key, mode);
+        }
+    }
+
+    /// Whether `key` may post: its mode is `on`.
+    pub(in crate::attach) fn alerts(&self, key: &ResourceId) -> bool {
+        !self.muted.contains_key(key)
     }
 
     /// Fold an outer-terminal focus report.
@@ -277,7 +301,9 @@ impl Notifier {
             let prior = self.tracks.get(&row.key).copied();
             let (track, edge) = decide(prior, row, self.client_focused, primed, cfg);
             self.tracks.insert(row.key.clone(), track);
-            let Some(kind) = edge else { continue };
+            let Some(kind) = edge.filter(|_| self.alerts(&row.key)) else {
+                continue;
+            };
             let queued = self
                 .pending
                 .iter()
@@ -309,8 +335,9 @@ impl Notifier {
     }
 
     /// Whether a warn or error note for `key` notifies now: not with
-    /// `mode = "off"`, not (with `suppress-focused`) while the pane is
-    /// `seen` in a focused window, and at most once per [`RATE_LIMIT`].
+    /// `mode = "off"` or a muted pane, not (with `suppress-focused`) while
+    /// the pane is `seen` in a focused window, and at most once per
+    /// [`RATE_LIMIT`].
     pub(super) fn note_due(
         &mut self,
         key: &ResourceId,
@@ -318,7 +345,8 @@ impl Notifier {
         cfg: NotificationsCfg,
         now: Instant,
     ) -> bool {
-        if cfg.mode == NotifyMode::Off || (cfg.suppress_focused && seen && self.client_focused) {
+        let looking = cfg.suppress_focused && seen && self.client_focused;
+        if cfg.mode == NotifyMode::Off || looking || !self.alerts(key) {
             return false;
         }
         let slot = (key.clone(), NOTE_BUCKET);

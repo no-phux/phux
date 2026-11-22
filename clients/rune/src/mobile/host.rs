@@ -84,7 +84,57 @@ pub fn zoom(rt: &mut rune::Runtime<State>, larger: bool) {
 /// The surface's edge colour as sRGB, so UIKit can paint the status-bar and
 /// home-indicator strips it keeps outside the surface as one ground.
 pub fn edge_srgb(rt: &rune::Runtime<State>) -> [f32; 3] {
-    let color = crate::ui::phone_edge_color(&rt.state);
+    srgb(crate::ui::phone_edge_color(&rt.state))
+}
+
+/// The floating controls UIKit draws as Liquid Glass this frame, where the
+/// frame drew them (view points) and how opaque: `[]` off the native host
+/// or where glass may not draw. A control something else covers (a sheet,
+/// a page, a menu) is left out, so its glass never floats over a modal or
+/// takes a tap meant for it.
+pub fn controls(rt: &rune::Runtime<State>) -> Value {
+    let Some(native) = rt.state.native.as_ref() else {
+        return json!([]);
+    };
+    let controls = native.controls.borrow();
+    let shown = controls.iter().filter_map(|control| {
+        let ([x, y, w, h], opacity) = rt.presented(&control.key)?;
+        let centre = rt.element_at(x + w / 2.0, y + h / 2.0)?;
+        let uncovered = centre.key() == Some(control.key.as_str());
+        (uncovered && opacity > 0.01 && w >= 1.0 && h >= 1.0).then(|| {
+            json!({"id": control.key, "rect": [x, y, w, h], "opacity": opacity,
+                "label": control.label, "title": control.title, "symbol": control.symbol,
+                "subtitle": control.subtitle.as_ref().map(|(text, _)| text),
+                "subtitle_ink": control.subtitle.as_ref().map(|(_, ink)| srgb(*ink)),
+                "leading": control.leading,
+                "enabled": control.enabled, "dark": control.dark, "ink": srgb(control.ink),
+                "badge": control.badge.map(srgb)})
+        })
+    });
+    // Reading order, so VoiceOver meets them as the eye does.
+    let mut shown: Vec<Value> = shown.collect();
+    // A row's controls share a centre line whatever their heights.
+    shown.sort_by_key(|c| {
+        let r = |i: usize| c["rect"][i].as_f64().unwrap_or_default();
+        ((r(1) + r(3) / 2.0).round() as i64, r(0).round() as i64)
+    });
+    Value::Array(shown)
+}
+
+/// The host's tap on native control `key`: run its press, as an
+/// accessibility press would, so a covered or inert control does nothing.
+/// False when this frame showed no such control.
+pub fn press(rt: &mut rune::Runtime<State>, key: &str) -> bool {
+    let known = rt
+        .state
+        .native
+        .as_ref()
+        .is_some_and(|native| native.controls.borrow().iter().any(|c| c.key == key));
+    known && rt.accessibility_action(key, rune::accesskit::Action::Click, None)
+}
+
+/// A linear colour as sRGB, for UIKit.
+fn srgb(color: rune::Color) -> [f32; 3] {
     [color.r, color.g, color.b].map(|linear| {
         let linear = linear.clamp(0.0, 1.0);
         if linear <= 0.003_130_8 {

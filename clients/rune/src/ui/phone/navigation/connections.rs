@@ -1,5 +1,7 @@
-//! One named destination, with the current computer and its status as context.
-use rune::{El, col, text};
+//! One named destination, with the current computer and its status as
+//! context: a mark and a word, never colour alone.
+use phux_design::State;
+use rune::{El, col, el, text};
 
 use super::{Desk, Look, control};
 use crate::keys::Shortcut;
@@ -8,6 +10,11 @@ use crate::ui::tokens::{Paint, Voice};
 
 pub(super) fn view(desk: &Desk, p: &Look) -> El {
     let dim = p.roles.text.dim.paint();
+    let state = match desk.link_word() {
+        "connected" => State::Done,
+        "connecting" => State::Working,
+        _ => State::Failed,
+    };
     let label = format!(
         "Connections · {} · {}",
         desk.machines.label(),
@@ -20,6 +27,12 @@ pub(super) fn view(desk: &Desk, p: &Look) -> El {
     .gap(p.space.s2)
     .py(p.space.s2)
     .fill(p.roles.layer.raised.paint())
+    .child(
+        el().size(p.icon.size.sm, p.icon.size.sm)
+            .radius(p.radius.full)
+            .fill(p.status.state(state).tone.ink)
+            .a11y_hidden(),
+    )
     .child(
         col()
             .grow(1.0)

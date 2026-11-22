@@ -284,10 +284,8 @@ pub enum Event {
         /// The `phux.agent/v1` record, or its absence.
         value: Option<Vec<u8>>,
     },
-    /// The one stored `phux.session.project/v1` tag.
-    ///
-    /// `project: None` clears it. The server keeps a single global value, so
-    /// a new tag replaces the previous session's tag.
+    /// The one stored `phux.session.project/v1` tag; `None` clears it. The
+    /// server keeps one, so a new tag replaces another session's.
     SessionProject {
         /// Session name the tag belongs to. Empty when the tag was cleared.
         name: String,
@@ -295,18 +293,17 @@ pub enum Event {
         project: Option<String>,
     },
     /// Whether something under the terminal runs outside its foreground
-    /// group (a backgrounded job, an agent's detached command), from the
-    /// server-owned `phux.pane-occupant/v1` record. A record without the
-    /// field, from an older server, reads `false`.
+    /// group (a background job, an agent's detached command), from the
+    /// server-owned `phux.pane-occupant/v1` record; an older server's reads
+    /// `false`.
     BackgroundWork {
         /// The terminal.
         terminal_id: ResourceId,
         /// Whether background work is running.
         running: bool,
     },
-    /// The latest note a program posted for the terminal (`phux.note/v1`).
-    /// `live` is true for a note posted while subscribed, the only kind a
-    /// client should announce; a read after (re)subscribing is the baseline.
+    /// The terminal's latest `phux.note/v1` note. Announce only a `live`
+    /// one, posted while subscribed; a read after subscribing is the baseline.
     Note {
         /// The terminal.
         terminal_id: ResourceId,
@@ -314,6 +311,13 @@ pub enum Event {
         note: Option<phux_client_core::note::Note>,
         /// Posted now, not read back.
         live: bool,
+    },
+    /// The terminal's `phux.notify/v1` mode; absent reads `On`.
+    NotifyMode {
+        /// The terminal.
+        terminal_id: ResourceId,
+        /// The mode.
+        mode: phux_protocol::wire::frame::PaneNotify,
     },
     /// Whether a question is pending in the terminal now: the server-owned
     /// `phux.agent.asked/v1` flag (docs/protocol.md), from a fenced read or a live
@@ -358,19 +362,17 @@ pub enum Event {
         /// Why.
         reason: HistoryUnavailableReason,
     },
-    /// A replica generation was invalidated; the connection driver
-    /// reconnects for fresh snapshots, and a sans-IO consumer must do the
-    /// same.
+    /// A replica generation was invalidated: reconnect for fresh snapshots
+    /// (the connection driver does; a sans-IO consumer must).
     ResyncRequired {
         /// The terminal.
         terminal_id: ResourceId,
         /// The tombstone reason.
         reason: TombstoneReason,
     },
-    /// A document's stream stalled (a cut stopped arriving, or a fence was
-    /// never recut). Only that document is recovered: with automatic
-    /// lifecycle the runtime attaches it again, and a sans-IO consumer
-    /// sends `ATTACH_RESOURCE` itself. Its last document stays shown.
+    /// A document's stream stalled (no cut, or a fence never recut). With
+    /// automatic lifecycle the runtime re-attaches that document; a sans-IO
+    /// consumer sends `ATTACH_RESOURCE`. Its last document stays shown.
     DocumentStalled {
         /// The document resource.
         terminal_id: ResourceId,

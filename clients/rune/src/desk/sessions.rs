@@ -293,6 +293,7 @@ impl Desk {
 
     pub fn focus_changed(&mut self, focused: bool) {
         self.focused = focused;
+        self.chief.disarm();
         if !focused {
             crate::handoff::offer(None);
         }

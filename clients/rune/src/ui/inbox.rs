@@ -446,9 +446,12 @@ fn title(desk: &Desk, count: usize, t: &Tokens) -> El {
     let s = &t.space;
     let r = &t.roles;
     let heading = text("Inbox").font(t.ty.title).color(r.text.text.paint());
-    let count = text(count.to_string())
-        .font(t.ty.readout)
-        .color(r.text.dim.paint());
+    // A phone's empty drawer says so in its body; a zero here is noise.
+    let count = (desk.phone.is_none() || count > 0).then(|| {
+        text(count.to_string())
+            .font(t.ty.readout)
+            .color(r.text.dim.paint())
+    });
     let title = row()
         .w_full()
         .h(s.s12)
@@ -456,7 +459,7 @@ fn title(desk: &Desk, count: usize, t: &Tokens) -> El {
         .items_center()
         .justify_between();
     if desk.phone.is_none() {
-        return title.child(heading).child(count);
+        return title.child(heading).children(count);
     }
     let close = pressable("inbox-close", t)
         .role("button")
@@ -477,11 +480,13 @@ fn title(desk: &Desk, count: usize, t: &Tokens) -> El {
             d.close_inbox();
             tx.blur();
         });
-    let mut leading = col()
-        .grow(1.0)
-        .min_w(0.0)
-        .gap(s.s1)
-        .child(row().gap(s.s2).items_center().child(heading).child(count));
+    let mut leading = col().grow(1.0).min_w(0.0).gap(s.s1).child(
+        row()
+            .gap(s.s2)
+            .items_center()
+            .child(heading)
+            .children(count),
+    );
     // Confirmations stay in the fixed header, so they do not displace the
     // question above a keyboard; errors wrap in the footer.
     if let Some(notice) = &desk.notice
@@ -512,7 +517,10 @@ pub fn view(desk: &Desk, p: &Tokens) -> El {
     for (index, item) in items.iter().enumerate() {
         list = list.child(item_row(desk, item, index, Some(index) == picked, t));
     }
-    if items.is_empty() {
+    // A phone centres its empty state on the drawer; a desktop's sits atop
+    // its list.
+    let centred = items.is_empty() && desk.phone.is_some();
+    if items.is_empty() && !centred {
         list = list.child(empty(t));
     }
     let rule = |key: &'static str| {
@@ -533,7 +541,21 @@ pub fn view(desk: &Desk, p: &Tokens) -> El {
         ))
         .child(title(desk, items.len(), t))
         .child(rule("inbox-header-rule"))
-        .child(
+        .child(if centred {
+            el().key("inbox-scroll")
+                .w_full()
+                .grow(1.0)
+                .min_h(0.0)
+                .center()
+                .pb(s.s12)
+                .child(super::status::phone_empty(
+                    "inbox-empty",
+                    &icons::INBOX,
+                    "Nothing needs you",
+                    "Questions, approvals and finished agents land here.",
+                    t,
+                ))
+        } else {
             col()
                 .key("inbox-scroll")
                 .w_full()
@@ -542,8 +564,8 @@ pub fn view(desk: &Desk, p: &Tokens) -> El {
                 .scroll(rune::ScrollSpec {
                     stick_bottom: false,
                 })
-                .child(list),
-        )
+                .child(list)
+        })
         .child(rule("inbox-footer-rule"))
         .children(reply::phone_reply(desk, &items, picked, t))
         .child(footer(desk, items.is_empty(), t));

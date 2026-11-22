@@ -224,7 +224,7 @@ fn insert_resource_before(
         };
         s.registry_mut().commit(&phux_core::Transition {
             deltas: vec![
-                phux_core::Delta::PutResource(resource),
+                phux_core::Delta::PutResource(Box::new(resource)),
                 phux_core::Delta::PutSession(record),
             ],
             ..phux_core::Transition::default()

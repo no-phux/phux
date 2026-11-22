@@ -24,6 +24,10 @@ impl NativeCursorKey {
 
 #[derive(Debug)]
 pub(super) struct NativeCursorOwner {
+    /// History may finish before the pump consumes its publication handoff.
+    pub(super) history_released: bool,
+    /// Only a reflow of an unconsumed publication grants one recovery receipt.
+    pub(super) superseded: bool,
     pub(super) cursor: crate::native_state::OpaqueHistoryCursor,
     pub(super) record_index: usize,
     pub(super) touched: tokio::time::Instant,

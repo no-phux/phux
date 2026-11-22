@@ -235,6 +235,36 @@ be identifiable; set the protocol yourself if notifications don't appear.
 Inside tmux, phux wraps the sequence for passthrough, which needs
 `set -g allow-passthrough on` in tmux.
 
+### Muting a pane
+
+A pane that is noisy on purpose, such as a watcher, can be muted on its
+own:
+
+```sh
+phux notify-mode @4 off          # this pane
+phux notify-mode work unread-only  # every pane in session "work" now
+phux notify-mode @4 on           # back to normal
+```
+
+| Mode | The pane |
+| --- | --- |
+| `on` | Notifies as configured above. The default. |
+| `unread-only` | Keeps its state, badges and counts, but raises no toast, sound, or system notification. |
+| `off` | Like `unread-only`, and Rune leaves it out of the Dock's count. |
+
+The server keeps the mode in the pane's `phux.notify/v1` metadata and on
+its record, so every client honours it, and it survives `phux upgrade`
+and a restart. `phux resource show @4` prints it as `notify`. A session,
+group, or tag target sets the panes it holds when you run the command;
+panes added later start `on`. A program's [notes](./scripting.md#notes)
+follow the mode too. To start a quiet watcher, mute it right after you
+create it:
+
+```sh
+id=$(phux new --json -s watch -- cargo watch | jq -r .terminal_id)
+phux notify-mode "@$id" off
+```
+
 ## Debugging
 
 - `phux config check` reports an unknown widget kind or option with a

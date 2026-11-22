@@ -11,6 +11,7 @@ use phux_client_runtime::approvals::{Approval, Decision, DecisionOutcome};
 use phux_client_runtime::control::{DeliveryOutcome, Event, Status};
 use phux_client_runtime::engine::ReplicaPrompt;
 use phux_protocol::ids::{ApprovalId, ResourceId};
+use phux_protocol::wire::frame::PaneNotify;
 use rune::{Key, KeyEvent, Mods, TextEdit, Tx};
 
 use super::{Desk, NoticeKind};
@@ -54,6 +55,8 @@ pub struct Inbox {
     pub clocks: Vec<String>,
     /// ACP agents' questions, answered over the protocol.
     pub questions: super::questions::Questions,
+    /// Panes whose `phux.notify/v1` mode is not `on`.
+    pub muted: HashMap<ResourceId, PaneNotify>,
 }
 
 /// A receipt can retire only the untouched draft submitted for this question.
@@ -316,8 +319,9 @@ impl Desk {
                 detail,
                 ..
             } => {
-                let questions = &mut self.inbox.questions;
-                questions.receipt(*operation_id, *disposition, detail.as_deref())
+                let detail = detail.as_deref();
+                self.chief.receipt(*operation_id, *disposition, detail)
+                    || (self.inbox.questions).receipt(*operation_id, *disposition, detail)
             }
             Event::AgentPublication { .. }
             | Event::AgentSessionClosed { .. }
@@ -325,6 +329,7 @@ impl Desk {
             | Event::StatusChanged(_) => {
                 let lost = matches!(event, Event::StatusChanged(s) if *s != Status::Attached);
                 let unknown = lost && self.inbox.questions.disconnected();
+                let unknown = (lost && self.chief.disconnected()) | unknown;
                 self.inbox
                     .questions
                     .refresh(client, self.connection.topology.as_ref());
@@ -380,6 +385,7 @@ impl Desk {
         for pane in self.connection.topology.iter().flat_map(|t| t.panes.iter()) {
             (&pane.terminal_id, &pane.session_name, &pane.title).hash(&mut listed);
             (&pane.name, &pane.cwd).hash(&mut listed);
+            self.inbox.muted.get(&pane.terminal_id).hash(&mut listed);
         }
         for approval in &self.inbox.approvals {
             approval.id.hash(&mut listed);
@@ -463,12 +469,14 @@ impl Desk {
         self.keep_pick(&items);
         let (focused, open) = (inputs.focused, inputs.open);
         let (on_screen, enabled) = (&inputs.on_screen, inputs.enabled);
+        let muted = &self.inbox.muted;
         self.inbox.alerts.sync(
             &items,
             |target| match target {
                 Target::Inbox => focused && open,
                 Target::Terminal { id, .. } => focused && on_screen.contains(id),
             },
+            |id| muted.get(id).copied().unwrap_or_default(),
             enabled,
         );
         self.inbox.synced = Some(inputs);

@@ -44,6 +44,7 @@ mod bootstrap;
 mod bootstrap_queue;
 mod handle;
 mod output_pump;
+mod output_pump_gap;
 mod output_pump_resync;
 mod pane_capture;
 mod pane_capture_run;

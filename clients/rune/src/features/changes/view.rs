@@ -167,7 +167,7 @@ pub fn view(desk: &Desk, p: &Tokens) -> El {
         top: s.s16,
         close: Desk::close_changes,
     };
-    sheet.build(Some(refresh), body, foot, t)
+    sheet.build(Some(refresh), body, Some(foot), t)
 }
 
 #[cfg(test)]

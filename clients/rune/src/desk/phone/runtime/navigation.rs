@@ -187,13 +187,7 @@ fn a_higher_modal_owns_soft_keys_even_with_session_search_retained_underneath() 
 fn the_native_browser_never_offers_a_nonexistent_local_mac() {
     let (_, mut rt) = fixture();
     rt.update(|d, _| {
-        d.native = Some(crate::mobile::Platform {
-            target: phux_client_runtime::Target::uds("/tmp/not-used"),
-            active: true,
-            connection_requested: false,
-            paste_requested: false,
-            away_since: None,
-        });
+        d.native = Some(crate::mobile::Platform::test());
         d.machines.current = Some("mini".into());
         d.open_phone_sessions();
     });
@@ -219,13 +213,7 @@ fn navigation_reserves_desktop_traffic_lights_but_not_a_second_native_safe_area(
     assert!(inset > 0.0);
     assert!(close[1] >= inset);
     rt.update(|d, tx| {
-        d.native = Some(crate::mobile::Platform {
-            target: phux_client_runtime::Target::uds("/tmp/not-used"),
-            active: true,
-            connection_requested: false,
-            paste_requested: false,
-            away_since: None,
-        });
+        d.native = Some(crate::mobile::Platform::test());
         tx.instant();
     });
     settle(&mut rt);

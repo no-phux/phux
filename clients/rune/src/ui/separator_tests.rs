@@ -12,7 +12,7 @@ fn sheet(desk: &Desk, cx: &mut Cx<Desk>) -> El {
         top: 40.0,
         close: |_| {},
     }
-    .build(None, el().h(80.0), el().h(20.0), &p)
+    .build(None, el().h(80.0), Some(el().h(20.0)), &p)
 }
 
 fn palette(desk: &Desk, cx: &mut Cx<Desk>) -> El {

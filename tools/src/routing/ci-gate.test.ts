@@ -15,7 +15,7 @@ const script = run(
 const lanes = Object.keys(jobs(CI)).filter((id) => !AFTER.includes(id));
 const baseline = {
   ...Object.fromEntries(lanes.map((id) => [id, { result: "skipped" }])),
-  plan: { result: "success", outputs: { queue_verified: "true" } },
+  plan: { result: "success", outputs: {} },
   "queue-apple": { result: "success" },
 };
 const aggregate = (results: unknown, event: string): number =>

@@ -57,31 +57,44 @@ fn report_launch(
     if s.shutting_down() {
         return;
     }
+    if let Err(refusal) = update_launch(s, terminal, edit) {
+        tracing::debug!(?terminal, %refusal, "launch report not recorded");
+    }
+}
+
+/// Commit `edit` to the launch record of the live Terminal `terminal`.
+/// Nothing is written when the edit changes nothing, or for a pane with no
+/// current activation or Terminal launch.
+pub(in crate::runtime) fn update_launch(
+    s: &mut ServerState,
+    terminal: &ResourceId,
+    edit: impl FnOnce(&mut TerminalLaunch),
+) -> Result<(), String> {
     let Some(record) = s
         .idspace
         .resource_from_wire(terminal)
         .and_then(|id| s.registry().record(id))
     else {
-        return;
+        return Ok(());
     };
     let (Some(activation), Some(LaunchSpec::Terminal(launch))) =
         (record.activation.as_ref(), record.launch.as_ref())
     else {
-        return;
+        return Ok(());
     };
     let mut edited = launch.clone();
     edit(&mut edited);
-    if *launch == edited {
-        return;
+    if edited == *launch {
+        return Ok(());
     }
     let op = Op::ResourceLaunchReported {
         resource: record.key,
         activation: activation.id,
         launch: LaunchSpec::Terminal(edited),
     };
-    if let Err(refusal) = s.commit_system(op) {
-        tracing::debug!(?terminal, %refusal, "launch report not recorded");
-    }
+    s.commit_system(op)
+        .map(|_| ())
+        .map_err(|refusal| refusal.to_string())
 }
 
 /// Flags that hand a coding agent its task on the command line.

@@ -9,6 +9,8 @@ use crate::keys::Shortcut;
 
 impl Desk {
     pub fn shortcut(&mut self, action: Shortcut, tx: &mut Tx) {
+        // A chord or menu pick with right Command held is not the chief's tap.
+        self.chief.disarm();
         if self.refuse_too_old(action) {
             return;
         }

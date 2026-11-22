@@ -114,6 +114,10 @@ pub struct TerminalLaunch {
     /// `[[restore.program]]` command for its app.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume: Option<ResumeToken>,
+    /// The pane's notify mode (`phux.notify/v1`), kept here so it outlives
+    /// the server; reinstalled as that key at every activation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify: Option<String>,
     /// The directory the pane's program last reported (`cd /etc`). Not an
     /// organization wire field; a relaunch starts there while it exists,
     /// else in [`Self::cwd`].

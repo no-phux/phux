@@ -344,16 +344,7 @@ each snapshot before clearing its counters, including in watch mode.
 [Mutation testing](./mutation-testing.md) describes the bounded, opt-in
 mutation recipes. Regression tests still belong in the ordinary suite.
 
-## Demos and recordings
+## Recording fixtures
 
-`bash scripts/record-readme.sh` records the README's real composited TUI
-using `target/debug/phux`, a private server, and an empty home. It needs
-Python 3 for JSON processing, not a signed-in agent or an external renderer.
-`scripts/demo-setup.sh` stages a demo session and prints the runbook.
-`scripts/demo-record.sh` records `docs/assets/recording-demo.cast` and
-renders the GIF, under a 1 MiB budget because GitHub serves the whole file
-before the first frame. Pass an output directory for a disposable take or
-concurrent runs; all intermediate files are private and removed on exit.
-`scripts/demo-pi-setup.sh` sets up the pi fleet
-demo. The `.cast` files under `docs/assets/` are read by tests in
-`phux-record` and `phux`, so re-record them deliberately.
+`scripts/demo-pi-setup.sh` sets up the pi fleet demo. Keep the `.cast` files
+under `docs/assets/`: `phux-record` and `phux` read them in tests.

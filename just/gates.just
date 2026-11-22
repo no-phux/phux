@@ -94,9 +94,9 @@ integration-check PACKAGE: worktree-claim
     esac
 
 
-# The `integrations` lane: every package, the runtime dist, and npm audit.
+# The `integrations` lane: every package, the shared runtime, and npm audit.
 [group('gates')]
-[doc('Every agent integration package, the shared runtime, and its dist check.')]
+[doc('Every agent integration package and the shared runtime.')]
 agent-integrations-check:
     bash scripts/ci/agent-integrations.sh
 

@@ -52,7 +52,6 @@ const ROUTES: Record<string, Surface[]> = {
   "scripts/examples-smoke.sh": ["phux"],
   "scripts/agent-verify/**": ["phux"],
   "scripts/test-agent-examples.py": ["phux"],
-  "scripts/{demo-record,record-readme}.sh": ["phux"],
   // Workflow infrastructure is compile-free (guards only), except ci.yml and
   // its shared actions: a change to how lanes run reruns every lane.
   ".github/workflows/*.{yml,yaml}": [],

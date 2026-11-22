@@ -2,6 +2,7 @@
 from itertools import product
 
 from visual_motion import pane_motion_inventory
+from visual_states import states_inventory
 
 
 def navigation_inventory(themes=("dark", "light")):
@@ -32,6 +33,7 @@ def navigation_inventory(themes=("dark", "light")):
         for theme, state, (width, height) in product(
             themes, ("top", "bottom"), ((320, 340), (393, 480)))
     })
+    cases.update(states_inventory(themes))
     cases.update(pane_motion_inventory(themes))
     return cases
 
@@ -55,6 +57,7 @@ def navigation_exporter(stem):
         ("connections-", "phone_connections_visual_review_frames"),
         ("pane-motion-", "phone_pane_motion_visual_review_frames"),
         ("header-", "phone_header_visual_review_frames"),
+        ("states-", "phone_states_visual_review_frames"),
         ("retina-", "retina_navigation_renders_in_native_safe_area_and_desktop_phone_viewports"),
     ):
         if stem.startswith(prefix):

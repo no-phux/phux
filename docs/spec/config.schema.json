@@ -1129,6 +1129,14 @@
       "additionalProperties": false,
       "description": "`[rune]` table: settings the Rune app otherwise keeps in its own prefs.\n\nA key set here wins over the app's saved choice and cannot be changed\nfrom Settings; an unset key stays the app's to remember.",
       "properties": {
+        "chief": {
+          "default": null,
+          "description": "The phux session whose ACP agent a tap of the right Command key\nprompts; `\"chief\"` when unset, `\"none\"` turns the tap off.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "confirm-close": {
           "default": null,
           "description": "Ask before closing a terminal or tab with something running.",
@@ -2076,6 +2084,7 @@
         }
       ],
       "default": {
+        "chief": null,
         "confirm-close": null,
         "copy-on-select": null,
         "font-family": null,

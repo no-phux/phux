@@ -162,7 +162,7 @@ function calledHosts(lane: Table): "all" | "linux" | "macos" {
 /** A caller that refuses pull_request does not put that event in the pool. */
 function poolTriggers(lane: Table, triggers: string[]): string[] {
   const gate = str(lane["if"]) ?? "";
-  if (gate.includes("needs.plan.outputs.queue_verified")) {
+  if (gate.includes("needs.plan.outputs.release_qualify")) {
     return triggers.filter((label) => label === "merge_group" || label === "pull_request");
   }
   if (gate === "github.event_name == 'merge_group'") {

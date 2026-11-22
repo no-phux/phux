@@ -65,6 +65,7 @@ Agents:
   mail          Send, read and acknowledge mail between agents
   claim         Claim paths so other agents leave them alone
   notify        Post a note for a pane, shown as a toast
+  notify-mode   Mute or unmute a pane's notifications
   approvals     List actions held for approval
   approve       Approve a held action
   deny          Deny a held action
@@ -4920,6 +4921,39 @@ Flags:
                        (default: info)
       --pane <TARGET>  The pane the note is about (a selector). Default: this
                        pane.
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux notify-mode`
+
+```text
+Set a pane's notify mode.
+
+`unread-only` keeps the pane's state, badges and counts but raises no toast,
+sound or system notification. `off` also leaves it out of counts such as the
+Dock's. `on` restores notifications. The server keeps the mode, so every client
+honours it, and it survives upgrades and restarts. A session, group or tag
+target sets every pane it holds now.
+
+Examples:
+phux notify-mode @4 off
+phux notify-mode work unread-only
+phux notify-mode '#watchers' on
+
+Usage: phux notify-mode [--json] <TARGET> <MODE>
+
+Arguments:
+  <TARGET>  The pane, or the session, group or tag whose panes to set.
+  <MODE>    The mode.
+            [possible values: on, unread-only, off]
+
+Flags:
       --json           Emit stable, versioned JSON on stdout instead of the
                        human view. On failure, stdout stays empty and stderr
                        carries one JSON error object.

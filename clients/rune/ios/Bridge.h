@@ -47,6 +47,9 @@ char *phux_rune_ios_frame(void *host);
 char *phux_rune_ios_input(void *host, const char *operation);
 void phux_rune_ios_touch(void *host, uint64_t identity, uint32_t phase,
                          double x, double y, double seconds);
+// A tap on the frame's native control `id` (its `controls`): runs that
+// control's press, as Rune's accessibility press would. False when none ran.
+bool phux_rune_ios_press(void *host, const char *id);
 // Answers a frame's `paste` request with the system pasteboard's text.
 void phux_rune_ios_paste(void *host, const char *text);
 // The network path changed: rebind the connection and probe it now.
