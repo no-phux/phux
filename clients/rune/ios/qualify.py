@@ -67,7 +67,8 @@ def marker_command(marker=MARKER):
 class Qualification:
     def __init__(self, app, phux, out, scratch, transport="quic"):
         self.transport = transport
-        self.app, self.phux, self.out, self.scratch = app, phux, out, scratch
+        # Normalize trusted output like the CLI, including macOS temp aliases.
+        self.app, self.phux, self.out, self.scratch = app, phux, out.resolve(), scratch
         self.udid = None
         self.server = None
         self.env = {k: v for k, v in os.environ.items()

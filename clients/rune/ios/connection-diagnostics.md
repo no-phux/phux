@@ -88,6 +88,10 @@ trees remain forensic failures, never accepted reports or rendered-input proof.
 No JSON is repaired, parsed into replacement evidence or fed back to acceptance.
 Copies are exclusive and private; symlinks (including directory ancestors),
 hardlinks, nonregular files, foreign-owned files and changing sources are rejected.
+The constructor canonicalizes its trusted output path, like the CLI, so macOS
+temporary-directory aliases work for direct callers too. Untrusted source paths
+are never canonicalized; capture still opens directory components without following
+symlinks, including any replacement of the canonical output after construction.
 If shutdown does not establish producer quiescence, no native bytes are copied;
 the receipt records that limitation and rejects every file.
 
