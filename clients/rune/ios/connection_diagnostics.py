@@ -137,6 +137,10 @@ def finish_connection_diagnostics(self):
     # Same readiness policy as cycle_scene: the native callback writes this
     # after sealing returns, so termination cannot interrupt receipt cleanup.
     background = self.documents / "rune-background.json"
+    if self.failure_evidence_requested:
+        # The seal handshake replaces this file. Retain its original inode now,
+        # but do not read/copy its bytes until owned shutdown establishes quiescence.
+        self.stage_failure_background()
     background.unlink(missing_ok=True)
     copy_private(self.documents / (stem + ".finish"), b"")
     self.simctl("launch", self.udid, "com.apple.springboard")
@@ -236,6 +240,8 @@ def cleanup(self):
         self.stop_server()
     except (OSError, subprocess.SubprocessError) as error:
         errors.append(f"server cleanup: {error}")
+    if errors:
+        self.failure_evidence_requested = True
     if self.udid is not None:
         errors.extend(self.cleanup_simulator())
     (self.out / "cleanup.json").write_text(json.dumps({"errors": errors}) + "\n")
@@ -245,20 +251,35 @@ def cleanup(self):
 
 def cleanup_simulator(self):
     errors = []
+    quiescent = False
     try:
         self.simctl("shutdown", self.udid, timeout=60)
+        quiescent = True
     except (OSError, subprocess.SubprocessError) as error:
         errors.append(f"shutdown {self.udid}: {error}")
     try:
-        self.preserve_connection_diagnostics(quiescent=not errors)
+        status = self.preserve_connection_diagnostics(quiescent=quiescent)
+        if any(row["status"] != "retained" for row in status["files"]):
+            self.failure_evidence_requested = True
     except OSError:
         errors.append("diagnostic receipt could not be written")
     finally:
+        if self.failure_evidence_requested or errors:
+            preserve_native_failure(self, quiescent, errors)
         try:
             self.simctl("delete", self.udid, timeout=60)
         except (OSError, subprocess.SubprocessError) as error:
             errors.append(f"delete {self.udid}: {error}")
     return errors
+
+
+def preserve_native_failure(self, quiescent, errors):
+    try:
+        self.preserve_failure_evidence(quiescent=quiescent)
+    except Exception:
+        # Diagnostic retention must never replace the original host/app error,
+        # and even an unexpected capture error must not skip owned deletion.
+        errors.append("UNVALIDATED native failure evidence could not be retained")
 
 
 def stop_server(self):
