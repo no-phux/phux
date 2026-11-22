@@ -8,9 +8,17 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import subprocess
 import threading
 import time
+
+
+STALL_SECONDS = 10
+SAMPLE_SECONDS = 15
+RESOURCE_SECONDS = 5
+CAPTURE_SECONDS = 20
+CLEANUP_SECONDS = 1
 
 
 def utc():
@@ -60,91 +68,222 @@ class Observation:
     def __init__(self, lane, process, prefix, identity, targets):
         self.lane, self.process, self.prefix = lane, process, prefix
         self.identity, self.targets = identity, targets
+        self.command_finished = threading.Event()
         self.cancelled = threading.Event()
-        self.lock = threading.Lock()
+        self.deadline = None
+        # Workers publish their retained child before any identity lookup/wait.
+        # List append/remove/copy are atomic in this CPython diagnostic harness;
+        # no registry lock may prevent cancellation or deadline snapshots.
         self.helpers = []
+        self.workers = []
         self.thread = threading.Thread(target=self.observe, daemon=True)
 
     def stop(self):
-        self.cancelled.set()
-        with self.lock:
-            for helper in self.helpers:
-                if helper.poll() is None:
-                    helper.kill()  # Only a Popen we started and have not reaped.
-        self.thread.join()
+        # Wake an observer still waiting for the stall threshold immediately.
+        # An active capture may finish, without moving the command's deadline.
+        self.command_finished.set()
+        deadline = self.deadline or time.monotonic() + CAPTURE_SECONDS
+        self.thread.join(timeout=max(0, deadline - CLEANUP_SECONDS - time.monotonic()))
+        self.cancel_helpers()
+        self.thread.join(timeout=max(0, deadline - time.monotonic()))
+        cleanup = self.cleanup_status()
+        write_json(self.prefix.with_suffix(".cleanup.json"), cleanup)
+        return cleanup
 
-    def helper(self, label, command):
-        if self.cancelled.is_set():
+    def cancel_helpers(self):
+        self.cancelled.set()
+        for helper in self.helpers.copy():
+            self.signal_helper(helper)
+
+    def signal_helper(self, helper):
+        process = helper.get("process")
+        if process is None:
             return
+        try:
+            if process.poll() is None:
+                process.kill()  # Retained helper Popen only; never a PID lookup.
+        except Exception as error:
+            helper["record"]["signal_error"] = type(error).__name__
+
+    def cleanup_status(self):
+        helpers = [{**helper["record"], "reaped": False} for helper in self.helpers.copy()]
+        workers = [label for label, worker in self.workers.copy() if worker.is_alive()]
+        complete = not helpers and not workers and not self.thread.is_alive()
+        return {"cleanup_complete": complete, "unreaped_helpers": helpers,
+                "unfinished_workers": workers, "observer_alive": self.thread.is_alive(),
+                "external_blocker": None if complete else
+                "owned helper termination/reaping or diagnostic worker completion unavailable"}
+
+    def helper(self, label, command, timeout=RESOURCE_SECONDS, target=None):
         output = self.prefix.parent / (self.prefix.name + "-" + label)
+        record = {"label": label, "pid": None, "identity": None,
+                  "started_utc": utc(), "started_monotonic": time.monotonic(),
+                  "deadline_seconds": timeout, "target_identity": target}
+        helper = {"record": record, "process": None}
+        self.helpers.append(helper)
         with output.with_suffix(".log").open("w") as log:
-            with self.lock:
-                if self.cancelled.is_set():
-                    return
+            try:
+                if self.cancelled.is_set() or not self.target_matches(target, record):
+                    return record
                 process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT,
                                            env=self.lane.env)
-                self.helpers.append(process)
-            record = {"pid": process.pid, "started_utc": utc(), "deadline_seconds": 2}
-            try:
+                helper["process"] = process
+                record["pid"] = process.pid
+                if self.cancelled.is_set():
+                    return record
                 record["identity"] = process_identity(process.pid)
-                record["returncode"] = process.wait(timeout=2)
+                if self.deadline is not None:
+                    timeout = min(timeout, max(0, self.deadline - time.monotonic()))
+                record["returncode"] = process.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
                 record["timed_out"] = True
-            except BaseException:
-                if process.poll() is None:
-                    process.kill()
-                process.wait()
-                raise
+            except Exception as error:
+                record["error"] = type(error).__name__
             finally:
+                self.reap_helper(helper, record)
+                if helper["process"] is not None:
+                    record["returncode"] = helper["process"].returncode
+                record.update({"finished_utc": utc(), "cancelled": self.cancelled.is_set()})
                 write_json(output.with_suffix(".json"), record)
+        return record
+
+    def target_matches(self, target, record):
+        if target is None:
+            return True
+        record["target_identity_at_start"] = process_identity(target["pid"])
+        if same_process(target, record["target_identity_at_start"]):
+            return True
+        record["skipped"] = "process exited or identity changed"
+        return False
+
+    def reap_helper(self, helper, record):
+        process = helper["process"]
+        if process is None:
+            self.helpers.remove(helper)
+            return
+        self.signal_helper(helper)
+        deadline = min(self.deadline or float("inf"), time.monotonic() + CLEANUP_SECONDS)
+        try:
+            process.wait(timeout=max(0, deadline - time.monotonic()))
+        except Exception as error:
+            record["cleanup_error"] = type(error).__name__
+            record["cleanup_complete"] = False
+            return
+        record["cleanup_complete"] = True
+        self.helpers.remove(helper)
 
     def sample(self, role, identity):
-        if not same_process(identity, process_identity(identity["pid"])):
-            write_json(self.prefix.parent / (self.prefix.name + f"-{role}-skipped.json"),
-                       {"reason": "process exited or identity changed"})
-            return
         destination = self.prefix.parent / (self.prefix.name + f"-{role}.sample.txt")
-        self.helper(role + "-sampler", ["/usr/bin/sample", str(identity["pid"]), "1", "20",
-                                       "-file", str(destination)])
+        record = {"target_identity": identity, "capture_complete": False}
+        try:
+            if not same_process(identity, process_identity(identity["pid"])):
+                record["skipped"] = "process exited or identity changed"
+                return
+            helper = self.helper(role + "-sampler", [
+                "/usr/bin/sample", str(identity["pid"]), "1", "20", "-mayDie",
+                "-file", str(destination)], timeout=SAMPLE_SECONDS, target=identity)
+            record["helper"] = helper
+            report = destination.read_bytes() if destination.exists() else b""
+            record["report_bytes"] = len(report)
+            record["capture_complete"] = sample_complete(helper, identity, report.decode(errors="replace"))
+        except Exception as error:
+            record["error"] = type(error).__name__
+        finally:
+            record["finished_utc"] = utc()
+            write_json(self.prefix.parent / (self.prefix.name + f"-{role}-capture.json"), record)
 
     def resources(self):
-        commands = (
+        commands = [
+            ("host", ["/usr/sbin/sysctl", "hw.logicalcpu", "hw.memsize",
+                      "vm.loadavg", "vm.swapusage"]),
             ("ps", ["/bin/ps", "-axo", "pid,ppid,lstart,state,time,%cpu,rss,comm"]),
             ("top", ["/usr/bin/top", "-l", "2", "-s", "1", "-F", "-R", "-o", "cpu",
                      "-n", "30", "-stats", "pid,command,cpu,time,threads,state,mem"]),
             ("vm", ["/usr/bin/vm_stat", "-c", "2", "1"]),
-            ("host", ["/usr/sbin/sysctl", "hw.logicalcpu", "hw.memsize",
-                      "vm.loadavg", "vm.swapusage"]),
-        )
-        for label, command in commands:
-            self.helper(label, command)
+        ]
         if self.lane.udid:
             predicate = ('process == "CoreSimulatorService" AND eventMessage CONTAINS "'
                          + self.lane.udid + '"')
-            self.helper("service-log", ["/usr/bin/log", "show", "--last", "2m",
-                                      "--style", "compact", "--predicate", predicate])
+            commands.append(("service-log", ["/usr/bin/log", "show", "--last", "2m",
+                                             "--style", "compact", "--predicate", predicate]))
+        return commands
+
+    def capture(self, deadline):
+        try:
+            # Fixed fanout: two cheap resources, up to three owned samplers,
+            # then three heavier resources. No helper waits for another helper.
+            resources = self.resources()
+            tasks = [(self.helper, args) for args in resources[:2]]
+            tasks += [(self.sample, args) for args in self.targets.items()]
+            tasks += [(self.helper, args) for args in resources[2:]]
+            for function, args in tasks:
+                worker = threading.Thread(target=function, args=args, daemon=True)
+                self.workers.append((args[0], worker))
+                worker.start()
+            for _, worker in self.workers:
+                worker.join(timeout=max(0, deadline - CLEANUP_SECONDS - time.monotonic()))
+        finally:
+            self.cancel_helpers()
+            for _, worker in self.workers:
+                worker.join(timeout=max(0, deadline - time.monotonic()))
 
     def observe(self):
         try:
-            if self.cancelled.wait(10) or self.process.poll() is not None:
+            if self.command_finished.wait(STALL_SECONDS) or self.process.poll() is not None:
                 return
             if not same_process(self.identity, process_identity(self.process.pid)):
                 return
+            self.deadline = time.monotonic() + CAPTURE_SECONDS
             write_json(self.prefix.with_suffix(".observation.json"), {
                 "diagnostic_only": True, "started_utc": utc(),
+                "started_monotonic": time.monotonic(), "capture_budget_seconds": CAPTURE_SECONDS,
                 "note": "sample briefly suspends targets; not pristine qualification timing",
                 "owned_targets": self.targets,
             })
-            # Capture the blocked command first, before its existing timeout.
-            for role, identity in self.targets.items():
-                self.sample(role, identity)
-            self.resources()
-        except Exception:
+            self.capture(self.deadline)
+        except Exception as error:
             # Neither a helper error nor observation failure may mask the original.
             write_json(self.prefix.with_suffix(".observation-error.json"),
-                       {"error": "diagnostic observation failed"})
+                       {"error": type(error).__name__})
+
+
+def sample_complete(helper, identity, report):
+    if (helper.get("returncode") != 0 or helper.get("cancelled")
+            or helper.get("timed_out") or helper.get("error")):
+        return False
+    if not same_process(identity, helper.get("target_identity_at_start")):
+        return False
+    if helper.get("cleanup_complete") is not True:
+        return False
+    # A "Sampling process" preamble is not a stack report. Require its target
+    # header, call graph and at least one real (possibly unsymbolicated) frame.
+    return (re.search(r"(?m)^Process:\s+.+\[" + str(identity["pid"]) + r"\]\s*$", report) is not None
+            and "Call graph:" in report
+            and re.search(r"(?m)^\s*[+!:| ]*\d+\s+.+\s+\(in .+\)", report) is not None)
+
+
+def capture_summary(directory):
+    try:
+        observations = list(directory.glob("command-*.observation.json"))
+        expected = sum(len(json.loads(path.read_text())["owned_targets"]) for path in observations)
+        captures = [json.loads(path.read_text()) for path in directory.glob("command-*-capture.json")]
+        completed = sum(record["capture_complete"] for record in captures)
+        errors = len(list(directory.glob("command-*.observation-error.json")))
+        incomplete = incomplete_cleanup(directory)
+        return {"observations": len(observations), "expected_samples": expected,
+                "completed_stack_samples": completed, "incomplete_samples": expected - completed,
+                "observation_errors": errors,
+                "incomplete_cleanup": incomplete, "cleanup_complete": not incomplete,
+                "capture_complete": expected > 0 and completed == expected and errors == 0
+                                    and not incomplete}
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        # Damaged diagnostic output must not mask the original sequence result.
+        return {"capture_complete": False, "error": type(error).__name__}
+
+
+def incomplete_cleanup(directory):
+    records = [json.loads(path.read_text()) for path in directory.glob("command-*.cleanup.json")]
+    return [record for record in records if not record["cleanup_complete"]]
 
 
 def owned_targets(lane, command_identity):
@@ -206,16 +345,21 @@ def diagnostic_run(lane, command, timeout=30, env=None):
                 record["succeeded"] = True
             except BaseException as error:
                 record["failure_class"] = type(error).__name__
-                if process.poll() is None:
-                    process.kill()
-                process.wait()
+                try:
+                    if process.poll() is None:
+                        process.kill()
+                    process.wait(timeout=CLEANUP_SECONDS)
+                except Exception as cleanup_error:
+                    record["command_cleanup_error"] = type(cleanup_error).__name__
                 raise
             finally:
                 record["command_finished_monotonic"] = time.monotonic()
+                record["finished_utc"] = utc()
+                record["command_elapsed_seconds"] = record["command_finished_monotonic"] - started
                 if observation is not None:
-                    observation.stop()
+                    record["diagnostic_cleanup"] = observation.stop()
     finally:
-        record.update({"finished_utc": utc(), "elapsed_seconds": time.monotonic() - started})
+        record.update({"observation_finished_utc": utc(), "elapsed_seconds": time.monotonic() - started})
         write_json(prefix.with_suffix(".timing.json"), record)
     return prefix.with_suffix(".log").read_text()
 
@@ -232,7 +376,8 @@ def run_sequence(app, phux, out):
     out.mkdir(parents=True, exist_ok=False)
     write_json(out / "DIAGNOSTIC-ONLY.json", {
         "diagnostic_only": True, "release_qualification": False,
-        "sampling": "owned processes only, 1 second at 20ms; each helper bounded to 2 seconds",
+        "sampling": "owned targets only, 1 second at 20ms; 15s sampler / 5s resource wait; "
+                    "20s capture/cleanup budget, including command-exit drain",
         "sequence": "unmodified qualifier ordering, retries, assertions and budgets; QUIC then WSS",
     })
     module = load_qualifier()
@@ -267,6 +412,7 @@ def run_sequence(app, phux, out):
             write_json(out / (transport + "-diagnostic-status.json"), {
                 "diagnostic_only": True, "release_qualification": False,
                 "sequence_completed": succeeded,
+                "capture": capture_summary(directory),
             })
 
 

@@ -152,8 +152,39 @@ QUIC completes, with the same commands, assertions, retries and budgets. Command
 still running after ten seconds get bounded sampling of recorded owned command,
 app and server PIDs, with microsecond start-identity rechecks. Shared services
 are never sampled or signalled. Resource snapshots omit process arguments;
-CoreSimulator logs are restricted to the owned device. Each diagnostic helper
-has a two-second limit and is cancelled/reaped when its command finishes.
+CoreSimulator logs are restricted to the owned device. Timestamped host/sysctl
+and process snapshots start first, followed without serial waits by up to three
+owned samplers and the heavier resource/log helpers (at most eight helpers).
+Samplers use one second at 20ms with `-mayDie`, with a 15-second initial wait;
+resource helpers have five seconds. Each sampler rechecks target/start identity
+immediately before spawning. The entire capture has a shared 20-second deadline,
+including a one-second cleanup reserve. Every diagnostic wait and thread join
+uses a finite timeout within that deadline; no registry lock is held during
+identity lookup, spawn, wait or reap.
+
+Fast commands wake and stop their observer without waiting for the ten-second
+threshold. When an observed command finishes, already-started capture work can
+drain within the capture budget; only retained helper children are then
+cancelled/killed and given bounded time to reap. The original command deadline, result and actual
+finish timestamp remain separate from this diagnostic-only drain. Timing records
+retain `command_elapsed_seconds` and `command_finished_monotonic`; total
+`elapsed_seconds` includes observer cleanup.
+
+Per-target `*-capture.json` records distinguish skipped/reused identities,
+helper errors/timeouts/cancellation and complete samples. Completeness requires
+successful sampler exit, matching target/start identity at spawn, and a nonempty
+report naming the target PID with a call graph and a real stack frame. Empty
+files or "Sampling process" preambles are not stacks. Transport status records
+summarize capture completeness separately from `sequence_completed`; zero usable
+stacks is incomplete even when the original sequence succeeds.
+
+`command-*.cleanup.json` and timing/status records explicitly report incomplete
+cleanup, retained owned child PIDs/start identities (or unavailable identity),
+and unfinished diagnostic workers. A timed-out reap is never called successful.
+The wrapper returns the original result/exception without waiting indefinitely
+for a stuck helper or worker. An OS child that cannot terminate/reap within the
+deadline is an external runner/platform-owner blocker, not a completed cleanup.
+Late workers remain diagnostic-only daemon threads; no foreign PID is signalled.
 
 Sampling briefly suspends its targets, so even successful output is **diagnostic
 counterevidence, not pristine timing or release acceptance**. Receipts are renamed

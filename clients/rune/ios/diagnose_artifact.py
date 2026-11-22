@@ -30,6 +30,7 @@ ALLOWED_CHANGES = frozenset((
     "clients/rune/ios/diagnose_artifact.py", "clients/rune/ios/diagnose_commands.py",
     "clients/rune/ios/connection-diagnostics.md",
     "clients/rune/scripts/test_ios_command_diagnostics.py",
+    "clients/rune/scripts/test_ios_command_capture.py",
 ))
 
 

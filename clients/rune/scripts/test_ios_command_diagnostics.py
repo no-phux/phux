@@ -8,6 +8,7 @@ import plistlib
 import stat
 import subprocess
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -31,6 +32,11 @@ def identity(pid=123, microseconds=10):
             "executable": "/owned/simctl"}
 
 
+def stack_report(pid=123):
+    return (f"Process: owned [{pid}]\nCall graph:\n"
+            "    20 Thread_123\n    + 20 start (in dyld) [0x123]\n")
+
+
 class CommandDiagnosticsTests(unittest.TestCase):
     def lane(self, root):
         return SimpleNamespace(out=root, sequence=0, env={"PATH": "/usr/bin:/bin"},
@@ -43,6 +49,7 @@ class CommandDiagnosticsTests(unittest.TestCase):
         process.wait.side_effect = outcome
         process.poll.return_value = None
         observer = Mock()
+        observer.stop.return_value = {"cleanup_complete": True}
         with patch.object(diagnose.subprocess, "Popen", return_value=process), \
                 patch.object(diagnose, "process_identity", return_value=identity()), \
                 patch.object(diagnose, "Observation", return_value=observer):
@@ -111,17 +118,17 @@ class CommandDiagnosticsTests(unittest.TestCase):
         self.assertTrue(diagnose.owned_app(lane, "/Devices/owned/data/Phux Rune.app/PhuxRune"))
         self.assertFalse(diagnose.owned_app(lane, "/Devices/other/data/Phux Rune.app/PhuxRune"))
 
-    def test_stop_cancels_and_reaps_helper_without_waiting_for_observation_delay(self):
+    def test_fast_command_stops_without_waiting_for_observation_delay(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             observation = diagnose.Observation(self.lane(root), Mock(pid=123), root / "command-001",
                                               identity(), {})
-            helper = Mock()
-            helper.poll.return_value = None
-            observation.helpers.append(helper)
-            observation.thread.start()
-            observation.stop()
-            helper.kill.assert_called_once()
+            with patch.object(observation, "helper") as helper:
+                observation.thread.start()
+                started = time.monotonic()
+                observation.stop()
+                self.assertLess(time.monotonic() - started, 1)
+                helper.assert_not_called()
             self.assertFalse(observation.thread.is_alive())
 
     def test_helpers_are_bounded_and_reaped_on_timeout(self):
@@ -130,13 +137,64 @@ class CommandDiagnosticsTests(unittest.TestCase):
             observation = diagnose.Observation(self.lane(root), Mock(pid=123), root / "command-001",
                                               identity(), {})
             helper = Mock(pid=456)
-            helper.wait.side_effect = [subprocess.TimeoutExpired("inert-sample", 2), -9]
+            helper.poll.return_value = None
+            helper.returncode = -9
+            helper.wait.side_effect = [subprocess.TimeoutExpired("inert-sample", 5), -9]
             with patch.object(diagnose.subprocess, "Popen", return_value=helper), \
                     patch.object(diagnose, "process_identity", return_value=identity(456)):
                 observation.helper("inert", ["/inert/native-command-stub"])
             helper.kill.assert_called_once()
             self.assertEqual(helper.wait.call_count, 2)
-            self.assertEqual(helper.wait.call_args_list[0].kwargs["timeout"], 2)
+            self.assertEqual(helper.wait.call_args_list[0].kwargs["timeout"], diagnose.RESOURCE_SECONDS)
+            self.assertFalse(observation.helpers)
+            self.assertTrue(json.loads((root / "command-001-inert.json").read_text())["timed_out"])
+
+    def test_identity_is_rechecked_immediately_before_sampler_spawn(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            observation = diagnose.Observation(self.lane(root), Mock(pid=123), root / "command-001",
+                                              identity(), {"command": identity()})
+            with patch.object(diagnose, "process_identity", side_effect=[
+                    identity(), identity(microseconds=11)]), \
+                    patch.object(diagnose.subprocess, "Popen") as spawn:
+                observation.sample("command", identity())
+            spawn.assert_not_called()
+            record = json.loads((root / "command-001-command-capture.json").read_text())
+            self.assertFalse(record["capture_complete"])
+            self.assertIn("identity changed", record["helper"]["skipped"])
+
+    def test_stack_completeness_requires_success_identity_and_real_report(self):
+        helper = {"returncode": 0, "target_identity_at_start": identity(), "cleanup_complete": True}
+        self.assertTrue(diagnose.sample_complete(helper, identity(), stack_report()))
+        for report in ("", "Sampling process 123", "Call graph:", stack_report(456)):
+            with self.subTest(report=report):
+                self.assertFalse(diagnose.sample_complete(helper, identity(), report))
+        for changes in ({"returncode": -9}, {"cancelled": True}, {"error": "OSError"}, {"timed_out": True},
+                        {"target_identity_at_start": identity(microseconds=11)}, {"cleanup_complete": False}):
+            with self.subTest(changes=changes):
+                self.assertFalse(diagnose.sample_complete({**helper, **changes}, identity(), stack_report()))
+
+    def test_malformed_capture_does_not_mask_original_sequence_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            app = root / "app"
+            app.mkdir()
+            (app / "Info.plist").write_bytes(plistlib.dumps({"CFBundleExecutable": "PhuxRune"}))
+            original = ValueError("original failure")
+
+            def qualify(app, phux, directory, transport):
+                directory.mkdir()
+                (directory / "command-001-command-capture.json").write_text("{")
+                raise original
+
+            module = SimpleNamespace(Qualification=object, qualify=qualify)
+            with patch.object(diagnose, "load_qualifier", return_value=module):
+                with self.assertRaises(ValueError) as raised:
+                    diagnose.run_sequence(app, root / "phux", root / "out")
+            self.assertIs(raised.exception, original)
+            status = json.loads((root / "out/quic-diagnostic-status.json").read_text())
+            self.assertFalse(status["capture"]["capture_complete"])
+            self.assertEqual(status["capture"]["error"], "JSONDecodeError")
 
     def test_success_and_failure_never_leave_release_receipt(self):
         for fail in (False, True):
@@ -168,9 +226,23 @@ class CommandDiagnosticsTests(unittest.TestCase):
                 status = json.loads((root / "out/quic-diagnostic-status.json").read_text())
                 self.assertFalse(status["release_qualification"])
                 self.assertEqual(status["sequence_completed"], not fail)
+                self.assertFalse(status["capture"]["capture_complete"])
+                self.assertEqual(status["capture"]["completed_stack_samples"], 0)
 
 
 class ArtifactTests(unittest.TestCase):
+    def test_source_equivalence_allows_only_exact_capture_test_addition(self):
+        allowed = "clients/rune/scripts/test_ios_command_capture.py"
+        with patch.object(artifact.subprocess, "run", return_value=SimpleNamespace(stdout=allowed + "\n")):
+            artifact.verify_sources(Path("/inert/repository"))
+        for rejected in ("clients/rune/ios/qualify.py", "clients/rune/src/mobile/host.rs",
+                         "clients/rune/scripts/test_another.py"):
+            with self.subTest(rejected=rejected), \
+                    patch.object(artifact.subprocess, "run",
+                                 return_value=SimpleNamespace(stdout=allowed + "\n" + rejected + "\n")):
+                with self.assertRaises(ValueError):
+                    artifact.verify_sources(Path("/inert/repository"))
+
     def archive(self, names):
         data = io.BytesIO()
         with zipfile.ZipFile(data, "w") as archive:

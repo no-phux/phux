@@ -21,7 +21,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Test diagnostic harness (inert native stubs only)
-        run: python3 -B -m unittest discover -s clients/rune/scripts -p test_ios_command_diagnostics.py -v
+        run: python3 -B -m unittest discover -s clients/rune/scripts -p 'test_ios_command_*.py' -v
       - name: Acquire and verify immutable original simulator app
         env:
           GITHUB_TOKEN: ${{ github.token }}
