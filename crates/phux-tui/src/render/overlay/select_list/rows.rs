@@ -4,7 +4,8 @@
 use phux_config::keybind::ResolvedAction;
 use ratatui::layout::Rect;
 
-use super::fuzzy::{fuzzy_match, fuzzy_rank};
+use phux_design::palette::{Fields, Query, group, rank, score};
+
 use super::{CHROME_ROWS, SelectItem, SelectList};
 use crate::render::overlay::widgets::{MODAL_PAD, centered_panel, modal_inner_width};
 
@@ -98,20 +99,65 @@ impl SelectList {
     }
 
     /// Indices of items to display: every row in source order for an empty
-    /// query, else the matching selectable rows best-first (stable).
+    /// query; else the matching rows best-first, and in a sectioned list,
+    /// regrouped under their headers in the order of each section's best
+    /// row, so a typed query keeps its "Commands" / "Sessions" bands.
     pub(super) fn filtered_indices(&self) -> Vec<usize> {
-        let q = self.query().to_lowercase();
-        if q.is_empty() {
+        let query = Query::parse(self.query());
+        if query.is_empty() {
             return (0..self.items.len()).collect();
         }
-        fuzzy_rank(
-            &q,
-            self.items
-                .iter()
-                .enumerate()
-                .filter(|(_, item)| !item.is_header())
-                .map(|(i, item)| (i, item.filter_text())),
+        let rows: Vec<usize> = (0..self.items.len())
+            .filter(|&i| !self.items[i].is_header())
+            .collect();
+        let aliases: Vec<Vec<&str>> = rows
+            .iter()
+            .map(|&i| {
+                self.items[i]
+                    .keywords
+                    .as_deref()
+                    .map_or_else(Vec::new, |k| k.split_whitespace().collect())
+            })
+            .collect();
+        let ranked: Vec<usize> = rank(
+            &query,
+            rows.iter().zip(&aliases).map(|(&i, aliases)| {
+                let item = &self.items[i];
+                let fields = Fields {
+                    title: &item.label,
+                    aliases,
+                    detail: item.secondary.as_deref(),
+                };
+                (fields, item.boost)
+            }),
         )
+        .into_iter()
+        .map(|(at, _)| rows[at])
+        .collect();
+        if !self.items.iter().any(SelectItem::is_header) {
+            return ranked;
+        }
+        let header_of = self.section_headers();
+        group(&ranked, |i| header_of[i])
+            .into_iter()
+            .flat_map(|(header, rows)| header.into_iter().chain(rows))
+            .collect()
+    }
+
+    /// Each item's nearest header above it in source order (`None` before
+    /// the first header).
+    fn section_headers(&self) -> Vec<Option<usize>> {
+        let mut current = None;
+        self.items
+            .iter()
+            .enumerate()
+            .map(|(i, item)| {
+                if item.is_header() {
+                    current = Some(i);
+                }
+                current
+            })
+            .collect()
     }
 
     /// Whether the visible row `row` is selectable.
@@ -234,18 +280,19 @@ impl SelectList {
         format!("{at} of {selectable}")
     }
 
-    /// Char positions in `item.label` the query matches, when the label
-    /// alone is a match (a row kept by its keywords or chord shows no
-    /// highlight). `None` with an empty query.
+    /// Char positions in `item.label` the query lit; `None` with an empty
+    /// query or for a row kept only by its aliases or secondary.
     pub(super) fn label_hits(&self, item: &SelectItem) -> Option<Vec<usize>> {
-        if self.query().is_empty() {
+        let query = Query::parse(self.query());
+        if query.is_empty() {
             return None;
         }
-        let lowered = item.label.to_lowercase();
-        // A lowercase form of a different length cannot index the label.
-        if lowered.chars().count() != item.label.chars().count() {
-            return None;
-        }
-        fuzzy_match(&self.query().to_lowercase(), &lowered).map(|(_, hits)| hits)
+        let fields = Fields {
+            title: &item.label,
+            ..Fields::default()
+        };
+        score(&query, &fields)
+            .map(|hit| hit.title_positions)
+            .filter(|lit| !lit.is_empty())
     }
 }

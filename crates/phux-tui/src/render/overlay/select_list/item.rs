@@ -29,6 +29,9 @@ pub struct SelectItem {
     /// Extra words a query matches but the row never shows (the palette's
     /// canonical action name, so `kill-pane` still finds "Close pane").
     pub keywords: Option<String>,
+    /// Added to the row's match score: recent use, waiting attention. Close
+    /// matches reorder; a far better match still wins.
+    pub boost: i32,
 }
 
 impl SelectItem {
@@ -43,6 +46,7 @@ impl SelectItem {
             indented: false,
             attention: false,
             keywords: None,
+            boost: 0,
         }
     }
 
@@ -57,6 +61,7 @@ impl SelectItem {
             indented: false,
             attention: false,
             keywords: None,
+            boost: 0,
         }
     }
 
@@ -71,6 +76,13 @@ impl SelectItem {
     #[must_use]
     pub fn keywords(mut self, keywords: impl Into<String>) -> Self {
         self.keywords = Some(keywords.into());
+        self
+    }
+
+    /// Rank this row above close matches by `boost` (see [`Self::boost`]).
+    #[must_use]
+    pub const fn boosted(mut self, boost: i32) -> Self {
+        self.boost = boost;
         self
     }
 
@@ -92,16 +104,5 @@ impl SelectItem {
     #[must_use]
     pub const fn is_header(&self) -> bool {
         matches!(self.kind, SelectKind::Header)
-    }
-
-    /// The text a query matches: label, then any [`Self::keywords`], then
-    /// the secondary (so chords filter too).
-    pub(super) fn filter_text(&self) -> String {
-        let mut text = self.label.clone();
-        for extra in [&self.keywords, &self.secondary].into_iter().flatten() {
-            text.push(' ');
-            text.push_str(extra);
-        }
-        text
     }
 }
