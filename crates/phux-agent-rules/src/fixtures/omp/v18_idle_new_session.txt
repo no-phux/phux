@@ -1,0 +1,24 @@
+
+                        ████████████
+                           ██  ██       ▄▀▀▄ █▀▄▀▄ █▀▀▄
+                           ██  ██       ▀▄▄▀ █ █ █ █▄▄▀
+                           ▒▒  ██                  █
+                               ██       v18.6.1
+
+     Tip: `/shake` rips heavy tool results out of context to reclaim tokens
+          without a full /compact — `/shake images` drops just images
+
+
+  New session started
+
+ 󰵗  󰪣 GPT-6.1-Sol   …7602/scratchpad/omp18/work   master  󰙺 ─0.8%─󰁨922K─
+╰─                                                 󰘶 󰌒 to change thinking effort
+
+
+
+
+
+
+
+
+

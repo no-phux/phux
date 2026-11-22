@@ -1,0 +1,280 @@
+//! Frame-body dispatch by type byte, and the handshake, compression, liveness, and output frames.
+
+use super::{
+    BootstrapId, BootstrapLimits, DecodeError, Decoder, FrameKind, MAX_FRAME_LEN, ResourceId,
+    StreamId, TYPE_FRAME_COMPRESSED, decode_bootstrap_id, decode_bootstrap_profile,
+    decode_client_capabilities, decode_directory_listing, decode_list_directory, decode_query,
+    decode_results, decode_server_capabilities, decode_stream_id, decode_terminal_id, field,
+    negotiated_bootstrap_limits, req, utf8_value,
+};
+
+/// Generate [`Decoder::decode_body`] from the frame catalog: one arm per
+/// row, plus the `FRAME_COMPRESSED` envelope, which is no `FrameKind`.
+macro_rules! decode_body_dispatch {
+    ($(
+        $(#[$attr:meta])*
+        $variant:ident = $name:ident $tag:literal, $spec:literal, $module:literal, $decode:ident;
+    )*) => {
+        impl Decoder<'_> {
+            /// Decode one frame body by its type byte. Each decoder
+            /// collects fields by id, defaults absent optional ones, and
+            /// reports a missing required one as `UnexpectedEof`.
+            pub(super) fn decode_body(&mut self, type_byte: u8) -> Result<FrameKind, DecodeError> {
+                match type_byte {
+                    $(crate::wire::frame::$name => self.$decode(),)*
+                    TYPE_FRAME_COMPRESSED => self.decode_frame_compressed(),
+                    other => Err(DecodeError::UnknownFrameKind {
+                        tag: u16::from(other),
+                    }),
+                }
+            }
+        }
+    };
+}
+
+crate::wire::frame::frame_catalog!(decode_body_dispatch);
+
+impl Decoder<'_> {
+    pub(super) fn decode_hello(&mut self) -> Result<FrameKind, DecodeError> {
+        use field::hello as f;
+        let mut client_name: Option<String> = None;
+        let mut protocol_major = None;
+        let mut protocol_minor = None;
+        let mut protocol_patch = None;
+        let mut client_caps: Option<crate::caps::ClientCapabilities> = None;
+        let mut compression: Option<crate::caps::CompressionSet> = None;
+        let mut ssh_origin = None;
+        let mut quic_streams = false;
+        let mut resource_kinds = crate::caps::ResourceKindSet::LEGACY;
+        let mut platform = None;
+        let mut credential_approvals = false;
+        for_each_field!(self, value, {
+            f::CLIENT_NAME => client_name = Some(utf8_value(value)?),
+            f::PROTOCOL_MAJOR => protocol_major = Some(sub!(value, Decoder::read_u16_be)),
+            f::PROTOCOL_MINOR => protocol_minor = Some(sub!(value, Decoder::read_u16_be)),
+            f::PROTOCOL_PATCH => protocol_patch = Some(sub!(value, Decoder::read_u16_be)),
+            f::CLIENT_CAPS => client_caps = Some(sub!(value, decode_client_capabilities)),
+            f::COMPRESSION => {
+                compression = Some(crate::caps::CompressionSet::from_bits(sub!(
+                    value,
+                    Decoder::read_u8
+                )));
+            }
+            f::SSH_ORIGIN => ssh_origin = crate::wire::ssh_origin::decode_ssh_origin(value),
+            f::QUIC_STREAMS => quic_streams = sub!(value, Decoder::read_u8) != 0,
+            f::CREDENTIAL_APPROVALS => {
+                credential_approvals = sub!(value, Decoder::read_u8) == 1;
+            }
+            f::RESOURCE_KINDS => {
+                resource_kinds =
+                    crate::caps::ResourceKindSet::from_wire(sub!(value, Decoder::read_u64_be));
+            }
+            // A label: an unreadable one is dropped, never a refusal.
+            f::PLATFORM => {
+                platform = std::str::from_utf8(value)
+                    .ok()
+                    .and_then(crate::caps::ClientPlatform::parse);
+            }
+        });
+        let mut client_caps = req(client_caps)?;
+        if let Some(origin) = ssh_origin {
+            client_caps = client_caps.with_ssh_origin(origin);
+        }
+        // Top-level on the wire (`CLIENT_CAPS` is frozen), folded into the
+        // typed capabilities; absent keeps the empty set.
+        if let Some(compression) = compression {
+            client_caps = client_caps.with_compression(compression);
+        }
+        client_caps = client_caps
+            .with_quic_streams(quic_streams)
+            .with_resource_kinds(resource_kinds)
+            .with_platform(platform)
+            .with_credential_approvals(credential_approvals);
+        Ok(FrameKind::Hello {
+            client_name: req(client_name)?,
+            protocol_major: req(protocol_major)?,
+            protocol_minor: req(protocol_minor)?,
+            protocol_patch: req(protocol_patch)?,
+            client_caps,
+        })
+    }
+
+    pub(super) fn decode_hello_ok(&mut self) -> Result<FrameKind, DecodeError> {
+        use field::hello_ok as f;
+        let mut protocol_major = None;
+        let mut protocol_minor = None;
+        let mut protocol_patch = None;
+        let mut server_caps = None;
+        let mut server_id = None;
+        let mut selected_profile = None;
+        let mut max_chunk_bytes = None;
+        let mut max_history_page_bytes = None;
+        let mut compression: Option<crate::caps::Compression> = None;
+        for_each_field!(self, value, {
+            f::PROTOCOL_MAJOR => protocol_major = Some(sub!(value, Decoder::read_u16_be)),
+            f::PROTOCOL_MINOR => protocol_minor = Some(sub!(value, Decoder::read_u16_be)),
+            f::PROTOCOL_PATCH => protocol_patch = Some(sub!(value, Decoder::read_u16_be)),
+            f::SERVER_CAPS => server_caps = Some(sub!(value, decode_server_capabilities)),
+            f::SERVER_ID => server_id = Some(value.to_vec()),
+            f::SELECTED_PROFILE => selected_profile = Some(sub!(value, decode_bootstrap_profile)),
+            f::MAX_CHUNK_BYTES => max_chunk_bytes = Some(sub!(value, Decoder::read_u32_be)),
+            f::MAX_HISTORY_PAGE_BYTES => {
+                max_history_page_bytes = Some(sub!(value, Decoder::read_u32_be));
+            }
+            f::COMPRESSION => {
+                compression = Some(crate::caps::Compression::from_u8(sub!(
+                    value,
+                    Decoder::read_u8
+                )));
+            }
+        });
+        let bootstrap_limits =
+            negotiated_bootstrap_limits(max_chunk_bytes, max_history_page_bytes)?;
+        let mut server_caps = req(server_caps)?;
+        if let Some(compression) = compression {
+            server_caps = server_caps.with_compression(compression);
+        }
+        Ok(FrameKind::HelloOk {
+            protocol_major: req(protocol_major)?,
+            protocol_minor: req(protocol_minor)?,
+            protocol_patch: req(protocol_patch)?,
+            server_caps,
+            server_id: req(server_id)?,
+            selected_profile,
+            bootstrap_limits,
+        })
+    }
+
+    /// Largest inflated body a `FRAME_COMPRESSED` envelope may declare
+    /// (`docs/protocol.md#framing`).
+    ///
+    /// The sender picks `uncompressed_len` and we allocate it before
+    /// inflating, so it is bounded by this connection's negotiated payload
+    /// limits plus envelope room rather than the 16 MiB frame cap.
+    pub(super) fn max_compressed_frame_bytes(&self) -> u32 {
+        /// Room for the inner frame's ids and cursors beside its payload.
+        const ENVELOPE_ALLOWANCE: u32 = 64 * 1024;
+
+        self.max_bootstrap_chunk_bytes
+            .max(self.max_history_page_bytes)
+            .saturating_add(ENVELOPE_ALLOWANCE)
+            .min(MAX_FRAME_LEN)
+    }
+
+    /// Inflate a `FRAME_COMPRESSED` envelope and decode the frame inside with
+    /// the same negotiated limits. Oversized declarations are refused before
+    /// allocating and nested envelopes are refused outright.
+    pub(super) fn decode_frame_compressed(&mut self) -> Result<FrameKind, DecodeError> {
+        let mut algorithm = None;
+        let mut uncompressed_len = None;
+        let mut payload: Option<&[u8]> = None;
+        for_each_field!(self, value, {
+            field::frame_compressed::ALGORITHM => {
+                algorithm = Some(crate::caps::Compression::from_u8(sub!(
+                    value,
+                    Decoder::read_u8
+                )));
+            }
+            field::frame_compressed::UNCOMPRESSED_LEN => {
+                uncompressed_len = Some(sub!(value, Decoder::read_u32_be));
+            }
+            field::frame_compressed::PAYLOAD => payload = Some(value),
+        });
+        if req(algorithm)? != crate::caps::Compression::Deflate {
+            return Err(DecodeError::CompressedFrameInvalid);
+        }
+        let declared = req(uncompressed_len)?;
+        if declared == 0 || declared > self.max_compressed_frame_bytes() {
+            return Err(DecodeError::LengthOverflow);
+        }
+        let declared = usize::try_from(declared).map_err(|_| DecodeError::LengthOverflow)?;
+        let payload = req(payload)?;
+        let body = crate::wire::compress::inflate(payload, declared)?;
+
+        let mut inner = Decoder::with_bootstrap_limits(
+            &body,
+            BootstrapLimits::new(self.max_bootstrap_chunk_bytes, self.max_history_page_bytes)
+                .unwrap_or_default(),
+        );
+        inner.body_end = Some(body.len());
+        let type_byte = inner.read_u8()?;
+        if type_byte == TYPE_FRAME_COMPRESSED {
+            return Err(DecodeError::CompressedFrameInvalid);
+        }
+        inner.decode_body(type_byte)
+    }
+
+    pub(super) fn decode_ping(&mut self) -> Result<FrameKind, DecodeError> {
+        Ok(FrameKind::Ping {
+            nonce: self.decode_nonce()?,
+        })
+    }
+
+    pub(super) fn decode_pong(&mut self) -> Result<FrameKind, DecodeError> {
+        Ok(FrameKind::Pong {
+            nonce: self.decode_nonce()?,
+        })
+    }
+
+    /// Decode the shared `PING` / `PONG` body: its required nonce.
+    pub(super) fn decode_nonce(&mut self) -> Result<u64, DecodeError> {
+        let mut nonce: Option<u64> = None;
+        for_each_field!(self, value, {
+            field::ping::NONCE => nonce = Some(sub!(value, Decoder::read_u64_be)),
+        });
+        req(nonce)
+    }
+
+    pub(super) fn decode_terminal_output(&mut self) -> Result<FrameKind, DecodeError> {
+        use field::terminal_output as f;
+        let mut terminal_id: Option<ResourceId> = None;
+        let mut stream_id: Option<StreamId> = None;
+        let mut bootstrap_id: Option<BootstrapId> = None;
+        let mut seq: Option<u64> = None;
+        let mut bytes: Option<bytes::Bytes> = None;
+        for_each_field!(self, value, {
+            f::TERMINAL_ID => terminal_id = Some(sub!(value, decode_terminal_id)),
+            f::SEQ => seq = Some(sub!(value, Decoder::read_u64_be)),
+            f::BYTES => bytes = Some(self.share_exact(value)),
+            f::STREAM_ID => stream_id = Some(sub!(value, decode_stream_id)),
+            f::BOOTSTRAP_ID => bootstrap_id = Some(sub!(value, decode_bootstrap_id)),
+        });
+        Ok(FrameKind::ResourceOutput {
+            terminal_id: req(terminal_id)?,
+            stream_id: req(stream_id)?,
+            bootstrap_id: req(bootstrap_id)?,
+            seq: req(seq)?,
+            bytes: req(bytes)?,
+        })
+    }
+
+    pub(super) fn decode_list_directory_frame(&mut self) -> Result<FrameKind, DecodeError> {
+        let (request_id, path, host) = decode_list_directory(self)?;
+        Ok(FrameKind::ListDirectory {
+            request_id,
+            path,
+            host,
+        })
+    }
+
+    pub(super) fn decode_directory_listing_frame(&mut self) -> Result<FrameKind, DecodeError> {
+        let (request_id, result) = decode_directory_listing(self)?;
+        Ok(FrameKind::DirectoryListing { request_id, result })
+    }
+
+    pub(super) fn decode_path_query(&mut self) -> Result<FrameKind, DecodeError> {
+        let (request_id, root, query, recursive, host) = decode_query(self)?;
+        Ok(FrameKind::PathQuery {
+            request_id,
+            root,
+            query,
+            recursive,
+            host,
+        })
+    }
+
+    pub(super) fn decode_path_results(&mut self) -> Result<FrameKind, DecodeError> {
+        let (request_id, result) = decode_results(self)?;
+        Ok(FrameKind::PathResults { request_id, result })
+    }
+}

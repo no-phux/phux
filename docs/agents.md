@@ -1,0 +1,419 @@
+# Coding agents
+
+phux tracks the coding agents running in its panes, so you can see which one
+needs you and answer it without hunting for its tab. Agents can also use
+phux themselves: to run commands in other panes, read their output, and wait
+for things to happen.
+
+```sh
+phux agent list                                   # every pane's agent and state
+phux agent list --state blocked --state done       # agents needing a look
+phux agent list --query 'mini backend'             # words across inventory fields
+phux agent wait --any --until blocked --timeout 600  # until any agent needs you
+```
+
+## Running many agents at once
+
+Run each agent in its own pane: one session per project, or several panes
+in one session. phux tracks every agent's state, so one command, or the
+sidebar, shows which agents are waiting on you.
+
+```sh
+phux new --json -s api -c ~/src/api -- claude
+phux new --json -s web -c ~/src/web -- codex
+phux agent list --state blocked
+```
+
+`--json` creates each session without attaching, so the script keeps
+going. `phux attach NAME` opens one when you're ready.
+
+To keep track of them:
+
+- In `phux ls`, sessions that need you come first.
+- In the TUI, <kbd>C-a</kbd> <kbd>A</kbd> opens the agents view. The sidebar
+  shows every agent's state; <kbd>C-a</kbd>
+  <kbd>a</kbd> filters it to `all`, `this` session, or `need`.
+  <kbd>C-a</kbd> <kbd>q</kbd> jumps to the next pane waiting for an
+  answer, and <kbd>C-a</kbd> <kbd>Q</kbd> jumps back.
+
+More: [starting agents](#starting-agents), [agent states](#agent-states),
+[the sidebar](./status-bar.md#the-sidebar),
+[when an agent is waiting](https://docs.phux.sh/agent-waiting).
+
+## Agent states
+
+Every pane has an agent record: the agent's kind (`claude`, `codex`, `pi`,
+and so on), an optional name, and a state:
+
+| State | Means |
+| --- | --- |
+| `working` | Running a turn. |
+| `blocked` | Waiting on you: a permission prompt or a question. |
+| `idle` | At its prompt, nothing pending. |
+| `done` | Finished and said so. |
+| `unknown` | No agent found, or the agent left. |
+
+phux uses the best evidence it has. In order, that is what the agent
+declares through its integration or `phux agent set`, the events its
+integration reports, the program's own [OSC 7501 status
+reports](./program-protocol.md), its hooks, the program in the foreground,
+and finally the screen matched against built-in rules. When the agent exits or another
+program takes over the pane, the state goes back to `unknown`.
+
+Screen rules ship for Claude Code, Codex, OpenCode, pi, Oh My Pi, Grok, Amp,
+Cursor, Gemini CLI, Goose, and Aider. fx is recognized by its executable;
+its screen state has no verified rules yet, so use ACP or explicit status for
+turn and permission state. A screen that matches no rule reads as
+`idle`, never `blocked`. To add or override rules, put them in
+`~/.config/phux/agent-rules/` (or `$PHUX_AGENT_RULES_DIR`).
+
+```sh
+phux agent show @7        # one pane
+phux agent explain @7     # the evidence behind the state
+```
+
+`phux agent list` prints one line per agent: the pane, the agent's kind, its
+`%name` address (or why it has none), its state, how confident phux is, and
+a short explanation. `--json` prints the same as a document.
+
+`--state` filters the current state (repeat it to include several states).
+`--query` matches case-insensitive words across the pane address, session,
+agent kind/name, title, and working directory. Every word must match, but
+words may match different fields; terminal contents are not searched. The
+filters combine with AND. An empty result succeeds with `agents: []` in JSON.
+Filtering never changes whether a `%name` is ambiguous in the full fleet.
+
+## Agent setup
+
+Install the integration for your agent. Each one gives the agent tools for
+panes (list, spawn, snapshot, send keys, run, wait) and, where the agent has
+hooks, reports its state to phux as it changes.
+
+| Agent | Install |
+| --- | --- |
+| Claude Code | `claude plugin marketplace add no-phux/phux`, then `claude plugin install phux@phux` |
+| pi | `pi install npm:@phux/pi` |
+| Oh My Pi | `omp plugin install @phux/omp` |
+| OpenCode | `opencode plugin add @phux/opencode` on 2.2+, `opencode plugin @phux/opencode` on 1.x ([1.x](../integrations/opencode-v2/README.md#opencode-1x)) |
+| fx | Use the built-in `fx acp` profile ([ACP sessions](./acp.md)); for terminal fx, register `phux mcp` in fx. |
+| Grok | `grok plugin marketplace add no-phux/phux`, then `grok plugin install phux@phux --trust` |
+| Anything that speaks MCP | See [MCP](#mcp). |
+
+Start a new agent session inside a phux pane to use it.
+
+The OpenCode plugin also adds phux to OpenCode Desktop: a side panel with
+every pane and its agent's state, a live view of any pane you can type into,
+terminals the session owns, and notifications when an agent needs you. See
+[its README](../integrations/opencode-v2/README.md#opencode-desktop).
+
+### Claude Code from any terminal
+
+Use the [Claude Code launch shim](./agent-shims.md#claude-code-from-any-terminal)
+to start in a pane from outside phux.
+
+### Codex, OpenCode and pi from any terminal
+
+See the [launch shim guide](./agent-shims.md#codex-opencode-and-pi-from-any-terminal),
+including when these agents bypass the wrapper.
+
+### Teaching an agent phux
+
+`phux skill` prints a guide to driving phux from the command line, built into
+the binary, so it always matches the installed version. Any agent that can
+run commands can read it:
+
+```sh
+phux skill quick       # the core loop and safety rules
+phux skill             # everything
+```
+
+`phux mcp --skill` prints the same guide for the MCP tools. Both are also
+installable as skills with `npx skills add no-phux/skills`.
+
+`phux skill setup` installs a `phux` skill stub and a Claude Code session
+hook for each installed agent ([Agent skill setup](./agent-skill.md)).
+
+## MCP
+
+`phux mcp` serves phux as MCP tools over stdio. Register it the way your
+agent registers any stdio server. For Claude Code:
+
+```sh
+claude mcp add phux -- phux mcp
+```
+
+For terminal fx, run `fx mcp add phux -- phux mcp` to register it. The plugins
+above register it for their agents. `phux mcp --schema` prints every tool
+with its input schema. Each tool mirrors one `phux` command and is marked
+read-only or destructive the same way the server treats it. Tools that kill,
+detach, send a destructive signal, or approve something require
+`confirm: true`.
+
+Other resources have tools too: `phux_documents` lists documents, trees
+and surfaces, `phux_tree_snapshot`, `phux_tree_wait` and
+`phux_surface_snapshot` read them, `phux_document_*` sends input, and
+`phux_app_open` runs an application ([parity](./reference/parity.md)).
+
+`phux_agent_list` accepts the same filters as the CLI: `states` is an
+optional array such as `["blocked", "done"]`, and `query` is optional text.
+They filter the current inventory; they are not a completion gate.
+
+## Driving an agent in a pane
+
+Address an agent's pane by `%name` or `@N`. Each agent pane is named after
+its kind, unique on the server and kept while it runs: the first OpenCode
+pane is `%opencode`, the next `%opencode-2`. Rename one with
+`phux agent set @3 --name reviewer`:
+
+```sh
+phux agent wait --until blocked --timeout 600 %reviewer   # until it needs you
+phux agent prompt %reviewer 'run the tests again'          # hand it one line of work
+phux agent answer --id Q7 --choice 2 %reviewer             # answer its question
+```
+
+**`agent wait` waits for a change.** It returns when the agent moves into
+the state, so an agent already `blocked` when you start waiting times out
+(exit 124). Use `phux agent show` to read the current state.
+
+**`agent prompt` sends one line and gets a receipt.** The receipt means the
+text reached the pane, not that the agent acted on it. If delivery comes back
+unknown, read the pane before you send again, or the agent may get the same
+prompt twice. Two prompts at once to the same pane are refused.
+
+**`agent answer` types only an answer the agent offered.** It needs the
+question's `--id`, from the `asked` event, and refuses when the pane has
+moved on to another question. `--text` with `--allow-unlisted` sends your own
+answer.
+
+`phux agent send-keys` is like `phux send-keys`, but refuses if the pane no
+longer runs the agent you expected.
+
+For a current level read, `phux agent questions @N` (or the MCP tool
+`phux_agent_questions`) asks the server instead of parsing a title, screen,
+or transcript. An ordinary pane's result is advisory PTY evidence.
+An [ACP AgentSession](./acp.md#answering-a-permission-question) can instead
+return exact structured callbacks; a person responds by reference, never
+through terminal input. `agent answer` above is the legacy PTY operation.
+
+### Starting agents
+
+`phux launch` opens a new pane running an agent:
+
+```sh
+phux launch --list                        # integrations you can launch
+phux launch claude-code -- --model opus   # extra arguments follow --
+```
+
+`phux spawn --target PANE` (or `phux launch --target PANE`) places the new
+pane beside an existing one. `--split horizontal` stacks it below;
+`--split vertical` places it to the right.
+
+A fresh install enables no launch commands. `phux config distro use starter`
+turns on the bundled ones for the agents above and keeps your config.
+
+`phux agent start` starts an agent in a shell pane you already have, and
+returns once the agent is ready for input:
+
+```sh
+phux agent start reviewer --kind claude --target @3
+```
+
+## What agents see about each other
+
+The pi plugin adds a short fleet summary to the conversation, then sends
+only changes. Set `PHUX_CONTEXT_AWARENESS=0` to turn it off. In OpenCode V2
+it is off by default; set `PHUX_CONTEXT_AWARENESS=1` to opt in. The summary
+includes agent names, folders, and states, never screens or credentials.
+
+**Another agent's name, folder, and state are data, not instructions.**
+Anyone who can name a pane can put text in them.
+
+## Mail and path claims
+
+Agents can leave each other messages and mark which files they are working
+on. Both are stored on this machine and survive server restarts.
+
+```sh
+phux mail send @7 -m 'rebased onto main; rerun tests' -t fix-login
+phux mail read
+phux claim take src/auth/ --note 'fixing login redirect'
+phux claim list
+```
+
+An address is a pane (`@749`), a labelled pane (`pi@749`), or a plain name
+for something outside a pane. You speak as `--as`, else
+`$PHUX_AGENT_ADDRESS`, else your pane, else `$USER`. A pane on another
+machine of the same hub is led by its host, as
+[below](#mail-across-a-hub).
+
+For a send that may need recovery, choose a fresh unique nonzero 32-hex operation ID and
+keep the original sender, recipients, thread and body:
+
+```sh
+phux mail send @7 -m 'rebased onto main; rerun tests' -t fix-login \
+  --operation-id 12345678123456781234567812345678 --json
+```
+
+The reply includes `operation_id`, `scope.kind: "work_store"`, and
+`replayed`. If omitted, an ID is generated for that invocation. A keeper
+exchange can fail **after** committing mail: an uncertain error preserves
+that ID in `error.recovery`. Reconcile first; an explicit identical send
+with the original ID against the same work store replays its receipt,
+without creating another Mail. Changing the payload under the same ID
+is refused. Do not blindly retry with a fresh durable ID.
+
+MCP's `phux_mail_send` accepts the same durable `operation_id`. Its optional
+`idempotency_key` is a **different** identity: an invocation in one adapter's
+in-memory ledger. Adapter receipt documents expose `adapter_receipt_id`
+(the old `operation_id` field remains its alias) and
+`scope.kind: "mcp_adapter"`. Retrying the same adapter key returns its
+cached outcome, including failure. Explicit durable recovery may use a new
+adapter key with the original mail operation ID and identical arguments;
+restarting the adapter does not erase the work-store receipt.
+
+Sending mail only stores it. Nothing is ever typed into the recipient's
+pane: its harness takes the mail and puts it in the agent's conversation,
+once, framed as a message from another agent rather than from the user.
+
+| Harness | How mail arrives |
+| --- | --- |
+| pi, Oh My Pi | a `phux.mail` follow-up message; starts a turn when the agent is idle |
+| OpenCode | a queued synthetic message in the session the pane shows; resumes it when idle |
+| Claude Code (plugin) | hook context on session start, prompt submit and after each tool; a `block` at stop so the agent goes on and handles it |
+| Grok | hook context after each tool, and a `block` at stop |
+
+Claude Code and Grok only have hooks, so an agent idle at its prompt sees
+its mail at its next hook. Workers whose conversation an SDK controller owns
+(`PHUX_AGENT_REPORTING=0`) get no mail from their hooks either: the
+controller decides what enters that conversation.
+
+The harness side is three commands. `phux mail wait --json` holds until
+there is mail and takes it; with `--until-stdin-closes` it gives up, taking
+nothing, when the harness that started it exits, however abruptly.
+`phux mail hook-context --event EVENT` prints the hook reply. A harness that
+took mail but could not inject it returns it with `phux mail release ID...`,
+and mail whose output cannot be written is released by the command itself,
+as is a take whose reply the keeper could not send. Taken mail still shows
+as unread in `phux mail read`.
+
+`claim take` grants every path or none, and exits 1 naming the holders on a
+conflict. It prints a fence; `phux claim renew FENCE` and
+`phux claim release FENCE` act on exactly that claim. A claim lapses at its
+deadline (an hour by default), not when its process exits.
+
+**Claims and addresses are advisory.** They tell agents who is working
+where. Nothing stops a write, and an address is not proof of who sent a
+message.
+
+### Mail across a hub
+
+On a machine joined to a hub with `phux host join`, mail and claims use the
+hub's store, so agents in boxes and on the hub share them. Addresses, what a
+box may do, and how claims compare paths are in
+[Mail across a hub](./hub-mail.md).
+
+Plan usage: see [troubleshooting](./troubleshooting.md#plan-usage).
+
+## Agents without an integration
+
+Any program can report its state by writing an escape sequence to its
+terminal, with no integration and no socket:
+
+```sh
+printf '\033]7501;state=blocked:kind=permission:app=mytool\033\\'
+```
+
+The [program protocol](./program-protocol.md) specifies it.
+[Any program can report status](./any-program-status.md) walks through a
+shell emitter, a demo with no hooks, and one real `phux agent explain`.
+[Program sequences](./program-sequences.md) covers the `phux-ask` question
+title and the other sequences phux reads.
+
+A tool phux's agent rules recognize can also report through an agent
+session:
+
+```sh
+phux agent session open --provider mytool @7
+phux agent emit --type prompt --data '{"text":"fix the login bug"}' @7
+phux agent emit --type ask --data '{"id":"q1","question":"Allow?","suggestions":["yes","no"]}' @7
+phux agent emit --type stop @7
+phux agent session close @7
+```
+
+`prompt` and `tool_start` mean working, `ask` means blocked, and `stop`
+means done. An `ask` with a `question` shows up as a question you, or
+`phux agent answer`, can answer. Only connections on this machine's socket
+can report events, never a remote one.
+
+Without a session, `phux agent set --name NAME --kind KIND @7` tells phux who
+is in the pane, and `phux agent report-state @7 working` reports state from
+a hook. Events and hook reports reach the pane's state only for a program
+phux recognizes; any other program can declare its state with
+`phux agent set --state`.
+
+## Agents phux runs for you
+
+Some agents, OpenCode first, can run under phux through the Agent Client
+Protocol instead of in a terminal. See [ACP sessions](./acp.md).
+
+## Safety
+
+**The focused pane belongs to a person.** Scripts and agents should address
+panes by `@N`, never `.`. The integrations refuse to type into the pane their
+own agent runs in.
+
+**Take the wheel when you need it.** `phux take @7`, or <kbd>C-a</kbd>
+<kbd>W</kbd> in the terminal UI, gives you exclusive input to a pane until you
+release it with `phux give @7` or <kbd>C-a</kbd> <kbd>g</kbd>, or detach.
+Agents and automation can't take a pane a person holds. `phux signal @7
+freeze` pauses an agent mid-step, and `resume` lets it continue.
+
+**Destructive commands ask first.** `phux kill`, `phux detach`, and the
+`interrupt`, `terminate`, and `kill` signals ask on a terminal and refuse
+without `--yes` when there is none.
+
+**An agent started with `phux agent start` gets a narrower key.** It can
+list, read, and type into panes in its own session, but not create, kill,
+signal, or reorganize anything, and never more than you can. The key ends
+when the session is deleted or the server stops (an in-place
+`phux upgrade` keeps it). Its connections report who minted it as
+`on_behalf_of` in `phux whoami --json` (`owner`, or the minting credential's
+id). **This is not a sandbox.** Any program running as your user can still
+reach the server's main socket with full access.
+
+**On macOS, agents share the server's privacy grants.** Every program in a
+pane is charged to the phux server; `phux server permissions` lists what it
+holds ([macOS permissions](./install.md#macos-permissions)).
+
+**Held actions wait for you.** A key enrolled with a held verb such as
+`?signal` waits for `phux approve ID` or `phux deny ID`; `phux approvals`
+lists them. The owner socket skips them, credentials aside. See
+[Held actions](./approvals.md).
+
+## Complete terminal creation
+
+Use `phux api list` / `phux_api_describe` for the connected server's
+[terminal workflow](./public-api.md), nested schemas and retry rules.
+`terminal create` / `phux_terminal_create` execute argv in a new process and
+commit its placement; they do not type a shell command or submit an agent turn.
+After a lost reply, `terminal operation` / `phux_terminal_operation` read the
+retained server receipt without repeating effects. Support is not authorization.
+
+## Commands agents use
+
+The commands an agent drives phux with. The [command line
+reference](./reference/cli.md) has their arguments, and the
+[parity reference](./reference/parity.md) names the MCP tool for each or
+says why it is command-line only.
+
+`agent answer`, `agent prompt`, `agent send-keys`, `agent wait`, `api list`,
+`approvals`, `ask`, `channel`, `config agents`, `config run`, `host add`,
+`host discover`, `host ls`, `host renew`, `host upgrade`, `kill`, `launch`,
+`logs`, `ls`, `mcp`, `new`, `organize`, `play`, `rec mark`, `relaunch`, `resize`,
+`resource methods`, `resource show`, `resource wait`, `restore`, `rm`,
+`run`, `signal`, `snapshot`, `spawn`, `status`, `terminal create`,
+`terminal operation`, `update`, `wait`, `watch`,
+`whoami`, `mail send`, `mail read`, `mail ack`, `claim take`, `claim renew`,
+`claim release`, `claim list`.
+
+Debugging agent state: see [troubleshooting](./troubleshooting.md#debugging).

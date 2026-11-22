@@ -1,0 +1,21 @@
+{
+  "cols": 9,
+  "cursor": null,
+  "lines": [
+    "the quickbrown fox"
+  ],
+  "pane": 1,
+  "rows": 2,
+  "schema_version": 3,
+  "scrollback": [
+    "h2",
+    "h3"
+  ],
+  "soft_wrap": {
+    "lines": [],
+    "scrollback": []
+  },
+  "title": "zsh",
+  "truncated": true,
+  "truncated_reason": "row_window"
+}

@@ -1,0 +1,1477 @@
+//! Paint composition for the attach driver: the full frame, the incremental
+//! pane-plus-bar path, the in-place repaints, and the chrome geometry.
+
+use std::collections::HashMap;
+use std::io::Write;
+use std::time::SystemTime;
+
+use libghostty_vt::Terminal as GhosttyTerminal;
+use phux_protocol::ids::ResourceId;
+
+use super::chrome_ctx::ChromeCtx;
+use super::pane_state::{AttachKernel, PaneSlot, published_replica};
+use crate::layout::LayoutState;
+use crate::render::chrome::status_bar::{
+    BarInset, ComposePolicy, Position, StatusBarPainter, make_context,
+};
+
+mod frame_block;
+pub(super) use frame_block::FrameBlock;
+
+/// Memoized pane tiling: the output path asks for it three times a frame.
+/// Keyed by the whole tiling input by structural equality, so a hit is exact.
+#[derive(Debug, Default)]
+struct LayoutCache {
+    /// The inputs the cached tiling was computed from.
+    key: Option<(LayoutState, crate::layout::Rect, (u16, u16))>,
+    /// The tiling itself, dropped whenever the key moves.
+    tiling: Option<crate::multi_pane::PaneLayout>,
+    /// How many times the tiling was actually computed (asserted by tests).
+    misses: u64,
+}
+
+impl LayoutCache {
+    /// The tiling for `layout` inside `content`, computed only on a miss.
+    fn get(
+        &mut self,
+        layout: &LayoutState,
+        content: crate::layout::Rect,
+        viewport_dims: (u16, u16),
+    ) -> &crate::multi_pane::PaneLayout {
+        let hit = self.key.as_ref().is_some_and(|(cached, rect, viewport)| {
+            *rect == content && *viewport == viewport_dims && cached == layout
+        });
+        if !hit {
+            self.key = Some((layout.clone(), content, viewport_dims));
+            self.tiling = None;
+        }
+        // The `None` arm runs exactly on a miss; a hit never re-tiles.
+        let misses = &mut self.misses;
+        self.tiling.get_or_insert_with(|| {
+            *misses = misses.saturating_add(1);
+            phux_client::perf::LAYOUTS.add(1);
+            crate::multi_pane::compute_layout_in(layout, content, viewport_dims)
+        })
+    }
+}
+
+thread_local! {
+    /// One cache per attach thread; a hit is an exact structural match, so
+    /// sharing across session loops can only miss.
+    static LAYOUT_CACHE: std::cell::RefCell<LayoutCache> =
+        std::cell::RefCell::new(LayoutCache::default());
+}
+
+/// Run `read` against the memoized tiling of `layout` inside `content`; copy
+/// out what is needed. Computes in place if the cache is already borrowed.
+pub(super) fn with_tiling<R>(
+    layout: &LayoutState,
+    content: crate::layout::Rect,
+    viewport_dims: (u16, u16),
+    read: impl FnOnce(&crate::multi_pane::PaneLayout) -> R,
+) -> R {
+    LAYOUT_CACHE.with(|cache| {
+        if let Ok(mut cache) = cache.try_borrow_mut() {
+            return read(cache.get(layout, content, viewport_dims));
+        }
+        phux_client::perf::LAYOUTS.add(1);
+        read(&crate::multi_pane::compute_layout_in(
+            layout,
+            content,
+            viewport_dims,
+        ))
+    })
+}
+
+/// One pane's rect in the memoized tiling.
+pub(super) fn tiled_rect(
+    layout: &LayoutState,
+    content: crate::layout::Rect,
+    viewport_dims: (u16, u16),
+    terminal_id: &ResourceId,
+) -> Option<crate::layout::Rect> {
+    with_tiling(layout, content, viewport_dims, |tiling| {
+        tiling.rects.get(terminal_id).copied()
+    })
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum StatusBarPaint {
+    #[default]
+    NotPublished,
+    Published {
+        cols: u16,
+    },
+}
+
+impl StatusBarPaint {
+    pub(super) fn delivered(self, painter: Option<&StatusBarPainter>, expected: &str) -> bool {
+        matches!(self, Self::Published { cols } if usize::from(cols) >= expected.chars().count())
+            && painter.is_some_and(|painter| painter.notice_is(expected))
+    }
+}
+
+/// The mirror grid a pane is letterboxed with; every paint path must use
+/// these dims, or an undersized mirror paints twice.
+pub(super) fn mirror_dims(
+    terminal: &GhosttyTerminal<'_, '_>,
+    rect: crate::layout::Rect,
+) -> (u16, u16) {
+    let cols = terminal.cols().unwrap_or(rect.w);
+    let rows = terminal.rows().unwrap_or(rect.h);
+    (cols, rows)
+}
+
+/// Render one pane into `rect` without resizing it (the mirror grid is
+/// server-authoritative). Returns its outer-viewport cursor, if shown.
+pub(super) fn paint_focused_pane<W: Write>(
+    out: &mut W,
+    rect: crate::layout::Rect,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
+    kernel: &AttachKernel,
+    focused: &ResourceId,
+    force_full: bool,
+) -> Option<(u16, u16)> {
+    let slot = panes.get_mut(focused)?;
+    let walk = published_replica(kernel, focused)?;
+    // The mirror grid size is server-authoritative (set only at the
+    // snapshot / resize-ack handler); the layout rect clips and positions
+    // the paint but never resizes the pane's libghostty Terminal.
+    let mirror = mirror_dims(walk.terminal, rect);
+    let _ = slot.renderer.render_at_letterboxed(
+        walk,
+        out,
+        (rect.x, rect.y),
+        (rect.w, rect.h),
+        mirror,
+        force_full,
+    );
+    slot.renderer.last_cursor()
+}
+
+/// The single end-of-frame cursor authority (ADR-0029): the only place that
+/// emits the frame's cursor placement and flushes. A known `cursor` is shown;
+/// otherwise it parks hidden at `fallback_origin` or the viewport origin.
+/// The flush is load-bearing: a CUP alone sits in line-buffered stdout.
+pub(super) fn end_of_frame_cursor<W: Write>(
+    out: &mut W,
+    cursor: Option<(u16, u16)>,
+    fallback_origin: Option<(u16, u16)>,
+) -> std::io::Result<()> {
+    if let Some((row, col)) = cursor {
+        tracing::trace!(row, col, "end_of_frame_cursor: restore focused cursor");
+        super::render::write_cup(out, row, col)?;
+        out.write_all(b"\x1b[?25h")?;
+    } else {
+        // No authoritative cursor: park at the focused pane's origin (or the
+        // viewport origin) and hide. `fallback_origin` is `(x, y)`.
+        let (x, y) = fallback_origin.unwrap_or((0, 0));
+        tracing::trace!(x, y, "end_of_frame_cursor: no cursor, parking hidden");
+        super::render::write_cup(out, y, x)?;
+        out.write_all(b"\x1b[?25l")?;
+    }
+    out.flush()
+}
+
+/// Clear the viewport and paint everything from scratch, as one write and
+/// one flush ([`FrameBlock`]) so the stdout queue delivers or drops it whole.
+pub(super) fn paint_full_frame<W: super::RenderSink>(
+    out: &mut W,
+    layout_state: &LayoutState,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
+    kernel: &AttachKernel,
+    focused_resource: Option<&ResourceId>,
+    chrome: &mut ChromeCtx<'_>,
+) -> StatusBarPaint {
+    let mut block = FrameBlock::begin(out);
+    let (painted, composed) = paint_full_frame_into(
+        &mut block,
+        layout_state,
+        panes,
+        kernel,
+        focused_resource,
+        chrome,
+        true,
+    );
+    seal_frame(block, painted, composed, chrome.status_bar.as_deref_mut())
+}
+
+/// Re-render every visible pane and the chrome without `ED2`
+/// (`RepaintLevel::Panes`). Safe only at unchanged tiles, which the caller
+/// proves; fronts are invalidated and panes forced.
+pub(super) fn paint_panes_in_place<W: super::RenderSink>(
+    out: &mut W,
+    layout_state: &LayoutState,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
+    kernel: &AttachKernel,
+    focused_resource: Option<&ResourceId>,
+    chrome: &mut ChromeCtx<'_>,
+) -> StatusBarPaint {
+    let mut block = FrameBlock::begin(out);
+    let (painted, composed) = paint_full_frame_into(
+        &mut block,
+        layout_state,
+        panes,
+        kernel,
+        focused_resource,
+        chrome,
+        false,
+    );
+    seal_frame(block, painted, composed, chrome.status_bar.as_deref_mut())
+}
+
+/// Repaint each visible pane's dirty rows in place, then the chrome
+/// (`RepaintLevel::Rows`): no `ED2`, no forced paint, so clean rows emit
+/// nothing. For a local viewport scroll at unchanged tiles. The focused pane
+/// paints last so the chrome tail restores its cursor.
+pub(super) fn paint_pane_rows_in_place<W: super::RenderSink>(
+    out: &mut W,
+    layout_state: &LayoutState,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
+    kernel: &AttachKernel,
+    focused_resource: Option<&ResourceId>,
+    chrome: &mut ChromeCtx<'_>,
+) -> StatusBarPaint {
+    let mut block = FrameBlock::begin(out);
+    let viewport_dims = chrome.viewport;
+    let _paint = tracing::debug_span!(
+        "paint_pane_rows_in_place",
+        cols = viewport_dims.0,
+        rows = viewport_dims.1,
+    )
+    .entered();
+    let ContentLayout { rect: content, .. } = chrome.content_layout();
+    let multi = super::multi_pane::compute_layout_in(layout_state, content, viewport_dims);
+    let mut paint =
+        |id: &ResourceId, rect: crate::layout::Rect, panes: &mut HashMap<ResourceId, PaneSlot>| {
+            if let (Some(slot), Some(walk)) = (panes.get_mut(id), published_replica(kernel, id)) {
+                let mirror = mirror_dims(walk.terminal, rect);
+                let _ = slot.renderer.render_at_letterboxed(
+                    walk,
+                    &mut block,
+                    (rect.x, rect.y),
+                    (rect.w, rect.h),
+                    mirror,
+                    false,
+                );
+            }
+        };
+    for (id, rect) in &multi.rects {
+        if Some(id) != focused_resource {
+            paint(id, *rect, panes);
+        }
+    }
+    if let Some(fid) = focused_resource {
+        let rect = multi
+            .rects
+            .get(fid)
+            .copied()
+            .unwrap_or_else(|| super::floating::untiled_rect(panes, fid, content));
+        paint(fid, rect, panes);
+    }
+    let (painted, composed) = paint_chrome_in_place_into(
+        &mut block,
+        layout_state,
+        panes,
+        kernel,
+        focused_resource,
+        chrome,
+    );
+    if composed && block.end().is_ok() {
+        return painted;
+    }
+    // The panes recorded cells the terminal may never have received, and
+    // their dirty bits are already cleared.
+    super::pane_state::invalidate_all_fronts(panes);
+    if let Some(painter) = chrome.status_bar.as_deref_mut() {
+        painter.invalidate();
+    }
+    StatusBarPaint::NotPublished
+}
+
+mod empty_state;
+pub(super) use empty_state::{
+    empty_session_lines, paint_empty_session, unarranged_lines, write_centered_lines,
+};
+
+/// Force the sidebar strip to re-emit after a clear wiped its columns, its
+/// rule teed at `junctions`. A no-op without a reservation or a painter.
+fn repaint_sidebar_strip<W: Write>(out: &mut W, chrome: &mut ChromeCtx<'_>, junctions: &[u16]) {
+    let (Some(res), Some(painter)) = (chrome.sidebar, chrome.sidebar_painter.as_deref_mut()) else {
+        return;
+    };
+    painter.invalidate();
+    painter.set_rule(sidebar_rule(res.edge));
+    painter.set_junctions(junctions);
+    let _ = painter.paint(out, sidebar_rect(chrome.viewport, res));
+}
+
+/// Ship a composited frame and reconcile the bar cache with what reached
+/// the sink: a failed frame reports `NotPublished` and invalidates the
+/// painter. Panes here paint forced, so no cell front needs forgetting.
+fn seal_frame<W: Write>(
+    block: FrameBlock<'_, W>,
+    painted: StatusBarPaint,
+    composed: bool,
+    status_bar: Option<&mut StatusBarPainter>,
+) -> StatusBarPaint {
+    if composed && block.end().is_ok() {
+        return painted;
+    }
+    if !matches!(painted, StatusBarPaint::NotPublished)
+        && let Some(painter) = status_bar
+    {
+        painter.invalidate();
+    }
+    StatusBarPaint::NotPublished
+}
+
+/// [`paint_full_frame`]'s body, emitting into the frame block (`clear` is
+/// the `ED2`). Returns the bar outcome and whether the cursor tail landed.
+fn paint_full_frame_into<W: Write>(
+    out: &mut W,
+    layout_state: &LayoutState,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
+    kernel: &AttachKernel,
+    focused_resource: Option<&ResourceId>,
+    chrome: &mut ChromeCtx<'_>,
+    clear: bool,
+) -> (StatusBarPaint, bool) {
+    let viewport_dims = chrome.viewport;
+    // The whole-repaint duration: the client-side render-lag signal.
+    let _paint = tracing::debug_span!(
+        "paint_full_frame",
+        cols = viewport_dims.0,
+        rows = viewport_dims.1,
+        panes = panes.len(),
+        clear = clear,
+    )
+    .entered();
+    let _timed = phux_client::perf::PAINT_FULL.timer();
+    let ContentLayout {
+        rect: content,
+        rail,
+    } = chrome.content_layout();
+    let multi = super::multi_pane::compute_layout_in(layout_state, content, viewport_dims);
+    // ED2 + home, inside the frame block's transaction — skipped by the
+    // in-place path, whose panes already cover every content cell.
+    if clear {
+        let _ = out.write_all(b"\x1b[2J\x1b[H");
+    }
+    // Forget every front: on the clear path so unchanged content is re-emitted,
+    // on the in-place path so a pane that was hidden (its cells overwritten by
+    // another pane) repaints from scratch.
+    super::pane_state::invalidate_all_fronts(panes);
+    // A pane this view no longer shows takes its kitty images with it.
+    super::pane_state::release_hidden_kitty(out, panes, |id| {
+        multi.rects.contains_key(id) || Some(id) == focused_resource
+    });
+    // Non-focused panes first, then chrome; the focused pane paints LAST so
+    // it owns final cursor placement.
+    for (id, rect) in &multi.rects {
+        if Some(id) == focused_resource {
+            continue;
+        }
+        if let (Some(slot), Some(walk)) = (panes.get_mut(id), published_replica(kernel, id)) {
+            // Force a full redraw: the ED2 above cleared the screen, so
+            // unchanged pane content must still be emitted.
+            let mirror = mirror_dims(walk.terminal, *rect);
+            let _ = slot.renderer.render_at_letterboxed(
+                walk,
+                out,
+                (rect.x, rect.y),
+                (rect.w, rect.h),
+                mirror,
+                true,
+            );
+        }
+    }
+    let leaves = super::surface_leaf::SurfaceLeaves::new(kernel, chrome.leaves);
+    super::surface_leaf::paint_placeholders(out, &multi.rects, leaves);
+    let panes_ref = &*panes;
+    let _ = crate::render::chrome::dividers::render_dividers(
+        out,
+        &multi,
+        content,
+        rail,
+        focused_resource,
+        chrome.theme,
+        |id| super::pane_state::pane_label(kernel, panes_ref, id),
+    );
+    // The ED2 cleared the strip, so force it to re-emit.
+    let junctions = chrome.sidebar.map_or_else(Vec::new, |res| {
+        sidebar_junctions(rail, content, res.edge, &multi)
+    });
+    repaint_sidebar_strip(out, chrome, &junctions);
+    // The ED2 above cleared the bar row, so force a re-emit even if the
+    // bar's content is byte-identical to the previous frame.
+    let status_bar_painted = paint_bar_after_pane(out, chrome, None, None, true);
+    // ADR-0147: the floating overlay's border, over the panes it covers.
+    if let Some(title) = focused_resource
+        .and_then(|fid| panes.get(fid))
+        .and_then(|slot| slot.floating.as_deref())
+    {
+        let frame = super::floating::floating_box(content);
+        let _ = super::floating::paint_floating_frame(out, frame, title, chrome.theme);
+    }
+    // The focused render may be a no-op, so always end with an explicit
+    // cursor placement rather than wherever the bar left it. A focused pane
+    // with no tile is the floating overlay (its box) or the bootstrap pane.
+    let untiled = |fid: &ResourceId, panes: &HashMap<ResourceId, PaneSlot>| {
+        multi
+            .rects
+            .get(fid)
+            .copied()
+            .unwrap_or_else(|| super::floating::untiled_rect(panes, fid, content))
+    };
+    let focused_rect = focused_resource.map(|fid| untiled(fid, panes));
+    let final_cursor = focused_resource
+        .zip(focused_rect)
+        .and_then(|(fid, rect)| paint_focused_pane(out, rect, panes, kernel, fid, true));
+    // The focused pane's Rect origin is the fallback cursor parking spot when
+    // `final_cursor` is None. All cursor placement + the flush
+    // is owned by the one composite authority.
+    let fallback_origin = focused_resource
+        .filter(|fid| {
+            multi.rects.contains_key(*fid)
+                || panes.get(*fid).is_some_and(|slot| slot.floating.is_some())
+        })
+        .and(focused_rect)
+        .map(|r| (r.x, r.y));
+    let cursor_published = end_of_frame_cursor(out, final_cursor, fallback_origin).is_ok();
+    (status_bar_painted, cursor_published)
+}
+
+/// Repaint only the chrome in place (`RepaintLevel::Chrome`), so agent-state
+/// changes do not strobe the screen. One frame block, ending in its own
+/// [`end_of_frame_cursor`] since the strip moved the host cursor.
+pub(super) fn paint_chrome_in_place<W: super::RenderSink>(
+    out: &mut W,
+    layout_state: &LayoutState,
+    panes: &HashMap<ResourceId, PaneSlot>,
+    kernel: &AttachKernel,
+    focused_resource: Option<&ResourceId>,
+    chrome: &mut ChromeCtx<'_>,
+) -> StatusBarPaint {
+    let mut block = FrameBlock::begin(out);
+    let (painted, composed) = paint_chrome_in_place_into(
+        &mut block,
+        layout_state,
+        panes,
+        kernel,
+        focused_resource,
+        chrome,
+    );
+    seal_frame(block, painted, composed, chrome.status_bar.as_deref_mut())
+}
+
+/// [`paint_chrome_in_place`]'s body, emitting into the frame block.
+fn paint_chrome_in_place_into<W: Write>(
+    out: &mut W,
+    layout_state: &LayoutState,
+    panes: &HashMap<ResourceId, PaneSlot>,
+    kernel: &AttachKernel,
+    focused_resource: Option<&ResourceId>,
+    chrome: &mut ChromeCtx<'_>,
+) -> (StatusBarPaint, bool) {
+    let viewport_dims = chrome.viewport;
+    let _paint = tracing::debug_span!(
+        "paint_chrome_in_place",
+        cols = viewport_dims.0,
+        rows = viewport_dims.1,
+    )
+    .entered();
+    let _timed = phux_client::perf::PAINT_CHROME.timer();
+    let ContentLayout {
+        rect: content,
+        rail,
+    } = chrome.content_layout();
+    let multi = super::multi_pane::compute_layout_in(layout_state, content, viewport_dims);
+    // The focused pane's LAST authoritative cursor — read, never re-derived by
+    // a render. `None` (hidden / not yet rendered) falls back to the pane's
+    // rect origin, hidden, exactly as every other paint tail does.
+    let restore = focused_resource
+        .and_then(|fid| panes.get(fid))
+        .and_then(|slot| slot.renderer.last_cursor());
+    let floating = focused_resource
+        .and_then(|fid| panes.get(fid))
+        .is_some_and(|slot| slot.floating.is_some());
+    let fallback = focused_resource
+        .and_then(|fid| {
+            multi
+                .rects
+                .get(fid)
+                .copied()
+                .or_else(|| floating.then(|| super::floating::floating_box(content).inner))
+        })
+        .map(|r| (r.x, r.y));
+    // Pane titles are chrome, so the grid repaints here; the skip-cell
+    // carve-out keeps it off pane interiors. Under the floating overlay
+    // (ADR-0147) the grid stays frozen: its rules would cross the box.
+    if !floating {
+        let _ = crate::render::chrome::dividers::render_dividers(
+            out,
+            &multi,
+            content,
+            rail,
+            focused_resource,
+            chrome.theme,
+            |id| super::pane_state::pane_label(kernel, panes, id),
+        );
+    }
+    if let (Some(res), Some(painter)) = (chrome.sidebar, chrome.sidebar_painter.as_deref_mut()) {
+        painter.set_rule(sidebar_rule(res.edge));
+        painter.set_junctions(&sidebar_junctions(rail, content, res.edge, &multi));
+        let _ = painter.paint(out, sidebar_rect(viewport_dims, res));
+    }
+    // `bar_row_clobbered = false`: nothing cleared the bar row, so the
+    // painter's cache decides. Skipped entirely when the config has no bar.
+    let (sidebar, session_name) = (chrome.sidebar, chrome.session_name);
+    let status_bar_painted =
+        chrome
+            .status_bar
+            .as_deref_mut()
+            .map_or(StatusBarPaint::NotPublished, |painter| {
+                paint_bar_row(
+                    painter,
+                    out,
+                    viewport_dims,
+                    sidebar,
+                    session_name,
+                    false,
+                    ComposePolicy::Always,
+                )
+            });
+    // The cursor tail runs on every path, bar or no bar.
+    let cursor_placed = end_of_frame_cursor(out, restore, fallback).is_ok();
+    (status_bar_painted, cursor_placed)
+}
+
+/// Restore the status row after a pane render, then place the cursor via
+/// [`end_of_frame_cursor`]. Pass `fallback_origin = None` where a later pane
+/// render owns the cursor; `bar_row_clobbered` (only after a full-frame
+/// `ED2`) bypasses the painter's cache.
+pub(super) fn paint_bar_after_pane<W: Write>(
+    out: &mut W,
+    chrome: &mut ChromeCtx<'_>,
+    restore_cursor: Option<(u16, u16)>,
+    fallback_origin: Option<(u16, u16)>,
+    bar_row_clobbered: bool,
+) -> StatusBarPaint {
+    let (viewport_dims, sidebar, session_name) =
+        (chrome.viewport, chrome.sidebar, chrome.session_name);
+    let Some(painter) = chrome.status_bar.as_deref_mut() else {
+        // With no bar there is no cursor tail below, so publish the pane's
+        // bytes here.
+        let _ = out.flush();
+        return StatusBarPaint::NotPublished;
+    };
+    let status_bar_painted = paint_bar_row(
+        painter,
+        out,
+        viewport_dims,
+        sidebar,
+        session_name,
+        bar_row_clobbered,
+        ComposePolicy::Always,
+    );
+    let cursor_flushed = end_of_frame_cursor(out, restore_cursor, fallback_origin).is_ok();
+    if cursor_flushed {
+        status_bar_painted
+    } else {
+        if !matches!(status_bar_painted, StatusBarPaint::NotPublished) {
+            painter.invalidate();
+        }
+        StatusBarPaint::NotPublished
+    }
+}
+
+/// Emit the status-bar row and nothing else: the cursor tail is the
+/// caller's (see [`paint_bar_after_pane`] for `bar_row_clobbered`).
+pub(super) fn paint_bar_row<W: Write>(
+    painter: &mut StatusBarPainter,
+    out: &mut W,
+    viewport_dims: (u16, u16),
+    sidebar: Option<SidebarReservation>,
+    session_name: &str,
+    bar_row_clobbered: bool,
+    compose: ComposePolicy,
+) -> StatusBarPaint {
+    let inset = bar_inset(viewport_dims, sidebar);
+    if viewport_dims.1 == 0 || inset.span(viewport_dims.0).1 == 0 {
+        return StatusBarPaint::NotPublished;
+    }
+    if bar_row_clobbered {
+        painter.invalidate();
+    }
+    match painter.paint_outcome(
+        out,
+        // Yield the sidebar's columns so the window tabs start
+        // beside the strip, not underneath it.
+        inset,
+        viewport_dims.0,
+        viewport_dims.1,
+        // The window list is owned by the painter and injected inside
+        // `paint`; this context carries none.
+        &make_context(session_name, SystemTime::now()),
+        compose,
+    ) {
+        Ok(true) => StatusBarPaint::Published {
+            cols: inset.span(viewport_dims.0).1,
+        },
+        Ok(false) | Err(_) => StatusBarPaint::NotPublished,
+    }
+}
+
+/// Close a composited frame with its chrome tail: the bar row, the cursor,
+/// then the block's single flush. A failed close invalidates the bar cache.
+pub(super) fn close_frame_with_chrome<W: Write>(
+    block: FrameBlock<'_, W>,
+    chrome: &mut ChromeCtx<'_>,
+    cursor: Option<(u16, u16)>,
+    fallback_origin: Option<(u16, u16)>,
+    compose: ComposePolicy,
+) -> StatusBarPaint {
+    let bar = BarTail {
+        status_bar: chrome.status_bar.as_deref_mut(),
+        viewport: chrome.viewport,
+        sidebar: chrome.sidebar,
+        session_name: chrome.session_name,
+    };
+    close_frame_reporting(block, bar, cursor, fallback_origin, compose).0
+}
+
+/// The slice of a frame's chrome its closing bar row paints from: the part
+/// of [`ChromeCtx`] a pane-output frame (which has no strip painter or
+/// theme) can also supply.
+pub(super) struct BarTail<'a> {
+    /// The status-bar painter, or `None` for a bar-less config.
+    pub(super) status_bar: Option<&'a mut StatusBarPainter>,
+    /// The outer terminal viewport, `(cols, rows)`.
+    pub(super) viewport: (u16, u16),
+    /// This frame's sidebar reservation; the bar yields its columns.
+    pub(super) sidebar: Option<SidebarReservation>,
+    /// The attached session's name, as the bar renders it.
+    pub(super) session_name: &'a str,
+}
+
+/// [`close_frame_with_chrome`], also reporting whether the frame shipped (a
+/// failed frame's pane fronts must be forgotten).
+pub(super) fn close_frame_reporting<W: Write>(
+    mut block: FrameBlock<'_, W>,
+    bar: BarTail<'_>,
+    cursor: Option<(u16, u16)>,
+    fallback_origin: Option<(u16, u16)>,
+    compose: ComposePolicy,
+) -> (StatusBarPaint, bool) {
+    let BarTail {
+        mut status_bar,
+        viewport: viewport_dims,
+        sidebar,
+        session_name,
+    } = bar;
+    let painted = status_bar
+        .as_deref_mut()
+        .map_or(StatusBarPaint::NotPublished, |painter| {
+            // `bar_row_clobbered = false`: pane rendering is confined to the
+            // rows above the reserved bar row, so the painter's own content
+            // cache decides whether anything is owed.
+            paint_bar_row(
+                painter,
+                &mut block,
+                viewport_dims,
+                sidebar,
+                session_name,
+                false,
+                compose,
+            )
+        });
+    let cursor_placed = if block.opened() {
+        end_of_frame_cursor(&mut block, cursor, fallback_origin).is_ok()
+    } else {
+        true
+    };
+    if cursor_placed && block.end().is_ok() {
+        return (painted, true);
+    }
+    if !matches!(painted, StatusBarPaint::NotPublished)
+        && let Some(painter) = status_bar
+    {
+        painter.invalidate();
+    }
+    (StatusBarPaint::NotPublished, false)
+}
+
+/// Which edge a reserved sidebar strip docks to (mirrors
+/// `phux_config::SidebarPosition`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SidebarEdge {
+    /// Dock on the left; panes tile to its right.
+    Left,
+    /// Dock on the right; panes tile to its left.
+    Right,
+}
+
+/// The sidebar's reservation: `width` columns on `edge`. Built once per frame
+/// and threaded to every layout site so they agree on the inset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct SidebarReservation {
+    /// The edge the strip docks to.
+    pub edge: SidebarEdge,
+    /// Strip width in columns.
+    pub width: u16,
+}
+
+/// Fold the sidebar's on/off state and geometry into the per-frame
+/// reservation: `None` below `width + min_pane_cols`; automatic width (`0`)
+/// is a quarter of the viewport clamped to `28..=40`.
+pub(super) const fn sidebar_reservation(
+    outer_cols: u16,
+    enabled: bool,
+    width: u16,
+    edge: SidebarEdge,
+    min_pane_cols: u16,
+) -> Option<SidebarReservation> {
+    // Automatic sizing follows the viewport, never changing titles or counts:
+    // background activity must not reflow the terminal under someone's hands.
+    let width = if width == 0 {
+        let preferred = outer_cols / 4;
+        if preferred < 28 {
+            28
+        } else if preferred > 40 {
+            40
+        } else {
+            preferred
+        }
+    } else {
+        width
+    };
+    if enabled && width <= outer_cols && outer_cols - width >= min_pane_cols {
+        Some(SidebarReservation { edge, width })
+    } else {
+        None
+    }
+}
+
+/// The residual content `Rect` panes tile into: [`content_layout`]'s rect.
+pub(super) fn content_rect(
+    outer: (u16, u16),
+    bar: Option<Position>,
+    sidebar: Option<SidebarReservation>,
+) -> crate::layout::Rect {
+    content_layout(outer, bar, sidebar).rect
+}
+
+/// The pane area AND the pane-grid rail row above it. The rail is REPORTED,
+/// not inferred from `rect.y`: on a two-row viewport with a top bar `rect.y`
+/// is 1 but row 0 is the bar's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ContentLayout {
+    /// The rectangle panes tile into.
+    pub rect: crate::layout::Rect,
+    /// The row reserved above `rect` for the pane-grid rail, or `None`
+    /// when the viewport was too short to spare one.
+    pub rail: Option<u16>,
+}
+
+/// Split `outer` into the status-bar row, the pane-grid rail, the
+/// sidebar strip, and the pane area that survives them.
+pub(super) fn content_layout(
+    outer: (u16, u16),
+    bar: Option<Position>,
+    sidebar: Option<SidebarReservation>,
+) -> ContentLayout {
+    let (cols, rows) = outer;
+    let h = if bar.is_some() {
+        rows.saturating_sub(1)
+    } else {
+        rows
+    };
+    // A top-docked bar pushes the content down one row; the
+    // bottom (default) reservation keeps the pre-knob `y: 0` origin.
+    let y = match bar {
+        Some(Position::Top) => 1,
+        Some(Position::Bottom) | None => 0,
+    };
+    // One row above the panes for the pane-grid rail (the top rule holding
+    // top-row titles), unconditional so a split never moves the panes; yielded
+    // on a viewport too short to spare it.
+    let (y, h, rail) = if h >= 2 {
+        (y + 1, h - 1, Some(y))
+    } else {
+        (y, h, None)
+    };
+    let rect = sidebar.map_or(
+        crate::layout::Rect {
+            x: 0,
+            y,
+            w: cols,
+            h,
+        },
+        |res| {
+            let width = res.width.min(cols);
+            let w = cols - width;
+            let x = match res.edge {
+                SidebarEdge::Left => width,
+                SidebarEdge::Right => 0,
+            };
+            crate::layout::Rect { x, y, w, h }
+        },
+    );
+    ContentLayout { rect, rail }
+}
+
+/// Strip rows where the pane grid's rules meet the sidebar's separator (the
+/// rail and every divider reaching the strip), which the strip tees.
+pub(super) fn sidebar_junctions(
+    rail: Option<u16>,
+    content: crate::layout::Rect,
+    edge: SidebarEdge,
+    multi: &crate::multi_pane::PaneLayout,
+) -> Vec<u16> {
+    let edge_x = match edge {
+        SidebarEdge::Left => content.x,
+        SidebarEdge::Right => (content.x + content.w).saturating_sub(1),
+    };
+    let dividers = multi
+        .dividers
+        .iter()
+        .filter(|cell| cell.x == edge_x && cell.ch == '─')
+        .map(|cell| cell.y);
+    let mut rows: Vec<u16> = rail.into_iter().chain(dividers).collect();
+    rows.sort_unstable();
+    rows.dedup();
+    rows
+}
+
+/// The strip's separator rule faces the panes: trailing on a left dock,
+/// leading on a right dock.
+pub(super) const fn sidebar_rule(edge: SidebarEdge) -> crate::render::chrome::sidebar::SidebarRule {
+    use crate::render::chrome::sidebar::SidebarRule;
+    match edge {
+        SidebarEdge::Left => SidebarRule::Trailing,
+        SidebarEdge::Right => SidebarRule::Leading,
+    }
+}
+
+/// The sidebar strip's `Rect`: its columns over the FULL height, bar row
+/// included (the bar yields via [`bar_inset`]). Strip, bar, and content tile
+/// the viewport without overlap, which mouse routing relies on.
+pub(super) const fn sidebar_rect(
+    outer: (u16, u16),
+    res: SidebarReservation,
+) -> crate::layout::Rect {
+    let (cols, rows) = outer;
+    // `Ord::min` is not const for u16.
+    let width = if res.width < cols { res.width } else { cols };
+    let x = match res.edge {
+        SidebarEdge::Left => 0,
+        SidebarEdge::Right => cols - width,
+    };
+    crate::layout::Rect {
+        x,
+        y: 0,
+        w: width,
+        h: rows,
+    }
+}
+
+/// Columns the status bar yields to a docked sidebar (its span is the content
+/// rect's horizontal extent); `BarInset::NONE` without one.
+pub(super) fn bar_inset(outer: (u16, u16), sidebar: Option<SidebarReservation>) -> BarInset {
+    sidebar.map_or(BarInset::NONE, |res| {
+        let width = res.width.min(outer.0);
+        match res.edge {
+            SidebarEdge::Left => BarInset {
+                left: width,
+                right: 0,
+            },
+            SidebarEdge::Right => BarInset {
+                left: 0,
+                right: width,
+            },
+        }
+    })
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
+mod kitty_tests;
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
+mod tests {
+    use super::*;
+    use crate::attach::pane_state::published_test_state;
+    use crate::attach::render::SYNC_OUTPUT_END;
+    use crate::layout::Rect;
+    use crate::layout::{LayoutNode, SplitDir};
+    use crate::render::ChromeBreakpoints;
+    use crate::render::chrome::sidebar::SidebarPainter;
+    use crate::render::chrome::status_bar::widgets::{StatusBar, WidgetRegistry, WindowInfo};
+    use crate::render::theme::Theme;
+    use phux_config::{StatusCfg, Widget};
+
+    const LEFT20: SidebarReservation = SidebarReservation {
+        edge: SidebarEdge::Left,
+        width: 20,
+    };
+    const RIGHT20: SidebarReservation = SidebarReservation {
+        edge: SidebarEdge::Right,
+        width: 20,
+    };
+
+    fn rect(x: u16, y: u16, w: u16, h: u16) -> Rect {
+        Rect { x, y, w, h }
+    }
+
+    fn leaf_layout(id: &ResourceId) -> LayoutState {
+        LayoutState {
+            tree: Some(LayoutNode::Leaf(id.clone())),
+            focus: Some(id.clone()),
+        }
+    }
+
+    fn split_layout(left: &ResourceId, right: &ResourceId) -> LayoutState {
+        LayoutState {
+            tree: Some(LayoutNode::Split {
+                dir: SplitDir::Horizontal,
+                ratio: 0.5,
+                left: Box::new(LayoutNode::Leaf(left.clone())),
+                right: Box::new(LayoutNode::Leaf(right.clone())),
+            }),
+            focus: Some(left.clone()),
+        }
+    }
+
+    fn build_painter() -> StatusBarPainter {
+        let cfg = StatusCfg {
+            left: vec![Widget::Bare("session-name".into())],
+            ..Default::default()
+        };
+        let bar = StatusBar::build(&cfg, &WidgetRegistry::with_builtins()).expect("bar build");
+        StatusBarPainter::new(bar, Position::Bottom)
+    }
+
+    /// A left-docked sidebar painter primed with one window.
+    fn build_sidebar() -> SidebarPainter {
+        let mut painter = SidebarPainter::new(Theme::default());
+        painter.set_windows(vec![WindowInfo {
+            name: "editor".to_owned(),
+            active: true,
+            ..WindowInfo::default()
+        }]);
+        painter
+    }
+
+    /// Members running with no view are counted, with the action that shows
+    /// them again (R15).
+    #[test]
+    fn unarranged_state_counts_running_members_and_names_the_reopen_action() {
+        assert_eq!(
+            unarranged_lines(2, Some("C-a R")),
+            [
+                "2 running, not arranged".to_owned(),
+                "Hidden panes keep their terminals running.".to_owned(),
+                "C-a R  reopen views".to_owned(),
+            ]
+        );
+        assert!(unarranged_lines(1, None)[2].contains("command palette"));
+    }
+
+    /// An unchanged layout tiles once however often it is read, and every
+    /// component of the key (tree, content rect, viewport) forces a retile.
+    #[test]
+    fn the_layout_cache_retiles_exactly_when_its_key_changes() {
+        let (id, other) = (ResourceId::local(1), ResourceId::local(2));
+        let content = rect(0, 0, 80, 23);
+        let mut cache = LayoutCache::default();
+        for _ in 0..16 {
+            assert_eq!(
+                cache
+                    .get(&leaf_layout(&id), content, (80, 24))
+                    .rects
+                    .get(&id),
+                Some(&content)
+            );
+        }
+        assert_eq!(cache.misses, 1);
+        let inset = rect(20, 0, 60, 23);
+        for (layout, content, viewport, misses) in [
+            (leaf_layout(&other), content, (80, 24), 2),
+            (leaf_layout(&other), inset, (80, 24), 3),
+            (leaf_layout(&other), inset, (100, 30), 4),
+            (leaf_layout(&other), inset, (100, 30), 4),
+        ] {
+            let got = cache
+                .get(&layout, content, viewport)
+                .rects
+                .get(&other)
+                .copied();
+            assert_eq!((cache.misses, got), (misses, Some(content)));
+        }
+    }
+
+    /// The strip yields rather than starving the panes: reserved only when
+    /// `width + min_pane_cols` fits; automatic width grows with the viewport
+    /// (28..=40); the leftover content, strip, and bar inset always tile.
+    #[test]
+    fn the_sidebar_reserves_only_what_the_panes_can_afford() {
+        let min = ChromeBreakpoints::DEFAULT.min_pane_cols;
+        let res = |cols, width, min| sidebar_reservation(cols, true, width, SidebarEdge::Left, min);
+        assert_eq!(res(59, 20, min), None);
+        assert_eq!(res(60, 20, min), Some(LEFT20));
+        assert!(
+            res(50, 10, min).is_some(),
+            "a narrower strip is affordable sooner"
+        );
+        assert_eq!(
+            res(55, 20, 30),
+            Some(LEFT20),
+            "a lowered floor keeps the strip"
+        );
+        assert_eq!(res(70, 20, 60), None, "a raised floor takes it away");
+        for cols in [0u16, 60, 200] {
+            assert_eq!(
+                sidebar_reservation(cols, false, 20, SidebarEdge::Left, min),
+                None
+            );
+        }
+        for cols in 0u16..=120 {
+            let sidebar = res(cols, 20, min);
+            let w = content_rect((cols, 24), Some(Position::Bottom), sidebar).w;
+            assert!(
+                if sidebar.is_some() {
+                    w >= min
+                } else {
+                    w == cols
+                },
+                "cols={cols}"
+            );
+        }
+        for edge in [SidebarEdge::Left, SidebarEdge::Right] {
+            for (cols, expected) in [
+                (67, None),
+                (68, Some(28)),
+                (80, Some(28)),
+                (120, Some(30)),
+                (144, Some(36)),
+                (160, Some(40)),
+                (240, Some(40)),
+            ] {
+                let res = sidebar_reservation(cols, true, 0, edge, 40);
+                assert_eq!(res.map(|r| r.width), expected, "cols={cols}");
+                if let Some(res) = res {
+                    let content = content_rect((cols, 24), Some(Position::Bottom), Some(res));
+                    assert!(content.w >= 40);
+                    assert_eq!(content.w + sidebar_rect((cols, 24), res).w, cols);
+                    assert_eq!(
+                        bar_inset((cols, 24), Some(res)).span(cols),
+                        (content.x, content.w)
+                    );
+                }
+            }
+            assert_eq!(
+                sidebar_reservation(200, true, 22, edge, 40).map(|r| r.width),
+                Some(22)
+            );
+            assert!(sidebar_reservation(u16::MAX, true, u16::MAX, edge, 40).is_none());
+        }
+    }
+
+    /// The content rect folds off the bar row (a top bar shifts the origin),
+    /// a rail row above the panes when there is a row to spare, and the
+    /// sidebar columns; the rail is REPORTED, since on a two-row viewport with
+    /// a top bar `rect.y - 1` is the bar's row.
+    #[test]
+    fn content_layout_folds_bar_rail_and_sidebar() {
+        let top = Some(Position::Top);
+        let bottom = Some(Position::Bottom);
+        for (outer, bar, sidebar, want, rail) in [
+            ((80, 24), None, None, rect(0, 1, 80, 23), Some(0)),
+            ((80, 24), bottom, None, rect(0, 1, 80, 22), Some(0)),
+            ((200, 50), bottom, None, rect(0, 1, 200, 48), Some(0)),
+            ((80, 24), top, None, rect(0, 2, 80, 22), Some(1)),
+            ((80, 24), top, Some(LEFT20), rect(20, 2, 60, 22), Some(1)),
+            ((80, 24), None, Some(LEFT20), rect(20, 1, 60, 23), Some(0)),
+            ((80, 24), bottom, Some(RIGHT20), rect(0, 1, 60, 22), Some(0)),
+            ((40, 2), top, None, rect(0, 1, 40, 1), None),
+            ((10, 2), bottom, None, rect(0, 0, 10, 1), None),
+            ((10, 1), None, None, rect(0, 0, 10, 1), None),
+            ((10, 1), bottom, None, rect(0, 0, 10, 0), None),
+            ((10, 1), top, None, rect(0, 1, 10, 0), None),
+        ] {
+            let layout = content_layout(outer, bar, sidebar);
+            assert_eq!(
+                (layout.rect, layout.rail),
+                (want, rail),
+                "{outer:?} {bar:?} {sidebar:?}"
+            );
+            assert_eq!(content_rect(outer, bar, sidebar), layout.rect);
+        }
+        let huge = SidebarReservation {
+            edge: SidebarEdge::Left,
+            width: 999,
+        };
+        let clamped = content_rect((80, 24), None, Some(huge));
+        assert_eq!(
+            (clamped.x, clamped.w),
+            (80, 0),
+            "an over-wide strip clamps, no underflow"
+        );
+        assert_eq!(bar_inset((80, 24), Some(huge)).span(80).1, 0);
+    }
+
+    /// The strip tees the rail and every horizontal divider that runs into
+    /// its side of the pane area; a divider stopping short of it does not.
+    #[test]
+    fn sidebar_junctions_tee_the_rail_and_dividers_reaching_the_strip() {
+        let (a, b, c) = (
+            ResourceId::local(1),
+            ResourceId::local(2),
+            ResourceId::local(3),
+        );
+        // Left column stacked (a over b), c beside it.
+        let layout = LayoutState {
+            tree: Some(LayoutNode::Split {
+                dir: SplitDir::Horizontal,
+                ratio: 0.5,
+                left: Box::new(LayoutNode::Split {
+                    dir: SplitDir::Vertical,
+                    ratio: 0.5,
+                    left: Box::new(LayoutNode::Leaf(a.clone())),
+                    right: Box::new(LayoutNode::Leaf(b)),
+                }),
+                right: Box::new(LayoutNode::Leaf(c)),
+            }),
+            focus: Some(a),
+        };
+        let viewport = (80, 24);
+        for (res, reaches) in [(LEFT20, true), (RIGHT20, false)] {
+            let ContentLayout { rect, rail } = content_layout(viewport, None, Some(res));
+            let multi = crate::multi_pane::compute_layout_in(&layout, rect, viewport);
+            let rows = sidebar_junctions(rail, rect, res.edge, &multi);
+            let divider_row = multi
+                .dividers
+                .iter()
+                .find(|cell| cell.x == rect.x && cell.ch == '─')
+                .map(|cell| cell.y)
+                .expect("the left column's divider");
+            let want = if reaches {
+                vec![0, divider_row]
+            } else {
+                vec![0]
+            };
+            assert_eq!(rows, want, "{:?}", res.edge);
+        }
+    }
+
+    /// The strip is full height at its edge; the bar yields exactly its
+    /// columns, so `bar_inset`'s span is the content rect's horizontal extent.
+    #[test]
+    fn the_strip_is_full_height_and_the_bar_yields_its_columns() {
+        assert_eq!(sidebar_rect((80, 24), LEFT20), rect(0, 0, 20, 24));
+        assert_eq!(sidebar_rect((80, 24), RIGHT20), rect(60, 0, 20, 24));
+        assert_eq!(bar_inset((80, 24), None), BarInset::NONE);
+        assert_eq!(
+            bar_inset((80, 24), Some(LEFT20)),
+            BarInset { left: 20, right: 0 }
+        );
+        assert_eq!(
+            bar_inset((80, 24), Some(RIGHT20)),
+            BarInset { left: 0, right: 20 }
+        );
+        for res in [LEFT20, RIGHT20] {
+            let content = content_rect((80, 24), Some(Position::Bottom), Some(res));
+            assert_eq!(
+                bar_inset((80, 24), Some(res)).span(80),
+                (content.x, content.w)
+            );
+        }
+    }
+
+    /// ADR-0029: the composite cursor emitter's three-way fallback.
+    #[test]
+    fn end_of_frame_cursor_resolves_all_three_cases() {
+        for (cursor, fallback, want) in [
+            (Some((2, 4)), None, "\x1b[3;5H\x1b[?25h"),
+            (None, Some((3, 5)), "\x1b[6;4H\x1b[?25l"),
+            (None, None, "\x1b[1;1H\x1b[?25l"),
+        ] {
+            let mut out = Vec::new();
+            end_of_frame_cursor(&mut out, cursor, fallback).expect("write");
+            assert_eq!(String::from_utf8(out).unwrap(), want);
+        }
+    }
+
+    /// Paint a full frame of `layout` over published panes into `out`.
+    fn full_frame<W: Write>(
+        out: &mut W,
+        layout: &LayoutState,
+        entries: &[(&ResourceId, u16, u16, &[u8])],
+        viewport: (u16, u16),
+        bar: Option<&mut StatusBarPainter>,
+        sidebar: Option<(SidebarReservation, &mut SidebarPainter)>,
+    ) -> StatusBarPaint {
+        let (kernel, _, mut panes) = published_test_state(entries);
+        let (res, strip) = sidebar.map_or((None, None), |(res, strip)| (Some(res), Some(strip)));
+        let mut chrome = ChromeCtx {
+            sidebar: res,
+            status_bar: bar,
+            sidebar_painter: strip,
+            ..ChromeCtx::bare(viewport, "demo")
+        };
+        paint_full_frame(
+            out,
+            layout,
+            &mut panes,
+            &kernel,
+            layout.focus.as_ref(),
+            &mut chrome,
+        )
+    }
+
+    /// A full frame composites both panes and the divider inside one ED2
+    /// transaction, shipped as one write and one flush, ending with a cursor.
+    #[test]
+    fn a_full_frame_is_one_synchronized_chunk() {
+        let (left, right) = (ResourceId::local(1), ResourceId::local(2));
+        let layout = split_layout(&left, &right);
+        let entries: [(&ResourceId, u16, u16, &[u8]); 2] =
+            [(&left, 80, 24, b"hello\r\n"), (&right, 80, 24, b"")];
+
+        let mut out: Vec<u8> = Vec::new();
+        full_frame(&mut out, &layout, &entries, (80, 24), None, None);
+        let s = String::from_utf8_lossy(&out);
+        assert!(s.starts_with("\x1b[?2026h\x1b[?25l\x1b[2J\x1b[H"), "{s:?}");
+        assert!(s.ends_with("\x1b[?2026l"), "{s:?}");
+        assert!(
+            s.contains(";41H") || s.contains(";40H"),
+            "divider CUP; {s:?}"
+        );
+        assert!(s.contains("\x1b[?25h") || s.contains("\x1b[?25l"));
+
+        let mut bar = build_painter();
+        let mut strip = build_sidebar();
+        let mut sink = ChunkCountingSink::default();
+        let outcome = full_frame(
+            &mut sink,
+            &layout,
+            &entries,
+            (80, 24),
+            Some(&mut bar),
+            Some((LEFT20, &mut strip)),
+        );
+        assert_ne!(outcome, StatusBarPaint::NotPublished);
+        assert_eq!((sink.writes, sink.flushes), (1, 1));
+        let s = String::from_utf8_lossy(&sink.bytes);
+        assert!(
+            s.starts_with("\x1b[?2026h") && s.ends_with("\x1b[?2026l"),
+            "{s:?}"
+        );
+        assert_eq!(
+            s.matches("\x1b[?2026h").count(),
+            1,
+            "nested guards do not reopen"
+        );
+    }
+
+    /// Fails the frame at its tail: the write carrying `?2026l`, or the flush
+    /// after it.
+    struct TailFailSink {
+        fail_sync_end: bool,
+        fail_final_flush: bool,
+        sync_end_seen: bool,
+    }
+
+    impl Write for TailFailSink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if buf.ends_with(SYNC_OUTPUT_END) {
+                self.sync_end_seen = true;
+                if self.fail_sync_end {
+                    return Err(std::io::Error::other("sync end failed"));
+                }
+            }
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            if self.fail_final_flush && self.sync_end_seen {
+                return Err(std::io::Error::other("final flush failed"));
+            }
+            Ok(())
+        }
+    }
+
+    /// A frame whose terminator or final flush failed never publishes the bar.
+    #[test]
+    fn a_failed_frame_tail_does_not_publish_the_bar() {
+        let id = ResourceId::local(1);
+        for (fail_sync_end, fail_final_flush) in [(true, false), (false, true)] {
+            let mut sink = TailFailSink {
+                fail_sync_end,
+                fail_final_flush,
+                sync_end_seen: false,
+            };
+            let mut bar = build_painter();
+            let outcome = full_frame(
+                &mut sink,
+                &leaf_layout(&id),
+                &[(&id, 80, 24, b"")],
+                (80, 24),
+                Some(&mut bar),
+                None,
+            );
+            assert_eq!(outcome, StatusBarPaint::NotPublished);
+        }
+    }
+
+    /// Counts sink-visible writes and flushes (the stdout queue's chunks).
+    #[derive(Default)]
+    struct ChunkCountingSink {
+        writes: usize,
+        flushes: usize,
+        bytes: Vec<u8>,
+    }
+
+    impl Write for ChunkCountingSink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.writes += 1;
+            self.bytes.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.flushes += 1;
+            Ok(())
+        }
+    }
+
+    fn bar_after_pane(
+        painter: &mut StatusBarPainter,
+        cursor: Option<(u16, u16)>,
+        fallback: Option<(u16, u16)>,
+        clobbered: bool,
+    ) -> String {
+        let mut out = Vec::new();
+        let mut chrome = ChromeCtx {
+            status_bar: Some(painter),
+            ..ChromeCtx::bare((80, 24), "demo")
+        };
+        paint_bar_after_pane(&mut out, &mut chrome, cursor, fallback, clobbered);
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    /// The bar-then-cursor tail: a known cursor is restored visible; unknown,
+    /// it parks hidden at the pane origin, else at (0,0) hidden rather than
+    /// stranding at the bar's last cell.
+    #[test]
+    fn paint_bar_after_pane_places_the_cursor() {
+        let s = bar_after_pane(&mut build_painter(), Some((4, 7)), Some((0, 0)), true);
+        assert!(s.contains("\x1b[5;8H") && s.contains("\x1b[?25h"), "{s:?}");
+        assert!(!s.contains("\x1b[1;1H"), "{s:?}");
+
+        let s = bar_after_pane(&mut build_painter(), None, Some((3, 5)), true);
+        let cup = s.rfind("\x1b[6;4H").expect("fallback CUP");
+        assert!(
+            s[cup..].contains("\x1b[?25l") && !s[cup..].contains("\x1b[?25h"),
+            "{s:?}"
+        );
+
+        let s = bar_after_pane(&mut build_painter(), None, None, true);
+        assert!(
+            s.contains("\x1b[24;1H") && s.contains("\x1b[1;1H\x1b[?25l"),
+            "{s:?}"
+        );
+        assert!(!s.contains("\x1b[?25h"), "{s:?}");
+    }
+
+    /// On the hot path an unchanged bar is not re-emitted, but a row the frame
+    /// clobbered (ED2) is, even when unchanged.
+    #[test]
+    fn paint_bar_after_pane_re_emits_only_a_changed_or_clobbered_bar() {
+        for clobbered in [false, true] {
+            let mut painter = build_painter();
+            assert!(
+                bar_after_pane(&mut painter, Some((4, 7)), None, clobbered).contains("\x1b[24;1H")
+            );
+            let second = bar_after_pane(&mut painter, Some((4, 7)), None, clobbered);
+            assert_eq!(second.contains("\x1b[24;1H"), clobbered, "{second:?}");
+            assert!(second.contains("\x1b[5;8H"), "{second:?}");
+        }
+    }
+
+    fn chrome_in_place<W: Write>(
+        out: &mut W,
+        layout: &LayoutState,
+        panes: &HashMap<ResourceId, PaneSlot>,
+        bar: Option<&mut StatusBarPainter>,
+        strip: &mut SidebarPainter,
+    ) {
+        let mut chrome = ChromeCtx {
+            sidebar: Some(LEFT20),
+            status_bar: bar,
+            sidebar_painter: Some(strip),
+            ..ChromeCtx::bare((80, 24), "demo")
+        };
+        let (kernel, _effects, _panes) = published_test_state(&[]);
+        paint_chrome_in_place(
+            out,
+            layout,
+            panes,
+            &kernel,
+            layout.focus.as_ref(),
+            &mut chrome,
+        );
+    }
+
+    /// The anti-strobe contract: the in-place chrome paint is one chunk that
+    /// never clears or re-renders a pane and keeps the strip's cache.
+    #[test]
+    fn paint_chrome_in_place_never_clears_or_repaints_panes() {
+        let id = ResourceId::local(1);
+        let layout = LayoutState {
+            tree: None,
+            focus: Some(id.clone()),
+        };
+        let slot = PaneSlot::new_with_size(60, 23).expect("slot");
+        let panes = HashMap::from([(id, slot)]);
+        let mut bar = build_painter();
+        let mut strip = build_sidebar();
+        let mut sink = ChunkCountingSink::default();
+        chrome_in_place(&mut sink, &layout, &panes, Some(&mut bar), &mut strip);
+        assert_eq!((sink.writes, sink.flushes), (1, 1));
+        let s = String::from_utf8_lossy(&sink.bytes);
+        assert!(
+            s.starts_with("\x1b[?2026h") && s.ends_with("\x1b[?2026l"),
+            "{s:?}"
+        );
+        assert!(!s.contains("\x1b[2J") && !s.contains("PANEBODY"), "{s:?}");
+        assert!(s.contains("\x1b[?25h") || s.contains("\x1b[?25l"));
+        assert!(s.contains("\x1b[2;1H"), "the strip painted; {s:?}");
+
+        let mut again: Vec<u8> = Vec::new();
+        chrome_in_place(&mut again, &layout, &panes, Some(&mut bar), &mut strip);
+        assert!(!String::from_utf8_lossy(&again).contains("\x1b[2;1H"));
+    }
+
+    /// With a sidebar and no status bar the in-place paint still ends with
+    /// the cursor tail (it once stranded in the strip), parked hidden at the
+    /// focused pane's origin right of the strip and under the rail.
+    #[test]
+    fn paint_chrome_in_place_restores_the_cursor_without_a_status_bar() {
+        let id = ResourceId::local(1);
+        let panes = HashMap::from([(id.clone(), PaneSlot::new_with_size(60, 24).expect("slot"))]);
+        let mut out: Vec<u8> = Vec::new();
+        chrome_in_place(
+            &mut out,
+            &leaf_layout(&id),
+            &panes,
+            None,
+            &mut build_sidebar(),
+        );
+        let s = String::from_utf8_lossy(&out);
+        assert!(s.contains("\x1b[2;1H"), "{s:?}");
+        assert!(s.ends_with("\x1b[2;21H\x1b[?25l\x1b[?2026l"), "{s:?}");
+    }
+}

@@ -1,0 +1,242 @@
+//! phux on Rune: the desktop client.
+//!
+//! One window over the shared client runtime: a sidebar of every session
+//! and terminal the server lists, the selected terminal, and a status line.
+
+mod activity;
+mod addressable;
+mod alerts;
+mod askpass;
+mod connect;
+mod creature;
+mod desk;
+mod diag;
+mod dock;
+mod document_viewer;
+mod features;
+mod file_size;
+mod galaxy;
+#[allow(clippy::disallowed_methods)]
+// terminal content: SGR faint and underlines are the VT's, not chrome
+mod grid;
+mod handoff;
+mod hive;
+mod host_color;
+mod inbox;
+mod keys;
+mod kitchen;
+mod launch;
+mod links;
+mod machines;
+pub mod mobile;
+mod onboarding;
+mod pair;
+mod palette;
+mod paths;
+mod perf;
+mod pitch;
+mod pitlane;
+mod playground;
+mod quick_look;
+mod reef;
+#[cfg(any(target_os = "linux", test))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod scheme;
+mod screenshot;
+mod services;
+mod session_color;
+mod ssh_config;
+mod standing;
+mod system_settings;
+#[allow(clippy::disallowed_methods)] // owner path: theme adapters and catalog
+mod theme;
+mod ui;
+mod updates;
+#[cfg(test)]
+mod wire_fixture;
+
+#[cfg(test)]
+mod test_support;
+
+use desk::Desk;
+use phux_config_core::rune::NewWindowScreen;
+use rune::{AppSpec, Chrome};
+
+/// The desktop entry's name, and what `phux omarchy setup` tags as a terminal.
+const APP_ID: &str = "sh.phux.rune";
+
+/// Which running process a later launch hands its links to (Linux; macOS
+/// keeps one process per bundle itself). A development build has its own,
+/// so `cargo run` never hands its arguments to the installed app.
+const INSTANCE_ID: &str = if cfg!(debug_assertions) {
+    "sh.phux.rune.dev"
+} else {
+    APP_ID
+};
+
+pub fn run_desktop() {
+    // Before any write: the log's first line can already be past the limit.
+    file_size::fail_writes_past_the_limit();
+    // ssh runs this executable to ask for a password or 2FA code.
+    if let Some(code) = askpass::answer() {
+        std::process::exit(code);
+    }
+    // The updater asks a new binary this before trusting it can run here.
+    if rune::extra_args().iter().any(|arg| arg == "--version") {
+        println!("phux-rune {}", updates::VERSION);
+        return;
+    }
+    diag::install();
+    // Desk's destructor closes popup commands and releases server view leases;
+    // the performance recorder also flushes on drop. Rune now exits without
+    // destructors by default, so retain the window's orderly teardown.
+    rune::orderly_exit();
+    // The window's Wayland app_id and X11 class: what matches the .desktop
+    // entry, the icon, and a compositor's rules (Omarchy's terminal tag).
+    rune::set_app_id(APP_ID);
+    rune::prewarm_gpu();
+    // Rune keeps its own flags (`--snap`, `--script`, ...); the rest are ours.
+    let options = match launch::Options::parse(rune::extra_args().iter().cloned()) {
+        Ok(options) => options,
+        Err(message) => {
+            eprintln!("{message}");
+            std::process::exit(2);
+        }
+    };
+    // The window opens first; `Desk::listen` finds the server on a worker.
+    let resolved = launch::resolve(&options);
+    let phone = options.phone;
+    if !accept_launch(&options, &resolved) {
+        return;
+    }
+    // Rune hands `on_open_url` the links among a Linux or Windows launch's
+    // arguments; macOS sends its links as Apple events, so a link on a
+    // bare binary's command line is handed over here.
+    let argv_links = if cfg!(target_os = "macos") {
+        options.links.iter().map(|link| link.0.clone()).collect()
+    } else {
+        Vec::new()
+    };
+    let (size, min_size) = if phone {
+        ((393.0, 852.0), (320.0, 568.0))
+    } else {
+        ((1100.0, 720.0), (640.0, 360.0))
+    };
+    // The desktop window reopens at the size it closed at, and where it was
+    // unless `new-window-screen` names a display.
+    let frame = (!phone).then(desk::window_frame::saved).flatten();
+    let size = frame.map_or(size, |f| {
+        (f.size.0.max(min_size.0), f.size.1.max(min_size.1))
+    });
+    let screen = (phux_config_core::loader::load_client().ok())
+        .and_then(|config| config.rune.new_window_screen)
+        .unwrap_or_default();
+    let position = frame
+        .filter(|_| screen == NewWindowScreen::Current)
+        .map(|f| f.position);
+    let spec = app_spec(size, min_size);
+    perf::report_to_file();
+    let mut app = desk::with_menus(rune::App::new(spec));
+    // The quick terminal's panel is always there; its chord, once the file or
+    // Settings turns it on, is registered when the windows have started.
+    let panel = (!phone).then(|| desk::quick::add(&mut app, resolved.clone()));
+    let window = app.handle();
+    // Finder's service needs the running app; headless tooling has none.
+    #[cfg(target_os = "macos")]
+    if !rune::is_headless() {
+        let services = app.handle();
+        app.handle()
+            .update(move |_, _| services::register(services));
+    }
+    if let Some(panel) = panel {
+        window.update(move |desk, _| desk.arm_quick(panel));
+    }
+    // Linux: the titlebar is the app's own. Where the compositor draws no
+    // frame (GNOME), Rune takes its bar away and adds the caption buttons;
+    // KDE, Hyprland and X11 keep theirs.
+    #[cfg(target_os = "linux")]
+    let app = app.titlebar(rune::Titlebar::new(phux_design::tokens::SPACE.titlebar_h));
+    let app = app
+        .init(move || {
+            let mut desk = Desk::new(&resolved).with_phone(phone);
+            desk.machines.window = Some(window.clone());
+            desk.onboarding.dock.window = Some(window);
+            desk.machines.pending = argv_links;
+            desk
+        })
+        .chrome(Chrome {
+            full_size_content: true,
+            traffic_lights: Some((14.0, 14.0)),
+            drag_regions: true,
+        })
+        .standard_menus()
+        // With the quick terminal's chord set, closing the window keeps the
+        // app for the chord; the Dock brings the window back.
+        .keep_running()
+        .on_window(move |window| {
+            if !phone {
+                desk::window_frame::opened(window);
+                desk::window_frame::place(window, screen);
+            }
+        })
+        .on_quit(|desk: &mut Desk, _| desk.save_frame())
+        .on_close(|desk: &mut Desk, tx| {
+            desk.save_frame();
+            desk.cancel_screenshot();
+            if !desk.keeps_running() {
+                tx.quit();
+            }
+        })
+        // Transparent so the glass slider can show Liquid Glass behind the
+        // chrome; the root paints it solid until glass is turned up.
+        .window_options(rune::WindowOptions {
+            transparent: cfg!(target_os = "macos"),
+            position,
+            ..rune::WindowOptions::default()
+        })
+        // Rune's native host drops on_modifiers; keep logical events.
+        .modifier_keys()
+        .on_ime(|desk: &mut Desk, event, _| desk.ime(event))
+        .on_focus(|desk: &mut Desk, focused, _| desk.focus_changed(focused))
+        .on_open_url(|desk: &mut Desk, url, _| desk.open_system_link(url))
+        .on_frame_drawn(|rt: &rune::Runtime<Desk>| rt.state.drawn());
+    match perf::frame_hook() {
+        Some(record) => app.on_frame_encoded(record).run(),
+        None => app.run(),
+    }
+}
+
+/// Keep an aimed run separate; hand a plain launch to the running window.
+fn accept_launch(options: &launch::Options, resolved: &launch::Resolved) -> bool {
+    // One window takes pairing links. A run aimed at a server or a session,
+    // the phone form and headless tooling stand alone.
+    let plain =
+        !resolved.aimed && options.session.is_none() && !options.phone && !rune::is_headless();
+    if plain && !rune::single_instance(INSTANCE_ID) {
+        return false;
+    }
+    // An older installed entry gains the link handler; development builds
+    // leave the installed app's entry alone.
+    #[cfg(target_os = "linux")]
+    if plain && !cfg!(debug_assertions) {
+        std::thread::spawn(scheme::repair);
+    }
+    true
+}
+
+pub(crate) fn app_spec(size: (f32, f32), min_size: (f32, f32)) -> AppSpec<Desk> {
+    AppSpec {
+        min_size: Some(min_size),
+        fonts: grid::FONTS,
+        families: grid::FAMILIES,
+        setup: Some(|desk: &mut Desk, waker| desk.listen(waker)),
+        poll: Some(|desk: &mut Desk, clock, tx| desk.poll(clock, tx)),
+        on_key: Some(|desk: &mut Desk, event, tx| desk.key(event, tx)),
+        ..AppSpec::new("phux", size, placeholder_init, ui::view)
+    }
+}
+
+/// `AppSpec` needs a plain `fn`; `App::init` supplies the real state.
+fn placeholder_init() -> Desk {
+    Desk::new(&launch::resolve(&launch::Options::default()))
+}

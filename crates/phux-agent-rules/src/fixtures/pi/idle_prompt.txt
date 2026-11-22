@@ -1,0 +1,22 @@
+ references for reading and mutable references for modification. Return owned
+ values when creating new data. Clone only when genuinely independent ownership
+ is needed. Use smart pointers when the program’s architecture requires heap
+ allocation, shared ownership, or controlled interior mutation.
+
+ Rust’s compiler errors often reflect uncertainty about one of these
+ relationships. Rather than fighting the borrow checker, it is usually helpful
+ to clarify ownership boundaries, shorten borrow durations, separate data into
+ independent fields, or choose a more appropriate owning type.
+
+ Ultimately, Rust’s ownership model makes resource management part of normal
+ type checking. Values are cleaned up deterministically, references cannot
+ dangle, mutation requires controlled access, and thread sharing must satisfy
+ explicit safety rules. The cost is that programmers must model ownership
+ carefully. The benefit is strong memory and concurrency safety without garbage
+ collection, while retaining low-level control and predictable performance.
+
+────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+/private/tmp/phux-detection (feat/agent-detection-fixtures)
+↑1.1k ↓3.2k $0.101 (sub) 1.2%/372k (auto)                     gpt-5.6-sol • high

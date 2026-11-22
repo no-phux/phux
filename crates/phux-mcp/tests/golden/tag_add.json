@@ -1,0 +1,13 @@
+{
+  "action": "add",
+  "schema_version": 1,
+  "terminals": [
+    {
+      "tags": [
+        "build",
+        "urgent"
+      ],
+      "terminal": "@2"
+    }
+  ]
+}

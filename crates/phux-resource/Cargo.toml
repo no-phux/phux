@@ -1,0 +1,38 @@
+[package]
+name = "phux-resource"
+description = "The kind-neutral resource substrate: output streams, lifecycle, and opaque facets."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+phux-protocol.workspace = true
+phux-core.workspace = true
+bytes.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
+libc = "0.2"
+nix = { version = "0.31", default-features = false, features = [
+    "signal",
+    "term",
+    "fs",
+    "feature",
+    "process",
+    "user",
+    "hostname",
+] }
+
+[dev-dependencies]
+# The boundary guard parses this crate's own manifest.
+toml.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+tempfile.workspace = true

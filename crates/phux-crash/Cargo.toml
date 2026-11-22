@@ -1,0 +1,77 @@
+# DERIVED — see NOTICE. This crate is a trimmed derivative of
+# `xai-crash-handler` from xAI's `grok-build` repository, licensed Apache-2.0.
+# The `license` field below is deliberately not `license.workspace = true`,
+# so `cargo deny` and any downstream license audit see the upstream grant on
+# exactly the code it covers. The rest of the workspace is also Apache-2.0;
+# this crate still ships its own LICENSE and NOTICE because that is how the
+# derivative records provenance.
+#
+# It is NOT kept in sync with upstream (ADR-0079). phux keeps only the
+# fatal-signal terminal restore: an alternate signal stack, a
+# SIGSEGV/SIGBUS/SIGABRT handler that writes the DEC resets and restores
+# termios, then re-raises with default disposition.
+#
+# Local modifications from upstream (Apache-2.0 section 4(b)):
+#   1. Renamed `xai-crash-handler` -> `phux-crash` (crate, paths, doc links).
+#   2. Removed crash reporting: `install`, `check_previous_crash`,
+#      `CrashHandlerConfig`, `CrashReport`, the crash-blob format
+#      (`format.rs`), symbolication (`symbolicate.rs`), the frame-pointer
+#      walker, and with them the `backtrace` dependency.
+#   3. Removed the Windows unhandled-exception filters and the `windows-sys`
+#      dependency; phux's client is Unix-only, and every entry point is a
+#      no-op off Unix.
+#   4. Removed the unused `MOUSE_TRACKING_RESET` / `MOUSE_PASTE_RESET`
+#      constants. `RESTORE_SEQ` is unchanged.
+#   5. Doc comments retargeted from grok's pager to phux's client, and
+#      `// SAFETY:` comments added to every `unsafe` block.
+#   6. `[lints]` below is crate-local rather than `workspace = true` — see the
+#      comment there.
+#   7. Integration tests reworked for the restore-only surface: fatal signals
+#      are asserted to re-raise with the original signal, and two tests added
+#      that a fatal signal with escape restore armed writes the DECSET resets
+#      to fd 2 and one with it disarmed writes none.
+[package]
+name = "phux-crash"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+license = "Apache-2.0"
+description = "Fatal-signal (SIGSEGV/SIGBUS/SIGABRT) handler that restores the terminal from an alternate signal stack, then re-raises."
+publish = false
+
+[target.'cfg(unix)'.dependencies]
+# `sigaction`/`sigaltstack` to register the handler, `tcgetattr`/`tcsetattr`
+# to snapshot and restore termios, and raw `write(2)` because the handler must
+# not allocate. `rustix` (which the rest of phux uses) has no async-signal-safe
+# raw-fd write we can call from a handler, and its termios types are not
+# `static`-constructible for the pre-signal snapshot.
+libc = "0.2"
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
+# The integration tests re-exec the test binary and really do raise
+# SIGSEGV/SIGBUS/SIGABRT in the child, then assert on how it died and what it
+# wrote to stderr. `tokio` proves the handler coexists with a running runtime
+# and does not clobber tokio's own signal handlers.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "signal", "io-util", "net"] }
+
+# NOT `workspace = true`. This is derived third-party signal-handler code:
+# `clippy::pedantic` and `clippy::nursery` fire on its raw pointer casts and
+# `unsafe` FFI, and keeping it close to the upstream shape keeps it easy to
+# compare against the code it was taken from.
+#
+# The lints that actually matter for *this* code are kept at `deny`:
+# `unsafe_op_in_unsafe_fn` (every `unsafe fn` here already opens an explicit
+# `unsafe` block) and `unused_must_use`.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+missing_debug_implementations = "warn"
+unreachable_pub = "allow"
+
+[lints.clippy]
+pedantic = { level = "allow", priority = -1 }
+nursery = { level = "allow", priority = -1 }
+undocumented_unsafe_blocks = "deny"

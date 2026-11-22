@@ -1,0 +1,79 @@
+[package]
+name = "phux-client"
+description = "phux headless client library: the connection facade over the client runtime and the control-plane verbs behind the agent CLI and MCP."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Exposes `phux_client::testkit`, the scripted server client-side tests
+# speak to. Test scaffolding: downstream crates enable it from
+# dev-dependencies. There is no `tui` feature; the TUI is `phux-tui`.
+testkit = ["phux-client-runtime/testing", "dep:phux-wire-fixtures"]
+
+[dependencies]
+phux-protocol.workspace = true
+phux-core.workspace = true
+# The detection manifests `agent::detect` replays to name the rule behind a
+# reported state (ADR-0046). ratatui-free.
+phux-agent-rules.workspace = true
+# Only the asciicast codec: `default-features = false` drops `render`. By
+# path because cargo will not let a member disable a workspace dependency's
+# default features, and the `phux` binary wants `render` on.
+phux-record = { path = "../phux-record", default-features = false }
+# The ratatui-free pane-interior substrate (ADR-0020), re-exported.
+phux-client-core.workspace = true
+serde_json.workspace = true
+phux-config.workspace = true
+# `AttachError::Ghostty` names libghostty's error type.
+libghostty-vt.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+# `explain::peer_pid` compares the peer uid with `getuid`; `hub_mail` polls.
+rustix = { version = "1.1", default-features = false, features = ["std", "process", "event"] }
+bytes.workspace = true
+phux-perf.workspace = true
+serde = { workspace = true }
+# The dial plan types `attach::connection` re-exports (`QuicDial`, `WsDial`,
+# `CertTrust`); the dialing itself is the runtime's.
+phux-dial.workspace = true
+# `hub_mail`: a satellite's mail and claims, one QUIC stream per work-store
+# call to its hub.
+phux-work.workspace = true
+quinn.workspace = true
+# The one transport (ADR-0171): `Connection` is a facade over its one-shot
+# session, and reconnect policy (ADR-0133).
+phux-client-runtime.workspace = true
+# `phux wait --regex`: linear-time matching of operator patterns.
+regex = "1"
+# Input operation ids (ADR-0053).
+uuid = { workspace = true }
+# `download`: verify the whole-file digest `GET_FILE` returns.
+sha2 = "0.11"
+# The scripted server's frames; test scaffolding behind `testkit` only.
+phux-wire-fixtures = { workspace = true, optional = true }
+
+[dev-dependencies]
+# `testkit` also compiles under `cfg(test)`, without the feature.
+phux-wire-fixtures.workspace = true
+# `testing`: the scripted `FnPolicy` HELLO engine.
+phux-server = { workspace = true, features = ["testing"] }
+phux-terminal.workspace = true
+# Wire-to-libghostty key conversions for the native encoder round trips.
+phux-vt.workspace = true
+tempfile.workspace = true
+# The scripted QUIC and WebSocket servers in `tests/connection`.
+quinn = { workspace = true }
+rustls = { workspace = true }
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+# `test-util` for paused clocks; `fs` for `command_isolation`.
+tokio = { workspace = true, features = ["test-util", "fs"] }

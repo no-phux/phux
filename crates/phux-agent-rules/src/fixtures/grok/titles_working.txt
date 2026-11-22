@@ -1,0 +1,2 @@
+⠴ - Wait 20 seconds before answering… - Slow Count Then Delayed Capture Phrase - grok
+⠙ - Responding - Count numbers 1-80 one per line - grok

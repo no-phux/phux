@@ -1,0 +1,26 @@
+# Generated, tool-written, or vendored files. Also exempts them from the
+# pre-commit file-size gate (scripts/check-file-tokens.sh).
+.beads/*.jsonl linguist-generated=true
+CHANGELOG.md linguist-generated=true
+docs/spec/CHANGELOG.md -linguist-generated
+docs/reference/cli.md linguist-generated=true
+docs/reference/config.md linguist-generated=true
+docs/assets/*.cast linguist-generated=true
+integrations/opencode-v2/index.js linguist-generated=true
+integrations/opencode-v2/tui.js linguist-generated=true
+integrations/opencode-v2/dist/gui-experimental.cjs linguist-generated=true
+crates/phux-record/assets/*.bdf linguist-vendored=true
+docs/spec/wire-schema.json linguist-generated=true
+docs/spec/config.schema.json linguist-generated=true
+docs/spec/plugin.schema.json linguist-generated=true
+# Design-token exports written by `just design-gen`. JSON carries no
+# @generated header, so the size gate exempts every token JSON export.
+crates/phux-design/tokens/themes.json linguist-generated=true
+crates/phux-design/tokens/derive-vectors.subset.json linguist-generated=true
+clients/rune/ios/Assets/AccentColor.colorset/Contents.json linguist-generated=true
+# Token sources kept whole over the size gate: the theme catalog (upstream
+# terminal palettes) and the closed schema are each read as one table.
+crates/phux-design/tokens/src/themes.json linguist-vendored=true
+crates/phux-design/tokens/src/phux.tokens.schema.json linguist-vendored=true
+
+crates/phux-mcp/tests/golden/catalog.json linguist-generated=true

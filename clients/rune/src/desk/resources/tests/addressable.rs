@@ -1,0 +1,121 @@
+//! A session's documents are addressable like its terminals: a sidebar
+//! row, a palette row, a stop when cycling, and the window title.
+
+use super::*;
+
+#[test]
+fn a_local_document_has_a_sidebar_row_a_palette_row_a_cycle_stop_and_a_title() {
+    let records = [
+        record(1, ResourceKind::Terminal),
+        record(2, ResourceKind::AccessibilityTree),
+    ];
+    let (_client, mut rt) = fixture(&records, &doc(LayoutNode::Leaf(id(1))));
+    assert_eq!(rt.state.connection.shown.as_ref().unwrap().resource, id(1));
+    assert_eq!(rt.state.window_title(), "Mirror 1 — work");
+
+    assert!(rt.find("pane-@1").is_some(), "its terminal");
+    assert!(rt.find("pane-@2").is_some(), "its mirror");
+    let texts: Vec<_> = rt.elements().into_iter().filter_map(|el| el.text).collect();
+    assert!(texts.iter().any(|t| t == "Mirror 2"), "{texts:?}");
+    assert!(texts.iter().any(|t| t == "Read-only mirror"), "{texts:?}");
+
+    let rows: Vec<_> = rt
+        .state
+        .palette_hits()
+        .into_iter()
+        .filter(|h| matches!(h.item.kind, "terminal" | "document"))
+        .map(|h| (h.item.kind, h.item.title, h.item.detail))
+        .collect();
+    let row = |kind, title: &str, detail: &str| (kind, title.to_owned(), detail.to_owned());
+    assert_eq!(
+        rows,
+        [
+            row("terminal", "Mirror 1", "work · @1"),
+            row("document", "Mirror 2", "work · @2 · Read-only mirror"),
+        ]
+    );
+
+    rt.update(|d, _| d.cycle(1));
+    step(&mut rt);
+    let shown = rt.state.connection.shown.as_ref().unwrap();
+    assert_eq!((&shown.resource, shown.view), (&id(2), None));
+    assert_eq!(rt.state.window_title(), "Mirror 2 — work");
+    rt.update(|d, _| d.cycle(1));
+    step(&mut rt);
+    assert_eq!(rt.state.connection.shown.as_ref().unwrap().resource, id(1));
+    rt.update(|d, _| d.cycle(-1));
+    step(&mut rt);
+    assert_eq!(rt.state.connection.shown.as_ref().unwrap().resource, id(2));
+}
+
+#[test]
+fn a_document_in_no_known_session_is_named_by_its_record_or_left_out() {
+    let records = [
+        record(1, ResourceKind::Terminal),
+        record(2, ResourceKind::AccessibilityTree),
+    ];
+    let (_client, mut rt) = fixture(&records, &doc(LayoutNode::Leaf(id(1))));
+    let unsessioned = |d: &mut Desk| {
+        let topology = d.connection.topology.as_mut().unwrap();
+        let listed = topology.resources.iter_mut().find(|r| r.id == id(2));
+        listed.unwrap().session_id = 0;
+    };
+    rt.update(|d, _| unsessioned(d));
+    let document = |d: &Desk| d.addressable().into_iter().find(|r| r.id == id(2));
+    let named = document(&rt.state).expect("its record names the session");
+    assert_eq!(named.session, "work");
+
+    rt.update(|d, _| {
+        let entry = d.connection.resources.entries.get_mut(&id(2)).unwrap();
+        entry.record.session = SessionKey::new([9; 16]).unwrap();
+    });
+    assert_eq!(document(&rt.state), None, "no session row called \"\"");
+    assert!(
+        !rt.state
+            .palette_hits()
+            .iter()
+            .any(|h| matches!(&h.item.target, crate::palette::Target::Terminal { id: shown, .. } if *shown == id(2)))
+    );
+}
+
+#[test]
+fn stepping_in_session_walks_tabs_then_panes_and_wraps() {
+    let records = [
+        record(1, ResourceKind::Terminal),
+        record(2, ResourceKind::Terminal),
+        record(3, ResourceKind::Terminal),
+    ];
+    let mut arrangement = doc(split(1, 2));
+    arrangement.add_group("second".to_owned(), id(3));
+    arrangement.active = 0;
+    let (_client, mut rt) = fixture(&records, &arrangement);
+    assert_eq!(rt.state.connection.shown.as_ref().unwrap().resource, id(1));
+    for (step_by, want) in [(1, 2), (1, 3), (1, 1), (-1, 3)] {
+        rt.update(|d, _| d.cycle_in_session(step_by));
+        step(&mut rt);
+        assert_eq!(
+            rt.state.connection.shown.as_ref().unwrap().resource,
+            id(want)
+        );
+    }
+}
+
+#[test]
+fn an_empty_palette_leads_with_terminals_and_leaves_the_mirrors_last() {
+    let records = [record(1, ResourceKind::Terminal)];
+    let (_client, rt) = fixture(&records, &doc(LayoutNode::Leaf(id(1))));
+    let hits = rt.state.palette_hits();
+    assert_eq!(hits.first().map(|h| h.item.kind), Some("terminal"));
+    let mirrors = hits
+        .iter()
+        .position(|h| h.item.title.starts_with("Mirror a screen"))
+        .expect("the screens row is listed");
+    assert!(
+        hits[mirrors..]
+            .iter()
+            .all(|h| h.item.kind == "action" || h.item.kind == "theme"),
+        "nothing but the remaining rows follows the mirrors"
+    );
+    let first_command = hits.iter().position(|h| h.item.kind == "action").unwrap();
+    assert!(first_command < mirrors, "everyday commands come first");
+}

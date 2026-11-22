@@ -1,0 +1,429 @@
+//! Regression: rapid window switching and control spam must never leave
+//! doubled text. These drive the real `handle_server_frame` and
+//! `paint_full_frame`, replay every byte into a "glass" terminal, and diff it
+//! against a reference compose of the pane mirrors.
+
+use std::collections::HashMap;
+
+use crate::layout::{LayoutNode, SplitDir};
+use libghostty_vt::Terminal as GhosttyTerminal;
+use phux_client_core::engine::ghostty::GhosttyAdapter;
+use phux_client_core::session::{EffectBuffer as KernelEffectBuffer, KernelInput, SessionKernel};
+use phux_protocol::ids::ResourceId;
+use phux_protocol::wire::frame::FrameKind;
+use phux_protocol::{BootstrapId, BootstrapLimits, BootstrapProfile};
+use phux_wire_fixtures::{BootstrapOptions, bootstrap_frames_with, output_on};
+
+use super::paint::{SidebarEdge, SidebarReservation, content_rect, paint_full_frame};
+use super::pane_state::PaneSlot;
+use super::server_frame::{FrameEnv, handle_server_frame};
+use super::session_mirror::SessionMirror;
+use crate::layout::{ArrangementDoc, Group, LayoutState};
+use crate::predict::{PredictionState, PredictiveConfig};
+
+mod glass;
+use glass::{dump, term_grid};
+
+const fn tid(id: u32) -> ResourceId {
+    ResourceId::local(id)
+}
+
+/// A driver-shaped rig: the loop's paint state plus a "glass" terminal that
+/// parses every emitted byte; methods mirror the `main_loop` arms.
+struct Rig {
+    mirror: SessionMirror,
+    sidebar: Option<SidebarReservation>,
+    overlay_active: bool,
+    glass: GhosttyTerminal<'static, 'static>,
+    viewport: (u16, u16),
+    seq: HashMap<ResourceId, u64>,
+    bootstraps: HashMap<ResourceId, BootstrapId>,
+    next_bootstrap: u64,
+    attach_released: bool,
+}
+
+impl Rig {
+    fn new(workspace: ArrangementDoc, viewport: (u16, u16)) -> Self {
+        let focused = workspace.active_group().and_then(|ls| ls.focus.clone());
+        let terminals = workspace
+            .groups
+            .iter()
+            .filter_map(|window| window.state.tree.as_ref())
+            .flat_map(crate::layout::leaves)
+            .collect::<Vec<_>>();
+        let mut kernel = SessionKernel::new(
+            GhosttyAdapter::new(BootstrapLimits::default()),
+            BootstrapProfile::SynthesizedVtRaw,
+        );
+        let mut kernel_effects = KernelEffectBuffer::new();
+        kernel
+            .update(
+                KernelInput::AttachStarted {
+                    attach_id: 1,
+                    terminals: &terminals,
+                },
+                &mut kernel_effects,
+            )
+            .expect("attach started");
+        let mut mirror = SessionMirror::new(
+            kernel,
+            PredictionState::new(PredictiveConfig::disabled(), viewport.0, viewport.1),
+        );
+        mirror.kernel_effects = kernel_effects;
+        mirror.workspace = workspace;
+        mirror.focused_resource = focused;
+        mirror.session_name = "stress".to_owned();
+        Self {
+            mirror,
+            sidebar: None,
+            overlay_active: false,
+            glass: {
+                let mut terminal =
+                    GhosttyTerminal::new(viewport.0, viewport.1).expect("glass terminal");
+                terminal
+                    .set_scrollback_max_lines(Some(200))
+                    .expect("glass terminal");
+                terminal
+            },
+            viewport,
+            seq: HashMap::new(),
+            bootstraps: HashMap::new(),
+            next_bootstrap: 1,
+            attach_released: false,
+        }
+    }
+
+    /// Seed a pane slot at an explicit (server-authoritative) mirror size
+    /// with initial content — the "resize handshake in flight" fixture when
+    /// the size differs from the pane's layout rect.
+    fn seed_pane(&mut self, id: &ResourceId, cols: u16, rows: u16, content: &[u8]) {
+        self.mirror.panes.insert(
+            id.clone(),
+            PaneSlot::new_with_size(cols, rows).expect("pane slot"),
+        );
+        self.snapshot(id, cols, rows, content);
+    }
+
+    /// Run one inbound server frame through the REAL dispatcher and parse
+    /// whatever it painted into the glass.
+    fn drive(&mut self, frame: FrameKind) -> super::server_frame::FrameOutcome {
+        let mut out: Vec<u8> = Vec::new();
+        let env = FrameEnv {
+            sidebar: self.sidebar,
+            viewport_dims: self.viewport,
+            overlay_active: self.overlay_active,
+            ..FrameEnv::default()
+        };
+        let outcome = handle_server_frame(&mut self.mirror, env, &mut out, frame)
+            .expect("handle_server_frame");
+        self.glass.vt_write(&out);
+        outcome
+    }
+
+    /// `RESOURCE_OUTPUT` for `pane` — the hot path.
+    fn output(&mut self, pane: &ResourceId, bytes: &[u8]) {
+        let seq = self.seq.entry(pane.clone()).or_insert(0);
+        *seq += 1;
+        let seq = *seq;
+        let bootstrap_id = *self.bootstraps.get(pane).expect("published bootstrap");
+        self.drive(output_on(pane, [1, bootstrap_id.get()], seq, bytes));
+    }
+
+    /// Negotiated synthesized-VT replacement bootstrap for one pane.
+    fn snapshot(&mut self, pane: &ResourceId, cols: u16, rows: u16, replay: &[u8]) {
+        let bootstrap_id = BootstrapId::new(self.next_bootstrap).expect("bootstrap");
+        self.next_bootstrap += 1;
+        let options = BootstrapOptions {
+            base_seq: self.seq.get(pane).copied().unwrap_or(0),
+            ..BootstrapOptions::default()
+        };
+        let [begin, chunk, ready] =
+            bootstrap_frames_with(pane, [1, bootstrap_id.get()], [cols, rows], replay, options);
+        self.drive(begin);
+        self.drive(chunk);
+        let outcome = self.drive(ready);
+        if outcome.layout_replaced {
+            self.full_repaint();
+        }
+        self.bootstraps.insert(pane.clone(), bootstrap_id);
+    }
+
+    /// The driver's `layout_changed` repaint: full frame of the render
+    /// window (ED2 + every pane + cursor), exactly as `main_loop` runs it.
+    fn full_repaint(&mut self) {
+        if !self.attach_released {
+            self.drive(FrameKind::AttachReady { attach_id: 1 });
+            self.attach_released = true;
+        }
+        let mut out: Vec<u8> = Vec::new();
+        if let Some(ls) = self
+            .mirror
+            .workspace
+            .render_group(self.mirror.zoomed.as_ref())
+        {
+            let mut chrome = crate::attach::chrome_ctx::ChromeCtx {
+                sidebar: self.sidebar,
+                ..crate::attach::chrome_ctx::ChromeCtx::bare(
+                    self.viewport,
+                    &self.mirror.session_name,
+                )
+            };
+            paint_full_frame(
+                &mut out,
+                ls.as_ref(),
+                &mut self.mirror.panes,
+                &self.mirror.engine_kernel,
+                self.mirror.focused_resource.as_ref(),
+                &mut chrome,
+            );
+        }
+        self.glass.vt_write(&out);
+    }
+
+    /// `next-window` (`C-a n`): advance the active window, re-anchor focus,
+    /// repaint — the `switch_window` + `layout_changed` sequence.
+    fn switch_next(&mut self) {
+        self.mirror.workspace.next();
+        self.mirror.focused_resource = self
+            .mirror
+            .workspace
+            .active_group()
+            .and_then(|ls| ls.focus.clone());
+        self.full_repaint();
+    }
+
+    /// `toggle-sidebar`: flip the reservation and repaint into the new
+    /// content rect, as the dispatch arm does after re-folding the flag.
+    fn toggle_sidebar(&mut self) {
+        self.sidebar = match self.sidebar {
+            Some(_) => None,
+            None => Some(SidebarReservation {
+                edge: SidebarEdge::Left,
+                width: 20,
+            }),
+        };
+        self.full_repaint();
+    }
+
+    /// Open a floating modal: base full frame, then the modal's box painted
+    /// over pane cells (what `paint_active_overlay` + `paint_clipped` do).
+    /// While open, `handle_server_frame` suppresses pane paints.
+    fn overlay_open(&mut self) {
+        self.overlay_active = true;
+        self.full_repaint();
+        // The modal box scribbles over pane rows — content the dismiss
+        // repaint must fully clear.
+        self.glass
+            .vt_write(b"\x1b[8;15H################ PALETTE ################");
+        self.glass
+            .vt_write(b"\x1b[9;15H#  ghost stress: modal over the panes   #");
+        self.glass
+            .vt_write(b"\x1b[10;15H##########################################");
+    }
+
+    /// Dismiss the modal: the dispatcher sets `layout_changed`, which full
+    /// repaints over the scribbles.
+    fn overlay_close(&mut self) {
+        self.overlay_active = false;
+        self.full_repaint();
+    }
+
+    /// Whether any pane is mid synchronized-output transaction (paints
+    /// suppressed; the screen legitimately lags the mirror).
+    fn sync_active(&self) -> bool {
+        self.mirror
+            .panes
+            .values()
+            .any(|s| s.sync_output_since.is_some())
+    }
+
+    /// The compose invariant: at a settled point the glass equals the
+    /// reference compose of the active window (each mirror letterboxed in
+    /// its rect). Cells outside pane rects are not checked.
+    fn assert_consistent(&self, label: &str) {
+        assert!(!self.overlay_active, "{label}: assert while overlay active");
+        assert!(!self.sync_active(), "{label}: assert while sync suppressed");
+        let (cols, rows) = self.viewport;
+        let content = content_rect(self.viewport, None, self.sidebar);
+        let ls = self
+            .mirror
+            .workspace
+            .render_group(self.mirror.zoomed.as_ref())
+            .expect("active window");
+        let rects = super::multi_pane::compute_layout_in(ls.as_ref(), content, self.viewport).rects;
+
+        let mut expected: Vec<Vec<Option<char>>> =
+            vec![vec![None; usize::from(cols)]; usize::from(rows)];
+        for (id, rect) in &rects {
+            let terminal = super::pane_state::published_terminal(&self.mirror.engine_kernel, id)
+                .expect("published pane terminal");
+            let mgrid = term_grid(terminal);
+            let mcols = terminal.cols().expect("mirror cols");
+            let mrows = terminal.rows().expect("mirror rows");
+            // The letterbox placement contract: undersized mirror centred
+            // with a floor split (extra cell on the trailing edge); mirror
+            // >= rect clips at the rect origin.
+            let inner_c = mcols.min(rect.w);
+            let inner_r = mrows.min(rect.h);
+            let pad_x = rect.w.saturating_sub(mcols) / 2;
+            let pad_y = rect.h.saturating_sub(mrows) / 2;
+            for ry in 0..rect.h {
+                for rx in 0..rect.w {
+                    let gy = usize::from(rect.y + ry);
+                    let gx = usize::from(rect.x + rx);
+                    let inside =
+                        ry >= pad_y && ry < pad_y + inner_r && rx >= pad_x && rx < pad_x + inner_c;
+                    let ch = if inside {
+                        mgrid
+                            .get(usize::from(ry - pad_y))
+                            .and_then(|l| l.chars().nth(usize::from(rx - pad_x)))
+                            .unwrap_or(' ')
+                    } else {
+                        ' '
+                    };
+                    expected[gy][gx] = Some(ch);
+                }
+            }
+        }
+
+        let glass = term_grid(&self.glass);
+        let mut mismatches = Vec::new();
+        for (y, row) in expected.iter().enumerate() {
+            for (x, want) in row.iter().enumerate() {
+                let Some(want) = want else { continue };
+                let got = glass.get(y).and_then(|l| l.chars().nth(x)).unwrap_or(' ');
+                if got != *want {
+                    mismatches.push(format!("({y},{x}): want {want:?}, got {got:?}"));
+                }
+            }
+        }
+        assert!(
+            mismatches.is_empty(),
+            "{label}: glass diverged from the mirror compose ({} cells)\nfirst: {}\nglass:\n{}\n",
+            mismatches.len(),
+            mismatches.first().map_or("", |s| s.as_str()),
+            dump(&glass),
+        );
+    }
+}
+
+/// Window 0: a single full-content pane. Window 1: a side-by-side split.
+fn two_window_workspace(p: &ResourceId, q: &ResourceId, r: &ResourceId) -> ArrangementDoc {
+    ArrangementDoc {
+        groups: vec![
+            Group::new("one".to_owned(), LayoutState::single(p.clone())),
+            Group::new("two".to_owned(), split(q, r)),
+        ],
+        active: 0,
+        slots: Vec::new(),
+    }
+}
+
+fn split(q: &ResourceId, r: &ResourceId) -> LayoutState {
+    LayoutState {
+        tree: Some(LayoutNode::Split {
+            dir: SplitDir::Horizontal,
+            ratio: 0.5,
+            left: Box::new(LayoutNode::Leaf(q.clone())),
+            right: Box::new(LayoutNode::Leaf(r.clone())),
+        }),
+        focus: Some(q.clone()),
+    }
+}
+
+/// Every non-full-frame paint of an undersized mirror (focused snapshot
+/// resync, non-focused snapshot resync, non-focused incremental output)
+/// lands at the same letterboxed origin the full frame uses.
+#[test]
+fn every_paint_path_letterboxes_an_undersized_mirror_like_the_full_frame() {
+    let (p, q, r) = (tid(1), tid(2), tid(3));
+    let one = |layout| ArrangementDoc {
+        groups: vec![Group::new("w".to_owned(), layout)],
+        active: 0,
+        slots: Vec::new(),
+    };
+    // Server grid smaller than the client rect: a resize handshake in flight.
+    let mut rig = Rig::new(one(LayoutState::single(p.clone())), (80, 24));
+    rig.seed_pane(&p, 40, 24, b"ALPHA-CONTENT");
+    rig.full_repaint();
+    rig.assert_consistent("single pane baseline");
+    rig.snapshot(&p, 40, 24, b"\x1b[2J\x1b[HALPHA-CONTENT");
+    rig.assert_consistent("focused snapshot resync");
+
+    let mut rig = Rig::new(one(split(&q, &r)), (80, 24));
+    rig.seed_pane(&q, 40, 24, b"FOCUSED-LEFT");
+    rig.seed_pane(&r, 21, 24, b"ROW-A");
+    rig.full_repaint();
+    rig.assert_consistent("split baseline");
+    rig.output(&r, b"\r\nROW-B");
+    rig.assert_consistent("non-focused incremental output");
+    rig.snapshot(&r, 21, 24, b"\x1b[2J\x1b[HRIGHT-PANE-ROW");
+    rig.assert_consistent("non-focused snapshot resync");
+}
+
+/// The dogfood stress: continuous output and synchronized bursts while
+/// windows cycle, the sidebar toggles, and a palette opens and closes.
+#[test]
+fn rapid_switch_and_control_spam_leaves_no_doubled_text() {
+    let p = tid(1);
+    let q = tid(2);
+    let r = tid(3);
+    let mut rig = Rig::new(two_window_workspace(&p, &q, &r), (80, 24));
+    rig.seed_pane(&p, 80, 24, b"p: boot\r\n");
+    rig.seed_pane(&q, 40, 24, b"q: boot\r\n");
+    // R's mirror lags its rect for the whole run (resize race fixture).
+    rig.seed_pane(&r, 21, 24, b"r: boot\r\n");
+    rig.full_repaint();
+    rig.assert_consistent("bootstrap");
+
+    for i in 0..12u32 {
+        // Continuous output on every pane; off-screen panes keep their
+        // mirrors warm (off-screen invariant), on-screen ones repaint.
+        rig.output(&p, format!("p: line {i} aaaaaaaaaaaaaaaa\r\n").as_bytes());
+        // Q wraps its redraw in DEC 2026 split across two frames, the way
+        // a TUI's synchronized redraw arrives mid-burst.
+        rig.output(&q, format!("\x1b[?2026hq: begin {i}").as_bytes());
+        rig.output(&q, format!(" ... q: end {i}\r\n\x1b[?2026l").as_bytes());
+        rig.output(&r, format!("r: {i}\r\n").as_bytes());
+        rig.assert_consistent(&format!("iter {i}: after output"));
+
+        // Control spam.
+        match i % 4 {
+            0 => rig.switch_next(),
+            1 => rig.toggle_sidebar(),
+            2 => {
+                rig.overlay_open();
+                // Output keeps flowing while the modal suppresses paints.
+                rig.output(&p, format!("p: modal {i}\r\n").as_bytes());
+                rig.output(&r, format!("r: modal {i}\r\n").as_bytes());
+                rig.overlay_close();
+            }
+            _ => {
+                rig.switch_next();
+                rig.switch_next();
+            }
+        }
+        rig.assert_consistent(&format!("iter {i}: after control spam"));
+
+        // Lagging server resyncs race the spam (R at 21x24, P every third
+        // iteration at 40x24), then catch back up to 80x24.
+        rig.snapshot(&r, 21, 24, format!("\x1b[2J\x1b[Hr: resync {i}").as_bytes());
+        rig.assert_consistent(&format!("iter {i}: after r resync"));
+        if i % 3 == 0 {
+            rig.snapshot(
+                &p,
+                40,
+                24,
+                format!("\x1b[2J\x1b[Hp: small resync {i}").as_bytes(),
+            );
+            rig.assert_consistent(&format!("iter {i}: after p lagging resync"));
+            rig.snapshot(
+                &p,
+                80,
+                24,
+                format!("\x1b[2J\x1b[Hp: full resync {i}").as_bytes(),
+            );
+            rig.assert_consistent(&format!("iter {i}: after p full resync"));
+        }
+    }
+}

@@ -1,0 +1,522 @@
+{
+  "version": 1,
+  "listener_fd": 7,
+  "counters": {
+    "next_session_wire_id": 2,
+    "next_terminal_wire_id": 4,
+    "next_window_wire_id": 2,
+    "next_touch_timestamp": 9,
+    "server_instance": [
+      109,
+      149,
+      46,
+      96,
+      246,
+      54,
+      250,
+      144,
+      4,
+      240,
+      173,
+      45,
+      71,
+      132,
+      47,
+      235
+    ]
+  },
+  "sessions": [
+    {
+      "wire_id": 1,
+      "name": "alpha",
+      "window_wire_ids": [
+        1
+      ],
+      "active_window": 1,
+      "created_at_unix_nanos": 1793470086506000000,
+      "last_touched": 7,
+      "root": "/home/u/proj",
+      "keep_empty": true,
+      "key": "rplgnyv4msq4b453bjhwn62sp4"
+    }
+  ],
+  "windows": [
+    {
+      "wire_id": 1,
+      "session_wire_id": 1,
+      "pane_wire_ids": [
+        1,
+        3
+      ],
+      "active_resource": 3,
+      "layout": {
+        "Split": {
+          "dir": "Horizontal",
+          "ratio": 0.5,
+          "left": {
+            "Leaf": 1
+          },
+          "right": {
+            "Leaf": 3
+          }
+        }
+      },
+      "last_cwd": "/home/u/proj/src"
+    }
+  ],
+  "panes": [
+    {
+      "wire_id": 1,
+      "window_wire_id": 1,
+      "cols": 80,
+      "rows": 24,
+      "cell_px": [
+        9,
+        18
+      ],
+      "cwd": "/home/u/proj",
+      "title": "editor",
+      "osc_title": "nvim README.md",
+      "term": "xterm-256color",
+      "child_pid": 4321,
+      "master_fd": 11,
+      "vt_replay_bytes": [
+        27,
+        91,
+        50,
+        74,
+        104,
+        105
+      ],
+      "scrollback_bytes": [
+        111,
+        108,
+        100,
+        13,
+        10
+      ],
+      "retained_exit": {
+        "exit_status": 0,
+        "signal": 15,
+        "exited_at_ms": 1793470086000,
+        "retained_until_ms": 1793470146000
+      },
+      "retain_secs": 60,
+      "key": "n5mmkthu2rjbchfwgjgj65u5oy"
+    },
+    {
+      "wire_id": 3,
+      "window_wire_id": 1,
+      "cols": 80,
+      "rows": 24,
+      "cell_px": [
+        9,
+        18
+      ],
+      "cwd": "/home/u/proj",
+      "title": "editor",
+      "osc_title": "nvim README.md",
+      "term": "xterm-256color",
+      "child_pid": 4322,
+      "master_fd": 12,
+      "vt_replay_bytes": [
+        27,
+        91,
+        50,
+        74,
+        104,
+        105
+      ],
+      "scrollback_bytes": [
+        111,
+        108,
+        100,
+        13,
+        10
+      ],
+      "retained_exit": {
+        "exit_status": 0,
+        "signal": 15,
+        "exited_at_ms": 1793470086000,
+        "retained_until_ms": 1793470146000
+      },
+      "retain_secs": 60,
+      "key": "n5mmkthu2rjbchfwgjgj65u5oy"
+    }
+  ],
+  "agent_sessions": [
+    {
+      "wire_id": 2,
+      "parent_wire_id": 1,
+      "provider": "omp",
+      "native_id": "provider-session-1",
+      "state": "working",
+      "base_seq": 1,
+      "dropped": 4,
+      "ended": true,
+      "records": [
+        "{\"seq\":1,\"ts_ms\":1793470086510,\"type\":\"provider_raw\",\"data\":{\"schema\":\"phux.native-agent/v1\",\"update\":{\"type\":\"view\",\"view\":{\"activation\":\"activation-A\",\"backend\":\"acp\",\"capabilities\":{\"follow_up\":true,\"interrupt\":true,\"prompt\":true,\"questions\":true},\"connected\":true,\"provider_session_id\":\"provider-session-1\",\"questions\":[],\"turn_id\":\"turn-A\"}}}}\n"
+      ],
+      "native_publications": [
+        {
+          "identity": {
+            "id": 1,
+            "fingerprint": "3f00b63d4c055495f6da5b518f0f8c3e63d4563168e27a559e9bdf9d68271a20"
+          },
+          "accepted": {
+            "first_seq": 1,
+            "last_seq": 1,
+            "ts_ms": 1793470086510,
+            "evidence": null,
+            "ask": null
+          }
+        }
+      ],
+      "native_publication_high_water": 1,
+      "key": "xqtttje3gnj3ky62v2abae5rme"
+    }
+  ],
+  "metadata": [
+    {
+      "group": 1,
+      "key": "phux.tui.layout/v1/1",
+      "value": [
+        161,
+        1
+      ]
+    }
+  ],
+  "org": {
+    "authority": {
+      "id": "myj43ek6r7symbe3u7dnlsojee",
+      "inbox_session": "jch3kqthu2fgl7727nekazm57u"
+    },
+    "sessions": [
+      {
+        "key": "jch3kqthu2fgl7727nekazm57u",
+        "name": "intake",
+        "lifetime": "persistent",
+        "awaiting_organization": false,
+        "members": [],
+        "arrangement": "lndr6feelt4r3tmrqj4f5u6hfe",
+        "attrs": {
+          "project": null,
+          "directory": null,
+          "host_label": null,
+          "repository": null
+        },
+        "created": 1793470086505,
+        "revision": 1,
+        "recent": null
+      },
+      {
+        "key": "rplgnyv4msq4b453bjhwn62sp4",
+        "name": "alpha",
+        "lifetime": "persistent",
+        "awaiting_organization": true,
+        "members": [
+          "n5mmkthu2rjbchfwgjgj65u5oy",
+          "xqtttje3gnj3ky62v2abae5rme"
+        ],
+        "arrangement": "twbso2qc42stxred2y65k5v5zq",
+        "attrs": {
+          "project": "phux",
+          "directory": "/home/u/proj",
+          "host_label": "mini",
+          "repository": null,
+          "mission_task": "00000000000000000000000000000001",
+          "project_link": "project-1"
+        },
+        "created": 1793470086506,
+        "revision": 2,
+        "recent": "n5mmkthu2rjbchfwgjgj65u5oy"
+      }
+    ],
+    "resources": [
+      {
+        "key": "n5mmkthu2rjbchfwgjgj65u5oy",
+        "session": "rplgnyv4msq4b453bjhwn62sp4",
+        "name": "shell",
+        "kind": "terminal",
+        "provenance": {
+          "created_by": {
+            "principal": "owner",
+            "client": null,
+            "on_behalf_of": "owner"
+          },
+          "operation": "ma5b7cnux6jr3zbhitlz5qslvy",
+          "parent": null
+        },
+        "launch": {
+          "terminal": {
+            "argv": [
+              "/bin/sh"
+            ],
+            "cwd": "/home/u/proj",
+            "env": [
+              [
+                "PHUX_NATIVE_HOST_SPEC",
+                "{\"session\":\"alpha\",\"backend\":\"acp\",\"provider\":\"omp\",\"command\":[\"provider-not-started-in-broker-test\"],\"cwd\":null,\"env\":{},\"native_id\":\"provider-session-1\",\"guardian\":null,\"guardian_key\":null,\"guardian_expected\":null}"
+              ]
+            ]
+          }
+        },
+        "on_exit": "retain",
+        "durable_result": true,
+        "activation": {
+          "id": 1,
+          "instance": "nwks4yhwg35jabhqvuwupbbp5m",
+          "state": "running",
+          "started": 1793470086506,
+          "ended": 1793470086600,
+          "outcome": null,
+          "host_proc": {
+            "pid": 74918,
+            "pgid": 74918,
+            "start_raw": 1,
+            "boot_id": [
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1
+            ]
+          }
+        },
+        "revision": 3
+      },
+      {
+        "key": "xqtttje3gnj3ky62v2abae5rme",
+        "session": "rplgnyv4msq4b453bjhwn62sp4",
+        "name": null,
+        "kind": "agent_session",
+        "provenance": {
+          "created_by": {
+            "principal": "owner",
+            "client": null,
+            "on_behalf_of": null
+          },
+          "operation": "ydx4gghur437t7xnex4kdsm5aa",
+          "parent": "n5mmkthu2rjbchfwgjgj65u5oy"
+        },
+        "launch": {
+          "agent": {
+            "provider": "omp",
+            "native_id": "provider-session-1"
+          }
+        },
+        "on_exit": "remove",
+        "durable_result": false,
+        "activation": {
+          "id": 1,
+          "instance": "nwks4yhwg35jabhqvuwupbbp5m",
+          "state": "running",
+          "started": 1793470086508,
+          "ended": null,
+          "outcome": null,
+          "host_proc": null
+        },
+        "revision": 2
+      }
+    ],
+    "arrangements": [
+      {
+        "key": "lndr6feelt4r3tmrqj4f5u6hfe",
+        "owner": {
+          "session": "jch3kqthu2fgl7727nekazm57u"
+        },
+        "groups": [],
+        "revision": 1
+      },
+      {
+        "key": "twbso2qc42stxred2y65k5v5zq",
+        "owner": {
+          "session": "rplgnyv4msq4b453bjhwn62sp4"
+        },
+        "groups": [
+          {
+            "id": [
+              160,
+              55,
+              155,
+              44,
+              39,
+              231,
+              13,
+              11,
+              5,
+              238,
+              29,
+              184,
+              147,
+              43,
+              196,
+              243
+            ],
+            "name": "main",
+            "tree": {
+              "leaf": {
+                "entry": [
+                  25,
+                  233,
+                  109,
+                  46,
+                  169,
+                  26,
+                  124,
+                  204,
+                  101,
+                  253,
+                  175,
+                  54,
+                  80,
+                  252,
+                  243,
+                  25
+                ],
+                "target": {
+                  "member": "n5mmkthu2rjbchfwgjgj65u5oy"
+                }
+              }
+            }
+          }
+        ],
+        "revision": 1
+      }
+    ]
+  },
+  "delegations": [
+    {
+      "id": "delegated:00000000000000000000000000000001",
+      "group": 1,
+      "verbs": 3,
+      "on_behalf_of": "owner",
+      "delegator": "owner",
+      "expires_at_ms": 1793470146000,
+      "listener_fd": 13,
+      "operations": [
+        [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      ]
+    }
+  ],
+  "native_agents": [
+    {
+      "launch": {
+        "session": "alpha",
+        "backend": "acp",
+        "provider": "omp",
+        "command": [
+          "provider-not-started-in-broker-test"
+        ],
+        "cwd": "/home/u/proj",
+        "env": {
+          "K": "V"
+        },
+        "native_id": "provider-session-1",
+        "guardian": null,
+        "guardian_key": null,
+        "guardian_expected": null
+      },
+      "agent": {
+        "Local": {
+          "id": 2
+        }
+      },
+      "parent": {
+        "Local": {
+          "id": 1
+        }
+      },
+      "activation": "activation-A",
+      "proof": "private-test-proof",
+      "credential": "delegated:283769b6b319681e0bc4523115d55a66",
+      "host_pid": 74918,
+      "generation": 1,
+      "view": {
+        "activation": "activation-A",
+        "backend": "acp",
+        "capabilities": {
+          "prompt": true,
+          "interrupt": true,
+          "questions": true,
+          "follow_up": true
+        },
+        "connected": true,
+        "turn_id": "turn-A",
+        "provider_session_id": "provider-session-1",
+        "questions": []
+      },
+      "closed": true,
+      "closure_committed": true,
+      "publication_committed": 1,
+      "evidence_seq": 2,
+      "operations": {
+        "31": {
+          "command": {
+            "operation_id": 31,
+            "activation": "activation-A",
+            "intent": {
+              "type": "prompt",
+              "text": "may already have reached SDK"
+            }
+          },
+          "result": {
+            "operation_id": 31,
+            "disposition": "unknown",
+            "detail": "dispatched to host; admission not yet acknowledged"
+          },
+          "delivered": true,
+          "submitted": false,
+          "requester": 1
+        }
+      },
+      "pending": [
+        31
+      ],
+      "answered": {
+        "question-1": 31
+      },
+      "publications": [
+        {
+          "id": 1,
+          "fingerprint": "3f00b63d4c055495f6da5b518f0f8c3e63d4563168e27a559e9bdf9d68271a20",
+          "receipt": {
+            "publication_id": 1,
+            "first_seq": 1,
+            "last_seq": 1
+          },
+          "view": null
+        }
+      ],
+      "publication_high_water": 1
+    }
+  ]
+}

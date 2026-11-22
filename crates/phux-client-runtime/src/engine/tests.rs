@@ -1,0 +1,570 @@
+use phux_protocol::caps::BootstrapStreamProfile;
+use phux_protocol::ids::{BootstrapId, StreamId};
+use phux_protocol::wire::frame::FrameKind;
+#[cfg(feature = "engine")]
+use phux_protocol::wire::frame::HistoryRejectionReason;
+
+use super::*;
+#[cfg(feature = "engine")]
+mod bounded_selection;
+mod native_agent;
+#[cfg(feature = "engine")]
+mod theme;
+#[cfg(feature = "engine")]
+mod views;
+#[cfg(feature = "engine")]
+use crate::publication::GridDamage;
+#[cfg(feature = "engine")]
+use phux_client_core::session::KernelSend;
+
+fn id(value: u32) -> ResourceId {
+    ResourceId::local(value)
+}
+
+fn stream(value: u64) -> StreamId {
+    StreamId::new(value).expect("nonzero")
+}
+
+fn bootstrap(value: u64) -> BootstrapId {
+    BootstrapId::new(value).expect("nonzero")
+}
+
+fn config() -> EngineConfig {
+    EngineConfig {
+        profile: BootstrapProfile::SynthesizedVtRaw,
+        limits: BootstrapLimits::default(),
+        scrollback_lines: 100,
+        history: None,
+    }
+}
+
+#[cfg(feature = "engine")]
+fn owner() -> (EngineHandle, Arc<Publication>) {
+    let publication = Arc::new(Publication::new());
+    let handle = EngineHandle::start(&config(), Arc::clone(&publication)).expect("owner");
+    (handle, publication)
+}
+
+#[cfg(not(feature = "engine"))]
+fn owner() -> EngineHandle {
+    EngineHandle::start(&config()).expect("owner")
+}
+
+fn apply_ok(owner: &EngineHandle, event: EngineEvent) -> EngineOutcome {
+    let outcome = owner.apply(event).expect("owner response");
+    assert_eq!(outcome.error, None);
+    assert!(!outcome.resync_required());
+    outcome
+}
+
+#[cfg(feature = "engine")]
+fn apply_batch_ok(owner: &EngineHandle, events: Vec<EngineEvent>) -> Vec<EngineOutcome> {
+    let outcomes = owner.apply_batch(events).expect("owner response");
+    assert!(outcomes.iter().all(|outcome| outcome.error.is_none()));
+    assert!(outcomes.iter().all(|outcome| !outcome.resync_required()));
+    outcomes
+}
+
+fn output(terminal: &ResourceId, seq: u64, bytes: &[u8]) -> EngineEvent {
+    EngineEvent::Stream(FrameKind::ResourceOutput {
+        terminal_id: terminal.clone(),
+        stream_id: stream(1),
+        bootstrap_id: bootstrap(1),
+        seq,
+        bytes: bytes.to_vec().into(),
+    })
+}
+
+fn attach(owner: &EngineHandle, terminal_id: &ResourceId, bytes: &[u8]) {
+    attach_many(owner, &[(terminal_id, bytes)]);
+}
+
+fn attach_many(owner: &EngineHandle, terminals: &[(&ResourceId, &[u8])]) {
+    attach_many_sized(owner, terminals, (20, 4));
+}
+
+fn attach_many_sized(
+    owner: &EngineHandle,
+    terminals: &[(&ResourceId, &[u8])],
+    geometry: (u16, u16),
+) {
+    attach_many_history(owner, terminals, geometry, None);
+}
+
+fn attach_many_history(
+    owner: &EngineHandle,
+    terminals: &[(&ResourceId, &[u8])],
+    geometry: (u16, u16),
+    history_cursor: Option<&[u8]>,
+) {
+    apply_ok(
+        owner,
+        EngineEvent::AttachStarted {
+            attach_id: 7,
+            terminals: terminals.iter().map(|(id, _)| (*id).clone()).collect(),
+        },
+    );
+    for (terminal_id, bytes) in terminals {
+        for event in bootstrap_events(terminal_id, 1, geometry, bytes, history_cursor) {
+            apply_ok(owner, event);
+        }
+    }
+    apply_ok(owner, EngineEvent::AttachReady { attach_id: 7 });
+}
+
+/// A raw synthesized bootstrap of `terminal` on stream 1 as bootstrap
+/// `bootstrap_id`: begin, one chunk of `payload`, ready.
+fn bootstrap_events(
+    terminal: &ResourceId,
+    bootstrap_id: u64,
+    (cols, rows): (u16, u16),
+    payload: &[u8],
+    history_cursor: Option<&[u8]>,
+) -> [EngineEvent; 3] {
+    [
+        EngineEvent::Stream(FrameKind::BootstrapBegin {
+            terminal_id: terminal.clone(),
+            stream_id: stream(1),
+            bootstrap_id: bootstrap(bootstrap_id),
+            profile: BootstrapStreamProfile::SynthesizedVtRaw,
+            cols,
+            rows,
+            base_seq: 0,
+        }),
+        EngineEvent::Stream(FrameKind::BootstrapChunk {
+            terminal_id: terminal.clone(),
+            stream_id: stream(1),
+            bootstrap_id: bootstrap(bootstrap_id),
+            chunk_seq: 0,
+            payload: payload.to_vec().into(),
+        }),
+        EngineEvent::Stream(FrameKind::BootstrapReady {
+            terminal_id: terminal.clone(),
+            stream_id: stream(1),
+            bootstrap_id: bootstrap(bootstrap_id),
+            history_cursor: history_cursor.map(bytes::Bytes::copy_from_slice),
+        }),
+    ]
+}
+
+/// Replace `terminal`'s 20x4 replica with bootstrap `bootstrap_id` of
+/// `payload`, outside any attach.
+#[cfg(feature = "engine")]
+fn rebootstrap(owner: &EngineHandle, terminal: &ResourceId, bootstrap_id: u64, payload: &[u8]) {
+    for event in bootstrap_events(terminal, bootstrap_id, (20, 4), payload, None) {
+        apply_ok(owner, event);
+    }
+}
+
+#[cfg(feature = "engine")]
+#[test]
+fn a_published_replica_is_projected_and_generations_advance_on_output() {
+    let (owner, publication) = owner();
+    let terminal = id(1);
+    assert!(!owner.has_projection(&terminal));
+    attach(&owner, &terminal, b"ready");
+    assert!(owner.has_projection(&terminal));
+    assert!(owner.input_ready(&terminal));
+    let first = publication.acquire(&terminal).expect("published");
+    assert_eq!(first.generation, 1);
+    assert_eq!(first.text(), "ready");
+    assert_eq!(first.damage, GridDamage::Full);
+    assert_eq!(first.dirty_rows().count(), 4, "a first frame is all dirty");
+
+    // Nothing applied: the generation does not move.
+    assert_eq!(publication.generation(&terminal), Some(1));
+
+    apply_ok(&owner, output(&terminal, 1, b"\x1b[3;1Hthird"));
+    let second = publication.acquire(&terminal).expect("published");
+    assert_eq!(second.generation, 2);
+    assert_eq!(second.row_text(2), "third");
+    assert!(second.is_row_dirty(2));
+    assert_eq!(first.text(), "ready", "the held frame is untouched");
+
+    // A scroll re-publishes even when the grid did not change.
+    owner.scroll(&terminal, Scroll::Bottom).expect("scroll");
+    assert_eq!(publication.generation(&terminal), Some(3));
+}
+
+#[cfg(feature = "engine")]
+#[test]
+fn an_output_burst_projects_once_without_losing_event_outcomes() {
+    let (owner, publication) = owner();
+    let terminal = id(1);
+    attach(&owner, &terminal, b"ready");
+    // A caught-up consumer: the batch publishes before anyone asks again.
+    let before = publication
+        .acquire(&terminal)
+        .expect("published")
+        .generation;
+    let events = vec![
+        output(&terminal, 1, b"\x1b[1;1Htop"),
+        output(&terminal, 2, b"\x1b[3;1Hthird"),
+    ];
+
+    let outcomes = apply_batch_ok(&owner, events);
+
+    assert_eq!(outcomes.len(), 2);
+    assert_eq!(publication.generation(&terminal), Some(before + 1));
+    assert_eq!(owner.replica_info(&terminal).expect("replica").last_seq, 2);
+    let frame = publication.acquire(&terminal).expect("published");
+    assert_eq!(frame.row_text(0), "topdy");
+    assert_eq!(frame.row_text(2), "third");
+    assert_eq!(frame.damage, GridDamage::Rows);
+    assert_eq!(
+        frame.dirty_rows().collect::<Vec<_>>(),
+        vec![0, 2],
+        "one final projection preserves the burst's exact accumulated row damage"
+    );
+}
+
+#[cfg(feature = "engine")]
+#[test]
+fn an_unread_frame_defers_projection_until_the_next_acquire() {
+    let (owner, publication) = owner();
+    let terminal = id(1);
+    attach(&owner, &terminal, b"ready");
+    let slot = publication.slot(&terminal).expect("published");
+    let first = slot.generation();
+
+    // Nobody read the attach frame: three batches replace nothing.
+    apply_batch_ok(&owner, vec![output(&terminal, 1, b"\x1b[1;1Htop")]);
+    apply_batch_ok(&owner, vec![output(&terminal, 2, b"\x1b[2;1Hsecond")]);
+    apply_batch_ok(&owner, vec![output(&terminal, 3, b"\x1b[3;1Hthird")]);
+    assert_eq!(slot.generation(), first, "unread frames are not replaced");
+
+    // The read pulls one projection of the latest state, with the damage of
+    // every deferred batch.
+    let caught_up = slot.acquire().expect("caught up");
+    assert_eq!(caught_up.generation, first + 1);
+    assert_eq!(caught_up.last_seq, 3);
+    assert_eq!(caught_up.row_text(0), "topdy");
+    assert_eq!(caught_up.row_text(2), "third");
+    assert_eq!(caught_up.damage, GridDamage::Rows);
+    assert_eq!(caught_up.dirty_rows().collect::<Vec<_>>(), vec![0, 1, 2]);
+    // Nothing changed since: a second read is the same frame, no projection.
+    let again = slot.acquire().expect("current");
+    assert!(Arc::ptr_eq(&caught_up, &again));
+
+    // Read, so the next batch publishes at once: an echo is never held.
+    apply_batch_ok(&owner, vec![output(&terminal, 4, b"\x1b[4;1Hecho")]);
+    assert_eq!(slot.generation(), first + 2);
+    let echo = publication.acquire(&terminal).expect("published");
+    assert_eq!(echo.row_text(3), "echo");
+    assert_eq!(echo.damage, GridDamage::Rows);
+    assert!(echo.is_row_dirty(3));
+    assert!(!echo.is_row_dirty(0));
+}
+
+/// The read/stale handshake under contention: a consumer that only
+/// re-acquires when the generation moves must still end on the final state,
+/// however its reads interleave with the owner's publish-or-defer choice.
+#[cfg(feature = "engine")]
+#[test]
+fn a_generation_polling_consumer_never_strands_on_a_deferred_frame() {
+    const BATCHES: u64 = 2_000;
+    let (owner, publication) = owner();
+    let terminal = id(1);
+    attach(&owner, &terminal, b"ready");
+    let slot = publication.slot(&terminal).expect("published");
+    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let consumer = {
+        let done = Arc::clone(&done);
+        std::thread::spawn(move || {
+            let mut painted = slot.acquire().expect("frame");
+            loop {
+                let finished = done.load(std::sync::atomic::Ordering::SeqCst);
+                if slot.generation() != painted.generation {
+                    painted = slot.acquire().expect("frame");
+                } else if finished {
+                    return painted;
+                }
+                std::thread::yield_now();
+            }
+        })
+    };
+    for seq in 1..=BATCHES {
+        let text = format!("\x1b[1;1H{seq:06}");
+        apply_batch_ok(&owner, vec![output(&terminal, seq, text.as_bytes())]);
+    }
+    done.store(true, std::sync::atomic::Ordering::SeqCst);
+    let painted = consumer.join().expect("consumer");
+    assert_eq!(painted.last_seq, BATCHES);
+    assert_eq!(painted.row_text(0), format!("{BATCHES:06}"));
+}
+
+#[cfg(feature = "engine")]
+#[test]
+fn a_catch_up_after_the_owner_stops_returns_the_last_frame() {
+    let (owner, publication) = owner();
+    let terminal = id(1);
+    attach(&owner, &terminal, b"ready");
+    let slot = publication.slot(&terminal).expect("published");
+    apply_batch_ok(&owner, vec![output(&terminal, 1, b"\x1b[1;1Htop")]);
+    let held = slot.generation();
+    drop(owner);
+    // Retiring the owner removes the slot; a held handle neither blocks nor
+    // resurrects it.
+    for _ in 0..100 {
+        if slot.acquire().is_none() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(slot.acquire().is_none());
+    assert_eq!(slot.generation(), held);
+}
+
+#[cfg(feature = "engine")]
+#[test]
+fn a_fatal_event_stops_the_batch_before_later_terminals_mutate() {
+    let (owner, publication) = owner();
+    let first = id(1);
+    let second = id(2);
+    attach_many(&owner, &[(&first, b"first"), (&second, b"second")]);
+    let second_generation = publication.generation(&second).expect("second published");
+
+    let outcomes = owner
+        .apply_batch(vec![output(&first, 2, b"gap"), output(&second, 1, b"late")])
+        .expect("owner response");
+
+    assert_eq!(
+        outcomes.len(),
+        1,
+        "the fatal outcome ends the applied prefix"
+    );
+    assert!(matches!(
+        outcomes[0].error,
+        Some(EngineApplyError::Protocol(_))
+    ));
+    assert_eq!(
+        owner
+            .replica_info(&second)
+            .expect("second replica")
+            .last_seq,
+        0
+    );
+    assert_eq!(publication.generation(&second), Some(second_generation));
+    assert_eq!(
+        publication.acquire(&second).expect("second frame").text(),
+        "second"
+    );
+}
+
+#[cfg(feature = "engine")]
+#[test]
+fn scrolling_toward_uncached_history_emits_a_prefetch_request() {
+    let publication = Arc::new(Publication::new());
+    let mut history_config = config();
+    history_config.history = Some(HistoryCacheConfig::default());
+    let owner = EngineHandle::start(&history_config, publication).expect("owner");
+    let terminal = id(9);
+    attach_many_history(
+        &owner,
+        &[(&terminal, b"one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix")],
+        (20, 4),
+        Some(b"older"),
+    );
+    apply_ok(
+        &owner,
+        EngineEvent::Stream(FrameKind::HistoryRejected {
+            terminal_id: terminal.clone(),
+            stream_id: stream(1),
+            bootstrap_id: bootstrap(1),
+            cursor: bytes::Bytes::from_static(b"older"),
+            reason: HistoryRejectionReason::ZeroLimit,
+            required_bytes: 0,
+            required_rows: 0,
+        }),
+    );
+
+    let outcome = owner.scroll(&terminal, Scroll::Top).expect("scroll");
+    assert!(outcome.effects.iter().any(|effect| matches!(
+        effect,
+        KernelEffect::Send(KernelSend::HistoryRequest { cursor, .. }) if cursor == b"older"
+    )));
+}
+
+#[cfg(feature = "engine")]
+#[test]
+fn a_closed_terminal_loses_its_projection_unless_retained() {
+    let (owner, publication) = owner();
+    let terminal = id(2);
+    attach(&owner, &terminal, b"final");
+    owner.set_retain_on_close(&terminal, true);
+    apply_ok(&owner, EngineEvent::closed_unknown(terminal.clone()));
+    assert!(owner.is_closed(&terminal));
+    assert!(owner.has_projection(&terminal), "retained after close");
+    assert!(publication.acquire(&terminal).is_some());
+    owner.release(&terminal);
+    assert!(!owner.has_projection(&terminal));
+    assert!(publication.acquire(&terminal).is_none());
+}
+
+#[cfg(feature = "engine")]
+#[test]
+fn a_frame_queued_after_close_cannot_recreate_the_projection() {
+    let (owner, publication) = owner();
+    let terminal = id(3);
+    attach(&owner, &terminal, b"final");
+
+    let outcomes = apply_batch_ok(
+        &owner,
+        vec![
+            EngineEvent::closed_unknown(terminal.clone()),
+            output(&terminal, 1, b"stale"),
+        ],
+    );
+
+    assert_eq!(outcomes.len(), 2);
+    assert!(outcomes[1].effects.is_empty());
+    assert!(owner.is_closed(&terminal));
+    assert!(!owner.has_projection(&terminal));
+    assert!(publication.acquire(&terminal).is_none());
+}
+
+#[cfg(feature = "engine")]
+#[test]
+fn releasing_a_live_terminal_keeps_its_current_publication() {
+    let (owner, publication) = owner();
+    let terminal = id(3);
+    attach(&owner, &terminal, b"live");
+    let generation = publication.generation(&terminal);
+
+    owner.release(&terminal);
+
+    assert!(owner.has_projection(&terminal));
+    assert_eq!(publication.generation(&terminal), generation);
+}
+
+#[cfg(not(feature = "engine"))]
+#[test]
+fn the_headless_replica_keeps_bytes_until_taken() {
+    let owner = owner();
+    let terminal = id(3);
+    attach(&owner, &terminal, b"ready");
+    assert!(owner.has_projection(&terminal));
+    assert_eq!(owner.take_output(&terminal), b"ready");
+    apply_ok(&owner, output(&terminal, 1, b"more"));
+    assert_eq!(owner.take_output(&terminal), b"more");
+    assert!(owner.take_output(&terminal).is_empty());
+}
+
+#[cfg(feature = "engine")]
+fn assert_search_projection_unavailable(owner: &EngineHandle, terminal: &ResourceId, anchor: u64) {
+    for bound in [8, 0] {
+        assert!(matches!(
+            owner.search_bounded(terminal, "needle".into(), true, bound),
+            Err(EngineError::ProjectionUnavailable)
+        ));
+    }
+    assert!(matches!(
+        owner.clear_search(terminal),
+        Err(EngineError::ProjectionUnavailable)
+    ));
+    for handle in [u64::MAX, anchor] {
+        assert!(matches!(
+            owner.pin_viewport(terminal, handle),
+            Err(EngineError::ProjectionUnavailable)
+        ));
+    }
+}
+
+#[cfg(feature = "engine")]
+#[test]
+fn missing_search_projection_is_typed_and_preserves_sibling_state() {
+    let (owner, publication) = owner();
+    let sibling = id(1);
+    attach(
+        &owner,
+        &sibling,
+        b"needle one\r\na\r\nb\r\nc\r\nneedle two\r\nd\r\ne\r\nf",
+    );
+    let found = owner.search(&sibling, "needle".into(), true).unwrap();
+    owner.pin_viewport(&sibling, found[0].start).unwrap();
+    let frame = publication.acquire(&sibling).unwrap();
+    assert_search_projection_unavailable(&owner, &id(999), found[1].start);
+    assert!(Arc::ptr_eq(&frame, &publication.acquire(&sibling).unwrap()));
+    owner.pin_viewport(&sibling, found[1].start).unwrap();
+    assert_eq!(
+        publication.acquire(&sibling).unwrap().row_text(0),
+        "needle two"
+    );
+}
+
+/// Two searched terminals; once `retire` drops the first one's projection,
+/// it refuses search whichever anchor is offered and the sibling still pins.
+#[cfg(feature = "engine")]
+fn assert_retired_search_projection_unavailable(retire: fn(&EngineHandle, &ResourceId)) {
+    let (owner, _) = owner();
+    let terminal = id(1);
+    let sibling = id(2);
+    attach_many(&owner, &[(&terminal, b"needle"), (&sibling, b"needle")]);
+    let old = owner.search(&terminal, "needle".into(), true).unwrap();
+    let live = owner.search(&sibling, "needle".into(), true).unwrap();
+    retire(&owner, &terminal);
+    assert_search_projection_unavailable(&owner, &terminal, old[0].start);
+    assert_search_projection_unavailable(&owner, &terminal, live[0].start);
+    owner.pin_viewport(&sibling, live[0].start).unwrap();
+}
+
+#[cfg(feature = "engine")]
+#[test]
+fn detached_search_projection_is_unavailable_before_anchor_lookup() {
+    assert_retired_search_projection_unavailable(|owner, terminal| {
+        assert!(owner.detach(terminal.clone()));
+    });
+}
+
+#[cfg(feature = "engine")]
+#[test]
+fn live_search_preserves_stale_and_wrong_owner_errors() {
+    let (owner, _) = owner();
+    let terminal = id(1);
+    let sibling = id(2);
+    attach_many(&owner, &[(&terminal, b"needle"), (&sibling, b"needle")]);
+    let old = owner.search(&terminal, "needle".into(), true).unwrap();
+    let fresh = owner.search(&terminal, "needle".into(), true).unwrap();
+    assert!(matches!(
+        owner.pin_viewport(&terminal, old[0].start),
+        Err(EngineError::AnchorUnavailable(_))
+    ));
+    assert!(matches!(
+        owner.pin_viewport(&sibling, fresh[0].start),
+        Err(EngineError::Engine(_))
+    ));
+    let view = owner.create_view(&terminal).unwrap();
+    let in_view = owner.search_view(view, "needle".into(), true).unwrap();
+    assert!(matches!(
+        owner.pin_viewport(&terminal, in_view[0].start),
+        Err(EngineError::Engine(_))
+    ));
+    owner.clear_search(&terminal).unwrap();
+    assert!(matches!(
+        owner.pin_viewport(&terminal, fresh[0].start),
+        Err(EngineError::AnchorUnavailable(_))
+    ));
+    let rebuilt = owner.search(&terminal, "needle".into(), true).unwrap();
+    owner.clear_presentation(&terminal, 1, 1).unwrap();
+    assert!(matches!(
+        owner.pin_viewport(&terminal, rebuilt[0].start),
+        Err(EngineError::AnchorUnavailable(_))
+    ));
+}
+
+#[cfg(feature = "engine")]
+#[test]
+fn retained_close_keeps_existing_kernel_search_refusal() {
+    let (owner, _) = owner();
+    let terminal = id(1);
+    attach(&owner, &terminal, b"needle");
+    owner.set_retain_on_close(&terminal, true);
+    apply_ok(&owner, EngineEvent::closed_unknown(terminal.clone()));
+    assert!(owner.has_projection(&terminal));
+    assert!(matches!(
+        owner.search(&terminal, "needle".into(), true),
+        Err(EngineError::Engine(_))
+    ));
+    owner.release(&terminal);
+    assert_search_projection_unavailable(&owner, &terminal, u64::MAX);
+}

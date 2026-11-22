@@ -1,0 +1,187 @@
+//! What a consumer configures the control plane with.
+
+use phux_protocol::caps::{
+    BootstrapCapabilities, BootstrapLimits, ClientCapabilities, ImageProtocolSet, Layer, LayerSet,
+};
+use phux_protocol::caps::{BootstrapProfileKind, BootstrapProfileSet, ImageProtocol};
+use phux_protocol::wire::frame::{AttachTarget, RolePolicy};
+
+/// What a consumer asks the control plane to do on every connection.
+#[derive(Debug, Clone)]
+pub struct ControlOptions {
+    /// The `HELLO` client name.
+    pub client_name: String,
+    /// Whether the runtime queues its post-handshake attach, topology reads,
+    /// and agent metadata discovery/recovery.
+    ///
+    /// An embedder that drives attaches itself sets this to `false`; this
+    /// plane still owns lifecycle validation and frame application, but
+    /// issues no autonomous roster reads.
+    pub automatic_lifecycle: bool,
+    /// Recover session selection and terminal subscriptions after transport loss.
+    /// Disable when the consumer revalidates authority and persistent keys from
+    /// fresh inventory before explicitly selecting work and rebuilding views.
+    pub session_recovery: SessionRecovery,
+    /// The viewport `ATTACH` and spawns declare, in cells. `(0, 0)` casts no
+    /// vote: the server ignores it in window-size policy, a session attach
+    /// resizes nothing, and every terminal's size is set explicitly (a GUI
+    /// whose panes each size their own terminal).
+    pub viewport: (u16, u16),
+    /// The scrollback depth `ATTACH` requests and the history cache keeps.
+    pub scrollback_lines: u32,
+    /// The session every connection attaches after `HELLO_OK`; `None`
+    /// browses the topology (`GET_STATE`) without attaching.
+    pub attach: Option<AttachTarget>,
+    /// The role every `ATTACH` declares (ADR-0127); `None` sends nothing.
+    pub attach_role: Option<RolePolicy>,
+    /// The journal cursor the automatic `SUBSCRIBE_EVENTS` carries on a
+    /// server that advertises `EVENT_JOURNAL`; `None` is live-only.
+    pub event_after_seq: Option<u64>,
+    /// Pick up a terminal another client spawned with a per-terminal
+    /// attach on the live socket, so its output reaches this client
+    /// without a reconnect.
+    pub auto_attach_foreign_spawns: bool,
+    /// Stream every `AgentSession` resource (ADR-0103) whose parent Terminal
+    /// this connection streams: subscribe it with a per-resource attach,
+    /// re-read the topology when one is announced, and surface its commits
+    /// as [`super::Event::AgentPublication`] and its end as
+    /// [`super::Event::AgentSessionClosed`]. Needs `automatic_lifecycle`, which
+    /// owns the request ids those attaches use.
+    pub subscribe_agent_sessions: bool,
+    /// The bootstrap payload limits offered in `HELLO`.
+    pub bootstrap_limits: BootstrapLimits,
+    /// Image protocols this consumer can paint. Currently Kitty is supported;
+    /// unsupported protocols are not advertised. Empty for text-only and ABI consumers.
+    pub image_protocols: ImageProtocolSet,
+    /// How predictive echo is drawn. Applied to every engine this plane starts.
+    pub prediction_style: PredictionStyle,
+}
+
+/// How a guess at what the server will echo is drawn.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PredictionStyle {
+    /// Underlined, as a terminal client marks a guess.
+    #[default]
+    Underline,
+    /// Plain text, for a client that would rather typing read as typed.
+    Plain,
+}
+
+/// Who re-establishes session and terminal admission after transport loss.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SessionRecovery {
+    /// Follow the confirmed session and replay preserved terminal subscriptions.
+    #[default]
+    Automatic,
+    /// Read inventory only. The caller validates authority and persistent keys,
+    /// then explicitly selects work and re-establishes its views.
+    CallerValidated,
+}
+
+impl Default for ControlOptions {
+    fn default() -> Self {
+        Self {
+            client_name: "phux-client-runtime".to_owned(),
+            automatic_lifecycle: true,
+            session_recovery: SessionRecovery::Automatic,
+            viewport: (80, 24),
+            scrollback_lines: 1000,
+            attach: None,
+            attach_role: None,
+            event_after_seq: None,
+            auto_attach_foreign_spawns: true,
+            subscribe_agent_sessions: false,
+            bootstrap_limits: BootstrapLimits::default(),
+            image_protocols: ImageProtocolSet::new(),
+            prediction_style: PredictionStyle::Underline,
+        }
+    }
+}
+
+impl ControlOptions {
+    /// The capabilities `HELLO` advertises: every bootstrap profile the
+    /// hosted engine can consume, and L3 metadata.
+    #[must_use]
+    #[allow(
+        clippy::missing_const_for_fn,
+        reason = "the engine offer probes libghostty at runtime; only the headless offer is constant"
+    )]
+    pub fn client_caps(&self) -> ClientCapabilities {
+        ClientCapabilities::new()
+            .with_image_protocols(
+                if cfg!(feature = "engine")
+                    && self.image_protocols.contains(ImageProtocol::KittyGraphics)
+                {
+                    ImageProtocolSet::with(&[ImageProtocol::KittyGraphics])
+                } else {
+                    ImageProtocolSet::new()
+                },
+            )
+            .with_layers(LayerSet::with(&[Layer::L3]))
+            .with_credential_approvals(true)
+            .with_bootstrap(self.bootstrap_caps())
+            .with_resource_kinds(phux_client_core::session::KERNEL_RESOURCE_KINDS)
+    }
+
+    #[cfg(feature = "engine")]
+    fn bootstrap_caps(&self) -> BootstrapCapabilities {
+        if self.image_protocols.contains(ImageProtocol::KittyGraphics) {
+            // Native pixels arrive after READY through history units. This
+            // viewer pulls history on demand, so use synthesized replay to
+            // make initial images paint without waiting for a history request.
+            return BootstrapCapabilities::new()
+                .with_profiles(BootstrapProfileSet::with(&[
+                    BootstrapProfileKind::SynthesizedVtRaw,
+                    BootstrapProfileKind::SynthesizedVtStateSync,
+                ]))
+                .with_limits(self.bootstrap_limits);
+        }
+        phux_client_core::engine::ghostty::native_bootstrap_capabilities(self.bootstrap_limits)
+    }
+
+    #[cfg(not(feature = "engine"))]
+    const fn bootstrap_caps(&self) -> BootstrapCapabilities {
+        BootstrapCapabilities::new()
+            .with_profiles(BootstrapProfileSet::with(&[
+                BootstrapProfileKind::SynthesizedVtRaw,
+            ]))
+            .with_limits(self.bootstrap_limits)
+    }
+}
+
+#[cfg(test)]
+mod image_tests {
+    use super::*;
+
+    #[test]
+    fn text_consumers_do_not_offer_image_protocols() {
+        assert_eq!(
+            ControlOptions::default().client_caps().image_protocols,
+            ImageProtocolSet::new()
+        );
+    }
+
+    #[test]
+    fn image_offer_is_explicit_and_eagerly_bootstraps_pixels() {
+        let options = ControlOptions {
+            image_protocols: ImageProtocolSet::with(&[ImageProtocol::KittyGraphics]),
+            ..ControlOptions::default()
+        };
+        let caps = options.client_caps();
+        assert_eq!(
+            caps.image_protocols.contains(ImageProtocol::KittyGraphics),
+            cfg!(feature = "engine")
+        );
+        assert!(
+            !caps
+                .bootstrap
+                .profiles
+                .contains(BootstrapProfileKind::NativeState)
+        );
+        assert!(
+            caps.bootstrap
+                .profiles
+                .contains(BootstrapProfileKind::SynthesizedVtRaw)
+        );
+    }
+}

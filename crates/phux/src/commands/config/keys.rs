@@ -1,0 +1,310 @@
+//! `phux config keys`: the key bindings in effect and the layer that set each.
+
+use std::collections::BTreeMap;
+use std::process::ExitCode;
+
+use phux_config::keybind::{BindingDiagnostic, Resolver, binding_layer};
+use phux_config::loader as config_loader;
+use phux_config::plugin::actions as plugin_actions;
+use phux_config::{Action, ConfigProvenance, KeybindingsCfg, LayerSource};
+
+/// One effective binding, as printed.
+struct Row {
+    /// The table below `[keybindings]`: `global`, `prefix-table`, or
+    /// `modes.<name>`.
+    table: String,
+    keys: String,
+    action: String,
+    args: BTreeMap<String, toml::Value>,
+    source: String,
+}
+
+/// `phux config keys [ACTION] [--json]`.
+pub(super) fn run_config_keys(filter: Option<&str>, json: bool) -> ExitCode {
+    let path = config_loader::config_path();
+    let user_input = match std::fs::read_to_string(&path) {
+        Ok(body) => body,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(err) => {
+            error!("could not read {}: {err}", path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let loaded = phux_config::parse_with_defaults(&user_input, &path).and_then(|cfg| {
+        phux_config::merged_config_with_provenance(&user_input, &path)
+            .map(|(_, provenance)| (cfg, provenance))
+    });
+    let (cfg, provenance) = match loaded {
+        Ok(loaded) => loaded,
+        Err(err) => {
+            error!("{err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // Plugin keys merge exactly as the terminal UI merges them.
+    let manifests = phux_config::plugin::load_enabled_manifests(&path, &cfg.plugins);
+    let mut keybindings = cfg.keybindings;
+    plugin_actions::merge_plugin_bindings(
+        &mut keybindings,
+        &plugin_actions::entries_from_manifests(&manifests),
+    );
+    let (_, skipped) = Resolver::new_lenient(&keybindings);
+
+    let prefix_source = binding_source(&provenance, "keybindings", "prefix", None);
+    let rows: Vec<Row> = rows(&keybindings, &provenance)
+        .into_iter()
+        .filter(|row| filter.is_none_or(|action| row.action == action))
+        .collect();
+    if json {
+        return print_json(&keybindings.prefix, &prefix_source, &rows, &skipped);
+    }
+    print_human(&keybindings.prefix, &prefix_source, &rows, filter);
+    for diagnostic in &skipped {
+        warn!("skipped {diagnostic}");
+    }
+    ExitCode::SUCCESS
+}
+
+/// Global bindings first, then the prefix table, then each key mode, each
+/// in key order. A mode's keys read `mode:<name> <key>`.
+fn rows(keybindings: &KeybindingsCfg, provenance: &ConfigProvenance) -> Vec<Row> {
+    let mut tables = vec![
+        ("global".to_owned(), &keybindings.global, None),
+        (
+            "prefix-table".to_owned(),
+            &keybindings.prefix_table,
+            Some(keybindings.prefix.clone()),
+        ),
+    ];
+    tables.extend(keybindings.modes.iter().map(|(mode, bindings)| {
+        (
+            format!("modes.{mode}"),
+            bindings,
+            Some(format!("mode:{mode}")),
+        )
+    }));
+    let mut rows = Vec::new();
+    for (table, bindings, lead) in tables {
+        let table_path = format!("keybindings.{table}");
+        for (binding, action) in bindings {
+            let (action, args) = match action {
+                Action::Bare(name) => (name.clone(), BTreeMap::new()),
+                Action::Parameterized(p) => (p.action.clone(), p.args.clone()),
+            };
+            // A plugin-contributed key has no layer; name its plugin.
+            let plugin = (action == plugin_actions::PLUGIN_ACTION_NAME)
+                .then(|| plugin_actions::plugin_action_target(&args))
+                .flatten()
+                .map(|(plugin, _)| plugin);
+            rows.push(Row {
+                table: table.clone(),
+                keys: lead
+                    .as_ref()
+                    .map_or_else(|| binding.clone(), |lead| format!("{lead} {binding}")),
+                source: binding_source(provenance, &table_path, binding, plugin),
+                action,
+                args,
+            });
+        }
+    }
+    rows
+}
+
+/// The layer that set a binding (`defaults`, a layer's file name), or the
+/// plugin that contributed it.
+fn binding_source(
+    provenance: &ConfigProvenance,
+    table_path: &str,
+    binding: &str,
+    plugin: Option<&str>,
+) -> String {
+    let layer = binding_layer(provenance, table_path, binding)
+        .and_then(|layer| provenance.layers.get(layer));
+    match (layer, plugin) {
+        (Some(LayerSource::Defaults), _) => "defaults".to_owned(),
+        (Some(LayerSource::Extended(path) | LayerSource::User(path)), _) => {
+            path.file_name().map_or_else(
+                || path.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            )
+        }
+        (None, Some(plugin)) => format!("plugin {plugin}"),
+        (None, None) => "plugin".to_owned(),
+    }
+}
+
+/// `direction=vertical amount=5`, strings unquoted.
+fn render_args(args: &BTreeMap<String, toml::Value>) -> String {
+    args.iter()
+        .map(|(key, value)| match value {
+            toml::Value::String(s) => format!("{key}={s}"),
+            other => format!("{key}={other}"),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn print_human(prefix: &str, prefix_source: &str, rows: &[Row], filter: Option<&str>) {
+    outln!("prefix  {prefix}  ({prefix_source})");
+    outln!();
+    if rows.is_empty() {
+        match filter {
+            Some(action) => outln!("no key is bound to {action}"),
+            None => outln!("no key bindings"),
+        }
+        return;
+    }
+    let args: Vec<String> = rows.iter().map(|row| render_args(&row.args)).collect();
+    let keys_w = rows.iter().map(|r| r.keys.len()).max().unwrap_or(0).max(3);
+    let action_w = rows
+        .iter()
+        .map(|r| r.action.len())
+        .max()
+        .unwrap_or(0)
+        .max(6);
+    let args_w = args.iter().map(String::len).max().unwrap_or(0).max(4);
+    outln!(
+        "{:<keys_w$}  {:<action_w$}  {:<args_w$}  SOURCE",
+        "KEY",
+        "ACTION",
+        "ARGS"
+    );
+    for (row, args) in rows.iter().zip(&args) {
+        outln!(
+            "{:<keys_w$}  {:<action_w$}  {:<args_w$}  {}",
+            row.keys,
+            row.action,
+            args,
+            row.source
+        );
+    }
+}
+
+fn print_json(
+    prefix: &str,
+    prefix_source: &str,
+    rows: &[Row],
+    skipped: &[BindingDiagnostic],
+) -> ExitCode {
+    let bindings: Vec<_> = rows
+        .iter()
+        .map(|row| {
+            serde_json::json!({
+                "table": row.table,
+                "keys": row.keys,
+                "action": row.action,
+                "args": row.args,
+                "source": row.source,
+            })
+        })
+        .collect();
+    let skipped: Vec<_> = skipped
+        .iter()
+        .map(|d| serde_json::json!({ "binding": d.binding, "error": d.error.to_string() }))
+        .collect();
+    crate::output::json(&serde_json::json!({
+        "schema_version": 1,
+        "prefix": { "keys": prefix, "source": prefix_source },
+        "bindings": bindings,
+        "skipped": skipped,
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rows_for(user: &str) -> Vec<Row> {
+        let path = std::path::Path::new("/tmp/phux-keys-test/config.toml");
+        let cfg = phux_config::parse_with_defaults(user, path).expect("parses");
+        let (_, provenance) =
+            phux_config::merged_config_with_provenance(user, path).expect("merges");
+        rows(&cfg.keybindings, &provenance)
+    }
+
+    #[test]
+    fn shipped_bindings_are_attributed_to_the_defaults() {
+        let rows = rows_for("");
+        let zoom = rows.iter().find(|r| r.keys == "C-a z").expect("prefix z");
+        assert_eq!(
+            (zoom.action.as_str(), zoom.source.as_str()),
+            ("toggle-zoom", "defaults")
+        );
+        let split = rows.iter().find(|r| r.keys == "C-a %").expect("prefix %");
+        assert_eq!(render_args(&split.args), "direction=vertical");
+    }
+
+    #[test]
+    fn your_bindings_name_your_file_and_unbound_keys_disappear() {
+        let rows = rows_for(
+            "[keybindings]\nprefix = \"C-b\"\n[keybindings.global]\n\"M-Enter\" = \"toggle-zoom\"\n\
+             [keybindings.prefix-table]\nx = \"none\"\n",
+        );
+        let global = rows.iter().find(|r| r.keys == "M-Enter").expect("global");
+        assert_eq!(
+            (global.table.as_str(), global.source.as_str()),
+            ("global", "config.toml")
+        );
+        assert!(rows.iter().any(|r| r.keys == "C-b z"), "prefix applies");
+        assert!(!rows.iter().any(|r| r.keys == "C-b x"), "x unbound");
+    }
+
+    #[test]
+    fn mode_bindings_read_mode_name_then_key_and_none_unbinds_one() {
+        let rows = rows_for("[keybindings.modes.resize]\nh = \"none\"\nx = \"exit-mode\"\n");
+        let j = rows
+            .iter()
+            .find(|r| r.keys == "mode:resize j")
+            .expect("shipped j");
+        assert_eq!(
+            (j.table.as_str(), j.action.as_str(), j.source.as_str()),
+            ("modes.resize", "resize-pane", "defaults")
+        );
+        assert_eq!(render_args(&j.args), "amount=1 direction=down");
+        let x = rows
+            .iter()
+            .find(|r| r.keys == "mode:resize x")
+            .expect("yours");
+        assert_eq!(x.source, "config.toml");
+        assert!(!rows.iter().any(|r| r.keys == "mode:resize h"), "h unbound");
+        let enter = rows.iter().find(|r| r.keys == "C-a R").expect("prefix R");
+        assert_eq!(render_args(&enter.args), "name=resize");
+    }
+
+    /// Rows after merging one plugin action that claims `keys`, as
+    /// `run_config_keys` merges enabled manifests.
+    fn rows_with_plugin_key(user: &str, keys: &str) -> Vec<Row> {
+        let path = std::path::Path::new("/tmp/phux-keys-test/config.toml");
+        let cfg = phux_config::parse_with_defaults(user, path).expect("parses");
+        let (_, provenance) =
+            phux_config::merged_config_with_provenance(user, path).expect("merges");
+        let mut keybindings = cfg.keybindings;
+        plugin_actions::merge_plugin_bindings(
+            &mut keybindings,
+            &[plugin_actions::PluginActionEntry {
+                plugin_id: "example.tools".to_owned(),
+                plugin_name: "Tools".to_owned(),
+                action_id: "summarize".to_owned(),
+                title: "Summarize".to_owned(),
+                keys: Some(keys.to_owned()),
+            }],
+        );
+        rows(&keybindings, &provenance)
+    }
+
+    #[test]
+    fn a_plugin_key_shows_its_plugin_unless_you_unbound_the_key() {
+        let rows = rows_with_plugin_key("", "M-s");
+        let row = rows.iter().find(|r| r.keys == "C-a M-s").expect("merged");
+        assert_eq!(row.source, "plugin example.tools");
+        assert_eq!(render_args(&row.args), "id=summarize plugin=example.tools");
+
+        let rows =
+            rows_with_plugin_key("[keybindings.prefix-table]\n\"M-S\" = \"none\"\n", "M-S-s");
+        assert!(
+            !rows.iter().any(|r| r.action == "plugin-action"),
+            "a key you unbound stays unbound"
+        );
+    }
+}

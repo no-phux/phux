@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "phux",
+  "displayName": "phux",
+  "version": "0.7.2",
+  "description": "Expose shared phux terminals as Claude Code tools and publish Claude lifecycle metadata.",
+  "author": {
+    "name": "phall"
+  },
+  "homepage": "https://github.com/no-phux/phux/tree/main/integrations/claude",
+  "repository": "https://github.com/no-phux/phux",
+  "license": "MIT OR Apache-2.0",
+  "keywords": [
+    "phux",
+    "terminal",
+    "mcp",
+    "agent"
+  ]
+}

@@ -1,0 +1,329 @@
+//! Every step through the real window, and fixture renders of each.
+
+use rune::accesskit::Action;
+use rune::{Env, Key, Runtime};
+
+use super::*;
+use crate::onboarding::{AgentSkill, KEEP_ALIVE, Permissions};
+
+mod modes;
+
+const SIZE: (f32, f32) = (1100.0, 720.0);
+/// Snapshots render at the Retina scale.
+const SCALE: u8 = 2;
+
+fn skill(agent: &str, state: &str) -> AgentSkill {
+    AgentSkill {
+        agent: agent.to_owned(),
+        detected: true,
+        skill: Some(state.to_owned()),
+        ..AgentSkill::default()
+    }
+}
+
+/// The real window on `step`, as a first run with Claude Code and Codex
+/// found and one permission granted would show it.
+fn window(step: Step) -> Runtime<Desk> {
+    let mut desk = crate::test_support::settings_window();
+    desk.connection.resources.images = Some(rune::ImageCache::new(std::sync::Arc::new(|| {})));
+    desk.settings_open = false;
+    desk.settings.theme = theme::find("midnight");
+    let mut rt = crate::test_support::runtime(
+        desk,
+        crate::ui::view,
+        SIZE,
+        Env::new(true, f32::from(SCALE)),
+    );
+    rt.on_key = Some(Desk::key);
+    rt.update(|d, tx| {
+        d.open_onboarding();
+        // The offline fixture has no CLI: drop what that answered.
+        d.pump_onboarding(tx);
+        let ob = &mut d.onboarding;
+        ob.skills = Probe::Ready(vec![
+            skill("claude", "installed"),
+            skill("codex", "missing"),
+        ]);
+        ob.permissions = Probe::Ready(Permissions {
+            responsible_path: Some("/Applications/phux Server.app".into()),
+            services: vec![(Service::FullDiskAccess, Grant::Granted)],
+        });
+        ob.bundle = Some("/Applications/phux Server.app".into());
+        ob.step = step;
+    });
+    settle(&mut rt);
+    rt
+}
+
+fn settle(rt: &mut Runtime<Desk>) {
+    for t in [0.0, 0.5, 1.0, 2.0] {
+        rt.frame(t);
+    }
+}
+
+fn has(rt: &Runtime<Desk>, key: &str) -> bool {
+    rt.find(key).is_some()
+}
+
+/// `RUNE_ONBOARDING_SNAP=DIR` writes each frame as `DIR/NAME.png`.
+fn snap(rt: &mut Runtime<Desk>, name: &str) {
+    let Some(dir) = std::env::var_os("RUNE_ONBOARDING_SNAP") else {
+        return;
+    };
+    let (w, h) = (
+        (SIZE.0 * f32::from(SCALE)) as u32,
+        (SIZE.1 * f32::from(SCALE)) as u32,
+    );
+    let gpu = rune::render::Gpu::headless();
+    let mut renderer = rune::render::Renderer::new(&gpu.device, rune::render::OFFSCREEN_FORMAT);
+    let pixels = crate::ui::offscreen(&gpu, &mut renderer, rt, (w, h));
+    let path = std::path::Path::new(&dir).join(format!("{name}.png"));
+    std::fs::create_dir_all(&dir).unwrap();
+    rune::render::write_png(&path, w, h, &pixels).unwrap();
+}
+
+#[test]
+fn every_step_renders_its_parts() {
+    let mut rt = window(Step::Welcome);
+    assert!(has(&rt, "onboarding-continue") && has(&rt, "onboarding-skip"));
+    assert!(rt.state.fox_image().is_some(), "the brand fox, not a glyph");
+    assert!(!has(&rt, "onboarding-back"), "nothing to go back to");
+    snap(&mut rt, "1-welcome");
+
+    let mut rt = window(Step::Look);
+    for key in [
+        "look-auto",
+        "look-light",
+        "look-dark",
+        "look-sidebar",
+        "look-theme-phux",
+    ] {
+        assert!(has(&rt, key), "{key}");
+    }
+    assert!(
+        !has(&rt, "look-theme-catppuccin-latte"),
+        "dark themes only on Dark"
+    );
+    snap(&mut rt, "2-look");
+
+    let mut rt = window(Step::Agents);
+    assert!(has(&rt, "onboarding-skill") && has(&rt, "onboarding-install"));
+    assert!(has(&rt, "onboarding-shims") && has(&rt, "onboarding-shim"));
+    assert_eq!(
+        has(&rt, "onboarding-permissions"),
+        PERMISSIONS,
+        "macOS only"
+    );
+    snap(&mut rt, "3-agents");
+    if PERMISSIONS {
+        // One frame per runtime: a snapshot takes the glyph atlas's uploads.
+        let mut rt = window(Step::Agents);
+        assert!(rt.accessibility_action("onboarding-grant", Action::Click, None));
+        settle(&mut rt);
+        assert!(!has(&rt, "grant-full_disk_access"), "granted shows Granted");
+        assert!(has(&rt, "grant-screen_recording") && has(&rt, "grant-accessibility"));
+        assert!(has(&rt, "grant-drag"), "the server's app to drag in");
+        let badge = rt.state.badge_image().expect("the app badge").clone();
+        assert!(badge.wait().is_ok(), "the pinned app icon decodes");
+        settle(&mut rt);
+        snap(&mut rt, "3b-grant-sheet");
+    }
+
+    let mut rt = window(Step::Migrate);
+    for key in [
+        "migrate-claude",
+        "migrate-codex",
+        "migrate-skip",
+        "migrate-copy",
+    ] {
+        assert!(has(&rt, key), "{key}");
+    }
+    assert!(
+        !has(&rt, "migrate-opencode"),
+        "only agents that are installed"
+    );
+    snap(&mut rt, "4-migrate");
+    let mut rt = window(Step::Migrate);
+    rt.update(|d, _| d.onboarding.migrate = Migrate::Running("claude".into(), None));
+    settle(&mut rt);
+    assert!(has(&rt, "migrate-status") && has(&rt, "migrate-cancel"));
+    assert!(has(&rt, "terminal"), "the agent's pane beside the step");
+    assert_eq!(rt.state.modal(), None, "typing reaches the agent");
+    snap(&mut rt, "4b-migrating");
+
+    let mut rt = window(Step::Done);
+    for key in [
+        "done-key-0",
+        "done-key-1",
+        "done-key-2",
+        "onboarding-start",
+        "pair-show",
+    ] {
+        assert!(has(&rt, key), "{key}");
+    }
+    assert_eq!(has(&rt, "onboarding-keep-alive"), KEEP_ALIVE, "Linux only");
+    assert!(has(&rt, "done-agent-claude") && has(&rt, "done-agent-codex"));
+    assert!(!has(&rt, "done-agent-opencode") && !has(&rt, "done-tour"));
+    snap(&mut rt, "5-done");
+    let mut rt = window(Step::Done);
+    rt.update(|d, _| d.onboarding.skills = Probe::Ready(Vec::new()));
+    settle(&mut rt);
+    assert!(has(&rt, "done-tour"), "no agent: the tour, not a dead end");
+    snap(&mut rt, "5c-done-no-agent");
+    assert!(rt.accessibility_action("done-tour", Action::Click, None));
+    settle(&mut rt);
+    assert!(!rt.state.onboarding.open && rt.state.palette_open);
+    // A fresh window: a second snap's renderer misses glyphs the first uploaded.
+    let mut rt = window(Step::Done);
+    rt.update(|d, _| d.pairing_fixture());
+    for t in [3.0, 4.0, 5.0] {
+        rt.frame(t);
+    }
+    rt.update(|_, tx| tx.scroll_into_view("pair-new"));
+    for t in [6.0, 7.0] {
+        rt.frame(t);
+    }
+    assert!(has(&rt, "pair-qr") && !has(&rt, "pair-devices"));
+    snap(&mut rt, "5-done-pair");
+    let mut rt = window(Step::Done);
+    rt.update(|d, _| {
+        d.settings_ui.pairing.code = Some(Err(
+            "phux: error: pair: the server at /s has no remote listener bound, and this computer \
+             has no private network address (no tailnet) for paired mode to bind"
+                .to_owned(),
+        ));
+    });
+    settle(&mut rt);
+    rt.update(|_, tx| tx.scroll_into_view("pair-recheck"));
+    settle(&mut rt);
+    assert!(has(&rt, "pair-tailscale") && !has(&rt, "pair-allow"));
+    snap(&mut rt, "5-done-pair-no-tailnet");
+    if KEEP_ALIVE {
+        let mut rt = window(Step::Done);
+        assert!(rt.state.onboarding.keep_alive, "on by default");
+        assert!(rt.accessibility_action("onboarding-keep-alive", Action::Click, None));
+        settle(&mut rt);
+        assert!(!rt.state.onboarding.keep_alive, "the switch turns it off");
+    }
+}
+
+#[test]
+fn picks_apply_to_the_window_and_keys_move_on() {
+    let mut rt = window(Step::Look);
+    assert!(rt.accessibility_action("look-light", Action::Click, None));
+    rt.frame(3.0);
+    assert!(
+        rt.state.settings.theme.is_some_and(|t| !t.dark),
+        "a light theme, live"
+    );
+    assert!(rt.accessibility_action("look-auto", Action::Click, None));
+    rt.frame(3.5);
+    assert_eq!(rt.state.settings.theme, None, "Auto follows the system");
+    rt.key(crate::keys::plain(Key::Enter));
+    rt.frame(4.0);
+    assert_eq!(rt.state.onboarding.step, Step::Agents);
+    rt.key(crate::keys::plain(Key::Escape));
+    rt.frame(4.5);
+    assert_eq!(rt.state.onboarding.step, Step::Look);
+}
+
+#[test]
+fn start_using_phux_closes_it() {
+    let mut rt = window(Step::Done);
+    assert!(rt.accessibility_action("onboarding-start", Action::Click, None));
+    settle(&mut rt);
+    assert!(!rt.state.onboarding.open);
+    assert!(!has(&rt, "onboarding"));
+}
+
+#[test]
+fn the_glass_slider_steps_and_clamps() {
+    let mut rt = window(Step::Look);
+    assert_eq!(
+        has(&rt, "look-glass"),
+        cfg!(target_os = "macos"),
+        "macOS only"
+    );
+    rt.state.set_glass(250);
+    assert_eq!(rt.state.settings.glass, 100, "clamped");
+    rt.state.set_glass(0);
+    if !cfg!(target_os = "macos") {
+        assert_eq!(
+            rt.state.glass(),
+            0.0,
+            "no glass without a transparent window"
+        );
+        return;
+    }
+    rt.frame(0.1);
+    assert!(rt.accessibility_action("look-glass", Action::Focus, None));
+    for key in [Key::Right, Key::Right] {
+        rt.key(crate::keys::plain(key));
+        rt.frame(0.2);
+    }
+    assert_eq!(rt.state.settings.glass, 10, "arrows step by 5");
+    assert!((rt.state.glass() - 0.10).abs() < 1e-6);
+    assert_eq!(
+        rt.state.onboarding.step,
+        Step::Look,
+        "arrows don't change step"
+    );
+    rt.key(crate::keys::plain(Key::End));
+    rt.frame(0.3);
+    assert_eq!(rt.state.settings.glass, 100);
+    snap(&mut rt, "2b-look-glass");
+}
+
+#[test]
+fn skill_shows_installed_with_no_agent_found() {
+    let mut rt = window(Step::Agents);
+    rt.update(|d, _| {
+        let undetected = |agent, state| AgentSkill {
+            detected: false,
+            ..skill(agent, state)
+        };
+        d.onboarding.skills = Probe::Ready(vec![
+            undetected("claude", "missing"),
+            undetected("codex", "up_to_date"),
+        ]);
+    });
+    settle(&mut rt);
+    assert!(
+        !has(&rt, "onboarding-install"),
+        "the shared skill is in place"
+    );
+}
+
+#[test]
+fn the_machines_step_offers_ssh_and_tailnet_hosts_to_tick() {
+    let mut rt = window(Step::Machines);
+    rt.update(|d, _| {
+        let list = &mut d.machines;
+        list.ssh.hosts = vec!["devbox".to_owned(), "mini".to_owned()];
+        list.peers = vec![crate::machines::Peer {
+            name: "nas".to_owned(),
+            ssh_host: "nas.tail1.ts.net".to_owned(),
+            online: true,
+        }];
+        list.hosts = vec![crate::machines::Host {
+            name: "mini".to_owned(),
+            ssh: Some("mini".to_owned()),
+            ssh_only: false,
+            paused: false,
+        }];
+    });
+    settle(&mut rt);
+    assert!(
+        has(&rt, "onboarding-machine-devbox") && has(&rt, "onboarding-machine-nas.tail1.ts.net")
+    );
+    assert!(!has(&rt, "onboarding-machine-mini"), "already set up");
+    assert!(
+        !has(&rt, "onboarding-machines-set-up"),
+        "nothing ticked yet"
+    );
+    assert!(rt.accessibility_action("onboarding-machine-devbox", Action::Click, None));
+    settle(&mut rt);
+    assert!(rt.state.machines.ssh.picked.contains("devbox"));
+    assert!(has(&rt, "onboarding-machines-set-up"));
+    snap(&mut rt, "4c-machines");
+}

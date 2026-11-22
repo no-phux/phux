@@ -1,0 +1,25 @@
+id = "com.phux.demo.continuum"
+name = "phux Continuum"
+version = "0.1.0"
+min_phux_version = "0.0.2"
+description = "Workspace archive autosave through host event hooks."
+platforms = ["linux", "macos"]
+
+[[events]]
+id = "idle-autosave"
+title = "Autosave when a client detaches"
+on = "client-detached"
+command = ["sh", "scripts/autosave.sh"]
+
+[[events]]
+id = "session-autosave"
+title = "Autosave when a pane exits"
+on = "pane-exit"
+command = ["sh", "scripts/autosave.sh"]
+
+[[profiles]]
+id = "continuum"
+title = "Continuum"
+description = "Autosaves archives for a durable phux workspace profile."
+contexts = ["workspace"]
+events = ["idle-autosave", "session-autosave"]

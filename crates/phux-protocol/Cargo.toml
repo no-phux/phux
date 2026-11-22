@@ -1,0 +1,40 @@
+[package]
+name = "phux-protocol"
+description = "Wire protocol for phux: frame format, message catalog, codec."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "README.md"
+keywords = ["terminal", "multiplexer", "protocol", "pty", "tui"]
+categories = ["command-line-interface", "network-programming", "encoding"]
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror.workspace = true
+bytes.workspace = true
+bitflags = "2"
+serde = { workspace = true }
+# Trailing additive JSON on `SessionSnapshot` (remote listener bind report,
+# phux-kyna) and any future open-shaped diagnostic field on the state reply.
+serde_json = { workspace = true }
+# Best-effort erasure of ephemeral credential values on drop; already in the lockfile.
+zeroize = "1"
+# Complete nested schemas for the public terminal workflow, derived from its DTOs.
+schemars = "1.2.3"
+# Derives TryFrom<u32> for the wire's PhysicalKey enum (ADR-0024). Pure Rust,
+# wasm-safe; the same crate libghostty-vt uses for its key discriminants.
+int-enum = "1.3"
+# DEFLATE for the negotiated FRAME_COMPRESSED envelope; see the workspace
+# manifest for the justification and the measured ratio.
+flate2.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+insta.workspace = true
+tempfile.workspace = true
+

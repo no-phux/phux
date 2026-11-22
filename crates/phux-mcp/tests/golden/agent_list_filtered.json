@@ -1,0 +1,38 @@
+{
+  "agents": [
+    {
+      "address": "%review",
+      "address_refusal": null,
+      "agent": {
+        "id": "claude",
+        "kind": "claude",
+        "label": "review"
+      },
+      "agent_session": null,
+      "attention": "high",
+      "confidence": 1.0,
+      "cwd": null,
+      "explanation": "the phux.agent/v1 record for this pane (ADR-0040); nothing in the `claude` manifest matches this screen now (no state-bearing rule matched; the detector fails safe to idle, never blocked)",
+      "session": "work",
+      "sources": [
+        {
+          "confidence": 1.0,
+          "kind": "agent_record",
+          "observed": "{\"name\":\"review\",\"kind\":\"claude\",\"state\":\"blocked\"}",
+          "signal": "phux.agent/v1 record published for this pane"
+        },
+        {
+          "confidence": 0.3,
+          "kind": "detector_fallback",
+          "observed": "no state-bearing rule matched; the detector fails safe to idle, never blocked",
+          "signal": "no `claude` rule matches this screen"
+        }
+      ],
+      "state": "blocked",
+      "terminal": "@2",
+      "title": "zsh",
+      "window": "window-0"
+    }
+  ],
+  "schema_version": 1
+}

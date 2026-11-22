@@ -1,0 +1,224 @@
+# Getting started
+
+This page walks through a first session: install phux, run a first agent, then split and move between panes, open tabs and sessions, detach, and come back.
+
+## First agent
+
+Install phux, start it, run an agent you already have, and read its state. phux does not install Claude Code, Codex, OpenCode, or pi.
+
+```sh
+curl -fsSL https://phux.sh/install | sh
+phux
+```
+
+The install script puts `phux` and `phux-mcp` in `~/.local/bin`. When that directory is not on `PATH`, it adds the directory to your shell profile. Open a new shell if the next command is not found.
+
+`phux` starts a background server and attaches to a session. In the shell pane, run `claude`, `codex`, `opencode`, or `pi`, whichever is on that shell's `PATH`. Detach with <kbd>C-a</kbd> <kbd>d</kbd>. From another shell:
+
+```sh
+phux agent list
+```
+
+Once phux has identified the program in the foreground, that command prints the pane, the agent kind, and its state: `working`, `blocked`, `idle`, `done`, or `unknown`. The sidebar (<kbd>C-a</kbd> <kbd>b</kbd>) lists the same agents. [Coding agents](./agents.md) is the rest of the setup. [Using phux as an agent](./agent-quickstart.md) drives a session without attaching.
+
+Homebrew is one command, and it does not ask for a separate `brew trust`:
+
+```sh
+brew install no-phux/tap/phux
+```
+
+See [Homebrew](./install.md#homebrew).
+
+## Start phux
+
+The rest of this page assumes `phux` is [installed](./install.md).
+
+```sh
+phux
+```
+
+Press <kbd>C-a</kbd> <kbd>d</kbd> (<kbd>Ctrl</kbd>+<kbd>a</kbd>, then <kbd>d</kbd>) to detach. Run `phux` again to come back to exactly where you were.
+
+The first run starts a server in the background and attaches you to a new session named after the current directory. Your shell runs in a pane inside it. Later runs attach to the session you used last.
+
+**Closing the terminal doesn't end anything.** The server keeps your shells and the programs in them running until you end them. [Concepts](./concepts.md) explains the server and what survives what.
+
+## The prefix
+
+Every phux key starts with the prefix, <kbd>C-a</kbd> (<kbd>Ctrl</kbd>+<kbd>a</kbd>). Press it, let go, then press the key for what you want. <kbd>C-a</kbd> <kbd>%</kbd> means "press <kbd>C-a</kbd>, then <kbd>%</kbd>".
+
+Keys you press without the prefix go to the program in the pane. phux binds none of them out of the box.
+
+## Find any key
+
+You don't need to memorize anything on this page. Two things show you the keys as you go:
+
+- **The which-key popup.** Press <kbd>C-a</kbd> and wait a moment. A popup lists every key you can press next, grouped into Pane, Tab, Session, and phux. It never eats a key: press one and it runs as if the popup weren't there. <kbd>Esc</kbd> cancels the prefix.
+- **The command palette.** Press <kbd>C-a</kbd> <kbd>Space</kbd> (or <kbd>:</kbd> or <kbd>?</kbd>) to search every action by name. Each row shows its key, so the palette is also how you learn them.
+
+[Default key bindings](./reference/keys.md) lists every key on one page.
+
+## Split and move between panes
+
+A pane is one terminal. Split the one you're in:
+
+| Keys                                                                               | Does                                     |
+| ---------------------------------------------------------------------------------- | ---------------------------------------- |
+| <kbd>C-a</kbd> <kbd>%</kbd> or <kbd>C-a</kbd> <kbd>\|</kbd>                        | split right                              |
+| <kbd>C-a</kbd> <kbd>"</kbd> or <kbd>C-a</kbd> <kbd>-</kbd>                         | split below                              |
+| <kbd>C-a</kbd> <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd>                 | move to the pane left, down, up, right   |
+| <kbd>C-a</kbd> <kbd>H</kbd> <kbd>J</kbd> <kbd>K</kbd> <kbd>L</kbd>                 | resize the pane left, down, up, right    |
+| <kbd>C-a</kbd> <kbd>R</kbd>                                                        | resize mode: <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd> or the arrows resize one cell at a time; <kbd>Esc</kbd> leaves |
+| <kbd>C-a</kbd> <kbd>o</kbd>                                                        | next pane                                |
+| <kbd>C-a</kbd> <kbd>=</kbd>                                                        | the pane you were in before              |
+| <kbd>C-a</kbd> <kbd>z</kbd>                                                        | zoom the pane to fill the tab; again to unzoom |
+| <kbd>C-a</kbd> <kbd>x</kbd>                                                        | close the pane                           |
+
+**<kbd>C-a</kbd> <kbd>x</kbd> closes the pane right away, without asking**, and ends the program in it. Capital letters mean <kbd>Shift</kbd>: <kbd>H</kbd> is <kbd>Shift</kbd>+<kbd>h</kbd>.
+
+## Tabs
+
+A tab holds a set of panes. The status bar along the top shows your tabs.
+
+| Keys                                                       | Does                                       |
+| ---------------------------------------------------------- | ------------------------------------------ |
+| <kbd>C-a</kbd> <kbd>c</kbd>                                | new tab                                    |
+| <kbd>C-a</kbd> <kbd>n</kbd> or <kbd>C-a</kbd> <kbd>Tab</kbd>, <kbd>C-a</kbd> <kbd>p</kbd> | next, previous tab |
+| <kbd>C-a</kbd> <kbd>t</kbd> | the tab you were on before this one |
+| <kbd>C-a</kbd> <kbd>0</kbd>–<kbd>9</kbd>                   | go to tab 0–9                              |
+| <kbd>C-a</kbd> <kbd>w</kbd>                                | pick a tab from every session              |
+| <kbd>C-a</kbd> <kbd>,</kbd>                                | rename the tab                             |
+| <kbd>C-a</kbd> <kbd>X</kbd>                                | close the tab and everything in it (asks first) |
+
+A new tab opens at the end of the strip. To have it open right after the tab you are on, set `new-tab-after-current = true` under `[chrome]` in your config.
+
+## Sessions
+
+A session is a named workspace, usually one per project. Each holds its own tabs.
+
+| Keys                                                       | Does                         |
+| ---------------------------------------------------------- | ---------------------------- |
+| <kbd>C-a</kbd> <kbd>C</kbd>                                | new session                  |
+| <kbd>C-a</kbd> <kbd>T</kbd>                                | new git worktree and session |
+| <kbd>C-a</kbd> <kbd>s</kbd>                                | pick a session               |
+| <kbd>C-a</kbd> <kbd>N</kbd>, <kbd>C-a</kbd> <kbd>P</kbd>   | next, previous session       |
+| <kbd>C-a</kbd> <kbd>)</kbd>                                | the session you were in before |
+| <kbd>C-a</kbd> <kbd>$</kbd>                                | rename the session           |
+
+From a shell:
+
+```sh
+phux ls               # list sessions
+phux new work         # create a session called "work" and attach
+phux attach work      # attach to it later
+phux kill work        # end it and everything in it (asks first)
+```
+
+## Detach and come back
+
+Press <kbd>C-a</kbd> <kbd>d</kbd> to detach. The UI closes; your shells, and whatever runs in them, keep going.
+
+```sh
+phux
+```
+
+Run `phux` again, from this terminal or any other, to pick up where you left off. Losing an SSH connection is the same as detaching.
+
+## Scroll and copy
+
+Scroll a pane's history with the mouse wheel. For keyboard selection, press <kbd>C-a</kbd> <kbd>[</kbd> to enter copy mode:
+
+| Keys                                          | Does                                                    |
+| --------------------------------------------- | ------------------------------------------------------- |
+| <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd>, arrow keys | move the cursor; at the edge, scroll  |
+| <kbd>w</kbd> <kbd>b</kbd> <kbd>e</kbd>        | next word, word start, word end (within the line)       |
+| <kbd>0</kbd> <kbd>^</kbd> <kbd>$</kbd>        | line start, first text, last text                       |
+| <kbd>g</kbd>, <kbd>G</kbd>                    | oldest line, newest line                                |
+| <kbd>H</kbd> <kbd>M</kbd> <kbd>L</kbd>        | top, middle, bottom of the screen                       |
+| <kbd>C-u</kbd> <kbd>C-d</kbd>, <kbd>C-b</kbd> <kbd>C-f</kbd>, <kbd>PageUp</kbd> <kbd>PageDown</kbd> | scroll half a page, a page |
+| <kbd>v</kbd>, <kbd>V</kbd>, <kbd>C-v</kbd>    | select by character, line, or block; moving extends it  |
+| <kbd>Shift</kbd>+arrows                       | extend the selection                                    |
+| <kbd>Tab</kbd>                                | switch between character, line, and block selection     |
+| <kbd>/</kbd>, <kbd>?</kbd>                    | search down, up; <kbd>n</kbd> and <kbd>N</kbd> repeat   |
+| <kbd>y</kbd>, <kbd>Enter</kbd>                | copy the selection and leave; with nothing selected, <kbd>y</kbd> copies the word |
+| <kbd>Y</kbd>, <kbd>A</kbd>                    | copy the line, or everything, and leave                 |
+| <kbd>Esc</kbd>                                | drop the selection and stay; with none, leave           |
+| <kbd>q</kbd>                                  | leave without copying                                   |
+| <kbd>]</kbd>                                  | copy the last command's output and leave                |
+
+Leaving copy mode from the keyboard puts the pane back on the live screen. Scrolling with the wheel stays where you left it until you type.
+
+To scroll from the keyboard without copy mode, bind the scroll actions ([keys](./keys.md)): `scroll-page-up`, `scroll-page-down`, `scroll-half-page-up`, `scroll-half-page-down`, `scroll-to-top` and `scroll-to-bottom`. Like the wheel, they stay where you leave them until you type. `"S-PageUp" = "scroll-page-up"` under `[keybindings.global]` gives you the usual key.
+
+Copies go to your system clipboard through your terminal (OSC 52), so they work over SSH too if your terminal allows it.
+
+To grab a link without selecting it, press <kbd>C-a</kbd> <kbd>U</kbd>: phux lists every `http` and `https` link in the pane, newest first, with its history included. Type to filter, and <kbd>Enter</kbd> copies the one you choose.
+
+Copy mode also works over a full-screen program such as an editor, lazygit or a coding agent. There it selects from what the program is showing: these programs draw on a separate screen with no history of its own, so there is nothing above the top row to scroll to. The shell's history is back when the program exits. An agent that prints its transcript into the normal screen scrolls like any other output.
+
+## Mouse
+
+The mouse is on by default:
+
+- Click a pane to focus it.
+- Drag a divider to resize panes.
+- Drag a pane by its title (an untitled pane by the start of the line above it) onto another pane to make it a tab of that pane's slot.
+- Drag across text to copy it.
+- Right-click for a menu of actions for that pane, tab, or session.
+- Click a tab to switch to it, the tab you're on to go back to the last one; drag it to reorder.
+
+Programs that use the mouse themselves, such as `htop` or an editor, still get clicks over their own panes. To leave the mouse to your terminal's own selection instead, set `mouse = false` under `[defaults]` in your [config file](./config.md).
+
+## The sidebar
+
+The sidebar lists your coding agents (with which ones need you) and your sessions. Press <kbd>C-a</kbd> <kbd>b</kbd> to show or hide it. On a narrow terminal it stays hidden so your panes get the room.
+
+When an agent is waiting on you, <kbd>C-a</kbd> <kbd>q</kbd> jumps to it and <kbd>C-a</kbd> <kbd>Q</kbd> takes you back. <kbd>C-a</kbd> <kbd>A</kbd> opens every agent and its state. [Coding agents](./agents.md) covers the rest.
+
+## Coming from tmux
+
+Already have tmux, zellij, Ghostty, herdr or Rex configured the way you like?
+Run `phux migrate` and your coding agent moves your key bindings into your
+phux config, checks it and reports what carried over. See [Migrate your
+config with your agent](./migrate.md). Without an agent,
+`phux config import-tmux` previews a native config layer from a running
+tmux; see [Bring your tmux keys to phux](./tmux-import.md) before applying it.
+
+Most keys match tmux, with <kbd>C-a</kbd> where tmux uses <kbd>C-b</kbd>. What's different:
+
+| In tmux                                     | In phux                                                                |
+| ------------------------------------------- | ---------------------------------------------------------------------- |
+| prefix <kbd>C-b</kbd>                       | prefix <kbd>C-a</kbd>; [set it back](#keep-c-b) if you like            |
+| "window"                                    | "tab" in the UI; actions in the config file still say `window` (`new-window`) |
+| arrow keys move between panes               | <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd>                    |
+| <kbd>;</kbd> last pane                      | <kbd>=</kbd>; <kbd>;</kbd> is the previous pane                        |
+| <kbd>x</kbd> asks before closing a pane     | <kbd>x</kbd> closes it right away                                      |
+| <kbd>&</kbd> closes a window                | <kbd>X</kbd> closes a tab (asks first)                                 |
+| <kbd>(</kbd> <kbd>)</kbd> previous, next session | <kbd>P</kbd> <kbd>N</kbd>; <kbd>)</kbd> is the last session         |
+| <kbd>q</kbd> shows pane numbers             | <kbd>i</kbd>; <kbd>q</kbd> jumps to the next pane that needs you       |
+| `synchronize-panes` types into every pane   | <kbd>y</kbd> turns it on for the tab, and off again                    |
+| `send-prefix` sends the prefix through      | press the prefix twice: <kbd>C-a</kbd> <kbd>C-a</kbd> sends <kbd>C-a</kbd> to the program. Any key with no binding after the prefix goes to the program |
+| copy mode with vi or emacs keys             | vi keys and arrows; <kbd>y</kbd> or <kbd>Enter</kbd> copies to the system clipboard |
+| `tmux source-file ~/.tmux.conf`             | `phux config reload`                                                   |
+| `tmux capture-pane -p`                      | `phux snapshot`                                                        |
+| `tmux kill-server`                          | `phux kill --server`                                                   |
+
+For when tmux is still the better fit, see [phux vs tmux, Herdr, and cmux](./compare.md).
+
+### Keep C-b
+
+Put this in `~/.config/phux/config.toml`:
+
+```toml
+[keybindings]
+prefix = "C-b"
+```
+
+Then reload with `phux config reload`. [Key bindings](./keys.md) covers rebinding and unbinding any key.
+
+## Next
+
+- [Concepts](./concepts.md): sessions, tabs, panes, targets, and what survives a restart.
+- [Driving terminals from scripts](./scripting.md): everything above, from a shell or a coding agent.
+- [Key bindings](./keys.md): make the keys your own.
+- [Remote machines](./remote.md): attach to a server on another machine.

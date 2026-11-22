@@ -1,0 +1,494 @@
+//! Shared session-rename planning and framing.
+//!
+//! Against a server that advertises `ORGANIZATION`, a rename is one
+//! `SESSION_RENAME` naming the session's key ([`org_rename_command`]); the
+//! last writer wins, its `COMMITTED` or `REFUSED` reply is the outcome, and a
+//! resend after a lost reply reuses the operation id. Each caller classifies
+//! that reply through its own organization outcome path.
+//!
+//! Against an older server, a rename is a `SET_METADATA` of
+//! `phux.session.name/v1` (`current\0new`). The server applies it and
+//! broadcasts nothing when it refuses, and `SET_METADATA` has no reply. Every
+//! client therefore does the same three steps: judge the request against the
+//! session list it already trusts, send the write only when that list allows
+//! it, then read `GET_STATE` as an ordering barrier whose snapshot is the
+//! outcome.
+//!
+//! Either way the request is judged first with [`plan_rename`].
+//!
+//! The module is synchronous so the full-duplex TUI loop and the FFI bridge
+//! can correlate the barrier themselves; `phux-client` re-exports it.
+
+use phux_protocol::ids::{OperationId, SessionId, SessionKey};
+use phux_protocol::wire::frame::{
+    Command, FrameKind, SESSION_NAME_KEY, Scope, StateScope, encode_session_rename,
+};
+
+/// A session the rename policy can see: its stable id and its current name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NamedSession<'a> {
+    /// Stable session id. The barrier matches on this, not on the old name.
+    pub id: SessionId,
+    /// Human-readable name from the snapshot or the local roster.
+    pub name: &'a str,
+}
+
+/// Why a rename must not be sent.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RenameRefusal {
+    /// `current` is not in the session list. Session names are hub-local.
+    #[error("no such session")]
+    NoSuchSession,
+    /// `new_name` is already held by another session.
+    #[error("{new_name:?} already exists")]
+    AlreadyExists {
+        /// The name that collided.
+        new_name: String,
+    },
+    /// `new_name` could not be typed back as a session selector.
+    #[error(transparent)]
+    InvalidName(#[from] SessionNameError),
+}
+
+/// Longest session name, in UTF-8 bytes: the `name` bound of the
+/// organization commands (`docs/protocol.md`) and of a session record
+/// (`docs/organization.md`).
+pub const MAX_SESSION_NAME_BYTES: usize = 256;
+
+/// Why a session name cannot be used.
+///
+/// The server would refuse it (too long, or a control character), or the
+/// selector grammar every CLI verb, hook, and keybinding resolves
+/// (`docs/concepts.md#targets`) would read it as something other
+/// than this session, or as nothing.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SessionNameError {
+    /// Empty or only whitespace.
+    #[error("a session name cannot be empty")]
+    Empty,
+    /// Longer than [`MAX_SESSION_NAME_BYTES`].
+    #[error("a session name cannot be longer than {MAX_SESSION_NAME_BYTES} bytes")]
+    TooLong,
+    /// Contains a control character (`char::is_control`), NUL included.
+    #[error("a session name cannot contain a control character")]
+    ControlCharacter,
+    /// `.` (the focused pane) or `=` (the previous pane).
+    #[error("{0:?} is a reserved selector")]
+    Reserved(String),
+    /// Starts with `@` (a pane id), `#` (a tag), `%` (an agent), or `^` (a
+    /// record key).
+    #[error("a session name cannot start with `{0}`, which marks a pane id, tag, agent, or key")]
+    LeadingSigil(char),
+    /// Contains `:`, which separates the session from a window.
+    #[error("a session name cannot contain `:`, which separates the session from a window")]
+    Colon,
+    /// Contains `/@`, which names a satellite pane.
+    #[error("a session name cannot contain `/@`, which names a pane on another host")]
+    SatelliteId,
+}
+
+/// Accept `name` only when the server would store it as given: non-blank, at
+/// most [`MAX_SESSION_NAME_BYTES`], and free of control characters.
+///
+/// This is the part of [`check_session_name`] that does not depend on the
+/// selector grammar. Use it for a name that already exists, such as the
+/// current name of a session being renamed or a name the server reported;
+/// use [`check_session_name`] for a name about to be created or assigned.
+///
+/// # Errors
+///
+/// The first [`SessionNameError`] the name trips.
+pub(crate) fn check_session_name_text(name: &str) -> Result<(), SessionNameError> {
+    if name.trim().is_empty() {
+        return Err(SessionNameError::Empty);
+    }
+    if name.len() > MAX_SESSION_NAME_BYTES {
+        return Err(SessionNameError::TooLong);
+    }
+    if name.chars().any(char::is_control) {
+        return Err(SessionNameError::ControlCharacter);
+    }
+    Ok(())
+}
+
+/// Accept `name` only when the server would store it as given
+/// (`check_session_name_text`) and the selector `name` would address this
+/// session.
+///
+/// Every frontend that creates or renames a session (CLI, TUI, MCP, and the
+/// C and uniffi bindings) judges the new name here.
+///
+/// # Errors
+///
+/// The first [`SessionNameError`] the name trips.
+pub fn check_session_name(name: &str) -> Result<(), SessionNameError> {
+    check_session_name_text(name)?;
+    if name == "." || name == "=" {
+        return Err(SessionNameError::Reserved(name.to_owned()));
+    }
+    if let Some(sigil) = name
+        .chars()
+        .next()
+        .filter(|c| matches!(c, '@' | '#' | '%' | '^'))
+    {
+        return Err(SessionNameError::LeadingSigil(sigil));
+    }
+    if name.contains(':') {
+        return Err(SessionNameError::Colon);
+    }
+    if name.contains("/@") {
+        return Err(SessionNameError::SatelliteId);
+    }
+    Ok(())
+}
+
+/// Rewrite a generated name into one [`check_session_name`] accepts.
+///
+/// For a template render or a directory basename: each control character
+/// and each `:` becomes `_`, `/@` becomes `/_`, a leading `@`, `#`, `%`, or
+/// `^` becomes `_`, a bare `.` or `=` becomes `_`, and the result is cut to
+/// [`MAX_SESSION_NAME_BYTES`] on a character boundary. A blank name stays
+/// blank so the caller picks its fallback. An explicit name is refused, never rewritten: only a name
+/// nobody typed may be changed behind the user's back.
+#[must_use]
+pub fn addressable_session_name(name: &str) -> String {
+    if name.trim().is_empty() {
+        return name.to_owned();
+    }
+    let mut out: String = name
+        .chars()
+        .map(|c| if c == ':' || c.is_control() { '_' } else { c })
+        .collect();
+    out = out.replace("/@", "/_");
+    if out == "." || out == "=" || out.starts_with(['@', '#', '%', '^']) {
+        out.replace_range(..1, "_");
+    }
+    if out.len() > MAX_SESSION_NAME_BYTES {
+        let mut end = MAX_SESSION_NAME_BYTES;
+        while !out.is_char_boundary(end) {
+            end -= 1;
+        }
+        out.truncate(end);
+    }
+    out
+}
+
+/// What to do with a rename, judged before any write is sent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RenamePlan {
+    /// `current` already has `new_name`. Nothing to send.
+    Unchanged {
+        /// The session that already carries the name.
+        session_id: SessionId,
+    },
+    /// Do not send the write.
+    Refused(RenameRefusal),
+    /// Send the write, then a `GET_STATE` barrier.
+    Send {
+        /// The session the write names. The barrier looks this id up.
+        session_id: SessionId,
+    },
+}
+
+/// Judge `current` → `new_name` against `sessions`.
+///
+/// An unknown current name is refused. A new name no selector could address
+/// ([`check_session_name`]) is refused. A new name another session already
+/// holds is refused. Renaming a session to the name it already has does not
+/// send. Anything else may be written.
+#[must_use]
+pub fn plan_rename(sessions: &[NamedSession<'_>], current: &str, new_name: &str) -> RenamePlan {
+    let Some(session) = sessions.iter().find(|session| session.name == current) else {
+        return RenamePlan::Refused(RenameRefusal::NoSuchSession);
+    };
+    if let Err(invalid) = check_session_name(new_name) {
+        return RenamePlan::Refused(invalid.into());
+    }
+    if current == new_name {
+        return RenamePlan::Unchanged {
+            session_id: session.id,
+        };
+    }
+    if sessions
+        .iter()
+        .any(|other| other.name == new_name && other.id != session.id)
+    {
+        return RenamePlan::Refused(RenameRefusal::AlreadyExists {
+            new_name: new_name.to_owned(),
+        });
+    }
+    RenamePlan::Send {
+        session_id: session.id,
+    }
+}
+
+/// The write, then the ordering-barrier read, in that order.
+///
+/// Callers that own a request-id space pass the two ids they will correlate.
+/// `phux_client::session::rename_checked` sends the same two frames through
+/// its connection helper, which allocates its own ids.
+#[must_use]
+pub fn rename_frames(
+    write_id: u32,
+    barrier_id: u32,
+    current: &str,
+    new_name: &str,
+) -> (FrameKind, FrameKind) {
+    (
+        write_frame(write_id, current, new_name),
+        FrameKind::Command {
+            request_id: barrier_id,
+            command: Command::GetState {
+                scope: StateScope::Server,
+            },
+        },
+    )
+}
+
+/// The `SET_METADATA` write alone: `current\0new` under [`SESSION_NAME_KEY`].
+#[must_use]
+pub fn write_frame(request_id: u32, current: &str, new_name: &str) -> FrameKind {
+    FrameKind::SetMetadata {
+        request_id,
+        scope: Scope::Global,
+        key: SESSION_NAME_KEY.to_owned(),
+        value: encode_session_rename(current, new_name),
+    }
+}
+
+/// The `SESSION_RENAME` for a [`RenamePlan::Send`] against a server that
+/// advertises `ORGANIZATION`: the session's key and a caller-minted
+/// operation id that a resend reuses.
+#[must_use]
+pub fn org_rename_command(operation: OperationId, session: SessionKey, new_name: &str) -> Command {
+    Command::SessionRename {
+        operation,
+        session,
+        name: new_name.to_owned(),
+    }
+}
+
+/// What the barrier snapshot says about the session that was renamed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BarrierVerdict {
+    /// That session's name is now `new_name`.
+    Applied,
+    /// That session id is no longer in the snapshot.
+    Gone,
+    /// The session is still there, under some other name.
+    NotApplied,
+}
+
+impl BarrierVerdict {
+    /// The refusal sentence a frontend shows when the barrier did not apply.
+    ///
+    /// `None` when the rename [applied](Self::Applied).
+    #[must_use]
+    pub const fn refusal_reason(self) -> Option<&'static str> {
+        match self {
+            Self::Applied => None,
+            Self::Gone => Some("the session no longer exists"),
+            Self::NotApplied => Some(
+                "the server did not rename the session (the name may have been taken meanwhile)",
+            ),
+        }
+    }
+}
+
+/// Read the barrier snapshot: the session id from [`RenamePlan::Send`] either
+/// carries `new_name`, is missing, or still has another name.
+#[must_use]
+pub fn barrier_verdict(
+    sessions: &[NamedSession<'_>],
+    session_id: SessionId,
+    new_name: &str,
+) -> BarrierVerdict {
+    let Some(session) = sessions.iter().find(|session| session.id == session_id) else {
+        return BarrierVerdict::Gone;
+    };
+    if session.name == new_name {
+        BarrierVerdict::Applied
+    } else {
+        BarrierVerdict::NotApplied
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn roster<'a>(rows: &'a [(u32, &'a str)]) -> Vec<NamedSession<'a>> {
+        rows.iter()
+            .map(|(id, name)| NamedSession {
+                id: SessionId::new(*id),
+                name,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn plan_refuses_an_unknown_session_and_a_taken_name() {
+        let sessions = roster(&[(1, "work"), (2, "play")]);
+        assert_eq!(
+            plan_rename(&sessions, "gone", "x"),
+            RenamePlan::Refused(RenameRefusal::NoSuchSession)
+        );
+        assert_eq!(
+            plan_rename(&sessions, "work", "play"),
+            RenamePlan::Refused(RenameRefusal::AlreadyExists {
+                new_name: "play".to_owned()
+            })
+        );
+    }
+
+    /// `phux rename work ""` once renamed the session to the empty string,
+    /// and `x:y` or `@3` made a session no selector could reach again.
+    /// A directory named `@proj` or a template like `work:${cwd-basename}`
+    /// rendered a session no selector could reach; generated names are now
+    /// rewritten until the rule accepts them.
+    #[test]
+    fn generated_names_are_rewritten_to_addressable_ones() {
+        for (generated, addressable) in [
+            ("@proj", "_proj"),
+            ("#tag", "_tag"),
+            ("%agent", "_agent"),
+            ("^key", "_key"),
+            ("a:b", "a_b"),
+            ("work:x:y", "work_x_y"),
+            ("devbox/@7", "devbox/_7"),
+            ("@a/@b:c", "_a/_b_c"),
+            (".", "_"),
+            ("=", "_"),
+            ("work", "work"),
+            (".config", ".config"),
+            ("x@y", "x@y"),
+        ] {
+            let got = addressable_session_name(generated);
+            assert_eq!(got, addressable, "{generated:?}");
+            assert_eq!(check_session_name(&got), Ok(()), "{generated:?} -> {got:?}");
+        }
+        assert_eq!(addressable_session_name("a\tb\u{7f}"), "a_b_");
+        let long = addressable_session_name(&"\u{20ac}".repeat(100));
+        assert!(long.len() <= MAX_SESSION_NAME_BYTES);
+        assert_eq!(check_session_name(&long), Ok(()));
+        assert_eq!(addressable_session_name(""), "");
+        assert_eq!(addressable_session_name("  "), "  ");
+    }
+
+    #[test]
+    fn plan_refuses_a_name_no_selector_can_address() {
+        let sessions = roster(&[(1, "work")]);
+        for (new_name, refusal) in [
+            ("", SessionNameError::Empty),
+            ("  ", SessionNameError::Empty),
+            (".", SessionNameError::Reserved(".".to_owned())),
+            ("=", SessionNameError::Reserved("=".to_owned())),
+            ("@3", SessionNameError::LeadingSigil('@')),
+            ("#tag", SessionNameError::LeadingSigil('#')),
+            ("%agent", SessionNameError::LeadingSigil('%')),
+            ("^abcdef", SessionNameError::LeadingSigil('^')),
+            ("x:y", SessionNameError::Colon),
+            ("devbox/@7", SessionNameError::SatelliteId),
+            ("a\nb", SessionNameError::ControlCharacter),
+            ("a\0b", SessionNameError::ControlCharacter),
+            ("a\u{7f}", SessionNameError::ControlCharacter),
+            ("a\u{85}", SessionNameError::ControlCharacter),
+        ] {
+            assert_eq!(
+                plan_rename(&sessions, "work", new_name),
+                RenamePlan::Refused(RenameRefusal::InvalidName(refusal)),
+                "{new_name:?}"
+            );
+        }
+        for fine in [".config", "a.b", "a/b", "a b", "work-2", "x@y", "a=b"] {
+            assert_eq!(check_session_name(fine), Ok(()), "{fine:?}");
+        }
+        let at_limit = "a".repeat(MAX_SESSION_NAME_BYTES);
+        assert_eq!(check_session_name(&at_limit), Ok(()));
+        assert_eq!(
+            plan_rename(&sessions, "work", &format!("{at_limit}a")),
+            RenamePlan::Refused(RenameRefusal::InvalidName(SessionNameError::TooLong))
+        );
+        // An existing name is judged by the text rule only.
+        assert_eq!(check_session_name_text("x:y"), Ok(()));
+        assert_eq!(
+            check_session_name_text("a\tb"),
+            Err(SessionNameError::ControlCharacter)
+        );
+    }
+
+    #[test]
+    fn plan_sends_a_free_name_and_skips_a_no_op() {
+        let sessions = roster(&[(7, "work"), (8, "play")]);
+        assert_eq!(
+            plan_rename(&sessions, "work", "notes"),
+            RenamePlan::Send {
+                session_id: SessionId::new(7)
+            }
+        );
+        assert_eq!(
+            plan_rename(&sessions, "work", "work"),
+            RenamePlan::Unchanged {
+                session_id: SessionId::new(7)
+            }
+        );
+    }
+
+    #[test]
+    fn frames_are_the_write_then_a_server_get_state() {
+        let (write, barrier) = rename_frames(5, 6, "work", "notes");
+        assert_eq!(
+            write,
+            FrameKind::SetMetadata {
+                request_id: 5,
+                scope: Scope::Global,
+                key: SESSION_NAME_KEY.to_owned(),
+                value: b"work\0notes".to_vec(),
+            }
+        );
+        assert_eq!(
+            barrier,
+            FrameKind::Command {
+                request_id: 6,
+                command: Command::GetState {
+                    scope: StateScope::Server,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn barrier_names_applied_missing_and_unchanged() {
+        let applied = roster(&[(7, "notes"), (8, "play")]);
+        assert_eq!(
+            barrier_verdict(&applied, SessionId::new(7), "notes"),
+            BarrierVerdict::Applied
+        );
+        assert_eq!(
+            barrier_verdict(&applied, SessionId::new(7), "notes").refusal_reason(),
+            None
+        );
+
+        let unchanged = roster(&[(7, "work"), (8, "play")]);
+        assert_eq!(
+            barrier_verdict(&unchanged, SessionId::new(7), "notes"),
+            BarrierVerdict::NotApplied
+        );
+        assert!(
+            barrier_verdict(&unchanged, SessionId::new(7), "notes")
+                .refusal_reason()
+                .unwrap_or_default()
+                .contains("did not rename")
+        );
+
+        let gone = roster(&[(8, "play")]);
+        assert_eq!(
+            barrier_verdict(&gone, SessionId::new(7), "notes"),
+            BarrierVerdict::Gone
+        );
+        assert_eq!(
+            barrier_verdict(&gone, SessionId::new(7), "notes").refusal_reason(),
+            Some("the session no longer exists")
+        );
+    }
+}

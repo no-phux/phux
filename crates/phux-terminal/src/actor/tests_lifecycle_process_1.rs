@@ -1,0 +1,75 @@
+use super::*;
+/// The actor answers `PwdRequest` with the PTY child's live cwd.
+#[tokio::test(flavor = "current_thread")]
+async fn actor_responds_to_pwd_request_with_pty_child_cwd() {
+    on_local!(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // macOS returns the realpath, like the kernel query.
+        let dir_path = dir.path().canonicalize().expect("canonicalize tempdir");
+
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.arg("-c");
+        cmd.arg(format!("cd '{}' && read _", dir_path.display()));
+        let bundle = TerminalActor::build_with_token(
+            20,
+            5,
+            Some(cmd),
+            DEFAULT_SCROLLBACK,
+            CancellationToken::new(),
+        )
+        .expect("build_with_token");
+        let handle = bundle.handle.clone();
+        let token = bundle.token;
+        let join = tokio::task::spawn_local(bundle.actor.run());
+
+        // The query races the shell's `cd`; retry briefly.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut got: Option<String> = None;
+        while tokio::time::Instant::now() < deadline {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            handle
+                .terminal()
+                .expect("terminal facet")
+                .pwd
+                .send(PwdRequest { reply: reply_tx })
+                .await
+                .expect("send pwd request");
+            got = reply_rx.await.expect("pwd reply");
+            if got.as_deref() == Some(dir_path.to_str().expect("utf8 path")) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        assert_eq!(
+            got.as_deref(),
+            Some(dir_path.to_str().expect("utf8 path")),
+            "actor should report the PTY child's live CWD",
+        );
+
+        token.cancel();
+        let _ = tokio::time::timeout(ACTOR_EXIT_DEADLINE, join).await;
+    })
+    .await;
+}
+
+/// A PTY-less actor answers `pwd` with `None`.
+#[tokio::test(flavor = "current_thread")]
+async fn actor_pwd_request_is_none_without_pty() {
+    on_local!(async {
+        let bundle = TerminalActor::new_with_seed(20, 5, b"no pty here").expect("seed");
+        let handle = bundle.handle.clone();
+        let _token = bundle.token;
+        tokio::task::spawn_local(bundle.actor.run());
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        handle
+            .terminal()
+            .expect("terminal facet")
+            .pwd
+            .send(PwdRequest { reply: reply_tx })
+            .await
+            .expect("send pwd request");
+        assert_eq!(reply_rx.await.expect("pwd reply"), None);
+    })
+    .await;
+}

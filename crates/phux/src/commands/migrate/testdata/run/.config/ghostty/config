@@ -1,0 +1,8 @@
+theme = catppuccin-mocha
+font-family = JetBrains Mono
+font-size = 14
+background-opacity = 0.95
+window-padding-x = 8
+cursor-style = block
+custom-shader = ~/.config/ghostty/crt.glsl
+keybind = cmd+d=new_split:right

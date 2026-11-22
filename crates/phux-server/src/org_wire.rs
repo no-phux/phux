@@ -1,0 +1,499 @@
+//! Conversions between `phux-core`'s organization types and their
+//! `phux-protocol` encodings (R02: core does not depend on the protocol).
+//!
+//! Keys are the same 16 bytes on both sides; a wire key is never all zero,
+//! so a core key that is (no minted key is) converts to `None`.
+
+use phux_core::Key16 as _;
+use phux_protocol::ids as wire;
+use phux_protocol::wire::frame;
+
+mod event;
+pub use event::event;
+
+/// A core session key on the wire.
+#[must_use]
+pub fn session_key(key: phux_core::SessionKey) -> Option<wire::SessionKey> {
+    wire::SessionKey::new(key.to_bytes())
+}
+
+/// A core resource key on the wire.
+#[must_use]
+pub fn resource_key(key: phux_core::ResourceKey) -> Option<wire::ResourceKey> {
+    wire::ResourceKey::new(key.to_bytes())
+}
+
+/// A core arrangement key on the wire.
+#[must_use]
+pub fn arrangement_key(key: phux_core::ArrangementKey) -> Option<wire::ArrangementKey> {
+    wire::ArrangementKey::new(key.to_bytes())
+}
+
+/// A wire session key in core.
+#[must_use]
+pub const fn core_session_key(key: &wire::SessionKey) -> phux_core::SessionKey {
+    phux_core::SessionKey::from_bytes(*key.as_bytes())
+}
+
+/// A wire resource key in core.
+#[must_use]
+pub const fn core_resource_key(key: &wire::ResourceKey) -> phux_core::ResourceKey {
+    phux_core::ResourceKey::from_bytes(*key.as_bytes())
+}
+
+/// A wire arrangement key in core.
+#[must_use]
+pub const fn core_arrangement_key(key: &wire::ArrangementKey) -> phux_core::ArrangementKey {
+    phux_core::ArrangementKey::from_bytes(*key.as_bytes())
+}
+
+/// A wire operation id in core.
+#[must_use]
+pub const fn core_operation(op: &wire::OperationId) -> phux_core::OperationId {
+    phux_core::OperationId::from_bytes(*op.as_bytes())
+}
+
+/// A core operation id on the wire.
+#[must_use]
+pub fn operation(op: phux_core::OperationId) -> Option<wire::OperationId> {
+    wire::OperationId::new(op.to_bytes())
+}
+
+/// A revision on the wire.
+#[must_use]
+pub const fn revision(r: phux_core::Revision) -> wire::Revision {
+    wire::Revision::new(r.get())
+}
+
+/// A wire revision in core.
+#[must_use]
+pub const fn core_revision(r: wire::Revision) -> phux_core::Revision {
+    phux_core::Revision(r.get())
+}
+
+/// An activation id on the wire.
+#[must_use]
+pub const fn activation_id(a: phux_core::ActivationId) -> wire::ActivationId {
+    wire::ActivationId::new(a.get())
+}
+
+/// A wire activation id in core.
+#[must_use]
+pub const fn core_activation_id(a: wire::ActivationId) -> phux_core::ActivationId {
+    phux_core::ActivationId(a.get())
+}
+
+/// A lifetime on the wire.
+#[must_use]
+pub const fn lifetime(l: phux_core::SessionLifetime) -> frame::SessionLifetime {
+    match l {
+        phux_core::SessionLifetime::Persistent => frame::SessionLifetime::Persistent,
+        phux_core::SessionLifetime::Ephemeral => frame::SessionLifetime::Ephemeral,
+    }
+}
+
+/// A wire lifetime in core; `None` for one this build does not define,
+/// which the decoder already refuses.
+#[must_use]
+pub const fn core_lifetime(l: frame::SessionLifetime) -> Option<phux_core::SessionLifetime> {
+    Some(match l {
+        frame::SessionLifetime::Persistent => phux_core::SessionLifetime::Persistent,
+        frame::SessionLifetime::Ephemeral => phux_core::SessionLifetime::Ephemeral,
+        frame::SessionLifetime::Unknown(_) => return None,
+    })
+}
+
+/// An exit policy on the wire.
+#[must_use]
+pub const fn exit_policy(p: phux_core::ExitPolicy) -> frame::ExitPolicy {
+    match p {
+        phux_core::ExitPolicy::Remove => frame::ExitPolicy::Remove,
+        phux_core::ExitPolicy::Retain => frame::ExitPolicy::Retain,
+    }
+}
+
+/// A wire exit policy in core; `None` for one this build does not define,
+/// which the decoder already refuses.
+#[must_use]
+pub const fn core_exit_policy(p: frame::ExitPolicy) -> Option<phux_core::ExitPolicy> {
+    Some(match p {
+        frame::ExitPolicy::Remove => phux_core::ExitPolicy::Remove,
+        frame::ExitPolicy::Retain => phux_core::ExitPolicy::Retain,
+        frame::ExitPolicy::Unknown(_) => return None,
+    })
+}
+
+/// A wire launch mode in core.
+#[must_use]
+pub const fn core_launch_mode(m: frame::LaunchMode) -> phux_core::LaunchMode {
+    match m {
+        frame::LaunchMode::Immediate => phux_core::LaunchMode::Immediate,
+        frame::LaunchMode::Deferred => phux_core::LaunchMode::Deferred,
+    }
+}
+
+/// An execution state on the wire.
+#[must_use]
+pub const fn exec_state(s: phux_core::ExecState) -> frame::ExecState {
+    match s {
+        phux_core::ExecState::Starting => frame::ExecState::Starting,
+        phux_core::ExecState::Running => frame::ExecState::Running,
+        phux_core::ExecState::Stopping => frame::ExecState::Stopping,
+        phux_core::ExecState::Completed => frame::ExecState::Completed,
+        phux_core::ExecState::Failed => frame::ExecState::Failed,
+        phux_core::ExecState::Lost => frame::ExecState::Lost,
+        phux_core::ExecState::Abandoned => frame::ExecState::Abandoned,
+    }
+}
+
+/// An outcome on the wire. Absent exit evidence never implies success.
+#[must_use]
+pub const fn outcome(o: phux_core::Outcome) -> frame::Outcome {
+    match o {
+        phux_core::Outcome::Unobserved => frame::Outcome::Unobserved,
+        phux_core::Outcome::Exit(exit) => match (exit.status, exit.signal) {
+            (_, Some(signal)) => frame::Outcome::Signaled(signal),
+            (Some(status), None) => frame::Outcome::Exited(status),
+            (None, None) => frame::Outcome::Unobserved,
+        },
+    }
+}
+
+/// One truthful execution projection for inventory and creation receipts.
+#[must_use]
+pub fn activation(a: &phux_core::Activation, pending: bool) -> frame::ActivationInfo {
+    frame::ActivationInfo::new(
+        activation_id(a.id),
+        wire::ServerInstance::new(*a.instance.as_bytes()),
+        exec_state(a.state),
+    )
+    .with_outcome(a.outcome.map(outcome))
+    .with_evidence(a.diagnostic.map(launch_diagnostic), pending)
+}
+
+const fn launch_diagnostic(d: phux_core::LaunchDiagnostic) -> phux_protocol::api::LaunchDiagnostic {
+    use phux_core::LaunchStage as C;
+    use phux_protocol::api::LaunchStage as W;
+    let stage = match d.stage {
+        C::Pty => W::Pty,
+        C::Spawn => W::Spawn,
+        C::Cwd => W::Cwd,
+        C::Exec => W::Exec,
+        C::Handshake => W::Handshake,
+        C::Engine => W::Engine,
+    };
+    phux_protocol::api::LaunchDiagnostic {
+        stage,
+        errno: d.errno,
+    }
+}
+
+/// A terminate mode in core.
+#[must_use]
+pub const fn core_terminate_mode(m: frame::TerminateMode) -> phux_core::TerminateMode {
+    match m {
+        frame::TerminateMode::Graceful => phux_core::TerminateMode::Graceful,
+        frame::TerminateMode::Force => phux_core::TerminateMode::Force,
+    }
+}
+
+/// A core verb on the wire.
+#[must_use]
+pub const fn verb(v: phux_core::Verb) -> phux_protocol::kinds::Verb {
+    use phux_protocol::kinds::Verb as W;
+    match v {
+        phux_core::Verb::Observe => W::Inventory,
+        phux_core::Verb::Interact => W::Input,
+        phux_core::Verb::Organize => W::Organize,
+        phux_core::Verb::Create => W::Create,
+        phux_core::Verb::Terminate => W::Terminate,
+    }
+}
+
+/// A core refusal on the wire.
+#[must_use]
+pub fn refusal(r: &phux_core::Refusal) -> frame::Refusal {
+    use phux_core::Refusal as R;
+    match r {
+        R::Unauthorized { verb: v } => frame::Refusal::Unauthorized { verb: verb(*v) },
+        R::NotFound => frame::Refusal::NotFound,
+        R::Conflict { current } => frame::Refusal::Conflict {
+            current: revision(*current),
+        },
+        R::Stale { current } => frame::Refusal::Stale {
+            current: current.map(activation_id),
+        },
+        R::NotEmpty { members } => frame::Refusal::NotEmpty { members: *members },
+        R::Unsupported { capability } => frame::Refusal::Unsupported {
+            capability: capability.clone(),
+        },
+        R::InvalidArgument { field, reason } => frame::Refusal::InvalidArgument {
+            field: (*field).to_owned(),
+            reason: reason.clone(),
+        },
+        R::NameTaken => frame::Refusal::NameTaken,
+        R::ExecutionUncertain => frame::Refusal::ExecutionUncertain,
+        R::DuplicateOperation => frame::Refusal::DuplicateOperation,
+        R::StoreFailure { reason } => frame::Refusal::StoreFailure {
+            reason: reason.clone(),
+        },
+    }
+}
+
+/// A core launch spec on the wire.
+#[must_use]
+pub fn launch(spec: &phux_core::LaunchSpec) -> frame::LaunchSpec {
+    match spec {
+        phux_core::LaunchSpec::Terminal(t) => frame::LaunchSpec::new(t.argv.clone())
+            .with_cwd(t.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()))
+            .with_env(t.env.clone())
+            .with_restore(t.restore.clone()),
+        phux_core::LaunchSpec::Agent(a) => frame::LaunchSpec::new(vec![a.provider.clone()])
+            .with_restore(a.native_id.as_ref().map(|id| id.as_bytes().to_vec())),
+        _ => frame::LaunchSpec::default(),
+    }
+}
+
+/// A wire launch spec for `kind` in core, `None` for a kind no launch spec
+/// describes.
+#[must_use]
+pub fn core_launch(
+    kind: phux_core::ResourceKind,
+    spec: &frame::LaunchSpec,
+) -> Option<phux_core::LaunchSpec> {
+    match kind {
+        phux_core::ResourceKind::Terminal => {
+            Some(phux_core::LaunchSpec::Terminal(phux_core::TerminalLaunch {
+                argv: spec.command.clone(),
+                cwd: spec.cwd.as_ref().map(std::path::PathBuf::from),
+                env: spec.env.clone(),
+                restore: spec.restore.clone(),
+                // Not organization wire fields: PTY reports set `resume`,
+                // `phux.notify/v1` writes set `notify`.
+                resume: None,
+                notify: None,
+                last_cwd: None,
+                pane_id: None,
+            }))
+        }
+        phux_core::ResourceKind::AgentSession => {
+            Some(phux_core::LaunchSpec::Agent(phux_core::AgentLaunch {
+                provider: spec.command.first().cloned().unwrap_or_default(),
+                native_id: spec
+                    .restore
+                    .as_ref()
+                    .map(|bytes| String::from_utf8_lossy(bytes).into_owned()),
+            }))
+        }
+        // A tree names its application at SPAWN_RESOURCE, not in a launch.
+        phux_core::ResourceKind::AccessibilityTree
+        | phux_core::ResourceKind::PixelSurface
+        | phux_core::ResourceKind::Document => None,
+    }
+}
+
+/// Attributes on the wire, as `(name, value)` pairs.
+#[must_use]
+pub fn attrs(a: &phux_core::Attrs) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    if let Some(link) = &a.project_link {
+        out.push((LINK.to_owned(), link.clone()));
+    }
+    if let Some(project) = &a.project {
+        out.push(("project".to_owned(), project.clone()));
+    }
+    if let Some(dir) = &a.directory {
+        out.push(("directory".to_owned(), dir.to_string_lossy().into_owned()));
+    }
+    if let Some(host) = &a.host_label {
+        out.push(("host".to_owned(), host.clone()));
+    }
+    if let Some(repository) = &a.repository {
+        out.extend(repository.to_attrs());
+    }
+    if let Some(task) = &a.mission_task {
+        out.push(("mission.task".to_owned(), task.clone()));
+    }
+    out
+}
+
+const LINK: &str = phux_core::project_identity::attr::LINK;
+
+/// Wire attribute pairs in core; the `project.*` names (ADR-0168) are one
+/// typed repository identity, `project.link` is the separate explicit link,
+/// and unknown names are ignored.
+#[must_use]
+pub fn core_attrs(pairs: &[(String, String)]) -> phux_core::Attrs {
+    let mut a = phux_core::Attrs::default();
+    for (name, value) in pairs {
+        match name.as_str() {
+            "project" => a.project = Some(value.clone()),
+            // `SESSION_SET_PROJECT`'s rules, except that a bad link at
+            // create is dropped rather than refused: attributes describe.
+            LINK if !value.is_empty() && value.trim() == value => {
+                a.project_link = Some(value.clone());
+            }
+            "directory" => a.directory = Some(std::path::PathBuf::from(value)),
+            "host" => a.host_label = Some(value.clone()),
+            "mission.task" => a.mission_task = Some(value.clone()),
+            _ => {}
+        }
+    }
+    a.repository = phux_core::project_identity::SessionProject::from_attrs(
+        pairs
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str())),
+    )
+    .map(Box::new);
+    a
+}
+
+/// An arrangement owner on the wire.
+#[must_use]
+pub fn owner(o: phux_core::ArrangementOwner) -> Option<frame::ArrangementOwner> {
+    match o {
+        phux_core::ArrangementOwner::Session(k) => {
+            session_key(k).map(frame::ArrangementOwner::Session)
+        }
+        phux_core::ArrangementOwner::Workspace(k) => {
+            wire::WorkspaceKey::new(k.to_bytes()).map(frame::ArrangementOwner::Workspace)
+        }
+    }
+}
+
+fn node(n: &phux_core::LayoutNode<phux_core::EntryRef>) -> Option<frame::ArrangementNode> {
+    Some(match n {
+        phux_core::LayoutNode::Leaf(entry) => frame::ArrangementNode::Leaf(wire_entry(entry)?),
+        phux_core::LayoutNode::Split {
+            dir,
+            ratio,
+            left,
+            right,
+        } => frame::ArrangementNode::Split {
+            dir: match dir {
+                phux_core::SplitDir::Horizontal => frame::SplitDirection::Horizontal,
+                phux_core::SplitDir::Vertical => frame::SplitDirection::Vertical,
+            },
+            ratio: *ratio,
+            first: Box::new(node(left)?),
+            second: Box::new(node(right)?),
+        },
+    })
+}
+
+/// A core entry, slot tabs included, as its wire form.
+fn wire_entry(entry: &phux_core::EntryRef) -> Option<frame::EntryRef> {
+    let target = match &entry.target {
+        phux_core::EntryTarget::Member(k) => frame::EntryTarget::Member(resource_key(*k)?),
+        phux_core::EntryTarget::Satellite { host, id } => frame::EntryTarget::Satellite {
+            host: wire::SatelliteHost::new(host.clone()),
+            id: *id,
+        },
+    };
+    let mut wire = frame::EntryRef::new(entry.entry, target);
+    wire.tabs = entry.tabs.iter().map(wire_entry).collect::<Option<_>>()?;
+    wire.shown_at = entry.shown_at;
+    Some(wire)
+}
+
+/// A wire entry, slot tabs included, as its core form.
+fn core_entry(entry: &frame::EntryRef) -> Option<phux_core::EntryRef> {
+    let target = match &entry.target {
+        frame::EntryTarget::Member(k) => phux_core::EntryTarget::Member(core_resource_key(k)),
+        frame::EntryTarget::Satellite { host, id } => phux_core::EntryTarget::Satellite {
+            host: host.as_str().to_owned(),
+            id: *id,
+        },
+        _ => return None,
+    };
+    let mut core = phux_core::EntryRef::new(entry.entry, target);
+    core.tabs = entry.tabs.iter().map(core_entry).collect::<Option<_>>()?;
+    core.shown_at = entry.shown_at;
+    Some(core)
+}
+
+fn core_node(n: &frame::ArrangementNode) -> Option<phux_core::LayoutNode<phux_core::EntryRef>> {
+    Some(match n {
+        frame::ArrangementNode::Leaf(entry) => phux_core::LayoutNode::Leaf(core_entry(entry)?),
+        frame::ArrangementNode::Split {
+            dir,
+            ratio,
+            first,
+            second,
+        } => phux_core::LayoutNode::Split {
+            dir: match dir {
+                frame::SplitDirection::Horizontal => phux_core::SplitDir::Horizontal,
+                frame::SplitDirection::Vertical => phux_core::SplitDir::Vertical,
+            },
+            ratio: *ratio,
+            left: Box::new(core_node(first)?),
+            right: Box::new(core_node(second)?),
+        },
+    })
+}
+
+/// Core groups as a wire document. Entries the wire cannot carry (a zero
+/// key) drop their group.
+#[must_use]
+pub fn document(groups: &[phux_core::Group]) -> frame::ArrangementDoc {
+    frame::ArrangementDoc {
+        groups: groups
+            .iter()
+            .filter_map(|g| {
+                Some(frame::ArrangementGroup {
+                    id: g.id,
+                    name: g.name.clone(),
+                    tree: node(&g.tree)?,
+                    locked: g.locked,
+                })
+            })
+            .collect(),
+    }
+}
+
+/// A wire document as core groups; `None` when a target kind is unknown.
+#[must_use]
+pub fn core_groups(doc: &frame::ArrangementDoc) -> Option<Vec<phux_core::Group>> {
+    doc.groups
+        .iter()
+        .map(|g| {
+            Some(phux_core::Group {
+                id: g.id,
+                name: g.name.clone(),
+                tree: core_node(&g.tree)?,
+                locked: g.locked,
+            })
+        })
+        .collect()
+}
+
+/// A core actor as the event stamp's `ActorRef`, with its principal.
+#[must_use]
+pub fn actor_ref(actor: &phux_core::Actor, client: Option<wire::ClientId>) -> frame::ActorRef {
+    frame::ActorRef::new(client.unwrap_or(wire::ClientId::new(0)))
+        .with_client_name(actor.client.clone())
+        .with_principal(principal_id(&actor.principal))
+        .with_on_behalf_of(actor.on_behalf_of.as_ref().and_then(principal_id))
+}
+
+/// A principal's stable wire id: the first 16 bytes of the SHA-256 of its
+/// label (`owner`, `system`, or the credential name).
+#[must_use]
+pub fn principal_id(principal: &phux_core::PrincipalId) -> Option<wire::PrincipalId> {
+    match principal {
+        phux_core::PrincipalId::Owner => digest_id(b"owner"),
+        phux_core::PrincipalId::System => digest_id(b"system"),
+        phux_core::PrincipalId::Credential(name) => digest_id(name.as_bytes()),
+    }
+}
+
+fn digest_id(label: &[u8]) -> Option<wire::PrincipalId> {
+    use sha2::Digest as _;
+    let digest = sha2::Sha256::digest(label);
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    wire::PrincipalId::new(bytes)
+}
+
+#[cfg(test)]
+mod tests;

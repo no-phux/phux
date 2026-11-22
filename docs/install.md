@@ -1,0 +1,401 @@
+# Install
+
+Install the CLI/terminal UI below, or choose the [desktop app](#desktop-app).
+The CLI install includes `phux` and `phux-mcp`. Run `phux` to start.
+
+```sh
+curl -fsSL https://phux.sh/install | sh
+```
+
+## Requirements
+
+Published CLI/server builds:
+
+| OS    | Architecture          | Notes                                   |
+| ----- | --------------------- | --------------------------------------- |
+| macOS | Apple silicon (arm64) | standalone CLI: macOS 11.0 or later     |
+| Linux | x86_64                | glibc; there is no musl build           |
+| Linux | arm64                 | glibc; there is no musl build           |
+
+Windows: the CLI and server use the Linux builds in WSL 2, with optional
+PowerShell launchers. There is no native Windows CLI, server, or desktop app,
+and no Intel Mac build. See [Windows (WSL)](#windows-wsl).
+
+The install script needs `curl` or `wget`, `tar`, and `sha256sum` or `shasum`.
+
+## macOS permissions
+
+macOS charges every program in a pane to the phux server, so the server
+holds the Full Disk Access, Screen Recording and Accessibility grants for
+everything you run in phux. On macOS the install script and `phux update`
+keep a signed app, **phux Server**, at one path:
+
+```text
+~/Library/Application Support/sh.phux/Server/Versions/<release>/phux Server.app
+~/Library/Application Support/sh.phux/Server/Versions/Current -> <release>
+```
+
+Auto-start, `phux service install` and `phux upgrade` run the server
+through `Versions/Current`, so System Settings lists one **phux Server**
+row with an icon, and a grant survives updates. `~/.local/bin/phux` stays a
+plain CLI. The bundle is used only when it holds the same build as the CLI.
+Homebrew, Nix and source builds install no bundle; their server runs from
+their own binary.
+
+```sh
+phux server permissions                          # what the server holds
+phux server permissions --open full-disk-access  # open the pane, print what to add
+```
+
+Each grant reads `granted`, `denied` (this includes never asked),
+`not_determined` or `unknown`, and checking never shows a prompt.
+`--open` takes `full-disk-access`, `screen-recording` or `accessibility`.
+It opens that pane of **System Settings → Privacy & Security** and prints
+the app to switch on, or add with **+**. Restart the server afterwards. Save
+your work first: a restart ends the programs in panes. `phux doctor` shows
+the same three statuses and warns when the live server runs from somewhere
+other than the bundle.
+
+macOS charges a server to the app that started it, so a server auto-started
+from Terminal or Ghostty uses that terminal's grants. `phux server
+permissions` names that app on its `charged to` line. To have **phux
+Server** hold the grants itself, run the server under `phux service
+install`. Stable releases sign the bundle with phux's Developer ID, so a
+grant follows it from release to release. `next` builds are signed ad hoc,
+so macOS treats each one as a new app.
+
+Every grant is optional, and macOS owns the approval: phux cannot grant
+access on your behalf. Grants on this Mac do not change permissions on a
+remote host. phux itself needs none of them; they let the shells, agents
+and tools you run reach protected folders, the screen or other apps. See
+Apple's [file access controls](https://support.apple.com/guide/security/controlling-app-access-to-files-secddd1d86a6/web).
+
+## Windows (WSL)
+
+The CLI and server run in WSL 2, with optional PowerShell launchers.
+
+Use Windows Terminal and WSL 2 with Ubuntu 22.04 or newer (x64 or arm64).
+The server, panes, configuration, credentials, and agent integrations live
+**inside that Linux distribution**, not in Windows. PowerShell can launch
+and control them. The terminal UI runs in WSL.
+
+If you do not have WSL, run this in an administrator PowerShell, restart if
+Windows requests it, then open Ubuntu once and create your Linux user:
+
+```powershell
+wsl --install -d Ubuntu
+```
+
+For an existing WSL installation, run `wsl --update` from PowerShell before
+installing phux so its Windows console host is current.
+
+In Ubuntu, ensure the download tools are present:
+
+```sh
+sudo apt-get update
+sudo apt-get install -y curl ca-certificates
+curl -fsSL https://phux.sh/install | sh
+phux
+```
+
+That is sufficient for using phux in a WSL terminal. To also expose `phux`
+and `phux-mcp` as PowerShell commands, download and run the
+[PowerShell installer](../scripts/install-windows.ps1):
+
+```powershell
+Invoke-WebRequest https://raw.githubusercontent.com/no-phux/phux/main/scripts/install-windows.ps1 -OutFile install-windows.ps1
+# Inspect the downloaded script before running it.
+.\install-windows.ps1 -Distribution Ubuntu
+```
+
+Use `wsl --list --quiet` to find your distribution's exact name, such as
+`Ubuntu-24.04`, and pass it with `-Distribution`. It must have an initialized,
+non-root default Linux user. The installer uses the existing release
+installer and its checksum/signature checks. It writes `phux.ps1` and
+`phux-mcp.ps1` to `%LOCALAPPDATA%\phux\bin` and adds that directory to your
+user `PATH`; it never changes your execution policy or PowerShell profile.
+If your policy blocks scripts, follow your organization's policy; on an
+unmanaged machine, `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
+allows locally generated scripts. An administrator-enforced policy wins.
+
+Options: `-Channel next`, `-Version 0.112.0` (stable only),
+`-InstallDir C:\Tools\phux`, `-NoModifyPath`, and `-DryRun`.
+Open a new PowerShell window after installing:
+
+```powershell
+phux --version
+phux                         # Linux terminal UI in Windows Terminal
+phux ls
+phux spawn --cwd /mnt/c/Users/me/project -- bash
+phux update                  # updates the Linux installation
+```
+
+Arguments are Linux paths: use `/mnt/c/...`, not `C:\...`. WSL maps the
+PowerShell working directory when launching the command. Keep repositories
+in the Linux filesystem for best performance. Tools and agents you run in
+panes must be installed inside WSL. `phux --help` and `phux-mcp --schema`
+work from PowerShell too; launchers preserve arguments, exit codes, and
+UTF-8 text pipes. For a Windows MCP client, use the native WSL executable
+directly, so stdin/stdout bypass PowerShell's text encoders and buffering:
+
+```json
+{
+  "command": "wsl.exe",
+  "args": ["--distribution", "Ubuntu", "--exec", "sh", "-c", "exec ~/.local/bin/phux-mcp"]
+}
+```
+
+Use your distribution's name in place of `Ubuntu`. Windows PowerShell 5.1
+cannot transparently forward a native client's open stdin through a script;
+its launcher refuses that mode instead of hanging. PowerShell 7 supports it,
+but the direct WSL entrypoint above is recommended for clients on both.
+A client running inside WSL can invoke `phux mcp` directly.
+
+Re-running the installer updates the launchers and Linux programs. To
+remove the Windows entrypoints, delete only `phux.ps1` and `phux-mcp.ps1`
+from the chosen install directory and remove that directory from your user
+`PATH`. To remove the Linux programs and state, follow [Uninstall](#uninstall)
+inside WSL. Neither step removes your distribution. The terminal UI runs in
+Windows Terminal, and WSLg is not required.
+
+## Install script
+
+```sh
+curl -fsSL https://phux.sh/install | sh
+```
+
+On Debian, Ubuntu, Fedora and RHEL the script asks for sudo, adds the [phux apt or dnf repository](#linux-package-repositories) and installs from it, so phux updates with your system. `--no-repo` (or `PHUX_NO_REPO=1`), `--install-dir`, `--channel`, `--version`, or no way to ask for sudo installs the archive instead.
+
+Everywhere else, the script downloads the release for your platform, checks its SHA-256 before unpacking anything, and puts `phux` and `phux-mcp` in `~/.local/bin`. If that directory isn't on your `PATH`, it adds it to your shell profile. On macOS a stable release also installs [phux Server](#macos-permissions), checked the same way.
+
+On Linux the script ends by offering to keep your sessions running after logout and reboot. Yes runs `phux service install --adopt`, which runs the server as a systemd user unit and turns on linger (`loginctl enable-linger`) so it starts at boot. No sudo is needed. Where your system's policy wants an administrator for linger, it prints the `sudo loginctl enable-linger` command to run. With no terminal to ask on, the script installs the service. `--no-service` or `PHUX_NO_SERVICE=1` skips it. `phux doctor` warns while the server is not supervised.
+
+Pass options after `sh -s --`:
+
+```sh
+curl -fsSL https://phux.sh/install | sh -s -- --help
+curl -fsSL https://phux.sh/install | sh -s -- --install-dir ~/bin --no-modify-path
+curl -fsSL https://phux.sh/install | sh -s -- --version 0.113.0
+curl -fsSL https://phux.sh/install | sh -s -- --channel next
+curl -fsSL https://phux.sh/install | sh -s -- --dry-run
+```
+
+| Option                          | Does                                                          |
+| ------------------------------- | ------------------------------------------------------------- |
+| `--install-dir <dir>`           | install somewhere other than `~/.local/bin`                   |
+| `--no-modify-path`              | leave your shell profile alone                                |
+| `--no-repo`                     | install the archive, not the apt or dnf repository            |
+| `--service`, `--no-service`     | on Linux, install the systemd user service, or skip it, without asking |
+| `--version <X.Y.Z>`             | install a specific release instead of the latest             |
+| `--channel <stable\|next\|lts>`  | follow tagged releases (the default), every `main` build that passes CI, or the [long-term-support](./runbooks/lts.md) release |
+| `--rune`                        | install the desktop app, [Phux Rune](./clients.md#desktop), adding the CLI if missing |
+| `--desktop`                     | the same as `--rune` (the GPUI desktop is retired)           |
+| `--dry-run`                     | print what would be downloaded and where, and install nothing |
+| `--verbose`                     | also say what went where, and how the download was checked    |
+
+**Signature checks need `minisign`.** With `minisign` on your `PATH`, the script also verifies the release signature. Without it the SHA-256 alone is checked, which `--verbose` mentions. Set `PHUX_REQUIRE_SIGNATURE=1` to refuse to install without that check.
+
+A tarball saved from a browser can carry `com.apple.quarantine`; clear it with `xattr -d com.apple.quarantine <file>`. `curl` does not set that attribute.
+
+## Containers and small servers
+
+The Linux release needs glibc 2.35 or newer: Debian 12, Ubuntu 22.04 and
+later, and their arm64 builds, which covers 64-bit Raspberry Pi OS. Alpine
+and other musl systems are not supported yet; the install script will put
+the binary there, but it cannot start.
+
+[`examples/container/Dockerfile`](https://github.com/no-phux/phux/blob/main/examples/container/Dockerfile)
+builds a small image that runs a server as an unprivileged user:
+
+```sh
+docker build -t phux examples/container
+docker run -d --init --name phux -v phux-state:/home/phux/.local/state/phux \
+  -v phux-config:/home/phux/.config/phux phux
+docker exec -it phux phux            # attach from inside the container
+```
+
+- `--init` matters: panes are child processes, and something has to reap
+  them.
+- The two volumes hold sessions, credentials and config. With them, a
+  restarted container lists its sessions again and `phux restore` starts
+  their programs.
+- To reach it from another machine, give the server a listener and pair as
+  on any host ([Remote access](./remote.md)), and publish that port.
+
+On Kubernetes,
+[`examples/container/statefulset.yaml`](https://github.com/no-phux/phux/blob/main/examples/container/statefulset.yaml)
+runs the same image as a one-pod StatefulSet with a volume claim for each
+of those two directories:
+
+```sh
+kubectl apply -f examples/container/statefulset.yaml
+kubectl exec -it phux-0 -- phux      # attach from inside the pod
+```
+
+Keep it at one replica: a server owns its sessions. After the pod is
+replaced, `phux ls` lists the sessions again and `phux restore` starts
+their programs.
+
+## Linux package repositories
+
+Signed apt and dnf repositories carry the stable channel for x86_64 and
+arm64; the [install script](#install-script) adds the right one. By hand:
+
+```sh
+R=https://github.com/no-phux/phux/releases/download
+# Debian, Ubuntu
+sudo curl -fsSLo /etc/apt/keyrings/phux.asc $R/repodata/phux.asc
+echo "deb [signed-by=/etc/apt/keyrings/phux.asc] $R repodata/" | sudo tee /etc/apt/sources.list.d/phux.list
+sudo apt update && sudo apt install phux
+# Fedora, RHEL 10
+sudo curl -fsSLo /etc/yum.repos.d/phux.repo $R/repodata/phux.repo
+sudo dnf install phux
+```
+
+`apt upgrade` or `dnf upgrade` then brings each release (`phux update`
+says so), and `phux upgrade` moves the running server onto it without
+stopping your panes. The repositories keep the three newest releases;
+releases also carry the `.deb` and `.rpm` files. The signing key is
+[`packaging/phux.asc`](https://github.com/no-phux/phux/blob/main/packaging/phux.asc),
+fingerprint `0F3D4046E72D0CB23784A58B043A18DFD4D1A4D5`.
+
+On Arch, install `phux-bin` with pacman where a repository carries it.
+
+## Homebrew
+
+```sh
+brew install no-phux/tap/phux
+```
+
+Homebrew taps `no-phux/tap` and installs `phux` and `phux-mcp`. On Homebrew 6 and later that name trusts only the `phux` formula, so no `brew trust` step. Update with `brew upgrade no-phux/tap/phux`.
+
+To install by the short name after you have tapped the repository, trust the formula first, then install:
+
+```sh
+brew trust --formula no-phux/tap/phux
+brew install phux
+```
+
+`brew trust no-phux/tap` trusts every current and future formula, cask, and external command in the tap. The one-line install above does not.
+
+## Desktop app
+
+The desktop app is [Phux Rune](../clients/rune/README.md) (alpha):
+
+```sh
+curl -fsSL https://phux.sh/install | sh -s -- --rune
+```
+
+`https://phux.sh/install-desktop` and `install --desktop` run the same
+install. It checks the archive's SHA-256 (and the release signature with
+`minisign` on `PATH`), installs the CLI when none is found, and never
+replaces an existing CLI or stops its server. Releases are the `rune-v*`
+tags on [GitHub](https://github.com/no-phux/phux/releases?q=rune-v&expanded=true).
+
+| OS    | Needs                                                   | Installs to                                          |
+| ----- | ------------------------------------------------------- | ---------------------------------------------------- |
+| macOS | Apple silicon, macOS 14 or later                        | `/Applications`, or `~/Applications` if not writable |
+| Linux | x86_64 or arm64, glibc 2.39, Vulkan, `libxkbcommon-x11` | `~/.local/share/phux-rune`, with a menu entry        |
+
+The app updates itself. It is rougher than the terminal UI;
+[Clients](./clients.md#desktop) says what it does today. There is no
+Windows desktop app.
+
+The GPUI desktop (`Phux.app`, the `phux-desktop` Homebrew cask, the Windows
+desktop) was retired after Desktop 0.62.0 and gets no further updates.
+To remove it, delete `Phux.app`, or run
+`brew uninstall --cask no-phux/tap/phux-desktop`.
+
+## Check it worked
+
+```sh
+phux --version
+phux doctor
+```
+
+`phux doctor` checks your config, the socket, and the server, and says what to fix. Then [start your first session](./getting-started.md).
+
+## Update
+
+```sh
+phux update            # install the latest release
+phux update --check    # say whether there is one, and change nothing
+phux update --rollback # put the previous version back
+```
+
+`phux update` downloads the new release, checks it, replaces both programs (and, on macOS, [phux Server](#macos-permissions)), and restarts the server in place. **Your panes keep running through an update**, and attached clients reconnect on their own.
+
+`phux upgrade` does only the restart: it moves the running server onto whatever `phux` is already installed, again without stopping your panes. Run it after updating some other way, such as `brew upgrade`.
+
+If you're upgrading from 0.110 or older, the new CLI can't stop the old
+server (`phux upgrade` and `phux kill --server` are refused across protocol
+majors). Save its work, identify the old server's PID and profile, then stop
+that exact process with `kill PID`; do not kill by name or port, which can
+hit unrelated clients or servers. Start the new one with
+`phux server --ensure` (or just run `phux`). Stopping the server ends the programs in its
+panes; the new server brings the sessions back without them, and
+`phux restore` relaunches them.
+
+If you installed with Homebrew, Nix, apt, dnf, `cargo install`, or pacman (`phux-bin` on Arch and Omarchy), `phux update` changes nothing and prints the command for that package manager instead.
+
+### Channels
+
+```sh
+phux channel           # show the channel you follow
+phux channel next      # follow every green build of main, and update now
+phux channel stable    # go back to tagged releases
+phux channel lts       # follow the long-term-support release
+```
+
+`stable` is the tagged releases and the default. `next` is rebuilt from every commit on `main` that passes CI. `lts` is one release promoted about monthly that receives security fixes for 12 months ([LTS](./runbooks/lts.md)); its manifest must carry a valid signature.
+
+## Shell completion
+
+```sh
+phux completion zsh > ~/.zfunc/_phux
+phux completion bash > ~/.local/share/bash-completion/completions/phux
+phux completion fish > ~/.config/fish/completions/phux.fish
+```
+
+`elvish`, `nu`, and `powershell` work too. For zsh, `~/.zfunc` must be on your `$fpath`. Regenerate after an update.
+
+Homebrew, the Linux packages and the install script also install `man phux`; `phux man | man -l -` reads it.
+
+## Build from source
+
+Install the [platform packages](./development.md#platform-packages) first,
+then the Rust toolchain pinned in the repository. You need a C toolchain,
+`curl`, and `tar`; Linux GNU builds also require `mold`, selected by
+`.cargo/config.toml` in the checkout.
+
+```sh
+git clone https://github.com/no-phux/phux
+cd phux
+cargo install --locked --path crates/phux
+cargo install --locked --path crates/phux-mcp
+```
+
+On the three release platforms the build downloads a prebuilt, checksummed copy of the terminal emulator library; anywhere else it builds it with Zig 0.16. [Development](./development.md) covers a full setup.
+
+**A build from a checkout uses its own server.** It runs under a separate `dev` profile with its own socket and state, so it never touches the sessions of an installed `phux`. Install it with `cargo install` to make it the one you use.
+
+## Uninstall
+
+There is no uninstall command. Stop the server, then delete the files:
+
+```sh
+phux service uninstall   # only if you ran phux service install
+phux kill --server       # ends every session
+rm ~/.local/bin/phux ~/.local/bin/phux-mcp
+rm -rf ~/.config/phux ~/.local/state/phux ~/.local/share/phux
+rm -rf ~/Library/Application\ Support/sh.phux   # macOS: phux Server
+```
+
+If you installed the desktop app, also remove `Phux Rune.app` from `/Applications` or `~/Applications` on macOS, or `~/.local/share/phux-rune` and `~/.local/bin/phux-rune` on Linux. With Homebrew, run `brew uninstall phux` instead of the first `rm`. From apt or dnf: `sudo apt remove phux` or `sudo dnf remove phux`. [File locations](./reference/files.md) lists every path phux writes, including where they move when `XDG_*` variables are set.
+
+## Troubleshooting
+
+- **`no phux release for <os>/<arch>; build from source`**: your platform has no release build. See [Requirements](#requirements).
+- **`checksum mismatch for <file>`**: the download was corrupted or altered, and nothing was installed. Run the script again.
+- **`phux: command not found` after installing**: open a new shell so it reads the updated profile, or add `~/.local/bin` to your `PATH`. The shell installer adds the directory itself when profile changes are allowed.
+- Anything else: run `phux doctor`, then see [Troubleshooting](./troubleshooting.md).

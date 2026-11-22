@@ -1,0 +1,549 @@
+//! Schemas for the orchestration tools, and the two that still run the CLI.
+//!
+//! `phux_launch`, `phux_archive`, and `phux_project_inspect` stay on the CLI
+//! residue (their reasons are in `crate::tool_table`); spawn, signal, tag,
+//! rename, and the spatial edits run in-process in `crate::pane_tools`,
+//! registered from here.
+
+#![allow(
+    clippy::similar_names,
+    reason = "argv and parsed args are deliberately adjacent in thin CLI wrappers"
+)]
+
+use serde_json::{Map, Value, json};
+
+use crate::cli_adapter::{
+    CliAdapter, DEFAULT_CALL_TIMEOUT, bounded_string, bounded_strings, enum_string, push_socket,
+    ratio,
+};
+use crate::pane_tools::{self, Spatial};
+use crate::tools::{ToolError, ToolSpec, strict_object};
+
+/// The orchestration tools, in catalog order.
+pub(crate) const SPECS: &[ToolSpec] = &[
+    ToolSpec::cli("phux_launch", launch_schema, |args, adapter| {
+        Box::pin(launch(args, adapter))
+    }),
+    ToolSpec::in_process("phux_spawn", spawn_schema, |args| {
+        Box::pin(pane_tools::spawn(args))
+    }),
+    ToolSpec::in_process("phux_signal", signal_schema, |args| {
+        Box::pin(pane_tools::signal(args))
+    }),
+    ToolSpec::in_process("phux_tag", tag_schema, |args| {
+        Box::pin(pane_tools::tag(args))
+    }),
+    ToolSpec::in_process("phux_rename", rename_schema, |args| {
+        Box::pin(pane_tools::rename(args))
+    }),
+    ToolSpec::in_process("phux_insert_pane", insert_schema, |args| {
+        Box::pin(pane_tools::spatial(args, Spatial::Insert))
+    }),
+    ToolSpec::in_process("phux_move_pane", move_schema, |args| {
+        Box::pin(pane_tools::spatial(args, Spatial::Move))
+    }),
+    ToolSpec::in_process("phux_swap_pane", swap_schema, |args| {
+        Box::pin(pane_tools::spatial(args, Spatial::Swap))
+    }),
+    ToolSpec::cli("phux_archive", archive_schema, |args, adapter| {
+        Box::pin(archive(args, adapter))
+    }),
+    ToolSpec::cli(
+        "phux_project_inspect",
+        project_inspect_schema,
+        |args, adapter| Box::pin(project_inspect(args, adapter)),
+    ),
+];
+
+pub(crate) fn string_schema() -> Value {
+    json!({ "type": "string", "minLength": 1, "maxLength": 4096 })
+}
+
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the schema takes ownership of its generated properties object"
+)]
+pub(crate) fn schema(name: &str, description: &str, properties: Value, required: &[&str]) -> Value {
+    json!({
+        "name": name,
+        "description": description,
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": properties,
+            "required": required,
+        }
+    })
+}
+
+fn launch_schema() -> Value {
+    schema(
+        "phux_launch",
+        "Launch a configured agent integration, optionally creating it beside a split leaf in the shared arrangement.",
+        json!({
+            "integration": string_schema(),
+            "list": { "type": "boolean" },
+            "target": string_schema(),
+            "split": placement_split_schema(),
+            "ratio": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1 },
+            "projection": { "type": "string", "description": "Legacy option; placed launch refuses named projections." },
+            "cwd": string_schema(),
+            "extra": { "type": "array", "maxItems": 64, "items": string_schema() },
+            "socket": string_schema(),
+        }),
+        &[],
+    )
+}
+
+fn spawn_schema() -> Value {
+    schema(
+        "phux_spawn",
+        "Spawn a Terminal without attaching; target/split/ratio atomically creates it beside a split leaf in the shared arrangement.",
+        json!({
+            "target": string_schema(),
+            "satellite": string_schema(),
+            "split": placement_split_schema(),
+            "ratio": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1 },
+            "projection": { "type": "string", "description": "Legacy option; placed spawn refuses named projections." },
+            "cwd": string_schema(),
+            "command": { "type": "array", "maxItems": 64, "items": string_schema() },
+            "retain_secs": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 86400,
+                "description": "Unplaced spawn only. Keep the pane inspectable this many seconds after its process exits (0: the server's default).",
+            },
+            "idempotency_key": {
+                "type": "string",
+                "minLength": 32,
+                "maxLength": 32,
+                "pattern": "^[0-9a-fA-F]{32}$",
+                "description": "Deduplicate an identical spawn. For an unknown placed spawn result, read the receipt with phux_terminal_operation rather than resolving the selector again.",
+            },
+            "socket": string_schema(),
+        }),
+        &[],
+    )
+}
+
+/// A single named-projection metadata key (ADR-0129): requires `target`.
+fn projection_key_schema() -> Value {
+    json!({
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4096,
+        "description": "Named projection key (`<prefix>.layout/v1/<session-id>`) to place into instead of the shared default; requires `target`.",
+    })
+}
+
+fn signal_schema() -> Value {
+    schema(
+        "phux_signal",
+        "Send a process-group signal to exactly one target. terminate/kill/interrupt require confirm=true.",
+        json!({
+            "target": string_schema(),
+            "signal": { "type": "string", "enum": crate::tools::signals::signal_names() },
+            "confirm": { "type": "boolean", "description": "Required true for interrupt, terminate, and kill." },
+            "idempotency_key": {
+                "type": "string",
+                "minLength": 32,
+                "maxLength": 32,
+                "pattern": "^[0-9a-fA-F]{32}$",
+                "description": "Make the signal safe to retry: a repeat with the same key answers the first signal's result and delivers nothing. Refused with unsupported_server when the server does not advertise keyed_signal.",
+            },
+            "socket": string_schema(),
+        }),
+        &["target", "signal"],
+    )
+}
+
+fn tag_schema() -> Value {
+    schema(
+        "phux_tag",
+        "List, add, or remove Terminal tags through the canonical phux tag command.",
+        json!({
+            "action": { "type": "string", "enum": ["ls", "add", "rm"] },
+            "target": string_schema(),
+            "tags": { "type": "array", "maxItems": 64, "items": string_schema() },
+            "socket": string_schema(),
+        }),
+        &["action", "target"],
+    )
+}
+
+fn rename_schema() -> Value {
+    schema(
+        "phux_rename",
+        "Rename an existing session.",
+        json!({ "session": string_schema(), "new_name": string_schema(), "socket": string_schema() }),
+        &["session", "new_name"],
+    )
+}
+
+/// `split` for a pane created beside `target`; the spatial edits name the
+/// divider instead (`direction` in [`spatial_schema`]).
+fn placement_split_schema() -> Value {
+    json!({
+        "type": "string",
+        "enum": ["horizontal", "vertical"],
+        "description": "Where the new pane goes beside `target`: `horizontal` to the right \
+                        (default), `vertical` below.",
+    })
+}
+
+fn spatial_schema(name: &str, description: &str, roles: &[&str], geometry: bool) -> Value {
+    let mut properties = Map::new();
+    for role in roles {
+        properties.insert((*role).to_owned(), string_schema());
+    }
+    if geometry {
+        properties.insert(
+            "direction".to_owned(),
+            json!({
+                "type": "string",
+                "enum": ["horizontal", "vertical"],
+                "description": "The divider: `horizontal` stacks the panes, `vertical` places them \
+                                side by side. The opposite of phux_spawn's `split`.",
+            }),
+        );
+        properties.insert(
+            "ratio".to_owned(),
+            json!({ "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1 }),
+        );
+    }
+    properties.insert(
+        "projection".to_owned(),
+        json!({
+            "type": "array",
+            "maxItems": 2,
+            "items": projection_key_schema(),
+            "description": "Named projection key(s) to edit instead of the shared default (ADR-0129): 0 or 1 for a same-session edit, or exactly 2 (source and destination) for a cross-session move-pane.",
+        }),
+    );
+    properties.insert("socket".to_owned(), string_schema());
+    schema(name, description, Value::Object(properties), roles)
+}
+
+fn insert_schema() -> Value {
+    spatial_schema(
+        "phux_insert_pane",
+        "Insert an already-created local pane beside an exact same-session target; never spawns.",
+        &["target", "new_pane"],
+        true,
+    )
+}
+
+fn move_schema() -> Value {
+    spatial_schema(
+        "phux_move_pane",
+        "Move one exact local pane beside another, including across sessions.",
+        &["source", "target"],
+        true,
+    )
+}
+
+fn swap_schema() -> Value {
+    spatial_schema(
+        "phux_swap_pane",
+        "Swap two exact local pane leaves in the same session without changing focus.",
+        &["first", "second"],
+        false,
+    )
+}
+
+fn archive_schema() -> Value {
+    schema(
+        "phux_archive",
+        "Export the running server's sessions as an archive document, or import an archive file: \
+         its missing sessions are recreated empty and persistent, and nothing is started.",
+        json!({
+            "action": { "type": "string", "enum": ["export", "import"] },
+            "archive": string_schema(),
+            "socket": string_schema(),
+        }),
+        &["action"],
+    )
+}
+
+fn project_inspect_schema() -> Value {
+    schema(
+        "phux_project_inspect",
+        "Map a git repository and its checked-out worktrees. Local only: never contacts a \
+         server, never creates or deletes a worktree.",
+        json!({ "path": string_schema() }),
+        &[],
+    )
+}
+
+async fn launch(args: &Value, adapter: &CliAdapter) -> Result<Value, ToolError> {
+    strict_object(
+        args,
+        &[
+            "integration",
+            "list",
+            "target",
+            "split",
+            "ratio",
+            "projection",
+            "cwd",
+            "extra",
+            "socket",
+        ],
+        &[],
+    )?;
+    let argv = launch_argv(args)?;
+    adapter.run_json(argv, DEFAULT_CALL_TIMEOUT).await
+}
+
+/// `phux launch` is two verbs behind one tool: enumerate the configured
+/// integrations, or start exactly one. Placement is parsed for both so an
+/// ill-formed `split`/`ratio` is rejected the same way either way.
+fn launch_argv(args: &Value) -> Result<Vec<String>, ToolError> {
+    let list = optional_bool(args, "list")?.unwrap_or(false);
+    let integration = bounded_string(args, "integration", false)?;
+    if list == integration.is_some() {
+        return Err(ToolError::new(
+            "provide exactly one of `integration` or `list: true`",
+        ));
+    }
+    let placement = launch_placement(args)?;
+    if list {
+        return launch_list_argv(args);
+    }
+    launch_one_argv(args, integration.unwrap_or_default(), placement)
+}
+
+/// The exact local placement the launched pane takes, if any. `split`,
+/// `ratio`, and `projection` are meaningless without a `target` to place
+/// against.
+struct Placement {
+    target: Option<String>,
+    split: String,
+    ratio: Option<f64>,
+    projection: Option<String>,
+}
+
+fn launch_placement(args: &Value) -> Result<Placement, ToolError> {
+    let target = bounded_string(args, "target", false)?;
+    let split = enum_string(
+        args,
+        "split",
+        &["horizontal", "vertical"],
+        Some("horizontal"),
+    )?;
+    let ratio = ratio(args)?;
+    let projection = bounded_string(args, "projection", false)?;
+    if target.is_none() && (args.get("split").is_some() || ratio.is_some() || projection.is_some())
+    {
+        return Err(ToolError::new(
+            "`split`, `ratio`, and `projection` require `target`",
+        ));
+    }
+    Ok(Placement {
+        target,
+        split,
+        ratio,
+        projection,
+    })
+}
+
+/// Enumeration takes no argument that only makes sense while launching.
+fn launch_list_argv(args: &Value) -> Result<Vec<String>, ToolError> {
+    reject_present(
+        args,
+        &[
+            "target",
+            "split",
+            "ratio",
+            "projection",
+            "cwd",
+            "extra",
+            "socket",
+        ],
+    )?;
+    Ok(vec![
+        "launch".to_owned(),
+        "--list".to_owned(),
+        "--json".to_owned(),
+    ])
+}
+
+fn launch_one_argv(
+    args: &Value,
+    integration: String,
+    placement: Placement,
+) -> Result<Vec<String>, ToolError> {
+    let mut argv = vec!["launch".to_owned(), integration, "--json".to_owned()];
+    push_placement(
+        &mut argv,
+        placement.target,
+        &placement.split,
+        placement.ratio,
+        placement.projection,
+    );
+    push_option(&mut argv, "-c", bounded_string(args, "cwd", false)?);
+    push_socket(&mut argv, args)?;
+    let extra = bounded_strings(args, "extra", false)?;
+    if !extra.is_empty() {
+        argv.push("--".to_owned());
+        argv.extend(extra);
+    }
+    Ok(argv)
+}
+
+async fn archive(args: &Value, adapter: &CliAdapter) -> Result<Value, ToolError> {
+    strict_object(args, &["action", "archive", "socket"], &["action"])?;
+    let action = enum_string(args, "action", &["export", "import"], None)?;
+    let mut argv = vec!["archive".to_owned(), action.clone()];
+    match action.as_str() {
+        "export" => {
+            reject_present(args, &["archive"])?;
+            push_socket(&mut argv, args)?;
+            adapter.run_json(argv, DEFAULT_CALL_TIMEOUT).await
+        }
+        "import" => {
+            let archive = bounded_string(args, "archive", true)?.unwrap_or_default();
+            if archive == "-" {
+                return Err(ToolError::new(
+                    "stdin archive input is unavailable over MCP; provide a bounded path",
+                ));
+            }
+            argv.push(archive);
+            push_socket(&mut argv, args)?;
+            adapter.run_json(argv, DEFAULT_CALL_TIMEOUT).await
+        }
+        _ => Err(ToolError::new("unsupported archive action")),
+    }
+}
+
+async fn project_inspect(args: &Value, adapter: &CliAdapter) -> Result<Value, ToolError> {
+    strict_object(args, &["path"], &[])?;
+    let mut argv = vec!["project".to_owned(), "inspect".to_owned()];
+    if let Some(path) = bounded_string(args, "path", false)? {
+        argv.push(path);
+    }
+    argv.push("--json".to_owned());
+    adapter.run_json(argv, DEFAULT_CALL_TIMEOUT).await
+}
+
+fn push_placement(
+    argv: &mut Vec<String>,
+    target: Option<String>,
+    split: &str,
+    ratio: Option<f64>,
+    projection: Option<String>,
+) {
+    if let Some(target) = target {
+        argv.extend([
+            "--target".to_owned(),
+            target,
+            "--split".to_owned(),
+            split.to_owned(),
+        ]);
+        if let Some(ratio) = ratio {
+            argv.extend(["--ratio".to_owned(), ratio.to_string()]);
+        }
+        if let Some(projection) = projection {
+            argv.extend(["--projection".to_owned(), projection]);
+        }
+    }
+}
+
+pub(crate) fn push_option(argv: &mut Vec<String>, flag: &str, value: Option<String>) {
+    if let Some(value) = value {
+        argv.extend([flag.to_owned(), value]);
+    }
+}
+
+pub(crate) fn optional_bool(args: &Value, key: &str) -> Result<Option<bool>, ToolError> {
+    args.get(key)
+        .map(|value| {
+            value
+                .as_bool()
+                .ok_or_else(|| ToolError::new(format!("`{key}` must be a boolean")))
+        })
+        .transpose()
+}
+
+fn reject_present(args: &Value, keys: &[&str]) -> Result<(), ToolError> {
+    keys.iter()
+        .find(|key| args.get(**key).is_some())
+        .map_or(Ok(()), |key| {
+            Err(ToolError::new(format!(
+                "`{key}` is not valid for this action"
+            )))
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli_adapter::fake;
+    use crate::tools::call_with_adapter;
+
+    #[tokio::test]
+    async fn dispatch_validation_blocks_malformed_residue_calls_before_execution() {
+        let adapter = CliAdapter::new("must-not-execute");
+        for (name, args) in [
+            ("phux_launch", json!({})),
+            (
+                "phux_launch",
+                json!({ "integration": "codex", "list": true }),
+            ),
+            (
+                "phux_launch",
+                json!({ "integration": "codex", "split": "vertical" }),
+            ),
+            ("phux_archive", json!({ "action": "delete" })),
+            (
+                "phux_archive",
+                json!({ "action": "import", "archive": "-" }),
+            ),
+            ("phux_archive", json!({ "action": "import" })),
+            ("phux_project_inspect", json!({ "socket": "/sock" })),
+        ] {
+            assert!(
+                call_with_adapter(name, &args, &adapter).await.is_err(),
+                "{name} accepted {args}"
+            );
+        }
+    }
+
+    /// The residue tools execute the exact canonical argv.
+    #[tokio::test]
+    async fn residue_handlers_execute_the_exact_canonical_argv() {
+        let (_temp, adapter, log) = fake::cli("printf '{}\\n'\n");
+
+        fake::assert_argv(
+            &adapter,
+            &log,
+            "phux_launch",
+            json!({
+                "integration": "codex", "target": "@1", "split": "vertical",
+                "ratio": 0.25, "cwd": "/work", "socket": "/sock",
+                "extra": ["--model", "x"]
+            }),
+            &[
+                "launch", "codex", "--json", "--target", "@1", "--split", "vertical", "--ratio",
+                "0.25", "-c", "/work", "--socket", "/sock", "--", "--model", "x",
+            ],
+        )
+        .await;
+        fake::assert_argv(
+            &adapter,
+            &log,
+            "phux_project_inspect",
+            json!({ "path": "/repo" }),
+            &["project", "inspect", "/repo", "--json"],
+        )
+        .await;
+        fake::assert_argv(
+            &adapter,
+            &log,
+            "phux_archive",
+            json!({ "action": "import", "archive": "/a.json", "socket": "/sock" }),
+            &["archive", "import", "/a.json", "--socket", "/sock"],
+        )
+        .await;
+    }
+}

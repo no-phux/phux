@@ -1,0 +1,237 @@
+# nextest configuration. See https://nexte.st/docs/configuration/
+
+[profile.default]
+# Workspace-wide default: surface flakes promptly, no blanket retries.
+retries = 0
+
+# PTY-backed integration tests each spawn a real pseudo-terminal: a blocking
+# reader thread, a server task, and a per-pane libghostty actor. Running two at
+# once on the 2-core CI runner oversubscribes those threads and starves the
+# timing-sensitive ones past their deadlines (WIRE_RECV_TIMEOUT / poll_for_echo)
+# — the root cause behind the route_input / reconnect / attach-churn flakes that
+# previously needed per-test `retries` band-aids and quarantines.
+#
+# Bound how many phux-server and phux-terminal integration tests (tests/*.rs)
+# run at once. Each spawns a real PTY, server task or libghostty actor, and running them
+# unbounded starves the timing-sensitive ones past their deadlines
+# (WIRE_RECV_TIMEOUT / poll_for_echo) — the root cause behind the
+# route_input / reconnect / attach-churn flakes that once needed per-test
+# retries and quarantines. A group only bounds members against EACH OTHER;
+# nextest still fills the remaining threads with non-group tests.
+#
+# The bound was 1 when CI ran on 2-core runners, which made these 212 tests a
+# strictly serial ~90 s chain on any machine: half of a local `just test`.
+# Hosted runners now have 4 vCPUs. Local runs allow 4 at a time (phux-server's
+# integration suite: 103 s -> 50 s on 14 cores, three clean runs); the `ci`
+# profile allows 2 (overridden below).
+[test-groups]
+pty-serial = { max-threads = 4 }
+pty-ci = { max-threads = 2 }
+
+[[profile.default.overrides]]
+filter = '(package(phux-server) + package(phux-terminal)) & kind(test)'
+test-group = 'pty-serial'
+
+# One LIB test needs the same treatment, and the filter above misses it
+# because `kind(test)` selects integration targets (tests/*.rs) only.
+#
+# `pane_kill_lets_foreground_process_flush_before_death` spawns a real
+# `/bin/sh` under `set -m`, hangs it up, and asserts the foreground job wrote
+# its flush marker. What it is really asserting is that the process got
+# scheduled inside `PANE_KILL_GRACE` — a deliberate 500ms product budget
+# ("kept short so pane close stays snappy"), not a test constant. Competing
+# with fifteen other tests for CPU, a shell can miss that window purely
+# through starvation, and the assertion then fails with an empty marker while
+# the product behaved exactly as designed.
+#
+# `test-group` alone is NOT enough here, and it is worth saying why: a group
+# with `max-threads = 1` only serialises members against EACH OTHER, so this
+# test still ran alongside fifteen unrelated ones and still lost the race
+# (measured: 2 failures in 3 full-suite runs with the group applied).
+# `threads-required = 'num-cpus'` is the knob that actually clears the
+# machine for it.
+#
+# Giving it the whole thread budget is the honest fix. Lengthening the grace
+# would change shipped behavior to suit a test, and lengthening the test's
+# own timeouts does nothing — no timeout is what fires; the final assertion
+# is, with an empty marker.
+[[profile.default.overrides]]
+filter = 'package(phux-terminal) & test(pane_kill_lets_foreground_process_flush_before_death)'
+threads-required = 'num-cpus'
+
+# kip_roundtrip drives real host TUIs (vim/nvim) under a PTY. Under host
+# load `vim_insert_and_quit_under_term_ghostty` stretches from 0.5s to
+# ~17s and misses the wire deadline (phux-wdgo / phux-x0cj). `pty-serial`
+# only serialises members against each other; `threads-required` clears
+# the machine, matching the foreground-flush fixtures above.
+[[profile.default.overrides]]
+filter = 'package(phux-server) & binary(=terminal) & test(/^kip_roundtrip::/)'
+threads-required = 'num-cpus'
+
+# The two phux-l96p.12 pane-kill tests need the same clearance, for the same
+# reason. One of them needs it more than anything above: it moves megabytes
+# through a real PTY inside that same 500ms grace, so CPU contention starves
+# it twice over — once for the fixture shells to be scheduled, once for the
+# bytes to actually move.
+[[profile.default.overrides]]
+filter = 'package(phux-terminal) & test(pane_kill_lets_a_terminal_flush_finish_inside_the_grace)'
+threads-required = 'num-cpus'
+
+# A 16 MiB PTY flood is a CPU hog for a few seconds and shares the server
+# integration pool. Give it the machine so its neighbours keep their
+# deadlines, and so its own drain is not the thing that misses the marker.
+[[profile.default.overrides]]
+filter = 'package(phux-server) & test(flood_16mib_stays_under_counter_ceilings)'
+threads-required = 'num-cpus'
+
+# This one is here to protect its NEIGHBOURS as much as itself. The fixture is
+# a process that writes to its terminal as fast as it can until it is
+# SIGKILLed at the grace deadline — a deliberate CPU hog for half a second,
+# which is exactly the kind of load that makes every other test in this file
+# miss its own 500ms product budget.
+[[profile.default.overrides]]
+filter = 'package(phux-terminal) & test(pane_kill_is_bounded_when_an_escaped_child_ignores_the_hangup_and_spews)'
+threads-required = 'num-cpus'
+
+# Its quiet twin: same teardown bound, a silent detached holder of the slave
+# instead of a noisy one. It spends a second waiting for a shell to fork, so
+# it is here to stop it soaking up a runner slot rather than to protect it.
+[[profile.default.overrides]]
+filter = 'package(phux-terminal) & test(pane_kill_is_bounded_when_a_detached_process_holds_the_slave_open)'
+threads-required = 'num-cpus'
+
+# `agent_detect` needs the same treatment, for the same reason, and the
+# measurement that justifies it is worth recording (phux-manu).
+#
+# These tests run a real agent process that paints a real permission dialog,
+# then wait for the server-side detector to scan the grid and publish
+# `state: "blocked"`. Every observed failure is the same shape — the record
+# arrives as `{"kind":"claude","name":"claude","state":"idle"}`, meaning the
+# identity was detected but the derivation never ran in time. That is a
+# scheduling symptom, not a logic one.
+#
+# Measured on a developer box deliberately loaded to a ~18 load average (many
+# concurrent cargo builds): 2 of 5 runs failed, and all three detector tests
+# failed together when they failed. The same runs on an idle machine pass.
+# `pty-serial` alone does not help here for the reason the block above already
+# documents: a `max-threads = 1` group only serialises members against EACH
+# OTHER, so these still ran alongside every non-group test in the pool.
+#
+# The convergence poll in the test (`await_agent_state`) is a real and separate
+# fix — sampling only the FIRST published record raced the detector's
+# idle-then-blocked convergence — but it is not sufficient on its own, because
+# under starvation the detector does not converge within the deadline at all.
+# Lengthening DETECT_DEADLINE would only hide that.
+[[profile.default.overrides]]
+filter = 'package(phux-server) & binary(=agents) & test(/^agent_detect::/)'
+threads-required = 'num-cpus'
+
+# The `hub::link` ssh-transport tests need it too, and this one is contention,
+# not a race — the measurement says so plainly.
+#
+# These are LIB tests, so `kind(test)` above does not reach them, and each of
+# them spawns a real child process: a `/bin/sh` stub standing in for `ssh` via
+# the `$PHUX_SSH` seam. Their assertions poll `wait_for_real_status`, whose
+# deadline is 10s.
+#
+# Measured across full-suite `cargo nextest run -p phux-server` runs on a
+# 14-core box under a 70-120 load average (many concurrent cargo builds):
+#
+#   ssh_transport_holds_a_live_child_as_connected              0.56s -> 5.65s
+#   ssh_transport_drains_stderr_past_the_pipe_buffer...        0.31s -> 6.32s
+#   ssh_transport_spawns_the_planned_argv_and_treats_exit...   0.38s -> 6.44s
+#   ssh_transport_missing_program_is_a_failed_attempt...       0.30s -> 0.12s
+#
+# The three that spawn a stub degraded 15-20x together, to within a third of
+# the 10s deadline; the fourth — which deliberately spawns NOTHING, pointing
+# `ssh_program` at a nonexistent path — was unaffected. That split is the
+# whole diagnosis: the cost is child-process startup under an oversubscribed
+# pool, not anything in the link supervisor. Nothing here races. The one
+# ordering hazard the code could have had (the argv-recording stub being
+# re-spawned by a redial and truncating `argv.txt` under the reader) cannot
+# occur: the supervisor task and the polling test share one current-thread
+# runtime, and there is no await between observing `Backoff` and reading the
+# file, so the supervisor cannot run in that gap.
+#
+# `threads-required` and not `pty-serial`, for the reason the two blocks above
+# already establish: a `max-threads = 1` group only serialises members against
+# EACH OTHER, and the load starving these tests comes from the whole pool.
+# Lengthening the 10s deadline is the other obvious move and is the wrong one
+# — it does not stop the starvation, it just waits longer for it, and the
+# margin it would need is unbounded in the load.
+#
+# The prefix filter takes all four rather than naming the three, so a future
+# ssh-transport test is covered without maintenance; including the
+# non-spawning one costs ~0.1s of exclusive machine time.
+[[profile.default.overrides]]
+filter = 'package(phux-server) & test(ssh_transport_)'
+threads-required = 'num-cpus'
+
+# The auto-spawn suites in `package(phux)` need it too, and it is the same
+# product-budget-versus-starvation shape the three blocks above describe.
+#
+# These drive the REAL binary through `phux new --socket ...` (via the shared
+# `common::AutoSpawnedServer` helper), which auto-spawns a server and waits
+# `AUTO_SPAWN_SOCKET_TIMEOUT` for it to bind. That 2s is a deliberate product
+# budget — `commands/server.rs` says so: "the server's bind is sub-ms on a
+# healthy system; 2s tolerates a slow-CI host without making a failed spawn
+# feel like a hang." Under an oversubscribed pool a cold process spawn plus
+# socket bind does not fit in it, and the test fails at its FIRST assertion
+# with the CLI's own no-server document:
+#
+#   phux new must start a server.
+#   stderr: {"error":{"code":"no_server", ...}}
+#
+# Measured on this 14-core box, isolated versus inside a full-suite run:
+#
+#   service_reconcile reconcile_corrects_the_policy_without_stopping_server  6.23s -> 21.23s (pass)
+#   service_reconcile reconcile_says_whether_the_new_policy_is_in_force      6.39s -> 10.86s FAIL
+#   stale_socket_recovery a_second_invocation_reuses_the_live_server         6.61s -> 10.12s FAIL
+#   stale_socket_recovery auto_spawn_reaps_a_stale_socket_instead_of_wedging 5.03s -> 12.22s FAIL
+#   stale_socket_recovery sigterm_unlinks_the_socket...                      4.37s -> 17.44s FAIL
+#
+# All of them pass isolated. Nothing here races — the degradation is uniform,
+# and it is process-startup cost, exactly as the `ssh_transport_` block above
+# diagnoses for its own stubs.
+#
+# The filter names every suite that uses `AutoSpawnedServer`, not just the
+# ones observed failing. That distinction is load-bearing: covering only the
+# observed two left `kill_server_e2e` — same helper, same budget — to fail on
+# the very next full run as the pool composition shifted. The property is
+# "drives the CLI auto-spawn path against a shipped 2s budget", so the filter
+# is the set that has that property. (`first_five_minutes_e2e` and
+# `idle_exit_e2e` are `#[ignore]`d into the e2e lane, which is already
+# `--test-threads=1`, so their entry is inert today and correct if they are
+# ever un-ignored.)
+#
+# `threads-required` and not `pty-serial`, for the reason already established
+# twice above: a `max-threads = 1` group only serialises members against EACH
+# OTHER, and the load starving these comes from the whole pool. Lengthening
+# `AUTO_SPAWN_SOCKET_TIMEOUT` is the other obvious move and is the wrong one —
+# it changes shipped behavior to suit a test, and the margin it would need is
+# unbounded in the load.
+[[profile.default.overrides]]
+filter = """package(phux) & (
+    (binary(=service) & test(/^(stale_socket_recovery|service_reconcile|kill_server_e2e|service_install_guard)::/))
+  + (binary(=lifecycle_e2e) & test(/^idle_exit_e2e::/))
+  + binary(=first_five_minutes_e2e)
+)"""
+threads-required = 'num-cpus'
+
+# The `ci` profile differs from `default` in one setting: its phux-server and
+# phux-terminal integration tests run 2 at a time on the 4-vCPU hosted runners, not 4.
+# nextest consults the selected profile's overrides first and falls back to
+# profile.default, so everything else above (retries, the threads-required
+# clears) still applies. It also emits a junit report. CI lanes opt in with NEXTEST_PROFILE=ci; local
+# runs never select it.
+[[profile.ci.overrides]]
+filter = '(package(phux-server) + package(phux-terminal)) & kind(test)'
+test-group = 'pty-ci'
+
+[profile.ci.junit]
+path = "junit.xml"
+
+# `just test-report` reads failures back from this. Overrides fall back to
+# profile.default, as they do for `ci`.
+[profile.report.junit]
+path = "junit.xml"

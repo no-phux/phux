@@ -1,0 +1,17 @@
+{
+  "schema": "phux.mission/v1",
+  "schema_version": 1,
+  "task": {
+    "alias": "phux/1",
+    "archived": false,
+    "created_at": "<timestamp>",
+    "description": "details",
+    "id": "<id>",
+    "repo": "phux",
+    "revision": 1,
+    "state": "todo",
+    "title": "Fix the prompt",
+    "updated_at": "<timestamp>"
+  },
+  "verb": "show"
+}

@@ -1,0 +1,753 @@
+{
+  "phux_status": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "running": {
+        "type": "boolean"
+      },
+      "pid": {
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "socket": {
+        "type": "string"
+      },
+      "features": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "unreachable": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "error": {
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "remedy": {
+        "type": "string"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "running"
+    ]
+  },
+  "phux_doctor": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "ok": {
+        "type": "boolean"
+      },
+      "checks": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "failed": {
+        "type": "integer"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "ok",
+      "checks"
+    ]
+  },
+  "phux_whoami": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "principal": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "credential_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "auth_route": {
+        "type": "string"
+      },
+      "peer_uid": {
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "serving_user": {
+        "type": "object"
+      },
+      "host": {
+        "type": "string"
+      },
+      "server_version": {
+        "type": "string"
+      },
+      "ssh_client": {
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    }
+  },
+  "phux_resource_show": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "resource": {
+        "type": "string"
+      },
+      "kind": {
+        "type": "string"
+      },
+      "lifecycle": {
+        "type": "string"
+      },
+      "parent": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "exit": {
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "tags": {
+        "type": [
+          "array",
+          "null"
+        ],
+        "items": {
+          "type": "string"
+        }
+      },
+      "viewers": {
+        "type": "array",
+        "items": {
+          "type": "integer"
+        }
+      },
+      "process": {
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "agent": {
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "program_status": {},
+      "unreachable": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "resource",
+      "kind",
+      "lifecycle"
+    ]
+  },
+  "phux_resource_wait": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "resource": {
+        "type": "string"
+      },
+      "outcome": {
+        "type": "string"
+      },
+      "retained": {
+        "type": "boolean"
+      },
+      "exit": {
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "cursor": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "waited_ms": {
+        "type": "integer"
+      },
+      "evidence_lost": {
+        "type": "boolean"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "resource",
+      "outcome",
+      "retained"
+    ]
+  },
+  "phux_resource_methods": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "resource": {
+        "type": "string"
+      },
+      "kind": {
+        "type": "string"
+      },
+      "methods": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    }
+  },
+  "phux_approvals": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "approvals": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "approvals"
+    ]
+  },
+  "phux_approve": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "id": {
+        "type": "string"
+      },
+      "decision": {
+        "type": "string"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "id",
+      "decision"
+    ]
+  },
+  "phux_perf": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "role": {
+        "type": "string"
+      },
+      "pid": {
+        "type": "integer"
+      },
+      "captured_unix_ms": {
+        "type": "integer"
+      },
+      "uptime_ms": {
+        "type": "integer"
+      },
+      "process": {
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "metrics": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "unit": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "value": {}
+          },
+          "required": [
+            "name",
+            "unit",
+            "kind"
+          ]
+        }
+      },
+      "rss_bytes": {
+        "type": "integer"
+      },
+      "alloc": {
+        "type": "object"
+      },
+      "stream_diagnostics": {},
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    }
+  },
+  "phux_perf_trace": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string"
+      },
+      "events": {
+        "type": "integer"
+      },
+      "dropped": {
+        "type": "integer"
+      },
+      "duration_ms": {
+        "type": "number"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    },
+    "required": [
+      "path"
+    ]
+  },
+  "phux_documents": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "documents": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "accessibility_tree",
+                "pixel_surface"
+              ]
+            },
+            "parent": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "parent",
+            "name"
+          ]
+        }
+      },
+      "unreachable": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": [
+      "schema_version",
+      "documents",
+      "unreachable"
+    ]
+  },
+  "phux_tree_snapshot": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "seq": {
+        "type": "integer"
+      },
+      "document": {
+        "description": "The tree's JSON document; null before the first publish."
+      }
+    },
+    "required": [
+      "schema_version",
+      "seq",
+      "document"
+    ]
+  },
+  "phux_tree_wait": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "outcome": {
+        "type": "string",
+        "enum": [
+          "matched",
+          "closed",
+          "timed_out"
+        ]
+      },
+      "seq": {
+        "type": "integer"
+      },
+      "document": {
+        "description": "The matching document, when `outcome` is matched."
+      }
+    },
+    "required": [
+      "schema_version",
+      "outcome"
+    ]
+  },
+  "phux_surface_snapshot": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "seq": {
+        "type": "integer"
+      },
+      "bytes": {
+        "type": "integer"
+      },
+      "format": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "enum": [
+          "png",
+          "jpeg",
+          null
+        ]
+      },
+      "width": {
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "height": {
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "schema_version",
+      "seq",
+      "bytes",
+      "format",
+      "width",
+      "height"
+    ]
+  },
+  "phux_document_navigate": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "sent": {
+        "type": "string",
+        "description": "The document the intent was sent to."
+      }
+    },
+    "required": [
+      "schema_version",
+      "sent"
+    ]
+  },
+  "phux_document_click": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "sent": {
+        "type": "string",
+        "description": "The document the intent was sent to."
+      }
+    },
+    "required": [
+      "schema_version",
+      "sent"
+    ]
+  },
+  "phux_document_type": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "sent": {
+        "type": "string",
+        "description": "The document the intent was sent to."
+      }
+    },
+    "required": [
+      "schema_version",
+      "sent"
+    ]
+  },
+  "phux_document_key": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "sent": {
+        "type": "string",
+        "description": "The document the intent was sent to."
+      }
+    },
+    "required": [
+      "schema_version",
+      "sent"
+    ]
+  },
+  "phux_document_scroll": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "sent": {
+        "type": "string",
+        "description": "The document the intent was sent to."
+      }
+    },
+    "required": [
+      "schema_version",
+      "sent"
+    ]
+  },
+  "phux_click_element": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "node": {
+        "type": "string",
+        "description": "The id of the node clicked."
+      },
+      "role": {
+        "type": "string"
+      },
+      "name": {
+        "type": "string"
+      },
+      "path": {
+        "type": "string",
+        "enum": [
+          "semantic",
+          "pixel"
+        ],
+        "description": "semantic when the tree's producer was asked to press the node; pixel when its centre was clicked on the window surface."
+      },
+      "surface": {
+        "type": "string",
+        "description": "On the pixel path, the surface clicked."
+      },
+      "pixel": {
+        "type": "array",
+        "items": {
+          "type": "integer"
+        },
+        "description": "On the pixel path, the frame pixel x, y."
+      }
+    },
+    "required": [
+      "schema_version",
+      "node",
+      "role",
+      "name",
+      "path"
+    ]
+  },
+  "phux_app_open": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "terminal_id": {
+        "type": [
+          "integer",
+          "string"
+        ]
+      },
+      "satellite": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "replayed": {
+        "type": "boolean"
+      },
+      "pane": {
+        "type": "string",
+        "description": "The app's pane, `@N`; close it with phux_app_close."
+      },
+      "documents": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "accessibility_tree",
+                "pixel_surface"
+              ]
+            },
+            "parent": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "parent",
+            "name"
+          ]
+        },
+        "description": "The documents the app's helper opened under the pane within the wait; fewer than two when a producer failed or was slow, so list again with phux_documents."
+      }
+    },
+    "required": [
+      "schema_version",
+      "terminal_id",
+      "pane",
+      "documents"
+    ]
+  },
+  "phux_app_close": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "integer"
+      },
+      "killed": {
+        "type": "boolean"
+      },
+      "target": {
+        "type": "string"
+      },
+      "report": {
+        "type": "object"
+      },
+      "resource_id": {
+        "type": "string",
+        "description": "Exact reusable resource ID, when this result identifies one resource."
+      }
+    }
+  }
+}

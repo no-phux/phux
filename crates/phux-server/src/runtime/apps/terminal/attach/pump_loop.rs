@@ -1,0 +1,254 @@
+//! The output pump loop and its fault handling.
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the split attach modules share the parent attach namespace"
+)]
+
+use super::*;
+use phux_terminal_api::actor::TerminalResource as _;
+
+/// Why a pump gave up on its generation and asked for a resync.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum GapCause {
+    /// The pane's broadcast overwrote this many chunks under the pump.
+    Dropped(u64),
+    /// The chunk in hand was read from the pane this long ago, past
+    /// [`pump::STALE_OUTPUT_BUDGET`].
+    Stale(std::time::Duration),
+    /// The consumer mailbox was full.
+    Backpressure,
+}
+
+impl std::fmt::Display for GapCause {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Dropped(n) => write!(f, "broadcast dropped {n} chunks"),
+            Self::Stale(age) => write!(f, "chunk {}ms old", age.as_millis()),
+            Self::Backpressure => write!(f, "consumer mailbox full"),
+        }
+    }
+}
+
+/// A final drain wins over ready broadcast traffic and expired gap retries.
+pub(super) async fn next_wait(
+    ctx: &OutputPumpContext,
+    generation: &PumpGeneration,
+    output_rx: &mut tokio::sync::broadcast::Receiver<ResourceOutput>,
+    draining: bool,
+) -> Option<pump::PumpWait> {
+    async fn cancelled(token: Option<&CancellationToken>) {
+        match token {
+            Some(token) => token.cancelled().await,
+            None => std::future::pending().await,
+        }
+    }
+    tokio::select! {
+        biased;
+        () = cancelled(ctx.drain.as_ref()), if !draining => Some(pump::PumpWait::FinalDrain),
+        wait = pump::next_event(generation, output_rx) => Some(wait),
+        () = cancelled(ctx.cancel.as_ref()) => None,
+    }
+}
+
+/// Drive one client's output subscription for a pane: park on the publication
+/// gate, then run [`run_started_output_pump`]. Returns the fault that ended
+/// it, `None` if orderly.
+pub(super) async fn run_output_pump(
+    ctx: &OutputPumpContext,
+    gate_rx: oneshot::Receiver<OutputPumpStart>,
+    output_rx: tokio::sync::broadcast::Receiver<ResourceOutput>,
+) -> Option<PumpFault> {
+    let start = gate_rx.await.ok()?;
+    run_started_output_pump(ctx, start, output_rx).await
+}
+
+/// Replay the backlog behind the published cut, then forward live output,
+/// ordered control, and generation replacements until the pane or the client
+/// goes away.
+pub(crate) async fn run_started_output_pump(
+    ctx: &OutputPumpContext,
+    start: OutputPumpStart,
+    mut output_rx: tokio::sync::broadcast::Receiver<ResourceOutput>,
+) -> Option<PumpFault> {
+    let mut generation = PumpGeneration::opened_at(start.published_cut, ctx.initial_bootstrap_id);
+    if let Some(live) = start.live {
+        output_rx = live;
+    }
+    if start.superseded {
+        if let Err(fault) = ctx
+            .retire_superseded_publication(&mut generation, start.published_cut)
+            .await
+        {
+            return Some(fault);
+        }
+        if let ControlFlow::Break(fault) = ctx.await_superseded_resync(&mut generation).await {
+            return fault;
+        }
+    }
+    if let Err(fault) = ctx
+        .forward_gated_replay(&mut generation, start.replay)
+        .await
+    {
+        return Some(fault);
+    }
+    ctx.publish_last_seq(&generation);
+    // The first live chunk waited behind the attach bootstrap and its replay.
+    generation.restart_staleness_clock();
+    drive_output_pump(ctx, generation, output_rx).await
+}
+
+async fn drive_output_pump(
+    ctx: &OutputPumpContext,
+    mut generation: PumpGeneration,
+    mut output_rx: tokio::sync::broadcast::Receiver<ResourceOutput>,
+) -> Option<PumpFault> {
+    let mut draining = false;
+    loop {
+        let wait = next_wait(ctx, &generation, &mut output_rx, draining).await?;
+        if let ControlFlow::Break(fault) =
+            dispatch_wait(ctx, &mut generation, &mut output_rx, wait, &mut draining).await
+        {
+            return fault;
+        }
+        if draining && generation.is_active() && !generation.is_fenced() {
+            return None;
+        }
+    }
+}
+
+async fn dispatch_wait(
+    ctx: &OutputPumpContext,
+    generation: &mut PumpGeneration,
+    output_rx: &mut tokio::sync::broadcast::Receiver<ResourceOutput>,
+    wait: pump::PumpWait,
+    draining: &mut bool,
+) -> ControlFlow<Option<PumpFault>> {
+    match wait {
+        pump::PumpWait::FinalDrain => {
+            *draining = true;
+            match ctx.publish_final_generation(generation, output_rx).await {
+                Ok(true) => ControlFlow::Break(None),
+                Ok(false) => ctx.await_superseded_resync(generation).await,
+                Err(fault) => ControlFlow::Break(Some(fault)),
+            }
+        }
+        pump::PumpWait::Event(received) => {
+            dispatch_output(ctx, generation, output_rx, received).await
+        }
+        pump::PumpWait::RetryResync => ctx.retry_gap_resync(generation).await,
+        pump::PumpWait::GapUnrecoverable => ctx.abandon_unanswered_gap(generation).await,
+    }
+}
+
+/// Handle one broadcast result for this pump's generation.
+async fn dispatch_output(
+    ctx: &OutputPumpContext,
+    generation: &mut PumpGeneration,
+    output_rx: &mut tokio::sync::broadcast::Receiver<ResourceOutput>,
+    received: Result<ResourceOutput, tokio::sync::broadcast::error::RecvError>,
+) -> ControlFlow<Option<PumpFault>> {
+    match received {
+        Ok(ResourceOutput::Live { seq, bytes, at }) => {
+            let age = generation.chunk_age(at);
+            if ctx.stale_skip && pump::is_stale(age) && generation.forwards(seq) {
+                // Skip a slow consumer to a fresh checkpoint rather than
+                // replay a backlog that only grows.
+                ctx.request_gap_resync(generation, GapCause::Stale(age))
+                    .await
+            } else {
+                ctx.forward_live(generation, seq, &bytes).await
+            }
+        }
+        Ok(ResourceOutput::Control { owner, frame }) => {
+            ctx.forward_control(generation, owner, frame).await
+        }
+        Ok(ResourceOutput::Resync {
+            cols,
+            rows,
+            bytes,
+            reason,
+            audience,
+            base_seq,
+        }) => {
+            ctx.apply_resync(
+                generation,
+                output_rx,
+                &audience,
+                &PaneResync {
+                    cols,
+                    rows,
+                    bytes,
+                    reason,
+                    base_seq,
+                },
+            )
+            .await
+        }
+        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+            ctx.request_gap_resync(generation, GapCause::Dropped(n))
+                .await
+        }
+        Err(tokio::sync::broadcast::error::RecvError::Closed) => ControlFlow::Break(None),
+    }
+}
+
+/// Release a shared pane's consumer after its pump failed. The pane itself
+/// belongs to others: an unrecoverable generation detaches only this client
+/// and closes its connection.
+pub(crate) fn release_after_pump_fault(
+    fault: PumpFault,
+    state: &SharedState,
+    client_id: ClientId,
+    connection_token: &CancellationToken,
+) {
+    fault.record();
+    match fault {
+        PumpFault::OutboundClosed | PumpFault::ReplayAbandoned | PumpFault::PaneGone => {}
+        PumpFault::TombstoneNotQueued | PumpFault::GenerationLost => {
+            warn!(?client_id, ?fault, "attach pump failed; closing the client");
+            crate::runtime::connections::detach_and_release_consumer_state(state, client_id);
+            connection_token.cancel();
+        }
+        PumpFault::PublicationNotActivated => {
+            warn!(
+                ?client_id,
+                "attach pump publication not activated; closing the client"
+            );
+            connection_token.cancel();
+        }
+    }
+}
+
+/// Release `client_id`'s consumers of Terminal `handles` after a failed
+/// session `ATTACH`, each within a bounded wait so a wedged actor cannot hold
+/// the rollback.
+pub(crate) async fn release_aborted_consumers(client_id: ClientId, handles: &[ResourceHandle]) {
+    let wire_client_id = crate::runtime::wire_client(client_id);
+    let producer_deadline = std::time::Duration::from_secs(1);
+    for handle in handles {
+        let Ok(terminal) = handle.terminal() else {
+            continue;
+        };
+        let _ = tokio::time::timeout(
+            producer_deadline,
+            terminal
+                .native_release
+                .send(phux_terminal_api::actor::NativeReleaseRequest { owner: client_id.0 }),
+        )
+        .await;
+        let (reply, done) = oneshot::channel();
+        if matches!(
+            tokio::time::timeout(
+                producer_deadline,
+                terminal.consumer_detach.send(ConsumerDetachRequest {
+                    client_id: wire_client_id,
+                    reply,
+                }),
+            )
+            .await,
+            Ok(Ok(()))
+        ) {
+            let _ = tokio::time::timeout(producer_deadline, done).await;
+        }
+    }
+}

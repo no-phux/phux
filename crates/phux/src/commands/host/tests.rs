@@ -1,0 +1,327 @@
+//! Unit tests for the host registry rows, lookups, edits, and rendering.
+
+use std::path::PathBuf;
+
+use super::HostRole;
+use super::list::{HostRow, auth_display, empty_state, render_table, share_colors, sort_rows};
+use super::manage::{
+    edit_host_field_at, inbound_rename_refusal, resolve_host_role, resolve_rm_role,
+};
+use crate::commands::json_err::codes;
+
+pub(super) fn row(name: &str, role: HostRole) -> HostRow {
+    HostRow {
+        name: name.to_owned(),
+        role,
+        endpoint: "ssh://example".to_owned(),
+        enabled: (role == HostRole::Satellite).then_some(true),
+        token_file: None,
+        cert_fingerprint: None,
+        tls_server_name: None,
+        session: None,
+        ssh: None,
+        direct: None,
+        client_cert: None,
+        client_key: None,
+        color: None,
+    }
+}
+
+#[test]
+fn host_edits_preserve_other_fields_and_refuse_inherited_or_colliding_names() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let original = "# keep this\n[[remote]]\nname = 'mini'\nendpoint = 'quic://example:8788'\ntoken-file = '/some/token'\n[[remote]]\nname = 'other'\nendpoint = 'ssh://other'\n[[satellites]]\nname = 'edge'\nendpoint = 'ssh://example'\nenabled = true\n";
+    std::fs::write(&path, original).expect("seed");
+    let mut mini = row("mini", HostRole::Remote);
+    mini.endpoint = "quic://example:8788".to_owned();
+    assert!(edit_host_field_at(&path, &mini, "name", "other".into()).is_err());
+    assert_eq!(std::fs::read_to_string(&path).expect("unchanged"), original);
+    edit_host_field_at(&path, &mini, "name", "desk".into()).expect("rename");
+    edit_host_field_at(
+        &path,
+        &row("edge", HostRole::Satellite),
+        "enabled",
+        false.into(),
+    )
+    .expect("disable");
+    let changed = std::fs::read_to_string(&path).expect("read");
+    assert!(changed.starts_with("# keep this"));
+    assert!(changed.contains("token-file = '/some/token'"));
+    assert!(
+        changed.contains("ssh = \"mini\""),
+        "old repair destination survives rename: {changed}"
+    );
+    assert!(changed.contains("enabled = false"));
+    assert!(
+        edit_host_field_at(
+            &path,
+            &row("missing", HostRole::Remote),
+            "name",
+            "new".into()
+        )
+        .is_err()
+    );
+}
+
+/// `host rm` with no `--role`: unique names resolve, a doubly-registered
+/// name is refused (exit 2) with both disambiguating commands named, and
+/// a miss is exit 1.
+#[test]
+fn rm_resolves_across_registries_and_refuses_ambiguity() {
+    assert_eq!(
+        resolve_rm_role("mini", None, true, false).map_err(|_| ()),
+        Ok(HostRole::Remote)
+    );
+    assert_eq!(
+        resolve_rm_role("edge", None, false, true).map_err(|_| ()),
+        Ok(HostRole::Satellite)
+    );
+
+    let (err, exit_code) = resolve_rm_role("both", None, true, true)
+        .expect_err("a doubly-registered name must be refused");
+    assert_eq!(exit_code, 2, "ambiguity is a refusal, not a miss");
+    assert!(
+        err.remedy.contains("--role remote both") && err.remedy.contains("--role satellite both"),
+        "the remedy names both disambiguating commands: {}",
+        err.remedy
+    );
+
+    let (err, exit_code) = resolve_rm_role("ghost", None, false, false).expect_err("a miss errors");
+    assert_eq!(exit_code, 1);
+    assert!(err.remedy.contains("phux host ls"), "got {}", err.remedy);
+}
+
+/// `host rm --role X NAME` where the name lives in the OTHER registry:
+/// the error names the role that would have matched instead of reading
+/// as a plain miss.
+#[test]
+fn rm_wrong_role_remedy_names_the_matching_role() {
+    let (err, exit_code) = resolve_rm_role("edge", Some(HostRole::Remote), false, true)
+        .expect_err("wrong role is a miss with a teaching remedy");
+    assert_eq!(exit_code, 1);
+    assert!(
+        err.remedy.contains("--role satellite edge"),
+        "got {}",
+        err.remedy
+    );
+
+    let (err, _) = resolve_rm_role("mini", Some(HostRole::Satellite), true, false)
+        .expect_err("symmetric case");
+    assert!(
+        err.remedy.contains("--role remote mini"),
+        "got {}",
+        err.remedy
+    );
+
+    // The requested role matching wins even when both registries hold
+    // the name — an explicit `--role` is never ambiguous.
+    assert_eq!(
+        resolve_rm_role("both", Some(HostRole::Satellite), true, true).map_err(|_| ()),
+        Ok(HostRole::Satellite)
+    );
+}
+
+/// Merged ordering is by name, remotes before satellites on a shared
+/// name — independent of config-file entry order.
+#[test]
+fn merged_rows_sort_by_name_then_remote_first() {
+    let mut rows = vec![
+        row("zeta", HostRole::Satellite),
+        row("alpha", HostRole::Satellite),
+        row("mini", HostRole::Remote),
+        row("alpha", HostRole::Remote),
+    ];
+    sort_rows(&mut rows);
+    let order: Vec<_> = rows
+        .iter()
+        .map(|row| (row.name.as_str(), row.role))
+        .collect();
+    assert_eq!(
+        order,
+        vec![
+            ("alpha", HostRole::Remote),
+            ("alpha", HostRole::Satellite),
+            ("mini", HostRole::Remote),
+            ("zeta", HostRole::Satellite),
+        ]
+    );
+}
+
+/// The AUTH column classifies the transport: ssh rides ssh trust, the
+/// paired transports report which halves of token + pin are on file.
+/// A name in both registries: one override colours both roles; a role with
+/// its own override keeps it; other names are untouched.
+#[test]
+fn a_shared_name_shares_its_one_override() {
+    let colored = |name, role, color: Option<&str>| HostRow {
+        color: color.map(str::to_owned),
+        ..row(name, role)
+    };
+    let mut rows = [
+        colored("ph", HostRole::Remote, None),
+        colored("ph", HostRole::Satellite, Some("navy")),
+        colored("other", HostRole::Remote, None),
+    ];
+    share_colors(&mut rows);
+    let colors: Vec<_> = rows.iter().map(|row| row.color.as_deref()).collect();
+    assert_eq!(colors, [Some("navy"), Some("navy"), None]);
+
+    let mut rows = [
+        colored("ph", HostRole::Remote, Some("green")),
+        colored("ph", HostRole::Satellite, Some("navy")),
+    ];
+    share_colors(&mut rows);
+    let colors: Vec<_> = rows.iter().map(|row| row.color.as_deref()).collect();
+    assert_eq!(colors, [Some("green"), Some("navy")]);
+}
+
+#[test]
+fn ambiguous_colour_remedy_names_the_role_flag_and_colour() {
+    let (err, code) = resolve_host_role("ph", None, true, true, "color").expect_err("ambiguous");
+    assert_eq!(code, 2);
+    assert!(
+        err.remedy
+            .contains("phux host color --role remote ph COLOR")
+            && err
+                .remedy
+                .contains("phux host color --role satellite ph COLOR"),
+        "{}",
+        err.remedy
+    );
+}
+
+#[test]
+fn auth_display_classifies_transports() {
+    assert_eq!(auth_display("ssh://mini", false, false), "ssh");
+    // ssh needs no pairing even if material is (pointlessly) on file.
+    assert_eq!(auth_display("  ssh://mini  ", true, true), "ssh");
+    assert_eq!(auth_display("quic://mini:8788", true, true), "token+pin");
+    assert_eq!(auth_display("wss://mini:8787", false, true), "pin");
+    assert_eq!(auth_display("quic://mini:8788", true, false), "token");
+    assert_eq!(auth_display("wss://mini:8787", false, false), "none");
+    assert_eq!(auth_display("inbound://", false, false), "cert");
+}
+
+/// An inbound satellite's credential is bound to its name, so `rename`
+/// refuses it; dialed satellites and remotes still rename.
+#[test]
+fn rename_refuses_only_inbound_satellites() {
+    let mut inbound = row("sandbox", HostRole::Satellite);
+    inbound.endpoint = "inbound://".to_owned();
+    let refused = inbound_rename_refusal(&inbound).expect("inbound refused");
+    assert_eq!(refused.code, codes::USAGE_ERROR);
+    assert!(
+        refused.remedy.contains("phux host ticket"),
+        "{}",
+        refused.remedy
+    );
+    assert!(inbound_rename_refusal(&row("mini", HostRole::Satellite)).is_none());
+    let mut remote = row("mini", HostRole::Remote);
+    remote.endpoint = "inbound://".to_owned();
+    assert!(inbound_rename_refusal(&remote).is_none());
+}
+
+/// The table carries the five pinned columns; STATE is `-` for remotes
+/// and the enabled bit for satellites.
+#[test]
+fn table_renders_role_state_and_auth_columns() {
+    let rows = vec![
+        HostRow {
+            endpoint: "quic://mini:8788".to_owned(),
+            token_file: Some(PathBuf::from("/tokens/mini")),
+            cert_fingerprint: Some("ab".repeat(32)),
+            session: Some("work".to_owned()),
+            ssh: Some("me@mini".to_owned()),
+            ..row("mini", HostRole::Remote)
+        },
+        HostRow {
+            endpoint: "ssh://edge".to_owned(),
+            enabled: Some(false),
+            ..row("edge", HostRole::Satellite)
+        },
+    ];
+    let table = render_table(&rows);
+    let mut lines = table.lines();
+    let header = lines.next().expect("header line");
+    for column in ["NAME", "ROLE", "ENDPOINT", "STATE", "AUTH"] {
+        assert!(header.contains(column), "header lost {column}: {header}");
+    }
+    let mini = lines.next().expect("first row");
+    assert!(mini.contains("remote") && mini.contains("token+pin"));
+    assert!(mini.contains(" - "), "remote STATE is the `-` placeholder");
+    let edge = lines.next().expect("second row");
+    assert!(edge.contains("satellite") && edge.contains("disabled") && edge.contains("ssh"));
+}
+
+/// `host ls` says where each client key is: a PEM file, this machine's
+/// hardware, or nowhere; the JSON row carries the same word.
+#[test]
+fn the_listing_names_where_each_client_key_is() {
+    use super::list::row_json;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (pem, held) = (dir.path().join("a.key"), dir.path().join("b.key"));
+    std::fs::write(&pem, "-----BEGIN PRIVATE KEY-----\nAAAA\n").expect("pem");
+    let header = phux_client_runtime::hardware_key::HEADER;
+    std::fs::write(&held, format!("{header}\n00ff\n")).expect("hardware key file");
+    let keyed = |name: &str, key: Option<&std::path::Path>| HostRow {
+        client_key: key.map(std::path::Path::to_path_buf),
+        ..row(name, HostRole::Remote)
+    };
+    let rows = [
+        keyed("file", Some(&pem)),
+        keyed("hard", Some(&held)),
+        keyed("none", None),
+    ];
+    let kinds: Vec<_> = rows
+        .iter()
+        .map(|row| row_json(row)["client_key_kind"].clone())
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            serde_json::json!("file"),
+            serde_json::json!("hardware"),
+            serde_json::Value::Null
+        ]
+    );
+    let table = render_table(&rows);
+    let lines: Vec<&str> = table.lines().collect();
+    assert!(lines[0].trim_end().ends_with("KEY"), "{table}");
+    for (line, kind) in lines[1..].iter().zip(["file", "hardware", "-"]) {
+        assert!(line.trim_end().ends_with(kind), "{table}");
+    }
+}
+
+/// The empty states teach the one command that fills the table — the
+/// ssh form, with the role flag under a satellite filter.
+#[test]
+fn empty_states_name_the_add_command() {
+    let merged = empty_state(None);
+    assert!(merged.contains("phux host add me@HOST"));
+    assert!(merged.contains("--role satellite"));
+
+    let remotes = empty_state(Some(HostRole::Remote));
+    assert!(remotes.contains("phux host add me@HOST"));
+    assert!(!remotes.contains("--role satellite"));
+
+    let satellites = empty_state(Some(HostRole::Satellite));
+    assert!(satellites.contains("--role satellite"));
+}
+
+#[test]
+fn pausing_a_remote_writes_a_flag_the_registry_reads_back() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    std::fs::write(
+        &path,
+        "[[remote]]\nname = 'mini'\nendpoint = 'quic://example:8788'\n",
+    )
+    .expect("seed");
+    let mut mini = row("mini", HostRole::Remote);
+    mini.endpoint = "quic://example:8788".to_owned();
+    edit_host_field_at(&path, &mini, "paused", true.into()).expect("pause");
+    let text = std::fs::read_to_string(&path).expect("read");
+    let cfg = phux_config::parse_with_defaults(&text, &path).expect("parses");
+    assert!(cfg.remote[0].paused, "{text}");
+}

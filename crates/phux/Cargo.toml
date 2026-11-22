@@ -1,0 +1,233 @@
+[package]
+name = "phux"
+description = "A terminal multiplexer whose server you can drive from code."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "phux"
+path = "src/main.rs"
+# This binary is only a shim over the library, so it has no unit-test harness.
+# Integration tests still build it and receive `CARGO_BIN_EXE_phux`.
+test = false
+
+# Heap-profiling entry point, gated by the `dhat-heap` feature below.
+# Deliberately a SEPARATE binary from `phux` (see src/lib.rs's "Why this is
+# a library crate" and src/bin/dhat_heap.rs) so `--all-features` never wires
+# dhat's global allocator into the `phux` binary that `cargo test`'s
+# integration tests spawn via `CARGO_BIN_EXE_phux`.
+[[bin]]
+name = "phux-dhat-heap"
+path = "src/bin/dhat_heap.rs"
+required-features = ["dhat-heap"]
+
+[dependencies]
+# Native ANSI tokens only; already locked transitively. std::io::IsTerminal
+# owns stream detection and output.rs owns policy, avoiding a styling framework.
+anstyle = "1.0"
+phux-protocol.workspace = true
+phux-core.workspace = true
+# `snapshot --format vt` decodes the server's base64 rendered capture to
+# raw bytes for stdout (D9); already in the dep graph, see the workspace
+# justification.
+base64.workspace = true
+# The browser producer (`phux agent page mirror`) speaks the DevTools
+# Protocol over a plain WebSocket; reconnect tests reuse the same client.
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+# Defaults are controlled by this executable's feature forwarding below.
+# Other workspace consumers can retain the server's own defaults.
+phux-server = { path = "../phux-server", default-features = false }
+# The Terminal app: this binary composes the server with what a pane runs.
+phux-terminal.workspace = true
+phux-terminal-api.workspace = true
+# `phux agent explain` evaluates detection manifests with no daemon in the
+# loop (phux-w7z2.24). The rules crate is the same evaluator the server
+# ticks; depending on it here keeps that path off `phux-server`.
+phux-agent-rules.workspace = true
+# Durable SDK owner; the daemon-managed guardian outlives native viewers.
+phux-agent-host.workspace = true
+phux-client.workspace = true
+# `archive import --plan` prints the shared host/directory/project lines.
+phux-client-core.workspace = true
+# ADR-0133: the attach loop's reconnect cadence is the client runtime's
+# ladder (interactive for the remote lanes, the flat local-upgrade poll for
+# UDS), not a third copy of the doubling. Workspace crate already in the
+# tree under phux-client; no new third-party dependency enters.
+phux-client-runtime.workspace = true
+# The reference TUI (`phux attach`, `phux snapshot --render`): the attach
+# driver, ratatui chrome, and overlays over the headless client (ADR-0100).
+phux-tui.workspace = true
+# In-process performance telemetry: `phux perf` renders a `PerfReport`.
+phux-perf.workspace = true
+phux-config.workspace = true
+# The status vocabulary and its plurals (`phux ls` header counts), from the
+# brand tokens. No dependencies of its own.
+phux-design.workspace = true
+# `phux agent surface standing` exits once `phux update` replaced its binary.
+phux-resource.workspace = true
+# `phux mission`: the mission documents, and the work store's keeper and
+# client. A client composition; no server or protocol type is involved.
+phux-work.workspace = true
+phux-plugin.workspace = true
+# `phux agent usage`: the plan-usage collector. Its own crate so nothing in the
+# server or client links vendor parsing.
+phux-usage.workspace = true
+# `phux doctor` dials its own routable listener to prove packets actually
+# reach the server, rather than only that a socket is bound. Reusing the
+# dial stack a real client uses is the whole point: a bespoke probe could
+# pass while the path clients take is blocked. Workspace crate, already in
+# the tree under phux-client; no new third-party dependency enters.
+# `relay`: `phux relay` fronts the reference relay. `run` drives its runtime
+# in the foreground and `pair` mints route-bound tunnel tokens.
+phux-dial = { workspace = true, features = ["relay"] }
+# `phux rec` and `phux --rec` export half: the asciicast codec, the offline
+# VT replayer, and the in-process GIF/APNG encoders. Taken with its default
+# `render` feature ON — the binary is the one consumer that must be able to
+# produce an animation, and doing it in-process is the whole point (ADR-0060:
+# no agg/vhs/ffmpeg at runtime). Workspace crate; the only third-party rows it
+# adds to the lockfile are `gif` and its single dependency `weezl`.
+phux-record.workspace = true
+# Same declaration drives parse, help, completions, and the generated
+# CLI reference. Aliased as `usage` per the crate's own docs.
+usage.workspace = true
+# `phux pair --qr` renders the pairing connect-link as a scannable terminal QR.
+qrcode.workspace = true
+dhat = { workspace = true, optional = true }
+# `phux snapshot --json` emits the stable ScreenState contract (ADR-0022).
+serde.workspace = true
+serde_json.workspace = true
+# `phux config show` renders the effective merged config table as TOML.
+toml.workspace = true
+toml_edit.workspace = true
+# Tokenize tmux's quoted list-keys/show-options output without executing it.
+# Already locked through portable-pty; this is not a tmux config interpreter.
+shell-words = "1.1"
+# `phux update` verifies a downloaded release archive against the `.sha256`
+# sidecar `release.yml` publishes beside it, BEFORE unpacking anything. That
+# checksum is the trust anchor of the whole self-update path, so the digest is
+# computed in-process rather than by shelling out to `shasum`/`sha256sum` and
+# parsing their output — one fewer external program whose absence, version, or
+# output format could turn "verify" into "skip". `sha2` is already a direct
+# dependency of phux-server, phux-dial, and phux-client-core (cert
+# fingerprints, ADR-0031), so this adds no new row to Cargo.lock; it is the
+# RustCrypto reference implementation, pure-safe Rust, no C deps.
+sha2 = "0.11"
+# `phux status` renders the server's up-since wall-clock timestamp. Already a
+# workspace dependency (protocol/server/config); no new third-party row
+# enters the lockfile.
+jiff.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+# Generate provider-native session ids before spawning integrations whose
+# documented CLI accepts a caller-supplied fresh UUID. `v7` is for
+# `phux idea`: one time-ordered idempotency key per capture. The feature
+# adds no package; `getrandom` is already a uuid dependency.
+uuid = { workspace = true, features = ["v7"] }
+# `process`: `setsid(2)` to detach an auto-spawned server from the launching
+# client's controlling terminal so it survives the terminal closing.
+# `termios`: `phux play`'s in-pane writer clears OPOST and ECHO on its own
+# PTY, so the line discipline cannot rewrite the recorded bytes (ONLCR turns
+# a bare LF into CR LF) or echo a stray keystroke into the middle of a frame.
+# Same crate and the same two features phux-client already uses; no new
+# third-party dependency enters the workspace.
+rustix = { version = "1.1", default-features = false, features = ["std", "process", "termios", "fs"] }
+# Direct spawn for event handlers; no ENOEXEC shell fallback.
+nix = { version = "0.31", default-features = false, features = ["process", "signal"] }
+
+[dev-dependencies]
+phux-frozen.workspace = true
+# `testing`: the scripted `FnPolicy` HELLO engine for the live-server tests.
+phux-server = { path = "../phux-server", default-features = false, features = ["testing"] }
+# The one scripted server (`phux_client::testkit`), where the reference
+# server's frame ORDER is written down once with a handler citation per
+# entry. The verb tests for partial-fleet reporting need a server that pushes
+# a hub's uncorrelated degradation ERRORs *ahead of* the GET_STATE ack — the
+# ordering a hand-rolled fake in this crate would have to re-guess, which is
+# the class of lie the harness exists to prevent. Opting in from
+# `[dev-dependencies]` keeps it out of the shipped binary; it is a workspace
+# crate behind a feature flag, so no third-party row enters the lockfile.
+phux-client = { workspace = true, features = ["testkit"] }
+# The cell-projection conformance test drives the TUI's `ReplicaWalk` through
+# its `for_test` seam, which the `testkit` build of phux-tui exposes (the
+# feature also turns on phux-client's scripted server above).
+phux-tui = { workspace = true, features = ["testkit"] }
+# Command-level wire mocks encode framed replies with the protocol's native
+# BytesMut API; bytes is already a workspace/runtime dependency.
+bytes.workspace = true
+# Raw-PTY harnesses (the PTY e2e suites and examples/pty_screen.rs) that run
+# the real `phux attach` in a pseudoterminal and read what it paints through a
+# libghostty oracle, with no tmux reinterpreting the byte stream.
+portable-pty.workspace = true
+libghostty-vt.workspace = true
+# Unique per-test socket directories for the `phux run`/`phux wait`
+# end-to-end harness (tests/run_wait_e2e.rs), which spawns the real
+# binary against a real PTY-backed server. Already a workspace dep used
+# by the phux-server wire tests; no new third-party crate enters.
+tempfile.workspace = true
+# Shared real-server integration-test cleanup uses kill(2) directly rather
+# than depending on an external `kill` executable.
+libc = "0.2"
+# The `phux workload` e2e (tests/lifecycle_e2e/workload_e2e.rs) generates a
+# client key and CSR the way an outside workload would, so the binary is
+# exercised on material it did not mint. Same version and features phux-dial
+# and phux-server already declare; no new row enters Cargo.lock.
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
+# Validates `phux mission --json` documents against the committed JSON
+# Schema. Dev-only, so the binary does not link it. The workspace had no
+# JSON Schema validator. Default features pull an HTTP resolver this
+# schema does not use.
+jsonschema = { version = "0.60", default-features = false }
+# Read-only inspection of the work store while the keeper holds its lock.
+rusqlite.workspace = true
+# The update tests sign fake releases the way the minisign CLI does (Ed25519
+# over a BLAKE2b-512 prehash), so the real verifier runs on every update path.
+# `ring` is already locked (rustls, quinn, rcgen); `blake2` is one dev-only
+# crate over the `digest` 0.10 already locked. Neither ships in the binary.
+ring = "0.17"
+blake2 = "0.11"
+
+[features]
+default = ["webtransport"]
+# Omit browser HTTP/3 support with --no-default-features; UDS, WS and QUIC stay.
+webtransport = ["phux-server/webtransport"]
+# Heap profiling via dhat, consumed ONLY by the `phux-dhat-heap` binary
+# above (src/bin/dhat_heap.rs) — never by the `phux` binary itself. See
+# src/lib.rs's module doc: dhat's `Profiler` Drop always writes a summary to
+# stderr with no way to silence it, so keeping this out of the `phux` binary
+# is what makes `cargo test -p phux --all-features` safe (the summary would
+# corrupt the stderr that integration tests spawned via `CARGO_BIN_EXE_phux`
+# assert on).
+#
+# Run with: cargo run --features dhat-heap --bin phux-dhat-heap -- server
+# On clean shutdown, the profiler guard's Drop writes `./dhat-heap.json`
+# (viewable at https://nnethercote.github.io/dh_view/dh_view.html).
+# Warning: the instrumented allocator is significantly slower than the
+# system allocator; do not use in production builds.
+dhat-heap = ["dep:dhat"]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+accessibility = "0.2.0"
+accessibility-sys = "0.2.0"
+core-foundation = "0.10"
+# The safe CGEvent API posts a surface mirror's input; `highsierra` adds scroll events.
+core-graphics = { version = "0.24", features = ["highsierra"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# `phux agent tree mirror` on Linux reads AT-SPI over D-Bus. zbus is pure
+# Rust (MIT) and runs on the tokio already here; the `atspi` crate is a layer
+# of generated proxies over it that a handful of method calls do not need.
+zbus = { version = "6.2", default-features = false, features = ["tokio"] }
+# `net`: the surface mirror's native Wayland input hands the compositor its
+# keymap fd over `SCM_RIGHTS` (`sendmsg`). The same rustix as above; a feature,
+# not a crate, so no row enters Cargo.lock.
+rustix = { version = "1.1", default-features = false, features = ["net"] }

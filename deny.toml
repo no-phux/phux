@@ -1,0 +1,54 @@
+# cargo-deny configuration.
+# https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+all-features = true
+
+[advisories]
+yanked = "deny"
+# Unmaintained notices are actionable for direct workspace dependencies. UniFFI
+# 0.28 (retained by phux-mobile ADR-0031) still carries unmaintained `paste` and
+# `bincode` transitively, with no compatible upgrade that avoids them; security
+# vulnerabilities and yanks remain denied across the complete graph.
+unmaintained = "workspace"
+
+[licenses]
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    # webpki-roots 1.x (Mozilla's root store, data only; ADR-0155).
+    "CDLA-Permissive-2.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+]
+confidence-threshold = 0.93
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Workspace-internal crates pin each other with version = "0.0.0", which
+# cargo-deny otherwise reports as a wildcard. Per cargo-deny docs this is
+# the canonical opt-out for intra-workspace path deps.
+allow-wildcard-paths = true
+deny = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+# libghostty-vt / libghostty-vt-sys are intentionally consumed from git
+# per ADR-0008 (use libghostty types directly). Track upstream until
+# crates.io releases catch up. The phall1 fork tracks upstream bindings and
+# libghostty-vt 1.0, retaining only required capture, staged-feed, input,
+# image replay, and safe integration extensions (docs/libghostty.md).
+allow-git = [
+    "https://github.com/Uzaaft/libghostty-rs",
+    "https://github.com/uzaaft/libghostty-rs",
+    "https://github.com/phall1/libghostty-rs",
+]
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

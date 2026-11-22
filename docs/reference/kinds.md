@@ -1,0 +1,396 @@
+# Resource kinds
+
+Resource kinds, their methods and events, and the authorization verb each wire method needs.
+
+<!--
+GENERATED FILE - do not edit. A unit test byte-compares this page
+against `phux gen-reference-docs` output and fails on any drift, so
+hand edits do not survive. Regenerate with `just docs-gen`.
+-->
+
+Everything below is compiled into the binary from `phux_protocol::kinds`. The same rows drive `phux --capabilities --json` and the workload-auth classifier, so the verbs listed for a method are the verbs dispatch requires. A method is invoked through its typed frame or command. The catalog describes methods and is never an invocation handle, and reading it grants nothing.
+
+Verbs are a closed set. A method whose rows need only `INVENTORY` or `OBSERVE` is read-only; any other verb can change server state; a method no row admits by verb (the `COMMAND` envelope, a denied method) counts as mutating. A gate is the `HELLO_OK` feature bit a client must see before relying on the method, named as `phux status --json` names it; a gate in the trailing `features_ext` word is marked `(features_ext)`, and any other lives in `features`. In `phux --capabilities --json` every gate is `feature_gate: { "word": "features" | "features_ext", "feature": name, "mask": value }`, where `mask` is the bit's value in that word of `HELLO_OK.server_caps`, not a bit index. The older `gate: { "feature", "mask" }` field covers only the `features` word and is `null` for a `features_ext` gate.
+
+## Server methods
+
+Addressed to the server or the connection rather than to one resource.
+
+| Method | Carrier | Requires | Mutating | Gate | Status |
+|---|---|---|---|---|---|
+| `CREDENTIALS` | command `0x4e` | BIND, INPUT | yes | `credentials` (features_ext) | shipped |
+| `GET_CREATION` | command `0x41` | INVENTORY | no | `api_description` (features_ext) | shipped |
+| `DESCRIBE_API` | command `0x40` | INVENTORY | no | `api_description` (features_ext) | shipped |
+| `PRIVACY_STATUS` | command `0x4c` | INVENTORY (owner socket only) | no | `privacy_status` (features_ext) | shipped |
+| `HOST_CHECKLIST` | command `0x43` | INVENTORY | no | `host_checklist` (features_ext) | shipped |
+| `HELLO` | frame `0x01` | exempt: handshake | no | none | shipped |
+| `PING` | frame `0x7f` | exempt: liveness | no | none | shipped |
+| `ATTACH` | frame `0x02` | OBSERVE, CREATE, BIND | yes | none | shipped |
+| `DETACH` | frame `0x03` | exempt: cleanup | no | none | shipped |
+| `VIEWPORT_RESIZE` | frame `0x20` | BIND | yes | none | shipped |
+| `VIEWPORT_COLORS` | frame `0x2b` | BIND | yes | `viewport_colors` (features_ext) | shipped |
+| `COMMAND` | frame `0x31` | nested | yes | none | shipped |
+| `LIST_DIRECTORY` | frame `0x55` | INVENTORY | no | `list_directory` | shipped |
+| `PATH_QUERY` | frame `0x56` | INVENTORY | no | `path_query` (features_ext) | shipped |
+| `MIRROR` | command `0x4a` | OBSERVE (control grant or owner socket) | no | `mirrors` (features_ext) | shipped |
+| `MIRROR_PROVIDE` | command `0x4b` | OBSERVE (owner socket only) | no | `mirrors` (features_ext) | shipped |
+| `GET_FILE` | command `0x3b` | INPUT | yes | `file_download` (features_ext) | shipped |
+| `SERVICE_HTTP_OPEN` | command `0x3d` | INPUT | yes | `host_service_http` (features_ext) | shipped |
+| `SERVICE_HTTP_READ` | command `0x3e` | INPUT | yes | `host_service_http` (features_ext) | shipped |
+| `SERVICE_HTTP_CLOSE` | command `0x3f` | INPUT | yes | `host_service_http` (features_ext) | shipped |
+| `FORWARD_OPEN` | command `0x44` | INPUT | yes | `forward_tcp` (features_ext) | shipped |
+| `FORWARD_READ` | command `0x45` | INPUT | yes | `forward_tcp` (features_ext) | shipped |
+| `FORWARD_WRITE` | command `0x46` | INPUT | yes | `forward_tcp` (features_ext) | shipped |
+| `FORWARD_CLOSE` | command `0x47` | INPUT | yes | `forward_tcp` (features_ext) | shipped |
+| `AGENT_OFFER` | command `0x4f` | INPUT | yes | `forward_agent` (features_ext) | shipped |
+| `AGENT_REPLY` | command `0x50` | INPUT | yes | `forward_agent` (features_ext) | shipped |
+| `UPGRADE` | command `0x0e` | SIGNAL | yes | none | shipped |
+| `SHUTDOWN` | command `0x16` | SIGNAL (owner socket only) | yes | `shutdown` | shipped |
+| `OPEN_LISTENER` | command `0x1c` | SIGNAL (owner socket only) | yes | `open_listener` | shipped |
+| `DETACH_CLIENTS` | command `0x13` | SIGNAL | yes | none | shipped |
+| `GET_PERF` | command `0x18` | OBSERVE, BIND | yes | `get_perf` | shipped |
+| `PERF_CONTROL` | command `0x39` | OBSERVE, BIND (owner socket only) | yes | `perf_control` (features_ext) | shipped |
+| `phux.session.create/v1` | metadata key | CREATE, BIND | yes | none | shipped |
+| `phux.session.name/v1` | metadata key | BIND | yes | none | shipped |
+| `phux.session.keep_empty/v1` | metadata key | CREATE, BIND, SIGNAL | yes | `keep_empty_sessions` | shipped |
+| `phux.config.reload/v1` | metadata key | SIGNAL | yes | none | shipped |
+| `phux.approval.decide/v1/` | metadata key | SIGNAL | yes | `approvals` | shipped |
+| `phux.whoami/v1` | metadata key | exempt: self | no | `whoami` | shipped |
+| `GET_ORGANIZATION` | command `0x1e` | INVENTORY | no | `organization` (features_ext) | shipped |
+| `SESSION_CREATE` | command `0x1f` | CREATE | yes | `organization` (features_ext) | shipped |
+| `SESSION_RENAME` | command `0x20` | ORGANIZE | yes | `organization` (features_ext) | shipped |
+| `SESSION_SET_LIFETIME` | command `0x21` | ORGANIZE | yes | `organization` (features_ext) | shipped |
+| `SESSION_DELETE` | command `0x22` | TERMINATE | yes | `organization` (features_ext) | shipped |
+| `RESOURCE_CREATE` | command `0x23` | CREATE, ORGANIZE | yes | `organization` (features_ext) | shipped |
+| `RESOURCE_MOVE` | command `0x24` | ORGANIZE | yes | `organization` (features_ext) | shipped |
+| `RESOURCE_MOVE_MANY` | command `0x25` | ORGANIZE | yes | `organization` (features_ext) | shipped |
+| `RESOURCE_RENAME` | command `0x26` | ORGANIZE | yes | `organization` (features_ext) | shipped |
+| `RESOURCE_TERMINATE` | command `0x27` | TERMINATE | yes | `organization` (features_ext) | shipped |
+| `RESOURCE_REMOVE` | command `0x28` | TERMINATE | yes | `organization` (features_ext) | shipped |
+| `RESOURCE_RELAUNCH` | command `0x29` | CREATE | yes | `organization` (features_ext) | shipped |
+| `INBOX_RESOLVE` | command `0x2b` | ORGANIZE | yes | `organization` (features_ext) | shipped |
+| `ORGANIZATION_UNDO` | command `0x2c` | ORGANIZE | yes | `organization` (features_ext) | shipped |
+| `ARRANGEMENT_GET` | command `0x2d` | INVENTORY | no | `organization` (features_ext) | shipped |
+| `ARRANGEMENT_REPLACE` | command `0x2e` | ORGANIZE | yes | `organization` (features_ext) | shipped |
+| `DELEGATE_AGENT` | command `0x35` | TERMINATE (owner socket only) | yes | none | shipped |
+| `REVOKE_DELEGATION` | command `0x36` | TERMINATE (owner socket only) | yes | none | shipped |
+| `SESSION_KILL` | command `0x37` | TERMINATE | yes | `session_kill` (features_ext) | shipped |
+| `SESSION_SET_PROJECT` | command `0x3a` | ORGANIZE | yes | `session_project` (features_ext) | shipped |
+| `ARRANGEMENT_LOCK` | command `0x4d` | ORGANIZE | yes | `tab_lock` (features_ext) | shipped |
+
+## Server events
+
+| Event | Tag |
+|---|---|
+| `journal_gap` | `0x0b` |
+| `approval_requested` | `0x0d` |
+| `approval_decided` | `0x0e` |
+| `session_created` | `0x10` |
+| `session_renamed` | `0x11` |
+| `session_deleted` | `0x12` |
+| `session_lifetime_changed` | `0x13` |
+| `membership_changed` | `0x14` |
+| `resource_created` | `0x15` |
+| `resource_removed` | `0x16` |
+| `activation_changed` | `0x17` |
+| `arrangement_changed` | `0x18` |
+| `lease_changed` | `0x19` |
+| `intake_changed` | `0x1a` |
+| `resource_renamed` | `0x1b` |
+| `session_project_set` | `0x1d` |
+
+## Substrate methods
+
+Answered by every resource kind.
+
+| Method | Carrier | Requires | Mutating | Gate | Status |
+|---|---|---|---|---|---|
+| `SPAWN_RESOURCE` | frame `0x22` | CREATE, BIND | yes | none | shipped |
+| `ATTACH_RESOURCE` | command `0x01` | OBSERVE, BIND | yes | none | shipped |
+| `DETACH_RESOURCE` | command `0x02` | exempt: cleanup | no | none | shipped |
+| `KILL_RESOURCE` | command `0x03` | SIGNAL | yes | none | shipped |
+| `KILL_RESOURCE_IF` | command `0x1b` | SIGNAL | yes | `conditional_kill` | shipped |
+| `KILL_RESOURCES` | command `0x09` | SIGNAL | yes | none | shipped |
+| `CLOSE_TAB_RESOURCES` | command `0x1d` | SIGNAL | yes | `close_tab_resources` | shipped |
+| `SUBSCRIBE_RESOURCE_EVENTS` | command `0x0d` | OBSERVE | no | none | shipped |
+| `SUBSCRIBE_EVENTS` | frame `0x41` | OBSERVE | no | none | shipped |
+| `GET_STATE` | command `0x05` | INVENTORY | no | none | shipped |
+| `GET_METADATA` | frame `0x50` | OBSERVE | no | none | shipped |
+| `SET_METADATA` | frame `0x51` | CREATE, BIND, SIGNAL | yes | none | shipped |
+| `DELETE_METADATA` | frame `0x52` | BIND | yes | none | shipped |
+| `LIST_METADATA` | frame `0x53` | INVENTORY | no | none | shipped |
+| `SUBSCRIBE_METADATA` | frame `0x54` | OBSERVE | no | none | shipped |
+| `PUBLISH_RESOURCE_STATE` | command `0x42` | BIND, INPUT | yes | none | shipped |
+| `SEND_DOCUMENT_INPUT` | command `0x48` | INPUT (control grant or owner socket) | yes | none | shipped |
+
+## Substrate events
+
+| Event | Tag |
+|---|---|
+| `pane_spawned` | `0x04` |
+| `pane_closed` | `0x05` |
+| `source_gap` | `0x0c` |
+| `document_input` | `0x20` |
+| `agent_request` | `0x21` |
+
+## Kind `TERMINAL`
+
+Wire tag `0`; gate: none.
+
+### Methods
+
+The kind's facet.
+
+| Method | Carrier | Requires | Mutating | Gate | Status |
+|---|---|---|---|---|---|
+| `INPUT_KEY` | frame `0x10` | INPUT | yes | none | shipped |
+| `INPUT_PASTE` | frame `0x11` | INPUT | yes | none | shipped |
+| `INPUT_MOUSE` | frame `0x12` | INPUT | yes | none | shipped |
+| `INPUT_FOCUS` | frame `0x14` | INPUT | yes | none | shipped |
+| `INPUT_RAW` | frame `0x13` | INPUT | yes | none | spec-only |
+| `INPUT_TERMINAL_REPLY` | frame `0x17` | INPUT | yes | `terminal_reply` | shipped |
+| `CLIPBOARD_REPLY` | frame `0x18` | INPUT | yes | `clipboard_read` (features_ext) | shipped |
+| `RESIZE_TERMINAL` | frame `0x23` | BIND | yes | none | shipped |
+| `HISTORY_REQUEST` | frame `0x16` | OBSERVE | no | none | shipped |
+| `FRAME_ACK` | frame `0x21` | OBSERVE | no | none | shipped |
+| `MOVE_RESOURCE` | frame `0x2a` | BIND | yes | `move_resource` | shipped |
+| `GET_SCREEN` | command `0x07` | OBSERVE | no | none | shipped |
+| `ROUTE_INPUT` | command `0x08` | INPUT | yes | none | shipped |
+| `APPLY_INPUT` | command `0x14` | INPUT | yes | `acknowledged_input` | shipped |
+| `PUT_FILE` | command `0x15` | INPUT | yes | `file_upload` | shipped |
+| `CHECKOUT` | command `0x3c` | INPUT | yes | `checkout` (features_ext) | shipped |
+| `TRANSCRIBE` | command `0x19` | INPUT | yes | `transcribe` | shipped |
+| `GET_TERMINAL_STATE` | command `0x0c` | INVENTORY | no | none | shipped |
+| `ACQUIRE_INPUT` | command `0x0f` | BIND | yes | none | shipped |
+| `RELEASE_INPUT` | command `0x10` | BIND | yes | none | shipped |
+| `SIGNAL_TERMINAL` | command `0x11` | SIGNAL | yes | none | shipped |
+| `REPORT_ASKED` | command `0x12` | BIND | yes | none | shipped |
+| `REPORT_AGENT_STATE` | command `0x17` | BIND | yes | `report_agent_state` | shipped |
+
+### Events
+
+| Event | Tag |
+|---|---|
+| `command_started` | `0x00` |
+| `command_finished` | `0x01` |
+| `title_changed` | `0x02` |
+| `bell` | `0x03` |
+| `dirty` | `0x06` |
+| `idle` | `0x07` |
+| `terminal_control` | `0x08` |
+| `asked` | `0x09` |
+| `cwd_changed` | `0x0a` |
+| `input_activity` | `0x0f` |
+
+### Resource metadata keys
+
+- `phux.agent/v1`
+- `phux.agent-session/v1`
+- `phux.pane-occupant/v1`
+- `phux.controller/v1`
+- `phux.tags/v1`
+- `phux.link/v1`
+- `phux.note/v1`
+- `phux.notify/v1`
+
+## Kind `AGENT_SESSION`
+
+Wire tag `1`; gate: `resource_kinds`.
+
+### Methods
+
+The kind's facet.
+
+| Method | Carrier | Requires | Mutating | Gate | Status |
+|---|---|---|---|---|---|
+| `APPEND_RESOURCE_OUTPUT` | command `0x1a` | BIND, INPUT | yes | `resource_kinds` | shipped |
+| `NATIVE_AGENT` | command `0x38` | INVENTORY, OBSERVE, CREATE, BIND, INPUT | yes | none | shipped |
+
+### Events
+
+| Event | Tag |
+|---|---|
+| `native_agent_result` | `0x1c` |
+
+### Resource metadata keys
+
+None.
+
+## Kind `ACCESSIBILITY_TREE`
+
+Wire tag `2`; gate: `accessibility_tree` (features_ext).
+
+### Methods
+
+The kind's facet.
+
+| Method | Carrier | Requires | Mutating | Gate | Status |
+|---|---|---|---|---|---|
+
+### Events
+
+None.
+
+### Resource metadata keys
+
+None.
+
+## Kind `PIXEL_SURFACE`
+
+Wire tag `3`; gate: `pixel_surface` (features_ext).
+
+### Methods
+
+The kind's facet.
+
+| Method | Carrier | Requires | Mutating | Gate | Status |
+|---|---|---|---|---|---|
+
+### Events
+
+None.
+
+### Resource metadata keys
+
+None.
+
+## Kind `DOCUMENT`
+
+Wire tag `4`; gate: `typed_document` (features_ext).
+
+### Methods
+
+The kind's facet.
+
+| Method | Carrier | Requires | Mutating | Gate | Status |
+|---|---|---|---|---|---|
+
+### Events
+
+None.
+
+### Resource metadata keys
+
+None.
+
+## Client frame classification
+
+Every client-originated frame lands on exactly one row.
+
+| Case | Requires | Subject |
+|---|---|---|
+| `HELLO` | exempt: handshake | `None` |
+| `PING` | exempt: liveness | `None` |
+| `DETACH` | exempt: cleanup | `CallingConnection` |
+| `ATTACH` existing/last target | OBSERVE+BIND | `ResolvedGroup` |
+| `ATTACH` create-if-missing | OBSERVE+CREATE+BIND | `SelectedLocalGroup` |
+| `HISTORY_REQUEST` | OBSERVE | `NamedTerminal` |
+| `FRAME_ACK` | OBSERVE | `NamedTerminal` |
+| `COMMAND` | nested | `None` |
+| `SUBSCRIBE` (unallocated) | deny | `None` |
+| `INPUT_KEY`, `INPUT_PASTE`, `INPUT_MOUSE`, `INPUT_RAW`, `INPUT_FOCUS`, `INPUT_TERMINAL_REPLY`, `CLIPBOARD_REPLY` | INPUT | `NamedTerminal` |
+| `VIEWPORT_RESIZE` | BIND | `AttachedTerminals` |
+| `VIEWPORT_COLORS` | BIND | `AttachedTerminals` |
+| `SPAWN_RESOURCE { satellite: Some, owner_terminal: None }` | CREATE | `SatelliteHost` |
+| `SPAWN_RESOURCE { satellite: None, owner_terminal: None }` | CREATE | `PayloadGroup` |
+| `SPAWN_RESOURCE { satellite: None, owner_terminal: Some }` | CREATE+BIND | `OwnerTerminalGroup` |
+| `SPAWN_RESOURCE { satellite: Some, owner_terminal: Some }` | deny | `None` |
+| `SPAWN_RESOURCE { kind: served non-TERMINAL, satellite: None, parent: Some }` | CREATE+BIND | `ParentTerminalGroup` |
+| `SPAWN_RESOURCE { kind: served non-TERMINAL, satellite: Some(H), parent: Some(Satellite { H, .. }) }` | CREATE+BIND | `SatelliteHostAndParent` |
+| `SPAWN_RESOURCE { kind: not TERMINAL, parent: None }` or `{ kind: TERMINAL, parent: Some }` | deny | `None` |
+| `SPAWN_RESOURCE { control: Some }` | deny | `None` |
+| `RESIZE_TERMINAL` | BIND | `NamedTerminal` |
+| `MOVE_RESOURCE` | BIND | `MovedAndOwnerTerminals` |
+| `SUBSCRIBE_EVENTS { terminal: Some }` | OBSERVE | `NamedTerminal` |
+| `SUBSCRIBE_EVENTS { terminal: None }` | OBSERVE | `ObservableTerminals` |
+| `GET_METADATA { Global, "phux.whoami/v1" }` | exempt: self | `CallingConnection` |
+| Other `GET_METADATA` | OBSERVE | `MetadataScope` |
+| `SET_METADATA { Global, "phux.session.create/v1" }` | CREATE+BIND | `Global { owner_uds_only: false }` |
+| `SET_METADATA { Global, "phux.session.keep_empty/v1" }` with value `name\0true` | CREATE+BIND | `Global { owner_uds_only: false }` |
+| `SET_METADATA { Global, "phux.session.keep_empty/v1" }` with value `name\0false` | SIGNAL | `NamedSession` |
+| `SET_METADATA { Global, "phux.session.keep_empty/v1" }` with any other value | deny | `None` |
+| `SET_METADATA { Global, "phux.config.reload/v1" }` | SIGNAL | `Global { owner_uds_only: false }` |
+| `SET_METADATA { Global, "phux.approval.decide/v1/<id>" }` with value `approve` or `deny` | SIGNAL | `HeldAction` |
+| `SET_METADATA { Global, "phux.approval.decide/v1/<id>" }` with a malformed id or any other value | deny | `None` |
+| `SET_METADATA` or `DELETE_METADATA` targeting `phux.session.created/v1` or its slash-prefixed results | deny | `None` |
+| `SUBSCRIBE_METADATA` targeting that result namespace | deny | `None` |
+| `SET_METADATA` or `DELETE_METADATA` targeting `phux.pane-occupant/v1`, `phux.controller/v1`, `phux.whoami/v1`, or a `phux.approval/v1/<id>` record, or `DELETE_METADATA` targeting `phux.config.reload/v1`, `phux.session.keep_empty/v1`, or a `phux.approval.decide/v1/<id>` key | deny | `None` |
+| Other `SET_METADATA`, `DELETE_METADATA` | BIND | `MetadataScope` |
+| `LIST_METADATA` | INVENTORY | `MetadataScope` |
+| `LIST_DIRECTORY` | INVENTORY | `Global { owner_uds_only: false }` |
+| `PATH_QUERY` | INVENTORY | `Global { owner_uds_only: false }` |
+| Other `SUBSCRIBE_METADATA` | OBSERVE | `MetadataScope` |
+| Unknown, wrong-direction, retired, or otherwise unclassified frame | deny | `None` |
+
+## Command classification
+
+Every command nested in `COMMAND` lands on exactly one row; the envelope alone grants nothing.
+
+| Case | Requires | Subject |
+|---|---|---|
+| `SPAWN` (unallocated) | deny | `None` |
+| `ATTACH_RESOURCE` | OBSERVE+BIND | `NamedTerminal` |
+| `DETACH_RESOURCE` | exempt: cleanup | `CallingConnection` |
+| `KILL_RESOURCE` | SIGNAL | `NamedTerminal` |
+| `KILL_RESOURCE_IF` | SIGNAL | `NamedTerminal` |
+| `GET_SCREEN` | OBSERVE | `NamedTerminal` |
+| `ROUTE_INPUT`, `APPLY_INPUT` | INPUT | `NamedTerminal` |
+| `KILL_RESOURCES` | SIGNAL | `EveryNamedTerminal` |
+| `CLOSE_TAB_RESOURCES` | SIGNAL | `EveryNamedTerminal` |
+| `RESIZE_TERMINAL` (unallocated) | deny | `None` |
+| `GET_STATE { SERVER }` | INVENTORY | `InventoryMatches` |
+| `RUN_HOOK` (unallocated) | deny | `None` |
+| `GET_TERMINAL_STATE` | INVENTORY | `NamedTerminal` |
+| `SUBSCRIBE_RESOURCE_EVENTS` | OBSERVE | `NamedTerminal` |
+| `UPGRADE` | SIGNAL | `Global { owner_uds_only: false }` |
+| `ACQUIRE_INPUT`, `RELEASE_INPUT` | BIND | `NamedTerminal` |
+| `SIGNAL_TERMINAL` | SIGNAL | `NamedTerminal` |
+| `REPORT_ASKED`, `REPORT_AGENT_STATE` | BIND | `NamedTerminal` |
+| `PUT_FILE` | INPUT | `NamedTerminal` |
+| `GET_FILE` | INPUT | `Global { owner_uds_only: false }` |
+| `CHECKOUT` | INPUT | `NamedTerminal` |
+| `SERVICE_HTTP_OPEN`, `SERVICE_HTTP_READ`, `SERVICE_HTTP_CLOSE` | INPUT | `Global { owner_uds_only: false }` |
+| `FORWARD_OPEN`, `FORWARD_READ`, `FORWARD_WRITE`, `FORWARD_CLOSE`, `AGENT_OFFER`, `AGENT_REPLY` | INPUT | `Global { owner_uds_only: false }` |
+| `TRANSCRIBE` | INPUT | `NamedTerminal` |
+| `DETACH_CLIENTS { session: Some }` | SIGNAL | `ResolvedGroup` |
+| `DETACH_CLIENTS { session: None }` | SIGNAL | `Global { owner_uds_only: false }` |
+| `SHUTDOWN` | SIGNAL + owner-UDS transport | `Global { owner_uds_only: true }` |
+| `OPEN_LISTENER` | SIGNAL + owner-UDS transport | `Global { owner_uds_only: true }` |
+| `GET_PERF { reset: false }` | OBSERVE | `Global { owner_uds_only: false }` |
+| `GET_PERF { reset: true }` | OBSERVE+BIND | `Global { owner_uds_only: false }` |
+| `PERF_CONTROL` | OBSERVE+BIND + owner-UDS transport | `Global { owner_uds_only: true }` |
+| `APPEND_RESOURCE_OUTPUT` | BIND+INPUT | `ParentOfNamed` |
+| `PUBLISH_RESOURCE_STATE` | BIND+INPUT | `ParentOfNamed` |
+| `SEND_DOCUMENT_INPUT` | INPUT on a control selector | `ControlledDocument` |
+| `MIRROR` | OBSERVE on a control selector | `ControlledDocument` |
+| `MIRROR_PROVIDE` | OBSERVE + owner-UDS transport | `Global { owner_uds_only: true }` |
+| `PRIVACY_STATUS` | INVENTORY + owner-UDS transport | `Global { owner_uds_only: true }` |
+| `CREDENTIALS` | BIND+INPUT | `Global { owner_uds_only: false }` |
+| `HOST_CHECKLIST` | INVENTORY | `Global { owner_uds_only: false }` |
+| `NATIVE_AGENT { type: spawn }` | CREATE+BIND | `KeyedSession` |
+| `NATIVE_AGENT { type: list_integrations }` | INVENTORY | `OrganizationView` |
+| `NATIVE_AGENT { type: launch_integration }` | CREATE+BIND+INPUT | `KeyedSession` |
+| `NATIVE_AGENT { type: command }` | INPUT | `NamedTerminal` |
+| `NATIVE_AGENT { type: current_questions }` with handle | OBSERVE | `NamedTerminal` |
+| `NATIVE_AGENT { type: current_questions }` with durable key | OBSERVE | `KeyedResource` |
+| `NATIVE_AGENT { type: respond_question }` | OBSERVE+INPUT | `KeyedResource` |
+| `NATIVE_AGENT { type: question_receipt }` | OBSERVE | `KeyedResource` |
+| `NATIVE_AGENT { type: register/receive/complete/publish/close }` | BIND | `ParentOfNamed` |
+| `GET_ORGANIZATION` | INVENTORY | `OrganizationView` |
+| `DESCRIBE_API` | INVENTORY | `Global { owner_uds_only: false }` |
+| `GET_CREATION` | INVENTORY | `KeyedSession` |
+| `SESSION_CREATE` | CREATE | `Global { owner_uds_only: false }` |
+| `SESSION_RENAME`, `SESSION_SET_PROJECT`, `SESSION_SET_LIFETIME`, `INBOX_RESOLVE` | ORGANIZE | `KeyedSession` |
+| `SESSION_DELETE`, `SESSION_KILL` | TERMINATE | `KeyedSession` |
+| `RESOURCE_CREATE` | CREATE | `KeyedSession` |
+| `RESOURCE_CREATE` with placement | CREATE+ORGANIZE | `KeyedSession` |
+| `RESOURCE_MOVE`, `RESOURCE_MOVE_MANY` | ORGANIZE | `MoveSessions` |
+| `RESOURCE_RENAME` | ORGANIZE | `KeyedResource` |
+| `RESOURCE_TERMINATE` | TERMINATE | `NamedTerminal` |
+| `RESOURCE_REMOVE` | TERMINATE | `KeyedResource` |
+| `RESOURCE_RELAUNCH` | CREATE | `KeyedResource` |
+| `ORGANIZATION_UNDO` | ORGANIZE | `UndoneOperation` |
+| `ARRANGEMENT_GET` | INVENTORY | `ArrangementOwner` |
+| `ARRANGEMENT_REPLACE`, `ARRANGEMENT_LOCK` | ORGANIZE | `ArrangementOwner` |
+| `DELEGATE_AGENT`, `REVOKE_DELEGATION` | TERMINATE + owner-UDS transport | `Global { owner_uds_only: true }` |
+| Unknown, retired, or otherwise unclassified command tag | deny | `None` |

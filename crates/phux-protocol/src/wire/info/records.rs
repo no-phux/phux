@@ -1,0 +1,371 @@
+//! The session, window, and resource rows of a [`SessionSnapshot`](super::SessionSnapshot), with their facets.
+
+#[cfg(doc)]
+use super::SessionSnapshot;
+use super::{
+    ClientId, CloseReason, ResourceId, ResourceKind, ResourceLifecycle, SessionId, SessionKey,
+    SessionLifetime, WindowId,
+};
+
+/// One session, sufficient for UI chrome and `phux ls`; its windows are in
+/// [`SessionSnapshot::windows`]. Construct via [`Self::new`] and `with_*`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SessionInfo {
+    /// Stable session identifier.
+    pub id: SessionId,
+    /// Human-readable name; `AttachTarget::ByName` matches against this.
+    pub name: String,
+    /// The session's remembered focus, restored on attach (distinct from the
+    /// client's [`SessionSnapshot::focused_window`]).
+    pub active_window: Option<WindowId>,
+    /// Creation time, seconds since the Unix epoch.
+    pub created_at_unix_secs: i64,
+    /// Number of windows, denormalized at snapshot time.
+    pub window_count: u16,
+    /// Number of attached clients, denormalized at snapshot time.
+    pub attached_client_count: u16,
+    /// Whether the session survives its last window (ADR-0105); rides the
+    /// trailing session facets, so older peers read `false`. A server that
+    /// reports [`Self::lifetime`] keeps it equal to
+    /// `lifetime == Persistent`.
+    pub keep_empty: bool,
+    /// The session's lifetime (`docs/organization.md`), from the extension
+    /// block's `SESSION_STATE`; `None` from a server that does not report it.
+    pub lifetime: Option<SessionLifetime>,
+    /// The session's persistent key, from the extension block's
+    /// `SESSION_STATE`; `None` from a server that does not report it.
+    pub key: Option<SessionKey>,
+    /// The session's descriptive attributes (`docs/organization.md`), in
+    /// order, from the extension block's `SESSION_STATE`; empty from a
+    /// server that does not report them.
+    pub attrs: Vec<(String, String)>,
+    /// The session's most recent input target (R14), a Terminal listed in
+    /// this snapshot and owned by this session, from the extension block's
+    /// `SESSION_STATE`; `None` when the session has none or the server does
+    /// not report it.
+    pub recent_input: Option<ResourceId>,
+    /// How recently the session was attached to or typed into: a counter
+    /// that only grows, so the session with the highest value was used
+    /// last. From the extension block's `SESSION_STATE`; `None` for a
+    /// session never touched, or a server that does not report it.
+    pub touched: Option<u64>,
+}
+
+impl SessionInfo {
+    /// A `SessionInfo` with every other field at `None` / `0` / `false`.
+    #[must_use]
+    pub fn new(id: SessionId, name: impl Into<String>) -> Self {
+        Self {
+            id,
+            name: name.into(),
+            active_window: None,
+            created_at_unix_secs: 0,
+            window_count: 0,
+            attached_client_count: 0,
+            keep_empty: false,
+            lifetime: None,
+            key: None,
+            attrs: Vec::new(),
+            recent_input: None,
+            touched: None,
+        }
+    }
+
+    builder_setters! {
+        const fn with_keep_empty(keep_empty: bool) => keep_empty;
+    }
+
+    /// Builder setter for [`Self::lifetime`]. Also sets
+    /// [`Self::keep_empty`] to `lifetime == Persistent`, so the legacy facet
+    /// and the lifetime cannot disagree; `None` leaves `keep_empty` alone.
+    #[must_use]
+    pub const fn with_lifetime(mut self, lifetime: Option<SessionLifetime>) -> Self {
+        self.lifetime = lifetime;
+        if let Some(lifetime) = lifetime {
+            self.keep_empty = matches!(lifetime, SessionLifetime::Persistent);
+        }
+        self
+    }
+
+    builder_setters! {
+        const fn with_key(key: Option<SessionKey>) => key;
+    }
+
+    /// Builder setter for [`Self::attrs`].
+    #[must_use]
+    pub fn with_attrs(mut self, attrs: Vec<(String, String)>) -> Self {
+        self.attrs = attrs;
+        self
+    }
+
+    builder_setters! {
+        fn with_recent_input(recent_input: Option<ResourceId>) => recent_input;
+        const fn with_touched(touched: Option<u64>) => touched;
+    }
+
+    /// Whether this session's extension-block `SESSION_STATE` has anything
+    /// to say.
+    pub(super) const fn has_session_state(&self) -> bool {
+        self.lifetime.is_some()
+            || self.key.is_some()
+            || !self.attrs.is_empty()
+            || self.recent_input.is_some()
+            || self.touched.is_some()
+    }
+
+    /// Whether the session currently holds no windows: a keep-empty session
+    /// whose last window closed, or one created with no seed terminal.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.window_count == 0
+    }
+
+    builder_setters! {
+        const fn with_active_window(active_window: Option<WindowId>) => active_window;
+        const fn with_created_at_unix_secs(created_at_unix_secs: i64) => created_at_unix_secs;
+        const fn with_window_count(window_count: u16) => window_count;
+        const fn with_attached_client_count(attached_client_count: u16) => attached_client_count;
+    }
+}
+
+/// One window, sufficient for tab/pane chrome; its resources are in
+/// [`SessionSnapshot::resources`]. Construct via [`Self::new`] and `with_*`.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct WindowInfo {
+    /// Stable window identifier.
+    pub id: WindowId,
+    /// Foreign key into [`SessionSnapshot::sessions`].
+    pub session_id: SessionId,
+    /// Position within the session's windows list.
+    pub index: u16,
+    /// Human-readable window name.
+    pub name: String,
+    /// Window's remembered focused pane.
+    pub active_resource: Option<ResourceId>,
+}
+
+impl WindowInfo {
+    /// A `WindowInfo` at index `0` with no active resource.
+    #[must_use]
+    pub fn new(id: WindowId, session_id: SessionId, name: impl Into<String>) -> Self {
+        Self {
+            id,
+            session_id,
+            index: 0,
+            name: name.into(),
+            active_resource: None,
+        }
+    }
+
+    builder_setters! {
+        const fn with_index(index: u16) => index;
+        fn with_active_resource(active_resource: Option<ResourceId>) => active_resource;
+    }
+}
+
+/// The snapshot facet of a [`ResourceKind::AgentSession`] resource.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct AgentFacet {
+    /// Agent provider name, e.g. `claude`.
+    pub provider: String,
+    /// Opaque provider-native session id, when the producer supplied one.
+    pub native_id: Option<String>,
+    /// Derived state, an open lower-case string; unknown values read as
+    /// `unknown`.
+    pub state: String,
+}
+
+impl AgentFacet {
+    /// An `AgentFacet` with no `native_id`.
+    #[must_use]
+    pub fn new(provider: impl Into<String>, state: impl Into<String>) -> Self {
+        Self {
+            provider: provider.into(),
+            native_id: None,
+            state: state.into(),
+        }
+    }
+
+    builder_setters! {
+        fn with_native_id(native_id: Option<String>) => native_id;
+    }
+}
+
+/// How a retained resource's process ended (ADR-0124); present only while
+/// the exited resource is retained.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ExitFacet {
+    /// `_exit(n)` status, when known.
+    pub exit_status: Option<i32>,
+    /// Terminating signal, when known.
+    pub signal: Option<i32>,
+    /// Why the process ended (`RESOURCE_CLOSED.reason` vocabulary).
+    pub reason: CloseReason,
+    /// When the process exited, Unix milliseconds.
+    pub exited_at_ms: u64,
+    /// When the server will close the resource, Unix milliseconds.
+    pub retained_until_ms: u64,
+}
+
+impl ExitFacet {
+    /// An `Exited` facet with no status or signal known.
+    #[must_use]
+    pub const fn new(exited_at_ms: u64, retained_until_ms: u64) -> Self {
+        Self {
+            exit_status: None,
+            signal: None,
+            reason: CloseReason::Exited,
+            exited_at_ms,
+            retained_until_ms,
+        }
+    }
+
+    builder_setters! {
+        const fn with_exit_status(exit_status: Option<i32>) => exit_status;
+        const fn with_signal(signal: Option<i32>) => signal;
+        const fn with_reason(reason: CloseReason) => reason;
+    }
+}
+
+/// One served resource of any [`ResourceKind`], sufficient for layout chrome.
+///
+/// A non-Terminal kind has no window or grid, encoded as `WindowId(0)` and
+/// `0 x 0`; key layout on [`Self::kind`], not those sentinels. `kind`,
+/// `parent`, and `agent` ride the snapshot's trailing facet list.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct ResourceInfo {
+    /// Stable resource identifier.
+    pub id: ResourceId,
+    /// Foreign key into [`SessionSnapshot::windows`]; `WindowId(0)` for a
+    /// non-Terminal kind, which no window owns.
+    pub window_id: WindowId,
+    /// Grid width in cells; `0` for a non-Terminal kind.
+    pub cols: u16,
+    /// Grid height in cells; `0` for a non-Terminal kind.
+    pub rows: u16,
+    /// User-set title, distinct from any shell-set title.
+    pub title: Option<String>,
+    /// The title the program set (OSC 0/2), from the extension block's
+    /// `RESOURCE_PROGRAM_TITLE`; `None` when unset or from a server that does
+    /// not report it. What a list shows before the client streams the pane.
+    pub program_title: Option<String>,
+    /// Working directory (lossy UTF-8, display only).
+    pub cwd: Option<String>,
+    /// What backs the resource; defaults to [`ResourceKind::Terminal`].
+    pub kind: ResourceKind,
+    /// The parent this child is bound to; closing the parent closes it.
+    pub parent: Option<ResourceId>,
+    /// Agent facet, present iff `kind` is [`ResourceKind::AgentSession`].
+    pub agent: Option<AgentFacet>,
+    /// `Running`, or `Exited` while retained (ADR-0124); rides the extension
+    /// block.
+    pub lifecycle: ResourceLifecycle,
+    /// How a retained resource's process ended; `None` while it runs.
+    pub exit: Option<ExitFacet>,
+    /// Input-lease holder; `None` while open to every client (ADR-0033).
+    pub input_holder: Option<ClientId>,
+    /// `VIEWER` subscribers, ascending (ADR-0127).
+    pub viewers: Vec<ClientId>,
+    /// The session the resource belongs to, from the extension block's
+    /// `RESOURCE_SESSION`; `None` from a server that does not report it, in
+    /// which case the join runs through [`Self::window_id`].
+    pub session: Option<SessionId>,
+    /// Whether a document's producer (the connection that opened it) is
+    /// still connected; `None` for a non-document kind or from a server that
+    /// does not report it. Rides `RESOURCE_STATE`.
+    pub producer_connected: Option<bool>,
+    /// What input to a document controls; `None` for a document with no
+    /// control class, another kind, or a server that does not report it.
+    /// Rides `RESOURCE_STATE`.
+    pub control: Option<crate::wire::frame::ControlClass>,
+}
+
+impl ResourceInfo {
+    /// A running Terminal entry with every optional field unset.
+    #[must_use]
+    pub const fn new(id: ResourceId, window_id: WindowId, cols: u16, rows: u16) -> Self {
+        Self {
+            id,
+            window_id,
+            cols,
+            rows,
+            title: None,
+            program_title: None,
+            cwd: None,
+            kind: ResourceKind::Terminal,
+            parent: None,
+            agent: None,
+            lifecycle: ResourceLifecycle::Running,
+            exit: None,
+            input_holder: None,
+            viewers: Vec::new(),
+            session: None,
+            producer_connected: None,
+            control: None,
+        }
+    }
+
+    builder_setters! {
+        const fn with_session(session: Option<SessionId>) => session;
+    }
+
+    /// Construct the entry for a non-Terminal resource: no window
+    /// (`WindowId(0)`), no grid (`0 x 0`), the given `kind`.
+    #[must_use]
+    pub const fn resource(id: ResourceId, kind: ResourceKind) -> Self {
+        Self {
+            id,
+            window_id: WindowId::new(0),
+            cols: 0,
+            rows: 0,
+            title: None,
+            program_title: None,
+            cwd: None,
+            kind,
+            parent: None,
+            agent: None,
+            lifecycle: ResourceLifecycle::Running,
+            exit: None,
+            input_holder: None,
+            viewers: Vec::new(),
+            session: None,
+            producer_connected: None,
+            control: None,
+        }
+    }
+
+    builder_setters! {
+        fn with_title(title: Option<String>) => title;
+        fn with_program_title(program_title: Option<String>) => program_title;
+        fn with_cwd(cwd: Option<String>) => cwd;
+        const fn with_kind(kind: ResourceKind) => kind;
+        fn with_parent(parent: Option<ResourceId>) => parent;
+        fn with_agent(agent: Option<AgentFacet>) => agent;
+        const fn with_lifecycle(lifecycle: ResourceLifecycle) => lifecycle;
+        const fn with_exit(exit: Option<ExitFacet>) => exit;
+        const fn with_input_holder(input_holder: Option<ClientId>) => input_holder;
+        fn with_viewers(viewers: Vec<ClientId>) => viewers;
+        const fn with_control(control: Option<crate::wire::frame::ControlClass>) => control;
+        const fn with_producer_connected(producer_connected: Option<bool>) => producer_connected;
+    }
+
+    /// Whether the trailing resource facet list needs a row for this entry.
+    pub(super) const fn has_resource_facets(&self) -> bool {
+        !self.kind.is_terminal() || self.parent.is_some() || self.agent.is_some()
+    }
+
+    /// Whether the extension block needs a `RESOURCE_STATE` entry for it.
+    pub(super) const fn has_resource_state(&self) -> bool {
+        !matches!(self.lifecycle, ResourceLifecycle::Running)
+            || self.exit.is_some()
+            || self.input_holder.is_some()
+            || !self.viewers.is_empty()
+            || self.producer_connected.is_some()
+            || self.control.is_some()
+    }
+}

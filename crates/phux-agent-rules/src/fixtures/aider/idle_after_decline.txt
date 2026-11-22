@@ -1,0 +1,40 @@
+Mock reply.
+
+
+Tokens: 2.4k sent, 3 received. Cost: $0.0059 message, $0.0059 session.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+> DELAY more
+
+Mock reply.
+
+
+Tokens: 2.4k sent, 3 received. Cost: $0.0060 message, $0.01 session.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+> SLOW stream
+
+line 1 line 2 line 3 line 4 line 5 line 6 line 7 line 8 line 9 line 10
+^C
+
+^C again to exit
+line 1 line 2 line 3 line 4 line 5 line 6 line 7 line 8 line 9 line 10
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+> SHELLBLOCK please
+
+Run this:
+
+
+touch phux-capture-marker
+
+
+
+Tokens: 2.5k sent, 15 received. Cost: $0.0063 message, $0.02 session.
+
+touch phux-capture-marker
+Run shell command? (Y)es/(N)o/(D)on't ask again [Yes]: n
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+>
+
+
+

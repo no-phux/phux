@@ -1,0 +1,487 @@
+# Key bindings
+
+A key binding maps a key to an **action**, such as splitting a pane or
+switching sessions. You change bindings in the
+[configuration file](./config.md), under `[keybindings]`.
+
+```toml
+[keybindings.prefix-table]
+"v" = { action = "split-pane", direction = "vertical" }
+"r" = "reload-config"
+
+[keybindings.global]
+"M-Enter" = "toggle-zoom"
+```
+
+Run `phux config reload` after changing the file for the bindings to take
+effect.
+
+## The prefix
+
+Most phux keys are two presses: the **prefix**, <kbd>C-a</kbd>, then a
+key. <kbd>C-a</kbd> <kbd>z</kbd> zooms the focused pane, and
+<kbd>C-a</kbd> <kbd>d</kbd> detaches.
+
+Press the prefix and hesitate, and after 400 milliseconds a popup lists
+every key you can press next, your own bindings included. The popup never
+gets in the way: whatever you press runs as if it weren't there, and
+<kbd>Esc</kbd> cancels the prefix. Change the delay or turn the popup off:
+
+```toml
+[keybindings]
+which-key = true
+which-key-delay-ms = 400
+```
+
+After the prefix, a key with no binding goes to the program in the pane;
+only the prefix itself is swallowed. So <kbd>C-a</kbd> <kbd>C-a</kbd>
+sends one literal <kbd>C-a</kbd> to the program, which is how you reach
+readline's beginning-of-line.
+
+[Default key bindings](./reference/keys.md) lists every key phux binds out
+of the box, grouped the way the popup groups them.
+
+## Binding a key
+
+Bindings live in two tables:
+
+| Table | Fires |
+| --- | --- |
+| `[keybindings.prefix-table]` | After the prefix. `"z"` here is <kbd>C-a</kbd> <kbd>z</kbd>. |
+| `[keybindings.global]` | On its own, with no prefix. phux ships none. |
+| `[keybindings.modes.<name>]` | On its own, while that [key mode](#key-modes) is on. |
+
+A binding's value is an action name, or an inline table with the action
+and its arguments:
+
+```toml
+[keybindings.prefix-table]
+"r" = "reload-config"
+"R" = { action = "resize-pane", direction = "right", amount = 10 }
+"," = { action = "rename-window", name = "build" }
+```
+
+Some actions require arguments and some take optional ones. `resize-pane`
+needs a `direction` and an `amount`; `rename-window` opens a prompt when
+you leave out `name` and renames straight away when you give one.
+
+A plugin's action is `plugin-action` with the plugin's id and the
+action's `id`:
+
+```toml
+[keybindings.prefix-table]
+"Y" = { action = "plugin-action", plugin = "example.pane-tools", id = "summarize" }
+```
+
+**A global binding takes the key away from every program.** A global
+<kbd>M-Enter</kbd> never reaches your editor or shell again. Pick global
+keys that your programs don't use.
+
+### A command in a popup
+
+`popup` runs one command in a floating box over your panes, in the focused
+pane's directory. The box closes when the command succeeds, or on the
+next phux action. If the command fails, the box stays open with its output
+and exit status until you press a key:
+
+```toml
+[keybindings.prefix-table]
+"g" = { action = "popup", command = "lazygit" }
+```
+
+Without `command` it asks for one; the palette's **Popup…** row does the same.
+
+### Close a pane you can get back
+
+<kbd>C-a</kbd> <kbd>x</kbd> ends the pane's program. To put a pane away
+without ending it, use `close-view`: the pane leaves the tab and its
+program keeps running, and `reopen-views` brings every hidden pane back,
+one tab each. Both are in the command palette (**Hide pane (keeps
+running)** and **Reopen hidden terminals**); neither has a key until you
+give it one:
+
+```toml
+[keybindings.prefix-table]
+"x" = "close-view"      # close without ending the program
+"M-x" = "kill-pane"     # really end it
+"v" = "reopen-views"
+```
+
+## Finding actions
+
+- Press <kbd>C-a</kbd> <kbd>Space</kbd> to open the command palette. It
+  lists every action you can run, searchable, with the key bound to it.
+- [Actions](./reference/actions.md) lists every action name with its
+  arguments.
+- `phux config keys` prints every binding in effect (see
+  [Inspecting bindings](#inspecting-bindings)).
+
+The actions keep tmux's word "window" for a tab: `new-window` opens a tab,
+`select-window` jumps to one.
+
+## Writing keys
+
+A key is written as zero or more modifiers followed by one key, joined by
+`-`. `C-a` is Ctrl+A and `C-M-x` is Ctrl+Alt+X.
+
+| Modifier | Means |
+| --- | --- |
+| `C-` | Ctrl |
+| `M-` | Alt (Meta) |
+| `A-` | Alt, the same as `M-` |
+| `S-` | Shift |
+
+Modifier letters are uppercase. `Ctrl-a` is not a key; write `C-a`.
+
+The key after the modifiers is one of:
+
+- A letter, digit, or ASCII punctuation character: `a`, `7`, `[`, `|`.
+- A named key: `Tab`, `BackTab`, `Enter`, `Esc` (or `Escape`), `Space`,
+  `Backspace`, `Delete`, `Insert`, `Up`, `Down`, `Left`, `Right`, `Home`,
+  `End`, `PageUp`, `PageDown`, and `F1` through `F24`. Names are
+  case-sensitive, so `enter` is not a key.
+
+A key names the physical key you press, not the character it types:
+
+- **A capital letter means Shift.** `"X"` and `"S-x"` are the same key,
+  and so are `"C-X"` and `"C-S-x"`.
+- **Punctuation is a key on a US layout.** `"|"` is Shift plus the
+  backslash key, the same as `"S-\\"`, and `"?"` is Shift plus `/`. On
+  another layout, write the shifted key with an explicit `S-`.
+- `BackTab` is Shift+Tab.
+
+A binding can also be a **sequence**: several keys pressed one after
+another, separated by spaces. In the prefix table, `"t s"` is
+<kbd>C-a</kbd> <kbd>t</kbd> <kbd>s</kbd>:
+
+```toml
+[keybindings.prefix-table]
+"t s" = "session-picker"
+"t w" = "window-picker"
+```
+
+A key either runs an action or starts a sequence; it can't do both,
+because phux could never tell which one you meant. The first key of a
+sequence must be free, a shipped binding included: <kbd>g</kbd> already
+runs `give-input`, so `"g s"` is an error until you unbind `"g"`.
+
+Quote keys that TOML would read differently: `'"' = ...` binds the double
+quote, `"\\" = ...` the backslash.
+
+## Replacing a default
+
+To change what a default key does, bind it. There is no need to unbind it
+first:
+
+```toml
+[keybindings.prefix-table]
+# C-a o goes back to the last pane instead of cycling through them
+"o" = "last-pane"
+```
+
+Your binding replaces the shipped one for that key whole, arguments
+included, whatever spelling you use: `"S-x"` in your file replaces the
+shipped `"X"`.
+
+Within one file, two spellings of the same key conflict. `"X"` and `"S-x"`
+in the same file is an error, and `phux config check` reports it.
+
+## Removing a binding
+
+Set a key to `"none"` to remove its binding, a shipped default included:
+
+```toml
+[keybindings.prefix-table]
+"x" = "none"
+
+[keybindings.global]
+"M-Enter" = "none"
+```
+
+**Unbinding a key gives it back to the program.** An unbound global key
+goes straight to the program in the pane. An unbound prefix-table key
+goes to the program after the prefix, so <kbd>C-a</kbd> <kbd>x</kbd> now
+types an `x`.
+
+**An unbound key stays unbound.** A plugin whose manifest `keys` names it
+doesn't get it, whatever spelling either of you uses.
+
+## Starting from an empty keymap
+
+To build your own keymap instead of unbinding the defaults one by one,
+turn the shipped bindings off:
+
+```toml
+[keybindings]
+defaults = false
+
+[keybindings.prefix-table]
+"d" = "detach"
+```
+
+Only bindings from your own files apply, in every table and key mode. The
+shipped `command-palette` keys (<kbd>C-a</kbd> then <kbd>Space</kbd>,
+<kbd>:</kbd> or <kbd>?</kbd>) stay as the way out, since the palette runs
+every action, until you bind `command-palette` yourself. The prefix stays
+<kbd>C-a</kbd> unless you set it. Rune has its own switch,
+[`[rune] key-defaults`](#rune-shortcuts).
+
+## Key modes
+
+A key mode is a set of keys that work without the prefix while the mode
+is on, so ordinary keys can do something else for a while. phux ships
+one: press <kbd>C-a</kbd> <kbd>R</kbd> for resize mode, then
+<kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd> or the arrows resize
+the focused pane one cell at a time (<kbd>H</kbd> <kbd>J</kbd>
+<kbd>K</kbd> <kbd>L</kbd> by five). <kbd>Enter</kbd> or <kbd>Esc</kbd>
+leaves. While a mode is on, the right end of the status bar shows its
+name.
+
+A mode is a table under `[keybindings.modes]`, entered with `enter-mode`:
+
+```toml
+[keybindings.prefix-table]
+"v" = { action = "enter-mode", name = "views" }
+
+[keybindings.modes.views]
+"n" = "next-window"
+"p" = "previous-window"
+"z" = "toggle-zoom"
+"q" = "exit-mode"
+```
+
+- **Leaving.** `exit-mode` leaves the mode, and so does <kbd>Esc</kbd>
+  unless the mode binds <kbd>Esc</kbd> itself. Add `once = true` to
+  `enter-mode` to leave after the first of the mode's keys runs.
+- **Other keys.** A key the mode doesn't bind does what it does outside
+  the mode: the prefix and global keys still work, and anything else goes
+  to the program in the pane. Make the mode exclusive to ignore those
+  keys instead, so a stray key can't type into the pane. The shipped
+  resize mode is exclusive:
+
+  ```toml
+  [keybindings.mode-options.resize]
+  exclusive = true
+  ```
+
+- **One mode at a time.** Entering a mode from inside another switches to
+  it.
+- **Changing a mode.** Mode tables layer like the others: your keys add to
+  or replace the shipped ones, and `"none"` removes one from that mode
+  only. `[keybindings.modes.resize] "h" = "none"` leaves <kbd>h</kbd>
+  bound everywhere else.
+
+A mode name is lowercase letters, digits, `-`, and `_`. `phux config
+check` reports an `enter-mode` naming a mode no table defines, and
+options for a mode that doesn't exist.
+
+### Type in every pane at once
+
+`sync-panes` sends what you type, and what you paste, to every pane in the
+tab you are on, until you run it again. Press the prefix, then
+<kbd>y</kbd>, or pick **Type in every pane** in the command palette.
+
+It belongs to that one tab: move to another tab and typing is ordinary
+there; come back and it is still on. phux says so each time it turns on or
+off, and while it is on each pane in the tab carries a `[sync]` mark in its
+title rule. Mouse input always goes to the pane under the pointer.
+
+To make the pane you are typing in stand out, `dim-unfocused = true` under
+`[chrome]` paints the other panes faint.
+
+### Jump to a pane by its number
+
+The prefix, then <kbd>i</kbd> (`display-panes`), draws a number over each
+pane in the tab. Press a number to focus that pane; any other key puts the
+numbers away. Panes are numbered in layout order, the first nine only.
+
+### Move the keyboard into the sidebar
+
+The prefix, then <kbd>e</kbd> (`focus-sidebar`), lights a row of the
+sidebar, opening it first if it is hidden. The arrows or <kbd>j</kbd> and
+<kbd>k</kbd> move, <kbd>Enter</kbd> does what a click on the row would, and
+<kbd>Esc</kbd> hands the keyboard back to the pane.
+
+### Your own copy-mode keys
+
+Copy mode's keys are vi's. A key mode named `copy-mode` gives you others:
+each entry makes a key of yours stand for one of the built-in keys, so
+everything in the [copy-mode table](./getting-started.md#scroll-and-copy)
+can be reached your way. The emacs motions, for example:
+
+```toml
+[keybindings.modes.copy-mode]
+"C-n" = { action = "copy-mode-key", key = "j" }
+"C-p" = { action = "copy-mode-key", key = "k" }
+"C-f" = { action = "copy-mode-key", key = "l" }
+"C-b" = { action = "copy-mode-key", key = "h" }
+"M-f" = { action = "copy-mode-key", key = "w" }
+"M-b" = { action = "copy-mode-key", key = "b" }
+"C-a" = { action = "copy-mode-key", key = "0" }
+"C-e" = { action = "copy-mode-key", key = "$" }
+"M-v" = { action = "copy-mode-key", key = "C-b" }
+"C-v" = { action = "copy-mode-key", key = "C-f" }
+"C-Space" = { action = "copy-mode-key", key = "v" }
+"M-w" = { action = "copy-mode-key", key = "y" }
+"C-s" = { action = "copy-mode-key", key = "/" }
+"C-r" = { action = "copy-mode-key", key = "?" }
+"C-g" = { action = "copy-mode-key", key = "Escape" }
+```
+
+`clear-selection` is the other action this table takes: it drops the
+selection and keeps you where you are, as <kbd>Esc</kbd> does while
+something is selected (`"C-c" = "clear-selection"`).
+
+A key you bind replaces what that key did in copy mode; the built-in keys
+you leave alone keep working. While you type a search, keys are text as
+usual. The table is read when the config loads or reloads.
+
+## Changing the prefix
+
+```toml
+[keybindings]
+prefix = "C-b"
+```
+
+Every prefix-table key moves with it: <kbd>C-b</kbd> <kbd>z</kbd> now
+zooms. The popup, the palette, and `phux config keys` all show the new
+prefix.
+
+A global binding on exactly the prefix key can never fire, because the
+prefix always wins. phux drops it and `phux config check` reports it. A
+prefix that does not parse falls back to <kbd>C-a</kbd>.
+
+## Coming from tmux
+
+To bring over your current tmux bindings automatically, preview
+`phux config import-tmux`, then use `--apply` after reviewing its report.
+The [tmux importer guide](./tmux-import.md) covers supported bindings,
+native layering, differences and undo.
+
+This file keeps tmux's prefix and brings back a few tmux habits:
+
+```toml
+[keybindings]
+prefix = "C-b"
+
+[keybindings.prefix-table]
+# tmux's & closes the tab after asking (phux ships this on X)
+"&" = "kill-window"
+
+# tmux's ( and ) step through sessions (phux ships N and P)
+"(" = "previous-session"
+")" = "next-session"
+
+# r to reload, the way many .tmux.conf files bind source-file
+"r" = "reload-config"
+```
+
+Splits (<kbd>"</kbd> <kbd>%</kbd>), new tab (<kbd>c</kbd>), next and
+previous tab (<kbd>n</kbd> <kbd>p</kbd>), copy mode (<kbd>[</kbd>), and
+detach (<kbd>d</kbd>) already match tmux. One difference to know:
+phux's <kbd>x</kbd> closes the pane without asking. The getting started
+guide lists [what else differs from tmux](./getting-started.md#coming-from-tmux).
+
+## Rune shortcuts
+
+`[rune.keys]` binds Rune's own shortcuts. The key is a chord and the value
+is a command, or `"none"` to take a built-in chord away:
+
+```toml
+[rune.keys]
+"cmd+shift+d" = "split-right"
+"ctrl+alt+left" = "previous-tab"
+"cmd+d" = "none"
+```
+
+Modifiers are `cmd`, `ctrl`, `alt` and `shift`; `cmd` is the Super key off
+macOS. A built-in chord works until you bind it elsewhere or to `"none"`. `key-defaults = false` in `[rune]` keeps
+only yours, plus the palette and Settings chords until you bind those. Menus and the shortcut list still show the
+built-in chords. The TUI's `[keybindings]` are separate: Rune's commands
+are the app's own.
+
+The command names:
+
+- Tabs and panes: `new-terminal` (a new tab), `close-terminal`, `close-tab`,
+  `next-tab`, `previous-tab`, `tab-1` to `tab-9`, `rename-tab`, `lock-tab`,
+  `split-right`, `split-down`, `zoom-pane`, `focus-left`, `focus-right`,
+  `focus-up`, `focus-down`, `next-terminal`, `previous-terminal`,
+  `last-pane`, `last-tab`.
+- Sessions and machines: `new-session`, `switch-session`, `rename-session`,
+  `close-session`, `restore-sessions`, `machines`, `retry-connection`,
+  `jump-to-attention`, `inbox`.
+- Text: `copy`, `paste`, `select-all`, `copy-mode`, `find`, `find-next`,
+  `find-previous`, `find-selection`, `insert-path`, `screenshot`,
+  `clear-selection` (in copy mode), `scroll-to-top`, `scroll-to-bottom`,
+  `scroll-page-up`, `scroll-page-down`, `scroll-half-page-up`,
+  `scroll-half-page-down`, `prompt-up`, `prompt-down`, `zoom-in`,
+  `zoom-out`, `zoom-reset`.
+- The app: `palette`, `settings`, `change-theme`, `toggle-sidebar`,
+  `toggle-full-screen`, `keyboard-shortcuts`, `essential-shortcuts`,
+  `get-started`, `bare`, `copy-config`, `copy-diagnostics`,
+  `check-for-updates`, `install-update`, `playground` (the palette over
+  the scenes), `galaxy`, `reef`, `pitch`, `kitchen`, `pit-lane`, `hive`.
+
+## Inspecting bindings
+
+`phux config keys` prints every binding in effect: the shipped defaults,
+your file and the files it extends, and keys from enabled plugins, merged
+exactly as phux merges them. Prefix-table keys are shown after the prefix:
+
+```text
+$ phux config keys split-pane
+prefix  C-a  (defaults)
+
+KEY    ACTION      ARGS                  SOURCE
+C-a "  split-pane  direction=horizontal  defaults
+C-a %  split-pane  direction=vertical    defaults
+C-a -  split-pane  direction=horizontal  defaults
+C-a |  split-pane  direction=vertical    defaults
+```
+
+Give it an action name to see only that action's keys, or none to see
+everything. A key mode's keys read `mode:<name> <key>`, such as
+`mode:resize h`. **SOURCE** is `defaults`, the name of the file that set the
+binding (`config.toml`, or a file you extend), or `plugin <id>`. The first
+line shows the prefix and where it came from.
+
+Bindings phux would skip are listed as warnings after the table, so a
+binding that does nothing never hides:
+
+```text
+phux: warn: skipped keybinding "q": unknown action `kill-pain` (did you mean `kill-pane`?)
+```
+
+`--json` prints the same as a stable JSON document.
+
+## Debugging
+
+`phux config check` reports every binding problem with its key path. The
+same problems appear as `phux config keys` warnings:
+
+```text
+$ phux config check
+keybindings.prefix: bad chord: unknown key name: Ctrl-a
+keybindings.prefix-table.q: unknown name: unknown action `kill-pain` (did you mean `kill-pane`?)
+keybindings.prefix-table."g s": bad chord: ambiguous prefix: 'g s' is both a binding and a prefix
+3 problems
+```
+
+| Finding | Cause | Fix |
+| --- | --- | --- |
+| `unknown key name` | The key isn't a character or named key, often a lowercase name or `Ctrl-`. | Use the syntax in [Writing keys](#writing-keys). |
+| `invalid chord syntax at N` | A malformed key, such as a trailing `-`. | Fix the character at offset N. |
+| `unknown action` | A misspelled action. The finding suggests the closest one. | Check [Actions](./reference/actions.md). |
+| `ambiguous prefix` on a sequence | One key both runs an action and starts a sequence (`"g"` and `"g s"`). | Remove one of them. |
+| `ambiguous prefix` on a plain key | Two spellings of one key in the same file (`"X"` and `"S-x"`). | Keep one spelling. |
+| `ambiguous prefix` in `global` | A global binding on the prefix key. | Bind another key, or change the prefix. |
+
+A bad binding disables only itself when you attach; every other binding
+still works. `phux config reload` is stricter: it refuses a file with any
+bad binding and keeps your current bindings, so fix the finding and reload
+again.
+
+If a key seems to do nothing, run `phux config keys` and look for it. A
+plugin key loses to yours when both bind the same key, and a key you
+removed with `"none"` is absent from the table, even when a plugin's
+`keys` names it.

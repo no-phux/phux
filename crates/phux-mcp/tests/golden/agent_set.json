@@ -1,0 +1,10 @@
+{
+  "action": "set",
+  "record": {
+    "kind": "codex",
+    "name": "bot",
+    "state": "working"
+  },
+  "schema_version": 1,
+  "terminal": "@1"
+}

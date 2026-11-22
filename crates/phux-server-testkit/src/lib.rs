@@ -1,0 +1,565 @@
+//! Shared scaffolding for phux-server's wire integration tests. A separate
+//! crate so it compiles once instead of once per test binary. Helpers drive
+//! the server only through the public `ServerRuntime` API and the wire, and
+//! every `recv` is bounded by [`WIRE_RECV_TIMEOUT`].
+
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "test scaffolding"
+)]
+#![allow(
+    clippy::missing_panics_doc,
+    missing_debug_implementations,
+    clippy::too_long_first_doc_paragraph,
+    clippy::must_use_candidate,
+    reason = "test scaffolding with one consumer; fixtures wrap non-Debug guards"
+)]
+
+pub mod builder;
+pub mod embedder;
+mod frames;
+mod framing;
+pub use frames::*;
+mod poll;
+pub use poll::{eventually, eventually_async};
+pub mod relay;
+pub mod screen;
+mod server;
+pub mod tracing_capture;
+pub use phux_server::policy::testing::{FnPolicy, parse_scopes, scoped_grant};
+pub use server::{
+    ServerBuilder, ServerHandles, SpawnedServer, contains, hangup_proof_script, seed_pty, sh,
+    spawn_server, spawn_server_connected, spawn_server_seed_pty_no_cmd, spawn_server_with,
+    spawn_server_with_seed_cmd, terminal_server,
+};
+
+use std::future::Future;
+use std::path::Path;
+use std::time::{Duration, Instant};
+
+use bytes::BytesMut;
+use framing::read_framed_unbounded;
+use phux_protocol::PROTOCOL_VERSION;
+use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet};
+use phux_protocol::ids::{GroupId, ResourceId, SatelliteHost};
+use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
+use phux_protocol::wire::RemoteListenerTransport;
+use phux_protocol::wire::frame::{
+    AttachTarget, Command, CommandResult, CommandValue, DetachReason, ErrorCode, FrameKind,
+    SpawnResource, SpawnResult, StateScope, TYPE_COMMAND_RESULT, TYPE_DETACHED, TYPE_HELLO_OK,
+    ViewportInfo,
+};
+use phux_protocol::wire::info::SessionSnapshot;
+use phux_server::ServerError;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::UnixStream;
+use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
+use tokio::time::{sleep, timeout};
+
+/// Deadline for every wire `recv`. Generous because PTY-backed tests contend
+/// for CPU; the happy path resolves in milliseconds, so only a real hang
+/// reaches it.
+pub const WIRE_RECV_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Deadline for the per-test socket-connect bootstrap (same rationale).
+pub const SOCKET_CONNECT_DEADLINE: Duration = Duration::from_secs(10);
+
+/// Deadline for joining a `ServerRuntime` that was told to shut down.
+pub const SERVER_JOIN_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Block on `fut` inside a fresh `current_thread` runtime + `LocalSet`.
+pub fn run_local<F>(fut: F)
+where
+    F: Future<Output = ()>,
+{
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let local = tokio::task::LocalSet::new();
+    local.block_on(&rt, fut);
+}
+
+/// Poll for a connection and complete the HELLO handshake. Tests of HELLO
+/// itself use [`wait_for_raw_socket`].
+pub async fn wait_for_socket(path: &Path, deadline: Duration) -> UnixStream {
+    wait_for_socket_with(path, deadline, |caps| caps).await
+}
+
+/// [`wait_for_socket`] with the default HELLO caps adjusted by `caps`.
+pub async fn wait_for_socket_with(
+    path: &Path,
+    deadline: Duration,
+    caps: impl FnOnce(ClientCapabilities) -> ClientCapabilities,
+) -> UnixStream {
+    let mut stream = wait_for_raw_socket(path, deadline).await;
+    let caps = caps(
+        ClientCapabilities::new()
+            .with_color_support(ColorSupport::TrueColor)
+            .with_layers(LayerSet::all()),
+    );
+    send_frame(&mut stream, &hello("phux-server-integration-test", caps)).await;
+    let (type_byte, frame) = recv_typed(&mut stream).await;
+    assert_eq!(type_byte, TYPE_HELLO_OK);
+    assert!(matches!(frame, FrameKind::HelloOk { .. }));
+    stream
+}
+
+/// A `HELLO` at this build's protocol version.
+#[must_use]
+pub fn hello(client_name: &str, client_caps: ClientCapabilities) -> FrameKind {
+    FrameKind::Hello {
+        client_name: client_name.to_owned(),
+        protocol_major: PROTOCOL_VERSION.major,
+        protocol_minor: PROTOCOL_VERSION.minor,
+        protocol_patch: PROTOCOL_VERSION.patch,
+        client_caps,
+    }
+}
+
+/// Poll `UnixStream::connect(path)` without sending protocol frames.
+pub async fn wait_for_raw_socket(path: &Path, deadline: Duration) -> UnixStream {
+    let start = Instant::now();
+    let mut last_err: Option<std::io::Error> = None;
+    while start.elapsed() < deadline {
+        match UnixStream::connect(path).await {
+            Ok(stream) => return stream,
+            Err(error) => last_err = Some(error),
+        }
+        sleep(Duration::from_millis(5)).await;
+    }
+    panic!(
+        "socket {} never became connectable: last_err={:?}",
+        path.display(),
+        last_err,
+    );
+}
+
+/// Like [`wait_for_raw_socket`] but returns `None` at the deadline, for tests
+/// racing a server that may already have exited.
+pub async fn try_connect_socket(path: &Path, deadline: Duration) -> Option<UnixStream> {
+    let start = Instant::now();
+    while start.elapsed() < deadline {
+        if let Ok(s) = UnixStream::connect(path).await {
+            return Some(s);
+        }
+        sleep(Duration::from_millis(5)).await;
+    }
+    None
+}
+
+/// Read one length-prefixed frame (header + body), or `None` if the server
+/// left before the header. Panics on timeout, I/O error, or a truncated frame.
+async fn read_framed(stream: &mut UnixStream) -> Option<Vec<u8>> {
+    timeout(WIRE_RECV_TIMEOUT, read_framed_unbounded(stream))
+        .await
+        .expect("timed out waiting for frame")
+}
+
+fn decode_framed(framed: &[u8]) -> (u8, FrameKind) {
+    let (frame, rest) = FrameKind::decode(framed).expect("decode frame");
+    assert!(rest.is_empty(), "decoder did not consume entire frame");
+    (framed[4], frame)
+}
+
+/// Read one length-prefixed frame (header + body); panics on EOF or timeout.
+pub async fn recv_framed(stream: &mut UnixStream) -> Vec<u8> {
+    read_framed(stream).await.expect("connection closed")
+}
+
+/// Decode one wire frame, returning its type byte and [`FrameKind`].
+pub async fn recv_typed(stream: &mut UnixStream) -> (u8, FrameKind) {
+    decode_framed(&recv_framed(stream).await)
+}
+
+/// Like [`recv_typed`], but `None` on EOF or reset at a frame boundary
+/// (the server exits when its last session is reaped). A partial header or
+/// body still panics.
+pub async fn try_recv_typed(stream: &mut UnixStream) -> Option<(u8, FrameKind)> {
+    read_framed(stream).await.as_deref().map(decode_framed)
+}
+
+/// Like [`try_recv_typed`], but bounded only by `deadline`: `Err` once it
+/// passes. Use it over a caller-side timeout around [`recv_typed`], which
+/// races [`WIRE_RECV_TIMEOUT`] and can hide the caller's diagnostic.
+pub async fn try_recv_typed_before(
+    stream: &mut UnixStream,
+    deadline: tokio::time::Instant,
+) -> Result<Option<(u8, FrameKind)>, tokio::time::error::Elapsed> {
+    if tokio::time::Instant::now() >= deadline {
+        // `timeout_at` still returns a ready read past its deadline, so a
+        // stream that never goes quiet would otherwise outrun it forever.
+        return tokio::time::timeout_at(deadline, std::future::pending()).await;
+    }
+    let framed = tokio::time::timeout_at(deadline, read_framed_unbounded(stream)).await?;
+    Ok(framed.as_deref().map(decode_framed))
+}
+
+/// Like [`recv_typed`], but bounded only by `deadline`: `None` once it
+/// passes, so the caller's panic names what stalled. Panics on EOF.
+pub async fn recv_typed_before(
+    stream: &mut UnixStream,
+    deadline: tokio::time::Instant,
+) -> Option<(u8, FrameKind)> {
+    try_recv_typed_before(stream, deadline)
+        .await
+        .ok()
+        .map(|frame| frame.expect("connection closed"))
+}
+
+/// Drain frames until `pred` returns `Some`. Each read is bounded by
+/// [`WIRE_RECV_TIMEOUT`]; for an overall deadline use [`recv_until_deadline`].
+pub async fn recv_until<T>(
+    stream: &mut UnixStream,
+    mut pred: impl FnMut(u8, FrameKind) -> Option<T>,
+) -> T {
+    loop {
+        let (type_byte, frame) = recv_typed(stream).await;
+        if let Some(value) = pred(type_byte, frame) {
+            return value;
+        }
+    }
+}
+
+/// Like [`recv_until`], but returns `None` once `deadline` passes.
+pub async fn recv_until_deadline<T>(
+    stream: &mut UnixStream,
+    deadline: tokio::time::Instant,
+    mut pred: impl FnMut(u8, FrameKind) -> Option<T>,
+) -> Option<T> {
+    while let Some((type_byte, frame)) = recv_typed_before(stream, deadline).await {
+        if let Some(value) = pred(type_byte, frame) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+/// Drain in-flight traffic until the server acknowledges DETACH.
+pub async fn recv_until_detached(stream: &mut UnixStream) -> FrameKind {
+    recv_until(stream, |_, frame| {
+        matches!(frame, FrameKind::Detached { .. }).then_some(frame)
+    })
+    .await
+}
+
+/// Poll `GET_SCREEN` until the server's own grid for `terminal_id` shows
+/// `needle`. Use a connection with no subscription so output does not
+/// interleave with the replies.
+pub async fn wait_for_server_screen_text(
+    stream: &mut UnixStream,
+    terminal_id: &ResourceId,
+    needle: &str,
+    deadline: Duration,
+) {
+    let start = Instant::now();
+    for request_id in 1.. {
+        assert!(
+            start.elapsed() < deadline,
+            "pane never showed {needle:?} within {deadline:?}",
+        );
+        send_frame(
+            stream,
+            &FrameKind::Command {
+                request_id,
+                command: Command::GetScreen {
+                    terminal_id: terminal_id.clone(),
+                    request_scrollback: None,
+                    cells: false,
+                    format: 0,
+                },
+            },
+        )
+        .await;
+        match await_command_result(stream, request_id).await {
+            CommandResult::OkWith(CommandValue::Json(json)) if json.contains(needle) => return,
+            CommandResult::OkWith(CommandValue::Json(_)) => {}
+            other => panic!("GET_SCREEN failed: {other:?}"),
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// Encode a [`FrameKind`] into a length-prefixed wire buffer.
+pub fn encode_frame(frame: &FrameKind) -> BytesMut {
+    let mut buf = BytesMut::new();
+    frame.encode(&mut buf);
+    buf
+}
+
+/// Skip frames until the `COMMAND_RESULT` for `request_id`, bounded by
+/// [`WIRE_RECV_TIMEOUT`] overall.
+pub async fn await_command_result(stream: &mut UnixStream, request_id: u32) -> CommandResult {
+    let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
+    recv_until_deadline(stream, deadline, |type_byte, frame| {
+        if type_byte != TYPE_COMMAND_RESULT {
+            return None;
+        }
+        match frame {
+            FrameKind::CommandResult {
+                request_id: got,
+                result,
+            } if got == request_id => Some(result),
+            _ => None,
+        }
+    })
+    .await
+    .unwrap_or_else(|| panic!("no COMMAND_RESULT with request_id={request_id} within deadline"))
+}
+
+/// Send `COMMAND { request_id, command }` and [`await_command_result`] its reply.
+pub async fn command(stream: &mut UnixStream, request_id: u32, command: Command) -> CommandResult {
+    send_frame(
+        stream,
+        &FrameKind::Command {
+            request_id,
+            command,
+        },
+    )
+    .await;
+    await_command_result(stream, request_id).await
+}
+
+/// `GET_STATE { Server }`.
+#[must_use]
+pub const fn get_state() -> Command {
+    Command::GetState {
+        scope: StateScope::Server,
+    }
+}
+
+/// The [`get_state`] snapshot; also an in-order barrier for this connection.
+pub async fn server_state(stream: &mut UnixStream, request_id: u32) -> SessionSnapshot {
+    match command(stream, request_id, get_state()).await {
+        CommandResult::OkWith(CommandValue::State(snapshot)) => snapshot,
+        other => panic!("GET_STATE failed: {other:?}"),
+    }
+}
+
+/// Assert `result` is a `CommandResult::Error` carrying `code`.
+#[track_caller]
+pub fn assert_command_error(result: &CommandResult, code: ErrorCode) {
+    assert!(
+        matches!(result, CommandResult::Error { code: got, .. } if *got == code),
+        "expected {code:?}, got {result:?}"
+    );
+}
+
+/// The address `transport`'s listener actually bound, read from the
+/// server's `GET_STATE` listener report over its UDS. Tests bind port 0 and
+/// ask here, rather than pre-picking a port another process could take.
+/// Panics when the listener was not configured or failed to bind.
+pub async fn bound_listener_addr(
+    socket: &Path,
+    transport: RemoteListenerTransport,
+) -> std::net::SocketAddr {
+    let mut stream = wait_for_socket(socket, SOCKET_CONNECT_DEADLINE).await;
+    let snapshot = server_state(&mut stream, 1).await;
+    let report = snapshot
+        .listeners()
+        .unwrap_or_else(|| panic!("the server reported no remote listeners"));
+    let slot = report
+        .listeners
+        .iter()
+        .find(|slot| slot.transport == transport)
+        .unwrap_or_else(|| panic!("no {transport} listener in {report:?}"));
+    assert!(
+        slot.bound,
+        "the {transport} listener did not bind: {slot:?}"
+    );
+    slot.addr
+        .as_deref()
+        .and_then(|addr| addr.parse().ok())
+        .unwrap_or_else(|| panic!("the {transport} listener reported no address: {slot:?}"))
+}
+
+/// [`encode_frame`] as an owned `Vec<u8>`.
+#[must_use]
+pub fn encode_frame_vec(frame: &FrameKind) -> Vec<u8> {
+    encode_frame(frame).to_vec()
+}
+
+/// Signal shutdown and assert the server task joined cleanly. Drop client
+/// streams first.
+pub async fn join_after_shutdown(
+    shutdown: oneshot::Sender<()>,
+    server: JoinHandle<Result<(), ServerError>>,
+) {
+    shutdown.send(()).ok();
+    timeout(SERVER_JOIN_DEADLINE, server)
+        .await
+        .expect("server did not shut down after the shutdown signal")
+        .expect("server join")
+        .expect("server run_async ok");
+}
+
+/// An unmodified press `KeyEvent` for an ASCII printable.
+#[must_use]
+pub fn ascii_key(c: char, key: PhysicalKey) -> KeyEvent {
+    KeyEvent {
+        action: KeyAction::Press,
+        key,
+        mods: ModSet::empty(),
+        consumed_mods: ModSet::empty(),
+        composing: false,
+        text: Some(c.to_string()),
+        unshifted_codepoint: Some(c as u32),
+    }
+}
+
+/// An unmodified Enter press with no text (the encoder synthesizes the CR).
+#[must_use]
+pub const fn enter_key() -> KeyEvent {
+    KeyEvent {
+        action: KeyAction::Press,
+        key: PhysicalKey::Enter,
+        mods: ModSet::empty(),
+        consumed_mods: ModSet::empty(),
+        composing: false,
+        text: None,
+        unshifted_codepoint: None,
+    }
+}
+
+/// The optional fields of a `SPAWN_RESOURCE` in group 1. `Default` is a
+/// plain default-shell Terminal spawn on the receiving server.
+#[derive(Debug, Clone, Default)]
+pub struct Spawn {
+    pub command: Option<Vec<String>>,
+    pub cwd: Option<String>,
+    pub env: Option<Vec<(String, String)>>,
+    pub term: Option<String>,
+    pub satellite: Option<SatelliteHost>,
+    pub owner_terminal: Option<ResourceId>,
+    pub agent_session: Option<Vec<u8>>,
+    pub initial_size: Option<(u16, u16)>,
+    pub resource: Option<Box<SpawnResource>>,
+}
+
+impl Spawn {
+    /// Spawn `argv` instead of the default shell.
+    #[must_use]
+    pub fn command(argv: &[&str]) -> Self {
+        Self {
+            command: Some(argv.iter().map(|arg| (*arg).to_owned()).collect()),
+            ..Self::default()
+        }
+    }
+
+    /// The wire frame.
+    #[must_use]
+    pub fn frame(self, request_id: u32) -> FrameKind {
+        FrameKind::SpawnResource {
+            request_id,
+            group: GroupId::new(1),
+            command: self.command,
+            cwd: self.cwd,
+            env: self.env,
+            term: self.term,
+            satellite: self.satellite,
+            owner_terminal: self.owner_terminal,
+            agent_session: self.agent_session,
+            initial_size: self.initial_size,
+            resource: self.resource,
+        }
+    }
+}
+
+/// Send `spawn` and return the correlated `RESOURCE_SPAWNED` result, skipping
+/// other frames, bounded by [`WIRE_RECV_TIMEOUT`] overall.
+pub async fn spawn_resource(stream: &mut UnixStream, request_id: u32, spawn: Spawn) -> SpawnResult {
+    send_frame(stream, &spawn.frame(request_id)).await;
+    let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
+    recv_until_deadline(stream, deadline, |_, frame| match frame {
+        FrameKind::ResourceSpawned {
+            request_id: got,
+            result,
+        } if got == request_id => Some(result),
+        _ => None,
+    })
+    .await
+    .unwrap_or_else(|| panic!("no RESOURCE_SPAWNED with request_id={request_id} within deadline"))
+}
+
+/// `ATTACH { ByName(name) }` at 80x24 with no scrollback.
+#[must_use]
+pub fn attach_by_name(name: &str) -> FrameKind {
+    attach_by_name_with_id(name, 1)
+}
+
+/// Send [`attach_by_name`] and return the attached session's focused resource.
+pub async fn attach_focused(stream: &mut UnixStream, name: &str) -> ResourceId {
+    send_frame(stream, &attach_by_name(name)).await;
+    recv_until(stream, |_, frame| match frame {
+        FrameKind::Attached { snapshot, .. } => Some(snapshot.focused_resource),
+        _ => None,
+    })
+    .await
+}
+
+/// Build an `ATTACH` with an explicit connection-unique correlation id.
+#[must_use]
+pub fn attach_by_name_with_id(name: &str, attach_id: u32) -> FrameKind {
+    FrameKind::Attach {
+        attach_id,
+        target: AttachTarget::ByName(name.to_owned()),
+        viewport: ViewportInfo::new(80, 24),
+        request_scrollback: false,
+        scrollback_limit_lines: 0,
+        role_policy: None,
+    }
+}
+
+/// Write a frame to the stream and flush.
+pub async fn send_frame(stream: &mut UnixStream, frame: &FrameKind) {
+    let buf = encode_frame(frame);
+    stream.write_all(&buf).await.unwrap();
+    stream.flush().await.unwrap();
+}
+
+/// `Ok(())` if the next read within `deadline` is a clean EOF.
+async fn expect_eof_within(stream: &mut UnixStream, deadline: Duration) -> Result<(), String> {
+    let mut buf = [0u8; 16];
+    match timeout(deadline, stream.read(&mut buf)).await {
+        Ok(Ok(0)) => Ok(()),
+        Ok(Ok(n)) => Err(format!(
+            "expected EOF, got {n} bytes (server still talking?)",
+        )),
+        Ok(Err(e)) => Err(format!("read error while expecting EOF: {e}")),
+        Err(_) => Err(format!(
+            "no EOF within {}ms; connection still open",
+            deadline.as_millis(),
+        )),
+    }
+}
+
+/// Assert the fatal-close tail: `DETACHED { PROTOCOL_ERROR }`, then
+/// EOF. The preceding `ERROR` frame is the caller's to check.
+pub async fn expect_protocol_error_close(stream: &mut UnixStream, deadline: Duration) {
+    let (type_byte, detached) = recv_typed(stream).await;
+    assert_eq!(
+        type_byte, TYPE_DETACHED,
+        "ERROR must be followed by DETACHED (got type 0x{type_byte:02x})",
+    );
+    assert_protocol_error_detach(&detached);
+    expect_eof_within(stream, deadline)
+        .await
+        .expect("server must close the transport after ERROR + DETACHED");
+}
+
+/// The frame half of [`expect_protocol_error_close`], for non-UDS transports.
+pub fn assert_protocol_error_detach(frame: &FrameKind) {
+    assert!(
+        matches!(
+            frame,
+            FrameKind::Detached {
+                reason: Some(DetachReason::ProtocolError),
+                ..
+            }
+        ),
+        "a protocol violation must close with DETACHED {{ reason: PROTOCOL_ERROR }}, got {frame:?}",
+    );
+}

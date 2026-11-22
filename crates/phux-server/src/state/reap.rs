@@ -1,0 +1,145 @@
+use phux_core::ids::{ResourceId, SessionId};
+use phux_core::process::ExitOutcome;
+use phux_protocol::ids::SessionId as WireSessionId;
+use phux_protocol::wire::info::projection_key_session;
+
+use super::ServerState;
+
+/// The layout-family key suffix `.layout/v1/<wire session id>` (docs/organization.md),
+/// used to find every layout key naming a reaped session.
+fn layout_key_suffix(session: WireSessionId) -> String {
+    format!(".layout/v1/{}", session.get())
+}
+
+impl ServerState {
+    /// Whether this is a default-Group layout key naming a dead session
+    /// (ADR-0129): a TUI republish can race the reap and would resurrect
+    /// the key. `None` when not a layout key in that Group.
+    #[must_use]
+    pub fn layout_key_names_a_dead_session(
+        &self,
+        scope: &phux_protocol::wire::frame::Scope,
+        key: &str,
+    ) -> Option<bool> {
+        if !matches!(scope, phux_protocol::wire::frame::Scope::Group(gid) if *gid == super::DEFAULT_GROUP_ID)
+        {
+            return None;
+        }
+        let wire = projection_key_session(key)?;
+        let live = self.idspace.resolve_session(wire).is_some();
+        Some(!live)
+    }
+}
+
+impl ServerState {
+    /// Reap a pane whose actor exited: end its activation, remove its
+    /// record (an ephemeral session it empties goes in the same commit), and
+    /// free its server-side bookkeeping, descendants included. Returns
+    /// whether the server now executes nothing (R13). Idempotent.
+    pub fn reap_resource(&mut self, pane: ResourceId) -> bool {
+        let token = self.reap_resource_deferring_actor_cancel(pane, ExitOutcome::UNKNOWN, false);
+        let idle = !self.has_live_activation();
+        if let Some(token) = token {
+            token.cancel();
+        }
+        idle
+    }
+
+    /// Reap `pane` but leave its actor running until the caller cancels the
+    /// returned token (so a fenced pump can publish the last screen).
+    /// `outcome` is how its process ended, as its exit watcher saw it.
+    pub(crate) fn reap_resource_deferring_actor_cancel(
+        &mut self,
+        pane: ResourceId,
+        outcome: ExitOutcome,
+        preserve_record: bool,
+    ) -> Option<tokio_util::sync::CancellationToken> {
+        self.sessions.registry.resource(pane)?;
+        let parent = self.resource_parent(pane);
+        // A bound descendant still here (no close cascade ran first, e.g. a
+        // failed publication) must lose its record, handle, and engine too:
+        // its own watcher will find it gone and reap nothing.
+        let descendants = self.resource_descendants(pane);
+        for child in descendants.into_iter().rev() {
+            if let Some(child_token) = self.forget_resource_bookkeeping(child) {
+                child_token.cancel();
+            }
+            self.retire_record(child, ExitOutcome::UNKNOWN);
+        }
+        if preserve_record {
+            self.activation_ended(pane, outcome, false);
+        }
+        let token = self.forget_resource_bookkeeping(pane);
+        if !preserve_record {
+            self.retire_record(pane, outcome);
+        }
+        // A removed producer hands its parent back to the remaining sources.
+        if let Some(agent_parent) = parent
+            .and_then(|parent| self.resources().handle(parent))
+            .and_then(|handle| handle.companion::<phux_agent_session::parent::AgentParent>())
+        {
+            let _ = agent_parent
+                .mailbox
+                .try_send(phux_agent_session::parent::AgentParentRequest::RecordInvalidated);
+        }
+        token
+    }
+
+    /// Delete every default-Group `<prefix>.layout/v1/<id>` key for the
+    /// session (no-op if it never had a wire id).
+    pub(super) fn forget_layout_keys_of_session(&mut self, wire: Option<WireSessionId>) {
+        let Some(wire) = wire else {
+            return;
+        };
+        let suffix = layout_key_suffix(wire);
+        let scope = phux_protocol::wire::frame::Scope::Group(super::DEFAULT_GROUP_ID);
+        let keys: Vec<String> = self
+            .metadata()
+            .list(&scope)
+            .into_iter()
+            .filter(|key| key.ends_with(&suffix))
+            .collect();
+        for key in keys {
+            let _ = self.metadata_delete(&scope, &key);
+        }
+    }
+
+    /// Drain the sessions a commit deleted whose attached clients still need
+    /// `DETACHED { SESSION_KILLED }`.
+    pub fn take_killed_sessions(&mut self) -> Vec<SessionId> {
+        self.sessions.take_killed()
+    }
+
+    /// Drop every map entry keyed on a removed pane and retire its wire id
+    /// (never reused).
+    pub(super) fn forget_resource_bookkeeping(
+        &mut self,
+        pane: ResourceId,
+    ) -> Option<tokio_util::sync::CancellationToken> {
+        // Subscriptions go now; draining pumps remain owned until close.
+        // The actor stays available for their final checkpoint captures.
+        let token = self.resources.forget_resource(pane);
+        self.pending_closes.remove(&pane);
+        self.retained.forget(pane);
+        // No lease change can follow a removed pane.
+        self.leases.forget_resource(pane);
+        // The retired wire id keys the metadata scope and the app slots.
+        let wire = self.idspace.retire_terminal(pane);
+        if let Some(wire) = &wire {
+            self.metadata.forget_resource(wire);
+            // A viewer mark (ADR-0127) must not outlive the Terminal it names.
+            self.clients.forget_viewed_terminal(wire);
+        }
+        // A recycled wire id must not inherit an app's stale state.
+        self.app_slots.forget_resource(pane, wire.as_ref());
+        token
+    }
+
+    /// Forget a removed session's wire id and last-touch ordering entry,
+    /// and revoke every delegated credential scoped to it (ADR-0163 §5).
+    pub(super) fn forget_session_bookkeeping(&mut self, session: SessionId) {
+        self.revoke_session_delegations(session);
+        self.idspace.forget_session(session);
+        self.sessions.forget_session(session);
+    }
+}

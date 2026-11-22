@@ -1,0 +1,150 @@
+//! Atomic loading of explicitly requested workload authentication
+//! (`[policy] mode = "paired"`, ADR-0179); an error in either half disables
+//! the listener. The registry is loaded once and its generation tracked, so
+//! `phux workload add-key` and `revoke` apply without a restart.
+
+use std::path::Path;
+use std::sync::Arc;
+
+use crate::workload::{ClientRoots, ReloadingWorkloadRegistry, WorkloadError};
+
+pub(super) struct WorkloadAuth {
+    /// The workload CA certificate, read once through the workload store's
+    /// owner, mode, and no-follow checks, and the organization roots beside
+    /// the registry. The TLS verifiers are built from the CA's bytes; its
+    /// path is never re-read.
+    pub roots: ClientRoots,
+    pub registry: Arc<ReloadingWorkloadRegistry>,
+}
+
+impl WorkloadAuth {
+    /// The authority a listener needs under its posture: `None` unless the
+    /// `paired` posture requires workload mTLS (`[policy] mode = "paired"`).
+    /// It applies even on loopback.
+    pub(super) fn for_posture(
+        required: bool,
+        env: &super::ServerEnv,
+    ) -> Result<Option<Self>, WorkloadError> {
+        if !required {
+            return Ok(None);
+        }
+        Self::configured(env).map(Some)
+    }
+
+    /// Load the authority from its configured locations. The
+    /// `PHUX_WORKLOAD_*` path variables select locations and do not enable
+    /// anything; provisioning those paths before opting in remains
+    /// supported.
+    pub(super) fn configured(env: &super::ServerEnv) -> Result<Self, WorkloadError> {
+        let paths = env.workload_paths();
+        Self::load(&paths.ca_cert, &paths.ca_key, &paths.registry)
+    }
+
+    fn load(cert: &Path, key: &Path, registry: &Path) -> Result<Self, WorkloadError> {
+        crate::workload::ensure_ca(cert, key)?;
+        migrate_paired_watch(registry);
+        Ok(Self {
+            roots: ClientRoots::new(crate::workload::authority_certificate(cert)?, registry),
+            registry: Arc::new(ReloadingWorkloadRegistry::load(registry.to_owned())?),
+        })
+    }
+}
+
+/// Give devices paired before watching a window or display needed a grant
+/// the view they had, once per registry, and say so (`docs/remote.md`). A
+/// failure is logged and leaves the registry as it was: those devices then
+/// need `phux workload grant`.
+fn migrate_paired_watch(registry: &Path) {
+    match crate::workload::WorkloadRegistry::migrate_paired_watch(registry) {
+        Ok(None) => {}
+        Ok(Some(changed)) => tracing::info!(
+            devices = changed.len(),
+            credentials = %changed.join(","),
+            "watching a window or display now needs observe@window or observe@display; \
+             paired human devices were given both once so they keep their view \
+             (`phux workload ungrant CREDENTIAL observe@display` withdraws it); \
+             automation keys were not"
+        ),
+        Err(error) => tracing::warn!(
+            %error,
+            "could not give paired devices observe@display and observe@window; \
+             grant them with `phux workload grant CREDENTIAL observe@display`"
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_registry_retains_certificate_auth_with_no_enrolled_identities() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert = dir.path().join("ca.pem");
+        let auth = WorkloadAuth::load(
+            &cert,
+            &dir.path().join("key.pem"),
+            &dir.path().join("keys.json"),
+        )
+        .unwrap();
+        assert_eq!(
+            *auth.roots.current(),
+            [crate::workload::authority_certificate(&cert).unwrap()]
+        );
+        assert!(auth.registry.current().is_empty());
+    }
+
+    /// A configured authority that cannot load disables the QUIC listener,
+    /// never falling back to bearer or anonymous admission.
+    #[test]
+    fn configured_workload_failure_disables_quic() {
+        for (malformed_registry, secure) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let leaf = dir.path().join("leaf.pem");
+            let leaf_key = dir.path().join("leaf-key.pem");
+            crate::transport::tls::ensure_self_signed_for(
+                &leaf,
+                &leaf_key,
+                &["localhost".to_owned()],
+            )
+            .unwrap();
+            let ca = dir.path().join("ca.pem");
+            let registry = dir.path().join("keys.json");
+            if malformed_registry {
+                std::fs::write(&registry, "malformed").unwrap();
+            } else {
+                std::fs::write(&ca, "partial CA pair").unwrap();
+            }
+            let tokens = dir.path().join("tokens.json");
+            crate::auth::write_test_credential(&tokens, &[0x11; crate::auth::TOKEN_LEN]);
+            let env = super::super::ServerEnv {
+                workload_ca: Some(ca),
+                workload_ca_key: Some(dir.path().join("ca-key.pem")),
+                workload_keys: Some(registry),
+                tls_cert: Some(leaf),
+                tls_key: Some(leaf_key),
+                ws_tokens: Some(tokens),
+                ws_secure: secure,
+                ..super::super::ServerEnv::default()
+            };
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let _entered = runtime.enter();
+            let (listener, slot) =
+                super::super::build_quic_listener_for("127.0.0.1:0".parse().unwrap(), true, &env);
+            assert!(
+                listener.is_none(),
+                "failed explicit mTLS must never fall back to bearer or anonymous QUIC"
+            );
+            assert!(slot.is_unhealthy());
+            assert_eq!(
+                slot.disabled_reason,
+                Some(super::super::ListenerDisabledReason::TlsSetupFailed)
+            );
+        }
+    }
+}

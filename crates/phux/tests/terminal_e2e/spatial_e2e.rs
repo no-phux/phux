@@ -1,0 +1,635 @@
+//! Real-server end-to-end coverage for the existing-pane spatial CLI.
+//!
+//! A real `phux server` runs on a private UDS and a real TUI client remains
+//! attached through a pseudo-terminal while separate CLI subprocesses insert,
+//! move, and swap panes. Persisted trees are decoded back through `LayoutOps`,
+//! and marker commands typed through the attached client prove metadata
+//! reconciliation preserves that client's local focus.
+
+#![allow(clippy::expect_used, clippy::panic, reason = "tests")]
+
+use crate::common;
+
+use std::time::{Duration, Instant};
+
+use phux_client::attach::connection::Connection;
+use phux_client::layout::{ArrangementDoc, LayoutNode, SplitDir};
+use phux_client::layout_ops::{LayoutOps, LayoutOpsError, layout_key};
+use phux_protocol::ids::{GroupId, ResourceId, SessionId};
+use phux_protocol::wire::frame::{FrameKind, Scope};
+
+const SESSION: &str = "work";
+const POLL: Duration = Duration::from_millis(50);
+/// Unattached no-TTY grid from `GET_SCREEN`. A tiled pane leaving this size
+/// (or any previously observed size) is how this file knows the attached
+/// client reconciled a layout broadcast — `RESIZE_TERMINAL` is the side
+/// effect of that reconcile, not of the CLI `SET_METADATA` itself.
+const NO_TTY_DEFAULT: (u64, u64) = (80, 24);
+
+/// A [`common::ServerGuard`] with an isolated home, which every client verb
+/// here reuses.
+struct IsolatedServer(common::ServerGuard);
+
+impl std::ops::Deref for IsolatedServer {
+    type Target = common::ServerGuard;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl IsolatedServer {
+    fn start() -> Self {
+        Self(
+            common::ServerGuard::builder("spatial")
+                // Panes run the server's `$SHELL`. Inherited, that is the CI
+                // devshell's minimal bash sourcing the runner's `~/.bashrc`, whose
+                // startup noise buries the typed markers; pin the `/bin/sh` the
+                // marker barriers assume.
+                .env("SHELL", "/bin/sh")
+                .isolated_home()
+                .start(),
+        )
+    }
+
+    fn command(&self, args: &[&str]) -> std::process::Output {
+        self.cmd(args).output().expect("run phux command")
+    }
+
+    fn seed_pane(&self) -> ResourceId {
+        let snapshot = self.json(&["snapshot", "--json", SESSION]);
+        ResourceId::local(
+            u32::try_from(snapshot["pane"].as_u64().expect("snapshot pane id"))
+                .expect("pane id fits u32"),
+        )
+    }
+
+    fn spawn_pane(&self) -> ResourceId {
+        let spawned = self.json(&["spawn", "--json"]);
+        ResourceId::local(
+            u32::try_from(spawned["terminal_id"].as_u64().expect("spawn terminal id"))
+                .expect("terminal id fits u32"),
+        )
+    }
+
+    fn seed_layout(&self, pane: &ResourceId) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        runtime.block_on(async {
+            let mut conn = Connection::connect(&self.socket)
+                .await
+                .expect("connect metadata client");
+            let workspace = ArrangementDoc::single(pane.clone());
+            conn.send(&FrameKind::SetMetadata {
+                request_id: 1,
+                scope: Scope::Group(GroupId::new(1)),
+                key: layout_key(SessionId::new(1)),
+                value: workspace.encode_cbor().expect("encode seed layout"),
+            })
+            .await
+            .expect("seed layout metadata");
+            // The ordered GET is a barrier proving the fire-and-forget SET was
+            // consumed before the real TUI attaches.
+            conn.send(&FrameKind::GetMetadata {
+                request_id: 2,
+                scope: Scope::Group(GroupId::new(1)),
+                key: layout_key(SessionId::new(1)),
+            })
+            .await
+            .expect("request seeded layout");
+            loop {
+                if let FrameKind::MetadataValue {
+                    request_id: 2,
+                    value: Some(_),
+                } = conn.recv().await.expect("seed layout reply")
+                {
+                    break;
+                }
+            }
+        });
+    }
+
+    fn read_layout(&self) -> Result<ArrangementDoc, LayoutOpsError> {
+        self.read_layout_for(SESSION)
+    }
+
+    fn read_layout_for(&self, session_name: &str) -> Result<ArrangementDoc, LayoutOpsError> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        runtime.block_on(async {
+            let mut conn = Connection::connect(&self.socket).await?;
+            let snapshot = phux_client::state::get_state_on(&mut conn)
+                .await?
+                .into_parts()
+                .0;
+            let session = snapshot
+                .sessions
+                .iter()
+                .find(|session| session.name == session_name)
+                .unwrap_or_else(|| panic!("session {session_name:?} missing from snapshot"));
+            let result = LayoutOps::new(&mut conn, session.id, 1).read().await;
+            drop(conn);
+            result
+        })
+    }
+
+    fn write_layout_bytes(&self, session_name: &str, value: Vec<u8>) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        runtime.block_on(async {
+            let mut conn = Connection::connect(&self.socket)
+                .await
+                .expect("connect metadata writer");
+            let snapshot = phux_client::state::get_state_on(&mut conn)
+                .await
+                .expect("read state")
+                .into_parts()
+                .0;
+            let session = snapshot
+                .sessions
+                .iter()
+                .find(|session| session.name == session_name)
+                .expect("session to corrupt");
+            conn.send(&FrameKind::SetMetadata {
+                request_id: 30,
+                scope: Scope::Group(GroupId::new(1)),
+                key: layout_key(session.id),
+                value,
+            })
+            .await
+            .expect("write layout bytes");
+            conn.send(&FrameKind::GetMetadata {
+                request_id: 31,
+                scope: Scope::Group(GroupId::new(1)),
+                key: layout_key(session.id),
+            })
+            .await
+            .expect("request layout write barrier");
+            loop {
+                if matches!(
+                    conn.recv().await.expect("layout write barrier reply"),
+                    FrameKind::MetadataValue {
+                        request_id: 31,
+                        value: Some(_)
+                    }
+                ) {
+                    break;
+                }
+            }
+        });
+    }
+
+    fn wait_for_layout(&self) -> ArrangementDoc {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            match self.read_layout() {
+                Ok(layout) => return layout,
+                Err(LayoutOpsError::MissingLayout) => std::thread::sleep(POLL),
+                Err(err) => panic!("read persisted layout: {err}"),
+            }
+        }
+        panic!("attached client did not seed layout metadata");
+    }
+
+    fn pane_snapshot(&self, pane: &ResourceId) -> serde_json::Value {
+        let selector = format!("@{}", pane.local_id().expect("local pane"));
+        self.json(&["snapshot", "--json", &selector])
+    }
+
+    fn pane_size(&self, pane: &ResourceId) -> (u64, u64) {
+        let snapshot = self.pane_snapshot(pane);
+        (
+            snapshot["cols"].as_u64().expect("snapshot cols"),
+            snapshot["rows"].as_u64().expect("snapshot rows"),
+        )
+    }
+
+    fn wait_for_pane_size(&self, pane: &ResourceId, expected: (u64, u64)) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if self.pane_size(pane) == expected {
+                return;
+            }
+            std::thread::sleep(POLL);
+        }
+        panic!(
+            "pane {pane:?} did not reach {expected:?}; last size {:?}",
+            self.pane_size(pane)
+        );
+    }
+
+    fn wait_for_attached(&self, session_name: &str, expected: bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            let output = self.command(&["ls", "--json"]);
+            let Ok(document) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
+                std::thread::sleep(POLL);
+                continue;
+            };
+            let attached = document["sessions"]
+                .as_array()
+                .expect("sessions array")
+                .iter()
+                .find(|session| session["name"] == session_name)
+                .and_then(|session| session["attached"].as_bool());
+            if attached == Some(expected) {
+                return;
+            }
+            std::thread::sleep(POLL);
+        }
+        panic!("session {session_name:?} did not reach attached={expected}");
+    }
+
+    /// Wait until `pane`'s live grid differs from `before`.
+    ///
+    /// The spatial CLI persists topology and returns; the attached client
+    /// adopts the tree on `METADATA_CHANGED` and only then resizes. A fixed
+    /// 300ms sleep after the CLI verb is a load-dependent bet (phux-5wxp.1):
+    /// under contention the broadcast loses to the next typed marker, so
+    /// focus probes land on the pre-reconcile tree (or the PTY write fails
+    /// because the client tore down mid-interleave). Snapshot cols/rows are
+    /// the pane actor's own grid, so a change is proof the client consumed
+    /// the update — the same "reply, not send" distinction the family uses.
+    fn wait_for_applied_grid(&self, pane: &ResourceId, before: (u64, u64)) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            let seen = self.pane_size(pane);
+            if seen != before {
+                return;
+            }
+            std::thread::sleep(POLL);
+        }
+        panic!("attached client did not apply a new grid for {pane:?} (still {before:?})");
+    }
+
+    fn pane_lines(&self, pane: &ResourceId) -> Vec<String> {
+        self.pane_snapshot(pane)["lines"]
+            .as_array()
+            .expect("snapshot lines")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
+    fn pane_has_output(&self, pane: &ResourceId) -> bool {
+        self.pane_lines(pane)
+            .iter()
+            .any(|line| !line.trim().is_empty())
+    }
+
+    /// Chrome resize proves the client attached and reflowed; it does not
+    /// prove the seed pane's `/bin/sh` has been scheduled (phux-5wxp shape
+    /// 5). Typed markers ride INPUT to that shell, so a blank grid here is
+    /// an ambient miss, not a focus regression.
+    fn wait_for_shell_output(&self, pane: &ResourceId) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if self.pane_has_output(pane) {
+                return;
+            }
+            std::thread::sleep(POLL);
+        }
+        panic!("pane {pane:?} never painted shell output");
+    }
+
+    fn pane_contains(&self, pane: &ResourceId, marker: &str) -> bool {
+        self.pane_lines(pane)
+            .iter()
+            .any(|line| line.contains(marker))
+    }
+
+    fn wait_for_marker(&self, pane: &ResourceId, marker: &str) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if self.pane_contains(pane, marker) {
+                return;
+            }
+            std::thread::sleep(POLL);
+        }
+        panic!(
+            "marker {marker:?} did not reach {pane:?} (grid {:?}, lines {:?})",
+            self.pane_size(pane),
+            self.pane_lines(pane)
+        );
+    }
+}
+
+struct AttachedClient(common::PtyAttach);
+
+impl AttachedClient {
+    fn start(server: &IsolatedServer) -> Self {
+        Self::start_named_at_size(server, SESSION, 100, 24)
+    }
+
+    fn start_named_at_size(server: &IsolatedServer, session: &str, cols: u16, rows: u16) -> Self {
+        let dir = server.isolated_home().root();
+        Self(common::PtyAttach::start(
+            &server.socket,
+            &[session],
+            (cols, rows),
+            &[
+                ("HOME", dir.join("home").as_os_str()),
+                ("XDG_STATE_HOME", dir.join("state").as_os_str()),
+                ("XDG_RUNTIME_DIR", dir.join("runtime").as_os_str()),
+            ],
+        ))
+    }
+
+    /// Applied in the same input turn as a following `type_marker`.
+    fn next_pane(&mut self) {
+        self.0.send(b"\x01o");
+    }
+
+    fn type_marker(&mut self, marker: &str) {
+        self.0.send(format!("echo {marker}\r").as_bytes());
+    }
+
+    fn detach(&mut self) {
+        self.0.send(b"\x01d");
+    }
+}
+
+fn leaf(id: &ResourceId) -> LayoutNode {
+    LayoutNode::Leaf(id.clone())
+}
+
+fn split(dir: SplitDir, left: LayoutNode, right: LayoutNode) -> LayoutNode {
+    LayoutNode::Split {
+        dir,
+        ratio: 0.5,
+        left: Box::new(left),
+        right: Box::new(right),
+    }
+}
+
+fn assert_tree(server: &IsolatedServer, expected: LayoutNode) {
+    let layout = server.read_layout().expect("persisted layout");
+    assert_eq!(layout.groups.len(), 1);
+    assert_eq!(layout.groups[0].state.tree, Some(expected));
+}
+
+#[test]
+#[ignore = "spawns a real server and attached PTY client; run in the e2e lane"]
+fn spatial_cli_persists_topology_and_preserves_attached_focus() {
+    let server = IsolatedServer::start();
+    let seed = server.seed_pane();
+    server.seed_layout(&seed);
+    let mut attached = AttachedClient::start(&server);
+    let initial = server.wait_for_layout();
+    assert_eq!(initial.groups[0].state.tree, Some(leaf(&seed)));
+    // Metadata was seeded before attach, so `wait_for_layout` can return
+    // before this client has subscribed. Chrome resize plus a painted
+    // prompt is the attach barrier (client ready *and* the seed shell).
+    server.wait_for_applied_grid(&seed, NO_TTY_DEFAULT);
+    server.wait_for_shell_output(&seed);
+    let seed_attached = server.pane_size(&seed);
+
+    let second = server.spawn_pane();
+    let third = server.spawn_pane();
+    let third_unplaced = server.pane_size(&third);
+
+    // User-facing `vertical` means a vertical divider and side-by-side panes;
+    // the persisted child axis is therefore internal Horizontal.
+    let inserted = server.json(&[
+        "insert-pane",
+        &format!("@{}", seed.local_id().expect("seed id")),
+        &format!("@{}", second.local_id().expect("second id")),
+        "--split",
+        "vertical",
+        "--json",
+    ]);
+    assert_eq!(inserted["direction"], "vertical");
+    assert_tree(
+        &server,
+        split(SplitDir::Horizontal, leaf(&seed), leaf(&second)),
+    );
+    server.wait_for_applied_grid(&seed, seed_attached);
+    attached.type_marker("FOCUS_AFTER_VERTICAL_INSERT");
+    server.wait_for_marker(&seed, "FOCUS_AFTER_VERTICAL_INSERT");
+    assert!(!server.pane_contains(&second, "FOCUS_AFTER_VERTICAL_INSERT"));
+
+    // Move local focus to pane two. The next metadata writer focuses pane
+    // three in its serialized envelope, but ADR-0049 reconciliation must keep
+    // this attached client on pane two.
+    attached.next_pane();
+    attached.type_marker("FOCUS_ON_SECOND");
+    server.wait_for_marker(&second, "FOCUS_ON_SECOND");
+
+    let inserted = server.json(&[
+        "insert-pane",
+        &format!("@{}", second.local_id().expect("second id")),
+        &format!("@{}", third.local_id().expect("third id")),
+        "--split",
+        "horizontal",
+        "--json",
+    ]);
+    assert_eq!(inserted["direction"], "horizontal");
+    assert_tree(
+        &server,
+        split(
+            SplitDir::Horizontal,
+            leaf(&seed),
+            split(SplitDir::Vertical, leaf(&second), leaf(&third)),
+        ),
+    );
+    server.wait_for_applied_grid(&third, third_unplaced);
+    attached.type_marker("FOCUS_AFTER_HORIZONTAL_INSERT");
+    server.wait_for_marker(&second, "FOCUS_AFTER_HORIZONTAL_INSERT");
+    assert!(!server.pane_contains(&third, "FOCUS_AFTER_HORIZONTAL_INSERT"));
+
+    let seed_before_move = server.pane_size(&seed);
+    server.success(&[
+        "mv",
+        &format!("@{}", seed.local_id().expect("seed id")),
+        &format!("@{}", third.local_id().expect("third id")),
+        "--split",
+        "vertical",
+    ]);
+    assert_tree(
+        &server,
+        split(
+            SplitDir::Vertical,
+            leaf(&second),
+            split(SplitDir::Horizontal, leaf(&third), leaf(&seed)),
+        ),
+    );
+    server.wait_for_applied_grid(&seed, seed_before_move);
+    attached.type_marker("FOCUS_AFTER_MOVE");
+    server.wait_for_marker(&second, "FOCUS_AFTER_MOVE");
+
+    let second_before_swap = server.pane_size(&second);
+    server.success(&[
+        "swap-pane",
+        &format!("@{}", second.local_id().expect("second id")),
+        &format!("@{}", third.local_id().expect("third id")),
+    ]);
+    assert_tree(
+        &server,
+        split(
+            SplitDir::Vertical,
+            leaf(&third),
+            split(SplitDir::Horizontal, leaf(&second), leaf(&seed)),
+        ),
+    );
+    server.wait_for_applied_grid(&second, second_before_swap);
+    attached.type_marker("FOCUS_AFTER_SWAP");
+    server.wait_for_marker(&second, "FOCUS_AFTER_SWAP");
+}
+
+fn json_created_pane(server: &IsolatedServer, session: &str) -> ResourceId {
+    let created = server.json(&["new", "--json", "-s", session]);
+    ResourceId::local(
+        u32::try_from(created["terminal_id"].as_u64().expect("created pane id"))
+            .expect("pane id fits u32"),
+    )
+}
+
+fn run_in_pane(server: &IsolatedServer, pane: &ResourceId, command: &str) -> serde_json::Value {
+    server.json(&[
+        "run",
+        "--json",
+        &format!("@{}", pane.local_id().expect("local pane")),
+        command,
+    ])
+}
+
+/// `layout` is one group showing only `pane`. The group's identity is
+/// minted by whoever created it, so it is taken from `layout` itself.
+fn assert_single_pane_layout(layout: &ArrangementDoc, pane: &ResourceId) {
+    let mut expected = ArrangementDoc::single(pane.clone());
+    if let (Some(seeded), Some(group)) = (layout.groups.first(), expected.groups.first_mut()) {
+        group.id = seeded.id;
+    }
+    assert_eq!(layout, &expected);
+}
+
+#[test]
+#[ignore = "spawns a real server and PTY-backed shells; run in the e2e lane"]
+fn json_created_sessions_are_immediately_layout_ready_for_cross_session_move() {
+    let server = IsolatedServer::start();
+    let source = json_created_pane(&server, "headless-source");
+    let destination = json_created_pane(&server, "headless-destination");
+
+    assert_single_pane_layout(
+        &server
+            .read_layout_for("headless-source")
+            .expect("source layout seeded"),
+        &source,
+    );
+    assert_single_pane_layout(
+        &server
+            .read_layout_for("headless-destination")
+            .expect("destination layout seeded"),
+        &destination,
+    );
+
+    let before = run_in_pane(&server, &source, "printf 'ALF7_BEFORE:%s\\n' \"$$\"");
+    let before_output = before["output"].as_str().expect("before output");
+    let shell_pid = before_output
+        .trim()
+        .strip_prefix("ALF7_BEFORE:")
+        .expect("before marker carries shell pid")
+        .to_owned();
+
+    let moved = server.json(&[
+        "mv",
+        &format!("@{}", source.local_id().expect("source id")),
+        &format!("@{}", destination.local_id().expect("destination id")),
+        "--split",
+        "vertical",
+        "--json",
+    ]);
+    assert_eq!(moved["cross_session"], true);
+    assert!(moved["source_session_id"].as_u64().is_some());
+    let destination_layout = server
+        .read_layout_for("headless-destination")
+        .expect("moved destination layout");
+    assert_eq!(
+        phux_client::layout::leaves(
+            destination_layout.groups[0]
+                .state
+                .tree
+                .as_ref()
+                .expect("destination tree")
+        ),
+        vec![destination, source.clone()]
+    );
+
+    let after = run_in_pane(&server, &source, "printf 'ALF7_AFTER:%s\\n' \"$$\"");
+    assert_eq!(
+        after["output"].as_str().expect("after output").trim(),
+        format!("ALF7_AFTER:{shell_pid}"),
+        "the same shell process must survive the ownership/layout move"
+    );
+    let screen = server.pane_snapshot(&source);
+    let retained = screen["lines"]
+        .as_array()
+        .expect("screen lines")
+        .iter()
+        .chain(screen["scrollback"].as_array().into_iter().flatten())
+        .filter_map(serde_json::Value::as_str)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        retained.contains("ALF7_BEFORE:"),
+        "pre-move output was lost: {retained}"
+    );
+    assert!(
+        retained.contains("ALF7_AFTER:"),
+        "post-move output missing: {retained}"
+    );
+}
+
+#[test]
+#[ignore = "spawns a real server and PTY client; run in the e2e lane"]
+fn last_tiny_view_detach_restores_headless_geometry_and_keeps_the_shell() {
+    let server = IsolatedServer::start();
+    let pane = json_created_pane(&server, "tiny-headless");
+    let mut attached = AttachedClient::start_named_at_size(&server, "tiny-headless", 1, 1);
+    server.wait_for_attached("tiny-headless", true);
+    server.wait_for_pane_size(&pane, (1, 1));
+
+    attached.detach();
+    server.wait_for_attached("tiny-headless", false);
+    server.wait_for_pane_size(&pane, NO_TTY_DEFAULT);
+    let result = run_in_pane(&server, &pane, "printf ALF7_STILL_ALIVE");
+    assert_eq!(result["output"], "ALF7_STILL_ALIVE");
+}
+
+#[test]
+#[ignore = "spawns a real server and PTY-backed shells; run in the e2e lane"]
+fn malformed_legacy_destination_layout_cannot_break_a_cross_session_move() {
+    let server = IsolatedServer::start();
+    let source = json_created_pane(&server, "bad-layout-source");
+    let destination = json_created_pane(&server, "bad-layout-destination");
+    // The session arrangement is the record (R17): bytes that do not decode
+    // under the legacy layout key never replace it.
+    server.write_layout_bytes("bad-layout-destination", b"not-cbor".to_vec());
+
+    let moved = server.json(&[
+        "mv",
+        &format!("@{}", source.local_id().expect("source id")),
+        &format!("@{}", destination.local_id().expect("destination id")),
+        "--json",
+    ]);
+    assert_eq!(moved["cross_session"], true);
+    let destination_layout = server
+        .read_layout_for("bad-layout-destination")
+        .expect("destination arrangement");
+    assert_eq!(
+        phux_client::layout::leaves(
+            destination_layout.groups[0]
+                .state
+                .tree
+                .as_ref()
+                .expect("destination tree")
+        ),
+        vec![destination, source]
+    );
+}

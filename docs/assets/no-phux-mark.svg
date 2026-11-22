@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="np-title np-desc">
+  <title id="np-title">no-phux</title>
+  <desc id="np-desc">A grid of terminal panes where one live lime pane feeds a wire running off the edge.</desc>
+  <defs>
+    <linearGradient id="np-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#141922"/>
+      <stop offset="1" stop-color="#090b0f"/>
+    </linearGradient>
+    <linearGradient id="np-live" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#bef264"/>
+      <stop offset="1" stop-color="#86efac"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="512" height="512" rx="112" fill="url(#np-bg)"/>
+  <rect x="7" y="7" width="498" height="498" rx="105" fill="none" stroke="#1e2530" stroke-width="2"/>
+
+  <!-- detached panes -->
+  <g fill="#0f131b" stroke="#3a4250" stroke-width="11">
+    <rect x="94" y="94" width="148" height="148" rx="27"/>
+    <rect x="94" y="270" width="148" height="148" rx="27"/>
+    <rect x="270" y="270" width="148" height="148" rx="27"/>
+  </g>
+
+  <!-- the live pane -->
+  <rect x="270" y="94" width="148" height="148" rx="27" fill="url(#np-live)"/>
+  <polyline points="308,138 334,168 308,198"
+            fill="none" stroke="#0a0d12" stroke-width="13"
+            stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- the wire off the edge -->
+  <path d="M418 168 H450" fill="none" stroke="#bef264" stroke-width="12" stroke-linecap="round"/>
+  <circle cx="468" cy="168" r="13" fill="#bef264"/>
+</svg>

@@ -1,0 +1,357 @@
+//! A QUIC attach restoring a persisted layout that names a dead pane.
+//!
+//! The persisted `phux.tui.layout/v1/<session>` tree outlives the panes it
+//! names: a pane can exit, or be killed from the CLI, while no TUI is
+//! attached to fold it out. Over QUIC multistream every Terminal frame rides
+//! that Terminal's own stream, so a bootstrap reflow that sized the dead
+//! leaf before any stream was bound ended the attach with "Terminal frame
+//! requires a live QUIC binding". This drives the real binary: a real
+//! `paired` server with a loopback QUIC listener (the only mode that serves
+//! one, ADR-0179), a two-pane layout whose second leaf is already gone, and
+//! `phux attach --quic` on a PTY presenting an enrolled certificate.
+
+#![allow(clippy::expect_used, clippy::panic, reason = "tests")]
+
+use crate::{common, listeners, paired};
+
+use std::time::{Duration, Instant};
+
+use phux_client::attach::connection::Connection;
+use phux_client::layout::{ArrangementDoc, LayoutNode, SplitDir};
+use phux_client::layout_ops::{LayoutOps, LayoutOpsError, layout_key};
+use phux_protocol::ids::{GroupId, ResourceId, SessionId};
+use phux_protocol::wire::frame::{FrameKind, Scope};
+
+const SESSION: &str = "work";
+const POLL: Duration = Duration::from_millis(50);
+const DEADLINE: Duration = Duration::from_secs(20);
+
+/// The PTY the QUIC-attached client runs in.
+const ATTACH_PTY: (u16, u16) = (100, 24);
+
+/// The message the attach died with when the reflow reached the dead leaf.
+const UNBOUND_TERMINAL: &str = "requires a live QUIC binding";
+
+/// A real server on a private UDS plus a loopback QUIC listener, with every
+/// directory it or a client reads or writes inside its isolated home.
+struct QuicServer {
+    inner: common::ServerGuard,
+    quic: std::net::SocketAddr,
+    enrolled: paired::Enrolled,
+}
+
+impl QuicServer {
+    fn start() -> Self {
+        let spawn = common::ServerGuard::builder("quic-restore")
+            .env("SHELL", "/bin/sh")
+            .isolated_home();
+        let home = spawn.home();
+        paired::write_paired_policy(&home.root().join("config/phux/config.toml"));
+        let enrolled = paired::enroll_client(home.root(), |args, stdin| {
+            let mut command = common::phux_cmd(crate::runner::phux_bin());
+            command.envs(home.env()).args(args);
+            paired::output_with_stdin(command, stdin)
+        });
+        let inner = spawn.start_with(|cmd| {
+            cmd.args(["--quic", listeners::LOOPBACK_ANY_PORT]);
+        });
+        let quic =
+            listeners::bound_listener_addr(&inner.socket, listeners::RemoteListenerTransport::Quic);
+        Self {
+            inner,
+            quic,
+            enrolled,
+        }
+    }
+
+    fn command(&self, args: &[&str]) -> std::process::Output {
+        self.inner.cmd(args).output().expect("run phux command")
+    }
+
+    fn seed_pane(&self) -> ResourceId {
+        let snapshot = self.inner.json(&["snapshot", "--json", SESSION]);
+        local_pane(&snapshot["pane"])
+    }
+
+    fn spawn_pane(&self) -> ResourceId {
+        local_pane(&self.inner.json(&["spawn", "--json"])["terminal_id"])
+    }
+
+    /// `(cols, rows)` of the pane actor's own grid, or `None` once the pane
+    /// is gone.
+    fn pane_size(&self, pane: &ResourceId) -> Option<(u64, u64)> {
+        let selector = format!("@{}", pane.local_id().expect("local pane"));
+        let output = self.command(&["snapshot", "--json", &selector]);
+        if !output.status.success() {
+            return None;
+        }
+        let snapshot: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("snapshot --json is JSON");
+        Some((
+            snapshot["cols"].as_u64().expect("snapshot cols"),
+            snapshot["rows"].as_u64().expect("snapshot rows"),
+        ))
+    }
+
+    /// Kill `pane` from the CLI and wait until the server no longer has it.
+    fn kill_pane(&self, pane: &ResourceId) {
+        let selector = format!("@{}", pane.local_id().expect("local pane"));
+        let output = self.command(&["kill", "--yes", &selector]);
+        assert!(
+            output.status.success(),
+            "kill {selector}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let deadline = Instant::now() + DEADLINE;
+        while self.pane_size(pane).is_some() {
+            assert!(Instant::now() < deadline, "{selector} outlived its kill");
+            std::thread::sleep(POLL);
+        }
+    }
+
+    /// Persist `workspace` as the session's layout, the way an attached TUI
+    /// would have before the pane died. The ordered GET is a barrier proving
+    /// the fire-and-forget SET landed before the attach starts.
+    fn write_layout(&self, workspace: &ArrangementDoc) {
+        let runtime = runtime();
+        runtime.block_on(async {
+            let mut conn = Connection::connect(&self.inner.socket)
+                .await
+                .expect("connect metadata writer");
+            conn.send(&FrameKind::SetMetadata {
+                request_id: 1,
+                scope: Scope::Group(GroupId::new(1)),
+                key: layout_key(SessionId::new(1)),
+                value: workspace.encode_cbor().expect("encode layout"),
+            })
+            .await
+            .expect("write layout");
+            conn.send(&FrameKind::GetMetadata {
+                request_id: 2,
+                scope: Scope::Group(GroupId::new(1)),
+                key: layout_key(SessionId::new(1)),
+            })
+            .await
+            .expect("request layout barrier");
+            loop {
+                if let FrameKind::MetadataValue {
+                    request_id: 2,
+                    value: Some(_),
+                } = conn.recv().await.expect("layout barrier reply")
+                {
+                    break;
+                }
+            }
+        });
+    }
+
+    fn read_layout(&self) -> Result<ArrangementDoc, LayoutOpsError> {
+        runtime().block_on(async {
+            let mut conn = Connection::connect(&self.inner.socket).await?;
+            let result = LayoutOps::new(&mut conn, SessionId::new(1), 1).read().await;
+            drop(conn);
+            result
+        })
+    }
+
+    /// `phux attach --quic` to this server's listener on a PTY. Config and
+    /// state both resolve inside the tempdir, so the attach never reads the
+    /// real config or dials the running server.
+    fn attach_over_quic(&self) -> common::PtyAttach {
+        let addr = self.quic.to_string();
+        let home = self.inner.isolated_home().env();
+        let identity = self.enrolled.env();
+        common::PtyAttach::start_dialing(&["--quic", &addr, SESSION], ATTACH_PTY, |_, command| {
+            for (key, value) in home {
+                if key != "XDG_CONFIG_HOME" {
+                    command.env(key, value);
+                }
+            }
+            for (key, value) in &identity {
+                command.env(key, value);
+            }
+        })
+    }
+}
+
+fn runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime")
+}
+
+fn local_pane(id: &serde_json::Value) -> ResourceId {
+    ResourceId::local(u32::try_from(id.as_u64().expect("pane id")).expect("pane id fits u32"))
+}
+
+/// The content rect a default-config attach leaves for panes on
+/// [`ATTACH_PTY`]: the sidebar's columns and the status bar and pane-title
+/// rows come off the viewport (as `resize_e2e` pins for a UDS attach).
+fn full_content_rect() -> (u64, u64) {
+    let (cols, rows) = ATTACH_PTY;
+    let sidebar = phux_config::SidebarCfg::default();
+    let sidebar_width = if sidebar.width == 0 {
+        (cols / 4).clamp(28, 40)
+    } else {
+        sidebar.width
+    };
+    (
+        u64::from(cols) - u64::from(sidebar_width),
+        u64::from(rows) - 2,
+    )
+}
+
+#[test]
+#[ignore = "spawns a real server with a QUIC listener and an attached PTY client; run in the e2e lane"]
+fn quic_attach_survives_a_layout_naming_a_dead_pane() {
+    let server = QuicServer::start();
+    let live = server.seed_pane();
+    let dead = server.spawn_pane();
+    server.kill_pane(&dead);
+
+    // The layout is written after the kill, so nothing has folded the dead
+    // leaf out: this is the tree a TUI left behind before the pane died.
+    let mut layout = ArrangementDoc::single(live.clone());
+    layout.groups[0].state.tree = Some(LayoutNode::Split {
+        dir: SplitDir::Horizontal,
+        ratio: 0.5,
+        left: Box::new(LayoutNode::Leaf(live.clone())),
+        right: Box::new(LayoutNode::Leaf(dead.clone())),
+    });
+    server.write_layout(&layout);
+
+    let mut client = server.attach_over_quic();
+
+    // With the dead leaf folded out, the live pane owns the whole content
+    // rect; half of it would mean the dead leaf was still being laid out.
+    let want = full_content_rect();
+    let deadline = Instant::now() + DEADLINE;
+    let mut seen = server.pane_size(&live);
+    while seen != Some(want) {
+        assert_attach_up(&mut client);
+        assert!(
+            Instant::now() < deadline,
+            "the live pane never reached the full content rect {want:?} (last {seen:?}):\n{}",
+            client.painted()
+        );
+        std::thread::sleep(POLL);
+        seen = server.pane_size(&live);
+    }
+
+    // The client re-persists the pruned tree: one leaf, the live pane.
+    let deadline = Instant::now() + DEADLINE;
+    loop {
+        assert_attach_up(&mut client);
+        let tree = server
+            .read_layout()
+            .expect("persisted layout")
+            .groups
+            .first()
+            .and_then(|window| window.state.tree.clone());
+        if tree == Some(LayoutNode::Leaf(live.clone())) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the dead leaf {dead:?} was never pruned from the persisted layout: {tree:?}"
+        );
+        std::thread::sleep(POLL);
+    }
+    assert_attach_up(&mut client);
+}
+
+/// The attach is still running and has not reported a Terminal frame with
+/// no QUIC stream.
+fn assert_attach_up(client: &mut common::PtyAttach) {
+    let running = client.is_running();
+    let painted = client.painted();
+    assert!(
+        running && !painted.contains(UNBOUND_TERMINAL),
+        "the QUIC attach did not survive restoring the layout (running: {running}):\n{painted}"
+    );
+}
+
+/// Creating tabs must save their arrangement before detach; a fresh client
+/// must restore the same tabs with the original terminal resource identities.
+#[test]
+#[ignore = "spawns a real server with a QUIC listener and attached PTY clients; run in the e2e lane"]
+fn quic_tui_created_tabs_survive_detach_and_reattach() {
+    let server = QuicServer::start();
+    let mut client = server.attach_over_quic();
+    let deadline = Instant::now() + DEADLINE;
+    while server.pane_size(&server.seed_pane()) != Some(full_content_rect()) {
+        assert_attach_up(&mut client);
+        assert!(Instant::now() < deadline, "initial client did not settle");
+        std::thread::sleep(POLL);
+    }
+    for (count, name) in [(2, "first-job"), (3, "second-job")] {
+        client.send(b"\x01c");
+        let deadline = Instant::now() + DEADLINE;
+        loop {
+            assert_attach_up(&mut client);
+            let layout = server
+                .read_layout()
+                .expect("read arrangement after new tab");
+            if layout.groups.len() == count {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "new tab was not persisted: {layout:?}\n{}",
+                client.painted()
+            );
+            std::thread::sleep(POLL);
+        }
+        client.send(format!("\x01,{name}\r").as_bytes());
+        let deadline = Instant::now() + DEADLINE;
+        while !server
+            .read_layout()
+            .expect("read renamed tab")
+            .groups
+            .iter()
+            .any(|group| group.name.ends_with(name))
+        {
+            assert_attach_up(&mut client);
+            assert!(
+                Instant::now() < deadline,
+                "tab rename was not persisted\n{}",
+                client.painted()
+            );
+            std::thread::sleep(POLL);
+        }
+    }
+    let before = server.read_layout().expect("saved tabs before detach");
+    let members = server.inner.json(&["ls", "--json"])["terminals"].clone();
+    client.send(b"\x01d");
+    let deadline = Instant::now() + DEADLINE;
+    while client.is_running() {
+        assert!(Instant::now() < deadline, "detach did not finish");
+        std::thread::sleep(POLL);
+    }
+    drop(client);
+    let mut restored = server.attach_over_quic();
+    let deadline = Instant::now() + DEADLINE;
+    loop {
+        assert_attach_up(&mut restored);
+        let painted = restored.painted();
+        if painted.contains("first-job") && painted.contains("second-job") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "reattach did not restore tabs:\n{painted}"
+        );
+        std::thread::sleep(POLL);
+    }
+    let after = server.read_layout().expect("restored arrangement");
+    assert_eq!(
+        before.groups, after.groups,
+        "tab identities, names and trees changed"
+    );
+    assert_eq!(
+        members,
+        server.inner.json(&["ls", "--json"])["terminals"],
+        "reattach changed terminal records"
+    );
+}

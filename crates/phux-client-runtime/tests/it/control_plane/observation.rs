@@ -1,0 +1,378 @@
+use super::*;
+use phux_client_runtime::control::{EVENT_QUEUE_CAP, Observation};
+#[cfg(feature = "engine")]
+use phux_protocol::input::focus::FocusEvent;
+
+/// Drop the transport and complete a full reconnect to a server that hands
+/// back the same session, window and terminal ids.
+fn reconnect_with_reused_ids(plane: &mut ControlPlane) {
+    let epoch = plane.connection_epoch();
+    plane.connection_lost(Some("transport dropped".to_owned()));
+    reopen(plane, hello_ok(PROTOCOL_VERSION.patch));
+    let attach_id = plane.queued_attach_id();
+    reattach(plane, attach_id, epoch + 1);
+    let _ = plane.take_outbound();
+}
+
+/// `attach`, with the fresh bootstrap generation a new connection carries.
+fn reattach(plane: &mut ControlPlane, attach_id: u32, generation: u64) {
+    plane.attached(attach_id, snapshot());
+    for frame in bootstrap_frames(&terminal(), [1, generation], [20, 4], b"again") {
+        plane.feed(frame).unwrap();
+    }
+    plane.feed(FrameKind::AttachReady { attach_id }).unwrap();
+}
+
+fn attached() -> ControlPlane {
+    let (mut plane, attach_id) = negotiated();
+    attach(&mut plane, attach_id, b"first");
+    let _ = plane.take_outbound();
+    plane
+}
+
+fn bell(plane: &mut ControlPlane) {
+    plane
+        .feed(FrameKind::Bell {
+            terminal_id: terminal(),
+        })
+        .unwrap();
+}
+
+fn boundaries(observation: &Observation) -> Vec<u64> {
+    observation
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            Event::ConnectionOpened { connection_epoch } => Some(*connection_epoch),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_quiet_activity_omits_the_graph_and_a_bell_samples_it() {
+    let mut plane = attached();
+    let opened = plane.take_activity();
+    assert!(opened.topology.is_some());
+    let quiet = plane.take_activity();
+    assert!(quiet.events.is_empty());
+    assert!(quiet.topology.is_none());
+    assert_eq!(quiet.status, Status::Attached);
+    bell(&mut plane);
+    let rung = plane.take_activity();
+    assert!(
+        rung.events
+            .iter()
+            .any(|event| matches!(event, Event::Bell { .. }))
+    );
+    assert!(rung.topology.is_some());
+}
+
+#[test]
+fn a_recovery_between_drain_and_status_sampling_stays_in_one_observation() {
+    let mut plane = attached();
+    let _ = plane.take_observation();
+    plane.connection_lost(None);
+    // Sampled mid-recovery: the loss and the status it led to, together.
+    let mid = plane.take_observation();
+    assert_eq!(mid.status, Status::Connecting);
+    assert!(
+        mid.events
+            .iter()
+            .any(|event| matches!(event, Event::ConnectionLost { .. }))
+    );
+    assert_eq!(mid.connection_epoch, 1);
+
+    reopen(&mut plane, hello_ok(PROTOCOL_VERSION.patch));
+    let attach_id = plane.queued_attach_id();
+    reattach(&mut plane, attach_id, 2);
+    let done = plane.take_observation();
+    assert_eq!(done.status, Status::Attached);
+    assert_eq!(done.connection_epoch, 2);
+    assert_eq!(boundaries(&done), [2]);
+}
+
+#[test]
+fn old_events_queued_before_a_reconnect_precede_its_boundary() {
+    let mut plane = attached();
+    let _ = plane.take_observation();
+    bell(&mut plane);
+    reconnect_with_reused_ids(&mut plane);
+    bell(&mut plane);
+    let observation = plane.take_observation();
+    let order: Vec<&str> = observation
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            Event::Bell { .. } => Some("bell"),
+            Event::ConnectionLost { .. } => Some("lost"),
+            Event::ConnectionOpened { .. } => Some("opened"),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(order, ["bell", "lost", "opened", "bell"]);
+}
+
+fn shell_event(plane: &mut ControlPlane, event: phux_protocol::wire::frame::AgentEvent) {
+    plane
+        .feed(FrameKind::Event {
+            terminal: Some(terminal()),
+            event,
+            stamp: None,
+        })
+        .unwrap();
+}
+
+#[test]
+fn a_started_command_is_running_until_it_finishes_or_the_connection_ends() {
+    use phux_protocol::wire::frame::AgentEvent;
+    let mut plane = attached();
+    assert_eq!(
+        plane.command_state(&terminal()),
+        None,
+        "no shell event yet is unknown"
+    );
+    shell_event(&mut plane, AgentEvent::CommandStarted);
+    assert_eq!(plane.command_state(&terminal()), Some(true));
+    shell_event(
+        &mut plane,
+        AgentEvent::CommandFinished { exit_code: Some(0) },
+    );
+    assert_eq!(plane.command_state(&terminal()), Some(false));
+    assert!(plane.take_observation().events.iter().any(|event| matches!(
+        event,
+        Event::CommandFinished {
+            exit_code: Some(0),
+            ..
+        }
+    )));
+
+    shell_event(&mut plane, AgentEvent::CommandStarted);
+    reconnect_with_reused_ids(&mut plane);
+    assert_eq!(
+        plane.command_state(&terminal()),
+        None,
+        "a new connection does not inherit the old one's events; the replica answers"
+    );
+
+    shell_event(&mut plane, AgentEvent::CommandStarted);
+    shell_event(
+        &mut plane,
+        AgentEvent::TerminalControl {
+            lifecycle: phux_protocol::wire::frame::ResourceLifecycle::Exited,
+            exit_status: Some(0),
+            input_holder: None,
+            action: phux_protocol::wire::frame::ControlAction::Exited,
+            actor: None,
+        },
+    );
+    assert_eq!(
+        plane.command_state(&terminal()),
+        Some(false),
+        "an exited shell runs nothing"
+    );
+
+    shell_event(&mut plane, AgentEvent::CommandStarted);
+    shell_event(
+        &mut plane,
+        AgentEvent::ResourceClosed {
+            exit_status: Some(0),
+        },
+    );
+    assert_eq!(
+        plane.command_state(&terminal()),
+        None,
+        "a closed terminal forgets its state"
+    );
+}
+
+#[test]
+fn an_ordinary_refresh_is_not_a_new_incarnation() {
+    let mut plane = attached();
+    let before = plane.take_observation();
+    let request_id = plane.refresh_topology().unwrap();
+    let _ = plane.take_outbound();
+    answer_state(&mut plane, request_id, snapshot());
+    let after = plane.take_observation();
+    assert_eq!(after.connection_epoch, before.connection_epoch);
+    assert!(boundaries(&after).is_empty());
+    assert!(!after.events_dropped);
+    assert!(
+        after
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::TopologyChanged))
+    );
+}
+
+#[test]
+fn overflow_is_bounded_reported_once_and_keeps_the_newest_boundary() {
+    let mut plane = attached();
+    let _ = plane.take_observation();
+    for _ in 0..3 {
+        reconnect_with_reused_ids(&mut plane);
+        for _ in 0..EVENT_QUEUE_CAP {
+            bell(&mut plane);
+        }
+    }
+    let flooded = plane.take_observation();
+    assert!(flooded.events_dropped);
+    assert!(flooded.events.len() <= EVENT_QUEUE_CAP + 1);
+    assert_eq!(flooded.connection_epoch, 4);
+    assert_eq!(boundaries(&flooded), [4]);
+    assert!(
+        flooded
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::TopologyChanged)),
+        "the loss is followed by a topology barrier"
+    );
+    let calm = plane.take_observation();
+    assert!(!calm.events_dropped);
+    assert!(calm.events.is_empty());
+}
+
+#[test]
+fn take_events_clears_the_overflow_report_too() {
+    let mut plane = attached();
+    for _ in 0..=EVENT_QUEUE_CAP {
+        bell(&mut plane);
+    }
+    let _ = plane.take_events();
+    assert!(!plane.take_observation().events_dropped);
+}
+
+#[cfg(feature = "engine")]
+const OSC52: &[u8] = b"\x1b]52;c;cmVtb3RlLWNvcHk=\x07";
+
+#[cfg(feature = "engine")]
+fn clipboard_events(events: &[Event]) -> Vec<(&ResourceId, &str)> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            Event::ClipboardWrite { terminal_id, text } => Some((terminal_id, text.0.as_str())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[cfg(feature = "engine")]
+#[test]
+fn osc52_live_output_reaches_the_focused_consumer_but_bootstrap_and_reads_do_not() {
+    let (mut plane, attach_id) = negotiated();
+    // Native hosts can report local focus before the terminal is ready,
+    // without sending an INPUT_FOCUS for an unsubscribed resource.
+    assert!(!plane.send_focus(&terminal(), FocusEvent::Gained));
+    assert!(plane.take_outbound().is_empty());
+    attach(&mut plane, attach_id, OSC52);
+    assert!(clipboard_events(&plane.take_events()).is_empty());
+    output(&mut plane, 1, OSC52);
+    let live = plane.take_activity();
+    assert_eq!(
+        clipboard_events(&live.events),
+        [(&terminal(), "remote-copy")]
+    );
+    assert!(
+        live.topology.is_none(),
+        "clipboard writes do not change the graph"
+    );
+    assert!(!format!("{:?}", live.events).contains("remote-copy"));
+    assert!(
+        clipboard_events(&plane.take_events()).is_empty(),
+        "delivered once"
+    );
+    let _ = plane.take_outbound();
+    output(&mut plane, 2, b"\x1b]52;c;?\x07");
+    assert!(clipboard_events(&plane.take_events()).is_empty());
+    assert!(
+        plane.take_outbound().iter().all(|bytes| !matches!(
+            decode(bytes),
+            FrameKind::InputPaste { .. } | FrameKind::InputKey { .. }
+        )),
+        "clipboard queries must not leak client clipboard contents"
+    );
+}
+
+#[cfg(feature = "engine")]
+#[test]
+fn clipboard_requests_expire_on_focus_loss_change_and_connection_loss() {
+    let mut plane = attached();
+    plane.send_focus(&terminal(), FocusEvent::Gained);
+    let _ = plane.take_events();
+    output(&mut plane, 1, OSC52);
+    plane.send_focus(&terminal(), FocusEvent::Lost);
+    output(&mut plane, 2, OSC52);
+    plane.send_focus(&terminal(), FocusEvent::Gained);
+    assert!(
+        clipboard_events(&plane.take_events()).is_empty(),
+        "no background catch-up"
+    );
+    output(&mut plane, 3, OSC52);
+    plane.send_focus(&ResourceId::local(99), FocusEvent::Gained);
+    assert!(
+        clipboard_events(&plane.take_events()).is_empty(),
+        "no old-focus delivery"
+    );
+    plane.send_focus(&terminal(), FocusEvent::Gained);
+    output(&mut plane, 4, OSC52);
+    reconnect_with_reused_ids(&mut plane);
+    assert!(
+        clipboard_events(&plane.take_events()).is_empty(),
+        "no reconnect replay"
+    );
+    // Desired host focus survives a reconnect, but the old request does not.
+    plane
+        .feed(phux_wire_fixtures::output_on(&terminal(), [1, 2], 1, OSC52))
+        .unwrap();
+    assert_eq!(
+        clipboard_events(&plane.take_events()),
+        [(&terminal(), "remote-copy")]
+    );
+}
+
+#[cfg(feature = "engine")]
+#[test]
+fn clipboard_requests_expire_on_terminal_retirement_and_close() {
+    let mut plane = attached();
+    plane.send_focus(&terminal(), FocusEvent::Gained);
+    let _ = plane.take_events();
+    output(&mut plane, 1, OSC52);
+    assert!(plane.release_terminal(&terminal()));
+    assert!(clipboard_events(&plane.take_events()).is_empty());
+    reconnect_with_reused_ids(&mut plane);
+    let _ = plane.take_events();
+    plane
+        .feed(phux_wire_fixtures::output_on(&terminal(), [1, 2], 1, OSC52))
+        .unwrap();
+    assert!(
+        clipboard_events(&plane.take_events()).is_empty(),
+        "retired focus does not revive"
+    );
+    plane.send_focus(&terminal(), FocusEvent::Gained);
+    plane
+        .feed(phux_wire_fixtures::output_on(&terminal(), [1, 2], 2, OSC52))
+        .unwrap();
+    plane.close();
+    assert!(clipboard_events(&plane.take_events()).is_empty());
+}
+
+#[cfg(feature = "engine")]
+#[test]
+fn an_accepted_detach_expires_clipboard_requests_and_focus() {
+    let mut plane = attached();
+    plane.send_focus(&terminal(), FocusEvent::Gained);
+    let _ = plane.take_events();
+    output(&mut plane, 1, OSC52);
+    let request_id = plane.detach_terminal(&terminal());
+    plane.reply(request_id, CommandResult::Ok);
+    assert!(clipboard_events(&plane.take_events()).is_empty());
+    reconnect_with_reused_ids(&mut plane);
+    let _ = plane.take_events();
+    plane
+        .feed(phux_wire_fixtures::output_on(&terminal(), [1, 2], 1, OSC52))
+        .unwrap();
+    assert!(
+        clipboard_events(&plane.take_events()).is_empty(),
+        "an explicitly detached terminal must regain host focus before copying"
+    );
+}

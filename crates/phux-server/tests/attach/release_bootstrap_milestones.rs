@@ -1,0 +1,718 @@
+//! Every cut through the bootstrap handshake is followed by a clean fresh
+//! attach, and eight simultaneous native owners of a warm 50k-line
+//! full-screen pane (one deliberately stalled) share one generation prefix,
+//! page history independently, and see live output exactly once after READY.
+
+#![allow(clippy::too_many_lines, reason = "scripted release gates")]
+
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+
+use bytes::Bytes;
+use futures_util::stream::{FuturesUnordered, StreamExt};
+use phux_protocol::caps::{
+    BootstrapCapabilities, ClientCapabilities, EngineCodec, EngineFeatureSet,
+};
+use phux_protocol::input::paste::{PasteEvent, PasteTrust};
+use phux_protocol::wire::frame::{AttachTarget, DetachReason, FrameKind, ViewportInfo};
+use phux_protocol::{BootstrapId, ResourceId, StreamId};
+use phux_server::LaunchCommand;
+use tempfile::TempDir;
+use tokio::net::UnixStream;
+use tokio::sync::Barrier;
+use tokio::time::{Instant, timeout};
+
+use phux_server_testkit::{
+    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, join_after_shutdown, recv_typed, recv_typed_before,
+    recv_until, recv_until_detached, run_local, send_frame, spawn_server_with_seed_cmd,
+    wait_for_socket,
+};
+
+use super::common::{connect_with, contains};
+
+#[derive(Clone, Copy, Debug)]
+enum Milestone {
+    HelloOk,
+    Attached,
+    Begin,
+    Chunk,
+    Ready,
+    AttachReady,
+}
+
+impl Milestone {
+    const ALL: [Self; 6] = [
+        Self::HelloOk,
+        Self::Attached,
+        Self::Begin,
+        Self::Chunk,
+        Self::Ready,
+        Self::AttachReady,
+    ];
+
+    const fn reached(self, frame: &FrameKind) -> bool {
+        matches!(
+            (self, frame),
+            (Self::Attached, FrameKind::Attached { .. })
+                | (Self::Begin, FrameKind::BootstrapBegin { .. })
+                | (Self::Chunk, FrameKind::BootstrapChunk { .. })
+                | (Self::Ready, FrameKind::BootstrapReady { .. })
+                | (Self::AttachReady, FrameKind::AttachReady { .. })
+        )
+    }
+}
+
+fn attach_frame_at(id: u32, history: bool, viewport: ViewportInfo) -> FrameKind {
+    FrameKind::Attach {
+        attach_id: id,
+        target: AttachTarget::ByName("release".to_owned()),
+        viewport,
+        request_scrollback: history,
+        scrollback_limit_lines: if history { 50_000 } else { 0 },
+        role_policy: None,
+    }
+}
+
+fn attach_frame(id: u32, history: bool) -> FrameKind {
+    attach_frame_at(id, history, ViewportInfo::new(200, 60))
+}
+
+const LIVE_SENTINEL: &[u8] = b"PHUX-RELEASE-LIVE-ONCE-7C91";
+const LIVE_BOUNDARY: &[u8] = b"PHUX-RELEASE-LIVE-BOUNDARY-2A4E";
+
+fn count_occurrences(haystack: &[u8], needle: &[u8]) -> usize {
+    haystack
+        .windows(needle.len())
+        .filter(|window| *window == needle)
+        .count()
+}
+
+#[derive(Debug)]
+struct EstablishedClient {
+    stream: UnixStream,
+    terminal_id: ResourceId,
+    live_bytes: Vec<u8>,
+}
+
+async fn wait_for_fullscreen_marker(path: &Path) -> EstablishedClient {
+    let mut stream = wait_for_socket(path, SOCKET_CONNECT_DEADLINE).await;
+    send_frame(
+        &mut stream,
+        &attach_frame_at(u32::MAX, false, ViewportInfo::new(80, 24)),
+    )
+    .await;
+    let mut screen = phux_server_testkit::screen::Screen::new(80, 24).expect("screen oracle");
+    let mut terminal_id = None;
+    let mut marker_seen = false;
+    let mut attach_ready = false;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !(marker_seen && attach_ready) {
+        let (_, frame) = recv_typed_before(&mut stream, deadline)
+            .await
+            .expect("full-screen marker did not reach the terminal actor");
+        match frame {
+            FrameKind::Attached { snapshot, .. } => {
+                terminal_id = snapshot.resources.first().map(|pane| pane.id.clone());
+            }
+            FrameKind::BootstrapChunk { payload, .. } => screen.write(&payload),
+            FrameKind::ResourceOutput { bytes, .. } => screen.write(&bytes),
+            FrameKind::AttachReady { attach_id } if attach_id == u32::MAX => {
+                attach_ready = true;
+            }
+            _ => {}
+        }
+        marker_seen = screen.contains("RELEASE-FULLSCREEN");
+    }
+    EstablishedClient {
+        stream,
+        terminal_id: terminal_id.expect("established terminal id"),
+        live_bytes: Vec::new(),
+    }
+}
+
+async fn send_live_bytes(client: &mut EstablishedClient, bytes: &[u8]) {
+    send_frame(
+        &mut client.stream,
+        &FrameKind::InputPaste {
+            terminal_id: client.terminal_id.clone(),
+            event: PasteEvent {
+                trust: PasteTrust::Trusted,
+                data: bytes.to_vec(),
+            },
+        },
+    )
+    .await;
+}
+
+async fn receive_established_until(client: &mut EstablishedClient, marker: &[u8]) {
+    let deadline = Instant::now() + WIRE_RECV_TIMEOUT;
+    while !contains(&client.live_bytes, marker) {
+        let (_, frame) = recv_typed_before(&mut client.stream, deadline)
+            .await
+            .expect("established client was delayed by a stalled bootstrap owner");
+        if let FrameKind::ResourceOutput { bytes, .. } = frame {
+            client.live_bytes.extend_from_slice(&bytes);
+        }
+    }
+}
+
+async fn disconnect_at(path: &Path, milestone: Milestone, attach_id: u32) {
+    let mut stream = wait_for_socket(path, SOCKET_CONNECT_DEADLINE).await;
+    if matches!(milestone, Milestone::HelloOk) {
+        drop(stream);
+        return;
+    }
+    send_frame(&mut stream, &attach_frame(attach_id, false)).await;
+    recv_until(&mut stream, |_, frame| {
+        milestone.reached(&frame).then_some(())
+    })
+    .await;
+    drop(stream);
+}
+
+async fn attach_ready(path: &Path, attach_id: u32) -> UnixStream {
+    let mut stream = wait_for_socket(path, SOCKET_CONNECT_DEADLINE).await;
+    send_frame(&mut stream, &attach_frame(attach_id, false)).await;
+    recv_until(&mut stream, |_, frame| {
+        matches!(frame, FrameKind::AttachReady { attach_id: id } if id == attach_id).then_some(())
+    })
+    .await;
+    stream
+}
+
+#[test]
+fn reconnect_succeeds_after_every_bootstrap_milestone() {
+    run_local(async {
+        let tmp = TempDir::new().expect("tempdir");
+        let socket = tmp.path().join("release.sock");
+        let mut command = LaunchCommand::new("/bin/sh");
+        command.arg("-c");
+        command
+            .arg("printf '\x1b[?1049h\x1b[2J\x1b[1;1Hrelease-reconnect\x1b[?1049l'; exec /bin/cat");
+        let (shutdown, server) = spawn_server_with_seed_cmd(socket.clone(), "release", command);
+
+        for (index, milestone) in Milestone::ALL.into_iter().enumerate() {
+            let id = u32::try_from(index).expect("six milestones fit in u32");
+            disconnect_at(&socket, milestone, id + 1).await;
+            // Every cut is followed immediately by a complete fresh attach;
+            // this proves cleanup, not just that the disconnect itself returns.
+            let probe = attach_ready(&socket, id + 101).await;
+            drop(probe);
+        }
+
+        join_after_shutdown(shutdown, server).await;
+        assert!(
+            !socket.exists(),
+            "server leaked UDS after milestone reconnects"
+        );
+    });
+}
+
+#[derive(Debug)]
+struct BootstrappingClient {
+    attach_id: u32,
+    stream: UnixStream,
+    terminal_id: ResourceId,
+    stream_id: StreamId,
+    bootstrap_id: BootstrapId,
+}
+
+#[derive(Debug)]
+struct AttachedClient {
+    attach_id: u32,
+    stream: UnixStream,
+    terminal_id: ResourceId,
+    stream_id: StreamId,
+    bootstrap_id: BootstrapId,
+    cursor: Bytes,
+    bootstrap_records: Vec<Bytes>,
+    live_bytes: Vec<u8>,
+    pending_cursor: Option<Bytes>,
+    expected_page_seq: u64,
+}
+
+async fn wait_for_native_socket(path: &Path) -> UnixStream {
+    let caps = ClientCapabilities::new().with_bootstrap(BootstrapCapabilities::new().with_native(
+        EngineCodec::LibghosttySnapshotV1,
+        EngineFeatureSet::required_native(),
+    ));
+    connect_with(path, caps).await
+}
+
+async fn attach_through_begin(
+    mut stream: UnixStream,
+    attach_id: u32,
+    attach_barrier: Arc<Barrier>,
+) -> BootstrappingClient {
+    attach_barrier.wait().await;
+    send_frame(
+        &mut stream,
+        &attach_frame_at(attach_id, true, ViewportInfo::new(80, 24)),
+    )
+    .await;
+    let mut terminal_id = None;
+    loop {
+        let (_, frame) = recv_typed(&mut stream).await;
+        match frame {
+            FrameKind::Attached { snapshot, .. } => {
+                terminal_id = snapshot.resources.first().map(|pane| pane.id.clone());
+            }
+            FrameKind::BootstrapBegin {
+                terminal_id: begin_terminal,
+                stream_id,
+                bootstrap_id,
+                ..
+            } => {
+                let terminal_id = terminal_id
+                    .take()
+                    .unwrap_or_else(|| panic!("client {attach_id}: BEGIN preceded ATTACHED"));
+                assert_eq!(
+                    begin_terminal, terminal_id,
+                    "client {attach_id}: BEGIN terminal identity"
+                );
+                return BootstrappingClient {
+                    attach_id,
+                    stream,
+                    terminal_id,
+                    stream_id,
+                    bootstrap_id,
+                };
+            }
+            other => panic!("client {attach_id}: unexpected pre-BEGIN frame: {other:?}"),
+        }
+    }
+}
+
+/// Append a live `RESOURCE_OUTPUT` after checking it names the client's generation.
+fn record_live_output(client: &mut AttachedClient, frame: &FrameKind) {
+    let FrameKind::ResourceOutput {
+        terminal_id,
+        stream_id,
+        bootstrap_id,
+        bytes,
+        ..
+    } = frame
+    else {
+        unreachable!()
+    };
+    assert_eq!(
+        (terminal_id, *stream_id, *bootstrap_id),
+        (&client.terminal_id, client.stream_id, client.bootstrap_id),
+        "client {}: live generation identity",
+        client.attach_id
+    );
+    client.live_bytes.extend_from_slice(bytes);
+}
+
+async fn finish_attach(
+    partial: BootstrappingClient,
+    required_live_marker: Option<&[u8]>,
+) -> AttachedClient {
+    let BootstrappingClient {
+        attach_id,
+        stream,
+        terminal_id,
+        stream_id,
+        bootstrap_id,
+    } = partial;
+    let mut client = AttachedClient {
+        attach_id,
+        stream,
+        terminal_id,
+        stream_id,
+        bootstrap_id,
+        cursor: Bytes::new(),
+        bootstrap_records: Vec::new(),
+        live_bytes: Vec::new(),
+        pending_cursor: None,
+        expected_page_seq: 1,
+    };
+    let mut ready = false;
+    let mut attach_ready = false;
+    loop {
+        let (_, frame) = recv_typed(&mut client.stream).await;
+        match frame {
+            FrameKind::BootstrapChunk {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                chunk_seq,
+                payload,
+            } => {
+                assert_eq!(terminal_id, client.terminal_id);
+                assert_eq!(stream_id, client.stream_id);
+                assert_eq!(bootstrap_id, client.bootstrap_id);
+                assert_eq!(
+                    count_occurrences(&payload, LIVE_SENTINEL),
+                    0,
+                    "client {attach_id}: post-fence sentinel leaked into checkpoint"
+                );
+                assert_eq!(
+                    usize::try_from(chunk_seq).expect("chunk sequence fits usize"),
+                    client.bootstrap_records.len(),
+                    "client {attach_id}: bootstrap records are contiguous"
+                );
+                client.bootstrap_records.push(payload);
+            }
+            FrameKind::BootstrapReady {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                history_cursor,
+            } => {
+                assert!(!ready, "client {attach_id}: duplicate READY");
+                assert_eq!(terminal_id, client.terminal_id);
+                assert_eq!(stream_id, client.stream_id);
+                assert_eq!(bootstrap_id, client.bootstrap_id);
+                client.cursor = history_cursor
+                    .unwrap_or_else(|| panic!("client {attach_id}: missing warm history cursor"));
+                ready = true;
+            }
+            FrameKind::AttachReady { attach_id: id } if id == attach_id => {
+                assert!(ready, "client {attach_id}: ATTACH_READY preceded READY");
+                attach_ready = true;
+            }
+            frame @ FrameKind::ResourceOutput { .. } => {
+                assert!(
+                    ready && attach_ready,
+                    "client {attach_id}: live output overtook READY/ATTACH_READY"
+                );
+                record_live_output(&mut client, &frame);
+            }
+            other => panic!("client {attach_id}: unexpected attach frame: {other:?}"),
+        }
+        let marker_seen =
+            required_live_marker.is_none_or(|marker| contains(&client.live_bytes, marker));
+        if ready && attach_ready && marker_seen {
+            return client;
+        }
+    }
+}
+
+async fn request_page(client: &mut AttachedClient, cursor: Bytes) {
+    assert!(
+        client.pending_cursor.is_none(),
+        "client {}: overlapping history requests",
+        client.attach_id
+    );
+    client.pending_cursor = Some(cursor.clone());
+    send_frame(
+        &mut client.stream,
+        &FrameKind::HistoryRequest {
+            terminal_id: client.terminal_id.clone(),
+            stream_id: client.stream_id,
+            bootstrap_id: client.bootstrap_id,
+            cursor,
+            max_bytes: 1024 * 1024,
+            // Official native records preserve a whole cold page, which may
+            // contain more than the old fixture's 512-row request hint.
+            max_rows: 4096,
+        },
+    )
+    .await;
+}
+
+/// Check a `HISTORY_PAGE` answers this client's pending request in lineage.
+fn accept_history_page(client: &mut AttachedClient, frame: FrameKind) -> (u32, Option<Bytes>) {
+    let FrameKind::HistoryPage {
+        terminal_id,
+        stream_id,
+        bootstrap_id,
+        page_seq,
+        cursor,
+        next_cursor,
+        payload,
+        rows,
+    } = frame
+    else {
+        unreachable!()
+    };
+    let id = client.attach_id;
+    assert_eq!(
+        (terminal_id, stream_id, bootstrap_id),
+        (
+            client.terminal_id.clone(),
+            client.stream_id,
+            client.bootstrap_id
+        )
+    );
+    assert_eq!(
+        page_seq, client.expected_page_seq,
+        "client {id}: page lineage"
+    );
+    let requested = client
+        .pending_cursor
+        .take()
+        .unwrap_or_else(|| panic!("client {id}: unsolicited history page"));
+    assert_eq!(
+        cursor, requested,
+        "client {id}: consumed another owner's cursor"
+    );
+    assert!(
+        !payload.is_empty(),
+        "client {id}: empty native history page"
+    );
+    client.expected_page_seq += 1;
+    (rows, next_cursor)
+}
+
+/// Read until a history page (returned) or, with `marker`, until the live
+/// bytes contain it; live output is recorded either way.
+async fn pump(client: &mut AttachedClient, marker: Option<&[u8]>) -> Option<(u32, Option<Bytes>)> {
+    let deadline = Instant::now() + WIRE_RECV_TIMEOUT;
+    loop {
+        if marker.is_some_and(|m| contains(&client.live_bytes, m)) {
+            return None;
+        }
+        let (_, frame) = recv_typed_before(&mut client.stream, deadline)
+            .await
+            .unwrap_or_else(|| panic!("client {}: stalled", client.attach_id));
+        match frame {
+            FrameKind::HistoryPage { .. } => {
+                let page = accept_history_page(client, frame);
+                if marker.is_none() {
+                    return Some(page);
+                }
+            }
+            FrameKind::ResourceOutput { .. } => record_live_output(client, &frame),
+            other => panic!("client {}: unexpected {other:?}", client.attach_id),
+        }
+    }
+}
+
+async fn finish_history(
+    mut client: AttachedClient,
+    request_barrier: Arc<Barrier>,
+) -> (AttachedClient, u32, u64) {
+    request_barrier.wait().await;
+    let mut cursor = Some(client.cursor.clone());
+    let mut total_rows = 0_u32;
+    while let Some(requested) = cursor {
+        request_page(&mut client, requested).await;
+        let (rows, next) = pump(&mut client, None).await.expect("history page");
+        total_rows = total_rows
+            .checked_add(rows)
+            .expect("50k history row count fits u32");
+        cursor = next;
+    }
+    assert!(
+        total_rows > 0,
+        "client {}: 50k corpus reached FINISH without history rows",
+        client.attach_id
+    );
+    let pages = client.expected_page_seq - 1;
+    (client, total_rows, pages)
+}
+
+async fn detach_requested(stream: &mut UnixStream) {
+    send_frame(stream, &FrameKind::Detach).await;
+    assert!(matches!(
+        recv_until_detached(stream).await,
+        // phux-l83x: the ack for a client-sent DETACH names REQUESTED.
+        FrameKind::Detached {
+            reason: Some(DetachReason::Requested),
+            ..
+        }
+    ));
+}
+
+async fn detach_attached(mut client: AttachedClient) {
+    detach_requested(&mut client.stream).await;
+}
+
+#[test]
+fn warm_50k_fullscreen_eight_clients_one_stalled_history_cache() {
+    run_local(async {
+        let _capture = phux_server_testkit::tracing_capture::TracingCapture::install(
+            "release-bootstrap-milestones",
+        );
+        let tmp = TempDir::new().expect("tempdir");
+        let socket = tmp.path().join("release-load.sock");
+        let warm = tmp.path().join("warm.ready");
+        let script = format!(
+            "i=1; while [ $i -le 50000 ]; do printf 'warm-%08d α界\\r\\n' \"$i\"; i=$((i+1)); done; \
+             printf '\\033[?1049h\\033[?2026h\\033[2J\\033[1;1H\\033[38;2;70;210;130mRELEASE-FULLSCREEN\\033[0m\\033[?2026l'; \
+             : > '{}'; exec /bin/cat",
+            warm.display(),
+        );
+        let mut command = LaunchCommand::new("/bin/sh");
+        command.arg("-c");
+        command.arg(script);
+        let (shutdown, server) = spawn_server_with_seed_cmd(socket.clone(), "release", command);
+        timeout(Duration::from_secs(60), async {
+            while !warm.exists() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("50k-line PTY producer did not become warm");
+
+        // This already-published client is the control: its live stream must
+        // remain responsive while the eight native generations are captured.
+        let mut established = wait_for_fullscreen_marker(&socket).await;
+
+        // HELLO negotiation is intentionally complete on every socket before
+        // any ATTACH is allowed onto the wire.
+        let mut negotiated = Vec::with_capacity(8);
+        for attach_id in 1..=8 {
+            negotiated.push((attach_id, wait_for_native_socket(&socket).await));
+        }
+        let attach_barrier = Arc::new(Barrier::new(8));
+        let attaching = FuturesUnordered::new();
+        for (attach_id, stream) in negotiated {
+            attaching.push(attach_through_begin(
+                stream,
+                attach_id,
+                Arc::clone(&attach_barrier),
+            ));
+        }
+
+        // All eight must publish READY inside one existing wire deadline. The
+        // eighth socket stops reading immediately after BEGIN while clients
+        // 1-7 continue concurrently, so a socket-local stall cannot hide
+        // behind sequential attach or drain order.
+        let mut clients = timeout(WIRE_RECV_TIMEOUT, async {
+            let mut beginnings: Vec<_> = attaching.collect().await;
+            beginnings.sort_by_key(|client| client.attach_id);
+            let stalled = beginnings.pop().expect("eight BEGIN clients");
+            assert_eq!(stalled.attach_id, 8);
+
+            // BEGIN fences live output. An established client must not wait
+            // for publication of the native prefix.
+            send_live_bytes(&mut established, LIVE_SENTINEL).await;
+            receive_established_until(&mut established, LIVE_SENTINEL).await;
+
+            let active_attaches: FuturesUnordered<_> = beginnings
+                .into_iter()
+                .map(|client| finish_attach(client, Some(LIVE_SENTINEL)))
+                .collect();
+            let mut ready: Vec<_> = active_attaches.collect().await;
+
+            // Only after all seven active sockets have reached READY and
+            // received the fenced replay do we resume the intentionally
+            // stalled socket.
+            ready.push(finish_attach(stalled, Some(LIVE_SENTINEL)).await);
+            ready.sort_by_key(|client| client.attach_id);
+            ready
+        })
+        .await
+        .expect("eight simultaneous native owners did not reach READY within release gate");
+
+        assert_eq!(clients.len(), 8);
+        let first_prefix = &clients[0].bootstrap_records;
+        let shared_terminal = clients[0].terminal_id.clone();
+        assert!(
+            !first_prefix.is_empty(),
+            "full-screen TUI produced an empty native bootstrap"
+        );
+        for client in &clients[1..] {
+            assert_eq!(
+                client.terminal_id, shared_terminal,
+                "client {}: simultaneous attach resolved another terminal",
+                client.attach_id
+            );
+            assert_eq!(
+                &client.bootstrap_records, first_prefix,
+                "client {}: shared generation prefix differs",
+                client.attach_id
+            );
+            assert!(
+                !client.cursor.is_empty(),
+                "each owner has an opaque history cursor"
+            );
+        }
+
+        // Client 8 takes its own cursor lease and then stops consuming again.
+        // Captures may give owners independent generations even when their
+        // prefixes are identical. Each must advance its own opaque cursor and
+        // page_seq from 1 through FINISH; cursor equality is not a contract.
+        let mut stalled = clients.pop().expect("stalled client");
+        assert_eq!(stalled.attach_id, 8);
+        let stalled_cursor = stalled.cursor.clone();
+        request_page(&mut stalled, stalled_cursor).await;
+
+        let history_barrier = Arc::new(Barrier::new(7));
+        let histories: FuturesUnordered<_> = clients
+            .into_iter()
+            .map(|client| finish_history(client, Arc::clone(&history_barrier)))
+            .collect();
+        let completed_histories: Vec<_> = timeout(WIRE_RECV_TIMEOUT, histories.collect())
+            .await
+            .expect("seven independent owners did not page to FINISH within release gate");
+        let mut active = Vec::with_capacity(7);
+        let mut expected_rows = None;
+        let mut expected_pages = None;
+        for (client, rows, pages) in completed_histories {
+            assert_eq!(
+                rows,
+                *expected_rows.get_or_insert(rows),
+                "client {}: shared immutable history row count",
+                client.attach_id
+            );
+            assert_eq!(
+                pages,
+                *expected_pages.get_or_insert(pages),
+                "client {}: independent lineage reached a different FINISH",
+                client.attach_id
+            );
+            active.push(client);
+        }
+        active.sort_by_key(|client| client.attach_id);
+        assert_eq!(active.len(), 7);
+
+        // A later live boundary closes the exact-once observation window for
+        // the first sentinel. Client 8 remains unread with a history response
+        // in its outbound pump while both the established and seven active
+        // clients receive this boundary.
+        send_live_bytes(&mut established, LIVE_BOUNDARY).await;
+        receive_established_until(&mut established, LIVE_BOUNDARY).await;
+        let active_boundaries: FuturesUnordered<_> = active
+            .into_iter()
+            .map(|mut client| async move {
+                pump(&mut client, Some(LIVE_BOUNDARY)).await;
+                client
+            })
+            .collect();
+        let mut drained: Vec<_> = active_boundaries.collect().await;
+        pump(&mut stalled, Some(LIVE_BOUNDARY)).await;
+        drained.push(stalled);
+        drained.sort_by_key(|client| client.attach_id);
+
+        assert_eq!(
+            count_occurrences(&established.live_bytes, LIVE_SENTINEL),
+            1,
+            "established peer saw fenced sentinel more than once"
+        );
+        for client in &drained {
+            assert_eq!(
+                count_occurrences(&client.live_bytes, LIVE_SENTINEL),
+                1,
+                "client {}: sentinel must appear after READY exactly once",
+                client.attach_id
+            );
+        }
+
+        // Explicit DETACH acknowledgements make owner teardown observable.
+        // A fresh owner must then acquire and finish the same history without
+        // colliding with any abandoned cursor lineage.
+        assert_eq!(drained.len(), 8);
+        let detaches: FuturesUnordered<_> = drained.into_iter().map(detach_attached).collect();
+        detaches.collect::<Vec<()>>().await;
+        detach_requested(&mut established.stream).await;
+
+        let probe_stream = wait_for_native_socket(&socket).await;
+        let probe = attach_through_begin(probe_stream, 9, Arc::new(Barrier::new(1))).await;
+        let probe = finish_attach(probe, None).await;
+        let (probe, _, _) = timeout(
+            WIRE_RECV_TIMEOUT,
+            finish_history(probe, Arc::new(Barrier::new(1))),
+        )
+        .await
+        .expect("fresh owner did not reach FINISH after teardown");
+        detach_attached(probe).await;
+
+        join_after_shutdown(shutdown, server).await;
+        assert!(!socket.exists(), "server leaked UDS after load gate");
+    });
+}

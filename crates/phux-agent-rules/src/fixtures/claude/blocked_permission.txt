@@ -1,0 +1,24 @@
+  397
+  398
+  399
+  400
+
+✻ Worked for 8s
+
+❯ sh tool to run: touch /tmp/phux_probe2.txt
+
+⏺ Running 1 shell command…
+  ⎿  $ touch /tmp/phux_probe2.txt && ls -l /tmp/phux_probe2.txt
+
+────────────────────────────────────────────────────────────────────────────────
+ Bash command
+
+   touch /tmp/phux_probe2.txt && ls -l /tmp/phux_probe2.txt
+   Create probe file in /tmp
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and allow access to tmp/ and touch /tmp/phux_probe2.txt commands
+   3. No
+
+ Esc to cancel · Tab to amend · ctrl+e to explain

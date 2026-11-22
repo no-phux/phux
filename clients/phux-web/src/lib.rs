@@ -1,0 +1,502 @@
+//! phux-web — the phux browser client.
+//!
+//! Renders terminals to a `<canvas>` using the ghostty-vt engine (via
+//! [`phux_vt_web`]), and (subsequent milestones) speaks the phux wire over a
+//! WebSocket and routes keyboard input back. This module currently provides the
+//! canvas renderer over the engine's styled [`Grid`].
+
+#![deny(missing_docs)]
+
+pub mod bell;
+pub mod canvas;
+pub mod client;
+mod fonts;
+pub mod framing;
+pub use fonts::load as load_terminal_font;
+pub mod ink;
+pub mod input;
+pub mod links;
+mod panes;
+pub mod search;
+pub mod selection;
+pub mod session;
+pub mod touch;
+
+pub use panes::PaneRect;
+
+pub use session::approvals::{Approval, CredentialApproval, Requester as ApprovalRequester};
+pub use session::{AgentBadge, AttachPreference, Connection, Outcome, PaneExit, WebDocument};
+
+use std::cell::RefCell;
+use std::ops::Range;
+
+use futures_channel::oneshot;
+use futures_util::future::{Either, select};
+use phux_design::Roles;
+use phux_vt_web::{Grid, GridCell, Rgb};
+use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
+use web_sys::CanvasRenderingContext2d;
+
+/// JS entry point: connect to `ws_url` and render the attached terminal into the
+/// canvas element with id `canvas_id`, sized `cols`×`rows`.
+///
+/// # Errors
+/// Fails if the canvas element is missing or the connection can't be set up.
+#[wasm_bindgen]
+pub async fn start(ws_url: String, canvas_id: String, cols: u16, rows: u16) -> Result<(), JsValue> {
+    let canvas = canvas_by_id(&canvas_id)?;
+    let client = client::run(&ws_url, canvas, cols, rows).await?;
+    client.retain_until_failure();
+    Ok(())
+}
+
+/// Browser presentation events emitted by the real client's canvas.
+#[wasm_bindgen(typescript_custom_section)]
+const PRESENTATION_TYPES: &str = r#"
+/** Visible terminal rectangle in canonical canvas cells; separators excluded. */
+export interface PaneDescriptor { id: string; x: number; y: number; cols: number; rows: number; cursorRow?: number; }
+/** Canonical geometry shared by pane-state and full-paint events. */
+export interface PanePresentation { panes: PaneDescriptor[]; cols: number; rows: number; }
+/** Detail of the bubbling phux-panes CustomEvent. */
+export interface PaneState extends PanePresentation { count: number; focused: string; pending: boolean; error?: string; }
+/** Detail of phux-render, emitted after a full paint, with actual backing pixels. */
+export interface PaneRenderDetail extends PanePresentation { pixelWidth: number; pixelHeight: number; }
+"#;
+
+/// A hosted session controller returned to JavaScript.
+#[wasm_bindgen]
+pub struct HostedClient {
+    client: client::Client,
+}
+
+#[wasm_bindgen]
+impl HostedClient {
+    /// Close the socket and synchronously remove all browser handlers and timers.
+    pub fn close(&self) {
+        self.client.close();
+    }
+
+    /// Resize the terminal to `cols`x`rows` cells (for example after the
+    /// host element changes size). The canvas follows the server's new
+    /// geometry.
+    pub fn resize(&self, cols: u16, rows: u16) {
+        self.client.resize(cols, rows);
+    }
+
+    /// Opt into transparent default cells and no native pane borders. Explicit
+    /// ANSI backgrounds, selection/search and the cursor remain visible.
+    /// The default is opaque; changing appearance does not alter the session.
+    pub fn set_glass_mode(&self, enabled: bool) {
+        self.client.set_glass_mode(enabled);
+    }
+
+    /// Split the focused terminal using one new resource on this connection.
+    ///
+    /// # Errors
+    /// Refuses invalid axes, a fifth pane, or a split while another is pending.
+    pub fn split_pane(&self, axis: &str) -> Result<(), JsValue> {
+        self.client.split_pane(axis)
+    }
+
+    /// Move keyboard focus to the next published pane.
+    ///
+    /// # Errors
+    /// Fails when the connection has no usable terminal.
+    pub fn focus_next_pane(&self) -> Result<(), JsValue> {
+        self.client.focus_next_pane()
+    }
+
+    /// Focus the visible, published terminal whose canonical id was announced
+    /// by `phux-panes` (for example `@1` or `host/@1`). Does not open a view.
+    ///
+    /// # Errors
+    /// Refuses a missing, hidden, bootstrapping, or failed terminal.
+    pub fn focus_pane(&self, id: &str) -> Result<(), JsValue> {
+        self.client.focus_pane(id)
+    }
+
+    /// Send at most 4096 UTF-8 bytes as one structured, trusted paste to the
+    /// focused terminal. Empty text is a no-op; no Enter key is appended.
+    ///
+    /// # Errors
+    /// Refuses larger payloads or a terminal/transport unavailable for input.
+    pub fn send_text(&self, text: &str) -> Result<(), JsValue> {
+        self.client.send_text(text)
+    }
+
+    /// Close the focused pane's view. Presentation only: the terminal keeps
+    /// running in its session, and the remaining panes take its space.
+    ///
+    /// # Errors
+    /// Refuses the last view; use the host's Release Session control instead.
+    pub fn close_pane(&self) -> Result<(), JsValue> {
+        self.client.close_view()
+    }
+
+    /// Request termination of the focused terminal. The pane remains until
+    /// closure is observed. The `phux-panes` event reports later errors.
+    ///
+    /// # Errors
+    /// Refuses the last pane, a pending operation, or missing session identity
+    /// on an organization peer. Use Release Session to end the whole session.
+    pub fn kill_pane(&self) -> Result<(), JsValue> {
+        self.client.kill_pane()
+    }
+
+    /// Send one on-screen key as typed at the terminal: `Escape`, `Tab`,
+    /// `Enter`, `Backspace`, `Delete`, an arrow, `Home`, `End`, `PageUp`,
+    /// `PageDown`, or a single character. A held Ctrl latch chords it.
+    ///
+    /// # Errors
+    /// Refuses any other key name.
+    pub fn send_key(&self, key: &str) -> Result<(), JsValue> {
+        self.client.send_key(key)
+    }
+
+    /// Hold (or release) Ctrl for the next key typed at the terminal; the
+    /// canvas announces each change as a `phux-modifiers` event.
+    pub fn set_ctrl_latch(&self, held: bool) {
+        self.client.set_ctrl_latch(held);
+    }
+}
+
+/// Hosted JS entry point. Unlike [`start`], this requires the hosted session
+/// control preamble before accepting binary phux wire frames and reports safe,
+/// structured lifecycle events through `callback`. An optional `signal` cancels
+/// establishment, releasing the socket even before the attach completes.
+///
+/// # Errors
+/// Fails if the canvas element is missing or the connection can't be set up.
+#[wasm_bindgen]
+pub async fn start_hosted(
+    ws_url: String,
+    canvas_id: String,
+    cols: u16,
+    rows: u16,
+    callback: js_sys::Function,
+    signal: Option<web_sys::AbortSignal>,
+) -> Result<HostedClient, JsValue> {
+    let canvas = canvas_by_id(&canvas_id)?;
+    let client = with_abort(
+        client::run_hosted(&ws_url, canvas, cols, rows, callback),
+        signal,
+    )
+    .await?;
+    Ok(HostedClient { client })
+}
+
+struct AbortBinding {
+    signal: web_sys::AbortSignal,
+    callback: Closure<dyn FnMut()>,
+}
+
+impl Drop for AbortBinding {
+    fn drop(&mut self) {
+        let _ = self
+            .signal
+            .remove_event_listener_with_callback("abort", self.callback.as_ref().unchecked_ref());
+    }
+}
+
+async fn with_abort<T>(
+    future: impl Future<Output = Result<T, JsValue>>,
+    signal: Option<web_sys::AbortSignal>,
+) -> Result<T, JsValue> {
+    let Some(signal) = signal else {
+        return future.await;
+    };
+    if signal.aborted() {
+        return Err(JsValue::from_str("hosted connection aborted"));
+    }
+    let (sender, receiver) = oneshot::channel();
+    let sender = RefCell::new(Some(sender));
+    let callback = Closure::<dyn FnMut()>::new(move || {
+        if let Some(sender) = sender.borrow_mut().take() {
+            let _ = sender.send(());
+        }
+    });
+    signal.add_event_listener_with_callback("abort", callback.as_ref().unchecked_ref())?;
+    let _binding = AbortBinding { signal, callback };
+    // Dropping the losing establishment future runs AppEstablishment's disposal
+    // guard, closing its transport and removing the browser handlers.
+    match select(Box::pin(future), receiver).await {
+        Either::Left((result, _)) => result,
+        Either::Right(_) => Err(JsValue::from_str("hosted connection aborted")),
+    }
+}
+
+/// JS entry point for the WebTransport-first path: try HTTP/3-over-QUIC at
+/// `wt_url` (an `https://` session URL; append `?token=<hex>` for a
+/// token-authenticated listener) and fall back to the WebSocket at `ws_url`
+/// when the API or the endpoint is unavailable. After initial readiness the
+/// entry point supervises transport loss and repeats the bounded fallback.
+///
+/// # Errors
+/// Fails if the canvas element is missing or both transports fail to
+/// connect.
+#[wasm_bindgen]
+pub async fn start_webtransport(
+    wt_url: String,
+    ws_url: String,
+    canvas_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(), JsValue> {
+    let canvas = canvas_by_id(&canvas_id)?;
+    let client = client::run_with_fallback(&wt_url, &ws_url, canvas, cols, rows).await?;
+    client.enable_auto_reconnect(Some(&wt_url), &ws_url);
+    Ok(())
+}
+
+/// Resolve the `<canvas>` element the terminal renders into.
+fn canvas_by_id(canvas_id: &str) -> Result<web_sys::HtmlCanvasElement, JsValue> {
+    web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(canvas_id))
+        .ok_or_else(|| JsValue::from_str("canvas element not found"))?
+        .dyn_into::<web_sys::HtmlCanvasElement>()
+        .map_err(Into::into)
+}
+
+/// Cell geometry + font for the canvas renderer. A monospace cell grid: every
+/// cell is `cell_w`×`cell_h` logical CSS pixels; DPR only scales the backing store.
+#[derive(Clone, Debug)]
+pub struct Metrics {
+    /// Cell width in pixels.
+    pub cell_w: f64,
+    /// Cell height in pixels.
+    pub cell_h: f64,
+    /// CSS font string, e.g. `"14px monospace"`.
+    pub font: String,
+}
+
+impl Metrics {
+    /// Measure the same loaded face the canvas paints, before reporting a viewport.
+    ///
+    /// # Errors
+    /// Fails if the canvas cannot measure text.
+    pub fn measure(ctx: &CanvasRenderingContext2d) -> Result<Self, JsValue> {
+        let mut metrics = Self::default();
+        ctx.set_font(&metrics.font);
+        let text = ctx.measure_text("M")?;
+        metrics.cell_w = text.width().ceil().max(1.0);
+        metrics.cell_h = (text.font_bounding_box_ascent() + text.font_bounding_box_descent())
+            .ceil()
+            .max(metrics.cell_h);
+        Ok(metrics)
+    }
+
+    /// The cell size in whole pixels (at least 1x1), as the viewport
+    /// reports it to the server.
+    #[must_use]
+    pub fn cell_px(&self) -> (u16, u16) {
+        let whole = |px: f64| px.round().clamp(1.0, f64::from(u16::MAX)) as u16;
+        (whole(self.cell_w), whole(self.cell_h))
+    }
+}
+
+impl Default for Metrics {
+    fn default() -> Self {
+        Self {
+            cell_w: 8.0,
+            cell_h: 16.0,
+            font: "14px \"Paper Mono\", monospace".to_owned(),
+        }
+    }
+}
+
+/// A highlighted run of row-major cells: a search match.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Mark {
+    /// Row-major cell indices.
+    pub cells: Range<usize>,
+    /// Whether this is the current match.
+    pub current: bool,
+}
+
+/// What is drawn over the grid's own colors: the selection (inverted) and
+/// search matches (`match.*`, never a status tone).
+#[derive(Clone, Debug, Default)]
+pub struct Overlay<'a> {
+    /// Row-major indices of the selected cells.
+    pub selected: Range<usize>,
+    /// Search matches on screen.
+    pub marks: &'a [Mark],
+}
+
+/// Paint a [`Grid`] onto a 2D canvas context, row by row, under `overlay`
+/// (selected cells inverted, search matches highlighted in the roles the
+/// grid's own palette solves to, [`ink::roles_of`]). When `cursor_on`
+/// and the grid's cursor is visible, an inverted block cursor is drawn over
+/// its cell (the caller toggles `cursor_on` to blink). `glass` leaves
+/// default-background cells transparent.
+pub fn render(
+    ctx: &CanvasRenderingContext2d,
+    grid: &Grid,
+    m: &Metrics,
+    cursor_on: bool,
+    overlay: &Overlay<'_>,
+    glass: bool,
+) {
+    set_cell_text(ctx, m);
+    let roles = ink::roles_of(grid);
+    for row in 0..grid.rows {
+        draw_row(ctx, grid, m, row, overlay, glass, &roles);
+    }
+    if cursor_on {
+        draw_cursor(ctx, grid, m);
+    }
+}
+
+/// Redraw only the cursor's row of an already [`render`]ed `grid`, then the
+/// cursor over it when `cursor_on`. A blink costs one row instead of the
+/// whole grid, and repaints whatever part of a neighbor's glyph (a wide
+/// character's right half) reaches into the cursor's cell.
+pub fn render_cursor_row(
+    ctx: &CanvasRenderingContext2d,
+    grid: &Grid,
+    m: &Metrics,
+    cursor_on: bool,
+    overlay: &Overlay<'_>,
+    glass: bool,
+) {
+    set_cell_text(ctx, m);
+    let roles = ink::roles_of(grid);
+    draw_row(ctx, grid, m, grid.cursor_row, overlay, glass, &roles);
+    if cursor_on {
+        draw_cursor(ctx, grid, m);
+    }
+}
+
+/// Glyphs are drawn from their cell's top-left corner. Terminal cells run
+/// left to right whatever the page's direction, so the alignment is the
+/// physical `left`, never `start` (which a right-to-left page would flip).
+fn set_cell_text(ctx: &CanvasRenderingContext2d, m: &Metrics) {
+    // The canvas element is `direction: ltr` (index.html), so `fillText`
+    // never reorders a row's glyphs on a right-to-left page.
+    ctx.set_font(&m.font);
+    ctx.set_text_baseline("top");
+    ctx.set_text_align("left");
+}
+
+/// Paint one row: every cell's background first, then every glyph. A wide
+/// (CJK) glyph is drawn from its own cell across the spacer cell after it,
+/// so painting cell by cell would cover its right half with the spacer's
+/// background.
+fn draw_row(
+    ctx: &CanvasRenderingContext2d,
+    grid: &Grid,
+    m: &Metrics,
+    row: u16,
+    overlay: &Overlay<'_>,
+    glass: bool,
+    roles: &Roles,
+) {
+    let start = usize::from(row) * usize::from(grid.cols);
+    let Some(cells) = grid.cells.get(start..start + usize::from(grid.cols)) else {
+        return;
+    };
+    let y = f64::from(row) * m.cell_h;
+    if glass {
+        // Erase the previous glyph/cursor before repainting transparent cells.
+        ctx.clear_rect(0.0, y, f64::from(grid.cols) * m.cell_w, m.cell_h);
+    }
+    for (col, cell) in (0..grid.cols).zip(cells) {
+        let index = start + usize::from(col);
+        if glass && !cell_has_background(cell, index, overlay) {
+            continue;
+        }
+        let (_, bg) = cell_colors(grid, cell, index, overlay, roles);
+        ctx.set_fill_style_str(&ink::css_rgb(bg));
+        ctx.fill_rect(f64::from(col) * m.cell_w, y, m.cell_w, m.cell_h);
+    }
+    for (col, cell) in (0..grid.cols).zip(cells) {
+        if has_glyph(cell.ch) {
+            let (fg, _) = cell_colors(grid, cell, start + usize::from(col), overlay, roles);
+            ctx.set_fill_style_str(&ink::css_rgb(fg));
+            draw_glyph(ctx, cell.ch, f64::from(col) * m.cell_w, y);
+        }
+    }
+}
+
+fn cell_has_background(cell: &GridCell, index: usize, overlay: &Overlay<'_>) -> bool {
+    cell.bg.is_some()
+        || cell.inverse
+        || overlay.selected.contains(&index)
+        || overlay.marks.iter().any(|mark| mark.cells.contains(&index))
+}
+
+/// A cell's foreground and background under the overlay: the selection
+/// inverts them; a search match lays `match.bg` under the cell's own ink,
+/// and the current one takes `match.current_bg` and `match.current_fg`.
+fn cell_colors(
+    grid: &Grid,
+    cell: &GridCell,
+    index: usize,
+    overlay: &Overlay<'_>,
+    roles: &Roles,
+) -> (Rgb, Rgb) {
+    let (fg, bg) = base_cell_colors(grid, cell);
+    if overlay.selected.contains(&index) {
+        return (bg, fg);
+    }
+    match overlay
+        .marks
+        .iter()
+        .find(|mark| mark.cells.contains(&index))
+    {
+        Some(mark) if mark.current => ink::current_match(roles),
+        Some(_) => (fg, ink::match_fill(roles, bg)),
+        None => (fg, bg),
+    }
+}
+
+fn base_cell_colors(grid: &Grid, cell: &GridCell) -> (Rgb, Rgb) {
+    let fg = cell.fg.unwrap_or(grid.default_fg);
+    let bg = cell.bg.unwrap_or(grid.default_bg);
+    if cell.inverse { (bg, fg) } else { (fg, bg) }
+}
+
+/// Whether a cell draws a glyph: blanks and wide characters' spacer cells
+/// do not.
+const fn has_glyph(ch: char) -> bool {
+    ch != ' ' && ch != '\0'
+}
+
+fn draw_glyph(ctx: &CanvasRenderingContext2d, ch: char, x: f64, y: f64) {
+    let mut buf = [0u8; 4];
+    let _ = ctx.fill_text(ch.encode_utf8(&mut buf), x, y);
+}
+
+/// Inverted block cursor: fill the cell with the foreground color, then
+/// redraw its glyph in the background color on top, clipped to the cell so
+/// a wide glyph's right half keeps its own colors.
+fn draw_cursor(ctx: &CanvasRenderingContext2d, grid: &Grid, m: &Metrics) {
+    let (col, row) = (grid.cursor_col, grid.cursor_row);
+    if !grid.cursor_visible || col >= grid.cols || row >= grid.rows {
+        return;
+    }
+    let x = f64::from(col) * m.cell_w;
+    let y = f64::from(row) * m.cell_h;
+    let cell = grid
+        .cells
+        .get(usize::from(row) * usize::from(grid.cols) + usize::from(col));
+    let (fg, bg) = cell.map_or((grid.default_fg, grid.default_bg), |cell| {
+        base_cell_colors(grid, cell)
+    });
+    ctx.set_fill_style_str(&ink::css_rgb(fg));
+    ctx.fill_rect(x, y, m.cell_w, m.cell_h);
+    if let Some(c) = cell.filter(|c| has_glyph(c.ch)) {
+        ctx.save();
+        ctx.begin_path();
+        ctx.rect(x, y, m.cell_w, m.cell_h);
+        ctx.clip();
+        ctx.set_fill_style_str(&ink::css_rgb(bg));
+        draw_glyph(ctx, c.ch, x, y);
+        ctx.restore();
+    }
+}
+
+#[cfg(test)]
+mod glass_tests;

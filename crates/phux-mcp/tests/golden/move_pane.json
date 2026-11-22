@@ -1,0 +1,9 @@
+{
+  "direction": "horizontal",
+  "operation": "move-pane",
+  "ratio": 0.5,
+  "schema_version": 1,
+  "session_id": 1,
+  "source_terminal_id": 2,
+  "target_terminal_id": 1
+}

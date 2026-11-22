@@ -1,0 +1,83 @@
+//! Spawn/move result, scope, and event wire tags.
+
+#![allow(
+    clippy::redundant_pub_crate,
+    reason = "`frame` re-exports these crate-internal tags"
+)]
+
+use super::tag_registry;
+
+// `Result`-shaped unions use `Ok = 0`, `Err = 1`, mirroring `Option`'s
+// `None = 0`, `Some = 1`.
+wire_tags! { SpawnResult;
+pub(crate) const SPAWN_RESULT_OK: u8 = 0;
+pub(crate) const SPAWN_RESULT_ERR: u8 = 1;
+}
+
+// Wire tags for the `SpawnError` tagged union.
+wire_tags! { SpawnError;
+pub(crate) const SPAWN_ERROR_TAG_GROUP_NOT_FOUND: u8 = 0;
+pub(crate) const SPAWN_ERROR_TAG_SPAWN_FAILED: u8 = 1;
+pub(crate) const SPAWN_ERROR_TAG_UNSUPPORTED_SATELLITE_ROUTE: u8 = 2;
+pub(crate) const SPAWN_ERROR_TAG_SATELLITE_UNREACHABLE: u8 = 3;
+pub(crate) const SPAWN_ERROR_TAG_UNSUPPORTED_KIND: u8 = 4;
+pub(crate) const SPAWN_ERROR_TAG_PARENT_NOT_FOUND: u8 = 5;
+pub(crate) const SPAWN_ERROR_TAG_PARENT_KIND_MISMATCH: u8 = 6;
+pub(crate) const SPAWN_ERROR_TAG_IDEMPOTENCY_CONFLICT: u8 = 7;
+}
+
+// `MoveResult` / `MoveError` tags (ADR-0056).
+wire_tags! { MoveResult;
+pub(crate) const MOVE_RESULT_OK: u8 = 0;
+pub(crate) const MOVE_RESULT_ERR: u8 = 1;
+}
+wire_tags! { MoveError;
+pub(crate) const MOVE_ERROR_TAG_MOVE_FAILED: u8 = 0;
+pub(crate) const MOVE_ERROR_TAG_UNSUPPORTED_SATELLITE_ROUTE: u8 = 1;
+}
+
+// Wire tags for the `Scope` tagged union.
+wire_tags! { Scope;
+pub(crate) const SCOPE_TAG_RESOURCE: u8 = 0;
+pub(crate) const SCOPE_TAG_GROUP: u8 = 1;
+pub(crate) const SCOPE_TAG_GLOBAL: u8 = 2;
+}
+
+// `AgentEvent` tags. Each event is `tag: u8` + a
+// length-prefixed body, so an unknown tag skips to `AgentEvent::Unknown`.
+wire_tags! { Event;
+pub(crate) const EVENT_TAG_COMMAND_STARTED: u8 = 0x00;
+pub(crate) const EVENT_TAG_COMMAND_FINISHED: u8 = 0x01;
+pub(crate) const EVENT_TAG_TITLE_CHANGED: u8 = 0x02;
+pub(crate) const EVENT_TAG_BELL: u8 = 0x03;
+pub(crate) const EVENT_TAG_RESOURCE_SPAWNED: u8 = 0x04;
+pub(crate) const EVENT_TAG_RESOURCE_CLOSED: u8 = 0x05;
+pub(crate) const EVENT_TAG_DIRTY: u8 = 0x06;
+pub(crate) const EVENT_TAG_IDLE: u8 = 0x07;
+pub(crate) const EVENT_TAG_TERMINAL_CONTROL: u8 = 0x08;
+pub(crate) const EVENT_TAG_ASKED: u8 = 0x09;
+pub(crate) const EVENT_TAG_CWD_CHANGED: u8 = 0x0a;
+pub(crate) const EVENT_TAG_JOURNAL_GAP: u8 = 0x0b;
+pub(crate) const EVENT_TAG_SOURCE_GAP: u8 = 0x0c;
+pub(crate) const EVENT_TAG_APPROVAL_REQUESTED: u8 = 0x0d;
+pub(crate) const EVENT_TAG_APPROVAL_DECIDED: u8 = 0x0e;
+pub(crate) const EVENT_TAG_INPUT_ACTIVITY: u8 = 0x0f;
+// The organization events (`docs/organization.md`).
+pub(crate) const EVENT_TAG_SESSION_CREATED: u8 = 0x10;
+pub(crate) const EVENT_TAG_SESSION_RENAMED: u8 = 0x11;
+pub(crate) const EVENT_TAG_SESSION_DELETED: u8 = 0x12;
+pub(crate) const EVENT_TAG_SESSION_LIFETIME_CHANGED: u8 = 0x13;
+pub(crate) const EVENT_TAG_MEMBERSHIP_CHANGED: u8 = 0x14;
+pub(crate) const EVENT_TAG_RESOURCE_CREATED: u8 = 0x15;
+pub(crate) const EVENT_TAG_RESOURCE_REMOVED: u8 = 0x16;
+pub(crate) const EVENT_TAG_ACTIVATION_CHANGED: u8 = 0x17;
+pub(crate) const EVENT_TAG_ARRANGEMENT_CHANGED: u8 = 0x18;
+pub(crate) const EVENT_TAG_LEASE_CHANGED: u8 = 0x19;
+pub(crate) const EVENT_TAG_INTAKE_CHANGED: u8 = 0x1a;
+pub(crate) const EVENT_TAG_RESOURCE_RENAMED: u8 = 0x1b;
+pub(crate) const EVENT_TAG_NATIVE_AGENT_RESULT: u8 = 0x1c;
+pub(crate) const EVENT_TAG_SESSION_PROJECT_SET: u8 = 0x1d;
+// `0x1e` and `0x1f` are left free for concurrent work.
+pub(crate) const EVENT_TAG_DOCUMENT_INPUT: u8 = 0x20;
+pub(crate) const EVENT_TAG_AGENT_REQUEST: u8 = 0x21;
+}

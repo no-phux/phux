@@ -1,0 +1,170 @@
+# CI
+
+The hosted counterpart of [local validation](./development.md#validating-a-change).
+`.github/workflows/` is the executable reference; `just guards` lints it and
+`just tools-check` tests its contracts.
+
+## Routing and receipts
+
+One classifier, `bun tools/main.ts detect-changes` over
+[`tools/src/routing/routes.ts`](../tools/src/routing/routes.ts), decides
+which lanes a change can affect. Unknown paths fail closed and run everything;
+handwritten docs normally run only guards. An add, rename, or delete of a
+top-level `docs/*.md` also runs the docs catalog job. That job reads
+`no-phux/website` main's `scripts/docs-catalog.ts` at runtime, so a change
+on website main can alter phux CI results. Docs read by tests, including
+`docs/agents.md` and generated references, select their Rust consumers.
+A library change runs the tests of its dependents.
+
+Pull requests take the fast path: required `ci` never waits on the macOS
+pool. A PR gates on its path-scoped Linux lanes, path-scopes native setup and
+rust icount (or uses `perf-baseline` for icount), and skips compile lanes
+for release metadata. Apple, Linux packaging and the mandatory lanes
+qualify on the main push. A red main blocks a release, not a merge.
+The exception is a same-repository release bot's PR (`release-please--*`,
+`rune-release/*`): its merge commit is what gets tagged, so it keeps full
+qualification, Apple included. Bots merge those, so nobody waits on them.
+Main, the queue and release PRs always run native setup and rust icount,
+including after receipt reuse. Unknown or unreadable scope fails closed. The classifier
+compares both full documents: root workspace and lock versions, release
+manifest versions, skill version lines, changelogs, and top-level `version`
+in the five integration packages listed in `release-please-config.json`.
+Any other package field, missing side, unlisted path, or workspace bump
+without all its locks keeps normal routing.
+
+`main` pushes and merge queue groups (`merge_group`) run main policy: the
+full Rust pool and every lane the diff needs. A `main` push whose tree a
+pull request or merge group already validated with the same lanes reuses
+that receipt (`tools/src/routing/receipt.ts`).
+
+## After the merge
+
+The live `main` ruleset has no merge queue. A pull request merges once
+its required `ci` and `commitlint` checks pass on its own diff; the ruleset
+does not make it re-run against a newer `main`. Main's push validates the
+resulting tree too. Stable drafts still ship only from a green exact-SHA main
+`ci` push with native proof, so a red `main` blocks that release, not an
+already-qualified PR merge. Rune tags use `ci-green`.
+
+When a `ci` or `rune-macos` push run on `main` fails,
+[`main-red.yml`](../.github/workflows/main-red.yml) opens one `ci/main-red`
+issue listing the commits since that workflow's last green push; later
+failures comment on it. It closes once every tracked workflow's latest
+`main` push is green. Fix forward or revert the suspect; do not pile on.
+
+## Native Apple qualification
+
+`ci.yml`'s `rune` lane is Linux. A pull request runs `check.sh` and cargo-deny
+on `linux-x86_64` only: no package, no packaged launch, and no
+`linux-aarch64`. Its receipt omits `linux-aarch64` and `packaging`, so a
+main push cannot reuse it for those. Release PRs, the merge queue, a main push, and a
+manual `ci` dispatch package and launch both Linux hosts. Nightly
+`cache-warm.yml` does the same with the default inputs. `rune-client.yml`
+does too. Its preflight is `ci-green`, described below. A standalone pull request
+reports a passing `rune-macos` check
+without starting Apple runners; that receipt covers no Apple work.
+`rune-macos.yml` runs macOS and the native iOS simulator/device
+qualification on main pushes, nightly, and manually. Every Rune-affecting
+queue group runs both Apple legs, whether reached directly or through Cargo.
+Recognized release metadata also selects both Apple legs, even when CI's
+product lanes are unselected. This qualifies the metadata release's own tree,
+including native code behind any intervening documentation-only commits.
+
+On `merge_group` and Rune-affecting release PRs (including release metadata),
+**the already-required `ci` aggregate calls and requires the Apple workflow**.
+It rejects a skipped, failed, or cancelled child. Other pull requests never
+call it; the standalone PR `rune-macos` check stays cheap and covers no Apple work.
+The required child keeps read-only permissions and receives no signing/release secrets;
+tag-only signing and notarization remain tag-only. Simulator transport proof
+uses its isolated same-source server and generated fixture credentials.
+No additional required check, queue drain, or ruleset cutover is needed.
+Old queue entries retain their original full native `ci`. The child is
+not also triggered independently on the queue, so qualification is not doubled.
+
+A main push can reuse the exact native receipt from its successful queue or release PR
+`ci` caller: same immutable tree, source repository, referenced native child
+revision, workflow and both-leg
+coverage. Cheap PR and Linux-only receipts cannot attest Apple work.
+Nightly and manual runs always qualify the full tree.
+Native main pushes upload full-coverage receipts after the aggregate succeeds.
+A stable draft still needs that exact SHA's successful main push `ci` plus a
+full native receipt: same tree, workflow and both-leg coverage. `ci-green`
+(the Rune tag preflight) accepts that same push proof. It also accepts one
+`merge_group` `ci.yml` run for the exact SHA, and only when no push `ci` run
+exists (`missing`). A push that is queued, in progress, waiting, pending, or
+requested keeps the push refusal: a Rune tag cannot be undone if that push
+later goes red. When the fallback does apply, every part of this holds.
+`head_sha` is that SHA, the event is `merge_group`, the conclusion is
+`success`, and `head_branch` starts with `gh-readonly-queue/`. The SHA is
+reachable from `main`: `compare` of `main...SHA` reports `behind` or
+`identical`. Every job the push plan for that SHA requires ran and passed.
+That set comes from the planner (`tools/src/routing` plan and detect), read
+off `ci.yml`'s plan gates, not from a second list. A skipped or cancelled
+required job is missing. The only exception is an identical-tree receipt
+that proves the lane (`tools/src/routing/receipt.ts`): same tree, workflow
+and coverage, and not a lane reuse still runs (`ffi`, native setup, rust
+icount). That lookup does not pass a push SHA, so it accepts an
+identical-tree pull-request receipt as well as a merge group, the same
+reuse routing already uses. The `rune-macos` workflow called inside that same run passed.
+The full-coverage native receipt is still required on either path. A
+skipped or cheap green, an ancestor receipt, another SHA, a pull request,
+or a dispatch cannot substitute. Fallback (C), only when no push run
+exists and this queue evidence is not enough, is a push-equivalent `ci`
+run on that exact SHA. `ci.yml`'s
+`workflow_dispatch` has no inputs, and nothing dispatches `ci` for an
+arbitrary SHA. Missing or expired proof blocks publication.
+
+This deliberately qualifies even integration-only metadata releases rather
+than introducing ancestry tracking or product-specific exemptions. Arbitrary
+tags at unqualified docs-only commits are refused; use a normal version bump.
+A red Apple result on a direct main push does not block main, but cannot ship.
+See [releasing](./releasing.md).
+
+Missing or expired receipts hold a draft; rerunning the original qualified
+push can refresh its proof. A batch merge may produce a push only for its
+final commit. An intermediate SHA with no push run can still pass `ci-green` when its own
+`merge_group` run meets the rule above. A push that is still running cannot. Another SHA, a pull-request green,
+or a dispatch is not a substitute. `release.yml` still requires the push
+`ci` conclusion for a stable draft.
+
+## Concurrency
+
+Every main push retains its per-SHA CI **and Apple** groups, with no
+cancellation of running pushes. Routing compares each push's before/after
+range: replacing a pending native change with a docs-only push would lose
+its qualification. Actor identity never changes admission. This matches
+the reviewed CI repair (#2462), not rejected coalescing proposal #2449.
+
+PR updates, closes and a dispatch of the same repository branch share a
+latest-wins group. A merged PR's closed event carries the base ref, so its
+key uses the head repository and `refs/heads/` plus `head_ref`, not that
+base ref. Dispatches use their repository and full ref: a same-name tag
+cannot cancel a branch. The separator is a colon, forbidden in both names,
+so different repository/branch splits cannot collide.
+Merge groups retain their own queue-ref group. The Apple child's group
+prefix differs from its calling `ci`, preventing self-cancellation.
+The required queue or release PR child also uses a separate prefix from the standalone
+cheap PR workflow, so that check cannot cancel the actual native proof.
+The `required:` and `standalone:` modes use a colon, forbidden in repository
+and branch names, so a fork name cannot masquerade as the required mode.
+
+First-run timing runs Linux on every event. Its Mac job runs for installer
+changes on PRs and main pushes, nightly, and on manual runs. Only selected
+Mac jobs coalesce: unrelated pushes cannot replace a pending installer
+qualification, and nightly/manual jobs have separate groups. Its output-file
+fixture uses a regular temporary file, like Actions, not a captured `/dev/stdout`.
+
+## Runner and cache budget
+
+The test lanes compile once (`just test-archive`) and run the unit and e2e
+shards from that nextest archive. Pull requests restore caches and never
+save them. Main pushes and the 00:10 UTC Linux-only cache-warm dispatch
+save per-lane caches under the 10 GB budget. Post-upload pruning keeps
+current-day keys and never deletes the sole older restore source before
+a stored replacement exists. Rune warming keeps its separate 06:17 clock.
+The same nightly Linux dispatch warms both browser dependency caches using
+the CI web recipes. It explicitly enables saves on this repository's `main`;
+PRs and merge groups stay restore-only. This seeds the caches even when an
+exact-tree queue receipt skips the web jobs on the subsequent `main` push.
+PR and topic-ref entries are outside the pruner's deletion scope.
+Runners are free hosted Ubuntu x64 and arm64, macOS 26 and `xcode-27`.

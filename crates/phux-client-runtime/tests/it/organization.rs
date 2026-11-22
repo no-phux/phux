@@ -1,0 +1,527 @@
+//! The control plane's organization lane driven sans-IO: frames fed
+//! directly, outbound commands answered by hand.
+
+#![allow(clippy::expect_used, reason = "test assertions")]
+#![allow(clippy::unwrap_used, reason = "test assertions")]
+#![allow(clippy::panic, reason = "test assertions")]
+
+use phux_client_core::org_ops::{OrgOutcome, SubmitError};
+use phux_client_runtime::control::{ControlOptions, ControlPlane, Event, ReplicaState};
+use phux_protocol::caps::{ServerFeature, ServerFeatureExt, ServerFeatureExtSet, ServerFeatureSet};
+use phux_protocol::ids::{
+    ActivationId, AuthorityId, OperationId, ResourceId, ResourceKey, Revision, ServerInstance,
+    SessionId, SessionKey, WindowId,
+};
+use phux_protocol::wire::frame::{
+    ActivationInfo, AgentEvent, Command, CommandResult, CommandValue, Committed, EventStamp,
+    ExecState, FrameKind, OrgFilter, OrganizationPage, Outcome, Refusal, ResourceRecord,
+    SessionRecord,
+};
+use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot};
+
+use crate::embedded::{answer, commands, negotiate, opened, reopen, server_hello};
+
+mod close;
+mod empty_spawn;
+
+/// The fixture server, advertising `ORGANIZATION` (and the session verbs
+/// that ride with it) when `organization`.
+fn hello(organization: bool) -> FrameKind {
+    let ext = if organization {
+        ServerFeatureExtSet::with(&[
+            ServerFeatureExt::Organization,
+            ServerFeatureExt::SessionKill,
+            ServerFeatureExt::SessionProject,
+        ])
+    } else {
+        ServerFeatureExtSet::new()
+    };
+    server_hello()
+        .features(ServerFeatureSet::with(&[ServerFeature::CloseTabResources]))
+        .features_ext(ext)
+        .build()
+}
+
+fn event(plane: &mut ControlPlane, seq: Option<u64>, event: AgentEvent) {
+    plane
+        .feed(FrameKind::Event {
+            terminal: None,
+            event,
+            stamp: seq.map(|seq| Box::new(EventStamp::new(seq, 0))),
+        })
+        .expect("event");
+}
+
+const fn skey(n: u8) -> SessionKey {
+    SessionKey::new([n; 16]).unwrap()
+}
+
+const fn rkey(n: u8) -> ResourceKey {
+    ResourceKey::new([0x40 | n; 16]).unwrap()
+}
+
+const fn instance() -> ServerInstance {
+    ServerInstance::new([9; 16])
+}
+
+fn running(n: u8, session: SessionKey) -> ResourceRecord {
+    ResourceRecord::new(rkey(n), session, Revision::new(1))
+        .with_activation(Some(ActivationInfo::new(
+            ActivationId::new(1),
+            instance(),
+            ExecState::Running,
+        )))
+        .with_live(Some(ResourceId::local(u32::from(n))))
+}
+
+fn page(seq: u64) -> OrganizationPage {
+    OrganizationPage::new(AuthorityId::new([1; 16]).unwrap(), Revision::new(10), seq)
+        .with_sessions(vec![
+            SessionRecord::new(skey(1), "work", Revision::new(2))
+                .with_members(1)
+                .with_live(Some(SessionId::new(1))),
+        ])
+        .with_resources(vec![running(1, skey(1))])
+}
+
+fn page_value(page: OrganizationPage) -> CommandResult {
+    CommandResult::OkWith(CommandValue::OrganizationPage(Box::new(page)))
+}
+
+fn committed(operation: OperationId, revision: u64) -> CommandResult {
+    CommandResult::OkWith(CommandValue::Committed(Box::new(Committed::new(
+        operation,
+        Revision::new(revision),
+    ))))
+}
+
+/// A browsing plane past `HELLO_OK`; returns the seed request's id when the
+/// server advertises `ORGANIZATION`.
+fn negotiated(organization: bool) -> (ControlPlane, Option<u32>) {
+    let (plane, followups) = negotiate(ControlOptions::default(), hello(organization), None);
+    let seed = followups.into_iter().find_map(|frame| match frame {
+        FrameKind::Command {
+            request_id,
+            command:
+                Command::GetOrganization {
+                    filter: OrgFilter::All,
+                    cursor: None,
+                    ..
+                },
+        } => Some(request_id),
+        _ => None,
+    });
+    (plane, seed)
+}
+
+/// A plane seeded from `page(5)`, its post-seed commands drained.
+fn seeded() -> ControlPlane {
+    let (mut plane, seed) = negotiated(true);
+    answer(&mut plane, seed.expect("seed"), page_value(page(5)));
+    let _ = commands(&mut plane);
+    plane
+}
+
+/// Drop and reopen the connection; returns the reseed request's id and the
+/// other commands sent after `HELLO_OK`.
+fn reconnect(plane: &mut ControlPlane) -> (u32, Vec<(u32, Command)>) {
+    plane.connection_lost(Some("reset".to_owned()));
+    reopen(plane, hello(true));
+    let after_hello = commands(plane);
+    let seed = after_hello
+        .iter()
+        .find(|(_, c)| matches!(c, Command::GetOrganization { .. }))
+        .expect("reseed")
+        .0;
+    (seed, after_hello)
+}
+
+/// Answer a fresh topology read with `snapshot`.
+fn refresh_topology_to(plane: &mut ControlPlane, snapshot: SessionSnapshot) {
+    let refresh = plane.refresh_topology().unwrap();
+    let _ = commands(plane);
+    answer(
+        plane,
+        refresh,
+        CommandResult::OkWith(CommandValue::State(snapshot)),
+    );
+}
+
+fn renamed(name: &str) -> AgentEvent {
+    AgentEvent::SessionRenamed {
+        session: skey(1),
+        name: name.to_owned(),
+        revision: Revision::new(3),
+    }
+}
+
+fn org_outcomes(events: &[Event]) -> Vec<(OperationId, OrgOutcome)> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            Event::OrganizationOperation { operation, outcome } => {
+                Some((*operation, outcome.clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn the_replica_seeds_across_pages_then_follows_the_journal() {
+    let (mut plane, seed) = negotiated(true);
+    let seed = seed.expect("an ORGANIZATION server is seeded after HELLO_OK");
+    assert_eq!(plane.organization().state(), ReplicaState::Seeding);
+    let first = OrganizationPage::new(AuthorityId::new([1; 16]).unwrap(), Revision::new(10), 5)
+        .with_sessions(vec![SessionRecord::new(skey(1), "work", Revision::new(2))])
+        .with_next_cursor(Some(vec![7]));
+    answer(&mut plane, seed, page_value(first));
+    let next = commands(&mut plane)
+        .into_iter()
+        .find(|(_, c)| {
+            matches!(
+                c,
+                Command::GetOrganization {
+                    cursor: Some(_),
+                    ..
+                }
+            )
+        })
+        .expect("the next page")
+        .0;
+    // An event during the seed is buffered and replayed past the cut.
+    event(&mut plane, Some(6), renamed("notes"));
+    answer(
+        &mut plane,
+        next,
+        page_value(
+            OrganizationPage::new(AuthorityId::new([1; 16]).unwrap(), Revision::new(10), 5)
+                .with_resources(vec![running(1, skey(1))]),
+        ),
+    );
+    assert!(plane.organization().is_live());
+    assert_eq!(
+        plane.organization().session(&skey(1)).unwrap().name,
+        "notes"
+    );
+    assert_eq!(
+        plane.organization().handles().handle(&rkey(1)),
+        Some(&ResourceId::local(1))
+    );
+    assert!(
+        plane
+            .take_events()
+            .iter()
+            .any(|e| matches!(e, Event::OrganizationChanged))
+    );
+    event(
+        &mut plane,
+        Some(7),
+        AgentEvent::ActivationChanged {
+            resource: rkey(1),
+            activation: ActivationId::new(1),
+            state: ExecState::Completed,
+            outcome: Some(Outcome::Exited(0)),
+        },
+    );
+    assert_eq!(
+        plane
+            .organization()
+            .resource(&rkey(1))
+            .unwrap()
+            .activation
+            .unwrap()
+            .state,
+        ExecState::Completed
+    );
+    assert_eq!(plane.organization().journal_seq(), 7);
+}
+
+#[test]
+fn a_journal_gap_refetches_the_organization() {
+    let mut plane = seeded();
+    event(
+        &mut plane,
+        None,
+        AgentEvent::JournalGap {
+            first_missing: 6,
+            last_missing: 9,
+        },
+    );
+    assert_eq!(plane.organization().state(), ReplicaState::Seeding);
+    assert!(commands(&mut plane).iter().any(|(_, c)| matches!(
+        c,
+        Command::GetOrganization {
+            filter: OrgFilter::All,
+            cursor: None,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn an_operation_is_resent_with_the_same_id_after_a_reconnect_and_deduped() {
+    let mut plane = seeded();
+    let operation = plane.rename_session(skey(1), "notes").expect("submitted");
+    let sent = commands(&mut plane);
+    assert!(matches!(
+        sent.as_slice(),
+        [(_, Command::SessionRename { operation: op, .. })] if *op == operation
+    ));
+
+    // The reply is lost with the connection.
+    let (seed, after_hello) = reconnect(&mut plane);
+    assert!(
+        !after_hello
+            .iter()
+            .any(|(_, c)| matches!(c, Command::SessionRename { .. })),
+        "no resend before the seed names the authority"
+    );
+    answer(&mut plane, seed, page_value(page(8)));
+    let resent = commands(&mut plane);
+    let [(request_id, Command::SessionRename { operation: op, .. })] = resent.as_slice() else {
+        panic!("expected one resend, got {resent:?}");
+    };
+    assert_eq!(*op, operation, "the resend reuses the operation id");
+    // The server answers from its receipt.
+    answer(&mut plane, *request_id, committed(operation, 3));
+    let outcomes = org_outcomes(&plane.take_events());
+    assert_eq!(outcomes.len(), 1);
+    assert!(matches!(outcomes[0].1, OrgOutcome::Committed(_)));
+    assert!(plane.pending_organization_operations().next().is_none());
+    // A same-id resubmit with the same payload is journaled once.
+    let command = Command::SessionRename {
+        operation,
+        session: skey(1),
+        name: "again".to_owned(),
+    };
+    let first = plane.submit_organization(command.clone()).unwrap();
+    plane.submit_organization(command).unwrap();
+    assert_eq!(first, operation);
+    assert_eq!(plane.pending_organization_operations().count(), 1);
+}
+
+#[test]
+fn another_authority_after_a_reconnect_reports_the_outcome_unknown() {
+    let mut plane = seeded();
+    let operation = plane.rename_session(skey(1), "notes").unwrap();
+    let _ = commands(&mut plane);
+    let (seed, _) = reconnect(&mut plane);
+    let other = OrganizationPage::new(AuthorityId::new([2; 16]).unwrap(), Revision::new(1), 1);
+    answer(&mut plane, seed, page_value(other));
+    let outcomes = org_outcomes(&plane.take_events());
+    assert!(matches!(
+        outcomes.as_slice(),
+        [(op, OrgOutcome::Unknown { .. })] if *op == operation
+    ));
+    assert!(
+        !commands(&mut plane)
+            .iter()
+            .any(|(_, c)| matches!(c, Command::SessionRename { .. })),
+        "never resent to another authority"
+    );
+}
+
+#[test]
+fn a_conflict_is_surfaced_to_the_consumer() {
+    let mut plane = seeded();
+    let operation = plane.rename_session(skey(1), "notes").unwrap();
+    let (request_id, _) = commands(&mut plane).remove(0);
+    answer(
+        &mut plane,
+        request_id,
+        CommandResult::Refused(Refusal::Conflict {
+            current: Revision::new(4),
+        }),
+    );
+    let outcomes = org_outcomes(&plane.take_events());
+    assert_eq!(
+        outcomes,
+        vec![(
+            operation,
+            OrgOutcome::Refused(Refusal::Conflict {
+                current: Revision::new(4)
+            })
+        )]
+    );
+}
+
+#[test]
+fn without_organization_nothing_is_read_and_submissions_are_not_sent() {
+    let (mut plane, seed) = negotiated(false);
+    assert!(seed.is_none(), "no GET_ORGANIZATION to an older server");
+    assert_eq!(plane.organization().state(), ReplicaState::Empty);
+    assert!(plane.refresh_organization().is_none());
+    let operation = plane
+        .submit_organization(Command::SessionDelete {
+            operation: OperationId::new([5; 16]).unwrap(),
+            session: skey(1),
+        })
+        .unwrap();
+    assert!(commands(&mut plane).is_empty());
+    let outcomes = org_outcomes(&plane.take_events());
+    assert!(matches!(
+        outcomes.as_slice(),
+        [(op, OrgOutcome::NotSent { .. })] if *op == operation
+    ));
+    assert_eq!(plane.kill_session(skey(1)), Err(SubmitError::Unsupported));
+    assert!(!plane.session_project_supported());
+    assert_eq!(
+        plane.set_session_project(skey(1), Some("phux")),
+        Err(SubmitError::Unsupported)
+    );
+}
+
+#[test]
+fn kill_session_is_one_server_command_resolved_like_any_other() {
+    let mut plane = seeded();
+    let operation = plane
+        .kill_session(skey(1))
+        .expect("SESSION_KILL advertised");
+    let sent = commands(&mut plane);
+    let [(id, Command::SessionKill { session, .. })] = sent.as_slice() else {
+        panic!("expected one SESSION_KILL, got {sent:?}");
+    };
+    assert_eq!(*session, skey(1));
+    answer(
+        &mut plane,
+        *id,
+        CommandResult::OkWith(CommandValue::Committed(Box::new(
+            Committed::new(operation, Revision::new(0)).with_members(Some(1)),
+        ))),
+    );
+    let outcomes = org_outcomes(&plane.take_events());
+    assert!(matches!(
+        outcomes.as_slice(),
+        [(op, OrgOutcome::Committed(receipt))] if *op == operation && receipt.members == Some(1)
+    ));
+}
+
+#[test]
+fn set_session_project_sends_one_command_and_the_event_updates_the_record() {
+    let mut plane = seeded();
+    assert!(plane.session_project_supported());
+    let operation = plane
+        .set_session_project(skey(1), Some("phux"))
+        .expect("SESSION_PROJECT advertised");
+    let sent = commands(&mut plane);
+    let [
+        (
+            id,
+            Command::SessionSetProject {
+                session, project, ..
+            },
+        ),
+    ] = sent.as_slice()
+    else {
+        panic!("expected one SESSION_SET_PROJECT, got {sent:?}");
+    };
+    assert_eq!((*session, project.as_deref()), (skey(1), Some("phux")));
+    answer(&mut plane, *id, committed(operation, 3));
+    let seq = plane.organization().journal_seq() + 1;
+    event(
+        &mut plane,
+        Some(seq),
+        AgentEvent::SessionProjectSet {
+            session: skey(1),
+            project: Some("phux".to_owned()),
+            revision: Revision::new(3),
+        },
+    );
+    let record = plane.organization().session(&skey(1)).expect("record");
+    assert!(
+        record
+            .attrs
+            .iter()
+            .any(|(k, v)| k == "project.link" && v == "phux"),
+        "{:?}",
+        record.attrs
+    );
+
+    plane.set_session_project(skey(1), None).expect("clear");
+    let sent = commands(&mut plane);
+    assert!(matches!(
+        sent.as_slice(),
+        [(_, Command::SessionSetProject { project: None, .. })]
+    ));
+}
+
+#[test]
+fn the_topology_carries_keys_lifetimes_and_exec_state() {
+    let mut plane = seeded();
+    let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
+        .with_sessions(vec![
+            SessionInfo::new(SessionId::new(1), "work").with_key(Some(skey(1))),
+        ])
+        .with_resources(vec![
+            ResourceInfo::new(ResourceId::local(1), WindowId::new(1), 80, 24)
+                .with_session(Some(SessionId::new(1))),
+        ]);
+    refresh_topology_to(&mut plane, snapshot);
+    let topology = plane.topology().expect("topology");
+    assert_eq!(topology.sessions[0].key, Some(skey(1)));
+    assert_eq!(topology.sessions[0].revision, Some(Revision::new(2)));
+    assert_eq!(topology.sessions[0].members, 1);
+    assert_eq!(topology.panes[0].session_id, 1);
+    assert_eq!(topology.panes[0].key, Some(rkey(1)));
+    assert_eq!(topology.panes[0].exec, Some(ExecState::Running));
+    assert_eq!(topology.handles.key(&ResourceId::local(1)), Some(rkey(1)));
+    event(&mut plane, Some(6), renamed("renamed-work"));
+    let topology = plane.topology().unwrap();
+    assert_eq!(topology.sessions[0].name, "renamed-work");
+    assert_eq!(topology.sessions[0].key, Some(skey(1)));
+    assert_eq!(topology.panes[0].session_name, "renamed-work");
+}
+
+#[test]
+fn membership_events_update_live_pane_ownership_without_another_state_snapshot() {
+    let (mut plane, seed) = negotiated(true);
+    let seed_page = page(5).with_sessions(vec![
+        SessionRecord::new(skey(1), "source", Revision::new(2))
+            .with_members(1)
+            .with_live(Some(SessionId::new(1))),
+        SessionRecord::new(skey(2), "destination", Revision::new(2))
+            .with_live(Some(SessionId::new(2))),
+    ]);
+    answer(&mut plane, seed.unwrap(), page_value(seed_page));
+    let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
+        .with_sessions(vec![
+            SessionInfo::new(SessionId::new(1), "source").with_key(Some(skey(1))),
+            SessionInfo::new(SessionId::new(2), "destination").with_key(Some(skey(2))),
+        ])
+        .with_resources(vec![
+            ResourceInfo::new(ResourceId::local(1), WindowId::new(1), 80, 24)
+                .with_session(Some(SessionId::new(1))),
+        ]);
+    refresh_topology_to(&mut plane, snapshot);
+    assert_eq!(plane.topology().unwrap().panes[0].session_id, 1);
+    event(
+        &mut plane,
+        Some(6),
+        AgentEvent::MembershipChanged {
+            resource: rkey(1),
+            from: skey(1),
+            to: skey(2),
+            from_revision: Revision::new(3),
+            to_revision: Revision::new(3),
+        },
+    );
+    let topology = plane.topology().unwrap();
+    assert_eq!(topology.panes[0].session_id, 2);
+    assert_eq!(topology.panes[0].session_name, "destination");
+    assert_eq!(topology.panes[0].terminal_id, ResourceId::local(1));
+    assert_eq!(topology.panes[0].activation, Some(ActivationId::new(1)));
+    event(
+        &mut plane,
+        Some(7),
+        AgentEvent::MembershipChanged {
+            resource: rkey(1),
+            from: skey(2),
+            to: skey(1),
+            from_revision: Revision::new(4),
+            to_revision: Revision::new(4),
+        },
+    );
+    assert_eq!(plane.topology().unwrap().panes[0].session_id, 1);
+    assert_eq!(plane.topology().unwrap().panes[0].session_name, "source");
+}

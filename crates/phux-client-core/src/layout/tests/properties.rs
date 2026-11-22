@@ -1,0 +1,189 @@
+//! Property tests over random split/kill/focus sequences.
+
+use super::*;
+
+#[derive(Debug, Clone, Copy)]
+enum Op {
+    AddPane,
+    KillPaneAt(usize),
+}
+
+fn arb_op() -> impl Strategy<Value = Op> {
+    prop_oneof![
+        4 => Just(Op::AddPane),
+        1 => (0_usize..16).prop_map(Op::KillPaneAt),
+    ]
+}
+
+/// Apply `ops` against a fresh single-leaf tree, returning the final
+/// tree (or `None` if killed empty) plus the ordered list of leaves
+/// that should currently live in the tree.
+#[allow(clippy::needless_pass_by_value)]
+fn apply_ops(ops: Vec<Op>) -> (Option<LayoutNode>, Vec<ResourceId>) {
+    apply_ops_from(ops, 1)
+}
+
+fn apply_ops_from(ops: Vec<Op>, mut next_id: u32) -> (Option<LayoutNode>, Vec<ResourceId>) {
+    let first = ResourceId::local(next_id);
+    next_id += 1;
+    let mut tree: Option<LayoutNode> = Some(LayoutNode::Leaf(first.clone()));
+    let mut alive: Vec<ResourceId> = vec![first];
+
+    for op in ops {
+        match op {
+            Op::AddPane => {
+                let new_pane = ResourceId::local(next_id);
+                next_id += 1;
+                let Some(target) = alive.last().cloned() else {
+                    // Tree was empty — reseed.
+                    tree = Some(LayoutNode::Leaf(new_pane.clone()));
+                    alive.push(new_pane);
+                    continue;
+                };
+                let Some(cur) = tree else {
+                    tree = Some(LayoutNode::Leaf(new_pane.clone()));
+                    alive.push(new_pane);
+                    continue;
+                };
+                let dir = if next_id.is_multiple_of(2) {
+                    SplitDir::Horizontal
+                } else {
+                    SplitDir::Vertical
+                };
+                match split_at(&cur, &target, &new_pane, dir, 0.5) {
+                    Ok(t) => {
+                        tree = Some(t);
+                        alive.push(new_pane);
+                    }
+                    Err(_) => {
+                        // Restore tree and skip.
+                        tree = Some(cur);
+                    }
+                }
+            }
+            Op::KillPaneAt(idx) => {
+                if alive.is_empty() {
+                    continue;
+                }
+                let target = alive[idx % alive.len()].clone();
+                let Some(cur) = tree else { continue };
+                match kill_pane(&cur, &target) {
+                    Ok(new_tree) => {
+                        tree = new_tree;
+                        alive.retain(|p| *p != target);
+                    }
+                    Err(_) => {
+                        tree = Some(cur);
+                    }
+                }
+            }
+        }
+    }
+    (tree, alive)
+}
+
+/// `panes` with `new_pane` placed right after `target`.
+fn inserted_after(
+    panes: &[ResourceId],
+    target: &ResourceId,
+    new_pane: &ResourceId,
+) -> Vec<ResourceId> {
+    let mut out = Vec::with_capacity(panes.len() + 1);
+    for pane in panes {
+        out.push(pane.clone());
+        if pane == target {
+            out.push(new_pane.clone());
+        }
+    }
+    out
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
+
+    /// Invariant 0: on unique-leaf trees (all the clients build),
+    /// `kill_pane` drops exactly its target (`Ok(None)` for the last leaf)
+    /// and `split_at` places the new pane right after its target, both in
+    /// leaf order; an absent target is refused. These wrap phux-core's
+    /// `remove`/`split`; duplicate leaves are out of contract (core
+    /// `remove` drops every copy, the retired client walk dropped the
+    /// first).
+    #[test]
+    fn proptest_tree_edits_keep_leaf_order(ops in prop::collection::vec(arb_op(), 1..20)) {
+        let (tree, _) = apply_ops(ops);
+        let Some(tree) = tree else { return Ok(()) };
+        let panes = leaves(&tree);
+        let absent = t(9_999);
+        for target in &panes {
+            let kept: Vec<_> = panes.iter().filter(|p| *p != target).cloned().collect();
+            let after_kill = kill_pane(&tree, target).unwrap();
+            prop_assert_eq!(after_kill.as_ref().map_or_else(Vec::new, leaves), kept);
+            prop_assert_eq!(after_kill.is_none(), panes.len() == 1);
+            let split = split_at(&tree, target, &absent, SplitDir::Vertical, 0.5).unwrap();
+            prop_assert_eq!(leaves(&split), inserted_after(&panes, target, &absent));
+        }
+        prop_assert_eq!(
+            kill_pane(&tree, &absent),
+            Err(LayoutError::PaneNotInLayout(absent.clone()))
+        );
+        prop_assert_eq!(
+            split_at(&tree, &absent, &t(10_000), SplitDir::Horizontal, 0.5),
+            Err(LayoutError::PaneNotInLayout(absent))
+        );
+    }
+
+
+    /// Invariant 3: `focus_direction` is partial and only returns ids
+    /// that are other leaves of the tree.
+    #[test]
+    fn proptest_focus_direction_is_partial(
+        ops in prop::collection::vec(arb_op(), 1..20),
+        dir_pick in 0_u8..4,
+    ) {
+        let (tree, alive) = apply_ops(ops);
+        let Some(tree) = tree else { return Ok(()) };
+        if alive.is_empty() { return Ok(()) }
+        let leaf_set: HashSet<_> = leaves(&tree).into_iter().collect();
+        let dir = match dir_pick {
+            0 => Direction::Up,
+            1 => Direction::Down,
+            2 => Direction::Left,
+            _ => Direction::Right,
+        };
+        for src in &alive {
+            if let Some(neighbour) = focus_direction(&tree, src, dir) {
+                // Neighbour is a leaf of the tree.
+                prop_assert!(leaf_set.contains(&neighbour));
+                // Different from source.
+                prop_assert_ne!(&neighbour, src);
+            }
+        }
+    }
+
+
+    /// Invariant 5: a multi-window [`ArrangementDoc`] CBOR-round-trips for
+    /// any groups derived from random ops.
+    #[test]
+    fn proptest_arrangement_cbor_round_trip(
+        per_window in prop::collection::vec(
+            prop::collection::vec(arb_op(), 1..10), 1..5),
+    ) {
+        let mut groups = Vec::new();
+        for (i, ops) in per_window.into_iter().enumerate() {
+            // A workspace has one durable namespace, not independently
+            // reused terminal IDs in each generated window.
+            let seed = u32::try_from(i).unwrap() * 100 + 1;
+            let (tree, alive) = apply_ops_from(ops, seed);
+            let (Some(tree), Some(focus)) = (tree, alive.last().cloned()) else {
+                continue;
+            };
+            groups.push(Group::new((i + 1).to_string(), LayoutState { tree: Some(tree), focus: Some(focus) }));
+        }
+        prop_assume!(!groups.is_empty());
+        let active = groups.len() / 2;
+        let ws = ArrangementDoc { groups, active, slots: Vec::new(),  };
+        let bytes = ws.encode_cbor().expect("encode");
+        let decoded = ArrangementDoc::decode_cbor(&bytes).expect("decode");
+        prop_assert_eq!(decoded, ws);
+    }
+}

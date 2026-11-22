@@ -1,0 +1,80 @@
+use super::*;
+use phux_protocol::caps::ImageProtocolSet;
+
+/// 1024 base64 characters of noise (768 pixel bytes), so the snapshot's
+/// zlib payload cannot squeeze under a small budget.
+fn noise_base64() -> String {
+    const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut state = 0x9e37_79b9_u32;
+    (0..1024)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            char::from(BASE64[(state % 64) as usize])
+        })
+        .collect()
+}
+
+fn image_actor() -> TerminalActorBundle {
+    let bundle = TerminalActor::new(10, 5).expect("actor");
+    let mut canonical = bundle.actor.terminal.borrow_mut();
+    canonical.vt_write(b"visible text");
+    let payload = noise_base64();
+    canonical.vt_write(format!("\x1b_Ga=t,f=32,s=16,v=12,i=9,q=2;{payload}\x1b\\").as_bytes());
+    assert!(
+        canonical
+            .try_terminal()
+            .unwrap()
+            .kitty_graphics()
+            .unwrap()
+            .expect("Kitty graphics enabled")
+            .image(9)
+            .is_some()
+    );
+    drop(canonical);
+    bundle
+}
+
+fn assert_text_snapshot(snapshot: &SnapshotBytes) {
+    let mut receiver = GhosttyTerminal::new(10, 5).unwrap();
+    receiver.vt_write(&snapshot.bytes);
+    assert_eq!(&render_viewport(&receiver)[..2], &["visible te", "xt"]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn bounded_snapshot_request_omits_unsupported_resident_images() {
+    on_local!(async {
+        let bundle = image_actor();
+        let terminal = bundle.handle.terminal().unwrap().clone();
+        let token = bundle.token.clone();
+        let run = tokio::task::spawn_local(bundle.actor.run());
+        for image_protocols in [ImageProtocolSet::all(), ImageProtocolSet::new()] {
+            let (reply, receive) = oneshot::channel();
+            terminal
+                .snapshot
+                .send(SnapshotRequest {
+                    scrollback: None,
+                    image_protocols,
+                    max_bytes: 512,
+                    max_frames: 16,
+                    chunk_bytes: 512,
+                    reply,
+                })
+                .await
+                .unwrap();
+            let result = receive.await.unwrap();
+            if image_protocols == ImageProtocolSet::all() {
+                assert!(matches!(
+                    result,
+                    Err(phux_terminal_api::grid::CaptureError::LimitExceeded)
+                ));
+            } else {
+                assert_text_snapshot(&result.expect("text fits independently of images").0);
+            }
+        }
+        token.cancel();
+        run.await.unwrap();
+    })
+    .await;
+}

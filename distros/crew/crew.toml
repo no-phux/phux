@@ -1,0 +1,12 @@
+# Crew: one lead, a visible fleet, native phux missions and mail.
+# Your config still wins. No credentials, permission bypasses, or model pins.
+extends = ["../starter/starter.toml"]
+
+[sidebar]
+enabled = true
+
+[theme]
+accent = "#a6f750"
+
+[[plugins-append]]
+manifest = "phux-plugin.toml"

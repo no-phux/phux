@@ -1,0 +1,534 @@
+//! The machines this computer reaches, through the installed CLI: its
+//! registry, its Tailscale discovery, and `phux host add`, which owns
+//! enrollment and trust. This only reads the answers.
+
+use std::io::{BufRead as _, Write as _};
+use std::path::Path;
+use std::process::{Command, Stdio};
+use std::time::Duration;
+
+use serde_json::Value;
+
+use crate::launch::run_for;
+
+const LIST_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// The most rows of one listing this keeps. The sidebar lays out every row it's
+/// given on each frame, so a lying or broken CLI mustn't choose how many.
+const MAX_ROWS: usize = 512;
+/// The longest name kept. A name is an address, so a longer one is dropped
+/// rather than cut into a different one.
+const MAX_NAME: usize = 255;
+
+/// `value` as a name this can show and dial.
+fn name(value: &Value) -> Option<String> {
+    value
+        .as_str()
+        .filter(|name| name.len() <= MAX_NAME)
+        .map(str::to_owned)
+}
+
+/// What the sidebar calls the server on this computer.
+pub const LOCAL: &str = if cfg!(target_os = "macos") {
+    "This Mac"
+} else {
+    "This computer"
+};
+
+/// A machine in this computer's registry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Host {
+    pub name: String,
+    /// The ssh destination it was set up over.
+    pub ssh: Option<String>,
+    /// Its only route is ssh: a window dials it through `ssh`, on demand.
+    pub ssh_only: bool,
+    /// Kept in the registry, but nothing dials it until it is resumed.
+    pub paused: bool,
+}
+
+/// A tailnet machine phux can run on that isn't registered yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Peer {
+    pub name: String,
+    /// The `MagicDNS` name `phux host add` is given.
+    pub ssh_host: String,
+    pub online: bool,
+}
+
+/// A session on another machine, as `phux ls --json` lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Glance {
+    pub name: String,
+    pub terminals: u64,
+    pub running: u64,
+}
+
+/// A value that is never printed: a connect link carries a bearer token.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Secret(pub String);
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret(..)")
+    }
+}
+
+/// What `phux host add` is asked to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Add {
+    /// The ssh destination; with `code`, the name to register.
+    pub target: String,
+    pub name: Option<String>,
+    /// The tailnet vouches for the address, so a first host key is accepted.
+    pub tailnet: bool,
+    /// A connect link to pair from instead of ssh, written to the CLI's
+    /// stdin so its token stays out of the process list.
+    pub code: Option<Secret>,
+}
+
+impl Add {
+    fn args(&self) -> Vec<String> {
+        if self.code.is_some() {
+            return ["host", "add", self.target.as_str(), "--code", "-"]
+                .map(str::to_owned)
+                .to_vec();
+        }
+        let mut args = vec![
+            "host".to_owned(),
+            "add".to_owned(),
+            self.target.clone(),
+            "--install".to_owned(),
+        ];
+        if let Some(name) = &self.name {
+            args.extend(["--name".to_owned(), name.clone()]);
+        }
+        if self.tailnet {
+            args.push("--accept-new-host-key".to_owned());
+        }
+        args
+    }
+}
+
+fn parse_hosts(value: &Value) -> Vec<Host> {
+    let hosts = value["hosts"].as_array().into_iter().flatten();
+    hosts
+        .filter(|host| host["role"] == "remote")
+        .filter_map(|host| {
+            Some(Host {
+                name: name(&host["name"])?,
+                ssh: name(&host["ssh"]),
+                ssh_only: host["endpoint"]
+                    .as_str()
+                    .is_some_and(|endpoint| endpoint.trim().starts_with("ssh://")),
+                paused: host["enabled"] == false,
+            })
+        })
+        .take(MAX_ROWS)
+        .collect()
+}
+
+/// The peer an ssh destination names by its full `MagicDNS` name. A short
+/// name isn't enough: ssh may resolve it through its config or the LAN to a
+/// machine the tailnet doesn't vouch for.
+pub fn peer_for<'a>(peers: &'a [Peer], target: &str) -> Option<&'a Peer> {
+    let target = target.trim();
+    let host = target.rsplit_once('@').map_or(target, |(_, host)| host);
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    peers.iter().find(|peer| peer.ssh_host == host)
+}
+
+/// The registered host a finished add made or re-enrolled: the name it was
+/// asked for, a new row, else the row with its ssh destination. A connect
+/// link always registers its exact target name, never an inferred row.
+pub fn added<'a>(hosts: &'a [Host], before: &[Host], request: &Add) -> Option<&'a Host> {
+    let named = |name: &str| hosts.iter().find(|host| host.name == name);
+    if request.code.is_some() {
+        return named(&request.target);
+    }
+    let new = || hosts.iter().find(|host| !before.contains(host));
+    let same_route = || {
+        let target = request.target.trim();
+        let bare = target.rsplit_once('@').map_or(target, |(_, host)| host);
+        hosts
+            .iter()
+            .find(|host| host.ssh.as_deref() == Some(target) || host.name == bare)
+    };
+    request
+        .name
+        .as_deref()
+        .and_then(named)
+        .or_else(new)
+        .or_else(same_route)
+}
+
+fn parse_peers(value: &Value) -> Vec<Peer> {
+    let peers = value["peers"].as_array().into_iter().flatten();
+    peers
+        .filter(|peer| peer["supported"] == true && peer["registered"].is_null())
+        .filter_map(|peer| {
+            Some(Peer {
+                name: name(&peer["name"])?,
+                ssh_host: name(&peer["ssh_host"])?,
+                online: peer["online"] == true,
+            })
+        })
+        .take(MAX_ROWS)
+        .collect()
+}
+
+fn json(phux: &Path, args: &[&str]) -> Result<Value, String> {
+    let output = run_for(phux, args, LIST_TIMEOUT)?;
+    serde_json::from_slice(&output).map_err(|error| format!("phux printed no JSON: {error}"))
+}
+
+pub fn registered(phux: &Path) -> Result<Vec<Host>, String> {
+    let doc = json(phux, &["host", "ls", "--json"])?;
+    crate::host_color::learn(&doc);
+    crate::handoff::learn(&doc);
+    Ok(parse_hosts(&doc))
+}
+
+/// `phux host color`: `id` is a palette id or `auto`; [`LOCAL`] is this machine.
+pub fn recolor(phux: &Path, name: &str, id: &str) -> Result<(), String> {
+    let target = if name == LOCAL { "--local" } else { name };
+    run_for(phux, &["host", "color", target, id], LIST_TIMEOUT).map(|_| ())
+}
+
+/// Empty without Tailscale: discovery is a convenience, typing still works.
+pub fn tailnet(phux: &Path) -> Vec<Peer> {
+    json(phux, &["host", "discover", "--json"]).map_or_else(|_| Vec::new(), |doc| parse_peers(&doc))
+}
+
+fn parse_glances(value: &Value) -> Vec<Glance> {
+    let sessions = value["sessions"].as_array().into_iter().flatten();
+    sessions
+        .filter_map(|session| {
+            Some(Glance {
+                name: name(&session["name"])?,
+                terminals: session["members"].as_u64().unwrap_or(0),
+                running: session["exec"]["running"].as_u64().unwrap_or(0),
+            })
+        })
+        .take(MAX_ROWS)
+        .collect()
+}
+
+/// The sessions on `host`, or on this computer's server when `None`.
+// ponytail: the CLI's default socket; a window launched with --socket previews the default server.
+pub fn sessions(phux: &Path, host: Option<&str>) -> Result<Vec<Glance>, String> {
+    let mut args = vec!["ls", "--json"];
+    args.extend(host.map(|host| ["--remote", host]).into_iter().flatten());
+    Ok(parse_glances(&json(phux, &args)?))
+}
+
+/// Take `name` out of the registry. Its sessions keep running over there.
+/// Pause `name`, or resume it: `phux host disable` and `enable`.
+pub fn pause(phux: &Path, name: &str, paused: bool) -> Result<(), String> {
+    let verb = if paused { "disable" } else { "enable" };
+    run_for(phux, &["host", verb, name], LIST_TIMEOUT).map(|_| ())
+}
+
+pub fn remove(phux: &Path, name: &str) -> Result<(), String> {
+    run_for(
+        phux,
+        &["host", "rm", "--role", "remote", name],
+        LIST_TIMEOUT,
+    )
+    .map(|_| ())
+}
+
+/// `phux: info: mini: trying quic://...` reads `trying quic://...`.
+fn step(line: &str) -> Option<String> {
+    let (severity, text) = line.strip_prefix("phux: ")?.split_once(": ")?;
+    if !matches!(severity, "info" | "ok" | "warn") {
+        return None;
+    }
+    let text = text
+        .split_once(": ")
+        .filter(|(name, _)| !name.contains(' '))
+        .map_or(text, |(_, step)| step);
+    Some(text.trim().to_owned()).filter(|step| !step.is_empty())
+}
+
+fn failure(lines: &[String]) -> String {
+    let from = lines
+        .iter()
+        .position(|line| line.starts_with("phux: error") || line.starts_with("error"));
+    let useful = from.map_or(lines, |from| &lines[from..]);
+    useful.join("\n")
+}
+
+/// Enrollment can install phux and pair, so it takes a while; each step goes
+/// to `report` as the CLI prints it. stdin stays closed, so a machine that
+/// wants a password fails with ssh's words instead of hanging.
+pub fn add(phux: &Path, request: &Add, report: &dyn Fn(String)) -> Result<(), String> {
+    let stdin = if request.code.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    };
+    let mut child = Command::new(phux)
+        .args(request.args())
+        .env("NO_COLOR", "1")
+        .env_remove("CLICOLOR_FORCE")
+        .stdin(stdin)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("could not run {}: {error}", phux.display()))?;
+    if let (Some(code), Some(mut stdin)) = (&request.code, child.stdin.take()) {
+        // Dropping stdin closes it, so the CLI reads to the end. A CLI that
+        // exits first fails below in its own words.
+        let _ = stdin.write_all(code.0.as_bytes());
+    }
+    let mut lines = Vec::new();
+    if let Some(stderr) = child.stderr.take() {
+        for line in std::io::BufReader::new(stderr)
+            .lines()
+            .map_while(Result::ok)
+        {
+            if let Some(step) = step(&line) {
+                report(step);
+            }
+            lines.push(line);
+        }
+    }
+    let status = child
+        .wait()
+        .map_err(|error| format!("waiting for {}: {error}", phux.display()))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(failure(&lines))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_lying_listing_cant_choose_how_much_the_sidebar_lays_out() {
+        let many: Vec<_> = (0..MAX_ROWS + 9)
+            .map(|i| json!({ "name": format!("s{i}") }))
+            .collect();
+        assert_eq!(parse_glances(&json!({ "sessions": many })).len(), MAX_ROWS);
+        let long = "N".repeat(MAX_NAME + 1);
+        let doc = json!({ "sessions": [{ "name": long }, { "name": "ok" }] });
+        assert_eq!(parse_glances(&doc)[0].name, "ok");
+        let doc = json!({ "hosts": [{ "name": "h", "role": "remote", "ssh": long }] });
+        assert_eq!(parse_hosts(&doc)[0].ssh, None);
+    }
+
+    #[test]
+    fn a_listing_glances_at_each_session() {
+        let doc = json!({ "schema_version": 4, "sessions": [
+            { "name": "work", "members": 3, "exec": { "running": 2 } },
+            { "name": "bare" },
+            { "members": 1 },
+        ]});
+        let glance = |name: &str, terminals, running| Glance {
+            name: name.to_owned(),
+            terminals,
+            running,
+        };
+        assert_eq!(
+            parse_glances(&doc),
+            vec![glance("work", 3, 2), glance("bare", 0, 0)]
+        );
+    }
+
+    #[test]
+    fn only_remotes_are_machines_to_attach() {
+        let doc = json!({ "schema_version": 1, "hosts": [
+            { "name": "mini", "role": "remote" },
+            { "name": "box", "role": "satellite" },
+        ]});
+        let hosts = parse_hosts(&doc);
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].name, "mini");
+    }
+
+    #[test]
+    fn an_ssh_route_is_marked() {
+        let doc = json!({ "hosts": [
+            { "name": "a", "role": "remote", "endpoint": "quic://a:8788", "ssh": "me@a" },
+            { "name": "b", "role": "remote", "endpoint": "ssh://me@b", "enabled": false },
+        ]});
+        let hosts = parse_hosts(&doc);
+        assert!(!hosts[0].ssh_only);
+        assert_eq!(hosts[0].ssh.as_deref(), Some("me@a"));
+        assert!(hosts[1].ssh_only);
+        assert!(hosts[1].paused && !hosts[0].paused);
+    }
+
+    fn peer(ssh_host: &str) -> Peer {
+        Peer {
+            name: "mini".to_owned(),
+            ssh_host: ssh_host.to_owned(),
+            online: true,
+        }
+    }
+
+    #[test]
+    fn a_typed_name_vouches_only_with_its_full_tailnet_name() {
+        let peers = [peer("mini.tail.ts.net")];
+        for target in ["me@mini.tail.ts.net", " MINI.tail.ts.net. "] {
+            assert!(peer_for(&peers, target).is_some(), "{target}");
+        }
+        for target in ["mini", "me@mini", "other.tail.ts.net"] {
+            assert!(peer_for(&peers, target).is_none(), "{target}");
+        }
+    }
+
+    fn host(name: &str, ssh: Option<&str>) -> Host {
+        Host {
+            name: name.to_owned(),
+            ssh: ssh.map(str::to_owned),
+            ssh_only: false,
+            paused: false,
+        }
+    }
+
+    #[test]
+    fn an_add_lands_on_what_it_registered() {
+        let request = |target: &str, name: Option<&str>| Add {
+            target: target.to_owned(),
+            name: name.map(str::to_owned),
+            tailnet: false,
+            code: None,
+        };
+        let before = [host("a", Some("me@a"))];
+        let new = [host("a", Some("me@a")), host("b", Some("me@b"))];
+        let found =
+            |hosts: &[Host], request: Add| added(hosts, &before, &request).map(|h| h.name.clone());
+        assert_eq!(found(&new, request("me@b", None)).as_deref(), Some("b"));
+        // Setting a known machine up again adds no row.
+        assert_eq!(found(&before, request("me@a", None)).as_deref(), Some("a"));
+        assert_eq!(found(&before, request("a", None)).as_deref(), Some("a"));
+        assert_eq!(found(&new, request("x", Some("a"))).as_deref(), Some("a"));
+        assert_eq!(found(&before, request("me@z", None)), None);
+    }
+
+    #[test]
+    fn pairing_lands_only_on_the_name_accepted_not_an_unrelated_new_row() {
+        let request = Add {
+            target: "mini".to_owned(),
+            name: None,
+            tailnet: false,
+            code: Some(Secret("unused".to_owned())),
+        };
+        let before = [host("mini", None)];
+        // Re-pairing changes credentials, not the fields retained in Host.
+        // Another process can add a row while the pairing runs.
+        let after = [host("other", None), host("mini", None)];
+        assert_eq!(
+            added(&after, &before, &request).map(|host| host.name.as_str()),
+            Some("mini")
+        );
+        assert_eq!(added(&after[..1], &before, &request), None);
+    }
+
+    #[test]
+    fn peers_are_supported_and_unregistered() {
+        let peer = |name: &str, supported: bool, registered: Value| {
+            json!({ "name": name, "ssh_host": format!("{name}.ts.net"), "online": true,
+                    "supported": supported, "registered": registered })
+        };
+        let doc = json!({ "peers": [
+            peer("mini", true, Value::Null),
+            peer("phone", false, Value::Null),
+            peer("old", true, json!("old")),
+        ]});
+        let peers = parse_peers(&doc);
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].ssh_host, "mini.ts.net");
+    }
+
+    #[test]
+    fn a_host_key_is_accepted_only_for_the_tailnet() {
+        let add = |tailnet| Add {
+            target: "me@mini".to_owned(),
+            name: None,
+            tailnet,
+            code: None,
+        };
+        assert!(
+            !add(false)
+                .args()
+                .contains(&"--accept-new-host-key".to_owned())
+        );
+        assert!(
+            add(true)
+                .args()
+                .contains(&"--accept-new-host-key".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_failure_starts_at_the_error() {
+        let lines = ["phux: info: step", "phux: error: refused", "hint: try"].map(str::to_owned);
+        assert_eq!(failure(&lines), "phux: error: refused\nhint: try");
+    }
+
+    #[test]
+    fn add_reports_steps_and_fails_with_the_cli_words() {
+        let dir = std::env::temp_dir().join(format!("phux-rune-add-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let phux = dir.join("phux");
+        std::fs::write(
+            &phux,
+            "#!/bin/sh\necho 'phux: info: mini: dialing' >&2\necho 'phux: error: no route' >&2\nexit 1\n",
+        )
+        .unwrap();
+        Command::new("/bin/chmod")
+            .arg("+x")
+            .arg(&phux)
+            .status()
+            .unwrap();
+        let steps = std::sync::Mutex::new(Vec::new());
+        let request = Add {
+            target: "mini".to_owned(),
+            name: None,
+            tailnet: false,
+            code: None,
+        };
+        let result = add(&phux, &request, &|step| steps.lock().unwrap().push(step));
+        assert_eq!(result.unwrap_err(), "phux: error: no route");
+        assert_eq!(*steps.lock().unwrap(), ["dialing"]);
+    }
+
+    #[test]
+    fn a_link_goes_to_the_cli_on_stdin_never_in_its_arguments() {
+        let dir = std::env::temp_dir().join(format!("phux-rune-code-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (phux, seen) = (dir.join("phux"), dir.join("seen"));
+        std::fs::write(
+            &phux,
+            format!(
+                "#!/bin/sh\necho \"$@\" > '{0}'\ncat >> '{0}'\n",
+                seen.display()
+            ),
+        )
+        .unwrap();
+        Command::new("/bin/chmod")
+            .arg("+x")
+            .arg(&phux)
+            .status()
+            .unwrap();
+        let link = "phux://connect?quic=quic://mini:8788#token=secret";
+        let request = Add {
+            target: "mini".to_owned(),
+            name: None,
+            tailnet: false,
+            code: Some(Secret(link.to_owned())),
+        };
+        assert!(!format!("{request:?}").contains("secret"));
+        add(&phux, &request, &|_| {}).unwrap();
+        let seen = std::fs::read_to_string(&seen).unwrap();
+        assert_eq!(seen, format!("host add mini --code -\n{link}"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}

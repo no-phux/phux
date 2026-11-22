@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>phux Server</string>
+	<key>CFBundleExecutable</key>
+	<string>phux</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>sh.phux.server</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>phux Server</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@BUILD@</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>11.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>A program running in a phux terminal wants to control another app. phux does not control other apps itself.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>A program running in a phux terminal wants to record system audio. phux does not record audio itself.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>A program running in a phux terminal wants to use Bluetooth. phux does not use Bluetooth itself.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>A program running in a phux terminal wants to read your calendars. phux does not read your calendars itself.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>A program running in a phux terminal wants to read your calendars. phux does not read your calendars itself.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>A program running in a phux terminal wants to use your camera. phux does not use the camera itself.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>A program running in a phux terminal wants to read your contacts. phux does not read your contacts itself.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>A program running in a phux terminal wants to find and connect to devices on your local network. phux itself uses the network only for the remote connections you set up.</string>
+	<key>NSLocationUsageDescription</key>
+	<string>A program running in a phux terminal wants to use your location. phux does not use your location itself.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>A program running in a phux terminal wants to use your microphone. phux does not use the microphone itself.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>A program running in a phux terminal wants to read your photos. phux does not read your photos itself.</string>
+</dict>
+</plist>

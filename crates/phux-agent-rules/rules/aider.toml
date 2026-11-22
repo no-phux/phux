@@ -1,0 +1,78 @@
+# Agent-state detection manifest for Aider (ADR-0046).
+#
+# The rules below are verified against 120x40 `phux snapshot --json`
+# viewports captured from Aider 0.86.2 (`uvx --from aider-chat aider`, run
+# ephemerally) in a phux pane on 2026-10-07. Fixtures under
+# `src/fixtures/aider/` retain the rendered viewport unredacted.
+#
+# Provenance of the transcript text: the capture used an isolated HOME,
+# `--model openai/gpt-4o` with a throwaway key, and `--openai-api-base` aimed
+# at a localhost OpenAI-compatible stand-in. All chrome (banner, spinner,
+# confirmation prompt, token report) is the real 0.86.2 CLI; only the
+# model's replies ("Mock reply.", "line N", the fenced `touch` command) were
+# served by the stand-in. No rule matches transcript text.
+#
+# The governing doctrine (ADR-0046 §D): a MISSED signal is cheap, a FALSE
+# `blocked` is not.
+
+kind = "aider"
+name = "aider"
+
+# `aider` is a Python console script, so the leader is `python .../bin/aider`
+# (pipx, uv tool) or, under uvx, `uv tool uvx ... aider ...`; both unwrap to
+# the `aider` argument.
+binaries = ["aider"]
+
+# --- Title -------------------------------------------------------------------
+#
+# Aider writes no OSC title; the captured panes still carried the previous
+# program's title. No title rule is possible.
+
+# --- Screen rules ------------------------------------------------------------
+#
+# While Aider waits on the model it paints a scanner bar and the model name
+# as the last row. Captured frames over one turn:
+#
+#     ' █░        Waiting for openai/gpt-4o'
+#     '      ░█   Waiting for openai/gpt-4o'
+#     '    ░█     Waiting for openai/gpt-4o'
+#
+# The rule matches the bar plus `Waiting for <model>`. `aider/waiting.py`
+# (0.86.2) draws the bar as `░█` on a Unicode terminal and `#=` otherwise; the
+# ASCII palette was not captured and is matched because that source states it.
+# Once tokens stream, Aider renders the reply with no spinner
+# (`streaming_no_spinner.txt`), so a streaming turn reads idle: a missed
+# signal, recorded rather than guessed around.
+
+[[rules]]
+id = "waiting-for-model"
+state = "working"
+priority = 60
+region = "bottom-lines(1)"
+match = { line-regex = '^\s*[░█#=]+\s+Waiting for \S+$' }
+
+# VERIFIED: a fenced shell command in a reply stops on a confirmation that is
+# the last row, with the cursor after it:
+#
+#     Run shell command? (Y)es/(N)o/(D)on't ask again [Yes]:
+#
+# Answered, the row keeps the reply (`... [Yes]: n`) and a fresh `>` prompt
+# follows (`idle_after_decline.txt`), so the rule requires the row to END at
+# the `[Yes]:` / `[No]:` default. Only the shell prompt was captured; the rule
+# pins the shape rather than its stem because `InputOutput.confirm_ask` in
+# 0.86.2 builds every confirmation ("Add file to the chat?", "Create new
+# file?") as `<question> (Y)es/(N)o[/(A)ll/(S)kip all][/(D)on't ask again]`
+# followed by ` [Yes]: ` or ` [No]: `.
+
+[[rules]]
+id = "confirm-prompt"
+state = "blocked"
+priority = 80
+region = "bottom-lines(1)"
+match = { line-regex = '\? \(Y\)es/\(N\)o.* \[(Yes|No)\]:$' }
+
+# --- Rules deliberately NOT written ------------------------------------------
+#
+# No `idle` rule. The bare `>` prompt row would be a screen-derived
+# visible-idle signal, which the fixture audit warns against arming without a
+# single-payload source. `idle` is the fail-safe default.

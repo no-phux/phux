@@ -1,0 +1,204 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+# Plain `cargo build` builds the shipped executables; workspace-wide gates opt in.
+default-members = ["crates/phux", "crates/phux-mcp"]
+# Browser and desktop clients have separate workspaces and toolchains.
+# `.claude` holds agent worktrees. Without it, Cargo's cached-root lookup
+# adopts this checkout as the workspace of a nested worktree's out-of-tree
+# path dependencies and fails inheritance.
+exclude = ["clients", ".claude"]
+
+[workspace.package]
+version = "0.161.1"
+edition = "2024"
+rust-version = "1.99"
+license = "Apache-2.0"
+repository = "https://github.com/no-phux/phux"
+authors = ["phall <phallsignup@gmail.com>"]
+homepage = "https://github.com/no-phux/phux"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+missing_debug_implementations = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+# Enable the threshold in clippy.toml; neither lint group includes it.
+cognitive_complexity = "warn"
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+dbg_macro = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+# Pedantic exceptions: too noisy for our style.
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+# The suggested empty-array comparison requires PartialEq on element types.
+assert_is_empty = "allow"
+
+[workspace.dependencies]
+# Internal.
+phux-protocol = { path = "crates/phux-protocol" }
+phux-record = { path = "crates/phux-record" }
+phux-vt = { path = "crates/phux-vt" }
+phux-core = { path = "crates/phux-core" }
+phux-agent-rules = { path = "crates/phux-agent-rules" }
+phux-agent-host = { path = "crates/phux-agent-host" }
+phux-agent-session = { path = "crates/phux-agent-session" }
+phux-server = { path = "crates/phux-server" }
+phux-resource = { path = "crates/phux-resource" }
+phux-terminal = { path = "crates/phux-terminal", default-features = false }
+phux-terminal-api = { path = "crates/phux-terminal-api" }
+phux-client = { path = "crates/phux-client" }
+phux-tui = { path = "crates/phux-tui" }
+phux-client-core = { path = "crates/phux-client-core" }
+phux-layout-codec = { path = "crates/phux-layout-codec" }
+phux-client-ffi = { path = "crates/phux-client-ffi" }
+phux-client-runtime = { path = "crates/phux-client-runtime" }
+phux-config = { path = "crates/phux-config" }
+phux-config-core = { path = "crates/phux-config-core" }
+phux-design = { path = "crates/phux-design" }
+phux-work = { path = "crates/phux-work" }
+phux-dial = { path = "crates/phux-dial" }
+phux-perf = { path = "crates/phux-perf" }
+phux-git = { path = "crates/phux-git" }
+# The relay is independent of phux; members opt into its features.
+quictun = { path = "crates/quictun", default-features = false }
+phux-plugin = { path = "crates/phux-plugin" }
+phux-usage = { path = "crates/phux-usage" }
+phux-frozen = { path = "crates/phux-frozen" }
+# Derived code with its own attribution; see crates/phux-crash/NOTICE.
+phux-crash = { path = "crates/phux-crash" }
+# Dev-only scaffolding, compiled once for the server integration tests.
+phux-server-testkit = { path = "crates/phux-server-testkit" }
+# Dev-only frame builders for client-side tests; wasm-safe.
+phux-wire-fixtures = { path = "crates/phux-wire-fixtures" }
+portable-pty-adopt = { path = "crates/portable-pty-adopt" }
+
+# External.
+base64 = "0.23"
+thiserror = "2"
+tracing = "0.1"
+tracing-core = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+# File logging must not block the render/PTY thread or write into the TUI.
+tracing-appender = "0.2"
+# One CLI spec supplies parsing, help, completions, and generated docs.
+usage = { package = "usage-rs", version = "7.1", features = ["completions", "validation", "test"] }
+bytes = "1"
+slotmap = "1"
+smallvec = "1.16"
+proptest = "1"
+insta = { version = "1", features = ["yaml"] }
+tempfile = "3"
+# Bundle SQLite rather than depending on the host's version and features.
+rusqlite = { version = "0.41", features = ["bundled"] }
+# Predictive echo needs both cell widths and grapheme boundaries.
+unicode-width = "0.2"
+unicode-segmentation = "1"
+# Wire compression uses the pure-Rust backend on native and wasm targets.
+flate2 = "1.1"
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+# Dev-only instruction-count benchmarks; Valgrind is a separate host tool.
+iai-callgrind = "0.16"
+dhat = "0.3"
+tokio = { version = "1", features = ["macros", "rt", "net", "io-util", "sync", "signal", "time", "process"] }
+portable-pty = "0.9"
+# Pairing renders text QR codes only; do not pull in the image stack.
+qrcode = { version = "0.14", default-features = false }
+# Only phux-tui links ratatui, for chrome; phux emits pane VT itself.
+# Recheck Paragraph::line_count on upgrades: its feature is semver-exempt.
+ratatui = { version = "0.30", default-features = false, features = ["std", "underline-color", "unstable-rendered-line-info"] }
+# ratcn: themeable components + interaction runtime over the same ratatui,
+# for TUI overlays. No backend feature: phux feeds it protocol input itself.
+ratcn = { version = "0.1", default-features = false }
+jiff = { version = "0.2.38", features = ["serde"] }
+# Agent restoration needs a provider-native session ID before spawn.
+uuid = { version = "1", features = ["v4"] }
+serde = { version = "1", features = ["derive"] }
+# Upgrade snapshots can exceed serde's default depth; see state/upgrade_blob.rs.
+serde_json = { version = "1", features = ["unbounded_depth"] }
+# SIMD search skips plain-text runs in the PTY output hot path.
+memchr = "2"
+toml = "1"
+# Preserve comments when editing user-owned config.toml.
+toml_edit = "0.25"
+# Report the full config key path, not an ambiguous leaf name.
+serde_path_to_error = "0.1"
+# Pinned terminal engine; protocol's default features stay pure Rust.
+libghostty-vt = { version = "0.2", git = "https://github.com/phall1/libghostty-rs.git", rev = "4f7c3b477e0e697c594a4190bdd5919803b7e587", default-features = false }
+# Kitty graphics replay decodes f=100 PNG images.
+png = "0.18"
+# Use ring rather than aws-lc-rs/cmake. Omit log to avoid tracing/log unification.
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+# Share the TLS provider and feature set between listeners and dialers.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging"] }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+# Keep named panic backtraces without shipping full debug information.
+strip = "debuginfo"
+panic = "abort"
+opt-level = 3
+
+# Production profile for the mobile FFI artifacts. Workspace binaries keep the
+# release profile's abort policy; UniFFI turns a Rust panic into a foreign
+# error only when it can unwind.
+[profile.ffi-release]
+inherits = "release"
+panic = "unwind"
+
+# Mobile FFI iteration keeps the panic boundary without whole-program LTO.
+[profile.ffi-dev]
+inherits = "dev"
+panic = "unwind"
+lto = false
+codegen-units = 256
+
+[profile.dev]
+opt-level = 1
+debug = "line-tables-only"
+
+# Test builds (`cargo test`, nextest, CI's test archive) leave workspace
+# crates unoptimized and keep dependencies at the dev level. Every change
+# recompiles its dependent workspace crates, and -O1 made that the bulk of
+# the build: a phux-protocol edit rebuilt the test pool in 118 s at -O1
+# against 64 s here, while the same 7184 tests ran in 248 s and 251 s.
+# Dependencies stay optimized, so their (shared, cached) artifacts and the
+# runtime cost of tokio, serde, rustls and friends do not change.
+[profile.test]
+opt-level = 0
+
+[profile.test.package."*"]
+opt-level = 1
+
+[profile.bench]
+inherits = "release"
+debug = "line-tables-only"
+strip = "none"
+
+# Instruction-count guard. Release optimizations without fat LTO, so the
+# required job stays inside its budget. Counts are comparable only for
+# binaries built with this profile on x86_64.
+[profile.icount]
+inherits = "release"
+lto = false
+codegen-units = 16
+strip = "none"
+debug = "line-tables-only"
+
+# Profile for sampling profilers (samply, perf). Inherits release codegen
+# so the hot path matches production, but keeps line-table debug info and
+# symbols so flame views resolve to source. See `just profile`.
+[profile.profiling]
+inherits = "release"
+debug = 1
+strip = "none"

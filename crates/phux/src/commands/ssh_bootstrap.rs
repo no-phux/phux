@@ -1,0 +1,482 @@
+//! `phux attach --ssh [USER@]HOST` — attach mosh-style over ssh (ADR-0120).
+//! ssh authenticates and gets out of the way; the session rides QUIC:
+//!
+//! 1. `ssh -T HOST phux bootstrap` starts the server if needed and opens a
+//!    per-attach listener (`OPEN_LISTENER`);
+//! 2. its one JSON line names the port, the fingerprint to pin, and the token,
+//!    delivered over authenticated ssh (not trust on first use);
+//! 3. `ssh -G HOST` names the address ssh itself would connect to;
+//! 4. a short probe tells filtered UDP from a slow host, then the pinned QUIC
+//!    attach takes over.
+//!
+//! If UDP is filtered or the host cannot open a listener, the local client
+//! attaches through `ssh HOST phux stdio-bridge` instead. If that cannot
+//! attach either, it falls back to `ssh -t HOST phux attach` and says why;
+//! ssh failing or no phux at all is reported instead.
+
+use std::process::{Command, ExitCode, Stdio};
+
+use phux_client_core::handshake::protocol_compatible;
+use phux_protocol::{PROTOCOL_VERSION, Version};
+
+use super::attach;
+use super::enroll::{authority, login, ssh_hostname, ssh_program};
+use super::rec::RecordSpec;
+
+mod quic_probe;
+use quic_probe::probe;
+
+/// ssh's exit status when ssh itself failed (resolution, connection,
+/// authentication), as opposed to the remote command.
+const SSH_FAILED: i32 = 255;
+
+/// A POSIX shell's "command not found".
+const COMMAND_NOT_FOUND: i32 = 127;
+
+/// Everything `phux attach --ssh` was invoked with.
+pub(crate) struct SshAttach<'a> {
+    /// The ssh destination, passed to ssh verbatim.
+    pub(crate) destination: String,
+    /// A session to attach to, or `None` for the most recent one.
+    pub(crate) session: Option<String>,
+    /// The `phux` to run on the host.
+    pub(crate) remote_phux: String,
+    /// `MIN-MAX` UDP port range for the host's listener, unparsed.
+    pub(crate) udp_ports: Option<String>,
+    /// The workload client certificate a registered remote enrolled
+    /// (ADR-0116), presented on the probe and the attach; `None` reads the
+    /// environment, as an unregistered `--ssh` destination does.
+    pub(crate) identity: Option<phux_dial::TlsClientIdentity>,
+    /// Recording spec for the attach that follows.
+    pub(crate) rec: Option<&'a RecordSpec>,
+}
+
+/// What `phux bootstrap` reported: where to dial and how to authenticate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Report {
+    port: u16,
+    cert_fingerprint: String,
+    token: String,
+    protocol_version: Option<String>,
+}
+
+/// Why the bootstrap did not produce a dialable [`Report`].
+enum Failure {
+    /// ssh itself cannot reach the host, or there is no phux there: the
+    /// `ssh -t` fallback would fail the same way, so report and stop.
+    Fatal(String),
+    /// The host is reachable but cannot bootstrap: fall back to `ssh -t`.
+    Fallback(String),
+}
+
+/// Run `phux attach --ssh`.
+pub(crate) fn run(args: SshAttach<'_>) -> ExitCode {
+    if let Err(code) = attach::interactive_tty_preflight() {
+        return code;
+    }
+    if args.destination.is_empty() || args.destination.starts_with('-') {
+        error!(
+            "--ssh needs an ssh destination such as me@host, got {:?}",
+            args.destination
+        );
+        return ExitCode::from(2);
+    }
+    if let Some(ports) = args.udp_ports.as_deref()
+        && let Err(err) = super::bootstrap::parse_port_range(ports)
+    {
+        error!("--udp-ports: {err}");
+        return ExitCode::from(2);
+    }
+
+    // One prompt for the bootstrap, the stdio fallback and `ssh -t`.
+    login(&args.destination);
+    let host = ssh_hostname(&args.destination);
+    if super::enroll::udp_unanswered(&host) {
+        recheck_udp(&args);
+        return fall_back(
+            &args,
+            &format!(
+                "UDP to {host} went unanswered on a recent attach; checking it again in the \
+                 background for next time"
+            ),
+        );
+    }
+    info!("bootstrapping {} over ssh…", args.destination);
+    let report = match bootstrap(&args) {
+        Ok(report) => report,
+        Err(Failure::Fatal(message)) => {
+            error!("{message}");
+            return ExitCode::FAILURE;
+        }
+        Err(Failure::Fallback(message)) => return fall_back(&args, &message),
+    };
+
+    let target = authority(&host, report.port);
+    let rt = match super::cli_runtime() {
+        Ok(rt) => rt,
+        Err(code) => return code,
+    };
+    // The probe's connection is the attach's first, so the attach does not
+    // pay a second QUIC handshake and HELLO.
+    let (plan, first) = match probe(&rt, &target, &report, args.identity.clone()) {
+        Ok(probed) => probed,
+        Err(reason) => {
+            return fall_back(
+                &args,
+                &format!("QUIC to {target} did not connect: {reason}"),
+            );
+        }
+    };
+    info!("attaching over QUIC to {target}; ssh is out of the path");
+    attach::attach_quic_planned(&rt, plan, &target, args.session, args.rec, Some(first)).code
+}
+
+/// While this attach rides ssh, bootstrap a listener without a prompt and
+/// probe it, so the next attach uses QUIC once UDP answers again
+/// ([`super::enroll::probe`] notes the outcome). Silent: the terminal is
+/// the attach's.
+fn recheck_udp(args: &SshAttach<'_>) {
+    let args = SshAttach {
+        destination: args.destination.clone(),
+        session: None,
+        remote_phux: args.remote_phux.clone(),
+        udp_ports: args.udp_ports.clone(),
+        identity: args.identity.clone(),
+        rec: None,
+    };
+    std::thread::spawn(move || {
+        let Ok((output, _)) = bootstrap_once(&ssh_program(), &args, true) else {
+            return;
+        };
+        let Ok(report) = parse_report(&String::from_utf8_lossy(&output.stdout)) else {
+            return;
+        };
+        let _ = super::enroll::probe(
+            &authority(&ssh_hostname(&args.destination), report.port),
+            &report.token,
+            Some(&report.cert_fingerprint),
+            &phux_client_runtime::target::AuthorityPin::default(),
+            args.identity,
+        );
+    });
+}
+
+/// Say why the direct path is unavailable, then attach through ssh: the
+/// local client over a stdio bridge, or the far TUI under `ssh -t` when the
+/// bridge cannot attach (a far phux too old or too new for this one).
+fn fall_back(args: &SshAttach<'_>, why: &str) -> ExitCode {
+    warn!("{why}");
+    warn!("attaching through ssh instead; it does not roam between networks");
+    let stdio = attach::run_attach_stdio(
+        &args.destination,
+        &args.remote_phux,
+        args.session.clone(),
+        args.rec,
+    );
+    let err = match stdio {
+        Ok(code) => return code,
+        Err(err) => err,
+    };
+    warn!("the ssh bridge did not attach: {err}");
+    warn!(
+        "falling back to `ssh -t {} {} attach` (no local rendering)",
+        args.destination, args.remote_phux
+    );
+    if args.rec.is_some() {
+        warn!("--rec does not carry over ssh; run `phux --rec` on the host to record");
+    }
+    run_attach_over_ssh(
+        &args.destination,
+        &args.remote_phux,
+        args.session.as_deref(),
+    )
+}
+
+/// Replace this process with `ssh -t HOST REMOTE_PHUX attach [SESSION]`, so
+/// the terminal, signals, and exit code belong to ssh directly.
+fn run_attach_over_ssh(host: &str, remote_phux: &str, session: Option<&str>) -> ExitCode {
+    use std::os::unix::process::CommandExt as _;
+
+    let program = phux_client_runtime::connection::ssh_program();
+    let mut command = std::process::Command::new(&program);
+    command.args(phux_client_runtime::connection::ssh_control_options());
+    command.arg("-t").arg(host).arg(remote_phux).arg("attach");
+    if let Some(session) = session {
+        command.arg(session);
+    }
+
+    // `exec` only returns on failure.
+    let err = command.exec();
+    error!("could not exec {}: {err}", program.to_string_lossy());
+    ExitCode::FAILURE
+}
+
+/// Run `phux bootstrap` on the host and read its report. Only stdout is
+/// captured: ssh's stderr is copied through as it comes, so host-key,
+/// password, and 2FA prompts reach the operator.
+fn bootstrap(args: &SshAttach<'_>) -> Result<Report, Failure> {
+    let program = ssh_program();
+    let mut retry = 0;
+    let (output, stderr) = loop {
+        let (output, stderr) = bootstrap_once(&program, args, false).map_err(|err| {
+            Failure::Fatal(format!(
+                "could not run {}: {err}",
+                program.to_string_lossy()
+            ))
+        })?;
+        let dropped = output.status.code() == Some(SSH_FAILED)
+            && phux_client_runtime::connection::ssh_retry_login(&stderr);
+        let Some(delay) =
+            phux_client_runtime::connection::ssh_pre_auth_retry_delay(retry).filter(|_| dropped)
+        else {
+            break (output, stderr);
+        };
+        std::thread::sleep(delay);
+        // The dropped login may have been the master's too.
+        login(&args.destination);
+        retry += 1;
+    };
+
+    if output.status.code() == Some(SSH_FAILED)
+        && let Some(hint) =
+            phux_client_runtime::connection::ssh_failure_hint(&stderr, &args.destination)
+    {
+        return Err(Failure::Fatal(format!(
+            "ssh to {} failed (see above): {hint}",
+            args.destination
+        )));
+    }
+    match output.status.code() {
+        Some(0) => {}
+        Some(SSH_FAILED) => {
+            return Err(Failure::Fatal(format!(
+                "ssh to {} failed (see above)",
+                args.destination
+            )));
+        }
+        Some(COMMAND_NOT_FOUND) => {
+            return Err(Failure::Fatal(format!(
+                "`{}` was not found on {}; install phux there, or name it with --remote-phux PATH",
+                args.remote_phux, args.destination
+            )));
+        }
+        code => {
+            let status = code.map_or_else(|| "a signal".to_owned(), |code| format!("exit {code}"));
+            return Err(Failure::Fallback(format!(
+                "`{} bootstrap` failed on {} ({status}); a phux there older than ssh bootstrap \
+                 cannot open a listener",
+                args.remote_phux, args.destination
+            )));
+        }
+    }
+
+    let report =
+        parse_report(&String::from_utf8_lossy(&output.stdout)).map_err(Failure::Fallback)?;
+    check_protocol(report.protocol_version.as_deref(), &args.destination)
+        .map_err(Failure::Fallback)?;
+    Ok(report)
+}
+
+/// One `phux bootstrap` run: its output, with stdout captured, and what
+/// ssh printed on stderr, which was copied through as it came. `quiet`
+/// never prompts and copies nothing.
+fn bootstrap_once(
+    program: &std::ffi::OsString,
+    args: &SshAttach<'_>,
+    quiet: bool,
+) -> std::io::Result<(std::process::Output, String)> {
+    use std::io::{Read as _, Write as _};
+    let mut command = Command::new(program);
+    if quiet {
+        command
+            .args(phux_client_runtime::connection::ssh_batch_control_options())
+            .args(["-o", "BatchMode=yes"]);
+    } else {
+        command.args(phux_client_runtime::connection::ssh_control_options());
+    }
+    let mut child = command
+        .arg("-T")
+        .arg("-o")
+        .arg("ClearAllForwardings=yes")
+        .arg("--")
+        .arg(&args.destination)
+        .arg(remote_command(&args.remote_phux, args.udp_ports.as_deref()))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let tee = child.stderr.take().map(|mut pipe| {
+        std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            let mut chunk = [0; 4096];
+            while let Ok(count @ 1..) = pipe.read(&mut chunk) {
+                if !quiet {
+                    let _ = std::io::stderr().write_all(&chunk[..count]);
+                }
+                seen.extend_from_slice(&chunk[..count]);
+            }
+            String::from_utf8_lossy(&seen).into_owned()
+        })
+    });
+    let output = child.wait_with_output()?;
+    let stderr = tee.and_then(|tee| tee.join().ok()).unwrap_or_default();
+    Ok((output, stderr))
+}
+
+/// The command line ssh hands the remote shell. ssh joins its arguments into
+/// one string for the far end's shell, so each piece is quoted for it.
+fn remote_command(remote_phux: &str, udp_ports: Option<&str>) -> String {
+    let mut command = format!(
+        "{} bootstrap --client-version {}",
+        shell_quote(remote_phux),
+        shell_quote(env!("CARGO_PKG_VERSION"))
+    );
+    if let Some(ports) = udp_ports {
+        command.push_str(" --port-range ");
+        command.push_str(&shell_quote(ports));
+    }
+    command
+}
+
+/// Quote `word` for a POSIX shell, leaving it bare when that is already
+/// safe. A leading `~` stays unquoted so `--remote-phux ~/bin/phux` still
+/// expands on the host.
+pub(crate) fn shell_quote(word: &str) -> String {
+    let safe = |c: char| c.is_ascii_alphanumeric() || "_-./:@%+=,~".contains(c);
+    if !word.is_empty() && word.chars().all(safe) {
+        return word.to_owned();
+    }
+    format!("'{}'", word.replace('\'', r"'\''"))
+}
+
+/// Find the listener document: the last stdout line that parses as one, so
+/// shell startup noise cannot hide it.
+fn parse_report(stdout: &str) -> Result<Report, String> {
+    let document = stdout
+        .lines()
+        .rev()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .find_map(|line| {
+            serde_json::from_str::<serde_json::Value>(line)
+                .ok()
+                .filter(|value| value.get("port").is_some())
+        })
+        .ok_or_else(|| "`phux bootstrap` printed no listener document".to_owned())?;
+
+    let port = document["port"]
+        .as_u64()
+        .and_then(|port| u16::try_from(port).ok())
+        .filter(|port| *port != 0)
+        .ok_or_else(|| {
+            format!(
+                "`phux bootstrap` reported an invalid port: {}",
+                document["port"]
+            )
+        })?;
+    let text = |field: &str| {
+        document[field]
+            .as_str()
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| format!("`phux bootstrap` reported no {field}"))
+    };
+    Ok(Report {
+        port,
+        cert_fingerprint: text("cert_fingerprint")?,
+        token: text("token")?,
+        protocol_version: document["protocol_version"].as_str().map(str::to_owned),
+    })
+}
+
+/// Refuse a host on another protocol major. Any minor or patch on our
+/// major interoperates, older or newer. HELLO would refuse a foreign major
+/// too, but only after the dial, and with less to go on.
+fn check_protocol(theirs: Option<&str>, destination: &str) -> Result<(), String> {
+    let Some(theirs) = theirs else {
+        return Ok(());
+    };
+    let mut parts = theirs.split('.').map(str::parse::<u16>);
+    let (Some(Ok(major)), Some(Ok(minor))) = (parts.next(), parts.next()) else {
+        return Err(format!(
+            "{destination} reported an unreadable protocol version {theirs:?}"
+        ));
+    };
+    let patch = parts.next().and_then(Result::ok).unwrap_or(0);
+    if protocol_compatible(Version {
+        major,
+        minor,
+        patch,
+    }) {
+        return Ok(());
+    }
+    Err(format!(
+        "{destination} speaks phux protocol {theirs}, this phux speaks {}; \
+         protocol {major}.x and {}.x do not interoperate, so update one side",
+        super::bootstrap::protocol_version(),
+        PROTOCOL_VERSION.major
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{check_protocol, parse_report, remote_command, shell_quote};
+
+    const DOC: &str = r#"{"schema_version":1,"transport":"quic","port":60123,"cert_fingerprint":"AB:CD","token":"00ff","protocol_version":"0.9.0"}"#;
+
+    #[test]
+    fn the_report_is_found_past_startup_noise() {
+        let stdout = format!("Welcome to box\nlast login: never\n{DOC}\n\n");
+        let report = parse_report(&stdout).expect("report");
+        assert_eq!(report.port, 60123);
+        assert_eq!(report.cert_fingerprint, "AB:CD");
+        assert_eq!(report.token, "00ff");
+        assert_eq!(report.protocol_version.as_deref(), Some("0.9.0"));
+    }
+
+    #[test]
+    fn a_report_missing_what_the_dial_needs_is_refused() {
+        assert!(parse_report("").is_err());
+        assert!(parse_report("not json\n").is_err());
+        assert!(parse_report(r#"{"port":0,"cert_fingerprint":"a","token":"b"}"#).is_err());
+        assert!(parse_report(r#"{"port":70000,"cert_fingerprint":"a","token":"b"}"#).is_err());
+        assert!(parse_report(r#"{"port":1,"token":"b"}"#).is_err());
+        assert!(parse_report(r#"{"port":1,"cert_fingerprint":"a","token":""}"#).is_err());
+    }
+
+    #[test]
+    fn protocol_major_must_match_and_minor_patch_may_differ() {
+        use phux_protocol::PROTOCOL_VERSION as V;
+        let ours = super::super::bootstrap::protocol_version();
+        assert!(check_protocol(Some(&ours), "box").is_ok());
+        assert!(
+            check_protocol(None, "box").is_ok(),
+            "an older document says nothing"
+        );
+        let older = format!("{}.{}.0", V.major, V.minor.wrapping_sub(1));
+        let newer = format!("{}.{}.4", V.major, V.minor + 1);
+        assert!(check_protocol(Some(&older), "box").is_ok(), "older minor");
+        assert!(check_protocol(Some(&newer), "box").is_ok(), "newer minor");
+        let foreign = format!("{}.0.0", V.major + 1);
+        let err = check_protocol(Some(&foreign), "box").unwrap_err();
+        assert!(err.contains(&foreign) && err.contains(&ours), "{err}");
+        assert!(check_protocol(Some("garbage"), "box").is_err());
+    }
+
+    #[test]
+    fn the_remote_command_quotes_for_the_far_shell() {
+        assert_eq!(shell_quote("phux"), "phux");
+        assert_eq!(shell_quote("~/bin/phux"), "~/bin/phux");
+        assert_eq!(shell_quote("/opt/my phux"), "'/opt/my phux'");
+        assert_eq!(shell_quote("it's"), r"'it'\''s'");
+        assert_eq!(shell_quote(""), "''");
+
+        let command = remote_command("phux", Some("60000-61000"));
+        assert!(
+            command.starts_with("phux bootstrap --client-version "),
+            "{command}"
+        );
+        assert!(command.ends_with(" --port-range 60000-61000"), "{command}");
+        assert!(!remote_command("phux", None).contains("--port-range"));
+    }
+}

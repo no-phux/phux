@@ -1,0 +1,420 @@
+//! Establishing a connection: WebTransport, WebSocket, hosted, and the redial loop.
+
+use super::*;
+
+impl<T> Attempt<T> {
+    pub(super) fn get(&self) -> &T {
+        self.transport
+            .as_ref()
+            .expect("transport attempt is still armed")
+    }
+
+    fn transfer_to_app(&mut self) {
+        self.transport.take();
+    }
+}
+
+impl Attempt<WebSocket> {
+    pub(super) fn websocket(socket: WebSocket) -> Self {
+        Self {
+            transport: Some(socket),
+            close: |socket| drop(socket.close()),
+        }
+    }
+}
+
+impl Attempt<WebTransport> {
+    pub(super) fn webtransport(session: WebTransport) -> Self {
+        Self {
+            transport: Some(session),
+            close: WebTransport::close,
+        }
+    }
+}
+
+impl<T> Drop for Attempt<T> {
+    fn drop(&mut self) {
+        if let Some(transport) = self.transport.take() {
+            (self.close)(&transport);
+        }
+    }
+}
+
+impl AppEstablishment {
+    pub(super) fn new(app: Rc<RefCell<App>>) -> Self {
+        Self { app: Some(app) }
+    }
+
+    fn app(&self) -> &Rc<RefCell<App>> {
+        self.app.as_ref().expect("App establishment is still armed")
+    }
+
+    pub(super) fn complete(mut self) -> Client {
+        Client {
+            app: self.app.take().expect("App establishment is still armed"),
+        }
+    }
+}
+
+impl Drop for AppEstablishment {
+    fn drop(&mut self) {
+        if let Some(app) = self.app.take() {
+            app.borrow_mut().dispose();
+        }
+    }
+}
+
+impl AttemptDeadline {
+    pub(super) fn new() -> Result<Self, JsValue> {
+        let now = monotonic_now_ms()?;
+        Ok(Self {
+            end_ms: now + f64::from(CONNECT_DEADLINE_MS),
+        })
+    }
+
+    fn remaining_ms(&self) -> u32 {
+        let remaining = monotonic_now_ms()
+            .map(|now| (self.end_ms - now).ceil())
+            .unwrap_or(0.0);
+        remaining.clamp(0.0, f64::from(CONNECT_DEADLINE_MS)) as u32
+    }
+}
+
+pub(super) fn monotonic_now_ms() -> Result<f64, JsValue> {
+    web_sys::window()
+        .and_then(|window| window.performance())
+        .map(|performance| performance.now())
+        .ok_or_else(|| JsValue::from_str("monotonic browser clock unavailable"))
+}
+
+async fn load_vt() -> Result<Rc<Vt>, JsValue> {
+    match select(
+        Box::pin(async {
+            crate::fonts::load().await?;
+            Vt::load().await
+        }),
+        Box::pin(TimeoutFuture::new(CONNECT_DEADLINE_MS)),
+    )
+    .await
+    {
+        Either::Left((result, _)) => result,
+        Either::Right(((), _)) => Err(JsValue::from_str("terminal engine load timed out")),
+    }
+}
+
+/// Connect to a phux server over WebSocket and render the attached terminal
+/// into the given canvas, routing keyboard input back. Resolves only after the
+/// aggregate attach reaches READY; handlers then run for the connection's lifetime.
+///
+/// # Errors
+/// Fails if the engine can't load, the canvas has no 2D context, or the
+/// WebSocket can't be opened.
+pub async fn run(
+    ws_url: &str,
+    canvas: HtmlCanvasElement,
+    cols: u16,
+    rows: u16,
+) -> Result<Client, JsValue> {
+    let vt = load_vt().await?;
+    let direct = WsMode::Direct {
+        synthesized_only: false,
+    };
+    run_websocket(ws_url, None, canvas, cols, rows, direct, &vt).await
+}
+
+/// How a WebSocket connection starts: the plain wire, or the hosted
+/// live-demo preamble whose lifecycle events go to a callback.
+enum WsMode {
+    Direct { synthesized_only: bool },
+    Hosted(js_sys::Function),
+}
+
+/// Connect over WebSocket for the hosted live-demo Worker.
+///
+/// The first message must be the text `phux.session.v1` envelope. HELLO waits
+/// until that preamble arrives; later binary messages are the phux wire.
+///
+/// # Errors
+/// Fails if the engine, canvas, or WebSocket cannot be initialized, or if the
+/// hosted preamble is missing or invalid.
+pub async fn run_hosted(
+    ws_url: &str,
+    canvas: HtmlCanvasElement,
+    cols: u16,
+    rows: u16,
+    callback: js_sys::Function,
+) -> Result<Client, JsValue> {
+    let vt = load_vt().await?;
+    let hosted = WsMode::Hosted(callback);
+    run_websocket(ws_url, None, canvas, cols, rows, hosted, &vt).await
+}
+
+/// Connect over WebSocket while explicitly advertising synthesized
+/// compatibility profiles only.
+///
+/// # Errors
+/// Fails if the engine, canvas, or WebSocket cannot be initialized.
+pub async fn run_synthesized_compat(
+    ws_url: &str,
+    canvas: HtmlCanvasElement,
+    cols: u16,
+    rows: u16,
+) -> Result<Client, JsValue> {
+    let vt = load_vt().await?;
+    let compat = WsMode::Direct {
+        synthesized_only: true,
+    };
+    run_websocket(ws_url, None, canvas, cols, rows, compat, &vt).await
+}
+
+async fn run_websocket(
+    ws_url: &str,
+    bearer_hex: Option<&str>,
+    canvas: HtmlCanvasElement,
+    cols: u16,
+    rows: u16,
+    mode: WsMode,
+    vt: &Rc<Vt>,
+) -> Result<Client, JsValue> {
+    let deadline = AttemptDeadline::new()?;
+    let ws = websocket(ws_url, bearer_hex)?;
+    let mut attempt = Attempt::websocket(ws);
+    attempt.get().set_binary_type(BinaryType::Arraybuffer);
+
+    let app_socket = attempt.get().clone();
+    let tx = WireTx::Ws(WsTx::new(app_socket.clone()));
+    let synthesized_only = matches!(
+        mode,
+        WsMode::Direct {
+            synthesized_only: true
+        }
+    );
+    let (app, ready) = build_app(vt, tx, canvas, cols, rows, synthesized_only)?;
+    let app_attempt = AppEstablishment::new(Rc::clone(&app));
+    attempt.transfer_to_app();
+    install_transport_failure_hook(&app);
+
+    match mode {
+        WsMode::Direct { .. } => install_websocket_handlers(&app, &app_socket),
+        WsMode::Hosted(callback) => install_hosted_websocket_handlers(&app, &app_socket, callback),
+    }
+    complete_establishment(app_attempt, ready, &deadline).await
+}
+
+/// Wait for the aggregate ATTACH_READY, then bind input, the path picker,
+/// and the cursor blink.
+async fn complete_establishment(
+    establishment: AppEstablishment,
+    ready: oneshot::Receiver<Result<(), String>>,
+    deadline: &AttemptDeadline,
+) -> Result<Client, JsValue> {
+    let app = establishment.app();
+    await_protocol_ready(app, ready, deadline.remaining_ms()).await?;
+    ensure_app_live(app)?;
+    install_input(app)?;
+    path_picker::install(app)?;
+    install_cursor_blink(app)?;
+    Ok(establishment.complete())
+}
+
+/// Connect over WebTransport (HTTP/3 over QUIC), falling back to the
+/// WebSocket at `ws_url` when the API or the endpoint is unavailable.
+///
+/// `wt_url` is an `https://` session URL; a token-authenticated listener
+/// takes `?token=<hex>` (the JS API cannot set headers). The fallback offers
+/// that token through `Sec-WebSocket-Protocol`, never the WSS URL.
+///
+/// # Errors
+/// Fails only if *both* paths fail to come up.
+pub async fn run_with_fallback(
+    wt_url: &str,
+    ws_url: &str,
+    canvas: HtmlCanvasElement,
+    cols: u16,
+    rows: u16,
+) -> Result<Client, JsValue> {
+    let fallback_token = fallback_token_from_webtransport_url(wt_url);
+    if matches!(fallback_token, FallbackToken::Invalid) {
+        return Err(JsValue::from_str(
+            "WebTransport URL contains an invalid or duplicate token",
+        ));
+    }
+    let vt = load_vt().await?;
+    match run_webtransport_loaded(wt_url, canvas.clone(), cols, rows, &vt).await {
+        Ok(client) => Ok(client),
+        Err(_) => {
+            web_sys::console::warn_1(&JsValue::from_str(
+                "phux-web: WebTransport unavailable; falling back to WebSocket",
+            ));
+            let bearer = fallback_token.valid();
+            let direct = WsMode::Direct {
+                synthesized_only: false,
+            };
+            run_websocket(ws_url, bearer, canvas, cols, rows, direct, &vt).await
+        }
+    }
+}
+
+async fn run_webtransport_loaded(
+    wt_url: &str,
+    canvas: HtmlCanvasElement,
+    cols: u16,
+    rows: u16,
+    vt: &Rc<Vt>,
+) -> Result<Client, JsValue> {
+    let deadline = AttemptDeadline::new()?;
+    // `WebTransport::new` throws (rather than returning Err) when the API is
+    // absent from the global scope; the `catch` binding surfaces both cases
+    // as Err so the caller's fallback fires either way.
+    let wt = WebTransport::new(wt_url)
+        .map_err(|_| JsValue::from_str("WebTransport initialization failed"))?;
+    let mut attempt = Attempt::webtransport(wt);
+    if await_js_promise_with_deadline(
+        attempt.get().ready(),
+        "WebTransport readiness",
+        deadline.remaining_ms(),
+    )
+    .await
+    .is_err()
+    {
+        return Err(JsValue::from_str("WebTransport readiness failed"));
+    }
+
+    // One bidirectional stream carries the whole wire, mirroring the QUIC
+    // transport's one-stream-per-connection contract.
+    let stream: web_sys::WebTransportBidirectionalStream = match await_js_promise_with_deadline(
+        attempt.get().create_bidirectional_stream(),
+        "WebTransport stream creation",
+        deadline.remaining_ms(),
+    )
+    .await
+    {
+        Ok(stream) => stream,
+        Err(_) => return Err(JsValue::from_str("WebTransport stream creation failed")),
+    };
+    let writer = WritableStreamDefaultWriter::new(&stream.writable())
+        .map_err(|_| JsValue::from_str("WebTransport writer initialization failed"))?;
+    let reader = ReadableStreamDefaultReader::new(&stream.readable())
+        .map_err(|_| JsValue::from_str("WebTransport reader initialization failed"))?;
+
+    let reader_session = attempt.get().clone();
+    let tx = WireTx::Wt(Rc::new(WtTx::new(writer, attempt.get().clone())));
+    let (app, ready) = build_app(vt, tx, canvas, cols, rows, false)?;
+    let app_attempt = AppEstablishment::new(Rc::clone(&app));
+    attempt.transfer_to_app();
+    install_transport_failure_hook(&app);
+
+    // The session is already established (unlike the WebSocket path there is
+    // no onopen moment): send HELLO now; ATTACH follows HELLO_OK.
+    send_handshake(&app);
+
+    // Read pump: stream chunks land at arbitrary boundaries, so reassemble
+    // complete frames before decoding. `wt` is moved in to keep the session
+    // handle alive for the pump's lifetime.
+    {
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        app.borrow()
+            .bindings
+            .borrow_mut()
+            .wt_reader_cancel
+            .replace(cancel_tx);
+        let app = Rc::clone(&app);
+        wasm_bindgen_futures::spawn_local(async move {
+            run_webtransport_reader(app, reader, reader_session, cancel_rx).await;
+        });
+    }
+    complete_establishment(app_attempt, ready, &deadline).await
+}
+
+pub(super) fn spawn_reconnect(config: ReconnectConfig) {
+    wasm_bindgen_futures::spawn_local(async move {
+        TimeoutFuture::new(250).await;
+        loop {
+            let canvas = config.canvas.clone();
+            let attempt = match config.wt_url.as_deref() {
+                Some(wt_url) => {
+                    run_with_fallback(wt_url, &config.ws_url, canvas, config.cols, config.rows)
+                        .await
+                }
+                None => run(&config.ws_url, canvas, config.cols, config.rows).await,
+            };
+            match attempt {
+                Ok(client) => {
+                    client.enable_auto_reconnect(config.wt_url.as_deref(), &config.ws_url);
+                    return;
+                }
+                Err(error) => {
+                    if let Some(message) = error.as_string().filter(|m| is_version_refusal(m)) {
+                        mark_incompatible(&config.canvas, &message);
+                        return;
+                    }
+                    TimeoutFuture::new(1_000).await;
+                }
+            }
+        }
+    });
+}
+
+/// Stop on a protocol-major refusal and say why: the canvas is marked
+/// `incompatible` with the reason in [`ERROR_ATTRIBUTE`], and the console
+/// carries it too.
+pub(super) fn mark_incompatible(canvas: &HtmlCanvasElement, message: &str) {
+    web_sys::console::error_1(&JsValue::from_str(&format!("phux-web: {message}")));
+    let _ = canvas.set_attribute(CONNECTION_ATTRIBUTE, "incompatible");
+    let _ = canvas.set_attribute(ERROR_ATTRIBUTE, message);
+    let _ = canvas.set_attribute("title", message);
+}
+
+pub(super) fn websocket(ws_url: &str, bearer_hex: Option<&str>) -> Result<WebSocket, JsValue> {
+    let Some(token) = bearer_hex else {
+        return WebSocket::new(ws_url);
+    };
+    let protocols = js_sys::Array::new();
+    for protocol in authenticated_websocket_protocols(token) {
+        protocols.push(&JsValue::from_str(&protocol));
+    }
+    WebSocket::new_with_str_sequence(ws_url, protocols.as_ref())
+        .map_err(|_| JsValue::from_str("authenticated WebSocket initialization failed"))
+}
+
+pub(super) fn authenticated_websocket_protocols(token: &str) -> [String; 2] {
+    [
+        PHUX_WS_PROTOCOL.to_owned(),
+        format!("{PHUX_WS_BEARER_PREFIX}{token}"),
+    ]
+}
+
+impl<'a> FallbackToken<'a> {
+    const fn valid(self) -> Option<&'a str> {
+        match self {
+            Self::Valid(token) => Some(token),
+            Self::Missing | Self::Invalid => None,
+        }
+    }
+}
+
+pub(super) fn fallback_token_from_webtransport_url(url: &str) -> FallbackToken<'_> {
+    let Some(query) = url.split_once('?').map(|(_, rest)| rest) else {
+        return FallbackToken::Missing;
+    };
+    let mut tokens = query
+        .split('#')
+        .next()
+        .unwrap_or_default()
+        .split('&')
+        .filter(|part| *part == "token" || part.starts_with("token="));
+    let Some(carrier) = tokens.next() else {
+        return FallbackToken::Missing;
+    };
+    let Some(token) = carrier.strip_prefix("token=") else {
+        return FallbackToken::Invalid;
+    };
+    if tokens.next().is_some()
+        || token.is_empty()
+        || token.len() % 2 != 0
+        || !token.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return FallbackToken::Invalid;
+    }
+    FallbackToken::Valid(token)
+}

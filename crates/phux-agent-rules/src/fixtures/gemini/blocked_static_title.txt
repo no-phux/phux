@@ -1,0 +1,40 @@
+ ▝▜▄     Gemini CLI v0.63.0
+   ▝▜▄
+  ▗▟▀    Authenticated with gemini-api-key /auth
+ ▝▀
+
+
+Tips for getting started:
+1. Create GEMINI.md files to customize your interactions
+2. /help for more information
+3. Ask coding questions, edit code or run commands
+4. Be specific for the best results
+
+ > SLOW go
+
+✦ line 1
+  line 2
+  line 3
+  line 4
+  line 5
+  line 6
+
+
+ℹ Request cancelled.
+
+ > SHELL go
+
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ? Shell  touch phux-capture-marker                                                                                   │
+│ ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ │
+│ │ touch phux-capture-marker                                                                                        │ │
+│ ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ │
+│ Allow execution of [Shell]?                                                                                          │
+│                                                                                                                      │
+│ ● 1. Allow once                                                                                                      │
+│   2. Allow for this session                                                                                          │
+│   3. No, suggest changes (esc)                                                                                       │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+

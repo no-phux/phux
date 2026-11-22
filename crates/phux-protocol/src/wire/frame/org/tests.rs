@@ -1,0 +1,104 @@
+use super::*;
+
+fn encoded(doc: &ArrangementDoc) -> Vec<u8> {
+    let mut buf = BytesMut::new();
+    encode_arrangement_doc(doc, &mut Encoder::new(&mut buf));
+    buf.to_vec()
+}
+
+fn split_doc() -> ArrangementDoc {
+    let leaf = |byte| {
+        Box::new(ArrangementNode::Leaf(EntryRef::new(
+            [byte; 16],
+            EntryTarget::Member(ResourceKey::new([byte; 16]).expect("non-zero key")),
+        )))
+    };
+    ArrangementDoc {
+        groups: vec![ArrangementGroup {
+            locked: false,
+            id: [9; 16],
+            name: Some("tab".to_owned()),
+            tree: ArrangementNode::Split {
+                dir: SplitDirection::Vertical,
+                ratio: 0.25,
+                first: leaf(1),
+                second: leaf(2),
+            },
+        }],
+    }
+}
+
+/// The `u32` length prefix at `at`.
+fn len_at(bytes: &[u8], at: usize) -> usize {
+    let raw: [u8; 4] = bytes[at..at + 4].try_into().expect("four bytes");
+    u32::from_be_bytes(raw) as usize
+}
+
+/// `bytes` with the record at `at` grown by `extra` at its end, the
+/// enclosing record at `outer` (if any) lengthened to match: what a
+/// newer encoder appending a field would write.
+fn grow(bytes: &[u8], at: usize, outer: Option<usize>, extra: &[u8]) -> Vec<u8> {
+    let end = at + 4 + len_at(bytes, at);
+    let mut out = [&bytes[..end], extra, &bytes[end..]].concat();
+    for prefix in std::iter::once(at).chain(outer) {
+        let len = u32::try_from(len_at(&out, prefix) + extra.len()).expect("small");
+        out[prefix..prefix + 4].copy_from_slice(&len.to_be_bytes());
+    }
+    out
+}
+
+#[test]
+fn bytes_a_newer_peer_appends_to_a_document_are_skipped() {
+    let doc = split_doc();
+    let bytes = encoded(&doc);
+    assert_eq!(decode_arrangement_doc(&bytes), Ok(doc.clone()));
+
+    // After the last group.
+    let trailing = [bytes.as_slice(), &[0xEE; 5]].concat();
+    assert_eq!(decode_arrangement_doc(&trailing), Ok(doc.clone()));
+
+    // Inside the group record, which starts after the `u16` count: a newer
+    // peer writes the lock byte, then whatever it added after it.
+    let group = 2;
+    let grown_group = grow(&bytes, group, None, &[0x00, 0xEE, 0xEE]);
+    assert_eq!(decode_arrangement_doc(&grown_group), Ok(doc.clone()));
+    let mut locked = doc.clone();
+    locked.groups[0].locked = true;
+    let locked_group = grow(&bytes, group, None, &[0x01, 0xEE]);
+    assert_eq!(decode_arrangement_doc(&locked_group), Ok(locked.clone()));
+    assert_eq!(encoded(&locked), grow(&bytes, group, None, &[0x01]));
+
+    // Inside the split node, after the group's length, id, and name
+    // (presence byte, `u32` length, "tab").
+    let node = group + 4 + 16 + 1 + 4 + 3;
+    let grown_node = grow(&bytes, node, Some(group), &[0xEE; 2]);
+    assert_eq!(decode_arrangement_doc(&grown_node), Ok(doc));
+}
+
+/// Slot tabs ride at the end of the leaf record: a leaf without them
+/// encodes as it always did, one with them round-trips, and a default
+/// placed past its tabs is refused.
+#[test]
+fn slot_tabs_trail_the_leaf_and_round_trip() {
+    let tabbed = |shown_at| {
+        let mut doc = split_doc();
+        if let ArrangementNode::Split { first, .. } = &mut doc.groups[0].tree
+            && let ArrangementNode::Leaf(slot) = first.as_mut()
+        {
+            slot.tabs = vec![EntryRef::new(
+                [7; 16],
+                EntryTarget::Member(ResourceKey::new([7; 16]).expect("non-zero key")),
+            )];
+            slot.shown_at = shown_at;
+        }
+        doc
+    };
+    let doc = tabbed(1);
+    let bytes = encoded(&doc);
+    assert_eq!(decode_arrangement_doc(&bytes), Ok(doc));
+    assert!(bytes.len() > encoded(&split_doc()).len());
+    assert_eq!(
+        decode_arrangement_doc(&encoded(&tabbed(2))),
+        Err(DecodeError::InvalidArrangement)
+    );
+}

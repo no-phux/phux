@@ -1,0 +1,144 @@
+//! The engine-to-runtime event sink and its loss counter (ADR-0123).
+//!
+//! Engines `try_send` into a bounded channel the runtime drains into the
+//! journal. A full sink is the only pre-journal loss, so drops are counted
+//! and journaled as a resource-scoped `source_gap`.
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use phux_protocol::ids::IdempotencyKey;
+use phux_protocol::wire::frame::AgentEvent;
+use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TrySendError;
+
+/// One emitted event plus the key of the operation that caused it
+/// (`docs/protocol.md#receipts-retries-and-backpressure`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Emitted {
+    /// The event.
+    pub event: AgentEvent,
+    /// The causing operation's key, when it carried one.
+    pub operation_id: Option<IdempotencyKey>,
+}
+
+impl From<AgentEvent> for Emitted {
+    fn from(event: AgentEvent) -> Self {
+        Self {
+            event,
+            operation_id: None,
+        }
+    }
+}
+
+/// The engine's end: emits without blocking and counts what it had to drop.
+#[derive(Debug, Clone)]
+pub struct EventSink {
+    tx: mpsc::Sender<Emitted>,
+    dropped: Arc<AtomicU64>,
+}
+
+/// The runtime's end: the events in order, plus the drop count since the
+/// last read.
+#[derive(Debug)]
+pub struct EventSource {
+    rx: mpsc::Receiver<Emitted>,
+    dropped: Arc<AtomicU64>,
+}
+
+/// A sink of `capacity` events and the source that drains it.
+#[must_use]
+pub fn event_sink(capacity: usize) -> (EventSink, EventSource) {
+    let (tx, rx) = mpsc::channel(capacity);
+    let dropped = Arc::new(AtomicU64::new(0));
+    (
+        EventSink {
+            tx,
+            dropped: Arc::clone(&dropped),
+        },
+        EventSource { rx, dropped },
+    )
+}
+
+impl EventSink {
+    /// Queue `event`, or count a drop when full. A closed sink has nobody
+    /// to report to.
+    pub fn emit(&self, event: AgentEvent) {
+        self.emit_keyed(event, None);
+    }
+
+    /// [`Self::emit`], naming the key of the operation that caused `event`.
+    pub fn emit_keyed(&self, event: AgentEvent, operation_id: Option<IdempotencyKey>) {
+        let emitted = Emitted {
+            event,
+            operation_id,
+        };
+        if let Err(TrySendError::Full(_)) = self.tx.try_send(emitted) {
+            // Relaxed: the engine and the drain share one current-thread
+            // runtime (ADR-0014); the atomic only has to be shared.
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+/// A bare channel is a sink whose drops nobody reads, which is what a test
+/// that inspects the raw events wants.
+impl From<mpsc::Sender<Emitted>> for EventSink {
+    fn from(tx: mpsc::Sender<Emitted>) -> Self {
+        Self {
+            tx,
+            dropped: Arc::new(AtomicU64::new(0)),
+        }
+    }
+}
+
+impl EventSource {
+    /// The next event, or `None` once every sink is gone and the queue is
+    /// empty.
+    pub async fn recv(&mut self) -> Option<Emitted> {
+        self.rx.recv().await
+    }
+
+    /// The next already-queued event, without waiting: how the exit watcher
+    /// journals what a resource emitted before its close.
+    pub fn try_recv(&mut self) -> Option<Emitted> {
+        self.rx.try_recv().ok()
+    }
+
+    /// How many events were dropped since the last call, resetting the
+    /// count.
+    #[must_use]
+    pub fn take_dropped(&self) -> u64 {
+        self.dropped.swap(0, Ordering::Relaxed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_full_sink_counts_every_drop_once() {
+        let (sink, mut source) = event_sink(1);
+        sink.emit(AgentEvent::Bell);
+        sink.emit(AgentEvent::Dirty);
+        sink.emit(AgentEvent::Idle);
+        assert_eq!(source.take_dropped(), 2);
+        assert_eq!(source.take_dropped(), 0, "reading resets the count");
+        assert!(matches!(
+            source.rx.try_recv(),
+            Ok(Emitted {
+                event: AgentEvent::Bell,
+                operation_id: None
+            })
+        ));
+    }
+
+    #[test]
+    fn a_closed_sink_is_not_a_loss() {
+        let (sink, source) = event_sink(1);
+        drop(source.rx);
+        sink.emit(AgentEvent::Bell);
+        assert_eq!(source.dropped.load(Ordering::Relaxed), 0);
+    }
+}

@@ -1,0 +1,207 @@
+//! Pane input credits (ADR-0144): typed input waits for room instead of
+//! being dropped. Each Terminal owns [`INPUT_CREDITS`] permits; a request
+//! holds one from its sender until the PTY writer wrote it. A saturated pane
+//! makes the client's read loop wait (transport backpressure); the lane
+//! itself never waits. A pane that drains nothing for [`INPUT_STALL_LIMIT`]
+//! refuses explicitly until it drains again.
+//!
+//! [`INPUT_CREDITS`]: phux_terminal_api::actor::INPUT_CREDITS
+#![allow(
+    clippy::redundant_pub_crate,
+    reason = "the connection read loop and command handlers use these through the lane's re-export"
+)]
+
+use phux_terminal_api::actor::TerminalResource as _;
+use std::collections::HashSet;
+use std::time::Duration;
+
+use phux_protocol::ids::ResourceId as WireResourceId;
+use phux_protocol::wire::frame::{CommandResult, ErrorCode};
+
+use crate::state::SharedState;
+use phux_terminal_api::actor::{InputCredit, InputCreditPool, TerminalHandle};
+
+/// How long an event waits for its pane to drain before it is refused.
+pub(super) const INPUT_STALL_LIMIT: Duration = Duration::from_secs(5);
+
+/// The pane did not drain within [`INPUT_STALL_LIMIT`]; the event was not
+/// delivered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct InputStalled;
+
+impl InputStalled {
+    /// The wire refusal for `terminal_id`, shared by the uncorrelated
+    /// `ERROR` an `INPUT_*` frame gets and a command's `COMMAND_RESULT`.
+    pub(crate) fn message(terminal_id: &WireResourceId) -> String {
+        format!(
+            "input to {terminal_id} refused: the terminal has not drained its input for {}s",
+            INPUT_STALL_LIMIT.as_secs()
+        )
+    }
+
+    pub(crate) fn result(terminal_id: &WireResourceId) -> CommandResult {
+        CommandResult::error(ErrorCode::ResourceExhausted, Self::message(terminal_id))
+    }
+}
+
+/// One connection's credit acquisition, remembering which panes it saw
+/// stall so that input to them is refused without another full wait.
+#[derive(Debug, Default)]
+pub(crate) struct InputCredits {
+    stalled: HashSet<WireResourceId>,
+}
+
+impl InputCredits {
+    /// A credit for `terminal_id`, waiting up to [`INPUT_STALL_LIMIT`] for
+    /// one. `Ok(None)` when the id names no local Terminal: the lane then
+    /// applies its own not-found and authority handling.
+    ///
+    /// # Errors
+    ///
+    /// [`InputStalled`] when the pane did not drain in time, or is still
+    /// saturated after an earlier stall on this connection.
+    pub(crate) async fn acquire(
+        &mut self,
+        state: &SharedState,
+        terminal_id: &WireResourceId,
+    ) -> Result<Option<InputCredit>, InputStalled> {
+        let Some(pool) = credit_pool(state, terminal_id) else {
+            self.stalled.remove(terminal_id);
+            return Ok(None);
+        };
+        if let Some(credit) = pool.try_take() {
+            self.stalled.remove(terminal_id);
+            return Ok(Some(credit));
+        }
+        if self.stalled.contains(terminal_id) {
+            return Err(InputStalled);
+        }
+        let metrics = state
+            .terminal_engine()
+            .and_then(|engine| engine.host_metrics());
+        if let Some(metrics) = metrics {
+            metrics.input_credit_waits.incr();
+        }
+        let wait_started = std::time::Instant::now();
+        let outcome = tokio::time::timeout(INPUT_STALL_LIMIT, pool.take()).await;
+        if let Some(metrics) = metrics {
+            metrics.input_credit_wait.record_elapsed(wait_started);
+        }
+        match outcome {
+            Ok(credit) => Ok(Some(credit)),
+            Err(_elapsed) => {
+                if let Some(metrics) = metrics {
+                    metrics.input_credit_timeouts.incr();
+                }
+                tracing::warn!(
+                    ?terminal_id,
+                    "pane input stalled; refusing input until it drains"
+                );
+                self.stalled.insert(terminal_id.clone());
+                Err(InputStalled)
+            }
+        }
+    }
+}
+
+/// A credit for one event outside a connection's read loop (a held
+/// `ROUTE_INPUT`), with the same bounded wait.
+///
+/// # Errors
+///
+/// [`InputStalled`] when the pane did not drain in time.
+pub(crate) async fn acquire_credit(
+    state: &SharedState,
+    terminal_id: &WireResourceId,
+) -> Result<Option<InputCredit>, InputStalled> {
+    InputCredits::default().acquire(state, terminal_id).await
+}
+
+/// The credit pool of the local Terminal `terminal_id` names, if any.
+fn credit_pool(state: &SharedState, terminal_id: &WireResourceId) -> Option<InputCreditPool> {
+    state.with(|s| {
+        let core = s.idspace.resource_from_wire(terminal_id)?;
+        let terminal = s.resources().handle(core)?.terminal().ok()?;
+        Some(terminal.ordered_input.credits())
+    })
+}
+
+/// The credit a handoff to `handle` spends: the one its sender took, when
+/// that came from this pane's pool, else one taken now without waiting.
+pub(super) fn credit_for(
+    handle: &TerminalHandle,
+    credit: Option<InputCredit>,
+) -> Option<InputCredit> {
+    match credit {
+        Some(credit) if credit.is_from(&handle.ordered_input.credits()) => Some(credit),
+        _ => handle.ordered_input.credits().try_take(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use phux_terminal::actor::{INPUT_CREDITS, TerminalActor};
+
+    /// A registered (not running) Terminal and its credit pool.
+    fn terminal(state: &SharedState) -> (WireResourceId, InputCreditPool) {
+        let bundle = TerminalActor::new(80, 24).expect("actor");
+        let pool = bundle
+            .handle
+            .terminal()
+            .expect("facet")
+            .ordered_input
+            .credits();
+        let wire = state.with_mut(|s| {
+            let pane = s.seed_session("s").1;
+            s.register_resource_handle(pane, bundle.handle.clone(), bundle.token.clone())
+                .unwrap()
+        });
+        (wire, pool)
+    }
+
+    /// A pane that drains nothing for the stall limit refuses explicitly,
+    /// then refuses at once until a credit frees, then accepts again.
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn a_stalled_pane_refuses_after_the_limit_then_recovers() {
+        let state = SharedState::new();
+        let (wire, pool) = terminal(&state);
+        let mut held: Vec<_> = std::iter::from_fn(|| pool.try_take()).collect();
+        assert_eq!(held.len(), INPUT_CREDITS);
+
+        let mut credits = InputCredits::default();
+        let started = tokio::time::Instant::now();
+        assert_eq!(
+            credits.acquire(&state, &wire).await.err(),
+            Some(InputStalled)
+        );
+        assert!(started.elapsed() >= INPUT_STALL_LIMIT);
+
+        let again = tokio::time::Instant::now();
+        assert_eq!(
+            credits.acquire(&state, &wire).await.err(),
+            Some(InputStalled)
+        );
+        assert_eq!(
+            again.elapsed(),
+            Duration::ZERO,
+            "a known stall refuses at once"
+        );
+
+        held.pop();
+        let credit = credits.acquire(&state, &wire).await.expect("drained");
+        assert!(credit.is_some_and(|credit| credit.is_from(&pool)));
+        drop(held);
+        assert_eq!(pool.available(), INPUT_CREDITS);
+    }
+
+    /// An id naming no local Terminal takes no credit; the lane refuses it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_unknown_terminal_needs_no_credit() {
+        let state = SharedState::new();
+        let credit = InputCredits::default()
+            .acquire(&state, &WireResourceId::local(99))
+            .await;
+        assert!(matches!(credit, Ok(None)));
+    }
+}

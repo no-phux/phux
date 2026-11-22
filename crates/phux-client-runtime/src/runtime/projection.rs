@@ -1,0 +1,245 @@
+//! Published-grid and engine query methods.
+
+#[cfg(feature = "engine")]
+use super::{Arc, GridFrame, Publication, Scroll, TerminalPublication};
+use super::{Client, ResourceId, lock};
+
+impl Client {
+    /// Create an independent tail-following presentation at canonical PTY size.
+    #[cfg(feature = "engine")]
+    pub fn create_view(
+        &self,
+        terminal: &ResourceId,
+    ) -> Result<crate::ViewId, crate::engine::EngineError> {
+        self.engine()
+            .ok_or(crate::engine::EngineError::Stopped)?
+            .create_view(terminal)
+    }
+
+    /// Release only a view's presentation resources, preserving its terminal.
+    #[cfg(feature = "engine")]
+    pub fn destroy_view(&self, view: crate::ViewId) -> Result<(), crate::engine::EngineError> {
+        self.engine()
+            .ok_or(crate::engine::EngineError::Stopped)?
+            .destroy_view(view)
+    }
+
+    /// Acquire the immutable current frame for an independent view.
+    #[cfg(feature = "engine")]
+    #[must_use]
+    pub fn acquire_view(&self, view: crate::ViewId) -> Option<Arc<GridFrame>> {
+        self.inner.publication.acquire_view(view)
+    }
+
+    /// Poll the independent view's frame generation.
+    #[cfg(feature = "engine")]
+    #[must_use]
+    pub fn view_generation(&self, view: crate::ViewId) -> Option<u64> {
+        self.inner.publication.view_generation(view)
+    }
+
+    /// Retain a one-load polling handle for an independent view.
+    #[cfg(feature = "engine")]
+    #[must_use]
+    pub fn view_slot(&self, view: crate::ViewId) -> Option<TerminalPublication> {
+        self.inner.publication.view_slot(view)
+    }
+
+    /// Scroll only this view while preserving control-plane history routing.
+    #[cfg(feature = "engine")]
+    pub fn scroll_view(
+        &self,
+        view: crate::ViewId,
+        scroll: Scroll,
+    ) -> Result<(), crate::engine::EngineError> {
+        self.inner.with(|control| control.scroll_view(view, scroll))
+    }
+
+    /// Pin this view to one of its own document anchors.
+    #[cfg(feature = "engine")]
+    pub fn pin_viewport_view(
+        &self,
+        view: crate::ViewId,
+        anchor: u64,
+    ) -> Result<(), crate::engine::EngineError> {
+        self.inner
+            .with(|control| control.pin_viewport_view(view, anchor))
+    }
+
+    // ----- the grid ----------------------------------------------------
+
+    /// The published frames, for a consumer that polls generations itself.
+    #[cfg(feature = "engine")]
+    #[must_use]
+    pub fn publication(&self) -> &Arc<Publication> {
+        &self.inner.publication
+    }
+
+    /// The terminal's current frame, if one is published.
+    #[cfg(feature = "engine")]
+    #[must_use]
+    pub fn acquire(&self, terminal_id: &ResourceId) -> Option<Arc<GridFrame>> {
+        self.inner.publication.acquire(terminal_id)
+    }
+
+    /// The newest whole document a document resource published, whatever
+    /// wake announced it. A wake consumer reads with
+    /// [`Self::acquire_document_at`] instead.
+    #[cfg(feature = "engine")]
+    #[must_use]
+    pub fn acquire_document(
+        &self,
+        resource_id: &ResourceId,
+    ) -> Option<Arc<crate::publication::DocumentPublication>> {
+        self.inner.publication.acquire_document(resource_id)
+    }
+
+    /// The document an [`crate::control::Event::DocumentPublished`] wake for
+    /// `generation` announced; `None` once the slot is gone or moved on, in
+    /// which case a newer wake follows.
+    #[cfg(feature = "engine")]
+    #[must_use]
+    pub fn acquire_document_at(
+        &self,
+        resource_id: &ResourceId,
+        generation: u64,
+    ) -> Option<Arc<crate::publication::DocumentPublication>> {
+        self.inner
+            .publication
+            .acquire_document_at(resource_id, generation)
+    }
+
+    /// The generation of the terminal's current frame.
+    #[cfg(feature = "engine")]
+    #[must_use]
+    pub fn generation(&self, terminal_id: &ResourceId) -> Option<u64> {
+        self.inner.publication.generation(terminal_id)
+    }
+
+    /// A handle on the terminal's slot for one-load generation polls.
+    #[cfg(feature = "engine")]
+    #[must_use]
+    pub fn slot(&self, terminal_id: &ResourceId) -> Option<TerminalPublication> {
+        self.inner.publication.slot(terminal_id)
+    }
+
+    /// Add predictive text and publish the resulting presentation.
+    #[cfg(feature = "engine")]
+    pub fn predict_text(
+        &self,
+        terminal_id: &ResourceId,
+        text: String,
+    ) -> Result<bool, crate::engine::EngineError> {
+        self.engine()
+            .ok_or(crate::engine::EngineError::Stopped)?
+            .predict_text(terminal_id, text)
+    }
+
+    /// Clear predictive text and republish authoritative state.
+    #[cfg(feature = "engine")]
+    pub fn clear_predictions(
+        &self,
+        terminal_id: &ResourceId,
+    ) -> Result<bool, crate::engine::EngineError> {
+        self.engine()
+            .ok_or(crate::engine::EngineError::Stopped)?
+            .clear_predictions(terminal_id)
+    }
+
+    /// Scroll the terminal's viewport; the new frame is published before
+    /// this returns.
+    #[cfg(feature = "engine")]
+    pub fn scroll(
+        &self,
+        terminal_id: &ResourceId,
+        scroll: Scroll,
+    ) -> Result<(), crate::engine::EngineError> {
+        self.inner
+            .with(|control| control.scroll(terminal_id, scroll))
+    }
+
+    /// Search the terminal's loaded history, replacing its previous search
+    /// handles. At most `max_matches` (capped at
+    /// [`crate::engine::SEARCH_MATCH_LIMIT`]) come back, in document order.
+    #[cfg(feature = "engine")]
+    pub fn search(
+        &self,
+        terminal_id: &ResourceId,
+        query: String,
+        case_sensitive: bool,
+        max_matches: usize,
+    ) -> Result<crate::engine::SearchResults, crate::engine::EngineError> {
+        self.engine()
+            .ok_or(crate::engine::EngineError::Stopped)?
+            .search_bounded(terminal_id, query, case_sensitive, max_matches)
+    }
+
+    /// Release the terminal's search handles; the viewport stays put.
+    #[cfg(feature = "engine")]
+    pub fn clear_search(&self, terminal_id: &ResourceId) -> Result<(), crate::engine::EngineError> {
+        self.engine()
+            .ok_or(crate::engine::EngineError::Stopped)?
+            .clear_search(terminal_id)
+    }
+
+    /// Pin the terminal's viewport at one of its document anchors (a search
+    /// match endpoint, say); the new frame is published before this returns.
+    #[cfg(feature = "engine")]
+    pub fn pin_viewport(
+        &self,
+        terminal_id: &ResourceId,
+        anchor: u64,
+    ) -> Result<(), crate::engine::EngineError> {
+        self.inner
+            .with(|control| control.pin_viewport(terminal_id, anchor))
+    }
+
+    /// Keep the final replica after the terminal closes.
+    #[cfg(feature = "engine")]
+    pub fn set_retain_on_close(&self, terminal_id: &ResourceId, retain: bool) {
+        let engine = lock(&self.inner.control).engine().cloned();
+        if let Some(engine) = engine {
+            engine.set_retain_on_close(terminal_id, retain);
+        }
+    }
+
+    /// Release a retained closed replica.
+    #[cfg(feature = "engine")]
+    pub fn release(&self, terminal_id: &ResourceId) {
+        let engine = lock(&self.inner.control).engine().cloned();
+        if let Some(engine) = engine {
+            engine.release(terminal_id);
+        }
+    }
+
+    /// Whether the terminal's alternate screen is active.
+    #[cfg(feature = "engine")]
+    #[must_use]
+    pub fn is_alt_screen(&self, terminal_id: &ResourceId) -> bool {
+        self.engine()
+            .is_some_and(|engine| engine.is_alt_screen(terminal_id))
+    }
+
+    /// Whether the kernel holds a live (or retained) replica.
+    #[must_use]
+    pub fn has_projection(&self, terminal_id: &ResourceId) -> bool {
+        self.engine()
+            .is_some_and(|engine| engine.has_projection(terminal_id))
+    }
+
+    /// Whether the kernel has permanently closed the terminal.
+    #[must_use]
+    pub fn is_closed(&self, terminal_id: &ResourceId) -> bool {
+        self.engine()
+            .is_some_and(|engine| engine.is_closed(terminal_id))
+    }
+
+    /// Drain the bytes the headless replica retained since the last take.
+    #[cfg(not(feature = "engine"))]
+    #[must_use]
+    pub fn take_output(&self, terminal_id: &ResourceId) -> Vec<u8> {
+        self.engine()
+            .map(|engine| engine.take_output(terminal_id))
+            .unwrap_or_default()
+    }
+}

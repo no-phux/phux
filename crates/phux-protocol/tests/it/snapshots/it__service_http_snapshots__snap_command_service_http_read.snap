@@ -1,0 +1,6 @@
+---
+source: crates/phux-protocol/tests/it/service_http_snapshots.rs
+expression: hex_dump(&buf)
+---
+00000000 | 00 00 00 18 31 01 04 04  00 00 00 22 02 04 0d 3e |....1......"...>
+00000010 | 00 00 00 00 00 00 01 02  00 01 00 00             |............

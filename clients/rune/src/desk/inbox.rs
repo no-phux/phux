@@ -1,0 +1,542 @@
+//! The inbox: answering what agents ask and deciding what the server holds,
+//! from anywhere, jumping to what needs you, and keeping notifications in
+//! step with it.
+
+use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::time::Duration;
+
+use phux_client_runtime::Client;
+use phux_client_runtime::approvals::{Approval, Decision, DecisionOutcome};
+use phux_client_runtime::control::{DeliveryOutcome, Event, Status};
+use phux_client_runtime::engine::ReplicaPrompt;
+use phux_protocol::ids::{ApprovalId, ResourceId};
+use phux_protocol::wire::frame::PaneNotify;
+use rune::{Key, KeyEvent, Mods, TextEdit, Tx};
+
+use super::{Desk, NoticeKind};
+use crate::alerts::{Alerts, Target};
+use crate::inbox::{self, Item, Key as ItemKey};
+
+/// An answer whose fate no receipt will tell: only the pane can.
+const UNKNOWN_ANSWER: &str = "The answer may not have landed; read the pane first.";
+
+/// Everything the alerts and the Dock are derived from. While it holds still
+/// there is nothing to post, take back or count, however busy the terminals.
+#[derive(Debug, PartialEq)]
+pub struct AlertInputs {
+    marks: u64,
+    /// Panes' identities and labels, and the held actions.
+    listed: u64,
+    on_screen: Vec<ResourceId>,
+    focused: bool,
+    open: bool,
+    enabled: bool,
+}
+
+#[derive(Default)]
+pub struct Inbox {
+    pub open: bool,
+    pub reply: TextEdit,
+    /// Separates drafts even when a reopened editor contains identical text.
+    reply_epoch: u64,
+    /// The row the keyboard is on, by identity: rows move as work arrives,
+    /// and a draft or a decision must never slide onto another one.
+    pub picked: Option<ItemKey>,
+    pub approvals: Vec<Approval>,
+    /// Answers on their way, to report how each ended.
+    pub answers: HashMap<u64, Answer>,
+    pub alerts: Alerts,
+    /// What the alerts last synced from.
+    pub synced: Option<AlertInputs>,
+    /// A new connection hasn't yet told marks from its old one's leftovers.
+    pub relist: bool,
+    /// The times the open cards show, to redraw when one moves.
+    pub clocks: Vec<String>,
+    /// ACP agents' questions, answered over the protocol.
+    pub questions: super::questions::Questions,
+    /// Panes whose `phux.notify/v1` mode is not `on`.
+    pub muted: HashMap<ResourceId, PaneNotify>,
+}
+
+/// A receipt can retire only the untouched draft submitted for this question.
+pub struct Answer {
+    terminal: ResourceId,
+    reply_epoch: u64,
+    draft: Option<(crate::activity::Ask, TextEdit)>,
+}
+
+impl Answer {
+    fn owns_reply(&self, desk: &Desk) -> bool {
+        let Some((ask, draft)) = &self.draft else {
+            return false;
+        };
+        matches!(desk.picked_item(), Some(Item::Terminal(w))
+            if w.terminal == self.terminal && w.ask.as_ref() == Some(ask))
+            && desk.inbox.reply_epoch == self.reply_epoch
+            && &desk.inbox.reply == draft
+    }
+}
+
+impl Inbox {
+    fn clear_reply(&mut self) {
+        self.reply_epoch = self.reply_epoch.wrapping_add(1);
+        self.reply.clear();
+    }
+}
+
+impl Desk {
+    pub fn inbox_items(&self) -> Vec<Item> {
+        let mut items = inbox::items(
+            self.connection.topology.as_ref(),
+            &self.activities,
+            &self.inbox.approvals,
+        );
+        for item in &mut items {
+            if let Item::Terminal(waiting) = item
+                && waiting.ask.is_none()
+            {
+                waiting.ask = self.inbox.questions.ask(&waiting.terminal);
+            }
+        }
+        items
+    }
+
+    /// The picked row's place in `items`.
+    pub fn picked_index(&self, items: &[Item]) -> Option<usize> {
+        let picked = self.inbox.picked.as_ref()?;
+        items.iter().position(|item| &item.key() == picked)
+    }
+
+    fn picked_item(&self) -> Option<Item> {
+        let items = self.inbox_items();
+        items.get(self.picked_index(&items)?).cloned()
+    }
+
+    /// A picked row that left takes its draft with it; the top row is next.
+    fn keep_pick(&mut self, items: &[Item]) {
+        if self.inbox.picked.is_some() && self.picked_index(items).is_none() {
+            self.inbox.picked = None;
+            self.inbox.clear_reply();
+        }
+        if self.inbox.picked.is_none() {
+            self.inbox.picked = items.first().map(Item::key);
+        }
+    }
+
+    pub fn toggle_inbox(&mut self) {
+        if self.inbox.open {
+            self.close_inbox();
+            return;
+        }
+        self.settings_open = false;
+        self.inbox.open = true;
+        self.inbox.picked = None;
+        self.keep_pick(&self.inbox_items());
+        self.inbox.clear_reply();
+        self.inbox.reply.focused = true;
+    }
+
+    pub fn close_inbox(&mut self) {
+        self.inbox.open = false;
+        self.inbox.clear_reply();
+        self.inbox.reply.focused = false;
+    }
+
+    pub fn pick_item(&mut self, index: usize, tx: &mut Tx) {
+        let items = self.inbox_items();
+        let Some(key) = items.get(index).map(Item::key) else {
+            return;
+        };
+        if self.inbox.picked.as_ref() != Some(&key) {
+            self.inbox.clear_reply();
+        }
+        self.inbox.picked = Some(key);
+        self.inbox.reply.focused = true;
+        tx.scroll_into_view(format!("inbox-item-{index}"));
+    }
+
+    /// Keys while the inbox is open. The reply field gets typing; everything
+    /// here applies whether or not it holds the focus.
+    pub fn inbox_key(&mut self, event: &KeyEvent, tx: &mut Tx) -> bool {
+        let items = self.inbox_items();
+        let (count, at) = (items.len(), self.picked_index(&items).unwrap_or(0));
+        let chord = decision_chord(
+            &event.mods,
+            cfg!(any(target_os = "macos", target_os = "ios")),
+        ) && !tx.key_repeat();
+        match event.key {
+            Key::Escape => {
+                self.close_inbox();
+                tx.blur();
+            }
+            Key::Down | Key::Tab if count > 0 => self.pick_item((at + 1) % count, tx),
+            Key::Up if count > 0 => self.pick_item((at + count - 1) % count, tx),
+            Key::Enter if chord => self.decide_picked(Decision::Approve),
+            Key::Backspace if chord => self.decide_picked(Decision::Deny),
+            Key::Enter if event.mods.cmd || event.mods.shift => {}
+            Key::Enter => self.submit_picked(tx),
+            Key::Command(c) => {
+                let digit = tx
+                    .physical_key()
+                    .and_then(crate::keys::us_char)
+                    .unwrap_or(c);
+                match digit {
+                    '1'..='9' => self.answer_suggestion(digit as usize - '1' as usize),
+                    _ => return false,
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Return: send the draft, or go to the terminal when there is nothing
+    /// to send. A held action is never decided by plain Return.
+    pub fn submit_picked(&mut self, tx: &mut Tx) {
+        let Some(Item::Terminal(waiting)) = self.picked_item() else {
+            return;
+        };
+        let draft = self.inbox.reply.text.trim().to_owned();
+        match waiting.ask {
+            Some(ask) if ask.typed() && !draft.is_empty() => {
+                self.answer(&waiting.terminal, &ask.id, &draft)
+            }
+            _ => {
+                self.close_inbox();
+                tx.blur();
+                self.show(waiting.terminal, &waiting.session);
+            }
+        }
+    }
+
+    /// The Send control never uses Return's empty-draft "open terminal" fallback.
+    pub fn send_picked_reply(&mut self) {
+        let Some(Item::Terminal(waiting)) = self.picked_item() else {
+            return;
+        };
+        let Some(ask) = waiting.ask.filter(|ask| ask.typed()) else {
+            return;
+        };
+        let draft = self.inbox.reply.text.trim().to_owned();
+        if !draft.is_empty() {
+            self.answer(&waiting.terminal, &ask.id, &draft);
+        }
+    }
+
+    fn answer_suggestion(&mut self, index: usize) {
+        let Some(Item::Terminal(waiting)) = self.picked_item() else {
+            return;
+        };
+        let Some(ask) = waiting.ask.filter(|ask| ask.typed()) else {
+            return;
+        };
+        if let Some(text) = ask.suggestions.get(index) {
+            self.answer(&waiting.terminal, &ask.id, text);
+        }
+    }
+
+    /// Type `text` as the answer to `question`. The runtime refuses a stale
+    /// question, so a reply can't land on whatever the agent moved on to.
+    pub fn answer(&mut self, terminal: &ResourceId, question: &str, text: &str) {
+        let Some(client) = &self.connection.client else {
+            return;
+        };
+        if self.answering(terminal) {
+            return;
+        }
+        let draft = match self.picked_item() {
+            Some(Item::Terminal(w))
+                if &w.terminal == terminal && self.inbox.reply.text.trim() == text =>
+            {
+                w.ask
+                    .filter(|ask| ask.id == question)
+                    .map(|ask| (ask, self.inbox.reply.clone()))
+            }
+            _ => None,
+        };
+        let delivery = client.apply_answer(terminal, question, text);
+        self.inbox.answers.insert(
+            delivery,
+            Answer {
+                terminal: terminal.clone(),
+                reply_epoch: self.inbox.reply_epoch,
+                draft,
+            },
+        );
+    }
+
+    /// The client these answers' receipts belonged to ended, and its delivery
+    /// ids mean nothing to the next one: say how they stand, never resend.
+    pub(super) fn retire_answers(&mut self) {
+        if self.inbox.answers.drain().next().is_some() {
+            self.say(NoticeKind::Error, UNKNOWN_ANSWER);
+        }
+    }
+
+    pub fn answering(&self, terminal: &ResourceId) -> bool {
+        self.inbox.answers.values().any(|a| &a.terminal == terminal)
+    }
+
+    fn decide_picked(&mut self, decision: Decision) {
+        if let Some(Item::Approval(approval)) = self.picked_item() {
+            self.decide(&approval.id, decision);
+        }
+    }
+
+    /// Show what needs a person most, or the next after the shown one.
+    pub fn jump_to_attention(&mut self) {
+        let Some(topology) = &self.connection.topology else {
+            return;
+        };
+        let shown = self.connection.shown.as_ref().map(|s| &s.resource);
+        let next = inbox::next_jump(&topology.panes, &self.activities, shown)
+            .map(|p| (p.terminal_id.clone(), p.session_name.clone()));
+        if let Some((terminal, session)) = next {
+            self.show(terminal, &session);
+        }
+    }
+
+    /// Send one decision. Never retried: the event reports how it ended.
+    pub fn decide(&mut self, id: &str, decision: Decision) {
+        let Some(client) = &self.connection.client else {
+            return;
+        };
+        let Some(id) = ApprovalId::parse(id) else {
+            return;
+        };
+        if !client.decide_approval(id, decision) {
+            self.say(NoticeKind::Error, "That decision is already on its way.");
+        }
+    }
+
+    /// Answers and decisions coming back, and the held set changing.
+    pub(super) fn inbox_event(&mut self, client: &Client, event: &Event) -> bool {
+        match event {
+            Event::NativeAgentResult {
+                operation_id,
+                disposition,
+                detail,
+                ..
+            } => {
+                let detail = detail.as_deref();
+                self.chief.receipt(*operation_id, *disposition, detail)
+                    || (self.inbox.questions).receipt(*operation_id, *disposition, detail)
+            }
+            Event::AgentPublication { .. }
+            | Event::AgentSessionClosed { .. }
+            | Event::TopologyChanged
+            | Event::StatusChanged(_) => {
+                let lost = matches!(event, Event::StatusChanged(s) if *s != Status::Attached);
+                let unknown = lost && self.inbox.questions.disconnected();
+                let unknown = (lost && self.chief.disconnected()) | unknown;
+                self.inbox
+                    .questions
+                    .refresh(client, self.connection.topology.as_ref());
+                unknown | !matches!(event, Event::TopologyChanged | Event::StatusChanged(_))
+            }
+            Event::ApprovalsChanged => {
+                self.inbox.approvals = client.approvals();
+                true
+            }
+            Event::ApprovalDecision { outcome, .. } => {
+                match decision_notice(outcome) {
+                    Some(text) => self.say(NoticeKind::Error, text),
+                    None => self.dismiss_notice(),
+                }
+                true
+            }
+            Event::InputDelivery {
+                delivery_id,
+                outcome,
+                message,
+                ..
+            } => self.answer_delivered(*delivery_id, *outcome, message),
+            _ => false,
+        }
+    }
+
+    fn answer_delivered(&mut self, delivery: u64, outcome: DeliveryOutcome, message: &str) -> bool {
+        let Some(answer) = self.inbox.answers.remove(&delivery) else {
+            return false;
+        };
+        match outcome {
+            DeliveryOutcome::Delivered => {
+                if answer.owns_reply(self) {
+                    self.inbox.clear_reply();
+                }
+                let text = if self.inbox.reply.text.is_empty() {
+                    "Answer sent."
+                } else {
+                    "Answer sent; current draft kept."
+                };
+                self.say(NoticeKind::Info, text);
+            }
+            DeliveryOutcome::Refused => {
+                self.say(NoticeKind::Error, format!("Answer not sent: {message}"));
+            }
+            DeliveryOutcome::Unknown => self.say(NoticeKind::Error, UNKNOWN_ANSWER),
+        }
+        true
+    }
+
+    fn alert_inputs(&self) -> AlertInputs {
+        let mut listed = DefaultHasher::new();
+        for pane in self.connection.topology.iter().flat_map(|t| t.panes.iter()) {
+            (&pane.terminal_id, &pane.session_name, &pane.title).hash(&mut listed);
+            (&pane.name, &pane.cwd).hash(&mut listed);
+            self.inbox.muted.get(&pane.terminal_id).hash(&mut listed);
+        }
+        for approval in &self.inbox.approvals {
+            approval.id.hash(&mut listed);
+        }
+        AlertInputs {
+            marks: self.activities.revision(),
+            listed: listed.finish(),
+            on_screen: self.on_screen(),
+            focused: self.focused,
+            open: self.inbox.open,
+            enabled: self.settings.notifications,
+        }
+    }
+
+    /// Once a reconnect has attached, its list is the truth. Commands it left
+    /// in doubt wait for a replica, and only what's on screen has one.
+    fn relist(&mut self) -> bool {
+        if self.connection.status != Status::Attached {
+            return false;
+        }
+        let mut changed = false;
+        if let (true, Some(topology)) = (self.inbox.relist, &self.connection.topology) {
+            let listed: Vec<ResourceId> = topology
+                .panes
+                .iter()
+                .map(|pane| pane.terminal_id.clone())
+                .collect();
+            self.inbox.relist = false;
+            changed = self.activities.reconnected(&listed);
+        }
+        if !self.inbox.relist && self.activities.unproven() {
+            changed |= self.prove_commands();
+        }
+        changed
+    }
+
+    fn prove_commands(&mut self) -> bool {
+        let Some(engine) = self.connection.client.as_ref().and_then(|c| c.engine()) else {
+            return false;
+        };
+        let on_screen = self.on_screen();
+        self.activities
+            .prove(&on_screen, |id| match engine.replica_prompt(id) {
+                ReplicaPrompt::Running => Some(true),
+                ReplicaPrompt::AtPrompt => Some(false),
+                ReplicaPrompt::Unknown => None,
+            })
+    }
+
+    /// An open inbox's times count on with nothing else to redraw them. True
+    /// when one the cards show has moved. Wakes on the clock's whole second,
+    /// so however many polls ask, they ask for the one wake.
+    pub(super) fn tick_inbox(&mut self, tx: &mut Tx) -> bool {
+        let clocks: Vec<String> = if self.inbox.open {
+            self.inbox_items().iter().filter_map(Item::clock).collect()
+        } else {
+            Vec::new()
+        };
+        if !clocks.is_empty() {
+            let next = self.clock.floor() + 1.0 - self.clock;
+            tx.wake_after(Duration::from_secs_f64(next.max(0.01)));
+        }
+        let moved = clocks != self.inbox.clocks;
+        self.inbox.clocks = clocks;
+        moved
+    }
+
+    /// Post, take back, and count when what they read from moved; then
+    /// follow any notification clicked.
+    pub(super) fn sync_alerts(&mut self) -> bool {
+        // The main window posts them; a second poster would double each.
+        if self.quick.is_some() {
+            return false;
+        }
+        let relisted = self.relist();
+        let inputs = self.alert_inputs();
+        if self.inbox.synced.as_ref() == Some(&inputs) && !self.inbox.alerts.clicked() {
+            return relisted;
+        }
+        let items = self.inbox_items();
+        self.keep_pick(&items);
+        let (focused, open) = (inputs.focused, inputs.open);
+        let (on_screen, enabled) = (&inputs.on_screen, inputs.enabled);
+        let muted = &self.inbox.muted;
+        self.inbox.alerts.sync(
+            &items,
+            |target| match target {
+                Target::Inbox => focused && open,
+                Target::Terminal { id, .. } => focused && on_screen.contains(id),
+            },
+            |id| muted.get(id).copied().unwrap_or_default(),
+            enabled,
+        );
+        self.inbox.synced = Some(inputs);
+        relisted | self.follow_clicks()
+    }
+
+    fn follow_clicks(&mut self) -> bool {
+        let clicks = self.inbox.alerts.take_clicks();
+        let clicked = !clicks.is_empty();
+        for target in clicks {
+            crate::alerts::bring_to_front();
+            match target {
+                Target::Inbox if !self.inbox.open => self.toggle_inbox(),
+                Target::Inbox => {}
+                Target::Terminal { id, session } => self.show(id, &session),
+            }
+        }
+        clicked
+    }
+}
+
+/// The exact chord a decision takes: ⌘ on macOS, Ctrl+Shift elsewhere, where
+/// Ctrl alone belongs to the reply field. Plain Return never qualifies.
+const fn decision_chord(mods: &Mods, macos: bool) -> bool {
+    mods.cmd && mods.shift != macos && !mods.alt
+}
+
+fn decision_notice(outcome: &DecisionOutcome) -> Option<String> {
+    match outcome {
+        DecisionOutcome::Decided => None,
+        DecisionOutcome::Stale => Some("That action was already settled.".to_owned()),
+        DecisionOutcome::Refused { message, .. } => Some(format!("Refused: {message}")),
+        _ => Some("The server never confirmed that decision; check before retrying.".to_owned()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod delivery;
+
+    #[test]
+    fn a_decision_takes_the_platforms_exact_chord() {
+        let cmd = Mods {
+            cmd: true,
+            ..Mods::default()
+        };
+        let cmd_shift = Mods { shift: true, ..cmd };
+        let alt = Mods {
+            alt: true,
+            ..cmd_shift
+        };
+        assert!(decision_chord(&cmd, true));
+        assert!(!decision_chord(&cmd_shift, true));
+        assert!(decision_chord(&cmd_shift, false));
+        assert!(!decision_chord(&cmd, false));
+        for macos in [true, false] {
+            assert!(!decision_chord(&Mods::default(), macos));
+            assert!(!decision_chord(&alt, macos));
+        }
+    }
+}

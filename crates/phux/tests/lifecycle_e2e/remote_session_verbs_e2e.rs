@@ -1,0 +1,259 @@
+//! The session verbs (`new`, `ls`, `rename`, `detach`, `kill`) over
+//! `--remote` against a real `paired` server registered as a `[[remote]]`
+//! with a loopback QUIC listener (no token or pin needed; the entry names an
+//! enrolled client certificate, ADR-0179). Hermetic: private dirs, no ssh,
+//! no overlay detection.
+
+#![allow(clippy::expect_used, reason = "tests")]
+#![allow(clippy::unwrap_used, reason = "tests")]
+
+use crate::{common, listeners, paired};
+
+use std::path::Path;
+use std::process::{Child, Output, Stdio};
+use std::time::{Duration, Instant};
+
+use tempfile::TempDir;
+
+use crate::hermetic::hermetic_env;
+
+/// The registry name the loopback listener is registered under.
+const REMOTE: &str = "loop";
+
+/// How long the freshly started server has to answer its first `ls`.
+const READY_DEADLINE: Duration = Duration::from_secs(30);
+
+/// How long a listing has to reflect a lifecycle change. A killed session
+/// leaves the listing once the server has reaped its panes, which happens
+/// after the kill is acknowledged, not before.
+const SETTLE_DEADLINE: Duration = Duration::from_secs(10);
+
+/// A real server behind a loopback QUIC listener, registered as [`REMOTE`].
+struct LoopbackRemote {
+    dir: TempDir,
+    server: Child,
+    enrolled: paired::Enrolled,
+}
+
+impl LoopbackRemote {
+    fn start() -> Self {
+        let dir = TempDir::new().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join("run")).expect("runtime dir");
+        paired::write_paired_policy(&dir.path().join("config/phux/config.toml"));
+        let enrolled = paired::enroll_client(dir.path(), |args, stdin| {
+            let mut command = common::phux_cmd(crate::runner::phux_bin());
+            command.envs(hermetic_env(dir.path())).args(args);
+            paired::output_with_stdin(command, stdin)
+        });
+        let socket = dir.path().join("s.sock");
+        let server = common::phux_cmd(crate::runner::phux_bin())
+            .envs(hermetic_env(dir.path()))
+            .arg("server")
+            .arg("--socket")
+            .arg(&socket)
+            .args(["--quic", listeners::LOOPBACK_ANY_PORT])
+            // Backstop only: the Drop below kills the server, but a panic
+            // that skips it must not leave a daemon behind for long.
+            .args(["--exit-after-idle", "120"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn phux server");
+        let remote = Self {
+            dir,
+            server,
+            enrolled,
+        };
+        let quic =
+            listeners::bound_listener_addr(&socket, listeners::RemoteListenerTransport::Quic);
+        write_registry(remote.dir.path(), quic.port(), &remote.enrolled);
+        remote.await_ready();
+        remote
+    }
+
+    /// Run `phux <args...>` as a separate client process. It is never handed
+    /// the server's socket: `--remote` is the only way it can reach it.
+    fn phux(&self, args: &[&str]) -> Output {
+        common::phux_cmd(crate::runner::phux_bin())
+            .envs(hermetic_env(self.dir.path()))
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .expect("run phux")
+    }
+
+    fn await_ready(&self) {
+        let start = Instant::now();
+        loop {
+            let out = self.phux(&["ls", "--remote", REMOTE, "--json"]);
+            if out.status.success() {
+                return;
+            }
+            assert!(
+                start.elapsed() < READY_DEADLINE,
+                "the loopback remote never answered `ls --remote`: {}",
+                stderr(&out)
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// Session names from `phux ls --remote loop --json`.
+    fn session_names(&self) -> Vec<String> {
+        let out = self.phux(&["ls", "--remote", REMOTE, "--json"]);
+        assert!(out.status.success(), "ls --remote: {}", stderr(&out));
+        let doc: serde_json::Value =
+            serde_json::from_slice(&out.stdout).expect("ls --json is a JSON document");
+        doc["sessions"]
+            .as_array()
+            .expect("sessions array")
+            .iter()
+            .map(|session| session["name"].as_str().expect("name").to_owned())
+            .collect()
+    }
+
+    /// Wait until every `present` name is listed and no `absent` one is,
+    /// failing after [`SETTLE_DEADLINE`]. Polls rather than reading once
+    /// because session reaping trails the kill's acknowledgement. The
+    /// server's own seed session may also be listed, so this is not equality.
+    fn assert_sessions(&self, present: &[&str], absent: &[&str]) {
+        let start = Instant::now();
+        loop {
+            let names = self.session_names();
+            let listed = |want: &&str| names.iter().any(|name| name == want);
+            if present.iter().all(listed) && !absent.iter().any(listed) {
+                return;
+            }
+            assert!(
+                start.elapsed() < SETTLE_DEADLINE,
+                "sessions never settled: want {present:?} without {absent:?}, have {names:?}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+impl Drop for LoopbackRemote {
+    fn drop(&mut self) {
+        let _ = self.server.kill();
+        let _ = self.server.wait();
+    }
+}
+
+/// Register the loopback listener as [`REMOTE`], the way `phux host add loop
+/// quic://127.0.0.1:PORT` would.
+fn write_registry(dir: &Path, port: u16, enrolled: &paired::Enrolled) {
+    let config_dir = dir.join("config/phux");
+    std::fs::create_dir_all(&config_dir).expect("config dir");
+    std::fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            "[[remote]]\nname = \"{REMOTE}\"\nendpoint = \"quic://127.0.0.1:{port}\"\n{}",
+            enrolled.remote_lines()
+        ),
+    )
+    .expect("write registry");
+}
+
+fn stderr(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+fn stdout(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+#[ignore = "spawns a real server with a QUIC listener; runs in the e2e lane"]
+fn public_api_discovers_creates_and_recovers_on_a_registered_remote() {
+    fn json(output: &Output) -> serde_json::Value {
+        assert!(output.status.success(), "{}", stderr(output));
+        serde_json::from_slice(&output.stdout).expect("JSON reply")
+    }
+
+    let remote = LoopbackRemote::start();
+    let description = json(&remote.phux(&["api", "--remote", REMOTE, "list"]));
+    assert_eq!(description["source"], "connected_server");
+    json(&remote.phux(&["new", "--remote", REMOTE, "-s", "api-test", "--json"]));
+    let inventory = json(&remote.phux(&["ls", "--remote", REMOTE, "--json"]));
+    let session = &inventory["sessions"]
+        .as_array()
+        .expect("session array")
+        .iter()
+        .find(|session| session["name"] == "api-test")
+        .expect("new session")["key"];
+    let lookup = serde_json::json!({
+        "session":session, "idempotency_key":"0123456789abcdef0123456789abcdef",
+    });
+    let mut request = lookup.clone();
+    request["argv"] = serde_json::json!(["/bin/true"]);
+    let created = json(&remote.phux(&[
+        "api",
+        "--remote",
+        REMOTE,
+        "call",
+        "terminal.create",
+        "--request-json",
+        &request.to_string(),
+    ]));
+    assert_eq!(created["authority"], description["authority"]);
+    let recovered = json(&remote.phux(&[
+        "api",
+        "--remote",
+        REMOTE,
+        "call",
+        "terminal.operation",
+        "--request-json",
+        &lookup.to_string(),
+    ]));
+    assert_eq!(recovered["authority"], created["authority"]);
+    assert_eq!(recovered["resource"], created["resource"]);
+}
+
+/// Create, list, rename, detach, and kill sessions on a remote from a local
+/// shell — the gap F15/F19 named: headless verbs that took `--socket` only.
+#[test]
+#[ignore = "spawns a real server with a QUIC listener; runs in the e2e lane"]
+fn session_verbs_create_list_rename_and_kill_over_remote() {
+    let remote = LoopbackRemote::start();
+
+    for name in ["keep", "build"] {
+        let out = remote.phux(&["new", "--remote", REMOTE, "-s", name, "--json"]);
+        assert!(out.status.success(), "new {name}: {}", stderr(&out));
+        let doc: serde_json::Value =
+            serde_json::from_slice(&out.stdout).expect("new --json is a JSON document");
+        assert_eq!(doc["session"], name);
+        assert!(
+            doc["terminal_id"].as_u64().is_some(),
+            "the seed pane id comes back over the remote dial: {doc}"
+        );
+    }
+    remote.assert_sessions(&["keep", "build"], &[]);
+
+    // A duplicate is refused against the remote's own snapshot.
+    let out = remote.phux(&["new", "--remote", REMOTE, "-s", "keep", "--json"]);
+    assert!(!out.status.success(), "a duplicate name must be refused");
+
+    let out = remote.phux(&["rename", "--remote", REMOTE, "build", "ci"]);
+    assert!(out.status.success(), "rename: {}", stderr(&out));
+    assert!(stdout(&out).contains("renamed"), "{}", stdout(&out));
+    remote.assert_sessions(&["keep", "ci"], &["build"]);
+
+    let out = remote.phux(&["detach", "--yes", "--remote", REMOTE, "keep"]);
+    assert!(out.status.success(), "detach: {}", stderr(&out));
+    assert!(
+        stdout(&out).contains("detached 0 client(s)"),
+        "{}",
+        stdout(&out)
+    );
+
+    let out = remote.phux(&["kill", "--yes", "--remote", REMOTE, "ci"]);
+    assert!(out.status.success(), "kill: {}", stderr(&out));
+    remote.assert_sessions(&["keep"], &["ci", "build"]);
+
+    // The human listing rides the same dial.
+    let out = remote.phux(&["ls", "--remote", REMOTE]);
+    assert!(out.status.success(), "ls: {}", stderr(&out));
+    assert!(stdout(&out).contains("keep:"), "{}", stdout(&out));
+}

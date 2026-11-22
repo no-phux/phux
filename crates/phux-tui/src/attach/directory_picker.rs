@@ -1,0 +1,343 @@
+//! Rows for the `go-to-directory` picker over one `DIRECTORY_LISTING` reply.
+//! A satellite pane's listing is relayed from that satellite and every row
+//! carries `host`. "Open new tab here" commits `new-window { cwd }`; `..`
+//! and children commit `go-to-directory { path }`.
+
+use std::collections::BTreeMap;
+use std::path::Path;
+
+use phux_config::keybind::ResolvedAction;
+use phux_protocol::ids::SatelliteHost;
+use phux_protocol::wire::frame::{
+    DirectoryEntry, DirectoryErrorCode, DirectoryListing, DirectoryListingError,
+    DirectoryListingResult,
+};
+
+use crate::render::overlay::SelectItem;
+
+/// Which host one listing reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ListingHost {
+    /// The attached server's own host (no `host` on the wire).
+    Attached,
+    /// A satellite, relayed through the attached hub (`LIST_DIRECTORY.host`).
+    Satellite(SatelliteHost),
+}
+
+impl ListingHost {
+    /// The satellite the request names on the wire, if any.
+    pub(super) const fn satellite(&self) -> Option<&SatelliteHost> {
+        match self {
+            Self::Satellite(host) => Some(host),
+            Self::Attached => None,
+        }
+    }
+}
+
+/// The listing the picker waits on: its request id and the host it reads.
+/// Newest request wins; a reply with any other id is stale.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PendingDirectory {
+    /// The `LIST_DIRECTORY` correlation id.
+    pub(super) request_id: u32,
+    /// The host the listing reads, for the title and the rows.
+    pub(super) host: ListingHost,
+}
+
+/// The picker's modal title, naming the host when it is not the attached
+/// server's. The directory is the footer status ([`picker_status`]).
+pub(super) fn picker_title(host: &ListingHost) -> String {
+    match host {
+        ListingHost::Attached => "New tab in folder".to_owned(),
+        ListingHost::Satellite(satellite) => format!("New tab in folder on {satellite}"),
+    }
+}
+
+/// The picker's footer status: the directory as the shell shows it (`~` on
+/// the attached host; a satellite's path whole).
+pub(super) fn picker_status(
+    result: &DirectoryListingResult,
+    host: &ListingHost,
+    home: Option<&str>,
+) -> String {
+    let path = match result {
+        Ok(listing) => listing.path.as_str(),
+        Err(error) => error.path.as_str(),
+    };
+    match host {
+        ListingHost::Satellite(_) => path.to_owned(),
+        ListingHost::Attached => crate::render::home_to_tilde(path, home),
+    }
+}
+
+/// The picker's rows for one listing reply.
+pub(super) fn picker_items(result: &DirectoryListingResult, host: &ListingHost) -> Vec<SelectItem> {
+    let rows_host = host.satellite();
+    match result {
+        Ok(listing) => listing_items(listing, rows_host),
+        Err(error) => refusal_items(error, rows_host),
+    }
+}
+
+/// Open-here first (the confirm row), then `..`, then the children.
+fn listing_items(listing: &DirectoryListing, host: Option<&SatelliteHost>) -> Vec<SelectItem> {
+    let mut items = vec![open_here_item(&listing.path, host)];
+    items.extend(
+        listing
+            .parent
+            .as_deref()
+            .map(|parent| parent_item(parent, host)),
+    );
+    items.extend(
+        ordered_children(&listing.entries).map(|entry| child_item(&listing.path, entry, host)),
+    );
+    if listing.truncated {
+        items.push(SelectItem::header(format!(
+            "Listing cut off at {} directories",
+            listing.entries.len()
+        )));
+    }
+    items
+}
+
+/// The reason, then the ways out: the parent of the refused path and home,
+/// both on the host that refused.
+fn refusal_items(error: &DirectoryListingError, host: Option<&SatelliteHost>) -> Vec<SelectItem> {
+    let mut items = vec![SelectItem::header(format!(
+        "{}: {}",
+        refusal_reason(error.code),
+        error.message
+    ))];
+    let parent = Path::new(&error.path).parent().and_then(Path::to_str);
+    items.extend(parent.map(|parent| parent_item(parent, host)));
+    items.push(SelectItem::new("~", go_to("~", host)).secondary("home"));
+    items
+}
+
+const fn refusal_reason(code: DirectoryErrorCode) -> &'static str {
+    match code {
+        DirectoryErrorCode::NotFound => "Not found",
+        DirectoryErrorCode::PermissionDenied => "Permission denied",
+        DirectoryErrorCode::NotADirectory => "Not a directory",
+        DirectoryErrorCode::Other => "Cannot list",
+    }
+}
+
+/// Visible directories before dot-directories, each group in server order
+/// (sorted by name).
+fn ordered_children(entries: &[DirectoryEntry]) -> impl Iterator<Item = &DirectoryEntry> {
+    let (hidden, visible): (Vec<_>, Vec<_>) = entries
+        .iter()
+        .partition(|entry| entry.name.starts_with('.'));
+    visible.into_iter().chain(hidden)
+}
+
+fn open_here_item(path: &str, host: Option<&SatelliteHost>) -> SelectItem {
+    SelectItem::new("Open a new tab here", open_window_at(path, host)).secondary("new tab")
+}
+
+fn parent_item(parent: &str, host: Option<&SatelliteHost>) -> SelectItem {
+    SelectItem::new("..", go_to(parent, host)).secondary("parent")
+}
+
+fn child_item(dir: &str, entry: &DirectoryEntry, host: Option<&SatelliteHost>) -> SelectItem {
+    let item = SelectItem::new(
+        format!("{}/", entry.name),
+        go_to(&child_path(dir, &entry.name), host),
+    );
+    if entry.is_symlink {
+        item.secondary("symlink")
+    } else {
+        item
+    }
+}
+
+/// `dir` joined with one child `name`, without doubling the root's slash.
+fn child_path(dir: &str, name: &str) -> String {
+    if dir.ends_with('/') {
+        format!("{dir}{name}")
+    } else {
+        format!("{dir}/{name}")
+    }
+}
+
+fn go_to(path: &str, host: Option<&SatelliteHost>) -> ResolvedAction {
+    action_on("go-to-directory", "path", path, host)
+}
+
+fn open_window_at(path: &str, host: Option<&SatelliteHost>) -> ResolvedAction {
+    action_on("new-window", "cwd", path, host)
+}
+
+/// `action { key = value }`, plus `host` when the rows list a satellite, so
+/// every row keeps browsing, or opens its window, on the host it came from.
+fn action_on(action: &str, key: &str, value: &str, host: Option<&SatelliteHost>) -> ResolvedAction {
+    let mut args = BTreeMap::new();
+    args.insert(key.to_owned(), toml::Value::String(value.to_owned()));
+    if let Some(host) = host {
+        args.insert(
+            "host".to_owned(),
+            toml::Value::String(host.as_str().to_owned()),
+        );
+    }
+    crate::attach::resolved(action, args)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(name: &str, is_symlink: bool) -> DirectoryEntry {
+        DirectoryEntry {
+            name: name.to_owned(),
+            is_symlink,
+        }
+    }
+
+    fn listing(path: &str, parent: Option<&str>, entries: Vec<DirectoryEntry>) -> DirectoryListing {
+        DirectoryListing {
+            path: path.to_owned(),
+            parent: parent.map(ToOwned::to_owned),
+            entries,
+            truncated: false,
+        }
+    }
+
+    fn committed(item: &SelectItem) -> (&str, Option<&str>) {
+        let arg = item
+            .action
+            .args
+            .values()
+            .next()
+            .and_then(toml::Value::as_str);
+        (item.action.action.as_str(), arg)
+    }
+
+    #[test]
+    fn listing_rows_confirm_first_then_parent_then_visible_before_hidden() {
+        let result = Ok(listing(
+            "/home/u",
+            Some("/home"),
+            vec![
+                entry(".cache", false),
+                entry("src", false),
+                entry("www", true),
+            ],
+        ));
+
+        let items = picker_items(&result, &ListingHost::Attached);
+
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            ["Open a new tab here", "..", "src/", "www/", ".cache/"]
+        );
+        assert_eq!(committed(&items[0]), ("new-window", Some("/home/u")));
+        assert_eq!(committed(&items[1]), ("go-to-directory", Some("/home")));
+        assert_eq!(
+            committed(&items[2]),
+            ("go-to-directory", Some("/home/u/src"))
+        );
+        assert_eq!(items[3].secondary.as_deref(), Some("symlink"));
+        assert_eq!(picker_title(&ListingHost::Attached), "New tab in folder");
+        assert_eq!(
+            picker_status(&result, &ListingHost::Attached, Some("/home/u")),
+            "~"
+        );
+        assert_eq!(
+            picker_status(&result, &ListingHost::Attached, Some("/home/x")),
+            "/home/u"
+        );
+    }
+
+    #[test]
+    fn the_root_has_no_parent_row_and_children_join_without_a_double_slash() {
+        let items = picker_items(
+            &Ok(listing("/", None, vec![entry("usr", false)])),
+            &ListingHost::Attached,
+        );
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(committed(&items[1]), ("go-to-directory", Some("/usr")));
+    }
+
+    #[test]
+    fn a_truncated_listing_ends_with_a_non_selectable_note() {
+        let mut truncated = listing("/big", Some("/"), vec![entry("a", false)]);
+        truncated.truncated = true;
+
+        let items = picker_items(&Ok(truncated), &ListingHost::Attached);
+
+        assert!(items.last().is_some_and(SelectItem::is_header));
+    }
+
+    #[test]
+    fn a_refusal_names_the_reason_and_keeps_parent_and_home_reachable() {
+        let result = Err(DirectoryListingError {
+            path: "/root/secret".to_owned(),
+            code: DirectoryErrorCode::PermissionDenied,
+            message: "Permission denied (os error 13)".to_owned(),
+        });
+
+        let items = picker_items(&result, &ListingHost::Attached);
+
+        assert!(items[0].is_header());
+        assert!(items[0].label.starts_with("Permission denied"));
+        assert_eq!(committed(&items[1]), ("go-to-directory", Some("/root")));
+        assert_eq!(committed(&items[2]), ("go-to-directory", Some("~")));
+        assert_eq!(
+            picker_status(&result, &ListingHost::Attached, Some("/home/u")),
+            "/root/secret"
+        );
+    }
+
+    fn arg<'a>(item: &'a SelectItem, key: &str) -> Option<&'a str> {
+        item.action.args.get(key).and_then(toml::Value::as_str)
+    }
+
+    fn edge() -> SatelliteHost {
+        SatelliteHost::new("edge")
+    }
+
+    #[test]
+    fn satellite_rows_keep_their_host_and_the_title_names_it() {
+        let host = ListingHost::Satellite(edge());
+        let result = Ok(listing("/home/e", Some("/home"), vec![entry("src", false)]));
+
+        let items = picker_items(&result, &host);
+
+        assert_eq!(picker_title(&host), "New tab in folder on edge");
+        assert_eq!(
+            picker_status(&result, &host, Some("/home/e")),
+            "/home/e",
+            "a satellite's home is not this client's"
+        );
+        assert_eq!(items[0].action.action, "new-window");
+        assert_eq!(arg(&items[0], "cwd"), Some("/home/e"));
+        assert_eq!(arg(&items[1], "path"), Some("/home"));
+        assert_eq!(arg(&items[2], "path"), Some("/home/e/src"));
+        for item in &items {
+            assert_eq!(arg(item, "host"), Some("edge"), "{}", item.label);
+        }
+    }
+
+    #[test]
+    fn a_refused_satellite_listing_keeps_its_ways_out_on_that_host() {
+        let host = ListingHost::Satellite(edge());
+        let result = Err(DirectoryListingError {
+            path: "/root".to_owned(),
+            code: DirectoryErrorCode::Other,
+            message: "satellite edge is unreachable: link is down".to_owned(),
+        });
+
+        let items = picker_items(&result, &host);
+
+        assert!(items[0].is_header());
+        assert!(items[0].label.contains("edge is unreachable"));
+        assert!(
+            items[1..]
+                .iter()
+                .all(|item| arg(item, "host") == Some("edge"))
+        );
+    }
+}

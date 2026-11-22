@@ -1,0 +1,407 @@
+//! Additive wire shapes of `0.9.0-draft.15`: the journaled `EVENT`
+//! envelope and `SUBSCRIBE_EVENTS.after_seq` (ADR-0123), retain-on-exit and
+//! `RESOURCE_CLOSED.signal` (ADR-0124), and idempotent create (ADR-0126).
+//!
+//! Every test pins two things: the new field round-trips, and a frame that
+//! does not use it keeps the bytes a `0.9.0-draft.14` encoder wrote. "What an
+//! older decoder sees" is modelled by renumbering or dropping the new field,
+//! since the current decoder skips an unknown field id by length exactly as
+//! an older one does.
+
+#![allow(clippy::unwrap_used)]
+
+use phux_protocol::ids::{
+    ApprovalId, ClientId, IdempotencyKey, ResourceId, ResourceKind, ServerInstance, SessionId,
+    WindowId,
+};
+use phux_protocol::wire::decode::Decoder;
+use phux_protocol::wire::frame::{
+    ActorRef, AgentEvent, ApprovalOutcome, CloseReason, ControlAction, EventStamp, FrameKind,
+    ResourceLifecycle, SpawnError, SpawnResource, SpawnResult,
+};
+use phux_protocol::wire::info::{ExitFacet, ResourceInfo, SessionSnapshot};
+use phux_protocol::wire::{DecodeError, frame::TYPE_EVENT};
+
+use crate::common::{assert_round_trip, decode, encode, framed_tlv, state_reply, tlv_field};
+
+/// Split an encoded frame into its type byte and its top-level TLV fields.
+fn fields(bytes: &[u8]) -> (u8, Vec<(u32, Vec<u8>)>) {
+    let body = &bytes[4..];
+    let mut dec = Decoder::new(&body[1..]);
+    let mut out = Vec::new();
+    while let Some((id, value)) = dec.read_field().unwrap() {
+        out.push((id, value.to_vec()));
+    }
+    (body[0], out)
+}
+
+/// Re-frame `bytes` with each field id passed through `map`; `None` drops
+/// the field. Dropping a new field yields what the older encoder wrote;
+/// renumbering it to an unassigned id yields what an older decoder skips.
+fn refield(bytes: &[u8], map: impl Fn(u32) -> Option<u32>) -> Vec<u8> {
+    let (ty, fs) = fields(bytes);
+    let mut body = Vec::new();
+    for (id, value) in fs {
+        if let Some(id) = map(id) {
+            tlv_field(&mut body, id, &value);
+        }
+    }
+    framed_tlv(ty, &body)
+}
+
+fn drop_ids(bytes: &[u8], ids: &[u32]) -> Vec<u8> {
+    refield(bytes, |id| (!ids.contains(&id)).then_some(id))
+}
+
+const fn key(byte: u8) -> IdempotencyKey {
+    IdempotencyKey::new([byte; 16]).unwrap()
+}
+
+fn actor() -> ActorRef {
+    ActorRef::new(ClientId::new(7))
+        .with_credential_id(Some("cred-1".to_owned()))
+        .with_client_name(Some("phux-cli".to_owned()))
+}
+
+fn event(terminal: Option<ResourceId>, event: AgentEvent, stamp: Option<EventStamp>) -> FrameKind {
+    FrameKind::Event {
+        terminal,
+        event,
+        stamp: stamp.map(Box::new),
+    }
+}
+
+/// No process shape, so the same helper serves both kinds.
+fn spawn(resource: Option<SpawnResource>) -> FrameKind {
+    crate::common::Spawn {
+        request_id: 9,
+        resource: resource.map(Box::new),
+        ..crate::common::Spawn::default()
+    }
+    .frame()
+}
+
+/// A stamp's fields 4-6 mean nothing without field 3 and are dropped.
+#[test]
+fn event_stamp_exists_only_with_its_sequence() {
+    let stamped = encode(&event(
+        None,
+        AgentEvent::Bell,
+        Some(EventStamp::new(5, 6).with_operation_id(Some(key(1)))),
+    ));
+    let without_seq = drop_ids(&stamped, &[3]);
+    assert_eq!(
+        decode(&without_seq).unwrap(),
+        event(None, AgentEvent::Bell, None)
+    );
+}
+
+#[test]
+fn event_without_journal_fields_is_byte_identical_to_0_9_0() {
+    // 0.9.0-draft.14 EVENT: field 1 = LOCAL(7), field 2 = bell (tag 0x03,
+    // empty length-prefixed body).
+    let mut golden = Vec::new();
+    tlv_field(&mut golden, 1, &[0, 0, 0, 0, 7]);
+    tlv_field(&mut golden, 2, &[0x03, 0, 0, 0, 0]);
+    let golden = framed_tlv(TYPE_EVENT, &golden);
+    let plain = event(Some(ResourceId::local(7)), AgentEvent::Bell, None);
+    assert_eq!(encode(&plain), golden);
+
+    let stamped = event(
+        Some(ResourceId::local(7)),
+        AgentEvent::Bell,
+        Some(
+            EventStamp::new(9, 10)
+                .with_actor(Some(actor()))
+                .with_operation_id(Some(key(2))),
+        ),
+    );
+    let stamped = encode(&stamped);
+    assert_eq!(drop_ids(&stamped, &[3, 4, 5, 6]), golden);
+    // An older decoder skips fields it does not know by length.
+    let older = refield(&stamped, |id| Some(if id > 2 { id + 100 } else { id }));
+    assert_eq!(decode(&older).unwrap(), plain);
+}
+
+/// `input_activity` is tag `0x0f` and an unstamped `EVENT`.
+#[test]
+fn input_activity_is_tag_0x0f_and_unstamped() {
+    let bytes = encode(&event(
+        Some(ResourceId::local(3)),
+        AgentEvent::InputActivity {
+            origin: "ada".to_owned(),
+        },
+        None,
+    ));
+    let (_, fs) = fields(&bytes);
+    assert!(fs.iter().all(|(id, _)| *id <= 2), "no stamp fields: {fs:?}");
+    let event_bytes = &fs.iter().find(|(id, _)| *id == 2).expect("event").1;
+    assert_eq!(event_bytes[0], 0x0f);
+}
+
+#[test]
+fn terminal_control_role_changed_round_trips_and_an_unknown_action_is_opaque() {
+    // ADR-0127's `ROLE_CHANGED = 10` is known and round-trips as itself.
+    assert_round_trip(&event(
+        Some(ResourceId::local(2)),
+        AgentEvent::TerminalControl {
+            lifecycle: ResourceLifecycle::Running,
+            exit_status: None,
+            input_holder: None,
+            action: ControlAction::RoleChanged,
+            actor: Some(phux_protocol::ids::ClientId::new(3)),
+        },
+        None,
+    ));
+    // lifecycle RUNNING, no exit, no holder, action 0x0b (unallocated), no
+    // actor.
+    let control = [0u8, 0, 0, 0x0b, 0];
+    let mut agent_event = vec![0x08, 0, 0, 0, 5];
+    agent_event.extend_from_slice(&control);
+    let mut body = Vec::new();
+    tlv_field(&mut body, 2, &agent_event);
+    assert_eq!(
+        decode(&framed_tlv(TYPE_EVENT, &body)).unwrap(),
+        event(
+            None,
+            AgentEvent::Unknown {
+                tag: 0x08,
+                body: control.to_vec(),
+            },
+            None,
+        )
+    );
+}
+
+#[test]
+fn spawn_resource_fields_16_17_roundtrip_and_older_encoding_is_unchanged() {
+    for resource in [
+        SpawnResource::default().with_retain_secs(Some(0)),
+        SpawnResource::default().with_retain_secs(Some(600)),
+        SpawnResource::default().with_idempotency_key(Some(key(3))),
+        SpawnResource::default()
+            .with_retain_secs(Some(30))
+            .with_idempotency_key(Some(key(4)))
+            .with_bind_instance(true),
+        SpawnResource::agent_session(ResourceId::local(1), "claude")
+            .with_idempotency_key(Some(key(5))),
+    ] {
+        assert_round_trip(&spawn(Some(resource)));
+    }
+    let keyed = encode(&spawn(Some(
+        SpawnResource::default()
+            .with_retain_secs(Some(30))
+            .with_idempotency_key(Some(key(6))),
+    )));
+    assert_eq!(drop_ids(&keyed, &[16, 17]), encode(&spawn(None)));
+    assert_eq!(
+        decode(&refield(&keyed, |id| Some(id + u32::from(id >= 16) * 100))).unwrap(),
+        spawn(None)
+    );
+}
+
+#[test]
+fn spawn_resource_fields_16_17_are_validated() {
+    let agent = encode(&spawn(Some(
+        SpawnResource::agent_session(ResourceId::local(1), "claude").with_retain_secs(Some(5)),
+    )));
+    assert!(matches!(
+        decode(&agent),
+        Err(DecodeError::InvalidSpawnForKind {
+            field: 16,
+            required: false,
+            ..
+        })
+    ));
+    let keyed = encode(&spawn(Some(
+        SpawnResource::default().with_idempotency_key(Some(key(7))),
+    )));
+    for bad in [vec![0u8; 16], vec![7u8; 15], vec![7u8; 17]] {
+        let (ty, fs) = fields(&keyed);
+        let mut body = Vec::new();
+        for (id, value) in fs {
+            tlv_field(&mut body, id, if id == 17 { &bad } else { &value });
+        }
+        assert!(matches!(
+            decode(&framed_tlv(ty, &body)),
+            Err(DecodeError::InvalidIdempotencyKey)
+        ));
+    }
+}
+
+#[test]
+fn resource_spawned_replayed_flag_only_beside_ok() {
+    let instance = ServerInstance::new([0x11; 16]);
+    let spawned = |result| FrameKind::ResourceSpawned {
+        request_id: 3,
+        result,
+    };
+    for result in [
+        SpawnResult::Replayed {
+            id: ResourceId::local(8),
+            instance: None,
+        },
+        SpawnResult::Replayed {
+            id: ResourceId::local(8),
+            instance: Some(instance),
+        },
+        SpawnResult::Err(SpawnError::IdempotencyConflict),
+    ] {
+        assert_round_trip(&spawned(result));
+    }
+    let replayed = encode(&spawned(SpawnResult::Replayed {
+        id: ResourceId::local(8),
+        instance: None,
+    }));
+    assert_eq!(
+        drop_ids(&replayed, &[4]),
+        encode(&spawned(SpawnResult::Ok(ResourceId::local(8))))
+    );
+    // A replayed flag beside a refusal means nothing and is dropped.
+    let refused = encode(&spawned(SpawnResult::Err(SpawnError::GroupNotFound)));
+    let (ty, mut fs) = fields(&refused);
+    fs.push((4, vec![1]));
+    let mut body = Vec::new();
+    for (id, value) in &fs {
+        tlv_field(&mut body, *id, value);
+    }
+    assert_eq!(
+        decode(&framed_tlv(ty, &body)).unwrap(),
+        spawned(SpawnResult::Err(SpawnError::GroupNotFound))
+    );
+    // `0` is not replayed; any other value is malformed.
+    let ok = encode(&spawned(SpawnResult::Ok(ResourceId::local(8))));
+    for (flag, expect_ok) in [(0u8, true), (2, false)] {
+        let (ty, mut fs) = fields(&ok);
+        fs.push((4, vec![flag]));
+        let mut body = Vec::new();
+        for (id, value) in &fs {
+            tlv_field(&mut body, *id, value);
+        }
+        assert_eq!(decode(&framed_tlv(ty, &body)).is_ok(), expect_ok);
+    }
+}
+
+fn state(resources: Vec<ResourceInfo>) -> FrameKind {
+    state_reply(
+        SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
+            .with_resources(resources),
+    )
+}
+
+const fn plain(id: u32) -> ResourceInfo {
+    ResourceInfo::new(ResourceId::local(id), WindowId::new(1), 80, 24)
+}
+
+/// Bytes in the `COMMAND_RESULT` result field (id 2), which holds the
+/// snapshot.
+fn result_len(frame: &FrameKind) -> usize {
+    let (_, fs) = fields(&encode(frame));
+    fs.iter().find(|(id, _)| *id == 2).unwrap().1.len()
+}
+
+#[test]
+fn resource_info_facet_row_carries_lifecycle_exit_and_input_holder_additively() {
+    let exited = plain(1)
+        .with_lifecycle(ResourceLifecycle::Exited)
+        .with_exit(Some(
+            ExitFacet::new(1_700_000_000_000, 1_700_000_600_000)
+                .with_signal(Some(9))
+                .with_reason(CloseReason::Exited),
+        ));
+    let held = plain(2).with_input_holder(Some(ClientId::new(4)));
+    let child = ResourceInfo::resource(ResourceId::local(3), ResourceKind::AgentSession)
+        .with_parent(Some(ResourceId::local(1)))
+        .with_input_holder(Some(ClientId::new(5)));
+    let frozen = plain(6).with_lifecycle(ResourceLifecycle::Frozen);
+    let all = vec![exited.clone(), held.clone(), child, frozen, plain(7)];
+    assert_round_trip(&state(all));
+    assert_round_trip(&state(vec![
+        plain(1).with_exit(Some(ExitFacet::new(1, 2).with_exit_status(Some(0)))),
+    ]));
+
+    // A plain entry adds only its positional record (length 4, then id 5 +
+    // window 4 + cols 2 + rows 2 + title 1 + cwd 1 bytes): no state entry is
+    // written.
+    let one = state(vec![exited.clone(), held.clone()]);
+    let two = state(vec![exited, held, plain(7)]);
+    assert_eq!(result_len(&two) - result_len(&one), 19);
+
+    // A snapshot of plain entries carries no trailing field at all.
+    let bare = state(vec![plain(1), plain(2)]);
+    assert_eq!(result_len(&bare) - result_len(&state(vec![plain(1)])), 19);
+    let empty = state(Vec::new());
+    assert_eq!(result_len(&state(vec![plain(1)])) - result_len(&empty), 19);
+}
+
+/// ADR-0128's events: `approval_requested = 0x0d { id }` and
+/// `approval_decided = 0x0e { id, outcome }`, positional. A decoder that
+/// predates them reads `Unknown` by length; an outcome byte this build does
+/// not know, or a zero id, makes the event opaque rather than failing the
+/// frame.
+#[test]
+fn approval_events_round_trip_and_an_unknown_outcome_is_opaque() {
+    let id = ApprovalId::new([0x11; 16]).unwrap();
+    assert_eq!(id.to_string(), "11".repeat(16));
+    assert_eq!(ApprovalId::parse(&id.to_string()), Some(id));
+    for text in [
+        "",
+        "00000000000000000000000000000000",
+        &"1".repeat(31),
+        &"A".repeat(32),
+    ] {
+        assert_eq!(ApprovalId::parse(text), None, "{text:?}");
+    }
+    assert_round_trip(&event(
+        Some(ResourceId::local(3)),
+        AgentEvent::ApprovalRequested { id },
+        Some(EventStamp::new(7, 8).with_actor(Some(actor()))),
+    ));
+    for outcome in [
+        ApprovalOutcome::Approved,
+        ApprovalOutcome::Denied,
+        ApprovalOutcome::Expired,
+        ApprovalOutcome::Withdrawn,
+    ] {
+        assert_round_trip(&event(
+            None,
+            AgentEvent::ApprovalDecided { id, outcome },
+            None,
+        ));
+    }
+    let (_, fs) = fields(&encode(&event(
+        None,
+        AgentEvent::ApprovalRequested { id },
+        None,
+    )));
+    assert_eq!(fs[0].1[..5], [0x0d, 0, 0, 0, 16], "tag 0x0d, 16-byte body");
+
+    let mut decided = vec![0x0e, 0, 0, 0, 17];
+    decided.extend_from_slice(&[0x11; 16]);
+    decided.push(9);
+    let mut body = Vec::new();
+    tlv_field(&mut body, 2, &decided);
+    assert_eq!(
+        decode(&framed_tlv(TYPE_EVENT, &body)).unwrap(),
+        event(
+            None,
+            AgentEvent::Unknown {
+                tag: 0x0e,
+                body: decided[5..].to_vec(),
+            },
+            None,
+        )
+    );
+    let zero = [
+        0x0d, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ];
+    let mut body = Vec::new();
+    tlv_field(&mut body, 2, &zero);
+    assert!(matches!(
+        decode(&framed_tlv(TYPE_EVENT, &body)).unwrap(),
+        FrameKind::Event {
+            event: AgentEvent::Unknown { tag: 0x0d, .. },
+            ..
+        }
+    ));
+}

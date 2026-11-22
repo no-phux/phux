@@ -1,0 +1,261 @@
+//! Reconnect policy for every consumer (ADR-0133).
+//!
+//! The backoff ladder and the refusals no retry can satisfy. Lanes share one
+//! shape (double, hold at the ceiling, reset to the floor on progress) and
+//! differ only in their [`Ladder`] rungs.
+
+use std::time::Duration;
+
+use phux_dial::DialError;
+
+/// A backoff ladder: the first reconnect delay and the delay doubling
+/// stops at. Walk it with [`Ladder::next`]; reset to [`Ladder::floor`] on
+/// progress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ladder {
+    /// The first reconnect delay, and the delay a connection that made
+    /// progress resets to.
+    pub floor: Duration,
+    /// The longest reconnect delay: doubling stops here.
+    pub ceiling: Duration,
+}
+
+impl Ladder {
+    /// The interactive lane (a human over a network, where the client's own
+    /// radio usually broke): 500 ms doubling to 8 s.
+    pub const INTERACTIVE: Self = Self {
+        floor: Duration::from_millis(500),
+        ceiling: Duration::from_secs(8),
+    };
+
+    /// The agent-verb lane (a caller blocking on a cheap local reconnect):
+    /// 50 ms doubling to 1 s.
+    pub const AGENT_VERB: Self = Self {
+        floor: Duration::from_millis(50),
+        ceiling: Duration::from_secs(1),
+    };
+
+    /// The local-upgrade lane (the ADR-0032 re-exec blink on a still-bound
+    /// Unix socket): a flat 100 ms poll.
+    pub const LOCAL_UPGRADE: Self = Self::flat(Duration::from_millis(100));
+
+    /// A ladder that never grows: every delay is `delay`.
+    #[must_use]
+    pub const fn flat(delay: Duration) -> Self {
+        Self {
+            floor: delay,
+            ceiling: delay,
+        }
+    }
+
+    /// The next delay after one that waited `current`: double, clamped to
+    /// `[floor, ceiling]` (so a zero seed starts at the floor).
+    #[must_use]
+    pub fn next(self, current: Duration) -> Duration {
+        current.saturating_mul(2).clamp(self.floor, self.ceiling)
+    }
+}
+
+/// Whether retrying with the same credentials cannot change this refusal:
+/// a QUIC [`DialError::AuthRefused`] or an ADR-0031 401/403 on the
+/// WebSocket upgrade. Everything else may heal and is retried.
+#[must_use]
+pub fn is_fatal_refusal(error: &DialError) -> bool {
+    match error {
+        DialError::AuthRefused(_) | DialError::AuthorityChanged(_) => true,
+        DialError::Connect(detail) => is_fatal_refusal_detail(detail),
+        DialError::Io(_) | DialError::Unreachable(_) | DialError::Stalled(_) => false,
+    }
+}
+
+/// A Unix socket left on the interactive default polls like a local upgrade.
+/// Callers that picked a ladder, including the agent-verb one, keep it.
+#[must_use]
+pub(crate) fn ladder_for(local_socket: bool, ladder: Ladder) -> Ladder {
+    if local_socket && ladder == Ladder::INTERACTIVE {
+        Ladder::LOCAL_UPGRADE
+    } else {
+        ladder
+    }
+}
+
+/// One immediate redial after a session that was up long enough to be real.
+/// A flap that dies inside a second still pays the floor, so a crash loop
+/// cannot dial with no delay forever.
+#[must_use]
+pub(crate) fn earned_immediate(was_attached: bool, elapsed: Duration) -> bool {
+    was_attached && elapsed >= Duration::from_secs(1)
+}
+
+/// The phrase a consumer uses when it flattens [`DialError::AuthRefused`]
+/// into its own vocabulary; [`is_fatal_refusal_detail`] reads it back.
+pub(crate) const TOKEN_REFUSED: &str = "pairing token refused";
+
+/// The phrase every rendering of [`DialError::AuthorityChanged`] carries;
+/// [`is_fatal_refusal_detail`] reads it back.
+pub const AUTHORITY_CHANGED: &str = "certificate authority changed";
+
+/// How [`crate::dial::dial_message`] words [`DialError::AuthRefused`];
+/// [`is_fatal_refusal_detail`] reads it back.
+pub(crate) const HOST_REFUSED_TOKEN: &str = "refused the pairing token";
+
+/// [`is_fatal_refusal`] for a consumer holding only the rendered detail of
+/// a connect failure.
+///
+/// A WebSocket refusal is matched as tungstenite renders
+/// the upgrade's status, so a port, address, or fingerprint that happens to
+/// contain `401` is not read as one.
+#[must_use]
+pub fn is_fatal_refusal_detail(detail: &str) -> bool {
+    [
+        "HTTP error: 401",
+        "HTTP error: 403",
+        TOKEN_REFUSED,
+        HOST_REFUSED_TOKEN,
+        AUTHORITY_CHANGED,
+    ]
+    .iter()
+    .any(|phrase| detail.contains(phrase))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backoff_doubles_to_the_ceiling() {
+        assert_eq!(
+            schedule(Ladder::INTERACTIVE, 6),
+            vec![500, 1000, 2000, 4000, 8000, 8000, 8000]
+        );
+    }
+
+    fn schedule(ladder: Ladder, steps: usize) -> Vec<u128> {
+        let mut delay = ladder.floor;
+        let mut out = vec![delay.as_millis()];
+        for _ in 0..steps {
+            delay = ladder.next(delay);
+            out.push(delay.as_millis());
+        }
+        out
+    }
+
+    /// The local-upgrade lane is flat: a graceful upgrade is over in under
+    /// a second and a Unix connect costs nothing, so it never backs off.
+    #[test]
+    fn the_local_upgrade_ladder_is_flat() {
+        assert_eq!(schedule(Ladder::LOCAL_UPGRADE, 10), vec![100; 11]);
+    }
+
+    /// Doubling saturates instead of overflowing, so a runaway loop still
+    /// holds at the ceiling.
+    #[test]
+    fn next_saturates_at_the_ceiling() {
+        assert_eq!(
+            Ladder::INTERACTIVE.next(Duration::MAX),
+            Ladder::INTERACTIVE.ceiling
+        );
+    }
+
+    /// A seed below the floor (usually `Duration::ZERO`) lands on the floor.
+    #[test]
+    fn next_never_drops_below_the_floor() {
+        assert_eq!(
+            Ladder::INTERACTIVE.next(Duration::ZERO),
+            Ladder::INTERACTIVE.floor
+        );
+    }
+
+    fn refused(status: u16, reason: &str) -> DialError {
+        DialError::Connect(format!(
+            "WebSocket handshake: HTTP error: {status} {reason}"
+        ))
+    }
+
+    #[test]
+    fn auth_rejections_are_fatal_and_everything_else_retries() {
+        assert!(
+            is_fatal_refusal(&refused(401, "Unauthorized")),
+            "401 cannot heal"
+        );
+        assert!(
+            is_fatal_refusal(&refused(403, "Forbidden")),
+            "403 cannot heal"
+        );
+        assert!(
+            is_fatal_refusal(&DialError::AuthRefused("unauthorized".to_owned())),
+            "a QUIC token refusal is the same verdict as a 401"
+        );
+        // A gateway hiccup is worth the ladder.
+        assert!(!is_fatal_refusal(&refused(503, "Service Unavailable")));
+        assert!(!is_fatal_refusal(&DialError::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "Connection refused (os error 61)",
+        ))));
+        assert!(!is_fatal_refusal(&DialError::Unreachable(
+            "failed to lookup address information".to_owned()
+        )));
+        assert!(!is_fatal_refusal(&DialError::Stalled("no pong".to_owned())));
+        let changed = DialError::AuthorityChanged(phux_dial::AuthorityChange {
+            pinned: format!("sha256:{}", "a".repeat(64)),
+            presented: Some(format!("sha256:{}", "b".repeat(64))),
+        });
+        assert!(
+            is_fatal_refusal(&changed),
+            "a changed authority never heals"
+        );
+        assert!(
+            is_fatal_refusal_detail(&crate::dial::dial_message("mini", &changed)),
+            "the flattened refusal stays fatal"
+        );
+    }
+
+    /// A refused QUIC preamble survives being flattened into a consumer's
+    /// connect vocabulary: the wording carries [`TOKEN_REFUSED`], so the
+    /// detail rule still calls it fatal. This is the assertion that keeps
+    /// `phux-client`'s `From<DialError>` wording and this rule together.
+    #[test]
+    fn a_flattened_token_refusal_stays_fatal() {
+        assert!(is_fatal_refusal_detail(&format!(
+            "{TOKEN_REFUSED} (unauthorized)"
+        )));
+        assert!(!is_fatal_refusal_detail(
+            "did not answer (connection refused)"
+        ));
+        // The QUIC lane's own wording, as a consumer holding only the
+        // rendered message sees it.
+        let quic = DialError::AuthRefused("unauthorized".to_owned());
+        assert!(is_fatal_refusal_detail(&crate::dial::dial_message(
+            "mini", &quic
+        )));
+        // Digits in a port, address, or fingerprint are not a status.
+        for detail in [
+            "mini: dial 100.64.0.1:8401: connection reset",
+            "mini: fingerprint mismatch (pinned ab401c, got cd403e)",
+        ] {
+            assert!(!is_fatal_refusal_detail(detail), "{detail}");
+        }
+    }
+
+    #[test]
+    fn a_local_socket_on_the_default_ladder_polls_like_an_upgrade() {
+        assert_eq!(ladder_for(true, Ladder::INTERACTIVE), Ladder::LOCAL_UPGRADE);
+        assert_eq!(ladder_for(true, Ladder::AGENT_VERB), Ladder::AGENT_VERB);
+        assert_eq!(
+            ladder_for(true, Ladder::LOCAL_UPGRADE),
+            Ladder::LOCAL_UPGRADE
+        );
+        assert_eq!(ladder_for(false, Ladder::INTERACTIVE), Ladder::INTERACTIVE);
+        let flat = Ladder::flat(Duration::from_millis(7));
+        assert_eq!(ladder_for(true, flat), flat);
+    }
+
+    #[test]
+    fn a_settled_session_redials_before_sleeping() {
+        assert!(earned_immediate(true, Duration::from_secs(1)));
+        assert!(earned_immediate(true, Duration::from_secs(30)));
+        assert!(!earned_immediate(true, Duration::from_millis(999)));
+        assert!(!earned_immediate(false, Duration::from_secs(30)));
+        assert!(!earned_immediate(false, Duration::ZERO));
+    }
+}

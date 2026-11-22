@@ -1,0 +1,48 @@
+# Release operations. CI does the releasing; see docs/releasing.md.
+
+
+# Stuck drafts, assetless releases, untagged release PRs, a stale stable
+# manifest. Reads live GitHub state through an authenticated `gh`.
+[group('release')]
+[doc('Report stuck releases: drafts, assetless publishes, untagged release PRs.')]
+release-drift grace="120":
+    bun tools/main.ts release-drift --grace-minutes {{ grace }}
+
+
+# Dry-run the crates.io publish of phux-protocol, the only publishable crate.
+[group('release')]
+[doc('Dry-run the phux-protocol crates.io publish: package and verify, no upload.')]
+publish-protocol-dry:
+    cargo publish --locked --dry-run -p phux-protocol
+
+
+# Publish phux-protocol to crates.io. IRREVERSIBLE. Requires `cargo login`
+# (or CARGO_REGISTRY_TOKEN). Run `just publish-protocol-dry` first.
+[group('release')]
+[doc('Publish phux-protocol to crates.io. IRREVERSIBLE.')]
+[confirm('Publish phux-protocol to crates.io? This cannot be undone. [y/N]')]
+publish-protocol:
+    cargo publish --locked -p phux-protocol
+
+
+# Write the product skills package (the no-phux/skills publish tree).
+[group('release')]
+[doc('Write the product skills package to DEST (publish mirror of .agents/skills).')]
+sync-skills DEST:
+    bash scripts/export-product-skills.sh "{{DEST}}"
+
+
+# The UniFFI xcframework (iOS device, arm64 simulator, macOS), with generated
+# Swift from the same revision so consumers replace slices and bindings
+# together (ADR-0135). Needs full Xcode with the iOS SDK, rustup and the
+# pinned Zig; `--dev` skips the device slice.
+[group('release')]
+[doc('Build the canonical mobile UniFFI xcframework, bindings, and provenance.')]
+mobile-ffi-xcframework *ARGS:
+    bash scripts/build-mobile-ffi-xcframework.sh {{ARGS}}
+
+# The Android sibling: Kotlin, arm64-v8a/x86_64 .so, and provenance.
+[group('release')]
+[doc('Build the canonical Android UniFFI zip (Kotlin, cdylibs, provenance).')]
+mobile-ffi-android:
+    bash scripts/build-mobile-ffi-android.sh

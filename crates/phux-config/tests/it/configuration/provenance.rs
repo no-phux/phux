@@ -1,0 +1,227 @@
+//! Provenance recording for the layered merge: every leaf and array
+//! element attributed to the layer that set it.
+
+#![allow(clippy::expect_used, reason = "tests")]
+#![allow(clippy::panic, reason = "tests")]
+
+use std::path::PathBuf;
+
+use phux_config::{ConfigProvenance, KeyOrigin, LayerSource, merged_config_with_provenance};
+use tempfile::TempDir;
+
+use crate::common;
+use common::write;
+
+/// The root (user) input of the three-layer fixture.
+const USER_INPUT: &str = r#"
+extends = ["distro.toml"]
+
+[keybindings]
+prefix = "C-b"
+
+[[plugins-append]]
+manifest = "/home/me/phux-plugin.toml"
+"#;
+
+/// Build the three-layer fixture: base <- distro <- user, over the
+/// embedded defaults. Layer indexes: 0 defaults, 1 base, 2 distro,
+/// 3 user.
+fn three_layer_stack(tmp: &TempDir) -> (toml::Table, ConfigProvenance, PathBuf) {
+    write(
+        tmp.path(),
+        "base.toml",
+        r#"
+[defaults]
+history-limit = 1111
+mouse         = false
+
+[[plugins-append]]
+manifest = "/opt/base/phux-plugin.toml"
+
+[keybindings.prefix-table]
+"b" = "new-window"
+"#,
+    );
+    write(
+        tmp.path(),
+        "distro.toml",
+        r#"
+extends = ["base.toml"]
+
+[defaults]
+history-limit = 2222
+
+[status]
+right-append = [{ kind = "time", format = "%H:%M" }]
+"#,
+    );
+    let config_path = tmp.path().join("config.toml");
+    let (merged, provenance) =
+        merged_config_with_provenance(USER_INPUT, &config_path).expect("layered parse");
+    (merged, provenance, config_path)
+}
+
+fn origin<'a>(provenance: &'a ConfigProvenance, key: &str) -> &'a KeyOrigin {
+    provenance
+        .keys
+        .get(key)
+        .unwrap_or_else(|| panic!("provenance entry for `{key}`"))
+}
+
+/// The stack is reported in merge order, and each scalar belongs to the
+/// last layer that set it (tables merge per key).
+#[test]
+fn scalars_attribute_to_the_last_layer_that_set_them() {
+    let tmp = TempDir::new().expect("tempdir");
+    let (_, provenance, config_path) = three_layer_stack(&tmp);
+    assert_eq!(
+        provenance.layers,
+        vec![
+            LayerSource::Defaults,
+            LayerSource::Extended(tmp.path().join("base.toml")),
+            LayerSource::Extended(tmp.path().join("distro.toml")),
+            LayerSource::User(config_path),
+        ]
+    );
+
+    for (key, layer) in [
+        ("defaults.term", 0),
+        ("defaults.mouse", 1),
+        ("defaults.history-limit", 2),
+        ("keybindings.prefix", 3),
+        ("keybindings.prefix-table.b", 1),
+        ("keybindings.prefix-table.x", 0),
+    ] {
+        assert_eq!(origin(&provenance, key).layer, layer, "{key}");
+    }
+    assert_eq!(origin(&provenance, "keybindings.prefix").elements, None);
+}
+
+#[test]
+fn append_arrays_attribute_each_element_to_its_contributor() {
+    let tmp = TempDir::new().expect("tempdir");
+    let (merged, provenance, _) = three_layer_stack(&tmp);
+
+    // `[[plugins]]`: absent from the defaults; base appends one entry,
+    // the user appends another. Element order is stack order.
+    let plugins = origin(&provenance, "plugins");
+    assert_eq!(plugins.elements.as_deref(), Some(&[1, 3][..]));
+    assert_eq!(plugins.layer, 3, "last contributor owns the key");
+
+    // `status.right`: the shipped widgets, then the distro's clock.
+    let right = origin(&provenance, "status.right");
+    let (last, shipped) = right
+        .elements
+        .as_deref()
+        .and_then(<[usize]>::split_last)
+        .expect("elements");
+    assert_eq!(*last, 2);
+    assert!(!shipped.is_empty() && shipped.iter().all(|l| *l == 0));
+    let merged_right = merged["status"]["right"]
+        .as_array()
+        .expect("status.right is an array");
+    assert_eq!(
+        merged_right.len(),
+        right.elements.as_ref().map(Vec::len).expect("elements"),
+        "element attribution covers every merged element"
+    );
+}
+
+#[test]
+fn plain_array_assignment_attributes_all_elements_to_the_assigner() {
+    let tmp = TempDir::new().expect("tempdir");
+    write(
+        tmp.path(),
+        "distro.toml",
+        r#"
+[status]
+right = ["session-name", { kind = "time", format = "%H:%M" }]
+"#,
+    );
+    let user = r#"
+extends = ["distro.toml"]
+
+[status]
+right-append = ["session-name"]
+"#;
+
+    let (_, provenance) = merged_config_with_provenance(user, &tmp.path().join("config.toml"))
+        .expect("layered parse");
+    // The distro's plain assignment replaces the shipped array (all
+    // elements re-attributed to layer 1); the user appends one more.
+    let right = origin(&provenance, "status.right");
+    assert_eq!(right.elements.as_deref(), Some(&[1, 1, 2][..]));
+    assert_eq!(right.layer, 2);
+}
+
+/// Mirror the library's path grammar: bare segments join with `.`,
+/// anything else is double-quoted with `\` / `"` escaped.
+fn child_path(prefix: &str, key: &str) -> String {
+    let is_bare = !key.is_empty()
+        && key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    let segment = if is_bare {
+        key.to_owned()
+    } else {
+        format!("\"{}\"", key.replace('\\', "\\\\").replace('"', "\\\""))
+    };
+    if prefix.is_empty() {
+        segment
+    } else {
+        format!("{prefix}.{segment}")
+    }
+}
+
+/// Assert every leaf under `table` carries an in-range provenance
+/// entry (arrays additionally one element attribution per element).
+fn assert_leaves_attributed(table: &toml::Table, prefix: &str, provenance: &ConfigProvenance) {
+    for (key, value) in table {
+        let path = child_path(prefix, key);
+        match value {
+            toml::Value::Table(t) => assert_leaves_attributed(t, &path, provenance),
+            toml::Value::Array(items) => {
+                let entry = origin(provenance, &path);
+                assert_eq!(
+                    entry.elements.as_ref().map(Vec::len),
+                    Some(items.len()),
+                    "element attribution length for `{path}`"
+                );
+                assert!(entry.elements.iter().flatten().all(|l| *l < 4));
+            }
+            _ => {
+                assert!(origin(provenance, &path).layer < 4);
+            }
+        }
+    }
+}
+
+/// Every merged leaf is attributed, and the table half is exactly
+/// `merged_config_table`.
+#[test]
+fn every_merged_leaf_has_a_provenance_entry() {
+    let tmp = TempDir::new().expect("tempdir");
+    let (merged, provenance, config_path) = three_layer_stack(&tmp);
+    assert_leaves_attributed(&merged, "", &provenance);
+    let table = phux_config::merged_config_table(USER_INPUT, &config_path).expect("merge");
+    assert_eq!(merged, table);
+}
+
+#[test]
+fn non_bare_key_segments_are_quoted() {
+    let tmp = TempDir::new().expect("tempdir");
+    let (_, provenance, _) = three_layer_stack(&tmp);
+
+    // The shipped prefix-table binds `%` (split-pane), a table value
+    // whose leaves sit under a quoted segment.
+    assert_eq!(
+        origin(&provenance, "keybindings.prefix-table.\"%\".action").layer,
+        0
+    );
+
+    // A user-supplied dotted key quotes as one segment.
+    let user = "[theme]\n\"a.b\" = \"x\"\n";
+    let (_, provenance) =
+        merged_config_with_provenance(user, &tmp.path().join("config.toml")).expect("parse");
+    assert_eq!(origin(&provenance, "theme.\"a.b\"").layer, 1);
+}

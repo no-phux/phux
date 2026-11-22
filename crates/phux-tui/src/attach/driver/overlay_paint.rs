@@ -1,0 +1,228 @@
+//! Overlay-layer painting: the active-overlay compositor and the copy-mode
+//! status strip.
+
+use std::collections::HashMap;
+use std::io::{self, Write};
+
+use phux_protocol::ids::ResourceId;
+
+use crate::attach::chrome_ctx::ChromeCtx;
+use crate::attach::paint::{StatusBarPaint, paint_full_frame};
+use crate::attach::pane_state::{AttachKernel, PaneSlot};
+use crate::attach::render::{SelectionRect, write_cup};
+use crate::layout::LayoutState;
+use crate::render::chrome::status_bar::Position;
+use crate::render::overlay::CopyMarks;
+use crate::render::overlay::OverlayState;
+
+/// Paint the active overlay layer: copy mode repaints the focused pane with
+/// its selection plus a status line; every other overlay floats over a
+/// repainted base frame. `base` is the render window, `None` when empty.
+/// The sidebar painter is passed so the strip survives the base's `ED2`.
+pub(super) fn paint_active_overlay<W: crate::attach::RenderSink>(
+    out: &mut W,
+    overlays: &OverlayState,
+    base: Option<&LayoutState>,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
+    engine_kernel: &AttachKernel,
+    focused: Option<&ResourceId>,
+    chrome: &mut ChromeCtx<'_>,
+) -> StatusBarPaint {
+    if let Some(sel) = overlays.copy_selection() {
+        return paint_copy_mode(
+            out,
+            sel,
+            overlays,
+            base,
+            panes,
+            engine_kernel,
+            (focused, chrome),
+        );
+    }
+    // Modals center in the pane content rect, never over the sidebar.
+    let overlay_content = {
+        let cr = chrome.content_layout().rect;
+        ratatui::layout::Rect::new(cr.x, cr.y, cr.w, cr.h)
+    };
+    let viewport_dims = chrome.viewport;
+    let Some(clip) = overlays.active_bounds(overlay_content) else {
+        // Full-screen overlay (no bounded region): clear + paint.
+        let _ = out.write_all(b"\x1b[2J\x1b[H");
+        let _ = overlays.paint(out, viewport_dims);
+        // The clear and the overlay replaced every pane cell.
+        crate::attach::pane_state::invalidate_all_fronts(panes);
+        return StatusBarPaint::NotPublished;
+    };
+    // Floating modal: repaint the base frame (panes and sidebar stay
+    // visible), then only the modal's bounded region; no full clear.
+    let painted = base.map_or(StatusBarPaint::NotPublished, |ls| {
+        paint_full_frame(out, ls, panes, engine_kernel, focused, chrome)
+    });
+    // `display-panes`: each shown pane's number over it.
+    if let (Some(numbered), Some(ls)) = (overlays.pane_numbers(), base) {
+        let content = chrome.content_layout().rect;
+        let shown = crate::multi_pane::compute_layout_in(ls, content, viewport_dims).rects;
+        let spots = (1..).zip(numbered).filter_map(|(n, id)| {
+            let rect = *shown.get(id)?;
+            Some((n, rect, Some(id) == focused))
+        });
+        let _ = crate::render::overlay::pane_picks::paint_numbers(out, spots, chrome.theme);
+    }
+    let shadow = chrome.theme.shadow;
+    let _ = overlays.paint_clipped(out, viewport_dims, overlay_content, clip, shadow);
+    // The box sits over pane cells; forget their fronts (free insurance).
+    crate::attach::pane_state::invalidate_all_fronts(panes);
+    painted
+}
+
+/// Copy mode: repaint the base frame with the focused pane's selection
+/// inverted and its other visible search hits underlined, then the copy-mode
+/// status strip over the bottom row.
+fn paint_copy_mode<W: crate::attach::RenderSink>(
+    out: &mut W,
+    sel: SelectionRect,
+    overlays: &OverlayState,
+    base: Option<&LayoutState>,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
+    engine_kernel: &AttachKernel,
+    (focused, chrome): (Option<&ResourceId>, &mut ChromeCtx<'_>),
+) -> StatusBarPaint {
+    let (Some(base), Some(fid)) = (base, focused) else {
+        return StatusBarPaint::NotPublished;
+    };
+    // Set the marks for this one zoom-honoring paint, then clear them.
+    if let Some(slot) = panes.get_mut(fid) {
+        let matches = visible_search_hits(overlays, engine_kernel, fid);
+        slot.renderer.set_copy_marks(CopyMarks {
+            selection: Some(sel),
+            matches,
+            dim: false,
+        });
+    }
+    let painted = paint_full_frame(out, base, panes, engine_kernel, focused, chrome);
+    if let Some(slot) = panes.get_mut(fid) {
+        slot.renderer.set_copy_marks(CopyMarks::default());
+    }
+    let search = overlays.copy_search_status();
+    let content = chrome.content_layout().rect;
+    let _ = paint_copy_mode_status(
+        out,
+        sel,
+        search.as_deref(),
+        content,
+        chrome.viewport,
+        chrome.theme,
+    );
+    // The strip lands on the bottom viewport row, which is a
+    // pane row under a top-docked bar or no bar at all.
+    crate::attach::pane_state::invalidate_all_fronts(panes);
+    if matches!(chrome.bar(), Some(Position::Bottom)) {
+        StatusBarPaint::NotPublished
+    } else {
+        painted
+    }
+}
+
+/// The copy-mode search hits on screen in `fid`'s pane, as pane-local
+/// rectangles, minus the current one (the selection already inverts it).
+fn visible_search_hits(
+    overlays: &OverlayState,
+    engine_kernel: &AttachKernel,
+    fid: &ResourceId,
+) -> Vec<SelectionRect> {
+    let Some(view) = overlays.copy_search_view() else {
+        return Vec::new();
+    };
+    let Some(terminal) = crate::attach::pane_state::published_terminal(engine_kernel, fid) else {
+        return Vec::new();
+    };
+    let (Some(top), Ok(cols), Ok(rows)) = (
+        crate::attach::copy::viewport_top(terminal),
+        terminal.cols(),
+        terminal.rows(),
+    ) else {
+        return Vec::new();
+    };
+    view.matches
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| Some(*index) != view.current)
+        .filter_map(|(_, hit)| hit.viewport_rect(top, rows, cols))
+        .collect()
+}
+
+/// The copy-mode key legends, longest first; the strip paints the longest one
+/// that fits.
+pub(super) const COPY_MODE_LEGENDS: [&str; 3] = [
+    "y copy · v select · V line · / find · tab block · esc",
+    "⏎ copy · / find · tab block · esc",
+    "⏎ copy · esc",
+];
+
+/// The longest legend that fits in `room` cells, counting the one-cell pad on
+/// each side; `None` when even the shortest does not fit.
+pub(super) fn legend_for(room: usize) -> Option<&'static str> {
+    COPY_MODE_LEGENDS
+        .into_iter()
+        .find(|legend| crate::render::display_width(legend) + 2 <= room)
+}
+
+/// Emit the copy-mode status strip over the bottom row of `content`, then
+/// hide the hardware cursor (the selection marks the position).
+pub(super) fn paint_copy_mode_status<W: Write>(
+    out: &mut W,
+    sel: SelectionRect,
+    search: Option<&str>,
+    content: crate::layout::Rect,
+    viewport_dims: (u16, u16),
+    theme: &crate::render::Theme,
+) -> io::Result<()> {
+    let (cols, rows) = viewport_dims;
+    if rows == 0 || cols == 0 || content.w == 0 {
+        return Ok(());
+    }
+    let span_rows = u32::from(sel.end_row - sel.start_row + 1);
+    let cell_count = if sel.rectangle {
+        // Block selection: span_rows * band_cols, the band taking min/max of
+        // the column bounds (tuple-normalized corners can have start_col >
+        // end_col on an up-left drag).
+        let band_cols =
+            u32::from(sel.start_col.max(sel.end_col) - sel.start_col.min(sel.end_col)) + 1;
+        span_rows * band_cols
+    } else {
+        // Linear: bounding-box arithmetic, saturating on reversed columns.
+        span_rows * (u32::from(sel.end_col.saturating_sub(sel.start_col)) + 1)
+    };
+    // Block vs linear, cycled by `Tab` (ADR-0045).
+    let geom = if sel.rectangle { "block" } else { "linear" };
+    let unit = if cell_count == 1 { "cell" } else { "cells" };
+    let status = search.map_or_else(
+        || format!(" Copy mode · {geom} · {cell_count} {unit} "),
+        |search| format!(" Copy mode · {geom} · {cell_count} {unit} · {search} "),
+    );
+    let width = usize::from(content.w.min(cols.saturating_sub(content.x)));
+    let status = crate::render::clip_text(&status, width);
+    let status_w = crate::render::display_width(&status);
+    // The longest key legend the status leaves room for, after a two-cell gap.
+    let legend = legend_for(width.saturating_sub(status_w + 2)).map(|keys| format!(" {keys} "));
+    let keys_w = legend
+        .as_ref()
+        .map_or(0, |keys| crate::render::display_width(keys));
+    let fill = width - status_w - keys_w;
+    write_cup(out, rows - 1, content.x)?;
+    // Selection strip from the theme (`selection_bg`/`selection_fg`), padded
+    // to the pane columns only; then reset + hide the cursor.
+    out.write_all(b"\x1b[0m")?;
+    if theme.selection_reverses() {
+        out.write_all(b"\x1b[7m")?;
+    }
+    crate::render::write_sgr_color(out, theme.selection_bg, false)?;
+    crate::render::write_sgr_color(out, theme.selection_fg, true)?;
+    out.write_all(status.as_bytes())?;
+    out.write_all(" ".repeat(fill).as_bytes())?;
+    if let Some(keys) = legend {
+        out.write_all(keys.as_bytes())?;
+    }
+    out.write_all(b"\x1b[0m\x1b[?25l")?;
+    out.flush()
+}

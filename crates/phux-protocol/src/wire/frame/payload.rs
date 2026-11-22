@@ -1,0 +1,426 @@
+//! Shared sub-record payload types: attach targets, viewport
+//! info, L3 metadata scope, and spawn/move results.
+
+use crate::ids::{
+    ClientId, GroupId, IdempotencyKey, PrincipalId, ResourceId, ResourceKind, ServerInstance,
+    SessionId,
+};
+
+/// The connection that caused an event or a metadata change (ADR-0123).
+///
+/// Positional on the wire: `client: u32 || credential_id: optional<str> ||
+/// client_name: optional<str>`, then the trailing pair `principal:
+/// optional<bytes16> || on_behalf_of: optional<bytes16>`, written only when
+/// either is present, so an actor without them keeps its earlier bytes.
+/// Through a federation hub the actor is the hub's link.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ActorRef {
+    /// The acting connection's wire client id; does not survive a reconnect.
+    pub client: ClientId,
+    /// The paired credential the connection authenticated with, if any.
+    pub credential_id: Option<String>,
+    /// The `HELLO.client_name` the connection announced, if any.
+    pub client_name: Option<String>,
+    /// The principal pair, boxed so the common actor without one stays small
+    /// (it rides `FrameKind::MetadataChanged` inline); `None` when neither is
+    /// known. Read through [`Self::principal`] and [`Self::on_behalf_of`].
+    principals: Option<Box<[Option<PrincipalId>; 2]>>,
+}
+
+impl ActorRef {
+    /// An actor known only by its connection id.
+    #[must_use]
+    pub const fn new(client: ClientId) -> Self {
+        Self {
+            client,
+            credential_id: None,
+            client_name: None,
+            principals: None,
+        }
+    }
+
+    /// The authenticated principal: the owner, or an owner-registered
+    /// credential.
+    #[must_use]
+    pub fn principal(&self) -> Option<PrincipalId> {
+        self.principals.as_ref().and_then(|pair| pair[0])
+    }
+
+    /// The human a delegated principal acts for.
+    #[must_use]
+    pub fn on_behalf_of(&self) -> Option<PrincipalId> {
+        self.principals.as_ref().and_then(|pair| pair[1])
+    }
+
+    /// Builder setter for [`Self::principal`].
+    #[must_use]
+    pub fn with_principal(self, principal: Option<PrincipalId>) -> Self {
+        let on_behalf_of = self.on_behalf_of();
+        self.with_principals(principal, on_behalf_of)
+    }
+
+    /// Builder setter for [`Self::on_behalf_of`].
+    #[must_use]
+    pub fn with_on_behalf_of(self, on_behalf_of: Option<PrincipalId>) -> Self {
+        let principal = self.principal();
+        self.with_principals(principal, on_behalf_of)
+    }
+
+    fn with_principals(
+        mut self,
+        principal: Option<PrincipalId>,
+        on_behalf_of: Option<PrincipalId>,
+    ) -> Self {
+        self.principals = (principal.is_some() || on_behalf_of.is_some())
+            .then(|| Box::new([principal, on_behalf_of]));
+        self
+    }
+
+    builder_setters! {
+        fn with_credential_id(credential_id: Option<String>) => credential_id;
+        fn with_client_name(client_name: Option<String>) => client_name;
+    }
+}
+
+/// The journal stamp on an `EVENT` (fields 3-6, ADR-0123), present iff field
+/// 3 (`seq`) is. Boxed on the frame to keep [`FrameKind`](super::FrameKind)
+/// small.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct EventStamp {
+    /// Server-wide journal sequence: starts at 1, strictly increasing within
+    /// one server incarnation (`HELLO_OK.server_id`), never wraps.
+    pub seq: u64,
+    /// Server wall-clock time the event was journaled, Unix milliseconds.
+    pub ts_ms: u64,
+    /// The connection that caused the event; `None` for server-driven ones.
+    pub actor: Option<ActorRef>,
+    /// The idempotency key of the operation that caused the event.
+    pub operation_id: Option<IdempotencyKey>,
+}
+
+impl EventStamp {
+    /// A stamp with no actor and no operation.
+    #[must_use]
+    pub const fn new(seq: u64, ts_ms: u64) -> Self {
+        Self {
+            seq,
+            ts_ms,
+            actor: None,
+            operation_id: None,
+        }
+    }
+
+    builder_setters! {
+        fn with_actor(actor: Option<ActorRef>) => actor;
+        const fn with_operation_id(operation_id: Option<IdempotencyKey>) => operation_id;
+    }
+}
+
+/// The kind, binding, and facet of a `SPAWN_RESOURCE`: fields 11-17
+/// (`docs/protocol.md#commands-events-resources`).
+///
+/// An all-default value encodes to no fields and decodes back as `None`.
+/// The decoder enforces per-kind rules: an
+/// [`AgentSession`](ResourceKind::AgentSession) requires `parent` and
+/// `provider` and forbids the PTY-shape fields; a
+/// [`Terminal`](ResourceKind::Terminal) forbids `parent`, `provider`, and
+/// `native_id`; an [`Unknown`](ResourceKind::Unknown) kind is passed through
+/// so the server can answer [`SpawnError::UnsupportedKind`]. A client MUST
+/// see [`ServerFeature::ResourceKinds`](crate::caps::ServerFeature::ResourceKinds)
+/// before asking for another kind.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SpawnResource {
+    /// Kind to spawn (field 11; absent means `Terminal`).
+    pub kind: ResourceKind,
+    /// Parent resource (field 12); closing it closes the child.
+    pub parent: Option<ResourceId>,
+    /// The producer: an agent provider name, e.g. `claude`, or the
+    /// application an accessibility tree observes (field 13; at most
+    /// [`MAX_RESOURCE_PROVIDER_BYTES`](super::MAX_RESOURCE_PROVIDER_BYTES)
+    /// bytes, non-empty), or the window or display a pixel surface
+    /// captures, or a document's content type (at most
+    /// [`MAX_CONTENT_TYPE_BYTES`](super::typed_document::MAX_CONTENT_TYPE_BYTES)).
+    /// Required for `AgentSession`, `AccessibilityTree`, `PixelSurface` and
+    /// `Document`.
+    pub provider: Option<String>,
+    /// Opaque provider-native session id (field 14; at most
+    /// [`MAX_RESOURCE_NATIVE_ID_BYTES`](super::MAX_RESOURCE_NATIVE_ID_BYTES)
+    /// bytes, non-empty), or a document's optional name.
+    pub native_id: Option<String>,
+    /// Bind the new resource to the server's instance token (field 15,
+    /// ADR-0109), answered with [`SpawnResult::OkBound`] by a server
+    /// advertising [`ServerFeature::ConditionalKill`](crate::caps::ServerFeature::ConditionalKill).
+    pub bind_instance: bool,
+    /// Keep a Terminal inspectable this many seconds after exit (field 16,
+    /// ADR-0124); `Some(0)` is the server default. Needs
+    /// [`ServerFeature::RetainOnExit`](crate::caps::ServerFeature::RetainOnExit).
+    pub retain_secs: Option<u32>,
+    /// Idempotency key (field 17, ADR-0126): a same-payload repeat answers
+    /// [`SpawnResult::Replayed`]. Needs
+    /// [`ServerFeature::SpawnIdempotency`](crate::caps::ServerFeature::SpawnIdempotency).
+    pub idempotency_key: Option<IdempotencyKey>,
+    /// What input to a document controls (field 18,
+    /// `docs/resource-kinds.md#authority`); `None` takes input from the
+    /// owner socket only. An older server ignores it, which is `None`.
+    pub control: Option<super::ControlClass>,
+}
+
+impl SpawnResource {
+    /// The fields of an `AgentSession` spawn bound to `parent`: the two the
+    /// decoder requires, with `native_id` left to [`Self::with_native_id`].
+    #[must_use]
+    pub fn agent_session(parent: ResourceId, provider: impl Into<String>) -> Self {
+        Self {
+            kind: ResourceKind::AgentSession,
+            parent: Some(parent),
+            provider: Some(provider.into()),
+            ..Self::default()
+        }
+    }
+
+    /// An accessibility tree of `target` under `parent`, the Terminal its
+    /// producer runs in.
+    #[must_use]
+    pub fn accessibility_tree(parent: ResourceId, target: impl Into<String>) -> Self {
+        Self {
+            kind: ResourceKind::AccessibilityTree,
+            parent: Some(parent),
+            provider: Some(target.into()),
+            ..Self::default()
+        }
+    }
+
+    /// A pixel surface of `target` under `parent`, the Terminal its
+    /// producer runs in.
+    #[must_use]
+    pub fn pixel_surface(parent: ResourceId, target: impl Into<String>) -> Self {
+        Self {
+            kind: ResourceKind::PixelSurface,
+            parent: Some(parent),
+            provider: Some(target.into()),
+            ..Self::default()
+        }
+    }
+
+    /// A document of `content_type` under `parent`, the Terminal its
+    /// producer runs in, optionally named.
+    #[must_use]
+    pub fn document(
+        parent: ResourceId,
+        content_type: impl Into<String>,
+        name: Option<String>,
+    ) -> Self {
+        Self {
+            kind: ResourceKind::Document,
+            parent: Some(parent),
+            provider: Some(content_type.into()),
+            native_id: name,
+            ..Self::default()
+        }
+    }
+
+    builder_setters! {
+        const fn with_retain_secs(retain_secs: Option<u32>) => retain_secs;
+        const fn with_idempotency_key(key: Option<IdempotencyKey>) => idempotency_key;
+        fn with_native_id(native_id: Option<String>) => native_id;
+        const fn with_control(control: Option<super::ControlClass>) => control;
+        const fn with_bind_instance(bind_instance: bool) => bind_instance;
+    }
+
+    /// `true` iff every field is at its default: a plain Terminal spawn,
+    /// which the encoder writes as no fields at all.
+    #[must_use]
+    pub const fn is_default(&self) -> bool {
+        self.kind.is_terminal()
+            && self.parent.is_none()
+            && self.provider.is_none()
+            && self.native_id.is_none()
+            && !self.bind_instance
+            && self.retain_secs.is_none()
+            && self.idempotency_key.is_none()
+            && self.control.is_none()
+    }
+}
+
+/// Session the client wishes to attach to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum AttachTarget {
+    /// Most-recently-touched live session known to the server. Before any
+    /// touch, resolves to the server's configured live seed. Returns
+    /// `SESSION_NOT_FOUND` when neither resolution yields a live session;
+    /// never creates.
+    Last,
+    /// Look up a session by its human-readable name.
+    ByName(String),
+    /// Look up a session by its server-assigned [`SessionId`].
+    ById(SessionId),
+    /// Look up a session by name; create one if no such session exists.
+    CreateIfMissing {
+        /// Name for the new session (also used to match an existing one).
+        name: String,
+        /// Initial command to run in the seed pane, if creation occurs.
+        command: Option<Vec<String>>,
+        /// Working directory for the seed pane, if creation occurs.
+        cwd: Option<String>,
+    },
+}
+
+/// Viewport metrics the client advertises.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ViewportInfo {
+    /// Viewport width in cells.
+    pub cols: u16,
+    /// Viewport height in cells.
+    pub rows: u16,
+    /// Optional viewport width in pixels.
+    pub pixel_w: Option<u16>,
+    /// Optional viewport height in pixels.
+    pub pixel_h: Option<u16>,
+}
+
+impl ViewportInfo {
+    /// A viewport of `cols` x `rows` cells with no pixel size.
+    #[must_use]
+    pub const fn new(cols: u16, rows: u16) -> Self {
+        Self {
+            cols,
+            rows,
+            pixel_w: None,
+            pixel_h: None,
+        }
+    }
+
+    /// Builder setter for the optional pixel dimensions.
+    #[must_use]
+    pub const fn with_pixels(mut self, pixel_w: Option<u16>, pixel_h: Option<u16>) -> Self {
+        self.pixel_w = pixel_w;
+        self.pixel_h = pixel_h;
+        self
+    }
+}
+
+/// Scope of an L3 metadata key: a 1-byte tag (`0` resource,
+/// `1` group, `2` global) plus the id, if any.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Scope {
+    /// Keys scoped to a single resource. Cleared when the resource closes.
+    Resource(ResourceId),
+    /// Keys scoped to a Group (opaque grouping key).
+    Group(GroupId),
+    /// Server-wide keys.
+    Global,
+}
+
+/// Why a spawn was refused. An error tag a newer server
+/// allocated, or a result tag this build does not know, decodes as
+/// [`Self::Unknown`] so the spawn still settles.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SpawnError {
+    /// The named `group` does not exist.
+    GroupNotFound,
+    /// Spawning failed; carries a diagnostic.
+    SpawnFailed(String),
+    /// This server cannot route to the named satellite (not a hub, or the
+    /// host is unregistered).
+    UnsupportedSatelliteRoute,
+    /// The hub's link to the named satellite is down; retryable.
+    SatelliteUnreachable(String),
+    /// This server does not serve the requested `kind`.
+    UnsupportedKind,
+    /// The `parent` does not exist.
+    ParentNotFound,
+    /// The `parent` may not own this child kind.
+    ParentKindMismatch,
+    /// The `idempotency_key` is bound to a different payload (ADR-0126);
+    /// nothing was created.
+    IdempotencyConflict,
+    /// A result this build cannot read, kept verbatim: a newer server's
+    /// error tag, a `SpawnResult` tag no 1.0 build defines, or a payload this
+    /// build cannot decode. Whether anything was created is not stated.
+    Unknown(crate::wire::UnreadableResult),
+}
+
+/// The `RESOURCE_SPAWNED` result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SpawnResult {
+    /// The freshly spawned Terminal's identifier.
+    Ok(ResourceId),
+    /// Structured failure; see [`SpawnError`].
+    Err(SpawnError),
+    /// The new id plus the instance token, answering
+    /// [`SpawnResource::bind_instance`] (ADR-0109): the `Ok` tag plus field 3.
+    OkBound {
+        /// The freshly spawned resource.
+        id: ResourceId,
+        /// The token naming the id space `id` was allocated from.
+        instance: ServerInstance,
+    },
+    /// The id an earlier same-key spawn created; nothing new was spawned
+    /// (ADR-0126). The `Ok` tag plus field 4 (and field 3 when bound).
+    Replayed {
+        /// The resource the original spawn created.
+        id: ResourceId,
+        /// Its instance token, when the original spawn asked to bind it.
+        instance: Option<ServerInstance>,
+    },
+}
+
+impl SpawnResult {
+    /// The spawned resource's id, bound, replayed, or neither; `None` for a
+    /// refusal.
+    #[must_use]
+    pub const fn spawned_id(&self) -> Option<&ResourceId> {
+        match self {
+            Self::Ok(id) | Self::OkBound { id, .. } | Self::Replayed { id, .. } => Some(id),
+            Self::Err(_) => None,
+        }
+    }
+
+    /// The instance token the spawned id is bound to, when the server bound
+    /// it.
+    #[must_use]
+    pub const fn instance(&self) -> Option<ServerInstance> {
+        match self {
+            Self::OkBound { instance, .. } => Some(*instance),
+            Self::Replayed { instance, .. } => *instance,
+            Self::Ok(_) | Self::Err(_) => None,
+        }
+    }
+
+    /// `true` iff the reply repeats an earlier keyed spawn.
+    #[must_use]
+    pub const fn is_replayed(&self) -> bool {
+        matches!(self, Self::Replayed { .. })
+    }
+}
+
+/// Why a move was refused (ADR-0056).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum MoveError {
+    /// The move was refused or failed; carries a diagnostic.
+    MoveFailed(String),
+    /// A satellite-tagged Terminal was named; moves are local-only.
+    UnsupportedSatelliteRoute,
+    /// A result this build cannot read, kept verbatim: a newer server's
+    /// error tag, a `MoveResult` tag no 1.0 build defines, or a payload this
+    /// build cannot decode. Whether the move happened is not stated.
+    Unknown(crate::wire::UnreadableResult),
+}
+
+/// The `RESOURCE_MOVED` result (ADR-0056); the id is stable across a move.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum MoveResult {
+    /// The moved Terminal's identifier (stable across the move).
+    Ok(ResourceId),
+    /// Structured failure; see [`MoveError`].
+    Err(MoveError),
+}

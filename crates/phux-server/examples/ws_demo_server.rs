@@ -1,0 +1,99 @@
+//! Standalone seeded WebSocket server, for the phux-web browser e2e.
+//!
+//! Runs a real phux server with a PTY-backed `default` session that prints a
+//! deterministic marker (`PHUX_WEB_OK`) then runs an interactive `sh`,
+//! listening for WebSocket clients on `PHUX_WS_ADDR` (default
+//! `127.0.0.1:47654`). Blocks forever.
+//!
+//! `PHUX_DEMO_PANE=cat` runs `cat` instead of the shell: each typed line
+//! comes back as program output, which is how the browser e2e makes the
+//! "program" emit escape sequences (mouse modes, OSC 8, BEL). A person
+//! trying the client wants the shell, where a typed line shows once.
+//!
+//! Port 0 lets the kernel pick; the `listening on` line on stderr names the
+//! address actually bound, which is how the browser e2e learns it.
+//!
+//! Honors the same `PHUX_WS_*` process configuration as `phux server`
+//! (`PHUX_WS_SECURE`, `PHUX_WS_TOKENS`, `PHUX_WS_TLS_CERT`/`KEY`, …) via
+//! [`ServerEnv::from_process`], so CI's authenticated fallback can probe
+//! `wss://` with a bearer token.
+//!
+//! A browser holds no workload certificate, and `phux server` admits a
+//! remote consumer only under `paired` with one (ADR-0179). This demo is an
+//! embedder (ADR-0072): it injects an engine that grants every connection
+//! the owner's authority, which no configuration of `phux server` can.
+//! Never expose it beyond loopback.
+//!
+//!   PHUX_WS_ADDR=127.0.0.1:47654 cargo run --example ws_demo_server
+
+#![allow(
+    clippy::print_stderr,
+    clippy::expect_used,
+    clippy::doc_markdown,
+    reason = "example/dev tool"
+)]
+
+use phux_protocol::wire::RemoteListenerTransport;
+use phux_server::LaunchCommand as CommandBuilder;
+use phux_server::{ServerConfig, ServerEnv, ServerRuntime};
+
+fn main() {
+    // stderr is the browser gate's server.log. Without a subscriber, `RUST_LOG`
+    // is ignored and the stale-output resync (debug only) never shows up there.
+    let _log_guard = phux_server::telemetry::init().ok().flatten();
+
+    let addr: std::net::SocketAddr = std::env::var("PHUX_WS_ADDR")
+        .unwrap_or_else(|_| "127.0.0.1:47654".to_owned())
+        .parse()
+        .expect("PHUX_WS_ADDR is a socket address");
+
+    let socket_path = std::env::temp_dir().join(format!("phux-e2e-{}.sock", std::process::id()));
+
+    // A PTY session that emits a deterministic marker, then stays alive.
+    let mut cmd = CommandBuilder::new("sh");
+    cmd.args([
+        "-c",
+        pane_script(std::env::var("PHUX_DEMO_PANE").ok().as_deref()),
+    ]);
+
+    // Standalone process binary: snapshot PHUX_* the same way `phux server`
+    // does. `with_default_socket()` leaves env empty for hermetic in-process
+    // tests; this example is launched with CI-supplied TLS/token env.
+    let env = ServerEnv::from_process();
+    let scheme = if env.ws_secure { "wss" } else { "ws" };
+
+    let mut cfg = ServerConfig {
+        socket_path: socket_path.clone(),
+        pre_seeded_session: Some("default".to_owned()),
+        seed_with_pty: true,
+        seed_command: Some(cmd),
+        env,
+        ..ServerConfig::with_default_socket()
+    };
+    phux_server_testkit::embedder::embed_owner_engine(&mut cfg);
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    tokio::task::LocalSet::new().block_on(&runtime, async move {
+        let server = tokio::task::spawn_local(
+            ServerRuntime::new(cfg, std::sync::Arc::new(phux_terminal::TerminalEngine))
+                .listen_ws(addr)
+                .run_async(async { tokio::signal::ctrl_c().await.expect("shutdown signal") }),
+        );
+        let bound =
+            phux_server_testkit::bound_listener_addr(&socket_path, RemoteListenerTransport::Wss)
+                .await;
+        eprintln!("ws-demo-server listening on {scheme}://{bound}/  (seed: default)");
+        server.await.expect("server task").expect("server run");
+    });
+}
+
+/// The seeded pane's `sh -c` script: the marker, then the pane program.
+fn pane_script(program: Option<&str>) -> &'static str {
+    match program {
+        Some("cat") => "printf 'PHUX_WEB_OK\\r\\n'; exec cat",
+        _ => "printf 'PHUX_WEB_OK\\r\\n'; exec sh -i",
+    }
+}

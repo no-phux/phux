@@ -1,0 +1,193 @@
+//! Input, subscription, and protocol extension methods.
+
+use super::{
+    Client, Command, ControlPlane, FocusEvent, FrameKind, KeyEvent, MouseEvent, PasteTrust,
+    ResourceId, lock,
+};
+
+impl Client {
+    /// Submit a validated SDK intent without any terminal-input fallback.
+    /// A lost acknowledgement becomes a dedicated Unknown receipt, never replay.
+    #[must_use]
+    pub fn native_agent_command(
+        &self,
+        agent_session_id: &ResourceId,
+        activation: &str,
+        intent: phux_protocol::native_agent::NativeIntent,
+    ) -> Option<u64> {
+        let operation = self
+            .inner
+            .with(|control| control.native_agent_command(agent_session_id, activation, intent));
+        if operation.is_some() {
+            self.nudge();
+        }
+        operation
+    }
+    // ----- input ------------------------------------------------------
+
+    /// Send one key on the raw path.
+    #[must_use]
+    pub fn send_key(&self, terminal_id: &ResourceId, event: KeyEvent) -> bool {
+        self.inner
+            .with(|control| control.send_key(terminal_id, event))
+    }
+
+    /// Type text on the raw path.
+    #[must_use]
+    pub fn send_text(&self, terminal_id: &ResourceId, text: &str) -> bool {
+        self.inner
+            .with(|control| control.send_text(terminal_id, text))
+    }
+
+    /// Send a paste as one frame.
+    #[must_use]
+    pub fn send_paste(&self, terminal_id: &ResourceId, data: Vec<u8>, trust: PasteTrust) -> bool {
+        self.inner
+            .with(|control| control.send_paste(terminal_id, data, trust))
+    }
+
+    /// Answer a focused terminal's OSC 52 read the user allowed; see
+    /// [`ControlPlane::send_clipboard_reply`](crate::control::ControlPlane::send_clipboard_reply).
+    #[must_use]
+    pub fn send_clipboard_reply(
+        &self,
+        terminal_id: &ResourceId,
+        selection: phux_client_core::engine::ClipboardSelection,
+        text: String,
+    ) -> bool {
+        self.inner
+            .with(|control| control.send_clipboard_reply(terminal_id, selection, text))
+    }
+
+    /// Send one mouse event.
+    #[must_use]
+    pub fn send_mouse(&self, terminal_id: &ResourceId, event: MouseEvent) -> bool {
+        self.inner
+            .with(|control| control.send_mouse(terminal_id, event))
+    }
+
+    /// Report host focus.
+    #[must_use]
+    pub fn send_focus(&self, terminal_id: &ResourceId, event: FocusEvent) -> bool {
+        self.inner
+            .with(|control| control.send_focus(terminal_id, event))
+    }
+
+    /// Atomically deliver a line and Enter through the acknowledged path.
+    #[must_use]
+    pub fn apply_line(&self, terminal_id: &ResourceId, text: &str) -> u64 {
+        self.acknowledged(|control| control.apply_line(terminal_id, text))
+    }
+
+    /// Answer the ask `question_id` names, refusing a stale or absent one.
+    #[must_use]
+    pub fn apply_answer(&self, terminal_id: &ResourceId, question_id: &str, text: &str) -> u64 {
+        self.acknowledged(|control| control.apply_answer(terminal_id, question_id, text))
+    }
+
+    /// Atomically deliver an untrusted paste through the acknowledged path.
+    #[must_use]
+    pub fn apply_paste(&self, terminal_id: &ResourceId, text: &str) -> u64 {
+        self.acknowledged(|control| control.apply_paste(terminal_id, text))
+    }
+
+    /// Atomically flush a draft and press Tab through the acknowledged path.
+    #[must_use]
+    pub fn apply_tab_completion(&self, terminal_id: &ResourceId, text: &str) -> u64 {
+        self.acknowledged(|control| control.apply_tab_completion(terminal_id, text))
+    }
+
+    /// Publish an immediate binding-boundary refusal from the runtime's
+    /// correlation sequence (for example, an invalid textual resource id).
+    #[must_use]
+    pub fn refuse_acknowledged_input(&self, message: &str) -> u64 {
+        let message = message.to_owned();
+        self.acknowledged(|control| control.refuse_acknowledged_input(&message))
+    }
+
+    fn acknowledged(&self, f: impl FnOnce(&mut ControlPlane) -> u64) -> u64 {
+        let (id, resolved) = self.inner.with(|control| {
+            let before = control.has_events();
+            let id = f(control);
+            (id, !before && control.has_events())
+        });
+        if resolved {
+            self.inner.wake();
+        } else {
+            // The receipt now waits on the wire. Probe it: a half-open link
+            // (a dead NAT mapping, a server gone behind a forward that keeps
+            // the socket open) would otherwise hold the receipt until an idle
+            // timeout notices, while the consumer still reads as attached.
+            // Mid-backoff, the nudge redials at once instead.
+            self.nudge();
+        }
+        id
+    }
+
+    /// Whether raw input for the terminal would pass the server's gate now.
+    #[must_use]
+    pub fn input_ready(&self, terminal_id: &ResourceId) -> bool {
+        lock(&self.inner.control).input_ready(terminal_id)
+    }
+
+    /// Whether the terminal is fenced behind an unknown delivery.
+    #[must_use]
+    pub fn delivery_fenced(&self, terminal_id: &ResourceId) -> bool {
+        lock(&self.inner.control).delivery_fenced(terminal_id)
+    }
+
+    /// Confirm that a fresh authoritative projection reached the consumer.
+    pub fn acknowledge_projection(&self, terminal_id: &ResourceId) {
+        self.inner
+            .with(|control| control.acknowledge_projection(terminal_id));
+    }
+
+    /// Capture the exact delivery fence to associate with an authoritative
+    /// projection. For an atomic projection snapshot use `with_control`.
+    #[must_use]
+    pub fn projection_fence(
+        &self,
+        terminal_id: &ResourceId,
+    ) -> Option<crate::control::ProjectionFence> {
+        lock(&self.inner.control).projection_fence(terminal_id)
+    }
+
+    /// Validate and clear the captured fence under the control-owner lock.
+    /// This never clears a newer Unknown, even within the same connection.
+    #[must_use]
+    pub fn acknowledge_projection_if(
+        &self,
+        terminal_id: &ResourceId,
+        expected: crate::control::ProjectionFence,
+    ) -> bool {
+        self.inner
+            .with(|control| control.acknowledge_projection_if(terminal_id, expected))
+    }
+
+    // ----- events subscription and extension points --------------------
+
+    /// Subscribe to the server-wide event stream from a journal cursor.
+    pub fn subscribe_events(&self, after_seq: Option<u64>) {
+        self.inner
+            .with(|control| control.subscribe_events(after_seq));
+    }
+
+    /// Extension point: send any `COMMAND`; its reply is
+    /// [`Event::CommandResult`](crate::control::Event::CommandResult).
+    #[must_use]
+    pub fn send_command(&self, command: Command) -> u32 {
+        self.inner.with(|control| control.send_command(command))
+    }
+
+    /// Extension point: allocate a correlation id from the runtime's one
+    /// sequence, so binding-owned frames cannot collide with built-in work.
+    #[must_use]
+    pub fn next_request_id(&self) -> u32 {
+        self.inner.with(ControlPlane::next_request_id)
+    }
+
+    /// Extension point: queue any frame.
+    pub fn queue_frame(&self, frame: &FrameKind) {
+        self.inner.with(|control| control.queue_frame(frame));
+    }
+}

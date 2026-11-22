@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+# Launch a small, explicitly placed agent fleet and observe it without taking
+# focus. This uses only the canonical phux CLI surface; set the integration ids
+# to names shown by `phux launch --list` before running.
+
+set -euo pipefail
+
+PHUX="${PHUX:-phux}"
+SESSION="${PHUX_FLEET_SESSION:-agent-fleet-demo}"
+BUILDER="${PHUX_BUILDER_INTEGRATION:-codex}"
+REVIEWER="${PHUX_REVIEWER_INTEGRATION:-claude}"
+WATCH_SECONDS="${PHUX_WATCH_SECONDS:-15}"
+WORKDIR="${PHUX_FLEET_CWD:-$PWD}"
+
+if ! [[ "$WATCH_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "PHUX_WATCH_SECONDS must be a positive integer" >&2
+    exit 2
+fi
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "python3 is required to parse the versioned JSON results" >&2
+    exit 2
+fi
+
+json_field() {
+    local field="$1"
+    python3 -c 'import json,sys; print(json.load(sys.stdin)[sys.argv[1]])' "$field"
+}
+
+watch_dir="$(mktemp -d "${TMPDIR:-/tmp}/phux-fleet-watch.XXXXXX")"
+watch_pids=()
+timer_pids=()
+cleanup() {
+    local pid
+    for pid in "${watch_pids[@]:-}" "${timer_pids[@]:-}"; do
+        [[ -n "$pid" ]] && kill "$pid" 2>/dev/null || true
+    done
+    rm -rf "$watch_dir"
+}
+trap cleanup EXIT INT TERM
+
+start_bounded_watch() {
+    local target="$1"
+    local output="$2"
+    if [[ -n "$target" ]]; then
+        "$PHUX" watch --json "$target" >"$output" &
+    else
+        "$PHUX" watch --json >"$output" &
+    fi
+    local watch_pid=$!
+    watch_pids+=("$watch_pid")
+    (
+        sleep "$WATCH_SECONDS"
+        kill "$watch_pid" 2>/dev/null || true
+    ) &
+    timer_pids+=("$!")
+}
+
+printf 'Creating session %s in %s\n' "$SESSION" "$WORKDIR"
+seed_json="$($PHUX new --json -s "$SESSION" -c "$WORKDIR")"
+seed_id="$(printf '%s' "$seed_json" | json_field terminal_id)"
+seed="@$seed_id"
+
+# Start server-wide observation before agents launch so an immediate ask cannot
+# race the later pane-specific subscriptions.
+start_bounded_watch "" "$watch_dir/fleet.jsonl"
+
+printf 'Launching builder %s beside %s (vertical divider / side-by-side)\n' "$BUILDER" "$seed"
+builder_json="$($PHUX launch "$BUILDER" --json --target "$seed" --split vertical --ratio 0.55 -c "$WORKDIR")"
+builder_id="$(printf '%s' "$builder_json" | json_field terminal_id)"
+builder="@$builder_id"
+
+printf 'Launching reviewer %s beside %s (horizontal divider / stacked)\n' "$REVIEWER" "$builder"
+reviewer_json="$($PHUX launch "$REVIEWER" --json --target "$builder" --split horizontal --ratio 0.5 -c "$WORKDIR")"
+reviewer_id="$(printf '%s' "$reviewer_json" | json_field terminal_id)"
+reviewer="@$reviewer_id"
+
+printf 'Spawning a placed coordinator shell beside %s\n' "$seed"
+coordinator_json="$($PHUX spawn --json --target "$seed" --split horizontal --ratio 0.7 -c "$WORKDIR" -- sh -lc 'printf "coordinator ready\n"; exec sleep 3600')"
+coordinator_id="$(printf '%s' "$coordinator_json" | json_field terminal_id)"
+coordinator="@$coordinator_id"
+
+# Existing-pane layout verbs are topology edits, not focus commands. These two
+# calls demonstrate deterministic reshaping after launch without moving any
+# attached human's viewport.
+"$PHUX" move-pane "$reviewer" "$coordinator" --split vertical --ratio 0.5 --json >/dev/null
+"$PHUX" swap-pane "$builder" "$reviewer" --json >/dev/null
+
+printf 'Watching %s and %s concurrently for %ss\n' "$builder" "$reviewer" "$WATCH_SECONDS"
+start_bounded_watch "$builder" "$watch_dir/builder.jsonl"
+start_bounded_watch "$reviewer" "$watch_dir/reviewer.jsonl"
+
+# A watch is a stream, so the timers above are the bound. SIGTERM from the
+# timer is expected; collect both subprocesses without treating it as failure.
+set +e
+for pid in "${watch_pids[@]}"; do
+    wait "$pid"
+done
+set -e
+for pid in "${timer_pids[@]}"; do
+    wait "$pid" 2>/dev/null || true
+done
+
+python3 - "$watch_dir/fleet.jsonl" "$watch_dir/builder.jsonl" "$watch_dir/reviewer.jsonl" <<'PY'
+import json
+import pathlib
+import sys
+
+asks = []
+seen = set()
+for path in map(pathlib.Path, sys.argv[1:]):
+    for raw in path.read_text().splitlines():
+        if not raw.strip():
+            continue
+        event = json.loads(raw)
+        if event.get("event") == "asked":
+            key = (event.get("terminal"), event.get("id"))
+            if key not in seen:
+                seen.add(key)
+                asks.append(event)
+
+if asks:
+    print("Blocked asks:")
+    for event in asks:
+        suggestions = event.get("suggestions") or []
+        suffix = f" (suggestions: {', '.join(suggestions)})" if suggestions else ""
+        print(f"  {event.get('terminal', '?')}: {event.get('question', '')}{suffix}")
+else:
+    print("No blocked asks arrived during the bounded watch window.")
+PY
+
+cat <<EOF
+Fleet remains running in session: $SESSION
+Human attention is advisory: attach with 'phux attach $SESSION', press C-a q to
+jump through asking panes, and C-a Q to return. This script never moves focus.
+Use bounded 'phux wait --timeout ...' for a specific screen condition; watches
+above were bounded by child-process timers.
+EOF

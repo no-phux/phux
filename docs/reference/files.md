@@ -1,0 +1,87 @@
+# File locations
+
+Where phux keeps its socket, config, state, logs, and credentials.
+
+<!--
+GENERATED FILE - do not edit. A unit test byte-compares this page
+against `phux gen-reference-docs` output and fails on any drift, so
+hand edits do not survive. Regenerate with `just docs-gen`.
+-->
+
+phux splits its files across the three XDG base directories: config (hand-written, follows you between machines), runtime (expected to disappear on reboot), and state (survives across runs but is not config). Paths below are symbolic; each rule names its fallback when the environment variable is unset.
+
+## Profiles
+
+Every runtime and state path carries the active **profile**, so a development build cannot touch the installed build's socket, sessions, or logs. The profile is `$PHUX_PROFILE` when set; otherwise `dev` for a binary that is not an installed release (a debug build, or one under a Cargo `target/` directory); otherwise `default`.
+
+The `default` profile is unsuffixed — `phux` — so paths created by earlier releases stay valid. Any other profile suffixes the directory name: `phux-dev`, `phux-<name>`. Below, `<profile-dir>` means `phux` or `phux-<profile>` accordingly. `phux doctor` reports the resolved profile.
+
+## Socket
+
+The Unix domain socket every consumer dials and the server binds:
+
+1. `$PHUX_SOCKET` if set (an explicit `--socket` flag still overrides it);
+2. `$XDG_RUNTIME_DIR/<profile-dir>/phux.sock` if `XDG_RUNTIME_DIR` is set;
+3. `/run/user/<uid>/<profile-dir>/phux.sock` if `XDG_RUNTIME_DIR` is unset and that login runtime directory exists and is owned by this user (sessions such as Tailscale SSH or cron that omit the variable still reach the systemd `--user` server);
+4. `/tmp/phux-<user>[-<profile>]/phux.sock` otherwise.
+
+The parent directory is created mode `0700`. Its sibling `spawn.lock` serialises auto-spawn so concurrent invocations elect one server rather than racing to bind.
+
+A socket file whose server has died is *stale*, not a server: liveness is established by connecting, never by the file existing. A stale entry is removed and a server started, so an uncleanly killed server cannot wedge later invocations.
+
+## Config
+
+`$XDG_CONFIG_HOME/phux/config.toml`, falling back to `~/.config/phux/config.toml` when `XDG_CONFIG_HOME` is unset. A missing config file is not an error (the embedded defaults apply); there is no global config-path flag — set `XDG_CONFIG_HOME` to isolate configuration for a test or an alternate environment. `phux config path` prints the resolved path.
+
+Beside `config.toml`, `ops.env` holds the ideas-capture credentials `phux idea` reads: `PHUX_IDEAS_KEY_ID` (the key id) and `PHUX_IDEAS_KEY` (64 hex characters, the 32-byte HMAC secret). The secret is never printed. The file is not `config.toml` and is never committed.
+
+Beside it, `known-authorities` holds the certificate authority each paired server's leaf was issued by, one line per server keyed by the `[[remote]]` entry's `cert-fingerprint`. Pairing writes it (`phux host add`, `--code`); a connection never does. A server presenting another CA is refused. Delete a line to forget a pin.
+
+## State
+
+The state directory is `$XDG_STATE_HOME/<profile-dir>`, falling back to `~/.local/state/<profile-dir>` when `XDG_STATE_HOME` is unset or empty:
+
+```
+$XDG_STATE_HOME/<profile-dir>/
+├── server.log          # the ONE server log, both spawn paths
+├── server.log.1..4     # older generations, rotated while live
+├── server-starts.log   # one line per server start (crash-loop check)
+├── audit/              # signed audit log, its rotations, and its key (0700)
+├── client-<pid>.log    # per-pid interactive-client log
+├── onboarding.json     # versioned first-use journey progress
+├── onboarding.lock     # serializes first-use moment delivery
+├── plugin-runs.jsonl   # recent plugin action/hook/startup runs (phux plugin log)
+├── plugin-startup/     # [[startup]] sidecar logs, pidfiles, and state
+├── remote-cert.pem     # auto-provisioned remote-consumer certificate (leaf, then CA)
+├── remote-key.pem      # its private key (owner-only, 0600)
+├── remote-tokens       # structured credential store (owner-only, 0600)
+├── enrollment-tickets  # single-use enrollment ticket hashes (owner-only, 0600)
+├── workload-org-roots/ # each organization's root certificates (owner-only)
+├── reports/            # local bug-report bundles (TUI C-a B, phux report)
+├── ideas/              # phux idea spool, one file per unsent capture
+├── service-wrapper.sh  # `phux service install --restore` wrapper
+└── workspace.json      # `--restore` archive, kept current by `--autosave`
+```
+
+- `server.log` is the canonical server log regardless of how the server was started: the auto-spawn path redirects the daemon's stderr here, and the service unit points its log capture at the same file. `phux logs` and `phux service logs` read it; `PHUX_LOG` tees the server's structured log to an additional file without moving this one. Whenever it exceeds 8 MiB it is rolled aside to `server.log.1` (older generations shifting to `.2`, `.3`, `.4`, oldest dropped), checked at server start and again periodically for as long as the server runs -- so one very long-lived server is bounded the same as many short-lived ones. Rotation truncates the live file in place rather than replacing it, so a `tail -f` or the OS-redirected stdio a service-managed server writes through keeps working across it.
+- `server-starts.log` records `<epoch> <pid> <version>` per server start. `phux doctor` counts recent entries to report a crash-loop, and compares the newest version against the running binary's to detect an upgrade the server has not picked up.
+- `client-<pid>.log` is where an interactive client writes its trace — the TUI owns the alt screen, so the client never logs to stderr. `PHUX_LOG` redirects it. Log files are created mode `0600`.
+- `onboarding.json` records only the versioned first-use journey stage. `onboarding.lock` serializes delivery within that profile. State is best-effort: missing state starts the guidance, while unreadable, unknown, or unwritable state stays quiet and never prevents attach.
+- `plugin-runs.jsonl` is the bounded run log behind `phux plugin log`: one JSON line per plugin action run (TUI keybinding, `phux config run`, the MCP tool), server hook run, or `[[startup]]` lifecycle line, with exit status, duration, and the last 4 KiB of stdout and stderr. Writers lock it while appending and compact it to the newest 100 runs once it passes 1 MiB. Recording is best effort and never fails a run.
+- `plugin-startup/` holds each `[[startup]]` sidecar: `<plugin-id>/<startup-id>.log` (stdout and stderr, mode `0600`, rotated at 1 MiB with three generations), `<plugin-id>/<startup-id>.<server-pid>.pid` (so the next start can reap an orphan), and `<plugin-id>/<startup-id>/` (`PHUX_PLUGIN_STATE`, mode `0700`). `phux plugin log --startup` prints the log tail.
+- `remote-cert.pem` / `remote-key.pem` are the TLS pair auto-provisioned for remote consumers: issued by the workload CA (`workload-ca.pem`), the certificate file holding the leaf then the CA, or self-signed when provisioned before that. `PHUX_WS_TLS_CERT` / `PHUX_WS_TLS_KEY` substitute an operator-supplied pair. A complete pair is never regenerated (`phux workload authority --rotate` replaces it on purpose), so the pinned fingerprint stays stable -- which also means its subjectAltName set is fixed at generation; `phux doctor` reports whether it names the address phux advertises, and (`remote-cert-chain`) whether an auto-provisioned leaf still fails to chain to the workload CA, which blocks phone QR enrollment.
+- `remote-tokens` is the versioned verifier-only credential store the server reads and `phux pair`, `phux pair rotate`, and `phux pair revoke` update under an exclusive lock on its owner-controlled, non-group/world-writable parent directory, re-checked after locking so a replaced directory cannot split concurrent writers (a `.remote-tokens.lock` left by an older binary is ignored). Store commits use a synced temporary file and atomic rename. The store must be a regular, non-symlink file of at most 4 MiB owned by the effective user with no group/world permissions, in a directory only that user can change; an integrity failure denies authentication. `PHUX_WS_TOKENS` moves it without weakening those checks. A store of legacy anonymous token lines is refused: remove it and pair again.
+- `enrollment-tickets` holds the SHA-256 of each single-use ticket `phux pair --enroll` minted (never the ticket), with the scope and lifetime the credential it enrolls gets; the first redemption consumes it. It sits beside the workload registry and moves with `PHUX_WORKLOAD_KEYS`.
+- `workload-org-roots/` holds `<org>.pem`, the root certificates `phux workload sync-managed` was handed for that organization, mode `0600` in a `0700` directory. A paired listener trusts them beside the workload CA and re-reads them when they change. It sits beside the workload registry and moves with `PHUX_WORKLOAD_KEYS`.
+- `ideas/` is the `phux idea` spool (`ideas/spool/`, one file per idea that does not yet have a 2xx). The file keeps the idempotency key. A network failure leaves it; the next `phux idea` sends those same bytes. A 2xx removes it.
+- `audit/` holds the `phux.audit/v1` log (`audit.jsonl`, rotated at 64 MiB to `audit.jsonl.1`..`.4`), its ed25519 signing key `audit-key` (owner-only, `0600`) and the public half `audit-key.pub`. The server appends one hash-chained, signed record per decision; `phux audit tail` and `phux audit verify` read it with no server. See [Audit log](../audit.md).
+- `reports/` holds local bug-report bundles written by the TUI `report-bug` action (`C-a B`) and by `phux report new`. Each subdirectory is one report (session, pane, version, log tails, optional screen dump, and a `report.md` an agent can open). `latest` points at the newest; `phux report` lists them and `phux report show` prints one.
+- `service-wrapper.sh` and `workspace.json` exist only under `phux service install --restore`. The wrapper starts `phux server --autosave workspace.json` and saves once more on stop. The server restores the archive on a fresh start and rewrites it (owner-only, `0600`) through a synced `workspace.json.autosave.tmp` and an atomic rename a few seconds after the workspace changes, so a crash or power loss leaves the latest layout. An archive that fails to restore is copied to `workspace.json.unrestored` first.
+
+## Server bundle (macOS)
+
+The install script and `phux update` keep the signed server app under `~/Library/Application Support/sh.phux/Server`: `Versions/<release>/phux Server.app` and `Versions/Current`, a symlink to the release in use. The previous release is kept for `phux update --rollback`; older ones are removed. Servers start through `Versions/Current` when it holds the same build as the CLI, so macOS privacy grants survive updates ([macOS permissions](../install.md#macos-permissions)). It is not profile-scoped: a development build never runs it.
+
+## Decided: not built
+
+A `server.pid` file and a `journal/` directory of per-pane PTY output for crash recovery are decided: not built. Neither path exists today; a crash loses every pane's scrollback. The `EVENT` stream is a separate, memory-bounded journal that carries no PTY bytes. Workspace archives are written only where `phux archive export` or `phux server --autosave` is pointed.

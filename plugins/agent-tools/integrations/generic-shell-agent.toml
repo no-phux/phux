@@ -1,0 +1,45 @@
+schema_version = 1
+id = "generic-shell-agent"
+display_name = "Generic Shell Agent"
+kind = "terminal-agent"
+description = "Template for any CLI assistant a team wants phux to launch and supervise."
+package_version = "0.1.0"
+package_status = "public-template"
+first_party = true
+capabilities = ["terminal-control", "session-supervision"]
+
+[detect]
+mode = "opt-in"
+command = "sh"
+env = "PHUX_AGENT_TOOLS_DETECT"
+
+[link]
+mode = "state-file"
+default_session = "agent-bench-generic-shell-agent"
+
+[session_identity]
+mode = "phux"
+native_env = "PHUX_GENERIC_AGENT_SESSION_ID"
+restore = "phux-session"
+
+# phux-r82.11: template for wrapping any CLI assistant so its pane
+# self-declares a `phux.agent/v1` record (ADR-0040). Replace the name,
+# kind, and the argv after `--` with your agent's; the wrapper writes the
+# record at launch and clears it on exit. It targets its own pane via
+# PHUX_TERMINAL_ID and writes nothing if it cannot resolve the pane (never
+# a focused-pane guess).
+#
+# NOTE: `phux launch <id>` (ADR-0042) now runs this `command` as a pane's
+# program (`phux launch generic-shell-agent`). The path is anchored to
+# ${PHUX_PLUGIN_ROOT} (the launch executor expands it to the absolute plugin
+# root before spawning), so the wrapper script resolves from any cwd while
+# the agent itself runs in the caller's workspace
+# (`working_directory = "workspace"`). Replace the argv after `--` with your
+# agent's command.
+[agent_identity]
+name = "shell-agent"
+kind = "generic"
+
+[launch]
+command = ["sh", "${PHUX_PLUGIN_ROOT}/scripts/phux-agent-wrap.sh", "--name", "shell-agent", "--kind", "generic", "--", "sh", "-lc", "echo configure this template with your agent command"]
+working_directory = "workspace"

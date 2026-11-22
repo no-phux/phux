@@ -1,0 +1,1204 @@
+//! The sidebar's cross-session projections (Agents, Sessions): pure
+//! functions over the driver's peer caches, with no new wire surface
+//! (ADR-0030). A CLI-created session has no persisted TUI layout until a TUI
+//! visits it, so the server window/resource graph is its inventory until then.
+
+use std::collections::{BTreeSet, HashMap, HashSet};
+
+use phux_core::project_identity::SessionProject;
+
+use phux_client::session_order;
+use phux_protocol::ids::{ResourceId, SessionId, SessionKey};
+use phux_protocol::wire::info::{HostInventory, ResourceInfo, SessionInfo, WindowInfo};
+
+use crate::layout::ArrangementDoc;
+use crate::render::chrome::sidebar::{AgentEntry, SessionRosterEntry, attention_rank};
+use phux_client::agent_meta::{AgentAttention, AgentMetaState, AgentRecord};
+
+use super::review::ReviewIndex;
+
+/// Label for a peer pane that asked for a human but declares no agent
+/// record, so the strip can say WHAT happened without claiming to know who.
+const UNNAMED_AGENT: &str = "unnamed agent";
+
+/// The peer-wide state the sidebar's cross-session zones project from.
+#[derive(Clone, Copy)]
+pub(super) struct PeerInputs<'a> {
+    /// The serving server's own hostname, never the TUI process's hostname.
+    pub serving_host: Option<&'a str>,
+    /// ADR-0140: which machine this process attached to, when the CLI
+    /// recorded one. `None` (tests, embedders) draws no machine segments.
+    pub origin: Option<&'a crate::attach::hosts::AttachOrigin>,
+    /// ADR-0140: the hosts provider's rows, the attached machine included.
+    pub remote_hosts: &'a [phux_core::host_list::HostJson],
+    /// Host-qualified satellite inventories, separate from local session ids.
+    pub hosts: &'a [HostInventory],
+    /// The server's session graph, from the `ATTACHED` snapshot.
+    pub sessions: &'a [SessionInfo],
+    /// Which of those sessions this client is attached to.
+    pub focused_session: Option<SessionId>,
+    /// Windows from the same snapshot graph: a legacy server's tab grouping,
+    /// and the session join for a resource that reports no session.
+    pub windows: &'a [WindowInfo],
+    /// Resources from the same snapshot graph, joined to their session with
+    /// [`resource_session`].
+    pub resources: &'a [ResourceInfo],
+    /// Each peer session's persisted pane tree.
+    pub foreign_layouts: &'a HashMap<SessionId, ArrangementDoc>,
+    /// Each peer pane's `phux.agent/v1` record.
+    pub foreign_agents: &'a HashMap<ResourceId, AgentRecord>,
+    /// Peer panes that raised an ADR-0035 `Asked`.
+    pub foreign_attention: &'a HashSet<ResourceId>,
+    /// `phux.session.project/v1` tags, keyed by session id.
+    pub project_tags: &'a HashMap<SessionId, String>,
+    /// The stored session order (`phux.session-order/v1`), first on top.
+    pub session_order: &'a [SessionKey],
+    /// ADR-0168: project group keys collapsed in this client's sidebar.
+    pub collapsed_projects: &'a BTreeSet<String>,
+    /// Connection-lifetime review index. Peer rows read `seen`
+    /// from here instead of hardcoding unseen.
+    pub review: &'a ReviewIndex,
+}
+
+/// The session `info` belongs to: its `session` facet, else its legacy
+/// window's ([`phux_client::resource::session_of`] for the cached graph).
+pub(in crate::attach) fn resource_session(
+    info: &ResourceInfo,
+    windows: &[WindowInfo],
+) -> Option<SessionId> {
+    info.session.or_else(|| {
+        windows
+            .iter()
+            .find(|window| window.id == info.window_id)
+            .map(|window| window.session_id)
+    })
+}
+
+/// The Terminal-kind resources of `session` in the cached graph.
+pub(in crate::attach) fn session_terminal_ids(
+    resources: &[ResourceInfo],
+    windows: &[WindowInfo],
+    session: SessionId,
+) -> Vec<ResourceId> {
+    resources
+        .iter()
+        .filter(|info| info.kind.is_terminal())
+        .filter(|info| resource_session(info, windows) == Some(session))
+        .map(|info| info.id.clone())
+        .collect()
+}
+
+impl<'a> PeerInputs<'a> {
+    /// How many terminals each session holds in the cached graph.
+    pub(in crate::attach) fn terminal_counts(&self) -> HashMap<SessionId, usize> {
+        let mut counts = HashMap::new();
+        for info in self.resources.iter().filter(|info| info.kind.is_terminal()) {
+            if let Some(session) = resource_session(info, self.windows) {
+                *counts.entry(session).or_insert(0) += 1;
+            }
+        }
+        counts
+    }
+
+    /// Whether the cached graph reports each resource's session (ADR-0161),
+    /// as [`phux_client::resource::reports_sessions`].
+    pub(in crate::attach) fn reports_sessions(&self) -> bool {
+        self.resources
+            .iter()
+            .any(|info| info.id.is_local() && info.session.is_some())
+    }
+
+    /// ADR-0140: every hosts-provider machine except the attached one, in
+    /// provider order. Empty when the CLI recorded no origin.
+    pub(super) fn other_machines(&self) -> Vec<&'a phux_core::host_list::HostJson> {
+        self.origin.map_or_else(Vec::new, |origin| {
+            crate::attach::hosts::other_hosts(self.remote_hosts, origin)
+        })
+    }
+
+    /// The peer sessions in the stored order, the rest in the graph's.
+    fn ordered_sessions(&self) -> Vec<&SessionInfo> {
+        let mut sessions: Vec<_> = self.sessions.iter().collect();
+        sessions.sort_by_key(|s| s.id);
+        session_order::arrange(&mut sessions, self.session_order);
+        sessions
+    }
+}
+
+/// One peer terminal as the Agents list visits it.
+struct PeerLeaf {
+    window: usize,
+    pane: Option<usize>,
+    id: ResourceId,
+    window_name: String,
+}
+
+/// A persisted TUI workspace with at least one window. An empty entry is
+/// treated as missing so the server graph can still name the session's panes.
+fn persisted_layout<'a>(
+    peers: &'a PeerInputs<'_>,
+    session: SessionId,
+) -> Option<&'a ArrangementDoc> {
+    peers
+        .foreign_layouts
+        .get(&session)
+        .filter(|ws| !ws.groups.is_empty())
+}
+
+/// Every pane of `workspace` as `(window index, dfs ordinal, id)`.
+fn leaves_with_position(workspace: &ArrangementDoc) -> Vec<(usize, usize, ResourceId)> {
+    let mut out = Vec::new();
+    for (w, window) in workspace.groups.iter().enumerate() {
+        if let Some(tree) = window.state.tree.as_ref() {
+            for (p, id) in crate::layout::leaves(tree).into_iter().enumerate() {
+                out.push((w, p, id));
+            }
+        }
+    }
+    out
+}
+
+/// Peer terminals in stable session/window/leaf order, from a persisted
+/// layout when it has windows, else the server graph. Pane ordinals exist
+/// only for layout-backed leaves.
+fn peer_leaves(peers: &PeerInputs<'_>, session: &SessionInfo) -> Vec<PeerLeaf> {
+    if let Some(layout) = persisted_layout(peers, session.id) {
+        return leaves_with_position(layout)
+            .into_iter()
+            .map(|(window, pane, id)| PeerLeaf {
+                window,
+                pane: Some(pane),
+                id,
+                window_name: session.name.clone(),
+            })
+            .collect();
+    }
+    graph_leaves(peers, session.id)
+}
+
+/// A session's terminals from the server graph. One that names its session
+/// sits in the first tab; a legacy window orders and names the rest.
+fn graph_leaves(peers: &PeerInputs<'_>, session: SessionId) -> Vec<PeerLeaf> {
+    let mut out: Vec<(u16, u32, PeerLeaf)> = peers
+        .resources
+        .iter()
+        .filter(|info| info.kind.is_terminal())
+        .filter(|info| resource_session(info, peers.windows) == Some(session))
+        .map(|info| {
+            let window = info
+                .session
+                .is_none()
+                .then(|| peers.windows.iter().find(|w| w.id == info.window_id))
+                .flatten();
+            let index = window.map_or(0, |w| w.index);
+            let window_name = match (window, info.session) {
+                (Some(window), _) => window.name.clone(),
+                (None, Some(_)) => ArrangementDoc::default().default_group_name(),
+                (None, None) => String::new(),
+            };
+            let leaf = PeerLeaf {
+                window: usize::from(index),
+                pane: None,
+                id: info.id.clone(),
+                window_name,
+            };
+            (index, window.map_or(0, |w| w.id.get()), leaf)
+        })
+        .collect();
+    out.sort_by(|a, b| (a.0, a.1, &a.2.id).cmp(&(b.0, b.1, &b.2.id)));
+    out.into_iter().map(|(_, _, leaf)| leaf).collect()
+}
+
+/// Resource identities the foreign agent cache should retain: layout leaves
+/// when a TUI workspace exists, otherwise the server graph's terminals.
+pub(super) fn foreign_terminal_ids(peers: &PeerInputs<'_>) -> HashSet<ResourceId> {
+    let mut ids: HashSet<ResourceId> = peers
+        .ordered_sessions()
+        .into_iter()
+        .filter(|session| Some(session.id) != peers.focused_session)
+        .flat_map(|session| peer_leaves(peers, session))
+        .map(|leaf| leaf.id)
+        .collect();
+    ids.extend(satellite_terminal_ids(peers));
+    ids
+}
+
+/// Satellite terminals from the federated graph (ADR-0136), not leaves of a
+/// local layout, so their agent records get subscribed.
+pub(super) fn satellite_terminal_ids<'a>(
+    peers: &'a PeerInputs<'_>,
+) -> impl Iterator<Item = ResourceId> + 'a {
+    peers
+        .resources
+        .iter()
+        .filter(|resource| resource.kind.is_terminal() && resource.id.host().is_some())
+        .map(|resource| resource.id.clone())
+}
+
+/// Full agent list in stable session-id, window and leaf order. Status and
+/// review changes affect the row's badge only. Truncation belongs to the
+/// painter's fixed Agents panel, never to this projection.
+pub(super) fn needs_you_queue(local: Vec<AgentEntry>, peers: &PeerInputs<'_>) -> Vec<AgentEntry> {
+    let mut rows = Vec::new();
+    let mut local = Some(local);
+    for session in peers.ordered_sessions() {
+        if Some(session.id) == peers.focused_session {
+            rows.extend(local.take().unwrap_or_default());
+            continue;
+        }
+        for leaf in peer_leaves(peers, session) {
+            let asked = peers.foreign_attention.contains(&leaf.id);
+            let record = peers.foreign_agents.get(&leaf.id);
+            // A pane with neither a record nor an ask is a shell, not an
+            // agent. The queue lists agents — otherwise every idle prompt on
+            // the server competes with a blocked agent for the strip.
+            let named = record.is_some_and(|r| !r.name.is_empty());
+            if !named && !asked {
+                continue;
+            }
+            // An ask with no record still earns a row: it is blocked on a
+            // human by definition, which is the most important thing the
+            // strip can say. It just cannot say who.
+            let (name, state) = record.filter(|_| named).map_or_else(
+                || (UNNAMED_AGENT.to_owned(), AgentMetaState::Blocked),
+                |r| (r.name.clone(), r.state),
+            );
+            let host = leaf.id.host().map(|host| host.as_str().to_owned());
+            let seen = peers.review.is_seen(&leaf.id);
+            rows.push(AgentEntry {
+                session: Some(session.name.clone()),
+                session_id: Some(session.id),
+                resource: Some(leaf.id),
+                window: leaf.window,
+                window_name: leaf.window_name,
+                pane: leaf.pane,
+                name,
+                state,
+                attention: asked
+                    || record.is_some_and(|r| r.effective_attention() == AgentAttention::High),
+                host,
+                seen,
+            });
+        }
+    }
+    // Synthetic or not-yet-snapshotted local state still remains navigable.
+    rows.extend(local.unwrap_or_default());
+    rows
+}
+
+/// Satellite agents not already open, grouped by agent name then host and
+/// appended so a state change cannot jump an existing row.
+pub(super) fn satellite_agent_rows(
+    peers: &PeerInputs<'_>,
+    open: &HashSet<ResourceId>,
+) -> Vec<AgentEntry> {
+    let mut rows = Vec::new();
+    for id in satellite_terminal_ids(peers) {
+        if open.contains(&id) {
+            continue;
+        }
+        let asked = peers.foreign_attention.contains(&id);
+        let record = peers.foreign_agents.get(&id);
+        let named = record.is_some_and(|r| !r.name.is_empty());
+        if !named && !asked {
+            continue;
+        }
+        let (name, state) = record.filter(|_| named).map_or_else(
+            || (UNNAMED_AGENT.to_owned(), AgentMetaState::Blocked),
+            |r| (r.name.clone(), r.state),
+        );
+        let host = id.host().map(|host| host.as_str().to_owned());
+        rows.push(AgentEntry {
+            session: Some(name.clone()),
+            session_id: None,
+            resource: Some(id.clone()),
+            window: 0,
+            window_name: host.clone().unwrap_or_default(),
+            pane: None,
+            name,
+            state,
+            attention: asked
+                || record.is_some_and(|r| r.effective_attention() == AgentAttention::High),
+            host,
+            seen: peers.review.is_seen(&id),
+        });
+    }
+    rows.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.host.cmp(&b.host)));
+    rows
+}
+
+/// Every session, current included, with its serving host. One with no
+/// cached layout gets zero counts; satellite counts are unknown.
+pub(super) fn session_roster(
+    peers: &PeerInputs<'_>,
+    local: &[AgentEntry],
+) -> Vec<SessionRosterEntry> {
+    let mut out = Vec::new();
+    let mut projects: Vec<RowProject<'_>> = Vec::new();
+    let here = peers
+        .origin
+        .and_then(|origin| {
+            crate::attach::hosts::origin_label(peers.remote_hosts, origin, peers.serving_host)
+        })
+        .or_else(|| peers.serving_host.map(str::to_owned))
+        .unwrap_or_else(|| "this server".to_owned());
+    for session in peers.ordered_sessions() {
+        let mut entry = SessionRosterEntry {
+            name: session.name.clone(),
+            id: Some(session.id),
+            host: here.clone(),
+            active: Some(session.id) == peers.focused_session,
+            route_host: None,
+            switch_host: None,
+            selectable: true,
+            blocked: 0,
+            working: 0,
+            done_unvisited: 0,
+            settled: 0,
+            unknown: 0,
+            satellite: false,
+            group: None,
+            linked: false,
+        };
+        if entry.active {
+            summarize_local_agents(&mut entry, local);
+        } else {
+            count_peer_leaves(&mut entry, &peer_leaves(peers, session), peers);
+        }
+        out.push(entry);
+        projects.push(RowProject {
+            project: phux_client::project_identity::of_session(session),
+            link: phux_client::project_identity::link_of_session(session),
+            label: peers.project_tags.get(&session.id).map(String::as_str),
+        });
+    }
+    let satellites = satellite_roster(peers.hosts);
+    projects.extend(satellites.iter().map(|_| RowProject::default()));
+    out.extend(satellites);
+    for (entry, session) in machine_roster(&peers.other_machines()) {
+        out.push(entry);
+        projects.push(RowProject {
+            project: session.and_then(|session| session.project.clone()),
+            link: session.and_then(|session| session.project_link.as_deref()),
+            label: None,
+        });
+    }
+    group_roster(&out, &projects, peers.collapsed_projects)
+}
+
+/// What groups one roster row (ADR-0168).
+#[derive(Default)]
+struct RowProject<'a> {
+    project: Option<SessionProject>,
+    link: Option<&'a str>,
+    label: Option<&'a str>,
+}
+
+/// Project groups of two or more rows first, in first-appearance order;
+/// then every other row in its place. A collapsed group keeps its first
+/// row, the current session, and any session that needs you.
+fn group_roster(
+    entries: &[SessionRosterEntry],
+    projects: &[RowProject<'_>],
+    collapsed: &BTreeSet<String>,
+) -> Vec<SessionRosterEntry> {
+    use phux_client::project_groups::{Block, GroupRow, group_rows};
+    let rows: Vec<GroupRow<'_>> = entries
+        .iter()
+        .zip(projects)
+        .map(|(entry, row)| GroupRow {
+            project: row.project.as_ref(),
+            link: row.link,
+            label: row.label,
+            needs_you: entry.blocked,
+        })
+        .collect();
+    let mut grouped = Vec::new();
+    let mut singles = Vec::new();
+    for block in group_rows(&rows, 2) {
+        let block = match block {
+            Block::Single(index) => {
+                singles.push(index);
+                continue;
+            }
+            Block::Project(block) => block,
+        };
+        let is_collapsed = collapsed.contains(&block.key);
+        let first = block.members.first().map(|member| member.index);
+        let visible = block.visible(is_collapsed, |index| {
+            Some(index) == first || entries[index].active || entries[index].blocked > 0
+        });
+        let group = crate::render::chrome::sidebar::RosterGroup {
+            hidden: block.members.len() - visible.len(),
+            key: block.key,
+            name: block.name,
+            collapsed: is_collapsed,
+            needs_you: block.needs_you,
+        };
+        grouped.extend(visible.into_iter().map(|member| SessionRosterEntry {
+            group: Some(group.clone()),
+            linked: member.linked,
+            ..entries[member.index].clone()
+        }));
+    }
+    grouped.extend(singles.into_iter().map(|index| entries[index].clone()));
+    grouped
+}
+
+/// How many panes of each peer session want a person (the roster's top
+/// rung: blocked, or asking), for the sessions with any. The focused
+/// session's panes are local state, so it is never counted here.
+pub(super) fn peer_needs_you(peers: &PeerInputs<'_>) -> HashMap<SessionId, usize> {
+    peers
+        .sessions
+        .iter()
+        .filter(|session| Some(session.id) != peers.focused_session)
+        .filter_map(|session| {
+            let mut entry = SessionRosterEntry::default();
+            count_peer_leaves(&mut entry, &peer_leaves(peers, session), peers);
+            (entry.blocked > 0).then_some((session.id, entry.blocked))
+        })
+        .collect()
+}
+
+/// ADR-0140: one segment per other machine, in provider order; a session
+/// row commits `switch-host`. An unreachable machine keeps its segment with
+/// a placeholder. Agent counts are unknown across machines, so all are zero.
+fn machine_roster<'a>(
+    hosts: &[&'a phux_core::host_list::HostJson],
+) -> Vec<(
+    SessionRosterEntry,
+    Option<&'a phux_core::session_list::SessionJson>,
+)> {
+    let mut out = Vec::new();
+    for host in hosts {
+        let base = SessionRosterEntry {
+            host: host.label.clone(),
+            switch_host: Some(host.name.clone()),
+            selectable: host.reachable,
+            ..SessionRosterEntry::default()
+        };
+        if !host.reachable {
+            out.push((
+                SessionRosterEntry {
+                    name: "down".to_owned(),
+                    ..base
+                },
+                None,
+            ));
+            continue;
+        }
+        if host.sessions.is_empty() {
+            out.push((
+                SessionRosterEntry {
+                    name: "no sessions".to_owned(),
+                    selectable: false,
+                    ..base
+                },
+                None,
+            ));
+            continue;
+        }
+        out.extend(host.sessions.iter().map(|session| {
+            (
+                SessionRosterEntry {
+                    name: session.name.clone(),
+                    ..base.clone()
+                },
+                Some(session),
+            )
+        }));
+    }
+    out
+}
+
+/// Share the current-session summary between live and headless chrome.
+pub(super) fn summarize_local_agents(entry: &mut SessionRosterEntry, agents: &[AgentEntry]) {
+    for agent in agents {
+        count_rank(
+            entry,
+            attention_rank(agent.state, agent.attention, agent.seen),
+        );
+    }
+}
+
+/// A remote pane does not change the host of the session containing it.
+fn count_peer_leaves(entry: &mut SessionRosterEntry, leaves: &[PeerLeaf], peers: &PeerInputs<'_>) {
+    for leaf in leaves {
+        if !leaf.id.is_local() {
+            entry.unknown += 1;
+            continue;
+        }
+        let asked = peers.foreign_attention.contains(&leaf.id);
+        let (state, attention) =
+            peers
+                .foreign_agents
+                .get(&leaf.id)
+                .map_or((AgentMetaState::Unknown, asked), |r| {
+                    (
+                        r.state,
+                        asked || r.effective_attention() == AgentAttention::High,
+                    )
+                });
+        count_rank(
+            entry,
+            attention_rank(state, attention, peers.review.is_seen(&leaf.id)),
+        );
+    }
+}
+
+const fn count_rank(entry: &mut SessionRosterEntry, rank: u8) {
+    match rank {
+        4 => entry.blocked += 1,
+        3 => entry.done_unvisited += 1,
+        2 => entry.working += 1,
+        1 => entry.settled += 1,
+        _ => entry.unknown += 1,
+    }
+}
+
+/// Satellite session ids are host-local; never merge them with local ids.
+fn satellite_roster(hosts: &[HostInventory]) -> Vec<SessionRosterEntry> {
+    let mut hosts: Vec<_> = hosts.iter().collect();
+    hosts.sort_by(|a, b| a.host.as_str().cmp(b.host.as_str()));
+    let mut out = Vec::new();
+    for host in hosts {
+        let base = SessionRosterEntry {
+            host: host.host.to_string(),
+            route_host: Some(host.host.to_string()),
+            satellite: true,
+            selectable: host.is_reachable(),
+            ..SessionRosterEntry::default()
+        };
+        if !host.is_reachable() {
+            out.push(SessionRosterEntry {
+                name: "down".to_owned(),
+                ..base
+            });
+            continue;
+        }
+        let mut sessions: Vec<_> = host.sessions.iter().collect();
+        sessions.sort_by_key(|s| s.id);
+        out.extend(sessions.into_iter().map(|session| SessionRosterEntry {
+            name: session.name.clone(),
+            unknown: usize::from(session.pane_count),
+            ..base.clone()
+        }));
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::layout::ArrangementDoc;
+    use phux_protocol::ids::WindowId;
+
+    mod machines;
+
+    fn sinfo(id: u32, name: &str) -> SessionInfo {
+        SessionInfo::new(SessionId::new(id), name).with_window_count(1)
+    }
+
+    fn record(name: &str, state: AgentMetaState) -> AgentRecord {
+        AgentRecord {
+            name: name.to_owned(),
+            state,
+            ..AgentRecord::default()
+        }
+    }
+
+    fn local_row(name: &str, state: AgentMetaState) -> AgentEntry {
+        AgentEntry {
+            session: None,
+            session_id: None,
+            resource: None,
+            window: 0,
+            window_name: "here".to_owned(),
+            pane: Some(0),
+            name: name.to_owned(),
+            state,
+            attention: false,
+            host: None,
+            seen: false,
+        }
+    }
+
+    fn graph_window(
+        session: u32,
+        window_id: u32,
+        index: u16,
+        name: &str,
+        leaf: ResourceId,
+    ) -> WindowInfo {
+        WindowInfo::new(WindowId::new(window_id), SessionId::new(session), name)
+            .with_index(index)
+            .with_active_resource(Some(leaf))
+    }
+
+    fn graph_resource(id: ResourceId, window: u32) -> ResourceInfo {
+        ResourceInfo::new(id, WindowId::new(window), 80, 24)
+    }
+
+    struct Fixture {
+        sessions: Vec<SessionInfo>,
+        windows: Vec<WindowInfo>,
+        resources: Vec<ResourceInfo>,
+        layouts: HashMap<SessionId, ArrangementDoc>,
+        agents: HashMap<ResourceId, AgentRecord>,
+        attention: HashSet<ResourceId>,
+        project_tags: HashMap<SessionId, String>,
+        collapsed: BTreeSet<String>,
+        review: ReviewIndex,
+    }
+
+    impl Fixture {
+        fn inputs(&self) -> PeerInputs<'_> {
+            PeerInputs {
+                serving_host: Some("mini"),
+                origin: None,
+                remote_hosts: &[],
+                hosts: &[],
+                sessions: &self.sessions,
+                focused_session: Some(SessionId::new(1)),
+                windows: &self.windows,
+                resources: &self.resources,
+                foreign_layouts: &self.layouts,
+                foreign_agents: &self.agents,
+                foreign_attention: &self.attention,
+                project_tags: &self.project_tags,
+                session_order: &[],
+                collapsed_projects: &self.collapsed,
+                review: &self.review,
+            }
+        }
+    }
+
+    /// One peer session, `peer`, holding two panes.
+    fn fixture() -> Fixture {
+        let mut ws = ArrangementDoc::single(ResourceId::local(10));
+        ws.add_group("two".to_owned(), ResourceId::local(11));
+        let mut layouts = HashMap::new();
+        layouts.insert(SessionId::new(2), ws);
+        Fixture {
+            sessions: vec![sinfo(1, "here"), sinfo(2, "peer")],
+            windows: vec![
+                graph_window(2, 10, 0, "main", ResourceId::local(10)),
+                graph_window(2, 11, 1, "two", ResourceId::local(11)),
+            ],
+            resources: vec![
+                graph_resource(ResourceId::local(10), 10),
+                graph_resource(ResourceId::local(11), 11),
+            ],
+            layouts,
+            project_tags: HashMap::new(),
+            collapsed: BTreeSet::new(),
+            agents: HashMap::new(),
+            attention: HashSet::new(),
+            review: ReviewIndex::default(),
+        }
+    }
+
+    fn machine(
+        name: &str,
+        label: &str,
+        kind: phux_core::host_list::HostKind,
+        reachable: bool,
+        sessions: &[&str],
+    ) -> phux_core::host_list::HostJson {
+        phux_core::host_list::HostJson {
+            name: name.to_owned(),
+            label: label.to_owned(),
+            kind,
+            endpoint: None,
+            reachable,
+            error: (!reachable).then(|| "timed out".to_owned()),
+            sessions: sessions
+                .iter()
+                .map(|session| phux_core::session_list::SessionJson {
+                    name: (*session).to_owned(),
+                    windows: 1,
+                    attached: false,
+                    attached_clients: 0,
+                    keep_empty: false,
+                    empty: false,
+                    lifetime: None,
+                    members: 0,
+                    exec: phux_core::session_list::ExecCounts::default(),
+                    ..Default::default()
+                })
+                .collect(),
+        }
+    }
+
+    /// A peer changing state cannot jump ahead of an existing local row.
+    #[test]
+    fn a_peers_blocked_agent_keeps_its_session_order() {
+        let mut f = fixture();
+        f.agents.insert(
+            ResourceId::local(10),
+            record("claude", AgentMetaState::Blocked),
+        );
+
+        let rows = needs_you_queue(
+            vec![local_row("codex", AgentMetaState::Working)],
+            &f.inputs(),
+        );
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[1].name, "claude",
+            "the blocked peer stays in its session position: {rows:?}"
+        );
+        assert_eq!(
+            rows[1].session.as_deref(),
+            Some("peer"),
+            "and it carries the session a click must switch to"
+        );
+        assert_eq!(
+            rows[1].session_id,
+            Some(SessionId::new(2)),
+            "the click carries the stable id, not only the display name"
+        );
+        assert_eq!(rows[1].pane, Some(0), "and the pane that wants the human");
+        assert_eq!(
+            rows[1].resource,
+            Some(ResourceId::local(10)),
+            "and the stable resource a click must attach to"
+        );
+        assert_eq!(rows[0].name, "codex");
+
+        f.agents.get_mut(&ResourceId::local(10)).unwrap().state = AgentMetaState::Done;
+        let done = needs_you_queue(vec![local_row("codex", AgentMetaState::Idle)], &f.inputs());
+        assert_eq!(
+            done.iter()
+                .map(|e| (&e.name, e.window, e.pane))
+                .collect::<Vec<_>>(),
+            rows.iter()
+                .map(|e| (&e.name, e.window, e.pane))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// A pane with no record and no ask is a shell, not an agent. The queue
+    /// lists agents — otherwise every idle prompt on the server competes with
+    /// a blocked one for the strip.
+    #[test]
+    fn plain_shells_on_a_peer_do_not_enter_the_queue() {
+        let f = fixture();
+        let rows = needs_you_queue(Vec::new(), &f.inputs());
+        assert!(rows.is_empty(), "{rows:?}");
+    }
+
+    /// An ADR-0035 ask alone is enough, even with no record: a peer agent
+    /// that asked for a human IS blocked on one, and it is the single most
+    /// important row the strip can show.
+    #[test]
+    fn a_peer_ask_alone_puts_a_row_on_the_queue() {
+        let mut f = fixture();
+        f.attention.insert(ResourceId::local(11));
+
+        let rows = needs_you_queue(Vec::new(), &f.inputs());
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert!(rows[0].attention);
+        assert_eq!(rows[0].session.as_deref(), Some("peer"));
+        assert_eq!(rows[0].session_id, Some(SessionId::new(2)));
+    }
+
+    #[test]
+    fn the_roster_rolls_a_peer_session_into_one_histogram() {
+        let mut f = fixture();
+        f.agents.insert(
+            ResourceId::local(10),
+            record("claude", AgentMetaState::Blocked),
+        );
+        f.agents.insert(
+            ResourceId::local(11),
+            record("codex", AgentMetaState::Working),
+        );
+
+        let roster = session_roster(&f.inputs(), &[]);
+        assert_eq!(
+            roster.len(),
+            2,
+            "current and peer sessions appear: {roster:?}"
+        );
+        assert!(roster[0].active);
+        assert_eq!(roster[0].host, "mini");
+        let peer = &roster[1];
+        assert_eq!(peer.name, "peer");
+        assert_eq!(peer.id, Some(SessionId::new(2)));
+        assert_eq!(peer.blocked, 1);
+        assert_eq!(peer.working, 1);
+        assert_eq!(peer.total(), 2);
+        assert_eq!(
+            peer.top_rank(),
+            attention_rank(AgentMetaState::Blocked, false, false),
+            "the session takes its worst pane's rung"
+        );
+    }
+
+    #[test]
+    fn a_reviewed_peer_done_is_settled_not_unvisited() {
+        let mut f = fixture();
+        let done = ResourceId::local(10);
+        f.agents
+            .insert(done.clone(), record("claude", AgentMetaState::Done));
+        f.review
+            .observe_record(&done, f.agents.get(&done), Some(&done));
+
+        let rows = needs_you_queue(Vec::new(), &f.inputs());
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].seen, "the peer row must keep the reviewed bit");
+        let roster = session_roster(&f.inputs(), &[]);
+        let peer = &roster[1];
+        assert_eq!(peer.done_unvisited, 0);
+        assert_eq!(peer.settled, 1);
+    }
+
+    /// A satellite's panes are unknowable here, so its row says `unknown`,
+    /// never a calm-looking `blocked: 0`.
+    #[test]
+    fn a_satellite_session_reports_unknown_not_zero() {
+        let mut f = fixture();
+        let sat = ResourceId::satellite("prod-3", 1);
+        f.layouts
+            .insert(SessionId::new(2), ArrangementDoc::single(sat.clone()));
+        // Even a record cached from somewhere must not promote it.
+        f.agents
+            .insert(sat, record("claude", AgentMetaState::Blocked));
+
+        let roster = session_roster(&f.inputs(), &[]);
+        let peer = &roster[1];
+        assert!(
+            !peer.satellite,
+            "a remote pane does not change its containing session's host"
+        );
+        assert_eq!(peer.host, "mini");
+        assert_eq!(peer.unknown, 1);
+        assert_eq!(peer.blocked, 0);
+        assert_eq!(
+            peer.top_rank(),
+            attention_rank(AgentMetaState::Unknown, false, true),
+            "an unknowable session sits on the bottom rung, not a calm one"
+        );
+    }
+
+    /// A session with no cached layout still gets a row: "this space exists"
+    /// is the roster's job. Counts come from the server graph until a TUI
+    /// layout lands; an empty graph still reads as "nothing known".
+    #[test]
+    fn a_peer_with_no_cached_layout_still_gets_a_row() {
+        let mut f = fixture();
+        f.layouts.clear();
+
+        let roster = session_roster(&f.inputs(), &[]);
+        assert_eq!(roster.len(), 2);
+        assert_eq!(roster[1].name, "peer");
+        assert_eq!(roster[1].total(), 2);
+        assert_eq!(roster[1].unknown, 2);
+
+        f.windows.clear();
+        f.resources.clear();
+        let empty = session_roster(&f.inputs(), &[]);
+        assert_eq!(empty[1].name, "peer");
+        assert_eq!(empty[1].total(), 0);
+    }
+
+    /// A resource that names its session (an `ORGANIZATION` server) is
+    /// joined and named without the legacy window: the synthesized window's
+    /// name and index never reach the row.
+    #[test]
+    fn session_facet_rows_ignore_the_synthesized_window() {
+        let mut f = fixture();
+        f.layouts.clear();
+        f.windows = vec![graph_window(9, 10, 3, "window-0", ResourceId::local(10))];
+        f.resources = vec![
+            graph_resource(ResourceId::local(11), 10).with_session(Some(SessionId::new(2))),
+            graph_resource(ResourceId::local(10), 10).with_session(Some(SessionId::new(2))),
+        ];
+        for id in [10, 11] {
+            f.agents.insert(
+                ResourceId::local(id),
+                record(&format!("agent{id}"), AgentMetaState::Idle),
+            );
+        }
+        let rows = needs_you_queue(Vec::new(), &f.inputs());
+        assert_eq!(
+            rows.iter()
+                .map(|row| (
+                    row.resource.clone(),
+                    row.window,
+                    row.window_name.as_str(),
+                    row.session_id
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (Some(ResourceId::local(10)), 0, "1", Some(SessionId::new(2))),
+                (Some(ResourceId::local(11)), 0, "1", Some(SessionId::new(2))),
+            ]
+        );
+    }
+
+    /// Two terminals in one unvisited session appear once each, in window
+    /// then `ResourceId` order, and stay the same rows after a TUI layout
+    /// lands.
+    #[test]
+    fn inventory_rows_are_stable_across_layout_persist() {
+        let mut f = fixture();
+        f.layouts.clear();
+        f.agents.insert(
+            ResourceId::local(11),
+            record("builder", AgentMetaState::Working),
+        );
+        f.agents.insert(
+            ResourceId::local(10),
+            record("reviewer", AgentMetaState::Idle),
+        );
+
+        let before = needs_you_queue(Vec::new(), &f.inputs());
+        assert_eq!(
+            before
+                .iter()
+                .map(|row| (row.name.as_str(), row.resource.clone(), row.pane))
+                .collect::<Vec<_>>(),
+            vec![
+                ("reviewer", Some(ResourceId::local(10)), None),
+                ("builder", Some(ResourceId::local(11)), None),
+            ]
+        );
+
+        let mut ws = ArrangementDoc::single(ResourceId::local(10));
+        ws.add_group("two".to_owned(), ResourceId::local(11));
+        f.layouts.insert(SessionId::new(2), ws);
+        let after = needs_you_queue(Vec::new(), &f.inputs());
+        assert_eq!(after.len(), 2, "{after:?}");
+        assert_eq!(after[0].resource, Some(ResourceId::local(10)));
+        assert_eq!(after[1].resource, Some(ResourceId::local(11)));
+        assert_eq!(after[0].name, "reviewer");
+        assert_eq!(after[1].name, "builder");
+        assert_eq!(after[0].pane, Some(0));
+        assert_eq!(after[1].pane, Some(0));
+        let ids = foreign_terminal_ids(&f.inputs());
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&ResourceId::local(10)));
+        assert!(ids.contains(&ResourceId::local(11)));
+    }
+
+    #[test]
+    fn same_named_sessions_keep_host_qualified_targets() {
+        use phux_protocol::wire::info::HostSessionInfo;
+        let f = fixture();
+        let hosts = vec![
+            HostInventory::reachable(
+                "devbox".into(),
+                vec![
+                    HostSessionInfo::new(SessionId::new(1), "here")
+                        .with_window_count(2)
+                        .with_pane_count(3),
+                ],
+            ),
+            HostInventory::unreachable("offline".into(), "link down"),
+        ];
+        let mut inputs = f.inputs();
+        inputs.hosts = &hosts;
+        let roster = session_roster(&inputs, &[]);
+        assert_eq!(
+            (&roster[0].name, &roster[0].host),
+            (&"here".to_owned(), &"mini".to_owned())
+        );
+        assert!(roster[0].route_host.is_none());
+        assert_eq!(roster[2].name, "here");
+        assert_eq!(roster[2].host, "devbox");
+        assert_eq!(roster[2].route_host.as_deref(), Some("devbox"));
+        assert_eq!(roster[2].unknown, 3);
+        assert!(roster[2].selectable);
+        assert_eq!(roster[3].host, "offline");
+        assert!(!roster[3].selectable);
+        inputs.serving_host = None;
+        assert_eq!(session_roster(&inputs, &[])[0].host, "this server");
+    }
+
+    /// ADR-0136: satellite terminals list by agent name, then host, and an
+    /// already-open leaf is left to the workspace rows.
+    #[test]
+    fn satellite_agents_group_by_name_then_host() {
+        let mut f = fixture();
+        let edge = ResourceId::satellite("edge", 9);
+        let gpu = ResourceId::satellite("gpubox", 4);
+        let open = ResourceId::satellite("gpubox", 1);
+        f.resources.push(graph_resource(edge.clone(), 0));
+        f.resources.push(graph_resource(gpu.clone(), 0));
+        f.resources.push(graph_resource(open.clone(), 0));
+        f.agents
+            .insert(edge.clone(), record("reviewer", AgentMetaState::Blocked));
+        f.agents
+            .insert(gpu.clone(), record("reviewer", AgentMetaState::Working));
+        f.agents
+            .insert(open.clone(), record("reviewer", AgentMetaState::Idle));
+        f.attention.insert(edge.clone());
+
+        let local = needs_you_queue(
+            vec![local_row("codex", AgentMetaState::Working)],
+            &f.inputs(),
+        );
+        let rows = satellite_agent_rows(&f.inputs(), &HashSet::from([open.clone()]));
+        assert_eq!(local[0].name, "codex", "local rows stay first and unmoved");
+        assert_eq!(rows.len(), 2, "the open satellite pane is not listed twice");
+        assert_eq!(rows[0].name, "reviewer");
+        assert_eq!(rows[0].host.as_deref(), Some("edge"));
+        assert!(rows[0].attention);
+        assert_eq!(rows[0].resource.as_ref(), Some(&edge));
+        assert_eq!(rows[1].host.as_deref(), Some("gpubox"));
+        assert_eq!(rows[1].state, AgentMetaState::Working);
+        let ids = foreign_terminal_ids(&f.inputs());
+        assert!(ids.contains(&edge) && ids.contains(&gpu) && ids.contains(&open));
+    }
+
+    fn identity(linked: bool, host: &str) -> SessionProject {
+        SessionProject {
+            id: "github.com/no-phux/phux".to_owned(),
+            name: "phux".to_owned(),
+            checkout: "/w".to_owned(),
+            branch: None,
+            linked_worktree: linked,
+            host: Some(host.to_owned()),
+        }
+    }
+
+    /// Give session `id` an identity the way the snapshot carries it.
+    fn tag(f: &mut Fixture, id: u32, project: &SessionProject) {
+        let session = f
+            .sessions
+            .iter_mut()
+            .find(|s| s.id == SessionId::new(id))
+            .expect("fixture session");
+        *session = session.clone().with_attrs(project.to_attrs());
+    }
+
+    /// ADR-0168: one repository groups across machines. The group leads
+    /// the roster; a linked worktree packs under the primary checkout on
+    /// its own machine; ungrouped rows keep their place.
+    #[test]
+    fn a_project_groups_its_sessions_across_machines() {
+        use phux_core::host_list::HostKind;
+        let mut f = fixture();
+        f.sessions.push(sinfo(3, "scratch"));
+        tag(&mut f, 1, &identity(false, "mini"));
+        tag(&mut f, 2, &identity(true, "mini"));
+        let origin = crate::attach::hosts::AttachOrigin::Remote("mini".to_owned());
+        let mut laptop = machine("local", "laptop", HostKind::Local, true, &["phux", "notes"]);
+        laptop.sessions[0].project = Some(identity(false, "laptop"));
+        let hosts = vec![laptop];
+        let peers = PeerInputs {
+            origin: Some(&origin),
+            remote_hosts: &hosts,
+            ..f.inputs()
+        };
+        let roster = session_roster(&peers, &[]);
+        let rows: Vec<_> = roster
+            .iter()
+            .map(|r| {
+                (
+                    r.name.as_str(),
+                    r.host.as_str(),
+                    r.group.as_ref().map(|g| g.name.as_str()),
+                    r.linked,
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("here", "mini", Some("phux"), false),
+                ("peer", "mini", Some("phux"), true),
+                ("phux", "laptop", Some("phux"), false),
+                ("scratch", "mini", None, false),
+                ("notes", "laptop", None, false),
+            ]
+        );
+    }
+
+    /// A session linked into a project by name joins that project's group,
+    /// here or elsewhere; a free-text `project` label does not move it.
+    #[test]
+    fn a_linked_session_joins_its_project_group_across_machines() {
+        use phux_core::host_list::HostKind;
+        let mut f = fixture();
+        f.sessions.push(sinfo(3, "scratch"));
+        let mut here = identity(false, "mini").to_attrs();
+        here.push(("project".to_owned(), "phux-checkout".to_owned()));
+        let session = f
+            .sessions
+            .iter_mut()
+            .find(|s| s.id == SessionId::new(1))
+            .expect("fixture session");
+        *session = session.clone().with_attrs(here);
+        let peer = f
+            .sessions
+            .iter_mut()
+            .find(|s| s.id == SessionId::new(2))
+            .expect("fixture session");
+        *peer = peer
+            .clone()
+            .with_attrs(vec![("project.link".to_owned(), "phux".to_owned())]);
+        let origin = crate::attach::hosts::AttachOrigin::Remote("mini".to_owned());
+        let mut laptop = machine("local", "laptop", HostKind::Local, true, &["docs", "notes"]);
+        laptop.sessions[0].project_link = Some("phux".to_owned());
+        let hosts = vec![laptop];
+        let peers = PeerInputs {
+            origin: Some(&origin),
+            remote_hosts: &hosts,
+            ..f.inputs()
+        };
+        let roster = session_roster(&peers, &[]);
+        let rows: Vec<_> = roster
+            .iter()
+            .map(|r| {
+                (
+                    r.name.as_str(),
+                    r.host.as_str(),
+                    r.group.as_ref().map(|g| g.name.as_str()),
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("here", "mini", Some("phux")),
+                ("peer", "mini", Some("phux")),
+                ("docs", "laptop", Some("phux")),
+                ("scratch", "mini", None),
+                ("notes", "laptop", None),
+            ]
+        );
+    }
+
+    /// A collapsed group keeps its first row, the current session, and a
+    /// session that needs you, and counts the rest it hides.
+    #[test]
+    fn a_collapsed_group_still_shows_what_needs_you() {
+        let mut f = fixture();
+        f.sessions.push(sinfo(3, "quiet"));
+        f.sessions.push(sinfo(4, "loud"));
+        for id in 1..=4 {
+            tag(&mut f, id, &identity(id == 2, "mini"));
+        }
+        f.agents.insert(
+            ResourceId::local(10),
+            record("claude", AgentMetaState::Blocked),
+        );
+        f.collapsed.insert("github.com/no-phux/phux".to_owned());
+        let names = |roster: &[SessionRosterEntry]| -> Vec<String> {
+            roster.iter().map(|r| r.name.clone()).collect()
+        };
+        let mut inputs = f.inputs();
+        inputs.focused_session = Some(SessionId::new(4));
+        let roster = session_roster(&inputs, &[]);
+        assert_eq!(names(&roster), ["here", "peer", "loud"]);
+        let group = roster[0].group.as_ref().expect("grouped");
+        assert!(group.collapsed);
+        assert_eq!(group.hidden, 1, "only `quiet` is hidden");
+        assert_eq!(group.needs_you, 1);
+    }
+}

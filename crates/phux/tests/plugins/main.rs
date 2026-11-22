@@ -1,0 +1,17 @@
+//! Plugin installation, launch, lifecycle, and update integration tests.
+
+#[path = "../common/runner.rs"]
+mod runner;
+
+#[path = "../common/ambient.rs"]
+mod common;
+
+mod plugin_demo_package;
+mod plugin_guard;
+mod plugin_install;
+mod plugin_launch;
+mod plugin_lifecycle;
+mod plugin_ref;
+mod plugin_startup;
+mod support;
+mod update_e2e;

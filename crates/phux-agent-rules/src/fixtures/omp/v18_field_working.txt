@@ -1,0 +1,24 @@
+                           ██  ██       ▀▄▄▀ █ █ █ █▄▄▀
+                           ▒▒  ██                  █
+                               ██       v18.6.1
+
+     Tip: No native tool_calling? Inference provider botches parsing them?
+          `PI_DIALECT=glm|kimi|anthropic…` rolls it locally for them!
+
+
+  New session started
+
+
+ Use the bash tool to run exactly: sleep 20 && echo finished . Then reply with
+ one word: done
+
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ $ sleep 20 && echo finished .                                                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+  󱊷 Running requested command
+
+▐                                                                              ▌
+
+ ⠙ 7s · 󰪣 GPT-6.1-Sol ·  …chpad/omp18/work ·  master ·  0.8%/922K 󰁨 · 󰙺 0.01

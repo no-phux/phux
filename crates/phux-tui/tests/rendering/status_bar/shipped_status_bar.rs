@@ -1,0 +1,134 @@
+//! The shipped `[status]` lineup rendered across terminal widths: the only
+//! test that notices changes individually correct and collectively
+//! unreadable.
+
+#![allow(clippy::expect_used, reason = "tests")]
+
+use std::path::Path;
+use std::time::{Duration, UNIX_EPOCH};
+
+use phux_tui::render::chrome::status_bar::widgets::{
+    CellHit, StatusBar, WidgetContext, WidgetRegistry, WindowInfo, row_to_string,
+};
+
+fn win(name: &str, active: bool) -> WindowInfo {
+    WindowInfo {
+        name: name.to_owned(),
+        active,
+        ..WindowInfo::default()
+    }
+}
+
+/// The bar built from the shipped defaults, rendered at `width`.
+fn shipped_row(
+    width: u16,
+    session: &str,
+    windows: &[WindowInfo],
+) -> Vec<phux_tui::render::chrome::status_bar::widgets::Cell> {
+    let cfg = phux_config::parse_with_defaults("", Path::new("/nonexistent/config.toml"))
+        .expect("shipped defaults parse");
+    let bar = StatusBar::build(&cfg.status, &WidgetRegistry::with_builtins())
+        .expect("the shipped status lineup must build");
+    let ctx = WidgetContext::new(
+        UNIX_EPOCH + Duration::from_secs(12_345),
+        session,
+        "C-a",
+        windows,
+    );
+    bar.render(&ctx, width)
+}
+
+fn shipped_text(width: u16, session: &str, windows: &[WindowInfo]) -> String {
+    row_to_string(&shipped_row(width, session, windows))
+}
+
+/// Whatever else changes, the row is exactly as wide as the terminal —
+/// no short row (which leaves stale cells from the last paint) and no
+/// long one (which wraps onto the pane above).
+#[test]
+fn the_shipped_bar_is_exactly_the_terminal_width_at_every_size() {
+    let windows = [
+        win("zsh", false),
+        win("nvim", true),
+        win("server", false),
+        win("logs", false),
+    ];
+    for width in 1u16..=200 {
+        let row = shipped_row(width, "phux", &windows);
+        assert_eq!(row.len(), usize::from(width), "row length at width {width}");
+        assert_eq!(
+            row_to_string(&row).chars().count(),
+            usize::from(width),
+            "painted width at {width}"
+        );
+    }
+}
+
+/// The gates read the terminal, not the row: beside a sidebar an 80-column
+/// terminal leaves the bar 61 columns, and that is still room for context,
+/// with the sidebar already listing the agents the chip would open.
+#[test]
+fn a_bar_beside_the_sidebar_gates_on_the_terminal_width() {
+    let cfg = phux_config::parse_with_defaults("", Path::new("/nonexistent/config.toml"))
+        .expect("shipped defaults parse");
+    let bar = StatusBar::build(&cfg.status, &WidgetRegistry::with_builtins())
+        .expect("the shipped status lineup must build");
+    let windows = [win("zsh", true)];
+    let ctx = WidgetContext {
+        cols: 80,
+        ..WidgetContext::new(
+            UNIX_EPOCH + Duration::from_secs(12_345),
+            "phux",
+            "C-a",
+            &windows,
+        )
+    };
+    let text = row_to_string(&bar.render(&ctx, 61));
+    assert_eq!(text.chars().count(), 61, "{text:?}");
+    assert!(text.contains("phux"), "session name stays: {text:?}");
+    assert!(
+        !text.contains(" agents "),
+        "no chip beside the sidebar: {text:?}"
+    );
+}
+
+/// The chip is a click target across its whole painted width, padding
+/// included — and nothing else on the row claims to be one.
+#[test]
+fn the_switch_chip_is_clickable_across_its_padding() {
+    let windows = [win("nvim", true)];
+    let row = shipped_row(46, "phux", &windows);
+    let switch_cols: Vec<usize> = row
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.hit == Some(CellHit::Switch))
+        .map(|(i, _)| i)
+        .collect();
+
+    // " agents " is 8 cells, flush against the right edge.
+    assert_eq!(switch_cols.len(), 8, "{switch_cols:?}");
+    assert_eq!(*switch_cols.last().expect("non-empty"), 45);
+    // Contiguous: no inert gap inside the target.
+    for pair in switch_cols.windows(2) {
+        assert_eq!(pair[1], pair[0] + 1, "{switch_cols:?}");
+    }
+}
+
+/// The breakpoint is a clean switchover, not an overlap or a gap: at
+/// every width one of the two shapes is in effect and never both.
+#[test]
+fn the_two_right_slot_shapes_never_overlap() {
+    let windows = [win("nvim", true)];
+    for width in 20u16..=120 {
+        let text = shipped_text(width, "sess", &windows);
+        let has_chip = text.contains(" agents ");
+        let has_clock = text.contains(':') && text.contains("sess");
+        assert!(
+            !(has_chip && has_clock),
+            "both shapes at width {width}: {text:?}"
+        );
+        if width <= 64 {
+            assert!(has_chip, "no chip at width {width}: {text:?}");
+        }
+    }
+}

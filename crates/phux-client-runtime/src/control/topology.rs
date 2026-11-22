@@ -1,0 +1,438 @@
+//! The session graph, projected from an `ATTACHED` or `GET_STATE` snapshot
+//! and, from a server that advertises `ORGANIZATION`, enriched with the
+//! organization replica's keys, revisions, lifetimes, members, arrangements,
+//! and execution states ([`Topology::with_organization`]).
+
+use phux_client_core::layout::wire::HandleMap;
+use phux_protocol::ids::{
+    ActivationId, ArrangementKey, AuthorityId, ResourceId, ResourceKey, ResourceKind, Revision,
+    SessionId, SessionKey,
+};
+use phux_protocol::wire::frame::{ExecState, SessionLifetime};
+use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
+
+use super::organization::OrganizationReplica;
+use crate::project_identity::{self, SessionProject};
+
+mod listings;
+mod resource;
+pub(super) use listings::{Listings, View};
+pub use resource::ResourceDescriptor;
+
+/// One session in the server's graph.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionDescriptor {
+    /// The session id (live handle).
+    pub id: u32,
+    /// The session name.
+    pub name: String,
+    /// Clients attached to the session.
+    pub attached_client_count: u16,
+    /// The session survives its last member (`lifetime == persistent`).
+    pub keep_empty: bool,
+    /// Creation time, seconds since the Unix epoch.
+    pub created_at_unix_secs: i64,
+    /// The persistent key, when the server reports it.
+    pub key: Option<SessionKey>,
+    /// How recently it was attached to or typed into: higher is more
+    /// recent. `None` when never used, or the server does not report it.
+    pub touched: Option<u64>,
+    /// Whether it outlives its last member, when the server reports it.
+    pub lifetime: Option<SessionLifetime>,
+    /// The record's revision, from the organization replica.
+    pub revision: Option<Revision>,
+    /// Member resources: the replica's count, else those the snapshot lists.
+    pub members: u32,
+    /// Its arrangement, from the organization replica.
+    pub arrangement: Option<ArrangementKey>,
+    /// Whether it is imported work awaiting organization (Intake).
+    pub awaiting_organization: bool,
+    /// Its repository identity, from its attributes (ADR-0168).
+    pub project: Option<SessionProject>,
+    /// Its explicit project link (`phux project link`), from its attributes.
+    pub project_link: Option<String>,
+}
+
+/// One Terminal-kind resource, denormalized with its session so a consumer
+/// needs no joins.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneDescriptor {
+    /// The terminal.
+    pub terminal_id: ResourceId,
+    /// The session it belongs to.
+    pub session_id: u32,
+    /// That session's name.
+    pub session_name: String,
+    /// The terminal's grid width.
+    pub cols: u16,
+    /// The terminal's grid height.
+    pub rows: u16,
+    /// The terminal's title, if known.
+    pub title: Option<String>,
+    /// The terminal's working directory, if known.
+    pub cwd: Option<String>,
+    /// Whether this is the attaching client's initial focus.
+    pub is_focused: bool,
+    /// The persistent key, from the organization replica.
+    pub key: Option<ResourceKey>,
+    /// The record's revision, from the organization replica.
+    pub revision: Option<Revision>,
+    /// The record's display name, from the organization replica.
+    pub name: Option<String>,
+    /// The current activation, from the organization replica.
+    pub activation: Option<ActivationId>,
+    /// The current activation's state, from the organization replica.
+    pub exec: Option<ExecState>,
+    /// The foreground program's name, from the server-owned
+    /// `phux.pane-occupant/v1` record; `None` until it is read, and for a
+    /// satellite pane, whose record stays on its own server.
+    pub foreground: Option<String>,
+    /// The icon a program in the terminal set, from the same record's
+    /// `icon`; `None` when none did.
+    pub icon: Option<String>,
+}
+
+/// One `AgentSession` resource: a record stream bound to a Terminal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentSessionDescriptor {
+    /// The resource.
+    pub id: ResourceId,
+    /// The Terminal it is bound to.
+    pub parent: Option<ResourceId>,
+    /// The provider slug, if declared.
+    pub provider: Option<String>,
+    /// The provider's own session id, if declared.
+    pub native_id: Option<String>,
+    /// The server-derived state word, if declared.
+    pub state: Option<String>,
+}
+
+/// One document-kind resource: a tree, surface, or typed document.
+///
+/// A hub's satellite documents have no organization record on the hub, so
+/// the snapshot's listing is the only way a client finds them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentDescriptor {
+    /// The resource.
+    pub id: ResourceId,
+    /// Which document kind.
+    pub kind: ResourceKind,
+    /// The pane its producer runs in.
+    pub parent: Option<ResourceId>,
+    /// Its display name, if declared.
+    pub name: Option<String>,
+}
+
+/// One session on a hub's reachable satellite, with its terminals.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SatelliteSession {
+    /// The satellite's name on the hub.
+    pub host: String,
+    /// The session's name on the satellite.
+    pub name: String,
+    /// Its resources of every kind, satellite-tagged; Terminals in window
+    /// order.
+    pub members: Vec<ResourceId>,
+}
+
+/// The session/pane graph.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Topology {
+    /// Every session the server listed.
+    pub sessions: Vec<SessionDescriptor>,
+    /// Every resource of every kind, in the server's order, as of the last
+    /// snapshot: a close removes one (from every view) and a Terminal's live
+    /// title replaces its listed one. `panes`, `agent_sessions` and
+    /// `documents` are views of it by kind.
+    pub resources: Vec<ResourceDescriptor>,
+    /// Every Terminal-kind resource, in the server's order.
+    pub panes: Vec<PaneDescriptor>,
+    /// Every `AgentSession` resource.
+    pub agent_sessions: Vec<AgentSessionDescriptor>,
+    /// Every document-kind resource, in the server's order.
+    pub documents: Vec<DocumentDescriptor>,
+    /// A hub's satellite sessions, from its inventory; none elsewhere.
+    pub satellite_sessions: Vec<SatelliteSession>,
+    /// The focused session.
+    pub focused_session: u32,
+    /// The focused terminal.
+    pub focused_pane: ResourceId,
+    /// The authority the records belong to, from the organization replica.
+    pub authority: Option<AuthorityId>,
+    /// The designated Intake session; legacy field name retained for consumers.
+    pub inbox: Option<SessionKey>,
+    /// Resource keys to live handles, from the organization replica.
+    pub handles: HandleMap,
+}
+
+impl Topology {
+    /// The designated Intake session; the legacy public field remains compatible.
+    #[must_use]
+    pub const fn intake(&self) -> Option<SessionKey> {
+        self.inbox
+    }
+
+    /// Project a wire snapshot.
+    #[must_use]
+    pub fn from_snapshot(snapshot: &SessionSnapshot) -> Self {
+        let sessions = snapshot
+            .sessions
+            .iter()
+            .map(|session| SessionDescriptor {
+                id: session.id.get(),
+                name: session.name.clone(),
+                attached_client_count: session.attached_client_count,
+                keep_empty: session.keep_empty,
+                created_at_unix_secs: session.created_at_unix_secs,
+                key: session.key,
+                touched: session.touched,
+                lifetime: session.lifetime,
+                revision: None,
+                members: u32::try_from(
+                    snapshot
+                        .resources
+                        .iter()
+                        .filter(|info| session_of(snapshot, info) == Some(session.id))
+                        .count(),
+                )
+                .unwrap_or(u32::MAX),
+                arrangement: None,
+                awaiting_organization: false,
+                project: project_identity::of_session(session),
+                project_link: project_identity::link_of_session(session).map(str::to_owned),
+            })
+            .collect();
+        let panes = terminal_resources(snapshot)
+            .map(|pane| {
+                let session_id = session_of(snapshot, pane);
+                let session = snapshot
+                    .sessions
+                    .iter()
+                    .find(|session| Some(session.id) == session_id);
+                PaneDescriptor {
+                    terminal_id: pane.id.clone(),
+                    session_id: session_id.map_or(0, SessionId::get),
+                    session_name: session.map_or_else(String::new, |s| s.name.clone()),
+                    cols: pane.cols,
+                    rows: pane.rows,
+                    // The user-set title, else the program's: a list names a
+                    // pane before the client streams it. Live retitles
+                    // overwrite this as they arrive.
+                    title: pane.title.clone().or_else(|| pane.program_title.clone()),
+                    cwd: pane.cwd.clone(),
+                    is_focused: pane.id == snapshot.focused_resource,
+                    key: None,
+                    revision: None,
+                    name: None,
+                    activation: None,
+                    exec: None,
+                    foreground: None,
+                    icon: None,
+                }
+            })
+            .collect();
+        let agent_sessions = snapshot
+            .resources
+            .iter()
+            .filter(|resource| resource.kind == ResourceKind::AgentSession)
+            .map(|resource| AgentSessionDescriptor {
+                id: resource.id.clone(),
+                parent: resource.parent.clone(),
+                provider: resource.agent.as_ref().map(|facet| facet.provider.clone()),
+                native_id: resource
+                    .agent
+                    .as_ref()
+                    .and_then(|facet| facet.native_id.clone()),
+                state: resource.agent.as_ref().map(|facet| facet.state.clone()),
+            })
+            .collect();
+        let resources = resource::resources(snapshot);
+        let documents = resource::documents(&resources);
+        let satellite_sessions = satellite_sessions(snapshot);
+        Self {
+            sessions,
+            resources,
+            panes,
+            agent_sessions,
+            documents,
+            satellite_sessions,
+            focused_session: snapshot.focused_session.get(),
+            focused_pane: snapshot.focused_resource.clone(),
+            authority: None,
+            inbox: None,
+            handles: HandleMap::new(),
+        }
+    }
+
+    /// Enrich with the organization replica: keys, revisions, lifetimes,
+    /// member counts, arrangements, intake, and execution states. A replica
+    /// that is not live leaves the snapshot projection as it is.
+    #[must_use]
+    pub fn with_organization(mut self, replica: &OrganizationReplica) -> Self {
+        if replica.authority().is_none() {
+            return self;
+        }
+        self.authority = replica.authority();
+        self.inbox = replica.intake();
+        self.handles = replica.handles().clone();
+        for session in &mut self.sessions {
+            let record = session
+                .key
+                .and_then(|key| replica.session(&key))
+                .or_else(|| replica.session_by_live(SessionId::new(session.id)));
+            if let Some(record) = record {
+                session.name.clone_from(&record.name);
+                session.key = Some(record.key);
+                session.lifetime = Some(record.lifetime);
+                session.keep_empty = record.lifetime == SessionLifetime::Persistent;
+                session.revision = Some(record.revision);
+                session.members = record.members;
+                session.arrangement = record.arrangement;
+                session.awaiting_organization = record.awaiting_organization;
+                session.project = project_identity::of_attrs(&record.attrs);
+                session.project_link =
+                    project_identity::link_of_attrs(&record.attrs).map(str::to_owned);
+            }
+        }
+        resource::rehome(&mut self.resources, replica);
+        for pane in &mut self.panes {
+            if let Some(record) = replica.resource_by_live(&pane.terminal_id) {
+                if let Some(session) = replica.session(&record.session)
+                    && let Some(live) = session.live
+                {
+                    pane.session_id = live.get();
+                    pane.session_name.clone_from(&session.name);
+                }
+                pane.key = Some(record.key);
+                pane.revision = Some(record.revision);
+                pane.name.clone_from(&record.name);
+                pane.activation = record.activation.map(|a| a.id);
+                pane.exec = record.activation.map(|a| a.state);
+            }
+        }
+        self
+    }
+
+    /// The pane entry for `terminal_id`.
+    #[must_use]
+    pub fn pane(&self, terminal_id: &ResourceId) -> Option<&PaneDescriptor> {
+        self.panes
+            .iter()
+            .find(|pane| &pane.terminal_id == terminal_id)
+    }
+
+    pub(super) fn pane_mut(&mut self, terminal_id: &ResourceId) -> Option<&mut PaneDescriptor> {
+        self.panes
+            .iter_mut()
+            .find(|pane| &pane.terminal_id == terminal_id)
+    }
+
+    /// The session entry named `name`.
+    #[must_use]
+    pub fn session_named(&self, name: &str) -> Option<&SessionDescriptor> {
+        self.sessions.iter().find(|session| session.name == name)
+    }
+
+    /// The session entry whose live id is `id`.
+    #[must_use]
+    pub fn session(&self, id: u32) -> Option<&SessionDescriptor> {
+        self.sessions.iter().find(|session| session.id == id)
+    }
+
+    /// The session entry keyed `key`.
+    #[must_use]
+    pub fn session_keyed(&self, key: &SessionKey) -> Option<&SessionDescriptor> {
+        self.sessions
+            .iter()
+            .find(|session| session.key == Some(*key))
+    }
+
+    /// The first live pane of session `session_id`, in the server's order.
+    #[must_use]
+    pub(crate) fn first_pane_of(&self, session_id: u32) -> Option<&ResourceId> {
+        self.panes
+            .iter()
+            .find(|pane| pane.session_id == session_id)
+            .map(|pane| &pane.terminal_id)
+    }
+}
+
+/// A hub's satellite sessions, from its inventory rows.
+fn satellite_sessions(snapshot: &SessionSnapshot) -> Vec<SatelliteSession> {
+    snapshot
+        .hosts()
+        .iter()
+        .flat_map(|host| {
+            host.sessions.iter().map(|session| SatelliteSession {
+                host: host.host.as_str().to_owned(),
+                name: session.name.clone(),
+                members: session.members.clone(),
+            })
+        })
+        .collect()
+}
+
+/// The session a snapshot resource belongs to: its `session` facet, or from
+/// a server that predates it, the session of its legacy window.
+pub(super) fn session_of(snapshot: &SessionSnapshot, info: &ResourceInfo) -> Option<SessionId> {
+    info.session.or_else(|| {
+        snapshot
+            .windows
+            .iter()
+            .find(|window| window.id == info.window_id)
+            .map(|window| window.session_id)
+    })
+}
+
+/// The Terminal-kind entries of a snapshot's inventory. Skipping every other
+/// kind is a client obligation (ADR-0102): an agent session has no window,
+/// grid, or PTY, so projecting one as a pane would paint a row no input can
+/// reach.
+pub(super) fn terminal_resources(
+    snapshot: &SessionSnapshot,
+) -> impl Iterator<Item = &ResourceInfo> {
+    snapshot
+        .resources
+        .iter()
+        .filter(|resource| resource.kind == ResourceKind::Terminal)
+}
+
+#[cfg(test)]
+mod tests {
+    use phux_protocol::ids::{ResourceId, SessionId, WindowId};
+    use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot};
+
+    use super::Topology;
+
+    fn snapshot(user: Option<&str>, program: Option<&str>) -> SessionSnapshot {
+        SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
+            .with_sessions(vec![
+                SessionInfo::new(SessionId::new(1), "work").with_window_count(1),
+            ])
+            .with_resources(vec![
+                ResourceInfo::new(ResourceId::local(1), WindowId::new(1), 80, 24)
+                    .with_title(user.map(str::to_owned))
+                    .with_program_title(program.map(str::to_owned)),
+            ])
+    }
+
+    /// Every pane in the snapshot is named before any stream opens: the
+    /// user-set title wins, the program's fills in, and neither leaves none.
+    #[test]
+    fn a_pane_is_titled_from_the_snapshot_before_it_streams() {
+        let title = |user, program| {
+            Topology::from_snapshot(&snapshot(user, program)).panes[0]
+                .title
+                .clone()
+        };
+        assert_eq!(
+            title(None, Some("OC | Fix the flaky test")).as_deref(),
+            Some("OC | Fix the flaky test")
+        );
+        assert_eq!(
+            title(Some("deploy"), Some("vim")).as_deref(),
+            Some("deploy")
+        );
+        assert_eq!(title(None, None), None);
+    }
+}

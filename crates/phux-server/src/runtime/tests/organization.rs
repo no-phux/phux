@@ -1,0 +1,257 @@
+use super::*;
+use crate::org_store::SqliteOrgStore;
+use crate::state::TerminalTarget;
+use phux_core::{Actor, ExecState, ExitOutcome, ExitPolicy, Op, SessionLifetime, TerminalLaunch};
+
+/// A store written before every session had an arrangement gains the
+/// missing empty ones at startup, and an arrangement it already held
+/// stays the one its session names.
+#[test]
+fn open_org_store_backfills_sessions_that_have_no_arrangement() {
+    use crate::org_store::{LIVE_IMPORT_MIGRATION, OrgStore as _, SqliteOrgStore};
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v1.sqlite3");
+    let (org, arrangement_key) = org_with_one_arrangement();
+    {
+        let mut store = SqliteOrgStore::open(&path).unwrap();
+        store.import(&org, None, phux_core::Stamp(1_000)).unwrap();
+        assert_eq!(store.count("arrangements").unwrap(), 1);
+        assert!(!store.has_migration(LIVE_IMPORT_MIGRATION).unwrap());
+    }
+
+    let state = SharedState::new();
+    open_org_store(&state, &crate::OrgStoreLocation::Path(path.clone())).unwrap();
+    state.with(|server| {
+        assert_eq!(
+            server.sessions().by_name("arranged").unwrap().arrangement,
+            Some(arrangement_key)
+        );
+        assert!(
+            server
+                .sessions()
+                .by_name("bare")
+                .unwrap()
+                .arrangement
+                .is_some()
+        );
+        assert!(
+            server
+                .sessions()
+                .by_name(phux_core::INTAKE_NAME)
+                .unwrap()
+                .arrangement
+                .is_some()
+        );
+        assert!(server.org().check_invariants().is_ok());
+    });
+    drop(state);
+
+    let mut store = SqliteOrgStore::open(&path).unwrap();
+    let stored = store.load().unwrap().expect("backfilled");
+    assert_eq!(stored.arrangements.len(), 3);
+    let arranged = stored
+        .sessions
+        .iter()
+        .find(|session| session.name == "arranged")
+        .unwrap();
+    assert_eq!(arranged.arrangement, Some(arrangement_key));
+    let bare = stored
+        .sessions
+        .iter()
+        .find(|session| session.name == "bare")
+        .unwrap();
+    let backfill = stored
+        .arrangements
+        .iter()
+        .find(|arrangement| Some(arrangement.key) == bare.arrangement)
+        .unwrap();
+    assert!(backfill.groups.is_empty());
+    assert_eq!(backfill.revision, phux_core::Revision::FIRST);
+    assert!(!store.has_migration(LIVE_IMPORT_MIGRATION).unwrap());
+}
+
+const REJECT_REPORT: &str = "CREATE TRIGGER reject_report BEFORE UPDATE ON resources \
+     WHEN NEW.exec_state <> 'starting' BEGIN SELECT RAISE(FAIL, 'test report refusal'); END;";
+
+fn paused<T>(body: impl FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Output = T>>>) -> T {
+    let runtime = Builder::new_current_thread()
+        .enable_time()
+        .start_paused(true)
+        .build()
+        .unwrap();
+    let local = LocalSet::new();
+    runtime.block_on(local.run_until(body()))
+}
+
+/// A server on a store in `dir` holding one retained Terminal, `kept`,
+/// whose store now refuses every activation report: `(state, session,
+/// terminal, db)`.
+fn kept_terminal_refusing_reports(
+    dir: &tempfile::TempDir,
+) -> (
+    SharedState,
+    phux_core::ids::SessionId,
+    phux_core::ids::ResourceId,
+    rusqlite::Connection,
+) {
+    let path = dir.path().join("org.sqlite3");
+    let state = SharedState::new();
+    let (session, id) = state.with_mut(|server| {
+        server.set_org_store(Box::new(SqliteOrgStore::open(&path).unwrap()));
+        server.persist_first_start().unwrap();
+        server
+            .create_terminal(
+                TerminalTarget::NewSession {
+                    name: "kept",
+                    lifetime: SessionLifetime::Persistent,
+                },
+                TerminalLaunch::default(),
+                ExitPolicy::Retain,
+                &Actor::owner(),
+            )
+            .unwrap()
+    });
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch(REJECT_REPORT).unwrap();
+    (state, session, id, db)
+}
+
+/// The executor state of `id`'s current activation.
+fn activation_state(state: &SharedState, id: phux_core::ids::ResourceId) -> ExecState {
+    state.with(|server| {
+        server
+            .registry()
+            .record(id)
+            .unwrap()
+            .activation
+            .clone()
+            .unwrap()
+            .state
+    })
+}
+
+#[test]
+fn a_refused_end_report_backs_off_instead_of_livelocking() {
+    paused(|| {
+        Box::pin(async {
+            let dir = tempfile::tempdir().unwrap();
+            let (state, _, id, _db) = kept_terminal_refusing_reports(&dir);
+            crate::state::ServerState::reset_executor_persist_attempts();
+            state.with_mut(|server| server.activation_ended(id, ExitOutcome::UNKNOWN, true));
+            let token = CancellationToken::new();
+            super::super::services::spawn_activation_report_retry(&state, &token);
+            tokio::task::yield_now().await;
+            let mut elapsed = Duration::ZERO;
+            while elapsed < Duration::from_secs(10) {
+                tokio::time::advance(Duration::from_millis(20)).await;
+                tokio::task::yield_now().await;
+                elapsed += Duration::from_millis(20);
+            }
+            let attempts = crate::state::ServerState::executor_persist_attempts();
+            // 20ms doubling to a 2s cap over 10s is 12 offers. No cap stops at
+            // 10; a wake that resets the delay livelocks well past 13.
+            token.cancel();
+            tokio::task::yield_now().await;
+            assert_eq!(
+                attempts, 12,
+                "persistence attempts {attempts} left the 20ms-to-2s backoff"
+            );
+        })
+    });
+}
+
+#[test]
+fn a_commit_wakes_a_backing_off_report_retry() {
+    paused(|| {
+        Box::pin(async {
+            let dir = tempfile::tempdir().unwrap();
+            let (state, session, id, db) = kept_terminal_refusing_reports(&dir);
+            state.with_mut(|server| server.activation_ended(id, ExitOutcome::UNKNOWN, true));
+            assert_eq!(activation_state(&state, id), ExecState::Starting);
+            let token = CancellationToken::new();
+            super::super::services::spawn_activation_report_retry(&state, &token);
+            tokio::task::yield_now().await;
+            tokio::time::advance(Duration::from_secs(3)).await;
+            db.execute_batch("DROP TRIGGER reject_report;").unwrap();
+            state.with_mut(|server| {
+                let key = server.registry().session_key(session).unwrap();
+                server
+                    .commit(
+                        Op::SessionRename {
+                            session: key,
+                            name: "kept-2".to_owned(),
+                        },
+                        &Actor::owner(),
+                    )
+                    .unwrap();
+            });
+            tokio::task::yield_now().await;
+            let state_now = activation_state(&state, id);
+            token.cancel();
+            tokio::task::yield_now().await;
+            assert_eq!(state_now, ExecState::Failed);
+        })
+    });
+}
+
+/// A receipt this binary cannot decode leaves the server able to start and
+/// the operation unable to run twice: its retry is refused, while a retry of
+/// a readable receipt still replays and new work still commits.
+#[test]
+fn open_org_store_starts_past_an_unreadable_receipt_and_refuses_its_retry() {
+    use phux_core::{Actor, Attrs, Command, Op, OperationId, Refusal, SessionLifetime};
+
+    fn create(name: &str, id: u8) -> Command {
+        Command {
+            operation: OperationId::from_bytes([id; 16]),
+            op: Op::SessionCreate {
+                name: name.to_owned(),
+                lifetime: SessionLifetime::Persistent,
+                attrs: Attrs::default(),
+                resource: None,
+            },
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v1.sqlite3");
+    let location = crate::OrgStoreLocation::Path(path.clone());
+    let actor = Actor::owner();
+
+    let state = SharedState::new();
+    open_org_store(&state, &location).unwrap();
+    state.with_mut(|s| {
+        s.persist_first_start().unwrap();
+        s.commit_command_from(&create("lost", 1), &actor, None)
+            .unwrap();
+        s.commit_command_from(&create("kept", 2), &actor, None)
+            .unwrap();
+    });
+    drop(state);
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute(
+            "UPDATE receipts SET receipt = '{}' WHERE operation = ?1",
+            [[1u8; 16].as_slice()],
+        )
+        .unwrap();
+
+    let state = SharedState::new();
+    open_org_store(&state, &location).unwrap();
+    state.with_mut(|s| {
+        let sessions = s.org().sessions().count();
+        assert!(matches!(
+            s.commit_command_from(&create("lost", 1), &actor, None),
+            Err(Refusal::DuplicateOperation)
+        ));
+        assert_eq!(s.org().sessions().count(), sessions, "nothing ran twice");
+        let replay = s
+            .commit_command_from(&create("kept", 2), &actor, None)
+            .unwrap();
+        assert!(replay.applied.replayed);
+        s.commit_command_from(&create("new", 3), &actor, None)
+            .unwrap();
+        assert_eq!(s.org().sessions().count(), sessions + 1);
+    });
+}

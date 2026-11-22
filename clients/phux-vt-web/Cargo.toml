@@ -1,0 +1,26 @@
+[package]
+name = "phux-vt-web"
+description = "Rust/WASM driver for ghostty's libghostty-vt engine (ghostty-vt.wasm), used by the phux browser client."
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+license = "Apache-2.0"
+repository = "https://github.com/no-phux/phux"
+authors = ["phall <phallsignup@gmail.com>"]
+publish = false
+
+# Standalone workspace: keeps this wasm-only crate out of the native phux
+# workspace's `cargo build --workspace` / CI.
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+phux-protocol = { path = "../../crates/phux-protocol", default-features = false }
+wasm-bindgen = "=0.2.130"
+js-sys = "0.3"
+wasm-bindgen-futures = "0.4"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"

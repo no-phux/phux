@@ -1,0 +1,442 @@
+//! Level-state recovery after lossy event delivery. No new wire contract:
+//! subscribe before reading, and fence unversioned snapshots by live delivery.
+//! Journal stamps do not version `GET_STATE` or `GET_METADATA` replies. Explicit
+//! gaps trigger recovery; a numeric jump in a filtered event stream does not.
+//!
+//! Three Terminal-scoped keys are recovered this way: the `phux.agent/v1`
+//! declaration ([`Event::AgentMetadata`]), the server-owned
+//! `phux.agent.asked/v1` flag ([`Event::AgentAskedState`], docs/protocol.md),
+//! and the server-owned `phux.pane-occupant/v1` record's background flag
+//! ([`Event::BackgroundWork`]) and foreground name, which names the pane
+//! (`PaneDescriptor::label`).
+//! `AgentAsked` only announces a question; the flag is the level that says
+//! whether one is still pending, so it is what retracts a question after a
+//! gap or a reconnect instead of leaving it to resurrect.
+
+use phux_protocol::caps::Layer;
+use phux_protocol::wire::frame::{
+    PaneNotify, RESOURCE_AGENT_KEY, RESOURCE_ASKED_KEY, RESOURCE_NOTE_KEY, RESOURCE_NOTIFY_KEY,
+    RESOURCE_PANE_OCCUPANT_KEY, Scope,
+};
+
+use super::{
+    AgentEvent, CommandResult, CommandValue, ControlError, ControlPlane, ErrorCode, Event,
+    FrameKind, HashMap, HashSet, ResourceId,
+};
+
+#[derive(Debug, Default)]
+pub(super) struct RosterRecovery {
+    pub topology: Option<(u32, bool)>,
+    /// Terminals whose subscription and level read this connection has
+    /// already issued. An inventory refresh reads only terminals new to it.
+    subscribed: HashSet<ResourceId>,
+    /// Re-read every inventoried declaration at the next inventory.
+    resync: bool,
+    /// Terminals the grant inventories but may not observe: their reads are
+    /// refused with `PERMISSION_DENIED`, a stable answer for the connection.
+    denied: HashSet<ResourceId>,
+    reads: HashMap<u32, MetadataRead>,
+    /// Titles and cwds that changed while the topology read was in flight,
+    /// laid over its reply. Fencing the read on these instead would starve
+    /// the inventory while any pane's title animates.
+    relabels: HashMap<ResourceId, Relabel>,
+}
+
+/// A pane's labels newer than the in-flight topology read.
+#[derive(Debug, Default)]
+pub(super) struct Relabel {
+    pub title: Option<String>,
+    pub cwd: Option<String>,
+}
+
+#[derive(Debug)]
+struct MetadataRead {
+    terminal_id: ResourceId,
+    key: RosterKey,
+    superseded: bool,
+    repeat: bool,
+}
+
+/// The Terminal-scoped keys every inventoried terminal is subscribed to and
+/// read, in that order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RosterKey {
+    /// `phux.agent/v1`.
+    Agent,
+    /// `phux.agent.asked/v1`.
+    Asked,
+    /// `phux.pane-occupant/v1`, for its `background` flag and foreground.
+    Occupant,
+    /// `phux.note/v1`: only a live change is news; a read is the baseline.
+    Note,
+    /// `phux.notify/v1`: the pane's notify mode.
+    Notify,
+}
+
+impl RosterKey {
+    const ALL: [Self; 5] = [
+        Self::Agent,
+        Self::Asked,
+        Self::Occupant,
+        Self::Note,
+        Self::Notify,
+    ];
+
+    const fn wire(self) -> &'static str {
+        match self {
+            Self::Agent => RESOURCE_AGENT_KEY,
+            Self::Asked => RESOURCE_ASKED_KEY,
+            Self::Occupant => RESOURCE_PANE_OCCUPANT_KEY,
+            Self::Note => RESOURCE_NOTE_KEY,
+            Self::Notify => RESOURCE_NOTIFY_KEY,
+        }
+    }
+
+    /// Whether a hub serves this key for a satellite pane. A hub mirrors
+    /// the agent declaration and the asked flag (ADR-0136); the occupant
+    /// record stays on the satellite's own server, and the hub answers a
+    /// subscription to it with an `UNSUPPORTED_SATELLITE_ROUTE` push that a
+    /// consumer would surface as a refused request on every connect.
+    const fn federates(self) -> bool {
+        // ponytail: a hub doesn't mirror notes; a satellite pane's notes show
+        // when its own server is attached.
+        !matches!(self, Self::Occupant | Self::Note | Self::Notify)
+    }
+
+    fn from_wire(key: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|candidate| candidate.wire() == key)
+    }
+}
+
+impl ControlPlane {
+    /// One read in flight, plus one dirty bit, regardless of gap burst size.
+    pub(super) fn recover_roster(&mut self) {
+        if !self.options.automatic_lifecycle {
+            return;
+        }
+        self.fence_topology_read();
+        for read in self.roster.reads.values_mut() {
+            read.superseded = true;
+            // Wait for the recovered inventory before reading its declarations.
+            read.repeat = false;
+        }
+        self.roster.resync = true;
+        self.queue_refresh_topology();
+        self.rewatch_global_metadata(false);
+    }
+
+    /// The server ended this attachment, and with it every metadata
+    /// subscription (docs/protocol.md). The next inventory subscribes afresh.
+    pub(super) fn forget_roster_subscriptions(&mut self) {
+        self.roster.subscribed.clear();
+    }
+
+    pub(super) fn observe_roster_event(&mut self, event: &AgentEvent) {
+        if !self.options.automatic_lifecycle {
+            return;
+        }
+        match event {
+            AgentEvent::JournalGap { .. } | AgentEvent::SourceGap { .. } => self.recover_roster(),
+            // An empty session has no RESOURCE_CLOSED to drive inventory
+            // recovery. The organization replica drops its record, but the
+            // topology's session list still needs a fresh server snapshot.
+            AgentEvent::ResourceSpawned { .. } | AgentEvent::SessionDeleted { .. } => {
+                self.fence_topology_read();
+                self.queue_refresh_topology();
+            }
+            AgentEvent::ResourceClosed { .. } => self.fence_topology_read(),
+            _ => {}
+        }
+    }
+
+    pub(super) const fn fence_topology_read(&mut self) {
+        if let Some((_, stale)) = &mut self.roster.topology {
+            *stale = true;
+        }
+    }
+
+    /// Where to record a label change the in-flight topology read may
+    /// predate; `None` when no read is in flight.
+    pub(super) fn relabel_in_flight(&mut self, terminal_id: &ResourceId) -> Option<&mut Relabel> {
+        self.roster.topology?;
+        Some(self.roster.relabels.entry(terminal_id.clone()).or_default())
+    }
+
+    pub(super) fn resolve_topology_read(
+        &mut self,
+        result: CommandResult,
+    ) -> Result<(), ControlError> {
+        let stale = self.roster.topology.take().is_some_and(|(_, stale)| stale);
+        let relabels = std::mem::take(&mut self.roster.relabels);
+        if stale {
+            self.queue_refresh_topology();
+        } else if let CommandResult::OkWith(CommandValue::State(snapshot)) = result {
+            self.apply_topology_refresh(&snapshot)?;
+            self.overlay_relabels(relabels);
+        }
+        Ok(())
+    }
+
+    fn overlay_relabels(&mut self, relabels: HashMap<ResourceId, Relabel>) {
+        let Some(topology) = self.topology.as_mut() else {
+            return;
+        };
+        for (terminal_id, relabel) in relabels {
+            if let Some(title) = &relabel.title {
+                topology.retitle(&terminal_id, title);
+            }
+            let Some(pane) = topology.pane_mut(&terminal_id) else {
+                continue;
+            };
+            if relabel.cwd.is_some() {
+                pane.cwd = relabel.cwd;
+            }
+        }
+    }
+
+    pub(super) fn sync_agent_metadata(&mut self) {
+        if !self.options.automatic_lifecycle {
+            return;
+        }
+        if !self
+            .server
+            .as_ref()
+            .is_some_and(|server| server.layers.contains(Layer::L3))
+        {
+            return;
+        }
+        let terminals: Vec<_> = self
+            .topology
+            .iter()
+            .flat_map(|topology| &topology.panes)
+            .map(|pane| pane.terminal_id.clone())
+            .collect();
+        let resync = std::mem::take(&mut self.roster.resync);
+        // There is no unsubscribe frame. The server tears these down on detach;
+        // keep only live inventory locally and tolerate an idempotent resubscribe.
+        self.roster.subscribed.retain(|id| terminals.contains(id));
+        for terminal_id in terminals {
+            if self.roster.denied.contains(&terminal_id) {
+                continue;
+            }
+            // A live subscription already delivers every later change, so a
+            // plain inventory refresh leaves a known terminal alone. Recovery
+            // re-reads them all, since the loss may have hidden a change.
+            if !self.roster.subscribed.insert(terminal_id.clone()) && !resync {
+                continue;
+            }
+            let local = terminal_id.is_local();
+            for key in RosterKey::ALL
+                .into_iter()
+                .filter(|key| local || key.federates())
+            {
+                self.queue_frame(&FrameKind::SubscribeMetadata {
+                    scope: Scope::Resource(terminal_id.clone()),
+                    key: key.wire().to_owned(),
+                });
+                self.read_agent_metadata(terminal_id.clone(), key);
+            }
+        }
+    }
+
+    fn read_agent_metadata(&mut self, terminal_id: ResourceId, key: RosterKey) {
+        if let Some(read) = self
+            .roster
+            .reads
+            .values_mut()
+            .find(|read| read.terminal_id == terminal_id && read.key == key)
+        {
+            read.superseded = true;
+            read.repeat = true;
+            return;
+        }
+        let request_id = self.next_request_id();
+        self.roster.reads.insert(
+            request_id,
+            MetadataRead {
+                terminal_id: terminal_id.clone(),
+                key,
+                superseded: false,
+                repeat: false,
+            },
+        );
+        self.queue_frame(&FrameKind::GetMetadata {
+            request_id,
+            scope: Scope::Resource(terminal_id),
+            key: key.wire().to_owned(),
+        });
+    }
+
+    /// Publish one key's current value as its event.
+    fn publish_roster_value(
+        &mut self,
+        terminal_id: ResourceId,
+        key: RosterKey,
+        value: Option<Vec<u8>>,
+        live: bool,
+    ) {
+        let event = match key {
+            RosterKey::Note => Event::Note {
+                terminal_id,
+                note: value
+                    .as_deref()
+                    .and_then(phux_client_core::note::parse_note),
+                live,
+            },
+            RosterKey::Notify => Event::NotifyMode {
+                terminal_id,
+                mode: value
+                    .as_deref()
+                    .and_then(PaneNotify::decode)
+                    .unwrap_or_default(),
+            },
+            RosterKey::Agent => Event::AgentMetadata { terminal_id, value },
+            RosterKey::Asked => {
+                // The server writes `1` while a question is pending and deletes
+                // the key when none is. Any present value reads as asked, so an
+                // unexpected byte can never retract a question.
+                let asked = value.is_some();
+                if !asked {
+                    self.live_asks.remove(&terminal_id);
+                }
+                Event::AgentAskedState { terminal_id, asked }
+            }
+            RosterKey::Occupant => {
+                let record = value
+                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+                let field = |key: &str| record.as_ref().map(|record| &record[key]);
+                let foreground = field("foreground")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|name| !name.is_empty() && !name.chars().any(char::is_control))
+                    .map(str::to_owned);
+                let icon = field("icon")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|icon| phux_config_core::pane_icon::is_icon(icon))
+                    .map(str::to_owned);
+                if let Some(pane) = self
+                    .topology
+                    .as_mut()
+                    .and_then(|topology| topology.pane_mut(&terminal_id))
+                {
+                    // Names the pane (`PaneDescriptor::label`); bindings
+                    // re-read the topology on this event.
+                    pane.foreground = foreground;
+                    pane.icon = icon;
+                }
+                Event::BackgroundWork {
+                    terminal_id,
+                    running: field("background")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false),
+                }
+            }
+        };
+        self.push_event(event);
+    }
+
+    /// Preserve extension frames exactly once. Only our own read correlations
+    /// are consumed; live metadata remains available to existing raw consumers.
+    pub(super) fn roster_metadata_frame(&mut self, frame: FrameKind) -> Option<FrameKind> {
+        match frame {
+            FrameKind::MetadataValue { request_id, value }
+                if self.roster.reads.contains_key(&request_id) =>
+            {
+                self.resolve_agent_metadata(request_id, value);
+                None
+            }
+            frame @ FrameKind::MetadataChanged { .. } => {
+                self.observe_agent_metadata(&frame);
+                Some(frame)
+            }
+            frame => Some(frame),
+        }
+    }
+
+    fn observe_agent_metadata(&mut self, frame: &FrameKind) {
+        let FrameKind::MetadataChanged {
+            scope: Scope::Resource(terminal_id),
+            key,
+            value,
+            ..
+        } = frame
+        else {
+            return;
+        };
+        let Some(key) = RosterKey::from_wire(key) else {
+            return;
+        };
+        if !self.roster.subscribed.contains(terminal_id) {
+            return;
+        }
+        for read in self
+            .roster
+            .reads
+            .values_mut()
+            .filter(|read| &read.terminal_id == terminal_id && read.key == key)
+        {
+            read.superseded = true;
+            read.repeat = false;
+        }
+        self.publish_roster_value(terminal_id.clone(), key, value.clone(), true);
+    }
+
+    fn resolve_agent_metadata(&mut self, request_id: u32, value: Option<Vec<u8>>) {
+        let Some(read) = self.roster.reads.remove(&request_id) else {
+            return;
+        };
+        if !self.roster.subscribed.contains(&read.terminal_id) {
+            return;
+        }
+        if read.repeat {
+            self.read_agent_metadata(read.terminal_id, read.key);
+        } else if !read.superseded {
+            self.publish_roster_value(read.terminal_id, read.key, value, false);
+        }
+    }
+
+    pub(super) fn forget_agent_metadata(&mut self, terminal_id: &ResourceId) {
+        self.roster.subscribed.remove(terminal_id);
+        self.roster.denied.remove(terminal_id);
+        // Retain correlations until their replies so they cannot leak as raw
+        // extension replies or be mistaken for a new resource's declaration.
+        for read in self
+            .roster
+            .reads
+            .values_mut()
+            .filter(|read| &read.terminal_id == terminal_id)
+        {
+            read.superseded = true;
+            read.repeat = false;
+        }
+    }
+
+    /// Settle a refused roster read; `None` when `request_id` is not one.
+    /// `Some(true)` when the refusal is the grant's stable answer, which is
+    /// no consumer's error: the runtime issued the read on its own.
+    pub(super) fn agent_metadata_error(
+        &mut self,
+        request_id: u32,
+        code: ErrorCode,
+    ) -> Option<bool> {
+        let read = self.roster.reads.remove(&request_id)?;
+        if code == ErrorCode::PermissionDenied {
+            // A grant never widens on a live connection,
+            // so neither the read nor its subscription is ever retried here.
+            self.roster.subscribed.remove(&read.terminal_id);
+            self.roster.denied.insert(read.terminal_id);
+            return Some(true);
+        }
+        // An error is not a retraction. It still settles the old read and
+        // must preserve a refresh requested while that read was in flight.
+        if read.repeat && self.roster.subscribed.contains(&read.terminal_id) {
+            self.read_agent_metadata(read.terminal_id, read.key);
+        } else if !read.superseded {
+            // The declaration stays unknown while its subscription stays
+            // live; the next inventory reads it again.
+            self.roster.resync = true;
+        }
+        Some(false)
+    }
+}

@@ -1,0 +1,136 @@
+use std::path::PathBuf;
+use std::process::ExitCode;
+
+use phux_client::ask::AskedPayload;
+use phux_client::attach::AttachError;
+use phux_client::read::Verb;
+use phux_client::selector::format_terminal_id;
+use phux_config::socket::default_socket_path;
+use phux_protocol::ResourceId;
+
+use crate::commands::{cli_runtime, json_err, parse_selector, resolve_terminal_target};
+
+pub(crate) fn run_ask(
+    target: &str,
+    id: String,
+    suggestions: Vec<String>,
+    elapsed_seconds: Option<u64>,
+    json: bool,
+    question: String,
+    socket: Option<PathBuf>,
+) -> ExitCode {
+    let selector = match parse_selector(Some(target)) {
+        Ok(sel) => sel,
+        Err(code) => return code,
+    };
+    let socket_path = socket.unwrap_or_else(default_socket_path);
+    let rt = match cli_runtime() {
+        Ok(rt) => rt,
+        Err(code) => return code,
+    };
+    rt.block_on(async move {
+        let pane = match resolve_terminal_target(&socket_path, &selector, Verb::Ask).await {
+            Ok(id) => id,
+            Err(refusal) => return refusal.emit(json),
+        };
+        let payload = AskedPayload {
+            id,
+            question,
+            suggestions,
+            elapsed_seconds,
+        };
+        match phux_client::ask::report(&socket_path, pane.clone(), payload.clone()).await {
+            Ok(()) => print_success(&pane, &payload, json),
+            Err(err @ AttachError::Io(_)) => {
+                json_err::report_no_server(json, &err, &socket_path, "ask")
+            }
+            Err(AttachError::Refused(msg) | AttachError::WrongResourceKind(msg)) => {
+                error!("cannot report ask for '{target}': {msg}");
+                ExitCode::FAILURE
+            }
+            Err(err) => {
+                error!("ask failed: {err}");
+                ExitCode::FAILURE
+            }
+        }
+    })
+}
+
+fn print_success(pane: &ResourceId, payload: &AskedPayload, json: bool) -> ExitCode {
+    if json {
+        match serde_json::to_string_pretty(&success_json(pane, payload)) {
+            Ok(line) => outln!("{line}"),
+            Err(err) => {
+                error!("failed to serialize ask: {err}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        outln!("{}", success_text(pane, payload));
+    }
+    ExitCode::SUCCESS
+}
+
+fn success_json(pane: &ResourceId, payload: &AskedPayload) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "event": "asked",
+        "terminal": format_terminal_id(pane),
+        "id": payload.id,
+        "question": payload.question,
+        "suggestions": payload.suggestions,
+        "elapsed_seconds": payload.elapsed_seconds,
+    })
+}
+
+fn success_text(pane: &ResourceId, payload: &AskedPayload) -> String {
+    format!(
+        "reported ask {} to {}",
+        payload.id,
+        format_terminal_id(pane)
+    )
+}
+
+/// Run `phux ask` as parsed.
+pub(crate) fn run(args: crate::commands::AskArgs, socket: Option<PathBuf>) -> ExitCode {
+    let crate::commands::AskArgs {
+        target,
+        id,
+        suggestions,
+        elapsed_seconds,
+        json,
+        question,
+    } = args;
+    run_ask(
+        &target,
+        id,
+        suggestions,
+        elapsed_seconds,
+        json.json,
+        question,
+        socket,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn satellite_success_outputs_canonical_selector() {
+        let pane = ResourceId::satellite("region/@build", 7);
+        let payload = AskedPayload {
+            id: "q1".to_owned(),
+            question: "Continue?".to_owned(),
+            suggestions: vec!["yes".to_owned()],
+            elapsed_seconds: Some(5),
+        };
+        let doc = success_json(&pane, &payload);
+        assert_eq!(doc["schema_version"], 1);
+        assert_eq!(doc["terminal"], "region/@build/@7");
+        assert_eq!(
+            success_text(&pane, &payload),
+            "reported ask q1 to region/@build/@7"
+        );
+    }
+}

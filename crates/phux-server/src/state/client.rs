@@ -1,0 +1,375 @@
+use std::collections::HashMap;
+
+use phux_core::ids::{ResourceId, SessionId};
+use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities};
+use phux_protocol::ids::ResourceId as WireResourceId;
+use thiserror::Error;
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
+
+use super::{ClientTable, ServerState};
+use crate::mailbox::Outbound;
+use crate::resource::ResourceHandle;
+
+/// Server-assigned client id, monotonic from 1, used only for routing
+/// inside [`super::ServerState`] (not the wire `ClientId`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ClientId(pub u64);
+
+/// An attached client: routing identity plus outbound mailbox.
+#[derive(Debug)]
+pub struct AttachedClient {
+    /// Server-assigned client id.
+    pub id: ClientId,
+    /// The session this client is observing.
+    pub session: SessionId,
+    /// Outbound mailbox, drained by the per-client write task.
+    pub tx: mpsc::Sender<Outbound>,
+    /// Capabilities from HELLO; outbound bytes are downsampled
+    /// to them. Without a HELLO, the permissive default.
+    pub client_caps: ClientCapabilities,
+    /// Immutable Terminal profile selected for this HELLO, if one was offered.
+    /// Sessions containing only other kinds do not need one.
+    pub bootstrap_profile: Option<BootstrapProfile>,
+    /// Immutable payload limits selected for this HELLO.
+    pub bootstrap_limits: BootstrapLimits,
+    /// Current outer viewport; shared-Terminal geometry applies the
+    /// `defaults.window-size` policy across subscribers' viewports.
+    pub viewport: Option<phux_protocol::wire::frame::ViewportInfo>,
+    /// Viewport-clock stamp of the last `viewport` set, so cell-pixel
+    /// resolution can prefer the newest report.
+    pub viewport_seq: u64,
+    /// Viewport-clock stamp of the last time this view was used (input,
+    /// focus, attach or resize), for the `active` window-size policy.
+    pub active_seq: u64,
+    /// The session attach declared `VIEWER` (ADR-0127); panes it spawns are
+    /// observe-only too.
+    pub viewer: bool,
+    /// The connection-local SESSION ATTACH publication, if still in progress.
+    pub(crate) publication_gate: Option<CancellationToken>,
+}
+
+/// One resource target in an ATTACH snapshot pass. The field names retain the
+/// legacy pane vocabulary; no Terminal facet is implied by membership.
+#[derive(Debug, Clone)]
+pub struct AttachSnapshotPane {
+    /// Core resource identifier.
+    pub terminal_id: ResourceId,
+    /// Cross-task handle to the resource's engine.
+    pub handle: ResourceHandle,
+    /// Stable wire id for the bootstrap and live output.
+    pub wire_terminal_id: WireResourceId,
+}
+
+/// Errors from [`super::ServerState::attach`] (not the client-side
+/// `AttachError`).
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum AttachError {
+    /// No session with that name was found in the registry.
+    #[error("unknown session: {0}")]
+    UnknownSession(String),
+    /// The given [`ClientId`] is already attached.
+    #[error("client {0:?} is already attached")]
+    AlreadyAttached(ClientId),
+    /// The session cannot fit the bounded aggregate attach preflight.
+    #[error("session exceeds aggregate attach resource limits")]
+    ResourceLimit,
+    /// A session containing Terminals requires a negotiated Terminal profile.
+    #[error("session contains Terminals but HELLO selected no Terminal profile")]
+    TerminalProfileUnavailable,
+}
+
+impl ServerState {
+    /// Everything keyed on a connected client. Attaching and detaching span
+    /// several tables, so they stay on `ServerState`.
+    #[must_use]
+    pub(crate) const fn clients(&self) -> &ClientTable {
+        &self.clients
+    }
+
+    /// Mutable [`Self::clients`].
+    pub(crate) const fn clients_mut(&mut self) -> &mut ClientTable {
+        &mut self.clients
+    }
+
+    /// The attached clients, read-only (writes stay in `state`).
+    #[must_use]
+    pub const fn attached(&self) -> &HashMap<ClientId, AttachedClient> {
+        &self.clients.attached
+    }
+
+    /// Start under the subscription lock; the guard releases on publication,
+    /// rollback, or cancellation of the host's attach future.
+    pub(crate) fn begin_attach_publication(
+        &mut self,
+        client: ClientId,
+    ) -> tokio_util::sync::DropGuard {
+        let gate = CancellationToken::new();
+        if let Some(attached) = self.clients.attached.get_mut(&client)
+            && let Some(prior) = attached.publication_gate.replace(gate.clone())
+        {
+            prior.cancel();
+        }
+        gate.drop_guard()
+    }
+
+    /// Retained by close fanout under the reap lock. A committed kill must not
+    /// abort the host's publication fence along with its resource pumps.
+    pub(crate) fn attach_publication_fences(
+        &self,
+        resource: ResourceId,
+    ) -> Vec<(mpsc::Sender<Outbound>, Vec<CancellationToken>)> {
+        self.resources()
+            .subscribers_for(resource)
+            .iter()
+            .filter_map(|client| {
+                let gate = self
+                    .clients
+                    .attached
+                    .get(client)?
+                    .publication_gate
+                    .as_ref()?;
+                if gate.is_cancelled() {
+                    return None;
+                }
+                Some((self.client_mailbox(*client)?, vec![gate.clone()]))
+            })
+            .collect()
+    }
+
+    /// Register the transport's cancellation root (the relay uses it to end
+    /// a connection other sender clones keep alive).
+    pub fn set_client_connection_cancellation(
+        &mut self,
+        client_id: ClientId,
+        token: CancellationToken,
+    ) {
+        self.clients
+            .connection_cancellations
+            .insert(client_id, token);
+    }
+
+    /// Clone the cancellation root for one live client transport.
+    #[must_use]
+    pub fn client_connection_cancellation(&self, client_id: ClientId) -> Option<CancellationToken> {
+        self.clients
+            .connection_cancellations
+            .get(&client_id)
+            .cloned()
+    }
+
+    /// Attach a client to `session_name`, subscribing it to every resource in
+    /// the session. `client_caps` come from HELLO; see
+    /// [`Self::attach_default_caps`] otherwise.
+    pub fn attach(
+        &mut self,
+        client_id: ClientId,
+        session_name: &str,
+        tx: mpsc::Sender<Outbound>,
+        client_caps: ClientCapabilities,
+        bootstrap_profile: impl Into<Option<BootstrapProfile>>,
+        bootstrap_limits: BootstrapLimits,
+    ) -> Result<SessionId, AttachError> {
+        let bootstrap_profile = bootstrap_profile.into();
+        // Resolve first: re-attaching the same session is a re-bootstrap;
+        // switching sessions is refused; an unknown name stays
+        // UnknownSession.
+        let session_id = self
+            .sessions()
+            .find_by_name(session_name)
+            .ok_or_else(|| AttachError::UnknownSession(session_name.to_owned()))?;
+        if bootstrap_profile.is_none() && !self.sessions().terminal_members(session_id).is_empty() {
+            return Err(AttachError::TerminalProfileUnavailable);
+        }
+        if let Some(existing) = self.clients.attached.get(&client_id) {
+            if existing.session != session_id {
+                return Err(AttachError::AlreadyAttached(client_id));
+            }
+            // Same session: keep the record; the sweep below picks up new
+            // panes.
+        } else {
+            self.clients.attached.insert(
+                client_id,
+                AttachedClient {
+                    id: client_id,
+                    session: session_id,
+                    tx,
+                    client_caps,
+                    bootstrap_profile,
+                    bootstrap_limits,
+                    viewport: None,
+                    viewport_seq: 0,
+                    active_seq: 0,
+                    viewer: false,
+                    publication_gate: None,
+                },
+            );
+            // Attaching arms tmux-model last-session self-exit (phux-60s).
+            self.lifecycle_mut().arm_self_exit();
+        }
+
+        // Subscribe every pane, not just the active one: the input gate
+        // drops keys to unsubscribed panes, and every pane renders live. A
+        // kind the client does not decode is left out: it stays in the
+        // snapshot, but nothing of it streams to this client.
+        let session_panes = self.registry().members(session_id);
+        for pane in session_panes {
+            // The registry's kind, so a pane whose handle is not yet
+            // registered is still subscribed, and an unknown record is not.
+            let decodes = self
+                .registry()
+                .record(pane)
+                .is_some_and(|record| crate::id_bridge::client_decodes(&client_caps, record.kind));
+            if decodes {
+                self.resources.subscribe(client_id, pane);
+            }
+        }
+        Ok(session_id)
+    }
+
+    /// [`Self::attach`] with default capabilities and bootstrap contract.
+    pub fn attach_default_caps(
+        &mut self,
+        client_id: ClientId,
+        session_name: &str,
+        tx: mpsc::Sender<Outbound>,
+    ) -> Result<SessionId, AttachError> {
+        self.attach(
+            client_id,
+            session_name,
+            tx,
+            ClientCapabilities::default(),
+            BootstrapProfile::SynthesizedVtRaw,
+            BootstrapLimits::default(),
+        )
+    }
+
+    /// Detach `client_id`: attachment teardown (idempotent).
+    ///
+    /// Clears attachment-scoped state (leases, pumps, subscriptions, L3 and
+    /// event subscriptions per `docs/protocol.md#commands-events-resources`). Connection-scoped
+    /// state (layers, peer identity) survives until
+    /// [`Self::forget_connection`].
+    pub fn detach(&mut self, client_id: ClientId) {
+        let voted = self
+            .clients
+            .attached
+            .get(&client_id)
+            .is_some_and(|client| client.viewport.is_some_and(|v| v.cols > 0 && v.rows > 0));
+        let geometry_targets = self.viewport_terminals(client_id);
+        if let Some(attached) = self.clients.attached.remove(&client_id)
+            && let Some(gate) = attached.publication_gate
+        {
+            gate.cancel();
+        }
+        // Drop local and satellite leases; the runtime already broadcast and
+        // relayed the releases. Each local release opens a new epoch.
+        self.release_all_input_leases(client_id);
+        // Cancel owned pumps, then drop the client from subscriber lists.
+        self.resources.cancel_pumps_for_client(client_id);
+        self.resources.drop_client_subscriptions(client_id);
+        // L3 subscriptions are attachment-scoped (docs/protocol.md#commands-events-resources).
+        self.metadata.drop_client(client_id);
+        self.clients.metadata_mailboxes.remove(&client_id);
+        // The mailbox half of each `ATTACH_RESOURCE` registration.
+        self.clients.terminal_mailboxes.remove(&client_id);
+        if let Some(keys) = self.clients.session_create_results.remove(&client_id) {
+            for key in keys {
+                let _ = self.metadata_delete(&phux_protocol::wire::frame::Scope::Global, &key);
+            }
+        }
+        // Event subscriptions follow the same lifecycle.
+        if let Some(sub) = self.clients.event_subscriptions.remove(&client_id) {
+            sub.retire();
+        }
+        // Only a departing geometry vote changes what policy resolves. A
+        // client that attached without one (a GUI or the TUI sizing each
+        // terminal explicitly) leaves those explicit sizes in place, so
+        // quitting and relaunching it does not reflow every shell twice;
+        // the one exception is an unwatched pane left too small to use
+        // (ADR-0145).
+        self.restore_terminal_geometry_after_detach(geometry_targets, voted);
+    }
+
+    /// Forget `client_id`'s connection-scoped state after [`Self::detach`];
+    /// only when the transport goes away. Clearing the layers early would
+    /// fail open (unknown clients default to all layers), and clearing the
+    /// peer identity would break the local `SHUTDOWN` gate. Idempotent.
+    pub fn forget_connection(&mut self, client_id: ClientId) {
+        self.detach(client_id);
+        // `VIEWER` marks last until the connection ends (ADR-0127).
+        self.clients.viewers.remove(&client_id);
+        self.clients.layers.remove(&client_id);
+        self.clear_controller(client_id);
+        self.clients.client_names.remove(&client_id);
+        self.clients.client_platforms.remove(&client_id);
+        self.clients.connection_cancellations.remove(&client_id);
+        self.clients.revocation_signals.remove(&client_id);
+        self.remove_peer_identity(client_id);
+    }
+
+    /// `(client, mailbox)` pairs to force-detach for `DETACH_CLIENTS`:
+    /// clients of `session`, or all when `None`. Mailboxes are cloned so the
+    /// caller can send `DETACHED` before the teardown re-locks.
+    #[must_use]
+    pub fn attached_clients_to_detach(
+        &self,
+        session: Option<&str>,
+    ) -> Vec<(ClientId, mpsc::Sender<Outbound>)> {
+        let target_session = match session {
+            Some(name) => match self.sessions().find_by_name(name) {
+                Some(id) => Some(id),
+                None => return Vec::new(),
+            },
+            None => None,
+        };
+        self.clients
+            .attached
+            .values()
+            .filter(|c| target_session.is_none_or(|sid| c.session == sid))
+            .map(|c| (c.id, c.tx.clone()))
+            .collect()
+    }
+
+    /// Whether `client_id` holds an agent-event subscription.
+    #[cfg(test)]
+    pub(crate) fn has_event_subscription(&self, client_id: ClientId) -> bool {
+        self.clients.event_subscriptions.contains_key(&client_id)
+    }
+
+    /// Whether `client_id` holds an L3 metadata subscription on `(scope, key)`.
+    #[cfg(test)]
+    pub(crate) fn has_metadata_subscription(
+        &self,
+        client_id: ClientId,
+        scope: &phux_protocol::wire::frame::Scope,
+        key: &str,
+    ) -> bool {
+        self.metadata
+            .subscribers_for(scope, key)
+            .contains(&client_id)
+    }
+}
+
+#[cfg(test)]
+mod connection_cancellation_tests {
+    use super::*;
+
+    #[test]
+    fn connection_cancellation_survives_detach_and_is_removed_on_forget() {
+        let mut state = ServerState::new();
+        let client = state.clients_mut().new_client_id();
+        let token = CancellationToken::new();
+        state.set_client_connection_cancellation(client, token.clone());
+
+        state.detach(client);
+        let registered = state
+            .client_connection_cancellation(client)
+            .expect("detach preserves connection-scoped cancellation");
+        registered.cancel();
+        assert!(token.is_cancelled());
+
+        state.forget_connection(client);
+        assert!(state.client_connection_cancellation(client).is_none());
+    }
+}

@@ -1,0 +1,461 @@
+//! Handshake, attach, and command response handling.
+
+use super::subscriptions::{Origin, barrier_resources};
+#[cfg(feature = "engine")]
+use std::sync::Arc;
+
+use super::{
+    AttachTarget, BootstrapLimits, BootstrapProfile, Command, CommandResult, ControlError,
+    ControlPlane, EngineConfig, EngineEvent, EngineHandle, ErrorCode, Event, FrameKind, HashSet,
+    Pending, ResourceId, ResourceKind, SessionSnapshot, StateScope, Status, topology,
+};
+use crate::control::topology::View;
+use crate::handshake::HelloOk;
+
+mod lifecycle;
+
+impl ControlPlane {
+    // ----- handshake --------------------------------------------------
+
+    pub(super) fn hello_ok(&mut self, answer: HelloOk) -> Result<(), ControlError> {
+        crate::connection::trace::phase("hello_received");
+        if self.handshake_ready {
+            return Err(ControlError::Protocol(
+                "server sent duplicate HELLO_OK".to_owned(),
+            ));
+        }
+        let info = match answer.accept(&self.offered_caps) {
+            Ok(info) => info,
+            Err(error) => {
+                let message = error.to_string();
+                self.error = Some(message.clone());
+                return Err(ControlError::Refused(message));
+            }
+        };
+        self.requalify_attach_target(&info.id)?;
+        // Replicas survive a reconnect so the same incarnation can resume
+        // their streams. A new incarnation recycles resource ids for fresh
+        // PTYs (a restarted server reseeds `@1`), and a replica kept under a
+        // reused id would go on publishing the old terminal's screen while
+        // the new one's stream is never bootstrapped into it.
+        let new_incarnation = self
+            .server
+            .as_ref()
+            .is_some_and(|previous| previous.id != info.id);
+        if new_incarnation {
+            // Spawn keys are only remembered by the original incarnation.
+            // Replaying against recycled terminal/session ids can launch work
+            // in a different destination, even when the new server supports keys.
+            self.fail_pending_spawns();
+            if let Some(engine) = &self.engine {
+                engine.reset_connection();
+            }
+            self.damaged.clear();
+            // What the old incarnation listed proves nothing about this one:
+            // kept, its absence reads as a close that would hide the Terminal
+            // that later takes the recycled id.
+            self.listings = crate::control::topology::Listings::default();
+            // The new incarnation reuses resource ids, a Terminal's as
+            // readily as an agent session's.
+            self.end_agent_incarnation();
+        }
+        let (profile, limits) = (info.profile, info.limits);
+        let server_id = info.id.clone();
+        self.server = Some(info);
+        self.ensure_engine(profile, limits)?;
+        self.handshake_ready = true;
+        crate::connection::trace::phase("hello_accepted");
+        self.set_status(Status::Negotiated);
+        let now_ms = self.now_ms();
+        let reports = self
+            .input_replay
+            .begin_connection_at(Some(&server_id), true, now_ms);
+        self.publish_replay_reports(reports, None);
+        if self.options.automatic_lifecycle {
+            self.queue_post_handshake();
+            // A session selected after startup also queues an attach. Wait for
+            // its inventory before replaying subscriptions outside that session.
+            if self.active_attach_id.is_none() {
+                self.replay_preserving_subscriptions();
+            }
+        }
+        self.org_connection_negotiated(new_incarnation);
+        self.approvals_negotiated();
+        self.queue_durable_frames();
+        self.queue_next_upload();
+        Ok(())
+    }
+
+    /// Session numbers are local to a server incarnation. Recover the same
+    /// logical session by its last authoritative name, never by a recycled ID.
+    fn requalify_attach_target(&mut self, server_id: &[u8]) -> Result<(), ControlError> {
+        // Manual embedders select their own next attach after negotiation; an
+        // old target must not refuse a connection they intend to retarget.
+        if !self.options.automatic_lifecycle {
+            return Ok(());
+        }
+        let Some(AttachTarget::ById(id)) = &self.attach_target else {
+            return Ok(());
+        };
+        if self
+            .server
+            .as_ref()
+            .is_none_or(|previous| previous.id == server_id)
+        {
+            return Ok(());
+        }
+        let name = self
+            .topology
+            .as_ref()
+            .and_then(|topology| {
+                topology
+                    .sessions
+                    .iter()
+                    .find(|session| session.id == id.get())
+            })
+            .map(|session| session.name.clone())
+            .ok_or_else(|| {
+                ControlError::Refused(format!(
+                    "cannot recover session {}: its previous name is unavailable",
+                    id.get()
+                ))
+            })?;
+        self.attach_target = Some(AttachTarget::ByName(name));
+        Ok(())
+    }
+
+    pub(super) fn ensure_engine(
+        &mut self,
+        profile: BootstrapProfile,
+        limits: BootstrapLimits,
+    ) -> Result<(), ControlError> {
+        let config = EngineConfig {
+            profile,
+            limits,
+            scrollback_lines: self.options.scrollback_lines,
+            history: self.history_config,
+        };
+        // Explicit history policies override the requested scrollback depth.
+        // Compare effective settings so reconnect does not discard committed
+        // agent records for a change in an unused default.
+        //
+        // A real profile, limits, or effective-history change still replaces
+        // the owner: those values are constructor-private on the kernel, and
+        // this crate cannot transplant agent streams. Resume cursors stay a
+        // live kernel query. Delivery stamps are never aliased onto the new
+        // owner. The publication journal is control-plane state and survives
+        // a same-incarnation rebuild; incarnation reset discards it.
+        let same = self.engine_config.as_ref().is_some_and(|previous| {
+            previous.profile == config.profile
+                && previous.limits == config.limits
+                && previous.history() == config.history()
+        });
+        if self.engine.is_some() && same {
+            return Ok(());
+        }
+        let engine = EngineHandle::start(
+            &config,
+            #[cfg(feature = "engine")]
+            Arc::clone(&self.publication),
+        )
+        .map_err(|error| ControlError::Protocol(error.to_string()))?;
+        if self.terminal_theme.is_some() {
+            engine.set_terminal_theme(self.terminal_theme);
+        }
+        #[cfg(feature = "engine")]
+        if self.options.prediction_style == super::PredictionStyle::Plain {
+            engine
+                .set_prediction_underline(false)
+                .map_err(|error| ControlError::Protocol(error.to_string()))?;
+        }
+        if let Some(previous) = self.engine.replace(engine) {
+            previous.stop();
+        }
+        self.engine_config = Some(config);
+        Ok(())
+    }
+
+    pub(super) fn queue_post_handshake(&mut self) {
+        let after_seq = self.options.event_after_seq;
+        self.queue_frame(&FrameKind::SubscribeEvents {
+            terminal: None,
+            after_seq,
+        });
+        let target = self.attach_target.clone();
+        match target {
+            Some(target) => {
+                let attach_id = self.next_request_id();
+                self.active_attach_id = Some(attach_id);
+                if let AttachTarget::CreateIfMissing { name, .. } = &target {
+                    // Creation is a one-shot act; a reconnect re-attaches.
+                    self.attach_target = Some(AttachTarget::ByName(name.clone()));
+                }
+                self.viewport.pending = false;
+                self.queue_frame(&FrameKind::Attach {
+                    attach_id,
+                    target,
+                    viewport: self.viewport.desired,
+                    request_scrollback: true,
+                    scrollback_limit_lines: self.options.scrollback_lines,
+                    role_policy: self.options.attach_role,
+                });
+            }
+            None => {
+                self.queue_refresh_topology();
+            }
+        }
+    }
+
+    pub(super) fn queue_refresh_topology(&mut self) -> u32 {
+        if let Some((request_id, _)) = self.roster.topology {
+            return request_id;
+        }
+        let request_id = self.next_request_id();
+        self.roster.topology = Some((request_id, false));
+        self.pending.insert(request_id, Pending::RefreshTopology);
+        self.queue_frame(&FrameKind::Command {
+            request_id,
+            command: Command::GetState {
+                scope: StateScope::Server,
+            },
+        });
+        request_id
+    }
+
+    pub(super) fn attached(
+        &mut self,
+        attach_id: u32,
+        snapshot: &SessionSnapshot,
+    ) -> Result<(), ControlError> {
+        if self.active_attach_id != Some(attach_id) {
+            return Err(ControlError::Protocol(format!(
+                "ATTACHED used unexpected attach id {attach_id}"
+            )));
+        }
+        // Lifecycle events are not replayed on attach; the previous attach's
+        // listing is the floor.
+        let closed = self.listings.relist(View::Attach, snapshot);
+        self.close_proven(closed)?;
+        let (terminals, seen) = attached_terminals(snapshot)?;
+        self.subscriptions
+            .replace(Origin::SessionAttach, ResourceKind::Terminal, seen);
+        self.attached_session = Some(snapshot.focused_session.get());
+        self.selected_session = self.attached_session;
+        // Names are lookup hints, not identities: a rename may free the old
+        // name for another session before this socket reconnects. Numeric IDs
+        // are stable within an incarnation and requalified on a server change.
+        self.attach_target = Some(AttachTarget::ById(snapshot.focused_session));
+        let mut topology = self.project_topology(snapshot);
+        topology.keep_foregrounds(self.topology.as_ref());
+        self.topology = Some(topology);
+        self.error = None;
+        self.apply_engine(EngineEvent::AttachStarted {
+            attach_id,
+            terminals: terminals.clone(),
+        })?;
+        self.declare_agent_sessions(snapshot, &terminals)?;
+        self.reconcile_agent_sessions(snapshot, false)?;
+        self.push_event(Event::TopologySnapshot {
+            attach_id: Some(attach_id),
+            snapshot: snapshot.clone(),
+        });
+        self.push_event(Event::TopologyChanged);
+        self.fence_topology_read();
+        // Any earlier attachment's subscriptions ended with it.
+        self.forget_roster_subscriptions();
+        self.sync_agent_metadata();
+        // Manual embedders own request ids. An autonomous project-tag GET
+        // would steal the first metadata read their fixtures answer.
+        if self.options.automatic_lifecycle {
+            self.watch_session_project();
+            self.rewatch_global_metadata(true);
+        }
+        // A hub's satellites and anything the grant inventories but does not
+        // observe are missing from this view, not gone: read them back.
+        if self.options.automatic_lifecycle && self.listings.hides(View::Attach, snapshot) {
+            self.queue_refresh_topology();
+        }
+        Ok(())
+    }
+
+    /// Close the terminals a same-view listing proved gone.
+    fn close_proven(&mut self, closed: Vec<ResourceId>) -> Result<(), ControlError> {
+        for terminal_id in closed {
+            self.apply_engine(EngineEvent::closed_unknown(terminal_id.clone()))?;
+            self.close_pane(
+                &terminal_id,
+                None,
+                None,
+                phux_protocol::wire::frame::CloseReason::Unknown,
+            );
+        }
+        Ok(())
+    }
+
+    fn declare_agent_sessions(
+        &mut self,
+        snapshot: &SessionSnapshot,
+        terminals: &[ResourceId],
+    ) -> Result<(), ControlError> {
+        self.subscriptions.clear(Origin::AgentDeclared);
+        let agent_sessions = snapshot.resources.iter().filter(|resource| {
+            resource.kind == ResourceKind::AgentSession
+                && resource
+                    .parent
+                    .as_ref()
+                    .is_some_and(|parent| terminals.contains(parent))
+        });
+        for resource in agent_sessions {
+            let facet = resource.agent.as_ref();
+            self.apply_engine(EngineEvent::AgentSessionDeclared {
+                terminal_id: resource.id.clone(),
+                parent: resource.parent.clone(),
+                provider: facet.map(|facet| facet.provider.clone()),
+                native_id: facet.and_then(|facet| facet.native_id.clone()),
+                state: facet.map(|facet| facet.state.clone()),
+            })?;
+            self.subscriptions
+                .insert(&resource.id, resource.kind, Origin::AgentDeclared);
+        }
+        Ok(())
+    }
+
+    pub(super) fn attach_ready(&mut self, attach_id: u32) -> Result<(), ControlError> {
+        self.apply_engine(EngineEvent::AttachReady { attach_id })?;
+        if self.active_attach_id != Some(attach_id) {
+            return Err(ControlError::Protocol(format!(
+                "ATTACH_READY used unexpected attach id {attach_id}"
+            )));
+        }
+        self.attached_once = true;
+        crate::connection::trace::phase("attach_ready");
+        self.attach_ended = false;
+        self.error = None;
+        self.set_status(Status::Attached);
+        self.push_event(Event::Attached { attach_id });
+        self.publish_viewport();
+        self.replay_preserving_subscriptions();
+        self.replay_pending_spawns();
+        self.retire_unadmitted_agent_subscriptions();
+        self.release_agent_delivery();
+        Ok(())
+    }
+
+    fn is_attach_refusal(&self, request_id: Option<u32>) -> bool {
+        self.status == Status::Negotiated && self.active_attach_id.is_some() && request_id.is_none()
+    }
+
+    pub(super) fn server_error(
+        &mut self,
+        request_id: Option<u32>,
+        code: ErrorCode,
+        message: String,
+    ) -> Result<(), ControlError> {
+        if code != ErrorCode::VersionIncompatible
+            && (self.resolve_path_error(request_id, &message)
+                || self.resolve_directory_error(request_id, &message))
+        {
+            return Ok(());
+        }
+        if let Some(id) = request_id
+            && self.approval_error(id, code, &message)
+        {
+            return Ok(());
+        }
+        let rendered = format!("server error {code:?}: {message}");
+        // ATTACH uses attach_id, not the command request_id namespace. Its
+        // refusals are uncorrelated; a correlated error belongs to a command,
+        // even when its request_id numerically equals the active attach_id.
+        // End this attempt instead of waiting forever for ATTACH_READY.
+        if self.is_attach_refusal(request_id) {
+            self.error = Some(rendered.clone());
+            self.push_event(Event::ServerError {
+                code,
+                message,
+                request_id,
+            });
+            return Err(ControlError::Refused(rendered));
+        }
+        if request_id.is_some_and(|id| self.project_tag_pending == Some(id)) {
+            self.project_tag_pending = None;
+            return Ok(());
+        }
+        if self.resolve_global_metadata_error(request_id) {
+            return Ok(());
+        }
+        let roster_read = request_id.and_then(|id| self.agent_metadata_error(id, code));
+        if roster_read == Some(true) {
+            return Ok(());
+        }
+        if roster_read.is_some() {
+            self.push_event(Event::ServerError {
+                code,
+                message,
+                request_id,
+            });
+            if code == ErrorCode::VersionIncompatible {
+                return Err(ControlError::Refused(rendered));
+            }
+            return Ok(());
+        }
+        // An acknowledged input or an organization request settles in its
+        // own journal; the general pending map never holds those ids.
+        if let Some(request_id) = request_id
+            && (self.input_replay.owns(request_id) || self.owns_org_request(request_id))
+        {
+            return self.command_result(request_id, CommandResult::Error { code, message });
+        }
+        if let Some(request_id) = request_id
+            && !self.pending.contains_key(&request_id)
+        {
+            // The binding extension that allocated this correlation owns its
+            // reply. Surface the original wire shape exactly once.
+            self.push_event(Event::Frame(Box::new(FrameKind::Error {
+                request_id: Some(request_id),
+                code,
+                message,
+            })));
+            if code == ErrorCode::VersionIncompatible {
+                return Err(ControlError::Refused(rendered));
+            }
+            return Ok(());
+        }
+        self.error = Some(rendered.clone());
+        if let Some(request_id) = request_id {
+            self.resolve_pending(
+                request_id,
+                CommandResult::Error {
+                    code,
+                    message: message.clone(),
+                },
+            )?;
+        }
+        self.push_event(Event::ServerError {
+            code,
+            message,
+            request_id,
+        });
+        if code == ErrorCode::VersionIncompatible {
+            return Err(ControlError::Refused(rendered));
+        }
+        Ok(())
+    }
+}
+
+fn attached_terminals(
+    snapshot: &SessionSnapshot,
+) -> Result<(Vec<ResourceId>, HashSet<ResourceId>), ControlError> {
+    // Only the focused session's barrier kinds (Terminals) take part: the
+    // server bootstraps only that session.
+    let terminals: Vec<ResourceId> = barrier_resources(snapshot)
+        .filter(|pane| topology::session_of(snapshot, pane) == Some(snapshot.focused_session))
+        .map(|pane| pane.id.clone())
+        .collect();
+    let mut seen = HashSet::new();
+    if !terminals.iter().all(|id| seen.insert(id.clone())) {
+        return Err(ControlError::Protocol(
+            "ATTACHED target session contains duplicate terminal ids".to_owned(),
+        ));
+    }
+    Ok((terminals, seen))
+}

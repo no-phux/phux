@@ -1,0 +1,63 @@
+[package]
+name = "phux-client-core"
+description = "Frontend-neutral synchronous session kernel and reusable client-side terminal policies."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Safe native libghostty checkpoint host. The target-qualified optional
+# dependency below keeps wasm builds, including `--all-features`, off the
+# native C/Zig linkage graph.
+native-engine = ["dep:bytes", "dep:libghostty-vt", "dep:phux-vt"]
+# Criterion is only needed by the history benchmark. Keeping this feature off
+# by default prevents workspace tests from compiling the benchmark toolchain.
+history-bench = ["dep:criterion"]
+
+[dependencies]
+criterion = { workspace = true, optional = true }
+# Stable IDs, ungated wire/input atoms, bootstrap profiles, and layout records.
+# libghostty conversions live in phux-vt, so the wasm build never links them.
+phux-protocol.workspace = true
+# The generic binary split tree (`LayoutNode<L>`) and its edits; wasm-safe.
+phux-core.workspace = true
+# Kernel-side performance telemetry (`perf` module); wasm-safe, no clock on
+# wasm32, always on.
+phux-perf.workspace = true
+# Cell widths for predictive echo.
+unicode-width = { workspace = true }
+# Grapheme clusters for predictive echo.
+unicode-segmentation = { workspace = true }
+phux-layout-codec.workspace = true
+serde = { workspace = true }
+# AgentSession resources stream `AgentEventsJsonlV1` records (one JSON object
+# per line). The kernel decodes every line before a frontend sees it, so the
+# JSON parser lives in the substrate; the workspace already pins one.
+serde_json.workspace = true
+thiserror.workspace = true
+sha2 = "0.11"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+bytes = { workspace = true, optional = true }
+libghostty-vt = { workspace = true, optional = true }
+# Shared libghostty glue: the GHOSTSNP codec, render pool, bounded Kitty
+# storage and PNG setup. A leaf, so it never depends back on this crate.
+phux-vt = { workspace = true, optional = true, features = ["kitty"] }
+
+[dev-dependencies]
+phux-frozen.workspace = true
+proptest.workspace = true
+insta.workspace = true
+
+[[bench]]
+name = "history"
+harness = false
+required-features = ["history-bench"]

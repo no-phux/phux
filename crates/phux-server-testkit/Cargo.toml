@@ -1,0 +1,37 @@
+[package]
+name = "phux-server-testkit"
+description = "Shared scaffolding for phux-server's wire integration tests: server/PTY fixtures, fault injection, screen assertions, and tracing capture. Dev-only; never a runtime dependency."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+test = true
+
+[lints]
+workspace = true
+
+# A crate rather than `tests/common/` so it compiles once, not once per
+# phux-server test binary.
+[dependencies]
+phux-protocol.workspace = true
+# The shared render trio only (ADR-0086).
+phux-vt = { workspace = true, features = ["render-pool"] }
+# Public `ServerRuntime` surface only, never internals. `testing`: the
+# scripted `FnPolicy` HELLO engine.
+phux-server = { workspace = true, features = ["testing"] }
+# Relay fixture; one-directional by ADR-0051 invariant 4.
+phux-dial = { workspace = true, features = ["relay"] }
+bytes.workspace = true
+thiserror.workspace = true
+libghostty-vt.workspace = true
+# `Screen::synthesized`: the canonical replay of a replica's grid.
+phux-terminal.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true

@@ -1,0 +1,114 @@
+# All docs
+
+Every page in the phux docs, grouped by what you're trying to do.
+
+The server, CLI and terminal UI are the core product. Remote hosts, agent
+integrations, MCP, plugins and distributions are optional maintained
+features; you do not need them to use local terminals. The separately
+released desktop is a newer maintained client. The browser client is an
+unshipped experiment, and the phone apps are in testing (Android on Google Play). See
+[Clients](./clients.md) for platform requirements and limitations.
+
+## Get started
+
+- [Install](./install.md): the install script, Homebrew, the desktop app, updating, and removing phux.
+- [Getting started](./getting-started.md): install, a first agent, the keys that matter, detaching, and coming from tmux.
+- [Concepts](./concepts.md): the server, sessions, tabs, panes, clients, hosts, targets, and what survives a restart.
+- [phux vs tmux, Herdr, and cmux](./compare.md): which one fits the job.
+- [Roadmap](./roadmap.md): what is being built now, next, and later.
+
+## Customize
+
+- [Configuration file](./config.md): where the file lives, how it layers over the defaults, and when a change takes effect.
+- [Key bindings](./keys.md): change the prefix, rebind or unbind keys, and see what's in effect.
+- [Migrate your config](./migrate.md): your coding agent moves your tmux, zellij, Ghostty, herdr or Rex keys into phux.
+- [Themes](./themes.md): install, pick, and write colour themes.
+- [Status bar and sidebar](./status-bar.md): what the bar and the sidebar show, and how to change it.
+- [Hooks](./hooks.md): run a command when something happens.
+- [Plugins](./plugins.md): add actions, panes, and sidebar sections.
+- [Maintained plugin packages](../plugins/README.md): the shipped plugins and where they are installed.
+- [Distributions](./distros.md): switch curated defaults without replacing your config; run the Crew agent distro.
+- [Omarchy](./omarchy.md): one command to fit phux into an Omarchy desktop, with its keys, theme, and launcher.
+- [Projects](./projects.md): open a project's session from a recipe in its repository.
+
+## Automate
+
+- [Public terminal workflow](./public-api.md): create, place and start a terminal with durable identity, receipts and connected-server schemas.
+- [Using phux as an agent](./agent-quickstart.md): install phux and drive sessions, panes, input, and scrollback from code.
+- [Driving terminals from scripts](./scripting.md): snapshot, send keys, run, wait, with JSON output and exit codes.
+- [Runnable examples](../examples/README.md): small programs for learning the CLI and integrations.
+- [Coding agents](./agents.md): see which agent needs you, connect your agent's host, and use the MCP server.
+- [Mail across a hub](./hub-mail.md): shared mail and path claims between a hub and the machines joined to it.
+- [Agent skill setup](./agent-skill.md): `phux skill setup` teaches every installed agent about phux.
+- [ACP sessions](./acp.md): run an agent through the Agent Client Protocol, and answer its permission requests yourself.
+- [Chief of staff](./chief-of-staff.md): tap the right ⌘ key in the desktop app, speak or type, and hand it to one ACP agent as a typed prompt.
+
+## Build on phux
+
+- [Build a phux client](./build-a-client.md): show agents, their questions and answers in your own app, from `phux agent list --json` and `phux watch --json`.
+- [Build on phux](./building.md): the versioned `--json` CLI, the MCP server, `phux watch`, the 1.x server protocol, OSC 7501, the plugin API, and the surfaces this repository does not ship.
+
+## Build for phux
+
+- [Program Status Protocol (OSC 7501): report status from any program](./program-protocol.md): the sequence phux reads, and what a pane shows from it.
+- [Any program can report status](./any-program-status.md): a short OSC 7501 emitter, a demo with no hooks, and how phux ranks that report.
+- [Program sequences and agent reports](./program-sequences.md): titles, `phux-ask` questions, OSC 133, OSC 52, and the other sequences phux reads, plus the agent record.
+
+## Machines and clients
+
+- [Remote machines](./remote.md): reach another machine's server with `phux host add`, and link machines together.
+- [SSH](./ssh.md): sign in once (passwords and 2FA included), recover from a changed host key, and attach over `ssh` without pairing.
+- [Audit log](./audit.md): the signed record of connections, decisions, approvals, and credential changes, and how to check it.
+- [Native terminal windows](./native-terminal.md): one server-owned shell per emulator window, without TUI chrome.
+- [Organizations](./enterprise.md): managed credentials, the audit log, held actions, and what the paid team service adds.
+- [Clients](./clients.md): the terminal UI, the desktop app (Phux Rune), the browser client, and phones.
+
+## Help
+
+- [Troubleshooting](./troubleshooting.md): what to run first, and the failures people hit.
+- [Supported platforms](./install.md#requirements) and [desktop installation](./install.md#desktop-app): choose the right download.
+- [Phux Rune diagnostics](../clients/rune/README.md#what-it-does): the desktop app's logs, crash entries, and **Copy diagnostics**.
+- [Report a bug](./troubleshooting.md#reporting-a-bug): gather diagnostics and remove private information before sharing.
+- [Discord](https://discord.gg/dUv5rzdHp): questions and setup help.
+- [GitHub issues](https://github.com/no-phux/phux/issues): reproducible bugs and feature proposals.
+
+## Reference
+
+Generated from the `phux` binary, so they match the code these docs describe.
+
+- [All reference pages](./reference/README.md): what each generated page covers.
+- [CLI](./reference/cli.md): the `--help` text of every command.
+- [Configuration settings](./reference/config.md): every key in the config file, with its default.
+- [Default key bindings](./reference/keys.md): every key phux binds out of the box.
+- [Actions](./reference/actions.md): everything a key binding can run.
+- [Status bar widgets](./reference/widgets.md): the pieces the status bar is built from, and their options.
+- [Hook events](./reference/hooks.md): every event a hook can run on.
+- [Environment variables](./reference/environment.md): what phux reads and sets.
+- [Exit codes](./reference/exit-codes.md): what each exit status means, for scripts.
+- [File locations](./reference/files.md): the socket, config, state, and logs.
+- [Resource kinds](./reference/kinds.md) and [MCP tools and the commands they mirror](./reference/parity.md).
+
+## Work on phux
+
+- [Architecture](./architecture.md): the process model, crates, and clients.
+- The [architecture target](./architecture-target.md) defines shared rule ownership and the evidence for migration.
+- [libghostty in phux](./libghostty.md): the libghostty-vt terminal engine in the server and in a rendering client, and what it does not do.
+- [Decisions](./decisions.md): the constraints the code keeps, and why.
+- [Organization](./organization.md): how the server owns sessions and their contents.
+- [Substrate](./substrate.md): how people, hosts, and agents fit together.
+- [Resource kinds beyond terminals](./resource-kinds.md): accessibility-tree, pixel-surface and typed-document resources, what is not done yet, and how they were built.
+- [Mirror formats and platforms](./mirrors.md): surface frame formats, the Linux tree and surface mirrors, and the notice shown while input arrives.
+- [Held actions](./approvals.md): which actions a key's scope can hold for approval, and who may decide them.
+- [Authority over pages, windows, and displays](./authority.md): who may watch or control a mirrored page, window, or display, and why no terminal grant does.
+- [Applications as resources](./applications.md): `phux spawn --app`, launching an app with its mirrors and quitting it with its pane.
+- [Server protocol](./protocol.md): framing, handshake, capabilities, and changing the wire.
+- [File transfer and checkout](./protocol-files.md): the commands that move files and inspect a checkout.
+- [Host services](./host-services.md): HTTP to a host service (OpenCode) over the phux connection.
+- [Port and ssh-agent forwarding](./forwarding.md): `phux forward -L`, a local TCP port carried to the server's loopback; `--agent`, your ssh-agent lent to its panes.
+- [Compatibility](./compatibility.md): what an older or newer peer sees.
+- [Embed phux](./embedding.md): put a phux terminal in your own app with `phux-client-runtime` or `phux-client-ffi`.
+- [Design language](./design-language.md): the tokens every client draws from, the theme solver, and the status ladder.
+- [Development](./development.md): set up, build, and run the checks.
+- [Releasing](./releasing.md): what ships, and how.
+
+These docs track `main`. `phux --help` describes the version you have installed.

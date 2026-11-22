@@ -1,0 +1,24 @@
+
+ done
+
+
+ Use the bash tool to run exactly this command and nothing else: rm -r
+ ./nonexistent-phux-probe
+
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ $ rm -r ./nonexistent-phux-probe                                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+  󱊷 Running requested removal command                Run sleep and echo finished
+╭─ Allow tool: bash ───────────────────────────────────────────────────────────╮
+│                                                                              │
+│ Reason: Prompt required by bash pattern: rm -r*                              │
+│ Command: rm -r ./nonexistent-phux-probe                                      │
+│                                                                              │
+│   Approve                                                                   │
+│    Deny                                                                      │
+│                                                                              │
+│ ↑/↓ navigate  󰌑 select  󱊷 cancel                                             │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯

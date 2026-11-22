@@ -1,0 +1,289 @@
+//! Shared byte-building helpers for the wire test files.
+//!
+//! One authoritative copy of the TLV primitives from
+//! `docs/protocol.md#framing` (message bodies are field-tagged:
+//! `field_id: varint || wire_type: u8 (4 = BYTES) || varint length || value`)
+//! plus the hand-rolled ATTACHED/SessionSnapshot encoder used to
+//! build malformed and edge-case frames the real encoder refuses to produce.
+
+// `pub` is idiomatic for a shared test module even though the `it` binary is
+// its own crate root, and not every helper has a caller in every build.
+#![allow(dead_code, unreachable_pub, clippy::unwrap_used, clippy::panic)]
+
+/// Append an unsigned LEB128 varint.
+pub fn put_varint(out: &mut Vec<u8>, mut v: u64) {
+    loop {
+        let byte = (v & 0x7f) as u8;
+        v >>= 7;
+        if v == 0 {
+            out.push(byte);
+            break;
+        }
+        out.push(byte | 0x80);
+    }
+}
+
+/// A positional record: `u32` big-endian length, then `body`.
+pub fn record(body: &[u8]) -> Vec<u8> {
+    let mut out = u32::try_from(body.len()).unwrap().to_be_bytes().to_vec();
+    out.extend_from_slice(body);
+    out
+}
+
+/// Append one TLV field: `field_id || wire_type(4 = BYTES) || len || value`.
+pub fn tlv_field(out: &mut Vec<u8>, field_id: u32, value: &[u8]) {
+    put_varint(out, u64::from(field_id));
+    out.push(4); // wire_type BYTES
+    put_varint(out, value.len() as u64);
+    out.extend_from_slice(value);
+}
+
+/// Wrap a `type_byte` + field-tagged `body` in the outer length frame
+/// (`u32 length || type || body`), where `length` covers the type byte + body.
+pub fn framed_tlv(type_byte: u8, fields: &[u8]) -> Vec<u8> {
+    let mut body = vec![type_byte];
+    body.extend_from_slice(fields);
+    let mut frame = Vec::new();
+    frame.extend_from_slice(&u32::try_from(body.len()).unwrap().to_be_bytes());
+    frame.extend_from_slice(&body);
+    frame
+}
+
+/// Encode `frame` to its framed wire bytes.
+pub fn encode(frame: &phux_protocol::wire::frame::FrameKind) -> Vec<u8> {
+    let mut buf = bytes::BytesMut::new();
+    frame.encode(&mut buf);
+    buf.to_vec()
+}
+
+/// Decode exactly one frame, asserting nothing trails it.
+pub fn decode(
+    bytes: &[u8],
+) -> Result<phux_protocol::wire::frame::FrameKind, phux_protocol::wire::DecodeError> {
+    let (frame, tail) = phux_protocol::wire::frame::FrameKind::decode(bytes)?;
+    assert!(tail.is_empty(), "decoder left {} bytes", tail.len());
+    Ok(frame)
+}
+
+/// Encoding then decoding `frame` is the identity.
+pub fn assert_round_trip(frame: &phux_protocol::wire::frame::FrameKind) {
+    assert_eq!(&decode(&encode(frame)).unwrap(), frame);
+}
+
+/// Render `bytes` as an `xxd`-style hex dump for the golden snapshots:
+/// 16 columns per row, `OFFSET | HEX HEX ... | ASCII`.
+pub fn hex_dump(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+
+    if bytes.is_empty() {
+        return "(empty)\n".to_owned();
+    }
+    let mut out = String::new();
+    for (chunk_idx, chunk) in bytes.chunks(16).enumerate() {
+        let _ = write!(out, "{:08x} |", chunk_idx * 16);
+        for (i, b) in chunk.iter().enumerate() {
+            if i == 8 {
+                out.push(' ');
+            }
+            let _ = write!(out, " {b:02x}");
+        }
+        for i in chunk.len()..16 {
+            if i == 8 {
+                out.push(' ');
+            }
+            out.push_str("   ");
+        }
+        out.push_str(" |");
+        for &b in chunk {
+            out.push(if (0x20..=0x7e).contains(&b) {
+                char::from(b)
+            } else {
+                '.'
+            });
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// The golden dump of `frame`, asserting it round-trips first.
+pub fn dump_frame(frame: &phux_protocol::wire::frame::FrameKind) -> String {
+    let bytes = encode(frame);
+    assert_eq!(
+        &decode(&bytes).unwrap(),
+        frame,
+        "the golden frame round-trips"
+    );
+    hex_dump(&bytes)
+}
+
+/// Read an unsigned LEB128 varint at `*offset`, advancing it.
+pub fn take_varint(input: &[u8], offset: &mut usize) -> u64 {
+    let mut value = 0u64;
+    let mut shift = 0;
+    loop {
+        let byte = input[*offset];
+        *offset += 1;
+        value |= u64::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
+            return value;
+        }
+        shift += 7;
+    }
+}
+
+/// A local `ResourceId` as positional bytes: tag 0 + `u32`.
+pub fn local_id_bytes(raw: u32) -> Vec<u8> {
+    let mut out = vec![0u8];
+    out.extend_from_slice(&raw.to_be_bytes());
+    out
+}
+
+/// Hand-roll an ATTACHED frame whose single `WindowInfo` carries `layout` in
+/// its retired layout slot — the positional tree bytes, without the leading `Some` presence
+/// byte (this helper writes it). Under field-tagged TLV the message body is
+/// three fields — SNAPSHOT (id 1), `INITIAL_CLIENT_ID` (id 2), and
+/// `ATTACH_ID` (id 3) — but the
+/// `info::encode_session_snapshot` exactly. Keep in sync when the snapshot
+/// wire shape changes.
+pub fn attached_with_layout(layout: &[u8]) -> Vec<u8> {
+    let mut win = Vec::new();
+    win.extend_from_slice(&1u32.to_be_bytes()); // window id
+    win.extend_from_slice(&1u32.to_be_bytes()); // session id
+    win.extend_from_slice(&0u16.to_be_bytes()); // index
+    win.extend_from_slice(&0u32.to_be_bytes()); // name len 0
+    win.push(0); // active_resource None
+    win.push(1); // layout Some
+    win.extend_from_slice(layout);
+
+    // Positional SessionSnapshot (the value of the ATTACHED SNAPSHOT field
+    // under field-tagged TLV — the snapshot itself stays positional).
+    let mut snap = Vec::new();
+    snap.extend_from_slice(&0u32.to_be_bytes()); // sessions 0
+    snap.extend_from_slice(&1u32.to_be_bytes()); // windows 1
+    snap.extend_from_slice(&record(&win));
+    snap.extend_from_slice(&0u32.to_be_bytes()); // panes 0
+    snap.extend_from_slice(&1u32.to_be_bytes()); // focused_session
+    snap.extend_from_slice(&1u32.to_be_bytes()); // focused_window
+    snap.push(0); // focused_resource tag local
+    snap.extend_from_slice(&1u32.to_be_bytes());
+
+    // Field-tagged ATTACHED body: SNAPSHOT (id 1), INITIAL_CLIENT_ID (id 2),
+    // and ATTACH_ID (id 3).
+    let mut fields = Vec::new();
+    tlv_field(&mut fields, 1, &snap);
+    tlv_field(&mut fields, 2, &7u32.to_be_bytes());
+    tlv_field(&mut fields, 3, &1u32.to_be_bytes());
+    framed_tlv(0x81, &fields)
+}
+
+/// `snapshot` as the `GET_STATE` reply that carries it.
+pub const fn state_reply(
+    snapshot: phux_protocol::wire::info::SessionSnapshot,
+) -> phux_protocol::wire::frame::FrameKind {
+    use phux_protocol::wire::frame::{CommandResult, CommandValue, FrameKind};
+    FrameKind::CommandResult {
+        request_id: 1,
+        result: CommandResult::OkWith(CommandValue::State(snapshot)),
+    }
+}
+
+/// The snapshot a framed `GET_STATE` reply carries.
+pub fn decode_state(bytes: &[u8]) -> phux_protocol::wire::info::SessionSnapshot {
+    use phux_protocol::wire::frame::{CommandResult, CommandValue, FrameKind};
+    match FrameKind::decode(bytes).unwrap().0 {
+        FrameKind::CommandResult {
+            result: CommandResult::OkWith(CommandValue::State(snapshot)),
+            ..
+        } => snapshot,
+        other => panic!("expected a state result, got {other:?}"),
+    }
+}
+
+/// The snapshot an `ATTACHED` frame built around positional `snapshot`
+/// bytes decodes to.
+pub fn decode_attached_snapshot(snapshot: &[u8]) -> phux_protocol::wire::info::SessionSnapshot {
+    use phux_protocol::wire::frame::FrameKind;
+    let mut fields = Vec::new();
+    tlv_field(&mut fields, 1, snapshot);
+    tlv_field(&mut fields, 2, &1u32.to_be_bytes());
+    tlv_field(&mut fields, 3, &1u32.to_be_bytes());
+    match FrameKind::decode(&framed_tlv(0x81, &fields)).unwrap().0 {
+        FrameKind::Attached { snapshot, .. } => snapshot,
+        other => panic!("expected Attached, got {other:?}"),
+    }
+}
+
+/// Every field of a `SPAWN_RESOURCE`, defaulting to group 1 with each
+/// optional field absent, so a case names only what it sets:
+/// `Spawn { term: Some(..), ..Spawn::default() }.frame()`.
+pub struct Spawn {
+    pub request_id: u32,
+    pub group: phux_protocol::ids::GroupId,
+    pub command: Option<Vec<String>>,
+    pub cwd: Option<String>,
+    pub env: Option<Vec<(String, String)>>,
+    pub term: Option<String>,
+    pub satellite: Option<phux_protocol::ids::SatelliteHost>,
+    pub owner_terminal: Option<phux_protocol::ids::ResourceId>,
+    pub agent_session: Option<Vec<u8>>,
+    pub initial_size: Option<(u16, u16)>,
+    pub resource: Option<Box<phux_protocol::wire::frame::SpawnResource>>,
+}
+
+impl Default for Spawn {
+    fn default() -> Self {
+        Self {
+            request_id: 0,
+            group: phux_protocol::ids::GroupId::new(1),
+            command: None,
+            cwd: None,
+            env: None,
+            term: None,
+            satellite: None,
+            owner_terminal: None,
+            agent_session: None,
+            initial_size: None,
+            resource: None,
+        }
+    }
+}
+
+impl Spawn {
+    pub fn frame(self) -> phux_protocol::wire::frame::FrameKind {
+        phux_protocol::wire::frame::FrameKind::SpawnResource {
+            request_id: self.request_id,
+            group: self.group,
+            command: self.command,
+            cwd: self.cwd,
+            env: self.env,
+            term: self.term,
+            satellite: self.satellite,
+            owner_terminal: self.owner_terminal,
+            agent_session: self.agent_session,
+            initial_size: self.initial_size,
+            resource: self.resource,
+        }
+    }
+}
+
+/// `frame` encoded with an unknown trailing field `id` appended and the
+/// length prefix patched to cover it: what a newer peer sends.
+pub fn encode_with_unknown_field(
+    frame: &phux_protocol::wire::frame::FrameKind,
+    id: u32,
+    value: &[u8],
+) -> Vec<u8> {
+    let mut encoded = encode(frame);
+    tlv_field(&mut encoded, id, value);
+    let body_len = u32::try_from(encoded.len() - 4).unwrap();
+    encoded[..4].copy_from_slice(&body_len.to_be_bytes());
+    encoded
+}
+
+/// The decode error for `frame`'s own encoding.
+pub fn decode_err(
+    frame: &phux_protocol::wire::frame::FrameKind,
+) -> phux_protocol::wire::DecodeError {
+    phux_protocol::wire::frame::FrameKind::decode(&encode(frame)).unwrap_err()
+}

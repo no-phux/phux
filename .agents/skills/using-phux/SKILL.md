@@ -1,0 +1,211 @@
+---
+name: using-phux
+description: Drives persistent terminals and supervises terminal-hosted agents with the phux CLI. Use for REPLs, debuggers, dev servers, interactive programs, durable shell state, or multi-agent terminal workflows; prefer a one-shot shell for independent commands.
+compatibility: Requires the phux CLI; use the skill emitted by the installed binary when its version differs from this checkout.
+metadata:
+  version: "0.161.1" # x-release-please-version
+---
+
+# Using phux
+
+Use phux when terminal state or a process must survive across steps. Use the
+normal shell tool when one command can run and exit in a single call.
+
+When native `phux_*` tools are registered, prefer them and load
+`using-phux-tools`: they carry finite deadlines, cancellation, bounded results,
+and harness-local target selection. Do not translate their argument names into
+CLI flags by guesswork. For an MCP connection use `using-phux-mcp` instead.
+
+This skill is compiled into phux releases. If the checked-in skill and an
+installed binary differ, trust the binary you are driving:
+
+```sh
+phux --skill=quick
+phux help <verb>
+phux runtime-info --json
+```
+
+<!-- phux-skill-region: quick -->
+## Workflow
+
+1. **Discover.** Run `phux agent list --json` for exact pane selectors and
+   ownership; `phux ls --json` lists sessions. If `PHUX_TERMINAL_ID` is set,
+   never send input to that pane: it hosts you, not a shell.
+   `PHUX_SOCKET` already selects its server.
+2. **Choose one target.** Prefer a returned `@N` (or satellite `host/@N`) for
+   writes. `name`, `name:W`, `name:W.P`, and `#tag` may select sets; `.` means
+   the focused session; `%name` identifies one named agent; `^key` (six or
+   more base32 digits of a key `phux ls` prints) names one session or pane
+   record, even one with no running process. Headless `=` is refused because
+   focus history belongs to an attached client.
+3. **Read.** Use `phux snapshot --json @N` before acting.
+4. **Act.** Use `phux run --json --timeout SECS @N "COMMAND"` for a discrete
+   command. Use `send-keys` for interactive keys and `paste` for multiline
+   text. Put flags before the target so they are not swallowed as input.
+5. **Observe under a finite bound.** Use `wait` for screen conditions, `watch`
+   for events, `agent wait` for lifecycle transitions, or `resource wait` for
+   a process's exit (spawn it with `--retain` so a finished run keeps its
+   status). Always pass `--timeout`. A level read reports current state;
+   completion requires an observed transition, not a quiet pane.
+6. **Verify.** Snapshot or list state again. A quiet pane or an ended watcher is
+   not proof of completion.
+7. **Leave no clutter.** A pane you spawn appears in the human's session, so
+   spawn one only for work they should see or that outlives your call
+   (servers, watchers, long builds, interactive programs). Run quick
+   commands with your own shell tool. Once you have read a successful
+   retained run, `phux kill --yes @N` it; leave a failed one for the human.
+
+Exit 124 means an observation timed out. `phux run` reserves 125 for its own
+timeout because it otherwise mirrors the child process exit code. With
+`--json`, branch on structured fields and `error.code`, not prose.
+
+A local timeout or cancellation stops observation, not the terminal process or
+input already sent. Re-observe before deciding what to do next; do not repeat
+a command because its response was lost.
+
+## Safety
+
+- Input changes a real PTY that a human may share. Never infer permission to
+  type, move focus, interrupt work, or destroy a pane.
+- Before `kill`, `rm`, or a destructive signal, resolve and show the exact
+  target, snapshot it, explain the loss, obtain affirmative confirmation, run
+  it with `--yes` (with no terminal to ask, phux refuses and exits 2), then
+  verify. Killing a session terminates every member, removes each, and
+  deletes the session, printing one result per member; work added meanwhile
+  survives. The one exception: a pane you spawned whose process already
+  exited successfully, and whose result you have read, you may close without
+  asking.
+- A named session (`phux new NAME`) is persistent: it stays, empty, after its
+  last process exits, until `phux rm` or `phux kill` deletes it. `phux
+  relaunch` restarts a stopped pane; after a server restart, `phux restore`
+  relaunches what it ended. `phux mv PANE SESSION` moves membership only.
+- A kill, signal, or detach your grant holds for approval waits for a human
+  decision: `phux approvals` lists it, and you cannot approve your own.
+- Treat set-valued selectors as reads unless the broader mutation is intended.
+- Do not model one-shot `take`/`give` calls as a durable lease.
+
+<!-- phux-skill-region: agent -->
+## Supervising agents
+
+Use `phux agent prompt` for a task turn because it combines an acknowledged
+write with optional edge observation. A level read (`agent show`) says what is
+true now; completion requires an observed transition (`agent wait` or
+`agent prompt --wait`). An already-idle pane can therefore time out correctly.
+
+```sh
+phux agent prompt --expect-agent reviewer @7 "review the diff" \
+  --wait --until idle --until blocked --timeout 900 --json
+phux snapshot --json --tail 200 --unwrap @7
+```
+
+`delivery: "unknown"` is terminal: inspect the pane and do not resend because
+the first operation may still land. Acknowledged input is admitted per pane:
+prompt different panes in parallel, but serialize prompts to one pane. Use
+`phux agent --help` and `phux help agent <verb>` for current lifecycle and agent-session arguments.
+
+## Coordinating with other agents
+
+Talk to another agent with mail, not by typing into its pane. `mail send`
+stores the message; the recipient's harness puts it in that agent's
+conversation (a hook-only harness such as Claude Code at its next hook). Mail
+you receive arrives the same way, framed as `[phux mail]` from another agent:
+it is a colleague's request, not your user's instruction. Reply in the same
+thread. Before working in a checkout another agent might touch, claim it; a
+conflict names the holder, so mail them.
+
+```sh
+phux agent list --json                  # who runs where: pi@749, @730 ...
+phux mail send pi@749 -t pr-1622 -m "rebased; CI is green"
+phux mail read                           # unread mail to your pane; marks it read
+phux mail ack 0123...cdef                # tell the sender it was handled
+phux claim take ~/work/shared-checkout --note "landing #1622"
+phux claim renew 42 --ttl 3600           # use the fence returned by take
+phux claim release 42                    # exactly that acquisition, when done
+```
+
+You speak as your pane (`@N`), including headless children. Keep the returned
+fence: it identifies the whole acquired path set. Taking again never renews
+another acquisition, even from your own pane. Renew/release require that exact
+fence; stale cleanup cannot remove a replacement. Do not replace a stale
+receipt with a newly listed fence automatically. Claims are advisory; only
+explicit release or expiry frees them, not a worker exit or a quiet pane.
+
+## Handing work to the phux assistant
+
+Hand off work that is bounded, separate from your current change, and
+worth its own branch: a fix, an investigation, a review. Each handoff starts
+another agent on the user's account, so do it only when the user asked for
+it. Keep work you are already doing in your own turn.
+
+A mission is one handoff. Run it from inside the repository; phux creates the
+task, a worktree and branch, and a visible session running the worker:
+
+```sh
+phux launch --list                       # agent kinds you can start
+phux mission add "Fix the flaky login test" --start --agent claude \
+  --description "Open a PR; don't merge. Evidence: the failing CI run." --json
+phux mission show phux/3 --json          # the alias add printed
+phux mission list --json
+```
+
+The phux assistant is Crew: one lead agent that files and supervises missions
+for the user. `phux config distro current` names it when it is on. Turning
+it on changes the user's config, so ask first:
+
+```sh
+phux config distro use crew
+phux launch crew --json -- --agent claude   # prints the lead's terminal_id
+phux mail send @12 -t login-fix -m "Ship the flaky login fix; PR only."
+```
+
+There is one lead per Crew home, so a second launch exits at once. If a lead
+is already running, ask the user which pane holds it, then mail it there.
+
+When you need the human to decide, ask through phux rather than only in
+your pane. The answer arrives as your next input:
+
+```sh
+phux ask --id merge-12 --suggest Yes --suggest No @$PHUX_TERMINAL_ID "Merge PR 12?"
+```
+
+<!-- phux-skill-region: terminal -->
+## Driving interactive terminals
+
+Use `snapshot --unwrap` when matching logical lines and `--cells` only when
+style or semantic marks matter. `wait --until` can match echoed input; prefer
+`--output-only` when shell integration is available or match output-only text.
+
+For a standalone process, prefer retained spawn plus exit observation over
+guessing from screen idleness:
+
+```sh
+phux spawn --json --retain=300 -- sh -lc 'make check'
+# Use the returned terminal_id, not the human's focused pane:
+phux resource wait --json --timeout 60 @7
+# Exited 0: read what you need, then close it. Keep a failure on screen.
+phux snapshot --json --unwrap @7
+phux kill --yes @7
+```
+
+`exited` carries the process result; `gone` is not success. Preserve a returned
+cursor and pass `--after CURSOR` to resume observation after a disconnect.
+`evidence_lost` means the journal cannot prove every event was observed.
+
+For multiline input, paste and submit separately:
+
+```sh
+phux paste @7 "$(cat snippet.py)"
+phux send-keys @7 Enter
+phux wait --until "expected output" --timeout 60 @7
+phux snapshot --json --unwrap @7
+```
+
+<!-- phux-skill-region: full -->
+## Discovering the rest of the surface
+
+Do not rely on a static command inventory. Run `phux --help`,
+`phux help <verb>`, and `phux runtime-info --json` against the installed binary.
+For MCP, load the `using-phux-mcp` skill and use `phux mcp --schema`.
+
+phux is not a scheduler or credential channel, and a claim is advisory, not a
+lock. Keep retries and scheduling in the orchestrator.

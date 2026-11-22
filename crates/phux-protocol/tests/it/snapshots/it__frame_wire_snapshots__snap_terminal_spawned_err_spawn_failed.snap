@@ -1,0 +1,7 @@
+---
+source: crates/phux-protocol/tests/it/frame_wire_snapshots.rs
+expression: dump_frame(&frame)
+---
+00000000 | 00 00 00 21 a2 01 04 04  00 00 00 08 02 04 16 01 |...!............
+00000010 | 01 00 00 00 10 6e 6f 20  70 74 79 20 61 76 61 69 |.....no pty avai
+00000020 | 6c 61 62 6c 65                                   |lable

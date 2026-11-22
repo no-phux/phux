@@ -1,0 +1,6 @@
+# web-sys gates its WebTransport bindings behind the `web_sys_unstable_apis`
+# cfg (the W3C spec is still a draft). The phux-web WebTransport connect path
+# (client.rs) uses them; this flag opts the whole (standalone) phux-web
+# workspace in. Remove once web-sys stabilizes the WebTransport API surface.
+[build]
+rustflags = ["--cfg=web_sys_unstable_apis"]

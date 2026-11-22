@@ -1,0 +1,244 @@
+use super::*;
+use crate::attach::render::ReplicaWalk;
+
+mod kitty;
+
+/// The hub's unreachable wording names a host, and only
+/// that host's panes go grey. A later return clears them for replay.
+#[test]
+fn satellite_unreachable_marks_one_host_and_a_return_clears_it() {
+    let local = ResourceId::local(1);
+    let edge = ResourceId::satellite("edge", 9);
+    let other = ResourceId::satellite("gpubox", 3);
+    let mut panes = HashMap::from([
+        (local.clone(), PaneSlot::new().expect("slot")),
+        (edge.clone(), PaneSlot::new().expect("slot")),
+        (other.clone(), PaneSlot::new().expect("slot")),
+    ]);
+    assert_eq!(
+        satellite_host_in_unreachable("satellite edge is unreachable: link is down"),
+        Some("edge")
+    );
+    assert!(satellite_host_in_unreachable("the link dropped").is_none());
+    assert!(note_satellite_unreachable(
+        &mut panes,
+        "satellite edge is unreachable: link is down"
+    ));
+    assert!(pane_satellite_down(&panes, &edge));
+    assert!(!pane_satellite_down(&panes, &local));
+    assert!(!pane_satellite_down(&panes, &other));
+    assert_eq!(
+        satellite_panes_returned(&mut panes, "edge"),
+        vec![edge.clone()]
+    );
+    assert!(!pane_satellite_down(&panes, &edge));
+}
+
+/// Every `SatelliteUnreachable` wording the hub emits names its host;
+/// other prose names none.
+#[test]
+fn every_hub_unreachable_shape_names_its_host() {
+    for message in [
+        "satellite edge is unreachable: link is down",
+        "satellite edge is unreachable",
+        "satellite edge link is down",
+        "satellite edge link dropped before the reply",
+        "satellite edge link dropped before the spawn reply",
+        "satellite edge did not answer within 30s",
+        "satellite edge did not answer the spawn within 30s",
+        "satellite edge proxy withdrawal cancelled before application after 30s; \
+             subscription preserved",
+    ] {
+        assert_eq!(
+            satellite_host_in_unreachable(message),
+            Some("edge"),
+            "{message}"
+        );
+    }
+    for message in [
+        "the link dropped",
+        "satellite edge",
+        "satellite  is unreachable",
+        "satellite edge link is saturated; retry",
+        "satellite edge has no such terminal",
+        "offline",
+    ] {
+        assert_eq!(satellite_host_in_unreachable(message), None, "{message}");
+    }
+}
+
+#[test]
+fn a_fresh_input_origin_badges_the_label_until_it_expires() {
+    let id = ResourceId::local(1);
+    let mut slot = PaneSlot::new().expect("slot");
+    slot.last_title = "shell".to_owned();
+    let started = Instant::now();
+    slot.note_input_origin("ada".to_owned(), started);
+    let mut panes = HashMap::from([(id.clone(), slot)]);
+    let (kernel, _effects, _panes) = published_test_state(&[]);
+    let label = pane_label(&kernel, &panes, &id).expect("label");
+    let origin = label.origin.expect("badge");
+    assert_eq!(origin.text, "ada");
+    assert!(!origin.dim);
+    panes.get_mut(&id).expect("slot").input_origin = Some(InputOrigin {
+        label: "ada".to_owned(),
+        since: Instant::now()
+            .checked_sub(INPUT_ORIGIN_LIFE)
+            .expect("test clock"),
+    });
+    assert!(
+        pane_label(&kernel, &panes, &id)
+            .expect("label")
+            .origin
+            .is_none()
+    );
+}
+
+/// A republish at unchanged geometry must serve fresh rows through an
+/// incremental paint: the kernel's new token reaches the renderer. (The
+/// deterministic guard lives in `phux_vt::render_pool::tests`.)
+#[test]
+fn republish_at_same_geometry_serves_fresh_rows_without_force_full() {
+    use phux_client_core::engine::CanonicalGeometry;
+    use phux_client_core::session::KernelInput;
+    use phux_protocol::{BootstrapId, BootstrapStreamProfile, StreamId};
+
+    let id = ResourceId::local(1);
+    let (mut kernel, mut effects, mut panes) = published_test_state(&[(&id, 10, 2, b"AA")]);
+    let slot = panes.get_mut(&id).expect("slot");
+
+    let walk_1 = published_replica(&kernel, &id).expect("generation 1");
+    let generation_1 = walk_1.generation;
+    let mut first = Vec::new();
+    let _ = slot
+        .renderer
+        .render_at(walk_1, &mut first, (0, 0), (10, 2))
+        .expect("paint generation 1");
+    assert!(
+        String::from_utf8_lossy(&first).contains("AA"),
+        "first incremental paint serves generation 1's rows"
+    );
+
+    // A second bootstrap generation, same geometry, new content.
+    let stream_id = StreamId::new(1).expect("stream");
+    let bootstrap_id = BootstrapId::new(2).expect("bootstrap 2");
+    kernel
+        .update(
+            KernelInput::BootstrapBegin {
+                terminal_id: &id,
+                stream_id,
+                bootstrap_id,
+                profile: BootstrapStreamProfile::SynthesizedVtRaw,
+                geometry: CanonicalGeometry::new(10, 2).expect("geometry"),
+                base_seq: 0,
+            },
+            &mut effects,
+        )
+        .expect("republish BEGIN");
+    kernel
+        .update(
+            KernelInput::BootstrapChunk {
+                terminal_id: &id,
+                stream_id,
+                bootstrap_id,
+                chunk_seq: 0,
+                payload: b"ZZ",
+            },
+            &mut effects,
+        )
+        .expect("republish CHUNK");
+    kernel
+        .update(
+            KernelInput::BootstrapReady {
+                terminal_id: &id,
+                stream_id,
+                bootstrap_id,
+                history_cursor: None,
+            },
+            &mut effects,
+        )
+        .expect("republish READY");
+
+    let walk_2 = published_replica(&kernel, &id).expect("generation 2");
+    let generation_2 = walk_2.generation;
+    assert_ne!(
+        generation_1, generation_2,
+        "a republish must change the walk-identity token"
+    );
+
+    // Another walk consumes the fresh replica's dirty state first.
+    let mut thief = libghostty_vt::RenderState::new().expect("thief state");
+    let _ = thief.update(walk_2.terminal).expect("thief update");
+
+    let mut second = Vec::new();
+    let _ = slot
+        .renderer
+        .render_at(walk_2, &mut second, (0, 0), (10, 2))
+        .expect("paint generation 2");
+    let painted = String::from_utf8_lossy(&second);
+    assert!(
+        painted.contains("ZZ"),
+        "an incremental paint (no force_full) after a same-geometry \
+             republish must serve the new generation's rows, got {painted:?}"
+    );
+}
+
+/// Input clears the asked flag once; repeats and unknown panes report
+/// false.
+#[test]
+fn clear_attention_on_input_clears_once() {
+    let id = ResourceId::local(1);
+    let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
+    let mut slot = PaneSlot::new_with_size(80, 24).expect("slot");
+    slot.attention = true;
+    panes.insert(id.clone(), slot);
+
+    assert!(clear_attention_on_input(&mut panes, &id), "first clear");
+    assert!(
+        !panes.get(&id).expect("slot").attention,
+        "flag must be down after the clear"
+    );
+    assert!(
+        !clear_attention_on_input(&mut panes, &id),
+        "already-clear pane reports no transition"
+    );
+    assert!(
+        !clear_attention_on_input(&mut panes, &ResourceId::local(9)),
+        "unknown pane reports no transition"
+    );
+}
+
+/// #2377: an auto-numbered window is named after what its pane runs and
+/// where, and follows the foreground; a user-given name stands.
+#[test]
+fn an_auto_numbered_window_is_named_after_its_foreground() {
+    let id = ResourceId::local(1);
+    let mut slot = PaneSlot::new().expect("slot");
+    slot.cwd = Some("/srv/phux".to_owned());
+    slot.foreground = Some("zsh".to_owned());
+    let mut panes = HashMap::from([(id.clone(), slot)]);
+    let agents = HashMap::new();
+    assert_eq!(
+        display_window_name("1", Some(&id), &panes, &agents),
+        "zsh · phux"
+    );
+    panes.get_mut(&id).unwrap().foreground = Some("npm".to_owned());
+    assert_eq!(
+        display_window_name("1", Some(&id), &panes, &agents),
+        "npm · phux"
+    );
+    assert_eq!(
+        display_window_name("api", Some(&id), &panes, &agents),
+        "api"
+    );
+    // A program-set icon goes in front of either.
+    panes.get_mut(&id).unwrap().program_icon = Some("🦀".to_owned());
+    assert_eq!(
+        display_window_name("1", Some(&id), &panes, &agents),
+        "🦀 npm · phux"
+    );
+    assert_eq!(
+        display_window_name("api", Some(&id), &panes, &agents),
+        "🦀 api"
+    );
+}

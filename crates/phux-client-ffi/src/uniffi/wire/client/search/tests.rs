@@ -1,0 +1,424 @@
+#![allow(clippy::expect_used, reason = "test assertions")]
+#![allow(clippy::panic, reason = "test assertions")]
+
+use phux_client_runtime::control::{ControlOptions, ControlPlane};
+use phux_protocol::ids::{SessionId, WindowId};
+use phux_protocol::wire::frame::FrameKind;
+use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
+
+use super::*;
+
+const COLS: u16 = 24;
+const ROWS: u16 = 4;
+
+fn history(lines: &[&str]) -> Vec<u8> {
+    lines.join("\r\n").into_bytes()
+}
+
+mod support;
+use support::remote_with;
+
+fn bootstrap(client: &Client, terminal_id: ResourceId, bytes: &[u8]) {
+    for frame in phux_wire_fixtures::bootstrap_frames(&terminal_id, [1, 1], [COLS, ROWS], bytes) {
+        client.feed(frame).expect("bootstrap frame");
+    }
+}
+
+fn top_row(remote: &RemoteClient, terminal: u32) -> String {
+    remote
+        .runtime_client()
+        .expect("connected")
+        .acquire(&ResourceId::local(terminal))
+        .expect("published")
+        .row_text(0)
+}
+
+fn pane(terminal: u32) -> String {
+    id::encode(&ResourceId::local(terminal))
+}
+
+/// Four rows at the tail show `f g h LIVE TAIL`.
+fn scrollback() -> Vec<u8> {
+    history(&[
+        "needle one",
+        "a",
+        "b",
+        "c",
+        "needle two",
+        "d",
+        "e",
+        "f",
+        "g",
+        "h",
+        "LIVE TAIL",
+    ])
+}
+
+fn search(remote: &RemoteClient, terminal: u32, query: &str) -> ProjectionSearch {
+    remote
+        .search_projection(pane(terminal), query.into(), true, search_match_limit())
+        .expect("search")
+}
+
+#[test]
+fn reveal_walks_matches_in_document_order_and_clear_keeps_the_viewport() {
+    let remote = remote_with(&[(1, scrollback())]);
+    assert_eq!(top_row(&remote, 1), "f");
+    let found = search(&remote, 1, "needle");
+    assert_eq!(found.matches.len(), 2);
+    assert!(!found.truncated);
+    assert_eq!(top_row(&remote, 1), "f", "searching must not scroll");
+
+    let [first, last] = [found.matches[0], found.matches[1]];
+    remote
+        .reveal_search_match(pane(1), last.start)
+        .expect("reveal last");
+    assert_eq!(top_row(&remote, 1), "needle two");
+    remote
+        .reveal_search_match(pane(1), first.start)
+        .expect("reveal first");
+    assert_eq!(top_row(&remote, 1), "needle one");
+
+    remote.clear_projection_search(pane(1)).expect("clear");
+    assert_eq!(
+        top_row(&remote, 1),
+        "needle one",
+        "clear keeps the viewport"
+    );
+    assert!(matches!(
+        remote.reveal_search_match(pane(1), first.start),
+        Err(SearchError::StaleMatch { .. })
+    ));
+    remote.scroll_projection_to_bottom(pane(1));
+    assert_eq!(top_row(&remote, 1), "f");
+}
+
+#[test]
+fn a_repeated_search_reclaims_the_previous_handles() {
+    let remote = remote_with(&[(1, scrollback())]);
+    let old = search(&remote, 1, "needle");
+    let new = search(&remote, 1, "needle");
+    assert_eq!(new.matches.len(), 2);
+    for stale in &old.matches {
+        assert!(!new.matches.contains(stale), "handles are never reused");
+        assert!(matches!(
+            remote.reveal_search_match(pane(1), stale.start),
+            Err(SearchError::StaleMatch { .. })
+        ));
+    }
+    remote
+        .reveal_search_match(pane(1), new.matches[1].start)
+        .expect("fresh handle reveals");
+}
+
+#[test]
+fn unicode_and_wide_glyph_queries_match_whole_graphemes() {
+    let bytes = history(&[
+        "日本語 wide",
+        "café au lait",
+        "x",
+        "y",
+        "z",
+        "w",
+        "v",
+        "LIVE",
+    ]);
+    let remote = remote_with(&[(1, bytes)]);
+    let wide = search(&remote, 1, "日本語");
+    assert_eq!(wide.matches.len(), 1);
+    remote
+        .reveal_search_match(pane(1), wide.matches[0].start)
+        .expect("reveal wide");
+    assert!(top_row(&remote, 1).starts_with("日本語"));
+    assert_eq!(search(&remote, 1, "café").matches.len(), 1);
+    assert!(search(&remote, 1, "Café").matches.is_empty());
+}
+
+#[test]
+fn saturated_search_keeps_matches_revealable_after_repeated_searches() {
+    let lines: Vec<_> = (0..600).map(|index| format!("needle {index:03}")).collect();
+    let remote = remote_with(&[(1, lines.join("\r\n").into_bytes())]);
+    for _ in 0..3 {
+        remote.scroll_projection_to_bottom(pane(1));
+        let found = search(&remote, 1, "needle");
+        assert!(found.truncated);
+        assert!(!found.matches.is_empty());
+        // The first reveal needs a viewport pin; subsequent reveals must
+        // allocate its replacement before releasing that pin.
+        for index in [0, 1, 2, 0] {
+            remote
+                .reveal_search_match(pane(1), found.matches[index].start)
+                .expect("bounded search leaves room for viewport pins");
+            assert_eq!(top_row(&remote, 1), format!("needle {index:03}"));
+        }
+        let replaced = search(&remote, 1, "needle");
+        remote
+            .reveal_search_match(pane(1), replaced.matches[1].start)
+            .expect("searching while pinned leaves replacement capacity");
+        assert_eq!(top_row(&remote, 1), "needle 001");
+        remote.clear_projection_search(pane(1)).expect("clear");
+        assert_eq!(top_row(&remote, 1), "needle 001");
+    }
+}
+
+#[test]
+fn sparse_cells_separate_matches_without_splitting_wide_or_wrapped_text() {
+    let remote = remote_with(&[(
+        1,
+        "a\x1b[2Cb\r\n日本語\r\ncafe\u{301}\r\n123456789012345678901234界x"
+            .as_bytes()
+            .to_vec(),
+    )]);
+    assert!(search(&remote, 1, "ab").matches.is_empty());
+    assert_eq!(search(&remote, 1, "a  b").matches.len(), 1);
+    assert_eq!(search(&remote, 1, "b\n日本語").matches.len(), 1);
+    assert_eq!(search(&remote, 1, "日本語").matches.len(), 1);
+    assert_eq!(search(&remote, 1, "cafe\u{301}").matches.len(), 1);
+    assert_eq!(search(&remote, 1, "34界x").matches.len(), 1);
+
+    // With one column left, Ghostty inserts a spacer head before wrapping
+    // the wide glyph. Neither that head nor its tail is a searchable space.
+    let remote = remote_with(&[(1, "12345678901234567890123界x".as_bytes().to_vec())]);
+    assert_eq!(search(&remote, 1, "23界x").matches.len(), 1);
+    assert!(search(&remote, 1, "23 界x").matches.is_empty());
+}
+
+#[test]
+fn bounds_are_explicit() {
+    let remote = remote_with(&[(1, scrollback())]);
+    assert!(matches!(
+        remote.search_projection(pane(1), String::new(), true, 8),
+        Err(SearchError::EmptyQuery)
+    ));
+    let long = "x".repeat(SEARCH_QUERY_BYTE_LIMIT + 1);
+    assert!(matches!(
+        remote.search_projection(pane(1), long, true, 8),
+        Err(SearchError::QueryTooLong { limit: 4096 })
+    ));
+    let one = remote
+        .search_projection(pane(1), "needle".into(), true, 1)
+        .expect("bounded");
+    assert_eq!(one.matches.len(), 1);
+    assert!(one.truncated, "a second match exists past the bound");
+    let none = remote
+        .search_projection(pane(1), "needle".into(), true, 0)
+        .expect("zero bound");
+    assert!(none.matches.is_empty());
+    assert!(none.truncated);
+    let exact = remote
+        .search_projection(pane(1), "needle".into(), true, 2)
+        .expect("exact bound");
+    assert_eq!(exact.matches.len(), 2);
+    assert!(!exact.truncated);
+}
+
+#[test]
+fn panes_search_independently() {
+    let remote = remote_with(&[(1, scrollback()), (2, scrollback())]);
+    let a = search(&remote, 1, "needle");
+    let b = search(&remote, 2, "needle");
+    search(&remote, 1, "needle");
+    remote.clear_projection_search(pane(1)).expect("clear a");
+    remote
+        .reveal_search_match(pane(2), b.matches[1].start)
+        .expect("pane 2 handles survive pane 1's search and clear");
+    assert_eq!(top_row(&remote, 2), "needle two");
+    assert_eq!(top_row(&remote, 1), "f");
+    assert!(
+        remote
+            .reveal_search_match(pane(2), a.matches[0].start)
+            .is_err(),
+        "another pane's handle never resolves here"
+    );
+}
+
+#[test]
+fn a_rebuilt_presentation_invalidates_its_matches() {
+    let remote = remote_with(&[(1, scrollback())]);
+    let found = search(&remote, 1, "needle");
+    remote
+        .runtime_client()
+        .expect("connected")
+        .engine()
+        .expect("engine")
+        .clear_presentation(&ResourceId::local(1), 1, 1)
+        .expect("clear presentation");
+    assert!(matches!(
+        remote.reveal_search_match(pane(1), found.matches[0].start),
+        Err(SearchError::StaleMatch { .. })
+    ));
+}
+
+#[test]
+fn without_a_connection_or_terminal_search_is_unavailable() {
+    let offline = RemoteClient::new("unused".into(), COLS, ROWS, None, None);
+    assert!(matches!(
+        offline.search_projection(pane(1), "needle".into(), true, 8),
+        Err(SearchError::Unavailable)
+    ));
+    assert!(matches!(
+        offline.clear_projection_search(pane(1)),
+        Err(SearchError::Unavailable)
+    ));
+    assert!(matches!(
+        offline.reveal_search_match(pane(1), u64::MAX),
+        Err(SearchError::Unavailable)
+    ));
+    let remote = remote_with(&[(1, scrollback())]);
+    for bad in ["", "not-an-id"] {
+        assert!(matches!(
+            remote.search_projection(bad.into(), "needle".into(), true, 8),
+            Err(SearchError::Unavailable)
+        ));
+        assert!(matches!(
+            remote.clear_projection_search(bad.into()),
+            Err(SearchError::Unavailable)
+        ));
+        assert!(matches!(
+            remote.reveal_search_match(bad.into(), u64::MAX),
+            Err(SearchError::Unavailable)
+        ));
+    }
+}
+
+fn assert_search_unavailable(remote: &RemoteClient, terminal: u32, anchor: u64) {
+    for bound in [8, 0] {
+        let result = remote.search_projection(pane(terminal), "needle".into(), true, bound);
+        assert!(
+            matches!(result, Err(SearchError::Unavailable)),
+            "{result:?}"
+        );
+    }
+    let result = remote.clear_projection_search(pane(terminal));
+    assert!(
+        matches!(result, Err(SearchError::Unavailable)),
+        "{result:?}"
+    );
+    for handle in [u64::MAX, anchor] {
+        let result = remote.reveal_search_match(pane(terminal), handle);
+        assert!(
+            matches!(result, Err(SearchError::Unavailable)),
+            "{result:?}"
+        );
+    }
+}
+
+#[test]
+fn absent_projection_operations_preserve_sibling_handles_and_viewport() {
+    let remote = remote_with(&[(1, scrollback())]);
+    let found = search(&remote, 1, "needle");
+    remote
+        .reveal_search_match(pane(1), found.matches[0].start)
+        .expect("pin sibling");
+    let client = remote.runtime_client().expect("connected");
+    let frame = client.acquire(&ResourceId::local(1)).expect("published");
+    assert_search_unavailable(&remote, 999, found.matches[1].start);
+    assert!(Arc::ptr_eq(
+        &frame,
+        &client.acquire(&ResourceId::local(1)).expect("unchanged")
+    ));
+    remote
+        .reveal_search_match(pane(1), found.matches[1].start)
+        .expect("sibling handle survives");
+    assert_eq!(top_row(&remote, 1), "needle two");
+}
+
+/// Retiring pane 1's projection (a detach, or a non-retained close) makes
+/// every search operation on it `Unavailable` while pane 2's handles survive.
+fn assert_retired_pane_search_is_unavailable(label: &str, retire: fn(&RemoteClient)) {
+    let remote = remote_with(&[(1, scrollback()), (2, scrollback())]);
+    let found = search(&remote, 1, "needle");
+    let sibling = search(&remote, 2, "needle");
+    retire(&remote);
+    assert_search_unavailable(&remote, 1, found.matches[0].start);
+    assert_search_unavailable(&remote, 1, sibling.matches[0].start);
+    remote
+        .reveal_search_match(pane(2), sibling.matches[0].start)
+        .unwrap_or_else(|error| panic!("{label}: sibling survives: {error:?}"));
+}
+
+#[test]
+fn detached_projection_search_operations_are_unavailable() {
+    assert_retired_pane_search_is_unavailable("detach", |remote| {
+        assert!(
+            remote
+                .runtime_client()
+                .expect("connected")
+                .engine()
+                .expect("engine")
+                .detach(ResourceId::local(1))
+        );
+    });
+}
+
+#[test]
+fn non_retained_closed_projection_search_operations_are_unavailable() {
+    assert_retired_pane_search_is_unavailable("close", |remote| {
+        remote
+            .runtime_client()
+            .expect("connected")
+            .feed(closed(1))
+            .expect("closed");
+    });
+}
+
+fn closed(terminal: u32) -> FrameKind {
+    FrameKind::ResourceClosed {
+        terminal_id: ResourceId::local(terminal),
+        exit_status: Some(0),
+        reason: phux_protocol::wire::frame::CloseReason::Unknown,
+        signal: None,
+    }
+}
+
+#[test]
+fn query_validation_precedes_absent_projection_lookup() {
+    let remote = remote_with(&[(1, scrollback())]);
+    assert!(matches!(
+        remote.search_projection(pane(999), String::new(), true, 0),
+        Err(SearchError::EmptyQuery)
+    ));
+    assert!(matches!(
+        remote.search_projection(pane(999), "x".repeat(SEARCH_QUERY_BYTE_LIMIT + 1), true, 0),
+        Err(SearchError::QueryTooLong { limit: 4096 })
+    ));
+}
+
+#[test]
+fn live_wrong_terminal_and_view_anchors_remain_engine_errors() {
+    let remote = remote_with(&[(1, scrollback()), (2, scrollback())]);
+    let sibling = search(&remote, 2, "needle");
+    assert!(matches!(
+        remote.reveal_search_match(pane(1), sibling.matches[0].start),
+        Err(SearchError::Engine { reason }) if reason == "document anchor belongs to another view"
+    ));
+    let engine = remote
+        .runtime_client()
+        .expect("connected")
+        .engine()
+        .expect("engine");
+    let view = engine.create_view(&ResourceId::local(1)).expect("view");
+    let found = engine
+        .search_view(view, "needle".into(), true)
+        .expect("view search");
+    assert!(matches!(
+        remote.reveal_search_match(pane(1), found[0].start),
+        Err(SearchError::Engine { reason }) if reason == "document anchor belongs to another view"
+    ));
+}
+
+#[test]
+fn retained_close_keeps_real_kernel_failures_as_engine_errors() {
+    let remote = remote_with(&[(1, scrollback())]);
+    let client = remote.runtime_client().expect("connected");
+    let engine = client.engine().expect("engine");
+    engine.set_retain_on_close(&ResourceId::local(1), true);
+    client.feed(closed(1)).expect("closed");
+    assert!(engine.has_projection(&ResourceId::local(1)));
+    assert!(matches!(
+        remote.search_projection(pane(1), "needle".into(), true, 8),
+        Err(SearchError::Engine { .. })
+    ));
+    engine.release(&ResourceId::local(1));
+    assert_search_unavailable(&remote, 1, u64::MAX);
+}

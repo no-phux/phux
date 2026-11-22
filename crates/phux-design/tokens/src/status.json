@@ -1,0 +1,18 @@
+{
+  "source": "Design spec §1.3: the mark ladder from the phux TUI, words from phux-mobile and the HUD. Shape carries the state; colour reinforces it.",
+  "ladder": [
+    { "state": "needs_you", "color": "status.needs_you", "word": "needs_you", "glyph": "●", "ascii": "*", "icon": "status-needs-you", "sf_symbol": "circle.fill", "rank": 1, "bold": true },
+    { "state": "failed", "color": "status.failed", "word": "failed", "glyph": "✕", "ascii": "x", "icon": "status-failed", "sf_symbol": "xmark", "rank": 2, "bold": true },
+    { "state": "lost", "color": "status.failed", "word": "lost", "glyph": "✕", "ascii": "x", "icon": "status-failed", "sf_symbol": "xmark", "rank": 2, "bold": true },
+    { "state": "done", "color": "status.done", "word": "done", "glyph": "◆", "ascii": "+", "icon": "status-done", "sf_symbol": "diamond.fill", "rank": 3, "bold": true },
+    { "state": "working", "color": "status.working", "word": "working", "glyph": "◐", "ascii": "~", "icon": "status-working", "sf_symbol": "circle.lefthalf.filled", "rank": 4, "bold": false },
+    { "state": "done_seen", "color": "status.idle", "word": "done", "glyph": "○", "ascii": "o", "icon": "status-quiet", "sf_symbol": "circle", "rank": 5, "bold": false },
+    { "state": "idle", "color": "status.idle", "word": "idle", "glyph": "○", "ascii": "o", "icon": "status-quiet", "sf_symbol": "circle", "rank": 6, "bold": false },
+    { "state": "unknown", "color": "status.unknown", "word": "", "glyph": "·", "ascii": ".", "icon": "status-unknown", "sf_symbol": "circle.dotted", "rank": 7, "bold": false },
+    { "state": "ended", "color": "text.faint", "word": "ended", "glyph": "–", "ascii": "-", "icon": "status-ended", "sf_symbol": "minus", "rank": 8, "bold": false },
+    { "state": "bell", "color": "status.bell", "word": "bell", "glyph": "•", "ascii": "!", "icon": "status-bell", "sf_symbol": "bell.fill", "rank": 0, "bold": false }
+  ],
+  "histogram_max_rank": 3,
+  "bell_alpha": 0.18,
+  "bell_min_interval": 1.0
+}

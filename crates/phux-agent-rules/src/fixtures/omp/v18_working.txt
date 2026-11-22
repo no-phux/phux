@@ -1,0 +1,24 @@
+                        ████████████
+                           ██  ██       ▄▀▀▄ █▀▄▀▄ █▀▀▄
+                           ██  ██       ▀▄▄▀ █ █ █ █▄▄▀
+                           ▒▒  ██                  █
+                               ██       v18.6.1
+
+     Tip: `/shake` rips heavy tool results out of context to reclaim tokens
+          without a full /compact — `/shake images` drops just images
+
+
+  New session started
+
+
+ Use the bash tool to run exactly: sleep 20 && echo finished . Then reply with
+ one word: done
+
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ $ sleep 20 && echo finished .                                                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+  󱊷 Running requested command                       Run sleep then echo finished
+ ⠙ 7s  󰪣 GPT-6.1-Sol   …atchpad/omp18/work   master  󰙺 0.01 ─0.8%─󰁨922K─
+╰─

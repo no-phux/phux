@@ -1,0 +1,264 @@
+//! The quick terminal: a panel a global chord drops over whatever app is in
+//! front, on the current Space, holding one terminal of its own session.
+//!
+//! It is a second window of this app with its own [`Desk`], always on this
+//! computer's server. Showing it never activates the app or raises the main
+//! window, so a window manager or Stage Manager doesn't switch away; it hides
+//! again when it loses the keyboard. Its session is an ordinary one, so what
+//! runs there outlives the panel and can be attached from anywhere. The main
+//! window leaves that session out of its lists.
+
+use phux_config_core::RuneCfg;
+use phux_config_core::rune::QuickTerminalEdge;
+use rune::{
+    Align, AppHandle, DisplayTarget, OverlayPlacement, ScreenEdge, Tx, WindowOptions, WindowSpec,
+};
+
+use super::Desk;
+use crate::launch::Resolved;
+
+mod chord;
+mod transfer;
+
+pub use chord::{Chord, refusal};
+pub(super) use transfer::Transfer;
+
+/// The session the panel shows, made again if its last terminal exits.
+pub const SESSION: &str = "quick";
+
+const SIZE: (f32, f32) = (960.0, 440.0);
+const MIN_SIZE: (f32, f32) = (320.0, 160.0);
+
+/// `quick-terminal-size` when unset, and the range it is held to.
+const HEIGHT: (f32, f32, f32) = (0.4, 0.2, 0.9);
+
+/// `NSWindowCollectionBehavior`: CanJoinAllSpaces | FullScreenAuxiliary, so
+/// it opens over the Space, or the full-screen app, in front.
+const ALL_SPACES: usize = 1 | 1 << 8;
+
+/// The panel window's own part: its handle, the main window it hands a
+/// terminal to, and whether it has dialed the server yet.
+pub struct Panel {
+    me: AppHandle<Desk>,
+    main: AppHandle<Desk>,
+    /// A panel off at launch connects the first time it's shown, so a chord
+    /// nobody set never makes the session.
+    dialed: bool,
+    /// A move requested from this panel, until the main window's receipt.
+    moving: bool,
+}
+
+/// Whether `session` is the quick terminal's, which the main window doesn't
+/// list.
+pub fn hidden(session: &str) -> bool {
+    session == SESSION
+}
+
+impl Desk {
+    /// The panel's window state: this computer's server and the quick session.
+    fn quick(resolved: &Resolved, me: AppHandle<Self>, main: AppHandle<Self>) -> Self {
+        let mut desk = Self::open(resolved, None);
+        desk.launch.session = Some(SESSION.to_owned());
+        let dialed = chord::at_launch(&desk.file, &desk.prefs).0;
+        desk.quick = Some(Panel {
+            me,
+            main,
+            dialed,
+            moving: false,
+        });
+        // It opens hidden, so nothing of it has the keyboard yet.
+        desk.focused = false;
+        desk
+    }
+
+    /// A panel nobody has shown yet, which stays off the server.
+    pub(super) fn quick_idle(&self) -> bool {
+        self.quick.as_ref().is_some_and(|panel| !panel.dialed)
+    }
+
+    /// The panel's terminal became a tab: a fresh shell for next time.
+    fn refill_quick(&mut self) {
+        if self.selected_session_name().as_deref() == Some(SESSION) {
+            self.new_terminal();
+        }
+    }
+}
+
+/// Add the panel to `app`. The main window registers its chord.
+pub fn add(app: &mut rune::App<Desk>, resolved: Resolved) -> AppHandle<Desk> {
+    let main = app.handle();
+    let panel = rune::App::new(crate::app_spec(SIZE, MIN_SIZE)).windowless();
+    let me = panel.handle();
+    let panel = panel
+        .init(move || Desk::quick(&resolved, me, main))
+        .modifier_keys()
+        .on_ime(|desk: &mut Desk, event, _| desk.ime(event))
+        .on_focus(|desk: &mut Desk, focused, tx| {
+            desk.focus_changed(focused);
+            if !focused {
+                tx.close_window();
+            }
+        });
+    let options = WindowOptions::launcher_panel()
+        .macos(|native| native.collection_behavior(ALL_SPACES).corner_radius(12.0));
+    app.window(WindowSpec::from_app("quick", panel).configured_options(options))
+        .0
+}
+
+/// The chord: hide the panel while it has the keyboard, else bring it in at
+/// the configured edge of the display under the pointer.
+fn toggle(desk: &mut Desk, _: &mut Tx) {
+    let Some(panel) = &mut desk.quick else { return };
+    if panel.me.is_visible() && desk.focused {
+        panel.me.hide();
+        return;
+    }
+    let dial = !std::mem::replace(&mut panel.dialed, true);
+    let area = visible_area_under_pointer();
+    panel
+        .me
+        .place(DisplayTarget::UnderPointer, placement(&desk.file, area));
+    panel.me.show();
+    if dial {
+        desk.dial();
+    }
+}
+
+/// Where the panel opens in `area`, `[x, y, w, h]` points from the display's
+/// top-left: its default width, `quick-terminal-size` of the height, centred
+/// on the chosen edge. An unknown display keeps the window's size.
+fn placement(file: &RuneCfg, area: Option<[f32; 4]>) -> OverlayPlacement {
+    let bottom = file.quick_terminal_edge == Some(QuickTerminalEdge::Bottom);
+    let Some([left, top, w, h]) = area else {
+        let edge = if bottom {
+            ScreenEdge::Bottom
+        } else {
+            ScreenEdge::Top
+        };
+        let (margin, inset) = (0.0, 0.0);
+        return OverlayPlacement::Edge {
+            edge,
+            margin,
+            align: Align::Center,
+            inset,
+        };
+    };
+    let (default, low, high) = HEIGHT;
+    let fraction = file.quick_terminal_size.unwrap_or(default).clamp(low, high);
+    let width = SIZE.0.min(w);
+    let height = (h * fraction).max(MIN_SIZE.1).min(h);
+    OverlayPlacement::Rect {
+        x: left + (w - width) / 2.0,
+        y: top + if bottom { h - height } else { 0.0 },
+        width,
+        height,
+    }
+}
+
+/// The part of the display under the pointer that the menu bar and the Dock
+/// leave free, `[x, y, w, h]` points from that display's top-left. Rune's
+/// placement picks the same display.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+fn visible_area_under_pointer() -> Option<[f32; 4]> {
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+    use objc2_foundation::{NSArray, NSPoint, NSRect};
+
+    // Safety: AppKit's screen list, read on the main thread (the chord's
+    // handler runs on Rune's loop). Both rects are in the same global space,
+    // whose y grows upwards.
+    unsafe {
+        let at: NSPoint = msg_send![class!(NSEvent), mouseLocation];
+        let screens: Retained<NSArray<AnyObject>> = msg_send![class!(NSScreen), screens];
+        screens.iter().find_map(|screen| {
+            let frame: NSRect = msg_send![&screen, frame];
+            let free: NSRect = msg_send![&screen, visibleFrame];
+            let inside = (frame.origin.x..frame.origin.x + frame.size.width).contains(&at.x)
+                && (frame.origin.y..=frame.origin.y + frame.size.height).contains(&at.y);
+            inside.then(|| {
+                let top = frame.origin.y + frame.size.height - (free.origin.y + free.size.height);
+                let left = free.origin.x - frame.origin.x;
+                [left, top, free.size.width, free.size.height].map(|v| v as f32)
+            })
+        })
+    }
+}
+
+/// Elsewhere the panel keeps its default size at the chosen edge.
+#[cfg(not(target_os = "macos"))]
+fn visible_area_under_pointer() -> Option<[f32; 4]> {
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rect(file: &RuneCfg, area: [f32; 4]) -> [f32; 4] {
+        match placement(file, Some(area)) {
+            OverlayPlacement::Rect {
+                x,
+                y,
+                width,
+                height,
+            } => [x, y, width, height],
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_panel_takes_its_share_of_the_display_at_its_edge() {
+        let mut file = RuneCfg::default();
+        let area = [0.0, 0.0, 1920.0, 1080.0];
+        assert_eq!(rect(&file, area), [480.0, 0.0, 960.0, 432.0], "0.4, top");
+        file.quick_terminal_size = Some(0.75);
+        file.quick_terminal_edge = Some(QuickTerminalEdge::Bottom);
+        assert_eq!(rect(&file, area), [480.0, 270.0, 960.0, 810.0]);
+        file.quick_terminal_size = Some(5.0);
+        assert_eq!(rect(&file, area)[3], 1080.0 * 0.9, "held to 0.9");
+        file.quick_terminal_size = Some(0.0);
+        assert_eq!(rect(&file, area)[3], 1080.0 * 0.2, "held to 0.2");
+        // A small display: the panel fits its width, and keeps its least
+        // height.
+        assert_eq!(
+            rect(&file, [0.0, 0.0, 800.0, 600.0]),
+            [0.0, 440.0, 800.0, 160.0]
+        );
+    }
+
+    #[test]
+    fn the_panel_stays_clear_of_the_menu_bar_and_the_dock() {
+        // A 1440-point display with a 30-point menu bar and a 70-point Dock.
+        let free = [0.0, 30.0, 3440.0, 1340.0];
+        let mut file = RuneCfg {
+            quick_terminal_size: Some(0.5),
+            ..RuneCfg::default()
+        };
+        assert_eq!(rect(&file, free), [1240.0, 30.0, 960.0, 670.0], "top");
+        file.quick_terminal_edge = Some(QuickTerminalEdge::Bottom);
+        assert_eq!(
+            rect(&file, free),
+            [1240.0, 700.0, 960.0, 670.0],
+            "ends at the Dock"
+        );
+        // A Dock on the left shifts the centre right.
+        assert_eq!(rect(&file, [80.0, 30.0, 3360.0, 1410.0])[0], 1280.0);
+    }
+
+    #[test]
+    fn an_unknown_display_keeps_the_edge() {
+        let file = RuneCfg {
+            quick_terminal_edge: Some(QuickTerminalEdge::Bottom),
+            ..RuneCfg::default()
+        };
+        assert!(matches!(
+            placement(&file, None),
+            OverlayPlacement::Edge {
+                edge: ScreenEdge::Bottom,
+                ..
+            }
+        ));
+    }
+}

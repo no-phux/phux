@@ -1,0 +1,372 @@
+//! Minting, rotating, listing, pruning, and revoking credentials.
+
+use std::path::Path;
+
+use jiff::{SignedDuration, Timestamp};
+use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
+
+use super::{
+    AuthError, CommitOutcome, CredentialFile, CredentialRecord, CredentialSummary,
+    MintedCredential, PruneOutcome, TERMINAL_CONTROL_SCOPE, TOKEN_LEN, TokenStore, decode_verifier,
+    verifier,
+};
+use crate::secure_file::{self, HeldLock, with_lock};
+
+/// Mint a generation-one credential with terminal-only authority.
+pub fn mint_token(path: &Path) -> Result<MintedCredential, AuthError> {
+    mint_credential(path, None, &[TERMINAL_CONTROL_SCOPE.to_owned()], None)
+}
+
+/// Mint a structured credential. `principal = None` creates a stable principal
+/// from the generated credential id.
+pub fn mint_credential(
+    path: &Path,
+    principal: Option<&str>,
+    scopes: &[String],
+    expires_at: Option<Timestamp>,
+) -> Result<MintedCredential, AuthError> {
+    with_lock(path, |held| {
+        mint_credential_unlocked(path, principal, scopes, expires_at, held)
+    })
+}
+
+pub(super) fn mint_credential_unlocked(
+    path: &Path,
+    principal: Option<&str>,
+    scopes: &[String],
+    expires_at: Option<Timestamp>,
+    held: &HeldLock<'_>,
+) -> Result<MintedCredential, AuthError> {
+    let mut file = load_file_for_update(path)?;
+    let (id, secret) = random_identity_and_secret()?;
+    let principal = principal.map_or_else(|| format!("remote-consumer:{id}"), str::to_owned);
+    file.credentials.push(CredentialRecord {
+        id: id.clone(),
+        verifier: verifier(&secret),
+        principal,
+        scopes: scopes.to_vec(),
+        issued_at: Timestamp::now(),
+        expires_at,
+        revoked_at: None,
+        generation: 1,
+        last_seen: None,
+        first_use_by: None,
+    });
+    let outcome = commit(path, &file, held)?;
+    Ok(MintedCredential {
+        id,
+        generation: 1,
+        secret: hex::encode(secret),
+        durable: outcome.is_durable(),
+    })
+}
+
+/// Rotate a credential with a bounded overlap, atomically.
+pub fn rotate_credential(
+    path: &Path,
+    id: &str,
+    overlap: SignedDuration,
+) -> Result<MintedCredential, AuthError> {
+    with_lock(path, |held| {
+        rotate_credential_at(path, id, overlap, Timestamp::now(), held)
+    })
+}
+
+pub(super) fn rotate_credential_at(
+    path: &Path,
+    id: &str,
+    overlap: SignedDuration,
+    now: Timestamp,
+    held: &HeldLock<'_>,
+) -> Result<MintedCredential, AuthError> {
+    let mut file = load_file_for_update(path)?;
+    let latest = file
+        .credentials
+        .iter()
+        .filter(|record| record.id == id)
+        .max_by_key(|record| record.generation)
+        .cloned()
+        .ok_or_else(|| AuthError::CredentialNotFound(id.to_owned()))?;
+    if latest.revoked_at.is_some() {
+        return Err(AuthError::CredentialRevoked(id.to_owned()));
+    }
+    let lapsed = |at: Option<Timestamp>| at.is_some_and(|at| now >= at);
+    if lapsed(latest.expires_at) || lapsed(latest.first_use_by) {
+        return Err(AuthError::CredentialExpired(id.to_owned()));
+    }
+    let overlap_until = now + overlap.max(SignedDuration::ZERO);
+    for record in file.credentials.iter_mut().filter(|record| record.id == id) {
+        if record.revoked_at.is_none() {
+            record.expires_at = Some(
+                record
+                    .expires_at
+                    .map_or(overlap_until, |expiry| expiry.min(overlap_until)),
+            );
+        }
+    }
+    let mut secret = [0u8; TOKEN_LEN];
+    getrandom::fill(&mut secret)?;
+    let generation = latest.generation.saturating_add(1);
+    file.credentials.push(CredentialRecord {
+        id: id.to_owned(),
+        verifier: verifier(&secret),
+        principal: latest.principal,
+        scopes: latest.scopes,
+        issued_at: now,
+        expires_at: latest.expires_at,
+        revoked_at: None,
+        generation,
+        last_seen: None,
+        first_use_by: latest.first_use_by,
+    });
+    let outcome = commit(path, &file, held)?;
+    Ok(MintedCredential {
+        id: id.to_owned(),
+        generation,
+        secret: hex::encode(secret),
+        durable: outcome.is_durable(),
+    })
+}
+
+/// Mint a generation-one terminal credential.
+///
+/// `replacing` revokes any live credential whose bearer matches that hex
+/// secret in the same rewrite. `expires_at` bounds later admission; `None`
+/// leaves the credential valid until it is revoked. `first_use_by` makes it a
+/// single-use link: unused by then it expires, and the first admission lifts
+/// the deadline. The bearer is returned once and stored only as a verifier.
+pub fn mint_terminal_credential(
+    path: &Path,
+    replacing: Option<&str>,
+    expires_at: Option<Timestamp>,
+    first_use_by: Option<Timestamp>,
+) -> Result<MintedCredential, AuthError> {
+    with_lock(path, |held| {
+        let previous = replacing.map(decode_secret).transpose()?;
+        let mut file = load_file_for_update(path)?;
+        let now = Timestamp::now();
+        if let Some(previous) = previous
+            && let Some(id) = credential_id_for_secret(&file, &previous)
+        {
+            for record in file.credentials.iter_mut().filter(|record| record.id == id) {
+                if record.revoked_at.is_none() {
+                    record.revoked_at = Some(now);
+                }
+            }
+        }
+        let (id, secret) = random_identity_and_secret()?;
+        file.credentials.push(CredentialRecord {
+            id: id.clone(),
+            verifier: verifier(&secret),
+            principal: format!("remote-consumer:{id}"),
+            scopes: vec![TERMINAL_CONTROL_SCOPE.to_owned()],
+            issued_at: now,
+            expires_at,
+            revoked_at: None,
+            generation: 1,
+            last_seen: None,
+            first_use_by,
+        });
+        let outcome = commit(path, &file, held)?;
+        Ok(MintedCredential {
+            id,
+            generation: 1,
+            secret: hex::encode(secret),
+            durable: outcome.is_durable(),
+        })
+    })
+}
+
+/// List credentials aggregated by id (mint time, last seen, revoked).
+pub fn list_credentials(path: &Path) -> Result<Vec<CredentialSummary>, AuthError> {
+    let store = TokenStore::load(path)?;
+    Ok(summarize_credentials(&store.file))
+}
+
+/// Revoke every live credential unused for `unused_for` (`last_seen`, else
+/// `issued_at`).
+pub fn prune_unused(path: &Path, unused_for: SignedDuration) -> Result<PruneOutcome, AuthError> {
+    with_lock(path, |held| {
+        let mut file = load_file_for_update(path)?;
+        let now = Timestamp::now();
+        let cutoff = now - unused_for.max(SignedDuration::ZERO);
+        let mut revoked_ids = Vec::new();
+        for summary in summarize_credentials(&file) {
+            if summary.revoked {
+                continue;
+            }
+            let activity = summary.last_seen.unwrap_or(summary.issued_at);
+            if activity > cutoff {
+                continue;
+            }
+            for record in file
+                .credentials
+                .iter_mut()
+                .filter(|record| record.id == summary.id)
+            {
+                if record.revoked_at.is_none() {
+                    record.revoked_at = Some(now);
+                }
+            }
+            revoked_ids.push(summary.id);
+        }
+        if revoked_ids.is_empty() {
+            return Ok(PruneOutcome {
+                revoked_ids,
+                durable: true,
+            });
+        }
+        let outcome = commit(path, &file, held)?;
+        Ok(PruneOutcome {
+            revoked_ids,
+            durable: outcome.is_durable(),
+        })
+    })
+}
+
+fn summarize_credentials(file: &CredentialFile) -> Vec<CredentialSummary> {
+    let mut by_id: std::collections::BTreeMap<String, CredentialSummary> =
+        std::collections::BTreeMap::new();
+    for record in &file.credentials {
+        let entry = by_id
+            .entry(record.id.clone())
+            .or_insert_with(|| CredentialSummary {
+                id: record.id.clone(),
+                issued_at: record.issued_at,
+                last_seen: record.last_seen,
+                revoked: record.revoked_at.is_some(),
+                generation: record.generation,
+                expires_at: record.expires_at,
+                first_use_by: record.first_use_by,
+            });
+        if record.issued_at < entry.issued_at {
+            entry.issued_at = record.issued_at;
+        }
+        entry.last_seen = match (entry.last_seen, record.last_seen) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        };
+        entry.revoked &= record.revoked_at.is_some();
+        if record.generation > entry.generation {
+            entry.generation = record.generation;
+            entry.expires_at = record.expires_at;
+        }
+        entry.first_use_by = entry.first_use_by.or(record.first_use_by);
+    }
+    by_id.into_values().collect()
+}
+
+fn credential_id_for_secret(file: &CredentialFile, secret: &[u8; TOKEN_LEN]) -> Option<String> {
+    let candidate = Sha256::digest(secret);
+    let mut matched = None;
+    for record in &file.credentials {
+        let Ok(verifier) = decode_verifier(&record.verifier) else {
+            continue;
+        };
+        if bool::from(verifier.ct_eq(candidate.as_slice())) {
+            matched = Some(record.id.clone());
+        }
+    }
+    matched
+}
+
+/// Record a successful authentication for `id`: best effort, at most once
+/// a minute per credential.
+pub fn record_credential_seen(path: &Path, id: &str) {
+    let _ = with_lock(path, |held| {
+        record_credential_seen_unlocked(path, id, Timestamp::now(), held)
+    });
+}
+
+fn record_credential_seen_unlocked(
+    path: &Path,
+    id: &str,
+    now: Timestamp,
+    held: &HeldLock<'_>,
+) -> Result<(), AuthError> {
+    let mut file = load_file_for_update(path)?;
+    let Some(latest) = file
+        .credentials
+        .iter()
+        .filter(|record| record.id == id && record.revoked_at.is_none())
+        .max_by_key(|record| record.generation)
+        .map(|record| record.generation)
+    else {
+        return Ok(());
+    };
+    // The first admission claims a single-use link: its deadline goes, on
+    // every generation, and is written whatever the throttle says.
+    let mut claimed = false;
+    for record in file.credentials.iter_mut().filter(|record| record.id == id) {
+        claimed |= record.first_use_by.take().is_some();
+    }
+    let Some(record) = file
+        .credentials
+        .iter_mut()
+        .find(|record| record.id == id && record.generation == latest)
+    else {
+        return Ok(());
+    };
+    if !claimed
+        && record
+            .last_seen
+            .is_some_and(|seen| now.duration_since(seen) < SignedDuration::from_secs(60))
+    {
+        return Ok(());
+    }
+    record.last_seen = Some(now);
+    let _ = commit(path, &file, held)?;
+    Ok(())
+}
+
+/// Revoke every generation of a credential for future connection attempts.
+pub fn revoke_credential(path: &Path, id: &str) -> Result<CommitOutcome, AuthError> {
+    with_lock(path, |held| {
+        let mut file = load_file_for_update(path)?;
+        let now = Timestamp::now();
+        let mut found = false;
+        for record in file.credentials.iter_mut().filter(|record| record.id == id) {
+            record.revoked_at = Some(now);
+            found = true;
+        }
+        if !found {
+            return Err(AuthError::CredentialNotFound(id.to_owned()));
+        }
+        commit(path, &file, held)
+    })
+}
+
+/// Write `file` (pretty JSON and one trailing newline) over the store at
+/// `path`, under the caller's lock on its directory.
+pub(super) fn commit(
+    path: &Path,
+    file: &CredentialFile,
+    held: &HeldLock<'_>,
+) -> Result<CommitOutcome, AuthError> {
+    let mut bytes =
+        serde_json::to_vec_pretty(file).map_err(|error| AuthError::Malformed(error.to_string()))?;
+    bytes.push(b'\n');
+    Ok(secure_file::atomic_replace(path, &bytes, held)?)
+}
+
+fn load_file_for_update(path: &Path) -> Result<CredentialFile, AuthError> {
+    Ok(TokenStore::load(path)?.file)
+}
+
+pub(super) fn random_identity_and_secret() -> Result<(String, [u8; TOKEN_LEN]), AuthError> {
+    let mut id = [0u8; 16];
+    let mut secret = [0u8; TOKEN_LEN];
+    getrandom::fill(&mut id)?;
+    getrandom::fill(&mut secret)?;
+    Ok((hex::encode(id), secret))
+}
+
+fn decode_secret(encoded: &str) -> Result<[u8; TOKEN_LEN], AuthError> {
+    let bytes =
+        hex::decode(encoded).map_err(|_| AuthError::Malformed("token is not hex".to_owned()))?;
+    <[u8; TOKEN_LEN]>::try_from(bytes.as_slice())
+        .map_err(|_| AuthError::Malformed("token has wrong length".to_owned()))
+}

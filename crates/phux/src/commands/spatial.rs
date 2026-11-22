@@ -1,0 +1,241 @@
+//! Existing-pane layout edits over the shared L3 workspace envelope.
+//!
+//! These verbs never spawn a Terminal. `insert-pane` requires a Terminal that
+//! already exists in the same session but is not yet present in its persisted
+//! layout; implicit spawn-and-place remains a separate placement concern. All
+//! selectors must resolve to exactly one local Terminal. The resulting
+//! metadata write changes topology only: attached clients preserve their own
+//! focus while reconciling it (ADR-0049).
+//!
+//! Resolution, planning, execution, and the refusal vocabulary live in
+//! [`phux_client::spatial`], the one implementation the MCP spatial tools
+//! also call; this file parses nothing but the CLI's own flags and reports.
+
+use std::path::PathBuf;
+use std::process::ExitCode;
+
+use phux_client::spatial::{SpatialError, SpatialOp, SpatialOutcome};
+use phux_config::socket::default_socket_path;
+
+use crate::commands::json_err::{self, CliError};
+use crate::commands::{SpawnSplit, cli_runtime};
+
+pub(crate) use phux_client::spatial::Direction;
+
+impl From<SpawnSplit> for Direction {
+    fn from(split: SpawnSplit) -> Self {
+        match split {
+            SpawnSplit::Horizontal => Self::Horizontal,
+            SpawnSplit::Vertical => Self::Vertical,
+        }
+    }
+}
+
+/// Insert an already-created pane beside `target`.
+pub(crate) fn run_insert_pane(
+    target: &str,
+    new_pane: &str,
+    direction: Direction,
+    ratio: f32,
+    projection: Vec<String>,
+    json: bool,
+    socket: Option<PathBuf>,
+) -> ExitCode {
+    run(
+        SpatialOp::Insert {
+            target: target.to_owned(),
+            new_pane: new_pane.to_owned(),
+            direction,
+            ratio,
+            projection,
+        },
+        json,
+        socket,
+    )
+}
+
+/// Relocate an existing pane beside another pane — across sessions when the
+/// target lives elsewhere (ADR-0056).
+pub(crate) fn run_move_pane(
+    source: &str,
+    target: &str,
+    direction: Direction,
+    ratio: f32,
+    projection: Vec<String>,
+    json: bool,
+    socket: Option<PathBuf>,
+) -> ExitCode {
+    run(
+        SpatialOp::Move {
+            source: source.to_owned(),
+            target: target.to_owned(),
+            direction,
+            ratio,
+            projection,
+        },
+        json,
+        socket,
+    )
+}
+
+/// `phux mv SOURCE DEST`: a membership move when DEST names a session
+/// ([`crate::commands::org::run_move_into_session`]), else a placement
+/// beside the pane DEST names ([`run_move_pane`]).
+pub(crate) fn run_mv(
+    source: &str,
+    dest: &str,
+    direction: Direction,
+    ratio: f32,
+    projection: Vec<String>,
+    json: bool,
+    socket: Option<PathBuf>,
+) -> ExitCode {
+    match crate::commands::org::classify_dest(dest, socket.as_deref()) {
+        crate::commands::org::MoveDest::Session => {
+            crate::commands::org::run_move_into_session(source, dest, json, socket)
+        }
+        crate::commands::org::MoveDest::Pane => {
+            run_move_pane(source, dest, direction, ratio, projection, json, socket)
+        }
+    }
+}
+
+/// Exchange two existing pane leaves in one session layout.
+pub(crate) fn run_swap_pane(
+    first: &str,
+    second: &str,
+    projection: Vec<String>,
+    json: bool,
+    socket: Option<PathBuf>,
+) -> ExitCode {
+    run(
+        SpatialOp::Swap {
+            first: first.to_owned(),
+            second: second.to_owned(),
+            projection,
+        },
+        json,
+        socket,
+    )
+}
+
+/// `phux slot add|out|next|prev`: a slot tab edit through the same path.
+pub(crate) fn run_slot(operation: SpatialOp, json: bool, socket: Option<PathBuf>) -> ExitCode {
+    run(operation, json, socket)
+}
+
+fn run(operation: SpatialOp, json: bool, socket: Option<PathBuf>) -> ExitCode {
+    let socket_path = socket.unwrap_or_else(default_socket_path);
+    let rt = match cli_runtime() {
+        Ok(rt) => rt,
+        Err(code) => return code,
+    };
+    let mut notices = Vec::new();
+    let result = rt.block_on(phux_client::spatial::run(
+        &socket_path,
+        operation,
+        &mut notices,
+    ));
+    for message in &notices {
+        warn!("partial results — {message}");
+    }
+    match result {
+        Ok(outcome) => print_success(json, &outcome),
+        Err(SpatialError::Transport(err)) => {
+            json_err::report_no_server(json, &err, &socket_path, "layout")
+        }
+        Err(SpatialError::Refused(refusal)) => json_err::emit(
+            json,
+            &CliError::new(refusal.code, refusal.message, refusal.remedy),
+            refusal.exit_code,
+        ),
+    }
+}
+
+fn print_success(json: bool, outcome: &SpatialOutcome) -> ExitCode {
+    if !json {
+        outln!("{}", outcome.summary);
+        return ExitCode::SUCCESS;
+    }
+    crate::output::json(&outcome.document)
+}
+
+/// Run `phux insert-pane` as parsed.
+pub(crate) fn insert_pane(
+    args: crate::commands::InsertPaneArgs,
+    socket: Option<PathBuf>,
+) -> ExitCode {
+    let crate::commands::InsertPaneArgs {
+        target,
+        new_pane,
+        split,
+        ratio,
+        projection,
+        json,
+    } = args;
+    run_insert_pane(
+        &target,
+        &new_pane,
+        split.into(),
+        ratio,
+        projection,
+        json,
+        socket,
+    )
+}
+
+/// Run `phux mv` as parsed.
+pub(crate) fn mv(args: crate::commands::MvArgs, socket: Option<PathBuf>) -> ExitCode {
+    let crate::commands::MvArgs {
+        source,
+        dest,
+        split,
+        ratio,
+        projection,
+        json,
+    } = args;
+    run_mv(
+        &source,
+        &dest,
+        split.into(),
+        ratio,
+        projection,
+        json,
+        socket,
+    )
+}
+
+/// Run `phux swap-pane` as parsed.
+pub(crate) fn swap_pane(args: crate::commands::SwapPaneArgs, socket: Option<PathBuf>) -> ExitCode {
+    let crate::commands::SwapPaneArgs {
+        first,
+        second,
+        projection,
+        json,
+    } = args;
+    run_swap_pane(&first, &second, projection, json, socket)
+}
+
+/// Run `phux slot` as parsed.
+pub(crate) fn slot(args: crate::commands::SlotArgs, socket: Option<PathBuf>) -> ExitCode {
+    use crate::commands::SlotAction;
+    let (operation, json) = match args.action {
+        SlotAction::Add { pane, to, json } => (SpatialOp::SlotAdd { pane, to }, json),
+        SlotAction::Out {
+            pane,
+            split,
+            ratio,
+            json,
+        } => (
+            SpatialOp::SlotOut {
+                pane,
+                direction: split.into(),
+                ratio,
+            },
+            json,
+        ),
+        SlotAction::Next { pane, json } => (SpatialOp::SlotStep { pane, delta: 1 }, json),
+        SlotAction::Prev { pane, json } => (SpatialOp::SlotStep { pane, delta: -1 }, json),
+    };
+    run_slot(operation, json, socket)
+}

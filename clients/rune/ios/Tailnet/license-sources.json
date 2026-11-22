@@ -1,0 +1,187 @@
+{
+  "artifact_revision": "3af8bca979a5e3f7e93e603fbc71b2c02b2512ad",
+  "go_version": "1.27.2",
+  "inventory_sha256": "616afdd686ed6fcb59ca98481e92e75783ab20dd627ed2e285cc8c3c90eb9cd4",
+  "modules": [
+    {
+      "name": "libtailscale",
+      "version": "3af8bca979a5",
+      "license": "BSD-3-Clause",
+      "text_sha256": "7b4eb91b9d2b6b762c5f0d53d9494da1bef392a9fca3e1655db73a534d9ae0b8"
+    },
+    {
+      "name": "go",
+      "version": "1.27.2",
+      "license": "BSD-3-Clause",
+      "text_sha256": "22975ebe413674bc619428a26e53412013dccffa69e2f27100dbd8d946fde287"
+    },
+    {
+      "name": "filippo.io/edwards25519",
+      "version": "1.2.0",
+      "license": "BSD-3-Clause",
+      "text_sha256": "4214d8afcc3620b7fb7aa9c7695e8f659a90011a830caf0e0c72a385d7d3b2a5"
+    },
+    {
+      "name": "github.com/creachadair/msync",
+      "version": "0.10.1",
+      "license": "BSD-2-Clause",
+      "text_sha256": "e49883dd91e5a1cba940da96c630429dcccaae707b385d58e3b0de136dad262d"
+    },
+    {
+      "name": "github.com/fxamacker/cbor/v2",
+      "version": "2.9.3",
+      "license": "MIT",
+      "text_sha256": "78cad457d5ea7318230f3d969d4cdf29cef45524a1fc8ca3a97646da1ad7a841"
+    },
+    {
+      "name": "github.com/gaissmai/bart",
+      "version": "0.29.0",
+      "license": "MIT",
+      "text_sha256": "41dda3379865cff960b74321028b0218417e66cd743ba19e356f249273f11f51"
+    },
+    {
+      "name": "github.com/go-json-experiment/json",
+      "version": "0.0.0-20260820222146-c27c302e5fc3",
+      "license": "BSD-3-Clause",
+      "text_sha256": "774b3e913f9c87ad3fb3162ebd5662983c5356dd7f4a01484e337e7205db5927"
+    },
+    {
+      "name": "github.com/golang/groupcache",
+      "version": "0.0.0-20241129210726-2c02b8208cf8",
+      "license": "Apache-2.0",
+      "text_sha256": "9ff562631a04b8cb1030c53fdf461bd749c9af0655d86e4f17eb270e935a7fe2"
+    },
+    {
+      "name": "github.com/google/btree",
+      "version": "1.1.3",
+      "license": "Apache-2.0",
+      "text_sha256": "283ea6cc2997a1a70da0049e09adf9317bb60ca1b51279b65196b83a69e1996b"
+    },
+    {
+      "name": "github.com/hdevalence/ed25519consensus",
+      "version": "0.2.0",
+      "license": "BSD-3-Clause",
+      "text_sha256": "412cb4e87828e5f3d48f429f9088ace42f821d3fdbc2ef552047e882bc9b99bd"
+    },
+    {
+      "name": "github.com/huin/goupnp",
+      "version": "1.3.0",
+      "license": "BSD-2-Clause",
+      "text_sha256": "e59ba7463205e4663e428403dd9c9dcc752d00be4dea62a6aef1de04874c66bd"
+    },
+    {
+      "name": "github.com/klauspost/compress",
+      "version": "1.20.0",
+      "license": "Apache-2.0",
+      "text_sha256": "ba479c17e31e6180d9b6f53cbea93a7fbe838baba13a6f3ad1b08a8163797212"
+    },
+    {
+      "name": "github.com/pires/go-proxyproto",
+      "version": "0.15.0",
+      "license": "Apache-2.0",
+      "text_sha256": "3947bd9da55c519df5bb069667e8a20e5e07e56d869bb7875cdee75834d8250c"
+    },
+    {
+      "name": "github.com/tailscale/peercred",
+      "version": "0.0.0-20250107143737-35a0c7bd7edc",
+      "license": "BSD-3-Clause",
+      "text_sha256": "23e0ad77baa84ff323c73397629958901247f14b4d4def85acd67096cabeac80"
+    },
+    {
+      "name": "github.com/tailscale/web-client-prebuilt",
+      "version": "0.0.0-20260917222731-e0ed2d0d0fea",
+      "license": "BSD-3-Clause",
+      "text_sha256": "1d72e54248cf3bb3977d7624f1895711c9ac710e82605dd1e82282f2a0737600"
+    },
+    {
+      "name": "github.com/tailscale/wireguard-go",
+      "version": "0.0.0-20260928213032-417aef361226",
+      "license": "MIT",
+      "text_sha256": "2af4d13698993a15849a869b4c2ed4954cf251768ad145f371774adb96697e0c"
+    },
+    {
+      "name": "github.com/x448/float16",
+      "version": "0.8.4",
+      "license": "MIT",
+      "text_sha256": "8fbcad4413dca2b76ecc2300d5f245230bf193f63729648d6a451be471e31922"
+    },
+    {
+      "name": "go4.org/mem",
+      "version": "0.0.0-20240501181205-ae6ca9944745",
+      "license": "Apache-2.0",
+      "text_sha256": "6dc0e068dcf3a5bc8e054205b85b7720e1d49265bbc64bf515d2cf79197df69a"
+    },
+    {
+      "name": "go4.org/netipx",
+      "version": "0.0.0-20260823151212-3075585bcbeb",
+      "license": "BSD-3-Clause",
+      "text_sha256": "6e341be35926666d027c250e382a2715572bfcf9d608fe066ae9980ee9b96289"
+    },
+    {
+      "name": "golang.org/x/crypto",
+      "version": "0.57.0",
+      "license": "BSD-3-Clause",
+      "text_sha256": "22975ebe413674bc619428a26e53412013dccffa69e2f27100dbd8d946fde287"
+    },
+    {
+      "name": "golang.org/x/exp",
+      "version": "0.0.0-20260908205506-85c1c2202aba",
+      "license": "BSD-3-Clause",
+      "text_sha256": "22975ebe413674bc619428a26e53412013dccffa69e2f27100dbd8d946fde287"
+    },
+    {
+      "name": "golang.org/x/net",
+      "version": "0.59.0",
+      "license": "BSD-3-Clause",
+      "text_sha256": "22975ebe413674bc619428a26e53412013dccffa69e2f27100dbd8d946fde287"
+    },
+    {
+      "name": "golang.org/x/oauth2",
+      "version": "0.37.0",
+      "license": "BSD-3-Clause",
+      "text_sha256": "22975ebe413674bc619428a26e53412013dccffa69e2f27100dbd8d946fde287"
+    },
+    {
+      "name": "golang.org/x/sync",
+      "version": "0.23.0",
+      "license": "BSD-3-Clause",
+      "text_sha256": "22975ebe413674bc619428a26e53412013dccffa69e2f27100dbd8d946fde287"
+    },
+    {
+      "name": "golang.org/x/sys",
+      "version": "0.48.0",
+      "license": "BSD-3-Clause",
+      "text_sha256": "22975ebe413674bc619428a26e53412013dccffa69e2f27100dbd8d946fde287"
+    },
+    {
+      "name": "golang.org/x/term",
+      "version": "0.46.0",
+      "license": "BSD-3-Clause",
+      "text_sha256": "22975ebe413674bc619428a26e53412013dccffa69e2f27100dbd8d946fde287"
+    },
+    {
+      "name": "golang.org/x/text",
+      "version": "0.42.0",
+      "license": "BSD-3-Clause",
+      "text_sha256": "22975ebe413674bc619428a26e53412013dccffa69e2f27100dbd8d946fde287"
+    },
+    {
+      "name": "golang.org/x/time",
+      "version": "0.16.0",
+      "license": "BSD-3-Clause",
+      "text_sha256": "22975ebe413674bc619428a26e53412013dccffa69e2f27100dbd8d946fde287"
+    },
+    {
+      "name": "gvisor.dev/gvisor",
+      "version": "0.0.0-20260915211658-a6f909f08a72",
+      "license": "Apache-2.0",
+      "text_sha256": "17ddd266e23d19c75fc1e4c303dd9583f1b42a55a9fd2c864f6a51fe02b39bf5"
+    },
+    {
+      "name": "tailscale.com",
+      "version": "1.104.1",
+      "license": "BSD-3-Clause",
+      "text_sha256": "be157f2795e76f34c085032e44bb345151e824dd18824ffce8079b3ce7101214"
+    }
+  ]
+}

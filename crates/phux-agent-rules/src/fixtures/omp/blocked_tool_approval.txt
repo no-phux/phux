@@ -1,0 +1,24 @@
+ Use the eval tool to compute 1 + 1, then report the result.
+
+
+╭─── 🐍 ⣟ running Compute one plus one ────────────────────────────────────────╮
+│ result = 1 + 1                                                               │
+│ display(result)                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+ ⠦ Compute one plus one ⟦esc⟧
+
+────────────────────────────────────────────────────────────────────────────────
+
+ Allow tool: eval
+ Language: python
+ Code:
+ result = 1 + 1
+ display(result)
+
+ ❯ Approve
+   Deny
+
+ up/down navigate  enter select  esc cancel
+
+────────────────────────────────────────────────────────────────────────────────

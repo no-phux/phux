@@ -1,0 +1,81 @@
+{
+  "name": "@phux/pi",
+  "version": "0.10.0",
+  "description": "phux integration for pi: terminal tools and agent status.",
+  "homepage": "https://docs.phux.sh/",
+  "type": "module",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/no-phux/phux.git",
+    "directory": "integrations/pi"
+  },
+  "keywords": [
+    "pi-package",
+    "phux",
+    "terminal"
+  ],
+  "files": [
+    "dist",
+    "extensions/index.ts",
+    "src",
+    "skills",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    },
+    "./adapter": {
+      "types": "./dist/src/adapter.d.ts",
+      "import": "./dist/src/adapter.js"
+    }
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.build.json && node scripts/bundle-skill.mjs",
+    "build:test": "npm run clean && tsc -p tsconfig.test.json",
+    "test": "npm run test:unit && npm run pack:check && npm run smoke:load",
+    "gates": "npm run typecheck && npm test && node ../../scripts/npm-audit-gate.mjs --audit-level=high --omit=dev",
+    "test:unit": "npm run build:test && node --test dist/test/*.test.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "pack:check": "npm run build && node scripts/test-pack.mjs",
+    "smoke:load": "npm run build && node scripts/test-extension-load.mjs",
+    "smoke:real": "npm run build && node scripts/smoke-real.mjs",
+    "prepack": "npm run build"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "^1.4.0",
+    "@earendil-works/pi-coding-agent": "^1.4.0",
+    "@earendil-works/pi-tui": "^1.4.0"
+  },
+  "dependencies": {
+    "@phux/integration-runtime": "file:../runtime"
+  },
+  "bundledDependencies": [
+    "@phux/integration-runtime"
+  ],
+  "devDependencies": {
+    "@earendil-works/pi-ai": "1.4.0",
+    "@earendil-works/pi-coding-agent": "1.4.0",
+    "@earendil-works/pi-tui": "1.4.0",
+    "@types/node": "26.6.6",
+    "typescript": "7.0.2"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

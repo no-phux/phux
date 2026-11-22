@@ -1,0 +1,331 @@
+//! Bridge between `phux-core` slotmap keys and `phux-protocol` wire ids.
+//!
+//! Core keys carry in-process generational tags; wire ids are stable `u32`s.
+//! The two crates must not depend on each other (ADR-0011), so the bridge
+//! lives here, owned by [`IdSpace`](crate::state::IdSpace). [`IdBridge`] is
+//! generic over both, one instance per space; minting differs only through
+//! [`WireId`].
+//!
+//! Wire ids start at 1 (0 is a sentinel), are never reused, and
+//! [`IdBridge::intern`] is idempotent. Exhaustion fails fast: minting
+//! `u32::MAX` panics (poisoning the state lock) instead of saturating,
+//! which would alias every later entity onto one id and misroute I/O.
+
+use std::collections::HashMap;
+use std::fmt::Debug;
+use std::hash::Hash;
+
+use phux_protocol::ids::{
+    ResourceId as WireResourceId, SessionId as WireSessionId, WindowId as WireWindowId,
+};
+
+/// A wire id an [`IdBridge`] can mint from a raw `u32` (one impl per space).
+pub trait WireId: Clone + Eq + Hash + Debug {
+    /// Name of the id space, for the exhaustion panic.
+    const SPACE: &'static str;
+
+    /// Mint the wire id for allocator value `raw`.
+    fn from_raw(raw: u32) -> Self;
+}
+
+impl WireId for WireSessionId {
+    const SPACE: &'static str = "session";
+
+    fn from_raw(raw: u32) -> Self {
+        Self::new(raw)
+    }
+}
+
+impl WireId for WireWindowId {
+    const SPACE: &'static str = "window";
+
+    fn from_raw(raw: u32) -> Self {
+        Self::new(raw)
+    }
+}
+
+/// Mints only `ResourceId::Local`: satellite terminals are routed off the
+/// wire id and never enter a bridge, so [`IdBridge::resolve`] returns
+/// `None` for them by design.
+impl WireId for WireResourceId {
+    const SPACE: &'static str = "terminal";
+
+    fn from_raw(raw: u32) -> Self {
+        Self::local(raw)
+    }
+}
+
+/// Bidirectional core ↔ wire map with a monotonic allocator, reached
+/// through [`IdSpace`](crate::state::IdSpace).
+#[derive(Debug)]
+pub struct IdBridge<C, W> {
+    /// Forward: core slotmap key → wire id.
+    forward: HashMap<C, W>,
+    /// Wire id → core key, kept consistent with `forward`.
+    reverse: HashMap<W, C>,
+    /// Next wire id to hand out. Starts at `1`; `0` is reserved.
+    next: u32,
+}
+
+impl<C, W> Default for IdBridge<C, W>
+where
+    C: Copy + Eq + Hash,
+    W: WireId,
+{
+    /// Same as [`IdBridge::new`] (a derived `Default` would mint the 0
+    /// sentinel).
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<C, W> IdBridge<C, W>
+where
+    C: Copy + Eq + Hash,
+    W: WireId,
+{
+    /// Build an empty bridge with the allocator at `1`.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            forward: HashMap::new(),
+            reverse: HashMap::new(),
+            next: 1,
+        }
+    }
+
+    /// The wire id for `core`, allocating on first call (idempotent,
+    /// monotonic from 1).
+    ///
+    /// # Panics
+    ///
+    /// On the call that would mint `u32::MAX`.
+    #[allow(
+        clippy::panic,
+        reason = "u32 exhaustion is operationally unreachable; fail-fast beats aliasing wire ids"
+    )]
+    pub fn intern(&mut self, core: C) -> W {
+        if let Some(wire) = self.forward.get(&core) {
+            return wire.clone();
+        }
+        let raw = self.next;
+        let Some(next) = self.next.checked_add(1) else {
+            panic!("{} wire-id space exhausted at u32::MAX", W::SPACE)
+        };
+        self.next = next;
+        let wire = W::from_raw(raw);
+        self.forward.insert(core, wire.clone());
+        self.reverse.insert(wire.clone(), core);
+        wire
+    }
+
+    /// Forward lookup without allocating (borrowed: not every wire id is
+    /// `Copy`).
+    #[must_use]
+    pub fn wire(&self, core: C) -> Option<&W> {
+        self.forward.get(&core)
+    }
+
+    /// Bind a mapping from an upgrade blob (ADR-0032); pair with
+    /// [`Self::set_next`].
+    pub fn bind(&mut self, core: C, wire: W) {
+        self.forward.insert(core, wire.clone());
+        self.reverse.insert(wire, core);
+    }
+
+    /// Restore the next-wire-id allocator after a graceful upgrade.
+    pub const fn set_next(&mut self, next: u32) {
+        self.next = next;
+    }
+
+    /// Reverse lookup; `None` for ids never allocated or since retired.
+    #[must_use]
+    pub fn resolve(&self, wire: &W) -> Option<C> {
+        self.reverse.get(wire).copied()
+    }
+
+    /// Drop both directions for `core`, returning the retired wire id (never
+    /// reused). Idempotent.
+    pub fn forget(&mut self, core: C) -> Option<W> {
+        let wire = self.forward.remove(&core)?;
+        self.reverse.remove(&wire);
+        Some(wire)
+    }
+
+    /// Number of currently interned mappings.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.forward.len()
+    }
+
+    /// True if no mappings are present.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.forward.is_empty()
+    }
+
+    /// The next wire id to allocate (carried in the upgrade blob).
+    #[must_use]
+    pub const fn next_wire(&self) -> u32 {
+        self.next
+    }
+}
+
+/// The wire tag for a kind the server serves.
+#[must_use]
+pub const fn wire_kind(
+    kind: phux_core::resource::ResourceKind,
+) -> phux_protocol::ids::ResourceKind {
+    use phux_core::resource::ResourceKind;
+    match kind {
+        ResourceKind::Terminal => phux_protocol::ids::ResourceKind::Terminal,
+        ResourceKind::AgentSession => phux_protocol::ids::ResourceKind::AgentSession,
+        ResourceKind::AccessibilityTree => phux_protocol::ids::ResourceKind::AccessibilityTree,
+        ResourceKind::PixelSurface => phux_protocol::ids::ResourceKind::PixelSurface,
+        ResourceKind::Document => phux_protocol::ids::ResourceKind::Document,
+    }
+}
+
+/// The domain kind a wire tag names, or `None` for one this build does not
+/// serve (a typed refusal, not a decode failure).
+#[must_use]
+pub const fn core_kind(
+    kind: phux_protocol::ids::ResourceKind,
+) -> Option<phux_core::resource::ResourceKind> {
+    use phux_core::resource::ResourceKind;
+    match kind {
+        phux_protocol::ids::ResourceKind::Terminal => Some(ResourceKind::Terminal),
+        phux_protocol::ids::ResourceKind::AgentSession => Some(ResourceKind::AgentSession),
+        phux_protocol::ids::ResourceKind::AccessibilityTree => {
+            Some(ResourceKind::AccessibilityTree)
+        }
+        phux_protocol::ids::ResourceKind::PixelSurface => Some(ResourceKind::PixelSurface),
+        phux_protocol::ids::ResourceKind::Document => Some(ResourceKind::Document),
+        _ => None,
+    }
+}
+
+/// Whether a client whose `HELLO` advertised `caps` decodes `kind`: the
+/// server streams it no other (`docs/compatibility.md`).
+#[must_use]
+pub const fn client_decodes(
+    caps: &phux_protocol::caps::ClientCapabilities,
+    kind: phux_core::resource::ResourceKind,
+) -> bool {
+    caps.resource_kinds.contains(wire_kind(kind))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use phux_core::ids::ResourceId as CoreResourceId;
+    use phux_core::ids::SessionId as CoreSessionId;
+
+    /// The session-space instantiation, which these tests exercise.
+    type SessionBridge = IdBridge<CoreSessionId, WireSessionId>;
+
+    fn fresh_core_ids(n: usize) -> (crate::state::ServerState, Vec<CoreSessionId>) {
+        let mut state = crate::state::ServerState::new();
+        let ids = (0..n)
+            .map(|i| state.seed_empty_session(&format!("s{i}")).expect("session"))
+            .collect::<Vec<_>>();
+        (state, ids)
+    }
+
+    fn fresh_core_terminal() -> (crate::state::ServerState, CoreResourceId) {
+        let mut state = crate::state::ServerState::new();
+        let (_, terminal) = state.seed_session("s");
+        (state, terminal)
+    }
+
+    #[test]
+    fn intern_resolve_and_forget_never_recycle_wire_ids() {
+        let (_reg, ids) = fresh_core_ids(3);
+        let mut bridge = SessionBridge::default();
+        // `Default` starts at 1 like `new`; a derived one would mint the 0 sentinel.
+        assert_eq!(bridge.next_wire(), 1);
+        assert!(bridge.resolve(&WireSessionId(0)).is_none());
+        assert!(bridge.resolve(&WireSessionId(1)).is_none());
+        assert_eq!(bridge.forget(ids[0]), None);
+
+        let w0 = bridge.intern(ids[0]);
+        assert_eq!(bridge.intern(ids[0]), w0);
+        let w1 = bridge.intern(ids[1]);
+        assert_eq!(
+            (w0, w1, bridge.len()),
+            (WireSessionId(1), WireSessionId(2), 2)
+        );
+
+        assert_eq!(bridge.forget(ids[0]), Some(w0));
+        assert_eq!(bridge.forget(ids[0]), None);
+        assert!(bridge.resolve(&w0).is_none() && bridge.wire(ids[0]).is_none());
+        assert_eq!(bridge.resolve(&w1), Some(ids[1]));
+        assert_eq!(bridge.intern(ids[2]), WireSessionId(3));
+    }
+
+    #[test]
+    fn terminal_bridge_mints_and_resolves_only_local_ids() {
+        let (_reg, terminal) = fresh_core_terminal();
+        let mut bridge: IdBridge<CoreResourceId, WireResourceId> = IdBridge::new();
+        let wire = bridge.intern(terminal);
+        assert_eq!(wire, WireResourceId::local(1));
+        let satellite = WireResourceId::satellite("peer", 1);
+        assert!(bridge.resolve(&satellite).is_none());
+        assert_eq!(bridge.resolve(&wire), Some(terminal));
+    }
+
+    #[test]
+    #[should_panic(expected = "session wire-id space exhausted")]
+    fn intern_mints_u32_max_minus_one_then_panics() {
+        let (_reg, ids) = fresh_core_ids(2);
+        let mut bridge = SessionBridge::new();
+        bridge.set_next(u32::MAX - 1);
+        assert_eq!(bridge.intern(ids[0]), WireSessionId(u32::MAX - 1));
+        let _ = bridge.intern(ids[1]);
+    }
+
+    /// The domain's parent facts restate the protocol catalog's
+    /// `ParentRule`: a kind requires a parent exactly when its spawn must
+    /// name one, and only a root (today, only a Terminal, which runs a
+    /// process) can be a parent. A kind that breaks the second pairing must
+    /// say so here.
+    #[test]
+    fn domain_parent_rules_agree_with_the_protocol_catalog() {
+        use phux_core::resource::ResourceKind;
+        use phux_protocol::kinds::{KINDS, ParentRule, parent_rule};
+
+        const SERVED: [ResourceKind; 5] = [
+            ResourceKind::Terminal,
+            ResourceKind::AgentSession,
+            ResourceKind::AccessibilityTree,
+            ResourceKind::PixelSurface,
+            ResourceKind::Document,
+        ];
+        // Stops compiling when a kind is added, so `SERVED` is revisited.
+        const _: () = match ResourceKind::Terminal {
+            ResourceKind::Terminal
+            | ResourceKind::AgentSession
+            | ResourceKind::AccessibilityTree
+            | ResourceKind::PixelSurface
+            | ResourceKind::Document => {}
+        };
+
+        for kind in SERVED {
+            let rule = parent_rule(wire_kind(kind));
+            assert_eq!(
+                kind.requires_parent(),
+                rule == ParentRule::Required,
+                "{kind}: requires_parent disagrees with the catalog",
+            );
+            assert_eq!(
+                kind.can_parent(),
+                rule == ParentRule::Forbidden,
+                "{kind}: can_parent disagrees with the catalog",
+            );
+        }
+        for spec in &KINDS {
+            let kind = core_kind(spec.kind).expect("every catalog kind is served");
+            assert!(SERVED.contains(&kind), "{kind} is missing from SERVED");
+        }
+    }
+}

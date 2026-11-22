@@ -1,0 +1,60 @@
+//! Transient notices: the chip a lifecycle event shows on the bar.
+
+use std::time::Duration;
+
+use ratatui::style::Style;
+
+use crate::render::theme::Theme;
+
+/// How long a transient [`Notice`] stays on the bar (expiry rides the 1 s
+/// status tick).
+pub const NOTICE_TTL: Duration = Duration::from_secs(7);
+
+/// A [`Notice`]'s chip style: `Info` rides the selection pair, `Warn` is
+/// bold selection ink on the theme's `error` slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoticeSeverity {
+    /// Informational lifecycle event (e.g. an input-lease handover).
+    Info,
+    /// Something is degraded and the user should know (e.g. a federation
+    /// satellite became unreachable).
+    Warn,
+}
+
+impl NoticeSeverity {
+    /// Full-row style for a notice of this severity.
+    pub(super) fn style(self, theme: &Theme) -> Style {
+        match self {
+            Self::Info => theme.on_selection(Style::default().fg(theme.selection_fg)),
+            Self::Warn => theme.alarm(),
+        }
+    }
+}
+
+/// A transient status-bar message: one newest-wins slot that restarts the
+/// [`NOTICE_TTL`] clock, painted right-aligned; the error line outranks it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Notice {
+    /// Render severity; see [`NoticeSeverity`].
+    pub severity: NoticeSeverity,
+    /// The message painted across the bar row (truncated to the span).
+    pub text: String,
+}
+
+impl Notice {
+    /// An [`NoticeSeverity::Info`] notice.
+    pub fn info(text: impl Into<String>) -> Self {
+        Self {
+            severity: NoticeSeverity::Info,
+            text: text.into(),
+        }
+    }
+
+    /// A [`NoticeSeverity::Warn`] notice.
+    pub fn warn(text: impl Into<String>) -> Self {
+        Self {
+            severity: NoticeSeverity::Warn,
+            text: text.into(),
+        }
+    }
+}

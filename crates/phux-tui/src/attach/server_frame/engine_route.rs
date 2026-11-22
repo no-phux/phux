@@ -1,0 +1,450 @@
+//! Translation of wire frames into session-kernel inputs and the
+//! kernel-effect route (`KernelRoute`) the handler folds back in.
+
+use std::collections::{HashMap, HashSet};
+
+use phux_client_core::history::HistoryLoadState;
+use phux_client_core::session::{
+    AgentSessionDeclaration, EffectBuffer as KernelEffectBuffer, KernelEffect, KernelInput,
+    KernelSend,
+};
+use phux_protocol::ids::{ResourceId, SessionId};
+use phux_protocol::wire::frame::{AgentEvent, FrameKind};
+use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot, WindowInfo};
+use phux_protocol::{BootstrapId, ResourceKind, StreamId};
+
+use crate::render::chrome::status_bar::Notice;
+
+use super::outcome::pane_label;
+
+#[derive(Default)]
+pub(super) struct KernelRoute {
+    pub(super) ack: Option<(ResourceId, StreamId, BootstrapId, u64)>,
+    pub(super) history_request: Option<(ResourceId, StreamId, BootstrapId, bytes::Bytes, u32, u32)>,
+    pub(super) damaged: HashSet<ResourceId>,
+    /// `AgentSession` resources whose record log grew under this frame. The
+    /// chrome projects them, so the handler raises a chrome repaint.
+    pub(super) agent_touched: HashSet<ResourceId>,
+    /// A live-spawned `AgentSession` child first declared by this frame, for
+    /// the driver to attach as a record stream.
+    pub(super) declared_agent: Option<ResourceId>,
+    pub(super) resync_required: bool,
+    pub(super) ignored: bool,
+    pub(super) failed: Option<String>,
+    /// Notices raised by the kernel's own effects.
+    pub(super) notices: Vec<Notice>,
+    /// Per-pane progressive-history health this frame established (`true`:
+    /// unavailable). Last word wins; absent panes keep their flag.
+    pub(super) history_degraded: HashMap<ResourceId, bool>,
+    /// OSC 52 writes from live output (ADR-0158), for the driver's policy.
+    pub(super) clipboard_writes: Vec<(ResourceId, phux_client_core::engine::ClipboardText)>,
+    /// OSC 52 reads from live output, for the driver's policy.
+    pub(super) clipboard_reads: Vec<(ResourceId, phux_client_core::engine::ClipboardSelection)>,
+}
+impl KernelRoute {
+    /// Keep an OSC 52 write or read for the driver's policy; false for any
+    /// other engine status.
+    fn note_clipboard(
+        &mut self,
+        terminal_id: &ResourceId,
+        status: &phux_client_core::engine::EngineStatus,
+    ) -> bool {
+        match status {
+            phux_client_core::engine::EngineStatus::ClipboardWrite(text) => {
+                self.clipboard_writes
+                    .push((terminal_id.clone(), text.clone()));
+            }
+            phux_client_core::engine::EngineStatus::ClipboardRead(selection) => {
+                self.clipboard_reads.push((terminal_id.clone(), *selection));
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    pub(super) fn damaged(&self, terminal_id: &ResourceId) -> bool {
+        self.damaged.contains(terminal_id)
+    }
+}
+
+/// Whether a snapshot entry is a Terminal-kind resource: the only kind that
+/// owns a grid, a pane slot, and a layout leaf.
+pub(super) const fn is_terminal(info: &ResourceInfo) -> bool {
+    matches!(info.kind, ResourceKind::Terminal)
+}
+
+/// The `AgentSession` resources bound to one of `participants`: declared as
+/// record streams, never slots or barrier participants.
+pub(super) fn attach_agent_sessions<'a>(
+    snapshot: &'a SessionSnapshot,
+    participants: &[ResourceId],
+) -> Vec<&'a ResourceInfo> {
+    snapshot
+        .resources
+        .iter()
+        .filter(|info| matches!(info.kind, ResourceKind::AgentSession))
+        .filter(|info| {
+            info.parent
+                .as_ref()
+                .is_some_and(|parent| participants.contains(parent))
+        })
+        .collect()
+}
+
+/// The panes an ATTACH will bootstrap: the focused session's Terminal-kind
+/// members. Counting other sessions' panes left `ATTACH_READY`
+/// unresolvable; an unnamed pane is excluded (a late paint, not a hang).
+pub(in crate::attach) fn attach_participants(snapshot: &SessionSnapshot) -> Vec<ResourceId> {
+    session_terminals(
+        &snapshot.windows,
+        &snapshot.resources,
+        snapshot.focused_session,
+    )
+}
+
+/// Every Terminal that belongs to `session`, arranged or not, joined through
+/// the same rule as [`phux_client::resource::session_of`].
+pub(in crate::attach) fn session_terminals(
+    windows: &[WindowInfo],
+    resources: &[ResourceInfo],
+    session: SessionId,
+) -> Vec<ResourceId> {
+    resources
+        .iter()
+        .filter(|pane| is_terminal(pane))
+        .filter(|pane| {
+            crate::attach::sidebar_zones::resource_session(pane, windows) == Some(session)
+        })
+        .map(|pane| pane.id.clone())
+        .collect()
+}
+
+/// The attach barrier and process closure, alongside the shared stream inputs.
+fn kernel_input_for<'a>(
+    frame: &'a FrameKind,
+    terminals: &'a [ResourceId],
+) -> Option<KernelInput<'a>> {
+    match frame {
+        FrameKind::Attached { attach_id, .. } => Some(KernelInput::AttachStarted {
+            attach_id: *attach_id,
+            terminals,
+        }),
+        FrameKind::AttachReady { attach_id } => Some(KernelInput::AttachReady {
+            attach_id: *attach_id,
+        }),
+        FrameKind::ResourceClosed {
+            terminal_id,
+            exit_status,
+            reason,
+            signal,
+        } => Some(KernelInput::ResourceClosed {
+            terminal_id,
+            exit_status: *exit_status,
+            signal: *signal,
+            reason: *reason,
+        }),
+        _ => KernelInput::from_stream_frame(frame),
+    }
+}
+
+/// Route one inbound wire frame through the session kernel and fold its
+/// declarative effects into a [`KernelRoute`] the handler's arm consumes.
+pub(super) fn route_engine_frame(
+    frame: &FrameKind,
+    kernel: &mut crate::attach::pane_state::AttachKernel,
+    effects: &mut KernelEffectBuffer,
+) -> KernelRoute {
+    let terminals = frame_attach_participants(frame);
+    // A frame the kernel does not model, except a spawn announcement of a
+    // new `AgentSession` child, which it must learn about.
+    let Some(input) = kernel_input_for(frame, &terminals) else {
+        let mut route = KernelRoute::default();
+        declare_spawned_agent_session(frame, kernel, effects, &mut route);
+        return route;
+    };
+
+    effects.clear();
+    let result = kernel.update(input, effects);
+    let mut route = classify_kernel_result(&result, frame, effects);
+    collect_route_effects(&mut route, effects);
+    if route.failed.is_none()
+        && let FrameKind::Attached { snapshot, .. } = frame
+    {
+        declare_agent_sessions(snapshot, &terminals, kernel, effects, &mut route);
+    }
+    if route.failed.is_none() {
+        declare_spawned_agent_session(frame, kernel, effects, &mut route);
+    }
+    note_fresh_history(frame, &mut route);
+    route
+}
+
+/// Whether a history cache in `state` can still page scrollback in.
+const fn history_healthy(state: HistoryLoadState) -> bool {
+    matches!(
+        state,
+        HistoryLoadState::Idle | HistoryLoadState::Loading | HistoryLoadState::Complete
+    )
+}
+
+/// An accepted `BOOTSTRAP_READY` publishes a replica with a fresh history
+/// cache, so an earlier generation's degraded mark no longer applies. A
+/// failure reported by the same frame keeps its word.
+fn note_fresh_history(frame: &FrameKind, route: &mut KernelRoute) {
+    let FrameKind::BootstrapReady { terminal_id, .. } = frame else {
+        return;
+    };
+    if route.failed.is_some() || route.resync_required || route.ignored {
+        return;
+    }
+    route
+        .history_degraded
+        .entry(terminal_id.clone())
+        .or_insert(false);
+}
+
+/// Declare a live-spawned `AgentSession` whose parent is a Terminal this
+/// kernel holds and that is not yet known.
+fn declare_spawned_agent_session(
+    frame: &FrameKind,
+    kernel: &mut crate::attach::pane_state::AttachKernel,
+    effects: &mut KernelEffectBuffer,
+    route: &mut KernelRoute,
+) {
+    let FrameKind::Event {
+        terminal: Some(terminal_id),
+        event:
+            AgentEvent::ResourceSpawned {
+                kind: ResourceKind::AgentSession,
+                parent: Some(parent),
+            },
+        ..
+    } = frame
+    else {
+        return;
+    };
+    if kernel.resource_kind(terminal_id).is_some()
+        || kernel.resource_kind(parent) != Some(ResourceKind::Terminal)
+    {
+        return;
+    }
+    let declaration = AgentSessionDeclaration {
+        terminal_id,
+        parent: Some(parent),
+        provider: None,
+        native_id: None,
+        state: None,
+    };
+    effects.clear();
+    match kernel.update(KernelInput::AgentSessionDeclared(declaration), effects) {
+        Ok(()) => {
+            route.declared_agent = Some(terminal_id.clone());
+            collect_route_effects(route, effects);
+        }
+        Err(error) => route.failed = Some(error.to_string()),
+    }
+}
+
+/// Declare every `AgentSession` child of an attach participant.
+fn declare_agent_sessions(
+    snapshot: &SessionSnapshot,
+    participants: &[ResourceId],
+    kernel: &mut crate::attach::pane_state::AttachKernel,
+    effects: &mut KernelEffectBuffer,
+    route: &mut KernelRoute,
+) {
+    for info in attach_agent_sessions(snapshot, participants) {
+        let facet = info.agent.as_ref();
+        let declaration = AgentSessionDeclaration {
+            terminal_id: &info.id,
+            parent: info.parent.as_ref(),
+            provider: facet.map(|facet| facet.provider.as_str()),
+            native_id: facet.and_then(|facet| facet.native_id.as_deref()),
+            state: facet.map(|facet| facet.state.as_str()),
+        };
+        effects.clear();
+        if let Err(error) = kernel.update(KernelInput::AgentSessionDeclared(declaration), effects) {
+            route.failed = Some(error.to_string());
+            return;
+        }
+        collect_route_effects(route, effects);
+    }
+}
+
+/// The attach participants an `ATTACHED` frame declares (materialized so
+/// `KernelInput::AttachStarted` can borrow it).
+fn frame_attach_participants(frame: &FrameKind) -> Vec<ResourceId> {
+    let FrameKind::Attached { snapshot, .. } = frame else {
+        return Vec::new();
+    };
+    attach_participants(snapshot)
+}
+
+/// Did the kernel emit a typed resync-required status?
+pub(in crate::attach) fn emitted_resync_required(effects: &KernelEffectBuffer) -> bool {
+    effects.as_slice().iter().any(|effect| {
+        matches!(
+            effect,
+            KernelEffect::Status(phux_client_core::session::KernelStatus::ResyncRequired { .. })
+        )
+    })
+}
+
+/// Did the kernel emit a (recoverable) per-pane history-unavailable status?
+fn emitted_history_unavailable(effects: &KernelEffectBuffer) -> bool {
+    effects.as_slice().iter().any(|effect| {
+        matches!(
+            effect,
+            KernelEffect::Status(
+                phux_client_core::session::KernelStatus::HistoryUnavailable { .. }
+            )
+        )
+    })
+}
+
+/// Fold the kernel's `update` result and statuses into the route's verdict.
+/// A resync, a frame off the current generations, and a recovered history
+/// failure are non-fatal; anything else rejects the frame.
+fn classify_kernel_result<E>(
+    result: &Result<(), phux_client_core::session::KernelError<E>>,
+    frame: &FrameKind,
+    effects: &KernelEffectBuffer,
+) -> KernelRoute
+where
+    phux_client_core::session::KernelError<E>: std::fmt::Display,
+{
+    // A deadline the kernel checked during this update (another resource's
+    // stalled cut) reports a resync whatever this frame's own result.
+    let resync_required = emitted_resync_required(effects);
+    let recovered_history_failure = result.is_err()
+        && matches!(frame, FrameKind::HistoryPage { .. })
+        && emitted_history_unavailable(effects);
+    let ignored = result
+        .as_ref()
+        .is_err_and(phux_client_core::session::KernelError::is_benign_generation);
+    let degraded = resync_required || ignored || recovered_history_failure;
+    let failed = match result {
+        Ok(()) => None,
+        Err(_) if degraded => None,
+        Err(error) => Some(error.to_string()),
+    };
+    KernelRoute {
+        resync_required,
+        ignored,
+        failed,
+        ..KernelRoute::default()
+    }
+}
+
+/// Fold the kernel's effects into the sends, repaints, and notices the
+/// handler reads.
+fn collect_route_effects(route: &mut KernelRoute, effects: &KernelEffectBuffer) {
+    for effect in effects.as_slice() {
+        match effect {
+            KernelEffect::Send(KernelSend::FrameAck {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                seq,
+            }) => {
+                route.ack = Some((terminal_id.clone(), *stream_id, *bootstrap_id, *seq));
+            }
+            KernelEffect::Send(KernelSend::HistoryRequest {
+                key,
+                cursor,
+                max_bytes,
+                max_rows,
+            }) => {
+                route.history_request = Some((
+                    key.terminal_id.clone(),
+                    key.stream_id,
+                    key.bootstrap_id,
+                    bytes::Bytes::from(cursor.clone()),
+                    *max_bytes,
+                    *max_rows,
+                ));
+            }
+            KernelEffect::Damage(damage) => {
+                route.damaged.insert(damage.terminal_id.clone());
+            }
+            KernelEffect::AgentPublication(publication) => {
+                route.agent_touched.insert(publication.resource_id.clone());
+            }
+            // The TUI draws no tree or surface yet.
+            KernelEffect::Document(_) => {}
+            // Per-pane and recoverable; the kernel names the pane.
+            KernelEffect::Status(phux_client_core::session::KernelStatus::HistoryUnavailable {
+                key,
+                reason,
+            }) => {
+                tracing::warn!(
+                    terminal_id = ?key.terminal_id,
+                    ?reason,
+                    "history unavailable for pane"
+                );
+                // `Released` means the terminal is already gone (a popup
+                // whose command exited): nothing is lost worth a toast.
+                if *reason != phux_client_core::session::HistoryUnavailableReason::Released {
+                    route.notices.push(Notice::warn(format!(
+                        "{}: scrollback unavailable",
+                        pane_label(&key.terminal_id),
+                    )));
+                }
+                route.history_degraded.insert(key.terminal_id.clone(), true);
+            }
+            // A healthy cache (a fresh fetch, or a completed one) clears the
+            // pane's degraded mark; a failed state leaves it as reported.
+            KernelEffect::Status(phux_client_core::session::KernelStatus::History {
+                key,
+                status,
+            }) => {
+                tracing::debug!(terminal_id = ?key.terminal_id, ?status, "history status");
+                if history_healthy(status.state) {
+                    route
+                        .history_degraded
+                        .insert(key.terminal_id.clone(), false);
+                }
+            }
+            // Cwd/command-boundary/exit statuses have no TUI chrome yet.
+            KernelEffect::Status(
+                status @ (phux_client_core::session::KernelStatus::Cwd { .. }
+                | phux_client_core::session::KernelStatus::CommandStarted { .. }
+                | phux_client_core::session::KernelStatus::CommandFinished { .. }
+                | phux_client_core::session::KernelStatus::Exited { .. }),
+            ) => {
+                tracing::debug!(?status, "session kernel status (no TUI consumer yet)");
+            }
+            // A resync means the replica diverged, and a document stall is
+            // recovered only where documents are streamed: worth a warning.
+            KernelEffect::Status(
+                status @ (phux_client_core::session::KernelStatus::ResyncRequired { .. }
+                | phux_client_core::session::KernelStatus::DocumentStalled { .. }
+                | phux_client_core::session::KernelStatus::DocumentLost { .. }),
+            ) => {
+                tracing::warn!(?status, "session kernel status");
+            }
+            KernelEffect::Status(phux_client_core::session::KernelStatus::Engine {
+                key,
+                status,
+            }) if route.note_clipboard(&key.terminal_id, status) => {}
+            // Title, bell, and history paging are routine (an agent's spinner
+            // retitles its pane several times a second): debug, not warn.
+            KernelEffect::Status(status) => {
+                tracing::debug!(?status, "session kernel status");
+            }
+            KernelEffect::Job(job) => {
+                tracing::debug!(?job, "session kernel cooperative job");
+            }
+            // The TUI manages its own SUBSCRIBE_EVENTS; the kernel's duplicate
+            // is dropped.
+            KernelEffect::Send(KernelSend::SubscribeEvents { .. }) => {
+                tracing::trace!(
+                    "kernel-emitted SUBSCRIBE_EVENTS superseded by the TUI's own subscription"
+                );
+            }
+            KernelEffect::Send(send) => {
+                tracing::warn!(?send, "unexpected synchronous engine send");
+            }
+        }
+    }
+}

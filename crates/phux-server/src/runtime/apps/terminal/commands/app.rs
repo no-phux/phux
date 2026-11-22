@@ -1,0 +1,331 @@
+//! [`TerminalApp`]: the Terminal facet's commands and stream bootstrap.
+
+use futures_util::FutureExt as _;
+use futures_util::future::LocalBoxFuture;
+use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode, FrameKind};
+use phux_terminal_api::actor::TerminalResource as _;
+
+use crate::runtime::apps::terminal::commands::agent_reports::{
+    handle_report_agent_state, handle_report_asked,
+};
+use crate::runtime::apps::terminal::commands::attach_resource::AttachResourceSession;
+use crate::runtime::apps::terminal::commands::input_lease::{
+    handle_acquire_input, handle_release_input,
+};
+use crate::runtime::apps::terminal::commands::input_route::handle_route_input;
+use crate::runtime::apps::terminal::commands::screen::{
+    handle_get_screen, handle_get_terminal_state,
+};
+use crate::runtime::apps::terminal::commands::signal::handle_signal_terminal;
+use crate::runtime::apps::{
+    FrameAdmission, KindResume, NO_TERMINAL_PROFILE, ResourceApp, ResourceFrame, ResourceSpawn,
+    StreamBootstrap, UpgradeCut,
+};
+use crate::runtime::commands::{AttachResourceFailure, CommandContext};
+use crate::runtime::connections::dispatch::FrameFlow;
+use crate::runtime::operation_dedupe::OperationClaim;
+use crate::state::SharedState;
+
+/// Serves [`ResourceKind::Terminal`](crate::resource::ResourceKind::Terminal).
+#[derive(Debug)]
+pub(crate) struct TerminalApp;
+
+impl ResourceApp for TerminalApp {
+    fn stage_session<'a>(
+        &'a self,
+        capture: crate::runtime::session_attach::SessionCapture<'a>,
+        staging: &'a mut crate::runtime::session_attach::staging::SessionStaging,
+        pane: crate::state::AttachSnapshotPane,
+    ) -> LocalBoxFuture<'a, Result<(), crate::runtime::session_attach::staging::CaptureFailure>>
+    {
+        super::super::attach::stage_session(capture, staging, pane).boxed_local()
+    }
+
+    fn command<'a>(
+        &'a self,
+        ctx: &'a CommandContext,
+        command: Command,
+        claim: Option<&'a OperationClaim>,
+    ) -> LocalBoxFuture<'a, CommandResult> {
+        serve(ctx, command, claim).boxed_local()
+    }
+
+    fn bootstrap<'a>(
+        &'a self,
+        stream: StreamBootstrap<'a>,
+    ) -> LocalBoxFuture<'a, Result<(), AttachResourceFailure>> {
+        bootstrap_stream(stream).boxed_local()
+    }
+
+    fn frame_admission(&self, frame: &FrameKind) -> FrameAdmission {
+        match frame {
+            FrameKind::InputKey { .. }
+            | FrameKind::InputMouse { .. }
+            | FrameKind::InputFocus { .. }
+            | FrameKind::InputPaste { .. }
+            | FrameKind::ClipboardReply { .. } => FrameAdmission::AttachedInput,
+            FrameKind::FrameAck { .. } => FrameAdmission::Subscription,
+            _ => FrameAdmission::Unrestricted,
+        }
+    }
+
+    fn frame<'a>(
+        &'a self,
+        ctx: ResourceFrame<'a>,
+        frame: FrameKind,
+    ) -> LocalBoxFuture<'a, FrameFlow> {
+        super::super::frames::serve_frame(ctx, frame).boxed_local()
+    }
+
+    fn spawn<'a>(&'a self, spawn: ResourceSpawn<'a>) -> LocalBoxFuture<'a, ()> {
+        super::super::attach::handle_spawn_terminal(spawn).boxed_local()
+    }
+
+    fn begin_upgrade(&self, _state: &SharedState) -> Option<Box<dyn UpgradeCut>> {
+        Some(Box::<super::super::upgrade::TerminalCut>::default())
+    }
+
+    fn resume(&self, state: &SharedState) -> Box<dyn KindResume> {
+        super::super::upgrade::resume(state)
+    }
+}
+
+/// One flat arm per Terminal facet command keeps the catalog auditable.
+#[allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    reason = "one flat dispatch arm per wire command keeps the catalog auditable"
+)]
+async fn serve(
+    ctx: &CommandContext,
+    command: Command,
+    claim: Option<&OperationClaim>,
+) -> CommandResult {
+    let CommandContext {
+        state, client_id, ..
+    } = ctx;
+    let client_id = *client_id;
+    let input_lane = ctx.input_lane.as_ref();
+
+    match command {
+        Command::Transcribe {
+            upload_id,
+            terminal_id,
+        } => {
+            crate::runtime::apps::terminal::voice::handle_transcribe(
+                state,
+                client_id,
+                upload_id,
+                &terminal_id,
+                input_lane,
+            )
+            .await
+        }
+        Command::GetScreen {
+            terminal_id,
+            request_scrollback,
+            cells,
+            format,
+        } => handle_get_screen(state, &terminal_id, request_scrollback, cells, format).await,
+        Command::RouteInput { terminal_id, event } => match input_lane {
+            // A held `ROUTE_INPUT` waits for a pane input credit exactly as a
+            // direct one does (ADR-0144).
+            Some(lane) => {
+                match crate::runtime::apps::terminal::input_lane::acquire_credit(
+                    state,
+                    &terminal_id,
+                )
+                .await
+                {
+                    Ok(credit) => {
+                        lane.begin_route(state, client_id, terminal_id, event, credit)
+                            .await
+                    }
+                    Err(crate::runtime::apps::terminal::input_lane::InputStalled) => {
+                        crate::runtime::apps::terminal::input_lane::InputStalled::result(
+                            &terminal_id,
+                        )
+                    }
+                }
+            }
+            None => handle_route_input(state, client_id, &terminal_id, event),
+        },
+        Command::ApplyInput {
+            operation_id,
+            terminal_id,
+            events,
+        } => match input_lane {
+            Some(lane) => {
+                lane.begin_apply(state, client_id, operation_id, terminal_id, events)
+                    .await
+            }
+            None => CommandResult::error(
+                ErrorCode::InternalError,
+                "acknowledged input lane unavailable",
+            ),
+        },
+        Command::GetTerminalState {
+            terminal_id,
+            include_scrollback,
+            max_scrollback_lines,
+        } => {
+            handle_get_terminal_state(
+                state,
+                &terminal_id,
+                include_scrollback,
+                max_scrollback_lines,
+            )
+            .await
+        }
+        Command::AcquireInput {
+            terminal_id,
+            mode,
+            ttl_ms,
+        } => handle_acquire_input(state, client_id, &terminal_id, mode, ttl_ms).await,
+        Command::ReleaseInput { terminal_id } => {
+            handle_release_input(state, client_id, &terminal_id).await
+        }
+        Command::SignalTerminal {
+            terminal_id,
+            signal,
+            operation_id,
+        } => {
+            handle_signal_terminal(state, client_id, &terminal_id, signal, operation_id, claim)
+                .await
+        }
+        Command::PutFile {
+            upload_id,
+            terminal_id,
+            extension,
+            offset,
+            data,
+            final_chunk,
+            sha256,
+        } => {
+            crate::runtime::apps::terminal::upload::handle_put_file(
+                state,
+                crate::runtime::apps::terminal::upload::PutFileChunk {
+                    upload_id,
+                    terminal_id,
+                    extension,
+                    offset,
+                    data,
+                    final_chunk,
+                    sha256,
+                    principal: state.with(|s| {
+                        crate::runtime::apps::terminal::upload::upload_principal(s, client_id)
+                    }),
+                },
+            )
+            .await
+        }
+        Command::Checkout {
+            terminal_id,
+            request,
+            contract,
+        } => {
+            crate::runtime::apps::terminal::checkout::handle(state, &terminal_id, request, contract)
+                .await
+        }
+        Command::ReportAsked {
+            terminal_id,
+            id,
+            question,
+            suggestions,
+            elapsed_seconds,
+        } => handle_report_asked(
+            state,
+            &terminal_id,
+            id,
+            question,
+            suggestions,
+            elapsed_seconds,
+        ),
+        Command::ReportAgentState {
+            terminal_id,
+            state: reported,
+        } => handle_report_agent_state(state, &terminal_id, reported).await,
+        _ => CommandResult::error(
+            ErrorCode::InvalidCommand,
+            "command not supported by this server",
+        ),
+    }
+}
+
+/// Bootstrap one Terminal's content stream into its mailbox without touching
+/// the caller's subscription; a failure cancels the generation only.
+async fn bootstrap_stream(stream: StreamBootstrap<'_>) -> Result<(), AttachResourceFailure> {
+    let StreamBootstrap {
+        state,
+        client_id,
+        wire: terminal_id,
+        core,
+        handle,
+        content_tx,
+        stream_id,
+        client_caps,
+        profile: bootstrap_profile,
+        limits: bootstrap_limits,
+        connection_token,
+        ..
+    } = stream;
+    let Some(bootstrap_profile) = bootstrap_profile else {
+        return Err(AttachResourceFailure {
+            code: ErrorCode::CodecUnavailable,
+            message: NO_TERMINAL_PROFILE.to_owned(),
+        });
+    };
+    let Some(stream_profile) =
+        crate::runtime::apps::terminal::attach::bootstrap_stream_profile(bootstrap_profile)
+    else {
+        return Err(AttachResourceFailure {
+            code: ErrorCode::CodecUnavailable,
+            message: "ATTACH_RESOURCE selected an unsupported bootstrap profile".to_owned(),
+        });
+    };
+
+    let Some(bootstrap_id) = state.with_mut(|s| s.resources_mut().next_bootstrap_id(client_id))
+    else {
+        return Err(AttachResourceFailure {
+            code: ErrorCode::ResourceExhausted,
+            message: "ATTACH_RESOURCE bootstrap id space exhausted".to_owned(),
+        });
+    };
+
+    let terminal = match handle.terminal() {
+        Ok(terminal) => terminal.clone(),
+        Err(error) => {
+            state.with_mut(|s| s.resources_mut().cancel_pump(client_id, core));
+            return Err(AttachResourceFailure {
+                code: ErrorCode::WrongResourceKind,
+                message: error.to_string(),
+            });
+        }
+    };
+    let session = AttachResourceSession {
+        state,
+        out_tx: content_tx,
+        connection_token,
+        terminal_id,
+        core,
+        handle: handle.clone(),
+        terminal,
+        client_id,
+        stream_id,
+        client_caps,
+        stream_profile,
+        bootstrap_limits,
+    };
+
+    let mut generation = match session.establish_generation(bootstrap_id).await {
+        Ok(generation) => generation,
+        Err(failure) => return Err(session.failed(failure)),
+    };
+
+    let finished = if let Some(state_sync) = generation.state_sync_bootstrap.take() {
+        session.finish_state_sync(&generation, state_sync).await
+    } else {
+        session.finish_bootstrap(&mut generation).await
+    };
+    finished.map_err(|failure| session.failed(failure))
+}

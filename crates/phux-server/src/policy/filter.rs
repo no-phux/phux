@@ -1,0 +1,389 @@
+//! Filtering at the source (`docs/remote.md#who-can-do-what`).
+//!
+//! The rows whose result is assembled from several resources admit a scoped
+//! grant that holds the row's verb anywhere, then return only what the grant
+//! covers.
+//!
+//! - `ATTACH`: the `ATTACHED` snapshot keeps the Terminals, windows, and
+//!   sessions the grant may `OBSERVE`.
+//! - `GET_STATE { SERVER }`: the snapshot keeps what the grant may
+//!   `INVENTORY`; the listener report, server-global data, needs Global.
+//! - `SUBSCRIBE_EVENTS { terminal: None }`: each journaled event is delivered
+//!   only when the grant may `OBSERVE` its Terminal (or the Terminal's
+//!   parent); an event about no Terminal is server-global and needs Global.
+//!
+//! The owner's grant sees everything, so the owner socket filters nothing in
+//! either mode.
+
+use phux_protocol::ids::{ResourceId as WireResourceId, ResourceKey};
+use phux_protocol::kinds::Verb;
+use phux_protocol::scope::EffectiveScopeSet;
+use phux_protocol::wire::info::SessionSnapshot;
+
+use super::enforce::{
+    ControlPoint, Located, Point, TerminalPoint, contains, group_of, local_point, resource_key_of,
+};
+use super::{Authority, ConnectionGrant, GroupPoint};
+use crate::state::{ClientId, ServerState};
+
+/// What one connection's grant lets it see.
+#[derive(Debug, Clone, Copy)]
+enum View<'a> {
+    /// The owner's grant: nothing is filtered.
+    All,
+    /// A scoped grant's clauses.
+    Scoped(&'a EffectiveScopeSet),
+    /// A withdrawn grant: nothing is visible.
+    Nothing,
+}
+
+impl View<'_> {
+    const fn of(grant: Option<&ConnectionGrant>) -> View<'_> {
+        // No grant: the dispatch guard refuses every frame from such a
+        // connection (`Denial::UNGRANTED`), so only a server-internal caller
+        // reaches a result without one, and it filters nothing.
+        let Some(grant) = grant else {
+            return View::All;
+        };
+        if grant.revocation().is_some() {
+            return View::Nothing;
+        }
+        match &grant.authority {
+            Authority::Owner => View::All,
+            Authority::Scoped { effective, .. } => View::Scoped(effective),
+        }
+    }
+
+    fn admits(self, verb: Verb, point: &Point) -> bool {
+        match self {
+            Self::All => true,
+            Self::Scoped(effective) => covers(effective, verb, point),
+            Self::Nothing => false,
+        }
+    }
+}
+
+fn covers(effective: &EffectiveScopeSet, verb: Verb, point: &Point) -> bool {
+    effective.admits(verb, |selector| contains(selector, point))
+}
+
+/// The clauses a subscription must be filtered by: `None` for the owner's
+/// grant, which sees every event.
+#[must_use]
+pub fn event_filter(grant: Option<&ConnectionGrant>) -> Option<EffectiveScopeSet> {
+    match View::of(grant) {
+        View::All => None,
+        View::Scoped(effective) => Some(effective.clone()),
+        View::Nothing => Some(EffectiveScopeSet::default()),
+    }
+}
+
+/// Where a journaled event sits in the topology, stamped when it is recorded
+/// so delivery and replay judge it without the state lock.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EventSubject {
+    /// The session holding the event's Terminal (or its parent) when the
+    /// event was recorded; `None` when it was in no window.
+    pub group: Option<GroupPoint>,
+    /// The record key of the event's local Terminal when it was recorded.
+    pub terminal_key: Option<ResourceKey>,
+    /// The record key of that Terminal's local parent when it was recorded.
+    pub parent_key: Option<ResourceKey>,
+}
+
+impl EventSubject {
+    /// An event not yet placed: in no Group, naming no record.
+    pub const UNPLACED: Self = Self {
+        group: None,
+        terminal_key: None,
+        parent_key: None,
+    };
+
+    /// Stamp the event about `terminal` (widened to `parent`) under `s`.
+    #[must_use]
+    pub fn at(
+        s: &ServerState,
+        terminal: Option<&WireResourceId>,
+        parent: Option<&WireResourceId>,
+    ) -> Self {
+        let group = [terminal, parent]
+            .into_iter()
+            .flatten()
+            .filter(|wire| wire.is_local())
+            .find_map(|wire| {
+                s.idspace
+                    .resource_from_wire(wire)
+                    .and_then(|core| group_of(s, core))
+            });
+        let key = |wire: Option<&WireResourceId>| {
+            wire.filter(|wire| wire.is_local())
+                .and_then(|wire| s.idspace.resource_from_wire(wire))
+                .and_then(|core| resource_key_of(s, core))
+        };
+        Self {
+            group,
+            terminal_key: key(terminal),
+            parent_key: key(parent),
+        }
+    }
+}
+
+/// Whether a subscription filtered by `effective` may receive an event about
+/// `terminal` (widened to `parent`): `OBSERVE` on the Terminal, or on its
+/// parent, or on Global for a server-global event.
+#[must_use]
+pub fn observes_event(
+    effective: &EffectiveScopeSet,
+    terminal: Option<&WireResourceId>,
+    parent: Option<&WireResourceId>,
+    subject: &EventSubject,
+) -> bool {
+    let Some(terminal) = terminal else {
+        return covers(effective, Verb::Observe, &Point::Global);
+    };
+    let point = |wire: &WireResourceId,
+                 key: Option<ResourceKey>,
+                 parent: Option<Box<TerminalPoint>>| TerminalPoint {
+        at: located(wire),
+        group: wire.is_local().then_some(subject.group).flatten(),
+        key: wire.is_local().then_some(key).flatten(),
+        parent,
+    };
+    let parent = parent.map(|wire| Box::new(point(wire, subject.parent_key, None)));
+    covers(
+        effective,
+        Verb::Observe,
+        &Point::Terminal(point(terminal, subject.terminal_key, parent)),
+    )
+}
+
+fn located(wire: &WireResourceId) -> Located {
+    match wire {
+        WireResourceId::Local { id } => Located::Local(*id),
+        WireResourceId::Satellite { host, id } => Located::Satellite(host.as_str().to_owned(), *id),
+    }
+}
+
+/// Whether `client` may act on `session` with `verb`: through its Group,
+/// or the local host for a session no wire id names yet.
+#[must_use]
+pub fn admits_session(
+    s: &ServerState,
+    client: ClientId,
+    verb: Verb,
+    session: phux_core::ids::SessionId,
+) -> bool {
+    let point = GroupPoint::of(s, session).map_or(Point::LocalHost, Point::Group);
+    View::of(s.connection_grant(client)).admits(verb, &point)
+}
+
+/// Whether `client` may act on the local resource `resource` with `verb`:
+/// as itself, through its current session's Group, or its parent.
+#[must_use]
+pub fn admits_resource(
+    s: &ServerState,
+    client: ClientId,
+    verb: Verb,
+    resource: phux_core::ids::ResourceId,
+) -> bool {
+    View::of(s.connection_grant(client)).admits(verb, &Point::Terminal(local_point(s, resource)))
+}
+
+/// Whether `client` holds `verb` at Global (server-wide data).
+#[must_use]
+pub fn admits_global(s: &ServerState, client: ClientId, verb: Verb) -> bool {
+    View::of(s.connection_grant(client)).admits(verb, &Point::Global)
+}
+
+/// Whether `client` may name who it relays a `SEND_DOCUMENT_INPUT` for.
+///
+/// See `docs/authority.md#relayed-identity`: the owner (an `ssh://` or uplink hub reaches the owner socket), or a grant
+/// holding every verb at Global, the full-control ceiling `phux host add`
+/// pairs a hub with. A person's device paired before scope schema v2 holds
+/// the legacy six-verb ceiling instead and is believed too. An automation key
+/// or a narrowed grant is not.
+#[must_use]
+pub fn vouches_for_relay(s: &ServerState, client: ClientId) -> bool {
+    let Some(grant) = s.connection_grant(client) else {
+        return false;
+    };
+    let view = View::of(Some(grant));
+    let holds = |ceiling: View<'_>| {
+        Verb::ALL
+            .iter()
+            .filter(|verb| ceiling.admits(**verb, &Point::Global))
+            .all(|verb| view.admits(*verb, &Point::Global))
+    };
+    holds(View::All)
+        || (grant.kind() == phux_core::actor::PrincipalKind::Human
+            && legacy_pairing_ceiling().is_some_and(|legacy| holds(View::of(Some(&legacy)))))
+}
+
+/// The pre-v2 full-control pairing ceiling, as a grant to compare against.
+fn legacy_pairing_ceiling() -> Option<ConnectionGrant> {
+    let set = phux_protocol::scope::TerminalScopeSet::parse_all(&[
+        crate::workload::LEGACY_PAIRED_DEVICE_SCOPE,
+    ])
+    .ok()?;
+    ConnectionGrant::scoped(set, None).ok()
+}
+
+/// Whether `client` may read satellite `host` with `verb`: a hub asks only
+/// the satellites the caller could see, so a refused one discloses nothing.
+#[must_use]
+pub fn admits_satellite(s: &ServerState, client: ClientId, verb: Verb, host: &str) -> bool {
+    View::of(s.connection_grant(client)).admits(verb, &Point::SatelliteHost(host.to_owned()))
+}
+
+/// The control classes `client` may send document input to on satellite
+/// `host`; `None` for the owner, who may send to any.
+///
+/// A hub stamps them on
+/// the relayed `SEND_DOCUMENT_INPUT`, so the satellite, which knows the
+/// document's class, refuses one of any other.
+#[must_use]
+pub fn satellite_input_classes(
+    s: &ServerState,
+    client: ClientId,
+    host: &str,
+) -> Option<phux_protocol::wire::frame::ControlClasses> {
+    use phux_protocol::wire::frame::{ControlClass, ControlClasses};
+    let view = View::of(s.connection_grant(client));
+    if matches!(view, View::All) {
+        return None;
+    }
+    let admits = |class: &ControlClass| {
+        let document = ControlPoint {
+            class: Some(*class),
+            host: Some(host.to_owned()),
+            key: None,
+        };
+        view.admits(Verb::Input, &Point::Control(document))
+    };
+    Some(
+        ControlClass::ALL
+            .iter()
+            .filter(|class| admits(class))
+            .fold(ControlClasses::EMPTY, |set, class| set.with(*class)),
+    )
+}
+
+/// Whether `client` may watch a document of `class` on satellite `host`.
+///
+/// A window or display needs `OBSERVE` on its class there
+/// (`window:<host>`, `display:<host>`), never the host grant that admitted
+/// the relay (`docs/authority.md`); a page, or a document with no class, is
+/// admitted as the relay was. The hub asks at relay, with the class the
+/// satellite reported in its inventory.
+#[must_use]
+pub fn admits_satellite_watch(
+    s: &ServerState,
+    client: ClientId,
+    host: &str,
+    class: Option<phux_protocol::wire::frame::ControlClass>,
+) -> bool {
+    let Some(class) = class.filter(|class| class.guards_observe()) else {
+        return true;
+    };
+    let document = ControlPoint {
+        class: Some(class),
+        host: Some(host.to_owned()),
+        key: None,
+    };
+    View::of(s.connection_grant(client)).admits(Verb::Observe, &Point::Control(document))
+}
+
+/// The refusal a watch of a window or display gets when only its class
+/// grant is missing: which grant, and the owner's remedy. `host` is the
+/// satellite the document lives on; `None` for a local one.
+#[must_use]
+pub fn watch_refusal(
+    s: &ServerState,
+    client: ClientId,
+    class: phux_protocol::wire::frame::ControlClass,
+    host: Option<&str>,
+) -> String {
+    let scope = host.map_or_else(
+        || format!("observe@{}", class.name()),
+        |host| format!("observe@{}:{host}", class.name()),
+    );
+    let credential = s
+        .connection_grant(client)
+        .and_then(|grant| grant.credential_id.clone())
+        .unwrap_or_else(|| "CREDENTIAL".to_owned());
+    format!(
+        "permission denied: watching a {} needs `{scope}`, which this device's grant lacks; \
+         the owner can add it on that host with `phux workload grant {credential} {scope}`",
+        class.name()
+    )
+}
+
+/// `snapshot` as `client` may see it with `verb`.
+///
+/// `s` is the state the snapshot was cut from. Terminals are judged under
+/// the live topology, sessions and windows as their Group, satellite
+/// inventory rows as their Host, and the listener report as server-global
+/// data.
+#[must_use]
+pub fn filter_snapshot(
+    s: &ServerState,
+    client: ClientId,
+    verb: Verb,
+    mut snapshot: SessionSnapshot,
+) -> SessionSnapshot {
+    let view = View::of(s.connection_grant(client));
+    if matches!(view, View::All) {
+        return snapshot;
+    }
+    let group = |id: phux_protocol::ids::SessionId| {
+        view.admits(verb, &Point::Group(GroupPoint::of_wire(s, id)))
+    };
+    let terminal =
+        |id: &WireResourceId| view.admits(verb, &Point::Terminal(TerminalPoint::of(s, id)));
+    snapshot.resources.retain(|resource| terminal(&resource.id));
+    // Other connections are not the caller's to enumerate, and a child's
+    // parent is named only when the grant covers it.
+    let own = crate::runtime::wire_client(client);
+    for resource in &mut snapshot.resources {
+        resource.viewers.retain(|viewer| *viewer == own);
+        resource.input_holder = resource.input_holder.filter(|holder| *holder == own);
+        if resource
+            .parent
+            .as_ref()
+            .is_some_and(|parent| !terminal(parent))
+        {
+            resource.parent = None;
+        }
+    }
+    snapshot.sessions.retain(|session| group(session.id));
+    for session in &mut snapshot.sessions {
+        if session
+            .recent_input
+            .as_ref()
+            .is_some_and(|id| !terminal(id))
+        {
+            session.recent_input = None;
+        }
+    }
+    snapshot.windows.retain(|window| group(window.session_id));
+    if !snapshot
+        .sessions
+        .iter()
+        .any(|session| session.id == snapshot.focused_session)
+    {
+        snapshot.focused_session = phux_protocol::ids::SessionId::new(0);
+        snapshot.focused_window = phux_protocol::ids::WindowId::new(0);
+        snapshot.focused_resource = WireResourceId::local(0);
+    }
+    let hosts: Vec<_> = snapshot
+        .hosts()
+        .iter()
+        .filter(|row| view.admits(verb, &Point::SatelliteHost(row.host.as_str().to_owned())))
+        .cloned()
+        .collect();
+    snapshot = snapshot.with_hosts(hosts);
+    if !view.admits(verb, &Point::Global) {
+        snapshot = snapshot.without_listeners();
+    }
+    snapshot
+}

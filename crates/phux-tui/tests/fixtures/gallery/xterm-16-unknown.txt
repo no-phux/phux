@@ -1,0 +1,88 @@
+== sidebar 30x26
+00| Agents                    6 │|
+  1-6 gray/- +b, 29-29 gray/-
+01| all·this·need               │|
+  1-3 cyan/- +br, 4-4 gray/-, 9-9 gray/-, 29-29 gray/-
+02| ● w1                 claude │|
+  1-2 yellow/- +b, 29-29 gray/-
+03| ◐ w0                  codex │|
+  1-2 lightblue/-, 29-29 gray/-
+04| ◆ w2                 gemini │|
+  1-2 green/- +b, 29-29 gray/-
+05| ○ w3                  merge │|
+  1-2 gray/-, 29-29 gray/-
+06| ○ w0                  watch │|
+  1-2 gray/-, 29-29 gray/-
+07| · w0                  probe │|
+  1-2 gray/-, 29-29 gray/-
+08|                             │|
+  29-29 gray/-
+09|                             │|
+  29-29 gray/-
+10|                             │|
+  29-29 gray/-
+11|                             │|
+  29-29 gray/-
+12|                             │|
+  29-29 gray/-
+13| Sessions                  3 │|
+  1-8 gray/- +b, 29-29 gray/-
+14| ● development         ●1 ◆1 │|
+  1-2 yellow/-, 3-13 cyan/- +b, 23-24 yellow/-, 26-27 green/-, 29-29 gray/-
+15|   ● editor                  │|
+  0-2 -/- +r, 3-4 cyan/- +r, 5-10 cyan/- +br, 11-28 -/- +r, 29-29 gray/-
+16|   ● review ●                │|
+  3-4 yellow/-, 11-12 yellow/- +b, 29-29 gray/-
+17|   ○ build ✕3                │|
+  10-12 red/- +b, 29-29 gray/-
+18|   ○ lint –                  │|
+  9-10 gray/-, 29-29 gray/-
+19| ● ops                    ●2 │|
+  1-2 yellow/-, 26-27 yellow/-, 29-29 gray/-
+20| ◆ notes                  ◆3 │|
+  1-2 green/-, 26-27 green/-, 29-29 gray/-
+21|                             │|
+  29-29 gray/-
+22|                             │|
+  29-29 gray/-
+23|                             │|
+  29-29 gray/-
+24|                             │|
+  29-29 gray/-
+25| + new tab                   ‹|
+== status-bar 60x1
+00|0:editor 1:review                                  main  ●2 |
+  0-7 -/- +br, 56-59 yellow/- +br
+== toast 44x7
+00|                                            |
+01|╭ Config reloaded ─────────────────────────╮|
+  0-0 gray/-, 1-17 cyan/-, 18-43 gray/-
+02|│ theme: phux                              │|
+  0-0 gray/-, 43-43 gray/-
+03|│ 2 panes need you                         │|
+  0-0 gray/-, 43-43 gray/-
+04|╰───────────────────────────────── any key ╯|
+  0-33 gray/-, 43-43 gray/-
+05|                                            |
+06|                                            |
+== picker 48x10
+00|╭ Sessions ────────────────────────────────────╮|
+  0-0 gray/-, 1-10 cyan/-, 11-47 gray/-
+01|│ >                                            │|
+  0-0 gray/-, 4-4 -/cyan, 47-47 gray/-
+02|│ Local                                        │|
+  0-0 gray/-, 47-47 gray/-
+03|│   development                    1 needs you │|
+  0-0 gray/-, 2-45 -/- +r, 47-47 gray/-
+04|│   ops                             3 need you │|
+  0-0 gray/-, 2-6 yellow/- +b, 47-47 gray/-
+05|│   notes                                      │|
+  0-0 gray/-, 47-47 gray/-
+06|│                                              │|
+  0-0 gray/-, 47-47 gray/-
+07|│                                              │|
+  0-0 gray/-, 47-47 gray/-
+08|│                                              │|
+  0-0 gray/-, 47-47 gray/-
+09|╰ 1 of 3 ─────────────── ↑↓ move · ⏎ run · esc ╯|
+  0-0 gray/-, 9-23 gray/-, 47-47 gray/-

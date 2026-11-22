@@ -1,0 +1,396 @@
+use super::*;
+use phux_client_runtime::control::TerminalResizeOutcome as Resize;
+use phux_protocol::wire::frame::{RolePolicy, ViewportInfo};
+
+fn browse(options: ControlOptions) -> ControlPlane {
+    let mut plane = opened(options, hello_ok(PROTOCOL_VERSION.patch));
+    plane.take_outbound();
+    plane
+}
+
+fn confirm(plane: &mut ControlPlane, request_id: u32) {
+    plane.reply(request_id, CommandResult::Ok);
+}
+
+fn bootstrap(plane: &mut ControlPlane, id: &ResourceId, generation: u64) {
+    empty_bootstrap(plane, id, [generation, generation]);
+}
+
+fn ready(plane: &mut ControlPlane, id: &ResourceId) {
+    let request = plane.attach_terminal_preserving_geometry(id);
+    assert_ne!(request, 0);
+    bootstrap(plane, id, 1);
+    confirm(plane, request);
+    plane.take_outbound();
+}
+
+#[test]
+fn targeted_resize_only_sends_one_resource_and_never_fabricates_readback() {
+    let mut plane = browse(ControlOptions::default());
+    let other = ResourceId::local(8);
+    ready(&mut plane, &terminal());
+    ready(&mut plane, &other);
+    #[cfg(feature = "engine")]
+    let before = plane.publication().acquire(&terminal()).unwrap();
+    assert_eq!(plane.resize_terminal(&terminal(), 100, 30), Resize::Queued);
+    let frames = plane.take_outbound();
+    assert_eq!(frames.len(), 1);
+    assert!(
+        matches!(decode(&frames[0]), FrameKind::ResizeTerminal { terminal_id, cols: 100, rows: 30, cell_px: None } if terminal_id == terminal())
+    );
+    assert_eq!(plane.viewport(), (80, 24));
+    #[cfg(feature = "engine")]
+    {
+        let after = plane.publication().acquire(&terminal()).unwrap();
+        assert_eq!(after.generation, before.generation);
+        assert_eq!((after.cols, after.rows), (20, 4));
+        let untouched = plane.publication().acquire(&other).unwrap();
+        assert_eq!((untouched.cols, untouched.rows), (20, 4));
+    }
+    assert!(plane.take_events().iter().all(|event| !matches!(event, Event::Frame(frame) if matches!(frame.as_ref(), FrameKind::ResizeTerminal { .. }))));
+}
+
+#[test]
+fn resize_rejects_invalid_sizes_viewers_and_unready_resources_before_send() {
+    let mut plane = browse(ControlOptions::default());
+    for (cols, rows) in [(0, 24), (80, 0), (65536, 24), (80, u32::MAX)] {
+        assert_eq!(
+            plane.resize_terminal(&terminal(), cols, rows),
+            Resize::InvalidSize
+        );
+    }
+    assert_eq!(plane.resize_terminal(&terminal(), 80, 24), Resize::NotReady);
+    let request = plane.attach_terminal_preserving_geometry(&terminal());
+    bootstrap(&mut plane, &terminal(), 1);
+    assert_eq!(plane.resize_terminal(&terminal(), 80, 24), Resize::NotReady);
+    confirm(&mut plane, request);
+    plane.take_outbound();
+    plane.connection_lost(None);
+    assert_eq!(plane.resize_terminal(&terminal(), 80, 24), Resize::NotReady);
+    assert!(plane.take_outbound().is_empty());
+
+    let mut observer = browse(ControlOptions {
+        attach_role: Some(RolePolicy::VIEWER),
+        ..ControlOptions::default()
+    });
+    ready(&mut observer, &terminal());
+    assert_eq!(
+        observer.resize_terminal(&terminal(), 80, 24),
+        Resize::Observer
+    );
+    assert!(observer.take_outbound().is_empty());
+    observer.resize_viewport(100, 30);
+    assert!(observer.take_outbound().is_empty());
+}
+
+#[test]
+fn preserving_subscriptions_replay_without_global_resize_or_old_replica_readiness() {
+    let mut plane = browse(ControlOptions::default());
+    ready(&mut plane, &terminal());
+    assert_eq!(plane.attach_terminal_preserving_geometry(&terminal()), 0);
+    assert_eq!(plane.attach_terminal(&terminal()), 0);
+    assert!(plane.take_outbound().is_empty());
+    plane.connection_lost(None);
+    reopen(&mut plane, hello_ok(PROTOCOL_VERSION.patch));
+    let frames = outbound(&mut plane);
+    assert!(!frames.iter().any(|frame| matches!(
+        frame,
+        FrameKind::ResizeTerminal { .. }
+            | FrameKind::ViewportResize { .. }
+            | FrameKind::Attach { .. }
+    )));
+    let requests: Vec<_> = frames
+        .iter()
+        .filter_map(|frame| match frame {
+            FrameKind::Command {
+                request_id,
+                command: Command::AttachResource { terminal_id, .. },
+            } if *terminal_id == terminal() => Some(*request_id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(requests.len(), 1);
+    confirm(&mut plane, requests[0]);
+    assert_eq!(
+        plane.resize_terminal(&terminal(), 80, 24),
+        Resize::NotReady,
+        "retained old publication is not current-connection evidence"
+    );
+    bootstrap(&mut plane, &terminal(), 2);
+    plane.take_outbound();
+    assert_eq!(plane.resize_terminal(&terminal(), 80, 24), Resize::Queued);
+}
+
+#[test]
+fn global_viewport_fanout_and_existing_default_attach_keep_their_policy() {
+    let mut plane = browse(ControlOptions::default());
+    let default = ResourceId::local(8);
+    plane.attach_terminal_preserving_geometry(&terminal());
+    let initial = plane.take_outbound();
+    assert_eq!(initial.len(), 1);
+    assert!(matches!(
+        decode(&initial[0]),
+        FrameKind::Command {
+            command: Command::AttachResource { .. },
+            ..
+        }
+    ));
+    plane.attach_terminal(&default);
+    assert_eq!(plane.attach_terminal_preserving_geometry(&default), 0);
+    let initial = plane.take_outbound();
+    assert_eq!(initial.len(), 2);
+    assert!(
+        matches!(decode(&initial[1]), FrameKind::ResizeTerminal { terminal_id, cols: 80, rows: 24, cell_px: None } if terminal_id == default)
+    );
+    plane.resize_viewport(90, 25);
+    let frames = plane.take_outbound();
+    assert_eq!(frames.len(), 1);
+    assert!(
+        matches!(decode(&frames[0]), FrameKind::ResizeTerminal { terminal_id, cols: 90, rows: 25, cell_px: None } if terminal_id == default)
+    );
+}
+
+#[test]
+fn manual_reconnect_retains_policy_but_leaves_attach_scheduling_to_embedder() {
+    let mut plane = browse(ControlOptions {
+        automatic_lifecycle: false,
+        ..ControlOptions::default()
+    });
+    ready(&mut plane, &terminal());
+    reopen(&mut plane, hello_ok(PROTOCOL_VERSION.patch));
+    assert!(plane.take_outbound().is_empty());
+    plane.attach_terminal(&terminal());
+    assert_eq!(
+        plane.take_outbound().len(),
+        1,
+        "policy survives an embedder's legacy reattach call"
+    );
+    plane.detach_terminal(&terminal());
+    plane.take_outbound();
+    // Resolve the replaced attach correlation before starting a fresh intent.
+    reopen(&mut plane, hello_ok(PROTOCOL_VERSION.patch));
+    plane.attach_terminal(&terminal());
+    assert_eq!(
+        plane.take_outbound().len(),
+        2,
+        "detach releases preserving policy"
+    );
+}
+
+fn geometry_frames(plane: &mut ControlPlane) -> Vec<FrameKind> {
+    outbound(plane)
+        .into_iter()
+        .filter(|frame| {
+            matches!(
+                frame,
+                FrameKind::ViewportResize { .. } | FrameKind::ResizeTerminal { .. }
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn viewport_intent_during_attach_flushes_the_latest_once_after_ready() {
+    let (mut plane, attach_id) = negotiated();
+    let first = ViewportInfo::new(90, 25);
+    plane.resize_viewport(first.cols, first.rows);
+    assert!(geometry_frames(&mut plane).is_empty());
+    plane.attached(attach_id, snapshot());
+    bootstrap(&mut plane, &terminal(), 1);
+    let latest = ViewportInfo::new(95, 26);
+    plane.resize_viewport(latest.cols, latest.rows);
+    assert!(geometry_frames(&mut plane).is_empty());
+    plane.feed(FrameKind::AttachReady { attach_id }).unwrap();
+    assert_eq!(
+        geometry_frames(&mut plane),
+        vec![FrameKind::ViewportResize { viewport: latest }]
+    );
+    #[cfg(feature = "engine")]
+    {
+        let published = plane.publication().acquire(&terminal()).unwrap();
+        assert_eq!((published.cols, published.rows), (20, 4));
+    }
+    // Authoritative readback may differ under multi-client policy. It does
+    // not create another request or a retry-until-equal loop.
+    plane
+        .feed(FrameKind::BootstrapTombstone {
+            terminal_id: terminal(),
+            stream_id: StreamId::new(1).unwrap(),
+            bootstrap_id: BootstrapId::new(1).unwrap(),
+            reason: phux_protocol::wire::frame::TombstoneReason::Resize,
+            last_valid_seq: 0,
+        })
+        .unwrap();
+    bootstrap(&mut plane, &terminal(), 2);
+    assert!(geometry_frames(&mut plane).is_empty());
+    let changed = ViewportInfo::new(100, 30);
+    plane.resize_viewport(changed.cols, changed.rows);
+    assert_eq!(
+        geometry_frames(&mut plane),
+        vec![FrameKind::ViewportResize { viewport: changed }]
+    );
+}
+
+#[test]
+fn offline_viewport_intent_replays_in_attach_and_same_size_can_be_reasserted() {
+    let mut plane = ControlPlane::new(ControlOptions {
+        attach: Some(AttachTarget::Last),
+        ..ControlOptions::default()
+    });
+    let first = ViewportInfo::new(90, 25);
+    plane.resize_viewport(first.cols, first.rows);
+    assert!(plane.take_outbound().is_empty());
+    let opening = reconnect(&mut plane);
+    let attach_id = opening
+        .iter()
+        .find_map(|frame| match frame {
+            FrameKind::Attach {
+                attach_id,
+                viewport,
+                ..
+            } if *viewport == first => Some(*attach_id),
+            _ => None,
+        })
+        .expect("pre-connect viewport is carried by ATTACH");
+    attach(&mut plane, attach_id, b"");
+    assert!(geometry_frames(&mut plane).is_empty());
+    plane.resize_viewport(first.cols, first.rows);
+    assert_eq!(
+        geometry_frames(&mut plane),
+        vec![FrameKind::ViewportResize { viewport: first }]
+    );
+    plane.connection_lost(None);
+    let offline = ViewportInfo::new(100, 30);
+    plane.resize_viewport(offline.cols, offline.rows);
+    assert!(geometry_frames(&mut plane).is_empty());
+    assert!(
+        reconnect(&mut plane).iter().any(
+            |frame| matches!(frame, FrameKind::Attach { viewport, .. } if *viewport == offline)
+        )
+    );
+}
+
+#[test]
+fn session_viewer_casts_viewport_vote_without_exact_subscription_fanout() {
+    let mut plane = ControlPlane::new(ControlOptions {
+        attach: Some(AttachTarget::Last),
+        attach_role: Some(RolePolicy::VIEWER),
+        viewport: (20, 4),
+        ..ControlOptions::default()
+    });
+    let attach_id = reconnect(&mut plane)
+        .iter()
+        .find_map(|frame| match frame {
+            FrameKind::Attach { attach_id, .. } => Some(*attach_id),
+            _ => None,
+        })
+        .expect("ATTACH");
+    attach(&mut plane, attach_id, b"");
+    plane.attach_terminal(&ResourceId::local(8));
+    plane.take_outbound();
+    plane.resize_viewport(90, 25);
+    assert_eq!(
+        geometry_frames(&mut plane),
+        vec![FrameKind::ViewportResize {
+            viewport: ViewportInfo::new(90, 25)
+        }]
+    );
+}
+
+#[test]
+fn stream_recovery_preserves_geometry() {
+    let (mut plane, attach_id) = negotiated();
+    attach(&mut plane, attach_id, b"home");
+    refresh_to(&mut plane, two_session_snapshot(false));
+    let foreign = ResourceId::local(8);
+    ready(&mut plane, &foreign);
+    assert_eq!(plane.ensure_stream(&foreign), StreamRecovery::Attached);
+    let frames = plane.take_outbound();
+    assert_eq!(frames.len(), 1);
+    assert!(matches!(
+        decode(&frames[0]),
+        FrameKind::Command {
+            command: Command::AttachResource { .. },
+            ..
+        }
+    ));
+}
+
+fn reconnect(plane: &mut ControlPlane) -> Vec<FrameKind> {
+    plane.connection_lost(None);
+    reopen(plane, hello_ok(PROTOCOL_VERSION.patch));
+    outbound(plane)
+}
+
+fn resource_attaches(frames: &[FrameKind]) -> Vec<ResourceId> {
+    frames
+        .iter()
+        .filter_map(|frame| match frame {
+            FrameKind::Command {
+                command: Command::AttachResource { terminal_id, .. },
+                ..
+            } => Some(terminal_id.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn authoritative_close_retires_preserving_intent_without_ui_release() {
+    let mut plane = browse(ControlOptions::default());
+    let survivor = ResourceId::local(8);
+    ready(&mut plane, &terminal());
+    ready(&mut plane, &survivor);
+    plane
+        .feed(FrameKind::ResourceClosed {
+            terminal_id: terminal(),
+            exit_status: Some(0),
+            signal: None,
+            reason: phux_protocol::wire::frame::CloseReason::Unknown,
+        })
+        .unwrap();
+    assert_eq!(plane.resize_terminal(&terminal(), 80, 24), Resize::NotReady);
+    for _ in 0..2 {
+        let frames = reconnect(&mut plane);
+        assert_eq!(resource_attaches(&frames), vec![survivor.clone()]);
+    }
+}
+
+#[test]
+fn browse_to_session_reconnect_defers_preserving_replay_until_inventory_is_ready() {
+    let mut plane = browse(ControlOptions::default());
+    let foreign = ResourceId::local(8);
+    ready(&mut plane, &terminal());
+    ready(&mut plane, &foreign);
+    assert!(plane.attach_session(AttachTarget::ByName("main".to_owned())));
+    let frames = reconnect(&mut plane);
+    assert!(
+        resource_attaches(&frames).is_empty(),
+        "session inventory must arrive before resource replay"
+    );
+    let attach_id = frames
+        .iter()
+        .find_map(|frame| match frame {
+            FrameKind::Attach {
+                attach_id, target, ..
+            } => {
+                assert_eq!(target, &AttachTarget::ByName("main".to_owned()));
+                Some(*attach_id)
+            }
+            _ => None,
+        })
+        .expect("current session target was queued");
+    plane.attached(attach_id, snapshot());
+    bootstrap(&mut plane, &terminal(), 2);
+    assert!(resource_attaches(&outbound(&mut plane)).is_empty());
+    plane.feed(FrameKind::AttachReady { attach_id }).unwrap();
+    let frames = outbound(&mut plane);
+    assert_eq!(resource_attaches(&frames), vec![foreign]);
+    assert!(
+        !frames.iter().any(|frame| matches!(
+            frame,
+            FrameKind::ResizeTerminal { .. } | FrameKind::ViewportResize { .. }
+        )),
+        "preserving replay must not resize: {frames:?}"
+    );
+}

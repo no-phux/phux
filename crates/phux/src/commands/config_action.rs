@@ -1,0 +1,232 @@
+use usage::Subcommands;
+
+/// `phux config <action>` — local config inspection and scaffolding.
+#[derive(Debug, Subcommands)]
+pub(crate) enum ConfigAction {
+    /// Bring tmux bindings and preferences into a native phux config layer.
+    ///
+    /// Reads global options and key tables from an already running tmux,
+    /// without sourcing files or changing either server. By default, prints
+    /// TOML on stdout and a fidelity report on stderr. Unsupported bindings
+    /// are never executed or silently replaced with a different phux action.
+    /// This configures the terminal UI; desktop shortcuts are separate.
+    /// To have your coding agent migrate from your config files instead, run
+    /// `phux migrate`.
+    ImportTmux {
+        /// Read this tmux socket instead of tmux's current/default server.
+        #[usage(long, value_name = "PATH")]
+        tmux_socket: Option<std::path::PathBuf>,
+
+        /// Save a new standalone TOML file; refuse to overwrite any file.
+        #[usage(long, value_name = "PATH", conflicts = "--apply")]
+        output: Option<std::path::PathBuf>,
+
+        /// Install tmux-import.toml below your existing config layers.
+        /// Existing phux settings win. Refuses to overwrite a previous import.
+        /// Remove its extends entry to undo. Does not reload a running server.
+        #[usage(long)]
+        apply: bool,
+
+        /// Emit TOML, the fidelity report, and saved paths in one JSON document.
+        #[usage(long)]
+        json: bool,
+    },
+    /// Discover or switch distro layers without overwriting personal config.
+    /// Changes are local only; run `phux config reload` afterwards for running
+    /// clients. Server startup settings apply on the next server start.
+    Distro {
+        #[usage(subcommand)]
+        action: DistroAction,
+    },
+    /// Write a commented starter config to the canonical path.
+    ///
+    /// The file is the shipped defaults, fully commented out: inert until
+    /// you uncomment a line, so the binary's defaults stay authoritative.
+    /// Refuses to overwrite an existing config unless `--force`.
+    ///
+    /// With `--distro`, the scaffold additionally carries one active
+    /// `extends` line layering the named starter distribution (a bundled
+    /// name like `starter`, or a path to a distro layer `.toml`) between
+    /// the shipped defaults and your file.
+    Init {
+        /// Overwrite an existing config file instead of refusing.
+        #[usage(long)]
+        force: bool,
+
+        /// Starter distribution to extend: a bundled name (resolved
+        /// under `$PHUX_DISTROS_DIR`, the XDG data dir, or the repo
+        /// checkout) or a path to a distro layer `.toml` / directory.
+        #[usage(long, value_name = "NAME_OR_PATH")]
+        distro: Option<String>,
+    },
+
+    /// Print the snippet that makes a shell mark prompts and commands.
+    ///
+    /// phux reads the prompt and command marks a shell emits (OSC 133):
+    /// `phux wait --output-only`, copy mode's "last command's output" key
+    /// and the exit-code widget rely on them. This prints the snippet for
+    /// zsh, bash or fish; it contacts no server and reads no config.
+    ///
+    /// Examples:
+    ///   eval "$(phux config shell-integration zsh)"      (in ~/.zshrc)
+    ///   eval "$(phux config shell-integration bash)"     (in ~/.bashrc)
+    ///   phux config shell-integration fish | source      (in config.fish)
+    ShellIntegration {
+        /// The shell to print the snippet for: zsh, bash or fish.
+        #[usage(value_enum, value_name = "SHELL")]
+        shell: super::CompletionShell,
+    },
+
+    /// Print the resolved config path. Pure path math — prints the path
+    /// whether or not the file exists.
+    Path,
+
+    /// Validate the config and report every problem, with full key paths.
+    ///
+    /// The loader already refuses an unknown key, but it names only the leaf
+    /// field (`unknown field 'enabledd'`) and stops at the first one. This
+    /// reports `sidebar.enabledd`, names the layer file that introduced it,
+    /// and finds every problem in one pass — so a config with four typos
+    /// takes one edit, not four.
+    ///
+    /// Exits 0 when clean, 1 when anything was found, and 2 when the check
+    /// could not run (an unreadable or missing PATH, or malformed TOML), so
+    /// it can gate a dotfiles CI run.
+    Check {
+        /// Config file to check. Defaults to the resolved config path, where
+        /// a missing file is clean (shipped defaults apply); a PATH you name
+        /// must exist.
+        #[usage(value_name = "PATH")]
+        path: Option<std::path::PathBuf>,
+
+        /// Emit a stable JSON document instead of human text.
+        #[usage(long)]
+        json: bool,
+    },
+
+    /// Print the effective config (shipped defaults + your overrides) as
+    /// TOML. With `--default`, print the shipped defaults verbatim
+    /// instead, ignoring any user config. With `--layers`, print which
+    /// layer of the `extends` stack set each effective key instead of
+    /// the values.
+    Show {
+        /// Show the shipped defaults verbatim, not the merged result.
+        #[usage(long, conflicts("--layers", "--json"))]
+        default: bool,
+
+        /// Attribute each effective key to the layer that set it
+        /// (embedded defaults / `extends` layers / your config file).
+        #[usage(long)]
+        layers: bool,
+
+        /// With --layers: emit a stable JSON document instead of human
+        /// text.
+        #[usage(long, requires = "layers")]
+        json: bool,
+    },
+
+    /// List every key binding in effect and where it came from.
+    ///
+    /// Shows the shipped defaults, your config and its `extends` layers, and
+    /// enabled plugins' keys merged exactly as the terminal UI merges them.
+    /// Prefix-table keys are printed after the prefix (`C-a z`). Bindings the
+    /// UI would skip (a key that does not parse, an unknown action, a
+    /// conflict) are listed as warnings on stderr.
+    Keys {
+        /// Only show bindings for this action, such as `split-pane`.
+        #[usage(value_name = "ACTION")]
+        action: Option<String>,
+
+        /// Emit a stable JSON document instead of human text.
+        #[usage(long)]
+        json: bool,
+    },
+
+    /// List plugin manifests declared by `[[plugins]]`.
+    Plugins {
+        /// Emit a stable JSON document instead of human text.
+        #[usage(long)]
+        json: bool,
+    },
+
+    /// List configured agents, merged with live pane state when a server is
+    /// running.
+    Agents {
+        /// Emit a stable JSON document instead of human text.
+        #[usage(long)]
+        json: bool,
+    },
+
+    /// Re-read the layered config and apply it to running clients in
+    /// place.
+    ///
+    /// Validates the config locally first (a broken file fails here, with
+    /// the parse error, and nothing is signalled), then rings the
+    /// `phux.config.reload/v1` doorbell on the server so every attached
+    /// client re-reads its own config file and rebuilds keybindings,
+    /// theme, and status bar without restarting. Clients whose re-read
+    /// fails keep their previous config. Deliberately explicit — the
+    /// config file is never watched.
+    Reload,
+
+    /// Execute one locally configured plugin action on this machine.
+    Run {
+        /// Configured plugin id.
+        plugin: String,
+
+        /// Plugin-local action id.
+        action: String,
+
+        /// Give up after this many seconds. Omit to wait indefinitely.
+        #[usage(long, value_name = "SECS")]
+        timeout: Option<u64>,
+
+        /// Override the action cwd. Relative paths resolve under plugin root.
+        #[usage(long, value_name = "PATH")]
+        cwd: Option<std::path::PathBuf>,
+
+        /// Explicit target facts as a JSON object; never selects or dials a server.
+        #[usage(long, value_name = "JSON")]
+        target_json: Option<String>,
+
+        /// Application-specific action input as JSON.
+        #[usage(long, value_name = "JSON")]
+        input_json: Option<String>,
+
+        /// Emit the structured action result as JSON.
+        #[usage(long)]
+        json: bool,
+    },
+}
+
+/// Local distro selection; no server contact.
+#[derive(Debug, Subcommands)]
+pub(crate) enum DistroAction {
+    /// List bundled names in search precedence, sorted by name.
+    List {
+        /// Emit a stable JSON document.
+        #[usage(long)]
+        json: bool,
+    },
+    /// Show the selected managed distro, not arbitrary user extends layers.
+    Current {
+        /// Emit a stable JSON document.
+        #[usage(long)]
+        json: bool,
+    },
+    /// Validate and select a bundled name or a layer file/directory path.
+    /// Preserves comments, user overrides, and other extends entries.
+    Use {
+        #[usage(value_name = "NAME_OR_PATH")]
+        spec: String,
+        /// Emit a stable JSON document.
+        #[usage(long)]
+        json: bool,
+    },
+    /// Remove only the managed distro entry, leaving personal config intact.
+    Off {
+        /// Emit a stable JSON document.
+        #[usage(long)]
+        json: bool,
+    },
+}

@@ -1,0 +1,24 @@
+────────────────────────────────────────────────────────────────────────────────
+
+
+ Use the bash tool to run exactly: sleep 12 && echo finished . Then reply with
+ one word: done
+
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ $ sleep 12 && echo finished .                                                │
+├─── Output ───────────────────────────────────────────────────────────────────┤
+│ Backgrounded early to handle an incoming message; the command keeps running. │
+│ ⟨Backgrounded: bg_1 | Timeout: 30s⟩                                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+ Also, after that, reply with the word: queued
+
+
+ waiting on 1 job
+└─ 󱑕 ⟨bash⟩ bg_1 sleep 12 && echo finished . · 4.9s
+
+  󱊷 Waiting for command completion                    Run sleep and echo command
+ ⠦ 8s  󰪣 GPT-6.1-Sol   …atchpad/omp18/work   master  󰙺 0.03 ─0.9%─󰁨922K─
+╰─

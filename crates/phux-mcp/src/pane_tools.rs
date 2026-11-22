@@ -1,0 +1,527 @@
+//! In-process pane-shaping tools (`phux_spawn`, `phux_signal`, `phux_tag`,
+//! `phux_rename`, the spatial edits) over the `phux-client` functions the CLI
+//! verbs call; `crate::goldens` pins every document.
+
+use std::path::Path;
+
+use phux_client::attach::connection::Connection;
+use phux_client::layout::SplitDir;
+use phux_client::selector::format_terminal_id;
+use phux_client::spatial::{Direction, SpatialError, SpatialOp};
+use phux_client::spawn::{PlacedSpawn, PlacedSpawnError};
+use phux_protocol::ids::{GroupId, IdempotencyKey, SatelliteHost};
+use phux_protocol::wire::frame::{FrameKind, SpawnError, SpawnResource, SpawnResult};
+use serde_json::{Value, json};
+
+use crate::cli_adapter::{bounded_string, bounded_strings, enum_string, ratio};
+use crate::tools::{
+    ToolError, contract_error, incomplete_view_miss, parse_selector, refusal_error, socket_arg,
+    strict_object, transport_error, warn_partial_view,
+};
+
+mod signal;
+pub(crate) use signal::signal;
+
+/// The split ratio the CLI defaults `--ratio` to.
+const DEFAULT_RATIO: f32 = 0.5;
+
+/// `ratio` as the CLI parsed it: the argument's decimal text read as `f32`,
+/// so an in-process call carries the exact value `--ratio N` used to.
+fn cli_ratio(args: &Value) -> Result<f32, ToolError> {
+    ratio(args)?.map_or(Ok(DEFAULT_RATIO), |value| {
+        value
+            .to_string()
+            .parse::<f32>()
+            .map_err(|err| ToolError::new(format!("`ratio` is not a float: {err}")))
+    })
+}
+
+// -----------------------------------------------------------------------------
+// spawn
+// -----------------------------------------------------------------------------
+
+/// One validated `phux_spawn` request.
+struct SpawnRequest {
+    target: Option<String>,
+    satellite: Option<String>,
+    split: SplitDir,
+    ratio: f32,
+    projection: Option<String>,
+    cwd: Option<String>,
+    command: Vec<String>,
+    retain_secs: Option<u32>,
+    idempotency_key: Option<IdempotencyKey>,
+}
+
+impl SpawnRequest {
+    fn parse(args: &Value) -> Result<Self, ToolError> {
+        let target = bounded_string(args, "target", false)?;
+        let satellite = bounded_string(args, "satellite", false)?;
+        let retain_secs = retain_secs(args)?;
+        let idempotency_key = bounded_string(args, "idempotency_key", false)?
+            .as_deref()
+            .map(idempotency_key)
+            .transpose()?;
+        if target.is_some() && satellite.is_some() {
+            return Err(ToolError::new("`target` conflicts with `satellite`"));
+        }
+        let split = enum_string(
+            args,
+            "split",
+            &["horizontal", "vertical"],
+            Some("horizontal"),
+        )?;
+        let ratio = cli_ratio(args)?;
+        let projection = bounded_string(args, "projection", false)?;
+        let placed =
+            args.get("split").is_some() || args.get("ratio").is_some() || projection.is_some();
+        if target.is_none() && placed {
+            return Err(ToolError::new(
+                "`split`, `ratio`, and `projection` require `target`",
+            ));
+        }
+        Ok(Self {
+            target,
+            satellite,
+            split: split_dir(&split),
+            ratio,
+            projection,
+            cwd: bounded_string(args, "cwd", false)?,
+            command: bounded_strings(args, "command", false)?,
+            retain_secs,
+            idempotency_key,
+        })
+    }
+
+    /// The `SPAWN_RESOURCE` frame `phux spawn` builds for the same flags.
+    fn frame(&self) -> FrameKind {
+        let durable = self.retain_secs.is_some() || self.idempotency_key.is_some();
+        FrameKind::SpawnResource {
+            request_id: 1,
+            // v0.1 servers expose the single default group.
+            group: GroupId::new(1),
+            command: (!self.command.is_empty()).then(|| self.command.clone()),
+            cwd: self.cwd.clone(),
+            env: None,
+            term: None,
+            satellite: self.satellite.clone().map(SatelliteHost::new),
+            owner_terminal: None,
+            agent_session: None,
+            // A headless spawn has no viewport; the pane takes the server
+            // default and is sized by whichever client attaches.
+            initial_size: None,
+            resource: durable.then(|| {
+                Box::new(
+                    SpawnResource::default()
+                        .with_retain_secs(self.retain_secs)
+                        .with_idempotency_key(self.idempotency_key),
+                )
+            }),
+        }
+    }
+}
+
+/// `--split` names the divider, the same word `phux spawn` uses.
+fn split_dir(split: &str) -> SplitDir {
+    match split {
+        "vertical" => Direction::Vertical,
+        _ => Direction::Horizontal,
+    }
+    .wire()
+}
+
+/// The optional `retain_secs` argument, bounded to `0..=86400`.
+fn retain_secs(args: &Value) -> Result<Option<u32>, ToolError> {
+    args.get("retain_secs").map_or(Ok(None), |value| {
+        value
+            .as_u64()
+            .filter(|secs| *secs <= 86_400)
+            .and_then(|secs| u32::try_from(secs).ok())
+            .map(Some)
+            .ok_or_else(|| ToolError::new("`retain_secs` must be an integer in 0..=86400"))
+    })
+}
+
+/// Parse an `idempotency_key` argument (spawn, signal, kill).
+pub(crate) fn idempotency_key(raw: &str) -> Result<IdempotencyKey, ToolError> {
+    phux_client::spawn::parse_idempotency_key(raw).map_err(|err| {
+        contract_error(
+            "invalid_idempotency_key",
+            err.to_string(),
+            "generate one with `openssl rand -hex 16` and reuse it on every retry of the same \
+             request",
+            2,
+        )
+    })
+}
+
+/// `phux_spawn` — unplaced spawn or atomic organization create beside a target.
+pub(crate) async fn spawn(args: &Value) -> Result<Value, ToolError> {
+    strict_object(
+        args,
+        &[
+            "target",
+            "satellite",
+            "split",
+            "ratio",
+            "projection",
+            "cwd",
+            "command",
+            "retain_secs",
+            "idempotency_key",
+            "socket",
+        ],
+        &[],
+    )?;
+    let request = SpawnRequest::parse(args)?;
+    let socket = socket_arg(args)?;
+    let frame = request.frame();
+    let result = match request.target.as_deref() {
+        Some(target) => spawn_placed(&socket, frame, target, &request).await?,
+        None => {
+            phux_client::spawn::spawn_on(&socket, &frame)
+                .await
+                .map_err(|err| transport_error(&err, &socket, "spawn"))?
+                .0
+        }
+    };
+    spawn_document(result)
+}
+
+async fn spawn_placed(
+    socket: &Path,
+    frame: FrameKind,
+    target: &str,
+    request: &SpawnRequest,
+) -> Result<SpawnResult, ToolError> {
+    let report = |err: PlacedSpawnError| {
+        if let PlacedSpawnError::Attach(err) = &err {
+            transport_error(err, socket, "spawn")
+        } else {
+            let (refusal, exit) = err.refusal(target);
+            refusal_error(&refusal, exit)
+        }
+    };
+    let placed = PlacedSpawn::from_spawn_frame(
+        frame,
+        request.split,
+        request.ratio,
+        request.projection.as_deref(),
+        None,
+    )
+    .map_err(report)?;
+    let selector = parse_selector(target)?;
+    let (result, degradation) = placed.run(socket, &selector, 1).await.map_err(report)?;
+    warn_partial_view("spawn", degradation.notices());
+    Ok(result)
+}
+
+fn spawn_document(result: SpawnResult) -> Result<Value, ToolError> {
+    match result {
+        SpawnResult::Ok(id) => Ok(phux_client::spawn::spawned_document(&id, false)),
+        // A keyed retry inside the server's horizon: the first spawn's pane,
+        // already placed by that spawn, so nothing is placed again.
+        SpawnResult::Replayed { id, .. } => Ok(phux_client::spawn::spawned_document(&id, true)),
+        SpawnResult::Err(SpawnError::IdempotencyConflict) => Err(contract_error(
+            "idempotency_conflict",
+            "the idempotency key was already used for a different spawn; nothing was spawned",
+            "reuse a key only to retry the identical spawn; draw a fresh key for a new one",
+            2,
+        )),
+        SpawnResult::Err(err) => Err(ToolError::new(phux_client::spawn::spawn_error_message(
+            &err,
+        ))),
+        // `SpawnResult` is `#[non_exhaustive]`: version skew.
+        _ => Err(ToolError::new(phux_client::explain::unexpected_reply(
+            "SPAWN_RESOURCE",
+        ))),
+    }
+}
+
+// -----------------------------------------------------------------------------
+// tag
+// -----------------------------------------------------------------------------
+
+/// `phux_tag` — read or edit Terminal tags through [`phux_client::tags::apply`],
+/// the home `phux tag` calls. Edits are read back from the server, never echoed.
+pub(crate) async fn tag(args: &Value) -> Result<Value, ToolError> {
+    strict_object(
+        args,
+        &["action", "target", "tags", "socket"],
+        &["action", "target"],
+    )?;
+    let action = enum_string(args, "action", &["ls", "add", "rm"], None)?;
+    let target = bounded_string(args, "target", true)?.unwrap_or_default();
+    let tags = bounded_strings(args, "tags", false)?;
+    if action == "ls" && !tags.is_empty() {
+        return Err(ToolError::new("`tags` is not accepted for action `ls`"));
+    }
+    if action != "ls" && tags.is_empty() {
+        return Err(ToolError::new("`tags` is required for add/rm"));
+    }
+    let socket = socket_arg(args)?;
+    let selector = parse_selector(&target)?;
+    let op = match action.as_str() {
+        "ls" => phux_client::tags::TagOp::List,
+        "add" => phux_client::tags::TagOp::Add(&tags),
+        _ => phux_client::tags::TagOp::Remove(&tags),
+    };
+    let outcome = match phux_client::tags::apply(&socket, &selector, op).await {
+        Ok(outcome) => outcome,
+        Err(phux_client::tags::TagError::Miss { degradation }) if degradation.is_complete() => {
+            return Err(ToolError::new(format!("no such target: {target}")));
+        }
+        Err(phux_client::tags::TagError::Miss { degradation }) => {
+            return Err(incomplete_view_miss(
+                &format!("'{target}'"),
+                degradation.notices(),
+            ));
+        }
+        Err(phux_client::tags::TagError::WriteRefused { message }) => {
+            return Err(ToolError::new(message));
+        }
+        Err(phux_client::tags::TagError::Agent(err)) => {
+            return Err(crate::tools::agent_resolve_error(&err));
+        }
+        Err(phux_client::tags::TagError::Attach(err)) => return Err(err.into()),
+    };
+    crate::tools::warn_partial_view("tag", outcome.view.notices());
+    let terminals: Vec<Value> = outcome
+        .rows
+        .iter()
+        .map(|(id, tags)| json!({ "terminal": format_terminal_id(id), "tags": tags }))
+        .collect();
+    Ok(json!({ "schema_version": 1, "action": action, "terminals": terminals }))
+}
+
+// -----------------------------------------------------------------------------
+// rename
+// -----------------------------------------------------------------------------
+
+/// `phux_rename` — through [`phux_client::session::rename_checked`], the
+/// snapshot refusal check, write, and `GET_STATE` ordering barrier
+/// `phux rename` uses.
+pub(crate) async fn rename(args: &Value) -> Result<Value, ToolError> {
+    strict_object(
+        args,
+        &["session", "new_name", "socket"],
+        &["session", "new_name"],
+    )?;
+    let session = bounded_string(args, "session", true)?.unwrap_or_default();
+    let new_name = bounded_string(args, "new_name", true)?.unwrap_or_default();
+    let socket = socket_arg(args)?;
+    let mut conn = Connection::connect(&socket).await?;
+    let mut notices = Vec::new();
+    let renamed =
+        phux_client::session::rename_checked(&mut conn, &session, &new_name, &mut notices).await;
+    crate::tools::warn_partial_view("rename", &notices);
+    match renamed {
+        Ok(()) => {
+            conn.shutdown().await;
+            Ok(json!({
+                "schema_version": 1,
+                "renamed": { "from": session, "to": new_name },
+            }))
+        }
+        Err(phux_client::session::RenameError::Attach(err)) => {
+            drop(conn);
+            Err(err.into())
+        }
+        Err(err) => {
+            drop(conn);
+            Err(ToolError::new(format!(
+                "rename refused for session {session:?}: {}",
+                err.reason()
+            )))
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// insert / move / swap
+// -----------------------------------------------------------------------------
+
+/// Which spatial edit a tool performs.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Spatial {
+    Insert,
+    Move,
+    Swap,
+}
+
+impl Spatial {
+    const fn roles(self) -> [&'static str; 2] {
+        match self {
+            Self::Insert => ["target", "new_pane"],
+            Self::Move => ["source", "target"],
+            Self::Swap => ["first", "second"],
+        }
+    }
+
+    const fn geometry(self) -> bool {
+        !matches!(self, Self::Swap)
+    }
+}
+
+/// `phux_insert_pane` / `phux_move_pane` / `phux_swap_pane` — through
+/// [`phux_client::spatial::run`], the implementation the CLI verbs call.
+/// A refusal carries the same stable code the CLI's `--json` error line does.
+pub(crate) async fn spatial(args: &Value, edit: Spatial) -> Result<Value, ToolError> {
+    let roles = edit.roles();
+    let mut allowed = roles.to_vec();
+    allowed.extend(["socket", "projection"]);
+    if edit.geometry() {
+        allowed.extend(["direction", "ratio"]);
+    }
+    strict_object(args, &allowed, &roles)?;
+    let [first, second] = [
+        bounded_string(args, roles[0], true)?.unwrap_or_default(),
+        bounded_string(args, roles[1], true)?.unwrap_or_default(),
+    ];
+    let direction = match enum_string(
+        args,
+        "direction",
+        &["horizontal", "vertical"],
+        Some("horizontal"),
+    )?
+    .as_str()
+    {
+        "vertical" => Direction::Vertical,
+        _ => Direction::Horizontal,
+    };
+    let ratio = cli_ratio(args)?;
+    // ADR-0129: 0 or 1 key for a same-session edit; a cross-session
+    // `move-pane` needs both (source and destination).
+    let projection = bounded_strings(args, "projection", false)?;
+    let socket = socket_arg(args)?;
+    let operation = match edit {
+        Spatial::Insert => SpatialOp::Insert {
+            target: first,
+            new_pane: second,
+            direction,
+            ratio,
+            projection,
+        },
+        Spatial::Move => SpatialOp::Move {
+            source: first,
+            target: second,
+            direction,
+            ratio,
+            projection,
+        },
+        Spatial::Swap => SpatialOp::Swap {
+            first,
+            second,
+            projection,
+        },
+    };
+    let mut notices = Vec::new();
+    match phux_client::spatial::run(&socket, operation, &mut notices).await {
+        Ok(outcome) => Ok(outcome.document),
+        Err(SpatialError::Transport(err)) => Err(transport_error(&err, &socket, "layout")),
+        Err(SpatialError::Refused(refusal)) => Err(contract_error(
+            refusal.code,
+            refusal.message,
+            refusal.remedy,
+            refusal.exit_code,
+        )),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spawn_split_names_the_divider() {
+        assert_eq!(split_dir("horizontal"), Direction::Horizontal.wire());
+        assert_eq!(split_dir("horizontal"), SplitDir::Vertical);
+        assert_eq!(split_dir("vertical"), Direction::Vertical.wire());
+        assert_eq!(split_dir("vertical"), SplitDir::Horizontal);
+    }
+
+    /// Validation refuses before dialing (the socket cannot exist).
+    #[tokio::test]
+    async fn malformed_or_dangerous_calls_are_refused_before_any_connection() {
+        let socket = "/nonexistent/phux-mcp-pane-tools.sock";
+        assert!(
+            crate::annotations::require_confirmation(
+                "phux_signal",
+                &json!({ "target": "@1", "signal": "kill", "socket": socket })
+            )
+            .is_err(),
+            "an unconfirmed kill signal is refused before dispatch"
+        );
+        let refused = [
+            spawn(&json!({ "target": "@1", "satellite": "edge", "socket": socket })).await,
+            spawn(&json!({ "split": "vertical", "socket": socket })).await,
+            spawn(&json!({ "retain_secs": 86_401, "socket": socket })).await,
+            tag(&json!({ "action": "ls", "target": "@1", "tags": ["x"], "socket": socket })).await,
+            tag(&json!({ "action": "add", "target": "@1", "socket": socket })).await,
+            spatial(
+                &json!({ "source": "@1", "target": "@2", "extra": true, "socket": socket }),
+                Spatial::Move,
+            )
+            .await,
+            spatial(
+                &json!({ "first": "@1", "second": "@2", "direction": "vertical" }),
+                Spatial::Swap,
+            )
+            .await,
+        ];
+        for result in refused {
+            let err = result.expect_err("refused");
+            assert!(
+                !err.0.contains("no server running"),
+                "validation must refuse before dialing: {}",
+                err.0
+            );
+        }
+    }
+
+    /// A malformed idempotency key is the `--json` usage refusal, before any
+    /// connection.
+    #[tokio::test]
+    async fn an_all_zero_idempotency_key_is_a_contract_refusal() {
+        let err = spawn(&json!({
+            "idempotency_key": "00000000000000000000000000000000",
+            "socket": "/nonexistent/phux.sock",
+        }))
+        .await
+        .unwrap_err();
+        let document: Value = serde_json::from_str(&err.0).expect("a JSON error line");
+        assert_eq!(document["error"]["code"], "invalid_idempotency_key");
+        assert_eq!(document["exit_code"], 2);
+    }
+
+    #[tokio::test]
+    async fn unsupported_placed_options_refuse_before_connecting() {
+        for (field, value, message) in [
+            ("projection", json!("app.layout/v1/1"), "named projections"),
+            ("retain_secs", json!(0), "timed screen retention"),
+        ] {
+            let mut args = json!({ "target": "@1", "socket": "/nonexistent/phux.sock" });
+            args[field] = value;
+            let error = spawn(&args).await.unwrap_err();
+            let document: Value = serde_json::from_str(&error.0).unwrap();
+            assert_eq!(document["error"]["code"], "usage_error");
+            assert!(
+                document["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains(message)
+            );
+        }
+    }
+
+    #[test]
+    fn cli_ratio_reads_the_argument_as_the_cli_parsed_it() {
+        assert!((cli_ratio(&json!({})).unwrap() - 0.5).abs() < f32::EPSILON);
+        assert_eq!(
+            cli_ratio(&json!({ "ratio": 0.3 })).unwrap().to_bits(),
+            "0.3".parse::<f32>().unwrap().to_bits()
+        );
+        assert!(cli_ratio(&json!({ "ratio": 1.0 })).is_err());
+    }
+}
