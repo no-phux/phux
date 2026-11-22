@@ -23,6 +23,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: write # reruns the bump PR's failed ci jobs once (release.py)
   contents: read
 
 concurrency:
@@ -57,6 +58,7 @@ jobs:
       - name: One step of the Rune train
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RUN_TOKEN: ${{ github.token }}
           # After ci or native completion, only tag; new bumps wait for the schedule.
           RUNE_RELEASE_TAG_ONLY: ${{ github.event_name == 'workflow_run' && '1' || '' }}
         run: |

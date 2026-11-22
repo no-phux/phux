@@ -41,10 +41,15 @@ released; its source is the `desktop-v0.62.0` tag.
 1. Conventional commits land on `main`. Release Please keeps one draft
    release PR for the root (CLI and integrations). It is one commit carrying the version bump, changelog, and every
    lockfile entry the bump moves.
-2. Every two hours `phux-auto-release.yml` marks the release PR ready, which
-   runs `ci`, and turns on squash auto-merge, so it merges once `ci` is green.
-   That creates the tag and a private draft release. A maintainer can still
-   merge it sooner by hand; `PHUX_AUTO_RELEASE=false` stops the automation.
+2. `phux-auto-release.yml` marks the release PR ready, which runs `ci`, and
+   turns on squash auto-merge. Merging creates the tag and a private draft
+   release. It arms the PR two hours after the last stable release; green
+   main pushes wake it as well as the schedule, which GitHub ran only every
+   6-8 hours. A ready PR is frozen: Release Please keeps tagging but stops
+   rewriting it, since each rewrite cancelled its `ci` and a busy main never
+   let it merge. A failed `ci` is rerun once; a second failure returns the PR
+   to draft, for Release Please to rebuild from main. Dispatch it to ship now.
+   Merging by hand still works; `PHUX_AUTO_RELEASE=false` stops it.
 3. `release.yml` reconciles after `ci` and native push completions, daily,
    or by dispatch. Every draft's exact tagged SHA needs green push `ci` on main
    and a full native receipt from its own successful `rune-macos` main push.
@@ -86,7 +91,8 @@ Rune releases never go through Release Please. `rune-auto-release.yml` cuts
 them on its own: every two hours it opens and auto-merges the next patch bump
 when feat/fix/perf commits touched `clients/rune` since the last tag, with notes
 generated from those subjects, and tags the merged bump after `ci-green`
-and a full native receipt are green (`clients/rune/scripts/release.py`). Set the repository variable
+and a full native receipt are green (`clients/rune/scripts/release.py`).
+A failed bump PR `ci` is rerun once. Set the repository variable
 `RUNE_AUTO_RELEASE=false` to stop it. To ship hand-written notes, merge your
 own bump first: the train then only tags it. Versions ran `0.1.0-alpha.N` to
 alpha.23, then `0.1.0`; the train now bumps the patch (`0.1.1`, `0.1.2`, ...).
@@ -141,46 +147,15 @@ default, 11.0: the plist key is what holds macOS at 14.0.
 
 ### A bad Rune release
 
-Clients refuse older versions, so nothing published can pull a bad build back
-off a machine that took it. **The way out is forward.** Two checks stand in
-front of that: qualification before upload, and from alpha.8 a launch check in
-the updater, which has the new binary draw one headless frame on the user's GPU
-before anything is swapped. Clients on alpha.7 and earlier have no such check:
-Linux runs `--version`, which exits before any GPU work, and macOS runs nothing
-from the new build. Neither check opens a real window on the user's machine, so
-a crash there still ships.
-
-1. **Stop it spreading.** Put the last good feed back, so clients that haven't
-   taken the bad version stop being offered it. Do this first.
-
-   ```sh
-   good=0.1.N
-   dir="$(mktemp -d)"
-   gh release download "rune-v$good" --repo no-phux/phux --dir "$dir" \
-     --pattern '*.zip' --pattern '*.tar.gz' --pattern '*.sha256'
-   git show "rune-v$good:crates/phux-protocol/src/lib.rs" > "$dir/lib.rs"
-   python3 clients/rune/scripts/feed.py build "$good" \
-     "$(git rev-parse "rune-v$good^{commit}")" "$dir" "$dir/lib.rs" > "$dir/rune.json"
-   gh release upload channels "$dir/rune.json" --clobber --repo no-phux/phux
-   ```
-
-2. **Say so.** Edit the bad release's notes to name the problem. Keep the tag
-   and the release: versions are never reused, and the next tag must sort above it.
-3. **Fix forward.** Ship the fix as a higher version through the normal steps.
-   The feed moves to it by itself, and clients on the bad build update as usual,
-   if they still start.
-4. **A build that won't start can't update itself.** Those users reinstall:
-   `curl -fsSL https://phux.sh/install | sh -s -- --rune` takes whatever the feed
-   names, even an older version, and keeps their settings and sessions.
-
-The first real update from each older client on macOS and Linux is the release
-evidence nothing here can replace: record alpha.6 to the next version, with
-Restart now, quit-install and the server handoff, before calling it good.
+Clients refuse older versions, so the way out is forward: put the last good
+feed back, say so on the bad release, and ship a higher version. The steps
+are in [the bad Rune release runbook](./runbooks/bad-rune-release.md).
 
 ## Doing things by hand
 
 | You want to                     | Run                                                                          |
 | ------------------------------- | ---------------------------------------------------------------------------- |
+| ship the release PR now         | `gh workflow run phux-auto-release.yml`                                      |
 | finish or rebuild a stuck draft | `gh workflow run release.yml -f tag=<tag>` (empty tag: every ready draft)    |
 | soak a release candidate        | `gh workflow run soak.yml -f ref=<tag>`                                      |
 | promote a release to lts        | `gh workflow run lts.yml -f tag=<tag>` (needs a passing soak)                |

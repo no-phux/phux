@@ -1,6 +1,16 @@
 import unittest
 
-from release import STUCK_SECONDS, already_reported, bump, next_version, notes, shippable, stuck_exit, stuck_line
+from release import (
+    STUCK_SECONDS,
+    already_reported,
+    bump,
+    next_version,
+    notes,
+    retry_decision,
+    shippable,
+    stuck_exit,
+    stuck_line,
+)
 
 SHA = "3bbef2bd820c1c16118c96d0d2e6fa2c216149c6"
 OTHER = "e2f9f3d69e3dd5a45105761c55b23de160dfbef8"
@@ -37,6 +47,16 @@ class ReleaseTest(unittest.TestCase):
         self.assertIn('version = "1"', m)
         self.assertIn('name = "other"\nversion = "1.0"', l)
         self.assertIn('name = "phux-rune"\nversion = "0.1.0-alpha.20"', l)
+
+    def test_a_failed_bump_ci_is_rerun_once_then_left_for_a_person(self):
+        self.assertIsNone(retry_decision("")[0])
+        self.assertIsNone(retry_decision("7 in_progress  1")[0])
+        self.assertIsNone(retry_decision("7 completed success 1")[0])
+        self.assertEqual(retry_decision("7 completed failure 1")[0], "7")
+        self.assertEqual(retry_decision("7 completed cancelled 1")[0], "7")
+        run_id, message = retry_decision("7 completed failure 2")
+        self.assertIsNone(run_id)
+        self.assertIn("failed ci twice", message)
 
     def test_stuck_line_is_what_later_runs_recognize(self):
         line = stuck_line("rune-v0.1.43", SHA, 7 * 3600)

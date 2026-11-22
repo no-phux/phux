@@ -1,22 +1,38 @@
 # Ships the phux release with no human, beside rune-auto-release.yml and
-# phux-mobile's auto-release: every two hours, if Release Please has a release
-# PR pending, mark it ready (which runs ci) and turn on squash auto-merge.
-# Merging cuts the stable release and release.yml publishes it as before.
-# Repository variable PHUX_AUTO_RELEASE=false stops it; merging the release
-# PR by hand still works.
+# phux-mobile's auto-release. When Release Please has a draft release PR and
+# the last stable release is at least two hours old, mark it ready (which runs
+# ci) and turn on squash auto-merge. Merging cuts the stable release and
+# release.yml publishes it as before. Repository variable
+# PHUX_AUTO_RELEASE=false stops it; merging the release PR by hand still works.
+#
+# A ready release PR is frozen: release.yml stops Release Please rewriting it,
+# so its ci can finish on a busy main. If that ci fails, the press reruns the
+# failed jobs once (a flaky lane). If it fails again, the press puts the PR
+# back to draft, so Release Please rebuilds it from main, which may carry the
+# fix, and a later press arms it again.
+#
+# Wake-ups: the schedule (GitHub ran it every 6-8 hours in November 2026, not
+# every two), every green main push (so the two-hour cadence holds), and every
+# finished ci on the release PR (so a failure is handled at once). Dispatch it
+# to arm the release PR now, for a fix that should not wait two hours.
 #
 # Act as the release App, never GITHUB_TOKEN: events it causes trigger no
 # workflows, so ready_for_review would run no ci and auto-merge would wait
-# forever.
+# forever. Rerunning a run is not such an event, so that uses GITHUB_TOKEN.
 name: phux-auto-release
 
 on:
   schedule:
     # Every two hours, off the hour and off rune-auto-release's minute.
     - cron: "37 */2 * * *"
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main, release-please--branches--main]
   workflow_dispatch:
 
 permissions:
+  actions: write # reruns the release PR's failed ci jobs
   contents: read
 
 concurrency:
@@ -25,7 +41,10 @@ concurrency:
 
 jobs:
   press:
-    if: vars.PHUX_AUTO_RELEASE != 'false'
+    if: >-
+      vars.PHUX_AUTO_RELEASE != 'false'
+      && (github.event_name != 'workflow_run'
+      || github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -34,19 +53,71 @@ jobs:
         with:
           client-id: ${{ vars.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-      - name: Ready and auto-merge the pending release PR
+      - name: Arm, retry, or reset the pending release PR
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RUN_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          RUN_EVENT: ${{ github.event.workflow_run.event }}
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          CADENCE_SECONDS: "7200"
         run: |
-          pr=$(gh pr list --state open --head release-please--branches--main \
-            --label "autorelease: pending" --json number --jq '.[0].number // empty')
-          if [ -z "$pr" ]; then
+          set -euo pipefail
+          pr_json=$(gh pr list --state open --head release-please--branches--main \
+            --label "autorelease: pending" --json number,isDraft,headRefOid --jq '.[0] // empty')
+          if [ -z "$pr_json" ]; then
             echo "no release PR pending"
             exit 0
           fi
-          if [ "$(gh pr view "$pr" --json isDraft --jq .isDraft)" = true ]; then
+          pr=$(jq -r .number <<<"$pr_json")
+          head=$(jq -r .headRefOid <<<"$pr_json")
+
+          if [ "$(jq -r .isDraft <<<"$pr_json")" = true ]; then
+            # Only a green main push may arm on a wake-up; a draft's own ci
+            # (which fails by design) never does.
+            if [ "$EVENT" = workflow_run ] && { [ "$RUN_BRANCH" != main ] \
+              || [ "$RUN_EVENT" != push ] || [ "$RUN_CONCLUSION" != success ]; }; then
+              echo "release PR #$pr is a draft; waiting for the schedule or a green main push"
+              exit 0
+            fi
+            if [ "$EVENT" != workflow_dispatch ]; then
+              last=$(gh release list --exclude-drafts --limit 50 --json tagName,createdAt \
+                --jq '[.[] | select(.tagName | test("^v[0-9]"))][0].createdAt // empty')
+              if [ -n "$last" ]; then
+                age=$(( $(date +%s) - $(date -d "$last" +%s) ))
+                if [ "$age" -lt "$CADENCE_SECONDS" ]; then
+                  echo "last stable release was ${age}s ago; release PR #$pr waits"
+                  exit 0
+                fi
+              fi
+            fi
             gh pr ready "$pr"
+            gh pr merge "$pr" --auto --squash
+            echo "release PR #$pr is ready and merges when ci is green"
+            exit 0
           fi
+
+          # Armed. Keep auto-merge on (a hand edit can drop it), then look at
+          # the newest ci run on the PR's head.
           gh pr merge "$pr" --auto --squash
-          echo "release PR #$pr is ready and merges when ci is green"
+          run_json=$(GH_TOKEN="$RUN_TOKEN" gh run list --workflow ci.yml --commit "$head" \
+            --event pull_request --limit 1 --json databaseId,status,conclusion,attempt --jq '.[0] // empty')
+          if [ -z "$run_json" ] || [ "$(jq -r .status <<<"$run_json")" != completed ]; then
+            echo "release PR #$pr: ci is still running"
+            exit 0
+          fi
+          conclusion=$(jq -r .conclusion <<<"$run_json")
+          if [ "$conclusion" = success ]; then
+            echo "release PR #$pr: ci is green; auto-merge lands it"
+            exit 0
+          fi
+          run=$(jq -r .databaseId <<<"$run_json")
+          if [ "$(jq -r .attempt <<<"$run_json")" -lt 2 ]; then
+            GH_TOKEN="$RUN_TOKEN" gh run rerun "$run" --failed
+            echo "release PR #$pr: ci run $run was $conclusion; reran its failed jobs once"
+            exit 0
+          fi
+          gh pr ready "$pr" --undo
+          echo "::warning::release PR #$pr failed ci twice (run $run); back to draft so Release Please rebuilds it from main"

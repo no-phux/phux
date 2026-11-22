@@ -178,6 +178,43 @@ def tag_step(version):
     return 1
 
 
+def retry_failed_ci():
+    """Rerun the open bump PR's failed ci jobs once, so a flaky lane cannot
+    park the train; a second failure is left for a person.
+
+    Reruns use RUN_TOKEN (the workflow's GITHUB_TOKEN, which has actions:
+    write); the release App may not. Returns the line to print.
+    """
+    run = sh(
+        "gh", "run", "list", "--workflow", "ci.yml", "--branch", BRANCH, "--event", "pull_request",
+        "--limit", "1", "--json", "databaseId,status,conclusion,attempt",
+        "-q", '.[0] // empty | "\\(.databaseId) \\(.status) \\(.conclusion) \\(.attempt)"',
+    )
+    run_id, message = retry_decision(run)
+    if not run_id:
+        return message
+    env = {**os.environ, "GH_TOKEN": os.environ.get("RUN_TOKEN") or os.environ.get("GH_TOKEN", "")}
+    done = subprocess.run(["gh", "run", "rerun", run_id, "--failed"], env=env, capture_output=True, text=True)
+    if done.returncode != 0:
+        return f"{message}; rerun failed: {done.stderr.strip()}"
+    return f"{message}; reran its failed jobs once"
+
+
+def retry_decision(run):
+    """`run` is "<id> <status> <conclusion> <attempt>" for the bump PR's
+    newest ci run, or empty. Returns (run id to rerun or None, message)."""
+    if not run:
+        return None, f"the {BRANCH} PR is open; waiting for its ci"
+    parts = run.split()  # an unfinished run has an empty conclusion
+    run_id, status, attempt = parts[0], parts[1], parts[-1]
+    conclusion = parts[2] if len(parts) == 4 else ""
+    if status != "completed" or conclusion == "success":
+        return None, f"the {BRANCH} PR is open; auto-merge lands it"
+    if int(attempt) >= 2:
+        return None, f"the {BRANCH} PR failed ci twice (run {run_id}); fix it, then rerun"
+    return run_id, f"the {BRANCH} PR's ci run {run_id} was {conclusion}"
+
+
 def bump_step(version):
     previous = TAG_PREFIX + version
     log = sh("git", "log", "--format=%s", f"{previous}..HEAD", "--", *PATHS)
@@ -186,7 +223,7 @@ def bump_step(version):
         print(f"nothing to ship since {previous}")
         return 0
     if sh("gh", "pr", "list", "--head", BRANCH, "--state", "open", "--json", "number", "-q", "length") != "0":
-        print(f"the {BRANCH} PR is open; auto-merge lands it")
+        print(retry_failed_ci())
         return 0
     new = next_version(version)
     manifest, lock = bump(Path(MANIFEST).read_text(), Path(LOCK).read_text(), new)
