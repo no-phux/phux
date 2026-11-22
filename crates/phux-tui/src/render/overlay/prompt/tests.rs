@@ -214,8 +214,8 @@ fn pastes_and_multi_character_text_insert_literally() {
     );
 }
 
-/// Tab is inert, as it always was: it never moves focus off the field, so
-/// the Enter after it still commits.
+/// Tab is inert, as it always was: it never moves focus off the field (nor
+/// drops the selected pre-filled name), so the Enter after it still commits.
 #[test]
 fn tab_stays_inert_and_enter_still_commits() {
     let tab = press(PhysicalKey::Tab, Some("\t"));
@@ -224,7 +224,7 @@ fn tab_stays_inert_and_enter_still_commits() {
     typ(&mut p, 'x');
     assert_eq!(
         committed_name(&mut p),
-        Some(toml::Value::String("buildx".to_owned()))
+        Some(toml::Value::String("x".to_owned()))
     );
 }
 
@@ -301,5 +301,28 @@ fn clicking_the_buttons_presses_them_and_clicking_the_field_moves_the_cursor() {
     assert_eq!(
         committed_name(&mut p),
         Some(toml::Value::String("bxuild".to_owned()))
+    );
+}
+
+/// A pre-filled name is selected: typing replaces it instead of appending
+/// (`api` + `work` used to commit `apiwork`), and an arrow key keeps it.
+#[test]
+fn typing_replaces_a_prefilled_name_and_an_arrow_keeps_it() {
+    let mut p = PromptOverlay::rename_session("api", &Theme::default());
+    for ch in "work".chars() {
+        typ(&mut p, ch);
+    }
+    assert_eq!(
+        committed_name(&mut p),
+        Some(toml::Value::String("work".to_owned()))
+    );
+
+    let plain = |key| key_event(key, ModSet::empty(), None);
+    let mut p = PromptOverlay::rename_window("api", &Theme::default());
+    p.handle_key(&plain(PhysicalKey::End));
+    typ(&mut p, '2');
+    assert_eq!(
+        committed_name(&mut p),
+        Some(toml::Value::String("api2".to_owned()))
     );
 }

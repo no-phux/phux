@@ -181,6 +181,7 @@ pub(crate) fn run(args: crate::commands::ServerArgs, socket: Option<PathBuf>) ->
         autosave,
         daemonize,
         seed_command,
+        seed_cwd,
         resume,
         no_seed,
     } = args;
@@ -202,6 +203,7 @@ pub(crate) fn run(args: crate::commands::ServerArgs, socket: Option<PathBuf>) ->
         autosave.as_deref(),
         daemonize,
         seed_command.as_deref(),
+        seed_cwd.as_deref(),
         resume,
     )
 }

@@ -378,9 +378,9 @@ prefix = "C-b"
 
 Splits (<kbd>"</kbd> <kbd>%</kbd>), new tab (<kbd>c</kbd>), next and
 previous tab (<kbd>n</kbd> <kbd>p</kbd>), copy mode (<kbd>[</kbd>), and
-detach (<kbd>d</kbd>) already match tmux. One difference to know:
-phux's <kbd>x</kbd> closes the pane without asking. The getting started
-guide lists [what else differs from tmux](./getting-started.md#coming-from-tmux).
+detach (<kbd>d</kbd>) already match tmux, and <kbd>x</kbd> asks before it
+closes a pane, as tmux does. The getting started guide lists
+[what differs from tmux](./getting-started.md#coming-from-tmux).
 
 ## Rune shortcuts
 

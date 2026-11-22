@@ -66,6 +66,15 @@ impl super::super::SessionLoop {
         if base.is_none() { empty } else { painted }
     }
 
+    /// Whether the open overlays float over visible panes rather than
+    /// covering the whole screen.
+    pub(in crate::attach::driver::loop_state) fn overlay_floats(&self) -> bool {
+        let (cols, rows) = self.viewport_dims;
+        self.overlays
+            .active_bounds(ratatui::layout::Rect::new(0, 0, cols, rows))
+            .is_some()
+    }
+
     /// Repaint the overlay stack when the live overlay tagged `key` took the
     /// fresh `items`; a no-op when it is not open.
     pub(in crate::attach::driver::loop_state) fn refresh_live_overlay<

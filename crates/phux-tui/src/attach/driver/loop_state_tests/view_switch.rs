@@ -72,6 +72,82 @@ async fn dismissing_the_palette_clears_its_box() {
     drop(server);
 }
 
+/// Output owed to a pane under a floating overlay (the palette, the welcome
+/// card) repaints the pane under it at the pacer's settle; it used to wait
+/// until the overlay closed, hiding a first-run prompt behind the card.
+#[tokio::test(flavor = "current_thread")]
+async fn owed_output_repaints_under_a_floating_overlay() {
+    let (mut state, mut client, server, mut out) = side_by_side_loop(&[]).await;
+    let sidebar = state.sidebar();
+    state
+        .dispatch_batch(
+            &mut client,
+            &mut out,
+            sidebar,
+            vec![chord_press("C-a"), chord_press("?")],
+        )
+        .await
+        .expect("open palette");
+    assert!(state.overlay_floats(), "the palette floats over the panes");
+
+    out.clear();
+    state.pacer.withhold(&ResourceId::local(2));
+    state.settle_withheld_panes(&mut out, sidebar);
+    let painted = String::from_utf8_lossy(&out);
+    assert!(
+        painted.contains("right pane"),
+        "the owed pane repaints under the palette: {painted:?}"
+    );
+    assert!(state.overlays.is_active(), "the palette stays open");
+    drop(client);
+    drop(server);
+}
+
+/// The session history survives a switch: each switch builds a fresh loop,
+/// and `last-session` (C-a `)`) rang the bell because the history it reads
+/// started empty every time.
+#[tokio::test(flavor = "current_thread")]
+async fn a_switch_carries_the_session_history_for_last_session() {
+    let (mut leaving, _client, _server, _a) = published_single_pane_loop().await;
+    leaving.focus_history.remember_session("work");
+    leaving.focus_history.remember_session("api");
+    let carried = leaving.peers_for_switch();
+
+    let (mut entering, _client2, _server2, _b) = published_single_pane_loop().await;
+    entering.seed_carried_peers(carried);
+    assert_eq!(entering.focus_history.session_names(), ["work", "api"]);
+}
+
+/// A pane that needs a human keeps its mark across switches: the session
+/// being left hands its own marked panes over as foreign, and the session
+/// being entered turns a carried mark on its own pane back into the pane's.
+#[tokio::test(flavor = "current_thread")]
+async fn a_switch_keeps_needs_you_marks_both_ways() {
+    let (mut leaving, _client, _server, a) = published_single_pane_loop().await;
+    leaving.mirror.panes.get_mut(&a).expect("pane").attention = true;
+    let carried = leaving.peers_for_switch();
+
+    let (mut elsewhere, _c2, _s2, _b) = published_single_pane_loop().await;
+    elsewhere.mirror.panes.clear();
+    elsewhere.seed_carried_peers(carried);
+    elsewhere.adopt_carried_local_agents();
+    assert!(
+        elsewhere.peers.foreign_attention.contains(&a),
+        "another session sees the left pane's mark as foreign"
+    );
+    let back = elsewhere.peers_for_switch();
+
+    let (mut returning, _c3, _s3, a_again) = published_single_pane_loop().await;
+    assert_eq!(a_again, a);
+    returning.seed_carried_peers(back);
+    returning.adopt_carried_local_agents();
+    assert!(
+        returning.mirror.panes[&a].attention,
+        "the mark is the pane's own again"
+    );
+    assert!(!returning.peers.foreign_attention.contains(&a));
+}
+
 /// A loop over one published 80x22 pane, with the shipped chrome, whose
 /// layout read already settled: the view a held switch is waiting for.
 async fn published_single_pane_loop() -> (SessionLoop, Connection, Connection, ResourceId) {

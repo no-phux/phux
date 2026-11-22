@@ -20,6 +20,8 @@ mod test_support;
 #[cfg(test)]
 mod tests_actions;
 #[cfg(test)]
+mod tests_attention;
+#[cfg(test)]
 mod tests_events;
 #[cfg(test)]
 mod tests_plugin_actions;

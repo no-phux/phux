@@ -74,7 +74,7 @@ A pane is one terminal. Split the one you're in:
 | <kbd>C-a</kbd> <kbd>z</kbd>                                                        | zoom the pane to fill the tab; again to unzoom |
 | <kbd>C-a</kbd> <kbd>x</kbd>                                                        | close the pane                           |
 
-**<kbd>C-a</kbd> <kbd>x</kbd> closes the pane right away, without asking**, and ends the program in it. Capital letters mean <kbd>Shift</kbd>: <kbd>H</kbd> is <kbd>Shift</kbd>+<kbd>h</kbd>.
+**<kbd>C-a</kbd> <kbd>x</kbd> asks first, then closes the pane** and ends the program in it; <kbd>y</kbd> or <kbd>Enter</kbd> confirms. Capital letters mean <kbd>Shift</kbd>: <kbd>H</kbd> is <kbd>Shift</kbd>+<kbd>h</kbd>.
 
 ## Tabs
 
@@ -171,7 +171,7 @@ Programs that use the mouse themselves, such as `htop` or an editor, still get c
 
 ## The sidebar
 
-The sidebar lists your coding agents (with which ones need you) and your sessions. Press <kbd>C-a</kbd> <kbd>b</kbd> to show or hide it. On a narrow terminal it stays hidden so your panes get the room.
+The sidebar lists your coding agents (with which ones need you) and your sessions. Press <kbd>C-a</kbd> <kbd>b</kbd> to show or hide it. It stays hidden whenever showing it would leave your panes fewer than 40 columns (`[chrome] min-pane-cols`), so a narrow terminal keeps the room for panes.
 
 When an agent is waiting on you, <kbd>C-a</kbd> <kbd>q</kbd> jumps to it and <kbd>C-a</kbd> <kbd>Q</kbd> takes you back. <kbd>C-a</kbd> <kbd>A</kbd> opens every agent and its state. [Coding agents](./agents.md) covers the rest.
 
@@ -192,7 +192,6 @@ Most keys match tmux, with <kbd>C-a</kbd> where tmux uses <kbd>C-b</kbd>. What's
 | "window"                                    | "tab" in the UI; actions in the config file still say `window` (`new-window`) |
 | arrow keys move between panes               | <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd>                    |
 | <kbd>;</kbd> last pane                      | <kbd>=</kbd>; <kbd>;</kbd> is the previous pane                        |
-| <kbd>x</kbd> asks before closing a pane     | <kbd>x</kbd> closes it right away                                      |
 | <kbd>&</kbd> closes a window                | <kbd>X</kbd> closes a tab (asks first)                                 |
 | <kbd>(</kbd> <kbd>)</kbd> previous, next session | <kbd>P</kbd> <kbd>N</kbd>; <kbd>)</kbd> is the last session         |
 | <kbd>q</kbd> shows pane numbers             | <kbd>i</kbd>; <kbd>q</kbd> jumps to the next pane that needs you       |
