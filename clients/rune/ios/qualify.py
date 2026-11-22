@@ -38,6 +38,7 @@ validate_input_contracts = _reports.validate_input_contracts
 validate_tree = _reports.validate_tree
 _settle = _sibling("rune_simulator_settle", "simulator_settle")
 _trace = _sibling("rune_connection_diagnostics", "connection_diagnostics")
+_failure = _sibling("rune_failure_evidence", "failure_evidence")
 _glass = _sibling("rune_liquid_glass", "liquid_glass")
 _input = _sibling("rune_qualify_input", "qualify_input")
 INPUT_GATE = _input.INPUT_GATE
@@ -81,6 +82,9 @@ class Qualification:
         self.diagnostic_receipts = {}
         self.diagnostic_pid = None
         self.diagnostic_sealed = set()
+        self.failure_evidence_requested = False
+        self.failure_evidence_receipt = None
+        self.failure_background_staged = False
 
     def run(self, command, timeout=30, env=None):
         self.sequence += 1
@@ -320,6 +324,8 @@ class Qualification:
     require_connection_diagnostics = _trace.require_connection_diagnostics
     finish_connection_diagnostics = _trace.finish_connection_diagnostics
     stop_server = _trace.stop_server
+    preserve_failure_evidence = _failure.preserve_failure_evidence
+    stage_failure_background = _failure.stage_failure_background
 
     failure_screenshot = _trace.failure_screenshot
     cleanup = _trace.cleanup
@@ -352,6 +358,7 @@ def qualify(app, phux, out, transport="quic"):
                 "input_proof": f"native insertText + Enter over paired {transport.upper()} with platform-held enrolled identity; not OS keyboard/IME proof",
             }, indent=2) + "\n")
         except Exception:
+            lane.failure_evidence_requested = True
             lane.failure_screenshot()
             raise
         finally:

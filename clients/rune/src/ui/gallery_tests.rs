@@ -380,7 +380,9 @@ fn the_gallery_paints_every_mode() {
         );
 
         let mut rt = fresh();
-        rt.set_system_contrast(Some(fixture::forced_colors(look.dark())));
+        rt.set_system_contrast(Some(crate::test_support::visual::forced_colors(
+            look.dark(),
+        )));
         paint(&gpu, &mut rt, DESKTOP, &format!("mode-forced-colors-{tag}"));
 
         let mut rt = fresh();

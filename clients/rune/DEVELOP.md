@@ -205,6 +205,10 @@ theme id: Omarchy swaps palettes under one id.
   `t.motion` pairs; shadows are `t.elevate(e, Tier::…)`.
 - Status is `t.status.state(phux_design::State::…)`: ink, companions,
   vector mark and word. `ui::badge::{mark, tone_badge}` draw it.
+- Elevation stacks stay in CSS front-to-back order; Kit and OWN painters
+  reverse them when appending shadows. Forced colours suppress glows as well
+  as ordinary shadows; a transparent glow preserves only the plain tier.
+  Attention keeps its mark, word and keyboard focus, not a grey halo.
 - phux's own rows are `ui::rows::Row`, with a forced `State` for the
   gallery; kit components take `&t.kit`.
 - Kit overlays mount above the window through `ui::kit_overlay`, and their

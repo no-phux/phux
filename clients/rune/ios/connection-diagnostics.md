@@ -56,6 +56,53 @@ status. A missing, malformed or nonquiescent trace fails diagnostic preservation
 after otherwise successful qualification; an original app failure always remains
 the primary error.
 
+## Unvalidated failure files
+
+If qualification or teardown fails, the collector also attempts a separate
+`UNVALIDATED-native-failure/` capture after successful shutdown of its exact
+owned simulator and before deletion. This recovers files published while a
+blocking health query prevented a report waiter from observing them. The same
+boundary covers initial/resumed reports, Liquid Glass, OS background/foreground
+receipts and final seal acknowledgement; it does not retry any of those steps.
+
+The fixed allowlist is `rune-qualification.json`, `rune-tree.json`,
+`rune-input-gate.json`, `rune-glass.json`, `rune-background.json`,
+`rune-lifecycle.json`, and the active connection capture's `.status.json` and
+`.status.pending`. Native files use the active process's initial or `resume-`
+prefix in the forensic directory. Scene files can predate the failed step;
+their presence alone does not bind them to that step. Pairing configuration,
+preferences, keys and arbitrary container files are never collected.
+
+Failure cleanup's seal handshake replaces `rune-background.json`. Before that
+handshake, the collector moves an existing acknowledgement into an exclusive
+`UNVALIDATED-before-seal/` directory inside the owned container, without reading
+its bytes. After shutdown it retains that file separately as
+`rune-background.before-seal.json` (with the active process prefix), so the later
+seal acknowledgement cannot erase the original lifecycle receipt. The staging
+directory is not an extra source allowlist: only its fixed background file can
+be read, with the same safety checks and quiescence requirement.
+
+`receipt.json` labels every copy **UNVALIDATED**, with its original byte length
+and SHA-256, or records a missing/rejected file. Malformed reports and absent
+trees remain forensic failures, never accepted reports or rendered-input proof.
+No JSON is repaired, parsed into replacement evidence or fed back to acceptance.
+Copies are exclusive and private; symlinks (including directory ancestors),
+hardlinks, nonregular files, foreign-owned files and changing sources are rejected.
+If shutdown does not establish producer quiescence, no native bytes are copied;
+the receipt records that limitation and rejects every file.
+
+Each forensic source is limited to **16 MiB**. Larger sources are rejected by
+`fstat` before reading; every read is bounded to 16 MiB plus one overflow byte
+to detect concurrent growth. Overflow is rejected, never truncated or copied as
+a complete capture. Other allowlisted files and owned deletion still proceed.
+This is only a forensic retention limit, not a native qualification/report
+acceptance limit; it changes no assertion, input rule, deadline or retry.
+
+This capture never overwrites normal retained reports or an earlier forensic
+capture. The original host/app exception remains primary even when preservation
+fails, and owned deletion still runs. It repairs diagnostic loss, not simulator
+responsiveness, connection budgets, qualification criteria or a failed release.
+
 ## Evidence boundary
 
 The original report remains authoritative: later automatic recovery cannot

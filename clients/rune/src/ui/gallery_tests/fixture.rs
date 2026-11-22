@@ -181,23 +181,3 @@ fn arabic(s: &str) -> Option<&'static str> {
         _ => return None,
     })
 }
-
-/// A Windows-style contrast theme (forced colours).
-pub(super) fn forced_colors(dark: bool) -> rune::SystemContrast {
-    let c = |rgb: u32| crate::theme::color(rgb);
-    let (window, text) = if dark {
-        (0x00_0000, 0xff_ffff)
-    } else {
-        (0xff_ffff, 0x00_0000)
-    };
-    rune::SystemContrast {
-        window: c(window),
-        text: c(text),
-        highlight: c(if dark { 0x1a_ebff } else { 0x37_006e }),
-        highlight_text: c(window),
-        disabled: c(if dark { 0x3f_f23f } else { 0x60_0000 }),
-        button: c(window),
-        button_text: c(text),
-        link: c(if dark { 0xff_ff00 } else { 0x00_009f }),
-    }
-}
