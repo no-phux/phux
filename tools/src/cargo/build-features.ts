@@ -65,6 +65,9 @@ export function violations({ full, lean, mcp, server, terminalApi, config }: Gra
     "the lean executable must not inherit server defaults",
   );
   expect.that(!mcp.has("ratatui"), "headless MCP must not compile TUI chrome");
+  for (const dependency of ["libghostty-vt", "libghostty-vt-sys", "phux-vt"]) {
+    expect.that(!mcp.has(dependency), `headless MCP must not compile ${dependency}`);
+  }
   for (const [name, graph] of Object.entries({ full, lean, mcp })) {
     expect.that(!graph.has("ratatui-crossterm"), `${name}: unused terminal backend`);
     expect.that(!graph.has("ratatui-macros"), `${name}: unused TUI macros`);

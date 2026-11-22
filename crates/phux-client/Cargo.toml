@@ -13,6 +13,10 @@ authors.workspace = true
 workspace = true
 
 [features]
+# Keep the existing standalone attach error vocabulary. Control-only consumers
+# can opt out and build without linking the native replica engine.
+default = ["engine"]
+engine = ["dep:libghostty-vt", "phux-client-runtime/engine"]
 # Exposes `phux_client::testkit`, the scripted server client-side tests
 # speak to. Test scaffolding: downstream crates enable it from
 # dev-dependencies. There is no `tui` feature; the TUI is `phux-tui`.
@@ -33,7 +37,7 @@ phux-client-core.workspace = true
 serde_json.workspace = true
 phux-config.workspace = true
 # `AttachError::Ghostty` names libghostty's error type.
-libghostty-vt.workspace = true
+libghostty-vt = { workspace = true, optional = true }
 thiserror.workspace = true
 tracing.workspace = true
 tokio.workspace = true
@@ -51,7 +55,7 @@ phux-work.workspace = true
 quinn.workspace = true
 # The one transport (ADR-0171): `Connection` is a facade over its one-shot
 # session, and reconnect policy (ADR-0133).
-phux-client-runtime.workspace = true
+phux-client-runtime = { path = "../phux-client-runtime", default-features = false }
 # `phux wait --regex`: linear-time matching of operator patterns.
 regex = "1"
 # Input operation ids (ADR-0053).
@@ -69,6 +73,7 @@ phux-server = { workspace = true, features = ["testing"] }
 phux-terminal.workspace = true
 # Wire-to-libghostty key conversions for the native encoder round trips.
 phux-vt.workspace = true
+libghostty-vt.workspace = true
 tempfile.workspace = true
 # The scripted QUIC and WebSocket servers in `tests/connection`.
 quinn = { workspace = true }
