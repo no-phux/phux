@@ -9,7 +9,8 @@ use phux_design::State;
 use rune::{ChromeInsets, Color, El, TextStyle, el, row, text};
 use rune_kit::WindowTitlebar;
 
-use super::{Desk, Paint, Shortcut, Tokens, badge, icon_press, icons, tabs, tip};
+use super::{Desk, Paint, Shortcut, Tokens, badge, icons, tabs, tip};
+use crate::ui::controls::terminal_icon_press;
 
 /// The terminal's size in the title bar: quiet machine figures that keep
 /// their columns as the window is dragged.
@@ -184,7 +185,7 @@ fn band(desk: &Desk, p: &Tokens, lights: f32, trailing: f32, fill: Color) -> El 
         .unwrap_or_default();
     let sizing = desk.size_glance().is_some();
     let folded = !desk.sidebar_shown();
-    let sidebar = icon_press(
+    let sidebar = terminal_icon_press(
         &icons::SIDEBAR,
         "Sidebar",
         "sidebar-toggle",
@@ -192,7 +193,7 @@ fn band(desk: &Desk, p: &Tokens, lights: f32, trailing: f32, fill: Color) -> El 
         Desk::toggle_sidebar,
     )
     .expanded(desk.sidebar_shown());
-    let settings = icon_press(
+    let settings = terminal_icon_press(
         &icons::SETTINGS,
         "Settings",
         "settings-button",

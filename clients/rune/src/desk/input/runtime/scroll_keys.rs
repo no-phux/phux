@@ -11,6 +11,91 @@ fn settle(rt: &mut rune::Runtime<crate::desk::Desk>) {
 }
 
 #[test]
+fn clicking_desktop_chrome_returns_typing_to_the_terminal() {
+    let (client, mut rt) = crate::test_support::input_fixture();
+    rt.update(|d, _| {
+        d.connection.tabs.list = vec![
+            crate::desk::Tab {
+                id: [1; 16],
+                name: "Shell".into(),
+                resources: vec![ResourceId::local(1)],
+                active: true,
+                locked: false,
+            },
+            crate::desk::Tab {
+                id: [2; 16],
+                name: "Other tab".into(),
+                resources: vec![ResourceId::local(2)],
+                active: false,
+                locked: false,
+            },
+        ];
+    });
+    settle(&mut rt);
+    for control in ["tab-0", "tab-new", "sidebar-toggle"] {
+        let (x, y) = rt.find(control).expect(control);
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        settle(&mut rt);
+        rt.update(|_, tx| assert_eq!(tx.focused(), None, "{control} kept focus"));
+        let _ = client.take_outbound();
+        for key in [Key::Text(" ".into()), Key::Down] {
+            rt.key(crate::keys::plain(key));
+            settle(&mut rt);
+        }
+        let events: Vec<_> = client
+            .take_outbound()
+            .iter()
+            .filter_map(|bytes| match FrameKind::decode(bytes).unwrap().0 {
+                FrameKind::InputKey { terminal_id, event } => Some((terminal_id, event.key)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            events,
+            [
+                (ResourceId::local(1), PhysicalKey::Space),
+                (ResourceId::local(1), PhysicalKey::ArrowDown),
+            ],
+            "{control}: both keys should reach the terminal exactly once"
+        );
+        assert!(!rt.state.settings_open);
+    }
+}
+
+#[test]
+fn intentionally_focused_chrome_does_not_share_keys_with_the_terminal() {
+    let (client, mut rt) = crate::test_support::input_fixture();
+    settle(&mut rt);
+    assert!(rt.accessibility_action("sidebar-toggle", rune::accesskit::Action::Focus, None));
+    settle(&mut rt);
+    let _ = client.take_outbound();
+
+    rt.key(crate::keys::plain(Key::Text("never type this".into())));
+    settle(&mut rt);
+    rt.update(|d, tx| {
+        assert_eq!(tx.focused(), Some("sidebar-toggle"));
+        assert!(!d.runtime_ime(&rune::Ime::Commit("IME should not leak either".into()), tx));
+    });
+    assert!(client.take_outbound().is_empty());
+
+    let sidebar = rt.state.sidebar_shown();
+    rt.key(crate::keys::plain(Key::Text(" ".into())));
+    settle(&mut rt);
+    assert_ne!(
+        rt.state.sidebar_shown(),
+        sidebar,
+        "keyboard activation works"
+    );
+    rt.update(|_, tx| assert_eq!(tx.focused(), Some("sidebar-toggle")));
+
+    rt.key(crate::keys::plain(Key::Escape));
+    settle(&mut rt);
+    rt.update(|_, tx| assert_eq!(tx.focused(), None, "Escape returns to the terminal"));
+    assert!(client.take_outbound().is_empty());
+}
+
+#[test]
 fn scroller_keys_still_reach_the_terminal_in_both_forms() {
     for (phone, size) in [(false, (1100.0, 720.0)), (true, (393.0, 852.0))] {
         let (client, mut rt) = crate::test_support::input_fixture();
