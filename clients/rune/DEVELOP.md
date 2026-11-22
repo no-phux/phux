@@ -22,8 +22,10 @@ all ten revisions match. The `winit` override temporarily uses an exact
 only a Wayland caret-rectangle publication fix; the other nine entries stay
 upstream. A bump must rebase and review this small patch on the new upstream
 head, not drop the fix or retain an older fork base. Reunify all ten when
-upstream supplies equivalent behavior. Linux `rune-check` also executes the
-patched dependency's unit tests; native qualification remains mandatory.
+upstream supplies equivalent behavior. On every host, `rune-check` compiles the
+actual pinned Wayland cursor helper with `rustc --test` and runs its six
+headless regressions. This does not compile the Linux native integration or
+replace mandatory real-compositor qualification in Linux CI.
 
 The `tooling`
 feature is required in release builds too: packaged qualification and the
