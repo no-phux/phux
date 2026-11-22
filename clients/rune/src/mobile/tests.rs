@@ -5,6 +5,44 @@ use phux_client_runtime::Transport;
 use phux_protocol::wire::frame::FrameKind;
 
 #[test]
+fn unchanged_native_accessibility_traits_do_not_rebuild_the_view() {
+    thread_local! {
+        static BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+    fn counted_view(_: &State, _: &mut rune::Cx<State>) -> rune::El {
+        BUILDS.with(|count| count.set(count.get() + 1));
+        rune::text("Native accessibility")
+    }
+    let mut rt = crate::test_support::runtime(
+        crate::test_support::window(),
+        counted_view,
+        (393.0, 852.0),
+        rune::Env::new(true, 2.0),
+    );
+    let standard = "UICTContentSizeCategoryL";
+    host::set_accessibility(&mut rt, false, standard);
+    rt.frame(0.0);
+    let initial = BUILDS.with(std::cell::Cell::get);
+    for _ in 0..20 {
+        host::set_accessibility(&mut rt, false, standard);
+        rt.frame(0.0);
+    }
+    assert_eq!(
+        BUILDS.with(std::cell::Cell::get),
+        initial,
+        "unchanged UIKit layout traits must not invalidate the Rune view"
+    );
+    host::set_accessibility(&mut rt, true, "UICTContentSizeCategoryAccessibilityXXXL");
+    rt.frame(0.0);
+    assert_eq!(BUILDS.with(std::cell::Cell::get), initial + 1);
+    assert!(rt.state.reduce_transparency());
+    host::set_accessibility(&mut rt, false, standard);
+    rt.frame(0.0);
+    assert_eq!(BUILDS.with(std::cell::Cell::get), initial + 2);
+    assert!(!rt.state.reduce_transparency());
+}
+
+#[test]
 fn ime_reconversion_replaces_only_the_focused_field_in_both_forms() {
     for (phone, size) in [(false, (1100.0, 720.0)), (true, (393.0, 852.0))] {
         let (client, mut rt) = crate::test_support::input_fixture();

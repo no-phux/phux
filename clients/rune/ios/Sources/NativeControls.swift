@@ -41,6 +41,7 @@ final class NativeControls {
     /// reading order. Moves follow Rune's own motion, so UIKit animates none.
     func update(_ specs: [[String: Any]]) {
         var seen = Set<String>()
+        var ordered: [UIView] = []
         UIView.performWithoutAnimation {
             for spec in specs {
                 guard let id = spec["id"] as? String, let rect = spec["rect"] as? [Double],
@@ -55,13 +56,24 @@ final class NativeControls {
                 }
                 let alpha = CGFloat(spec["opacity"] as? Double ?? 1)
                 if control.button.alpha != alpha { control.button.alpha = alpha }
-                host.bringSubviewToFront(control.button)
+                // Repeated ids keep their final occurrence's reading order.
+                ordered.removeAll { $0 === control.button }
+                ordered.append(control.button)
             }
             for (id, control) in controls where !seen.contains(id) {
                 control.button.removeFromSuperview()
                 controls.removeValue(forKey: id)
             }
+            order(ordered)
         }
+    }
+
+    private func order(_ ordered: [UIView]) {
+        // Reordering unchanged controls marks the host for layout, which
+        // draws again. Check the real hierarchy so new non-controls still
+        // stay beneath the buttons, without perpetuating idle frames.
+        guard !host.subviews.suffix(ordered.count).elementsEqual(ordered, by: { $0 === $1 }) else { return }
+        for button in ordered { host.bringSubviewToFront(button) }
     }
 
     func removeAll() { update([]) }

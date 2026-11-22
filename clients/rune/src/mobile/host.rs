@@ -63,10 +63,12 @@ pub fn set_accessibility(
     reduce_transparency: bool,
     content_size: &str,
 ) {
-    rt.update(|state, tx| {
-        if state.set_accessibility(reduce_transparency, content_size) {
+    rt.update_if(|state, tx| {
+        let changed = state.set_accessibility(reduce_transparency, content_size);
+        if changed {
             tx.instant();
         }
+        changed
     });
 }
 

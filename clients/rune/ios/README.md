@@ -105,7 +105,7 @@ secrets travel through a private app-container file, not launch arguments,
 logs or evidence artifacts. It injects a command through the actual UIKit
 `insertText` entry, requires
 the returned marker in a real terminal grid and presented frame, records the
-element tree/report/screenshot and fifteen UIKit input/onboarding-contract groups, and
+element tree/report/screenshot and sixteen UIKit input/onboarding/control-contract groups, and
 backgrounds/resumes the app through the
 OS before checking continued rendering. The report must also say the surface
 shows its drawable at the screen's scale: Rune reports its own geometry, not
@@ -121,6 +121,15 @@ page has removed the covered bar's glass and shown its own glass dock
 (`rune-glass.json`, `ios-glass-sessions.png`). It never adopts a user's simulator
 or production socket. Qualification-only socket/command launch arguments
 are compiled out on devices.
+
+The simulator-only `native-control-stability` contract runs actual glass controls
+on private UIKit views, without changing Rune's window or input. It requires
+100 identical updates to make no hierarchy reorder calls, while preserving
+changed order, removal, overlap hit testing, new non-control views, duplicate ids
+and changed appearance. Its receipt is required on both initial and resumed
+qualification. This guards redundant native layout work; it does not establish
+an exclusive cause of hosted simulator stalls or replace the live glass,
+rendering, paired-input and OS-lifecycle checks.
 
 The native surface presents layout-driven frames in UIKit's Core Animation
 transaction so keyboard geometry and Metal contents move together. Ordinary
