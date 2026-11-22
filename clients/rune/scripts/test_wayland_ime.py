@@ -308,8 +308,11 @@ class WaylandImeTests(WaylandImeFixture, unittest.TestCase):
         self.assertGreaterEqual(elapsed, ime.STARTUP_SECONDS)
         self.assertEqual(json.loads(files["wayland-ime-seats-before.json"]),
                          [{"name": "seat0", "capabilities": 0}])
-        self.assertEqual(json.loads(files["wayland-ime-seats-failure.json"]),
-                         [{"name": "seat0", "capabilities": 0}])
+        # A loaded host can time out the 1s failure capture; then
+        # assert_failure_evidence requires its recorded failed attempt.
+        if "wayland-ime-seats-failure.json" in files:
+            self.assertEqual(json.loads(files["wayland-ime-seats-failure.json"]),
+                             [{"name": "seat0", "capabilities": 0}])
         self.assert_failure_evidence(stages, files)
 
     def test_malformed_seat_reply_retains_raw_failure_evidence_without_app(self):

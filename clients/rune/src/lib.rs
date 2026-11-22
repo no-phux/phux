@@ -196,7 +196,7 @@ pub fn run_desktop() {
         })
         // Rune's native host drops on_modifiers; keep logical events.
         .modifier_keys()
-        .on_ime(|desk: &mut Desk, event, _| desk.ime(event))
+        .on_ime(|desk: &mut Desk, event, tx| desk.runtime_ime(event, tx))
         .on_focus(|desk: &mut Desk, focused, _| desk.focus_changed(focused))
         .on_open_url(|desk: &mut Desk, url, _| desk.open_system_link(url))
         .on_frame_drawn(|rt: &rune::Runtime<Desk>| rt.state.drawn());

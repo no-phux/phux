@@ -92,7 +92,7 @@ pub fn add(app: &mut rune::App<Desk>, resolved: Resolved) -> AppHandle<Desk> {
     let panel = panel
         .init(move || Desk::quick(&resolved, me, main))
         .modifier_keys()
-        .on_ime(|desk: &mut Desk, event, _| desk.ime(event))
+        .on_ime(|desk: &mut Desk, event, tx| desk.runtime_ime(event, tx))
         .on_focus(|desk: &mut Desk, focused, tx| {
             desk.focus_changed(focused);
             if !focused {

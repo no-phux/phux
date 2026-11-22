@@ -13,6 +13,11 @@ max_run_hours="${RUNE_UPSTREAM_MAX_RUN_HOURS:-10}"
 shell="${RUNE_UPSTREAM_SHELL:-${SHELL:-/bin/zsh}}"
 wt="$home/phux"
 changes="$home/worktrees"
+scratch="$home/scratch"
+# Scratch a finished run left behind is deleted once nothing in it has
+# changed for this long; entries matching keep_scratch never are.
+scratch_keep_hours="${RUNE_UPSTREAM_SCRATCH_KEEP_HOURS:-24}"
+keep_scratch="${RUNE_UPSTREAM_SCRATCH_KEEP:-phone-*}"
 run_tag=rune-upstream-run
 hold_tag=hold
 
@@ -66,6 +71,33 @@ refresh_worktrees() {
     if [[ "$(git -C "$wt" rev-parse HEAD)" != "$(git -C "$wt" rev-parse origin/main)" ]]; then
         git -C "$wt" switch -q --detach origin/main
     fi
+}
+
+# A run's scratch (builds, packaged apps, captures) once ran to 100 GB a
+# tick and filled the disk. Delete each top-level entry nothing has touched
+# for scratch_keep_hours and no process holds open; keep_scratch (the phone
+# delivery sites a launchd job serves) is never touched.
+prune_scratch() {
+    local dir name minutes=$((scratch_keep_hours * 60))
+    [[ -d "$scratch" ]] || return 0
+    for dir in "$scratch"/*; do
+        [[ -e "$dir" ]] || continue
+        name="${dir##*/}"
+        # shellcheck disable=SC2053 # keep_scratch is a glob on purpose
+        [[ "$name" == $keep_scratch ]] && continue
+        [[ -z "$(find "$dir" -mmin "-$minutes" -print -quit 2>/dev/null)" ]] || continue
+        # lsof exits nonzero on unrelated stat warnings even when it lists
+        # holders, so its output, not its status, says "in use".
+        if [[ -n "$(lsof +D "$dir" 2>/dev/null)" ]]; then
+            log "scratch $name is stale but in use; keeping it"
+            continue
+        fi
+        if rm -rf "$dir"; then
+            log "removed stale scratch $name"
+        else
+            log "could not remove stale scratch $name"
+        fi
+    done
 }
 
 # The session's panes and their tags; none when the session is gone. Any
@@ -161,6 +193,7 @@ main() {
     fi
     rm -f "$(git -C "$wt" rev-parse --absolute-git-dir)/phux-worktree-owner"
     refresh_worktrees
+    prune_scratch
 
     any="$(session_panes | jq -r '.terminals[0].terminal // empty')"
     if [[ -z "$any" ]] && session_exists; then

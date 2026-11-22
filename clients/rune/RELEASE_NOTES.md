@@ -1,6 +1,9 @@
-**Phux Rune 0.1.48**: crisp attention marks, clearer phone editing and quieter session chrome.
+**Phux Rune 0.1.49**: return keyboard focus to the terminal after clicking tabs and toolbar controls.
 
-Includes improvements prepared for 0.1.47, which was not published.
+- Keep typing with the focused control instead of splitting it between the desktop controls and the terminal. Escape gives focus back to the terminal. (#2851)
+- Update the `url` dependency to address RUSTSEC-2026-0592. (#2848)
+
+Also includes improvements prepared for 0.1.47 and 0.1.48, which were not published.
 
 - Keep waiting-agent marks crisp in forced colours, without restoring grey halos. Status words, marks and keyboard focus remain; ordinary shadows follow Rune Kit's CSS layer order.
 - Polish phone navigation and native glass controls. Keep Settings' keyboard dismissal and accessory keys readable at large text sizes: Done stays whole, keys fit their labels, and an overflow indicator makes the remaining keys discoverable.
