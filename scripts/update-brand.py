@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import brand
 
 SOURCE = "no-phux/phux-brand"
-REPOSITORIES = ("phux", "phux-mobile", "website")
+REPOSITORIES = ("phux", "phux-mobile", "website", "ops")
 
 
 def run(args, cwd=None, source=False):
@@ -65,7 +65,8 @@ def public_kit(root, archive, checksum, manifest, revision):
         raise ValueError("refusing to replace an already-published brand version")
     shutil.copyfile(archive, existing)
     (target / "SHA256SUMS").write_text(f"{checksum}  phux-brand.zip\n")
-    (target / "manifest.json").write_bytes(brand.encode(manifest))
+    # The release's own manifest.json: the archive's, plus the revision 2.x leaves out of it.
+    (target / "manifest.json").write_bytes(brand.encode({**manifest, "source_revision": revision}))
     index_path = root / "public/brand/index.json"
     index = json.loads(index_path.read_bytes()) if index_path.exists() else {"schema": 1, "releases": {}}
     index["releases"][version] = {"sha256": checksum, "source_revision": revision}

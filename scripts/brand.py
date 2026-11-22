@@ -15,7 +15,7 @@ import zipfile
 
 MAX_BYTES = 100 * 1024 * 1024
 PUBLIC_BASE = "https://phux.sh/brand/releases"
-CONSUMERS = ("phux", "mobile", "website")
+CONSUMERS = ("phux", "mobile", "website", "ops")
 
 
 def digest(data):

@@ -43,11 +43,11 @@
     },
     "tooling/brand.py": {
       "destination": "scripts/brand.py",
-      "sha256": "03cf2a2941106732ccbd4dec2852edf3f09903535c6592f930db25e1f9ef82eb"
+      "sha256": "731f24cc33acb87e4c9acce152188d90b53e56de7059911f87f8d98142e7a13c"
     }
   },
   "schema": 1,
-  "sha256": "63f3c6c2779cbd79908b0e5f5719b2f0e98e6033ae6c4eae19818b798f77a098",
-  "url": "https://phux.sh/brand/releases/2.0.0/phux-brand.zip",
-  "version": "2.0.0"
+  "sha256": "580974f8fcb12ad3e69b7371b18579ef8511716abc721d2e6575b4afac328960",
+  "url": "https://phux.sh/brand/releases/2.1.0/phux-brand.zip",
+  "version": "2.1.0"
 }

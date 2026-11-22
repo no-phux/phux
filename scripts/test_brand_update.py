@@ -49,6 +49,8 @@ class BrandUpdateTests(unittest.TestCase):
             update.public_kit(root, archive, checksum, {**manifest, "version": "1.1.0"}, revision)
             index = json.loads((root / "public/brand/index.json").read_bytes())
             self.assertEqual(set(index["releases"]), {"1.0.0", "1.1.0"})
+            published = json.loads((root / "public/brand/releases/1.1.0/manifest.json").read_bytes())
+            self.assertEqual(published, {"version": "1.1.0", "source_revision": revision})
             archive.write_bytes(b"changed")
             with self.assertRaisesRegex(ValueError, "already-published"):
                 update.public_kit(root, archive, update.brand.digest(archive.read_bytes()), manifest, revision)
