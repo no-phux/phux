@@ -5,12 +5,13 @@
 //! caller once, marking it injected so it reaches an agent's conversation at
 //! most once. A message injected but never read stays unread in the inbox.
 
-use rusqlite::{OptionalExtension as _, Transaction, TransactionBehavior, params};
+use rusqlite::{Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 
 use super::{Address, name_char};
 use crate::error::Error;
 use crate::id::{OpaqueId, OperationId};
+use crate::operation::replay;
 use crate::store::{Store, digest, timestamp};
 
 /// Longest thread slug, in bytes.
@@ -192,7 +193,7 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if let Some(mail) = replayed::<Mail>(&tx, &request.operation_id, &digest)? {
+        if let Some(mail) = replay(&tx, &request.operation_id, &digest)? {
             return Ok(Sent {
                 mail,
                 idempotent_replay: true,
@@ -438,27 +439,6 @@ fn recipients(tx: &Transaction<'_>, id: OpaqueId) -> Result<Vec<String>, Error> 
         tx.prepare("SELECT recipient FROM mail_delivery WHERE mail_id = ?1 ORDER BY rowid")?;
     let rows = statement.query_map(params![id.as_slice()], |row| row.get(0))?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Error::from)
-}
-
-fn replayed<T: serde::de::DeserializeOwned>(
-    tx: &Transaction<'_>,
-    operation_id: &OperationId,
-    digest: &str,
-) -> Result<Option<T>, Error> {
-    let row: Option<(String, String)> = tx
-        .query_row(
-            "SELECT digest, result_json FROM operation WHERE id = ?1",
-            params![operation_id.as_slice()],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()?;
-    match row {
-        None => Ok(None),
-        Some((stored, result)) if stored == digest => Ok(Some(serde_json::from_str(&result)?)),
-        Some(_) => Err(Error::OperationConflict {
-            operation_id: operation_id.to_hex(),
-        }),
-    }
 }
 
 /// The operation a send records beside its event.

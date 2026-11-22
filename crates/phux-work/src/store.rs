@@ -11,6 +11,7 @@ use crate::id::{
     parse_description, parse_repo, parse_title,
 };
 use crate::lock::{self, FileLock};
+use crate::operation::replay;
 use crate::schema;
 
 /// File name under `work/`.
@@ -688,27 +689,6 @@ pub(crate) fn digest(kind: &str, body: &serde_json::Value) -> Result<String, Err
         "body": body,
         "kind": kind,
     }))?)
-}
-
-fn replay(
-    tx: &Transaction<'_>,
-    operation_id: &OperationId,
-    digest: &str,
-) -> Result<Option<Objective>, Error> {
-    let row: Option<(String, String)> = tx
-        .query_row(
-            "SELECT digest, result_json FROM operation WHERE id = ?1",
-            params![operation_id.as_slice()],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()?;
-    match row {
-        None => Ok(None),
-        Some((stored, result)) if stored == digest => Ok(Some(serde_json::from_str(&result)?)),
-        Some(_) => Err(Error::OperationConflict {
-            operation_id: operation_id.to_hex(),
-        }),
-    }
 }
 
 fn allocate_alias(tx: &Transaction<'_>, repo: &str) -> Result<Alias, Error> {

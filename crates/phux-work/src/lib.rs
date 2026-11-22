@@ -45,6 +45,7 @@ mod error;
 mod id;
 mod lock;
 pub mod mission;
+mod operation;
 mod schema;
 mod service;
 mod start;
