@@ -400,6 +400,20 @@
             '';
         };
 
+        # The hosted shards execute an existing nextest archive. Keep the
+        # compiler for wire-tag probes, but do not realize Zig, browser,
+        # desktop, or development tools that these jobs never use.
+        devShells.test-archive = pkgs.mkShell {
+          packages = [
+            toolchain
+            pkgs.cargo-nextest
+            toolPins.just
+            toolPins.python
+            pkgs.jq
+          ];
+          env.RUST_BACKTRACE = "1";
+        };
+
         # Browser CI gets a browser matched to chromedriver without making
         # every native Linux lane download Chromium. Darwin uses host Chrome
         # and an explicitly matching driver (see docs/development.md).
