@@ -16,7 +16,18 @@ workspace and lock so Rune's graph stays out of the rest of phux. The
 twice a day.
 
 Keep all Rune dependencies and the six `[patch.crates-io]` entries on the
-same revision: Cargo does not inherit Rune's workspace patches. The `tooling`
+same upstream base: Cargo does not inherit Rune's workspace patches. Normally
+all ten revisions match. The `winit` override temporarily uses an exact
+[owned-fork](https://github.com/no-phux/rune) descendant of that base, containing
+only a Wayland caret-rectangle publication fix; the other nine entries stay
+upstream. A bump must rebase and review this small patch on the new upstream
+head, not drop the fix or retain an older fork base. Reunify all ten when
+upstream supplies equivalent behavior. On every host, `rune-check` compiles the
+actual pinned Wayland cursor helper with `rustc --test` and runs its six
+headless regressions. This does not compile the Linux native integration or
+replace mandatory real-compositor qualification in Linux CI.
+
+The `tooling`
 feature is required in release builds too: packaged qualification and the
 updater's GPU launch check use headless rendering. Desktop startup opts into
 Rune's orderly exit so window destruction still closes popup commands and

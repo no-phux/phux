@@ -16,7 +16,7 @@ import struct
 import subprocess
 from urllib.parse import quote
 
-from visual_motion import MOTION_FRAMES, pane_motion_inventory
+from visual_motion import MOTION_FRAMES, motion_frames, pane_motion_inventory
 from visual_navigation import navigation_exporter, navigation_inventory
 from visual_themes import theme_inventory
 
@@ -218,7 +218,7 @@ def settings_inventory():
 
 
 def required_inventory():
-    """749 required cases: 192 Inbox, 226 Settings, 330 navigation, 1 resource.
+    """989 required cases: 192 Inbox, 226 Settings, 570 navigation, 1 resource.
 
     Values are (logical width, logical height, scale); additional cases are
     welcome, but cannot replace any maintained case.
@@ -278,24 +278,25 @@ def case_record(root, png):
         "physical": physical, "logical": logical, "scale": tree["scale"],
         "elementCount": len(tree["elements"]),
     }
-    if png.stem.startswith("pane-motion-"):
+    if png.stem.startswith(("pane-motion-", "accessory-resize-")):
         case.update(motion_record(root, png, tree))
     return case
 
 
 def motion_record(root, png, tree):
+    frames = motion_frames(png.stem)
     path = png.with_suffix(".motion.json")
     relative = safe_relative(root, path)
     require(path.is_file(), f"{png}: missing motion timing")
     motion = json.loads(path.read_text(encoding="utf-8"))
     require(isinstance(motion, dict), f"{path}: motion must be an object")
     stage = motion.get("stage")
-    require(type(stage) is str and stage in MOTION_FRAMES, f"{path}: unknown motion stage")
+    require(type(stage) is str and stage in frames, f"{path}: unknown motion stage")
     require(type(motion.get("schema")) is int and motion["schema"] == 1
             and motion.get("scenario") == tree["scenario"]
             and png.stem == f'{motion["scenario"]}-{stage}', f"{path}: wrong motion case")
     frame, elapsed = motion.get("frame"), motion.get("elapsed_ms")
-    require(type(frame) is int and frame == MOTION_FRAMES[stage], f"{path}: wrong motion frame")
+    require(type(frame) is int and frame == frames[stage], f"{path}: wrong motion frame")
     require(type(elapsed) in (int, float) and math.isfinite(elapsed)
             and abs(elapsed - frame * 1000.0 / 60.0) < 1e-8, f"{path}: wrong motion clock")
     return {"motion": relative, "motionSha256": digest(path)}

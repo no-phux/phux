@@ -5358,7 +5358,7 @@ checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 [[package]]
 name = "winit"
 version = "0.30.13"
-source = "git+https://github.com/anomalyco/rune?rev=dc8f7f7213cbe43af45212de6998d530d0945187#dc8f7f7213cbe43af45212de6998d530d0945187"
+source = "git+https://github.com/no-phux/rune?rev=142017670b03815d3bd5299e94c210dd463dae77#142017670b03815d3bd5299e94c210dd463dae77"
 dependencies = [
  "ahash",
  "android-activity",
