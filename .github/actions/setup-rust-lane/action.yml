@@ -79,6 +79,7 @@ runs:
   using: composite
   steps:
     - name: runner disk headroom
+      if: inputs.build-cache != 'none'
       shell: bash
       run: |
         df -h / | tail -1
