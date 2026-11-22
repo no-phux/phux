@@ -14,6 +14,8 @@ use rune::{Env, Runtime};
 use crate::desk::{Desk, Pending, Tab};
 use crate::test_support::server::{self, agent, pane, session};
 
+mod attention;
+
 /// The pixel scale every page paints at.
 fn scale() -> f32 {
     2.0
