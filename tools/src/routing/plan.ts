@@ -154,6 +154,7 @@ export const ICOUNT_PR_PATHS = [
   "scripts/ci/perf-icount.sh",
   "just/perf.just",
   "tools/src/perf/**",
+  ".github/actions/setup-rust-lane/**",
   ".github/workflows/ci.yml",
 ] as const;
 

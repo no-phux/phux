@@ -6,7 +6,7 @@
 # THE HOLE THIS CLOSES. `#[ignore]`d tests do not run in the default pool
 # (`cargo nextest run --workspace`, which is CI's unit step). They run only
 # where a lane passes `--run-ignored` and names their binary. `just e2e`
-# names binaries explicitly, one `binary_id(...)` per line, and that list is
+# names binaries explicitly with `binary_id(...)`, and that list is
 # hand-maintained. A new `*_e2e.rs` full of `#[ignore]`d tests therefore
 # compiles, passes review, and then never executes anywhere -- green forever,
 # testing nothing. That is not hypothetical: phux/tests/upgrade_e2e.rs
@@ -14,15 +14,9 @@
 # the filterset, and plugin_agent_bench_e2e and workspace_archive_e2e were in
 # the same state.
 #
-# WHY NOT DERIVE THE LIST. Two reasons the filterset cannot simply be
-# generated from `crates/*/tests/*_e2e.rs`:
-#   1. It is a curated PR-critical-path subset by design. The heavy
-#      `stress_*` storms are deliberately excluded (CPU-starved on a 2-core
-#      runner; they run locally via `just stress`), and a future expensive e2e binary
-#      must be able to make the same choice.
-#   2. The filterset is split across two nextest invocations with different
-#      `--run-ignored` modes (all vs ignored-only), so "the list" is not one
-#      list to begin with.
+# WHY NOT DERIVE THE LIST. The PR lane is a curated subset. The heavy
+# `stress_*` storms run locally via `just stress`, and new expensive e2e
+# binaries can make the same choice.
 # So the contract enforced here is the weaker, checkable one: every e2e
 # binary must run SOMEWHERE. A binary with no `#[ignore]` already runs in the
 # default pool and needs no entry; a binary that has at least one `#[ignore]`

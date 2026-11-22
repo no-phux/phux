@@ -146,17 +146,14 @@ e2e: worktree-claim && (worktree-verify "e2e")
     set -euo pipefail
     if [[ -n "${PHUX_TEST_ARCHIVE:-}" ]]; then
       source=(--archive-file "$PHUX_TEST_ARCHIVE" --workspace-remap "{{justfile_directory()}}")
-      # One CI shard (see `test`). Two shards split the perf pair one each.
+      # One CI shard (see `test`).
       if [[ -n "${PHUX_NEXTEST_PARTITION:-}" ]]; then source+=(--partition "$PHUX_NEXTEST_PARTITION"); fi
     else
       source=(--workspace {{TEST_FEATURES}} {{E2E_TARGETS}})
     fi
     {{AUTO_SPAWN_BACKSTOP}} cargo nextest run "${source[@]}" --run-ignored ignored-only \
       --test-threads=1 --retries=2 \
-      -E 'binary_id(phux::automation_e2e) + binary_id(phux::terminal_e2e) + binary_id(phux::recording_e2e) + binary_id(phux::lifecycle_e2e) + binary_id(phux::first_five_minutes_e2e) + binary_id(phux::upload_e2e) + binary_id(phux::download_e2e) + binary_id(phux::git_e2e) + binary_id(phux::credentials_e2e)'
-    {{AUTO_SPAWN_BACKSTOP}} cargo nextest run "${source[@]}" --run-ignored ignored-only \
-      --test-threads=1 --retries=2 \
-      -E 'binary_id(phux-server::perf)'
+      -E 'binary_id(phux::automation_e2e) + binary_id(phux::terminal_e2e) + binary_id(phux::recording_e2e) + binary_id(phux::lifecycle_e2e) + binary_id(phux::first_five_minutes_e2e) + binary_id(phux::upload_e2e) + binary_id(phux::download_e2e) + binary_id(phux::git_e2e) + binary_id(phux::credentials_e2e) + binary_id(phux-server::perf)'
 
 E2E_TARGETS := "--test automation_e2e --test terminal_e2e --test recording_e2e --test lifecycle_e2e --test first_five_minutes_e2e --test upload_e2e --test download_e2e --test git_e2e --test credentials_e2e --test perf --test discovery"
 
