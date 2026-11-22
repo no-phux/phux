@@ -34,6 +34,8 @@ pub(in super::super) struct CarriedPeers {
     project_tags: HashMap<SessionId, String>,
     /// The federation host inventory.
     hosts: Vec<phux_protocol::wire::info::HostInventory>,
+    /// Attached session names, oldest first, for `last-session`.
+    session_history: Vec<String>,
 }
 
 impl super::SessionLoop {
@@ -121,6 +123,7 @@ impl super::SessionLoop {
             attention: std::mem::take(&mut self.peers.foreign_attention),
             project_tags: std::mem::take(&mut self.peers.project_tags),
             hosts: std::mem::take(&mut self.peers.hosts),
+            session_history: self.focus_history.take_sessions(),
         }
     }
 
@@ -136,6 +139,7 @@ impl super::SessionLoop {
         self.peers.foreign_attention = carried.attention;
         self.peers.project_tags = carried.project_tags;
         self.peers.hosts = carried.hosts;
+        self.focus_history.adopt_sessions(carried.session_history);
     }
 
     /// Once `ATTACHED` named this session, move its own panes' carried agent

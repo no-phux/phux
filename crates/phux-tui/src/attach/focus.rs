@@ -105,6 +105,18 @@ impl FocusHistory {
         &self.sessions
     }
 
+    /// The session history, handed to the next session's loop on a switch:
+    /// each switch rebuilds the loop, and an empty history broke
+    /// `last-session` (C-a `)`) after every switch.
+    pub(super) fn take_sessions(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.sessions)
+    }
+
+    /// Continue a history [`Self::take_sessions`] carried over a switch.
+    pub(super) fn adopt_sessions(&mut self, names: Vec<String>) {
+        self.sessions = names;
+    }
+
     /// Replace the session history. Dispatcher tests seed a known MRU.
     #[cfg(test)]
     pub(super) fn set_sessions(&mut self, names: Vec<String>) {

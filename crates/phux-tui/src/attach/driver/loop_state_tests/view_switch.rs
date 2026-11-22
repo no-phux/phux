@@ -103,6 +103,21 @@ async fn owed_output_repaints_under_a_floating_overlay() {
     drop(server);
 }
 
+/// The session history survives a switch: each switch builds a fresh loop,
+/// and `last-session` (C-a `)`) rang the bell because the history it reads
+/// started empty every time.
+#[tokio::test(flavor = "current_thread")]
+async fn a_switch_carries_the_session_history_for_last_session() {
+    let (mut leaving, _client, _server, _a) = published_single_pane_loop().await;
+    leaving.focus_history.remember_session("work");
+    leaving.focus_history.remember_session("api");
+    let carried = leaving.peers_for_switch();
+
+    let (mut entering, _client2, _server2, _b) = published_single_pane_loop().await;
+    entering.seed_carried_peers(carried);
+    assert_eq!(entering.focus_history.session_names(), ["work", "api"]);
+}
+
 /// A loop over one published 80x22 pane, with the shipped chrome, whose
 /// layout read already settled: the view a held switch is waiting for.
 async fn published_single_pane_loop() -> (SessionLoop, Connection, Connection, ResourceId) {
