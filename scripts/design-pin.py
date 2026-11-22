@@ -12,7 +12,7 @@ import subprocess
 import sys
 import tempfile
 
-REPOSITORIES = ("website", "phux-org", "phux-hud")
+REPOSITORIES = ("website", "phux-org", "phux-hud", "ops")
 BRANCH = "chore/phux-design-pin"
 
 

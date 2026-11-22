@@ -29,6 +29,7 @@ jobs:
             website
             phux-org
             phux-hud
+            ops
           permission-contents: write
           permission-pull-requests: write
       - name: Propose consumer pins

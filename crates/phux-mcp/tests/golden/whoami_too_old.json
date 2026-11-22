@@ -1,1 +1,0 @@
-{"schema_version":1,"error":{"code":"server_too_old","message":"the server does not report connection identity (it predates `phux whoami`)"},"remedy":"upgrade phux where the server runs (`phux upgrade` there), then retry; `phux status --json` lists the features a local server advertises","exit_code":1}

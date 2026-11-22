@@ -1,1 +1,0 @@
-{"schema_version":1,"error":{"code":"no_such_target","message":"no agent named 'ghost' on this hub"},"remedy":"`phux agent list` shows every declared name; set one with `phux agent set TARGET --name <name>`","exit_code":1}

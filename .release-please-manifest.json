@@ -1,8 +1,0 @@
-{
-  ".": "0.161.1",
-  "integrations/pi": "0.10.0",
-  "integrations/opencode-v2": "0.11.0",
-  "integrations/claude": "0.7.2",
-  "integrations/omp": "0.6.0",
-  "integrations/grok": "0.3.0"
-}

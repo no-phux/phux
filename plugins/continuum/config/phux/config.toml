@@ -1,3 +1,0 @@
-[[plugins]]
-manifest = "../../phux-plugin.toml"
-enabled = true

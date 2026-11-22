@@ -1,6 +1,0 @@
----
-source: crates/phux-protocol/tests/it/forward_snapshots.rs
-expression: hex_dump(&buf)
----
-00000000 | 00 00 00 1b 31 01 04 04  00 00 00 21 02 04 10 44 |....1......!...D
-00000010 | 00 00 00 09 6c 6f 63 61  6c 68 6f 73 74 0b b8    |....localhost..

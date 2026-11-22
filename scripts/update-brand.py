@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import brand
 
 SOURCE = "no-phux/phux-brand"
-REPOSITORIES = ("phux", "phux-mobile", "website")
+REPOSITORIES = ("phux", "phux-mobile", "website", "ops")
 
 
 def run(args, cwd=None, source=False):

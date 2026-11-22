@@ -1,1 +1,0 @@
-{"schema_version":1,"error":{"code":"no_server","message":"no server running at /nonexistent/phux-mcp-golden.sock"},"remedy":"start one with `phux` (attaches, auto-starting a server) or `phux server --ensure`; server log: <server-log>; run `phux doctor` for a health check","exit_code":1}
