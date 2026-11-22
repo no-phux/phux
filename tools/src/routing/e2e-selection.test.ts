@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { capture } from "../lib/process.ts";
 import { ROOT } from "../lib/repo.ts";
 import { list, table } from "../lib/value.ts";
-import { job, run, steps, workflow } from "../policy/workflows.ts";
+import { action, job, run, steps, workflow } from "../policy/workflows.ts";
 import { Classifier } from "./classify.ts";
 import { plan } from "./plan.ts";
 
@@ -80,4 +80,8 @@ test("only archive consumers use the slim test shell", () => {
   expect(steps(job(ci, "test-build")).map(run)).toContain("nix develop -c just test-archive");
   expect(steps(job(ci, "tests")).map(run)).toContain("nix develop .#test-archive -c just test");
   expect(steps(job(ci, "e2e")).map(run)).toContain("nix develop .#test-archive -c just e2e");
+  const headroom = steps(action("setup-rust-lane")).find(
+    (step) => step["name"] === "runner disk headroom",
+  );
+  expect(headroom?.["if"]).toBe("inputs.build-cache != 'none'");
 });
