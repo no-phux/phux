@@ -91,6 +91,13 @@ hardlinks, nonregular files, foreign-owned files and changing sources are reject
 If shutdown does not establish producer quiescence, no native bytes are copied;
 the receipt records that limitation and rejects every file.
 
+Each forensic source is limited to **16 MiB**. Larger sources are rejected by
+`fstat` before reading; every read is bounded to 16 MiB plus one overflow byte
+to detect concurrent growth. Overflow is rejected, never truncated or copied as
+a complete capture. Other allowlisted files and owned deletion still proceed.
+This is only a forensic retention limit, not a native qualification/report
+acceptance limit; it changes no assertion, input rule, deadline or retry.
+
 This capture never overwrites normal retained reports or an earlier forensic
 capture. The original host/app exception remains primary even when preservation
 fails, and owned deletion still runs. It repairs diagnostic loss, not simulator

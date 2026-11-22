@@ -8,6 +8,8 @@ import stat
 
 DIRECTORY = "UNVALIDATED-native-failure"
 STAGING_DIRECTORY = "UNVALIDATED-before-seal"
+# Forensic retention only: never a native qualification/acceptance limit.
+MAX_FORENSIC_FILE_BYTES = 16 * 1024 * 1024
 # Only files emitted by the qualification probes, never pairing/preferences.
 NATIVE_FILES = ("rune-qualification.json", "rune-tree.json", "rune-input-gate.json",
                 "rune-glass.json", "rune-background.json", "rune-lifecycle.json")
@@ -40,7 +42,11 @@ def original_bytes(source, name):
         before = os.fstat(handle.fileno())
         if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_uid != os.geteuid():
             raise ValueError("unsafe forensic source")
-        data = handle.read()
+        if before.st_size > MAX_FORENSIC_FILE_BYTES:
+            raise OverflowError("forensic source exceeds 16 MiB limit")
+        data = handle.read(MAX_FORENSIC_FILE_BYTES + 1)
+        if len(data) > MAX_FORENSIC_FILE_BYTES:
+            raise OverflowError("forensic source exceeds 16 MiB limit")
         after = os.fstat(handle.fileno())
         if (before.st_size, before.st_mtime_ns, before.st_ctime_ns, before.st_nlink) != (
                 after.st_size, after.st_mtime_ns, after.st_ctime_ns, after.st_nlink):
@@ -64,6 +70,8 @@ def capture_file(source, destination, name, retained_name):
                        sha256=hashlib.sha256(data).hexdigest())
     except FileNotFoundError:
         receipt["status"] = "missing"
+    except OverflowError:
+        receipt["error"] = "forensic source exceeds 16 MiB limit"
     except (OSError, ValueError):
         receipt["error"] = "unsafe source, changed bytes, or exclusive copy failed"
     return receipt
