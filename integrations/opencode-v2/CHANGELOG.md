@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.1](https://github.com/no-phux/phux/compare/opencode-plugin-v0.11.0...opencode-plugin-v0.11.1) (2026-11-22)
+
+
+### Bug Fixes
+
+* **opencode:** keep opt-in fleet context out of the per-request prefix ([#2827](https://github.com/no-phux/phux/issues/2827)) ([162de4c](https://github.com/no-phux/phux/commit/162de4cc5382d3a13b169f72bea95bafeccc5142))
+
 ## [0.11.0](https://github.com/no-phux/phux/compare/opencode-plugin-v0.10.0...opencode-plugin-v0.11.0) (2026-11-19)
 
 
