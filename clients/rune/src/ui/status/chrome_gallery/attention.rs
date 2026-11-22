@@ -5,10 +5,10 @@ fn focus_inbox(rt: &mut Runtime<Desk>) {
     // An unfocused terminal owns Tab. Use the app's Focus Sidebar chord first.
     let mods = rune::Mods {
         cmd: true,
-        logo: cfg!(target_os = "macos"),
-        ctrl: !cfg!(target_os = "macos"),
-        alt: !cfg!(target_os = "macos"),
-        shift: cfg!(target_os = "macos"),
+        logo: cfg!(any(target_os = "macos", target_os = "ios")),
+        ctrl: !cfg!(any(target_os = "macos", target_os = "ios")),
+        alt: !cfg!(any(target_os = "macos", target_os = "ios")),
+        shift: true,
     };
     let key = rune::Key::Command('b');
     assert_eq!(
