@@ -405,7 +405,10 @@
         # desktop, or development tools that these jobs never use.
         devShells.test-archive = pkgs.mkShell {
           packages = [
-            toolchain
+            (toolchain.override {
+              extensions = [ ];
+              targets = [ ];
+            })
             pkgs.cargo-nextest
             toolPins.just
             toolPins.python
