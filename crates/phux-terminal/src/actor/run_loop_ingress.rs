@@ -40,7 +40,7 @@ impl TerminalActor {
         }) = evt
         else {
             // `Some(PtyEvent::Eof)` or a dropped sender (`None`).
-            self.handle_pty_eof();
+            self.handle_pty_eof().await;
             return PtyTurn::Continue;
         };
         phux_perf::echo_hop::record("main");
@@ -77,7 +77,7 @@ impl TerminalActor {
         });
         let native_step_due = self.native_work_pending();
         if burst.saw_eof {
-            self.handle_pty_eof();
+            self.handle_pty_eof().await;
         } else if burst.hit_byte_cap {
             // Capped with more queued: yield so input and sibling tasks run.
             let yield_started = std::time::Instant::now();
