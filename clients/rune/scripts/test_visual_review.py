@@ -50,7 +50,7 @@ class VisualReview(unittest.TestCase):
         self.subject = SUBJECT
         self.frame(self.subject)
         # Most tests exercise one malformed case or the bundle writer, not
-        # the 1,013-frame inventory. Inventory tests opt back into the real set.
+        # the full maintained inventory. Inventory tests opt back into the real set.
         self.inventory = patch.object(review, "required_inventory",
                                       return_value={SUBJECT: (320, 568, 1)})
         self.inventory.start()
@@ -137,6 +137,8 @@ class VisualReview(unittest.TestCase):
         self.assertFalse((self.root / "manifest.json").exists())
 
     def test_selected_acp_forms_are_required_and_keep_existing_acp_cases(self):
+        self.inventory.stop()
+        self.populate(review.required_inventory())
         selected = review.form_inventory(review.THEMES)
         self.assertEqual(len(selected), 152)
         self.assertTrue(selected.keys() <= review.inbox_inventory().keys())
