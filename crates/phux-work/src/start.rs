@@ -10,6 +10,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 
 use crate::error::Error;
 use crate::id::{Alias, ObjectiveState, OpaqueId, OperationId, RunState};
+use crate::operation::{load_operation, replay};
 use crate::store::{
     Objective, Store, bump, digest, load_alias_conn, load_checked, project_state, timestamp,
     write_objective,
@@ -393,13 +394,7 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if let Some((stored, result)) = load_operation(&tx, &request.operation_id)? {
-            if stored != digest {
-                return Err(Error::OperationConflict {
-                    operation_id: request.operation_id.to_hex(),
-                });
-            }
-            let snapshot: StartSnapshot = serde_json::from_str(&result)?;
+        if let Some(snapshot) = replay(&tx, &request.operation_id, &digest)? {
             return Ok(applied_from(snapshot, request.operation_id, true));
         }
         let current = load_checked(&tx, &request.alias, request.expected_revision)?;
@@ -605,19 +600,6 @@ fn token_ok(text: &str, max: usize) -> bool {
         && text
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.')
-}
-
-fn load_operation(
-    conn: &Connection,
-    operation_id: &OperationId,
-) -> Result<Option<(String, String)>, Error> {
-    conn.query_row(
-        "SELECT digest, result_json FROM operation WHERE id = ?1",
-        params![operation_id.as_slice()],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )
-    .optional()
-    .map_err(Error::from)
 }
 
 fn load_checked_conn(conn: &Connection, alias: &Alias, expected: u64) -> Result<Objective, Error> {
