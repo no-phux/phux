@@ -44,12 +44,11 @@ Nix provides it.
 
 The terminal engine is Ghostty's C library. What it does in a running phux,
 and what it does not, is [libghostty in phux](./libghostty.md). On Linux
-and macOS (arm64 and x86_64) the build script downloads a checksummed
-prebuilt `libghostty-vt.a` when the pinned engine declares one, so those builds
-need no Zig. The current API-boundary pin is source-only. Each
-pin's archives are published by the `prebuilt` workflow of
+and macOS (arm64 and x86_64) the default static build downloads a checksummed
+prebuilt `libghostty-vt.a`, so those builds need no Zig. The current pin
+covers all four targets. Each pin's archives are published by the `prebuilt` workflow of
 [phall1/libghostty-rs](https://github.com/phall1/libghostty-rs) with Zig
-0.17.1. Other targets,
+0.17.1. Other targets or build flavors,
 `LIBGHOSTTY_VT_SYS_FROM_SOURCE=1`, offline operation, and failed downloads
 build from immutable source with Zig 0.17.1, cached outside any `target/`
 directory. `GHOSTTY_SOURCE_DIR` builds a local Ghostty checkout;
