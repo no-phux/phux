@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.3](https://github.com/no-phux/phux/compare/claude-plugin-v0.7.2...claude-plugin-v0.7.3) (2026-11-23)
+
+
+### Performance
+
+* **test:** verify Claude hook retry budget without sleeping ([#2873](https://github.com/no-phux/phux/issues/2873)) ([ce2b690](https://github.com/no-phux/phux/commit/ce2b690d29fbeeb2e787dc4a9ebd6a9da56b414b))
+
 ## [0.7.2](https://github.com/no-phux/phux/compare/claude-plugin-v0.7.1...claude-plugin-v0.7.2) (2026-11-11)
 
 
