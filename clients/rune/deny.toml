@@ -35,8 +35,6 @@ unknown-registry = "deny"
 unknown-git = "deny"
 allow-git = [
     "https://github.com/anomalyco/rune",
-    # A narrow Wayland IME cursor-publication patch atop the matching Rune pin.
-    "https://github.com/no-phux/rune",
     "https://github.com/phall1/libghostty-rs",
 ]
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]

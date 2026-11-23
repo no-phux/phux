@@ -130,7 +130,8 @@ impl Owner {
     }
 }
 
-/// Rune appends keys verbatim to full paths. Encode even JSON's literal `/`.
+/// Keep application identity components stably encoded, including JSON's `/`.
+/// Typed widget roles stay distinct without depending on Rune's path encoding.
 fn key_segment(value: Value) -> String {
     url::form_urlencoded::byte_serialize(value.to_string().as_bytes()).collect()
 }

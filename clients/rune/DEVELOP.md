@@ -15,17 +15,20 @@ workspace and lock so Rune's graph stays out of the rest of phux. The
 [Rune upstream follower](../../scripts/rune-upstream/README.md) moves the pin
 twice a day.
 
-Keep all Rune dependencies and the six `[patch.crates-io]` entries on the
-same upstream base: Cargo does not inherit Rune's workspace patches. Normally
-all ten revisions match. The `winit` override temporarily uses an exact
-[owned-fork](https://github.com/no-phux/rune) descendant of that base, containing
-only a Wayland caret-rectangle publication fix; the other nine entries stay
-upstream. A bump must rebase and review this small patch on the new upstream
-head, not drop the fix or retain an older fork base. Reunify all ten when
-upstream supplies equivalent behavior. On every host, `rune-check` compiles the
-actual pinned Wayland cursor helper with `rustc --test` and runs its six
-headless regressions. This does not compile the Linux native integration or
-replace mandatory real-compositor qualification in Linux CI.
+Keep all four Rune dependencies and the six `[patch.crates-io]` entries on
+the same immutable upstream revision: Cargo does not inherit Rune's workspace
+patches. All ten pins, including `winit`, use upstream Rune. Upstream
+[#1454](https://github.com/anomalyco/rune/pull/1454) supplies `ImeSync`, which
+suppresses unchanged cursor-area calls and republishes after movement,
+scaling, reset or input-context reentry. The temporary winit fork and its
+six-helper-test gate are retired.
+
+When validating this adoption, run the actual upstream Rune tests
+`ime_sync_skips_unchanged_cursor_area_and_resends_on_change_reset_or_reentry`
+and `ime_sync_skips_unchanged_area_for_app_ime_cursor` in the pinned upstream
+workspace. Cargo cannot run nonmember dependency tests from this client
+workspace. These tests do not replace `rune-check`, client IME regressions,
+packaged/native qualification or mandatory real-compositor Linux CI.
 
 The `tooling`
 feature is required in release builds too: packaged qualification and the
