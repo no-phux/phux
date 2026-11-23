@@ -54,7 +54,7 @@ rebuild: worktree-claim
     "${CARGO_HOME:-$HOME/.cargo}/bin/phux" upgrade
 
 
-# Watch loop — re-check + test on every save.
+# Watch loop — the test build already checks the workspace.
 [group('build')]
 watch:
-    cargo watch -x check -x 'nextest run --workspace'
+    cargo watch -s 'just test'

@@ -17,6 +17,13 @@
 - Preserve command exits, wait timeouts, delivery receipts/uncertainty, and
   output-only diagnostics without retrying mutations.
 
+## [0.10.1](https://github.com/no-phux/phux/compare/pi-extension-v0.10.0...pi-extension-v0.10.1) (2026-11-23)
+
+
+### Performance
+
+* **build:** trim standalone MCP and Cargo routing work ([#2860](https://github.com/no-phux/phux/issues/2860)) ([ed19b83](https://github.com/no-phux/phux/commit/ed19b8365b32ee82057d366ce706c7dff9e40ff0))
+
 ## [0.10.0](https://github.com/no-phux/phux/compare/pi-extension-v0.9.2...pi-extension-v0.10.0) (2026-11-14)
 
 

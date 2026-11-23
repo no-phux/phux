@@ -127,7 +127,6 @@ sha2 = "0.11"
 jiff.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 # Generate provider-native session ids before spawning integrations whose
 # documented CLI accepts a caller-supplied fresh UUID. `v7` is for
 # `phux idea`: one time-ordered idempotency key per capture. The feature

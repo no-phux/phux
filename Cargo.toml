@@ -10,7 +10,7 @@ default-members = ["crates/phux", "crates/phux-mcp"]
 exclude = ["clients", ".claude"]
 
 [workspace.package]
-version = "0.162.0"
+version = "0.162.1"
 edition = "2024"
 rust-version = "1.99"
 license = "Apache-2.0"
@@ -91,7 +91,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"]
 # File logging must not block the render/PTY thread or write into the TUI.
 tracing-appender = "0.2"
 # One CLI spec supplies parsing, help, completions, and generated docs.
-usage = { package = "usage-rs", version = "7.1", features = ["completions", "validation", "test"] }
+usage = { package = "usage-rs", version = "7.1", features = ["completions", "validation"] }
 bytes = "1"
 slotmap = "1"
 smallvec = "1.16"

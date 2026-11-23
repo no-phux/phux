@@ -52,7 +52,7 @@ covers all four targets. Each pin's archives are published by the `prebuilt` wor
 `LIBGHOSTTY_VT_SYS_FROM_SOURCE=1`, offline operation, and failed downloads
 build from immutable source with Zig 0.17.1, cached outside any `target/`
 directory. `GHOSTTY_SOURCE_DIR` builds a local Ghostty checkout;
-`LIBGHOSTTY_VT_SYS_LIB_DIR` links one you built. `just ghostty-pin-check`
+`LIBGHOSTTY_VT_SYS_LIB_DIR` links one you built. `bash scripts/check-ghostty-pin.sh`
 validates the immutable engine source and matching Zig requirement, then
 reports prebuilt versus source-only target coverage. It does not replace
 native compilation tests or claim unpublished archives exist.
@@ -315,8 +315,14 @@ file with the change that justifies it, and either add the trailer
 before `ci` runs. The lane refuses an unauthorized baseline edit in
 seconds.
 
-`just timings`, `just llvm-lines`, `just bloat`, and `just dep-stats` are
-the local build-observability recipes. For the server at run time,
+`just timings -p phux` records a Cargo build timeline for just the CLI.
+Without arguments `just timings` builds all workspace targets; use the same
+package, features, profile and cache state for a before/after comparison.
+`just dep-stats` inventories the whole lock graph, not what one build compiles.
+Use `cargo tree --locked -p phux-mcp -e normal,build` for a single production
+graph. `just complexity` lists Rust functions over the chosen cyclomatic
+complexity threshold; `just llvm-lines` and `just bloat` profile code size.
+For the server at run time,
 `phux perf` reads its counters, and the `tokio-console` and `dhat-heap`
 features in `phux-server` and `phux` attach the usual profilers.
 

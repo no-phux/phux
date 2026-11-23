@@ -142,7 +142,7 @@ class CommandObservationTests(CommandObservationFixture, unittest.TestCase):
 
 class WaylandImeTests(WaylandImeFixture, unittest.TestCase):
     def test_single_ascii_composition_with_real_echo_and_unrestricted_preedit(self):
-        result, calls, stages, files, _ = self.run_driver()
+        result, calls, stages, files = self.run_driver()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([c for c in calls if c[0] == "wtype"], [ime.KEYS])
         self.assertIn(["fcitx5-remote", "-o"], calls)
@@ -169,18 +169,26 @@ class WaylandImeTests(WaylandImeFixture, unittest.TestCase):
         }
         for mode, message in cases.items():
             with self.subTest(mode=mode):
-                result, calls, stages, files, elapsed = self.run_driver(mode)
+                result, calls, stages, files = self.run_driver(mode)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(message, result.stderr)
                 self.assertFalse(any(c[0] == "wtype" for c in calls))
                 self.assert_failure_evidence(stages, files)
-                self.assertLess(elapsed, 13, "one shared startup budget plus bounded failure capture")
+                failed = next(event for event in stages if event["stage"] == "failure")
+                self.assertLessEqual(failed["elapsed"], ime.STARTUP_SECONDS)
+                if mode == "hung-tree":
+                    self.assertTrue(any(
+                        event["stage"] == "command-observation-failed"
+                        and event["artifact"] == "wayland-ime-tree-before.json"
+                        and event["status"] == "TimeoutExpired"
+                        for event in stages
+                    ))
 
     def test_no_replay_or_false_success_after_composition(self):
         for mode in ("typing-fails", "app-dies-during-composition", "no-commit",
                      "plain-ascii", "wrong-chinese", "no-echo", "empty-snapshot"):
             with self.subTest(mode=mode):
-                result, calls, stages, files, _ = self.run_driver(mode)
+                result, calls, stages, files = self.run_driver(mode)
                 self.assertNotEqual(result.returncode, 0, result.stdout)
                 self.assertEqual([c for c in calls if c[0] == "wtype"], [ime.KEYS], result.stderr)
                 self.assertTrue(any(s["stage"] == "failure-liveness" for s in stages))
@@ -284,7 +292,7 @@ class WaylandImeTests(WaylandImeFixture, unittest.TestCase):
                     ime.seat_keyboard_ready(reply)
 
     def test_late_keyboard_is_observed_before_app_spawn(self):
-        result, calls, stages, files, _ = self.run_driver("late-seat")
+        result, calls, stages, files = self.run_driver("late-seat")
         self.assertEqual(result.returncode, 0, result.stderr)
         observations = [json.loads(line) for line in
                         files["wayland-fixture-seats.log"].splitlines()]
@@ -298,25 +306,25 @@ class WaylandImeTests(WaylandImeFixture, unittest.TestCase):
         self.assertEqual([c for c in calls if c[0] == "wtype"], [ime.KEYS])
 
     def test_no_keyboard_exhausts_shared_deadline_without_app_or_typing(self):
-        result, calls, stages, files, elapsed = self.run_driver("no-keyboard")
+        result, calls, stages, files = self.run_driver("no-keyboard")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("seat0 keyboard capability before app spawn", result.stderr)
         names = [c[0] for c in calls]
         self.assertNotIn("rune-fake", names)
         self.assertNotIn("wtype", names)
         self.assertEqual([s["name"] for s in stages if s["stage"] == "process-start"], ["fcitx"])
-        self.assertGreaterEqual(elapsed, ime.STARTUP_SECONDS)
+        failed = next(event for event in stages if event["stage"] == "failure")
+        self.assertEqual(failed["elapsed"], ime.STARTUP_SECONDS)
         self.assertEqual(json.loads(files["wayland-ime-seats-before.json"]),
                          [{"name": "seat0", "capabilities": 0}])
-        # A loaded host can time out the 1s failure capture; then
-        # assert_failure_evidence requires its recorded failed attempt.
+        # A failed evidence capture must leave its recorded attempt.
         if "wayland-ime-seats-failure.json" in files:
             self.assertEqual(json.loads(files["wayland-ime-seats-failure.json"]),
                              [{"name": "seat0", "capabilities": 0}])
         self.assert_failure_evidence(stages, files)
 
     def test_malformed_seat_reply_retains_raw_failure_evidence_without_app(self):
-        result, calls, stages, files, _ = self.run_driver("malformed-seats")
+        result, calls, stages, files = self.run_driver("malformed-seats")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("seat0 keyboard capability before app spawn", result.stderr)
         names = [c[0] for c in calls]
