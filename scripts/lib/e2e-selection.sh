@@ -22,11 +22,12 @@ e2e_select() {
             done
         done
     fi
-    # No recognized e2e target: preserve the previous full lane.
+    # Narrow only when every requested target maps to this lane. A mixed
+    # selection may contain an e2e consumer outside this list.
     # Read by just e2e after selection.
     # shellcheck disable=SC2034
     e2e_partition_extra=(--no-tests=warn)
-    if [[ -z "${selected[*]:-}" ]]; then
+    if [[ -z "${selected[*]:-}" ]] || [[ "${#selected[@]}" -ne "${#specs[@]}" ]]; then
         # shellcheck disable=SC2034
         e2e_partition_extra=()
         selected=("${E2E_BINARIES[@]}")
