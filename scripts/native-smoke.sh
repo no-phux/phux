@@ -7,10 +7,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 phux_info "native smoke: checking prerequisites"
 bash scripts/doctor.sh native
-phux_info "native smoke: core and protocol tests"
-cargo test --locked -p phux-core
-cargo test --locked -p phux-protocol
-cargo test --locked -p phux-vt --features kitty
+phux_info "native smoke: core, protocol, and VT tests"
+# One feature-unified schedule avoids compiling the shared graph once per crate.
+cargo test --locked -p phux-core -p phux-protocol -p phux-vt --features phux-vt/kitty
 phux_info "native smoke: building CLI and MCP"
 cargo build --locked -p phux -p phux-mcp
 "${CARGO_TARGET_DIR:-target}/debug/phux" --version

@@ -69,8 +69,8 @@ test("guards install Bun unconditionally for tools-check", () => {
   expect(all[setup]?.["if"]).toBeUndefined();
 });
 
-test("devshell lanes run their recipes inside it, which pins Bun", () => {
-  for (const id of ["lint", "icount", "tests", "e2e", "ffi"]) {
+test("native build lanes run their recipes in the default shell, which pins Bun", () => {
+  for (const id of ["lint", "icount", "test-build", "ffi"]) {
     for (const step of steps(job(workflow("ci.yml"), id)).filter((s) => run(s).includes("just "))) {
       expect([id, run(step).startsWith("nix develop -c just ")]).toEqual([id, true]);
     }

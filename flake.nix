@@ -400,6 +400,23 @@
             '';
         };
 
+        # The hosted shards execute an existing nextest archive. Keep the
+        # Rust metadata probes need rustc, not a native linker or SDK.
+        # Do not realize Zig, browser, desktop, or development tools either.
+        devShells.test-archive = pkgs.mkShellNoCC {
+          packages = [
+            (toolchain.override {
+              extensions = [ ];
+              targets = [ ];
+            })
+            pkgs.cargo-nextest
+            toolPins.just
+            toolPins.python
+            pkgs.jq
+          ];
+          env.RUST_BACKTRACE = "1";
+        };
+
         # Browser CI gets a browser matched to chromedriver without making
         # every native Linux lane download Chromium. Darwin uses host Chrome
         # and an explicitly matching driver (see docs/development.md).
