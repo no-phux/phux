@@ -17,7 +17,7 @@ VERSION = "0.2.0"
 SOURCE_REV = "3df118740ae4ad25fc928df0ae3832831c985164"
 SOURCE_SHA256 = "ce781dee84191be150fe1acc8bf7d865fef5ba52354271d5b82b6f7b0592471a"
 MACOS_TARGET = "aarch64-macos.14.0.0"
-# Keep these identical to scripts/zig-mirrors/build.zig.zon (tested below).
+# Keep these identical to scripts/zig-mirrors/build.zig.zon (pin-agreement test).
 ARO_URL = "https://deps.files.ghostty.org/aro-d0c8c4d9c55daa7ef6e40cf0f630a5b5e900989b.tar.gz"
 ARO_HASH = "aro-0.0.0-JSD1QtuBNwCASyBtNF3pqTl_W3oAJQGEVyFAtrBSE_Pa"
 MAX_ARCHIVE_SIZE = 64 * 1024 * 1024
@@ -58,22 +58,37 @@ def download(url):
         return response.read(64 * 1024 * 1024 + 1)
 
 
+def require_bounded_curl():
+    actual = subprocess.run(
+        ["curl", "--disable", "--version"], check=True,
+        capture_output=True, text=True, timeout=10,
+    )
+    version = re.match(r"\Acurl ([0-9]+)\.([0-9]+)\.([0-9]+)(?:\s|$)", actual.stdout)
+    if version is None:
+        raise ValueError("tmd mirror download needs curl >= 8.4.0; unrecognized version")
+    if tuple(map(int, version.groups())) < (8, 4, 0):
+        raise ValueError("tmd mirror download needs curl >= 8.4.0 to bound unknown-length transfers")
+
+
 def seed_aro_cache(global_cache):
     if not re.fullmatch(r"https://deps\.files\.ghostty\.org/aro-[0-9a-f]{40}\.tar\.gz", ARO_URL):
         raise ValueError("invalid aro mirror URL")
     if not re.fullmatch(r"aro-0\.0\.0-[A-Za-z0-9_-]{44}", ARO_HASH):
         raise ValueError("invalid aro package hash")
+    # Before 8.4, --max-filesize cannot bound unknown-length responses. Reserve
+    # 10s for this check and 110s for transfer, within the original 120s stage.
+    require_bounded_curl()
     archive = global_cache / "p" / f"{ARO_HASH}.tar.gz"
     archive.parent.mkdir(parents=True, exist_ok=True)
     # Keep the original archive untrusted in the compressed cache. Zig verifies
-    # its canonical package hash before materializing it or configuring a build.
+    # its canonical package hash before configuring a build.
     # A separate `zig build --fetch` would cold-compile Maker in this 120s stage.
     subprocess.run(
         ["curl", "--disable", "--fail", "--silent", "--show-error", "--location",
          "--proto", "=https", "--proto-redir", "=https", "--connect-timeout", "20",
-         "--max-time", "120", "--max-filesize", str(MAX_ARCHIVE_SIZE),
+         "--max-time", "110", "--max-filesize", str(MAX_ARCHIVE_SIZE),
          "--output", str(archive), "--", ARO_URL],
-        check=True, timeout=120,
+        check=True, timeout=110,
     )
     if archive.stat().st_size > MAX_ARCHIVE_SIZE:
         raise ValueError("aro archive exceeds size limit")
@@ -98,9 +113,11 @@ def build_macos(data, binaries, notices):
         global_cache = Path(temporary) / "zig-global-cache"
         seed_aro_cache(global_cache)
         env = {**os.environ, "ZIG_GLOBAL_CACHE_DIR": str(global_cache)}
+        # Keep this private package root relative to source: Zig 0.17 rejects
+        # transitive .path dependencies when --pkg-dir is an absolute path.
         subprocess.run(
             ["zig", "build", "--release=small", f"-Dtarget={MACOS_TARGET}",
-             "--pkg-dir", str(source / "zig-pkg"),
+             "--pkg-dir", "zig-pkg",
              "--cache-dir", str(Path(temporary) / "zig-cache")],
             cwd=source, env=env, check=True, timeout=600,
         )
