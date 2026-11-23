@@ -1,6 +1,6 @@
 # Browser clients: clients/phux-web and clients/phux-vt-web. CI runs the two
-# halves in parallel inside `nix develop .#browser`, which adds a Chrome
-# matched to chromedriver. `web-check` runs both, in this order.
+# halves in parallel. Only the client enters `nix develop .#browser`, which
+# adds a Chrome matched to chromedriver. `web-check` runs both, in this order.
 
 
 # The whole `web` lane, locally and for `just web-check`.

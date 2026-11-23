@@ -2995,7 +2995,6 @@ dependencies = [
  "toml",
  "toml_edit",
  "tracing",
- "tracing-subscriber",
  "usage-rs",
  "uuid",
  "zbus",
