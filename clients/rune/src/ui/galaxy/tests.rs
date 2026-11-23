@@ -10,13 +10,20 @@ fn fixture() -> (Runtime<Desk>, Pt) {
     rt.update(|d, _| d.toggle_galaxy());
     rt.settle_all();
     rt.frame(0.0);
-    rt.update(|d, _| {
-        d.galaxy.camera = Camera {
-            scale: 1.0,
-            offset: [30.0, -15.0],
-        };
-    });
+    // The first frame queues on_layout; the second delivers its initial fit.
     rt.frame(0.0);
+    let [w, h] = rt.state.galaxy.viewport;
+    assert!(w > 0.0 && h > 0.0, "Galaxy's first layout was delivered");
+    let camera = Camera {
+        scale: 1.0,
+        offset: [30.0, -15.0],
+    };
+    rt.update(|d, _| d.galaxy.camera = camera);
+    rt.frame(0.0);
+    assert_eq!(
+        rt.state.galaxy.camera, camera,
+        "fixture camera must survive layout before gesture delivery"
+    );
     let [x, y, w, h] = crate::ui::element(&rt, "galaxy-sky").rect;
     (rt, [x + w * 0.85, y + h * 0.75])
 }
