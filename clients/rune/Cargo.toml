@@ -99,5 +99,11 @@ accesskit_macos = { git = "https://github.com/anomalyco/rune", rev = "52f8582843
 [profile.release]
 lto = "thin"
 
+# Rendering, shaping, and accessibility fixtures are CPU-bound in an unoptimized
+# test build. The 64 KiB search test took 163.66 s at opt-level 0 and 10.61 s at
+# opt-level 1; CI caches the optimized third-party artifacts between changes.
+[profile.test]
+opt-level = 1
+
 [lints.rust]
 unsafe_code = "deny"

@@ -154,6 +154,7 @@ export const ICOUNT_PR_PATHS = [
   "scripts/ci/perf-icount.sh",
   "just/perf.just",
   "tools/src/perf/**",
+  ".github/actions/setup-rust-lane/**",
   ".github/workflows/ci.yml",
 ] as const;
 
@@ -284,7 +285,7 @@ export function plan(
     coverage: [...chosen(covered), ...(runeQualify ? LINUX_QUALIFY : [])].join(","),
     unitMode: push ? "workspace" : c.unitMode,
     unitTargets: push ? "" : c.unitTargets,
-    testFilterset: push ? "" : c.testFilterset,
+    testFilterset: !push && c.unitMode === "rdeps" ? c.testFilterset : "",
     docsCatalog: docsCatalogNeeded(options),
   };
 }

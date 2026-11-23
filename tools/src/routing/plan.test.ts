@@ -204,6 +204,7 @@ describe("native setup and rust icount", () => {
       "scripts/ci/perf-icount.sh",
       "just/perf.just",
       "tools/src/perf/**",
+      ".github/actions/setup-rust-lane/**",
       ".github/workflows/ci.yml",
     ]);
   });
@@ -276,6 +277,7 @@ describe("native setup and rust icount", () => {
       "just/perf.just",
       "tools/src/perf/icount.ts",
       "tools/src/perf/nested/extra.ts",
+      ".github/actions/setup-rust-lane/action.yml",
       ".github/workflows/ci.yml",
     ]) {
       expect(lanes([path], "pull_request")).toContain("icount");

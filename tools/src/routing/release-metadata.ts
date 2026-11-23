@@ -125,15 +125,17 @@ function locksMoveWithWorkspace(paths: readonly string[]): boolean {
 
 /** True when every path is release metadata and each side differs only in versions. */
 export function releaseMetadataOnly(paths: readonly string[], readPair: ReadPair): boolean {
-  return (
-    paths.length > 0 &&
-    locksMoveWithWorkspace(paths) &&
-    paths.every((path) => {
-      const check = /(^|\/)CHANGELOG\.md$/.test(path) ? () => true : CHECKS[path];
-      const [before, after] = (check && readPair(path)) ?? [];
-      return (
-        check !== undefined && before !== undefined && after !== undefined && check(before, after)
-      );
-    })
-  );
+  if (paths.length === 0 || !locksMoveWithWorkspace(paths)) return false;
+  // Reject a mixed diff before asking Git to load any of its (large) locks.
+  const checks = paths.map((path) => ({ path, check: metadataCheck(path) }));
+  if (checks.some(({ check }) => check === undefined)) return false;
+  return checks.every(({ path, check }) => {
+    const [before, after] = readPair(path) ?? [];
+    return before !== undefined && after !== undefined && check?.(before, after) === true;
+  });
+}
+
+function metadataCheck(path: string): Check | undefined {
+  if (/(^|\/)CHANGELOG\.md$/.test(path)) return () => true;
+  return Object.hasOwn(CHECKS, path) ? CHECKS[path] : undefined;
 }
