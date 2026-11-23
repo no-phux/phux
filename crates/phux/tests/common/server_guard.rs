@@ -350,7 +350,7 @@ impl ServerSpawn {
 
     /// The `phux server` command [`Self::start_with`] spawns, before the child
     /// exists. The release-check opt-out is applied after `configure`.
-    fn into_command(
+    pub(crate) fn into_command(
         self,
         configure: impl FnOnce(&mut Command),
     ) -> (
@@ -419,30 +419,4 @@ fn wait_for_socket(socket: &std::path::Path) {
         "phux server did not bind {} within {SERVER_DEADLINE:?}",
         socket.display()
     );
-}
-
-#[cfg(test)]
-mod tests {
-    use std::ffi::OsStr;
-
-    #[test]
-    fn server_spawn_keeps_the_release_check_off_after_env_clear() {
-        let (cmd, socket, _xdg, _home) = super::ServerSpawn::new("notice")
-            .env_clear()
-            .into_command(|cmd| {
-                cmd.env_clear();
-                cmd.env("PATH", "/usr/bin:/bin");
-            });
-        let _ = std::fs::remove_file(&socket);
-        let value = cmd.get_envs().find_map(|(key, value)| {
-            (key == super::super::ambient::NO_UPDATE_CHECK_ENV).then_some(value)
-        });
-        assert_eq!(
-            value,
-            Some(Some(OsStr::new(
-                super::super::ambient::NO_UPDATE_CHECK_VALUE
-            ))),
-            "a cleared server environment must still opt out of the release check"
-        );
-    }
 }
