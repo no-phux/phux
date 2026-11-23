@@ -64,7 +64,7 @@ fn submitting_and_late_receipts_do_not_hold_or_error_another_owner() {
     assert!(questions.held(&owner));
     assert!(!questions.held(&other));
     assert!(questions.receipt(7, NativeDisposition::Refused, Some("old A")));
-    assert!(questions.error.get(&owner).is_some());
+    assert!(questions.error.contains_key(&owner));
     // Replacing A's current owner must not transfer its old receipt to B.
     questions.views.remove(&a);
     questions.reconcile();
