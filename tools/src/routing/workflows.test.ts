@@ -132,25 +132,35 @@ test("the ci aggregate needs every lane and accepts only success or a skip", () 
   const baseline: Record<string, { result: string; outputs?: Record<string, string> }> =
     Object.fromEntries(lanes.map((id) => [id, { result: "skipped" }]));
   baseline["plan"] = { result: "success", outputs: {} };
-  for (const [id, result, code] of [
+  for (const [id, result, code, draft] of [
     ["lint", "skipped", 0],
     ["lint", "success", 0],
     ["integrations", "failure", 1],
     ["tests", "cancelled", 1],
     ["guards", "failure", 1],
     ["plan", "skipped", 1],
+    ["plan", "skipped", 0, "true"],
     ["plan", "failure", 1],
     ["docs-catalog", "skipped", 0],
     ["docs-catalog", "failure", 1],
-  ] as const) {
+  ] as [string, string, number, string?][]) {
     const results = JSON.stringify({ ...baseline, [id]: { result } });
     const exit = Bun.spawnSync(["bash", "-euo", "pipefail", "-c", script], {
       cwd: repoPath("."),
-      env: { ...process.env, RESULTS: results, EVENT_NAME: "pull_request" },
+      env: { ...process.env, RESULTS: results, EVENT_NAME: "pull_request", DRAFT: draft ?? "" },
       stdout: "ignore",
     }).exitCode;
-    expect([id, result, exit]).toEqual([id, result, code]);
+    expect([id, result, draft, exit]).toEqual([id, result, draft, code]);
   }
+});
+
+test("a draft never reports the required ci check", () => {
+  // Branch protection counts a skipped or passing `ci` as satisfied, so a
+  // draft reports `ci (draft)` and the required `ci` stays pending.
+  const name = str(job(CI, "ci")["name"]) ?? "";
+  expect(name).toContain("github.event.pull_request.draft");
+  expect(name).toContain("'ci (draft)' || 'ci'");
+  expect(name).toContain("release-please--");
 });
 
 test("pull requests and merge groups write receipts; content publishes after a green push", () => {
@@ -162,7 +172,7 @@ test("pull requests and merge groups write receipts; content publishes after a g
   );
   for (const step of ciSteps.slice(gateAt + 1)) {
     expect(str(step["if"])).toBe(
-      "github.event_name == 'pull_request' || github.event_name == 'merge_group'",
+      "needs.plan.result == 'success' && (github.event_name == 'pull_request' || github.event_name == 'merge_group')",
     );
   }
   const content = job(CI, "content");
