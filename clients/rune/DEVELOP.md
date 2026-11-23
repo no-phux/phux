@@ -15,13 +15,8 @@ workspace and lock so Rune's graph stays out of the rest of phux. The
 [Rune upstream follower](../../scripts/rune-upstream/README.md) moves the pin
 twice a day.
 
-Keep all four Rune dependencies and the six `[patch.crates-io]` entries on
-the same immutable upstream revision: Cargo does not inherit Rune's workspace
-patches. All ten pins, including `winit`, use upstream Rune. Upstream
-[#1454](https://github.com/anomalyco/rune/pull/1454) supplies `ImeSync`, which
-suppresses unchanged cursor-area calls and republishes after movement,
-scaling, reset or input-context reentry. The temporary winit fork and its
-six-helper-test gate are retired.
+See [upstream dependency policy](UPSTREAM.md) for pin agreement, the `ImeSync`
+adoption and the current phone modal-ownership compatibility hold.
 
 When validating this adoption, run the actual upstream Rune tests
 `ime_sync_skips_unchanged_cursor_area_and_resends_on_change_reset_or_reentry`
