@@ -2,24 +2,18 @@
 use super::*;
 use phux_protocol::native_agent::NativeQuestion;
 
-async fn opened_question(peer: &Peer, id: &str) -> NativeQuestion {
-    peer.question(id).await;
-    wait_for(|| {
-        peer.callback
-            .sink
-            .view()
-            .questions
-            .iter()
-            .any(|question| question.id == id)
-    })
-    .await;
-    peer.callback
-        .sink
-        .view()
-        .questions
-        .into_iter()
-        .find(|question| question.id == id)
-        .unwrap()
+async fn opened_question(peer: &Peer, previous_id: Option<&str>) -> NativeQuestion {
+    let question = loop {
+        let view = peer.callback.sink.view();
+        if let [question] = view.questions.as_slice()
+            && Some(question.id.as_str()) != previous_id
+        {
+            break question.clone();
+        }
+        tokio::task::yield_now().await;
+    };
+    peer.question(&question.id).await;
+    question
 }
 
 #[tokio::test]
@@ -47,7 +41,7 @@ async fn v1_opaque_permission_ids_and_metadata_round_trip_for_custom_provider() 
             "method":"session/request_permission", "params":params
         }))
         .await;
-        let question = opened_question(&peer, "acp-question:1").await;
+        let question = opened_question(&peer, None).await;
         assert_eq!(question.kind, "permission");
         assert_eq!(question.title, "Choose a workspace");
         assert_eq!(
@@ -147,8 +141,8 @@ async fn v1_unadvertised_typed_elicitation_is_refused_without_blocking_permissio
 
         peer.permission("ordinary-after-elicitation", "session")
             .await;
-        opened_question(&peer, "acp-question:1").await;
-        peer.answer(1, "acp-question:1", json!({"option_id":"allow-once"}))
+        let question = opened_question(&peer, None).await;
+        peer.answer(1, &question.id, json!({"option_id":"allow-once"}))
             .await;
         let answer = peer.recv().await;
         assert_eq!(answer["id"], "ordinary-after-elicitation");
@@ -167,7 +161,7 @@ async fn v1_repeated_source_tool_id_gets_fresh_callback_and_refuses_stale_answer
     run_peer(spec(None), async |mut peer| {
         peer.new_session().await;
         peer.permission("first-permission", "session").await;
-        let first = opened_question(&peer, "acp-question:1").await;
+        let first = opened_question(&peer, None).await;
         peer.answer(1, &first.id, json!({"option_id":"allow-once"}))
             .await;
         let answer = peer.recv().await;
@@ -177,7 +171,7 @@ async fn v1_repeated_source_tool_id_gets_fresh_callback_and_refuses_stale_answer
             json!({"outcome":{"outcome":"selected", "optionId":"allow-once"}})
         );
         peer.permission("second-permission", "session").await;
-        let second = opened_question(&peer, "acp-question:2").await;
+        let second = opened_question(&peer, Some(&first.id)).await;
         assert_eq!(first.fields["source_question_id"], "tool");
         assert_eq!(second.fields["source_question_id"], "tool");
         assert_ne!(first.id, second.id);
