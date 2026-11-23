@@ -245,7 +245,9 @@ class BundleTests(unittest.TestCase):
             ("tmd 0.2.0\n", "", "cannot render", 2),
         ):
             with self.subTest(version=version, rendered=rendered), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
+                # main resolves the executable directory, including macOS's
+                # /var -> /private/var temporary-directory alias.
+                root = Path(directory).resolve()
                 with patch.object(bundle_tmd.sys, "argv", ["bundle_tmd.py", str(root / "bin"), str(root / "notices")]), \
                         patch.object(bundle_tmd.platform, "system", return_value="Darwin"), \
                         patch.object(bundle_tmd.platform, "machine", return_value="arm64"), \
@@ -271,6 +273,37 @@ class BundleTests(unittest.TestCase):
                             "--plain-headings", "--width", "60",
                         ])
                         self.assertIn("**smooth**", run.call_args.kwargs["input"])
+
+    def test_main_probes_the_canonical_binary_through_a_directory_alias(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            alias = root / "alias"
+            alias.symlink_to(root, target_is_directory=True)
+            self.assertNotEqual(alias, alias.resolve())
+            data = b"verified by build_macos"
+            with patch.object(bundle_tmd.sys, "argv", ["bundle_tmd.py", str(alias / "bin"), str(alias / "notices")]), \
+                    patch.object(bundle_tmd.platform, "system", return_value="Darwin"), \
+                    patch.object(bundle_tmd.platform, "machine", return_value="arm64"), \
+                    patch.object(bundle_tmd, "download", return_value=data), \
+                    patch.object(bundle_tmd, "build_macos") as build, \
+                    patch.object(bundle_tmd.subprocess, "run", side_effect=[
+                        subprocess.CompletedProcess([], 0, f"tmd {bundle_tmd.VERSION}\n"),
+                        subprocess.CompletedProcess([], 0, "Whisk until smooth.\n"),
+                    ]) as run:
+                bundle_tmd.main()
+            build.assert_called_once_with(data, root / "bin", alias / "notices")
+            self.assertEqual(run.call_count, 2)
+            self.assertEqual(run.call_args_list[0].args[0], [str(root / "bin/tmd"), "--version"])
+            self.assertEqual(run.call_args_list[1].args[0], [
+                str(root / "bin/tmd"), "--print", "--no-images",
+                "--plain-headings", "--width", "60",
+            ])
+            for call in run.call_args_list:
+                self.assertTrue(call.kwargs["check"])
+                self.assertTrue(call.kwargs["capture_output"])
+                self.assertTrue(call.kwargs["text"])
+                self.assertEqual(call.kwargs["timeout"], 5)
+            self.assertIn("**smooth**", run.call_args_list[1].kwargs["input"])
 
     def test_packaging_and_inside_out_signing_include_the_helper(self):
         repo = Path(__file__).resolve().parents[3]
