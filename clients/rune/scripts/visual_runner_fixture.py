@@ -22,6 +22,7 @@ filters = {
     "phone_inbox_visual_review_frames": "RUNE_INBOX_SNAP",
     "phone_acp_visual_review_frames": "RUNE_INBOX_SNAP",
     "acp_form_visual_review_frames": "RUNE_INBOX_SNAP",
+    "acp_ask_owner_visual_review_frames": "RUNE_INBOX_SNAP",
     "settings_native_render_frames": "RUNE_SETTINGS_SNAP",
     "settings_size_visual_review_frames": "RUNE_SETTINGS_SNAP",
     "settings_theme_visual_review_frames": "RUNE_SETTINGS_SNAP",

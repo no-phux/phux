@@ -9,6 +9,20 @@ PHONES = (
 CONTENTS = ("ordinary", "long")
 TEXT_SIZES = ("standard", "ax5")
 EXPORTER = "acp_form_visual_review_frames"
+ASK_OWNER_EXPORTER = "acp_ask_owner_visual_review_frames"
+
+
+def ask_owner_inventory(themes):
+    """Supported choice-only Cursor asks; reduced 2× is not UIKit IME proof."""
+    return {
+        f"inbox/acp-ask-owner-{form}-{theme}-{stage}-{width}x{height}-{scale}x.png":
+            (width, height, scale)
+        for (form, width, height, scale), theme, stage in product(
+            (("desktop", 1100, 720, 1), ("desktop-min", 640, 360, 1),
+             ("phone", 393, 852, 1), ("small", 320, 568, 1),
+             ("native", 393, 480, 2), ("native-small", 320, 340, 2)),
+            themes, ("a-open", "a-selected", "b-open", "b-selected", "a-return"))
+    }
 
 
 def case(form, content, text, theme, stage, width, height, scale):

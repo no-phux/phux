@@ -82,10 +82,10 @@ class VisualReview(unittest.TestCase):
         self.inventory.stop()
         self.populate(review.required_inventory())
         manifest = self.produce()
-        self.assertEqual(len(manifest["cases"]), 1165)
+        self.assertEqual(len(manifest["cases"]), 1225)
         self.assertEqual({family: sum(case["family"] == family for case in manifest["cases"])
                           for family in review.FAMILIES},
-                          {"inbox": 344, "settings": 226, "navigation": 594, "resources": 1})
+                           {"inbox": 404, "settings": 226, "navigation": 594, "resources": 1})
         case = next(case for case in manifest["cases"] if case["png"] == self.subject)
         self.assertEqual(case["physical"], [320, 568])
         self.assertEqual(case["logical"], [320, 568])
@@ -152,6 +152,21 @@ class VisualReview(unittest.TestCase):
         old_acp = {path for path in review.inbox_inventory() if "/phone-acp-" in path}
         self.assertEqual(len(old_acp), 24)
         subject = native + "final-action-320x340-2x.png"
+        (self.root / subject).unlink()
+        with self.assertRaisesRegex(ValueError, "missing required cases"):
+            self.produce()
+
+    def test_supported_ask_owner_flow_is_required(self):
+        self.inventory.stop()
+        selected = review.ask_owner_inventory(review.THEMES)
+        self.assertEqual(len(selected), 60)
+        self.assertTrue(selected.keys() <= review.inbox_inventory().keys())
+        for path in selected:
+            self.assertEqual(review.exporter_for("inbox", Path(path).stem),
+                             "acp_ask_owner_visual_review_frames")
+        subject = "inbox/acp-ask-owner-native-small-dark-b-open-320x340-2x.png"
+        self.assertEqual(selected[subject], (320, 340, 2))
+        self.populate(review.required_inventory())
         (self.root / subject).unlink()
         with self.assertRaisesRegex(ValueError, "missing required cases"):
             self.produce()
@@ -330,10 +345,10 @@ class VisualReview(unittest.TestCase):
                                 env=environment, cwd=self.root, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         manifest = json.loads((out / "manifest.json").read_text())
-        self.assertEqual(len(manifest["cases"]), 1165)
+        self.assertEqual(len(manifest["cases"]), 1225)
         self.assertEqual(manifest["currentRunePin"], "test-pin")
         self.assertFalse(manifest["dirty"])
-        self.assertEqual(len(list((out / "logs").glob("*.log"))), 19)
+        self.assertEqual(len(list((out / "logs").glob("*.log"))), 20)
         self.assertEqual(seed.read_bytes(), seed_bytes)
         self.assertEqual({path.relative_to(private_seed).as_posix(): path.read_bytes()
                           for path in private_seed.rglob("*") if path.is_file()},
