@@ -100,6 +100,12 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
         effects.agents_filter,
         ctx,
     );
+    // Every switch (the picker, the fleet, `switch-session`, a jump) leaves
+    // this session: remember it here, once, for `last-session`.
+    if effects.reattach.is_some() {
+        let current = ctx.session_name.to_owned();
+        ctx.focus_history.remember_session(&current);
+    }
     record_reattach_request(
         effects.reattach,
         ctx.switch_request,

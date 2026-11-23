@@ -20,6 +20,8 @@ mod test_support;
 #[cfg(test)]
 mod tests_actions;
 #[cfg(test)]
+mod tests_attention;
+#[cfg(test)]
 mod tests_events;
 #[cfg(test)]
 mod tests_plugin_actions;
@@ -37,6 +39,7 @@ pub use effects::ReattachTarget;
 pub(super) use effects::{PendingSessionRename, encode_layout_or_log};
 /// The session picker's rows and its live-refresh key, so the
 /// driver can rebuild an open picker when a fresh host inventory lands.
-pub(super) use pickers::{SESSION_PICKER_LIVE_KEY, session_picker_rows};
+pub(super) use pickers::{SESSION_PICKER_LIVE_KEY, WindowNames, session_picker_rows};
+pub(super) use run_action::{PALETTE_LIVE_KEY, PaletteSources, palette_rows};
 
 pub(super) use dispatch::{send_replay_frames, terminal_in_alt_screen};

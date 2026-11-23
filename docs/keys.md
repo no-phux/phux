@@ -110,7 +110,8 @@ give it one:
 ## Finding actions
 
 - Press <kbd>C-a</kbd> <kbd>Space</kbd> to open the command palette. It
-  lists every action you can run, searchable, with the key bound to it.
+  lists every action you can run, searchable, with the key bound to it,
+  then every session's tabs. Actions you ran recently lead it.
 - [Actions](./reference/actions.md) lists every action name with its
   arguments.
 - `phux config keys` prints every binding in effect (see
@@ -378,9 +379,9 @@ prefix = "C-b"
 
 Splits (<kbd>"</kbd> <kbd>%</kbd>), new tab (<kbd>c</kbd>), next and
 previous tab (<kbd>n</kbd> <kbd>p</kbd>), copy mode (<kbd>[</kbd>), and
-detach (<kbd>d</kbd>) already match tmux. One difference to know:
-phux's <kbd>x</kbd> closes the pane without asking. The getting started
-guide lists [what else differs from tmux](./getting-started.md#coming-from-tmux).
+detach (<kbd>d</kbd>) already match tmux, and <kbd>x</kbd> asks before it
+closes a pane, as tmux does. The getting started guide lists
+[what differs from tmux](./getting-started.md#coming-from-tmux).
 
 ## Rune shortcuts
 

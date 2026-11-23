@@ -152,6 +152,12 @@ pub(crate) struct ServerArgs {
     #[usage(long, hide, conflicts("--ensure"))]
     pub(crate) seed_command: Option<String>,
 
+    /// Start the pre-seeded session's first pane in this directory: the
+    /// auto-spawn path passes the launching client's cwd, so bare `phux`
+    /// opens where it ran. `defaults.fixed-start-dir` still wins.
+    #[usage(long, hide, conflicts("--ensure"))]
+    pub(crate) seed_cwd: Option<std::path::PathBuf>,
+
     /// Graceful-upgrade resume: read the handoff state blob
     /// from this inherited descriptor, adopt the inherited listener, and
     /// rebuild the live session tree instead of starting fresh. Set by

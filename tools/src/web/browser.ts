@@ -426,6 +426,34 @@ export function scratchBase(
   );
 }
 
+function chromeMajor(binary: string): string | undefined {
+  return /\b(\d+)\.\d+\.\d+\.\d+\b/.exec(capture([binary, "--version"], { timeoutMs: 5_000 }))?.[1];
+}
+
+/** Reject a known mismatch before compiling the native test harness. */
+export function checkBrowserPair(chrome: string, driver: string): void {
+  const browserMajor = chromeMajor(chrome);
+  const driverMajor = chromeMajor(driver);
+  if (browserMajor !== undefined && driverMajor !== undefined && browserMajor !== driverMajor) {
+    throw new Failure(
+      `Chrome ${browserMajor} does not match ChromeDriver ${driverMajor}. ` +
+        "Set CHROME and CHROMEDRIVER to matching binaries.",
+    );
+  }
+}
+
+function selectBrowserPair(env: Env): void {
+  const localChrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  const chrome =
+    env["CHROME"] ||
+    Bun.which("chromium") ||
+    (process.platform === "darwin" && existsSync(localChrome) ? localChrome : undefined);
+  const driver = env["CHROMEDRIVER"] || Bun.which("chromedriver");
+  if (chrome) env["CHROME"] = chrome;
+  if (driver) env["CHROMEDRIVER"] = driver;
+  if (chrome && driver) checkBrowserPair(chrome, driver);
+}
+
 export async function webBrowser(): Promise<number> {
   for (const name of ["SIGTERM", "SIGINT"] as const) {
     process.on(name, () => {
@@ -434,13 +462,7 @@ export async function webBrowser(): Promise<number> {
     });
   }
   const env = isolatedEnvironment(process.env);
-  for (const [variable, binary] of Object.entries({
-    CHROME: "chromium",
-    CHROMEDRIVER: "chromedriver",
-  })) {
-    const found = env[variable] ?? Bun.which(binary);
-    if (found) env[variable] = found;
-  }
+  selectBrowserPair(env);
   const target = resolve(env["CARGO_TARGET_DIR"] ?? join(ROOT, "target/web-native"));
   env["CARGO_TARGET_DIR"] = target;
   const scratch = mkdtempSync(join(scratchBase(env["TMPDIR"]), "phux-browser-"));

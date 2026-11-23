@@ -69,17 +69,17 @@
 == picker 48x10
 00|╭ Sessions ────────────────────────────────────╮|
   0-0 gray/-, 1-10 cyan/-, 11-47 gray/-
-01|│ >                                            │|
-  0-0 gray/-, 2-2 gray/-, 4-4 -/cyan, 47-47 gray/-
-02|│ Local                                        │|
+01|│ › Type to filter                             │|
+  0-0 gray/-, 2-2 cyan/- +b, 4-4 -/cyan, 5-17 gray/-, 47-47 gray/-
+02|├──────────────────────────────────────────────┤|
+  0-47 gray/-
+03|│ Local                                        │|
   0-0 gray/-, 2-6 gray/-, 47-47 gray/-
-03|│   development                    1 needs you │|
-  0-0 gray/-, 2-45 -/- +r, 47-47 gray/-
-04|│   ops                             3 need you │|
+04|│▌  development                    1 needs you │|
+  0-0 gray/-, 1-1 cyan/- +r, 2-46 -/- +r, 47-47 gray/-
+05|│   ops                             3 need you │|
   0-0 gray/-, 2-6 yellow/- +b, 36-45 gray/-, 47-47 gray/-
-05|│   notes                                      │|
-  0-0 gray/-, 47-47 gray/-
-06|│                                              │|
+06|│   notes                                      │|
   0-0 gray/-, 47-47 gray/-
 07|│                                              │|
   0-0 gray/-, 47-47 gray/-

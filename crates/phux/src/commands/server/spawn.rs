@@ -97,6 +97,11 @@ pub(crate) fn maybe_auto_spawn_server(
     match session {
         Some(name) => {
             cmd.arg("--session").arg(name);
+            // The seed is the session the client named from its cwd; start
+            // its shell there too, not in $HOME.
+            if let Ok(cwd) = std::env::current_dir() {
+                cmd.arg("--seed-cwd").arg(cwd);
+            }
         }
         None => {
             cmd.arg("--no-seed");
