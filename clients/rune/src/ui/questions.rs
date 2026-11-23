@@ -214,13 +214,13 @@ fn form(mut panel: El, draft: &Draft, at: &At, t: &Tokens) -> El {
     };
     // The panel already leaves s2 before its actions; this margin makes that
     // separation s4 too, without changing the question's heading or message.
-    let mut fields = col().w_full().gap(t.space.s4).mb(t.space.s2);
+    let mut fields = col().w_full().gap(t.space.s3).mb(t.space.s2);
     for (id, schema) in properties {
         if at.phone {
             let group = col()
                 .key(format!("acp-form-{}-{id}", at.question))
                 .w_full()
-                .gap(t.space.s2);
+                .gap(t.space.s1);
             fields = fields.child(form_field(group, draft, id, schema, at, t));
         } else {
             // Keep the desktop's original flat children and spacing.

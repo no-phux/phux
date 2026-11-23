@@ -18,8 +18,8 @@ fn phone_form_groups_related_parts_more_closely_than_fields_and_final_actions() 
                 let (client, rt) = scene(view, stress, large, false);
                 let groups = ["mode", "note", "tags"]
                     .map(|id| crate::ui::element(&rt, &format!("acp-form-{ID}-{id}")));
-                gap(groups[0].rect, groups[1].rect, s.s4);
-                gap(groups[1].rect, groups[2].rect, s.s4);
+                gap(groups[0].rect, groups[1].rect, s.s3);
+                gap(groups[1].rect, groups[2].rect, s.s3);
                 gap(
                     groups[2].rect,
                     crate::ui::element(&rt, SUBMIT_KEY).rect,
@@ -42,9 +42,9 @@ fn phone_form_groups_related_parts_more_closely_than_fields_and_final_actions() 
                     .collect();
                 assert_eq!(parts.len(), 3, "heading, description and field shell");
                 for pair in parts.windows(2) {
-                    gap(pair[0].rect, pair[1].rect, s.s2);
+                    gap(pair[0].rect, pair[1].rect, s.s1);
                 }
-                assert!(s.s4 > s.s2, "between-field space is visibly distinct");
+                assert!(s.s3 > s.s1, "between-field space is visibly distinct");
                 assert!(!groups[1].focusable, "grouping adds no phantom control");
                 assert!(rt.state.inbox.questions.error.is_empty());
                 no_input(&client);

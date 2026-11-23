@@ -10,6 +10,7 @@ fn initial_action_names(rt: &Runtime<Desk>) {
     );
     assert!(!crate::ui::element(rt, NOTE_KEY).focused);
     whole(rt, SUBMIT_KEY, true);
+    whole(rt, CANCEL_KEY, true);
     let elements = rt.elements();
     for (key, words) in [
         (SUBMIT_KEY, "Submit response"),
