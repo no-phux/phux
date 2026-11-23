@@ -13,7 +13,7 @@ function select(specs: string): string[] {
       "-euo",
       "pipefail",
       "-c",
-        'source scripts/lib/e2e-selection.sh; e2e_select; printf "%s\\n" "$e2e_filter" "${e2e_targets[@]}" "${e2e_partition_extra[@]}"',
+      'source scripts/lib/e2e-selection.sh; e2e_select; printf "%s\\n" "$e2e_filter" "${e2e_targets[@]}" ${e2e_partition_extra[@]+"${e2e_partition_extra[@]}"}',
     ],
     { cwd: ROOT, env: { ...process.env, PHUX_UNIT_TARGETS: specs } },
   )
@@ -63,7 +63,7 @@ test("the archive and runner use the shared e2e selection", () => {
   const dump = capture(["just", "--dump", "--dump-format", "json"], { cwd: ROOT });
   const recipes = table(table(JSON.parse(dump))["recipes"]);
   for (const [recipe, selection] of [
-    ["test-archive", '${e2e_targets[@]}'],
+    ["test-archive", "${e2e_targets[@]}"],
     ["e2e", '-E "$e2e_filter"'],
   ] as const) {
     const body = list(table(recipes[recipe])["body"])
