@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { workspaceMembers } from "../lib/cargo.ts";
+import { git } from "../lib/git.ts";
 import { ROOT } from "../lib/repo.ts";
 import { Classifier, toOutputs, type Classification } from "./classify.ts";
 import { plan } from "./plan.ts";
@@ -236,8 +237,21 @@ test("docs a crate reads leave the docs-only path", () => {
   // A quoted docs/ path in Rust source is a fixture or an embedded input.
   const literal = /"(?:\.\.\/)*(docs\/[^"\s{}]+)"/g;
   const read = new Set<string>();
-  for (const source of rustSources(join(ROOT, "crates"))) {
-    for (const match of readFileSync(source, "utf8").matchAll(literal)) {
+  // Git's fixed-string scan skips ignored build output and avoids opening
+  // every Rust file a second time in the JS process.
+  const candidates = git([
+    "grep",
+    "--threads=2",
+    "--untracked",
+    "-l",
+    "-z",
+    "-F",
+    "docs/",
+    "--",
+    ":(glob)crates/**/*.rs",
+  ]);
+  for (const source of candidates.split("\0").filter(Boolean)) {
+    for (const match of readFileSync(join(ROOT, source), "utf8").matchAll(literal)) {
       const path = match[1] ?? "";
       if (statSync(join(ROOT, path), { throwIfNoEntry: false })) read.add(path.replace(/\/$/, ""));
     }
