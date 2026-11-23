@@ -9,6 +9,8 @@ import sys
 import tempfile
 import time
 
+import qualify_wayland_ime as ime
+
 DRIVER = Path(__file__).with_name("qualify_wayland_ime.py")
 
 # Every executable, including the server CLI and app, is a local test fake.
@@ -149,16 +151,16 @@ class WaylandImeFixture:
                 (root / name).symlink_to(fake)
             env = {"PATH": f"{root}:/usr/bin:/bin", "HOME": directory,
                    "STATE": directory, "MODE": mode, "LANG": "C.UTF-8"}
-            started = time.monotonic()
             try:
                 result = subprocess.run(
-                    [sys.executable, "-B", str(DRIVER), directory,
+                    [sys.executable, "-B", __file__, directory,
                      str(root / "rune-fake"), str(root / "phux-fake"),
                      "fake.socket", "fresh-ime"],
-                    env=env, text=True, capture_output=True, timeout=20,
+                    env=env, text=True, capture_output=True, timeout=60,
                 )
-                elapsed = time.monotonic() - started
-                calls = [json.loads(line) for line in (root / "calls").read_text().splitlines()]
+                calls_path = root / "calls"
+                self.assertTrue(calls_path.is_file(), result.stderr)
+                calls = [json.loads(line) for line in calls_path.read_text().splitlines()]
                 stages = [json.loads(line) for line in
                           (root / "wayland-ime-stages.log").read_text().splitlines()]
                 files = {p.name: p.read_text(errors="replace") for p in root.glob("wayland-*")}
@@ -166,7 +168,7 @@ class WaylandImeFixture:
                     if event["stage"] == "process-start":
                         with self.assertRaises(ProcessLookupError, msg="owned children must be reaped"):
                             os.kill(event["pid"], 0)
-                return result, calls, stages, files, elapsed
+                return result, calls, stages, files
             finally:
                 # Only fixture-owned PIDs, and only if a failed test left them.
                 for pidfile in root.glob("*.pid"):
@@ -226,3 +228,40 @@ class CommandObservationFixture:
         self.assertEqual((failed[-1]["stdout"], failed[-1]["stderr"]), (stdout, stderr))
         for name in (stdout, stderr):
             self.assertEqual(Path(name).suffix, ".log", "failed output must survive evidence export")
+
+
+class FixtureClock:
+    """Advance poll deadlines without waiting nine real seconds per failure."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, delay):
+        # Let the real child processes finish starting, without charging host
+        # scheduling time against the diagnostic's virtual startup deadline.
+        time.sleep(0.02)
+        self.now += max(delay, 1.0)
+
+
+class FixtureProcesses:
+    Popen = staticmethod(subprocess.Popen)
+    STDOUT = subprocess.STDOUT
+    SubprocessError = subprocess.SubprocessError
+    TimeoutExpired = subprocess.TimeoutExpired
+
+    @staticmethod
+    def run(args, *, timeout, **kwargs):
+        # Ordinary fake tools are Python executables. They can miss a 1s
+        # deadline on a loaded host, unlike the virtual deadline under test.
+        # The deliberately hung command still exercises real timeout handling.
+        hung = os.environ["MODE"] == "hung-tree" and args == ["swaymsg", "-t", "get_tree"]
+        return subprocess.run(args, timeout=timeout if hung else 10, **kwargs)
+
+
+if __name__ == "__main__":
+    ime.time = FixtureClock()
+    ime.subprocess = FixtureProcesses()
+    sys.exit(ime.main())

@@ -13,7 +13,8 @@ class MotionReview(unittest.TestCase):
         self.addCleanup(self.fixture.doCleanups)
 
     def test_motion_timing_is_required_and_bound_to_its_case_frame_and_clock(self):
-        relative = next(iter(review.pane_motion_inventory()))
+        relative, geometry = next(iter(review.pane_motion_inventory().items()))
+        self.fixture.populate({relative: geometry})
         path = (self.fixture.root / relative).with_suffix(".motion.json")
         original = path.read_text()
         path.unlink()
