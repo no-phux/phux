@@ -54,7 +54,7 @@ the schema regenerated ([protocol](./docs/protocol.md#changing-the-wire)).
 
 CI shares a small macOS pool, and every push to a ready PR cancels and
 requeues its lanes. Open PRs with `gh pr create --draft` (drafts skip the
-lanes and fail `ci`), run `just check` until it passes, then `gh pr ready`
+lanes and leave the required `ci` pending), run `just check` until it passes, then `gh pr ready`
 once. Fix review or CI findings in one push, not one push per fix. Flows
 that validate before the first push and use `gh pr merge --auto` may open
 ready.

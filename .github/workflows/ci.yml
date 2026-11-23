@@ -442,11 +442,10 @@ jobs:
 
   # The required check. The ruleset matches this display name.
   ci:
-    name: ci
+    # A draft reports `ci (draft)`, leaving `ci` pending, not red: a draft
+    # `ci` would satisfy protection before the ready run's own ci exists.
+    name: ${{ (github.event.pull_request.draft && !startsWith(github.head_ref, 'release-please--')) && 'ci (draft)' || 'ci' }}
     needs: [plan, guards, lint, test-build, tests, e2e, ffi, icount, integrations, web-vt, web-client, native, rune, queue-apple, docs-catalog]
-    # Runs on drafts too, and fails there: plan skipped. A skipped ci would
-    # pass branch protection, so readying a draft with auto-merge armed could
-    # merge before the ready run's own ci exists.
     if: always() && github.event.action != 'closed'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -458,16 +457,11 @@ jobs:
         env:
           RESULTS: ${{ toJSON(needs) }}
           EVENT_NAME: ${{ github.event_name }}
-        run: bash scripts/ci/ci-aggregate.sh
-      - name: write the validation receipt
-        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
-        env:
+          DRAFT: ${{ github.event.pull_request.draft }}
           RECEIPT: ${{ needs.plan.outputs.receipt }}
-        run: |
-          mkdir -p "$RUNNER_TEMP/receipt"
-          printf '%s\n' "$RECEIPT" > "$RUNNER_TEMP/receipt/receipt.json"
+        run: bash scripts/ci/ci-aggregate.sh
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        if: needs.plan.result == 'success' && (github.event_name == 'pull_request' || github.event_name == 'merge_group')
         with:
           name: ${{ needs.plan.outputs.receipt_name }}
           path: ${{ runner.temp }}/receipt/receipt.json
