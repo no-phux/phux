@@ -1,6 +1,7 @@
 //! Selected form fixtures shared by baseline and candidate, never gap goldens.
 use super::*;
 
+mod discovery;
 mod grouping;
 mod held_actions;
 mod render;
