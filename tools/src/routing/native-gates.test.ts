@@ -49,6 +49,21 @@ const push: Table = {
   event: {},
 };
 
+test("throwaway qualification CLIs skip interactive dev optimization", () => {
+  expect(job(workflow("ci.yml"), "native")["env"]).toMatchObject({
+    CARGO_PROFILE_DEV_OPT_LEVEL: "0",
+  });
+  const rune = workflow("rune-build.yml");
+  expect(rune["env"]).toMatchObject({
+    CARGO_INCREMENTAL: "0",
+    CARGO_PROFILE_DEV_DEBUG: "0",
+    CARGO_PROFILE_DEV_OPT_LEVEL: "0",
+  });
+  for (const name of ["linux-x86_64", "linux-aarch64", "macos", "ios-native"]) {
+    expect(job(rune, name)["env"]).toBeUndefined();
+  }
+});
+
 test("the split preserves real native, trust, transport and signed-byte qualification", () => {
   const build = workflow("rune-build.yml");
   const ios = steps(job(build, "ios-native")).map(run).join("\n");
@@ -98,7 +113,7 @@ test("the split preserves real native, trust, transport and signed-byte qualific
   const x86 = job(build, "linux-x86_64");
   const arm = job(build, "linux-aarch64");
   expect(str(x86["name"])).toBe("linux-x86_64");
-  expect(steps(x86).map(run).join("\n")).toContain("test_*.py");
+  expect(steps(x86).map(run).join("\n")).not.toContain("test_*.py");
   expect(str(arm["name"])).toBe("linux-aarch64");
   expect(str(arm["runs-on"])).toBe("ubuntu-24.04-arm");
   expect(str(arm["if"])).toContain("inputs.qualify");
