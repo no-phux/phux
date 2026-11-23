@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   boundPort,
+  checkBrowserPair,
   DEMO_SERVER_LOG,
   isolatedEnvironment,
   poll,
@@ -39,6 +40,20 @@ test("the demo server log filter names the target the server logs to", () => {
   expect(resync).toContain(`const LOG_TARGET: &str = "${target}";`);
   expect(gap).toContain("use super::output_pump_resync::LOG_TARGET;");
   expect(gap).toMatch(/target: LOG_TARGET,[^;]*fell behind; skipping to a fresh checkpoint/);
+});
+
+test("browser preflight rejects incompatible majors, not patch versions", () => {
+  const chrome = join(scratch, "Chrome");
+  const driver = join(scratch, "ChromeDriver");
+  const version = (path: string, text: string) =>
+    writeFileSync(path, `#!/bin/sh\nprintf '%s\\n' '${text}'\n`, { mode: 0o755 });
+  version(chrome, "Google Chrome 158.0.8127.36");
+  version(driver, "ChromeDriver 156.0.8078.74 (revision)");
+  expect(() => checkBrowserPair(chrome, driver)).toThrow(
+    "Chrome 158 does not match ChromeDriver 156",
+  );
+  version(driver, "ChromeDriver 158.0.8127.35 (revision)");
+  expect(() => checkBrowserPair(chrome, driver)).not.toThrow();
 });
 
 const running = { exitCode: null, signalCode: null };
