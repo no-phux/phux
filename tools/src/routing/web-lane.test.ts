@@ -40,6 +40,21 @@ test("just web-check runs both halves in the lane order", () => {
   expect(LANE_RECIPES.web.flatMap(([recipe]) => commands(recipe))).toEqual(WEB_CHECKS);
 });
 
+test("only the browser client realizes Chromium", () => {
+  const setup = steps(action("setup-web-cache")).map(run).join("\n");
+  expect(setup).toContain("nix develop -c bash");
+  expect(setup).not.toContain("nix develop .#browser");
+  for (const file of ["ci.yml", "cache-warm.yml"]) {
+    const current = workflow(file);
+    expect(steps(job(current, "web-vt")).map(run).join("\n")).toContain(
+      "nix develop -c just web-vt-check",
+    );
+    expect(steps(job(current, "web-client")).map(run).join("\n")).toContain(
+      "nix develop .#browser -c just web-client-check",
+    );
+  }
+});
+
 test("the web jobs cache cargo dependencies and save them only from main", () => {
   const pin = steps(action("setup-rust-lane"))
     .map(uses)

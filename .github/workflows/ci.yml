@@ -1,6 +1,6 @@
 # The one validation workflow: every pull request, merge group and main push.
 #
-# Execution, required lanes, and receipt reuse: docs/ci-plan.md.
+# Execution, required lanes, and receipt reuse: docs/ci.md.
 name: ci
 
 on:
@@ -134,14 +134,16 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-rust-lane
+        id: lane
         with:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
           cache-lane: check
       - run: nix develop -c just rust-lint
       - name: Check the plugin index compiles
         run: nix develop -c cargo check --locked --manifest-path scripts/plugin-index/Cargo.toml
-      - name: leave disk for the mbx objects export
-        if: github.event_name == 'push'
+      - &mbx-export-headroom
+        name: leave disk for the mbx objects export
+        if: steps.lane.outputs.cache-save-eligible == 'true' && steps.lane.outputs.cache-hit != 'true'
         run: bash scripts/ci/mbx-export-headroom.sh
 
   # One compile of the test profile, archived for the tests and e2e jobs. The
@@ -160,13 +162,14 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-rust-lane
+        id: lane
         with:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
           cache-lane: test
       - name: just test-archive
         env:
           PHUX_UNIT_MODE: ${{ needs.plan.outputs.unit_mode }}
-          PHUX_UNIT_TARGETS: ${{ needs.plan.outputs.unit_targets }}
+          PHUX_UNIT_TARGETS: &unit-targets ${{ needs.plan.outputs.unit_targets }}
           PHUX_E2E: ${{ needs.plan.outputs.e2e }}
           PHUX_TEST_ARCHIVE: ${{ runner.temp }}/phux-tests.tar.zst
         run: nix develop -c just test-archive
@@ -190,9 +193,7 @@ jobs:
           compression-level: 0
           retention-days: 1
           overwrite: true
-      - name: leave disk for the mbx objects export
-        if: github.event_name == 'push'
-        run: bash scripts/ci/mbx-export-headroom.sh
+      - *mbx-export-headroom
 
   # The archive runs in count partitions: one 4-vCPU runner took 263 s for
   # 7185 tests (run 41886342790), most of the critical path after the build.
@@ -223,13 +224,12 @@ jobs:
           NEXTEST_PROFILE: ci
           PHUX_NEXTEST_FILTERSET: ${{ needs.plan.outputs.test_filterset }}
           PHUX_UNIT_MODE: ${{ needs.plan.outputs.unit_mode }}
-          PHUX_UNIT_TARGETS: ${{ needs.plan.outputs.unit_targets }}
+          PHUX_UNIT_TARGETS: *unit-targets
           PHUX_TEST_ARCHIVE: ${{ runner.temp }}/phux-tests.tar.zst
           PHUX_NEXTEST_PARTITION: count:${{ matrix.shard }}/3
-        run: nix develop -c just test
+        run: nix develop .#test-archive -c just test
 
-  # Single-threaded by design, so it splits across runners instead: 185 s of
-  # serial e2e on one runner (run 41886342790).
+  # Serial e2e took 185 s on one runner (41886342790); split across two.
   e2e:
     name: rust e2e (${{ matrix.shard }}/2)
     needs: [plan, test-build]
@@ -255,9 +255,10 @@ jobs:
       - name: just e2e
         env:
           NEXTEST_PROFILE: ci
+          PHUX_UNIT_TARGETS: *unit-targets
           PHUX_TEST_ARCHIVE: ${{ runner.temp }}/phux-tests.tar.zst
           PHUX_NEXTEST_PARTITION: count:${{ matrix.shard }}/2
-        run: nix develop -c just e2e
+        run: nix develop .#test-archive -c just e2e
 
   # phux-client-ffi with the mobile artifact's features shares no artifacts
   # with the unit pool.
@@ -291,6 +292,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/setup-rust-lane
+        id: lane
         with:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
           cache-lane: icount
@@ -307,9 +309,7 @@ jobs:
           path: target/perf-icount/iai.jsonl
           if-no-files-found: ignore
           retention-days: 14
-      - name: leave disk for the mbx objects export
-        if: github.event_name == 'push'
-        run: bash scripts/ci/mbx-export-headroom.sh
+      - *mbx-export-headroom
 
   integrations:
     name: agent integrations
@@ -353,7 +353,7 @@ jobs:
         env:
           PHUX_WEB_ENGINE: ${{ needs.plan.outputs.web_engine == 'true' && '1' || '0' }}
           PHUX_TOOLCHAIN_DIR: ${{ runner.temp }}/phux-toolchains
-        run: nix develop .#browser -c just web-vt-check
+        run: nix develop -c just web-vt-check
 
   web-client:
     name: web (client + browser)
@@ -382,6 +382,9 @@ jobs:
     if: needs.plan.outputs.native == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      # The smoke CLI only runs --version.
+      CARGO_PROFILE_DEV_OPT_LEVEL: "0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

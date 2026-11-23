@@ -55,6 +55,16 @@ test("each host graph rejects a native terminal dependency", () => {
   }
 });
 
+test("MCP rejects the native replica engine", () => {
+  const lean = parseTree(CLEAN.replace(/^wtransport-proto.*\n/m, ""));
+  for (const name of ["libghostty-vt", "libghostty-vt-sys", "phux-vt"]) {
+    const mcp = new Map(lean).set(name, new Set<string>());
+    expect(violations({ full: parseTree(CLEAN), lean, mcp, ...HOST })).toEqual([
+      `headless MCP must not compile ${name}`,
+    ]);
+  }
+});
+
 test("the server production graph rejects client state", () => {
   const lean = parseTree(CLEAN.replace(/^wtransport-proto.*\n/m, ""));
   expect(

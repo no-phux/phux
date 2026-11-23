@@ -67,7 +67,7 @@ perf-rune-photon keys="200":
     bash scripts/bench/rune-echo.sh --photon target/release/phux clients/rune/target/release/phux-rune {{keys}} 250
 
 
-# Cyclomatic complexity of production code over a CCN ceiling — advisory.
+# Cyclomatic complexity of Rust source over a CCN ceiling — advisory.
 # clippy.toml is the CI gate; this is lizard via uvx. Not in `ci`.
 [group('perf')]
 complexity CCN="15":
@@ -77,9 +77,11 @@ complexity CCN="15":
       echo "complexity: uvx not found; install uv to run this report" >&2
       exit 1
     fi
-    uvx --from lizard==1.24.3 lizard -l rust crates --CCN {{CCN}} -w \
-      | grep -v -e '/tests/' -e '/benches/' -e '/examples/' \
-      || echo "no production function exceeds CCN {{CCN}}"
+    # Warnings are data, not a lizard failure. Do not mask broken invocations.
+    warnings="$(uvx --from lizard==1.24.3 lizard -l rust crates --CCN {{CCN}} --length 1000000 -w -i -1)"
+    if ! grep -vE '/(tests|benches|examples)/' <<<"$warnings" | grep -F 'warning:'; then
+      echo "no source function exceeds CCN {{CCN}}"
+    fi
 
 
 # CPU-profile the phux binary with samply (not a workspace dep).
@@ -106,8 +108,8 @@ profile *ARGS:
 
 # Build observability (Rust side only; the cold Zig blob is invisible here).
 [group('perf')]
-timings *ARGS:
-    cargo build --workspace --all-targets --timings {{ARGS}}
+timings *ARGS: worktree-claim
+    cargo build --timings {{ if ARGS == "" { "--workspace --all-targets" } else { ARGS } }}
     @echo "report -> target/cargo-timings/cargo-timing.html"
 
 
