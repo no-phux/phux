@@ -562,7 +562,7 @@ mod tests {
         let pid = fixture_pid(&pidfile, &mut child)
             .expect("fixture did not record a grandchild PID")
             .to_string();
-        let err = wait_bounded(child, "sleeper", None, Duration::ZERO).unwrap_err();
+        let err = wait_bounded(child, "sleeper", None, Duration::from_millis(400)).unwrap_err();
         assert!(err.contains("timed out"), "{err}");
         let alive = || {
             Command::new("kill")
