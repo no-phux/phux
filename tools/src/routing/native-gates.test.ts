@@ -18,6 +18,7 @@ import {
 } from "../policy/workflows.ts";
 import { Classifier } from "./classify.ts";
 import { runeMacosPlan } from "./rune-macos.ts";
+import { LANES } from "./plan.ts";
 
 function evaluate(value: unknown, github: Table, extra: Table = {}): unknown {
   if (typeof value !== "string") return value;
@@ -307,7 +308,18 @@ test("ci rejects a failed or cancelled native queue dependency", () => {
         ...process.env,
         EVENT_NAME: "merge_group",
         RESULTS: JSON.stringify({
-          plan: { result: "success" },
+          ...Object.fromEntries(
+            needs(job(workflow("ci.yml"), "ci")).map((id) => [id, { result: "skipped" }]),
+          ),
+          plan: {
+            result: "success",
+            outputs: Object.fromEntries(
+              [...LANES, "rune_qualify", "docs_catalog", "release_qualify"].map((key) => [
+                key,
+                "false",
+              ]),
+            ),
+          },
           native: { result: "success" },
           icount: { result: "success" },
           "queue-apple": { result: state },

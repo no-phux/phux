@@ -7,7 +7,7 @@ on:
   pull_request:
     # `closed` runs nothing; joining the PR's concurrency group cancels the
     # run still in flight for a merged or abandoned PR.
-    types: [opened, synchronize, reopened, ready_for_review, closed]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, closed]
   push:
     branches: [main]
   # Inert until the main ruleset enables the queue. The queue waits for the
@@ -34,10 +34,9 @@ permissions:
 
 jobs:
   plan:
-    # Drafts skip the suite. A release-please head stays draft while it
-    # accumulates, and still needs every lane. Push and merge_group carry no
-    # pull_request payload, so the draft test passes for them.
-    if: github.event.action != 'closed' && (startsWith(github.head_ref, 'release-please--') || github.event.pull_request.draft != true)
+    # All drafts skip qualification, including release trains. Ready release
+    # heads keep full qualification. Push and queue events have no draft.
+    if: github.event.action != 'closed' && github.event.pull_request.draft != true
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -445,9 +444,9 @@ jobs:
 
   # The required check. The ruleset matches this display name.
   ci:
-    # A draft reports `ci (draft)`, leaving `ci` pending, not red: a draft
-    # `ci` would satisfy protection before the ready run's own ci exists.
-    name: ${{ (github.event.pull_request.draft && !startsWith(github.head_ref, 'release-please--')) && 'ci (draft)' || 'ci' }}
+    # Fresh drafts leave ci absent. This cannot revoke older same-SHA checks:
+    # automated arming must first pass pr-ready-ci (docs/ci.md).
+    name: ${{ github.event.pull_request.draft && 'ci (draft)' || 'ci' }}
     needs: [plan, guards, lint, test-build, tests, e2e, ffi, icount, integrations, web-vt, web-client, native, rune, queue-apple, docs-catalog]
     if: always() && github.event.action != 'closed'
     runs-on: ubuntu-24.04
@@ -456,7 +455,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: plan succeeded; every lane passed or was not needed
+      - name: Strict CI aggregate v2
         env:
           RESULTS: ${{ toJSON(needs) }}
           EVENT_NAME: ${{ github.event_name }}
