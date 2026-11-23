@@ -21,14 +21,12 @@ path = "src/main.rs"
 # wire types directly — MCP is a thin adapter, not a separate core
 # (ADR-0022 §5). No MCP framework dep: the JSON-RPC is hand-rolled over
 # serde_json so the surface stays reimplementable in any language.
-# MCP only uses control/transport APIs. Since ADR-0100 the TUI is its own
-# crate (`phux-tui`), so depending on `phux-client` cannot pull in the chrome
-# or the native replica engine; `bun tools/main.ts build-features-check` still pins
-# that no `ratatui` reaches this graph.
+# MCP only uses control/transport APIs. The feature guard keeps both TUI
+# chrome and the native terminal engine out of the standalone adapter.
 # The surface tools return PNGs as base64 MCP image content.
 base64.workspace = true
-phux-client.workspace = true
-phux-client-runtime.workspace = true
+phux-client = { path = "../phux-client", default-features = false }
+phux-client-runtime = { path = "../phux-client-runtime", default-features = false }
 phux-config.workspace = true
 phux-plugin.workspace = true
 phux-protocol.workspace = true
@@ -36,8 +34,7 @@ phux-protocol.workspace = true
 phux-work.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-# Current-thread runtime: the client lib is async and its client-side
-# libghostty Terminal is !Send (ADR-0003). `io-std` for async stdin/stdout.
+# `io-std` for async stdin/stdout on the current-thread runtime.
 tokio = { workspace = true, features = ["io-std"] }
 
 [dev-dependencies]
@@ -46,7 +43,7 @@ tokio = { workspace = true, features = ["io-std"] }
 # harness out of the shipped adapter while the test build still gets it — and
 # replaces this crate's hand-rolled frame reader, which encoded whatever its
 # author believed the server does.
-phux-client = { workspace = true, features = ["testkit"] }
+phux-client = { path = "../phux-client", default-features = false, features = ["testkit"] }
 tempfile.workspace = true
 phux-server.workspace = true
 phux-server-testkit.workspace = true

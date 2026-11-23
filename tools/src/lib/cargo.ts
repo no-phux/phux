@@ -42,12 +42,13 @@ export function workspaceMembers(dir = ".", root = ROOT): Manifest[] {
 }
 
 /** The nearest manifest at or above `dir` that declares `[workspace]`. */
-function workspaceRoot(dir: string, root: string): Manifest | undefined {
+function workspaceRoot(
+  dir: string,
+  manifestAt: (dir: string) => Manifest | undefined,
+): Manifest | undefined {
   for (let current = dir; ; current = dirname(current)) {
-    if (existsSync(join(root, current, "Cargo.toml"))) {
-      const manifest = readManifest(current, root);
-      if (isTable(manifest.document["workspace"])) return manifest;
-    }
+    const manifest = manifestAt(current);
+    if (manifest && isTable(manifest.document["workspace"])) return manifest;
     if (current === "." || current === "/" || current === "") return undefined;
   }
 }
@@ -55,47 +56,6 @@ function workspaceRoot(dir: string, root: string): Manifest | undefined {
 /** The top-level table and every `[target.*]` table: where dependencies are declared. */
 export function dependencyTables(document: Table): Table[] {
   return [document, ...Object.values(table(document["target"])).map(table)];
-}
-
-/** Repository-relative directories of `manifest`'s path dependencies of `kinds`. */
-export function pathDependencies(
-  manifest: Manifest,
-  kinds: readonly DependencyKind[],
-  root = ROOT,
-): Set<string> {
-  const found = new Set<string>();
-  let inherited: Table | undefined;
-  const inheritedFrom = (): Table => {
-    inherited ??= table(
-      table(workspaceRoot(manifest.dir, root)?.document["workspace"])["dependencies"],
-    );
-    return inherited;
-  };
-  for (const tables of dependencyTables(manifest.document)) {
-    for (const kind of kinds) {
-      for (const [name, spec] of Object.entries(table(tables[kind]))) {
-        const path = dependencyPath(manifest, name, spec, inheritedFrom, root);
-        if (path !== undefined) found.add(path);
-      }
-    }
-  }
-  return found;
-}
-
-function dependencyPath(
-  manifest: Manifest,
-  name: string,
-  spec: unknown,
-  inherited: () => Table,
-  root: string,
-): string | undefined {
-  if (!isTable(spec)) return undefined;
-  const direct = str(spec["path"]);
-  if (direct !== undefined) return normalize(join(manifest.dir, direct), root);
-  if (spec["workspace"] !== true) return undefined;
-  const base = workspaceRoot(manifest.dir, root);
-  const path = str(table(inherited()[name])["path"]);
-  return base && path !== undefined ? normalize(join(base.dir, path), root) : undefined;
 }
 
 function normalize(path: string, root: string): string {
@@ -175,11 +135,10 @@ function activePathDependencies(
   manifest: Manifest,
   requested: ReadonlySet<string>,
   kinds: readonly DependencyKind[],
+  workspace: Manifest | undefined,
   root: string,
 ): DependencyRequest[] {
-  const inherited = table(
-    table(workspaceRoot(manifest.dir, root)?.document["workspace"])["dependencies"],
-  );
+  const inherited = table(table(workspace?.document["workspace"])["dependencies"]);
   const { dependencies, forwarded } = activated(manifest.document, requested);
   const found: DependencyRequest[] = [];
   for (const tables of dependencyTables(manifest.document)) {
@@ -187,10 +146,15 @@ function activePathDependencies(
       for (const [key, value] of Object.entries(table(tables[kind]))) {
         const spec = table(value);
         if (spec["optional"] === true && !dependencies.has(key)) continue;
-        const path = dependencyPath(manifest, key, spec, () => inherited, root);
-        if (path === undefined) continue;
         const base = spec["workspace"] === true ? table(inherited[key]) : {};
-        found.push({ dir: path, features: dependencyFeatures(spec, base, forwarded.get(key)) });
+        const direct = str(spec["path"]);
+        const path = direct ?? str(base["path"]);
+        const from = direct === undefined ? workspace?.dir : manifest.dir;
+        if (path === undefined || from === undefined) continue;
+        found.push({
+          dir: normalize(join(from, path), root),
+          features: dependencyFeatures(spec, base, forwarded.get(key)),
+        });
       }
     }
   }
@@ -203,11 +167,15 @@ function activePathDependencies(
  * count only at roots, target-specific edges on every platform (fail closed).
  */
 export function pathClosure(roots: readonly BuildRoot[], root = ROOT): Set<string> {
-  const manifests = new Map<string, Manifest>();
-  const manifestAt = (dir: string): Manifest => {
-    const manifest = manifests.get(dir) ?? readManifest(dir, root);
-    manifests.set(dir, manifest);
-    return manifest;
+  const manifests = new Map<string, Manifest | undefined>();
+  const manifestAt = (dir: string): Manifest | undefined => {
+    if (!manifests.has(dir)) {
+      const manifest = existsSync(join(root, dir, "Cargo.toml"))
+        ? readManifest(dir, root)
+        : undefined;
+      manifests.set(dir, manifest);
+    }
+    return manifests.get(dir);
   };
   const devRoots = new Set(roots.filter(({ dev }) => dev).map(({ dir }) => dir));
   const enabled = new Map<string, Set<string>>();
@@ -221,9 +189,12 @@ export function pathClosure(roots: readonly BuildRoot[], root = ROOT): Set<strin
     if (previous && [...features].every((feature) => previous.has(feature))) continue;
     const requested = new Set([...(previous ?? []), ...features]);
     enabled.set(dir, requested);
-    const manifest = manifestAt(dir);
+    // Keep the existing fail-closed error for a declared path without a manifest.
+    const manifest = manifestAt(dir) ?? readManifest(dir, root);
     const kinds = devRoots.has(dir) ? ALL_KINDS : TRANSITIVE_KINDS;
-    pending.push(...activePathDependencies(manifest, requested, kinds, root));
+    pending.push(
+      ...activePathDependencies(manifest, requested, kinds, workspaceRoot(dir, manifestAt), root),
+    );
   }
   return new Set(enabled.keys());
 }
