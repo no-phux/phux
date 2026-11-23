@@ -1,4 +1,4 @@
-//! Initial action discovery is distinct from revealing a complete touch target.
+//! Initial action names and complete targets, without manufacturing a scroll.
 use super::*;
 
 fn initial_action_names(rt: &Runtime<Desk>) {

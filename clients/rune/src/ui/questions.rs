@@ -213,7 +213,7 @@ fn form(mut panel: El, draft: &Draft, at: &At, t: &Tokens) -> El {
         ));
     };
     // The panel already leaves s2 before its actions; this margin makes that
-    // separation s4 too, without changing the question's heading or message.
+    // action separation s4, without changing the question's heading or message.
     let mut fields = col().w_full().gap(t.space.s3).mb(t.space.s2);
     for (id, schema) in properties {
         if at.phone {
