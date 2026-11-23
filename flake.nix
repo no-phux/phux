@@ -401,9 +401,9 @@
         };
 
         # The hosted shards execute an existing nextest archive. Keep the
-        # compiler for wire-tag probes, but do not realize Zig, browser,
-        # desktop, or development tools that these jobs never use.
-        devShells.test-archive = pkgs.mkShell {
+        # Rust metadata probes need rustc, not a native linker or SDK.
+        # Do not realize Zig, browser, desktop, or development tools either.
+        devShells.test-archive = pkgs.mkShellNoCC {
           packages = [
             (toolchain.override {
               extensions = [ ];
