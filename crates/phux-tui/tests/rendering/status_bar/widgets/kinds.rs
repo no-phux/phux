@@ -145,8 +145,9 @@ fn invalid_option_values_are_rejected_naming_the_kind() {
 
 /// Table-driven tab rendering with the default format/separator:
 /// plain tabs, the ` Z` zoom suffix on a zoomed window (phux-x2hm), the
-/// ` !` attention suffix (phux-foz.1, ADR-0035), the ` x` / ` xN`
-/// retained-exit suffix (phux-fpgl.33, ADR-0124), and the empty list.
+/// ladder's ` ●` needs-you suffix (phux-foz.1, ADR-0035) said once, the
+/// ` ✕N` / ` –` retained-exit suffix (phux-fpgl.33, ADR-0124), and the
+/// empty list.
 #[test]
 fn windows_widget_renders_tabs_and_markers() {
     let cases: &[(&str, Vec<WindowInfo>, &str)] = &[
@@ -167,7 +168,7 @@ fn windows_widget_renders_tabs_and_markers() {
             "0:a Z 1:b",
         ),
         (
-            "attention window gets the ! suffix; others stay plain",
+            "attention window gets the ladder's needs-you mark; others stay plain",
             vec![
                 win("a", true),
                 WindowInfo {
@@ -175,7 +176,28 @@ fn windows_widget_renders_tabs_and_markers() {
                     ..win("b", false)
                 },
             ],
-            "0:a 1:b !",
+            "0:a 1:b \u{25cf}",
+        ),
+        (
+            "the ascii column marks it the way the ascii sidebar does",
+            vec![WindowInfo {
+                attention: true,
+                glyphs: phux_tui::render::theme::Glyphs::Ascii,
+                ..win("a", true)
+            }],
+            "0:a *",
+        ),
+        (
+            "a needs-you badge already says it, so the tab says it once",
+            vec![WindowInfo {
+                attention: true,
+                badge: Some(WindowBadge {
+                    glyph: "\u{25cf}".to_owned(),
+                    ..WindowBadge::default()
+                }),
+                ..win("a", true)
+            }],
+            "0:\u{25cf} a",
         ),
         (
             "retained window gets the sidebar's failed mark plus exit status",
