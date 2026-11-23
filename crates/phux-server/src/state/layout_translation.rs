@@ -154,7 +154,7 @@ impl ServerState {
             .iter()
             .filter_map(|group| {
                 let tree = self.client_tree(&group.tree)?;
-                let focus = tree.leaves().into_iter().next().cloned()?;
+                let focus = tree.first_leaf().clone();
                 Some(Group {
                     id: group.id,
                     name: group.name.clone().unwrap_or_default(),

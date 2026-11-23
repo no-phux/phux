@@ -68,7 +68,7 @@ pub fn apply_kill(state: &LayoutState) -> Result<LayoutState, ActionError> {
             focus: None,
         },
         |tree| {
-            let focus = layout::leaves(&tree).into_iter().next();
+            let focus = Some(tree.first_leaf().clone());
             LayoutState {
                 tree: Some(tree),
                 focus,

@@ -7,15 +7,17 @@ use super::{
 /// Keep `state`'s focus when it is still a leaf, else fall back to the
 /// first leaf (or none for an empty tree).
 pub(super) fn repair_focus(state: &mut LayoutState) {
-    state.focus = state.tree.as_ref().and_then(|tree| {
-        let panes = leaves(tree);
-        state
-            .focus
-            .as_ref()
-            .filter(|focus| panes.contains(focus))
-            .cloned()
-            .or_else(|| panes.into_iter().next())
-    });
+    let Some(tree) = &state.tree else {
+        state.focus = None;
+        return;
+    };
+    if !state
+        .focus
+        .as_ref()
+        .is_some_and(|focus| tree.contains(focus))
+    {
+        state.focus = Some(tree.first_leaf().clone());
+    }
 }
 
 /// Where index `i` lands after the element at `from` moves to `to`.
@@ -219,11 +221,9 @@ fn descend_to_leaf(
     suffix: &[(SplitDir, ChildSide)],
 ) -> ResourceId {
     let perp = perpendicular_axis(dir);
-    let hints: Vec<ChildSide> = suffix
+    let mut hints = suffix
         .iter()
-        .filter_map(|(sd, side)| if *sd == perp { Some(*side) } else { None })
-        .collect();
-    let mut hint_idx = 0;
+        .filter_map(|(sd, side)| (*sd == perp).then_some(*side));
     let mut cur = node;
     loop {
         match cur {
@@ -240,9 +240,7 @@ fn descend_to_leaf(
                         Direction::Left | Direction::Up => right,
                     };
                 } else {
-                    let side = hints.get(hint_idx).copied().unwrap_or(ChildSide::Left);
-                    hint_idx += 1;
-                    cur = match side {
+                    cur = match hints.next().unwrap_or(ChildSide::Left) {
                         ChildSide::Left => left,
                         ChildSide::Right => right,
                     };
