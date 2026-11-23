@@ -1,6 +1,6 @@
 # Shared setup for ci.yml's Linux Rust lanes. The tests and e2e jobs take
 # `build-cache: none`: they execute a downloaded nextest archive and compile
-# nothing, so they need the devshell's tools but no build cache.
+# no test binaries, so they use the archive devshell and no build cache.
 #
 # Steps, in order:
 #   1. Drop unused preinstalled toolchains only when the disk is actually tight.
@@ -79,6 +79,7 @@ runs:
   using: composite
   steps:
     - name: runner disk headroom
+      if: inputs.build-cache != 'none'
       shell: bash
       run: |
         df -h / | tail -1

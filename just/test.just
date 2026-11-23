@@ -35,7 +35,7 @@ test: worktree-claim && (worktree-verify "test")
         filter=""
         for spec in "${specs[@]}"; do
           IFS=':' read -r pkg bin _ <<< "$spec"
-          if [[ "$bin" == "*" ]]; then one="(package(=${pkg}) & kind(test))"; else one="binary_id(${pkg}::${bin})"; fi
+          one="binary_id(${pkg}::${bin})"
           filter="${filter:+${filter} + }${one}"
         done
         # Gated targets hold `#[ignore]`d tests only, so building them is the check.
@@ -51,11 +51,7 @@ test: worktree-claim && (worktree-verify "test")
         IFS=':' read -r pkg bin feats <<< "$spec"
         features=()
         if [[ -n "$feats" ]]; then features=(--features "${feats//+/,}" --no-tests=warn); fi
-        if [[ "$bin" == "*" ]]; then
-          {{AUTO_SPAWN_BACKSTOP}} cargo nextest run -p "$pkg" --tests
-        else
-          {{AUTO_SPAWN_BACKSTOP}} cargo nextest run -p "$pkg" --test "$bin" ${features[@]+"${features[@]}"}
-        fi
+        {{AUTO_SPAWN_BACKSTOP}} cargo nextest run -p "$pkg" --test "$bin" ${features[@]+"${features[@]}"}
       done
       exit 0
     fi
@@ -111,17 +107,13 @@ test-archive: worktree-claim
       for spec in "${specs[@]}"; do
         IFS=':' read -r pkg bin feats <<< "$spec"
         if [[ -n "$feats" ]]; then features+=(--features "${pkg}/${feats//+/,${pkg}/}"); fi
-        if [[ "$bin" == "*" ]]; then
-          while IFS= read -r name; do targets+=(--test "$name"); done < <(
-            cargo metadata --no-deps --format-version 1 | jq -r --arg pkg "$pkg" '
-              .packages[] | select(.name == $pkg) | (.features.default // []) as $default
-              | .targets[] | select(.kind == ["test"])
-              | select(((."required-features" // []) - $default) == []) | .name')
-        else
-          targets+=(--test "$bin")
-        fi
+        targets+=(--test "$bin")
       done
-      if [[ "${PHUX_E2E:-true}" == "true" ]]; then targets+=({{E2E_TARGETS}}); fi
+      if [[ "${PHUX_E2E:-true}" == "true" ]]; then
+        source scripts/lib/e2e-selection.sh
+        e2e_select
+        targets+=("${e2e_targets[@]}")
+      fi
     fi
     cargo nextest archive --workspace {{TEST_FEATURES}} ${features[@]+"${features[@]}"} \
       "${targets[@]}" --archive-file "$archive"
@@ -144,21 +136,21 @@ test-archive: worktree-claim
 e2e: worktree-claim && (worktree-verify "e2e")
     #!/usr/bin/env bash
     set -euo pipefail
+    source scripts/lib/e2e-selection.sh
+    e2e_select
     if [[ -n "${PHUX_TEST_ARCHIVE:-}" ]]; then
       source=(--archive-file "$PHUX_TEST_ARCHIVE" --workspace-remap "{{justfile_directory()}}")
-      # One CI shard (see `test`). Two shards split the perf pair one each.
-      if [[ -n "${PHUX_NEXTEST_PARTITION:-}" ]]; then source+=(--partition "$PHUX_NEXTEST_PARTITION"); fi
+      # One CI shard (see `test`).
+      if [[ -n "${PHUX_NEXTEST_PARTITION:-}" ]]; then
+        source+=(--partition "$PHUX_NEXTEST_PARTITION")
+        # A narrowed lane can contain just one test split across two shards.
+        source+=(${e2e_partition_extra[@]+"${e2e_partition_extra[@]}"})
+      fi
     else
-      source=(--workspace {{TEST_FEATURES}} {{E2E_TARGETS}})
+      source=(--workspace {{TEST_FEATURES}} "${e2e_targets[@]}")
     fi
     {{AUTO_SPAWN_BACKSTOP}} cargo nextest run "${source[@]}" --run-ignored ignored-only \
-      --test-threads=1 --retries=2 \
-      -E 'binary_id(phux::automation_e2e) + binary_id(phux::terminal_e2e) + binary_id(phux::recording_e2e) + binary_id(phux::lifecycle_e2e) + binary_id(phux::first_five_minutes_e2e) + binary_id(phux::upload_e2e) + binary_id(phux::download_e2e) + binary_id(phux::git_e2e) + binary_id(phux::credentials_e2e)'
-    {{AUTO_SPAWN_BACKSTOP}} cargo nextest run "${source[@]}" --run-ignored ignored-only \
-      --test-threads=1 --retries=2 \
-      -E 'binary_id(phux-server::perf)'
-
-E2E_TARGETS := "--test automation_e2e --test terminal_e2e --test recording_e2e --test lifecycle_e2e --test first_five_minutes_e2e --test upload_e2e --test download_e2e --test git_e2e --test credentials_e2e --test perf --test discovery"
+      --test-threads=1 --retries=2 -E "$e2e_filter"
 
 
 # The release soak gate (soak.yml; lts.yml requires its pass). The e2e lane,

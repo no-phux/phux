@@ -80,6 +80,16 @@ test("an unknown path, a missing side or an empty diff fails closed", () => {
   expect(releaseMetadataOnly([], () => pair)).toBe(false);
 });
 
+test("a mixed diff never reads release blobs, even if the source change sorts last", () => {
+  const paths = ["Cargo.toml", ...WORKSPACE_LOCKS, "crates/phux/src/main.rs"];
+  expect(
+    releaseMetadataOnly(paths, () => {
+      throw new Error("unexpected blob read");
+    }),
+  ).toBe(false);
+  expect(releaseMetadataOnly(["constructor"], () => undefined)).toBe(false);
+});
+
 test.each(["pi", "opencode-v2", "omp", "grok", "claude"])(
   "%s release package allows only its top-level version to change",
   (integration) => {

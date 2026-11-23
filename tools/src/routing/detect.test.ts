@@ -1,4 +1,4 @@
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -6,18 +6,36 @@ import { WORKSPACE_LOCKS } from "../cargo/release-orchestration.ts";
 import { git } from "../lib/git.ts";
 import { detect, docsCatalogChanged, type Detection } from "./detect.ts";
 
-const repo = mkdtempSync(join(tmpdir(), "phux-routing-"));
+const template = mkdtempSync(join(tmpdir(), "phux-routing-"));
 // The payload lives outside the fixture tree, exactly like Actions.
 const payloads = mkdtempSync(join(tmpdir(), "phux-events-"));
-git(["init", "--quiet"], repo);
-git(["config", "user.email", "routing@example.invalid"], repo);
-git(["config", "user.name", "Routing Test"], repo);
-git(["config", "core.hooksPath", "/dev/null"], repo);
-git(["config", "commit.gpgsign", "false"], repo);
+let repo = template;
+git(["init", "--quiet"], template);
+const settings = [
+  "-c",
+  "user.email=routing@example.invalid",
+  "-c",
+  "user.name=Routing Test",
+  "-c",
+  "core.hooksPath=/dev/null",
+  "-c",
+  "commit.gpgsign=false",
+];
 const base = commitFiles({}, "HEAD");
 
+beforeEach(() => {
+  repo = mkdtempSync(join(tmpdir(), "phux-routing-case-"));
+  // A failed command must not leave staged or untracked paths for another test.
+  git(["clone", "--quiet", "--local", ...settings, template, repo], template);
+});
+
+afterEach(() => {
+  if (repo !== template) rmSync(repo, { recursive: true, force: true });
+  repo = template;
+});
+
 afterAll(() => {
-  rmSync(repo, { recursive: true, force: true });
+  rmSync(template, { recursive: true, force: true });
   rmSync(payloads, { recursive: true, force: true });
 });
 
@@ -28,7 +46,7 @@ function commitFiles(files: Record<string, string>, from = base): string {
     writeFileSync(join(repo, path), text);
   }
   git(["add", "--all"], repo);
-  git(["commit", "--quiet", "--allow-empty", "-m", "fixture"], repo);
+  git([...settings, "commit", "--quiet", "--allow-empty", "-m", "fixture"], repo);
   return git(["rev-parse", "HEAD"], repo).trim();
 }
 
@@ -183,10 +201,10 @@ test("PR2406's root and OpenCode release metadata requests no compile lane", () 
     "release-please-config.json",
     ".github/workflows/ci.yml",
   ]) {
-    const touched = commitFiles({ ...bumped, [path]: "runtime or policy change\n" }, before);
+    const touched = commitFiles({ [path]: "runtime or policy change\n" }, head);
     expect(push(before, touched).kind).toBe("paths");
   }
   // A bump that leaves a lock behind fails --locked builds: run them.
-  const stale = commitFiles({ ...bumped, "clients/rune/Cargo.lock": lock }, before);
+  const stale = commitFiles({ "clients/rune/Cargo.lock": lock }, head);
   expect(push(before, stale).kind).toBe("paths");
 }, 15_000);

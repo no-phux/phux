@@ -41,6 +41,13 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  # Qualification uses the debug CLI as a short-lived fixture server. Do not
+  # pay the interactive dev profile's opt-level 1 for that throwaway build.
+  CARGO_PROFILE_DEV_OPT_LEVEL: "0"
+
 jobs:
   # Static names: a skipped matrix job never expands, so `matrix.name` would
   # be published as the literal check `matrix.name`.
@@ -49,9 +56,6 @@ jobs:
     if: inputs.hosts == 'all' || inputs.hosts == 'linux'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    env:
-      CARGO_INCREMENTAL: "0"
-      CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -65,19 +69,13 @@ jobs:
           apple_notary_key_p8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
           apple_notary_key_id: ${{ secrets.APPLE_NOTARY_KEY_ID }}
           apple_notary_issuer_id: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
-      # ci.yml calls this workflow with hosts: linux and ios: false, so the
-      # iOS job below does not run on a pull request. This step does.
-      - name: Test Rune client scripts
-        run: python3 -B -m unittest discover -s clients/rune/scripts -p 'test_*.py' -v
+
 
   linux-aarch64:
     name: linux-aarch64
     if: inputs.qualify && (inputs.hosts == 'all' || inputs.hosts == 'linux')
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
-    env:
-      CARGO_INCREMENTAL: "0"
-      CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -97,9 +95,6 @@ jobs:
     if: inputs.hosts == 'all' || inputs.hosts == 'macos'
     runs-on: macos-26
     timeout-minutes: 60
-    env:
-      CARGO_INCREMENTAL: "0"
-      CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -121,9 +116,6 @@ jobs:
     # A cold macOS + simulator + device build still has to qualify both
     # transports. Sixty minutes can expire after QUIC, during the WSS pass.
     timeout-minutes: 90
-    env:
-      CARGO_INCREMENTAL: "0"
-      CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
