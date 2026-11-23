@@ -417,6 +417,7 @@ fn terminal_input(host: El, desk: &Desk, id: &ResourceId) -> El {
             mods: tx.mods(),
             button: PointerButton::Secondary,
         };
+        tx.blur();
         d.secondary_press(&menu, at, event.window());
     })
     .on_hover_change(move |d: &mut Desk, inside, _| {

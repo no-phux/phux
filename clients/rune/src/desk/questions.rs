@@ -303,7 +303,7 @@ impl Questions {
                 // Survives a connection replacement's fresh Questions value.
                 static GENERATION: AtomicU64 = AtomicU64::new(1);
                 let generation = GENERATION
-                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
+                    .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
                     .expect("question generation exhausted");
                 let owner = Owner {
                     terminal: terminal.clone(),
