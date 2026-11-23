@@ -1,5 +1,7 @@
 // Exercise the actual admission/gate expressions, not a parallel policy model.
 import { expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { runInNewContext } from "node:vm";
 import { capture } from "../lib/process.ts";
 import { repoPath } from "../lib/repo.ts";
@@ -124,6 +126,92 @@ test("the split preserves real native, trust, transport and signed-byte qualific
   // A tag and the nightly call pass no qualify input, so the default stays on.
   expect(withInput(job(workflow("rune-client.yml"), "build"), "qualify")).toBeUndefined();
   expect(withInput(job(workflow("cache-warm.yml"), "rune"), "qualify")).toBeUndefined();
+});
+
+test("macOS tests the final archive's TMD through the ignored library adapter before upload", () => {
+  const host = steps(action("rune-host"));
+  const launch = host.find((step) => str(step["name"])?.startsWith("Launch the packaged app"));
+  expect(launch?.["if"]).toBe("inputs.qualify == 'true'");
+  const script = run(launch ?? {});
+  expect(script.startsWith("set -euo pipefail\n")).toBe(true);
+  expect(script.indexOf("clients/rune/scripts/qualify.sh")).toBeLessThan(
+    script.indexOf('if [[ "$(uname -s)" == Darwin ]]'),
+  );
+  for (const command of [
+    'evidence="$RUNNER_TEMP/qualification/tmd-adapter"',
+    'unpack="$RUNNER_TEMP/tmd-adapter-unpacked"',
+    'ditto -x -k "$archive" "$unpack"',
+    'app="$unpack/Phux Rune.app"',
+    'export TMD_TEST_BIN="$app/Contents/MacOS/tmd"',
+    '--package phux-rune --lib --all-features "$filter"',
+    '-- --ignored --exact --nocapture 2>&1 | tee "$evidence/adapter.log"',
+    'grep -Fq "test $filter ... ok"',
+    "test result: ok\\. 1 passed; 0 failed;",
+    '"$evidence/context.log"',
+    '"$evidence/tmd-VERSION.txt"',
+    '"$evidence/sha256.txt"',
+  ]) {
+    expect(script).toContain(command);
+  }
+  expect(script).not.toContain("--release");
+  expect(script).not.toContain("python3 clients/rune/scripts/bundle_tmd.py");
+  expect(host.indexOf(launch ?? {})).toBeLessThan(
+    host.findIndex((step) => uses(step).startsWith("actions/upload-artifact@")),
+  );
+});
+
+test("the adapter output guards reject zero tests and preserve Cargo failures in the log", () => {
+  const script = run(
+    steps(action("rune-host")).find((step) =>
+      str(step["name"])?.startsWith("Launch the packaged app"),
+    ) ?? {},
+  );
+  const guard = [
+    script.split("\n")[0],
+    script.slice(script.indexOf("filter=document_viewer"), script.lastIndexOf("\nfi")),
+  ].join("\n");
+  const directory = mkdtempSync(repoPath("tools/.tmp-tmd-adapter-"));
+  const bin = join(directory, "bin");
+  const filter = "document_viewer::tests::pinned_tmd_renders_markdown_through_the_actual_adapter";
+  const passed = `test ${filter} ... ok\ntest result: ok. 1 passed; 0 failed;`;
+  try {
+    mkdirSync(bin);
+    // Synthetic Cargo output only: never build Rust or launch a packaged app.
+    writeFileSync(
+      join(bin, "cargo"),
+      '#!/bin/sh\nprintf "%s\\n" "$TMD_FAKE_OUTPUT"\nprintf "fixture stderr\\n" >&2\nexit "$TMD_FAKE_STATUS"\n',
+      { mode: 0o755 },
+    );
+    for (const [output, status, expected] of [
+      [passed, "0", 0],
+      ["test result: ok. 0 passed; 0 failed;", "0", 1],
+      [`test ${filter} ... ok\ntest result: ok. 0 passed; 0 failed;`, "0", 1],
+      [passed.replace("1 passed", "2 passed"), "0", 1],
+      [passed.replace("0 failed", "1 failed"), "0", 1],
+      ["test another_test ... ok\ntest result: ok. 1 passed; 0 failed;", "0", 1],
+      [passed, "7", 7],
+      ["test result: FAILED. 0 passed; 1 failed;", "101", 101],
+    ] as const) {
+      const result = Bun.spawnSync(["bash", "-c", guard], {
+        cwd: repoPath("."),
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env["PATH"] ?? ""}`,
+          evidence: directory,
+          TMD_FAKE_OUTPUT: output,
+          TMD_FAKE_STATUS: status,
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect([output, result.exitCode]).toEqual([output, expected]);
+      const log = readFileSync(join(directory, "adapter.log"), "utf8");
+      expect(log).toContain(output);
+      expect(log).toContain("fixture stderr");
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test.each(["ci.yml", "rune-macos.yml"])(
