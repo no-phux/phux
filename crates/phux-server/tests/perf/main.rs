@@ -16,9 +16,11 @@
     reason = "gates print the measurement for triage"
 )]
 
+use std::io::Write as _;
+use std::ops::RangeInclusive;
 use std::time::Duration;
 
-use phux_server::LaunchCommand as CommandBuilder;
+use phux_server::LaunchCommand;
 use phux_server_testkit::builder::{
     DEFAULT_IDLE_MS, E2eBuilder, colored_burst_bytes, colored_burst_command,
 };
@@ -30,17 +32,20 @@ const MULTI_CLIENT_CEILING: Duration = Duration::from_secs(8);
 
 /// 60 repaints of a 40-row screen, one 256-color foreground per row,
 /// emitted after the clients attach.
-fn row_colored_burst(gate: &std::path::Path) -> CommandBuilder {
-    let script = "while [ ! -e \"$1\" ]; do sleep 0.02; done; \
-        for g in $(seq 1 60); do printf '\\033[H'; \
-        if [ \"$g\" -eq 30 ]; then sleep 0.3; fi; \
-        for r in $(seq 1 40); do \
-        printf '\\033[38;5;%dmrow %02d g%d colored-chunk colored-chunk\\r\\n' $((16 + r % 200)) $r $g; \
-        done; done; printf 'BURSTDONE'; sleep 30";
-    let mut cmd = CommandBuilder::new("/bin/sh");
-    cmd.args(["-c", script, "row-burst"]);
-    cmd.arg(gate);
-    cmd
+fn row_colored_burst(gens: RangeInclusive<u16>) -> Vec<u8> {
+    let mut out = Vec::new();
+    for g in gens {
+        out.extend_from_slice(b"\x1b[H");
+        for r in 1..=40 {
+            write!(
+                out,
+                "\x1b[38;5;{}mrow {r:02} g{g} colored-chunk colored-chunk\r\n",
+                16 + r
+            )
+            .expect("vec write");
+        }
+    }
+    out
 }
 
 /// Two clients drain one burst concurrently; the slower one's settle is
@@ -50,10 +55,29 @@ fn row_colored_burst(gate: &std::path::Path) -> CommandBuilder {
 fn two_client_burst_slowest_settles_under_ceiling() {
     let dir = tempfile::TempDir::new().expect("burst dir");
     let gate = dir.path().join("gate");
+    let first = dir.path().join("first.bin");
+    let last = dir.path().join("last.bin");
+    std::fs::write(&first, row_colored_burst(1..=30)).expect("write first half");
+    let mut remaining = row_colored_burst(31..=60);
+    remaining.extend_from_slice(b"BURSTDONE");
+    std::fs::write(&last, remaining).expect("write last half");
+    // Precompute the same 60 repaints, as main does: shell generation under
+    // contention is not terminal performance. Keep a gap longer than idle to
+    // prove that both subscribers wait for completion rather than a pause.
+    let mut cmd = LaunchCommand::new("/bin/sh");
+    cmd.args([
+        "-c",
+        "while [ ! -e \"$1\" ]; do sleep 0.02; done; \
+         cat -- \"$2\"; sleep 0.3; cat -- \"$3\"; sleep 30",
+        "row-burst",
+    ]);
+    cmd.arg(&gate);
+    cmd.arg(first);
+    cmd.arg(last);
     run_local(async move {
         let cap = TracingCapture::install("latency_multi");
         E2eBuilder::new()
-            .seed_cmd(row_colored_burst(&gate))
+            .seed_cmd(cmd)
             .viewport(80, 40)
             .clients(2)
             .run(move |mut clients| async move {
@@ -133,7 +157,7 @@ fn colored_burst_settles_under_ceiling() {
                     })
                     .await;
                 let elapsed = started.elapsed();
-                let screen = client.screenshot().await.snapshot_text();
+                let screen = client.snapshot_text();
                 cap.attach_screen(screen.clone());
                 eprintln!("perf[colored]: settle={settle:?} over {GENS} repaints");
                 assert!(screen.contains("COLORDONE"), "burst never completed:\n{screen}");
