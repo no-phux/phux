@@ -24,7 +24,9 @@ use phux_protocol::wire::frame::{
 };
 use thiserror::Error;
 
-use super::{ArrangementDoc, Group, LayoutState, leaves};
+#[cfg(test)]
+use super::leaves;
+use super::{ArrangementDoc, Group, LayoutState};
 
 mod handle_map;
 mod nodes;
@@ -120,7 +122,7 @@ pub fn from_protocol(doc: &WireDoc, map: &HandleMap) -> (ArrangementDoc, EntryBi
                         group: group.id,
                         entry,
                     }));
-                let focus = leaves(&tree).into_iter().next();
+                let focus = Some(tree.first_leaf().clone());
                 let name = group
                     .name
                     .clone()

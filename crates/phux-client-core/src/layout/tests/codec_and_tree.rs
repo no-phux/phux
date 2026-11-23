@@ -44,6 +44,16 @@ fn focus_direction_right_across_split() {
 }
 
 #[test]
+fn focus_direction_across_columns_keeps_the_row() {
+    let tree = split_at(&leaf(1), &t(1), &t(3), SplitDir::Horizontal, 0.5).unwrap();
+    let tree = split_at(&tree, &t(1), &t(2), SplitDir::Vertical, 0.5).unwrap();
+    let tree = split_at(&tree, &t(3), &t(4), SplitDir::Vertical, 0.5).unwrap();
+    assert_eq!(tree.first_leaf(), &t(1));
+    assert_eq!(focus_direction(&tree, &t(2), Direction::Right), Some(t(4)));
+    assert_eq!(focus_direction(&tree, &t(4), Direction::Left), Some(t(2)));
+}
+
+#[test]
 fn cbor_round_trip_satellite_focus() {
     let focus = ResourceId::satellite("peer.example", 42);
     let state = LayoutState {

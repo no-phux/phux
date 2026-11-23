@@ -84,6 +84,15 @@ pub fn validate_ratio<L: std::fmt::Debug>(ratio: f32) -> Result<(), LayoutError<
 }
 
 impl<L> LayoutNode<L> {
+    /// Borrow the first leaf in left-to-right order without collecting the tree.
+    #[must_use]
+    pub fn first_leaf(&self) -> &L {
+        match self {
+            Self::Leaf(leaf) => leaf,
+            Self::Split { left, .. } => left.first_leaf(),
+        }
+    }
+
     /// Borrow every leaf in left-to-right (depth-first) order.
     #[must_use]
     pub fn leaves(&self) -> Vec<&L> {
