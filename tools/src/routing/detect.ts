@@ -19,34 +19,15 @@ export type Detection =
 /** A flat page: `docs/<name>.md`, the set the website's `discover()` rejects. */
 const FLAT_DOC = /^docs\/[^/]+\.md$/;
 
-/**
- * Paths from `git diff --name-status -z`. A rename or copy contributes both
- * sides. The record ends with a NUL, so the split has a trailing empty field.
- */
-function nameStatusPaths(raw: string): string[] {
-  const fields = raw.split("\0");
-  if (fields.at(-1) === "") fields.pop();
-  const paths: string[] = [];
-  for (let i = 0; i < fields.length;) {
-    const status = fields[i] ?? "";
-    if (status.startsWith("R") || status.startsWith("C")) {
-      paths.push(fields[i + 1] ?? "", fields[i + 2] ?? "");
-      i += 3;
-    } else {
-      paths.push(fields[i + 1] ?? "");
-      i += 2;
-    }
-  }
-  return paths.filter((path) => path !== "");
-}
-
 /** True when the range adds, renames, or deletes a top-level `docs/*.md`. */
 export function docsCatalogChanged(base: string, head: string, cwd = ROOT): boolean {
+  // The catalog only cares about path membership. A rename appears as a
+  // delete plus an add without making Git compare the contents.
   const raw = git(
-    ["diff", "--name-status", "--find-renames", "--diff-filter=ARD", "-z", base, head, "--"],
+    ["diff", "--name-only", "--no-renames", "--diff-filter=AD", "-z", base, head, "--", "docs/"],
     cwd,
   );
-  return nameStatusPaths(raw).some((path) => FLAT_DOC.test(path));
+  return raw.split("\0").some((path) => FLAT_DOC.test(path));
 }
 
 const NO_LANES: Classification = {
@@ -106,7 +87,7 @@ export function detect(eventName: string, eventPath: string | undefined, cwd = R
     if (eventPath === undefined) throw new Failure("GITHUB_EVENT_PATH is unset");
     [base, head] = eventRange(eventName, JSON.parse(readFileSync(eventPath, "utf8")), cwd);
     paths = diffPaths(base, head, cwd);
-    docsCatalog = docsCatalogChanged(base, head, cwd);
+    docsCatalog = paths.some((path) => FLAT_DOC.test(path)) && docsCatalogChanged(base, head, cwd);
   } catch (error) {
     return { kind: "full", reason: describe(error) };
   }
