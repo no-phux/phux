@@ -4,6 +4,8 @@ use serde_json::json;
 use super::*;
 use crate::launch::Resolved;
 
+mod evolution;
+
 fn question(kind: &str, fields: Value) -> NativeQuestion {
     NativeQuestion {
         id: "acp-question:1".into(),
