@@ -184,7 +184,16 @@ fn sessions(desk: &Desk, p: &Look) -> El {
         .py(s.s2)
         .label("Search sessions, panes, agents, and folders")
         .color(ink)
-        .placeholder("Search sessions or panes", dim)
+        // Past the grid's text cap the full hint is cut mid-word on a
+        // phone; the page's title already says what is searched.
+        .placeholder(
+            if p.type_scale > crate::desk::accessibility::GRID_CAP {
+                "Search"
+            } else {
+                "Search sessions or panes"
+            },
+            dim,
+        )
         .on_edit(|d: &mut Desk| &mut d.phone.as_mut().expect("phone").query)
         .on_input_change(Desk::phone_search_edited)
         .on_input_key(|d: &mut Desk, event, _| d.phone_navigation_key(event))
