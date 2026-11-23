@@ -18,24 +18,33 @@
 
 use std::time::Duration;
 
-use phux_server::LaunchCommand as CommandBuilder;
 use phux_server_testkit::builder::{
     DEFAULT_IDLE_MS, E2eBuilder, colored_burst_bytes, colored_burst_command,
 };
 use phux_server_testkit::run_local;
 use phux_server_testkit::tracing_capture::TracingCapture;
+use std::io::Write as _;
 
 /// Measured ~330-360 ms on an M-series laptop under the contended pool.
 const MULTI_CLIENT_CEILING: Duration = Duration::from_secs(8);
 
 /// 60 repaints of a 40-row screen, one 256-color foreground per row,
 /// emitted after the clients attach.
-fn row_colored_burst() -> CommandBuilder {
-    let script = "sleep 0.3; for g in $(seq 1 60); do printf '\\033[H'; \
-        for r in $(seq 1 40); do \
-        printf '\\033[38;5;%dmrow %02d g%d colored-chunk colored-chunk\\r\\n' $((16 + r % 200)) $r $g; \
-        done; done; printf 'BURSTDONE'; sleep 30";
-    phux_server_testkit::sh(script)
+fn row_colored_burst() -> Vec<u8> {
+    let mut out = Vec::new();
+    for g in 1..=60 {
+        out.extend_from_slice(b"\x1b[H");
+        for r in 1..=40 {
+            write!(
+                out,
+                "\x1b[38;5;{}mrow {r:02} g{g} colored-chunk colored-chunk\r\n",
+                16 + r
+            )
+            .expect("vec write");
+        }
+    }
+    out.extend_from_slice(b"BURSTDONE");
+    out
 }
 
 /// Two clients drain one burst concurrently; the slower one's settle is
@@ -43,18 +52,27 @@ fn row_colored_burst() -> CommandBuilder {
 #[ignore = "real-PTY e2e; starves the parallel pool. Run via `just e2e`."]
 #[test]
 fn two_client_burst_slowest_settles_under_ceiling() {
+    let dir = tempfile::TempDir::new().expect("burst dir");
+    let burst = dir.path().join("burst.bin");
+    let gate = dir.path().join("gate");
+    std::fs::write(&burst, row_colored_burst()).expect("write burst");
     run_local(async {
         let cap = TracingCapture::install("latency_multi");
         E2eBuilder::new()
-            .seed_cmd(row_colored_burst())
+            .seed_cmd(colored_burst_command(&burst, &gate))
             .viewport(80, 40)
             .clients(2)
-            .run(|mut clients| async move {
+            .run(move |mut clients| async move {
                 let [a, b] = clients.as_mut_slice() else {
                     unreachable!()
                 };
-                let (settle_a, settle_b) =
-                    tokio::join!(a.converge(DEFAULT_IDLE_MS), b.converge(DEFAULT_IDLE_MS));
+                std::fs::write(&gate, b"").expect("open burst gate after both clients attach");
+                let complete =
+                    |screen: &mut phux_server_testkit::screen::Screen| screen.contains("BURSTDONE");
+                let (settle_a, settle_b) = tokio::join!(
+                    a.converge_until_with_timeout(DEFAULT_IDLE_MS, MULTI_CLIENT_CEILING, complete),
+                    b.converge_until_with_timeout(DEFAULT_IDLE_MS, MULTI_CLIENT_CEILING, complete)
+                );
                 let slowest = settle_a.max(settle_b);
                 cap.attach_screen(a.screenshot().await.snapshot_text());
                 eprintln!("perf[multi]: settle A={settle_a:?} B={settle_b:?}");

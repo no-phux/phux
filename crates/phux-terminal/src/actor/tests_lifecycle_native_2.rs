@@ -276,7 +276,7 @@ async fn ready_native_publication_survives_eof_before_activation() {
     let capture = capture_native_for_pump(&mut actor, 7, stream_id, bootstrap_id);
 
     // The wire publisher holds this READY while the producer ends.
-    actor.handle_pty_eof();
+    actor.handle_pty_eof().await;
     actor.flush_final_gap_resync(&mut super::super::run_loop::ResyncDebounce::idle());
     activate_native_for_pump(
         &mut actor,
