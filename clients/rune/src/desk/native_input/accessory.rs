@@ -1,5 +1,6 @@
 //! Synchronous drawn keys for app-owned sheet fields in either phone host.
 //! The system keyboard owns native field shift/control editing traits.
+use super::super::questions::Owner;
 use super::super::{Desk, input::Modal, phone::Soft};
 use super::target::Field;
 use rune::{KeyEvent, Runtime, Tx};
@@ -104,7 +105,7 @@ fn question(d: &mut Desk, soft: &Soft, tx: &mut Tx) -> bool {
                 .texts
                 .iter()
                 .filter(|(_, edit)| edit.focused)
-                .map(move |(field, _)| format!("acp-{question}-field-{field}"))
+                .map(move |(field, _)| question.field_key(field))
         })
         .collect();
     let [key] = focused.as_slice() else {
@@ -112,13 +113,13 @@ fn question(d: &mut Desk, soft: &Soft, tx: &mut Tx) -> bool {
     };
     // A held/retired/ambiguous request consumes the key without sending it.
     if let Some((field, _)) = Field::question(d, key) {
-        if let Field::Question { terminal, .. } = &field
+        if let Field::Question { owner, .. } = &field
             && d.modal().is_none()
             && !d
                 .connection
                 .shown
                 .as_ref()
-                .is_some_and(|shown| &shown.resource == terminal)
+                .is_some_and(|shown| &shown.resource == owner.terminal())
         {
             return true;
         }
@@ -162,12 +163,12 @@ pub(super) fn retire_unmounted(rt: &mut Runtime<Desk>) -> bool {
     true
 }
 
-fn unmounted_fields(d: &Desk, mounted: &HashSet<String>) -> Vec<(String, String)> {
+fn unmounted_fields(d: &Desk, mounted: &HashSet<String>) -> Vec<(Owner, String)> {
     let mut hidden = Vec::new();
     for (question, draft) in &d.inbox.questions.drafts {
         for (field, edit) in &draft.texts {
             if (edit.focused || edit.is_composing())
-                && !mounted.contains(&format!("acp-{question}-field-{field}"))
+                && !mounted.contains(&question.field_key(field))
             {
                 hidden.push((question.clone(), field.clone()));
             }

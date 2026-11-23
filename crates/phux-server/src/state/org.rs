@@ -211,6 +211,29 @@ impl ServerState {
         Ok(())
     }
 
+    /// Check what the resumed image will load before an upgrade can strand
+    /// live engines. Reading the blob alone cannot prove the durable records.
+    pub(crate) fn validate_org_store(&mut self) -> Result<(), StoreError> {
+        let Some(stored) = self.org.store.load()? else {
+            if self.org.store.path().is_some() {
+                return Err(StoreError::Corrupt(
+                    "organization authority missing".to_owned(),
+                ));
+            }
+            return Ok(());
+        };
+        Org::restore(
+            stored.authority,
+            self.instance_id(),
+            stored.sessions,
+            stored.resources,
+            stored.arrangements,
+            stored.receipts,
+        )
+        .map_err(|error| StoreError::Corrupt(error.to_string()))?;
+        Ok(())
+    }
+
     /// Swap in another store, keeping the records, to inject write failures.
     #[cfg(test)]
     pub fn set_org_store(&mut self, store: Box<dyn OrgStore>) {

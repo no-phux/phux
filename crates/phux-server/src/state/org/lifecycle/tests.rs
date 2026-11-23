@@ -30,11 +30,34 @@ fn retained() -> (
     let db = rusqlite::Connection::open(path).unwrap();
     (s, id, dir, db)
 }
-fn reject(db: &rusqlite::Connection) {
-    db.execute_batch("CREATE TRIGGER reject_report BEFORE UPDATE ON resources WHEN NEW.exec_state <> 'starting' BEGIN SELECT RAISE(FAIL, 'test report refusal'); END;").unwrap();
+fn change_trigger(s: &mut ServerState, db: &rusqlite::Connection, sql: &str) {
+    use crate::org_store::OrgStore as _;
+    db.execute_batch(sql).unwrap();
+    // Reopening is valid only because the test changed schema, not records.
+    // Prove that before replacing the owner; never refresh a stale baseline.
+    let mut store = SqliteOrgStore::open(std::path::Path::new(db.path().unwrap())).unwrap();
+    let stored = store.load().unwrap().unwrap();
+    let org = phux_core::Org::restore(
+        stored.authority,
+        s.instance_id(),
+        stored.sessions,
+        stored.resources,
+        stored.arrangements,
+        stored.receipts,
+    )
+    .unwrap();
+    assert_eq!(&org, s.org());
+    s.set_org_store(Box::new(store));
 }
-fn recover(db: &rusqlite::Connection) {
-    db.execute_batch("DROP TRIGGER reject_report;").unwrap();
+fn reject(s: &mut ServerState, db: &rusqlite::Connection) {
+    change_trigger(
+        s,
+        db,
+        "CREATE TRIGGER reject_report BEFORE UPDATE ON resources WHEN NEW.exec_state <> 'starting' BEGIN SELECT RAISE(FAIL, 'test report refusal'); END;",
+    );
+}
+fn recover(s: &mut ServerState, db: &rusqlite::Connection) {
+    change_trigger(s, db, "DROP TRIGGER reject_report;");
 }
 fn activation(s: &ServerState, id: ResourceId) -> phux_core::Activation {
     s.registry().record(id).unwrap().activation.clone().unwrap()
@@ -45,7 +68,7 @@ fn refused_failed_launch_settles_same_activation_with_diagnostic_after_recovery(
     let (mut s, id, _dir, db) = retained();
     let before = activation(&s, id);
     let key = s.registry().record(id).unwrap().key;
-    reject(&db);
+    reject(&mut s, &db);
     let diagnostic = phux_core::LaunchDiagnostic {
         stage: phux_core::LaunchStage::Exec,
         errno: Some(libc::ENOENT),
@@ -54,7 +77,7 @@ fn refused_failed_launch_settles_same_activation_with_diagnostic_after_recovery(
     assert_eq!(activation(&s, id), before, "memory remains committed state");
     assert!(s.activation_persistence_pending(key));
     assert_eq!(s.org.pending_reports.len(), 1);
-    recover(&db);
+    recover(&mut s, &db);
     s.retry_activation_reports();
     let after = activation(&s, id);
     assert_eq!((after.id, after.instance), (before.id, before.instance));
@@ -81,14 +104,14 @@ fn refused_failed_launch_settles_same_activation_with_diagnostic_after_recovery(
 #[test]
 fn refused_start_stays_before_end_and_duplicate_reports_remain_bounded() {
     let (mut s, id, _dir, db) = retained();
-    reject(&db);
+    reject(&mut s, &db);
     for _ in 0..10 {
         s.activation_started(id, None);
         s.activation_ended(id, ExitOutcome::exited(7), false);
     }
     assert_eq!(s.org.pending_reports.len(), 1);
     assert_eq!(activation(&s, id).state, ExecState::Starting);
-    recover(&db);
+    recover(&mut s, &db);
     s.retry_activation_reports();
     assert_eq!(activation(&s, id).state, ExecState::Completed);
     assert_eq!(
@@ -101,11 +124,11 @@ fn refused_start_stays_before_end_and_duplicate_reports_remain_bounded() {
 #[test]
 fn queued_reports_cannot_touch_relaunch_or_removed_records() {
     let (mut s, id, _dir, db) = retained();
-    reject(&db);
+    reject(&mut s, &db);
     s.activation_ended(id, ExitOutcome::UNKNOWN, true);
     let mut old = s.org.pending_reports.pop_front().unwrap();
     let key = old.resource;
-    recover(&db);
+    recover(&mut s, &db);
     s.persist_activation_report(&mut old).unwrap();
     let expected = s.registry().record(id).unwrap().revision;
     s.commit(
@@ -123,10 +146,10 @@ fn queued_reports_cannot_touch_relaunch_or_removed_records() {
     s.retry_activation_reports();
     assert_eq!(activation(&s, id), before);
     assert!(!s.has_pending_activation_reports());
-    reject(&db);
+    reject(&mut s, &db);
     s.activation_ended(id, ExitOutcome::UNKNOWN, true);
     let old = s.org.pending_reports.pop_front().unwrap();
-    recover(&db);
+    recover(&mut s, &db);
     s.activation_ended(id, ExitOutcome::UNKNOWN, true);
     s.commit(Op::ResourceRemove { resource: key }, &Actor::owner())
         .unwrap();
@@ -139,10 +162,10 @@ fn queued_reports_cannot_touch_relaunch_or_removed_records() {
 #[test]
 fn report_from_another_instance_is_discarded_even_with_same_activation_id() {
     let (mut s, id, _dir, db) = retained();
-    reject(&db);
+    reject(&mut s, &db);
     s.activation_ended(id, ExitOutcome::UNKNOWN, true);
     s.org.pending_reports.front_mut().unwrap().instance = InstanceId::from_bytes([77; 16]);
-    recover(&db);
+    recover(&mut s, &db);
     let before = activation(&s, id);
     s.retry_activation_reports();
     assert_eq!(activation(&s, id), before);
@@ -152,7 +175,7 @@ fn report_from_another_instance_is_discarded_even_with_same_activation_id() {
 #[test]
 fn a_report_for_a_different_activation_id_is_discarded() {
     let (mut s, id, _dir, db) = retained();
-    reject(&db);
+    reject(&mut s, &db);
     s.activation_ended(id, ExitOutcome::UNKNOWN, true);
     let key = s.registry().record(id).unwrap().key;
     assert!(s.activation_persistence_pending(key));
@@ -161,7 +184,7 @@ fn a_report_for_a_different_activation_id_is_discarded() {
         !s.activation_persistence_pending(key),
         "evidence for another activation is not this execution's pending write"
     );
-    recover(&db);
+    recover(&mut s, &db);
     let before = activation(&s, id);
     s.retry_activation_reports();
     assert_eq!(activation(&s, id), before);
@@ -203,7 +226,7 @@ fn a_start_report_does_not_apply_once_the_activation_is_running() {
     let (mut s, id, _dir, db) = retained();
     s.activation_started(id, None);
     assert_eq!(activation(&s, id).state, ExecState::Running);
-    reject(&db);
+    reject(&mut s, &db);
     s.activation_started(id, None);
     assert_eq!(activation(&s, id).state, ExecState::Running);
     assert!(

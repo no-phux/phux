@@ -1,9 +1,9 @@
 # Ships the phux release with no human, beside rune-auto-release.yml and
-# phux-mobile's auto-release: every two hours, if Release Please has a release
-# PR pending, mark it ready (which runs ci) and turn on squash auto-merge.
-# Merging cuts the stable release and release.yml publishes it as before.
-# Repository variable PHUX_AUTO_RELEASE=false stops it; merging the release
-# PR by hand still works.
+# phux-mobile's auto-release. Arm a draft two hours after the last stable
+# release (dispatch bypasses the cadence). A ready PR is frozen by release.yml
+# so its normal post-ready ci can finish. Only pr-ready-ci on its exact head
+# authorizes auto-merge. Failed checks stay findings: no rerun or draft-reset
+# loop. PHUX_AUTO_RELEASE=false stops the press; hand merging still works.
 #
 # Act as the release App, never GITHUB_TOKEN: events it causes trigger no
 # workflows, so ready_for_review would run no ci and auto-merge would wait
@@ -14,9 +14,14 @@ on:
   schedule:
     # Every two hours, off the hour and off rune-auto-release's minute.
     - cron: "37 */2 * * *"
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main, release-please--branches--main]
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -25,28 +30,75 @@ concurrency:
 
 jobs:
   press:
-    if: vars.PHUX_AUTO_RELEASE != 'false'
+    if: >-
+      vars.PHUX_AUTO_RELEASE != 'false'
+      && (github.event_name != 'workflow_run'
+          || github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      # Run the trusted main harness, never code from the release PR.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
       - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         id: app-token
         with:
           client-id: ${{ vars.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-      - name: Ready and auto-merge the pending release PR
+      - name: Arm or reconcile the pending release PR
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           GH_REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          RUN_EVENT: ${{ github.event.workflow_run.event }}
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          CADENCE_SECONDS: "7200"
         run: |
-          pr=$(gh pr list --state open --head release-please--branches--main \
-            --label "autorelease: pending" --json number --jq '.[0].number // empty')
-          if [ -z "$pr" ]; then
+          set -euo pipefail
+          pr_json=$(gh pr list --state open --base main --head release-please--branches--main \
+            --label "autorelease: pending" --json number,isDraft,headRefOid,isCrossRepository \
+            --jq '[.[] | select(.isCrossRepository | not)][0] // empty')
+          if [ -z "$pr_json" ]; then
             echo "no release PR pending"
             exit 0
           fi
-          if [ "$(gh pr view "$pr" --json isDraft --jq .isDraft)" = true ]; then
+          pr=$(jq -r .number <<<"$pr_json")
+          head=$(jq -r .headRefOid <<<"$pr_json")
+          if [ "$(jq -r .isDraft <<<"$pr_json")" = true ]; then
+            # A draft's own skipped ci never arms it.
+            if [ "$EVENT" = workflow_run ] && { [ "$RUN_BRANCH" != main ] \
+              || [ "$RUN_EVENT" != push ] || [ "$RUN_CONCLUSION" != success ]; }; then
+              echo "release PR #$pr is a draft; waiting for the schedule or a green main push"
+              exit 0
+            fi
+            if [ "$EVENT" != workflow_dispatch ]; then
+              last=$(gh release list --exclude-drafts --limit 50 --json tagName,publishedAt \
+                --jq '[.[] | select(.tagName | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))][0].publishedAt // empty')
+              if [ -n "$last" ]; then
+                age=$(( $(date +%s) - $(date -d "$last" +%s) ))
+                if [ "$age" -lt "$CADENCE_SECONDS" ]; then
+                  echo "last stable release was ${age}s ago; release PR #$pr waits"
+                  exit 0
+                fi
+              fi
+            fi
             gh pr ready "$pr"
+            echo "release PR #$pr is armed; waiting for genuine post-ready ci"
+            exit 0
           fi
-          gh pr merge "$pr" --auto --squash
-          echo "release PR #$pr is ready and merges when ci is green"
+          if ! bun tools/main.ts pr-ready-ci "$pr" "$head"; then
+            echo "release PR #$pr: guard did not authorize auto-merge; inspect pending or failed checks"
+            exit 0
+          fi
+          current=$(gh pr view "$pr" --json state,isDraft,headRefOid)
+          if ! jq -e --arg head "$head" \
+            '.state == "OPEN" and (.isDraft | not) and .headRefOid == $head' <<<"$current" >/dev/null; then
+            echo "release PR #$pr changed after the guard; leaving it alone"
+            exit 0
+          fi
+          gh pr merge "$pr" --auto --squash --match-head-commit "$head"
+          echo "release PR #$pr: exact-head post-ready ci passed; auto-merge enabled"

@@ -16,23 +16,25 @@
     reason = "gates print the measurement for triage"
 )]
 
+use std::io::Write as _;
+use std::ops::RangeInclusive;
 use std::time::Duration;
 
+use phux_server::LaunchCommand;
 use phux_server_testkit::builder::{
     DEFAULT_IDLE_MS, E2eBuilder, colored_burst_bytes, colored_burst_command,
 };
 use phux_server_testkit::run_local;
 use phux_server_testkit::tracing_capture::TracingCapture;
-use std::io::Write as _;
 
 /// Measured ~330-360 ms on an M-series laptop under the contended pool.
 const MULTI_CLIENT_CEILING: Duration = Duration::from_secs(8);
 
 /// 60 repaints of a 40-row screen, one 256-color foreground per row,
 /// emitted after the clients attach.
-fn row_colored_burst() -> Vec<u8> {
+fn row_colored_burst(gens: RangeInclusive<u16>) -> Vec<u8> {
     let mut out = Vec::new();
-    for g in 1..=60 {
+    for g in gens {
         out.extend_from_slice(b"\x1b[H");
         for r in 1..=40 {
             write!(
@@ -43,7 +45,6 @@ fn row_colored_burst() -> Vec<u8> {
             .expect("vec write");
         }
     }
-    out.extend_from_slice(b"BURSTDONE");
     out
 }
 
@@ -53,33 +54,63 @@ fn row_colored_burst() -> Vec<u8> {
 #[test]
 fn two_client_burst_slowest_settles_under_ceiling() {
     let dir = tempfile::TempDir::new().expect("burst dir");
-    let burst = dir.path().join("burst.bin");
     let gate = dir.path().join("gate");
-    std::fs::write(&burst, row_colored_burst()).expect("write burst");
-    run_local(async {
+    let first = dir.path().join("first.bin");
+    let last = dir.path().join("last.bin");
+    std::fs::write(&first, row_colored_burst(1..=30)).expect("write first half");
+    let mut remaining = row_colored_burst(31..=60);
+    remaining.extend_from_slice(b"BURSTDONE");
+    std::fs::write(&last, remaining).expect("write last half");
+    // Precompute the same 60 repaints, as main does: shell generation under
+    // contention is not terminal performance. Keep a gap longer than idle to
+    // prove that both subscribers wait for completion rather than a pause.
+    let mut cmd = LaunchCommand::new("/bin/sh");
+    cmd.args([
+        "-c",
+        "while [ ! -e \"$1\" ]; do sleep 0.02; done; \
+         cat -- \"$2\"; sleep 0.3; cat -- \"$3\"; sleep 30",
+        "row-burst",
+    ]);
+    cmd.arg(&gate);
+    cmd.arg(first);
+    cmd.arg(last);
+    run_local(async move {
         let cap = TracingCapture::install("latency_multi");
         E2eBuilder::new()
-            .seed_cmd(colored_burst_command(&burst, &gate))
+            .seed_cmd(cmd)
             .viewport(80, 40)
             .clients(2)
             .run(move |mut clients| async move {
+                std::fs::write(&gate, b"").expect("open burst gate after both attaches");
                 let [a, b] = clients.as_mut_slice() else {
                     unreachable!()
                 };
-                std::fs::write(&gate, b"").expect("open burst gate after both clients attach");
-                let complete =
-                    |screen: &mut phux_server_testkit::screen::Screen| screen.contains("BURSTDONE");
+                // A producer pause (including the deliberate one at g30) is
+                // not completion. Keep both subscribers draining through READY.
+                let started = tokio::time::Instant::now();
                 let (settle_a, settle_b) = tokio::join!(
-                    a.converge_until_with_timeout(DEFAULT_IDLE_MS, MULTI_CLIENT_CEILING, complete),
-                    b.converge_until_with_timeout(DEFAULT_IDLE_MS, MULTI_CLIENT_CEILING, complete)
+                    a.converge_until_with_timeout(DEFAULT_IDLE_MS, MULTI_CLIENT_CEILING, |s| {
+                        s.contains("BURSTDONE")
+                    }),
+                    b.converge_until_with_timeout(DEFAULT_IDLE_MS, MULTI_CLIENT_CEILING, |s| {
+                        s.contains("BURSTDONE")
+                    }),
                 );
+                let elapsed = started.elapsed();
                 let slowest = settle_a.max(settle_b);
-                cap.attach_screen(a.screenshot().await.snapshot_text());
+                // Inspect exactly the published states at measured completion,
+                // not fresh sequential drains that could hide early settle.
+                let screen_a = a.snapshot_text();
+                let screen_b = b.snapshot_text();
+                cap.attach_screen(format!("client A:\n{screen_a}\nclient B:\n{screen_b}"));
                 eprintln!("perf[multi]: settle A={settle_a:?} B={settle_b:?}");
                 assert!(
-                    a.screenshot().await.contains("BURSTDONE")
-                        && b.screenshot().await.contains("BURSTDONE"),
-                    "both clients must observe the full burst",
+                    screen_a.contains("BURSTDONE") && screen_b.contains("BURSTDONE"),
+                    "both clients must observe the full burst:\nA:\n{screen_a}\nB:\n{screen_b}",
+                );
+                assert!(
+                    elapsed < MULTI_CLIENT_CEILING,
+                    "completion/idle watchdog exhausted after {elapsed:?}",
                 );
                 assert!(
                     slowest <= MULTI_CLIENT_CEILING,
@@ -88,6 +119,7 @@ fn two_client_burst_slowest_settles_under_ceiling() {
             })
             .await;
     });
+    drop(dir);
 }
 
 /// Worst-case colored shape: an SGR change per cell, 80x40, 24 repaints,
@@ -118,15 +150,18 @@ fn colored_burst_settles_under_ceiling() {
                 std::fs::write(&gate, b"").expect("open burst gate");
                 let client = &mut clients[0];
                 // Marker-gated: a quiet gap mid-burst is not settle.
+                let started = tokio::time::Instant::now();
                 let settle = client
                     .converge_until_with_timeout(DEFAULT_IDLE_MS, ceiling, |s| {
                         s.contains("COLORDONE")
                     })
                     .await;
-                let screen = client.screenshot().await.snapshot_text();
+                let elapsed = started.elapsed();
+                let screen = client.snapshot_text();
                 cap.attach_screen(screen.clone());
                 eprintln!("perf[colored]: settle={settle:?} over {GENS} repaints");
                 assert!(screen.contains("COLORDONE"), "burst never completed:\n{screen}");
+                assert!(elapsed < ceiling, "completion/idle watchdog exhausted after {elapsed:?}");
                 assert!(
                     settle <= ceiling,
                     "colored time-to-settle {settle:?} exceeded {ceiling:?} ({PER_REPAINT_CEILING:?}/repaint)",

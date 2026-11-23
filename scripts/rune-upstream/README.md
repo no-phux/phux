@@ -89,11 +89,14 @@ ownership, literal pane arrangement and the good command palette stay intact.
 Bumps move all ten upstream manifest entries together: four direct Rune
 dependencies and six crates.io patches, including `sctk-adwaita` for Wayland
 frame corners, not the removed `rune-mac` entry. Recheck upstream's patch set.
-The documented temporary `winit` fork is the sole revision exception: advance
-the other nine entries and rebase/review/test its narrow Wayland cursor patch
-on that same new upstream base. Pin the immutable owned-fork commit; never
-drop the fix or leave its base behind to equalize hashes. Reunify when upstream
-is equivalent. All qualification and release gates still apply.
+All ten pins, including `winit`, now use the same immutable upstream revision.
+Upstream [#1454](https://github.com/anomalyco/rune/pull/1454) supplies `ImeSync`
+to suppress unchanged cursor-area calls; the temporary fork and its six-helper
+gate are retired. Validate this adoption with the two actual upstream
+`ImeSync` tests listed in [DEVELOP.md](../../clients/rune/DEVELOP.md), run from
+the pinned upstream workspace, not a dependency-test wrapper. Client Rust/IME,
+real Wayland compositor, packaged/native qualification and release gates
+remain mandatory.
 The release policy follows the current patch-release train in
 [Releasing](../../docs/releasing.md#phux-rune), not the historic alpha sequence.
 Visual review supplements all existing check, packaged/native qualification

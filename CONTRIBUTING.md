@@ -90,7 +90,7 @@ or mark authored content generated to evade the gate.
   non-conventional subject is left out of the changelog.
 - `commitlint` checks every commit in the PR and the title against
   [`commitlint.config.mjs`](./commitlint.config.mjs). Never `--no-verify`.
-- Draft PRs skip the compile lanes and fail `ci` until ready; `commitlint` still runs.
+- Draft PRs skip the compile lanes and report a passing `ci (draft)`; the required `ci` stays pending until ready. `commitlint` still runs.
 - Work in a branch and a linked worktree, never on `main` in the primary
   checkout. Build and test recipes lease a worktree to one agent session at
   a time ([development](./docs/development.md#worktrees)).

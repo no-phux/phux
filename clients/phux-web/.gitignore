@@ -1,3 +1,4 @@
-target/
-pkg/
+# Generated artifacts may be links to an isolated external build directory.
+target
+pkg
 dist/

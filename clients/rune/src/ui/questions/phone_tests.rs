@@ -8,6 +8,11 @@ use rune::{Runtime, TouchPhase};
 use super::*;
 
 mod a11y;
+mod ask_flow;
+mod focus_retirement;
+mod form;
+mod opaque_keys;
+mod ownership;
 
 const ID: &str = "acp-question:phone";
 const LONG: &str =
@@ -66,7 +71,6 @@ fn fixture(size: (f32, f32), kind: &str) -> (Arc<Client>, Runtime<Desk>) {
         );
         let question = question(kind);
         let questions = &mut d.inbox.questions;
-        questions.drafts.insert(ID.into(), Draft::new(&question));
         questions.views.insert(
             terminal,
             (
@@ -85,6 +89,7 @@ fn fixture(size: (f32, f32), kind: &str) -> (Arc<Client>, Runtime<Desk>) {
                 },
             ),
         );
+        questions.reconcile();
         d.toggle_inbox();
         d.inbox.reply.focused = false;
     });
@@ -97,6 +102,24 @@ fn settle(rt: &mut Runtime<Desk>) {
     rt.settle_all();
     rt.frame(1.0);
     rt.frame(1.0);
+}
+
+fn owner(d: &Desk) -> &Owner {
+    let terminal = &d.connection.shown.as_ref().unwrap().resource;
+    d.inbox.questions.owner(terminal, ID).unwrap()
+}
+
+fn draft(d: &Desk) -> &Draft {
+    d.inbox.questions.draft(owner(d)).unwrap()
+}
+
+fn key(rt: &Runtime<Desk>, part: Widget<'_>) -> String {
+    owner(&rt.state).widget(part)
+}
+
+fn touch_part(rt: &mut Runtime<Desk>, part: Widget<'_>, finish: TouchPhase) {
+    let key = key(rt, part);
+    touch(rt, &key, finish);
 }
 
 fn reveal(rt: &mut Runtime<Desk>, key: &str) {
@@ -141,12 +164,12 @@ fn phone_acp_controls_wrap_and_scroll_to_full_touch_targets() {
     for size in [(320.0, 568.0), (393.0, 852.0), (320.0, 280.0)] {
         for kind in ["select", "ask", "form", "input"] {
             let (client, mut rt) = fixture(size, kind);
-            assert!(rt.state.inbox.questions.drafts[ID].choices.is_empty());
+            assert!(draft(&rt.state).choices.is_empty());
             let keys: Vec<_> = rt
                 .elements()
                 .into_iter()
                 .filter_map(|e| e.key)
-                .filter(|key| key.starts_with(&format!("acp-{ID}-")))
+                .filter(|key| key.starts_with(&owner(&rt.state).widget_prefix()))
                 .collect();
             assert!(keys.len() >= 2, "{kind} exposes its controls");
             for key in keys {
@@ -166,7 +189,7 @@ fn phone_acp_controls_wrap_and_scroll_to_full_touch_targets() {
                     e.rect
                 );
             }
-            assert!(rt.state.inbox.questions.drafts[ID].choices.is_empty());
+            assert!(draft(&rt.state).choices.is_empty());
             assert!(rt.state.inbox.questions.error.is_empty());
             assert!(rt.state.inbox.questions.pending.is_empty());
             rt.ime(rune::Ime::Commit("never type behind the modal".into()));
@@ -179,15 +202,15 @@ fn phone_acp_controls_wrap_and_scroll_to_full_touch_targets() {
 #[test]
 fn phone_acp_finished_touch_selects_explicitly_and_centers_the_input_caret() {
     let (client, mut rt) = fixture((320.0, 568.0), "ask");
-    touch(&mut rt, &format!("acp-{ID}-false-two"), TouchPhase::Ended);
-    touch(&mut rt, &format!("acp-{ID}-true-one"), TouchPhase::Ended);
-    touch(&mut rt, &format!("acp-{ID}-true-two"), TouchPhase::Ended);
-    let draft = &rt.state.inbox.questions.drafts[ID];
-    assert_eq!(draft.choices["false"], ["two"]);
-    assert_eq!(draft.choices["true"], ["one", "two"]);
+    touch_part(&mut rt, Widget::Choice("false", "two"), TouchPhase::Ended);
+    touch_part(&mut rt, Widget::Choice("true", "one"), TouchPhase::Ended);
+    touch_part(&mut rt, Widget::Choice("true", "two"), TouchPhase::Ended);
+    let selected = draft(&rt.state);
+    assert_eq!(selected.choices["false"], ["two"]);
+    assert_eq!(selected.choices["true"], ["one", "two"]);
     no_input(&client);
     let (client, mut rt) = fixture((320.0, 280.0), "input");
-    let key = format!("acp-{ID}-field-text");
+    let key = key(&rt, Widget::Field("text"));
     touch(&mut rt, &key, TouchPhase::Ended);
     rt.ime(rune::Ime::Commit("reviewed".into()));
     settle(&mut rt);
@@ -195,7 +218,7 @@ fn phone_acp_finished_touch_selects_explicitly_and_centers_the_input_caret() {
     let [_, y, _, h] = field.rect;
     let [_, cy, _, ch] = field.caret.expect("touch focuses the native ACP field");
     assert!((cy + ch / 2.0 - y - h / 2.0).abs() <= 1.0);
-    assert_eq!(rt.state.inbox.questions.drafts[ID].text("text"), "reviewed");
+    assert_eq!(draft(&rt.state).text("text"), "reviewed");
     no_input(&client);
 }
 
@@ -216,13 +239,13 @@ fn phone_acp_visual_review_frames() {
                 });
                 settle(&mut rt);
                 assert_eq!(rt.state.inbox_items().len(), 1);
-                assert_eq!(rt.state.inbox.questions.drafts[ID].question.kind, kind);
+                assert_eq!(draft(&rt.state).question.kind, kind);
                 assert!(
                     rt.elements()
                         .iter()
                         .any(|e| e.text.as_deref() == Some(LONG))
                 );
-                let cancel = format!("acp-{ID}-cancel");
+                let cancel = key(&rt, Widget::Action("cancel"));
                 assert!(
                     rt.elements()
                         .iter()
@@ -230,12 +253,13 @@ fn phone_acp_visual_review_frames() {
                 );
                 if size.1 == 280 {
                     let control = match kind {
-                        "select" => "one",
-                        "ask" => "false-one",
-                        "form" => "field-note",
-                        _ => "field-text",
+                        "select" => Widget::Option("one"),
+                        "ask" => Widget::Choice("false", "one"),
+                        "form" => Widget::Field("note"),
+                        _ => Widget::Field("text"),
                     };
-                    rt.update(|_, tx| tx.scroll_into_view(format!("acp-{ID}-{control}")));
+                    let control = key(&rt, control);
+                    rt.update(|_, tx| tx.scroll_into_view(control));
                     settle(&mut rt);
                 }
                 // A renderer owns its runtime's glyph atlas; never reuse it for

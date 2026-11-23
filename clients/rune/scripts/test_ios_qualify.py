@@ -13,6 +13,13 @@ from test_ios_build import build, qualify, valid_report
 
 
 class QualificationTests(unittest.TestCase):
+    def test_native_report_requires_the_control_stability_contract(self):
+        report = valid_report()
+        self.assertIn("native-control-stability", report["input_contracts"])
+        report["input_contracts"].remove("native-control-stability")
+        with self.assertRaisesRegex(ValueError, "contract groups did not pass"):
+            qualify.validate_report(report)
+
     def test_native_report_proves_the_requested_transport_not_just_any_connection(self):
         report = valid_report()
         with self.assertRaises(ValueError):

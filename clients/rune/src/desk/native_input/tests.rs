@@ -2,6 +2,8 @@ use super::*;
 use phux_protocol::native_agent::{NativeCapabilities, NativeQuestion, NativeView};
 use rune::accesskit::Action as Accessibility;
 
+mod composition;
+mod question_owners;
 mod retirement;
 
 fn native(d: &mut Desk) {
@@ -251,12 +253,16 @@ fn identical_acp_questions_in_new_activations_retire_the_owner() {
         .questions
         .views
         .insert(terminal.clone(), (ResourceId::local(2), view));
-    rt.state
+    rt.state.inbox.questions.reconcile();
+    let owner = rt
+        .state
         .inbox
         .questions
-        .drafts
-        .insert("q".into(), super::super::questions::Draft::new(&question));
-    let (_, before) = target::Field::question(&rt.state, "acp-q-field-text").unwrap();
+        .owner(&terminal, "q")
+        .unwrap()
+        .clone();
+    let key = owner.field_key("text");
+    let (old_field, before) = target::Field::question(&rt.state, &key).unwrap();
     rt.state
         .inbox
         .questions
@@ -265,7 +271,18 @@ fn identical_acp_questions_in_new_activations_retire_the_owner() {
         .unwrap()
         .1
         .activation = "second".into();
-    let (field, after) = target::Field::question(&rt.state, "acp-q-field-text").unwrap();
+    assert!(old_field.edit(&rt.state).is_none());
+    assert!(old_field.edit_mut(&mut rt.state).is_none());
+    rt.state.inbox.questions.reconcile();
+    let owner = rt
+        .state
+        .inbox
+        .questions
+        .owner(&terminal, "q")
+        .unwrap()
+        .clone();
+    let key = owner.field_key("text");
+    let (field, after) = target::Field::question(&rt.state, &key).unwrap();
     assert_ne!(before, after);
     rt.update(|d, tx| field.key(d, &event("Enter", false, false, false, false).unwrap(), tx));
     assert_eq!(field.edit(&rt.state).unwrap().text, "\n");
@@ -286,6 +303,22 @@ fn identical_acp_questions_in_new_activations_retire_the_owner() {
         .questions
         .views
         .insert(ResourceId::local(77), duplicate);
+    rt.state.inbox.questions.reconcile();
+    let duplicate = rt
+        .state
+        .inbox
+        .questions
+        .owner(&ResourceId::local(77), "q")
+        .unwrap()
+        .clone();
+    assert_ne!(key, duplicate.field_key("text"));
+    rt.state
+        .inbox
+        .questions
+        .field_mut(&duplicate, "text")
+        .unwrap()
+        .focused = true;
+    // The old unscoped key remains ambiguous and never identifies a widget.
     assert!(target::Field::question(&rt.state, "acp-q-field-text").is_none());
     rt.update(|d, tx| d.soft(super::super::phone::Soft::Key(Key::Backspace), tx));
     assert_eq!(field.edit(&rt.state).unwrap().text, "\n\n");

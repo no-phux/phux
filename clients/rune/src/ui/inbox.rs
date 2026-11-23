@@ -445,7 +445,10 @@ fn footer(desk: &Desk, empty: bool, t: &Tokens) -> El {
 fn title(desk: &Desk, count: usize, t: &Tokens) -> El {
     let s = &t.space;
     let r = &t.roles;
-    let heading = text("Inbox").font(t.ty.title).color(r.text.text.paint());
+    let heading = super::questions::retirement_target(
+        text("Inbox").font(t.ty.title).color(r.text.text.paint()),
+        super::questions::INBOX_FOCUS,
+    );
     // A phone's empty drawer says so in its body; a zero here is noise.
     let count = (desk.phone.is_none() || count > 0).then(|| {
         text(count.to_string())

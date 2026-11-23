@@ -25,6 +25,8 @@ use crate::history::HistoryLoadState;
 
 use super::test_rig::*;
 
+mod deadlines;
+
 /// The session rig over the synthesized [`FakeAdapter`].
 type Rig<E = FakeAdapter> = super::test_rig::Rig<E>;
 
@@ -567,27 +569,6 @@ fn bootstrap_staging_ceiling_counts_engine_and_pending_effect_capacity() {
 }
 
 #[test]
-fn bootstrap_staging_lifetime_is_checked_before_adapter_input_and_at_protocol_ready() {
-    for mode in [ReadyMode::ChunkFirst, ReadyMode::ProtocolFirst] {
-        let mut rig = Rig::new(mode);
-        let g = gen_of(1, 1, 1);
-        rig.begin(&g, 11);
-        let late = MAX_BOOTSTRAP_STAGING_IDLE_MS + 1;
-        let input = match mode {
-            ReadyMode::ChunkFirst => g.chunk(0, b"not-applied"),
-            ReadyMode::ProtocolFirst => g.ready(None),
-        };
-        let error = rig
-            .k
-            .update_at(late, input, &mut rig.fx)
-            .expect_err("expired staging must fail");
-        assert!(matches!(error, KernelError::BootstrapStagingLimitExceeded));
-        assert!(rig.k.staging(&g.id).is_none());
-        assert_eq!(rig.tomb(&g), codec_failure(11));
-    }
-}
-
-#[test]
 fn progressive_native_ready_requires_cursor_until_finish_is_authenticated() {
     let mut rig = Rig::of(kernel_with_profile(ReadyMode::ProtocolFirst, NATIVE));
     let g = gen_of(1, 1, 1);
@@ -793,36 +774,6 @@ fn real_native_wire_kernel_path_publishes_then_imports_multiple_pages() {
         );
     }
     assert_eq!(rig.history_state(&terminal_id), HistoryLoadState::Complete);
-}
-
-#[test]
-fn silent_bootstrap_staging_expires_on_driver_tick() {
-    let mut rig = Rig::new(ReadyMode::ProtocolFirst);
-    let first = gen_of(1, 1, 1);
-    let second = gen_of(2, 1, 1);
-    rig.begin(&first, 7);
-    rig.begin(&second, 9);
-
-    assert_eq!(
-        rig.k
-            .expire_bootstrap_staging(MAX_BOOTSTRAP_STAGING_IDLE_MS, &mut rig.fx),
-        0,
-        "the exact lifetime remains valid"
-    );
-    assert_eq!(
-        rig.k
-            .expire_bootstrap_staging(MAX_BOOTSTRAP_STAGING_IDLE_MS + 1, &mut rig.fx),
-        2
-    );
-    assert!(rig.k.staging(&first.id).is_none());
-    assert!(rig.k.staging(&second.id).is_none());
-    let resyncs = rig.fx.as_slice().iter().filter(|effect| {
-        matches!(
-            effect,
-            KernelEffect::Status(KernelStatus::ResyncRequired { .. })
-        )
-    });
-    assert_eq!(resyncs.count(), 2);
 }
 
 #[test]

@@ -99,10 +99,8 @@ impl Bridge {
 
     pub fn cancel_preedit(&self, rt: &mut Runtime<Desk>) {
         rt.update(|d, tx| {
-            if let Some(Target::Field(field, _)) = &self.target
-                && let Some(edit) = field.edit_mut(d)
-            {
-                edit.cancel_composition();
+            if let Some(Target::Field(field, _)) = &self.target {
+                field.cancel_composition(d);
             }
             d.connection.preedit = None;
             if let Some(phone) = &mut d.phone {
@@ -299,11 +297,11 @@ fn terminal_caret(d: &Desk) -> Option<[f32; 4]> {
 fn dismiss(rt: &mut Runtime<Desk>, target: &Target) {
     rt.update(|d, tx| {
         d.connection.preedit = None;
-        if let Target::Field(field, _) = target
-            && let Some(edit) = field.edit_mut(d)
-        {
-            edit.focused = false;
-            edit.cancel_composition();
+        if let Target::Field(field, _) = target {
+            field.cancel_composition(d);
+            if let Some(edit) = field.edit_mut(d) {
+                edit.focused = false;
+            }
         }
         // Dismissing a field's keyboard says nothing about the terminal's.
         if matches!(target, Target::Terminal(_))

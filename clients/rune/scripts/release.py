@@ -2,13 +2,14 @@
 """Cut the next Rune release with no human: rune-auto-release.yml runs this.
 
     release.py          one step of the train, from a main checkout
-    RUNE_RELEASE_TAG_ONLY=1 release.py   only ever the tag step
+    RUNE_RELEASE_TAG_ONLY=1 release.py   tag or reconcile, never open a new bump
 
 Each run does at most one step. If Cargo.toml names a version with no tag
 yet, it tags the commit that set it once that commit's push ci is green, and
 rune-client.yml takes it from there. Otherwise, if feat/fix/perf commits
 touched clients/rune since the last tag, it opens the next patch bump PR
-with generated notes and turns on auto-merge. Anything else is a no-op.
+with generated notes and marks it ready. Later runs enable auto-merge only
+after pr-ready-ci authorizes its exact head. Anything else is a no-op.
 
 A release SHA that is still not green after six hours fails the run once.
 A later run that already finds that line in this workflow's failed logs
@@ -16,6 +17,7 @@ exits 0. The workflow's head SHA is main's tip and is not the marker: it
 moves while the release SHA stays put.
 """
 
+import json
 import os
 import re
 import subprocess
@@ -178,15 +180,56 @@ def tag_step(version):
     return 1
 
 
+def open_bump_pr():
+    """Find the same-repository bump; never arm a fork's matching branch."""
+    return json.loads(sh(
+        "gh", "pr", "list", "--base", "main", "--head", BRANCH, "--state", "open",
+        "--json", "number,isDraft,headRefOid,isCrossRepository",
+        "-q", "[.[] | select(.isCrossRepository | not)][0] // null",
+    ))
+
+
+def arm_bump_pr(pr):
+    sh("gh", "pr", "ready", str(pr))
+    print(f"the {BRANCH} PR is armed; waiting for genuine post-ready ci")
+    return 0
+
+
+def same_ready_head(pr, head):
+    return pr["state"] == "OPEN" and not pr["isDraft"] and pr["headRefOid"] == head
+
+
+def reconcile_bump_pr(pr):
+    """Arm once, then consume the shared read-only guard before auto-merge."""
+    number = str(pr["number"])
+    if pr["isDraft"]:
+        return arm_bump_pr(number)
+    head = pr["headRefOid"]
+    gate = sh("bun", "tools/main.ts", "pr-ready-ci", number, head, check=False)
+    if gate.returncode != 0:
+        print((gate.stdout + gate.stderr).strip())
+        print(f"the {BRANCH} PR: guard did not authorize auto-merge; inspect pending or failed checks")
+        return 0
+    current = json.loads(sh("gh", "pr", "view", number, "--json", "state,isDraft,headRefOid"))
+    if not same_ready_head(current, head):
+        print(f"the {BRANCH} PR changed after the guard; leaving it alone")
+        return 0
+    sh("gh", "pr", "merge", number, "--auto", "--squash", "--match-head-commit", head)
+    print(f"the {BRANCH} PR: exact-head post-ready ci passed; auto-merge enabled")
+    return 0
+
+
 def bump_step(version):
+    pr = open_bump_pr()
+    if pr is not None:
+        return reconcile_bump_pr(pr)
+    if os.environ.get("RUNE_RELEASE_TAG_ONLY"):
+        return 0
     previous = TAG_PREFIX + version
     log = sh("git", "log", "--format=%s", f"{previous}..HEAD", "--", *PATHS)
     changes = shippable(log.splitlines())
     if not changes:
         print(f"nothing to ship since {previous}")
-        return 0
-    if sh("gh", "pr", "list", "--head", BRANCH, "--state", "open", "--json", "number", "-q", "length") != "0":
-        print(f"the {BRANCH} PR is open; auto-merge lands it")
         return 0
     new = next_version(version)
     manifest, lock = bump(Path(MANIFEST).read_text(), Path(LOCK).read_text(), new)
@@ -198,18 +241,15 @@ def bump_step(version):
     sh("git", "commit", "-qam", title)
     sh("git", "push", "-f", "origin", BRANCH)
     body = "Cut by rune-auto-release.yml. Merging tags it once ci is green.\n\n" + Path(NOTES).read_text()
-    sh("gh", "pr", "create", "--base", "main", "--head", BRANCH, "--title", title, "--body", body)
-    sh("gh", "pr", "merge", BRANCH, "--auto", "--squash")
+    sh("gh", "pr", "create", "--draft", "--base", "main", "--head", BRANCH, "--title", title, "--body", body)
     print(f"opened {title}")
-    return 0
+    return arm_bump_pr(BRANCH)
 
 
 def main():
     version = cargo_version(Path(MANIFEST).read_text())
     if not sh("git", "tag", "-l", TAG_PREFIX + version):
         return tag_step(version)
-    if os.environ.get("RUNE_RELEASE_TAG_ONLY"):
-        return 0
     return bump_step(version)
 
 

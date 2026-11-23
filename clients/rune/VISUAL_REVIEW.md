@@ -122,6 +122,15 @@ native UIKit behavior or evidence that the accessory fix repaired that stand-in.
 
 ## Review behavior as well as pixels
 
+ACP multi-field form cases retain field-heading and focused-editor scrolls,
+selected choices, final actions, required errors and in-flight responses.
+Compare ordinary/long content at standard and largest native text sizes,
+including both keyboard-reduced phone widths at true 2× and the unchanged
+desktop composition. Independently finish touches on held Submit and Cancel:
+neither may create an error, change a draft or keyboard preference, or send
+input. Keep genuine enabled validation. Record extra scroll cost and inherited
+oversized-heading/header clipping rather than calling spacing a fix for them.
+
 Use the trees and behavior tests to check focus/name/role, clipping/scroll
 reachability, actual hit bounds, keyboard routing and action semantics. A
 44-point painted button with a smaller effective hit target does not pass.
