@@ -23,7 +23,7 @@ use super::{POLL, ambient, strip_terminal_controls};
 /// `configure` may `env_clear`. The release-check opt-out is sealed
 /// afterwards: a private state dir still permits a live lookup, and a cached
 /// newer release still paints a modal that consumes the next scripted key.
-pub(crate) fn isolated_attach_command(
+pub fn isolated_attach_command(
     args: &[&str],
     config: &Path,
     configure: impl FnOnce(&Path, &mut portable_pty::CommandBuilder),

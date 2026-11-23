@@ -350,7 +350,7 @@ impl ServerSpawn {
 
     /// The `phux server` command [`Self::start_with`] spawns, before the child
     /// exists. The release-check opt-out is applied after `configure`.
-    pub(crate) fn into_command(
+    pub fn into_command(
         self,
         configure: impl FnOnce(&mut Command),
     ) -> (
