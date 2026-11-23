@@ -19,6 +19,7 @@ mod generated;
 
 pub mod catalog;
 mod color;
+pub mod palette;
 mod roles;
 pub mod solve;
 mod status;

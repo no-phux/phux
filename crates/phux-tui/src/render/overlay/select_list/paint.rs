@@ -1,5 +1,7 @@
 //! How a [`SelectList`](super::SelectList) row and field look.
 
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratcn::{InputStyle, ListStyle};
@@ -145,4 +147,44 @@ pub(super) fn highlight_spans(
         spans.push(Span::styled(run, if run_hit { hit } else { base }));
     }
     spans
+}
+
+/// The hairline between the query and the rows, joined to the box's sides
+/// (`├──┤`), so the field reads as a search bar above its results.
+pub(super) fn rule_under_query(buf: &mut Buffer, modal: Rect, theme: &Theme) {
+    if modal.width < 2 || modal.height < 4 {
+        return;
+    }
+    let y = modal.y + 2;
+    let style = Style::default().fg(theme.border).bg(theme.surface);
+    let right = modal.x + modal.width - 1;
+    for x in modal.x..=right {
+        let glyph = if x == modal.x {
+            "├"
+        } else if x == right {
+            "┤"
+        } else {
+            "─"
+        };
+        buf[(x, y)].set_symbol(glyph).set_style(style);
+    }
+}
+
+/// An accent bar in the padding left of the selected row (visible `row`
+/// within `rows`): the selection reads at a glance even on a terminal whose
+/// selection fill is faint.
+pub(super) fn selection_bar(buf: &mut Buffer, modal: Rect, rows: Rect, row: usize, theme: &Theme) {
+    let Ok(row) = u16::try_from(row) else {
+        return;
+    };
+    if row >= rows.height || modal.width < 3 {
+        return;
+    }
+    let style = theme.on_selection(Style::default().fg(theme.accent));
+    let y = rows.y + row;
+    buf[(modal.x + 1, y)].set_symbol("▌").set_style(style);
+    // The fill spans both paddings, so the selection is one even band.
+    buf[(modal.x + modal.width - 2, y)]
+        .set_symbol(" ")
+        .set_style(theme.on_selection(Style::default()));
 }

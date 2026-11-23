@@ -69,17 +69,17 @@
 == picker 48x10
 00|╭ Sessions ────────────────────────────────────╮|
   0-0 #4c4d4f/#eae9e6, 1-10 #2a2d32/#eae9e6, 11-47 #4c4d4f/#eae9e6
-01|│ >                                            │|
-  0-0 #4c4d4f/#eae9e6, 1-1 #17191c/#eae9e6, 2-2 #343538/#eae9e6, 3-3 #17191c/#eae9e6, 4-4 #eae9e6/#2a2d32, 5-46 #17191c/#eae9e6, 47-47 #4c4d4f/#eae9e6
-02|│ Local                                        │|
+01|│ › Type to filter                             │|
+  0-0 #4c4d4f/#eae9e6, 1-1 #17191c/#eae9e6, 2-2 #2a2d32/#eae9e6 +b, 3-3 #17191c/#eae9e6, 4-4 #eae9e6/#2a2d32, 5-17 #343538/#eae9e6, 18-46 #17191c/#eae9e6, 47-47 #4c4d4f/#eae9e6
+02|├──────────────────────────────────────────────┤|
+  0-47 #4c4d4f/#eae9e6
+03|│ Local                                        │|
   0-0 #4c4d4f/#eae9e6, 1-1 #17191c/#eae9e6, 2-6 #343538/#eae9e6, 7-46 #17191c/#eae9e6, 47-47 #4c4d4f/#eae9e6
-03|│   development                    1 needs you │|
-  0-0 #4c4d4f/#eae9e6, 1-1 #17191c/#eae9e6, 2-45 #17191c/#adadad, 46-46 #17191c/#eae9e6, 47-47 #4c4d4f/#eae9e6
-04|│   ops                             3 need you │|
+04|│▌  development                    1 needs you │|
+  0-0 #4c4d4f/#eae9e6, 1-1 #2a2d32/#adadad, 2-46 #17191c/#adadad, 47-47 #4c4d4f/#eae9e6
+05|│   ops                             3 need you │|
   0-0 #4c4d4f/#eae9e6, 1-1 #17191c/#eae9e6, 2-6 #805000/#eae9e6 +b, 7-35 #17191c/#eae9e6, 36-45 #343538/#eae9e6, 46-46 #17191c/#eae9e6, 47-47 #4c4d4f/#eae9e6
-05|│   notes                                      │|
-  0-0 #4c4d4f/#eae9e6, 1-46 #17191c/#eae9e6, 47-47 #4c4d4f/#eae9e6
-06|│                                              │|
+06|│   notes                                      │|
   0-0 #4c4d4f/#eae9e6, 1-46 #17191c/#eae9e6, 47-47 #4c4d4f/#eae9e6
 07|│                                              │|
   0-0 #4c4d4f/#eae9e6, 1-46 #17191c/#eae9e6, 47-47 #4c4d4f/#eae9e6

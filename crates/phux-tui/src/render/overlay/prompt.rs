@@ -75,6 +75,19 @@ pub struct PromptOverlay {
     outer: Cell<Rect>,
 }
 
+/// `initial` as the field's text, all selected when there is any: typing
+/// replaces a pre-filled name (as every rename field does), while an arrow
+/// key keeps it to edit.
+fn selected(initial: &str) -> InputState {
+    let state = InputState::new(initial);
+    if initial.is_empty() {
+        return state;
+    }
+    let mut editor = state.editor().clone();
+    editor.select_all();
+    InputState::from_editor(editor)
+}
+
 impl PromptOverlay {
     /// A prompt committing `action { arg_key: <text> }`, pre-filled with
     /// `initial`.
@@ -91,7 +104,7 @@ impl PromptOverlay {
             breakpoints: ChromeBreakpoints::default(),
             model: Model {
                 focus: FocusState::intent([DIALOG, INPUT]),
-                input: InputState::new(initial),
+                input: selected(initial),
             },
             ui: Surface::new(runtime),
             outer: Cell::new(Rect::new(0, 0, 80, 24)),
@@ -247,6 +260,12 @@ fn edited(input: &InputState, edit: impl FnOnce(&mut Editor<'static>)) -> InputS
 /// single key for), or the ratcn event to route.
 pub(super) fn field_key(input: &mut InputState, key: &KeyEvent) -> Option<Event> {
     let ctrl = key.mods.contains(ModSet::CTRL);
+    // Only typed text replaces a selected pre-filled name; any other key
+    // (an arrow, Backspace, a readline kill) first drops the selection and
+    // then edits the text as it stands.
+    if input.editor().is_selecting() && !is_typed_text(key) {
+        *input = edited(input, Editor::cancel_selection);
+    }
     if ctrl && key.key == PhysicalKey::U {
         *input = edited(input, |editor| {
             editor.delete_line_by_head();
@@ -263,14 +282,21 @@ pub(super) fn field_key(input: &mut InputState, key: &KeyEvent) -> Option<Event>
     }
     let event = kit::key(key);
     if event.is_none()
-        && !key.mods.intersects(ModSet::CTRL | ModSet::ALT)
+        && is_typed_text(key)
         && let Some(text) = key.text.as_deref()
-        && !text.is_empty()
-        && !text.chars().any(char::is_control)
     {
         *input = insert_literal(input, text);
     }
     event
+}
+
+/// Whether `key` types printable text rather than editing or moving.
+fn is_typed_text(key: &KeyEvent) -> bool {
+    !key.mods.intersects(ModSet::CTRL | ModSet::ALT)
+        && key
+            .text
+            .as_deref()
+            .is_some_and(|text| !text.is_empty() && !text.chars().any(char::is_control))
 }
 
 impl RenderOverlay for PromptOverlay {

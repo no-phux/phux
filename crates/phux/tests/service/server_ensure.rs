@@ -181,6 +181,43 @@ fn cold_profile_start_obeys_seed_policy_and_reuses_the_same_coordinator() {
     fixture.assert_cleaned_up();
 }
 
+/// The seed session's first pane starts in the directory the server was
+/// started from (bare `phux` in a project opens there), not in `$HOME`.
+#[test]
+fn the_seed_pane_starts_in_the_launching_directory() {
+    let mut fixture = Fixture::new();
+    let project = fixture.dir.path().join("work/myapp");
+    std::fs::create_dir_all(&project).expect("project dir");
+    let marker = fixture.dir.path().join("seed-cwd");
+    fixture.config(&format!(
+        "[defaults]\nspawn-on-attach = 'pwd -P > {}; exec /bin/sh'\n",
+        marker.display()
+    ));
+    let output = bounded_output(
+        fixture
+            .command()
+            .current_dir(&project)
+            .args(["server", "--ensure"]),
+    );
+    assert_success(&output);
+    fixture.server.capture_pid();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let seen = loop {
+        if let Ok(seen) = std::fs::read_to_string(&marker)
+            && !seen.is_empty()
+        {
+            break seen;
+        }
+        assert!(Instant::now() < deadline, "the seed command never ran");
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    assert_eq!(
+        std::path::Path::new(seen.trim()),
+        project.canonicalize().expect("canonical project"),
+    );
+    fixture.assert_cleaned_up();
+}
+
 #[test]
 fn json_contract_reports_cold_owner_then_exact_socket_reuse() {
     let mut fixture = Fixture::new();

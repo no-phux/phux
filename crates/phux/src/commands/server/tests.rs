@@ -113,6 +113,7 @@ fn metadata_value_bytes_is_clamped_to_the_agent_session_record_floor() {
             phux_server::hooks::HookCatalog::default(),
             None,
             None,
+            None,
         );
         assert_eq!(cfg.metadata_value_bytes, expected);
     }
