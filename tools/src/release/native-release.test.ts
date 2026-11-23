@@ -63,7 +63,7 @@ function receipt(sha: string): Receipt {
 
 function proof(sha: string, state: string, built = sha) {
   const candidate = receipt(sha);
-  const saved = receipt(built);
+  const saved = built === sha ? candidate : receipt(built);
   const run = {
     event: "push",
     head_branch: "main",
@@ -143,13 +143,16 @@ test.each(["pending", "failure", "cancelled", "absent"])(
   },
 );
 
+test("a native A..B push qualifies even though head B only changes docs", () => {
+  const actualPush = classifyDetection(detection(base, b), "qualify-rune");
+  expect(runeMacosPlan(actualPush, "push")).toMatchObject({ macos: true, ios: true });
+  // Looking only at B's parent diff would see no Rune inputs.
+  expect(classifyDetection(detection(a, b)).needed.has("rune")).toBe(false);
+});
+
 test.each(["pending", "failure", "cancelled", "absent"])(
-  "a native A..B push with docs-only head B cannot erase %s native proof",
+  "a docs-only head B cannot erase %s native proof",
   (state) => {
-    const actualPush = classifyDetection(detection(base, b), "qualify-rune");
-    expect(runeMacosPlan(actualPush, "push")).toMatchObject({ macos: true, ios: true });
-    // Looking only at B's parent diff would see no Rune inputs.
-    expect(classifyDetection(detection(a, b)).needed.has("rune")).toBe(false);
     const native = proof(b, state);
     expect(releaseRefusal("success", b, native.state)).toBeDefined();
     expect(publish(b, native).publish).toEqual([]);

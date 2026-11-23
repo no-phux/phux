@@ -107,10 +107,11 @@ fn an_unallocated_byte_may_be_declared() {
 
 #[test]
 fn duplicate_tags_fail_even_when_reserved_or_declared_in_another_block() {
-    // `FUTURE_TAG` has no decoder arm; the collision must still be rejected.
+    // These declarations have no decoder arms; their collisions must still
+    // be rejected. Use distinct names so they cannot conflict with each other.
     // TYPE_WORKLOAD_CHALLENGE is gone with the retired in-band workload-auth
     // wire (ADR-0116); TYPE_FRAME_COMPRESSED covers that Message block.
-    for (namespace, existing) in [
+    let conflicts = [
         ("Message", "TYPE_HELLO"),
         ("Message", "TYPE_FRAME_COMPRESSED"),
         ("Message", "TYPE_DIRECTORY_LISTING"),
@@ -119,14 +120,22 @@ fn duplicate_tags_fail_even_when_reserved_or_declared_in_another_block() {
         ("SpawnError", "SPAWN_ERROR_TAG_PARENT_KIND_MISMATCH"),
         ("Event", "EVENT_TAG_ASKED"),
         ("AttachTarget", "ATTACH_TARGET_CREATE_IF_MISSING"),
-    ] {
-        let Some(output) = compile_declarations(&format!(
-            "wire_tags! {{ {namespace}; const FUTURE_TAG: u8 = {existing}; }}"
-        )) else {
-            return;
-        };
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(!output.status.success(), "duplicate of {existing} compiled");
-        assert!(stderr.contains("E0119"), "{existing}: {stderr}");
-    }
+    ];
+    let declarations = conflicts
+        .iter()
+        .map(|(namespace, tag)| {
+            format!("wire_tags! {{ {namespace}; const DUPLICATE_{tag}: u8 = {tag}; }}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let Some(output) = compile_declarations(&declarations) else {
+        return;
+    };
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "duplicate tags compiled");
+    assert_eq!(
+        stderr.matches("error[E0119]:").count(),
+        conflicts.len(),
+        "each declaration must conflict with the existing registry:\n{stderr}"
+    );
 }

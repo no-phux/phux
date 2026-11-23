@@ -67,8 +67,8 @@ printf '[wrong leaf](./Parent/leaf.md)\n' >"$repo/docs/guide.md"
 expect_fail 'Parent/leaf.md does not exist' --only=links
 printf '[missing](./missing.md)\n' >"$repo/docs/guide.md"
 expect_fail 'missing.md does not exist' --only=links
-printf '[anchor](./Parent/Leaf.md#missing)\n' >"$repo/docs/guide.md"
-expect_fail 'has no heading #missing' --only=links
+printf '[valid](./Parent/Leaf.md#repeat-1)\n[partial](./Parent/Leaf.md#rep)\n' >"$repo/docs/guide.md"
+expect_fail 'has no heading #rep' --only=links
 # An early anchor on a page with more headings than a pipe holds: the lookup
 # reads every anchor, so the writer is never cut off and failed by pipefail.
 {
