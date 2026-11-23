@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import subprocess
 import tempfile
 import sys
@@ -16,6 +17,10 @@ VERSION = "0.2.0"
 SOURCE_REV = "3df118740ae4ad25fc928df0ae3832831c985164"
 SOURCE_SHA256 = "ce781dee84191be150fe1acc8bf7d865fef5ba52354271d5b82b6f7b0592471a"
 MACOS_TARGET = "aarch64-macos.14.0.0"
+# Keep these identical to scripts/zig-mirrors/build.zig.zon (tested below).
+ARO_URL = "https://deps.files.ghostty.org/aro-d0c8c4d9c55daa7ef6e40cf0f630a5b5e900989b.tar.gz"
+ARO_HASH = "aro-0.0.0-JSD1QtuBNwCASyBtNF3pqTl_W3oAJQGEVyFAtrBSE_Pa"
+MAX_ARCHIVE_SIZE = 64 * 1024 * 1024
 DIGESTS = {
     ("Linux", "aarch64"): ("aarch64-linux", "cd52ae76510b09d1d60af00c42dcf2c70040c0bb0fb7d2e00f8602627013408b"),
     ("Linux", "x86_64"): ("x86_64-linux", "9e807bc5a68274d2d69246aab14fd5d5746809e6ffc0c319a2e0d592e9b0a22b"),
@@ -53,6 +58,27 @@ def download(url):
         return response.read(64 * 1024 * 1024 + 1)
 
 
+def seed_aro_cache(global_cache):
+    if not re.fullmatch(r"https://deps\.files\.ghostty\.org/aro-[0-9a-f]{40}\.tar\.gz", ARO_URL):
+        raise ValueError("invalid aro mirror URL")
+    if not re.fullmatch(r"aro-0\.0\.0-[A-Za-z0-9_-]{44}", ARO_HASH):
+        raise ValueError("invalid aro package hash")
+    archive = global_cache / "p" / f"{ARO_HASH}.tar.gz"
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    # Keep the original archive untrusted in the compressed cache. Zig verifies
+    # its canonical package hash before materializing it or configuring a build.
+    # A separate `zig build --fetch` would cold-compile Maker in this 120s stage.
+    subprocess.run(
+        ["curl", "--disable", "--fail", "--silent", "--show-error", "--location",
+         "--proto", "=https", "--proto-redir", "=https", "--connect-timeout", "20",
+         "--max-time", "120", "--max-filesize", str(MAX_ARCHIVE_SIZE),
+         "--output", str(archive), "--", ARO_URL],
+        check=True, timeout=120,
+    )
+    if archive.stat().st_size > MAX_ARCHIVE_SIZE:
+        raise ValueError("aro archive exceeds size limit")
+
+
 def build_macos(data, binaries, notices):
     # Upstream's macOS archive requires 15; Phux still supports 14. Build the
     # immutable release source for our floor, never rewrite a Mach-O load command.
@@ -67,18 +93,15 @@ def build_macos(data, binaries, notices):
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
             archive.extractall(temporary, filter="data")
         source = Path(temporary) / f"tmd-{SOURCE_REV}"
-        # translate_c's Codeberg git fetch fails (and can abort Zig 0.17) on
-        # cold runners. Ghostty mirrors the identical aro revision/package hash.
-        # A manifest fetch materializes it; raw `zig fetch` only caches an archive
-        # whose reload is broken in Zig 0.17. Keep both stages' caches private.
-        env = {**os.environ, "ZIG_GLOBAL_CACHE_DIR": str(Path(temporary) / "zig-global-cache")}
+        # Avoid translate_c's failing Codeberg fetch using Ghostty's identical
+        # aro package. Never seed an unpacked directory: Zig trusts those.
+        global_cache = Path(temporary) / "zig-global-cache"
+        seed_aro_cache(global_cache)
+        env = {**os.environ, "ZIG_GLOBAL_CACHE_DIR": str(global_cache)}
         subprocess.run(
-            ["zig", "build", "--fetch=needed", "--pkg-dir", str(source / "zig-pkg"),
-             "--cache-dir", str(Path(temporary) / "zig-mirror-cache")],
-            cwd=repo / "scripts/zig-mirrors", env=env, check=True, timeout=120,
-        )
-        subprocess.run(
-            ["zig", "build", "--release=small", f"-Dtarget={MACOS_TARGET}"],
+            ["zig", "build", "--release=small", f"-Dtarget={MACOS_TARGET}",
+             "--pkg-dir", str(source / "zig-pkg"),
+             "--cache-dir", str(Path(temporary) / "zig-cache")],
             cwd=source, env=env, check=True, timeout=600,
         )
         payload = {name: (source / name).read_bytes() for name in ("LICENSE", "THIRD_PARTY_NOTICES.md")}
