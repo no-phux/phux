@@ -1,11 +1,9 @@
 //! Characters no installed face draws.
 //!
-//! On macOS only the last-resort font covers them (an unassigned code point,
-//! a noncharacter). Shaping one makes the text
-//! system add that font to the window's symbol fallback, where it covers every
-//! character and shadows the faces a later symbol needs: ⏵ then draws as a box
-//! for the rest of the window's life. So these are never shaped; the grid
-//! draws its own empty box in their cells.
+//! On macOS CoreText answers with the last-resort font for an unassigned code
+//! point or a noncharacter. Rune excludes that font from symbol fallback, so
+//! shaping one produces `.notdef` in an otherwise valid face. The grid draws
+//! its own empty box instead, keeping missing cells independent of that face.
 
 /// Whether only the last-resort font would draw `ch`, as CoreText decides it.
 /// Each character is asked once per thread.
@@ -92,6 +90,7 @@ mod tests {
             'a',
             'é',
             '⏵',
+            '⏎',
             '✔',
             '😀',
             '\u{E0A0}',
