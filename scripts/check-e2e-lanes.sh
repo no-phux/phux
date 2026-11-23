@@ -6,9 +6,9 @@
 # THE HOLE THIS CLOSES. `#[ignore]`d tests do not run in the default pool
 # (`cargo nextest run --workspace`, which is CI's unit step). They run only
 # where a lane passes `--run-ignored` and names their binary. `just e2e`
-# reads a hand-maintained list of binary IDs. A new `*_e2e.rs` full of `#[ignore]`d tests therefore
-# compiles, passes review, and then never executes anywhere -- green forever,
-# testing nothing. That is not hypothetical: phux/tests/upgrade_e2e.rs
+# reads a hand-maintained list of binary IDs. A new `*_e2e.rs` full of
+# `#[ignore]`d tests can therefore compile, pass review, and never execute
+# anywhere -- green forever, testing nothing. That is not hypothetical: phux/tests/upgrade_e2e.rs
 # shipped with a module doc claiming "run via `just e2e`" while absent from
 # the filterset, and plugin_agent_bench_e2e and workspace_archive_e2e were in
 # the same state.
@@ -30,7 +30,7 @@
 # exists to remove. `*_e2e.rs` carries the opposite intent by convention:
 # spawn a real server, run in a lane.
 #
-# Scanning the justfile text (rather than asking nextest) keeps this
+# Reading the shared list and the stress recipe (rather than asking nextest) keeps this
 # compile-free: it is a seconds-long gate that can run on the docs-only fast
 # path and in a job that never builds the workspace.
 #

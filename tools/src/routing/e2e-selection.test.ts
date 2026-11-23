@@ -22,7 +22,7 @@ function select(specs: string): string[] {
 }
 
 test("a narrow archive builds exactly the e2e binaries the runner selects, plus MCP", () => {
-  expect(select("phux:recording_e2e,phux-server:perf:measure,phux-client:connection")).toEqual([
+  expect(select("phux:recording_e2e,phux-server:perf:measure")).toEqual([
     "binary_id(phux::recording_e2e) + binary_id(phux-server::perf)",
     "--test",
     "discovery",
@@ -32,7 +32,12 @@ test("a narrow archive builds exactly the e2e binaries the runner selects, plus 
     "perf",
     "--no-tests=warn",
   ]);
+});
+
+test("unknown targets preserve the full lane even when mixed with a known harness", () => {
   expect(select("phux:service")).toEqual(select(""));
+  expect(select("phux:recording_e2e,phux:service")).toEqual(select(""));
+  expect(select("phux:service,phux:recording_e2e")).toEqual(select(""));
   expect(select("")).not.toContain("--no-tests=warn");
 });
 
