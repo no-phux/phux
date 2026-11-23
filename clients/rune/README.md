@@ -291,6 +291,9 @@ each line; the window asks first (Return pastes, Esc cancels).
 - A question raised through a hook before the window connected has no text
   to show (the server keeps only that one is pending); its card opens the
   terminal instead. Title-sentinel asks always show.
+- The ACP host supports permission requests and Cursor's explicit ask/plan
+  extensions, not optional form elicitation. The generic structured-form
+  renderer and its controlled captures do not advertise that provider capability.
 - Screen readers get Settings, the buttons and notices, but terminal text,
   the palette's results, tabs and sidebar rows don't read well yet.
 - A GIF with no loop extension loops in a typed document instead of
