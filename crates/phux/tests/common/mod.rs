@@ -45,10 +45,18 @@ pub use ambient::*;
 mod server_guard;
 #[allow(unused_imports, reason = "not every suite spawns a ServerGuard")]
 pub use server_guard::ServerGuard;
+#[allow(
+    unused_imports,
+    reason = "only the service suite tests the shared spawn contract"
+)]
+pub use server_guard::ServerSpawn;
 
 mod pty;
-#[cfg(test)]
-use pty::isolated_attach_command;
+#[allow(
+    unused_imports,
+    reason = "only the service suite tests the shared attach contract"
+)]
+pub use pty::isolated_attach_command;
 #[allow(unused_imports, reason = "not every suite drives a PTY")]
 pub use pty::{PtyAttach, clear_pty_env, pty_transcript};
 
@@ -415,6 +423,3 @@ pub fn first_index(
 ) -> Option<usize> {
     lines.iter().position(want)
 }
-
-#[cfg(test)]
-mod tests;
