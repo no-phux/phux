@@ -18,6 +18,7 @@ SOURCE = {
     "sourceRevision": "a" * 40, "currentRunePin": "b" * 40, "dirty": True,
     "gitDiffHeadSha256": "c" * 64, "untrackedSourceFiles": [],
 }
+SUBJECT = "inbox/phone-question-dark-320x568-1x.png"
 
 
 def motion_fixture(path, tree):
@@ -41,17 +42,25 @@ class VisualReview(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.tree = {
             "schema": 1, "projection": "ordered geometry and accessibility",
-            "viewport": [10, 20], "scale": 2, "pixels": [20, 40],
+            "viewport": [320, 568], "scale": 1, "pixels": [320, 568],
             "scenario": "exporter-owned scenario", "theme": "exporter-owned theme",
             "elements": [{"path": "same", "text": "first"}, {"path": "same", "text": "second"}],
             "accessibility": {},
         }
-        for relative, (width, height, scale) in review.required_inventory().items():
+        self.subject = SUBJECT
+        self.frame(self.subject)
+        # Most tests exercise one malformed case or the bundle writer, not
+        # the 1,013-frame inventory. Inventory tests opt back into the real set.
+        self.inventory = patch.object(review, "required_inventory",
+                                      return_value={SUBJECT: (320, 568, 1)})
+        self.inventory.start()
+        self.addCleanup(self.inventory.stop)
+
+    def populate(self, inventory):
+        for relative, (width, height, scale) in inventory.items():
             physical = [width * scale, height * scale]
             tree = {**self.tree, "viewport": [width, height], "scale": scale, "pixels": physical}
             self.frame(relative, tree=tree, physical=physical)
-        self.subject = "inbox/phone-question-dark-320x568-1x.png"
-        self.tree = json.loads((self.root / self.subject).with_suffix(".json").read_text())
 
     def frame(self, relative, tree=None, physical=None):
         path = self.root / relative
@@ -70,6 +79,8 @@ class VisualReview(unittest.TestCase):
             return review.produce(self.root, self.root)
 
     def test_bundle_has_all_families_hashes_and_honest_status(self):
+        self.inventory.stop()
+        self.populate(review.required_inventory())
         manifest = self.produce()
         self.assertEqual(len(manifest["cases"]), 1013)
         self.assertEqual({family: sum(case["family"] == family for case in manifest["cases"])
@@ -117,16 +128,23 @@ class VisualReview(unittest.TestCase):
                          "native_png_headless_renderer_smoke")
 
     def test_missing_family_fails_without_writing_bundle(self):
-        for png in (self.root / "inbox").glob("*.png"):
-            png.unlink()
+        self.inventory.stop()
+        (self.root / self.subject).unlink()
+        self.populate({path: size for path, size in review.required_inventory().items()
+                       if not path.startswith("inbox/")})
         with self.assertRaisesRegex(ValueError, "missing required cases: inbox/"):
             self.produce()
         self.assertFalse((self.root / "manifest.json").exists())
 
     def test_one_case_per_family_is_not_complete(self):
+        self.inventory.stop()
+        inventory = review.required_inventory()
+        representatives = {}
         for family in review.FAMILIES:
-            for png in sorted((self.root / family).glob("*.png"))[1:]:
-                png.unlink()
+            path = next(path for path in inventory if path.startswith(family + "/"))
+            representatives[path] = inventory[path]
+        (self.root / self.subject).unlink()
+        self.populate(representatives)
         with self.assertRaisesRegex(ValueError, "missing required cases"):
             self.produce()
 
