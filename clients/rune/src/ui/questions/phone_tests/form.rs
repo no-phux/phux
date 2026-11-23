@@ -7,9 +7,9 @@ mod held_actions;
 mod render;
 
 const NOTE: &str = "Keep pairing intact; verify input and pane layout.";
-const NOTE_KEY: &str = "acp-acp-question:phone-field-note";
-const SUBMIT_KEY: &str = "acp-acp-question:phone-submit";
-const CANCEL_KEY: &str = "acp-acp-question:phone-cancel";
+const NOTE_KEY: &str = "field-note";
+const SUBMIT_KEY: &str = "submit";
+const CANCEL_KEY: &str = "cancel";
 
 #[derive(Clone, Copy)]
 struct View {
@@ -112,10 +112,6 @@ fn scene(view: View, stress: bool, large: bool, light: bool) -> (Arc<Client>, Ru
             },
         );
         let asked = if stress { question("form") } else { ordinary() };
-        d.inbox
-            .questions
-            .drafts
-            .insert(ID.into(), Draft::new(&asked));
         let terminal = d.connection.shown.as_ref().unwrap().resource.clone();
         d.inbox
             .questions
@@ -124,11 +120,12 @@ fn scene(view: View, stress: bool, large: bool, light: bool) -> (Arc<Client>, Ru
             .unwrap()
             .1
             .questions = vec![asked];
+        d.inbox.questions.reconcile();
         tx.instant();
     });
     settle(&mut rt);
     assert_eq!(rt.state.inbox_items().len(), 1);
-    assert!(rt.state.inbox.questions.drafts[ID].choices.is_empty());
+    assert!(draft(&rt.state).choices.is_empty());
     (client, rt)
 }
 
@@ -157,25 +154,26 @@ fn whole(rt: &Runtime<Desk>, key: &str, phone: bool) {
     }
 }
 
-fn show(rt: &mut Runtime<Desk>, key: &str, phone: bool) {
+fn show(rt: &mut Runtime<Desk>, part: &str, phone: bool) {
+    let key = key(rt, part);
     rt.update(|_, tx| {
-        tx.scroll_into_view(key);
+        tx.scroll_into_view(&key);
         tx.instant();
     });
     settle(rt);
-    whole(rt, key, phone);
+    whole(rt, &key, phone);
 }
 
-fn activate(rt: &mut Runtime<Desk>, key: &str) {
-    show(rt, key, true);
-    touch(rt, key, TouchPhase::Ended);
+fn activate(rt: &mut Runtime<Desk>, part: &str) {
+    show(rt, part, true);
+    touch_part(rt, part, TouchPhase::Ended);
 }
 
 fn select(rt: &mut Runtime<Desk>, stress: bool) {
-    activate(rt, &format!("acp-{ID}-mode-\"safe\""));
+    activate(rt, "mode-\"safe\"");
     let tag = if stress { "a" } else { "input" };
-    activate(rt, &format!("acp-{ID}-tags-\"{tag}\""));
-    let draft = &rt.state.inbox.questions.drafts[ID];
+    activate(rt, &format!("tags-\"{tag}\""));
+    let draft = draft(&rt.state);
     assert_eq!(draft.choices["mode"], ["\"safe\""]);
     assert_eq!(draft.choices["tags"], [format!("\"{tag}\"")]);
 }
@@ -183,7 +181,7 @@ fn select(rt: &mut Runtime<Desk>, stress: bool) {
 fn edit(rt: &mut Runtime<Desk>, view: View) {
     let keyboard = rt.state.phone.as_ref().map(|phone| phone.keyboard);
     show(rt, NOTE_KEY, view.phone);
-    assert!(rt.accessibility_action(NOTE_KEY, rune::accesskit::Action::Focus, None));
+    assert!(rt.accessibility_action(&key(rt, NOTE_KEY), rune::accesskit::Action::Focus, None));
     settle(rt);
     if let Some(size) = view.editing {
         rt.set_viewport((size.0 as f32, size.1 as f32), view.scale as f32);
@@ -191,8 +189,8 @@ fn edit(rt: &mut Runtime<Desk>, view: View) {
     rt.ime(rune::Ime::Commit(NOTE.into()));
     settle(rt);
     show(rt, NOTE_KEY, view.phone);
-    assert!(crate::ui::element(rt, NOTE_KEY).focused);
-    assert_eq!(rt.state.inbox.questions.drafts[ID].text("note"), NOTE);
+    assert!(crate::ui::element(rt, &key(rt, NOTE_KEY)).focused);
+    assert_eq!(draft(&rt.state).text("note"), NOTE);
     if view.phone {
         let snapshot = crate::desk::native_input::Bridge::default().snapshot(rt);
         assert_eq!(snapshot.kind, "field");
@@ -212,8 +210,8 @@ fn edit(rt: &mut Runtime<Desk>, view: View) {
 fn heading(rt: &mut Runtime<Desk>) {
     rt.update(|_, tx| tx.scroll_to_instant("inbox-scroll", 0.0, 0.0));
     settle(rt);
-    let fast = crate::ui::element(rt, &format!("acp-{ID}-mode-\"fast\"")).rect;
-    let field = crate::ui::element(rt, NOTE_KEY).rect;
+    let fast = crate::ui::element(rt, &key(rt, "mode-\"fast\"")).rect;
+    let field = crate::ui::element(rt, &key(rt, NOTE_KEY)).rect;
     let title = rt
         .elements()
         .into_iter()
@@ -261,26 +259,20 @@ fn acp_form_fixture_choices_draft_and_final_controls_keep_ownership() {
             let (client, mut rt) = scene(view, false, true, false);
             rt.update(|d, _| d.phone.as_mut().unwrap().keyboard = keyboard);
             settle(&mut rt);
-            activate(&mut rt, "acp-acp-question:phone-mode-\"fast\"");
-            activate(&mut rt, "acp-acp-question:phone-mode-\"safe\"");
-            activate(&mut rt, "acp-acp-question:phone-tags-\"input\"");
-            activate(&mut rt, "acp-acp-question:phone-tags-\"layout\"");
-            activate(&mut rt, "acp-acp-question:phone-tags-\"layout\"");
-            assert_eq!(
-                rt.state.inbox.questions.drafts[ID].choices["mode"],
-                ["\"safe\""]
-            );
-            assert_eq!(
-                rt.state.inbox.questions.drafts[ID].choices["tags"],
-                ["\"input\""]
-            );
+            activate(&mut rt, "mode-\"fast\"");
+            activate(&mut rt, "mode-\"safe\"");
+            activate(&mut rt, "tags-\"input\"");
+            activate(&mut rt, "tags-\"layout\"");
+            activate(&mut rt, "tags-\"layout\"");
+            assert_eq!(draft(&rt.state).choices["mode"], ["\"safe\""]);
+            assert_eq!(draft(&rt.state).choices["tags"], ["\"input\""]);
             edit(&mut rt, view);
             for key in [SUBMIT_KEY, CANCEL_KEY] {
                 show(&mut rt, key, true);
-                touch(&mut rt, key, TouchPhase::Cancelled);
+                touch_part(&mut rt, key, TouchPhase::Cancelled);
             }
             assert!(rt.state.inbox.open);
-            assert_eq!(rt.state.inbox.questions.drafts[ID].text("note"), NOTE);
+            assert_eq!(draft(&rt.state).text("note"), NOTE);
             assert!(rt.state.inbox.questions.pending.is_empty());
             assert!(rt.state.inbox.questions.error.is_empty());
             assert_eq!(

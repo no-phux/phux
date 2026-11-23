@@ -17,17 +17,17 @@ fn phone_form_groups_related_parts_more_closely_than_fields_and_final_actions() 
             for large in [false, true] {
                 let (client, rt) = scene(view, stress, large, false);
                 let groups = ["mode", "note", "tags"]
-                    .map(|id| crate::ui::element(&rt, &format!("acp-form-{ID}-{id}")));
+                    .map(|id| crate::ui::element(&rt, &owner(&rt.state).form_key(id)));
                 gap(groups[0].rect, groups[1].rect, s.s3);
                 gap(groups[1].rect, groups[2].rect, s.s3);
                 gap(
                     groups[2].rect,
-                    crate::ui::element(&rt, SUBMIT_KEY).rect,
+                    crate::ui::element(&rt, &key(&rt, SUBMIT_KEY)).rect,
                     s.s4,
                 );
                 gap(
-                    crate::ui::element(&rt, SUBMIT_KEY).rect,
-                    crate::ui::element(&rt, CANCEL_KEY).rect,
+                    crate::ui::element(&rt, &key(&rt, SUBMIT_KEY)).rect,
+                    crate::ui::element(&rt, &key(&rt, CANCEL_KEY)).rect,
                     s.icon_gap,
                 );
                 let elements = rt.elements();
@@ -76,14 +76,14 @@ fn desktop_form_keeps_its_flat_layout_and_original_spacing() {
             .unwrap();
         assert_eq!(heading.parent, description.parent, "flat panel children");
         gap(
-            crate::ui::element(&rt, &format!("acp-{ID}-mode")).rect,
+            crate::ui::element(&rt, &key(&rt, "mode")).rect,
             heading.rect,
             s.s2,
         );
         gap(heading.rect, description.rect, s.s2);
         gap(
-            crate::ui::element(&rt, &format!("acp-{ID}-tags-\"layout\"")).rect,
-            crate::ui::element(&rt, SUBMIT_KEY).rect,
+            crate::ui::element(&rt, &key(&rt, "tags-\"layout\"")).rect,
+            crate::ui::element(&rt, &key(&rt, SUBMIT_KEY)).rect,
             s.s2,
         );
         no_input(&client);
@@ -97,11 +97,11 @@ fn enabled_phone_form_still_reports_a_genuine_validation_error() {
         edit(&mut rt, view);
         activate(&mut rt, SUBMIT_KEY);
         assert_eq!(
-            rt.state.inbox.questions.error[ID],
+            rt.state.inbox.questions.error[owner(&rt.state)],
             "Choose an explicit option for ‘mode’."
         );
-        assert_eq!(rt.state.inbox.questions.drafts[ID].text("note"), NOTE);
-        assert!(rt.state.inbox.questions.drafts[ID].choices.is_empty());
+        assert_eq!(draft(&rt.state).text("note"), NOTE);
+        assert!(draft(&rt.state).choices.is_empty());
         assert!(rt.state.inbox.questions.pending.is_empty());
         assert!(rt.state.inbox.open);
         no_input(&client);
@@ -117,17 +117,13 @@ fn phone_form_close_preserves_acp_draft_and_both_terminal_keyboard_preferences()
             settle(&mut rt);
             select(&mut rt, false);
             edit(&mut rt, view);
-            activate(&mut rt, "inbox-close");
+            reveal(&mut rt, "inbox-close");
+            whole(&rt, "inbox-close", true);
+            touch(&mut rt, "inbox-close", TouchPhase::Ended);
             assert!(!rt.state.inbox.open);
-            assert_eq!(rt.state.inbox.questions.drafts[ID].text("note"), NOTE);
-            assert_eq!(
-                rt.state.inbox.questions.drafts[ID].choices["mode"],
-                ["\"safe\""]
-            );
-            assert_eq!(
-                rt.state.inbox.questions.drafts[ID].choices["tags"],
-                ["\"input\""]
-            );
+            assert_eq!(draft(&rt.state).text("note"), NOTE);
+            assert_eq!(draft(&rt.state).choices["mode"], ["\"safe\""]);
+            assert_eq!(draft(&rt.state).choices["tags"], ["\"input\""]);
             assert_eq!(rt.state.phone.as_ref().unwrap().keyboard, keyboard);
             assert!(rt.state.inbox.questions.error.is_empty());
             assert!(rt.state.inbox.questions.pending.is_empty());

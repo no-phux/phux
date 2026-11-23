@@ -15,7 +15,7 @@ use super::inbox::{field_shell, touch_input};
 use super::tokens::{Paint, Tokens};
 use crate::activity::Ask;
 use crate::desk::Desk;
-use crate::desk::questions::{CLOSED, Draft, Questions, response};
+use crate::desk::questions::{CLOSED, Draft, Owner, Questions, response};
 
 /// The agent session's view isn't here: only a streamed pane brings it.
 const UNLOADED: &str = "Show its pane to load this ACP question.";
@@ -24,8 +24,7 @@ const UNSUPPORTED: &str =
 
 /// Where a control's press goes.
 struct At<'a> {
-    terminal: &'a ResourceId,
-    question: &'a str,
+    owner: &'a Owner,
     held: bool,
     phone: bool,
 }
@@ -51,10 +50,12 @@ pub fn panel(desk: &Desk, terminal: &ResourceId, ask: &Ask, p: &Tokens) -> El {
         return note(if known { CLOSED } else { UNLOADED }, t);
     };
     let question = &draft.question;
+    let owner = questions
+        .owner(terminal, &ask.id)
+        .expect("open question owner");
     let at = At {
-        terminal,
-        question: &question.id,
-        held: questions.held(view, &question.id),
+        owner,
+        held: questions.held(owner),
         phone: desk.phone.is_some(),
     };
     let mut panel = col()
@@ -114,10 +115,10 @@ fn status(mut panel: El, questions: &Questions, view: &NativeView, at: &At, t: &
     } else if !view.capabilities.questions.is_supported() {
         panel = panel.child(note("This agent takes no answers over ACP.", t));
     }
-    if let Some(status) = questions.status.get(at.question) {
+    if let Some(status) = questions.status.get(at.owner) {
         panel = panel.child(say(status, at.font(t.ty.caption, t), t).role("status"));
     }
-    if let Some(error) = questions.error.get(at.question) {
+    if let Some(error) = questions.error.get(at.owner) {
         // The invalid state's message: the failed tone, caption type.
         let line = text(error.clone())
             .font(at.font(t.ty.caption, t))
@@ -217,10 +218,7 @@ fn form(mut panel: El, draft: &Draft, at: &At, t: &Tokens) -> El {
     let mut fields = col().w_full().gap(t.space.s3).mb(t.space.s2);
     for (id, schema) in properties {
         if at.phone {
-            let group = col()
-                .key(format!("acp-form-{}-{id}", at.question))
-                .w_full()
-                .gap(t.space.s1);
+            let group = col().key(at.owner.form_key(id)).w_full().gap(t.space.s1);
             fields = fields.child(form_field(group, draft, id, schema, at, t));
         } else {
             // Keep the desktop's original flat children and spacing.
@@ -277,9 +275,9 @@ enum Kind {
 /// A button that answers (`response`) or submits the draft (`None`). While
 /// the question is held, disabled (the kit's look), never hidden.
 fn action(at: &At, id: &str, label: &str, answer: Option<Value>, kind: Kind, t: &Tokens) -> El {
-    let (terminal, question) = (at.terminal.clone(), at.question.to_owned());
-    let press = move |d: &mut Desk| d.answer_question(&terminal, &question, answer.clone());
-    let key = format!("acp-{}-{id}", at.question);
+    let owner = at.owner.clone();
+    let press = move |d: &mut Desk| d.answer_question(&owner, answer.clone());
+    let key = at.owner.widget(id);
     if at.phone {
         let on = matches!(kind, Kind::Primary);
         let row = touch_row(at, key, label, on, t).role("button");
@@ -354,10 +352,10 @@ fn choices(
 ) -> El {
     let chosen = draft.choices.get(item).map(Vec::as_slice).unwrap_or(&[]);
     let pick = |option: &NativeOption| {
-        let (question, item, id) = (at.question.to_owned(), item.to_owned(), option.id.clone());
-        move |d: &mut Desk| d.inbox.questions.choose(&question, &item, &id, multi)
+        let (owner, item, id) = (at.owner.clone(), item.to_owned(), option.id.clone());
+        move |d: &mut Desk| d.inbox.questions.choose(&owner, &item, &id, multi)
     };
-    let key = |option: &NativeOption| format!("acp-{}-{item}-{}", at.question, option.id);
+    let key = |option: &NativeOption| at.owner.widget(&format!("{item}-{}", option.id));
     if at.phone {
         return touch_choices(at, chosen, offered, multi, t, pick, key);
     }
@@ -388,9 +386,7 @@ fn choices(
         }
         group = group.item(radio);
     }
-    group
-        .build(&t.kit)
-        .key(format!("acp-{}-{item}", at.question))
+    group.build(&t.kit).key(at.owner.widget(item))
 }
 
 /// A phone's options: one wrapping touch row each, a radio or a checkbox.
@@ -431,7 +427,7 @@ fn field(at: &At, draft: &Draft, id: &str, label: &str, multiline: bool, t: &Tok
     let ink = if at.held { r.text.faint } else { r.text.text };
     let font = t.ty.body;
     let mut input = text_input(edit, font)
-        .key(format!("acp-{}-field-{id}", at.question))
+        .key(at.owner.field_key(id))
         .grow(1.0)
         .color(ink.paint())
         .label(label.to_owned())
@@ -441,15 +437,14 @@ fn field(at: &At, draft: &Draft, id: &str, label: &str, multiline: bool, t: &Tok
         input = input.single_line();
     }
     if !at.held {
-        let (question, id) = (at.question.to_owned(), id.to_owned());
-        let edits = (question.clone(), id.clone());
+        let (owner, id) = (at.owner.clone(), id.to_owned());
+        let edits = (owner.clone(), id.clone());
         input = input.on_edit(move |d: &mut Desk| d.inbox.questions.text_mut(&edits.0, &edits.1));
-        let terminal = at.terminal.clone();
         input = input.on_submit(move |d: &mut Desk, _| {
             if multiline {
-                d.inbox.questions.text_mut(&question, &id).insert("\n");
+                d.inbox.questions.text_mut(&owner, &id).insert("\n");
             } else {
-                d.answer_question(&terminal, &question, None);
+                d.answer_question(&owner, None);
             }
         });
     }

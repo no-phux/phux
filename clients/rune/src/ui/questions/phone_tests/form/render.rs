@@ -70,7 +70,7 @@ fn phone_frames(
         heading(&mut rt);
         count += capture.frame(&mut rt, view.scale, "field-heading");
     }
-    assert_eq!(rt.state.inbox.questions.drafts[ID].text("note"), NOTE);
+    assert_eq!(draft(&rt.state).text("note"), NOTE);
     assert!(rt.state.inbox.questions.pending.is_empty());
     no_input(&client);
     count
@@ -105,18 +105,20 @@ fn held_frame(gpu: &rune::render::Gpu, view: View, light: bool, errors: &mut Vec
     // Seed an in-flight receipt, like the existing questions unit fixture.
     // This is not an assertion that a native-agent command was delivered.
     rt.update(|d, tx| {
-        d.inbox.questions.pending.insert(7, ID.into());
+        let owner = owner(d).clone();
+        d.inbox.questions.pending.insert(7, owner.clone());
         d.inbox
             .questions
             .status
-            .insert(ID.into(), crate::desk::questions::SUBMITTING.into());
+            .insert(owner, crate::desk::questions::SUBMITTING.into());
         tx.instant();
     });
     settle(&mut rt);
-    for key in [SUBMIT_KEY, CANCEL_KEY] {
+    for part in [SUBMIT_KEY, CANCEL_KEY] {
         let before = rt.state.inbox.questions.error.clone();
-        show(&mut rt, key, true);
-        touch(&mut rt, key, TouchPhase::Ended);
+        show(&mut rt, part, true);
+        let key = key(&rt, part);
+        touch(&mut rt, &key, TouchPhase::Ended);
         if !rt.state.inbox.questions.error.is_empty() {
             let theme = if light { "light" } else { "dark" };
             errors.push(format!(
@@ -127,25 +129,19 @@ fn held_frame(gpu: &rune::render::Gpu, view: View, light: bool, errors: &mut Vec
         }
     }
     assert_eq!(rt.state.inbox.questions.pending.len(), 1);
-    assert_eq!(rt.state.inbox.questions.pending[&7], ID);
+    assert_eq!(&rt.state.inbox.questions.pending[&7], owner(&rt.state));
     assert_eq!(
-        rt.state.inbox.questions.status[ID],
+        rt.state.inbox.questions.status[owner(&rt.state)],
         crate::desk::questions::SUBMITTING
     );
-    assert_eq!(rt.state.inbox.questions.drafts[ID].text("note"), NOTE);
-    assert_eq!(
-        rt.state.inbox.questions.drafts[ID].choices["mode"],
-        ["\"safe\""]
-    );
-    assert_eq!(
-        rt.state.inbox.questions.drafts[ID].choices["tags"],
-        ["\"input\""]
-    );
+    assert_eq!(draft(&rt.state).text("note"), NOTE);
+    assert_eq!(draft(&rt.state).choices["mode"], ["\"safe\""]);
+    assert_eq!(draft(&rt.state).choices["tags"], ["\"input\""]);
     rt.ime(rune::Ime::Commit(
         "must not enter a held form or terminal".into(),
     ));
     settle(&mut rt);
-    assert_eq!(rt.state.inbox.questions.drafts[ID].text("note"), NOTE);
+    assert_eq!(draft(&rt.state).text("note"), NOTE);
     rt.update(|_, tx| tx.scroll_to_instant("inbox-scroll", 0.0, 100_000.0));
     let mut capture = Capture::new(gpu, view, false, true, light);
     let count = capture.frame(&mut rt, view.scale, "held");
@@ -160,11 +156,11 @@ fn error_frame(gpu: &rune::render::Gpu, view: View, light: bool) -> usize {
     // injected error string and no native-agent/terminal fallback traffic.
     activate(&mut rt, SUBMIT_KEY);
     assert_eq!(
-        rt.state.inbox.questions.error[ID],
+        rt.state.inbox.questions.error[owner(&rt.state)],
         "Choose an explicit option for ‘mode’."
     );
-    assert_eq!(rt.state.inbox.questions.drafts[ID].text("note"), NOTE);
-    assert!(rt.state.inbox.questions.drafts[ID].choices.is_empty());
+    assert_eq!(draft(&rt.state).text("note"), NOTE);
+    assert!(draft(&rt.state).choices.is_empty());
     assert!(rt.state.inbox.questions.pending.is_empty());
     rt.update(|_, tx| tx.scroll_to_instant("inbox-scroll", 0.0, 100_000.0));
     let mut capture = Capture::new(gpu, view, false, true, light);

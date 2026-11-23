@@ -8,15 +8,16 @@ fn initial_action_names(rt: &Runtime<Desk>) {
         (list.rect[1] - scroll.rect[1]).abs() < 0.5,
         "initial discovery must not be manufactured by scrolling"
     );
-    assert!(!crate::ui::element(rt, NOTE_KEY).focused);
-    whole(rt, SUBMIT_KEY, true);
-    whole(rt, CANCEL_KEY, true);
+    assert!(!crate::ui::element(rt, &key(rt, NOTE_KEY)).focused);
+    whole(rt, &key(rt, SUBMIT_KEY), true);
+    whole(rt, &key(rt, CANCEL_KEY), true);
     let elements = rt.elements();
-    for (key, words) in [
+    for (part, words) in [
         (SUBMIT_KEY, "Submit response"),
         (CANCEL_KEY, "Cancel request"),
     ] {
-        let action = crate::ui::element(rt, key);
+        let key = key(rt, part);
+        let action = crate::ui::element(rt, &key);
         assert!(action.rect[2] >= 44.0 && action.rect[3] >= 44.0);
         assert!(action.focusable);
         let prefix = format!("{}/", action.path);
@@ -42,9 +43,10 @@ fn initial_action_names(rt: &Runtime<Desk>) {
 }
 
 /// Unlike `activate`, this must never reveal or scroll the selected option.
-fn choose_in_place(rt: &mut Runtime<Desk>, key: &str) {
-    whole(rt, key, true);
-    let (x, y) = rt.find(key).unwrap();
+fn choose_in_place(rt: &mut Runtime<Desk>, part: &str) {
+    let key = key(rt, part);
+    whole(rt, &key, true);
+    let (x, y) = rt.find(&key).unwrap();
     rt.touch(1, TouchPhase::Started, x, y, 0.1);
     rt.frame(1.0 / 60.0);
     rt.frame(1.0 / 60.0);
@@ -58,10 +60,10 @@ fn standard_phone_form_discloses_both_action_names_before_scrolling() {
         for light in [false, true] {
             let (client, mut rt) = scene(view, false, false, light);
             initial_action_names(&rt);
-            choose_in_place(&mut rt, &format!("acp-{ID}-mode-\"safe\""));
-            choose_in_place(&mut rt, &format!("acp-{ID}-tags-\"input\""));
+            choose_in_place(&mut rt, "mode-\"safe\"");
+            choose_in_place(&mut rt, "tags-\"input\"");
             initial_action_names(&rt);
-            let draft = &rt.state.inbox.questions.drafts[ID];
+            let draft = draft(&rt.state);
             assert_eq!(draft.choices["mode"], ["\"safe\""]);
             assert_eq!(draft.choices["tags"], ["\"input\""]);
             assert!(rt.state.inbox.questions.error.is_empty());

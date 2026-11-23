@@ -3,6 +3,7 @@
 //! and never sent once the question it answers has closed or changed.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use phux_client_runtime::Client;
 use phux_client_runtime::control::{Status, Topology};
@@ -77,58 +78,127 @@ impl Draft {
     }
 }
 
+/// A captured local question owner. The generation fences old widgets and
+/// receipts when the same request changes or closes and later reopens.
+/// It is not a protocol revision and is never sent to the provider.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Owner {
+    terminal: ResourceId,
+    session: ResourceId,
+    activation: String,
+    question: String,
+    generation: u64,
+}
+
+impl Owner {
+    pub fn terminal(&self) -> &ResourceId {
+        &self.terminal
+    }
+
+    /// Widget identity uses the local generation, not a provider's local id.
+    pub fn widget(&self, part: &str) -> String {
+        format!("acp-{}-{part}", self.generation)
+    }
+
+    pub fn field_key(&self, field: &str) -> String {
+        self.widget(&format!("field-{field}"))
+    }
+
+    pub fn form_key(&self, field: &str) -> String {
+        format!("acp-form-{}-{field}", self.generation)
+    }
+}
+
 #[derive(Default)]
 pub struct Questions {
     /// Each ACP pane's agent session and the view it publishes, by terminal.
     pub views: HashMap<ResourceId, (ResourceId, NativeView)>,
-    /// Open questions' drafts, by question id.
-    pub drafts: HashMap<String, Draft>,
-    /// Answers awaiting their receipt: operation to question id.
-    pub pending: HashMap<u64, String>,
+    /// Open questions' drafts, by captured owner.
+    pub drafts: HashMap<Owner, Draft>,
+    /// Answers awaiting their receipt: operation to captured owner.
+    pub pending: HashMap<u64, Owner>,
     /// How a submitted answer stands. While set, its controls are held.
-    pub status: HashMap<String, String>,
+    pub status: HashMap<Owner, String>,
     /// Why the last try sent nothing, or was refused. The draft stays.
-    pub error: HashMap<String, String>,
+    pub error: HashMap<Owner, String>,
     /// What a field edits once its question has gone.
     spare: TextEdit,
 }
 
 impl Questions {
-    /// The view and open question an ACP ask on `terminal` refers to.
-    pub fn open(&self, terminal: &ResourceId, id: &str) -> Option<(&NativeView, &Draft)> {
-        let (_, view) = self.views.get(terminal)?;
-        view.questions.iter().find(|q| q.id == id)?;
-        Some((view, self.drafts.get(id)?))
+    /// Resolve once while constructing a view; callbacks retain this handle.
+    pub fn owner(&self, terminal: &ResourceId, id: &str) -> Option<&Owner> {
+        self.drafts.keys().find(|owner| {
+            &owner.terminal == terminal && owner.question == id && self.draft(owner).is_some()
+        })
     }
 
-    /// Whether `id`'s controls take no input now.
-    pub fn held(&self, view: &NativeView, id: &str) -> bool {
-        self.status.contains_key(id)
-            || !view.connected
-            || !view.capabilities.questions.is_supported()
+    fn current_view(&self, owner: &Owner) -> Option<&NativeView> {
+        let (session, view) = self.views.get(&owner.terminal)?;
+        (session == &owner.session && view.activation == owner.activation).then_some(view)
+    }
+
+    pub fn draft(&self, owner: &Owner) -> Option<&Draft> {
+        let draft = self.drafts.get(owner)?;
+        self.current_view(owner)?
+            .questions
+            .iter()
+            .any(|q| q == &draft.question)
+            .then_some(draft)
+    }
+
+    /// The view and open question an ACP ask on `terminal` refers to.
+    pub fn open(&self, terminal: &ResourceId, id: &str) -> Option<(&NativeView, &Draft)> {
+        let owner = self.owner(terminal, id)?;
+        Some((self.current_view(owner)?, self.draft(owner)?))
+    }
+
+    /// Whether this captured owner's controls take no input now.
+    pub fn held(&self, owner: &Owner) -> bool {
+        self.status.contains_key(owner)
+            || self.draft(owner).is_none()
+            || self
+                .current_view(owner)
+                .is_none_or(|view| !view.connected || !view.capabilities.questions.is_supported())
     }
 
     /// An enabled field in this exact live question owns text input.
     pub fn field_focused(&self, terminal: &ResourceId, id: &str) -> bool {
-        self.open(terminal, id).is_some_and(|(view, draft)| {
-            !self.held(view, id) && draft.texts.values().any(|edit| edit.focused)
+        self.owner(terminal, id).is_some_and(|owner| {
+            !self.held(owner) && self.drafts[owner].texts.values().any(|edit| edit.focused)
         })
     }
 
-    pub fn text_mut(&mut self, question: &str, field: &str) -> &mut TextEdit {
-        let Self { drafts, spare, .. } = self;
-        match drafts.get_mut(question) {
-            Some(draft) => draft.texts.entry(field.to_owned()).or_default(),
-            None => spare,
+    pub fn field(&self, owner: &Owner, field: &str) -> Option<&TextEdit> {
+        if self.held(owner) {
+            return None;
         }
+        self.draft(owner)?.texts.get(field)
+    }
+
+    pub fn field_mut(&mut self, owner: &Owner, field: &str) -> Option<&mut TextEdit> {
+        if self.held(owner) {
+            return None;
+        }
+        self.drafts.get_mut(owner)?.texts.get_mut(field)
+    }
+
+    pub fn text_mut(&mut self, owner: &Owner, field: &str) -> &mut TextEdit {
+        if self.held(owner) {
+            return &mut self.spare;
+        }
+        self.drafts
+            .get_mut(owner)
+            .and_then(|draft| draft.texts.get_mut(field))
+            .unwrap_or(&mut self.spare)
     }
 
     /// Pick or unpick one offered option; a single choice replaces the last.
-    pub fn choose(&mut self, question: &str, item: &str, option: &str, multi: bool) {
-        if self.status.contains_key(question) {
+    pub fn choose(&mut self, owner: &Owner, item: &str, option: &str, multi: bool) {
+        if self.held(owner) {
             return;
         }
-        let Some(draft) = self.drafts.get_mut(question) else {
+        let Some(draft) = self.drafts.get_mut(owner) else {
             return;
         };
         let values = draft.choices.entry(item.to_owned()).or_default();
@@ -163,21 +233,47 @@ impl Questions {
                 views.insert(parent.clone(), (session.id.clone(), view));
             }
         }
-        let open: Vec<&NativeQuestion> = views.values().flat_map(|(_, v)| &v.questions).collect();
-        self.drafts
-            .retain(|id, draft| open.iter().any(|q| &q.id == id && **q == draft.question));
-        let gone = |id: &String| !open.iter().any(|q| &q.id == id);
-        self.status.retain(|id, _| !gone(id));
-        self.error.retain(|id, _| !gone(id));
-        for question in open {
-            if !self.drafts.contains_key(&question.id) {
-                self.status.remove(&question.id);
-                self.error.remove(&question.id);
-                self.drafts
-                    .insert(question.id.clone(), Draft::new(question));
+        self.views = views;
+        self.reconcile();
+    }
+
+    /// Reconcile exact questions with their session/activation owner.
+    pub(crate) fn reconcile(&mut self) {
+        let current: Vec<_> = self
+            .drafts
+            .keys()
+            .filter(|owner| self.draft(owner).is_some())
+            .cloned()
+            .collect();
+        self.drafts.retain(|owner, _| current.contains(owner));
+        self.status.retain(|owner, _| current.contains(owner));
+        self.error.retain(|owner, _| current.contains(owner));
+        for (terminal, (session, view)) in &self.views {
+            for question in &view.questions {
+                let exists = current.iter().any(|owner| {
+                    owner.terminal == *terminal
+                        && owner.session == *session
+                        && owner.activation == view.activation
+                        && owner.question == question.id
+                });
+                if exists {
+                    continue;
+                }
+                // Survives a connection replacement's fresh Questions value.
+                static GENERATION: AtomicU64 = AtomicU64::new(1);
+                let generation = GENERATION
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
+                    .expect("question generation exhausted");
+                let owner = Owner {
+                    terminal: terminal.clone(),
+                    session: session.clone(),
+                    activation: view.activation.clone(),
+                    question: question.id.clone(),
+                    generation,
+                };
+                self.drafts.insert(owner, Draft::new(question));
             }
         }
-        self.views = views;
     }
 
     /// A receipt for one of ours. Refused frees the draft to send again;
@@ -192,7 +288,7 @@ impl Questions {
             return false;
         };
         let message = response::receipt(disposition, detail);
-        if self.drafts.contains_key(&question) {
+        if self.draft(&question).is_some() {
             if disposition == NativeDisposition::Refused {
                 self.status.remove(&question);
                 self.error.insert(question, message);
@@ -234,6 +330,9 @@ impl Questions {
             Some("Connection changed before receipt."),
         );
         for question in self.pending.values() {
+            if self.draft(question).is_none() {
+                continue;
+            }
             if let Some(status) = self.status.get_mut(question) {
                 status.clone_from(&unknown);
             }
@@ -270,41 +369,32 @@ pub fn admit<'a>(
 }
 
 impl Desk {
-    /// Answer `question` on `terminal`'s agent: with `response` from its
+    /// Answer the captured owner's question: with `response` from its
     /// button, or with what its draft holds.
-    pub fn answer_question(
-        &mut self,
-        terminal: &ResourceId,
-        question: &str,
-        response: Option<Value>,
-    ) {
-        let result = self.schedule_answer(terminal, question, response);
+    pub fn answer_question(&mut self, owner: &Owner, response: Option<Value>) {
+        // Never resolve a delayed callback's terminal/id to a replacement owner.
+        let result = self.schedule_answer(owner, response);
         let questions = &mut self.inbox.questions;
         match result {
             Ok(op) => {
-                questions.pending.insert(op, question.to_owned());
+                questions.pending.insert(op, owner.clone());
                 questions
                     .status
-                    .insert(question.to_owned(), SUBMITTING.to_owned());
-                questions.error.remove(question);
+                    .insert(owner.clone(), SUBMITTING.to_owned());
+                questions.error.remove(owner);
             }
             Err(error) => {
-                questions.error.insert(question.to_owned(), error);
+                questions.error.insert(owner.clone(), error);
             }
         }
     }
 
-    fn schedule_answer(
-        &self,
-        terminal: &ResourceId,
-        id: &str,
-        response: Option<Value>,
-    ) -> Result<u64, String> {
+    fn schedule_answer(&self, owner: &Owner, response: Option<Value>) -> Result<u64, String> {
         let questions = &self.inbox.questions;
-        if questions.status.contains_key(id) {
+        if questions.status.contains_key(owner) {
             return Err("That response is already on its way.".into());
         }
-        let draft = questions.drafts.get(id).ok_or(CLOSED)?;
+        let draft = questions.draft(owner).ok_or(CLOSED)?;
         let response = match response {
             Some(response) => response,
             None => response::build(draft)?,
@@ -314,7 +404,7 @@ impl Desk {
             .client
             .as_ref()
             .ok_or("Not connected. Nothing was sent.")?;
-        let (session, _) = questions.views.get(terminal).ok_or(CLOSED)?;
+        let (session, terminal) = (&owner.session, &owner.terminal);
         // The cached view may be behind: re-read everything the write rides on.
         let parented = client.topology().is_some_and(|topology| {
             let mut sessions = topology.agent_sessions.iter();
@@ -325,8 +415,11 @@ impl Desk {
             .and_then(|engine| engine.native_agent_view(session));
         let attached = client.status() == Status::Attached;
         let activation = admit(attached, parented, view.as_ref(), &draft.question)?;
+        if activation != owner.activation {
+            return Err(CLOSED.into());
+        }
         let intent = NativeIntent::Answer {
-            question_id: id.to_owned(),
+            question_id: owner.question.clone(),
             response,
         };
         client

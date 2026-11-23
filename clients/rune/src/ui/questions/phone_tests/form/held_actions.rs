@@ -21,13 +21,14 @@ const ACTIONS: [(&str, &str); 7] = [
 ];
 
 fn write_field(rt: &mut Runtime<Desk>, id: &str) {
-    let key = format!("acp-{ID}-field-{id}");
-    show(rt, &key, true);
+    let part = format!("field-{id}");
+    let key = key(rt, &part);
+    show(rt, &part, true);
     assert!(rt.accessibility_action(&key, rune::accesskit::Action::Focus, None));
     settle(rt);
     rt.ime(rune::Ime::Commit(NOTE.into()));
     settle(rt);
-    assert_eq!(rt.state.inbox.questions.drafts[ID].text(id), NOTE);
+    assert_eq!(draft(&rt.state).text(id), NOTE);
 }
 
 /// Prepare valid responses through real handlers so an accidental Submit
@@ -37,8 +38,8 @@ fn ready(view: View, kind: &str) -> (Arc<Client>, Runtime<Desk>) {
     match kind {
         "input" | "editor" => write_field(&mut rt, "text"),
         "ask" => {
-            activate(&mut rt, &format!("acp-{ID}-false-one"));
-            activate(&mut rt, &format!("acp-{ID}-true-one"));
+            activate(&mut rt, "false-one");
+            activate(&mut rt, "true-one");
             write_field(&mut rt, "false");
         }
         "form" => {
@@ -59,10 +60,11 @@ fn hold(rt: &mut Runtime<Desk>, reason: Held) {
         let questions = &mut d.inbox.questions;
         match reason {
             Held::Submitting => {
-                questions.pending.insert(7, ID.into());
+                let owner = questions.owner(&terminal, ID).unwrap().clone();
+                questions.pending.insert(7, owner.clone());
                 questions
                     .status
-                    .insert(ID.into(), crate::desk::questions::SUBMITTING.into());
+                    .insert(owner, crate::desk::questions::SUBMITTING.into());
             }
             Held::Disconnected => questions.views.get_mut(&terminal).unwrap().1.connected = false,
             Held::Unsupported => {
@@ -79,8 +81,8 @@ fn hold(rt: &mut Runtime<Desk>, reason: Held) {
     });
     settle(rt);
     let terminal = &rt.state.connection.shown.as_ref().unwrap().resource;
-    let (view, _) = rt.state.inbox.questions.open(terminal, ID).unwrap();
-    assert!(rt.state.inbox.questions.held(view, ID));
+    rt.state.inbox.questions.open(terminal, ID).unwrap();
+    assert!(rt.state.inbox.questions.held(owner(&rt.state)));
     assert!(
         rt.state.inbox.questions.error.is_empty(),
         "holding is not an error"
@@ -89,7 +91,7 @@ fn hold(rt: &mut Runtime<Desk>, reason: Held) {
 
 /// Text/choices/provider question must survive a disabled touch unchanged.
 fn draft_state(rt: &Runtime<Desk>) -> Value {
-    let draft = &rt.state.inbox.questions.drafts[ID];
+    let draft = draft(&rt.state);
     let texts: std::collections::BTreeMap<_, _> = draft
         .texts
         .iter()
@@ -134,9 +136,9 @@ fn held_touch(view: View, kind: &str, action: &str, reason: Held, keyboard: bool
     let (client, mut rt) = ready(view, kind);
     rt.update(|d, _| d.phone.as_mut().unwrap().keyboard = keyboard);
     hold(&mut rt, reason);
-    let key = format!("acp-{ID}-{action}");
+    let key = key(&rt, action);
     let context = format!("{} {kind} {action} {reason:?}", view.name);
-    show(&mut rt, &key, true);
+    show(&mut rt, action, true);
     let before = crate::ui::element(&rt, &key);
     let draft = draft_state(&rt);
     let pending = rt.state.inbox.questions.pending.clone();

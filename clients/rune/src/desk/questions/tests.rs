@@ -176,13 +176,11 @@ fn asking_desk(answers: bool) -> (Desk, ResourceId) {
     let (terminal, session) = (ResourceId::local(1), ResourceId::local(2));
     let asked = question("confirm", Value::Null);
     let questions = &mut desk.inbox.questions;
-    questions
-        .drafts
-        .insert(asked.id.clone(), Draft::new(&asked));
     let published = view(vec![asked], answers);
     questions
         .views
         .insert(terminal.clone(), (session, published));
+    questions.reconcile();
     (desk, terminal)
 }
 
@@ -190,16 +188,18 @@ fn asking_desk(answers: bool) -> (Desk, ResourceId) {
 fn a_closed_or_unsupported_question_sends_nothing_and_says_why() {
     let id = "acp-question:1";
     let (mut desk, terminal) = asking_desk(false);
-    desk.answer_question(&terminal, id, Some(json!({"confirmed": true})));
+    let owner = desk.inbox.questions.owner(&terminal, id).unwrap().clone();
+    desk.answer_question(&owner, Some(json!({"confirmed": true})));
     let questions = &desk.inbox.questions;
-    assert!(questions.pending.is_empty() && !questions.status.contains_key(id));
-    assert!(questions.error.contains_key(id));
+    assert!(questions.pending.is_empty() && !questions.status.contains_key(&owner));
+    assert!(questions.error.contains_key(&owner));
     let (mut desk, terminal) = asking_desk(true);
+    let owner = desk.inbox.questions.owner(&terminal, id).unwrap().clone();
     desk.inbox.questions.drafts.clear();
-    desk.answer_question(&terminal, id, Some(json!({"confirmed": true})));
+    desk.answer_question(&owner, Some(json!({"confirmed": true})));
     assert!(desk.inbox.questions.pending.is_empty());
     assert_eq!(
-        desk.inbox.questions.error.get(id).map(String::as_str),
+        desk.inbox.questions.error.get(&owner).map(String::as_str),
         Some(CLOSED)
     );
 }
@@ -209,9 +209,10 @@ fn a_response_on_its_way_holds_the_controls_until_its_receipt() {
     let id = "acp-question:1";
     let (mut desk, terminal) = asking_desk(true);
     let questions = &mut desk.inbox.questions;
-    questions.pending.insert(7, id.into());
-    questions.status.insert(id.into(), SUBMITTING.into());
-    desk.answer_question(&terminal, id, Some(json!({"confirmed": false})));
+    let owner = questions.owner(&terminal, id).unwrap().clone();
+    questions.pending.insert(7, owner.clone());
+    questions.status.insert(owner.clone(), SUBMITTING.into());
+    desk.answer_question(&owner, Some(json!({"confirmed": false})));
     assert_eq!(
         desk.inbox.questions.pending.len(),
         1,
@@ -219,16 +220,16 @@ fn a_response_on_its_way_holds_the_controls_until_its_receipt() {
     );
     let questions = &mut desk.inbox.questions;
     assert!(questions.receipt(7, NativeDisposition::Queued, None));
-    assert!(questions.pending.contains_key(&7) && questions.status.contains_key(id));
+    assert!(questions.pending.contains_key(&7) && questions.status.contains_key(&owner));
     assert!(
         !questions.receipt(8, NativeDisposition::Completed, None),
         "not ours"
     );
     assert!(questions.receipt(7, NativeDisposition::Refused, Some("stale")));
-    assert!(questions.pending.is_empty() && !questions.status.contains_key(id));
-    assert!(questions.drafts.contains_key(id), "the draft stays");
+    assert!(questions.pending.is_empty() && !questions.status.contains_key(&owner));
+    assert!(questions.drafts.contains_key(&owner), "the draft stays");
     assert_eq!(
-        questions.error.get(id).map(String::as_str),
+        questions.error.get(&owner).map(String::as_str),
         Some("Refused. Nothing retried; draft preserved: stale")
     );
 }
@@ -236,29 +237,31 @@ fn a_response_on_its_way_holds_the_controls_until_its_receipt() {
 #[test]
 fn a_lost_connection_marks_waiting_answers_unknown() {
     let id = "acp-question:1";
-    let (mut desk, _) = asking_desk(true);
+    let (mut desk, terminal) = asking_desk(true);
     let questions = &mut desk.inbox.questions;
-    questions.pending.insert(3, id.into());
-    questions.status.insert(id.into(), SUBMITTING.into());
+    let owner = questions.owner(&terminal, id).unwrap().clone();
+    questions.pending.insert(3, owner.clone());
+    questions.status.insert(owner.clone(), SUBMITTING.into());
     assert!(questions.disconnected());
-    assert!(questions.status[id].starts_with("Outcome unknown"));
+    assert!(questions.status[&owner].starts_with("Outcome unknown"));
 }
 
 #[test]
 fn choosing_replaces_a_single_choice_toggles_many_and_holds_while_sending() {
     let id = "acp-question:1";
-    let (mut desk, _) = asking_desk(true);
+    let (mut desk, terminal) = asking_desk(true);
     let questions = &mut desk.inbox.questions;
-    questions.choose(id, "a", "one", false);
-    questions.choose(id, "a", "two", false);
-    assert_eq!(questions.drafts[id].choices["a"], ["two"]);
-    questions.choose(id, "b", "one", true);
-    questions.choose(id, "b", "two", true);
-    questions.choose(id, "b", "one", true);
-    assert_eq!(questions.drafts[id].choices["b"], ["two"]);
-    questions.status.insert(id.into(), SUBMITTING.into());
-    questions.choose(id, "b", "one", true);
-    assert_eq!(questions.drafts[id].choices["b"], ["two"]);
+    let owner = questions.owner(&terminal, id).unwrap().clone();
+    questions.choose(&owner, "a", "one", false);
+    questions.choose(&owner, "a", "two", false);
+    assert_eq!(questions.drafts[&owner].choices["a"], ["two"]);
+    questions.choose(&owner, "b", "one", true);
+    questions.choose(&owner, "b", "two", true);
+    questions.choose(&owner, "b", "one", true);
+    assert_eq!(questions.drafts[&owner].choices["b"], ["two"]);
+    questions.status.insert(owner.clone(), SUBMITTING.into());
+    questions.choose(&owner, "b", "one", true);
+    assert_eq!(questions.drafts[&owner].choices["b"], ["two"]);
 }
 
 #[test]
