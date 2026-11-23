@@ -1,8 +1,8 @@
 # Plugin API: build extensions for the phux terminal multiplexer
 
-phux is a terminal multiplexer with a plugin API, where a plugin is a
+phux is a terminal multiplexer with a plugin API. A plugin is a
 directory with a `phux-plugin.toml` manifest whose commands run as
-separate processes. It can add actions, panes, status-bar widgets,
+separate processes. A plugin can add actions, panes, status-bar widgets,
 sidebar sections, themes, hooks, agent declarations, and long-running
 startup sidecars.
 
