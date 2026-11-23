@@ -49,14 +49,14 @@ pub use server_guard::ServerGuard;
     unused_imports,
     reason = "only the service suite tests the shared spawn contract"
 )]
-pub(crate) use server_guard::ServerSpawn;
+pub use server_guard::ServerSpawn;
 
 mod pty;
 #[allow(
     unused_imports,
     reason = "only the service suite tests the shared attach contract"
 )]
-pub(crate) use pty::isolated_attach_command;
+pub use pty::isolated_attach_command;
 #[allow(unused_imports, reason = "not every suite drives a PTY")]
 pub use pty::{PtyAttach, clear_pty_env, pty_transcript};
 
