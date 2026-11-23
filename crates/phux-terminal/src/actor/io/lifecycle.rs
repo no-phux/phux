@@ -5,37 +5,23 @@ use super::{
     warn,
 };
 
+// A slave can close before its owner is waitable. Allow scheduler delay
+// without holding up other actors, but still bound EOF for a live owner.
+const EOF_REAP_BUDGET: std::time::Duration = std::time::Duration::from_millis(100);
+
 impl TerminalActor {
     /// Reap the child on PTY EOF if it has exited, returning its
     /// [`ExitOutcome`](phux_core::process::ExitOutcome) (code, signal, or
     /// unknown). A child still running is left to the shutdown path.
-    pub(in crate::actor) fn reap_child_if_any(&mut self) -> phux_core::process::ExitOutcome {
+    #[allow(clippy::future_not_send, reason = "terminal actor runs on a LocalSet")]
+    async fn reap_child_if_any(&mut self) -> phux_core::process::ExitOutcome {
         use phux_core::process::ExitOutcome;
         let Some(pty) = self.pty.as_mut() else {
             return ExitOutcome::UNKNOWN;
         };
-        // EOF can precede the child becoming waitable, so retry briefly. The
-        // blocking sleep is once per pane and tiny; a daemonizer that keeps
-        // running exhausts it and reports unknown.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(20);
-        loop {
-            match pty.child.try_wait() {
-                Ok(Some(status)) => {
-                    debug!(?status, "child reaped on PTY EOF");
-                    return exit_outcome(&status);
-                }
-                Ok(None) if std::time::Instant::now() < deadline => {
-                    std::thread::sleep(std::time::Duration::from_millis(1));
-                }
-                Ok(None) => {
-                    trace!("PTY EOF but child still alive — leaving to shutdown path");
-                    return ExitOutcome::UNKNOWN;
-                }
-                Err(err) => {
-                    debug!(?err, "child try_wait failed on PTY EOF");
-                    return ExitOutcome::UNKNOWN;
-                }
-            }
+        match reap_bounded(EOF_REAP_BUDGET, || pty.child.try_wait()).await {
+            ReapOutcome::Reaped(status) => exit_outcome(&status),
+            ReapOutcome::Expired | ReapOutcome::Failed => ExitOutcome::UNKNOWN,
         }
     }
 
@@ -44,10 +30,11 @@ impl TerminalActor {
     /// shutdown; the run loop fires `exit_notify` after flushing gap
     /// resyncs. The runtime decides whether to close the pane or respawn a
     /// shell.
-    pub(in crate::actor) fn handle_pty_eof(&mut self) {
+    #[allow(clippy::future_not_send, reason = "terminal actor runs on a LocalSet")]
+    pub(in crate::actor) async fn handle_pty_eof(&mut self) {
         debug!("PTY EOF; recording exit and keeping actor alive for a final resync flush");
         self.pty_rx = None;
-        let exit = self.reap_child_if_any();
+        let exit = self.reap_child_if_any().await;
         self.record_exit(exit);
         // The program quit on its own. A signal may be the server or the
         // host going down, which is what the token is kept for.
@@ -139,7 +126,7 @@ impl TerminalActor {
         // Reap without blocking this task; see `reap_bounded`.
         let child_pid = pty.child.process_id();
         if matches!(
-            reap_bounded(|| pty.child.try_wait()).await,
+            reap_bounded(PANE_KILL_REAP_BUDGET, || pty.child.try_wait()).await,
             ReapOutcome::Expired
         ) {
             warn!("pty child did not exit within the reap budget; handing it to a reaper thread");
@@ -287,29 +274,29 @@ const fn needs_termination(observed: &std::io::Result<Option<portable_pty::ExitS
 }
 
 /// What [`reap_bounded`] concluded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 enum ReapOutcome {
     /// The child was collected; nothing is left behind.
-    Reaped,
+    Reaped(portable_pty::ExitStatus),
     /// `try_wait` itself failed. Nothing more to try here.
     Failed,
     /// The budget ran out with the child still running.
     Expired,
 }
 
-/// Poll until the child is collected or [`PANE_KILL_REAP_BUDGET`] expires,
-/// never blocking the task (a blocking `waitpid` on an escaped child would
+/// Poll until the child is collected or the budget expires,
+/// never blocking the runtime (a blocking `waitpid` on an escaped child would
 /// freeze the shared runtime). Takes a closure so it is testable.
-async fn reap_bounded<F>(mut poll: F) -> ReapOutcome
+async fn reap_bounded<F>(budget: std::time::Duration, mut poll: F) -> ReapOutcome
 where
     F: FnMut() -> std::io::Result<Option<portable_pty::ExitStatus>>,
 {
-    let deadline = tokio::time::Instant::now() + PANE_KILL_REAP_BUDGET;
+    let deadline = tokio::time::Instant::now() + budget;
     loop {
         match poll() {
             Ok(Some(status)) => {
                 debug!(?status, "pty child reaped");
-                return ReapOutcome::Reaped;
+                return ReapOutcome::Reaped(status);
             }
             Ok(None) => {}
             Err(err) => {
@@ -320,7 +307,7 @@ where
         if tokio::time::Instant::now() >= deadline {
             return ReapOutcome::Expired;
         }
-        tokio::time::sleep(PANE_KILL_POLL).await;
+        tokio::time::sleep_until(deadline.min(tokio::time::Instant::now() + PANE_KILL_POLL)).await;
     }
 }
 
@@ -397,7 +384,9 @@ fn hard_kill_pane_groups(groups: &[nix::unistd::Pid]) {
 
 #[cfg(test)]
 mod teardown_policy_tests {
-    use super::{ReapOutcome, join_thread_bounded, needs_termination, reap_bounded};
+    use super::{
+        EOF_REAP_BUDGET, ReapOutcome, join_thread_bounded, needs_termination, reap_bounded,
+    };
     use crate::actor::{PANE_KILL_POLL, PANE_KILL_REAP_BUDGET};
 
     /// A thread that never exits costs the budget and is then abandoned
@@ -459,13 +448,13 @@ mod teardown_policy_tests {
     async fn a_child_that_never_exits_expires_the_budget_instead_of_blocking() {
         let started = tokio::time::Instant::now();
         let mut polls = 0_u32;
-        let outcome = reap_bounded(|| {
+        let outcome = reap_bounded(PANE_KILL_REAP_BUDGET, || {
             polls += 1;
             Ok(None)
         })
         .await;
 
-        assert_eq!(outcome, ReapOutcome::Expired);
+        assert!(matches!(outcome, ReapOutcome::Expired));
         assert!(
             started.elapsed() >= PANE_KILL_REAP_BUDGET,
             "the reap must serve its whole budget before abandoning the child",
@@ -482,7 +471,7 @@ mod teardown_policy_tests {
     async fn a_child_that_exits_is_reaped_without_serving_the_budget() {
         let started = tokio::time::Instant::now();
         let mut remaining = 2_u32;
-        let outcome = reap_bounded(|| {
+        let outcome = reap_bounded(PANE_KILL_REAP_BUDGET, || {
             if remaining == 0 {
                 return Ok(Some(portable_pty::ExitStatus::with_exit_code(0)));
             }
@@ -491,7 +480,7 @@ mod teardown_policy_tests {
         })
         .await;
 
-        assert_eq!(outcome, ReapOutcome::Reaped);
+        assert!(matches!(outcome, ReapOutcome::Reaped(_)));
         assert!(
             started.elapsed() < PANE_KILL_REAP_BUDGET,
             "a child that exits early must not cost the whole budget",
@@ -500,11 +489,33 @@ mod teardown_policy_tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_failing_try_wait_gives_up_rather_than_spinning_out_the_budget() {
-        let outcome = reap_bounded(|| Err(std::io::Error::other("no such child"))).await;
-        assert_eq!(
-            outcome,
-            ReapOutcome::Failed,
+        let outcome = reap_bounded(PANE_KILL_REAP_BUDGET, || {
+            Err(std::io::Error::other("no such child"))
+        })
+        .await;
+        assert!(
+            matches!(outcome, ReapOutcome::Failed),
             "there is nothing to retry when the status itself is unreadable",
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn eof_reap_allows_other_tasks_to_run_and_keeps_the_exit_code() {
+        let ready = std::cell::Cell::new(false);
+        let (outcome, ()) = tokio::join!(
+            reap_bounded(EOF_REAP_BUDGET, || {
+                Ok(ready
+                    .get()
+                    .then(|| portable_pty::ExitStatus::with_exit_code(127)))
+            }),
+            async {
+                tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+                ready.set(true);
+            }
+        );
+        let ReapOutcome::Reaped(status) = outcome else {
+            panic!("exit status lost: {outcome:?}");
+        };
+        assert_eq!(status.exit_code(), 127);
     }
 }
