@@ -2,13 +2,13 @@
 use super::*;
 
 #[derive(Clone, Copy, Debug)]
-enum Change {
+pub(super) enum Change {
     Activation,
     Content,
     Reopen,
 }
 
-fn replace_owner(d: &mut Desk, change: Change) {
+pub(super) fn replace_owner(d: &mut Desk, change: Change) {
     let terminal = d.connection.shown.as_ref().unwrap().resource.clone();
     let original = d.inbox.questions.views[&terminal].1.questions[0].clone();
     match change {
@@ -53,6 +53,92 @@ fn replace_owner(d: &mut Desk, change: Change) {
     d.inbox.questions.reconcile();
 }
 
+fn queue_widget_edit(rt: &mut Runtime<Desk>, widget: &str, text: &str) {
+    assert!(rt.accessibility_action(
+        widget,
+        rune::accesskit::Action::ReplaceSelectedText,
+        Some(rune::accesskit::ActionData::Value(text.into())),
+    ));
+}
+
+#[test]
+fn path_addressed_input_edit_uses_the_live_widgets_owner() {
+    let (client, mut rt) = fixture((393.0, 852.0), "input");
+    let current = owner(&rt.state).clone();
+    let widget = current.field_key("text");
+    reveal(&mut rt, &widget);
+    assert!(rt.accessibility_action(&widget, rune::accesskit::Action::Focus, None));
+    settle(&mut rt);
+    queue_widget_edit(&mut rt, &widget, "current widget edit");
+    rt.frame(0.0);
+    settle(&mut rt);
+    assert_eq!(
+        rt.state
+            .inbox
+            .questions
+            .draft(&current)
+            .unwrap()
+            .text("text"),
+        "current widget edit"
+    );
+    assert!(rt.state.inbox.questions.pending.is_empty());
+    assert!(!rt.state.inbox.questions.status.contains_key(&current));
+    assert!(!rt.state.inbox.questions.error.contains_key(&current));
+    no_input(&client);
+}
+
+#[test]
+fn queued_path_addressed_widget_edits_choices_and_answers_cannot_retarget_a_replacement() {
+    for change in [Change::Activation, Change::Content, Change::Reopen] {
+        for (kind, control) in [
+            ("input", Widget::Field("text")),
+            ("ask", Widget::Choice("false", "one")),
+            ("confirm", Widget::Action("yes")),
+        ] {
+            let (client, mut rt) = fixture((393.0, 852.0), kind);
+            let old = owner(&rt.state).clone();
+            let widget = old.widget(control);
+            reveal(&mut rt, &widget);
+            if kind == "input" {
+                assert!(rt.accessibility_action(&widget, rune::accesskit::Action::Focus, None));
+                settle(&mut rt);
+                queue_widget_edit(&mut rt, &widget, "stale widget edit");
+            } else {
+                assert!(rt.accessibility_action(&widget, rune::accesskit::Action::Click, None));
+            }
+            // These actions address the old widget, unlike global IME input,
+            // which is routed to whichever field is focused when it executes.
+            replace_owner(&mut rt.state, change);
+            let current = owner(&rt.state).clone();
+            assert_ne!(old, current, "{kind} {change:?}");
+            let mounted = rt.elements();
+            assert!(
+                mounted.iter().any(|e| {
+                    e.key.as_deref() == Some(widget.as_str()) && !e.exiting && !e.inert
+                })
+            );
+            let replacement = current.widget(control);
+            assert!(
+                !mounted
+                    .iter()
+                    .any(|e| { e.key.as_deref() == Some(replacement.as_str()) && !e.exiting })
+            );
+            // Dispatch the still-mounted captured callback before a host settle
+            // can rebuild the tree and replace focus. No invalidation/update or
+            // poll is interposed in this deliberately controlled fixture.
+            rt.frame(0.0);
+            settle(&mut rt);
+            let current_draft = rt.state.inbox.questions.draft(&current).unwrap();
+            assert!(current_draft.choices.is_empty(), "{kind} {change:?}");
+            assert_eq!(current_draft.text("text"), "", "{kind} {change:?}");
+            assert!(!rt.state.inbox.questions.status.contains_key(&current));
+            assert!(!rt.state.inbox.questions.error.contains_key(&current));
+            assert!(rt.state.inbox.questions.pending.is_empty());
+            no_input(&client);
+        }
+    }
+}
+
 #[test]
 fn queued_real_widget_edits_choices_and_answers_cannot_retarget_a_replacement() {
     for change in [Change::Activation, Change::Content, Change::Reopen] {
@@ -72,8 +158,8 @@ fn queued_real_widget_edits_choices_and_answers_cannot_retarget_a_replacement() 
             } else {
                 assert!(rt.accessibility_action(&widget, rune::accesskit::Action::Click, None));
             }
-            // No frame/update: the queued event still holds the mounted old
-            // handler when the authoritative local question is replaced.
+            // Global IME is routed after this helper's pre-input replacement
+            // commit. Retired editor focus must not move into a new question.
             replace_owner(&mut rt.state, change);
             let current = owner(&rt.state).clone();
             assert_ne!(old, current, "{kind} {change:?}");

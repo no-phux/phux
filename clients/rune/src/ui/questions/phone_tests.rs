@@ -8,6 +8,7 @@ use rune::{Runtime, TouchPhase};
 use super::*;
 
 mod a11y;
+mod focus_retirement;
 mod form;
 mod opaque_keys;
 mod ownership;

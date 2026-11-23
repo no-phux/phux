@@ -25,8 +25,31 @@ const UNSUPPORTED: &str =
 /// Where a control's press goes.
 struct At<'a> {
     owner: &'a Owner,
+    retire_to: String,
     held: bool,
     phone: bool,
+}
+
+pub(super) const INBOX_FOCUS: &str = "inbox-question-focus";
+
+pub(super) fn pane_focus(terminal: &ResourceId) -> String {
+    format!("pane-host-{terminal}")
+}
+
+/// A surviving region can receive retired editor focus, never text or an
+/// answer. Negative Tab order preserves normal initial focus/navigation.
+pub(super) fn retirement_target(element: El, key: impl Into<String>) -> El {
+    let key = key.into();
+    element
+        .key(key.clone())
+        .focusable(true)
+        .tab_index(-1)
+        // focus_return prefers a selected descendant; select the target itself
+        // so it cannot resolve through this region to an answer control.
+        .focus_selected(true)
+        .on_key(move |_: &mut Desk, event, tx| {
+            tx.focused() == Some(key.as_str()) && event.key == rune::Key::Enter
+        })
 }
 
 impl At<'_> {
@@ -55,6 +78,11 @@ pub fn panel(desk: &Desk, terminal: &ResourceId, ask: &Ask, p: &Tokens) -> El {
         .expect("open question owner");
     let at = At {
         owner,
+        retire_to: if desk.inbox.open {
+            INBOX_FOCUS.into()
+        } else {
+            pane_focus(terminal)
+        },
         held: questions.held(owner),
         phone: desk.phone.is_some(),
     };
@@ -444,6 +472,7 @@ fn field(at: &At, draft: &Draft, id: &str, label: &str, multiline: bool, t: &Tok
     let font = t.ty.body;
     let mut input = text_input(edit, font)
         .key(at.owner.field_key(id))
+        .focus_return(at.retire_to.clone())
         .grow(1.0)
         .color(ink.paint())
         .label(label.to_owned())
