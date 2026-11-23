@@ -5,6 +5,7 @@ use super::*;
 use crate::launch::Resolved;
 
 mod evolution;
+mod ownership;
 
 fn question(kind: &str, fields: Value) -> NativeQuestion {
     NativeQuestion {
