@@ -1,10 +1,10 @@
-# Plugin API
+# Plugin API: build extensions for the phux terminal multiplexer
 
-A plugin is a directory with a `phux-plugin.toml` manifest that adds to
-phux: actions for the palette and your keys, panes, status-bar widgets,
+phux is a terminal multiplexer with a plugin API, where a plugin is a
+directory with a `phux-plugin.toml` manifest whose commands run as
+separate processes. It can add actions, panes, status-bar widgets,
 sidebar sections, themes, hooks, agent declarations, and long-running
-startup sidecars. Install one to pick up someone else's workflow, or
-write one to package your own.
+startup sidecars.
 
 ```sh
 phux plugin install someone/phux-plugin
@@ -408,7 +408,6 @@ per-plugin keys come later. Read a plugin before you install it.
 - `phux plugin validate` checks every configured manifest and says what
   is wrong with one that fails, including an event hook that can never
   fire.
-- `phux plugin list` shows which plugins are enabled.
 - `phux config keys` lists plugin keys with `plugin <id>` as their source.
 - `phux plugin log` lists the newest runs of every action and hook, and
   startup lifecycle lines, oldest first, with exit status and duration.

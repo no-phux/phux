@@ -22,7 +22,9 @@ Start with [Build on phux](./building.md).
   [`wire-schema.json`](./spec/wire-schema.json) is generated from the codec.
 - [Program Status Protocol (OSC 7501): report status from any program](./program-protocol.md).
   [Any program can report status](./any-program-status.md) is a short emitter.
-- [Plugin API](./plugins.md). A `phux-plugin.toml` manifest.
+- [Plugin API: build extensions for the phux terminal multiplexer](./plugins.md).
+  A plugin is a directory with a `phux-plugin.toml` manifest whose commands
+  run as separate processes.
 - [Publish your own resource kind](./applications.md#publish-your-own-kind).
   `phux agent doc serve` over a pipe; `[[producers]]` keeps it running.
 - [Agent integrations](./agents.md#agent-setup). Includes Claude Code, pi,
