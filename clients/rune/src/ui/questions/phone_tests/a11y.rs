@@ -18,7 +18,7 @@ fn keyed<'a>(tree: &'a serde_json::Value, key: &str) -> Option<&'a serde_json::V
 fn acp_choices_expose_one_name_and_keep_checkbox_radio_activation() {
     let (client, mut rt) = fixture((320.0, 568.0), "ask");
     for (item, role) in [("false", "radio-button"), ("true", "check-box")] {
-        let key = key(&rt, &format!("{item}-one"));
+        let key = key(&rt, Widget::Choice(item, "one"));
         reveal(&mut rt, &key);
         let tree = rt.accessibility_json();
         let node = keyed(&tree, &key).unwrap();

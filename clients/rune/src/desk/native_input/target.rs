@@ -123,6 +123,14 @@ impl Field {
         })
     }
 
+    pub(super) fn cancel_composition(&self, d: &mut Desk) {
+        if let Self::Question { owner, field, .. } = self {
+            d.inbox.questions.cancel_field_composition(owner, field);
+        } else if let Some(edit) = self.edit_mut(d) {
+            edit.cancel_composition();
+        }
+    }
+
     pub(super) fn changed(&self, d: &mut Desk, tx: &mut Tx) {
         match self {
             Self::Palette => d.palette_edited(),

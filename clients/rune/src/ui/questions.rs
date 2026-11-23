@@ -15,7 +15,7 @@ use super::inbox::{field_shell, touch_input};
 use super::tokens::{Paint, Tokens};
 use crate::activity::Ask;
 use crate::desk::Desk;
-use crate::desk::questions::{CLOSED, Draft, Owner, Questions, response};
+use crate::desk::questions::{CLOSED, Draft, Owner, Questions, Widget, response};
 
 /// The agent session's view isn't here: only a streamed pane brings it.
 const UNLOADED: &str = "Show its pane to load this ACP question.";
@@ -89,7 +89,7 @@ pub fn panel(desk: &Desk, terminal: &ResourceId, ask: &Ask, p: &Tokens) -> El {
     if matches!(question.kind.as_str(), "input" | "editor" | "ask" | "form") {
         actions = actions.child(action(
             &at,
-            "submit",
+            Widget::Action("submit"),
             "Submit response",
             None,
             Kind::Primary,
@@ -99,7 +99,7 @@ pub fn panel(desk: &Desk, terminal: &ResourceId, ask: &Ask, p: &Tokens) -> El {
     let cancel = Some(json!({"cancelled": true}));
     panel = panel.child(actions.child(action(
         &at,
-        "cancel",
+        Widget::Action("cancel"),
         "Cancel request",
         cancel,
         Kind::Quiet,
@@ -159,7 +159,7 @@ fn controls(mut panel: El, draft: &Draft, at: &At, t: &Tokens) -> El {
                 .gap(t.space.icon_gap)
                 .child(action(
                     at,
-                    "yes",
+                    Widget::Action("yes"),
                     "Confirm",
                     Some(json!({"confirmed": true})),
                     Kind::Primary,
@@ -167,7 +167,7 @@ fn controls(mut panel: El, draft: &Draft, at: &At, t: &Tokens) -> El {
                 ))
                 .child(action(
                     at,
-                    "no",
+                    Widget::Action("no"),
                     "Decline",
                     Some(json!({"confirmed": false})),
                     Kind::Quiet,
@@ -180,7 +180,14 @@ fn controls(mut panel: El, draft: &Draft, at: &At, t: &Tokens) -> El {
             for option in &question.options {
                 let answer = Some(json!({"option_id": option.id}));
                 let label = labelled(option);
-                list = list.child(action(at, &option.id, &label, answer, Kind::Quiet, t));
+                list = list.child(action(
+                    at,
+                    Widget::Option(&option.id),
+                    &label,
+                    answer,
+                    Kind::Quiet,
+                    t,
+                ));
             }
             panel.child(list)
         }
@@ -274,10 +281,17 @@ enum Kind {
 
 /// A button that answers (`response`) or submits the draft (`None`). While
 /// the question is held, disabled (the kit's look), never hidden.
-fn action(at: &At, id: &str, label: &str, answer: Option<Value>, kind: Kind, t: &Tokens) -> El {
+fn action(
+    at: &At,
+    widget: Widget<'_>,
+    label: &str,
+    answer: Option<Value>,
+    kind: Kind,
+    t: &Tokens,
+) -> El {
     let owner = at.owner.clone();
     let press = move |d: &mut Desk| d.answer_question(&owner, answer.clone());
-    let key = at.owner.widget(id);
+    let key = at.owner.widget(widget);
     if at.phone {
         let on = matches!(kind, Kind::Primary);
         let row = touch_row(at, key, label, on, t).role("button");
@@ -355,7 +369,7 @@ fn choices(
         let (owner, item, id) = (at.owner.clone(), item.to_owned(), option.id.clone());
         move |d: &mut Desk| d.inbox.questions.choose(&owner, &item, &id, multi)
     };
-    let key = |option: &NativeOption| at.owner.widget(&format!("{item}-{}", option.id));
+    let key = |option: &NativeOption| at.owner.widget(Widget::Choice(item, &option.id));
     if at.phone {
         return touch_choices(at, chosen, offered, multi, t, pick, key);
     }
@@ -386,7 +400,9 @@ fn choices(
         }
         group = group.item(radio);
     }
-    group.build(&t.kit).key(at.owner.widget(item))
+    group
+        .build(&t.kit)
+        .key(at.owner.widget(Widget::Choices(item)))
 }
 
 /// A phone's options: one wrapping touch row each, a radio or a checkbox.

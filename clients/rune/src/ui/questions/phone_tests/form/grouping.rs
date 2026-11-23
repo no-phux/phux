@@ -76,13 +76,13 @@ fn desktop_form_keeps_its_flat_layout_and_original_spacing() {
             .unwrap();
         assert_eq!(heading.parent, description.parent, "flat panel children");
         gap(
-            crate::ui::element(&rt, &key(&rt, "mode")).rect,
+            crate::ui::element(&rt, &key(&rt, Widget::Choices("mode"))).rect,
             heading.rect,
             s.s2,
         );
         gap(heading.rect, description.rect, s.s2);
         gap(
-            crate::ui::element(&rt, &key(&rt, "tags-\"layout\"")).rect,
+            crate::ui::element(&rt, &key(&rt, Widget::Choice("tags", "\"layout\""))).rect,
             crate::ui::element(&rt, &key(&rt, SUBMIT_KEY)).rect,
             s.s2,
         );

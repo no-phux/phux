@@ -21,9 +21,9 @@ const ACTIONS: [(&str, &str); 7] = [
 ];
 
 fn write_field(rt: &mut Runtime<Desk>, id: &str) {
-    let part = format!("field-{id}");
-    let key = key(rt, &part);
-    show(rt, &part, true);
+    let part = Widget::Field(id);
+    let key = key(rt, part);
+    show(rt, part, true);
     assert!(rt.accessibility_action(&key, rune::accesskit::Action::Focus, None));
     settle(rt);
     rt.ime(rune::Ime::Commit(NOTE.into()));
@@ -38,8 +38,8 @@ fn ready(view: View, kind: &str) -> (Arc<Client>, Runtime<Desk>) {
     match kind {
         "input" | "editor" => write_field(&mut rt, "text"),
         "ask" => {
-            activate(&mut rt, "false-one");
-            activate(&mut rt, "true-one");
+            activate(&mut rt, Widget::Choice("false", "one"));
+            activate(&mut rt, Widget::Choice("true", "one"));
             write_field(&mut rt, "false");
         }
         "form" => {
@@ -136,9 +136,14 @@ fn held_touch(view: View, kind: &str, action: &str, reason: Held, keyboard: bool
     let (client, mut rt) = ready(view, kind);
     rt.update(|d, _| d.phone.as_mut().unwrap().keyboard = keyboard);
     hold(&mut rt, reason);
-    let key = key(&rt, action);
+    let widget = if matches!(kind, "select" | "permission") && action != "cancel" {
+        Widget::Option(action)
+    } else {
+        Widget::Action(action)
+    };
+    let key = key(&rt, widget);
     let context = format!("{} {kind} {action} {reason:?}", view.name);
-    show(&mut rt, action, true);
+    show(&mut rt, widget, true);
     let before = crate::ui::element(&rt, &key);
     let draft = draft_state(&rt);
     let pending = rt.state.inbox.questions.pending.clone();

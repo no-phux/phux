@@ -2,6 +2,7 @@ use super::*;
 use phux_protocol::native_agent::{NativeCapabilities, NativeQuestion, NativeView};
 use rune::accesskit::Action as Accessibility;
 
+mod composition;
 mod question_owners;
 mod retirement;
 

@@ -9,6 +9,7 @@ use super::*;
 
 mod a11y;
 mod form;
+mod opaque_keys;
 mod ownership;
 
 const ID: &str = "acp-question:phone";
@@ -110,11 +111,11 @@ fn draft(d: &Desk) -> &Draft {
     d.inbox.questions.draft(owner(d)).unwrap()
 }
 
-fn key(rt: &Runtime<Desk>, part: &str) -> String {
+fn key(rt: &Runtime<Desk>, part: Widget<'_>) -> String {
     owner(&rt.state).widget(part)
 }
 
-fn touch_part(rt: &mut Runtime<Desk>, part: &str, finish: TouchPhase) {
+fn touch_part(rt: &mut Runtime<Desk>, part: Widget<'_>, finish: TouchPhase) {
     let key = key(rt, part);
     touch(rt, &key, finish);
 }
@@ -166,7 +167,7 @@ fn phone_acp_controls_wrap_and_scroll_to_full_touch_targets() {
                 .elements()
                 .into_iter()
                 .filter_map(|e| e.key)
-                .filter(|key| key.starts_with(&owner(&rt.state).widget("")))
+                .filter(|key| key.starts_with(&owner(&rt.state).widget_prefix()))
                 .collect();
             assert!(keys.len() >= 2, "{kind} exposes its controls");
             for key in keys {
@@ -199,15 +200,15 @@ fn phone_acp_controls_wrap_and_scroll_to_full_touch_targets() {
 #[test]
 fn phone_acp_finished_touch_selects_explicitly_and_centers_the_input_caret() {
     let (client, mut rt) = fixture((320.0, 568.0), "ask");
-    touch_part(&mut rt, "false-two", TouchPhase::Ended);
-    touch_part(&mut rt, "true-one", TouchPhase::Ended);
-    touch_part(&mut rt, "true-two", TouchPhase::Ended);
+    touch_part(&mut rt, Widget::Choice("false", "two"), TouchPhase::Ended);
+    touch_part(&mut rt, Widget::Choice("true", "one"), TouchPhase::Ended);
+    touch_part(&mut rt, Widget::Choice("true", "two"), TouchPhase::Ended);
     let selected = draft(&rt.state);
     assert_eq!(selected.choices["false"], ["two"]);
     assert_eq!(selected.choices["true"], ["one", "two"]);
     no_input(&client);
     let (client, mut rt) = fixture((320.0, 280.0), "input");
-    let key = key(&rt, "field-text");
+    let key = key(&rt, Widget::Field("text"));
     touch(&mut rt, &key, TouchPhase::Ended);
     rt.ime(rune::Ime::Commit("reviewed".into()));
     settle(&mut rt);
@@ -242,7 +243,7 @@ fn phone_acp_visual_review_frames() {
                         .iter()
                         .any(|e| e.text.as_deref() == Some(LONG))
                 );
-                let cancel = key(&rt, "cancel");
+                let cancel = key(&rt, Widget::Action("cancel"));
                 assert!(
                     rt.elements()
                         .iter()
@@ -250,10 +251,10 @@ fn phone_acp_visual_review_frames() {
                 );
                 if size.1 == 280 {
                     let control = match kind {
-                        "select" => "one",
-                        "ask" => "false-one",
-                        "form" => "field-note",
-                        _ => "field-text",
+                        "select" => Widget::Option("one"),
+                        "ask" => Widget::Choice("false", "one"),
+                        "form" => Widget::Field("note"),
+                        _ => Widget::Field("text"),
                     };
                     let control = key(&rt, control);
                     rt.update(|_, tx| tx.scroll_into_view(control));

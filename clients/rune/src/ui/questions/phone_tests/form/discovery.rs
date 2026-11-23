@@ -43,7 +43,7 @@ fn initial_action_names(rt: &Runtime<Desk>) {
 }
 
 /// Unlike `activate`, this must never reveal or scroll the selected option.
-fn choose_in_place(rt: &mut Runtime<Desk>, part: &str) {
+fn choose_in_place(rt: &mut Runtime<Desk>, part: Widget<'_>) {
     let key = key(rt, part);
     whole(rt, &key, true);
     let (x, y) = rt.find(&key).unwrap();
@@ -60,8 +60,8 @@ fn standard_phone_form_discloses_both_action_names_before_scrolling() {
         for light in [false, true] {
             let (client, mut rt) = scene(view, false, false, light);
             initial_action_names(&rt);
-            choose_in_place(&mut rt, "mode-\"safe\"");
-            choose_in_place(&mut rt, "tags-\"input\"");
+            choose_in_place(&mut rt, Widget::Choice("mode", "\"safe\""));
+            choose_in_place(&mut rt, Widget::Choice("tags", "\"input\""));
             initial_action_names(&rt);
             let draft = draft(&rt.state);
             assert_eq!(draft.choices["mode"], ["\"safe\""]);

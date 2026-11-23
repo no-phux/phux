@@ -174,3 +174,33 @@ fn replacing_the_entire_local_state_never_reuses_a_widget_generation() {
         .replace_text("stale runtime");
     assert_eq!(replacement.draft(&current).unwrap().text("text"), "first");
 }
+
+#[test]
+fn widget_roles_and_opaque_components_are_unambiguous_slash_free_segments() {
+    let (questions, terminal, _) = two_owners(true);
+    let owner = questions.owner(&terminal, "acp-question:1").unwrap();
+    let widgets = [
+        Widget::Action("x"),
+        Widget::Action("cancel"),
+        Widget::Option("cancel"),
+        Widget::Choices("x"),
+        Widget::Choices("x/items/item0"),
+        Widget::Field("x"),
+        Widget::Choices("field-x"),
+        Widget::Choice("a-b", "c"),
+        Widget::Choice("a", "b-c"),
+        Widget::Choice("a/", "日本%\"/b"),
+        Widget::Field("日本%\"/b"),
+    ];
+    let mut keys: Vec<_> = widgets
+        .into_iter()
+        .map(|widget| owner.widget(widget))
+        .collect();
+    keys.push(owner.form_key("日本%\"/b"));
+    assert!(keys.iter().all(|key| !key.contains('/')));
+    assert_eq!(
+        keys.len(),
+        keys.iter().collect::<std::collections::HashSet<_>>().len()
+    );
+    assert!(owner.form_key("x").starts_with("acp-form-"));
+}

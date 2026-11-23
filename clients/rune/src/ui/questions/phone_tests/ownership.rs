@@ -57,9 +57,9 @@ fn replace_owner(d: &mut Desk, change: Change) {
 fn queued_real_widget_edits_choices_and_answers_cannot_retarget_a_replacement() {
     for change in [Change::Activation, Change::Content, Change::Reopen] {
         for (kind, control) in [
-            ("input", "field-text"),
-            ("ask", "false-one"),
-            ("confirm", "yes"),
+            ("input", Widget::Field("text")),
+            ("ask", Widget::Choice("false", "one")),
+            ("confirm", Widget::Action("yes")),
         ] {
             let (client, mut rt) = fixture((393.0, 852.0), kind);
             let old = owner(&rt.state).clone();
@@ -156,12 +156,15 @@ fn coexisting_same_id_widgets_have_distinct_keys_and_choose_only_their_owner() {
         "coexisting controls may not share mount identity"
     );
     for owner in [&first, &second] {
-        assert!(rt.find(&owner.widget("false-one")).is_some());
+        assert!(
+            rt.find(&owner.widget(Widget::Choice("false", "one")))
+                .is_some()
+        );
         assert!(rt.find(&owner.field_key("false")).is_some());
-        assert!(rt.find(&owner.widget("submit")).is_some());
+        assert!(rt.find(&owner.widget(Widget::Action("submit"))).is_some());
     }
     assert!(rt.accessibility_action(
-        &first.widget("false-one"),
+        &first.widget(Widget::Choice("false", "one")),
         rune::accesskit::Action::Click,
         None
     ));

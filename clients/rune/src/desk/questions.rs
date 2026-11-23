@@ -12,7 +12,7 @@ use phux_protocol::native_agent::{
     NativeDisposition, NativeIntent, NativeOption, NativeQuestion, NativeView,
 };
 use rune::TextEdit;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use super::Desk;
 
@@ -90,23 +90,49 @@ pub struct Owner {
     generation: u64,
 }
 
+/// Widget roles and provider IDs are separate components, never reserved names.
+#[derive(Clone, Copy, Debug)]
+pub enum Widget<'a> {
+    Action(&'a str),
+    Option(&'a str),
+    Choices(&'a str),
+    Choice(&'a str, &'a str),
+    Field(&'a str),
+}
+
 impl Owner {
     pub fn terminal(&self) -> &ResourceId {
         &self.terminal
     }
 
+    pub fn widget_prefix(&self) -> String {
+        format!("acp-{}-", self.generation)
+    }
+
     /// Widget identity uses the local generation, not a provider's local id.
-    pub fn widget(&self, part: &str) -> String {
-        format!("acp-{}-{part}", self.generation)
+    pub fn widget(&self, widget: Widget<'_>) -> String {
+        let parts = match widget {
+            Widget::Action(id) => json!(["action", id]),
+            Widget::Option(id) => json!(["option", id]),
+            Widget::Choices(item) => json!(["choices", item]),
+            Widget::Choice(item, option) => json!(["choice", item, option]),
+            Widget::Field(field) => json!(["field", field]),
+        };
+        format!("{}{}", self.widget_prefix(), key_segment(parts))
     }
 
     pub fn field_key(&self, field: &str) -> String {
-        self.widget(&format!("field-{field}"))
+        self.widget(Widget::Field(field))
     }
 
     pub fn form_key(&self, field: &str) -> String {
-        format!("acp-form-{}-{field}", self.generation)
+        format!("acp-form-{}-{}", self.generation, key_segment(json!(field)))
     }
+}
+
+/// Rune appends keys verbatim to full paths. Encode even JSON's literal `/`.
+fn key_segment(value: Value) -> String {
+    url::form_urlencoded::byte_serialize(value.to_string().as_bytes()).collect()
 }
 
 #[derive(Default)]
@@ -181,6 +207,21 @@ impl Questions {
             return None;
         }
         self.drafts.get_mut(owner)?.texts.get_mut(field)
+    }
+
+    /// Lifecycle cleanup may retire only this exact owner's transient preedit,
+    /// even while held. It must not grant ordinary access to disabled content.
+    pub(in crate::desk) fn cancel_field_composition(&mut self, owner: &Owner, field: &str) {
+        if self.draft(owner).is_none() {
+            return;
+        }
+        if let Some(edit) = self
+            .drafts
+            .get_mut(owner)
+            .and_then(|draft| draft.texts.get_mut(field))
+        {
+            edit.cancel_composition();
+        }
     }
 
     pub fn text_mut(&mut self, owner: &Owner, field: &str) -> &mut TextEdit {

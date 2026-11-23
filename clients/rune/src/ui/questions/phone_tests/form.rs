@@ -7,9 +7,9 @@ mod held_actions;
 mod render;
 
 const NOTE: &str = "Keep pairing intact; verify input and pane layout.";
-const NOTE_KEY: &str = "field-note";
-const SUBMIT_KEY: &str = "submit";
-const CANCEL_KEY: &str = "cancel";
+const NOTE_KEY: Widget<'static> = Widget::Field("note");
+const SUBMIT_KEY: Widget<'static> = Widget::Action("submit");
+const CANCEL_KEY: Widget<'static> = Widget::Action("cancel");
 
 #[derive(Clone, Copy)]
 struct View {
@@ -154,7 +154,7 @@ fn whole(rt: &Runtime<Desk>, key: &str, phone: bool) {
     }
 }
 
-fn show(rt: &mut Runtime<Desk>, part: &str, phone: bool) {
+fn show(rt: &mut Runtime<Desk>, part: Widget<'_>, phone: bool) {
     let key = key(rt, part);
     rt.update(|_, tx| {
         tx.scroll_into_view(&key);
@@ -164,15 +164,15 @@ fn show(rt: &mut Runtime<Desk>, part: &str, phone: bool) {
     whole(rt, &key, phone);
 }
 
-fn activate(rt: &mut Runtime<Desk>, part: &str) {
+fn activate(rt: &mut Runtime<Desk>, part: Widget<'_>) {
     show(rt, part, true);
     touch_part(rt, part, TouchPhase::Ended);
 }
 
 fn select(rt: &mut Runtime<Desk>, stress: bool) {
-    activate(rt, "mode-\"safe\"");
+    activate(rt, Widget::Choice("mode", "\"safe\""));
     let tag = if stress { "a" } else { "input" };
-    activate(rt, &format!("tags-\"{tag}\""));
+    activate(rt, Widget::Choice("tags", &format!("\"{tag}\"")));
     let draft = draft(&rt.state);
     assert_eq!(draft.choices["mode"], ["\"safe\""]);
     assert_eq!(draft.choices["tags"], [format!("\"{tag}\"")]);
@@ -210,7 +210,7 @@ fn edit(rt: &mut Runtime<Desk>, view: View) {
 fn heading(rt: &mut Runtime<Desk>) {
     rt.update(|_, tx| tx.scroll_to_instant("inbox-scroll", 0.0, 0.0));
     settle(rt);
-    let fast = crate::ui::element(rt, &key(rt, "mode-\"fast\"")).rect;
+    let fast = crate::ui::element(rt, &key(rt, Widget::Choice("mode", "\"fast\""))).rect;
     let field = crate::ui::element(rt, &key(rt, NOTE_KEY)).rect;
     let title = rt
         .elements()
@@ -259,11 +259,11 @@ fn acp_form_fixture_choices_draft_and_final_controls_keep_ownership() {
             let (client, mut rt) = scene(view, false, true, false);
             rt.update(|d, _| d.phone.as_mut().unwrap().keyboard = keyboard);
             settle(&mut rt);
-            activate(&mut rt, "mode-\"fast\"");
-            activate(&mut rt, "mode-\"safe\"");
-            activate(&mut rt, "tags-\"input\"");
-            activate(&mut rt, "tags-\"layout\"");
-            activate(&mut rt, "tags-\"layout\"");
+            activate(&mut rt, Widget::Choice("mode", "\"fast\""));
+            activate(&mut rt, Widget::Choice("mode", "\"safe\""));
+            activate(&mut rt, Widget::Choice("tags", "\"input\""));
+            activate(&mut rt, Widget::Choice("tags", "\"layout\""));
+            activate(&mut rt, Widget::Choice("tags", "\"layout\""));
             assert_eq!(draft(&rt.state).choices["mode"], ["\"safe\""]);
             assert_eq!(draft(&rt.state).choices["tags"], ["\"input\""]);
             edit(&mut rt, view);
