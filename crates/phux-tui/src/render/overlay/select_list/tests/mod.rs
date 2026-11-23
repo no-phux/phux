@@ -86,7 +86,8 @@ fn painted_selection(sl: &SelectList, w: u16, h: u16) -> Option<String> {
             .filter(|&x| buf[(x, y)].bg == sl.theme.selection_bg)
             .map(|x| buf[(x, y)].symbol())
             .collect();
-        let row = row.trim();
+        // The accent bar beside the selected row shares its fill.
+        let row = row.trim().trim_start_matches('▌');
         row.starts_with("item-")
             .then(|| row.split_whitespace().next().unwrap_or_default().to_owned())
     })
@@ -227,18 +228,29 @@ fn filtering_ranks_best_first_and_keeps_ties_in_source_order() {
 }
 
 #[test]
-fn headers_group_an_empty_query_and_vanish_when_filtering() {
+fn headers_group_results_and_follow_their_best_row() {
     let mut sl = grouped();
     assert_eq!(sl.filtered_indices(), vec![0, 1, 2, 3]);
     // Opens on the first selectable row; Down skips the next header.
     assert_eq!(commit(&mut sl).as_deref(), Some("split-pane"));
     key(&mut sl, PhysicalKey::ArrowDown);
     assert_eq!(commit(&mut sl).as_deref(), Some("new-window"));
-    type_str(&mut sl, "s");
+    // A typed query keeps the bands: each match under its own header, and
+    // the band holding the best match first.
+    type_str(&mut sl, "window");
+    assert_eq!(
+        sl.filtered_indices(),
+        vec![2, 3],
+        "only Window's band matches"
+    );
+    let mut sl = grouped();
+    type_str(&mut sl, "e");
+    let shown = sl.filtered_indices();
+    assert!(sl.items[shown[0]].is_header(), "a band leads: {shown:?}");
+    assert_eq!(shown.len(), 4, "both bands, each under its header");
     assert!(
-        sl.filtered_indices()
-            .iter()
-            .all(|&i| !sl.items[i].is_header())
+        commit(&mut sl).is_some(),
+        "the cursor rests on a row, never a band"
     );
 
     // A header-only list, a trailing header under End, and an empty

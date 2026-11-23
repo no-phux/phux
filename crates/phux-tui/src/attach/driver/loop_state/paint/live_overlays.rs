@@ -23,6 +23,36 @@ impl super::super::SessionLoop {
         self.refresh_live_overlay(out, sidebar, key, &items);
     }
 
+    /// Rebuild and repaint the command palette, if it is open: a host
+    /// inventory brought sessions the attach snapshot did not know.
+    pub(in crate::attach::driver::loop_state) fn refresh_command_palette<
+        W: crate::attach::RenderSink,
+    >(
+        &mut self,
+        out: &mut W,
+        sidebar: Option<SidebarReservation>,
+    ) {
+        if !self.overlays.is_active() {
+            return;
+        }
+        let peers = self.peers.inputs(&self.review);
+        let items = crate::attach::input_dispatch::palette_rows(
+            &crate::attach::input_dispatch::PaletteSources {
+                keybindings: self.settings.keybindings.as_ref(),
+                plugin_actions: &self.settings.plugin_actions,
+                plugin_panes: &self.settings.plugin_panes,
+                workspace: &self.mirror.workspace,
+                peers: &peers,
+                names: crate::attach::input_dispatch::WindowNames {
+                    panes: &self.mirror.panes,
+                    agent_meta: &self.mirror.agent_meta.records,
+                },
+            },
+        );
+        let key = crate::attach::input_dispatch::PALETTE_LIVE_KEY;
+        self.refresh_live_overlay(out, sidebar, key, &items);
+    }
+
     /// Rebuild and repaint the agent-fleet dashboard, if it is open.
     pub(in crate::attach::driver::loop_state) fn refresh_fleet<W: crate::attach::RenderSink>(
         &mut self,

@@ -4,6 +4,7 @@
 use phux_client_runtime::control::{PaneDescriptor, SessionDescriptor, Topology};
 use phux_client_runtime::project_groups::{Block, GroupRow, group_rows};
 use phux_client_runtime::session_order;
+use phux_design::palette::{Fields, Query};
 use phux_protocol::ids::{ResourceId, SessionKey};
 
 use crate::addressable::Addressable;
@@ -351,48 +352,29 @@ pub fn pane_label(pane: &PaneDescriptor) -> String {
     )
 }
 
-/// Fuzzy subsequence match of `query` in `text`, case-insensitive. Rewards
-/// word starts and runs; `None` when a query character is missing.
+/// `query` against `text` with the matcher every phux palette shares
+/// ([`phux_design::palette`]): every word must match, in any order, as
+/// fragments or initials, and the matched characters are placed where they
+/// read best (word starts, runs). `None` when some word does not match.
 pub fn score(query: &str, text: &str) -> Option<(i32, Vec<usize>)> {
-    let query: Vec<char> = query
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .flat_map(char::to_lowercase)
-        .collect();
-    if query.is_empty() {
-        return Some((0, Vec::new()));
-    }
-    let chars: Vec<char> = text.chars().collect();
-    let mut matched = Vec::with_capacity(query.len());
-    let mut score = 0;
-    let mut at = 0;
-    let mut previous: Option<usize> = None;
-    for wanted in query {
-        let found =
-            (at..chars.len()).find(|&i| chars[i].to_lowercase().eq(std::iter::once(wanted)))?;
-        let word_start = found == 0 || !chars[found - 1].is_alphanumeric();
-        score += 1;
-        if word_start {
-            score += 8;
-        }
-        if previous.is_some_and(|p| p + 1 == found) {
-            score += 5;
-        } else if let Some(p) = previous {
-            score -= ((found - p) as i32).min(6);
-        }
-        matched.push(found);
-        previous = Some(found);
-        at = found + 1;
-    }
-    // Shorter titles win ties: the match covers more of them.
-    score -= (chars.len() as i32 / 8).min(4);
-    Some((score, matched))
+    let fields = Fields {
+        title: text,
+        ..Fields::default()
+    };
+    phux_design::palette::score(&Query::parse(query), &fields)
+        .map(|hit| (hit.score, hit.title_positions))
 }
 
-/// How well `item` matches `query`: its title, else (less) its detail.
+/// How well `item` matches `query`: its title (lit), else, for less, its
+/// detail (the session, or an action's keys).
 fn scored(item: &Item, query: &str) -> Option<(i32, Vec<usize>)> {
-    score(query, &item.title)
-        .or_else(|| score(query, &item.detail).map(|(s, _)| (s - 6, Vec::new())))
+    let fields = Fields {
+        title: &item.title,
+        aliases: &[],
+        detail: Some(&item.detail),
+    };
+    phux_design::palette::score(&Query::parse(query), &fields)
+        .map(|hit| (hit.score, hit.title_positions))
 }
 
 /// The items matching `query`, best first. An empty query keeps list order.

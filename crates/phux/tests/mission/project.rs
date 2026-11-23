@@ -45,7 +45,7 @@ fn agent_reports_and_a_non_zero_exit_project_into_task_state() {
     assert_valid(&blocked);
     report(&harness.guard, pane, "working");
     wait_state(&harness.guard, &repo, "demo/1", "working");
-    report(&harness.guard, pane, "done");
+    report_once(&harness.guard, pane, "done");
     let done = wait_state(&harness.guard, &repo, "demo/1", "done_unchecked");
     assert_valid(&done);
     let events = event_rows(&harness.guard.xdg.state);
@@ -74,9 +74,9 @@ fn agent_reports_and_a_non_zero_exit_project_into_task_state() {
 
     let failing = tempfile::tempdir().expect("temp");
     let fail_repo = failing.path().join("repo");
-    let fail = Harness::new(failing.path(), "sleep 0.4\nexit 1\n", None, true);
+    let fail = Harness::with_latched_exit(failing.path(), 1);
     let _stop_fail = StopKeeper(fail.guard.xdg.state.clone());
-    mission_json(
+    let started = mission_json(
         &fail.guard,
         &fail_repo,
         &[
@@ -84,6 +84,8 @@ fn agent_reports_and_a_non_zero_exit_project_into_task_state() {
         ],
         &[],
     );
+    let pane = started["binding"]["terminal_id"].as_str().unwrap();
+    release_exit(&fail.guard, failing.path(), &fail_repo, pane);
     wait_state(&fail.guard, &fail_repo, "demo/1", "failed");
     let failed = event_rows(&fail.guard.xdg.state);
     assert!(
@@ -116,7 +118,8 @@ fn a_freed_slot_launches_the_oldest_queued_task_once() {
         &[],
     );
     assert_eq!(launch_count(&harness.log_dir), 1);
-    report(&harness.guard, pane, "done");
+    report(&harness.guard, pane, "working");
+    report_once(&harness.guard, pane, "done");
     wait_state(&harness.guard, &repo, "demo/1", "done_unchecked");
     wait_state(&harness.guard, &repo, "demo/2", "working");
     wait_for_launches(&harness.log_dir, 2);
@@ -217,10 +220,7 @@ fn a_journal_gap_rereads_level_state() {
 fn a_done_that_lands_during_the_exit_grace_projects_done_unchecked() {
     let root = tempfile::tempdir().expect("temp");
     let repo = root.path().join("repo");
-    // Stay up long enough to be identified, then exit 0. The projector logs
-    // the grace before it will record `failed`. Publishing `done` in that
-    // window is the late record the re-read has to see.
-    let harness = Harness::new(root.path(), "sleep 3\nexit 0\n", None, true);
+    let harness = Harness::with_latched_exit(root.path(), 0);
     let _stop = StopKeeper(harness.guard.xdg.state.clone());
     let started = mission_json(
         &harness.guard,
@@ -231,6 +231,9 @@ fn a_done_that_lands_during_the_exit_grace_projects_done_unchecked() {
         &[],
     );
     let pane = started["binding"]["terminal_id"].as_str().unwrap();
+    release_exit(&harness.guard, root.path(), &repo, pane);
+
+    // Publish `done` only after the keeper starts holding the exit.
     let log = work_dir(&harness.guard.xdg.state).join("keeper.log");
     wait_for_log(&log, "keeper holding an exit for a late done record");
     publish_done(&harness.guard, pane);
@@ -247,12 +250,26 @@ fn a_done_that_lands_during_the_exit_grace_projects_done_unchecked() {
     );
 }
 
+// The keeper must project a report before the fake agent can exit. Otherwise
+// a busy runner can start watching after the exit has already happened.
+fn release_exit(guard: &ServerGuard, root: &Path, repo: &Path, pane: &str) {
+    report(guard, pane, "blocked");
+    wait_state(guard, repo, "demo/1", "needs_you");
+    std::fs::write(root.join("may-exit"), "").expect("release fake agent");
+}
+
 struct Harness {
     guard: ServerGuard,
     log_dir: PathBuf,
 }
 
 impl Harness {
+    fn with_latched_exit(root: &Path, status: u8) -> Self {
+        let script =
+            format!("while [ ! -f \"${{0%/*}}/may-exit\" ]; do sleep 0.05; done\nexit {status}\n");
+        Self::new(root, &script, None, true)
+    }
+
     fn new(root: &Path, script_body: &str, journal_entries: Option<u32>, retain: bool) -> Self {
         let repo = root.join("repo");
         let origin = root.join("origin.git");
@@ -354,12 +371,7 @@ fn publish_done(guard: &ServerGuard, pane: &str) {
 fn report(guard: &ServerGuard, pane: &str, state: &str) {
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
-        let (code, stdout, stderr) =
-            guard.run(&["agent", "report-state", &format!("@{pane}"), state]);
-        assert_eq!(
-            code, 0,
-            "report-state {state} stdout={stdout} stderr={stderr}"
-        );
+        report_once(guard, pane, state);
         if agent_record_state(guard, pane).as_deref() == Some(state) {
             return;
         }
@@ -370,6 +382,17 @@ fn report(guard: &ServerGuard, pane: &str, state: &str) {
         );
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+// After the detector has identified the agent, a successful report is
+// enough. The keeper's durable state proves it observed a transient `done`
+// even if a second CLI process would only see the subsequent idle record.
+fn report_once(guard: &ServerGuard, pane: &str, state: &str) {
+    let (code, stdout, stderr) = guard.run(&["agent", "report-state", &format!("@{pane}"), state]);
+    assert_eq!(
+        code, 0,
+        "report-state {state} stdout={stdout} stderr={stderr}"
+    );
 }
 
 fn agent_record_state(guard: &ServerGuard, pane: &str) -> Option<String> {

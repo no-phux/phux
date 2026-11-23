@@ -52,6 +52,7 @@ pub enum AttachError {
     NotATty,
 
     /// A libghostty operation failed on the client's local Terminal.
+    #[cfg(feature = "engine")]
     #[error("libghostty: {0}")]
     Ghostty(#[from] libghostty_vt::Error),
 

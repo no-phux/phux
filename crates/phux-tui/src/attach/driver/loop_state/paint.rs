@@ -264,6 +264,7 @@ impl super::SessionLoop {
         // was opened before its host inventory landed.
         if std::mem::take(&mut self.session_picker_dirty) {
             self.refresh_session_picker(out, sidebar);
+            self.refresh_command_palette(out, sidebar);
         }
         // A full or pane repaint discharges every paint the pacer was holding.
         if matches!(drained.level, RepaintLevel::Full | RepaintLevel::Panes) {

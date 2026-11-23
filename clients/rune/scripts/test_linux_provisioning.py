@@ -109,7 +109,7 @@ class UbuntuArchiveTests(unittest.TestCase):
                 with self.assertRaises(OSError):
                     archive.configure_sources(root)
 
-    def run_dependency_step(self, configure_status):
+    def run_dependency_step(self, configure_status, qualify=True):
         repo = Path(__file__).resolve().parents[3]
         action = (repo / ".github/actions/rune-host/action.yml").read_text()
         step = action.split("    - name: Linux build and qualification dependencies\n", 1)[1]
@@ -129,7 +129,8 @@ class UbuntuArchiveTests(unittest.TestCase):
                 ["bash", "-euo", "pipefail", "-c", command], capture_output=True, text=True,
                 env={**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"],
                      "CALLS": str(root / "calls"), "GITHUB_ENV": str(root / "env"),
-                     "CONFIGURE_STATUS": str(configure_status)},
+                     "CONFIGURE_STATUS": str(configure_status),
+                     "QUALIFY": "true" if qualify else "false"},
             )
             return result, (root / "calls").read_text().splitlines()
 
@@ -148,6 +149,16 @@ class UbuntuArchiveTests(unittest.TestCase):
         result, calls = self.run_dependency_step(1)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(calls, ["python3 clients/rune/scripts/configure_ubuntu_archive.py"])
+
+    def test_fast_path_installs_no_compositor_or_ime(self):
+        result, calls = self.run_dependency_step(0, qualify=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, [
+            "python3 clients/rune/scripts/configure_ubuntu_archive.py",
+            "apt-get update",
+            "apt-get install -y build-essential pkg-config mold libxkbcommon-dev libwayland-dev "
+            "libxkbcommon-x11-0 mesa-vulkan-drivers",
+        ])
 
 
 if __name__ == "__main__":

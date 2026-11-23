@@ -157,7 +157,9 @@ fixture uses a regular temporary file, like Actions, not a captured `/dev/stdout
 ## Runner and cache budget
 
 The test lanes compile once (`just test-archive`) and run the unit and e2e
-shards from that nextest archive. Pull requests restore caches and never
+shards from that nextest archive. The shards use `nix develop .#test-archive`,
+which includes the compiler for wire-tag probes but no Zig or browser stack.
+Pull requests restore caches and never
 save them. Main pushes and the 00:10 UTC Linux-only cache-warm dispatch
 save per-lane caches under the 10 GB budget. Post-upload pruning keeps
 current-day keys and never deletes the sole older restore source before
