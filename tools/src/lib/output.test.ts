@@ -1,6 +1,6 @@
 // The shared presentation contract for human diagnostics, in every runtime
-// that renders it: dev/lib/output.sh under each POSIX shell, this
-// package's output.ts, and scripts/lib/output.mjs while scripts still import it.
+// that renders it: dev/lib/output.sh under each POSIX shell and this
+// package's output.ts.
 import { describe, expect, test } from "bun:test";
 import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -30,9 +30,6 @@ const COMMANDS: Record<string, string[]> = Object.fromEntries(
   SHELLS.map((shell) => [shell, [shell, "-eu", "-c", STATUS, "test", HELPER]]),
 );
 COMMANDS["output.ts"] = [process.execPath, "-e", script(repoPath("tools/src/lib/output.ts"))];
-// The .mjs twin retires with its last importer under scripts/.
-const MJS = repoPath("scripts/lib/output.mjs");
-if (existsSync(MJS)) COMMANDS["output.mjs"] = [process.execPath, "-e", script(MJS)];
 
 function environment(overrides: Record<string, string> = {}): Record<string, string> {
   const env: Record<string, string> = {};

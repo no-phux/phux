@@ -32,6 +32,15 @@ if command -v bd >/dev/null 2>&1; then
 fi
 # --- END BEADS INTEGRATION v1.1.0 ---
 # --- BEGIN PHUX INTEGRATION ---
-# Reject staged files over the agent token budget (scripts/check-file-tokens.sh).
-exec bash "$(git rev-parse --show-toplevel)/scripts/check-file-tokens.sh"
+# Reject staged files over the agent token budget (tools/src/policy/file-tokens.ts).
+# core.hooksPath is shared by every worktree, so a checkout of a branch from
+# before the port still runs its own bash copy of the gate.
+_phux_top="$(git rev-parse --show-toplevel)"
+if [ ! -f "$_phux_top/tools/src/policy/file-tokens.ts" ] && [ -f "$_phux_top/scripts/check-file-tokens.sh" ]; then
+  exec bash "$_phux_top/scripts/check-file-tokens.sh"
+fi
+if command -v bun >/dev/null 2>&1; then
+  exec bun "$_phux_top/tools/main.ts" file-tokens-check
+fi
+echo >&2 "phux: warn: bun is not on PATH; skipping the file-size gate (the guards lane still runs it)"
 # --- END PHUX INTEGRATION ---

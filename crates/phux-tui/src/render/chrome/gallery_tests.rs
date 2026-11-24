@@ -306,7 +306,7 @@ fn render_fixture(theme: &Theme) -> (String, Vec<(&'static str, Buffer)>) {
 
 fn fixture_dir() -> PathBuf {
     // Read at run time: a compiled-in path ties the build cache to one
-    // checkout (scripts/check-cache-portable.sh).
+    // checkout (tools/src/policy/cache-portable.test.ts).
     PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo test sets CARGO_MANIFEST_DIR"),
     )

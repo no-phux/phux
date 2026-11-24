@@ -35,18 +35,12 @@ crate-check PACKAGE FEATURES="": worktree-claim
 guards: brand-check shellcheck tools-check docs-check install-surface-check
     actionlint .github/workflows/*.yml
     bun tools/main.ts design-gen --check
-    bash scripts/check-action-pins.sh
-    bash scripts/check-file-tokens_test.sh
-    bash scripts/check-file-tokens.sh --merge-base origin/main
-    bash scripts/ci/main-red_test.sh
-    bash scripts/check-toolchain-sync.sh
-    bash scripts/check-cache-portable.sh
-    bash scripts/check-frozen-fixtures.sh
-    bash scripts/check-frozen-fixtures_test.sh
+    bun tools/main.ts file-tokens-check --merge-base origin/main
+    bun tools/main.ts toolchain-sync-check
+    bun tools/main.ts frozen-fixtures-check
     bash scripts/check-e2e-lanes.sh
     bash scripts/check-release-cpu-baselines.sh
     bash dev/lib/worktree-owner_test.sh
-    node --test scripts/test-npm-audit-gate.mjs
     bash examples/agents/tests/placed-fleet-smoke.sh
     bash examples/agents/tests/program-status-smoke.sh
     python3 -B examples/agents/tests/test-agent-examples.py

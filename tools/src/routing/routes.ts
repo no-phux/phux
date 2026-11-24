@@ -80,6 +80,8 @@ const ROUTES: Record<string, Surface[]> = {
   "tools/src/lib/**": ["web"],
   "tools/src/web/**": ["web"],
   "tools/src/integrations/**": ["integrations"],
+  // Every integration package's gates script runs the npm audit gate.
+  "tools/src/policy/npm-audit-*": ["integrations"],
   "tools/src/cargo/build-features.ts": ["phux"],
   ".agents/skills/{using-phux,using-phux-mcp}/**": ["phux"],
   ".agents/lib/**": ["integrations"],

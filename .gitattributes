@@ -1,5 +1,5 @@
 # Generated, tool-written, or vendored files. Also exempts them from the
-# pre-commit file-size gate (scripts/check-file-tokens.sh).
+# pre-commit file-size gate (tools/src/policy/file-tokens.ts).
 .beads/*.jsonl linguist-generated=true
 CHANGELOG.md linguist-generated=true
 docs/spec/CHANGELOG.md -linguist-generated

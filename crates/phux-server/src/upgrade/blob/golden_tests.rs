@@ -2,7 +2,7 @@
 //!
 //! Field names are the format, and the reader cannot refuse after the
 //! re-exec, so `tests/fixtures/upgrade-blob/` is append-only
-//! (`scripts/check-frozen-fixtures.sh`). `phux_frozen` holds this image to
+//! (`bun tools/main.ts frozen-fixtures-check`). `phux_frozen` holds this image to
 //! them: every fixture reads back with nothing lost, the newest re-serializes
 //! exactly, and the newest gives every field a value.
 //!
