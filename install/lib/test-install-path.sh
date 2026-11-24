@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 # Sourced by test-install.sh after its installing section: the installer's
 # last line and the shell profile it may edit. Uses install_to and fail.
-[[ $HOME == "$TMP"/* ]] || { echo "source this from scripts/test-install.sh" >&2; exit 1; }
+[[ $HOME == "$TMP"/* ]] || { echo "source this from install/test-install.sh" >&2; exit 1; }
 
 # PATH: the plain line when phux is found, a remedy when shadowed, and one
 # idempotent profile line when the directory is off PATH.

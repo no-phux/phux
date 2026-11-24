@@ -3,7 +3,7 @@
 # offering `phux service install`, installing over a running server and handing
 # an older one over. Uses its package, install_to, no_leftovers and fail.
 # Its HOME is a temp dir; refuse anything else (phux-gh85y).
-[[ $HOME == "$TMP"/* ]] || { echo "source this from scripts/test-install.sh" >&2; exit 1; }
+[[ $HOME == "$TMP"/* ]] || { echo "source this from install/test-install.sh" >&2; exit 1; }
 # --- keeping the server running (Linux) -----------------------------------------
 
 # A fake uname says Linux and a fake systemctl stands in for the user manager;

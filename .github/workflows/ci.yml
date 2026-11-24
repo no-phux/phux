@@ -88,7 +88,7 @@ jobs:
         if: needs.plan.outputs.docs_only == 'true'
         run: |
           bash scripts/check-docs.sh
-          bash scripts/check-install-surface.sh
+          bash install/test.sh
           bash scripts/check-file-tokens.sh --merge-base origin/main
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
         if: needs.plan.outputs.docs_only != 'true'

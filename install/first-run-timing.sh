@@ -12,8 +12,8 @@
 # is not counted. The script does not shorten phux's agent startup grace
 # and does not send telemetry.
 #
-#   bash scripts/first-run-timing.sh            # public install, real timing
-#   bash scripts/first-run-timing.sh --self-test
+#   bash install/first-run-timing.sh            # public install, real timing
+#   bash install/first-run-timing.sh --self-test
 set -euo pipefail
 
 LIMIT_NS=60000000000
