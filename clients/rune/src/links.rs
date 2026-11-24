@@ -270,8 +270,19 @@ fn open_with(
     url: &str,
     failed: impl FnOnce(String) + Send + 'static,
 ) -> std::io::Result<()> {
-    let mut child = std::process::Command::new(opener)
-        .arg(url)
+    let mut command = std::process::Command::new(opener);
+    command.arg(url);
+    spawn_opener(command, url, failed)
+}
+
+/// Start `command` for `url`, detached from the window: `failed` hears why
+/// if it starts but gives up.
+pub fn spawn_opener(
+    mut command: std::process::Command,
+    url: &str,
+    failed: impl FnOnce(String) + Send + 'static,
+) -> std::io::Result<()> {
+    let mut child = command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

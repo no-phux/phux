@@ -44,7 +44,24 @@ pub struct Pointer {
 impl Desk {
     fn link_at(&self, terminal: &ResourceId, x: f32, y: f32) -> Option<Link> {
         let (frame, col, row) = self.cell_at(terminal, x, y)?;
-        links::at(&frame, col, row).or_else(|| self.file_at(terminal, &frame, col, row))
+        links::at(&frame, col, row)
+            .or_else(|| self.handled_word(&frame, col, row))
+            .or_else(|| self.file_at(terminal, &frame, col, row))
+    }
+
+    /// The word under the cell, when a configured `[[links]]` handler takes
+    /// it: a handler opts its pattern in, on any machine's pane.
+    fn handled_word(&self, frame: &GridFrame, col: u16, row: u16) -> Option<Link> {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            let word = links::word_at(frame, col, row)?;
+            self.link_handler(&word.url).is_some().then_some(word)
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            let _ = (frame, col, row);
+            None
+        }
     }
 
     /// A path to an existing file, as compilers and agents print them. Only
@@ -112,7 +129,7 @@ impl Desk {
     pub fn hover(&mut self, terminal: &ResourceId, x: f32, y: f32, mods: Mods) {
         let cmd = mods.cmd;
         self.pointer.last = Some((terminal.clone(), x, y));
-        self.pointer.cmd = cmd;
+        self.set_cmd(cmd);
         self.report_motion(terminal, x, y, mods);
         let link = cmd.then(|| self.link_at(terminal, x, y)).flatten();
         self.set_hover(link.map(|link| (terminal.clone(), link)));
@@ -132,6 +149,22 @@ impl Desk {
         }
     }
 
+    /// ⌘ is down or up. Pressing it reloads the `[[links]]` handlers.
+    // ponytail: a click in the few milliseconds the reload takes uses the
+    // handlers from before; load at connect if that ever bites.
+    fn set_cmd(&mut self, cmd: bool) {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if cmd && !self.pointer.cmd && self.phone.is_none() {
+            self.refresh_plugin_actions();
+        }
+        self.pointer.cmd = cmd;
+    }
+
+    /// Handlers changed: find the link under a held ⌘ again.
+    pub(super) fn rehover(&mut self) {
+        self.modifiers_changed(self.pointer.cmd);
+    }
+
     /// A pane's output moved under a held ⌘: find the link again.
     pub(super) fn relink(&mut self, terminal: &ResourceId) {
         if self
@@ -146,7 +179,7 @@ impl Desk {
 
     /// ⌘ went down or up without the pointer moving.
     pub fn modifiers_changed(&mut self, cmd: bool) {
-        self.pointer.cmd = cmd;
+        self.set_cmd(cmd);
         let link = match (&self.pointer.last, cmd) {
             (Some((terminal, x, y)), true) => self
                 .link_at(terminal, *x, *y)
@@ -172,20 +205,29 @@ impl Desk {
         true
     }
 
-    fn open_other(&self, url: &str) -> std::io::Result<()> {
+    /// Where an opener that gave up after starting says why.
+    pub(super) fn opener_failed(&self) -> impl FnOnce(String) + Send + 'static {
         let failed = Arc::clone(&self.pointer.failed);
         let waker = self.waker.clone();
-        links::open_other(url, move |why| {
+        move |why| {
             if let Ok(mut failed) = failed.lock() {
                 *failed = Some(why);
             }
             if let Some(waker) = waker {
                 waker();
             }
-        })
+        }
+    }
+
+    fn open_other(&self, url: &str) -> std::io::Result<()> {
+        links::open_other(url, self.opener_failed())
     }
 
     fn open_link(&mut self, terminal: &ResourceId, url: &str, tx: &mut Tx) {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if self.run_link_handler(terminal, url) {
+            return;
+        }
         if let Some(why) = links::refusal(url, self.remote(terminal)) {
             self.say(NoticeKind::Error, why);
             return;

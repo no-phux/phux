@@ -261,12 +261,28 @@ pub struct PluginManifestLinkHandler {
     pub contexts: Vec<String>,
     /// URI schemes this handler accepts.
     pub schemes: Vec<String>,
-    /// Route/link patterns this handler accepts.
+    /// Whole-link globs this handler accepts; `*` matches any run.
     pub patterns: Vec<String>,
     /// Optional platform override for this handler.
     pub platforms: Option<Vec<PluginPlatform>>,
+    /// Where the command runs.
+    #[serde(default)]
+    pub run_on: PluginLinkRunOn,
     /// Command argv to execute.
     pub command: Vec<String>,
+}
+
+/// Where a link handler's command runs.
+#[derive(
+    Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum PluginLinkRunOn {
+    /// On the machine that clicked, with the pane's host as context.
+    #[default]
+    Client,
+    /// In a split beside the pane, on the machine that runs it.
+    PaneHost,
 }
 
 /// Composition profile declared in a plugin manifest.
