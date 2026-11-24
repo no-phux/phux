@@ -73,12 +73,15 @@ pub(super) fn satellite_list(desk: &Desk, topology: &Topology, t: &Tokens) -> El
         for (id, label, place) in terminals.chain(mirrors) {
             let row = Row {
                 id,
+                target: id,
                 session: "",
                 name: label,
                 place,
                 key: None,
                 agent: desk.activities.agent_name(id),
+                kind: desk.activities.agent_kind(id),
                 mark: desk.activities.mark(id),
+                panes: 1,
                 selected: shown == Some(id),
                 host,
                 color: None,

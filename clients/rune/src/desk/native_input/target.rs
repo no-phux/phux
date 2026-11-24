@@ -1,7 +1,7 @@
 //! Finite app-owned editing targets. Unknown or inert fields fail closed.
-use phux_protocol::ids::ResourceId;
 use rune::{Key, KeyEvent, Runtime, TextEdit, Tx};
 
+use super::super::questions::Owner;
 use super::super::{Desk, input::Modal};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -14,8 +14,7 @@ pub(super) enum Field {
     Machine,
     PhoneSessions,
     Question {
-        terminal: ResourceId,
-        question: String,
+        owner: Owner,
         field: String,
         multiline: bool,
     },
@@ -63,21 +62,19 @@ impl Field {
 
     pub(super) fn question(d: &Desk, key: &str) -> Option<(Self, String)> {
         let mut resolved = None;
-        for (terminal, (session, view)) in &d.inbox.questions.views {
+        for (terminal, (_, view)) in &d.inbox.questions.views {
             for question in &view.questions {
-                if d.inbox.questions.held(view, &question.id) {
-                    continue;
-                }
-                let Some(draft) = d.inbox.questions.drafts.get(&question.id) else {
+                let Some(owner) = d.inbox.questions.owner(terminal, &question.id) else {
                     continue;
                 };
-                if draft.question != *question {
+                if d.inbox.questions.held(owner) {
                     continue;
                 }
+                let draft = d.inbox.questions.draft(owner)?;
                 let Some(field) = draft
                     .texts
                     .keys()
-                    .find(|field| key == format!("acp-{}-field-{field}", question.id))
+                    .find(|field| key == owner.field_key(field))
                 else {
                     continue;
                 };
@@ -89,16 +86,11 @@ impl Field {
                 }
                 resolved = Some((
                     Self::Question {
-                        terminal: terminal.clone(),
-                        question: question.id.clone(),
+                        owner: owner.clone(),
                         field: field.clone(),
                         multiline: question.kind == "editor",
                     },
-                    format!(
-                        "{terminal}:{session}:{}:{}",
-                        view.activation,
-                        serde_json::to_string(question).ok()?
-                    ),
+                    owner.field_key(field),
                 ));
             }
         }
@@ -114,9 +106,7 @@ impl Field {
             Self::Inbox => &d.inbox.reply,
             Self::Machine => &d.machines.field,
             Self::PhoneSessions => &d.phone.as_ref()?.query,
-            Self::Question {
-                question, field, ..
-            } => d.inbox.questions.drafts.get(question)?.texts.get(field)?,
+            Self::Question { owner, field, .. } => d.inbox.questions.field(owner, field)?,
         })
     }
 
@@ -129,16 +119,16 @@ impl Field {
             Self::Inbox => &mut d.inbox.reply,
             Self::Machine => &mut d.machines.field,
             Self::PhoneSessions => &mut d.phone.as_mut()?.query,
-            Self::Question {
-                question, field, ..
-            } => d
-                .inbox
-                .questions
-                .drafts
-                .get_mut(question)?
-                .texts
-                .get_mut(field)?,
+            Self::Question { owner, field, .. } => d.inbox.questions.field_mut(owner, field)?,
         })
+    }
+
+    pub(super) fn cancel_composition(&self, d: &mut Desk) {
+        if let Self::Question { owner, field, .. } = self {
+            d.inbox.questions.cancel_field_composition(owner, field);
+        } else if let Some(edit) = self.edit_mut(d) {
+            edit.cancel_composition();
+        }
     }
 
     pub(super) fn changed(&self, d: &mut Desk, tx: &mut Tx) {
@@ -207,9 +197,7 @@ impl Field {
             Self::Rename => d.submit_rename(tx),
             Self::Machine => d.add_typed_machine(),
             Self::PhoneSessions => d.blur_phone_search(tx),
-            Self::Question {
-                terminal, question, ..
-            } => d.answer_question(terminal, question, None),
+            Self::Question { owner, .. } => d.answer_question(owner, None),
             _ => {}
         }
     }

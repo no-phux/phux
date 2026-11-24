@@ -385,7 +385,7 @@
     },
     "ForwardCfg": {
       "additionalProperties": false,
-      "description": "`[forward]` table: TCP port and ssh-agent forwarding\n(`docs/forwarding.md`).",
+      "description": "`[forward]` table: TCP port and ssh-agent forwarding\n(`docs/ssh.md#forwarding-a-port`).",
       "properties": {
         "agent": {
           "default": false,
@@ -1305,7 +1305,7 @@
             }
           ],
           "default": null,
-          "description": "Where the terminal tabs go: `\"top\"` in the title bar, `\"bottom\"` under\nthe panes, or `\"hidden\"`."
+          "description": "Where the terminal tabs go: `\"auto\"` in the title bar while the\nsidebar is folded (the sidebar lists them while it shows), `\"top\"`\nalways in the title bar, `\"bottom\"` under the panes, or `\"hidden\"`."
         },
         "theme": {
           "default": null,
@@ -1470,6 +1470,11 @@
           "default": "left",
           "description": "Which edge the sidebar docks to."
         },
+        "rail": {
+          "default": true,
+          "description": "Keep a three-column rail while the sidebar is hidden or does not fit\n(default `true`): an agents-need-you count, one state dot per session\n(the active one marked), and an expand chevron. `false` hides the\nsidebar completely.",
+          "type": "boolean"
+        },
         "recent-first": {
           "default": false,
           "description": "List sessions most recently used first instead of in the arranged\norder.",
@@ -1583,6 +1588,11 @@
     "TabBar": {
       "description": "`[rune] tab-bar`: where the terminal tabs go.",
       "oneOf": [
+        {
+          "const": "auto",
+          "description": "In the title bar while the sidebar is folded; while it shows, its\nrows are the tabs.",
+          "type": "string"
+        },
         {
           "const": "top",
           "description": "In the title bar.",
@@ -2152,6 +2162,7 @@
         "hosts-provider": [],
         "hosts-refresh-secs": 10,
         "position": "left",
+        "rail": true,
         "recent-first": false,
         "width": 20
       },

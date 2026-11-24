@@ -4,10 +4,13 @@
 #   links     every relative link and #anchor in a tracked Markdown file
 #             resolves (headings are slugged the way GitHub slugs them)
 #   commands  every `phux <command>` and `just <recipe>` in a shell code
-#             block names a command the binary has and a recipe the
-#             justfiles define
+#             block or an inline code span names a command the binary has
+#             and a recipe the justfiles define
 #   crates    docs/architecture.md names every crates/* directory, and
 #             names none that is gone
+#   nav       every flat docs/*.md opens with frontmatter that places it in
+#             the site nav (`group:` and numeric `order:`), or opts out with
+#             `publish: false`. The website reads this; there is no catalog.
 #   citations every `docs/...md` path (and #anchor) that a code comment
 #             under crates/ or clients/ cites exists, and no comment cites
 #             a retired spec page (L1.md, proto.md, consumers/tui.md, ...)
@@ -25,7 +28,7 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-ALL_GATES=(links commands crates citations)
+ALL_GATES=(links commands crates citations nav)
 ONLY=""
 
 usage() {
@@ -39,7 +42,7 @@ USAGE:
 OPTIONS:
     --help          show this message and exit
     --list          print the gates and exit
-    --only=<gate>   run one gate (links, commands, crates, citations)
+    --only=<gate>   run one gate (links, commands, crates, citations, nav)
 EOF
 }
 
@@ -224,13 +227,23 @@ just_recipes() {
 }
 
 # Prints "<line>\t<tool>\t<word1>\t<word2>" for each phux or just call in a
-# sh/bash/shell/console block. A `$ ` prompt is dropped; comments are not
-# commands.
+# sh/bash/shell/console block or in an inline code span in prose. A `$ `
+# prompt is dropped; comments are not commands.
 extract_commands() {
     awk '
         /^[[:space:]]*```/ {
             if (!fence) { fence = 1; shell = ($0 ~ /```(sh|bash|shell|console|zsh)[[:space:]]*$/) }
             else { fence = 0; shell = 0 }
+            next
+        }
+        !fence {
+            rest = $0
+            while (match(rest, /`(just|phux) [^`]+`/)) {
+                span = substr(rest, RSTART + 1, RLENGTH - 2)
+                rest = substr(rest, RSTART + RLENGTH)
+                split(span, w, /[[:space:]]+/)
+                print NR "\t" w[1] "\t" w[2] "\t" w[3]
+            }
             next
         }
         !shell { next }
@@ -270,6 +283,8 @@ gate_commands() {
                 continue
             fi
             [[ "$first" == help ]] && continue
+            # Hidden machine-invoked commands (crates/phux/src/tests/aliases.rs).
+            [[ " gen-reference-docs stdio-bridge bootstrap " == *" $first "* ]] && continue
             if [[ "$paths" != *$'\n'"$first"$'\n'* ]]; then
                 violate commands "$file" "line $lineno: \`phux $first\` is not a command"
                 continue
@@ -388,6 +403,43 @@ gate_citations() {
             violate citations "$ROOT/$file" "line $lineno: $path has no heading #$anchor"
         fi
     done < <(collect_sources | (cd "$ROOT" && tr '\n' '\0' | xargs -0 awk "$CITATIONS_AWK" /dev/null))
+}
+
+# Nav groups. no-phux/website renders exactly these, in this order.
+NAV_GROUPS=" start customize automate connect build help internals "
+
+# Prints "<key>\t<value>" for each line of a leading `---` frontmatter block.
+frontmatter() {
+    awk '
+        NR == 1 { if ($0 != "---") exit; next }
+        $0 == "---" { exit }
+        match($0, /^[a-z]+:[[:space:]]*/) {
+            print substr($0, 1, index($0, ":") - 1) "\t" substr($0, RLENGTH + 1)
+        }
+    ' "$1"
+}
+
+gate_nav() {
+    local page key value group order publish
+    for page in "$ROOT"/docs/*.md; do
+        [[ -f "$page" ]] || continue
+        group="" order="" publish=""
+        while IFS=$'\t' read -r key value; do
+            case "$key" in
+                group) group="$value" ;;
+                order) order="$value" ;;
+                publish) publish="$value" ;;
+            esac
+        done < <(frontmatter "$page")
+        [[ "$publish" == false ]] && continue
+        if [[ -z "$group" ]]; then
+            violate nav "$page" "no frontmatter group:; add one of${NAV_GROUPS% } or publish: false"
+        elif [[ "$NAV_GROUPS" != *" $group "* ]]; then
+            violate nav "$page" "group $group is not one of${NAV_GROUPS% }"
+        fi
+        [[ "$order" =~ ^-?[0-9]+(\.[0-9]+)?$ ]] ||
+            violate nav "$page" "frontmatter order: must be a number"
+    done
 }
 
 for gate in "${ALL_GATES[@]}"; do

@@ -114,9 +114,9 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     };
     let fill = edge_fill(desk, &p);
     // Both keyboards sit after every sheet and kit overlay, outside their
-    // measured viewport. Rune treats post-modal controls as part of the
-    // modal: keys remain live while the scrim still blocks the terminal and
-    // navigation behind it.
+    // measured viewport. The compatible Rune pin (DEVELOP.md) treats post-modal
+    // controls as part of the modal: keys remain live while the scrim still
+    // blocks the terminal and navigation behind it.
     let content = overlays(
         el().h(0.0).grow(1.0).w_full().min_h(0.0).child(screen),
         desk,

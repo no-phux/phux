@@ -7,7 +7,7 @@ on:
   pull_request:
     # `closed` runs nothing; joining the PR's concurrency group cancels the
     # run still in flight for a merged or abandoned PR.
-    types: [opened, synchronize, reopened, ready_for_review, closed]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, closed]
   push:
     branches: [main]
   # Inert until the main ruleset enables the queue. The queue waits for the
@@ -34,10 +34,9 @@ permissions:
 
 jobs:
   plan:
-    # Drafts skip the suite. A release-please head stays draft while it
-    # accumulates, and still needs every lane. Push and merge_group carry no
-    # pull_request payload, so the draft test passes for them.
-    if: github.event.action != 'closed' && (startsWith(github.head_ref, 'release-please--') || github.event.pull_request.draft != true)
+    # All drafts skip qualification, including release trains. Ready release
+    # heads keep full qualification. Push and queue events have no draft.
+    if: github.event.action != 'closed' && github.event.pull_request.draft != true
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -54,7 +53,6 @@ jobs:
       rune_qualify: ${{ steps.plan.outputs.rune_qualify }}
       release_qualify: ${{ steps.plan.outputs.release_qualify }}
       docs_only: ${{ steps.plan.outputs.docs_only }}
-      docs_catalog: ${{ steps.plan.outputs.docs_catalog }}
       web_engine: ${{ steps.plan.outputs.web_engine }}
       content: ${{ steps.plan.outputs.content }}
       unit_mode: ${{ steps.plan.outputs.unit_mode }}
@@ -83,28 +81,15 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      # Warning-only: a miss or a failed fetch exits 0 and must not fail guards or ci.
-      - name: website docs catalog
-        if: github.event_name == 'pull_request'
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: bash scripts/check-website-docs-catalog.sh
-      - name: website docs catalog fixture
-        run: bash scripts/check-website-docs-catalog_test.sh
-      # The pre-commit size ratchet again, for commits whose hooks never ran.
-      - name: file size ratchet
-        if: github.event_name == 'pull_request'
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: bash scripts/check-file-tokens.sh --base "$BASE_SHA"
       - uses: ./.github/actions/setup-bun
-      # A docs-only diff needs only the two guards that read docs, with the
+      # A docs-only diff needs only the guards that read docs, with the
       # runner's own bash and no Nix.
       - name: docs guards
         if: needs.plan.outputs.docs_only == 'true'
         run: |
           bash scripts/check-docs.sh
           bash scripts/check-install-surface.sh
+          bash scripts/check-file-tokens.sh --merge-base origin/main
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
         if: needs.plan.outputs.docs_only != 'true'
       - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
@@ -139,8 +124,6 @@ jobs:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
           cache-lane: check
       - run: nix develop -c just rust-lint
-      - name: Check the plugin index compiles
-        run: nix develop -c cargo check --locked --manifest-path scripts/plugin-index/Cargo.toml
       - &mbx-export-headroom
         name: leave disk for the mbx objects export
         if: steps.lane.outputs.cache-save-eligible == 'true' && steps.lane.outputs.cache-hit != 'true'
@@ -420,36 +403,12 @@ jobs:
     with:
       qualify: true
 
-  docs-catalog:
-    name: docs catalog
-    needs: plan
-    if: needs.plan.outputs.docs_catalog == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: no-phux/website
-          ref: main
-          path: website
-          sparse-checkout: scripts/docs-catalog.ts
-          sparse-checkout-cone-mode: false
-          persist-credentials: false
-      - uses: ./.github/actions/setup-bun
-      - name: website docs catalog
-        run: bun scripts/ci/docs-catalog-new-misses.ts
-
   # The required check. The ruleset matches this display name.
   ci:
-    name: ci
-    needs: [plan, guards, lint, test-build, tests, e2e, ffi, icount, integrations, web-vt, web-client, native, rune, queue-apple, docs-catalog]
-    # Runs on drafts too, and fails there: plan skipped. A skipped ci would
-    # pass branch protection, so readying a draft with auto-merge armed could
-    # merge before the ready run's own ci exists.
+    # Fresh drafts leave ci absent. This cannot revoke older same-SHA checks:
+    # automated arming must first pass pr-ready-ci (docs/ci.md).
+    name: ${{ github.event.pull_request.draft && 'ci (draft)' || 'ci' }}
+    needs: [plan, guards, lint, test-build, tests, e2e, ffi, icount, integrations, web-vt, web-client, native, rune, queue-apple]
     if: always() && github.event.action != 'closed'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -457,20 +416,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: plan succeeded; every lane passed or was not needed
+      - name: Strict CI aggregate v2
         env:
           RESULTS: ${{ toJSON(needs) }}
           EVENT_NAME: ${{ github.event_name }}
-        run: bash scripts/ci/ci-aggregate.sh
-      - name: write the validation receipt
-        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
-        env:
+          DRAFT: ${{ github.event.pull_request.draft }}
           RECEIPT: ${{ needs.plan.outputs.receipt }}
-        run: |
-          mkdir -p "$RUNNER_TEMP/receipt"
-          printf '%s\n' "$RECEIPT" > "$RUNNER_TEMP/receipt/receipt.json"
+        run: bash scripts/ci/ci-aggregate.sh
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        if: needs.plan.result == 'success' && (github.event_name == 'pull_request' || github.event_name == 'merge_group')
         with:
           name: ${{ needs.plan.outputs.receipt_name }}
           path: ${{ runner.temp }}/receipt/receipt.json

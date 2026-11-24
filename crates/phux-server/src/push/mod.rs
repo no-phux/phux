@@ -1,7 +1,7 @@
 //! Host-originated background push (ADR-0155).
 //!
 //! A suspended phone registers a *push grant* under `phux.push/v1/<device>`
-//! ([background push](../../../docs/protocol/host-operations.md#background-push)):
+//! ([background push](../../../docs/protocol-files.md#background-push)):
 //! its gateway, a bearer that gateway minted, and the id the phone knows this
 //! server by. When an agent asks (or turns `blocked` on screen evidence), a
 //! held action waits, or an opted-in turn finishes, and the grant's writing

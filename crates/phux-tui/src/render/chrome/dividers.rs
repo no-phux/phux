@@ -41,8 +41,9 @@ const CELL_BYTES: usize = 16;
 /// title.
 #[derive(Debug, Clone)]
 pub struct PaneLabel<'a> {
-    /// The pane's display name. A program's OSC title, or the folder a
-    /// shell prompt was hiding (`user@host:path` clips to the user).
+    /// The pane's display name, as every list names it (`pane_label`): an
+    /// agent's task, else what runs and where (`bash · phux`), never a
+    /// shell's `user@host:path` prompt, which would clip to the user.
     pub text: Cow<'a, str>,
     /// The pane's place among its slot's tabs, `(position, count)` from 1,
     /// drawn as `2/3` ahead of the title.

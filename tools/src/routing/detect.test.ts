@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { WORKSPACE_LOCKS } from "../cargo/release-orchestration.ts";
 import { git } from "../lib/git.ts";
-import { detect, docsCatalogChanged, type Detection } from "./detect.ts";
+import { detect, type Detection } from "./detect.ts";
 
 const template = mkdtempSync(join(tmpdir(), "phux-routing-"));
 // The payload lives outside the fixture tree, exactly like Actions.
@@ -66,7 +66,7 @@ test("push and pull_request resolve to the same paths", () => {
     pull_request: { pull_request: { base: { sha: base }, head: { sha: head } } },
   };
   for (const [name, event] of Object.entries(events)) {
-    expect(run(name, event)).toEqual({ kind: "paths", paths, docsCatalog: false });
+    expect(run(name, event)).toEqual({ kind: "paths", paths });
   }
 });
 
@@ -77,7 +77,6 @@ test("a merge group diffs its queue commit against the group's base", () => {
   expect(run("merge_group", event)).toEqual({
     kind: "paths",
     paths: ["clients/rune/src/main.rs", "docs/development.md"],
-    docsCatalog: true,
   });
   expect(run("merge_group", { merge_group: { base_sha: earlier } }).kind).toBe("full");
 });
@@ -89,7 +88,6 @@ test("a pull request diffs from the merge base, not the advanced base branch", (
   expect(run("pull_request", event)).toEqual({
     kind: "paths",
     paths: ["docs/development.md"],
-    docsCatalog: true,
   });
 });
 
@@ -117,37 +115,7 @@ test("a rename reports both sides", () => {
   expect(push(before, commitFiles({}, "HEAD"))).toEqual({
     kind: "paths",
     paths: ["clients/phux-web/fixture.txt", "integrations/pi/fixture.txt"],
-    docsCatalog: false,
   });
-});
-
-test("flat docs adds, renames, and deletes select the catalog check", () => {
-  const added = commitFiles({ "docs/zz-uncatalogued-probe.md": "# probe\n" }, base);
-  expect(push(base, added)).toEqual({
-    kind: "paths",
-    paths: ["docs/zz-uncatalogued-probe.md"],
-    docsCatalog: true,
-  });
-  const edited = commitFiles({ "docs/zz-uncatalogued-probe.md": "# probe\n\nedited\n" }, added);
-  expect(push(added, edited)).toMatchObject({ kind: "paths", docsCatalog: false });
-  expect(docsCatalogChanged(added, edited, repo)).toBe(false);
-
-  const nested = commitFiles({ "docs/reference/zz-probe.md": "# nested\n" }, base);
-  expect(push(base, nested)).toMatchObject({ kind: "paths", docsCatalog: false });
-
-  const named = commitFiles({ "docs/old-page.md": "# page\n" }, base);
-  mkdirSync(join(repo, "docs/reference"), { recursive: true });
-  git(["mv", "docs/old-page.md", "docs/reference/old-page.md"], repo);
-  const moved = commitFiles({}, "HEAD");
-  expect(docsCatalogChanged(named, moved, repo)).toBe(true);
-
-  const flat = commitFiles({ "docs/renamed-page.md": "# page\n" }, base);
-  git(["mv", "docs/renamed-page.md", "docs/new-page.md"], repo);
-  const renamed = commitFiles({}, "HEAD");
-  expect(docsCatalogChanged(flat, renamed, repo)).toBe(true);
-  git(["rm", "--quiet", "docs/new-page.md"], repo);
-  const removed = commitFiles({}, "HEAD");
-  expect(docsCatalogChanged(renamed, removed, repo)).toBe(true);
 });
 
 // Exercises every standalone lock and several real Git checkouts; keep a

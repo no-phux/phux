@@ -4,6 +4,7 @@ use super::*;
 mod accessory;
 mod connections;
 mod header;
+mod reconnect;
 mod states;
 
 #[test]

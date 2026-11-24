@@ -1,5 +1,5 @@
 //! `phux workload sync-managed`: replace exactly one organization's records
-//! (`docs/remote.md#managed-by-an-organization`).
+//! (`docs/security.md#managed-by-an-organization`).
 
 use std::path::Path;
 

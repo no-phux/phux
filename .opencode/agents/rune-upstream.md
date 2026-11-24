@@ -129,13 +129,12 @@ from evidence, state the assumption in the PR, and keep going.
    `[patch.crates-io]` entries (`winit`, `sctk-adwaita`, `parley_engine`, `wgpu-hal`,
    `accesskit_windows`, `accesskit_macos`). Reinspect the manifest if upstream
    changes this set; never reintroduce the removed `rune-mac` pin.
-   The documented temporary `winit` compatibility exception tracks that same
-   upstream base, not necessarily its revision: advance the other nine entries,
-   rebase only the reviewed Wayland cursor patch onto the new head in the owned
-   fork, review/test the exact diff, and pin its immutable commit. Never drop
-   the fix to equalize hashes, retain an older fork base, or expand its scope.
-   Reunify all ten when upstream provides equivalent behavior; no exception
-   waives the full packaged/native qualification or release gates.
+   All ten pins now use the same immutable upstream revision, including `winit`.
+   Upstream #1454 supplies `ImeSync` unchanged-frame suppression; the temporary
+   fork and its six-helper gate are retired. Validate this adoption with the
+   actual upstream `ImeSync` tests listed in `clients/rune/DEVELOP.md`, from
+   the pinned upstream workspace. Client IME, real-compositor Wayland,
+   packaged/native qualification and release gates remain mandatory.
    Then `cargo update --manifest-path clients/rune/Cargo.toml -p rune` and
    verify manifest/lock agreement. Fix every break the way upstream fixed its examples:
    real code, no shims, no new `#[allow]`, no skipped tests. **Adopt** what

@@ -21,6 +21,7 @@ impl super::SessionLoop {
         sidebar_reservation(
             self.viewport_dims.0,
             self.sidebar_enabled,
+            self.settings.sidebar.rail,
             self.settings.sidebar.width,
             self.settings.sidebar.edge,
             self.settings.chrome.min_pane_cols,

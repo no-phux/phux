@@ -37,6 +37,7 @@ guards: brand-check shellcheck tools-check docs-check install-surface-check
     bun tools/main.ts design-gen --check
     bash scripts/check-action-pins.sh
     bash scripts/check-file-tokens_test.sh
+    bash scripts/check-file-tokens.sh --merge-base origin/main
     bash scripts/ci/main-red_test.sh
     bash scripts/check-toolchain-sync.sh
     bash scripts/check-cache-portable.sh
@@ -64,6 +65,7 @@ rust-lint: worktree-claim fmt-check lint doc deny
     cargo check --locked -p phux-tui --all-targets --no-default-features
     bash scripts/check-ghostty-pin_test.sh
     bash scripts/check-ghostty-pin.sh
+    cargo check --locked --manifest-path scripts/plugin-index/Cargo.toml
 
 
 # The binding crate with the mobile artifact's exact features (ADR-0135).

@@ -35,8 +35,9 @@ pub struct RuneCfg {
     pub confirm_close: Option<bool>,
     /// List the session used last first, instead of in the arranged order.
     pub recent_first: Option<bool>,
-    /// Where the terminal tabs go: `"top"` in the title bar, `"bottom"` under
-    /// the panes, or `"hidden"`.
+    /// Where the terminal tabs go: `"auto"` in the title bar while the
+    /// sidebar is folded (the sidebar lists them while it shows), `"top"`
+    /// always in the title bar, `"bottom"` under the panes, or `"hidden"`.
     pub tab_bar: Option<TabBar>,
     /// The title bar: `"shown"`, `"hover"` (hidden until the pointer reaches
     /// the window's top edge) or `"hidden"`.
@@ -90,8 +91,11 @@ pub enum QuickTerminalEdge {
 )]
 #[serde(rename_all = "kebab-case")]
 pub enum TabBar {
-    /// In the title bar.
+    /// In the title bar while the sidebar is folded; while it shows, its
+    /// rows are the tabs.
     #[default]
+    Auto,
+    /// In the title bar.
     Top,
     /// Under the panes.
     Bottom,
@@ -191,6 +195,9 @@ mod tests {
             (rune.tab_bar, rune.title_bar),
             (Some(TabBar::Bottom), Some(TitleBar::Hidden))
         );
+        let auto = "[rune]\ntab-bar = \"auto\"\n";
+        let auto = crate::loader::parse_client(auto, std::path::Path::new("config.toml"));
+        assert_eq!(auto.expect("parses").rune.tab_bar, Some(TabBar::Auto));
         let sideways = "[rune]\nquick-terminal-edge = \"left\"\n";
         assert!(crate::loader::parse_client(sideways, std::path::Path::new("c.toml")).is_err());
     }

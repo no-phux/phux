@@ -1,5 +1,5 @@
 //! Standing producers (`[[producers]]`): any command the server keeps
-//! running as a document producer (`docs/applications.md#standing-producers`).
+//! running as a document producer (`docs/resource-kinds.md#standing-producers`).
 
 use serde::{Deserialize, Serialize};
 

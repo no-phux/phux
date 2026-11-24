@@ -181,13 +181,21 @@ fn retained_acp_focus_cannot_capture_the_drawn_inbox_keyboard() {
             },
         ),
     );
-    for q in [current, hidden] {
-        rt.state
-            .inbox
-            .questions
-            .drafts
-            .insert(q.id.clone(), crate::desk::questions::Draft::new(&q));
-    }
+    rt.state.inbox.questions.reconcile();
+    let current_owner = rt
+        .state
+        .inbox
+        .questions
+        .owner(&terminal, &current.id)
+        .unwrap()
+        .clone();
+    let hidden_owner = rt
+        .state
+        .inbox
+        .questions
+        .owner(&terminal, &hidden.id)
+        .unwrap()
+        .clone();
     rt.state.activities.apply(
         &Event::AgentAskedState {
             terminal_id: terminal,
@@ -200,21 +208,22 @@ fn retained_acp_focus_cannot_capture_the_drawn_inbox_keyboard() {
         .state
         .inbox
         .questions
-        .drafts
-        .get_mut("acp-question:hidden")
-        .unwrap()
-        .texts
-        .get_mut("text")
+        .field_mut(&hidden_owner, "text")
         .unwrap();
     hidden.focused = true;
     hidden.replace_text("preserved");
     rt.frame(0.0);
-    assert!(rt.find("acp-acp-question:current-field-text").is_some());
-    assert!(rt.find("acp-acp-question:hidden-field-text").is_none());
+    assert!(rt.find(&current_owner.field_key("text")).is_some());
+    assert!(rt.find(&hidden_owner.field_key("text")).is_none());
     tap(&mut rt, "phone-cap-120", 0.1);
     tap(&mut rt, "phone-cap-return", 0.3);
     assert_eq!(
-        rt.state.inbox.questions.drafts["acp-question:hidden"].text("text"),
+        rt.state
+            .inbox
+            .questions
+            .draft(&hidden_owner)
+            .unwrap()
+            .text("text"),
         "preserved"
     );
     assert!(rt.state.inbox.questions.pending.is_empty());

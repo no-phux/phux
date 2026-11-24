@@ -56,9 +56,10 @@ pub(super) fn collect_pane_meta(
     panes
         .iter()
         .map(|(id, slot)| {
-            // Same label the rail draws: a program title stands, a shell
-            // prompt (`user@host:path`) becomes the place it was hiding.
-            let title = phux_client_core::pane_label::rail_label(
+            // The label the pane's rule draws (`pane_label`): an agent's
+            // task, else what runs and where, never a shell's prompt.
+            let title = phux_client_core::pane_label::pane_label(
+                None,
                 Some(slot.last_title.as_str()),
                 slot.foreground.as_deref(),
                 slot.cwd.as_deref(),

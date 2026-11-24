@@ -293,7 +293,6 @@ export function mergeGroupGate(
     unitMode: "skip",
     unitTargets: "",
     testFilterset: "",
-    docsCatalog: false,
   };
   if (run === undefined)
     return evaluateQueue(sha, undefined, [], "unknown", idle, false, false, proof);

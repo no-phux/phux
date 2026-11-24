@@ -53,6 +53,7 @@ mod sidebar;
 mod spatial;
 mod status;
 mod tabs;
+mod tile;
 #[allow(clippy::disallowed_methods)] // owner path: the tokens' own raw values
 pub(crate) mod tokens;
 mod updates;

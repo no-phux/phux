@@ -243,7 +243,7 @@ class FixtureClock:
         # Let the real child processes finish starting, without charging host
         # scheduling time against the diagnostic's virtual startup deadline.
         time.sleep(0.02)
-        self.now += max(delay, 1.0)
+        self.now += delay
 
 
 class FixtureProcesses:
@@ -254,10 +254,16 @@ class FixtureProcesses:
 
     @staticmethod
     def run(args, *, timeout, **kwargs):
-        # Ordinary fake tools are Python executables. They can miss a 1s
-        # deadline on a loaded host, unlike the virtual deadline under test.
-        # The deliberately hung command still exercises real timeout handling.
+        # Charge deterministic work against the supplied command/deadline budget,
+        # independently of Python startup on a loaded host. Ordinary commands
+        # need 0.25 virtual seconds; an insufficient budget cannot complete them.
         hung = os.environ["MODE"] == "hung-tree" and args == ["swaymsg", "-t", "get_tree"]
+        work = timeout if hung else 0.25
+        ime.time.now += min(work, timeout)
+        if work > timeout:
+            raise subprocess.TimeoutExpired(args, timeout)
+        # Keep a real host safety bound, and exercise real timeout/child cleanup
+        # for the deliberately hung command rather than simulating its exit.
         return subprocess.run(args, timeout=timeout if hung else 10, **kwargs)
 
 

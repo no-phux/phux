@@ -366,7 +366,8 @@ pub(super) fn agent_entries(
                     name: panes
                         .get(id)
                         .and_then(|slot| {
-                            phux_client_core::pane_label::rail_label(
+                            phux_client_core::pane_label::pane_label(
+                                None,
                                 Some(slot.last_title.as_str()),
                                 slot.foreground.as_deref(),
                                 None,

@@ -109,7 +109,7 @@ pub struct AuthenticatedCredential {
     /// record names one.
     pub subject: Option<String>,
     /// The organization managing the admitting workload record, if any
-    /// (`docs/remote.md#managed-by-an-organization`).
+    /// (`docs/security.md#managed-by-an-organization`).
     pub managed: Option<String>,
 }
 

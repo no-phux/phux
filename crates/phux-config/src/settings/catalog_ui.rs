@@ -77,7 +77,18 @@ pub(super) const ROWS: &[SettingSpec] = &[
         detail: "On by default because the strip is the product's answer to which agent \
                  needs you. prefix-b toggles it for the life of the attach without \
                  touching this key. Below sidebar.width + chrome.min-pane-cols columns the \
-                 strip is not reserved at all.",
+                 full strip is not reserved; sidebar.rail decides what remains.",
+        applies: Applies::NextAttach,
+    },
+    SettingSpec {
+        key: "sidebar.rail",
+        section: SettingSection::Sidebar,
+        kind: SettingKind::Bool,
+        summary: "Keep a rail while the sidebar is hidden",
+        detail: "Hidden or too wide to fit, the sidebar folds to three columns instead of \
+                 vanishing: how many agents need you, one state dot per session with the \
+                 current one marked, and a chevron that opens it again. Off hides the \
+                 sidebar completely.",
         applies: Applies::NextAttach,
     },
     SettingSpec {

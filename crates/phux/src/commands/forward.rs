@@ -1,5 +1,5 @@
 //! `phux forward -L`: listen here, carry each connection to a port on the
-//! server's loopback (`docs/forwarding.md`). Runs until Ctrl-C.
+//! server's loopback (`docs/ssh.md#forwarding-a-port`). Runs until Ctrl-C.
 //! `phux forward --agent` is in [`super::forward_agent`].
 use std::process::ExitCode;
 use std::sync::Arc;

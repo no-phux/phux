@@ -1,41 +1,27 @@
+---
+group: build
+order: 2
+---
+
 # Program sequences and agent reports
 
-The second half of the [program protocol](./program-protocol.md). It
-covers the sequences other than OSC 7501 that phux acts on when a program
-in a pane writes them, the pane's agent record, and the `phux` commands a
-program can run to report state instead of writing escapes.
+The sequences other than [OSC 7501](./program-protocol.md) that phux acts
+on, the pane's agent record, and the `phux` commands a program can run
+instead of writing escapes.
 
-The key words MUST, MUST NOT, SHOULD, and MAY are used as in RFC 2119 and
-RFC 8174, and only when they appear in capitals. `ESC`, `OSC`, and `ST`
-mean what they mean on the [first page](./program-protocol.md#conventions).
-
-phux renders everything a program writes. This page lists only what phux
-also acts on. A sequence missing here, such as OSC 8 hyperlinks, is
-rendered and does nothing more.
+Terms are as in [Conventions](./program-protocol.md#conventions). A
+sequence not listed here is rendered and nothing more.
 
 ## Titles (OSC 0 and 2)
 
-`OSC 0 ; text ST` and `OSC 2 ; text ST` set the pane's title. phux reads
-the title after each chunk of output, and on a change:
-
-- sends a `title_changed` event to `phux watch` and the MCP tools,
-- matches it against [agent rules](./agents.md#agent-states) that look at
-  the title,
-- checks it for a [`phux-ask` question](#questions-the-phux-ask-title).
-
-An empty title means no title. phux sets no length limit; the TUI cuts the
-title to fit where it shows it. OSC 1 (icon name) has no effect.
-
-A tab's label prefers, in order: a name the user gave the tab, the pane's
-agent name, the program's title, the folder's name, and the tab's number. A
-program's title never replaces a name the user set.
-
-Programs cannot read the title back: `CSI 21 t` is not answered.
+`OSC 0 ; text ST` and `OSC 2 ; text ST` set the pane's title. On a change
+phux sends `title_changed` to `phux watch` and MCP, runs title
+[agent rules](./agents.md#agent-states), and checks for a
+[`phux-ask` question](#questions-the-phux-ask-title). Empty means no title;
+there is no length limit. A name the user gave a tab always wins over the
+title. OSC 1 does nothing, and `CSI 21 t` is not answered.
 
 ## Questions: the phux-ask title
-
-A program that needs a person to answer a question sets its title to a
-`phux-ask` marker:
 
 ```
 title       := "phux-ask" ["[" id "]"] ":" question ["?s=" suggestions]
@@ -43,273 +29,158 @@ id          := any characters except "]"
 suggestions := answer ("|" answer)*
 ```
 
-- The question is everything after the `:`, up to the first `?s=`.
-- Suggestions are split on `|`; empty ones are dropped. They are shown in
-  order.
-- `phux-ask` without a `:` is not a question.
-- Setting any other title withdraws the question.
+- The question runs from the `:` to the first `?s=`. Suggestions split on
+  `|`; empty ones are dropped; order is kept.
+- `phux-ask` without `:` is not a question. Any other title withdraws it.
 
 ```sh
 printf '\033]2;phux-ask[deploy-7]:Deploy v2.4.1 to production??s=yes|no\033\\'
 ```
 
-phux raises an `asked` event carrying the id, the question, and the
-suggestions, marks the pane as needing attention, and notifies the user.
-`phux agent answer --id deploy-7 --choice 1 @7` pastes the first suggestion
-and presses Enter, so the program reads the answer as one line on standard
-input. A question without an id is shown, but `phux agent answer` refuses
-it. A program SHOULD give each question a new id.
-
-`phux ask` reports the same question without touching the title, and
-outranks a `phux-ask` title while it holds. phux has no command that
-withdraws a `phux ask` question; it lasts until the pane closes, so a
-program that can change its title SHOULD prefer the title.
+phux raises an `asked` event and notifies. `phux agent answer --id
+deploy-7 --choice 1 @7` pastes the answer plus Enter; it refuses a question
+without an id. A program SHOULD use a new id per question. `phux ask` raises
+the same question without a title, outranks it, and lasts until the pane
+closes, so a program that can set its title SHOULD prefer the title.
 
 ## Shell integration (OSC 133)
 
-phux reads the semantic prompt marks a shell emits:
-
 | Mark | phux does |
 | --- | --- |
-| `OSC 133 ; A ST` | Pane is at a prompt. Ends the pane's `working` and `blocked` [program status](./program-protocol.md#states) records. |
-| `OSC 133 ; B ST` | Pane is at a prompt, reading input. |
-| `OSC 133 ; C ST` | A command started: a `command_started` event. |
-| `OSC 133 ; D [; code] ST` | A command finished: a `command_finished` event with the exit code, and the status bar's `exit` widget shows it. phux also rechecks the pane's folder. |
+| `OSC 133 ; A ST` | At a prompt. Ends `working` and `blocked` [program status](./program-protocol.md#states) records. |
+| `OSC 133 ; B ST` | At a prompt, reading input. |
+| `OSC 133 ; C ST` | `command_started` event. |
+| `OSC 133 ; D [; code] ST` | `command_finished` with the exit code (shown by the `exit` widget); rechecks the pane's folder. No code clears the last one. |
 
-Your shell has to emit these marks. If your prompt or terminal setup does
-not already do it, phux prints a snippet for zsh, bash and fish:
-
-```sh
-eval "$(phux config shell-integration zsh)"     # in ~/.zshrc
-eval "$(phux config shell-integration bash)"    # in ~/.bashrc
-phux config shell-integration fish | source     # in ~/.config/fish/config.fish
-```
-
-Or let phux do it for the default shell of every new pane, with nothing
-in a startup file:
-
-```toml
-[defaults]
-shell-integration = true
-```
-
-The server reads this when it starts. zsh is reached through `ZDOTDIR`
-(yours is put back before your own files are read), bash through
-`PROMPT_COMMAND` and `PS0`, fish through a vendor directory. It is off
-unless you set it, and a pane started with its own command is left alone. bash older than 4.4 (the one
-macOS ships) marks prompts and exit codes but not command starts.
-
-Extra parameters such as `aid=` are allowed and ignored. A `D` without a
-code clears the last code. `phux wait --output-only`, `phux snapshot --cells`, and the
-`command_started` and `command_finished` events of `phux watch` rely on
-these marks; see [scripting](./scripting.md).
+Extra parameters (`aid=`) are ignored. `phux wait --output-only`,
+`phux snapshot --cells`, and the command events need these marks. Load them
+with `phux config shell-integration SHELL`, or set
+`defaults.shell-integration = true` to inject them into every new pane's
+default shell ([config reference](./reference/config.md)). bash before 4.4
+marks prompts and exit codes but not command starts.
 
 ## Progress (OSC 9;4)
 
-`OSC 9 ; 4 ; state ; percent ST`, with state `0` remove, `1` set, `2`
-error, `3` indeterminate, `4` paused. phux keeps the last one per pane only
-for agent rules that match the `osc-progress` region. It shows no progress
-bar and does not turn progress into program status. A full reset sets it
-back to `0`.
+`OSC 9 ; 4 ; state ; percent ST` (state `0` remove, `1` set, `2` error, `3`
+indeterminate, `4` paused). phux keeps the last one per pane only for agent
+rules matching the `osc-progress` region. A full reset sets it to `0`.
 
 ## Clipboard (OSC 52)
 
-`OSC 52 ; selection ; base64 ST` asks to set the clipboard. OSC 1337 `Copy`
-and kitty's OSC 5522 writes are treated the same way.
+**Writes.** `OSC 52 ; selection ; base64 ST`, OSC 1337 `Copy`, and OSC 5522
+writes set the user's clipboard, whatever the selection letter. Only the
+last write per output chunk counts, and only from live output of the
+focused pane, as UTF-8 `text/plain` up to 1 MiB decoded; replays and clears
+are dropped. `defaults.clipboard-write` is `allow`, `ask`, or `deny`. The
+TUI forwards the write as OSC 52 to the user's terminal; Rune sets its own
+clipboard.
 
-- Every selection (`c`, `p`, `s`, and the rest) means the clipboard of the
-  user's machine.
-- Only a write from the pane the client has focused (in Rune, while its
-  window has focus), from live output,
-  of UTF-8 `text/plain` at most 1 MiB decoded, is used. phux drops a write
-  replayed from history, a clear, and anything else. Only the last write in
-  one chunk of output counts.
-- The user's `defaults.clipboard-write` decides: `allow` (the default) sets
-  the clipboard, `ask` shows the size and asks first, `deny` drops it. Rune
-  asks one write at a time, ignores Return for the prompt's first half
-  second, and treats a config it cannot parse as `deny`. Copies the user
-  makes themselves never pass through this policy.
-- The TUI passes the text on to the user's terminal as OSC 52, which may
-  have its own policy; Rune sets its own clipboard.
+**Reads.** `OSC 52 ; c ; ? ST` gets no reply by default, so a program MUST
+NOT wait for one without a timeout.
 
-`OSC 52 ; c ; ? ST` asks to read the clipboard. By default it gets no
-reply, so a program MUST NOT wait for one without a timeout.
-
-- The user's `defaults.clipboard-read` decides: `deny` (the default) never
-  answers, `ask` shows a prompt naming the pane (allow once, allow this pane
-  until you detach, or deny), `allow` answers. The prompt ignores the keys
-  that allow for its first half second, so typing or an Enter already on
-  its way can't answer it.
-- Only a read from live output of the pane the client has focused, while
-  its window has focus, is considered. A read from any other pane is dropped
-  without a prompt. A pane prompts at most once every 3 seconds, and one read
-  is answered at a time.
-- Only selection `c`, and `p` where the user's machine has a primary
-  selection, is answered. Any other selection, several at once, or OSC 5522
-  gets no reply.
-- The answer is the clipboard of the client that controls the pane: the TUI
-  asks the user's terminal with OSC 52 (that terminal may have its own
-  policy, and may not answer), Rune reads its own clipboard. The client sends
-  it as `CLIPBOARD_REPLY`, and the server writes it to the asking pane only,
-  as `OSC 52 ; c ; base64 ST`, and only from a client that may type into
-  that pane (not a viewer, not blocked by another client's input lease).
-- The server records each answered read in the [audit log](./audit.md) as
-  `clipboard.read`, with the pane and size, never the text.
-- A client or server without `CLIPBOARD_READ` (older ones, the mobile apps)
-  leaves reads unanswered, as before.
-
-What other clients do with a clipboard write is not defined here.
+`defaults.clipboard-read` is `deny`, `ask`, or `allow`. Only live output
+of the focused pane in a focused window is considered, at most one prompt
+per pane per 3 seconds. Only selection `c` (and `p` where a primary
+selection exists) is answered. The controlling client sends
+`CLIPBOARD_REPLY`; the server writes `OSC 52 ; c ; base64 ST` to the asking
+pane only, from a client allowed to type there, and audits it as
+`clipboard.read` without the text ([Security](./security.md)). Peers
+without `CLIPBOARD_READ` never answer.
 
 ## Working folder (OSC 7)
 
-phux does not read OSC 7. It asks the operating system for the folder of
-the pane's process (on Linux and macOS), when a command finishes and when
-output goes quiet. A program cannot set the pane's folder by escape.
+Not read. phux asks the OS for the pane process's folder when a command
+finishes and when output goes quiet.
 
 ## Pane icon (OSC 1337 SetUserVar)
 
-A program can give its pane an icon with the user-variable sequence iTerm2
-and WezTerm use, so it works from a shell on the far side of `ssh` too:
-
 ```sh
 printf '\033]1337;SetUserVar=phux_icon=%s\007' "$(printf '🦀' | base64)"
-printf '\033]1337;SetUserVar=phux_icon=\007'   # remove it
+printf '\033]1337;SetUserVar=phux_icon=\007'   # remove
 ```
 
-The value is base64 of an icon: an emoji or a Nerd Font symbol, 1 to 32
-bytes of UTF-8 with no space, control character, or text-direction
-override. An empty value removes
-the icon; a value that breaks the rule, or another variable, changes
-nothing. The icon stays until the program changes or removes it, or the
-server restarts. The server publishes it as `icon` in the pane's
-`phux.pane-occupant/v1` record, and the terminal UI and the desktop draw it
-before the pane's name in tabs and lists. It comes before an icon from your
+The value is base64 of 1 to 32 bytes of UTF-8 with no space, control
+character, or direction override. Empty removes it; an invalid value or
+another variable changes nothing. It lasts until changed or the server
+restarts, is published as `icon` in `phux.pane-occupant/v1`, and wins over
 [`[[icons]]`](./clients.md#pane-icons) config.
 
 ## Notifications and the bell
 
-By default phux ignores OSC 9 (other than `9;4`), OSC 777, and OSC 99 from
-a pane: a program cannot raise a desktop notification through phux. With
-`notifications.from-programs = "notes"`, OSC 9 and OSC 777 become the pane's
-[note](./scripting.md#notes) instead. Report state
-instead, with [OSC 7501](./program-protocol.md) or a
-[`phux-ask` question](#questions-the-phux-ask-title), and phux notifies the
-user according to their `[notifications]` settings.
+OSC 9 (other than `9;4`), OSC 777, and OSC 99 are ignored. With
+`notifications.from-programs = "notes"`, OSC 9 and 777 become the pane's
+[note](./scripting.md#notes). Report state instead and phux notifies per
+`[notifications]`.
 
-A BEL (`0x07`) outside a control string is a `bell` event in `phux watch`
-and the MCP tools, one per chunk of output. It does not ring the user's
-terminal, and does not mark the pane as needing attention. A BEL that ends
-an OSC is a terminator, not a bell.
+A BEL outside a control string is one `bell` event per output chunk. It
+does not ring the user's terminal or mark the pane.
 
 ## Focus reports (DEC 1004)
 
-A pane that sets `CSI ? 1004 h` gets `CSI I` when it becomes the pane the
-user types into and `CSI O` when it stops being that pane. Both the terminal
-UI and Rune report every move: a pane, tab or session switch, a floating
-pane opening or closing, a detach, and the user's terminal window gaining or
-losing focus. A pane that isn't on screen never gets `CSI I`.
+After `CSI ? 1004 h`, a pane gets `CSI I` when it becomes the input pane
+(never while off screen) and `CSI O` when it stops, including on detach and
+window-focus changes.
 
 ## Replies phux sends
-
-phux answers these queries itself, without asking the user's terminal:
 
 | Query | Reply |
 | --- | --- |
 | `OSC 7501 ; ? ST` | [Feature detection](./program-protocol.md#feature-detection) |
-| `CSI c` (primary device attributes) | `CSI ? ... c` |
-| `CSI > q` (XTVERSION) | `libghostty`. Do not detect phux by this. |
-| `OSC 10 ; ? ST`, `OSC 11 ; ? ST` | The default colours of the user's terminal, as phux saw them at attach or after its last theme switch |
-| `CSI 14 t`, `CSI 16 t`, `CSI 18 t` | The pane's size, from a cell size of 8 by 16 pixels when the real one is unknown |
+| `CSI c` | `CSI ? ... c` |
+| `CSI > q` | `libghostty`. Do not detect phux by this. |
+| `OSC 10 ; ? ST`, `OSC 11 ; ? ST` | The user's terminal colours as last seen |
+| `CSI 14 t`, `CSI 16 t`, `CSI 18 t` | Pane size; cell size 8x16 when unknown |
 
-Not answered: `CSI 21 t`, ENQ, and `CSI ? 996 n`. `OSC 52` reads are
-answered only by user policy ([Clipboard](#clipboard-osc-52)).
+Not answered: `CSI 21 t`, ENQ, `CSI ? 996 n`. OSC 52 reads follow
+[Clipboard](#clipboard-osc-52).
 
 ## The agent record
 
-Every pane can carry an agent record, `phux.agent/v1`, a JSON object:
+`phux.agent/v1` is a JSON object on each pane:
 
 | Field | Value |
 | --- | --- |
-| `name` | Required. A record without a non-blank `name` counts as no record. A `name` equal to `kind` is made unique on the server: `claude`, then `claude-2`, kept while the record stays. |
-| `kind` | A slug such as `claude` or `terraform`. |
-| `state` | `unknown` \| `idle` \| `working` \| `blocked` \| `done`. An unknown word reads as `unknown`. |
-| `attention` | `none` \| `low` \| `normal` \| `high`. An unknown word reads as `normal`. Absent means derived: `blocked` high, `working` normal, `done` and `unknown` low, `idle` none. |
-| `session` | A free-form label, such as a job or fleet name. |
+| `name` | Required; blank means no record. A `name` equal to `kind` is made unique (`claude`, `claude-2`). |
+| `kind` | A slug such as `claude`. |
+| `state` | `unknown` \| `idle` \| `working` \| `blocked` \| `done`. Unknown words read `unknown`. |
+| `attention` | `none` \| `low` \| `normal` \| `high`. Unknown reads `normal`. Absent: `blocked` high, `working` normal, `done` and `unknown` low, `idle` none. |
+| `session` | Free-form label. |
 
-The record is what `phux agent list`, `phux agent wait`, the sidebar, and
-notifications read. phux writes it from the best evidence it has; a program
-can write it directly with `phux agent set`.
+phux writes it from the best evidence; `phux agent set` writes it
+directly. It records what a program claims, not who it is.
 
 ### Precedence
 
-From strongest to weakest:
-
-1. A record declared with a state, through `phux agent set --state` or the
-   MCP `phux_agent_set` tool. phux leaves it alone until it is cleared.
+1. A state declared by `phux agent set --state` or MCP `phux_agent_set`,
+   kept until cleared.
 2. A live agent session fed by `phux agent emit`.
 3. [OSC 7501 program status](./program-protocol.md#how-phux-shows-program-status).
 4. Hook reports from `phux agent report-state`.
-5. The foreground program and the screen, matched against agent rules.
+5. The foreground program and screen, matched against agent rules.
 
-While a pane has any OSC 7501 record and no live session, phux ignores
-levels 4 and 5 for it.
+While a pane has an OSC 7501 record and no live session, levels 4 and 5 are
+ignored.
 
 ### Commands a program can run
 
-A program in a pane SHOULD name its own pane, `@$PHUX_TERMINAL_ID`.
-Leaving the target out means the focused pane of the focused session,
-which is often someone else's.
+Target your own pane, `@$PHUX_TERMINAL_ID`; no target means the focused
+pane, often someone else's.
 
 ```sh
 phux agent set --name deploy --kind terraform --state working "@$PHUX_TERMINAL_ID"
-phux agent set --name deploy --kind terraform --state blocked --attention high "@$PHUX_TERMINAL_ID"
 phux agent clear "@$PHUX_TERMINAL_ID"
-phux agent show "@$PHUX_TERMINAL_ID"
 ```
 
-- `phux agent set` replaces the whole record, except that it keeps the
-  pane's `kind` when `--kind` is omitted. Without `--state` the record says
-  `unknown`, and phux may fill in a state from weaker evidence. A declared
-  state stays until `phux agent clear` or the pane closes, even after the
-  program exits, so a program that declares a state MUST clear it before it
-  exits. `set` and `clear` exit 0 even when the
-  write does not land or cannot be confirmed (they print an error);
-  confirm with `phux agent show`.
-- `phux agent report-state @7 working` (also `blocked`, `done`) is for hooks.
-- `phux agent session open`, then `phux agent emit --type prompt`,
-  `tool_start`, `ask`, or `stop`, feeds an agent session. See
-  [agents](./agents.md#agents-without-an-integration).
-- `phux ask @7 --id ID --suggest yes --suggest no "Question?"` raises a
-  question like the [`phux-ask` title](#questions-the-phux-ask-title).
-
-**`report-state` and `emit` change the agent record only when phux
-recognized the program** as one of the agents its rules know. For any other
-program, use OSC 7501 or `phux agent set`.
-
-Only connections on the local socket can feed an agent session; a remote
-client cannot. Any client that can write the pane's metadata can write the
-agent record, so the record says what a program claims, not who it is.
-
-## Relationship to standard sequences
-
-| Sequence | In phux |
-| --- | --- |
-| OSC 0, 2 | Title, `phux-ask` questions, agent rules |
-| OSC 1 | No effect |
-| OSC 7 | Not read |
-| OSC 9 (notification) | Ignored, or a note with `from-programs = "notes"` |
-| OSC 9;4 | Agent rules only |
-| OSC 52 | Clipboard write and read, by user policy |
-| OSC 777 | Ignored, or a note with `from-programs = "notes"` |
-| OSC 99 | Ignored |
-| OSC 133 | Prompt state, command events, exit codes; `A` ends active OSC 7501 records |
-| OSC 1337 | `SetUserVar=phux_icon` sets the [pane icon](#pane-icon-osc-1337-setuservar); `Copy` is a [clipboard](#clipboard-osc-52) write |
-| OSC 7501 | [Program status](./program-protocol.md#program-status-osc-7501) |
-| BEL | `bell` event |
-
-## Revision history
-
-| Date | Revision | Changes |
-| --- | --- | --- |
-| 2026-10-21 | 1 | First version. |
-| 2026-11-21 | 2 | Pane icon (OSC 1337 `SetUserVar=phux_icon`). |
+- `set` replaces the whole record (last writer wins) but keeps `kind`
+  when `--kind` is omitted. Without `--state`, weaker evidence may fill the
+  state. A declared state outlives the program, so a program MUST clear it
+  before exiting. `set` and `clear` read the record back and exit 1
+  (`agent_record_unconfirmed`) when the write did not land.
+- `phux agent report-state` is for hooks; `phux agent session open` plus
+  `phux agent emit` feeds a session
+  ([agents](./agents.md#agents-without-an-integration)); `phux ask` raises a
+  question.
+- **`report-state` and `emit` change the record only for programs phux's
+  rules recognize.** Others use OSC 7501 or `phux agent set`.
+- Only a local connection (this machine's socket or localhost) can feed an
+  agent session; remote peers are refused.

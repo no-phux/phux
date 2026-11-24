@@ -103,7 +103,7 @@ pub(super) async fn handle_upgrade(
             reply::send(out_tx, request_id, CommandResult::Ok).await;
             tokio::task::yield_now().await;
             info!("UPGRADE: re-exec'ing the new binary");
-            let err = plan.exec().await;
+            let err = plan.exec(state).await;
             // Only reached if exec failed: the old image keeps serving, so
             // the sidecars stopped for the exec come back.
             crate::plugin_startup::resume(state);

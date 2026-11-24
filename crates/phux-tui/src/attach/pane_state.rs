@@ -272,17 +272,17 @@ impl PaneSlot {
     }
 }
 
-/// The chrome label for one pane: its OSC title when a program set one,
-/// otherwise the list label (a shell prompt is `user@host:path` on Arch,
-/// which clips to the user and hides the path). Agent records are not
-/// read here.
+/// The chrome label for one pane: the label every list shares (never a
+/// shell's `user@host:path` prompt) and its ADR-0035 attention. Agent
+/// records are not read here.
 pub(super) fn pane_label<'a>(
     kernel: &AttachKernel,
     panes: &'a HashMap<ResourceId, PaneSlot>,
     id: &ResourceId,
 ) -> Option<crate::render::chrome::dividers::PaneLabel<'a>> {
     let (key, slot) = panes.get_key_value(id)?;
-    let text = phux_client_core::pane_label::rail_label(
+    let text = phux_client_core::pane_label::pane_label(
+        None,
         Some(slot.last_title.as_str()),
         slot.foreground.as_deref(),
         slot.cwd.as_deref(),

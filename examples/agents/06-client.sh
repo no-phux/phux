@@ -2,7 +2,7 @@
 #
 # 06 — a phux client: read agents, see a question, answer it.
 #
-# The flow of docs/build-a-client.md against a throwaway server: a pane asks
+# The flow of docs/building.md against a throwaway server: a pane asks
 # with the phux-ask title, the client finds it through `phux agent list` and
 # `phux watch`, answers with `phux agent answer`, and checks the pane got it.
 #

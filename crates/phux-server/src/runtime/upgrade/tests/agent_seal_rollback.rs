@@ -253,6 +253,7 @@ async fn cancelled_rollback_does_not_repeat_an_acknowledged_unseal() {
 
 #[tokio::test(start_paused = true)]
 async fn failed_exec_restores_flags_before_waiting_for_rollback_application() {
+    let state = SharedState::new();
     let (bootstrap, mut receiver) = mpsc::channel(1);
     bootstrap
         .try_send(BootstrapRequest {
@@ -265,7 +266,7 @@ async fn failed_exec_restores_flags_before_waiting_for_rollback_application() {
         bootstraps: vec![bootstrap],
     });
     {
-        let exec = plan.exec();
+        let exec = plan.exec(&state);
         tokio::pin!(exec);
         assert!(futures_util::poll!(&mut exec).is_pending());
         assert_eq!(fd_flags(listener.as_raw_fd()), original);

@@ -82,6 +82,7 @@ fn strict_load_reads_which_key_and_sidebar_knobs() {
         new.sidebar,
         SidebarSettings {
             enabled: true,
+            rail: true,
             width: 33,
             edge: SidebarEdge::Right,
             agents_share: 50,

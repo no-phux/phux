@@ -125,6 +125,13 @@ pub enum StoreError {
     /// Stored data is inconsistent.
     #[error("org store corrupt: {0}")]
     Corrupt(String),
+    /// Another connection committed after this owner's snapshot was opened.
+    #[error(
+        "org store {} changed through another connection; refusing stale writes; \
+         keep one server for this store and reopen it before continuing",
+        .0.display()
+    )]
+    StaleWriter(PathBuf),
     /// A test asked the store to fail.
     #[error("org store write failed (injected)")]
     Injected,

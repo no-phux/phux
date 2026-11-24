@@ -1,4 +1,10 @@
+import json
+import os
+import subprocess
 import unittest
+from unittest.mock import call, patch
+
+import release
 
 from release import STUCK_SECONDS, already_reported, bump, next_version, notes, shippable, stuck_exit, stuck_line
 
@@ -70,6 +76,123 @@ class ReleaseTest(unittest.TestCase):
     def test_unreadable_history_still_fails(self):
         self.assertEqual(stuck_exit(STUCK_SECONDS + 1, SHA, None), 1)
         self.assertEqual(stuck_exit(STUCK_SECONDS, SHA, None), 0)
+
+
+class BumpPrTest(unittest.TestCase):
+    def setUp(self):
+        self.pr = {"number": 42, "headRefOid": SHA, "isDraft": False}
+        self.current = {"headRefOid": SHA, "isDraft": False, "state": "OPEN"}
+        self.guard = call("bun", "tools/main.ts", "pr-ready-ci", "42", SHA, check=False)
+        self.view = call("gh", "pr", "view", "42", "--json", "state,isDraft,headRefOid")
+        self.merge = call("gh", "pr", "merge", "42", "--auto", "--squash", "--match-head-commit", SHA)
+        self.prints = patch("builtins.print").start()
+        self.addCleanup(patch.stopall)
+
+    def test_draft_is_armed_once_without_guard_or_auto_merge(self):
+        with patch("release.sh") as sh:
+            self.assertEqual(release.reconcile_bump_pr({**self.pr, "isDraft": True}), 0)
+        self.assertEqual(sh.call_args_list, [call("gh", "pr", "ready", "42")])
+
+    def test_pending_failed_or_unreadable_guard_never_enables_auto_merge(self):
+        for code in (1, 2, 3):
+            with self.subTest(code=code), patch("release.sh") as sh:
+                sh.return_value = subprocess.CompletedProcess([], code, "pending or failed", "detail")
+                self.assertEqual(release.reconcile_bump_pr(self.pr), 0)
+                self.assertEqual(sh.call_args_list, [self.guard])
+                self.prints.assert_any_call("pending or faileddetail")
+
+    def test_success_requeries_live_pr_and_binds_auto_merge_to_the_guarded_head(self):
+        with patch("release.sh") as sh:
+            sh.side_effect = [
+                subprocess.CompletedProcess([], 0, "", ""),
+                json.dumps(self.current),
+                "",
+            ]
+            self.assertEqual(release.reconcile_bump_pr(self.pr), 0)
+        self.assertEqual(sh.call_args_list, [self.guard, self.view, self.merge])
+
+    def test_later_polls_gate_an_armed_pr_without_rearming_it(self):
+        with patch("release.sh") as sh:
+            sh.side_effect = [
+                "",
+                subprocess.CompletedProcess([], 1, "pending", ""),
+                subprocess.CompletedProcess([], 0, "", ""),
+                json.dumps(self.current),
+                "",
+            ]
+            self.assertEqual(release.reconcile_bump_pr({**self.pr, "isDraft": True}), 0)
+            self.assertEqual(release.reconcile_bump_pr(self.pr), 0)
+            self.assertEqual(release.reconcile_bump_pr(self.pr), 0)
+        self.assertEqual(sh.call_args_list, [
+            call("gh", "pr", "ready", "42"), self.guard, self.guard, self.view, self.merge,
+        ])
+
+    def test_stale_head_current_draft_or_closed_pr_blocks_even_after_guard_success(self):
+        for changed in ({"headRefOid": OTHER}, {"isDraft": True}, {"state": "CLOSED"}, {"state": "MERGED"}):
+            with self.subTest(changed=changed), patch("release.sh") as sh:
+                sh.side_effect = [
+                    subprocess.CompletedProcess([], 0, "", ""),
+                    json.dumps({**self.current, **changed}),
+                ]
+                self.assertEqual(release.reconcile_bump_pr(self.pr), 0)
+                self.assertEqual(sh.call_args_list, [self.guard, self.view])
+
+    def test_requery_error_fails_closed(self):
+        with patch("release.sh") as sh:
+            sh.side_effect = [
+                subprocess.CompletedProcess([], 0, "", ""),
+                subprocess.CalledProcessError(1, ["gh", "pr", "view"]),
+            ]
+            with self.assertRaises(subprocess.CalledProcessError):
+                release.reconcile_bump_pr(self.pr)
+        self.assertEqual(sh.call_args_list, [self.guard, self.view])
+
+    def test_existing_bump_is_reconciled_before_tag_only_or_new_change_checks(self):
+        for tag_only in ("", "1"):
+            with self.subTest(tag_only=tag_only), patch.dict(os.environ, RUNE_RELEASE_TAG_ONLY=tag_only):
+                with patch("release.open_bump_pr", return_value=self.pr):
+                    with patch("release.reconcile_bump_pr", return_value=0) as reconcile:
+                        with patch("release.sh") as sh:
+                            self.assertEqual(release.bump_step("0.1.1"), 0)
+                reconcile.assert_called_once_with(self.pr)
+                sh.assert_not_called()
+
+    def test_main_completion_without_existing_bump_never_opens_one(self):
+        with patch.dict(os.environ, RUNE_RELEASE_TAG_ONLY="1"):
+            with patch("release.open_bump_pr", return_value=None), patch("release.sh") as sh:
+                self.assertEqual(release.bump_step("0.1.1"), 0)
+        sh.assert_not_called()
+
+    def test_new_bump_is_created_as_draft_then_armed_without_auto_merge(self):
+        with patch.dict(os.environ, RUNE_RELEASE_TAG_ONLY=""):
+            with patch("release.open_bump_pr", return_value=None), patch("release.Path") as path:
+                path.return_value.read_text.return_value = "release notes"
+                with patch("release.bump", return_value=("manifest", "lock")), patch("release.sh") as sh:
+                    sh.return_value = "fix(rune): paint"
+                    self.assertEqual(release.bump_step("0.1.1"), 0)
+        commands = [args.args for args in sh.call_args_list]
+        create = next(args for args in commands if args[:3] == ("gh", "pr", "create"))
+        self.assertIn("--draft", create)
+        self.assertEqual(commands[-1], ("gh", "pr", "ready", release.BRANCH))
+        self.assertFalse(any(args[:3] == ("gh", "pr", "merge") for args in commands))
+        self.assertFalse(any(args[0] == "bun" for args in commands))
+
+    def test_main_completion_reaches_existing_pr_reconciliation(self):
+        with patch.dict(os.environ, RUNE_RELEASE_TAG_ONLY="1"):
+            with patch("release.Path"), patch("release.cargo_version", return_value="0.1.1"):
+                with patch("release.sh", return_value="rune-v0.1.1"):
+                    with patch("release.bump_step", return_value=0) as bump_step:
+                        self.assertEqual(release.main(), 0)
+        bump_step.assert_called_once_with("0.1.1")
+
+    def test_lookup_is_scoped_to_same_repository_open_main_bumps(self):
+        own = {**self.pr, "isCrossRepository": False}
+        with patch("release.sh", return_value=json.dumps([own])) as sh:
+            self.assertEqual(release.open_bump_pr(), own)
+        sh.assert_called_once_with(
+            "gh", "pr", "list", "--base", "main", "--head", release.BRANCH, "--state", "open",
+            "--json", "number,isDraft,headRefOid,isCrossRepository",
+        )
 
 
 if __name__ == "__main__":
