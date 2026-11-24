@@ -46,7 +46,7 @@ function runStatus(
   env: Record<string, string> = {},
 ): { stdout: string; stderr: string } {
   const result = Bun.spawnSync(command, {
-    cwd: repoPath("scripts"),
+    cwd: repoPath("dev"),
     env: environment(env),
     stdout: "pipe",
     stderr: "pipe",
@@ -92,7 +92,7 @@ describe.each(Object.keys(COMMANDS))("%s", (name) => {
         const redirect = destination === "stderr" ? '>"$PHUX_OTHER"' : '2>"$PHUX_OTHER"';
         const chunks: Uint8Array[] = [];
         const child = Bun.spawn(["/bin/sh", "-c", `exec "$@" ${redirect}`, "sh", ...command], {
-          cwd: repoPath("scripts"),
+          cwd: repoPath("dev"),
           env: environment({ PHUX_OTHER: other }),
           terminal: { cols: 200, rows: 24, data: (_terminal, data) => chunks.push(data) },
         });

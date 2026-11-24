@@ -311,7 +311,7 @@
           ]
           ++ pkgs.lib.optional (mbxPinned != null) mbxPinned
           ++ [
-            # Shell linting for scripts/ and examples/agents/ (just shellcheck).
+            # Shell linting for the repo's shell (just shellcheck).
             pkgs.shellcheck
             # GitHub workflow syntax plus expression validation (`just
             # guards`). This is release infrastructure, so it belongs

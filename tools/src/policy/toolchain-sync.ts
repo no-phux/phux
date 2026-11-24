@@ -108,9 +108,9 @@ export function toolchainSync(root: string): ToolchainSync {
   }
   flakeHas("libexec/mbx:$PATH", "flake.nix shellHook must put the mbx Cargo wrapper first on PATH");
 
-  // Every workspace root, wherever the plugin index generator lives.
+  // Every workspace root: the repo, each client, and the plugin index generator.
   const manifests = git(
-    ["ls-files", "--", "Cargo.toml", "clients/*/Cargo.toml", "*plugin-index/Cargo.toml"],
+    ["ls-files", "--", "Cargo.toml", "clients/*/Cargo.toml", "plugins/index/Cargo.toml"],
     root,
   )
     .split("\n")

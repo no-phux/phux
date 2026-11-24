@@ -15,7 +15,7 @@ const INPUTS = [
   "tools/package.json",
   "Cargo.toml",
   "clients/*/Cargo.toml",
-  "*plugin-index/Cargo.toml",
+  "plugins/index/Cargo.toml",
   ".github/workflows/*.yml",
 ];
 
