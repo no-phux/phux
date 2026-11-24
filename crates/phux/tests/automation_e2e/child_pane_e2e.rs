@@ -45,7 +45,7 @@ fn parent_of(server: &common::ServerGuard, pane: &str) -> Value {
     (resources.iter())
         .find(|r| r["id"] == pane)
         .map(|r| r["parent"].clone())
-        .unwrap_or_else(|| panic!("{pane} is not listed: {listing}"))
+        .expect("the pane is listed")
 }
 
 #[test]
