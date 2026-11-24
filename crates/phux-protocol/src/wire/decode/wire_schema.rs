@@ -106,7 +106,7 @@ const UNSET_TYPE: &str = "?";
 
 fn schema_path() -> PathBuf {
     // Read at run time, not `env!`: a baked checkout path defeats the shared
-    // build cache (scripts/check-cache-portable.sh).
+    // build cache (tools/src/policy/cache-portable.test.ts).
     PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").expect("the test runner sets CARGO_MANIFEST_DIR"),
     )
