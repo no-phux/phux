@@ -90,19 +90,20 @@ fn fallback_spawn(
 /// Cache a successful trampoline path. A failure is not remembered, so a later
 /// materialize (after a noexec temp dir or a missing compiler) can succeed.
 ///
-/// The fast path only reads `slot`. Materializing takes the lock and checks
-/// again, so concurrent spawns do not rewrite an executing image.
+/// A temp-directory cleanup may remove a cached launcher. Check that it still
+/// exists before using it; materializing under the lock repairs a missing file
+/// without concurrent spawns rewriting an executing image.
 fn remember_path(
     slot: &OnceLock<PathBuf>,
     materialize: impl FnOnce() -> io::Result<PathBuf>,
 ) -> io::Result<PathBuf> {
-    if let Some(path) = slot.get() {
+    if let Some(path) = slot.get().filter(|path| path.is_file()) {
         return Ok(path.clone());
     }
     let _guard = TRAMPOLINE_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(path) = slot.get() {
+    if let Some(path) = slot.get().filter(|path| path.is_file()) {
         return Ok(path.clone());
     }
     let path = materialize()?;
