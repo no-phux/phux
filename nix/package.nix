@@ -2,10 +2,11 @@
 # source: `nix build`, `nix run`, `nix profile install github:no-phux/phux`.
 #
 # libghostty-vt-sys would download a prebuilt engine or clone Ghostty, and the
-# Nix sandbox allows neither. So this hands it the same engine source its
-# build.rs pins (GHOSTTY_SOURCE_DIR), that commit's own Zig package set for
-# `zig build --system` (GHOSTTY_ZIG_SYSTEM_DIR), and the pinned Zig release.
-# scripts/check-ghostty-pin.sh fails when ghosttyRev drifts from build.rs.
+# Nix sandbox allows neither. So the engine is built here, the way its
+# build.rs builds it, from the commit build.rs pins, with that commit's own Zig
+# package set and the pinned Zig release, and handed over through
+# LIBGHOSTTY_VT_SYS_LIB_DIR. scripts/check-ghostty-pin.sh fails when
+# ghosttyRev drifts from build.rs.
 {
   lib,
   stdenv,
@@ -29,6 +30,34 @@ let
     narHash = "sha256-eEVJxWGtbHd1D+ZjIg3ZpuYFvXMK8zipIHm3VmZu9Xc=";
   };
   ghosttyZigDeps = callPackage "${ghosttySrc}/deps/packages.nix" { zig_0_17 = zigPinned; };
+  libghosttyVt = stdenv.mkDerivation {
+    pname = "libghostty-vt";
+    version = builtins.substring 0 12 ghosttyRev;
+    src = ghosttySrc;
+    # Ghostty's Darwin build runs `xcrun nmedit`.
+    nativeBuildInputs = [
+      zigPinned
+    ]
+    ++ lib.optionals stdenv.hostPlatform.isDarwin [
+      cctools
+      xcbuild
+    ];
+    dontConfigure = true;
+    dontInstall = true;
+    dontFixup = true;
+    # build.rs's flags for a release build. On Linux the target is explicit:
+    # the static Zig release finds no ELF interpreter in the sandbox (no
+    # /usr/bin/env) and would detect musl as the native ABI.
+    buildPhase = ''
+      runHook preBuild
+      export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-global-cache"
+      zig build -Demit-lib-vt=true -Doptimize=ReleaseFast -Dcpu=baseline \
+        -Demit-xcframework=false -Dapp-runtime=none \
+        ${lib.optionalString stdenv.hostPlatform.isLinux "-Dtarget=${stdenv.hostPlatform.parsed.cpu.name}-linux-gnu"} \
+        --system ${ghosttyZigDeps} --cache-dir "$TMPDIR/zig-cache" --prefix "$out"
+      runHook postBuild
+    '';
+  };
   rust = toolchain.override {
     extensions = [ ];
     targets = [ ];
@@ -56,23 +85,10 @@ rustPlatform.buildRustPackage {
     "phux-mcp"
   ];
 
-  nativeBuildInputs = [
-    zigPinned
-  ]
   # .cargo/config.toml links Linux targets with mold.
-  ++ lib.optional stdenv.hostPlatform.isLinux mold
-  # Ghostty's Darwin build runs `xcrun nmedit`.
-  ++ lib.optionals stdenv.hostPlatform.isDarwin [
-    cctools
-    xcbuild
-  ];
+  nativeBuildInputs = lib.optional stdenv.hostPlatform.isLinux mold;
 
-  env = {
-    GHOSTTY_SOURCE_DIR = "${ghosttySrc}";
-    GHOSTTY_ZIG_SYSTEM_DIR = ghosttyZigDeps;
-    # Same engine flavor as the release binaries (scripts/build-release-binaries.sh).
-    LIBGHOSTTY_VT_SYS_CPU = "baseline";
-  };
+  env.LIBGHOSTTY_VT_SYS_LIB_DIR = "${libghosttyVt}/lib";
 
   # The suite needs PTYs, sockets and the test runner; CI runs it.
   doCheck = false;
