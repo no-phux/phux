@@ -214,8 +214,10 @@ fn points((left, top, right, bottom): Rect, scale: f32) -> (f32, f32, f32, f32) 
     )
 }
 
-/// A rounded corner. Rune borders all four sides, so the ring runs past the
-/// two open sides and the piece's rectangle cuts it off there.
+/// A rounded corner. A ring runs past the two open sides and the piece's
+/// rectangle cuts it off there. `El::border_sides` could draw just the two
+/// sides, but Rune caps a radius at half the box's shorter edge, so on the
+/// piece's own box the arc comes out tighter; the larger ring keeps it.
 fn bent(rect: Rect, line: Bend, scale: f32, color: Color) -> El {
     let (x, y, width, height) = points(rect, scale);
     let thickness = line.thickness as f32 / scale;
@@ -239,6 +241,9 @@ fn bent(rect: Rect, line: Bend, scale: f32, color: Color) -> El {
                 .border(thickness, color),
         )
 }
+
+#[cfg(test)]
+mod bend_tests;
 
 #[cfg(test)]
 mod tests {
