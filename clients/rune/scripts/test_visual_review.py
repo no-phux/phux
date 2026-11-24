@@ -82,10 +82,10 @@ class VisualReview(unittest.TestCase):
         self.inventory.stop()
         self.populate(review.required_inventory())
         manifest = self.produce()
-        self.assertEqual(len(manifest["cases"]), 1449)
+        self.assertEqual(len(manifest["cases"]), 1497)
         self.assertEqual({family: sum(case["family"] == family for case in manifest["cases"])
                           for family in review.FAMILIES},
-                            {"inbox": 404, "settings": 226, "navigation": 818, "resources": 1})
+                            {"inbox": 404, "settings": 226, "navigation": 866, "resources": 1})
         case = next(case for case in manifest["cases"] if case["png"] == self.subject)
         self.assertEqual(case["physical"], [320, 568])
         self.assertEqual(case["logical"], [320, 568])
@@ -107,6 +107,9 @@ class VisualReview(unittest.TestCase):
                          "mobile_appearance_and_real_theme_palette_render_accept_and_cancel")
         self.assertEqual(review.exporter_for("navigation", "retina-2x-native-false-640"),
                          "retina_navigation_renders_in_native_safe_area_and_desktop_phone_viewports")
+        self.assertEqual(review.exporter_for(
+            "navigation", "sidebar-focus-dark-normal-row-1100x720-2x"),
+            "sidebar_focus_visual_review_frames")
         self.assertEqual(review.exporter_for("navigation", "header-split-dark-native-true-2x-640"),
                           "phone_header_visual_review_frames")
         self.assertEqual(review.exporter_for("navigation", "states-slow-dark-native-true-2x-786"),
@@ -367,10 +370,10 @@ class VisualReview(unittest.TestCase):
                                 env=environment, cwd=self.root, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         manifest = json.loads((out / "manifest.json").read_text())
-        self.assertEqual(len(manifest["cases"]), 1449)
+        self.assertEqual(len(manifest["cases"]), 1497)
         self.assertEqual(manifest["currentRunePin"], "test-pin")
         self.assertFalse(manifest["dirty"])
-        self.assertEqual(len(list((out / "logs").glob("*.log"))), 21)
+        self.assertEqual(len(list((out / "logs").glob("*.log"))), 22)
         self.assertEqual(seed.read_bytes(), seed_bytes)
         self.assertEqual({path.relative_to(private_seed).as_posix(): path.read_bytes()
                           for path in private_seed.rglob("*") if path.is_file()},

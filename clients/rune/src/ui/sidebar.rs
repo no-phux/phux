@@ -29,6 +29,7 @@ use crate::keys::Shortcut;
 
 mod actions;
 mod items;
+pub(crate) use items::focus_target;
 use items::{Item, fold, given_name, items};
 mod row;
 use row::{Row, pane_row};

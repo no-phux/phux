@@ -46,6 +46,14 @@ def navigation_inventory(themes=("dark", "light")):
             themes, ("normal", "forced"), ("closed", "focused", "inbox"),
             ((1100, 720), (640, 360)))
     })
+    cases.update({
+        f"navigation/sidebar-focus-{theme}-{mode}-{state}-{width}x{height}-2x.png":
+            (width, height, 2)
+        for theme, mode, state, (width, height) in product(
+            themes, ("normal", "forced", "collapsed"),
+            ("idle", "row", "inbox-focus", "inbox-open"),
+            ((1100, 720), (640, 360)))
+    })
     return cases
 
 
@@ -104,6 +112,7 @@ def navigation_exporter(stem):
     for prefix, exporter in (
         ("reconnect-", "reconnect_feedback_visual_review_frames"),
         ("attention-", "attention_contrast_visual_review_frames"),
+        ("sidebar-focus-", "sidebar_focus_visual_review_frames"),
         ("accessory-resize-", "phone_accessory_resize_visual_review_frames"),
         ("accessory-", "phone_accessory_visual_review_frames"),
         ("connections-keyboard-", "phone_connections_keyboard_visual_review_frames"),

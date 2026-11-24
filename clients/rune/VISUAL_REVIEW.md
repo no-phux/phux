@@ -122,6 +122,15 @@ native UIKit behavior or evidence that the accessory fix repaired that stand-in.
 
 ## Review behavior as well as pixels
 
+Sidebar keyboard cases start in a non-leading split pane. Compare idle,
+Focus Sidebar, Shift+Tab to Inbox and Space activation at both desktop sizes,
+light/dark and forced colours, at true 2×. Include a collapsed containing
+session. The keyboard ring must mark the actual grouped row without selecting
+another pane or changing its arrangement. Behavioral tests additionally cover
+agent-led identity, missing members, unplaced/document rows, keyless sessions
+and unchanged terminal input. These are desktop keyboard cases; the core phone
+gallery remains surrounding nonregression evidence, not a phone-sidebar claim.
+
 Reconnect feedback cases retain an attached terminal, then exercise an ordinary
 drop, a long explanation and a real failed pairing status. Compare top, scrolled
 bottom and keyboard-focused Retry on both phone widths and native keyboard-reduced
