@@ -1,8 +1,8 @@
 import { MailInbox, releaseMail, waitForMail, type MailDelivery } from "../../runtime/src/mail.js";
 
-/** An address alone does not authorize delivery outside a phux pane. */
+/** The CLI validates this explicit record and selects its inbox. */
 export function hasChatMailbox(env: NodeJS.ProcessEnv): boolean {
-  return Boolean(env.PHUX_CHAT_RECORD && env.PHUX_AGENT_ADDRESS);
+  return Boolean(env.PHUX_CHAT_RECORD);
 }
 
 /** The one OpenCode session API mail needs: durable synthetic input. */

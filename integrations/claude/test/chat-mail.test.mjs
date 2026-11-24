@@ -27,7 +27,7 @@ console.log(${JSON.stringify(JSON.stringify(reply))});
         ...process.env,
         PHUX_TERMINAL_ID: "",
         PHUX_CHAT_RECORD: "/private/chat record",
-        PHUX_AGENT_ADDRESS: "buddy",
+        PHUX_AGENT_ADDRESS: "",
         PHUX_AGENT_REPORTING: "1",
         PHUX_AGENT_PHUX_BIN: executable,
         PHUX_BIN: "/missing/not-the-hook-binary",
@@ -44,8 +44,7 @@ console.log(${JSON.stringify(JSON.stringify(reply))});
       }
       for (const extra of [
         { PHUX_CHAT_RECORD: "" },
-        { PHUX_AGENT_ADDRESS: "" },
-        { PHUX_CHAT_RECORD: "", PHUX_AGENT_ADDRESS: "" },
+        { PHUX_CHAT_RECORD: "", PHUX_AGENT_ADDRESS: "ordinary-address" },
         { PHUX_AGENT_REPORTING: "0" },
       ]) {
         assert.equal(run("phux-mail.sh", "Stop", extra), "");
@@ -55,7 +54,7 @@ console.log(${JSON.stringify(JSON.stringify(reply))});
       }
       assert.deepEqual((await readFile(log, "utf8")).trim().split("\n").map(JSON.parse), events.map(event => ({
         args: ["mail", "hook-context", "--event", event],
-        record: "/private/chat record", address: "buddy", binary: executable,
+        record: "/private/chat record", address: "", binary: executable,
       })), "only registered mail hooks may invoke phux");
     } finally {
       await rm(directory, { recursive: true, force: true });

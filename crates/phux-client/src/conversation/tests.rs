@@ -29,7 +29,7 @@ fn record() -> Conversation {
         peer_address: "participant-b/agent".to_owned(),
         route: ConversationRoute::Hub {
             entry: entry(),
-            credential_id: "participant-a".to_owned(),
+            credential_id: format!("sha256:{}", "1".repeat(64)),
         },
     }
 }

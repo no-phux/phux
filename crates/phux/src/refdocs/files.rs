@@ -87,6 +87,7 @@ pub(crate) fn page() -> Page {
          ├── enrollment-tickets  # single-use enrollment ticket hashes (owner-only, 0600)\n\
          ├── workload-org-roots/ # each organization's root certificates (owner-only)\n\
          ├── reports/            # local bug-report bundles (TUI C-a B, phux report)\n\
+         ├── chats/              # private explicit conversation records and native identity files\n\
          ├── ideas/              # phux idea spool, one file per unsent capture\n\
          ├── service-wrapper.sh  # `phux service install --restore` wrapper\n\
          └── workspace.json      # `--restore` archive, kept current by `--autosave`\n\

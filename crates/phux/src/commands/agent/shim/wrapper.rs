@@ -241,7 +241,9 @@ if [ "$inner" = false ] && {{ [ "$passthrough" = true ] || [ ! -t 0 ] || [ ! -t 
   exec "$real" "$@"
 fi
 
-if [ "$inner" = true ] || [ -n "${{PHUX_TERMINAL_ID:-}}" ]; then
+# Chat launches already own their process context. Keep integrations, but do
+# not move them into a new pane. The CLI validates the inherited record.
+if [ "$inner" = true ] || [ -n "${{PHUX_TERMINAL_ID:-}}" ] || [ -n "${{PHUX_CHAT_RECORD:-}}" ]; then
   set_state start
   # Runs once: INT/TERM/HUP re-enter through EXIT, and `session_end` is
   # terminal for the stream this process may have opened.

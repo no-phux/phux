@@ -22,8 +22,8 @@ use super::rc::{install_rc_block, remove_rc_block, shell_activation, shell_rc};
 use super::{InstallReport, SCHEMA_MARKER, detected_shell};
 
 /// Behavioral version of the launch-only wrapper (see [`super::SHIM_SCHEMA`]
-/// for Claude's).
-pub(super) const AGENT_SHIM_SCHEMA: u32 = 1;
+/// for Claude's). Version 2 preserves explicit chat launches outside panes.
+pub(super) const AGENT_SHIM_SCHEMA: u32 = 2;
 
 /// `(subcommands, flags)` that mean a one-shot or non-interactive run, as
 /// `case` patterns. These go straight to the real binary, never into phux.
@@ -101,7 +101,9 @@ if [ "$inner" = false ] && {{ [ "$passthrough" = true ] || [ ! -t 0 ] || [ ! -t 
   exec "$real" "$@"
 fi
 
-if [ "$inner" = true ] || [ -n "${{PHUX_TERMINAL_ID:-}}" ]; then
+# Chat launches already own their process context. Do not move them into a
+# new pane; the CLI validates the inherited record when it is used.
+if [ "$inner" = true ] || [ -n "${{PHUX_TERMINAL_ID:-}}" ] || [ -n "${{PHUX_CHAT_RECORD:-}}" ]; then
   if [ -n "${{PHUX_TERMINAL_ID:-}}" ]; then
     target="@$PHUX_TERMINAL_ID"
     # Identity only, never a state: the screen rules derive that.

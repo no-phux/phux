@@ -83,7 +83,13 @@ fn validate_route(route: &ConversationRoute) -> Result<HubLink, String> {
         entry,
         credential_id,
     } = route;
-    validate_name(credential_id)?;
+    if phux_config::known_authorities::canonical_authority(credential_id).as_deref()
+        != Some(credential_id.as_str())
+    {
+        return Err(
+            "conversation credential_id must be a canonical sha256: fingerprint".to_owned(),
+        );
+    }
     if !entry.mail_only || !entry.enabled {
         return Err("conversation hub route must be enabled and mail-only".to_owned());
     }
@@ -92,6 +98,7 @@ fn validate_route(route: &ConversationRoute) -> Result<HubLink, String> {
 
 fn validate_id(field: &str, id: &str) -> Result<(), String> {
     if id.len() != 32
+        || id.bytes().all(|byte| byte == b'0')
         || !id
             .bytes()
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())

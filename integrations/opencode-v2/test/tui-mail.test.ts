@@ -53,7 +53,7 @@ if (process.argv[3] === "release") {
 }
 
 test("a TUI-local explicit chat mailbox delivers without pane lifecycle or sidebar writes", async () => {
-  const result = await launch({ PHUX_CHAT_RECORD: "/private/chat record", PHUX_AGENT_ADDRESS: "buddy" });
+  const result = await launch({ PHUX_CHAT_RECORD: "/private/chat record" });
   expect(result.slots).toEqual(["app"]);
   expect(result.lifecycle).toEqual([]);
   expect(result.subscriptions).toEqual(["session.idle"]);
@@ -67,7 +67,7 @@ test("a TUI-local explicit chat mailbox delivers without pane lifecycle or sideb
   for (const call of result.calls) {
     expect(call).toEqual({
       args: ["mail", "wait", "--json", "--until-stdin-closes", "--timeout", "300"],
-      record: "/private/chat record", address: "buddy", binary: result.executable,
+      record: "/private/chat record", address: "", binary: result.executable,
     });
   }
 });
@@ -77,7 +77,6 @@ test("the shipping TUI bundle delivers explicit chat mail but refuses an address
   const delivered = await launch({
     TEST_TUI_ENTRY: entrypoint,
     PHUX_CHAT_RECORD: "/private/chat record",
-    PHUX_AGENT_ADDRESS: "buddy",
   });
   expect(delivered.slots).toEqual(["app"]);
   expect(delivered.subscriptions).toEqual(["session.idle"]);
@@ -91,7 +90,7 @@ test("the shipping TUI bundle delivers explicit chat mail but refuses an address
   for (const call of delivered.calls) {
     expect(call).toEqual({
       args: ["mail", "wait", "--json", "--until-stdin-closes", "--timeout", "300"],
-      record: "/private/chat record", address: "buddy", binary: delivered.executable,
+      record: "/private/chat record", address: "", binary: delivered.executable,
     });
   }
   const refused = await launch({ TEST_TUI_ENTRY: entrypoint, PHUX_AGENT_ADDRESS: "ordinary-address" });
@@ -101,12 +100,10 @@ test("the shipping TUI bundle delivers explicit chat mail but refuses an address
   expect(refused.calls).toEqual([]);
 });
 
-test("outside a pane, missing or empty chat identity refuses all integration work", async () => {
+test("outside a pane, missing or empty chat record refuses all integration work", async () => {
   for (const env of [
     {}, { PHUX_AGENT_ADDRESS: "ordinary-address" },
-    { PHUX_CHAT_RECORD: "/private/chat" },
     { PHUX_CHAT_RECORD: "", PHUX_AGENT_ADDRESS: "buddy" },
-    { PHUX_CHAT_RECORD: "/private/chat", PHUX_AGENT_ADDRESS: "" },
     { PHUX_CHAT_RECORD: "/private/chat", PHUX_AGENT_ADDRESS: "buddy", PHUX_AGENT_REPORTING: "0" },
   ]) {
     const result = await launch(env);

@@ -58,6 +58,7 @@ $XDG_STATE_HOME/<profile-dir>/
 ├── enrollment-tickets  # single-use enrollment ticket hashes (owner-only, 0600)
 ├── workload-org-roots/ # each organization's root certificates (owner-only)
 ├── reports/            # local bug-report bundles (TUI C-a B, phux report)
+├── chats/              # private explicit conversation records and native identity files
 ├── ideas/              # phux idea spool, one file per unsent capture
 ├── service-wrapper.sh  # `phux service install --restore` wrapper
 └── workspace.json      # `--restore` archive, kept current by `--autosave`

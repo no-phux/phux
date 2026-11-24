@@ -54,6 +54,7 @@ pub(crate) mod attach_cli;
 pub(crate) mod audit;
 pub(crate) mod bootstrap;
 pub(crate) mod channel;
+pub(crate) mod chat;
 pub(crate) mod completion;
 pub(crate) mod config;
 pub(crate) mod config_action;
