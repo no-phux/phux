@@ -59,7 +59,11 @@ test("every job's result is logged before the verdict", () => {
 });
 
 test("a pass writes the receipt; a failure or a draft never does", () => {
-  const pass = cli({ RESULTS: JSON.stringify(complete), EVENT_NAME: "pull_request", RECEIPT: "{}" });
+  const pass = cli({
+    RESULTS: JSON.stringify(complete),
+    EVENT_NAME: "pull_request",
+    RECEIPT: "{}",
+  });
   expect([pass.code, pass.receipt]).toEqual([0, "{}\n"]);
   const failed = { ...complete, lint: { result: "failure" } };
   const fail = cli({ RESULTS: JSON.stringify(failed), EVENT_NAME: "pull_request", RECEIPT: "{}" });

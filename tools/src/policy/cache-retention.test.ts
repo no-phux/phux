@@ -1,51 +1,21 @@
-// The real retention script, with an inert gh function and deterministic
-// dates. DELETE is recorded only in this fixture's private directory.
-import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+// Build-cache retention against a fixture store and a fixed clock. The
+// store mimics GitHub's listing: main's caches for one prefix, newest first.
+import { afterEach, beforeEach, expect, spyOn, test, type Mock } from "bun:test";
 import { repoPath } from "../lib/repo.ts";
+import { listEndpoint, prune, SWEEP, type CacheStore } from "../mbx/prune.ts";
 
 const PREFIX = "linux-arm64-mbx-phux-test-";
 const MAIN = "refs/heads/main";
-const MOCK = `
-date() {
-  case "$*" in
-    "-u +%Y%m%d") echo 20261114 ;;
-    "-u +%Y-%m-%d") echo 2026-11-14 ;;
-    *) return 2 ;;
-  esac
-}
-sleep() { :; }
-gh() {
-  local endpoint="" query="" method="" prefix ref=""
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      api|--paginate|--silent) shift ;;
-      -X) method="$2"; shift 2 ;;
-      --jq) query="$2"; shift 2 ;;
-      *) endpoint="$1"; shift ;;
-    esac
-  done
-  if [[ "$method" = DELETE ]]; then
-    printf '%s\\n' "\${endpoint##*/}" >> "$DELETES"
-    return 0
-  fi
-  printf '%s\\n' "$endpoint" >> "$REQUESTS"
-  prefix="\${endpoint#*key=}"
-  prefix="\${prefix%%&*}"
-  if [[ "$endpoint" == *"ref=refs/heads/main"* ]]; then ref=refs/heads/main; fi
-  jq --arg prefix "$prefix" --arg ref "$ref" '
-    map(select(.key | startswith($prefix)))
-    | map(select($ref == "" or .ref == $ref))
-    | sort_by(.created_at) | reverse | {actions_caches:.}
-  ' "$ENTRIES" | jq -r "$query"
-  test "$FAIL_LIST" != true
-}
-source "$SCRIPT" "$@"
-`;
+const NOW = new Date("2026-11-14T09:30:00Z");
 
-function entry(id: number, day: string, ref = MAIN) {
+interface Raw {
+  id: number;
+  key: string;
+  created_at: string;
+  ref: string;
+}
+
+function entry(id: number, day: string, ref = MAIN): Raw {
   return {
     id,
     key: `${PREFIX}flake-lock-${day.replaceAll("-", "")}`,
@@ -54,66 +24,59 @@ function entry(id: number, day: string, ref = MAIN) {
   };
 }
 
-function sweep(entries: unknown[], args: string[] = [], failList = false) {
-  const dir = mkdtempSync(join(tmpdir(), "phux-cache-retention-"));
-  for (const [file, value] of [
-    ["entries", JSON.stringify(entries)],
-    ["deletes", ""],
-    ["requests", ""],
-  ]) {
-    writeFileSync(join(dir, file ?? ""), value ?? "");
-  }
+let log: Mock<typeof console.log>;
+beforeEach(() => {
+  log = spyOn(console, "log").mockImplementation(() => {});
+});
+afterEach(() => log.mockRestore());
+
+function sweep(entries: Raw[], options: { dry?: boolean; failList?: boolean } = {}) {
+  const deleted: string[] = [];
+  const store: CacheStore = {
+    list(prefix) {
+      if (options.failList) throw new Error("listing failed");
+      return entries
+        .filter((raw) => raw.key.startsWith(prefix) && raw.ref === MAIN)
+        .toSorted((left, right) => right.created_at.localeCompare(left.created_at))
+        .map((raw) => ({ id: String(raw.id), key: raw.key, created: raw.created_at }));
+    },
+    remove: (id) => void deleted.push(id),
+  };
+  let failed = false;
   try {
-    const result = Bun.spawnSync(["bash", "-c", MOCK, "fixture", ...args], {
-      env: {
-        ...process.env,
-        GH_TOKEN: "",
-        GITHUB_REPOSITORY: "fixture/repo",
-        SCRIPT: repoPath("scripts/ci/prune-build-cache.sh"),
-        ENTRIES: join(dir, "entries"),
-        DELETES: join(dir, "deletes"),
-        REQUESTS: join(dir, "requests"),
-        FAIL_LIST: String(failList),
-      },
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: 10_000,
-    });
-    return {
-      code: result.exitCode,
-      deleted: readFileSync(join(dir, "deletes"), "utf8").trim().split("\n").filter(Boolean),
-      requests: readFileSync(join(dir, "requests"), "utf8"),
-    };
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
+    prune(store, NOW, options.dry ?? false);
+  } catch {
+    failed = true;
   }
+  return { failed, deleted };
 }
 
 test("an absent/failed replacement leaves the newest old restore source", () => {
-  const result = sweep([entry(1, "2026-11-13"), entry(2, "2026-11-12")]);
-  expect(result.code).toBe(0);
-  expect(result.deleted).toEqual(["2"]);
+  expect(sweep([entry(1, "2026-11-13"), entry(2, "2026-11-12")])).toEqual({
+    failed: false,
+    deleted: ["2"],
+  });
+  expect(log).toHaveBeenCalledWith(`keeping newest restore ${PREFIX}flake-lock-20261113`);
 });
 
 test("a published current-day replacement retires old copies", () => {
-  const result = sweep([entry(1, "2026-11-13"), entry(2, "2026-11-14")]);
-  expect(result.code).toBe(0);
-  expect(result.deleted).toEqual(["1"]);
+  expect(sweep([entry(1, "2026-11-13"), entry(2, "2026-11-14")]).deleted).toEqual(["1"]);
+  expect(log).toHaveBeenCalledWith(`keeping current-day ${PREFIX}flake-lock-20261114`);
 });
 
 test("a PR cache cannot qualify replacement or be deleted by main retention", () => {
   const result = sweep([entry(1, "2026-11-13"), entry(2, "2026-11-14", "refs/pull/7/merge")]);
-  expect(result.code).toBe(0);
   expect(result.deleted).toEqual([]);
-  expect(result.requests).toContain("ref=refs/heads/main");
+  expect(listEndpoint("fixture/repo", PREFIX)).toBe(
+    `repos/fixture/repo/actions/caches?key=${PREFIX}&ref=refs/heads/main&sort=created_at&direction=desc&per_page=100`,
+  );
 });
 
 test("all current-day entries remain protected", () => {
-  const today = entry(2, "2026-11-14");
-  today.key = `${PREFIX}different-lock`;
-  const result = sweep([entry(1, "2026-11-14"), today]);
-  expect(result.code).toBe(0);
-  expect(result.deleted).toEqual([]);
+  // A key stamped with an older day still counts when it was created today.
+  const today = { ...entry(2, "2026-11-14"), key: `${PREFIX}different-lock` };
+  const stamped = { ...entry(3, "2026-11-01"), key: `${PREFIX}lock-20261114` };
+  expect(sweep([entry(1, "2026-11-14"), today, stamped]).deleted).toEqual([]);
 });
 
 test("unrelated caches and other refs are outside the deletion scope", () => {
@@ -124,20 +87,35 @@ test("unrelated caches and other refs are outside the deletion scope", () => {
     unrelated,
     entry(4, "2026-11-12", "refs/heads/topic"),
   ]);
-  expect(result.code).toBe(0);
   expect(result.deleted).toEqual(["1"]);
 });
 
 test("dry-run and failed listing cannot delete caches", () => {
   const entries = [entry(1, "2026-11-13"), entry(2, "2026-11-14")];
-  expect(sweep(entries, ["--dry-run"]).deleted).toEqual([]);
-  const failed = sweep(entries, [], true);
-  expect(failed.code).not.toBe(0);
-  expect(failed.deleted).toEqual([]);
+  expect(sweep(entries, { dry: true }).deleted).toEqual([]);
+  expect(log).toHaveBeenCalledWith(`would delete ${PREFIX}flake-lock-20261113 (1)`);
+  expect(sweep(entries, { failList: true })).toEqual({ failed: true, deleted: [] });
 });
 
 test("pre-upload replacement mode is rejected rather than deleting the sole restore copy", () => {
-  const result = sweep([entry(1, "2026-11-13")], ["--replace-prefix", PREFIX]);
-  expect(result.code).not.toBe(0);
-  expect(result.deleted).toEqual([]);
+  const proc = Bun.spawnSync(
+    ["bun", "tools/main.ts", "prune-build-cache", "--replace-prefix", PREFIX],
+    {
+      cwd: repoPath("."),
+      // A fake repository and no token: a regression could not reach GitHub.
+      env: {
+        ...process.env,
+        GITHUB_REPOSITORY: "fixture/repo",
+        GH_TOKEN: "",
+        GH_HOST: "fixture.invalid",
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
+  expect(proc.exitCode).toBe(2);
+});
+
+test("the sweep names each series once", () => {
+  expect(new Set(SWEEP).size).toBe(SWEEP.length);
 });

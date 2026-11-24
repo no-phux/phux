@@ -85,7 +85,9 @@ export function gateFailures(event: string, results: Table): string[] {
   for (const [id, mustSucceed] of Object.entries(requiredJobs(event, outputs))) {
     const state = result(results, id) ?? "";
     if (mustSucceed ? state !== "success" : !PASSING.has(state)) {
-      failures.push(`${id} is ${mustSucceed ? "required" : "expected"} and was ${state || "missing"}`);
+      failures.push(
+        `${id} is ${mustSucceed ? "required" : "expected"} and was ${state || "missing"}`,
+      );
     }
   }
   return failures;

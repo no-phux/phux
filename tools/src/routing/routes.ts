@@ -66,7 +66,6 @@ const ROUTES: Record<string, Surface[]> = {
   // Also used by release workflows outside the lane model.
   ".github/actions/setup-bun/**": [...SURFACES],
   "scripts/ci/setup-linux-release-userspace.sh": [],
-  "scripts/ci/prune-build-cache.sh": [],
   // The separate Windows WSL workflow exercises PowerShell and real WSL;
   // these distribution scripts do not change the Unix Rust build.
   "scripts/{install-windows,test-install-windows,test-windows-wsl}.ps1": [],

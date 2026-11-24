@@ -141,7 +141,7 @@ test("the Linux warm cannot replace or wait behind a pending Rune warm", () => {
 test("cache eviction happens only after post-step uploads, never on save eligibility", () => {
   for (const id of LINUX) {
     const commands = steps(job(WARM, id)).map(run).join("\n");
-    expect(commands).not.toContain("prune-build-cache.sh");
+    expect(commands).not.toContain("prune-build-cache");
     expect(commands).not.toContain("--replace-prefix");
   }
   expect(needs(job(WARM, "prune-build-cache")).toSorted()).toEqual(

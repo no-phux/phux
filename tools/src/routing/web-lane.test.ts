@@ -1,10 +1,10 @@
 // The web lane's own checks. workflows.test.ts is at the file-size ratchet,
 // so the split and its cache policy are asserted here.
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import { capture } from "../lib/process.ts";
 import { repoPath } from "../lib/repo.ts";
 import { list, str, table } from "../lib/value.ts";
+import { SWEEP } from "../mbx/prune.ts";
 import { action, job, needs, run, steps, uses, withInput, workflow } from "../policy/workflows.ts";
 import { LANES, LANE_RECIPES } from "./plan.ts";
 
@@ -127,8 +127,8 @@ test("both web halves fail the aggregate on failure or cancellation", () => {
 });
 
 test("the new web cache series participate in bounded repository retention", () => {
-  const prune = readFileSync(repoPath("scripts/ci/prune-build-cache.sh"), "utf8");
+  const sweep: readonly string[] = SWEEP;
   for (const prefix of ["v0-rust-phux-web-vt-", "v0-rust-phux-web-client-"]) {
-    expect(prune).toContain(prefix);
+    expect(sweep).toContain(prefix);
   }
 });
