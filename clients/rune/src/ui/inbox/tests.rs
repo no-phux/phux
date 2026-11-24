@@ -457,3 +457,27 @@ fn suggested_answers_are_named_buttons() {
         assert!(matches!(chip.label.as_deref(), Some("yes" | "no")));
     }
 }
+
+/// A card's detail says where the pane is without repeating its title: a
+/// shell's ask is headed by its label, so the label leaves the detail; an
+/// agent's card keeps it beside the session.
+#[test]
+fn a_waiting_card_places_its_pane_without_repeating_the_title() {
+    let shell = crate::inbox::Waiting {
+        terminal: phux_protocol::ids::ResourceId::local(1),
+        session: "phux".to_owned(),
+        label: "bash \u{b7} website".to_owned(),
+        agent: None,
+        kind: None,
+        mark: crate::activity::Mark::Blocked,
+        ask: None,
+    };
+    assert_eq!(super::place(&shell), "phux");
+    let agent = crate::inbox::Waiting {
+        agent: Some("codex".to_owned()),
+        label: "review #2617".to_owned(),
+        kind: Some("acp".to_owned()),
+        ..shell
+    };
+    assert_eq!(super::place(&agent), "review #2617 \u{b7} phux \u{b7} acp");
+}

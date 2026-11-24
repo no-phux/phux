@@ -205,6 +205,21 @@ pub(super) fn touch_input(input: El, font: TextStyle, phone: bool, t: &Tokens) -
         .py((s.touch_min - font.line_px()) / 2.0)
 }
 
+/// Where a waiting pane is: its label (when an agent's name heads the
+/// card; without one the label already does), its session, and a kind the
+/// agent's name does not already say.
+fn place(waiting: &Waiting) -> String {
+    let named = waiting.agent.is_some().then_some(waiting.label.as_str());
+    let kind = (waiting.kind.as_ref())
+        .filter(|kind| Some(*kind) != waiting.agent.as_ref())
+        .map(String::as_str);
+    (named.into_iter())
+        .chain([waiting.session.as_str()])
+        .chain(kind)
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
 fn waiting_card(desk: &Desk, waiting: &Waiting, picked: bool, t: &Tokens) -> El {
     let r = &t.roles;
     let phone = desk.phone.is_some();
@@ -225,12 +240,7 @@ fn waiting_card(desk: &Desk, waiting: &Waiting, picked: bool, t: &Tokens) -> El 
         waiting.mark.word()
     };
     let (_, tone) = mark_icon(waiting.mark, t);
-    let place = match &waiting.kind {
-        Some(kind) if Some(kind) != waiting.agent.as_ref() => {
-            format!("{} · {} · {kind}", waiting.label, waiting.session)
-        }
-        _ => format!("{} · {}", waiting.label, waiting.session),
-    };
+    let place = place(waiting);
     let mut body = col()
         .w_full()
         .gap(t.space.s2)
