@@ -109,7 +109,7 @@ fn a_long_rate_limit_wait_is_refused() {
 
 #[test]
 fn a_plain_403_is_a_skip() {
-    let skipped = classify_body(403, "", b"forbidden".to_vec(), FILE_LIMIT).expect("skip");
+    let skipped = classify_body(403, "", b"forbidden".to_vec(), FILE_LIMIT);
     assert!(matches!(skipped, Fetched::Skip(reason) if reason == "HTTP 403"));
 }
 

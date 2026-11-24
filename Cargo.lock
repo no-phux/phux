@@ -3314,6 +3314,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "phux-plugin-index"
+version = "0.162.2"
+dependencies = [
+ "phux-config",
+ "serde",
+ "serde_json",
+ "toml",
+]
+
+[[package]]
 name = "phux-protocol"
 version = "0.162.2"
 dependencies = [

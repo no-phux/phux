@@ -1,5 +1,8 @@
 //! Offline catalog: fixture API responses, manifests, and the golden index.
 
+#![allow(clippy::expect_used, reason = "test assertions")]
+#![allow(clippy::panic, reason = "test assertions")]
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;

@@ -39,8 +39,7 @@ pub fn render_markdown(index: &Index) -> String {
         };
         let stars = plugin
             .stars
-            .map(|count| count.to_string())
-            .unwrap_or_else(|| "-".to_owned());
+            .map_or_else(|| "-".to_owned(), |count| count.to_string());
         let updated = plugin.pushed_at.as_deref().unwrap_or("-");
         let license = plugin.license.as_deref().unwrap_or("-");
         out.push_str("| ");

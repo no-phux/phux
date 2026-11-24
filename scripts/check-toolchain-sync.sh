@@ -86,7 +86,7 @@ grep -Fq 'libexec/mbx:$PATH' "$FLAKE" || fail 'flake.nix shellHook must put the 
 while IFS=: read -r file line; do
     version="$(printf '%s\n' "$line" | sed -n -E 's/.*"([0-9]+\.[0-9]+)".*/\1/p')"
     [[ "$version" == "$rust_msrv" ]] || fail "$file rust-version must be $rust_msrv"
-done < <(grep -H 'rust-version = "[0-9]' "$ROOT"/Cargo.toml "$ROOT"/clients/*/Cargo.toml "$ROOT"/scripts/plugin-index/Cargo.toml)
+done < <(grep -H 'rust-version = "[0-9]' "$ROOT"/Cargo.toml "$ROOT"/clients/*/Cargo.toml)
 grep -Fq "msrv = \"$rust_msrv\"" "$ROOT/clippy.toml" || fail "clippy MSRV must be $rust_msrv"
 
 bindgen_version="$(sed -n -E 's/^wasm-bindgen = "=([^"]+)"/\1/p' "$ROOT/clients/phux-web/Cargo.toml")"
@@ -101,12 +101,6 @@ while IFS=: read -r file line; do
 done < <(grep -H 'node-version: [0-9]' "$ROOT"/.github/workflows/*.yml)
 
 # Pins spelled outside a `node-version:` key or a Cargo manifest.
-plugin_index="$ROOT/.github/workflows/plugin-index.yml"
-grep -Eq "^[[:space:]]*toolchain: $rust_version\$" "$plugin_index" ||
-    fail "plugin-index.yml must install Rust $rust_version"
-deny_version="$(mise_value cargo-deny)"
-grep -Eq "^[[:space:]]*version=$deny_version\$" "$plugin_index" ||
-    fail "plugin-index.yml must download cargo-deny $deny_version (mise.toml), with its digest"
 grep -Fq "nixpkgs#nodejs_$node_version " "$ROOT/.github/workflows/ci.yml" ||
     fail "ci.yml guards must run nixpkgs#nodejs_$node_version"
 
