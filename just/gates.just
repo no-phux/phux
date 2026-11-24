@@ -46,6 +46,7 @@ guards: brand-check shellcheck tools-check docs-check install-surface-check
     bash scripts/check-release-cpu-baselines.sh
     bash scripts/test-demo-pi-setup.sh
     bash scripts/lib/worktree-owner_test.sh
+    bash scripts/worktree-prune_test.sh
     node --test scripts/test-npm-audit-gate.mjs
     bash examples/agents/tests/placed-fleet-smoke.sh
     bash examples/agents/tests/program-status-smoke.sh
@@ -204,6 +205,14 @@ worktree-verify CALLER:
 [doc("Release this agent session's worktree lease for the next session.")]
 worktree-release:
     @bash scripts/worktree-release.sh worktree-release
+
+
+# Reclaim disk from idle linked worktrees (scripts/worktree-prune.sh): remove
+# clean ones whose pushed branch is merged, prune build output from the rest.
+[group('setup')]
+[doc('Prune idle worktrees (dry run; --apply acts, --outputs-only keeps every worktree).')]
+worktree-prune *ARGS:
+    @bash scripts/worktree-prune.sh {{ARGS}}
 
 # Verify committed branding without accessing the private source library.
 [group('gates')]
