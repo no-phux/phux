@@ -6,18 +6,27 @@
 
 use phux_protocol::api::ExecutionRef;
 use phux_protocol::ids::AuthorityId;
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use rusqlite::{OptionalExtension, TransactionBehavior, params};
 
 use crate::error::Error;
 use crate::id::{Alias, ObjectiveState, OpaqueId, OperationId, RunState};
 use crate::operation::{load_operation, replay};
 use crate::store::{
-    Objective, Store, bump, digest, load_alias_conn, load_checked, project_state, timestamp,
-    write_objective,
+    Objective, Store, bump, digest, load_checked, project_state, timestamp, write_objective,
 };
 
 mod binding;
-use binding::{insert_binding, map_open_run, validate_binding_authority};
+use binding::{StoredBinding, insert_binding, map_open_run, validate_binding_authority};
+
+mod receipt;
+mod request;
+mod runs;
+use receipt::{StartSnapshot, applied_from, record_start};
+use request::{legacy_start_matches, start_digest, validate_start};
+use runs::{
+    bound_holder, count_runs, insert_intent, insert_run, load_checked_conn, next_ordinal,
+    oldest_queued, refuse_unstartable,
+};
 
 /// What a started run is bound to. Absent when the task is only queued.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -234,7 +243,7 @@ impl Store {
     ///
     /// The errors of [`Store::plan_start`], plus [`Error::AtCapacity`] and
     /// operation conflicts.
-    pub fn commit_start(&mut self, request: StartRequest) -> Result<StartApplied, Error> {
+    pub fn commit_start(&mut self, mut request: StartRequest) -> Result<StartApplied, Error> {
         let actor = crate::id::parse_actor(&request.actor)?;
         let digest = start_digest(&request)?;
         validate_start(&request)?;
@@ -250,6 +259,11 @@ impl Store {
             let snapshot: StartSnapshot = serde_json::from_str(&result)?;
             return Ok(applied_from(snapshot, request.operation_id, true));
         }
+        let launch = request
+            .launch
+            .take()
+            .map(StoredBinding::from_public)
+            .transpose()?;
         let current = load_checked(&tx, &request.alias, request.expected_revision)?;
         if request.authority.is_none() {
             return Err(Error::invalid_text(
@@ -259,8 +273,8 @@ impl Store {
         }
         refuse_unstartable(&tx, &current, &request.worktree_path, &request.branch)?;
         let running = count_runs(&tx, RunState::Running)?;
-        let launching = request.launch.is_some();
-        if let Some(binding) = &request.launch {
+        let launching = launch.is_some();
+        if let Some(binding) = &launch {
             validate_binding_authority(binding, request.authority)?;
         }
         let limit = u64::from(request.max_agents);
@@ -285,7 +299,7 @@ impl Store {
             run_state,
             &now,
         )?;
-        if let Some(binding) = &request.launch {
+        if let Some(binding) = &launch {
             insert_binding(&tx, run_id, binding)?;
         }
         insert_intent(&tx, run_id, &request)?;
@@ -315,7 +329,7 @@ impl Store {
             run_state,
             disposition: disposition.to_owned(),
             queue_position,
-            binding: request.launch,
+            binding: launch,
         };
         record_start(
             &tx,
@@ -410,16 +424,11 @@ impl Store {
             )
             .optional()?
             .flatten();
-        validate_binding_authority(
-            &request.launch,
-            authority.as_deref().and_then(AuthorityId::parse),
-        )?;
-        if let Some((alias, taken)) = bound_holder(
-            &tx,
-            current.id,
-            &request.launch.worktree_path,
-            &request.launch.branch,
-        )? {
+        let launch = StoredBinding::from_public(request.launch)?;
+        validate_binding_authority(&launch, authority.as_deref().and_then(AuthorityId::parse))?;
+        if let Some((alias, taken)) =
+            bound_holder(&tx, current.id, &launch.worktree_path, &launch.branch)?
+        {
             return Err(Error::WorktreeBound { path: taken, alias });
         }
         let running = count_runs(&tx, RunState::Running)?;
@@ -431,7 +440,7 @@ impl Store {
             "UPDATE run SET state = 'running' WHERE id = ?1 AND state = 'queued' AND ended_at IS NULL",
             params![run_id.as_slice()],
         )?;
-        insert_binding(&tx, run_id, &request.launch)?;
+        insert_binding(&tx, run_id, &launch)?;
         let projected = project_state(&tx, current.id, ObjectiveState::Working)?;
         let previous = current.revision;
         let mut updated = current;
@@ -453,7 +462,7 @@ impl Store {
             run_state: RunState::Running,
             disposition: "started".to_owned(),
             queue_position: None,
-            binding: Some(request.launch),
+            binding: Some(launch),
         };
         record_start(
             &tx,
@@ -467,312 +476,6 @@ impl Store {
         tx.commit()?;
         Ok(applied_from(snapshot, request.operation_id, false))
     }
-}
-
-fn record_start(
-    tx: &Transaction<'_>,
-    operation: OperationId,
-    digest: &str,
-    actor: &str,
-    operation_kind: &str,
-    event_kind: &str,
-    snapshot: &StartSnapshot,
-) -> Result<(), Error> {
-    let result = serde_json::to_string(snapshot)?;
-    let objective = &snapshot.objective;
-    tx.execute(
-        "INSERT INTO operation (id, kind, digest, objective_id, result_json, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![
-            operation.as_slice(),
-            operation_kind,
-            digest,
-            objective.id.as_slice(),
-            result,
-            objective.updated_at
-        ],
-    )?;
-    tx.execute(
-        "INSERT INTO event (ts, actor, objective_id, operation_id, kind, json)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![
-            objective.updated_at,
-            actor,
-            objective.id.as_slice(),
-            operation.as_slice(),
-            event_kind,
-            result
-        ],
-    )?;
-    Ok(())
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct StartSnapshot {
-    objective: Objective,
-    agent_kind: String,
-    model: String,
-    run_id: OpaqueId,
-    ordinal: u64,
-    run_state: RunState,
-    disposition: String,
-    queue_position: Option<u64>,
-    binding: Option<StartBinding>,
-}
-
-fn applied_from(
-    snapshot: StartSnapshot,
-    operation_id: OperationId,
-    replayed: bool,
-) -> StartApplied {
-    StartApplied {
-        objective: snapshot.objective,
-        operation_id,
-        idempotent_replay: replayed,
-        agent_kind: snapshot.agent_kind,
-        model: snapshot.model,
-        run_id: snapshot.run_id,
-        ordinal: snapshot.ordinal,
-        run_state: snapshot.run_state,
-        disposition: snapshot.disposition,
-        queue_position: snapshot.queue_position,
-        binding: snapshot.binding,
-    }
-}
-
-fn start_digest(request: &StartRequest) -> Result<String, Error> {
-    let mut payload = serde_json::json!({
-            "agent_kind": &request.agent_kind,
-            "alias": request.alias.display(),
-            "branch": &request.branch,
-            "expected_revision": request.expected_revision,
-            "max_agents": request.max_agents,
-            "model": &request.model,
-            "repo_root": &request.repo_root,
-            "worktree_path": &request.worktree_path,
-    });
-    if let Some(authority) = request.authority {
-        payload["authority"] = serde_json::json!(authority.to_string());
-    }
-    digest("start", &payload)
-}
-
-fn legacy_start_matches(request: &StartRequest, stored: &str) -> Result<bool, Error> {
-    if request.authority.is_none() {
-        return Ok(false);
-    }
-    let mut legacy = request.clone();
-    legacy.authority = None;
-    Ok(start_digest(&legacy)? == stored)
-}
-
-fn validate_start(request: &StartRequest) -> Result<(), Error> {
-    if !token_ok(&request.agent_kind, 64)
-        || (!request.model.is_empty() && !token_ok(&request.model, 128))
-    {
-        return Err(Error::invalid_text(
-            "agent",
-            "must look like KIND or KIND/MODEL (letters, digits, `.`, `_`, `-`)",
-        ));
-    }
-    if request.max_agents == 0 {
-        return Err(Error::invalid_text("max_agents", "must be at least 1"));
-    }
-    if request.worktree_path.is_empty() || request.worktree_path.contains('\0') {
-        return Err(Error::invalid_text("worktree", "must be a path"));
-    }
-    if request.branch.is_empty() || request.branch.contains('\0') || request.branch.len() > 256 {
-        return Err(Error::invalid_text("branch", "must be a branch name"));
-    }
-    if let Some(binding) = &request.launch
-        && (binding.session.is_empty()
-            || binding.worktree_path != request.worktree_path
-            || binding.branch != request.branch)
-    {
-        return Err(Error::invalid_text("binding", "is incomplete"));
-    }
-    Ok(())
-}
-
-fn token_ok(text: &str, max: usize) -> bool {
-    !text.is_empty()
-        && text.len() <= max
-        && text
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.')
-}
-
-fn load_checked_conn(conn: &Connection, alias: &Alias, expected: u64) -> Result<Objective, Error> {
-    let objective = load_alias_conn(conn, alias)?;
-    if expected != objective.revision {
-        return Err(Error::RevisionConflict {
-            alias: alias.display(),
-            expected,
-            actual: objective.revision,
-        });
-    }
-    Ok(objective)
-}
-
-fn refuse_unstartable(
-    conn: &Connection,
-    objective: &Objective,
-    worktree_path: &str,
-    branch: &str,
-) -> Result<(), Error> {
-    if objective.archived {
-        return Err(Error::NotStartable {
-            alias: objective.alias.display(),
-        });
-    }
-    if has_live_run(conn, objective.id)? {
-        return Err(Error::AlreadyStarted {
-            alias: objective.alias.display(),
-        });
-    }
-    if let Some((alias, taken)) = bound_holder(conn, objective.id, worktree_path, branch)? {
-        return Err(Error::WorktreeBound { path: taken, alias });
-    }
-    Ok(())
-}
-
-fn has_live_run(conn: &Connection, id: OpaqueId) -> Result<bool, Error> {
-    let found: Option<i64> = conn
-        .query_row(
-            "SELECT 1 FROM run
-             WHERE objective_id = ?1 AND ended_at IS NULL AND state IN ('running', 'queued')
-             LIMIT 1",
-            params![id.as_slice()],
-            |row| row.get(0),
-        )
-        .optional()?;
-    Ok(found.is_some())
-}
-
-fn count_runs(conn: &Connection, state: RunState) -> Result<u64, Error> {
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM run WHERE state = ?1 AND ended_at IS NULL",
-        params![state.as_str()],
-        |row| row.get(0),
-    )?;
-    u64::try_from(count).map_err(|_| Error::Corrupt("run count".to_owned()))
-}
-
-fn bound_holder(
-    conn: &Connection,
-    id: OpaqueId,
-    worktree_path: &str,
-    branch: &str,
-) -> Result<Option<(String, String)>, Error> {
-    let row: Option<(String, String, String)> = conn
-        .query_row(
-            "SELECT objective.display_alias, binding.worktree_path, binding.branch
-             FROM binding
-             JOIN run ON run.id = binding.run_id
-             JOIN objective ON objective.id = run.objective_id
-             WHERE run.state = 'running' AND run.ended_at IS NULL
-               AND objective.archived = 0 AND objective.id != ?1
-               AND (binding.worktree_path = ?2 OR binding.branch = ?3)
-             LIMIT 1",
-            params![id.as_slice(), worktree_path, branch],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .optional()?;
-    Ok(row.map(|(alias, path, held_branch)| {
-        let taken = if path == worktree_path {
-            path
-        } else {
-            held_branch
-        };
-        (alias, taken)
-    }))
-}
-
-fn next_ordinal(tx: &Transaction<'_>, id: OpaqueId) -> Result<u64, Error> {
-    let max: Option<i64> = tx.query_row(
-        "SELECT MAX(ordinal) FROM run WHERE objective_id = ?1",
-        params![id.as_slice()],
-        |row| row.get(0),
-    )?;
-    let max = u64::try_from(max.unwrap_or(0)).map_err(|_| Error::Corrupt("ordinal".to_owned()))?;
-    max.checked_add(1)
-        .ok_or_else(|| Error::Corrupt("ordinal wrapped".to_owned()))
-}
-
-fn insert_run(
-    tx: &Transaction<'_>,
-    id: OpaqueId,
-    objective_id: OpaqueId,
-    ordinal: u64,
-    agent_kind: &str,
-    state: RunState,
-    now: &str,
-) -> Result<(), Error> {
-    let ordinal = i64::try_from(ordinal).map_err(|_| Error::Corrupt("ordinal".to_owned()))?;
-    tx.execute(
-        "INSERT INTO run (id, objective_id, ordinal, agent_kind, state, started_at, ended_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)",
-        params![
-            id.as_slice(),
-            objective_id.as_slice(),
-            ordinal,
-            agent_kind,
-            state.as_str(),
-            now
-        ],
-    )?;
-    Ok(())
-}
-
-fn insert_intent(
-    tx: &Transaction<'_>,
-    run_id: OpaqueId,
-    request: &StartRequest,
-) -> Result<(), Error> {
-    let max_agents = i64::from(request.max_agents);
-    tx.execute(
-        "INSERT INTO launch_intent
-            (run_id, model, max_agents, worktree_path, branch, repo_root, authority)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![
-            run_id.as_slice(),
-            request.model,
-            max_agents,
-            request.worktree_path,
-            request.branch,
-            request.repo_root,
-            request.authority.map(|id| id.to_string()),
-        ],
-    )?;
-    Ok(())
-}
-
-fn oldest_queued(
-    tx: &Transaction<'_>,
-    objective_id: OpaqueId,
-) -> Result<Option<(OpaqueId, u64, String, String)>, Error> {
-    let row: Option<(Vec<u8>, i64, String, String)> = tx
-        .query_row(
-            "SELECT run.id, run.ordinal, run.agent_kind, COALESCE(launch_intent.model, '')
-             FROM run
-             LEFT JOIN launch_intent ON launch_intent.run_id = run.id
-             WHERE run.objective_id = ?1 AND run.state = 'queued' AND run.ended_at IS NULL
-             ORDER BY run.started_at, run.rowid
-             LIMIT 1",
-            params![objective_id.as_slice()],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        )
-        .optional()?;
-    let Some((id, ordinal, agent_kind, model)) = row else {
-        return Ok(None);
-    };
-    let ordinal = u64::try_from(ordinal).map_err(|_| Error::Corrupt("ordinal".to_owned()))?;
-    Ok(Some((
-        OpaqueId::from_slice(&id)?,
-        ordinal,
-        agent_kind,
-        model,
-    )))
 }
 
 #[cfg(test)]
