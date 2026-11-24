@@ -43,6 +43,8 @@ pub mod keep_awake;
 pub mod kitchen;
 mod layout;
 pub mod link;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod link_handlers;
 mod links;
 pub mod machines;
 pub mod mouse;

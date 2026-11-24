@@ -47,22 +47,33 @@ impl Desk {
     /// Split the focused pane: spawn a terminal beside it, placed when the
     /// server answers.
     pub fn split(&mut self, dir: SplitDir) {
-        let (Some(client), Some(shown)) = (&self.connection.client, &self.connection.shown) else {
+        let Some(shown) = &self.connection.shown else {
             return;
         };
-        let request = client.spawn_terminal(SpawnRequest {
+        let target = shown.resource.clone();
+        let spawn = SpawnRequest {
             command: None,
             cwd: self.focused_cwd(),
             env: None,
+            session_id: None,
+            initial_size: None,
+        };
+        self.split_with(target, dir, spawn);
+    }
+
+    /// Split `target` along `dir` with `spawn`'s command, cwd and env.
+    pub(super) fn split_with(&mut self, target: ResourceId, dir: SplitDir, spawn: SpawnRequest) {
+        let Some(client) = &self.connection.client else {
+            return;
+        };
+        let request = client.spawn_terminal(SpawnRequest {
             session_id: client.selected_session(),
-            initial_size: self.split_spawn_size(&shown.resource, dir),
+            initial_size: self.split_spawn_size(&target, dir),
+            ..spawn
         });
         self.connection.pending_splits.insert(
             request,
-            (
-                self.placement_session(client),
-                Some((shown.resource.clone(), dir)),
-            ),
+            (self.placement_session(client), Some((target, dir))),
         );
         self.connection.zoomed = None;
     }

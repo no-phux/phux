@@ -2,6 +2,7 @@
 
 mod action_context;
 mod launch;
+mod links;
 pub mod run_log;
 pub mod startup_log;
 
@@ -20,6 +21,7 @@ pub use launch::{
     ResolvedLaunch, executable_on_path, executable_path, integration_for_kind, kind_matches,
     list_launchable, opencode_executable_path, resolve_launch, resolve_launch_for_kind,
 };
+pub use links::{ConfiguredLink, LinkCommand, LinkContext, configured_links, handler_for};
 
 /// One child-process execution request, shared by plugin actions, hooks,
 /// and `exec` widgets. Always a child process, with `kill_on_drop` set.

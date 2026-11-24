@@ -198,7 +198,7 @@ session (or `--session NAME`). It never creates a session on its own.
   across rows count. Paths to files that exist count too, absolute, `~/` or
   relative to the pane's directory, with or without a `:line:col` suffix;
   ⌘-click opens the file with its default app. A pane on another machine
-  never links paths, so a click can't open a local file that shares one.
+  links paths only for a [handler](../../docs/plugins.md#link-handlers).
 - **History.** Scrolled back, a pane shows where it is in its history and a
   pill back to the live tail that counts the lines that arrived meanwhile.
 - **Settings.** The sliders button at the right of the desktop title bar
