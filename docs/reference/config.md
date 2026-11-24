@@ -571,7 +571,7 @@ exclusive = true
 # interval-ms = 1000
 
 # Standing producers: any command this server keeps running as a document
-# producer (`docs/applications.md#standing-producers`), in its own session
+# producer (`docs/resource-kinds.md#standing-producers`), in its own session
 # `producer-<name>`, restarted and reloaded like the mirrors above. A first
 # word `phux` is this server's own binary.
 #

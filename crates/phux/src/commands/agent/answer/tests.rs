@@ -206,7 +206,7 @@ fn server_refusals_map_to_the_documented_exit_codes() {
     );
 }
 
-/// The success document is the one docs/build-a-client.md shows.
+/// The success document is the one docs/building.md shows.
 #[test]
 fn the_answered_document_matches_the_client_page() {
     let marker = marker("deploy-7", &["yes", "no"]);

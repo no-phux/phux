@@ -394,7 +394,7 @@ fn report_answered(
 }
 
 /// The `agent answer --json` success document. Its shape is documented in
-/// docs/build-a-client.md and checked against it by a test.
+/// docs/building.md and checked against it by a test.
 fn answered_document(
     label: &str,
     marker: &AskMarker,

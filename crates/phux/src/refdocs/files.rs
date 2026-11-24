@@ -178,7 +178,7 @@ pub(crate) fn page() -> Page {
            `audit-key` (owner-only, `0600`) and the public half \
            `audit-key.pub`. The server appends one hash-chained, signed \
            record per decision; `phux audit tail` and `phux audit verify` \
-           read it with no server. See [Audit log](../audit.md).\n\
+           read it with no server. See [Audit log](../security.md#audit-log).\n\
          - `reports/` holds local bug-report bundles written by the TUI \
            `report-bug` action (`C-a B`) and by `phux report new`. Each \
            subdirectory is one report (session, pane, version, log tails, \

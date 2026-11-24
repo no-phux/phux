@@ -425,7 +425,7 @@ pub(crate) fn roots_verifier(
 
 /// A listener's client-certificate verifier: [`roots_verifier`] over the
 /// host CA and the organization roots as they are at each handshake, rebuilt
-/// when they change (`docs/remote.md#managed-by-an-organization`). It names
+/// when they change (`docs/security.md#managed-by-an-organization`). It names
 /// no root in its `CertificateRequest`: phux clients present their one
 /// identity regardless, and the set changes under a running listener.
 #[derive(Debug)]

@@ -1,3 +1,8 @@
+---
+group: internals
+order: 2.5
+---
+
 # Organization store and recovery
 
 The durable side of [organization and execution](./organization.md): committing
@@ -67,7 +72,7 @@ flush them or refuse. Orderly shutdown makes one final attempt but still permits
 exit if the store is unavailable; any exit with undurable evidence can lose it.
 Restart can only reconcile the committed process identity, not recover a lost
 diagnostic.
-See [public durable inspection](./public-api.md#lost-replies-and-retry-scope).
+See [public durable inspection](./scripting.md#lost-replies-and-retry-scope).
 
 [Reconciliation](../crates/phux-server/src/reconcile.rs),
 [activation reports and policy tests](../crates/phux-server/src/state/org/lifecycle.rs)

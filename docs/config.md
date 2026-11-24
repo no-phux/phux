@@ -1,407 +1,163 @@
+---
+group: customize
+order: 0
+---
+
 # Configuration file
 
-phux reads one TOML file, `config.toml`, for your key bindings, theme,
-status bar, sidebar, hooks, plugins, and the defaults new panes start
-with. It's a sparse overlay: any key you set replaces the shipped value,
-and everything you leave out keeps the default.
+How `config.toml` is found, layered, checked, and applied. Every section and
+setting, with its default, is in the [config reference](./reference/config.md).
 
-You don't need one. phux ships with a full set of defaults, so start
-without a file and write one when there is something you want to change.
+The file is a sparse overlay: a key you set replaces the shipped value, and
+everything else keeps the default. You don't need one to start.
 
-## File location
+## Where it lives
 
-The file is `$XDG_CONFIG_HOME/phux/config.toml` when that variable is set,
-and `~/.config/phux/config.toml` when it isn't. `phux config path` prints
-the path phux resolved, whether or not the file exists:
+`$XDG_CONFIG_HOME/phux/config.toml`, else `~/.config/phux/config.toml`.
+`phux config path` prints the resolved path. No flag points phux at another
+file; set `XDG_CONFIG_HOME` for one shell to try a config in isolation.
 
-```sh
-$ phux config path
-/Users/you/.config/phux/config.toml
-```
-
-There is no flag or variable that points phux at a different file. To try
-a configuration in isolation, set `XDG_CONFIG_HOME` to another directory
-for that shell.
-
-The server and every client read the file on the machine they run on. A
-client attached to a remote server uses its own machine's key bindings and
-theme; the server's `[defaults]` and hooks come from the server's machine.
-
-## Quick example
-
-This file changes the prefix to <kbd>C-b</kbd>, binds <kbd>C-b</kbd>
-<kbd>r</kbd> to reload the configuration, and moves the status bar to the
-bottom:
-
-```toml
-[keybindings]
-prefix = "C-b"
-
-[keybindings.prefix-table]
-"r" = "reload-config"
-
-[status]
-position = "bottom"
-```
-
-Apply it to every attached client:
+Each process reads the file on its own machine. A client attached to a remote
+server uses its own key bindings, theme, and status bar; `[defaults]`, hooks,
+and `[policy]` come from the server's machine.
 
 ```sh
-$ phux config reload
-config OK; reload signalled to attached clients and a running hub
+phux config init        # commented copy of every default; changes nothing until you uncomment
+phux config show        # merged settings in effect (--default: shipped; --layers: who set each key)
+phux config keys        # every key binding and where it came from
 ```
 
-Press <kbd>C-b</kbd> <kbd>r</kbd> after your next edit and the same reload
-runs from inside phux. The [config reference](./reference/config.md) lists
-every section and setting with its default.
+`phux config init --distro starter` adds an `extends` line for the starter
+[distribution](./distros.md).
 
-## Applying changes
+## When a change takes effect
 
-For curated defaults and agent workflows, use [distributions](./distros.md).
-`phux config distro use crew` switches the managed distro without replacing
-your personal overrides; `phux config distro off` removes it again.
-
-phux never watches the file. Changes apply when you ask, and different
-settings are read at different moments.
-
-`phux config reload` validates the file first. If anything is wrong it
-signals nothing and tells you why:
-
-```text
-$ phux config reload
-phux: error: config invalid, not signalling reload: keybinding "q": unknown action `kill-pain` (did you mean `kill-pane`?)
-  hint: run `phux config check` to list every problem
-```
-
-A client whose own re-read fails keeps its previous settings and shows the
-error as a toast. A reload is never half-applied.
-
-### When a change takes effect
+phux never watches the file. `phux config reload` (or the `reload-config`
+action) validates it first and signals nothing if it is invalid. A client
+whose own re-read fails keeps its previous settings and shows a toast.
 
 | Settings | Take effect |
 | --- | --- |
-| Key bindings, which-key, theme, status bar, `[chrome]`, `[notifications]`, `clipboard-write`, `clipboard-read`, `[[sessions]]` colours, plugin actions, panes and sidebar sections | On `phux config reload` (or the `reload-config` action). |
-| `[sidebar]`, `mouse`, `[experimental] predictive-echo` | The next time you attach. Detach and run `phux attach` again. |
-| The rest of `[defaults]` (shell, `TERM`, scrollback, session names, ...), `[[hooks]]`, plugin event hooks, `[policy]`, `[voice]`, `[limits]`, `[[restore.program]]` | When the server starts. |
-| `[[satellites]]`, `[[uplink]]` ([linked machines](./remote.md#linking-machines)) | On `phux config reload`, by the server. |
+| Key bindings, which-key, theme, status bar, `[chrome]`, `[notifications]`, clipboard policy, `[[sessions]]` colours, plugin actions, panes and sidebar sections | On `phux config reload` |
+| `[[satellites]]`, `[[uplink]]` | On `phux config reload`, by the server |
+| `[sidebar]`, `mouse`, `[experimental] predictive-echo` | On the next attach |
+| The rest of `[defaults]`, `[[hooks]]`, plugin event hooks, `[policy]`, `[voice]`, `[limits]`, `[[restore.program]]` | When the server starts |
 
-The server reads its settings once, at start. `phux upgrade` restarts the
-server in place without closing any pane, so it is the way to apply them
-to a running server. The server refuses to start on a file that does not
-load, so run `phux config check` first.
+`phux upgrade` restarts the server in place without closing panes, which is
+how a running server picks up start-time settings. The Settings page shows
+each setting's timing.
 
-The Settings page shows each setting's own timing in its detail panel.
+## Checking a file
 
-## Validation
+`phux config check [PATH]` reports every problem in one pass with its key
+path, and names the layer file when the problem comes from one. It exits 0
+clean, 1 with findings, 2 when it cannot run; `--json` makes it a CI gate for
+dotfiles. A missing default file is clean.
 
-`phux config check` reads the file without applying it and reports every
-problem in one pass, each with its full key path:
-
-```sh
+```text
 $ phux config check
-/Users/you/.config/phux/config.toml: ok
+sidebar.enabledd: unknown key: unknown field `enabledd`, expected one of `enabled`, `width`, ...
+keybindings.prefix-table.q: unknown name: unknown action `kill-pain` (did you mean `kill-pane`?)
+2 problems
 ```
 
-With no file it says so and exits 0, since the defaults apply. Give it a
-path to check a draft before you move it into place:
-`phux config check ~/dotfiles/phux.toml`.
+A broken file never locks you out. When it fails to load, attach runs on the
+shipped defaults and shows the error on the status bar; a failed reload keeps
+the config you had. A server refuses to start on it, so check before you
+restart one. One bad key binding disables only itself.
 
-| Exit code | Meaning |
-| --- | --- |
-| 0 | No problems. |
-| 1 | It found problems, listed one per line. |
-| 2 | The check could not run: a file you named is missing or unreadable, or the TOML does not parse. |
-
-`--json` prints the same findings as a stable JSON document, so the check
-can gate a dotfiles CI run.
-
-### Editor completion
-
-With this first line, taplo and Even Better TOML complete keys, show their
-docs and flag unknown ones; `docs/spec/plugin.schema.json` does the same
-for `phux-plugin.toml`.
+Editor completion (taplo, Even Better TOML) comes from the schema:
 
 ```toml
 #:schema https://raw.githubusercontent.com/no-phux/phux/main/docs/spec/config.schema.json
 ```
 
-### Findings
-
-Each line is the key path, the kind of problem, and the detail:
-
-```text
-$ phux config check
-sidebar.enabledd: unknown key: unknown field `enabledd`, expected one of `enabled`, `width`, `position`, `agents-share`, `hosts`, `hosts-provider`, `hosts-refresh-secs`
-keybindings.prefix-table.q: unknown name: unknown action `kill-pain` (did you mean `kill-pane`?)
-status.right[0]: bad value: invalid option for widget time: unknown option `formt` (did you mean `format`?)
-3 problems
-```
-
-| Kind | What it means |
-| --- | --- |
-| `unknown key` | The section has no such setting, usually a typo. |
-| `bad value` | The setting exists, but the value has the wrong type, is out of range, or a widget option is wrong. |
-| `bad chord` | A key that does not parse, or two bindings that collide. See [Key bindings](./keys.md#debugging). |
-| `unknown name` | An action, hook event, `when` key, or widget kind phux doesn't know. |
-| `dead action` | A hook whose action can never run. See [Hooks](./hooks.md#debugging). |
-
-When a problem comes from a file you extend rather than your own, the line
-after it names that file (`  from /path/to/layer.toml`).
-
-**A broken file never locks you out of a session.** When the file does
-not load at all, because of a TOML syntax error or an unknown key, attaching
-still works: phux ignores the whole file, runs on the shipped defaults (so
-<kbd>C-a</kbd> <kbd>d</kbd> still detaches), and shows the error on the
-status bar until you fix it and run `phux config reload`. A reload of a
-file that still fails keeps the config you had. A server, though, won't
-start on such a file, so check before you restart one. A file that loads
-but has one bad key binding loses only that binding.
-
-## Starter file
-
-`phux config init` writes a commented copy of every shipped setting to
-your config path. Every line is commented out, so the file changes nothing
-until you uncomment a line:
-
-```sh
-$ phux config init
-wrote /Users/you/.config/phux/config.toml
-```
-
-It refuses to overwrite an existing file unless you pass `--force`.
-`phux config show --default` prints the same defaults without writing
-anything, and `phux config show` prints the merged result in effect.
-
-`phux config init --distro starter` writes the same file plus an `extends`
-line that layers the starter distribution under it. The starter turns on
-the example plugins (workspace autosave, agent helpers, plan usage). Every
-release carries it ([Distributions](./distros.md#choose-and-switch) says where
-it is written).
-
 ## Layers
 
-A file can build on others with `extends`. Your file applies last, so it
-wins every key it sets:
+`extends` stacks files. Order: shipped defaults, each extended file in the
+order listed (recursively), then the file that extends them. Later wins.
 
 ```toml
-extends = ["work.toml"]
+extends = ["base", "work.toml"]
 
-[keybindings]
-prefix = "C-b"
-```
-
-The layers apply in this order: the shipped defaults, each extended file
-in the order listed, then the file that extends them. An extended file can
-extend others in turn.
-
-- An absolute path is used as written.
-- A relative path, or any name ending in `.toml`, is relative to the file
-  that names it.
-- A bare name like `work` means `layers/work.toml` beside that file.
-
-Tables merge key by key. An array replaces the one beneath it, unless you
-spell its key with `-append`, which adds to the inherited array instead:
-
-```toml
 [status]
 right-append = [{ kind = "cwd" }]
 ```
 
-That keeps the shipped right side of the status bar and adds the working
-directory after it. You can't set `right` and `right-append` in the same
-table.
+- An absolute path is used as written; a relative path or any `.toml` name is
+  relative to the naming file; a bare name like `base` is
+  `layers/base.toml` beside it.
+- Tables merge key by key. An array replaces the one beneath it; spell the
+  key `<name>-append` to add to the inherited array instead. You can't set
+  both in one table.
 
-`phux config show --layers` shows which layer set each key in effect:
-
-```text
-$ phux config show --layers
-layers (merge order; later layers win):
-  [1] defaults (embedded)
-  [2] /Users/you/.config/phux/work.toml
-  [3] /Users/you/.config/phux/config.toml (user)
-
-keys:
-  defaults.agent-log-bytes                 <- [1] defaults
-  ...
-  keybindings.prefix                       <- [3] user
-  ...
-  status.position                          <- [2] work.toml
-  ...
-```
-
-## Keeping it in dotfiles
-
-`config.toml` is meant to be committed. To share one file across machines:
-
-- **Shared settings go in a layer.** Keep `layers/base.toml` in your
-  dotfiles and start each machine's `config.toml` with
-  `extends = ["base"]`. What a machine sets itself wins.
-- **Machine-specific tables stay out of the shared layer.** `[[remote]]`,
-  `[[connector]]`, `[[uplink]]`, and `[[satellites]]` are written by
-  commands such as `phux host add` and point at token files that exist
-  only on that machine. Tokens and certificates are never in
-  `config.toml`; they are separate files and should not be copied between
-  machines. In a `[[remote]]` entry the `name`, `endpoint`, `ssh`, and
-  `color` mean the same thing everywhere; `token-file`, `cert-fingerprint`,
-  `client-cert`, and `client-key` belong to the machine that paired. If an
-  entry does reach a second machine, connecting says the token file is not
-  there, and `phux host add NAME` pairs that machine and fills them in.
-- **`[defaults]` belongs to the server.** It is read by the machine that
-  runs the panes, so a laptop attaching to another machine gets that
-  machine's shell and scrollback settings. Key bindings, the status bar,
-  and the theme belong to the client you attach with.
-- **Check the file before it ships.** `phux config check --json PATH`
-  exits non-zero on a file that would not load, so it can run in your
-  dotfiles' CI without a server.
+For dotfiles, keep shared settings in `layers/base.toml` and start each
+machine's `config.toml` with `extends = ["base"]`. Keep `[[remote]]`,
+`[[connector]]`, `[[uplink]]`, and `[[satellites]]` out of the shared layer:
+`phux host add` and friends write them per machine, pointing at token files
+that exist only there.
 
 ## Settings page
 
-Press <kbd>C-a</kbd> <kbd>S</kbd> to open the Settings page. It lists
-every setting with its value in effect, its default, the layer that set
-it, and when a change applies. Edits go straight into your
-`config.toml` and then reload, like `reload-config`.
-
-- Type to filter across sections. <kbd>Tab</kbd> steps between sections.
-- <kbd>Enter</kbd> or <kbd>Space</kbd> toggles, cycles, or edits the row;
-  <kbd>Left</kbd> and <kbd>Right</kbd> step a value.
-- Click a section's tab to show it, a checkbox or a cycling value to change
-  it, or any other part of a row to select it.
-- <kbd>Delete</kbd> or <kbd>C-r</kbd> removes your override so the default
-  shows through. <kbd>C-z</kbd> undoes.
-
-Each edit changes one line and keeps your comments. An edit that would
-make the file invalid is refused before it is written. If another `phux`
-command is writing the file at the same moment, the edit is refused as
-busy; press it again. A setting that
-comes from a file you extend can't be reset here; the page names that
-file so you can edit it.
+<kbd>C-a</kbd> <kbd>S</kbd> lists every setting with its value, default, the
+layer that set it, and when a change applies. Edits change one line of your
+`config.toml`, keep comments, refuse an edit that would make the file
+invalid, then reload. <kbd>Delete</kbd> removes your override; <kbd>C-z</kbd>
+undoes. A value set in an extended file names that file instead.
 
 ## Rune
 
-The Rune desktop app reads a `[rune]` table from the same file. A key set
-there wins over the choice Rune saved, and Settings shows it as set in
-`config.toml`; a key you leave out stays Rune's to remember.
+The Rune desktop app reads `[rune]` at launch. A key set here wins over the
+choice Rune saved; a key left out stays Rune's. **Copy Settings as TOML** in
+Rune's palette copies your current choices as this table. Key names and
+values are in the [config schema](./spec/config.schema.json) (`RuneCfg`).
 
 ```toml
 [rune]
-theme = "nord"          # a theme id; "" follows the system
-font-size = 14.0        # the size each window starts at
-interface-size = 125    # sidebar, tabs, palette and Settings in percent, 80 to 200
-font-family = ""        # "" is the built-in face
-notifications = true
-option-as-meta = false
-copy-on-select = true
-wheel-arrows = true     # false: the wheel never sends arrows to full-screen programs
-confirm-close = false
-recent-first = true     # list the session you used last first
-tab-bar = "top"         # or "bottom" (under the panes), "hidden"
-title-bar = "shown"     # or "hover" (at the window's top edge), "hidden"
-new-window-screen = "current"  # or "mouse" (under the pointer), "main"
+theme = "nord"                    # "" follows the system
+font-family = ["Berkeley Mono", "Symbols Nerd Font"]
+tab-bar = "bottom"                # "top", "bottom", "hidden"
+quick-terminal = "ctrl+backquote" # global drop-down terminal; "none" is off
+chief = "staff"                   # session the right-Cmd tap prompts; "none" is off
+ssh-agent = "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
 ```
 
-A hidden title bar leaves a strip that moves the window. The window
-reopens where it closed (on Wayland, at its size). A `font-family` list
-such as `["Berkeley Mono", "Symbols Nerd Font"]` falls back in order.
-
-**Copy Settings as TOML** in Rune's command palette puts your current
-choices on the clipboard as this table. Rune reads the file at launch.
+`quick-terminal` shows a session named `quick` over the front app; `phux
+attach quick` reaches it too. `ssh-agent` matters because an app opened from
+the Dock doesn't see your shell's `SSH_AUTH_SOCK` ([SSH](./ssh.md)). The
+right-Cmd tap is the [chief of staff](./acp.md). `[rune.keys]` binds Rune's
+shortcuts ([Key bindings](./keys.md#rune-shortcuts)).
 
 ### Markdown viewer
 
-Desktop Markdown documents use the bundled [tmd](https://github.com/jtnk/tmd)
-renderer by default. **Source** switches to the original Markdown;
-**Rendered** switches back. Other document types keep their native viewers.
-To replace the renderer, set an argv (not a shell command):
+Desktop Markdown documents render through the bundled tmd by default;
+**Source** and **Rendered** switch views. To replace the renderer, give an
+argv (not a shell command):
 
 ```toml
 [rune]
 markdown-viewer = ["/absolute/path/to/renderer", "--width", "{width}"]
-# markdown-viewer = []  # source only, no renderer process
+# markdown-viewer = []  # source only
 ```
 
-The renderer receives UTF-8 Markdown on stdin and must write plain UTF-8
-text to stdout, then exit successfully. Only `{width}` in arguments expands
-(10–100 columns, following the pane); document text is never substituted.
-It runs locally, including for documents published by remote hosts, on at
-most two workers per window. A three-second deadline, 2 MiB output limit
-and visible source fallback bound failures. The command is trusted local
-configuration, not a sandbox; choose a renderer that never executes document
-code or fetches assets automatically. The built-in adapter uses `tmd --print`
-with images and pixel headings disabled: tables and text layout, not tmd's
-interactive terminal UI, colours, clickable links or inline images.
-HTML remains source; the iOS default remains source too.
-
-`quick-terminal` names a global chord that drops a terminal over whatever
-app is in front, on the current Space, without switching to Rune's window.
-The same chord, or clicking away, hides it. It shows a session of its own
-called `quick` on this computer, so what runs there keeps running while it's
-hidden, and `phux attach quick` reaches it too. Rune's sidebar and palette
-leave that session out. It's off until you turn it on, because a global
-chord is taken from every other app. **Settings › Terminal** turns it on and
-records the chord, and a change applies at once; set here, the file wins:
-
-```toml
-[rune]
-quick-terminal = "ctrl+backquote"   # or "alt+space", "cmd+shift+t"; "none" is off
-quick-terminal-size = 0.4           # share of the display's height, 0.2 to 0.9
-quick-terminal-edge = "top"         # or "bottom"
-```
-
-The panel is 960 points wide, centred on that edge of the display under the
-pointer; on Linux it keeps its default height. **Move to a Tab** in the
-panel's palette moves its terminal into the main window's session as a new
-tab, and the quick session starts a fresh shell for next time. On macOS,
-while the chord is on, closing the main window keeps Rune running for the
-chord; clicking its Dock icon brings the window back.
-
-A tap of the right <kbd>⌘</kbd> key opens a composer for one designated ACP
-agent, the [chief of staff](./chief-of-staff.md). `chief` names its session:
-
-```toml
-[rune]
-chief = "staff"   # "chief" when unset; "none" turns the tap off
-```
-
-`ssh-agent` names the socket of the SSH agent Rune's `ssh://` hosts use. An
-app opened from the Dock doesn't see your shell's `SSH_AUTH_SOCK`, so a key
-held only in an agent such as 1Password's is otherwise not offered
-([SSH](./ssh.md#keys-in-an-agent)):
-
-```toml
-[rune]
-ssh-agent = "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
-```
-
-`[rune.keys]` binds Rune's own shortcuts; [Key bindings](./keys.md#rune-shortcuts)
-has the chords and command names.
+The renderer reads UTF-8 Markdown on stdin and writes plain UTF-8 to stdout.
+Only `{width}` expands. It runs locally, even for remote documents, under a
+three-second deadline and a 2 MiB output cap, falling back to source on
+failure. It is trusted local configuration, not a sandbox: pick one that
+never executes document code or fetches assets.
 
 ## Predictive echo
 
-Predictive echo shows your typing in a pane before the server echoes it
-back, which hides latency on a slow link. It is on when you attach to
-another machine and off for a server on this one. Set it explicitly to
-override that:
-
-```toml
-[experimental]
-predictive-echo = false
-```
-
-**Turn it off before you type secrets on a shared screen.** Prediction
-does not know when a program has turned echo off, so characters you type
-at a password prompt can appear briefly on your screen until the server's
-reply corrects them, or for up to about five seconds. It only changes what
-your own client draws: nothing extra is sent, and other clients and
-recordings never see it.
-
-The setting is read when you attach. After changing it, detach and run
-`phux attach` again; neither `phux config reload` nor an automatic
-reconnect turns off prediction in a session that already has it.
+`[experimental] predictive-echo` draws your typing before the server echoes
+it. Unset, it is on for remote attaches and off locally. It cannot see when a
+program turns echo off, so a typed password can flash on your screen for up
+to about five seconds; nothing extra is sent. Set it to `false` before typing
+secrets on a shared screen, then reattach.
 
 ## Tailnet owner devices
 
-With [Tailscale](https://tailscale.com), your own phone and computers can
-reach this machine's phux with no pairing at all:
+With [Tailscale](https://tailscale.com), your own devices can reach this
+machine with no pairing:
 
 ```toml
 [policy]
@@ -409,50 +165,31 @@ mode = "paired"
 tailnet-owner = true
 ```
 
-A device then connects by its host name alone (`quic://mini.tail1234.ts.net:8788`)
-when the local Tailscale client says it belongs to the same Tailscale user
-as this machine. It gets what a phone paired with `phux pair` gets.
+A device connecting to the QUIC listener on this machine's tailnet address is
+admitted with a paired device's access when the local Tailscale client says
+it belongs to the same Tailscale user. Never on a LAN or public listener,
+never over WebSocket. Tagged devices, devices shared in from another tailnet,
+other users, and any device presenting a client certificate still need `phux
+pair`. If Tailscale can't answer, or this machine is tagged, nobody gets in
+this way. Each connection is audited as `tailnet:<login>`
+([Security](./security.md)). Restart the server after changing it.
 
-- **It's off by default**, and only works under `mode = "paired"`.
-- Only the QUIC listener on this machine's tailnet address takes it, never
-  a listener on a LAN or public address, and never WebSocket.
-- Tagged devices, devices shared in from another tailnet, and other
-  people on your tailnet still need `phux pair`. So does a device that
-  presents a client certificate: that certificate decides, so a device
-  you revoked stays out.
-- If Tailscale can't answer, or this machine is itself tagged, nobody gets
-  in this way.
-- Each connection is recorded in the [audit log](./audit.md) as
-  `tailnet:<your login>` with the device's address. `phux pair ls` says
-  when the mode is on.
+## Coming from another multiplexer
 
-The phone pins this machine's certificate authority the first time it
-connects, so a later impostor at the same name is refused. Restart the
-server after changing the setting. To keep a device out, remove it from
-your tailnet or turn the setting off.
+[`phux migrate`](./reference/cli.md#phux-migrate) has your coding agent
+translate tmux, zellij, Ghostty, herdr, or Rex bindings;
+[`phux config import-tmux`](./reference/cli.md#phux-config-import-tmux)
+writes a layer from a running tmux without an agent. Both write config;
+neither reloads a running server itself.
 
-## Debugging
+`import-tmux --apply` writes `tmux-import.toml` beside your config and
+prepends it to `extends`, so your own settings still win. It refuses to
+overwrite an earlier import. To undo, remove it from `extends` and delete
+the file. Preview first:
 
-- `phux config check` lists every problem in the file, with key paths.
-- `phux config show` prints the merged settings in effect;
-  `--layers` names the file that set each key, and `--default` prints the
-  shipped defaults.
-- `phux config keys` lists every key binding and where it came from.
-- `phux config path` prints the file phux reads.
+```sh
+phux config import-tmux > tmux-preview.toml && phux config check tmux-preview.toml
+```
 
-If a setting seems to have no effect, check the table under
-[When a change takes effect](#when-a-change-takes-effect): a `[sidebar]`
-change needs a new attach, and a `[defaults]` change needs the server to
-restart.
-
-## More
-
-- [Key bindings](./keys.md): change the prefix, rebind and unbind keys.
-- [Themes](./themes.md): install and pick colour themes, or recolour one
-  part of the chrome.
-- [Status bar and sidebar](./status-bar.md): what the bar and sidebar
-  show, and agent notifications.
-- [Hooks](./hooks.md): run a command when something happens.
-- [Plugins](./plugins.md): add actions, panes, widgets, and themes.
-- [Projects](./projects.md): open a repository's session from a recipe.
-- [Config reference](./reference/config.md): every section and setting.
+[Getting started](./getting-started.md#coming-from-tmux) lists what differs
+from tmux.

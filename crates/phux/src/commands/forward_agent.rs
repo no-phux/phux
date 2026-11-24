@@ -1,5 +1,5 @@
 //! `phux forward --agent`: serve this machine's ssh-agent to the panes on
-//! a phux server (`docs/forwarding.md#ssh-agent`). Runs until Ctrl-C.
+//! a phux server (`docs/ssh.md#ssh-agent`). Runs until Ctrl-C.
 //!
 //! The server sends each pane request as an event; this answers it from
 //! the local agent at `SSH_AUTH_SOCK`. It trusts the server for nothing:

@@ -1,5 +1,5 @@
 //! Organization roots beside the registry
-//! (`docs/remote.md#managed-by-an-organization`): one owner-only
+//! (`docs/security.md#managed-by-an-organization`): one owner-only
 //! `workload-org-roots/<org>.pem` per organization, written by
 //! `phux workload sync-managed` and trusted by a listener's client
 //! verifier beside this host's CA. A listener re-reads them when one

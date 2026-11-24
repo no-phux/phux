@@ -34,7 +34,7 @@ Programs that drive phux, or report status into a pane, start at
 [Build on phux](./docs/building.md). That page is the map to the versioned
 `--json` CLI, the MCP server (`phux mcp`), `phux watch --json` and its
 resume cursor, and OSC 7501
-([Any program can report status](./docs/any-program-status.md)).
+([Any program can report status](./docs/program-protocol.md)).
 Agent state is evidence-ranked; screen is the floor.
 
 ## Build and validate

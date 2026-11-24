@@ -1,7 +1,7 @@
 # Everything that follows a green main: the release PRs, then every draft
 # whose own commit passed ci. Release Please owns versions, changelogs, tags,
 # and drafts; this workflow attaches assets and flips drafts public. The next
-# channel is next.yml. docs/RELEASING.md is the runbook.
+# channel is next.yml. docs/releasing.md is the runbook.
 #
 # Rules this file keeps:
 # - Push as the release App, never GITHUB_TOKEN: its pushes trigger no ci, so

@@ -385,7 +385,7 @@
     },
     "ForwardCfg": {
       "additionalProperties": false,
-      "description": "`[forward]` table: TCP port and ssh-agent forwarding\n(`docs/forwarding.md`).",
+      "description": "`[forward]` table: TCP port and ssh-agent forwarding\n(`docs/ssh.md#forwarding-a-port`).",
       "properties": {
         "agent": {
           "default": false,

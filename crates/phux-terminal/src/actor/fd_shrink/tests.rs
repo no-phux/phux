@@ -28,6 +28,26 @@ fn a_failed_trampoline_materialize_is_not_cached() {
 }
 
 #[test]
+fn a_deleted_cached_trampoline_is_materialized_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("launcher");
+    let slot = OnceLock::new();
+    let materialize = || {
+        std::fs::write(&path, b"launcher")?;
+        Ok(path.clone())
+    };
+    assert_eq!(remember_path(&slot, materialize).unwrap(), path);
+    assert_eq!(remember_path(&slot, || panic!("cache miss")).unwrap(), path);
+    std::fs::remove_file(&path).unwrap();
+    let failed = remember_path(&slot, || {
+        Err(io::Error::new(ErrorKind::PermissionDenied, "cannot repair"))
+    });
+    assert!(failed.is_err());
+    assert_eq!(remember_path(&slot, materialize).unwrap(), path);
+    assert!(path.is_file());
+}
+
+#[test]
 fn spawn_pane_child_routes_a_missing_trampoline_through_strict_cwd() {
     struct Restore;
     impl Drop for Restore {

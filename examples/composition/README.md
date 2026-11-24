@@ -26,5 +26,5 @@ phux api describe terminal.create
 ## More
 
 - [Shell scripting](../../docs/scripting.md): exit codes, JSON, events.
-- [Public API](../../docs/public-api.md): launch with a receipt, recover a lost reply.
+- [Durable terminal creation](../../docs/scripting.md#durable-terminal-creation): launch with a receipt, recover a lost reply.
 - [External proofs](./proofs.md): worktree launcher, question inbox, review action.

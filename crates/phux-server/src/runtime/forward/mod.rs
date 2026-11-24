@@ -1,5 +1,5 @@
 //! TCP port forwarding (`FORWARD_*`, behind `features_ext.FORWARD_TCP`;
-//! `docs/forwarding.md`). Loopback by default; all commands are `INPUT`.
+//! `docs/ssh.md#forwarding-a-port`). Loopback by default; all commands are `INPUT`.
 //! Each is admitted on the dispatcher then runs on its own task, so a slow
 //! dial or parked read delays nothing else; a write answers after
 //! `write_all`, which is the client's backpressure.

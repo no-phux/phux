@@ -1,4 +1,4 @@
-//! The JSON shown in docs/build-a-client.md is what phux prints.
+//! The JSON shown in docs/building.md is what phux prints.
 //!
 //! Each `<!-- contract: NAME -->` block in that page is compared with the
 //! document the CLI builds: every key the page shows must still be there with
@@ -17,14 +17,14 @@ use phux_client::agent::detect::{
     PaneEvidence, SessionEvidence, agents_document, infer_agent_state,
 };
 
-const PAGE: &str = include_str!("../../../../../docs/build-a-client.md");
+const PAGE: &str = include_str!("../../../../../docs/building.md");
 
 /// The JSON block after `<!-- contract: NAME -->` on the page.
 fn documented(name: &str) -> Value {
     let marker = format!("<!-- contract: {name} -->");
     let after = PAGE
         .split_once(&marker)
-        .unwrap_or_else(|| panic!("docs/build-a-client.md has no `{marker}`"))
+        .unwrap_or_else(|| panic!("docs/building.md has no `{marker}`"))
         .1;
     let body = after
         .trim_start()

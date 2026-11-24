@@ -1,5 +1,5 @@
 //! ssh-agent forwarding (`AGENT_OFFER`, `AGENT_REPLY`, behind
-//! `features_ext.FORWARD_AGENT`; `docs/forwarding.md#ssh-agent`).
+//! `features_ext.FORWARD_AGENT`; `docs/ssh.md#ssh-agent`).
 //!
 //! The server serves an owner-only `SSH_AUTH_SOCK` but holds no key: list and
 //! sign requests go, as unjournaled `agent_request` events, to the one client

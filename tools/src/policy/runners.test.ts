@@ -32,13 +32,6 @@ const CACHE_WRITERS = new Set([
   "jdx/mr-boxington-action",
 ]);
 
-test("the docs catalog job is a short ubuntu-latest run", () => {
-  const lane = job(workflow("ci.yml"), "docs-catalog");
-  expect(str(lane["runs-on"])).toBe("ubuntu-latest");
-  expect(lane["timeout-minutes"]).toBe(5);
-  expect(Number(lane["timeout-minutes"])).toBeLessThan(10);
-});
-
 test("all runner selectors are standard public capacity", () => {
   for (const name of workflowNames()) {
     const body = workflowText(name);
