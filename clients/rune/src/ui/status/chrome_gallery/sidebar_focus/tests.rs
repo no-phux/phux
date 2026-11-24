@@ -79,6 +79,58 @@ fn target(rt: &Runtime<Desk>, id: u32) -> Option<(ResourceId, Option<SessionKey>
 }
 
 #[test]
+fn sidebar_focus_keeps_the_shown_child_row_without_unfolding_its_parent() {
+    for grouped in [false, true] {
+        for mode in ["normal", "collapsed"] {
+            let mut rt = split_window((1100, 720), true, mode);
+            rt.update(|d, _| {
+                d.connection
+                    .topology
+                    .as_mut()
+                    .unwrap()
+                    .panes
+                    .iter_mut()
+                    .find(|p| p.terminal_id == ResourceId::local(1))
+                    .unwrap()
+                    .parent = Some(ResourceId::local(3));
+                if !grouped {
+                    d.connection.tabs.by_session.get_mut(&1).unwrap()[0].resources =
+                        vec![ResourceId::local(1)];
+                }
+                d.sidebar_unfolded.clear();
+            });
+            rt.frame(3.0);
+            let layout = rt.state.connection.layout.clone();
+            let _ = rt.state.connection.client.as_ref().unwrap().take_outbound();
+            focus_sidebar(&mut rt);
+            server::settle(&mut rt);
+            let lead = ResourceId::local(if grouped { 2 } else { 1 });
+            let row = crate::ui::element(&rt, &format!("pane-{lead}"));
+            assert!(row.focused && row.focus_visible);
+            assert!(
+                !crate::ui::element(&rt, "pane-@3").focused,
+                "not its parent"
+            );
+            assert!(
+                rt.state.sidebar_unfolded.is_empty(),
+                "shown children reveal themselves"
+            );
+            assert_eq!(
+                rt.state.connection.shown.as_ref().unwrap().resource,
+                ResourceId::local(1)
+            );
+            assert_eq!(rt.state.connection.layout, layout);
+            previous(&mut rt);
+            assert!(crate::ui::element(&rt, "inbox-button").focused);
+            rt.key(crate::keys::plain(rune::Key::Text(" ".into())));
+            rt.frame(3.0);
+            assert!(rt.state.inbox.open);
+            no_terminal_input(&rt);
+        }
+    }
+}
+
+#[test]
 fn sidebar_focus_uses_available_members_and_agent_precedence() {
     let mut rt = split_window((1100, 720), true, "normal");
     let key = SessionKey::new([1; 16]);
