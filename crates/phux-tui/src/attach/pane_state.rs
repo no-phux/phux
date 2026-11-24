@@ -113,7 +113,7 @@ impl AttentionNavigation {
 /// session kernel.
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "independent per-pane flags (scroll, attention, sync-output, seen); a bitset would obscure every read site"
+    reason = "independent per-pane flags; a bitset would obscure every read site"
 )]
 pub(super) struct PaneSlot {
     /// Per-pane render scaffolding (warm iterators, predictive-echo anchor).
@@ -136,6 +136,8 @@ pub(super) struct PaneSlot {
     /// ADR-0035: an agent is waiting on a human; cleared by input to the pane
     /// ([`clear_attention_on_input`]).
     pub attention: bool,
+    /// When `attention` was raised, so the agent list opens on the oldest.
+    pub asked_at: Option<Instant>,
     /// Start of the current DEC synchronized-output transaction (`?2026h`).
     pub sync_output_since: Option<tokio::time::Instant>,
     /// Whether mirror state changed during the transaction.
@@ -156,6 +158,8 @@ pub(super) struct PaneSlot {
     pub foreground: Option<String>,
     /// The icon a program in the pane set (`phux.pane-occupant/v1`'s `icon`).
     pub program_icon: Option<String>,
+    /// Work runs outside the foreground (the occupant's `background`).
+    pub background: bool,
     /// The attention ladder's "looked at" bit: set while focused, cleared when
     /// an unfocused pane's agent record changes, so "finished, unread" ranks
     /// above "working" until visited.
@@ -205,6 +209,7 @@ impl PaneSlot {
             control_seen: false,
             viewport_scrolled: false,
             attention: false,
+            asked_at: None,
             sync_output_since: None,
             sync_output_dirty: false,
             cwd: None,
@@ -213,6 +218,7 @@ impl PaneSlot {
             slot_tab: None,
             foreground: None,
             program_icon: None,
+            background: false,
             seen: false,
             satellite_down: false,
             history_degraded: false,
@@ -294,8 +300,7 @@ pub(super) fn pane_label<'a>(
         agent: None,
         attention: slot.attention,
         seen: slot.seen,
-        // Borrow the host from the map key so the label lives as long as
-        // `panes`, the same lifetime as the title.
+        // Borrowed from the map key, so it lives as long as `panes`.
         host: key.host().map(phux_protocol::ids::SatelliteHost::as_str),
         unreachable: slot.satellite_down,
         origin: origin_badge(slot, Instant::now()).or_else(super::sync_input::badge),
@@ -343,10 +348,8 @@ pub(in crate::attach) fn cwd_basename(cwd: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-/// What a window is called wherever the chrome names it (the tab bar, the
-/// tab picker): a user-given name as is; an auto-numbered one prefers
-/// context, from the focused pane's agent, then the label every client
-/// gives the pane (what runs in it and where, else its title or cwd). The
+/// A window's name in the chrome: a user-given name as is; an auto-numbered
+/// one prefers the focused pane's agent, then its shared pane label. The
 /// focused pane's icon (`phux_config::pane_icon`) goes in front.
 pub(in crate::attach) fn display_window_name(
     name: &str,
