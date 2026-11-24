@@ -5,27 +5,27 @@ import { createEffect, createSignal, For, onCleanup, onMount, Show } from "solid
 import { PhuxCli } from "../../runtime/src/adapter.js";
 import { ActivePane } from "./active-pane.js";
 import { OpenCodeLifecycle } from "./lifecycle.js";
-import { openCodeMail } from "./mail.js";
+import { hasChatMailbox, openCodeMail } from "./mail.js";
 import { parentPane } from "./parent.js";
 
-/** Pane identity belongs to the TUI process, never to the shared OpenCode service. */
+/** Pane and chat identity belong to the TUI process, never to the shared service. */
 export default Plugin.define({
   id: "phux.tui",
   setup(ctx) {
     if (process.env.PHUX_AGENT_REPORTING === "0") return;
     const parent = parentPane(process.env.PHUX_TERMINAL_ID);
-    if (parent === null) return;
+    if (parent === null && !hasChatMailbox(process.env)) return;
 
-    const lifecycle = new OpenCodeLifecycle({
+    const active = parent === null ? undefined : new ActivePane(new OpenCodeLifecycle({
       cli: new PhuxCli({ env: process.env }),
       target: () => parent,
       onError: (error) => console.error("phux OpenCode presence:", error),
-    });
-    const active = new ActivePane(lifecycle);
-    // Mail for this pane goes to the session it shows, never into its terminal.
+    }));
+    let visibleSession: string | undefined;
+    // Mail goes to the session this TUI shows, never into its terminal.
     const mail = openCodeMail({
       sessions: ctx.client.session,
-      visibleSession: () => active.visible,
+      visibleSession: () => visibleSession,
       env: process.env,
       onError: (error) => console.error("phux OpenCode mail:", error),
     });
@@ -35,7 +35,8 @@ export default Plugin.define({
         createEffect(() => {
           const route = ctx.ui.router.current();
           const sessionID = route.type === "session" ? route.sessionID : undefined;
-          active.show(sessionID, sessionID !== undefined && ctx.data.session.status(sessionID) === "running"
+          visibleSession = sessionID;
+          active?.show(sessionID, sessionID !== undefined && ctx.data.session.status(sessionID) === "running"
             ? "working" : "idle");
           if (sessionID === undefined) mail.stop();
           else mail.start();
@@ -46,30 +47,31 @@ export default Plugin.define({
     // Show this session's phux-spawned terminals in the left sidebar so they
     // stay grouped with the session that owns them instead of becoming an
     // undifferentiated wall in the pane inventory.
-    const removeSidebar = ctx.ui.slot({
+    const removeSidebar = parent === null ? undefined : ctx.ui.slot({
       append: "sidebar.content",
       render: (input) => <PhuxSidebar sessionID={input.sessionID} />,
     });
-    const stopStatus = ctx.data.on("session.status", (event) => {
+    const stopStatus = active === undefined ? undefined : ctx.data.on("session.status", (event) => {
       const { sessionID, status } = event.data;
-      if (status.type === "busy") active.status(sessionID, "working");
-      if (status.type === "idle") active.status(sessionID, "idle");
+      if (status.type === "busy") active?.status(sessionID, "working");
+      if (status.type === "idle") active?.status(sessionID, "idle");
     });
     const stopIdle = ctx.data.on("session.idle", (event) => {
-      active.status(event.data.sessionID, "idle");
+      active?.status(event.data.sessionID, "idle");
       // Re-arms a mail loop that stopped on repeated failures.
-      if (active.visible !== undefined) mail.start();
+      if (visibleSession !== undefined) mail.start();
     });
-    const stopPermission = ctx.data.on("permission.asked", (event) => active.ask(event.data.sessionID));
+    const stopPermission = parent === null ? undefined
+      : ctx.data.on("permission.asked", (event) => active?.ask(event.data.sessionID));
 
     return async () => {
       mail.stop();
-      stopStatus();
+      stopStatus?.();
       stopIdle();
-      stopPermission();
+      stopPermission?.();
       removeSlot();
-      removeSidebar();
-      await active.dispose();
+      removeSidebar?.();
+      await active?.dispose();
     };
   },
 });

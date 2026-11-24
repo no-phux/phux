@@ -33,25 +33,32 @@ async function settle(): Promise<void> {
 }
 
 describe("OMP mail", () => {
-  test("taken mail is a follow-up message that starts a turn when idle", async () => {
-    const omp = fakeOmp();
-    const source = parkedAfter([{ text: "[phux mail] A message", ids: ["a"] }]);
-    const inbox = registerOmpMail(omp.api, {
-      env: { PHUX_TERMINAL_ID: "17" },
-      executable: "phux",
-      wait: source.wait,
-      release: async () => { throw new Error("nothing to release"); },
+  for (const env of [
+    { PHUX_TERMINAL_ID: "17" },
+    { PHUX_AGENT_ADDRESS: "ordinary-address" },
+    { PHUX_CHAT_RECORD: "/private/chat record" },
+    { PHUX_CHAT_RECORD: "/private/chat record", PHUX_AGENT_ADDRESS: "claim-holder" },
+  ]) {
+    test(`taken mail is a follow-up that starts a turn for ${JSON.stringify(env)}`, async () => {
+      const omp = fakeOmp();
+      const source = parkedAfter([{ text: "[phux mail] A message", ids: ["a"] }]);
+      const inbox = registerOmpMail(omp.api, {
+        env,
+        executable: "phux",
+        wait: source.wait,
+        release: async () => { throw new Error("nothing to release"); },
+      });
+      omp.fire("session_start");
+      await settle();
+      expect(omp.sent).toEqual([{
+        message: { customType: PHUX_MAIL_CUSTOM_TYPE, content: "[phux mail] A message", display: true, details: { ids: ["a"] } },
+        options: { triggerTurn: true, deliverAs: "followUp" },
+      }]);
+      omp.fire("session_shutdown");
+      await settle();
+      expect(inbox?.running).toBe(false);
     });
-    omp.fire("session_start");
-    await settle();
-    expect(omp.sent).toEqual([{
-      message: { customType: PHUX_MAIL_CUSTOM_TYPE, content: "[phux mail] A message", display: true, details: { ids: ["a"] } },
-      options: { triggerTurn: true, deliverAs: "followUp" },
-    }]);
-    omp.fire("session_shutdown");
-    await settle();
-    expect(inbox?.running).toBe(false);
-  });
+  }
 
   test("outside a pane nothing waits", async () => {
     const omp = fakeOmp();

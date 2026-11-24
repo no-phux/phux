@@ -400,21 +400,13 @@
             '';
         };
 
-        # The hosted shards execute an existing nextest archive. Keep the
-        # Rust metadata probes need rustc, not a native linker or SDK.
-        # Do not realize Zig, browser, desktop, or development tools either.
-        devShells.test-archive = pkgs.mkShellNoCC {
-          packages = [
-            (toolchain.override {
-              extensions = [ ];
-              targets = [ ];
-            })
-            pkgs.cargo-nextest
-            toolPins.just
-            toolPins.python
-            pkgs.jq
-          ];
-          env.RUST_BACKTRACE = "1";
+        devShells.test-archive = import ./nix/test-archive.nix {
+          inherit
+            pkgs
+            toolchain
+            toolPins
+            bunPinned
+            ;
         };
 
         # Browser CI gets a browser matched to chromedriver without making

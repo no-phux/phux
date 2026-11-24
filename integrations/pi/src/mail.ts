@@ -17,7 +17,8 @@ export interface PhuxMailOptions {
 /**
  * Put this pane's mail in the Pi conversation with `pi.sendMessage`: a
  * follow-up while the agent works, a new turn while it is idle. Off outside
- * a phux pane, where there is no address to receive mail.
+ * a phux pane unless an address or explicit chat record is selected. The CLI
+ * validates the record and selects its inbox without changing claim identity.
  */
 export function registerPhuxMail(pi: ExtensionAPI, options: PhuxMailOptions): MailInbox | null {
   const inbox = addressed(options.env) ? conversationInbox(pi, options) : null;
@@ -44,5 +45,6 @@ function conversationInbox(pi: ExtensionAPI, options: PhuxMailOptions): MailInbo
 }
 
 function addressed(env: NodeJS.ProcessEnv): boolean {
-  return [env.PHUX_TERMINAL_ID, env.PHUX_AGENT_ADDRESS].some((value) => value !== undefined && value.trim() !== "");
+  return [env.PHUX_TERMINAL_ID, env.PHUX_AGENT_ADDRESS, env.PHUX_CHAT_RECORD]
+    .some((value) => value !== undefined && value.trim() !== "");
 }

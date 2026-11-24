@@ -8,6 +8,10 @@ order: 0
 Reach another machine's phux server: add it once over SSH, then attach to
 its sessions directly. There are no accounts and no hosted service.
 
+For messaging with another person rather than controlling your own
+machines, use [conversations](./chat.md): one native messaging invite,
+explicit private routing, and no terminal sharing.
+
 ```sh
 phux host add me@mini --install
 phux attach mini

@@ -122,6 +122,9 @@ pub(crate) enum Command {
     #[usage(help_heading = "Agents", display_order = 37)]
     Mail(MailArgs),
 
+    #[usage(help_heading = "Agents", display_order = 37)]
+    Chat(super::chat::ChatArgs),
+
     #[usage(help_heading = "Agents", display_order = 38)]
     Claim(ClaimArgs),
 

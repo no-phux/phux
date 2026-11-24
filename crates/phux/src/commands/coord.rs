@@ -8,7 +8,8 @@
 //! conversation through the harness's own API ([`delivery`]).
 //!
 //! Who you are: `--as`, else `$PHUX_AGENT_ADDRESS`, else this pane (`@N`
-//! from `$PHUX_TERMINAL_ID`), else `$USER`.
+//! from `$PHUX_TERMINAL_ID`), else `$USER`. Mail alone defaults to the
+//! validated `$PHUX_CHAT_RECORD` inbox before the generic process identity.
 //!
 //! On a host joined to a hub with `phux host join`, both use the hub's store
 //! instead, in this host's name ([`phux_client::hub_mail`]).
@@ -201,19 +202,23 @@ fn whoami(me: &AsOpt) -> String {
 }
 
 pub(crate) fn run_mail(action: &MailAction) -> ExitCode {
+    let address = match mail_address(action) {
+        Ok(address) => address,
+        Err(code) => return code,
+    };
     match action {
         MailAction::Send {
             to,
             message,
             thread,
             operation_id,
-            me,
             json,
+            ..
         } => send(
             to,
             message,
             thread,
-            &whoami(me),
+            &address,
             json.json,
             operation_id.as_deref(),
         ),
@@ -221,28 +226,45 @@ pub(crate) fn run_mail(action: &MailAction) -> ExitCode {
             thread,
             all,
             peek,
-            me,
             json,
-        } => read(thread.clone(), *all, *peek, &whoami(me), json.json),
-        MailAction::Ack { id, me, json } => ack(id, &whoami(me), json.json),
+            ..
+        } => read(thread.clone(), *all, *peek, &address, json.json),
+        MailAction::Ack { id, json, .. } => ack(id, &address, json.json),
         MailAction::Wait {
             timeout,
             limit,
             until_stdin_closes,
-            me,
             json,
+            ..
         } => delivery::wait(
             delivery::WaitArgs {
                 timeout: *timeout,
                 limit: *limit,
                 until_stdin_closes: *until_stdin_closes,
             },
-            &whoami(me),
+            &address,
             json.json,
         ),
-        MailAction::Release { ids, me, json } => delivery::release(ids, &whoami(me), json.json),
-        MailAction::HookContext { event, me } => delivery::hook_context(*event, &whoami(me)),
+        MailAction::Release { ids, json, .. } => delivery::release(ids, &address, json.json),
+        MailAction::HookContext { event, .. } => delivery::hook_context(*event, &address),
     }
+}
+
+/// A chat changes mail's default address, never the generic claim holder.
+fn mail_address(action: &MailAction) -> Result<String, ExitCode> {
+    let (me, json) = match action {
+        MailAction::Send { me, json, .. }
+        | MailAction::Read { me, json, .. }
+        | MailAction::Ack { me, json, .. }
+        | MailAction::Wait { me, json, .. }
+        | MailAction::Release { me, json, .. } => (me, json.json),
+        MailAction::HookContext { me, .. } => (me, false),
+    };
+    // Validate even with --as: a broken explicit record must not fall back.
+    let chat = mail_conversation(json)?;
+    Ok(phux_work::caller_address(me.me.as_deref().or_else(|| {
+        chat.as_ref().map(|chat| chat.local_address.as_str())
+    })))
 }
 
 pub(crate) fn run_claim(action: &ClaimAction) -> ExitCode {
@@ -290,6 +312,37 @@ fn store(json: bool) -> Result<phux_work::Client, ExitCode> {
             crate::exit_codes::EXIT_USAGE,
         )),
     }
+}
+
+/// A launched chat redirects mail only, never this process's path claims.
+fn mail_store(json: bool) -> Result<phux_work::Client, ExitCode> {
+    let Some(chat) = mail_conversation(json)? else {
+        return store(json);
+    };
+    chat.hub_link()
+        .map(|link| phux_work::Client::remote(std::sync::Arc::new(link)))
+        .map_err(|message| mail_config_error(json, message))
+}
+
+fn mail_conversation(
+    json: bool,
+) -> Result<Option<phux_client::conversation::Conversation>, ExitCode> {
+    std::env::var_os(phux_client::conversation::CONTEXT_ENV)
+        .map(|record| phux_client::conversation::load_path(std::path::Path::new(&record)))
+        .transpose()
+        .map_err(|message| mail_config_error(json, message))
+}
+
+fn mail_config_error(json: bool, message: String) -> ExitCode {
+    json_err::emit(
+        json,
+        &json_err::CliError::new(
+            codes::INVALID_CONFIG,
+            message,
+            "fix the exact PHUX_CHAT_RECORD conversation; mail was not redirected to another store",
+        ),
+        crate::exit_codes::EXIT_USAGE,
+    )
 }
 
 fn emit(document: &serde_json::Value) {
