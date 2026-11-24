@@ -152,7 +152,7 @@ deny:
 # nits (sourced libs shellcheck cannot follow) that are correct as written.
 [group('gates')]
 shellcheck:
-    shellcheck --severity=warning dev/*.sh dev/lib/*.sh scripts/*.sh scripts/lib/*.sh scripts/ci/*.sh \
+    shellcheck --severity=warning dev/*.sh dev/lib/*.sh install/*.sh install/lib/*.sh scripts/*.sh scripts/lib/*.sh scripts/ci/*.sh \
       clients/rune/upstream/*.sh clients/phux-vt-web/scripts/*.sh \
       examples/agents/*.sh \
       examples/agents/orchestrate-placed-fleet examples/agents/record-pi-live-fleet examples/agents/tests/*.sh \
@@ -191,7 +191,7 @@ design-gen *ARGS:
 [group('gates')]
 [private]
 install-surface-check:
-    bash scripts/check-install-surface.sh
+    bash install/test.sh
 
 
 # Lease this worktree to the running agent session, or refuse (exit 3) when

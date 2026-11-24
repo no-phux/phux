@@ -146,9 +146,9 @@ test("first-run push classifier fails closed for unknown history or failed diffs
   expect(script).not.toBe("");
   for (const path of [
     "scripts/install.sh",
-    "scripts/installer",
-    "scripts/generate-install.sh",
-    "scripts/first-run-timing.sh",
+    "install/src",
+    "install/generate.sh",
+    "install/first-run-timing.sh",
     ".github/workflows/first-run-timing.yml",
   ]) {
     expect(script).toContain(path);

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# The install surface: the installers phux.sh serves, the release manifest
-# every client reads, and the tests that drive them.
+# Test the install surface: the installers phux.sh serves (scripts/install*,
+# generated from install/src), the release manifest every client reads, and
+# the tests that drive them. `just install-surface-check` runs this.
 set -euo pipefail
 # shellcheck source=dev/lib/output.sh
 source "$(dirname "${BASH_SOURCE[0]}")/../dev/lib/output.sh"
@@ -32,7 +33,8 @@ done
 
 # install.sh appends to the invoking shell's profile; a test that runs it
 # against the real home leaves PATH lines behind (phux-gh85y).
-for test in $(grep -lE 'install(-desktop|-rune)?\.sh|installer/' scripts/test-*.sh); do
+shopt -s nullglob
+for test in $(grep -lE 'install(-desktop|-rune)?\.sh|install/src/' install/test-*.sh scripts/test-*.sh); do
   grep -qE '^export HOME="\$TMP' "$test" || fail "$test runs an installer; export HOME=\"\$TMP/...\" first"
 done
 
@@ -40,13 +42,13 @@ done
 
 bash scripts/check-product-skills-export.sh
 bash scripts/test-pack-release.sh
-bash scripts/test-install.sh
-bash scripts/test-install-server-app.sh
+bash install/test-install.sh
+bash install/test-install-server-app.sh
 bash scripts/test-gen-formula.sh
-bash scripts/test-install-rune.sh
-bash scripts/first-run-timing.sh --self-test
+bash install/test-install-rune.sh
+bash install/first-run-timing.sh --self-test
 # Real Windows PowerShell 5.1/7 + WSL qualification lives in windows-wsl.yml.
 if command -v pwsh >/dev/null 2>&1; then
-  pwsh -NoProfile -File scripts/test-install-windows.ps1
+  pwsh -NoProfile -File install/test-install-windows.ps1
 fi
 phux_ok "install surface check passed"

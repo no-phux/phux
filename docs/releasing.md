@@ -106,7 +106,7 @@ embedded in `install.sh` and served as `repodata/phux.asc`.
 the maintainer's offline backup, and `build-package-repo.sh` refuses a subkey
 of any other primary. If the subkey leaks, revoke it with the primary, add a new
 subkey, update `packaging/phux.asc` and the secret, and regenerate
-`install.sh` (`sh scripts/generate-install.sh`). Existing users need the new
+`install.sh` (`sh install/generate.sh`). Existing users need the new
 public key before newly signed packages install.
 
 ## Phux Rune

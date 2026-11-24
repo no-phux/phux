@@ -1,6 +1,6 @@
 //! Black-box acceptance of the first-five-minutes journey from an
 //! install-shaped prefix: both release binaries copied into a fresh `bin/`.
-//! Archive layout, checksums, and publishing are `scripts/test-install.sh`'s
+//! Archive layout, checksums, and publishing are `install/test-install.sh`'s
 //! job.
 
 #![allow(clippy::expect_used, reason = "acceptance harness")]

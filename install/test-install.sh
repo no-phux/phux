@@ -5,7 +5,7 @@
 # handling, and the install-desktop shim. The network is a fake curl.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-sh "$ROOT/scripts/generate-install.sh" --check
+sh "$ROOT/install/generate.sh" --check
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 SH="$(command -v dash || echo /bin/sh)"
@@ -346,7 +346,7 @@ mkdir -p "$TMP/locked/.phux-install.lock"
 refused 'if none is running, remove' --os linux --arch x86_64 --install-dir "$TMP/locked"
 [[ -d $TMP/locked/.phux-install.lock ]] || fail "a refused install removed another's lock"
 
-source "$ROOT/scripts/lib/test-install-path.sh"
+source "$ROOT/install/lib/test-install-path.sh"
 
 # The website's install-desktop shim runs the installer with --rune.
 printf '#!/bin/sh\necho "args: $*"\n' > "$SERVED/install"
@@ -356,7 +356,7 @@ rm "$SERVED/install"
 if PATH="$TMP/bin:/usr/bin:/bin" "$SH" "$ROOT/scripts/install-desktop.sh" 2>"$TMP/err"; then fail "shim ran without an installer"; fi
 grep -Fq 'could not download' "$TMP/err" || fail "shim failure message"
 
-source "$ROOT/scripts/lib/test-install-service.sh"
-source "$ROOT/scripts/lib/test-install-repo.sh"
+source "$ROOT/install/lib/test-install-service.sh"
+source "$ROOT/install/lib/test-install-repo.sh"
 
 echo "installer tests passed"

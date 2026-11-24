@@ -3,6 +3,7 @@
 [CmdletBinding()]
 param([Parameter(Mandatory = $true)][string] $Distribution)
 $ErrorActionPreference = 'Stop'
+$installer = Join-Path (Join-Path (Split-Path $PSScriptRoot -Parent) 'scripts') 'install-windows.ps1'
 $work = Join-Path ([IO.Path]::GetTempPath()) ('phux-wsl-' + [Guid]::NewGuid().ToString('N'))
 $bin = Join-Path $work 'bin with spaces'
 $socket = '/tmp/phux-windows-' + [Guid]::NewGuid().ToString('N') + '.sock'
@@ -16,7 +17,7 @@ function Assert-True([bool] $Condition, [string] $Message) {
 try {
     # This downloads and verifies the real published Linux release, then
     # installs the PowerShell entrypoints exactly as a Windows user does.
-    . (Join-Path $PSScriptRoot 'install-windows.ps1') -Distribution $Distribution -InstallDir $bin -NoModifyPath
+    . $installer -Distribution $Distribution -InstallDir $bin -NoModifyPath
     $cli = Join-Path $bin 'phux.ps1'
     $mcp = Join-Path $bin 'phux-mcp.ps1'
     & $cli --version

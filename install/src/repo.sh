@@ -3,7 +3,7 @@
 
 # On Debian, Ubuntu, Fedora and RHEL the stable CLI comes from phux's signed
 # apt or dnf repository, so it updates with the system. The signing key is
-# repo_key, embedded by scripts/generate-install.sh from packaging/phux.asc:
+# repo_key, embedded by install/generate.sh from packaging/phux.asc:
 # it is as trusted as this script, and nothing else is fetched to trust it.
 # Packages stay on their releases; the signed metadata is the `repodata`
 # release (docs/releasing.md#linux-packages).

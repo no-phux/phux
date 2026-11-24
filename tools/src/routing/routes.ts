@@ -69,9 +69,12 @@ const ROUTES: Record<string, Surface[]> = {
   "scripts/ci/prune-build-cache.sh": [],
   // The separate Windows WSL workflow exercises PowerShell and real WSL;
   // these distribution scripts do not change the Unix Rust build.
-  "scripts/{install-windows,test-install-windows,test-windows-wsl}.ps1": [],
-  "scripts/test-windows-mcp.py": [],
-  "scripts/test-windows-terminal.py": [],
+  "scripts/install-windows.ps1": [],
+  "install/{test-install-windows,test-windows-wsl}.ps1": [],
+  "install/test-windows-{mcp,terminal}.py": [],
+  // The install-surface guard's entrypoint; the installers and the tests it
+  // drives stay unrouted, so a change to them still requests every lane.
+  "install/test.sh": [],
   // Tools code runs in the lanes whose builds import it.
   "tools/**": [],
   // Passive maintainer task exports/configuration are not product inputs.

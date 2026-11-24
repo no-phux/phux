@@ -2,7 +2,7 @@
 # Dependency-free installer/launcher contract tests (PowerShell 5.1 and 7).
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-$installer = Join-Path $PSScriptRoot 'install-windows.ps1'
+$installer = Join-Path (Join-Path $root 'scripts') 'install-windows.ps1'
 $work = Join-Path ([IO.Path]::GetTempPath()) ('phux-windows-test-' + [Guid]::NewGuid().ToString('N'))
 $originalOS = $env:OS
 
