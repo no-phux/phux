@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.2](https://github.com/no-phux/phux/compare/opencode-plugin-v0.11.1...opencode-plugin-v0.11.2) (2026-11-24)
+
+
+### Documentation
+
+* cut the docs by 61%; make CI lanes exactly their recipes ([#2899](https://github.com/no-phux/phux/issues/2899)) ([1d5a118](https://github.com/no-phux/phux/commit/1d5a118073a10e2456b3f94ccee44d3d53718736))
+
 ## [0.11.1](https://github.com/no-phux/phux/compare/opencode-plugin-v0.11.0...opencode-plugin-v0.11.1) (2026-11-22)
 
 
