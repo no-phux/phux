@@ -31,5 +31,13 @@ message once. Grok idle at its prompt runs no hook, so its mail waits until
 the next one; nothing is typed into the pane. `PHUX_AGENT_REPORTING=0`
 silences it with the lifecycle hook.
 
-Hooks no-op unless `PHUX_TERMINAL_ID` is set, so Grok outside a phux pane
-stays quiet.
+With this plugin installed, `phux chat run NAME -- grok` permits mail-only
+delivery without a pane: the launcher supplies a nonempty `PHUX_CHAT_RECORD`
+and `PHUX_AGENT_ADDRESS`, and pins `PHUX_AGENT_PHUX_BIN` to its own binary.
+The mail hook forwards that environment to `mail hook-context`. An address
+alone does not enable delivery. Chat mail is colleague data, not authoritative
+user instructions; it still waits for the next registered hook, without idle
+wake-up.
+
+Lifecycle hooks no-op unless `PHUX_TERMINAL_ID` is set. Outside a pane,
+mail also stays quiet unless both explicit chat mailbox variables are set.

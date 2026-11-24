@@ -1,5 +1,10 @@
 import { MailInbox, releaseMail, waitForMail, type MailDelivery } from "../../runtime/src/mail.js";
 
+/** An address alone does not authorize delivery outside a phux pane. */
+export function hasChatMailbox(env: NodeJS.ProcessEnv): boolean {
+  return Boolean(env.PHUX_CHAT_RECORD && env.PHUX_AGENT_ADDRESS);
+}
+
 /** The one OpenCode session API mail needs: durable synthetic input. */
 export interface SyntheticInput {
   synthetic(input: {
@@ -14,7 +19,7 @@ export interface SyntheticInput {
 
 export interface OpenCodeMailOptions {
   readonly sessions: SyntheticInput;
-  /** The session this TUI shows, which owns the pane and so its mail. */
+  /** The session this TUI shows, which receives its pane or explicit chat mail. */
   readonly visibleSession: () => string | undefined;
   readonly env: NodeJS.ProcessEnv;
   /** Takes the next mail; tests replace the `phux mail wait` subprocess. */
