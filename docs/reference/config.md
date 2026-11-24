@@ -67,6 +67,7 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `defaults.history-bytes` | `10485760` |
 | `defaults.history-limit` | `50000` |
 | `defaults.keep-awake` | `"off"` |
+| `defaults.lock-size` | `false` |
 | `defaults.mouse` | `true` |
 | `defaults.retain-on-exit` | `false` |
 | `defaults.retain-on-exit-max` | `256` |
@@ -243,6 +244,12 @@ session-name-template = "${cwd-basename}"
 #              desktop and it fits the desktop again
 #   "manual"   keep the current size
 window-size = "smallest"
+
+# Lock the terminal UI's view size when it attaches, as `phux attach
+# --lock-size` does: while it is attached, other clients (a phone, a second
+# laptop) see its panes letterboxed or cropped instead of resizing them.
+# The palette's "Lock view size" / "Unlock view size" switch it live.
+lock-size = false
 
 # Keep the machine from going to sleep by itself while agents are busy:
 #   "off"               never (the default)

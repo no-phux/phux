@@ -42,6 +42,8 @@ pub enum Target {
     Path(String),
     /// Switch the server's keep-awake mode.
     KeepAwake(phux_config::KeepAwake),
+    /// Claim (`true`) or release the view size lock.
+    SizeLock(bool),
 }
 
 /// What the palette lists.

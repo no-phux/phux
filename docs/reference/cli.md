@@ -2142,6 +2142,12 @@ Attach role:
                                   lease of every pane this attach opens, in the
                                   same step as the attach. The previous holder
                                   stays attached. `phux give` hands it back.
+      --lock-size                 Lock this client's view size: while it is
+                                  attached, other clients see its panes
+                                  letterboxed or cropped instead of resizing
+                                  them. `defaults.lock-size = true` makes it the
+                                  default; the palette's "Unlock view size"
+                                  releases it.
 
 Recording:
       --rec <PATH>                Record this session (.cast, .gif, or .apng)

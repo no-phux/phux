@@ -210,8 +210,13 @@ impl Desk {
             Event::StatusChanged(_)
             | Event::TopologyChanged
             | Event::OrganizationChanged
-            | Event::BackgroundWork { .. }
-            | Event::Attached { .. } => true,
+            | Event::BackgroundWork { .. } => true,
+            Event::Attached { .. } => {
+                if self.connection.size_locked {
+                    self.claim_size_lock(true);
+                }
+                true
+            }
             other => self.apply_document_subscription(client, other),
         }
     }

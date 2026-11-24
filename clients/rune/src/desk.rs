@@ -72,6 +72,7 @@ mod screenshot;
 mod sessions;
 mod settings;
 mod shown;
+mod size_lock;
 mod splits;
 pub mod surfaces;
 mod tabs;
