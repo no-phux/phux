@@ -341,7 +341,7 @@ impl TerminalCreate {
                     .map(|(key, value)| (key.clone(), value.clone()))
                     .collect(),
             );
-        validate_terminal_launch(&launch)?;
+        launch.validate_terminal()?;
         if self.name.as_ref().is_some_and(|name| {
             name.trim().is_empty() || name.len() > MAX_TERMINAL_NAME_BYTES || name.contains('\0')
         }) {
@@ -394,45 +394,6 @@ impl TerminalPlacement {
             }
         }
     }
-}
-
-/// Shared launch validation, enforced again by the executing server for placed creation.
-///
-/// # Errors
-/// Oversized lists, embedded NULs or overrides of private routing/bootstrap variables.
-pub fn validate_terminal_launch(launch: &crate::wire::frame::LaunchSpec) -> Result<(), String> {
-    if launch.command.first().is_some_and(String::is_empty) {
-        return Err("argv[0] must not be empty".into());
-    }
-    if launch
-        .cwd
-        .as_ref()
-        .is_some_and(|cwd| !std::path::Path::new(cwd).is_absolute())
-    {
-        return Err("cwd must be an absolute directory on the executing server".into());
-    }
-    if launch.command.len() > MAX_TERMINAL_ITEMS || launch.env.len() > MAX_TERMINAL_ITEMS {
-        return Err("argv and env are limited to 256 items".into());
-    }
-    if launch
-        .command
-        .iter()
-        .chain(launch.cwd.iter())
-        .any(|value| value.contains('\0'))
-    {
-        return Err("argv and cwd must not contain NUL".into());
-    }
-    launch.env.iter().try_for_each(validate_environment_pair)
-}
-
-fn validate_environment_pair((key, value): &(String, String)) -> Result<(), String> {
-    if key.is_empty() || key.contains(['=', '\0']) || value.contains('\0') {
-        return Err("invalid environment key or value".into());
-    }
-    if key.starts_with("PHUX_") || key == "TERM" {
-        return Err("PHUX_ and TERM environment variables are server-owned".into());
-    }
-    Ok(())
 }
 
 /// Parse an exact 16-byte hexadecimal identity, accepting either case.
@@ -499,6 +460,42 @@ pub fn terminal_created_schema() -> serde_json::Value {
 #[allow(clippy::unwrap_used, reason = "decode assertions")]
 mod tests {
     use super::{ExecutionOutcome, ExecutionState};
+
+    #[test]
+    fn terminal_create_projects_launch_fields_without_loss() {
+        use crate::wire::frame::{Command, ExitPolicy, LaunchMode};
+        let mut request = super::TerminalCreate::new(
+            crate::ids::SessionKey::new([1; 16]).unwrap().to_string(),
+            "02020202020202020202020202020202",
+        );
+        request.argv = vec!["sh".into(), "-c".into(), "printf hello".into()];
+        request.cwd = Some(std::env::temp_dir().to_string_lossy().into_owned());
+        request.env.insert("LANG".into(), "C".into());
+        request.name = Some("worker".into());
+        let Command::ResourceCreate {
+            launch: Some(launch),
+            name,
+            on_exit,
+            launch_mode,
+            ..
+        } = request.command().unwrap()
+        else {
+            panic!("terminal create command");
+        };
+        assert_eq!(launch.command, request.argv);
+        assert_eq!(launch.cwd, request.cwd);
+        assert_eq!(launch.env, vec![("LANG".into(), "C".into())]);
+        assert_eq!(launch.term, None);
+        assert_eq!(launch.restore, None);
+        assert_eq!(name, request.name);
+        assert_eq!(on_exit, ExitPolicy::Retain);
+        assert_eq!(launch_mode, LaunchMode::Immediate);
+        request.argv = vec![String::new()];
+        assert!(request.command().is_err());
+        request.argv.clear();
+        request.env.insert("TERM".into(), "xterm".into());
+        assert!(request.command().is_err());
+    }
 
     #[test]
     fn unknown_execution_values_decode_without_a_schema_bump() {

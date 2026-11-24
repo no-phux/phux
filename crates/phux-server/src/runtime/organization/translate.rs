@@ -508,7 +508,7 @@ fn creation_activation(
 }
 
 fn validate_placed_launch(launch: &phux_protocol::wire::frame::LaunchSpec) -> Result<(), String> {
-    phux_protocol::api::validate_terminal_launch(launch)?;
+    launch.validate_terminal()?;
     if let Some(cwd) = &launch.cwd {
         let cwd = std::path::Path::new(cwd);
         if !cwd.is_absolute()

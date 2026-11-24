@@ -106,6 +106,46 @@ impl LaunchSpec {
         fn with_term(term: Option<String>) => term;
         fn with_restore(restore: Option<Vec<u8>>) => restore;
     }
+
+    /// Validate terminal launch values without filesystem or authority checks.
+    /// Empty command selects the default shell. Paths use the executing OS's
+    /// absolute-path rules; existence and enterability belong to the host.
+    ///
+    /// # Errors
+    /// Oversized lists, invalid argv/cwd or environment overrides of private
+    /// routing/bootstrap variables.
+    pub fn validate_terminal(&self) -> Result<(), String> {
+        if self.command.first().is_some_and(String::is_empty) {
+            return Err("argv[0] must not be empty".into());
+        }
+        if self
+            .cwd
+            .as_ref()
+            .is_some_and(|cwd| !std::path::Path::new(cwd).is_absolute())
+        {
+            return Err("cwd must be an absolute directory on the executing server".into());
+        }
+        if self.command.len() > super::MAX_LAUNCH_LIST || self.env.len() > super::MAX_LAUNCH_LIST {
+            return Err("argv and env are limited to 256 items".into());
+        }
+        if self
+            .command
+            .iter()
+            .chain(self.cwd.iter())
+            .any(|value| value.contains('\0'))
+        {
+            return Err("argv and cwd must not contain NUL".into());
+        }
+        for (key, value) in &self.env {
+            if key.is_empty() || key.contains(['=', '\0']) || value.contains('\0') {
+                return Err("invalid environment key or value".into());
+            }
+            if key.starts_with("PHUX_") || key == "TERM" {
+                return Err("PHUX_ and TERM environment variables are server-owned".into());
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Which records a `GET_ORGANIZATION` page lists.
