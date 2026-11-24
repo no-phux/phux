@@ -303,3 +303,44 @@ fn a_grey_failed_tone_never_greys_out_the_verb() {
         assert_eq!(system(dark).danger_button(), ButtonVariant::Danger);
     }
 }
+
+/// A focused pane's rim opens at `border.control`: on a black ground its
+/// lift casts no visible shadow, so the rim alone must say which pane has
+/// the keys. That edge clears 3:1 on the ground in both house looks and in
+/// a black theme; a resting rim's `border.base` does not.
+#[test]
+fn a_focused_pane_rim_reads_without_its_shadow() {
+    let lut = phux_design::Params::house().srgb_lut;
+    let black = Tokens::resolve(&Inputs {
+        theme: Some(VANTABLACK),
+        ..Inputs::system(true)
+    });
+    for t in [system(true), system(false), black] {
+        let ground = t.roles.layer.ground.rgb();
+        let b = &t.roles.border;
+        let contrast = |c: phux_design::Rgb8| phux_design::solve::contrast(c, ground, lut);
+        assert!(contrast(b.control.rgb()) >= 3.0);
+        assert!(contrast(phux_design::solve::over(b.base, ground)) < 3.0);
+    }
+}
+
+/// A grey accent quieter than dim text would make every emphasis (a
+/// palette match, an accent icon) the dimmest ink on screen, so it takes
+/// body text; a hued accent keeps its ink.
+#[test]
+fn a_grey_accent_never_dims_what_it_emphasises() {
+    let black = Tokens::resolve(&Inputs {
+        theme: Some(VANTABLACK),
+        ..Inputs::system(true)
+    });
+    assert_eq!(black.roles.accent.accent_text, black.roles.text.text);
+    for dark in [true, false] {
+        let house = system(dark);
+        assert_eq!(
+            house.roles.accent.accent_text,
+            Roles::house(if dark { Mode::Dark } else { Mode::Light })
+                .accent
+                .accent_text
+        );
+    }
+}

@@ -1,8 +1,8 @@
 //! The collapsed rail (`[sidebar] rail`): what the strip keeps while hidden.
 //!
 //! [`RAIL_WIDTH`] columns: an outer marker column, the glyph column, and the
-//! separator rule. Top to bottom: how many agents need you (opens the agent
-//! fleet), one dot per session in the colour its Sessions row draws (the
+//! separator rule. Top to bottom: how many agents need you, `●2` across the
+//! two columns (opens the agent fleet), one dot per session in the colour its Sessions row draws (the
 //! active session marked on the outer column), an overflow mark (opens the
 //! session picker), and the expand chevron on the last row
 //! (`toggle-sidebar`). It speaks the strip's [`SidebarRow`] vocabulary, so a
@@ -96,7 +96,18 @@ impl SidebarPainter {
                 break;
             }
             let (glyph, style) = match row {
-                SidebarRow::NeedsYouHeader => self.agents_badge(),
+                SidebarRow::NeedsYouHeader => {
+                    let (count, style) = self.agents_badge();
+                    // `●1`, as the status bar counts them: a bare digit
+                    // could count anything, and in a grey theme the tone
+                    // alone does not say needs you.
+                    if marks && count != "0" {
+                        let mark =
+                            crate::render::chrome::mark(&self.theme, phux_design::State::NeedsYou);
+                        set(&mut buf, outer_x, y, mark, self.theme.agent_blocked);
+                    }
+                    (count, style)
+                }
                 SidebarRow::RosterEntry(j) => {
                     let Some(session) = self.roster.get(j) else {
                         continue;

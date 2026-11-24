@@ -35,6 +35,11 @@ fn the_rail_keeps_the_badge_and_a_dot_per_session() {
     let rect = r(0, 0, RAIL_WIDTH, 8);
     let buf = p.compose_buffer(rect, SidebarRule::Trailing, &[]);
     assert_eq!(buf[(1, 0)].symbol(), "1", "one agent needs you");
+    assert_eq!(
+        buf[(0, 0)].symbol(),
+        "\u{25cf}",
+        "counted as the status bar does"
+    );
     for y in 2..5 {
         assert_ne!(buf[(1, y)].symbol(), " ", "session dot on row {y}");
     }
@@ -106,5 +111,6 @@ fn a_short_rail_keeps_the_active_session() {
     p.set_roster((0..8).map(|i| roster(&format!("s{i}"), 0, 0, 0)).collect());
     let buf = p.compose_buffer(r(0, 0, RAIL_WIDTH, 6), SidebarRule::Trailing, &[]);
     assert_eq!(buf[(1, 0)].symbol(), "0", "nothing needs you");
+    assert_eq!(buf[(0, 0)].symbol(), " ", "and no needs-you mark");
     assert_eq!(buf[(1, 4)].symbol(), OVERFLOW_MARK);
 }
