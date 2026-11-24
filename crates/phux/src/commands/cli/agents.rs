@@ -365,6 +365,32 @@ pub(crate) struct AskArgs {
     pub(crate) question: String,
 }
 
+/// Offer a list in the attached client and print the choice.
+#[derive(Debug, Args)]
+#[usage(
+    about = "Offer a list in the attached client and print the choice",
+    long_about = "Offer a list and print the item chosen.\n\n\
+            Items are the arguments, else stdin's lines. The list is drawn on this \
+            terminal, where you type an item or its number and Enter. Inside a phux \
+            pane it is also raised as a `phux-ask` question, so a client's question \
+            card (or `phux agent answer`) can answer it; at most 16 items go to the \
+            card. The choice is printed on stdout and the exit code is 0; Escape, \
+            Ctrl-C or Ctrl-D cancel with exit 1. With no terminal (/dev/tty) it \
+            exits 2.\n\n\
+            Examples:\n  \
+            git branch --format='%(refname:short)' | phux pick --prompt Branch\n  \
+            host=$(phux pick mini macbook powerhouse-1)"
+)]
+pub(crate) struct PickArgs {
+    /// The question shown above the list.
+    #[usage(long, default = "Pick one", value_name = "TEXT")]
+    pub(crate) prompt: String,
+
+    /// Items to choose from. Omit to read one per line from stdin.
+    #[usage(trailing_var_arg)]
+    pub(crate) items: Vec<String>,
+}
+
 /// See and drive the agents running in panes
 ///
 /// Inference (`list`/`show`/`explain`) reports the agent phux infers is

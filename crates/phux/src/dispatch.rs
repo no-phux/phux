@@ -105,6 +105,7 @@ pub(crate) fn dispatch(
         Some(Command::Rec(args)) => commands::rec::run(args, socket),
         Some(Command::Play(args)) => commands::play::run(args, socket),
         Some(Command::Ask(args)) => commands::ask::run(args, socket),
+        Some(Command::Pick(args)) => commands::pick::run(args),
         Some(Command::Agent(args)) => commands::agent::run(args, socket),
         Some(Command::Run(args)) => commands::run::run(args, socket),
         Some(Command::Config(args)) => commands::config::run_config(&args.action, socket),
