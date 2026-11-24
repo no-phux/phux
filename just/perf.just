@@ -139,4 +139,4 @@ perf-icount *ARGS:
 [group('perf')]
 [doc('Dependency-graph stats without compiling: counts, duplicates, proc-macros.')]
 dep-stats:
-    bash scripts/ci/dep-stats.sh
+    bash dev/dep-stats.sh

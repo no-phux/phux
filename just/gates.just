@@ -156,7 +156,7 @@ shellcheck:
       clients/rune/upstream/*.sh clients/phux-vt-web/scripts/*.sh \
       examples/agents/*.sh \
       examples/agents/orchestrate-placed-fleet examples/agents/record-pi-live-fleet examples/agents/tests/*.sh \
-      plugins/*/scripts/*.sh
+      plugins/*/scripts/*.sh plugins/index/*.sh benchmarks/*/*.sh
 
 
 # The tools package (build and CI logic, ADR-0184): format, types, lint, tests.
