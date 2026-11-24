@@ -33,9 +33,11 @@ console.log(${JSON.stringify(JSON.stringify(reply))});
         PHUX_BIN: "/missing/not-the-hook-binary",
         TEST_LOG: log,
       };
+      // These probes inspect dispatch, not hook payloads. Short-circuiting
+      // hooks may exit before reading stdin; do not race an unused pipe write.
       const run = (script, event, extra = {}) => execFileSync("sh", [
         fileURLToPath(new URL(`../../${provider}/scripts/${script}`, import.meta.url)), event,
-      ], { env: { ...env, ...extra }, input: "{}", encoding: "utf8" });
+      ], { env: { ...env, ...extra }, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8" });
       const events = provider === "claude"
         ? ["SessionStart", "UserPromptSubmit", "PostToolUse", "PostToolUseFailure", "Stop"]
         : ["PostToolUse", "PostToolUseFailure", "Stop"];
