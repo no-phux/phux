@@ -1,7 +1,10 @@
 import { parseArgs } from "node:util";
 import { type Command } from "../lib/command.ts";
 import { report } from "../lib/expect.ts";
+import { status } from "../lib/output.ts";
+import { ROOT } from "../lib/repo.ts";
 import { readGraphs, violations } from "./build-features.ts";
+import { checkGhosttyPin } from "./ghostty-pin.ts";
 import {
   configViolations,
   lockFileViolations,
@@ -35,5 +38,12 @@ export const commands: Record<string, Command> = {
     summary: "Check production dependency feature boundaries from `cargo tree` (compile-free).",
     run: () =>
       report(violations(readGraphs()), "production feature and host/engine boundaries hold"),
+  },
+  "ghostty-pin": {
+    summary: "Verify the libghostty-vt engine pin and report its prebuilt coverage (network).",
+    async run() {
+      await checkGhosttyPin({ root: ROOT, fetch, log: status, token: process.env["GH_TOKEN"] });
+      return 0;
+    },
   },
 };

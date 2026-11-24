@@ -385,7 +385,7 @@ test("Apple qualification grants no signing, release or provisioning authority",
 test("ci rejects a failed or cancelled native queue dependency", () => {
   const script = run(
     steps(job(workflow("ci.yml"), "ci")).find((step) =>
-      run(step).includes("scripts/ci/ci-aggregate.sh"),
+      run(step).includes(".github/scripts/ci-aggregate.sh"),
     ) ?? {},
   );
   expect(needs(job(workflow("ci.yml"), "ci"))).toContain("queue-apple");

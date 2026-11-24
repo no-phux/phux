@@ -70,7 +70,6 @@ const PERF_ICOUNT_PATHS = [
   "{Cargo.toml,Cargo.lock,rust-toolchain.toml,flake.nix,flake.lock}",
   ".cargo/**",
   "benchmarks/icount-baseline.json",
-  "scripts/ci/perf-icount.sh",
   "tools/src/{perf,lib}/**",
   "tools/main.ts",
   "just/perf.just",

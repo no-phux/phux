@@ -69,7 +69,7 @@ function sweep(entries: unknown[], args: string[] = [], failList = false) {
         ...process.env,
         GH_TOKEN: "",
         GITHUB_REPOSITORY: "fixture/repo",
-        SCRIPT: repoPath("scripts/ci/prune-build-cache.sh"),
+        SCRIPT: repoPath(".github/scripts/prune-build-cache.sh"),
         ENTRIES: join(dir, "entries"),
         DELETES: join(dir, "deletes"),
         REQUESTS: join(dir, "requests"),

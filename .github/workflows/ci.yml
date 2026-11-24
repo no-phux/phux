@@ -127,7 +127,7 @@ jobs:
       - &mbx-export-headroom
         name: leave disk for the mbx objects export
         if: steps.lane.outputs.cache-save-eligible == 'true' && steps.lane.outputs.cache-hit != 'true'
-        run: bash scripts/ci/mbx-export-headroom.sh
+        run: bun tools/main.ts mbx-export-headroom
 
   # One compile of the test profile, archived for the tests and e2e jobs. The
   # mbx store lets a PR recompile only the crates its diff reaches.
@@ -423,7 +423,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           DRAFT: ${{ github.event.pull_request.draft }}
           RECEIPT: ${{ needs.plan.outputs.receipt }}
-        run: bash scripts/ci/ci-aggregate.sh
+        run: bash .github/scripts/ci-aggregate.sh
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: needs.plan.result == 'success' && (github.event_name == 'pull_request' || github.event_name == 'merge_group')
         with:
@@ -463,4 +463,4 @@ jobs:
           persist-credentials: false
       - env:
           GH_TOKEN: ${{ github.token }}
-        run: bash scripts/ci/prune-build-cache.sh
+        run: bash .github/scripts/prune-build-cache.sh

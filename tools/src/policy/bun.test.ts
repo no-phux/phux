@@ -20,8 +20,7 @@ import {
 } from "./workflows.ts";
 
 const ACTIONS = readdirSync(repoPath(".github/actions")).filter((name) => name !== "setup-bun");
-// scripts/ci/mbx-export-headroom.sh runs `bun tools/main.ts` itself.
-const CALLS_TOOLS = /(^|[\s;(])bun tools\/main\.ts|scripts\/ci\/mbx-export-headroom\.sh/m;
+const CALLS_TOOLS = /(^|[\s;(])bun tools\/main\.ts/m;
 
 /** setup-bun, or setup-rust-lane's mbx variant, which puts the devshell's Bun on PATH. */
 function providesBun(step: Table): boolean {

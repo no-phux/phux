@@ -3,10 +3,12 @@ import { parseArgs } from "node:util";
 import { formatOutputs, writeOutputs } from "../lib/actions.ts";
 import { describe, Failure, UsageError, type Command } from "../lib/command.ts";
 import { git } from "../lib/git.ts";
+import { hint, status } from "../lib/output.ts";
 import { inherit } from "../lib/process.ts";
 import { ROOT } from "../lib/repo.ts";
 import { Classifier, toOutputs, type Classification } from "./classify.ts";
 import { classifyDetection, classifyEvent, detect, diffPaths, type Detection } from "./detect.ts";
+import { laneCoverage } from "./e2e-lanes.ts";
 import { checkMerge } from "./merge-check.ts";
 import {
   CI_ONLY,
@@ -93,6 +95,22 @@ function validatedPush(event: string, repository: string, receipt: Receipt): boo
 }
 
 export const commands: Record<string, Command> = {
+  "e2e-lanes": {
+    summary: "Fail when an *_e2e.rs suite has #[ignore]d tests that no lane runs (compile-free).",
+    run() {
+      const { checked, uncovered } = laneCoverage(ROOT);
+      for (const { message, hints } of uncovered) {
+        status("error", message);
+        for (const line of hints) {
+          if (line === "") process.stderr.write("\n");
+          else hint(line);
+        }
+      }
+      if (uncovered.length > 0) return 1;
+      status("ok", `e2e lane coverage: ${checked} e2e suites, all reachable`);
+      return 0;
+    },
+  },
   classify: {
     summary: "Route changed paths (one per line on stdin, or a git range) to CI surfaces.",
     usage: "[--since REV [--until REV]]",

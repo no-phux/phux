@@ -77,7 +77,7 @@ test: worktree-claim && (worktree-verify "test")
 [group('test')]
 [doc('Run every unit test to the end and report only unexplained failures.')]
 test-report *ARGS: worktree-claim && (worktree-verify "test-report")
-    PHUX_TEST_FEATURES='{{TEST_FEATURES}}' bash scripts/test-report.sh {{ARGS}}
+    PHUX_TEST_FEATURES='{{TEST_FEATURES}}' bash dev/test-report.sh {{ARGS}}
 
 
 # `phux-server/measure` builds the e2e lane's `perf` target, which a
@@ -109,7 +109,7 @@ test-archive: worktree-claim
         targets+=(--test "$bin")
       done
       if [[ "${PHUX_E2E:-true}" == "true" ]]; then
-        source scripts/lib/e2e-selection.sh
+        source dev/lib/e2e-selection.sh
         e2e_select
         targets+=("${e2e_targets[@]}")
       fi
@@ -121,7 +121,7 @@ test-archive: worktree-claim
 # Fast e2e + perf gates (every PR). #[ignore]d out of `just test`; serial +
 # retries because these spin a real server+PTY. Keep --workspace so the
 # feature union matches `test` (a `-p` selection recompiles tokio). Filterset
-# names binaries; `scripts/check-e2e-lanes.sh` (in `just guards`) fails if an ignored *_e2e.rs is in
+# names binaries; `bun tools/main.ts e2e-lanes` (in `just guards`) fails if an ignored *_e2e.rs is in
 # no lane. Flag-stability story: CONTRIBUTING.md.
 #
 # The `--test` targets limit a local build to the binaries the filtersets
@@ -135,7 +135,7 @@ test-archive: worktree-claim
 e2e: worktree-claim && (worktree-verify "e2e")
     #!/usr/bin/env bash
     set -euo pipefail
-    source scripts/lib/e2e-selection.sh
+    source dev/lib/e2e-selection.sh
     e2e_select
     if [[ -n "${PHUX_TEST_ARCHIVE:-}" ]]; then
       source=(--archive-file "$PHUX_TEST_ARCHIVE" --workspace-remap "{{justfile_directory()}}")
