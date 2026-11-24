@@ -5,6 +5,7 @@ import { describe, Failure, UsageError, type Command } from "../lib/command.ts";
 import { git } from "../lib/git.ts";
 import { inherit } from "../lib/process.ts";
 import { ROOT } from "../lib/repo.ts";
+import { aggregate, parseResults, writeReceipt } from "./aggregate.ts";
 import { Classifier, toOutputs, type Classification } from "./classify.ts";
 import { classifyDetection, classifyEvent, detect, diffPaths, type Detection } from "./detect.ts";
 import { checkMerge } from "./merge-check.ts";
@@ -92,7 +93,33 @@ function validatedPush(event: string, repository: string, receipt: Receipt): boo
   );
 }
 
+/** The ci job's gate over `toJSON(needs)` in RESULTS; writes RECEIPT on a pass. */
+function ciAggregate(): number {
+  const env = process.env;
+  const text = env["RESULTS"];
+  if (text === undefined || text === "") throw new Failure("RESULTS is required");
+  const results = parseResults(text);
+  if (results === undefined) throw new Failure("RESULTS is not a JSON object of job results");
+  const verdict = aggregate({
+    results,
+    event: env["EVENT_NAME"] ?? "",
+    draft: env["DRAFT"] === "true",
+  });
+  for (const line of verdict.lines) console.log(line);
+  if (!verdict.ok) return 1;
+  const receipt = env["RECEIPT"];
+  if (env["DRAFT"] !== "true" && receipt !== undefined && receipt !== "") {
+    writeReceipt(receipt, env["RUNNER_TEMP"] ?? "");
+  }
+  return 0;
+}
+
 export const commands: Record<string, Command> = {
+  "ci-aggregate": {
+    summary: "The required ci gate: every selected lane passed (RESULTS, EVENT_NAME, DRAFT).",
+    help: "Reads toJSON(needs) from RESULTS; on a pass writes RECEIPT to $RUNNER_TEMP/receipt.",
+    run: ciAggregate,
+  },
   classify: {
     summary: "Route changed paths (one per line on stdin, or a git range) to CI surfaces.",
     usage: "[--since REV [--until REV]]",

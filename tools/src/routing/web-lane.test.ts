@@ -91,7 +91,7 @@ test("the web jobs cache cargo dependencies and save them only from main", () =>
 test("both web halves fail the aggregate on failure or cancellation", () => {
   const gate = run(
     steps(job(workflow("ci.yml"), "ci")).find((step) =>
-      run(step).includes("scripts/ci/ci-aggregate.sh"),
+      run(step).includes("tools/main.ts ci-aggregate"),
     ) ?? {},
   );
   for (const id of ["web-vt", "web-client"]) {
