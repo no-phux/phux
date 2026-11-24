@@ -48,10 +48,12 @@ pub fn pane_label<'a>(
         .or_else(|| folder.map(str::to_owned))
 }
 
-/// `title` as the work a program names, or `None` when it names none: a
-/// shell's prompt title, an ask, a path, `user@host`, or the program's or
-/// folder's own name (`Claude Code` while idle, `opencode`). A spinner or
-/// badge in front (`✳ `, `⠂ `) and a short tag (`OC | `) are dropped.
+/// `title` as the work a program names, or `None` when it names none.
+///
+/// None is a shell's prompt title, an ask, a path, `user@host`, or the
+/// program's or folder's own name (`Claude Code` while idle, `opencode`).
+/// A spinner or badge in front (`✳ `, `⠂ `) and a short tag (`OC | `) are
+/// dropped.
 #[must_use]
 pub fn task_title(title: &str, foreground: Option<&str>, cwd: Option<&str>) -> Option<String> {
     let program = foreground
