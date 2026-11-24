@@ -3,8 +3,8 @@
 # The crate list comes from `cargo metadata`, so a new crate is covered the
 # moment it exists. Usage: check-release-version.sh vX.Y.Z
 set -euo pipefail
-# shellcheck source=scripts/lib/output.sh
-source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
+# shellcheck source=dev/lib/output.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../dev/lib/output.sh"
 
 tag="${1:?usage: check-release-version.sh vX.Y.Z}"
 [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {

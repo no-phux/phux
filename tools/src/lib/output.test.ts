@@ -1,5 +1,5 @@
 // The shared presentation contract for human diagnostics, in every runtime
-// that renders it: scripts/lib/output.sh under each POSIX shell, this
+// that renders it: dev/lib/output.sh under each POSIX shell, this
 // package's output.ts, and scripts/lib/output.mjs while scripts still import it.
 import { describe, expect, test } from "bun:test";
 import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { repoPath } from "./repo.ts";
 
-const HELPER = repoPath("scripts/lib/output.sh");
+const HELPER = repoPath("dev/lib/output.sh");
 const SHELLS = [...new Set(["/bin/sh", "/bin/bash", Bun.which("dash")])].filter(
   (shell): shell is string => shell !== null && existsSync(shell),
 );

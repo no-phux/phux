@@ -29,7 +29,7 @@ def apple_environment(out):
     env["TMPDIR"] = "/tmp"
     result = subprocess.run(
         ["/bin/bash", "-ec", 'source "$1"; env -0', "apple-env",
-         str(REPO / "scripts/lib/apple-toolchain-env.sh")],
+         str(REPO / "dev/lib/apple-toolchain-env.sh")],
         env=env, check=True, capture_output=True, timeout=30,
     )
     return dict(item.decode().split("=", 1) for item in result.stdout.split(b"\0") if item)

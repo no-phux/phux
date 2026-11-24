@@ -152,7 +152,7 @@
 
         # Zig on Linux is the official ziglang.org release, verified against
         # the digests in .config/zig-toolchain.json (the same archives
-        # scripts/install-zig.sh and the site builder install). nixpkgs'
+        # dev/install-zig.sh and the site builder install). nixpkgs'
         # zig_0_16 rebuilt on the GCC 16 / glibc 2.44 stdenv emits corrupt
         # ELF objects: some section symbols come out with st_shndx = SHN_UNDEF,
         # a different random subset on every run. libghostty-vt's compiler_rt.o

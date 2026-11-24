@@ -17,8 +17,8 @@
 # a rehearsal; PHUX_PACKAGES_PUBLIC_KEY (the key the signer must match) and
 # PHUX_PACKAGES_URL (where SITE is served) go with it.
 set -euo pipefail
-# shellcheck source=scripts/lib/output.sh
-source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
+# shellcheck source=dev/lib/output.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../dev/lib/output.sh"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 KEEP=3

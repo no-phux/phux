@@ -4,9 +4,9 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/phux-pin-test.XXXXXX")"
 trap 'rm -rf "$scratch"' EXIT
-mkdir -p "$scratch/repo/scripts/lib" "$scratch/repo/clients/phux-vt-web/scripts" "$scratch/repo/.config" "$scratch/bin"
+mkdir -p "$scratch/repo/scripts" "$scratch/repo/dev/lib" "$scratch/repo/clients/phux-vt-web/scripts" "$scratch/repo/.config" "$scratch/bin"
 cp "$root/scripts/check-ghostty-pin.sh" "$scratch/repo/scripts/"
-cp "$root/scripts/lib/output.sh" "$scratch/repo/scripts/lib/"
+cp "$root/dev/lib/output.sh" "$scratch/repo/dev/lib/"
 cp "$root/.config/zig-toolchain.json" "$scratch/repo/.config/"
 rev=0123456789abcdef0123456789abcdef01234567
 cat >"$scratch/repo/Cargo.lock" <<EOF

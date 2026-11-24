@@ -5,7 +5,7 @@ set -euo pipefail
 
 ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=mbx-target.sh
-. "$ROOT/scripts/lib/mbx-target.sh"
+. "$ROOT/dev/lib/mbx-target.sh"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/mbx-target-test.XXXXXX")"
 trap 'rm -rf -- "$WORK"' EXIT

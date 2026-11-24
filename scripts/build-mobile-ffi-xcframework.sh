@@ -19,8 +19,8 @@
 #          [--profile ffi-release|ffi-dev] [--out DIR] [--skip-smoke]
 
 set -euo pipefail
-# shellcheck source=scripts/lib/output.sh
-source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
+# shellcheck source=dev/lib/output.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../dev/lib/output.sh"
 
 INVOKE_CWD="$PWD"
 ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -92,8 +92,8 @@ trap cleanup EXIT
 die() { phux_error "$*"; exit 1; }
 step() { phux_info "$*"; }
 
-# shellcheck source=scripts/lib/apple-toolchain-env.sh
-source "$ROOT/scripts/lib/apple-toolchain-env.sh"
+# shellcheck source=dev/lib/apple-toolchain-env.sh
+source "$ROOT/dev/lib/apple-toolchain-env.sh"
 export IPHONEOS_DEPLOYMENT_TARGET="$IOS_FLOOR"
 export MACOSX_DEPLOYMENT_TARGET="$MACOS_FLOOR"
 unset RUSTFLAGS CARGO_ENCODED_RUSTFLAGS CARGO_BUILD_RUSTFLAGS

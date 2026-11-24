@@ -88,7 +88,7 @@ bash clients/phux-vt-web/scripts/build-vt-wasm.sh --check  # byte-for-byte regen
 `build.rs` errors with a clear message if the artifact is missing. Follow
 [development: browser client](../../docs/development.md#browser-client) for tool versions,
 source pin maintenance, and local engine development overrides.
-`bash scripts/doctor.sh web` checks tools and artifact presence from the root;
+`bash dev/doctor.sh web` checks tools and artifact presence from the root;
 the tests verify engine ABI compatibility.
 The driver uses 1.0's frozen style/grid-reference/selection layouts and
 option-based formatter. `clients/phux-vt-web/scripts/prepare-vt-wasm.mjs` checks those layouts,

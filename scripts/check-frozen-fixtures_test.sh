@@ -10,9 +10,9 @@ blob=crates/phux-server/src/upgrade/blob.rs
 
 g() { git -C "$WORK" -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@"; }
 
-mkdir -p "$WORK/scripts/lib" "$WORK/$(dirname "$blob")"
+mkdir -p "$WORK/scripts" "$WORK/dev/lib" "$WORK/$(dirname "$blob")"
 cp "$ROOT/scripts/check-frozen-fixtures.sh" "$WORK/scripts/"
-cp "$ROOT/scripts/lib/output.sh" "$WORK/scripts/lib/"
+cp "$ROOT/dev/lib/output.sh" "$WORK/dev/lib/"
 cat >"$WORK/$blob" <<'EOF'
 pub struct Pane {
     pub terminal_id: u64,

@@ -17,7 +17,7 @@ VERSION = "0.2.0"
 SOURCE_REV = "3df118740ae4ad25fc928df0ae3832831c985164"
 SOURCE_SHA256 = "ce781dee84191be150fe1acc8bf7d865fef5ba52354271d5b82b6f7b0592471a"
 MACOS_TARGET = "aarch64-macos.14.0.0"
-# Keep these identical to scripts/zig-mirrors/build.zig.zon (pin-agreement test).
+# Keep these identical to dev/zig-mirrors/build.zig.zon (pin-agreement test).
 ARO_URL = "https://deps.files.ghostty.org/aro-d0c8c4d9c55daa7ef6e40cf0f630a5b5e900989b.tar.gz"
 ARO_HASH = "aro-0.0.0-JSD1QtuBNwCASyBtNF3pqTl_W3oAJQGEVyFAtrBSE_Pa"
 MAX_ARCHIVE_SIZE = 64 * 1024 * 1024

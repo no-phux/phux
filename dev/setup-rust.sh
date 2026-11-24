@@ -5,7 +5,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/dev-toolchain.sh"
 scope="${1:-core}"
 case "$scope" in
     core|native|web|profiling|editor) ;;
-    *) phux_error "usage: bash scripts/setup-rust.sh [core|native|web|profiling|editor]"; exit 2 ;;
+    *) phux_error "usage: bash dev/setup-rust.sh [core|native|web|profiling|editor]"; exit 2 ;;
 esac
 [[ $# -le 1 ]] || exit 2
 command -v rustup >/dev/null 2>&1 || {

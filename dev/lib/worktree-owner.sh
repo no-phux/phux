@@ -6,7 +6,7 @@
 # or the file contents underneath belonged to the other session
 # (phux-cockpit-tnt). Documentation alone did not stop it, so every just recipe
 # that builds, tests or formats the tree takes a lease through
-# `scripts/worktree-lease.sh claim` first (scripts/lib/worktree-owner_test.sh holds the
+# `dev/worktree-lease.sh claim` first (dev/lib/worktree-owner_test.sh holds the
 # wired list and fails when one loses its claim):
 #
 #   - The lease lives in the worktree's OWN git dir (`git rev-parse

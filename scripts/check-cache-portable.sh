@@ -16,8 +16,8 @@
 # Allowed: bin targets and examples, which are leaves. insta's snapshot macros
 # expand env!("CARGO_MANIFEST_DIR") themselves and are not matched here.
 set -euo pipefail
-# shellcheck source=scripts/lib/output.sh
-source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
+# shellcheck source=dev/lib/output.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../dev/lib/output.sh"
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 if hits="$(git grep -n -E 'env!\("(CARGO_MANIFEST_DIR|CARGO_BIN_EXE_[^"]+)"\)' -- \

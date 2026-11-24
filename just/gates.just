@@ -45,7 +45,7 @@ guards: brand-check shellcheck tools-check docs-check install-surface-check
     bash scripts/check-frozen-fixtures_test.sh
     bash scripts/check-e2e-lanes.sh
     bash scripts/check-release-cpu-baselines.sh
-    bash scripts/lib/worktree-owner_test.sh
+    bash dev/lib/worktree-owner_test.sh
     node --test scripts/test-npm-audit-gate.mjs
     bash examples/agents/tests/placed-fleet-smoke.sh
     bash examples/agents/tests/program-status-smoke.sh
@@ -80,7 +80,7 @@ integration-check PACKAGE: worktree-claim
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{PACKAGE}}" in runtime|opencode-v2|omp|pi|claude|grok|muse) ;; *) echo 'choose runtime, opencode-v2, omp, pi, claude, grok, or muse' >&2; exit 2 ;; esac
-    bash scripts/doctor.sh integrations
+    bash dev/doctor.sh integrations
     # Incidental install audits are off; the explicit audit inside each
     # package's gates script still runs.
     export npm_config_audit=false npm_config_fund=false
@@ -152,7 +152,7 @@ deny:
 # nits (sourced libs shellcheck cannot follow) that are correct as written.
 [group('gates')]
 shellcheck:
-    shellcheck --severity=warning scripts/*.sh scripts/lib/*.sh scripts/ci/*.sh \
+    shellcheck --severity=warning dev/*.sh dev/lib/*.sh scripts/*.sh scripts/lib/*.sh scripts/ci/*.sh \
       clients/rune/upstream/*.sh clients/phux-vt-web/scripts/*.sh \
       examples/agents/*.sh \
       examples/agents/orchestrate-placed-fleet examples/agents/record-pi-live-fleet examples/agents/tests/*.sh \
@@ -196,25 +196,25 @@ install-surface-check:
 
 # Lease this worktree to the running agent session, or refuse (exit 3) when
 # another live session holds it (AGENTS.md "Worktree Isolation"). Human shells
-# and CI are never checked. scripts/lib/worktree-owner_test.sh holds the list
+# and CI are never checked. dev/lib/worktree-owner_test.sh holds the list
 # of recipes that depend on it.
 [private]
 worktree-claim:
-    @bash scripts/worktree-lease.sh claim
+    @bash dev/worktree-lease.sh claim
 
 
 # After a long run (`test`, `e2e`): fail (exit 3) when HEAD moved or the lease
 # changed hands since the claim, so a straddled run is not a green.
 [private]
 worktree-verify CALLER:
-    @bash scripts/worktree-lease.sh verify "{{CALLER}}"
+    @bash dev/worktree-lease.sh verify "{{CALLER}}"
 
 
 # Drop this agent session's worktree lease when handing the worktree on.
 [group('setup')]
 [doc("Release this agent session's worktree lease for the next session.")]
 worktree-release:
-    @bash scripts/worktree-lease.sh release worktree-release
+    @bash dev/worktree-lease.sh release worktree-release
 
 # Verify committed branding without accessing the private source library.
 [group('gates')]

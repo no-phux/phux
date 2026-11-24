@@ -56,8 +56,8 @@ runs:
     - name: Toolchains
       shell: bash
       run: |
-        bash scripts/setup-rust.sh core
-        bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
+        bash dev/setup-rust.sh core
+        bash dev/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
     # Cold, a leg compiled Rune's graph three ways (clippy, test, release)
     # plus the root `phux` CLI: 15 to 18 minutes (run 41886269436). The
     # third-party artifacts of both workspaces are kept; saves come from
@@ -160,7 +160,7 @@ runs:
             zig version
             curl --disable --version
             shasum -a 256 clients/rune/scripts/bundle_tmd.py \
-              scripts/zig-mirrors/build.zig.zon .config/zig-toolchain.json
+              dev/zig-mirrors/build.zig.zon .config/zig-toolchain.json
           } > "$evidence/context.log" 2>&1
           ditto -x -k "$archive" "$unpack"
           app="$unpack/Phux Rune.app"

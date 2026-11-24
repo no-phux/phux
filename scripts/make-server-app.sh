@@ -13,8 +13,8 @@
 # bundle into OUT_DIR/phux-server-ID-TARGET.tar.gz plus its .sha256, the
 # asset the installer and `phux update` install beside the CLI.
 set -euo pipefail
-# shellcheck source=scripts/lib/output.sh
-source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
+# shellcheck source=dev/lib/output.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../dev/lib/output.sh"
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 app_name="phux Server.app"

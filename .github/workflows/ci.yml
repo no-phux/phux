@@ -376,12 +376,12 @@ jobs:
       - run: |
           sudo apt-get update
           sudo apt-get install -y build-essential pkg-config mold curl xz-utils
-      - run: bash scripts/test-dev-setup.sh
+      - run: bash dev/test-dev-setup.sh
       - run: |
-          bash scripts/setup-rust.sh native
-          bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
+          bash dev/setup-rust.sh native
+          bash dev/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
       # `just native-smoke`, without installing just.
-      - run: bash scripts/native-smoke.sh
+      - run: bash dev/native-smoke.sh
 
   # Fast-path PRs skip packaging and the second Linux host.
   rune:

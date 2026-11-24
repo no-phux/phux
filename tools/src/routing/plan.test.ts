@@ -148,24 +148,24 @@ describe("native setup and rust icount", () => {
       "crates/**/*.h",
       "crates/**/*.ld",
       "crates/**/*.lds",
-      "scripts/test-dev-setup.sh",
-      "scripts/setup-rust.sh",
-      "scripts/install-zig.sh",
-      "scripts/native-smoke.sh",
-      "scripts/test-env-runner.sh",
-      "scripts/doctor.sh",
+      "dev/test-dev-setup.sh",
+      "dev/setup-rust.sh",
+      "dev/install-zig.sh",
+      "dev/native-smoke.sh",
+      "dev/test-env-runner.sh",
+      "dev/doctor.sh",
       "scripts/check-docs.sh",
       "clients/phux-vt-web/scripts/build-vt-wasm.sh",
-      "scripts/zig-mirrors/build.zig",
-      "scripts/zig-mirrors/build.zig.zon",
+      "dev/zig-mirrors/build.zig",
+      "dev/zig-mirrors/build.zig.zon",
       "clients/phux-vt-web/scripts/prepare-vt-wasm.mjs",
       "clients/phux-vt-web/scripts/smoke-vt-wasm.mjs",
       "scripts/check-ghostty-pin.sh",
       "scripts/check-ghostty-pin_test.sh",
-      "scripts/lib/dev-toolchain.sh",
-      "scripts/lib/output.sh",
-      "scripts/lib/apple-toolchain-env.sh",
-      "scripts/lib/mbx-target.sh",
+      "dev/lib/dev-toolchain.sh",
+      "dev/lib/output.sh",
+      "dev/lib/apple-toolchain-env.sh",
+      "dev/lib/mbx-target.sh",
     ]);
     expect([...ICOUNT_PR_PATHS]).toEqual([
       "benchmarks/icount-baseline.json",
@@ -191,7 +191,7 @@ describe("native setup and rust icount", () => {
       "Cargo.toml",
       ".cargo/config.toml",
       ".cargo/nested/config.toml",
-      "scripts/test-env-runner.sh",
+      "dev/test-env-runner.sh",
     ]) {
       expect(lanes([path], "pull_request")).toContain("native");
     }
@@ -218,15 +218,15 @@ describe("native setup and rust icount", () => {
   });
 
   test("a pull request that changes a native-setup input runs native setup only", () => {
-    const chosen = lanes(["scripts/install-zig.sh"], "pull_request");
+    const chosen = lanes(["dev/install-zig.sh"], "pull_request");
     expect(chosen).toContain("native");
     expect(chosen).not.toContain("icount");
-    expect(lanes(["scripts/setup-rust.sh"], "pull_request")).toContain("native");
-    expect(lanes(["scripts/lib/dev-toolchain.sh"], "pull_request")).toContain("native");
-    expect(lanes(["scripts/lib/mbx-target.sh"], "pull_request")).toContain("native");
+    expect(lanes(["dev/setup-rust.sh"], "pull_request")).toContain("native");
+    expect(lanes(["dev/lib/dev-toolchain.sh"], "pull_request")).toContain("native");
+    expect(lanes(["dev/lib/mbx-target.sh"], "pull_request")).toContain("native");
   });
 
-  test.each(["scripts/zig-mirrors/build.zig", "scripts/zig-mirrors/build.zig.zon"])(
+  test.each(["dev/zig-mirrors/build.zig", "dev/zig-mirrors/build.zig.zon"])(
     "a fast-path pull request changing only %s runs native setup and the web engine",
     (path) => {
       const c = classifier.classify([path]);

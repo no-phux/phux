@@ -200,7 +200,7 @@ e2e-repro: worktree-claim
 [group('test')]
 [doc('Hermetic argv and control-flow gate for the placed-fleet example.')]
 agents-fleet-smoke: worktree-claim
-    bash scripts/test-env-runner.sh --all bash examples/agents/tests/placed-fleet-smoke.sh
+    bash dev/test-env-runner.sh --all bash examples/agents/tests/placed-fleet-smoke.sh
 
 
 # Also exercised by automation_e2e from CI's same-checkout test archive.
@@ -208,7 +208,7 @@ agents-fleet-smoke: worktree-claim
 [doc('Build the checkout CLI and execute every introductory agent example.')]
 examples-smoke: worktree-claim && (worktree-verify "examples-smoke")
     cargo build --locked -p phux --bin phux
-    PHUX="{{justfile_directory()}}/target/debug/phux" bash scripts/test-env-runner.sh --all bash examples/agents/tests/examples-smoke.sh
+    PHUX="{{justfile_directory()}}/target/debug/phux" bash dev/test-env-runner.sh --all bash examples/agents/tests/examples-smoke.sh
 
 
 # Real isolated server dogfood for placement/layout/watch/ask with shell panes;
@@ -219,7 +219,7 @@ examples-smoke: worktree-claim && (worktree-verify "examples-smoke")
 agents-fleet-live: worktree-claim
     cargo build -p phux
     PHUX="{{justfile_directory()}}/target/debug/phux" \
-      bash scripts/test-env-runner.sh --all bash examples/agents/tests/placed-fleet-live.sh
+      bash dev/test-env-runner.sh --all bash examples/agents/tests/placed-fleet-live.sh
 
 
 # Run the checked-in plugin package through the same discover/validate/run
@@ -231,7 +231,7 @@ plugin-demo: worktree-claim
     set -euo pipefail
     export XDG_CONFIG_HOME="{{justfile_directory()}}/plugins/agent-tools/config"
     cargo build --locked -p phux --bin phux
-    demo() { bash scripts/test-env-runner.sh --all "${CARGO_TARGET_DIR:-target}/debug/phux" "$@"; }
+    demo() { bash dev/test-env-runner.sh --all "${CARGO_TARGET_DIR:-target}/debug/phux" "$@"; }
     demo config plugins
     demo config plugins --json
     demo config run com.phux.demo.agent-tools inspect

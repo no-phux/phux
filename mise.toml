@@ -54,10 +54,10 @@ mr-boxington = "1.29.0"
 # against, since nextest's source releases can need a newer compiler than this
 # repository's Rust pin. Install the official prebuilt binary instead:
 # https://nexte.st/docs/installation/pre-built-binaries/. `bash
-# scripts/doctor.sh ci` reports it missing.
+# dev/doctor.sh ci` reports it missing.
 #
 # The browser-client tools (wasm-pack, wasm-bindgen-cli, binaryen, trunk,
 # chromedriver), the build-observability crates
 # (cargo-llvm-lines, cargo-bloat, cargo-watch, cargo-insta, cargo-mutants),
 # mold and lldb stay Nix-only or native-install. They are area tools, not root
-# gate tools; `bash scripts/doctor.sh web` names browser tools with remedies.
+# gate tools; `bash dev/doctor.sh web` names browser tools with remedies.

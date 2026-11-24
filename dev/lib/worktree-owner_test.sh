@@ -6,7 +6,7 @@
 set -euo pipefail
 
 ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
-bash "$ROOT/scripts/lib/mbx-target_test.sh"
+bash "$ROOT/dev/lib/mbx-target_test.sh"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/worktree-owner-test.XXXXXX")"
 WORK="$(cd "$WORK" && pwd -P)"
 trap 'rm -rf -- "$WORK"' EXIT
@@ -26,10 +26,10 @@ run_as() {
 
 # ------------------------------------------------------------- fixture
 REPO="${WORK}/repo"
-mkdir -p "${REPO}/scripts/lib"
-cp "${ROOT}/scripts/worktree-lease.sh" "${REPO}/scripts/worktree-lease.sh"
-cp "${ROOT}/scripts/lib/worktree-owner.sh" "${REPO}/scripts/lib/worktree-owner.sh"
-cp "${ROOT}/scripts/lib/mbx-target.sh" "${REPO}/scripts/lib/mbx-target.sh"
+mkdir -p "${REPO}/dev/lib"
+cp "${ROOT}/dev/worktree-lease.sh" "${REPO}/dev/worktree-lease.sh"
+cp "${ROOT}/dev/lib/worktree-owner.sh" "${REPO}/dev/lib/worktree-owner.sh"
+cp "${ROOT}/dev/lib/mbx-target.sh" "${REPO}/dev/lib/mbx-target.sh"
 git -C "$REPO" init -q -b main
 git -C "$REPO" -c user.name=t -c user.email=t@t add -A
 git -C "$REPO" -c user.name=t -c user.email=t@t commit -q -m fixture
@@ -41,7 +41,7 @@ SIBLING_LEASE="$(git -C "$SIBLING" rev-parse --absolute-git-dir)/phux-worktree-o
 lease_op() {
     # lease_op <claim|verify|release> <owner> <worktree dir> [env assignments...]
     local op="$1" owner="$2" dir="$3"; shift 3
-    (cd "$dir" && run_as "$owner" env "$@" bash ./scripts/worktree-lease.sh "$op" test) >"${WORK}/out.log" 2>&1
+    (cd "$dir" && run_as "$owner" env "$@" bash ./dev/worktree-lease.sh "$op" test) >"${WORK}/out.log" 2>&1
 }
 claim() { lease_op claim "$@"; }
 verify() { lease_op verify "$@"; }
@@ -68,8 +68,8 @@ fi
 if grep -qx 'owner=session-a' "$LEASE"; then ok "refusal leaves the lease untouched"; else bad "refusal must not move the lease"; fi
 
 # Claiming from a subdirectory resolves the same worktree lease.
-mkdir -p "${REPO}/scripts/lib/nested"
-status=0; (cd "${REPO}/scripts/lib/nested" && run_as session-b bash ../../worktree-lease.sh claim test) >"${WORK}/out.log" 2>&1 || status=$?
+mkdir -p "${REPO}/dev/lib/nested"
+status=0; (cd "${REPO}/dev/lib/nested" && run_as session-b bash ../../worktree-lease.sh claim test) >"${WORK}/out.log" 2>&1 || status=$?
 if [[ "$status" == 3 ]]; then ok "a subdirectory shares the worktree lease"; else bad "a subdirectory should hit the same lease (status=$status)"; fi
 
 # A sibling worktree has its own lease.

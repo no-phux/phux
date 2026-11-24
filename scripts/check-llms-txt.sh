@@ -10,8 +10,8 @@
 # Exit codes: 0 clean, 1 drift, 2 bad invocation.
 
 set -euo pipefail
-# shellcheck source=scripts/lib/output.sh
-source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
+# shellcheck source=dev/lib/output.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../dev/lib/output.sh"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VIOLATIONS=0

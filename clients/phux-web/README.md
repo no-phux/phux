@@ -104,7 +104,7 @@ cd clients/phux-web && wasm-pack build --target web --release --out-dir pkg
 ```
 
 Tool versions and installation commands live in the setup guide;
-`bash scripts/doctor.sh web` checks them from the repository root.
+`bash dev/doctor.sh web` checks them from the repository root.
 Changing the engine itself additionally needs Zig; the setup guide documents
 verified source acquisition and the byte-for-byte regeneration check.
 

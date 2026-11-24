@@ -2,11 +2,11 @@
 # Same entry point locally and on a clean native CI runner. This is a setup
 # smoke, not a replacement for workspace tests and real-server e2e coverage.
 set -euo pipefail
-# shellcheck source=scripts/lib/output.sh
+# shellcheck source=dev/lib/output.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 phux_info "native smoke: checking prerequisites"
-bash scripts/doctor.sh native
+bash dev/doctor.sh native
 phux_info "native smoke: core, protocol, and VT tests"
 # One feature-unified schedule avoids compiling the shared graph once per crate.
 cargo test --locked -p phux-core -p phux-protocol -p phux-vt --features phux-vt/kitty

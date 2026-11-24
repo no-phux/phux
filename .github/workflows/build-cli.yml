@@ -101,7 +101,7 @@ jobs:
         run: bash scripts/check-release-version.sh "$TAG"
 
       - name: Install Zig
-        run: bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
+        run: bash dev/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
 
       - name: Install Rust
         run: |

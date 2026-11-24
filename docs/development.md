@@ -19,7 +19,7 @@ mise install     # or: nix develop
 just doctor      # scope: native (default), docs, core, server, integrations, web, desktop, ci
 ```
 
-`bash scripts/doctor.sh <scope>` works before `just` is installed; it only
+`bash dev/doctor.sh <scope>` works before `just` is installed; it only
 checks and prints remedies.
 
 With direnv, `.envrc` loads Nix; an untracked `.envrc.local` containing
@@ -44,8 +44,8 @@ brew install pkgconf
 ```
 
 CI's `native setup` lane uses neither Mise nor
-Nix; reproduce it with `bash scripts/setup-rust.sh native`, Zig from
-`scripts/install-zig.sh`, and `just native-smoke`.
+Nix; reproduce it with `bash dev/setup-rust.sh native`, Zig from
+`dev/install-zig.sh`, and `just native-smoke`.
 
 ## libghostty-vt
 
@@ -90,7 +90,7 @@ Run `just doctor <scope>` for the area first.
 ## Browser client
 
 Client work uses the committed `clients/phux-vt-web/vendor/ghostty-vt.wasm`
-and needs no Zig. It needs the Rust wasm target (`bash scripts/setup-rust.sh web`),
+and needs no Zig. It needs the Rust wasm target (`bash dev/setup-rust.sh web`),
 Node, `wasm-pack`, `binaryen`, and `wasm-bindgen-cli` at the exact version the
 client manifests pin; `just doctor web` checks all of them.
 
@@ -140,7 +140,7 @@ full pass. `just check` first simulates merging your committed branch into
 branch, and resolve them before spending time on builds. Uncommitted edits
 count for routing, not for the merge simulation.
 
-Test processes never inherit `PHUX_*`: `scripts/test-env-runner.sh` strips
+Test processes never inherit `PHUX_*`: `dev/test-env-runner.sh` strips
 all but its listed knobs, so add a new test knob there.
 
 Easy to forget:

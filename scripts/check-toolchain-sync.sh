@@ -8,8 +8,8 @@
 set -euo pipefail
 
 ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=scripts/lib/dev-toolchain.sh
-source "$ROOT/scripts/lib/dev-toolchain.sh"
+# shellcheck source=dev/lib/dev-toolchain.sh
+source "$ROOT/dev/lib/dev-toolchain.sh"
 MISE="$ROOT/mise.toml"
 FLAKE="$ROOT/flake.nix"
 

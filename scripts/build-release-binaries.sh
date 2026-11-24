@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Build distributable CLI binaries with explicit Rust and libghostty CPU floors.
 set -euo pipefail
-# shellcheck source=scripts/lib/output.sh
-source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
+# shellcheck source=dev/lib/output.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../dev/lib/output.sh"
 
 target="${1:?usage: build-release-binaries.sh <target>}"
 case "$target" in

@@ -8,7 +8,7 @@
 # fails on main" is a measurement rather than a claim. Exit 0 means nothing
 # unexplained failed (with --base: nothing that passes on the base ref).
 set -euo pipefail
-source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/../dev/lib/output.sh"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
@@ -37,7 +37,7 @@ for suite in ET.parse(sys.argv[1]).getroot().iter("testsuite"):
 
 run_nextest() {
     # The explicit scrub is for --base: an older ref may predate the Cargo runner.
-    PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE=600 bash "$root/scripts/test-env-runner.sh" --all \
+    PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE=600 bash "$root/dev/test-env-runner.sh" --all \
         cargo nextest run --profile report --no-fail-fast --no-tests=warn "$@"
 }
 

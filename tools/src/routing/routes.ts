@@ -111,13 +111,13 @@ const ROUTES: Record<string, Surface[]> = {
   "flake.{nix,lock}": ["phux", "web"],
   // The native lane; the Rune lane provisions with setup-rust.sh too.
   "just/setup.just": ["native"],
-  "scripts/{doctor,test-dev-setup,native-smoke}.sh": ["native"],
-  "scripts/setup-rust.sh": ["native", "rune"],
+  "dev/{doctor,test-dev-setup,native-smoke}.sh": ["native"],
+  "dev/setup-rust.sh": ["native", "rune"],
   // How the native and web-engine lanes get libghostty's Zig; the Nix
   // lanes use flake.nix's compiler.
   ".config/zig-toolchain.json": [...SHARED, ...ZIG, "rune"],
-  "scripts/install-zig.sh": [...ZIG, "rune"],
-  "scripts/lib/dev-toolchain.sh": [...ZIG, "rune"],
+  "dev/install-zig.sh": [...ZIG, "rune"],
+  "dev/lib/dev-toolchain.sh": [...ZIG, "rune"],
   // The lint lane runs build-features-check against the real graph.
   "just/{gates,test,build}.just": ["phux"],
   "scripts/lib/e2e-selection.sh": ["phux"],
@@ -140,8 +140,8 @@ const ROUTES: Record<string, Surface[]> = {
   "scripts/build-mobile-ffi-android.sh": [],
   // The worktree lease and the mbx target heal are guards. They do not
   // change what any product lane compiles.
-  "scripts/worktree-lease.sh": [],
-  "scripts/lib/{worktree-owner,worktree-owner_test,mbx-target,mbx-target_test}.sh": [],
+  "dev/worktree-lease.sh": [],
+  "dev/lib/{worktree-owner,worktree-owner_test,mbx-target,mbx-target_test}.sh": [],
 };
 
 /**

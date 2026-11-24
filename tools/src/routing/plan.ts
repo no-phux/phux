@@ -94,12 +94,12 @@ export function eventHasLabel(event: unknown, label: string): boolean {
  * root manifest, `.cargo`, and crate build scripts, C sources, headers, and
  * linker scripts are inputs. A crate `Cargo.toml` is not: `Cargo.lock` is
  * what moves dependencies. `cargo test` on that machine runs
- * `scripts/test-env-runner.sh` through `.cargo/config.toml`. Merge groups and
+ * `dev/test-env-runner.sh` through `.cargo/config.toml`. Merge groups and
  * main always run the job.
  *
- * `scripts/lib/apple-toolchain-env.sh` is copied into the setup fixture and
+ * `dev/lib/apple-toolchain-env.sh` is copied into the setup fixture and
  * never sourced. The copy fails if the file is gone, so it stays on the list.
- * `scripts/lib/mbx-target.sh` is copied because `doctor.sh` sources it; a
+ * `dev/lib/mbx-target.sh` is copied because `doctor.sh` sources it; a
  * missing sibling fails `doctor.sh core`.
  * `clients/phux-vt-web/vendor/ghostty-vt.wasm` is not: the fixture creates its
  * own empty stand-in. `just/setup.just` is not: the job calls bash, not just.
@@ -118,24 +118,24 @@ export const NATIVE_SETUP_PATHS = [
   "crates/**/*.h",
   "crates/**/*.ld",
   "crates/**/*.lds",
-  "scripts/test-dev-setup.sh",
-  "scripts/setup-rust.sh",
-  "scripts/install-zig.sh",
-  "scripts/native-smoke.sh",
-  "scripts/test-env-runner.sh",
-  "scripts/doctor.sh",
+  "dev/test-dev-setup.sh",
+  "dev/setup-rust.sh",
+  "dev/install-zig.sh",
+  "dev/native-smoke.sh",
+  "dev/test-env-runner.sh",
+  "dev/doctor.sh",
   "scripts/check-docs.sh",
   "clients/phux-vt-web/scripts/build-vt-wasm.sh",
-  "scripts/zig-mirrors/build.zig",
-  "scripts/zig-mirrors/build.zig.zon",
+  "dev/zig-mirrors/build.zig",
+  "dev/zig-mirrors/build.zig.zon",
   "clients/phux-vt-web/scripts/prepare-vt-wasm.mjs",
   "clients/phux-vt-web/scripts/smoke-vt-wasm.mjs",
   "scripts/check-ghostty-pin.sh",
   "scripts/check-ghostty-pin_test.sh",
-  "scripts/lib/dev-toolchain.sh",
-  "scripts/lib/output.sh",
-  "scripts/lib/apple-toolchain-env.sh",
-  "scripts/lib/mbx-target.sh",
+  "dev/lib/dev-toolchain.sh",
+  "dev/lib/output.sh",
+  "dev/lib/apple-toolchain-env.sh",
+  "dev/lib/mbx-target.sh",
 ] as const;
 
 /**

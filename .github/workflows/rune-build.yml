@@ -122,8 +122,8 @@ jobs:
           persist-credentials: false
       - name: Toolchains
         run: |
-          bash scripts/setup-rust.sh core
-          bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
+          bash dev/setup-rust.sh core
+          bash dev/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
           rustup target add aarch64-apple-ios-sim aarch64-apple-ios
           # ghostty's build.zig panics when its HEAD carries a tag that is not vX.Y.Z,
           # and the ghostty fork tags archived branches (phux-1wudz).

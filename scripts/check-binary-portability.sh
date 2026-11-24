@@ -34,8 +34,8 @@
 # notes are checked below as a second, artifact-level guard against a compiler
 # declaring an x86-64-v2-or-newer requirement.
 set -euo pipefail
-# shellcheck source=scripts/lib/output.sh
-source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
+# shellcheck source=dev/lib/output.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../dev/lib/output.sh"
 
 GLIBC_MAX="${PHUX_GLIBC_MAX:-2.35}"
 MACOS_MIN_MAX="${PHUX_MACOS_MIN_MAX:-11.0}"

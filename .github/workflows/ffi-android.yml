@@ -137,7 +137,7 @@ jobs:
 
       - name: Contributor Zig setup
         run: |
-          bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
+          bash dev/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
           # ghostty's build.zig panics when its HEAD carries a tag that is not vX.Y.Z,
           # and the ghostty fork tags archived branches (phux-1wudz). This step lives
           # in the workflow, not the checkout, so a dispatch for an older tag gets it too.
@@ -147,7 +147,7 @@ jobs:
           echo "ZIG=$RUNNER_TEMP/zig-no-git" >> "$GITHUB_ENV"
 
       - name: Contributor Rust setup
-        run: bash scripts/setup-rust.sh core
+        run: bash dev/setup-rust.sh core
 
       # Also records explicit skipped evidence for a tagless run: preflight
       # must not confuse a historical tag artifact with the run's head SHA.

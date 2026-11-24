@@ -7,9 +7,9 @@ scratch="$(mktemp -d "${TMPDIR:-/tmp}/phux-docs-test.XXXXXX")"
 scratch="$(cd "$scratch" && pwd -P)"
 trap 'rm -rf "$scratch"' EXIT
 repo="$scratch/repo"
-mkdir -p "$repo/scripts/lib" "$repo/docs/Parent" "$repo/just"
+mkdir -p "$repo/scripts" "$repo/dev/lib" "$repo/docs/Parent" "$repo/just"
 cp "$root/scripts/check-docs.sh" "$repo/scripts/"
-cp "$root/scripts/lib/output.sh" "$repo/scripts/lib/"
+cp "$root/dev/lib/output.sh" "$repo/dev/lib/"
 # A Git fixture proves collection ignores untracked build/cache trees normally
 # excluded by Git, but still checks new authored docs.
 git -C "$repo" init -q

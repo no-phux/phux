@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# The per-worktree agent lease (scripts/lib/worktree-owner.sh):
+# The per-worktree agent lease (dev/lib/worktree-owner.sh):
 #   claim    lease the current worktree to the running agent session, or refuse
 #            (exit 3) when another live session holds it
 #   verify   after a long run, fail (exit 3) when HEAD moved or another session
 #            took the worktree over since the claim
 #   release  drop this session's lease so the next session needs no takeover
-# Usage: scripts/worktree-lease.sh claim|verify|release [caller-label]
+# Usage: dev/worktree-lease.sh claim|verify|release [caller-label]
 set -euo pipefail
 here="$(dirname -- "${BASH_SOURCE[0]}")"
 # shellcheck source=lib/worktree-owner.sh
@@ -24,7 +24,7 @@ case "$op" in
     verify) worktree_owner_verify "$PWD" "$label" ;;
     release) worktree_owner_release "$PWD" "$label" ;;
     *)
-        echo "usage: scripts/worktree-lease.sh claim|verify|release [caller-label]" >&2
+        echo "usage: dev/worktree-lease.sh claim|verify|release [caller-label]" >&2
         exit 2
         ;;
 esac

@@ -5,7 +5,7 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/dev-toolchain.sh"
 
 if [[ $# -ne 1 || "$1" == --help ]]; then
-    phux_error "usage: bash scripts/install-zig.sh DIRECTORY (prints the compiler directory)"
+    phux_error "usage: bash dev/install-zig.sh DIRECTORY (prints the compiler directory)"
     exit 2
 fi
 case "$(uname -s)/$(uname -m)" in

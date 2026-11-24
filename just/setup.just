@@ -5,7 +5,7 @@
 # Check prerequisites for only this work area; also works without just via bash.
 [group('setup')]
 doctor SCOPE="native":
-    bash scripts/doctor.sh "{{SCOPE}}"
+    bash dev/doctor.sh "{{SCOPE}}"
 
 
 # Activate the tracked Git hooks. The relative path makes every worktree run
@@ -20,7 +20,7 @@ hooks-install:
 # Native contributor smoke: real compiler/linker/VT build and codec tests, no Nix.
 [group('setup')]
 native-smoke: worktree-claim
-    bash scripts/native-smoke.sh
+    bash dev/native-smoke.sh
 
 
 # Scaffold a commented starter config into a worktree-local XDG dir

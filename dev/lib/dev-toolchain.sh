@@ -2,8 +2,8 @@
 # Shared reads of existing pins: no second Rust/Zig version registry.
 # Sourced by the setup helpers and doctor (Bash 3.2 compatible).
 DEV_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-# shellcheck source=scripts/lib/output.sh
-source "$DEV_ROOT/scripts/lib/output.sh"
+# shellcheck source=dev/lib/output.sh
+source "$DEV_ROOT/dev/lib/output.sh"
 RUST_CHANNEL="$(sed -n 's/^channel = "\([^"]*\)"/\1/p' "$DEV_ROOT/rust-toolchain.toml")"
 ZIG_PINS="$DEV_ROOT/.config/zig-toolchain.json"
 ZIG_VERSION="$(sed -n 's/^[[:space:]]*"version": "\([^"]*\)",*/\1/p' "$ZIG_PINS")"

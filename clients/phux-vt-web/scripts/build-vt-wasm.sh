@@ -7,7 +7,7 @@
 # browser decodes native bootstraps with its GHOSTSNP snapshot decoder.
 #
 # Requires Node, plus the official Zig release binary, which this script
-# installs itself with scripts/install-zig.sh (digest-verified against
+# installs itself with dev/install-zig.sh (digest-verified against
 # .config/zig-toolchain.json) under PHUX_TOOLCHAIN_DIR and runs by absolute
 # path: no Zig on PATH is ever used. This also avoids host-specific LLVM
 # builds changing the artifact (as observed with nixpkgs' Zig 0.16).
@@ -28,7 +28,7 @@ set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$here/../../.." && pwd)"
-source "$repo/scripts/lib/dev-toolchain.sh"
+source "$repo/dev/lib/dev-toolchain.sh"
 revision=ce42b4c3df8d206092d55d7add0a4f15ac29a0a2
 archive_sha256=a3904b78d08bed22364ba16a12d24fbbf2e9ddfcb9adb4d7aba7a1793f4f9894
 mode="${1:-build}"
@@ -39,7 +39,7 @@ for tool in node tar; do
   command -v "$tool" >/dev/null || { echo "$tool missing; see docs/development.md#browser-client" >&2; exit 1; }
 done
 toolchains="${PHUX_TOOLCHAIN_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/phux/toolchains}"
-zig="$("$BASH" "$repo/scripts/install-zig.sh" "$toolchains")/zig"
+zig="$("$BASH" "$repo/dev/install-zig.sh" "$toolchains")/zig"
 digest() {
   if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1
 }
@@ -58,7 +58,7 @@ GHOSTTY_SRC="$(cd "$GHOSTTY_SRC" && pwd)"
 # before the cold dependency walk can hit Codeberg and abort Zig 0.17. Use the
 # installed compiler and an independent bootstrap cache; only unpacked packages
 # enter the source tree, never compiler output from a previous rebuild.
-( cd "$repo/scripts/zig-mirrors" && ZIG_GLOBAL_CACHE_DIR="$scratch/zig-mirror-global" "$zig" build \
+( cd "$repo/dev/zig-mirrors" && ZIG_GLOBAL_CACHE_DIR="$scratch/zig-mirror-global" "$zig" build \
     --fetch=needed --pkg-dir "$GHOSTTY_SRC/zig-pkg" \
     --cache-dir "$scratch/zig-mirror-cache" )
 

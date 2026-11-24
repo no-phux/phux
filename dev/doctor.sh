@@ -6,7 +6,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/dev-toolchain.sh"
 scope="${1:-native}"
 case "$scope" in
     docs|core|native|server|integrations|web|desktop|ci) ;;
-    *) phux_error "usage: bash scripts/doctor.sh [docs|core|native|server|integrations|web|desktop|ci]"; exit 2 ;;
+    *) phux_error "usage: bash dev/doctor.sh [docs|core|native|server|integrations|web|desktop|ci]"; exit 2 ;;
 esac
 [[ $# -le 1 ]] || exit 2
 cd "$DEV_ROOT"
@@ -51,11 +51,11 @@ rust_tools() {
     local version
     version="$(rustc --version 2>/dev/null || true)"
     if [[ "$version" == "rustc $RUST_CHANNEL "* ]]; then ok "$version"; else
-        fail "Rust $RUST_CHANNEL (found: ${version:-none})" "$(env_remedy "bash scripts/setup-rust.sh $1")"
+        fail "Rust $RUST_CHANNEL (found: ${version:-none})" "$(env_remedy "bash dev/setup-rust.sh $1")"
     fi
     if cargo --version >/dev/null 2>&1 && cargo fmt --version >/dev/null 2>&1 && cargo clippy --version >/dev/null 2>&1; then
         ok "Cargo, rustfmt, clippy"
-    else fail "Cargo/rustfmt/clippy" "$(env_remedy "bash scripts/setup-rust.sh $1")"; fi
+    else fail "Cargo/rustfmt/clippy" "$(env_remedy "bash dev/setup-rust.sh $1")"; fi
     # Advisory: Cargo works without mbx, but parallel worktrees then each pay a
     # cold build and an unmanaged target/ (docs/development.md#build-cache-mbx).
     if command -v mbx >/dev/null 2>&1; then ok "$(mbx --version)"; else
@@ -98,7 +98,7 @@ zig_tool() {
     local version
     version="$(zig version 2>/dev/null || true)"
     if [[ "$version" == "$ZIG_VERSION" ]]; then ok "Zig $version"; else
-        fail "Zig $ZIG_VERSION (found: ${version:-none})" "$(env_remedy 'export PATH="$(bash scripts/install-zig.sh "${XDG_DATA_HOME:-$HOME/.local/share}/phux/toolchains"):$PATH"')"
+        fail "Zig $ZIG_VERSION (found: ${version:-none})" "$(env_remedy 'export PATH="$(bash dev/install-zig.sh "${XDG_DATA_HOME:-$HOME/.local/share}/phux/toolchains"):$PATH"')"
     fi
 }
 mac_sdk() {
@@ -171,7 +171,7 @@ server_tools() {
     native_tools
     need cargo-nextest "$(env_remedy 'see docs/development.md#validating-a-change')"
     need python3 'just test-report reads the JUnit report with python3'
-    if [[ -x scripts/test-env-runner.sh ]] && grep -q '^runner = "scripts/test-env-runner.sh"' .cargo/config.toml; then
+    if [[ -x dev/test-env-runner.sh ]] && grep -q '^runner = "dev/test-env-runner.sh"' .cargo/config.toml; then
         ok 'test runner strips inherited PHUX_* from test processes'
     else
         fail 'test env runner' 'restore [target.'"'"'cfg(unix)'"'"'] runner in .cargo/config.toml'
@@ -210,7 +210,7 @@ case "$scope" in
         else fail "wasm-bindgen CLI $bindgen" "$(env_remedy "cargo install --locked wasm-bindgen-cli --version $bindgen")"; fi
         sysroot="$(rustc --print sysroot 2>/dev/null || true)"
         if [[ -n "$sysroot" && -d "$sysroot/lib/rustlib/wasm32-unknown-unknown/lib" ]]; then ok 'Rust WASM target'; else
-            fail 'Rust WASM target' "$(env_remedy 'bash scripts/setup-rust.sh web')"
+            fail 'Rust WASM target' "$(env_remedy 'bash dev/setup-rust.sh web')"
         fi
         if [[ -f clients/phux-vt-web/vendor/ghostty-vt.wasm ]]; then ok 'Committed WASM engine present (run tests to verify ABI)'; else
             fail 'committed ghostty-vt.wasm' 'Restore clients/phux-vt-web/vendor/ghostty-vt.wasm from the checkout; see docs/development.md#browser-client'

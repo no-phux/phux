@@ -7,18 +7,18 @@ scratch="$(cd "$scratch" && pwd)"
 trap 'rm -rf "$scratch"' EXIT
 repo="$scratch/repo"
 bin="$scratch/bin"
-mkdir -p "$repo/scripts/lib" "$repo/.config" "$bin"
-cp "$root"/scripts/{doctor,setup-rust,install-zig}.sh "$repo/scripts/"
-cp "$root/scripts/lib/dev-toolchain.sh" "$repo/scripts/lib/"
-cp "$root/scripts/lib/output.sh" "$repo/scripts/lib/"
-cp "$root/scripts/lib/apple-toolchain-env.sh" "$repo/scripts/lib/"
+mkdir -p "$repo/scripts" "$repo/dev/lib" "$repo/.config" "$bin"
+cp "$root"/dev/{doctor,setup-rust,install-zig}.sh "$repo/dev/"
+cp "$root/dev/lib/dev-toolchain.sh" "$repo/dev/lib/"
+cp "$root/dev/lib/output.sh" "$repo/dev/lib/"
+cp "$root/dev/lib/apple-toolchain-env.sh" "$repo/dev/lib/"
 # doctor.sh sources this during rust_tools. The fixture doctor fails closed
 # without the sibling file.
-cp "$root/scripts/lib/mbx-target.sh" "$repo/scripts/lib/"
+cp "$root/dev/lib/mbx-target.sh" "$repo/dev/lib/"
 cp "$root/rust-toolchain.toml" "$repo/"
 cp "$root/mise.toml" "$repo/"
 cp "$root/.config/zig-toolchain.json" "$repo/.config/"
-source "$root/scripts/lib/dev-toolchain.sh"
+source "$root/dev/lib/dev-toolchain.sh"
 bash_bin="$BASH"
 for tool in dirname basename sed head awk git grep find sort mkdir mktemp rm mv tar uname tr chmod; do
     ln -s "$(command -v "$tool")" "$bin/$tool"
@@ -43,7 +43,7 @@ expect_fail() {
 }
 
 # A docs contributor has only shell/Git utilities; no compiler or Node probes.
-expect_pass "$repo/scripts/doctor.sh" docs
+expect_pass "$repo/dev/doctor.sh" docs
 cp "$root/scripts/check-docs.sh" "$repo/scripts/"
 mkdir -p "$repo/docs"
 printf '# Guide\n\n## Build cache (mbx)\n\nSee [setup](#build-cache-mbx) and [index](./README.md).\n' >"$repo/docs/guide.md"
@@ -54,14 +54,14 @@ expect_fail 'missing.md does not exist' "$repo/scripts/check-docs.sh" --only=lin
 printf '# Docs\n\n[Guide](./guide.md#no-such-heading)\n' >"$repo/docs/README.md"
 expect_fail 'has no heading #no-such-heading' "$repo/scripts/check-docs.sh" --only=links
 rm -rf "$repo/docs"
-expect_fail 'usage:' "$repo/scripts/doctor.sh" typo
+expect_fail 'usage:' "$repo/dev/doctor.sh" typo
 # Doctor names Mise/Nix first; the rustup helper is the native-CI fallback.
 # Unset IN_NIX_SHELL so a leftover Nix shell from the runner cannot flip the
 # remedy (the fixture PATH has no compilers either way).
 unset IN_NIX_SHELL
-expect_fail 'mise install' "$repo/scripts/doctor.sh" core
-grep -Fq 'bash scripts/setup-rust.sh core' "$scratch/output" || { cat "$scratch/output" >&2; exit 1; }
-IN_NIX_SHELL=1 expect_fail 'nix develop should provide this' "$repo/scripts/doctor.sh" core
+expect_fail 'mise install' "$repo/dev/doctor.sh" core
+grep -Fq 'bash dev/setup-rust.sh core' "$scratch/output" || { cat "$scratch/output" >&2; exit 1; }
+IN_NIX_SHELL=1 expect_fail 'nix develop should provide this' "$repo/dev/doctor.sh" core
 rm -f "$bin/uname"
 cat >"$bin/uname" <<'SH'
 #!/bin/sh
@@ -88,45 +88,45 @@ cat >"$bin/node" <<'SH'
 echo 22
 SH
 chmod +x "$bin"/{uname,rustc,cargo,cc,mold,pkg-config,npm,node}
-expect_pass "$repo/scripts/doctor.sh" core
+expect_pass "$repo/dev/doctor.sh" core
 
 # Check environment identity before Apple normalization can hide a mixed shell.
 mkdir -p "$scratch/custom-tools/command-wrappers/bin"
-cat >"$repo/scripts/check-desktop.sh" <<'SH'
+cat >"$repo/dev/check-desktop.sh" <<'SH'
 source "$(dirname "${BASH_SOURCE[0]}")/lib/dev-toolchain.sh"
 check_desktop_toolchain
 SH
-PHUX_ENV=mise IN_NIX_SHELL=1 expect_fail 'mixed Nix/Mise desktop toolchain' "$repo/scripts/doctor.sh" desktop
-PHUX_ENV=mise expect_pass "$repo/scripts/check-desktop.sh"
-PHUX_ENV=nix IN_NIX_SHELL=1 expect_pass "$repo/scripts/check-desktop.sh"
+PHUX_ENV=mise IN_NIX_SHELL=1 expect_fail 'mixed Nix/Mise desktop toolchain' "$repo/dev/doctor.sh" desktop
+PHUX_ENV=mise expect_pass "$repo/dev/check-desktop.sh"
+PHUX_ENV=nix IN_NIX_SHELL=1 expect_pass "$repo/dev/check-desktop.sh"
 # Shell hooks can shadow Nix tools without changing PHUX_ENV.
 cp "$bin/cargo" "$scratch/custom-tools/command-wrappers/bin/cargo"
 PATH="$scratch/custom-tools/command-wrappers/bin:$bin" IN_NIX_SHELL=1 PHUX_ENV=nix \
-    "$bash_bin" "$repo/scripts/check-desktop.sh" >"$scratch/output" 2>&1 && exit 1
+    "$bash_bin" "$repo/dev/check-desktop.sh" >"$scratch/output" 2>&1 && exit 1
 grep -Fq 'mixed Nix/Mise desktop toolchain' "$scratch/output"
 cp "$bin/rustc" "$scratch/rustc-good"
 sed "s/rustc $RUST_CHANNEL /rustc 0.0.0 /" "$scratch/rustc-good" >"$bin/rustc"
-expect_fail "desktop requires Rust $RUST_CHANNEL (found: rustc 0.0.0" "$repo/scripts/check-desktop.sh"
+expect_fail "desktop requires Rust $RUST_CHANNEL (found: rustc 0.0.0" "$repo/dev/check-desktop.sh"
 cp "$scratch/rustc-good" "$bin/rustc"
 
 # Tools present but the link broken (a linker older than the SDK) must fail.
-SETUP_TEST_LINK_FAIL=1 expect_fail 'unknown architecture' "$repo/scripts/doctor.sh" core
-expect_fail 'Node 24+' "$repo/scripts/doctor.sh" integrations
+SETUP_TEST_LINK_FAIL=1 expect_fail 'unknown architecture' "$repo/dev/doctor.sh" core
+expect_fail 'Node 24+' "$repo/dev/doctor.sh" integrations
 sed 's/echo 22/echo 24/' "$bin/node" >"$scratch/node"
 cp "$scratch/node" "$bin/node"
-expect_fail 'bun' "$repo/scripts/doctor.sh" integrations
+expect_fail 'bun' "$repo/dev/doctor.sh" integrations
 cp "$bin/npm" "$bin/bun"
-expect_pass "$repo/scripts/doctor.sh" integrations
-expect_fail "Zig $ZIG_VERSION" "$repo/scripts/doctor.sh" native
+expect_pass "$repo/dev/doctor.sh" integrations
+expect_fail "Zig $ZIG_VERSION" "$repo/dev/doctor.sh" native
 cat >"$bin/zig" <<'SH'
 #!/bin/sh
 echo 0.0.0
 SH
 chmod +x "$bin/zig"
-expect_fail 'found: 0.0.0' "$repo/scripts/doctor.sh" native
+expect_fail 'found: 0.0.0' "$repo/dev/doctor.sh" native
 sed "s/0.0.0/$ZIG_VERSION/" "$bin/zig" >"$scratch/zig"
 cp "$scratch/zig" "$bin/zig"
-expect_pass "$repo/scripts/doctor.sh" native
+expect_pass "$repo/dev/doctor.sh" native
 # Linux desktop checks libraries. Missing a development
 # package is diagnosed even when the machine has no graphical login.
 cp "$bin/npm" "$bin/python3"
@@ -136,15 +136,15 @@ cat >"$bin/bun" <<SH
 echo '$bun_version'
 SH
 chmod +x "$bin/bun"
-expect_pass "$repo/scripts/doctor.sh" desktop
+expect_pass "$repo/dev/doctor.sh" desktop
 grep -Fq 'xkbcommon-x11' "$scratch/output"
-SETUP_TEST_ARCH=aarch64 expect_pass "$repo/scripts/doctor.sh" desktop
-SETUP_TEST_ARCH=ppc64le expect_fail 'unsupported desktop platform' "$repo/scripts/doctor.sh" desktop
+SETUP_TEST_ARCH=aarch64 expect_pass "$repo/dev/doctor.sh" desktop
+SETUP_TEST_ARCH=ppc64le expect_fail 'unsupported desktop platform' "$repo/dev/doctor.sh" desktop
 cat >"$bin/pkg-config" <<'SH'
 #!/bin/sh
 test "$2" != xkbcommon-x11
 SH
-expect_fail 'xkbcommon-x11 development libraries' "$repo/scripts/doctor.sh" desktop
+expect_fail 'xkbcommon-x11 development libraries' "$repo/dev/doctor.sh" desktop
 cp "$bin/npm" "$bin/pkg-config"
 
 # Browser-client work reuses its committed engine; Zig must not be required.
@@ -161,11 +161,11 @@ chmod +x "$bin/wasm-bindgen"
 cp "$bin/npm" "$bin/wasm-pack"
 cp "$bin/npm" "$bin/wasm-opt"
 rm -f "$bin/zig"
-expect_pass "$repo/scripts/doctor.sh" web
+expect_pass "$repo/dev/doctor.sh" web
 cp "$scratch/zig" "$bin/zig"
 chmod +x "$bin/zig"
 rm -f "$bin/mold"
-expect_fail 'mold' "$repo/scripts/doctor.sh" core
+expect_fail 'mold' "$repo/dev/doctor.sh" core
 
 # macOS must diagnose an SDK with no nmedit before starting the VT build.
 cat >"$bin/uname" <<'SH'
@@ -177,7 +177,7 @@ cat >"$bin/xcrun" <<'SH'
 test "$1" = --show-sdk-path
 SH
 chmod +x "$bin/xcrun"
-expect_fail 'macOS SDK/nmedit' "$repo/scripts/doctor.sh" native
+expect_fail 'macOS SDK/nmedit' "$repo/dev/doctor.sh" native
 
 # The macOS desktop needs no Apple tools beyond the SDK the native build uses.
 cp "$bin/npm" "$bin/xcrun"
@@ -188,12 +188,12 @@ cat >"$bin/bun" <<SH
 echo '$bun_version'
 SH
 chmod +x "$bin/bun"
-expect_pass "$repo/scripts/doctor.sh" desktop
+expect_pass "$repo/dev/doctor.sh" desktop
 cat >"$bin/bun" <<'SH'
 #!/bin/sh
 echo 0.0.0
 SH
-expect_fail "Bun $bun_version (found: 0.0.0)" "$repo/scripts/doctor.sh" desktop
+expect_fail "Bun $bun_version (found: 0.0.0)" "$repo/dev/doctor.sh" desktop
 
 # Opt-in rustup components must not leak into a core contributor's install.
 export SETUP_TEST_LOG="$scratch/rustup-log"
@@ -202,10 +202,10 @@ cat >"$bin/rustup" <<'SH'
 echo "$*" >>"$SETUP_TEST_LOG"
 SH
 chmod +x "$bin/rustup"
-expect_pass "$repo/scripts/setup-rust.sh" core
+expect_pass "$repo/dev/setup-rust.sh" core
 grep -Fq "toolchain install $RUST_CHANNEL --profile minimal" "$SETUP_TEST_LOG"
 if grep -Eq 'wasm32|llvm-tools|rust-analyzer|default ' "$SETUP_TEST_LOG"; then exit 1; fi
-expect_pass "$repo/scripts/setup-rust.sh" web
+expect_pass "$repo/dev/setup-rust.sh" web
 grep -Fq "target add --toolchain $RUST_CHANNEL wasm32-unknown-unknown" "$SETUP_TEST_LOG"
 
 # A corrupt download must never be extracted or published. Use a fixture pin
@@ -224,9 +224,9 @@ SH
 ln -s "$(command -v cp)" "$bin/cp"
 chmod +x "$bin/curl"
 printf 'corrupt archive' >"$SETUP_TEST_ARCHIVE"
-expect_fail 'checksum' "$repo/scripts/install-zig.sh" "$scratch/toolchains"
+expect_fail 'checksum' "$repo/dev/install-zig.sh" "$scratch/toolchains"
 [[ ! -e "$scratch/toolchains/zig-aarch64-macos-$ZIG_VERSION" ]]
-SETUP_TEST_ARCH=x86_64 expect_fail 'checksum' "$repo/scripts/install-zig.sh" "$scratch/toolchains"
+SETUP_TEST_ARCH=x86_64 expect_fail 'checksum' "$repo/dev/install-zig.sh" "$scratch/toolchains"
 [[ ! -e "$scratch/toolchains/zig-x86_64-macos-$ZIG_VERSION" ]]
 mkdir -p "$scratch/payload/zig-aarch64-macos-$ZIG_VERSION"
 cp "$bin/zig" "$scratch/payload/zig-aarch64-macos-$ZIG_VERSION/zig"
@@ -247,10 +247,10 @@ cat >"$repo/.config/zig-toolchain.json" <<SH
   }
 }
 SH
-expect_pass "$repo/scripts/install-zig.sh" "$scratch/toolchains"
+expect_pass "$repo/dev/install-zig.sh" "$scratch/toolchains"
 grep -Fxq "$scratch/toolchains/zig-aarch64-macos-$ZIG_VERSION" "$scratch/output"
 rm -f "$SETUP_TEST_DOWNLOADS"
-expect_pass "$repo/scripts/install-zig.sh" "$scratch/toolchains"
+expect_pass "$repo/dev/install-zig.sh" "$scratch/toolchains"
 [[ ! -e "$SETUP_TEST_DOWNLOADS" ]]
 # Engine regeneration rejects corrupt source before building, preserves the
 # old artifact on ABI failure, and never replaces it in comparison mode. It
@@ -258,8 +258,8 @@ expect_pass "$repo/scripts/install-zig.sh" "$scratch/toolchains"
 # and tolerates the compiler's occasional nondeterministic build.
 mkdir -p "$repo/clients/phux-vt-web/scripts"
 cp "$root/clients/phux-vt-web/scripts/build-vt-wasm.sh" "$repo/clients/phux-vt-web/scripts/"
-mkdir -p "$repo/scripts/zig-mirrors"
-cp "$root/scripts/zig-mirrors/"{build.zig,build.zig.zon} "$repo/scripts/zig-mirrors/"
+mkdir -p "$repo/dev/zig-mirrors"
+cp "$root/dev/zig-mirrors/"{build.zig,build.zig.zon} "$repo/dev/zig-mirrors/"
 ln -s "$(command -v cmp)" "$bin/cmp"
 ln -s "$(command -v du)" "$bin/du"
 ln -s "$(command -v cut)" "$bin/cut"

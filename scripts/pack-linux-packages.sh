@@ -9,8 +9,8 @@
 # files are signed for dnf's gpgcheck. apt checks the signed repository
 # index instead (scripts/build-package-repo.sh), so a .deb is not signed.
 set -euo pipefail
-# shellcheck source=scripts/lib/output.sh
-source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
+# shellcheck source=dev/lib/output.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../dev/lib/output.sh"
 
 NFPM_VERSION=2.48.0
 declare -A NFPM_SHA256=(

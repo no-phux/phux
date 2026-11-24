@@ -6,8 +6,8 @@
 # call it; the install tests pack stub binaries the same way so
 # a packaging change cannot silently diverge from what curl | sh accepts.
 set -euo pipefail
-# shellcheck source=scripts/lib/output.sh
-source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
+# shellcheck source=dev/lib/output.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../dev/lib/output.sh"
 
 RELEASE_BINS=(phux phux-mcp)
 RELEASE_DOCS=(README.md LICENSE NOTICE THIRD-PARTY-NOTICES.md)
