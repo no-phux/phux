@@ -3,11 +3,10 @@
 //! chrome's names use.
 
 use phux_design::{State, Tone};
-use rune::{Color, El, Icon, el, row};
+use rune::{Color, El, Icon, row};
 
-use super::super::{Paint, Tokens, badge, icons};
+use super::super::{Tokens, badge, icons};
 use crate::activity::Mark;
-use crate::host_color;
 
 /// The ladder state a terminal's mark stands for. A shell's own
 /// command counts as work under way; a bell asks for you, as the pane's
@@ -54,28 +53,6 @@ pub(in crate::ui) fn mark_color(mark: Mark, ink: &Tokens) -> Color {
 /// A small identity dot: a session's or machine's colour.
 pub(in crate::ui) fn dot_size(t: &Tokens) -> f32 {
     t.space.s2 - t.space.s0_5
-}
-
-/// The leading mark: the state's vector mark in its tone, never animated,
-/// so a busy agent costs no frames. A plain shell with a session colour
-/// shows that colour instead; without one, the quiet dotted ring.
-pub(super) fn lead(mark: Mark, session: Option<u32>, t: &Tokens) -> El {
-    let mark = match (mark, session) {
-        (Mark::None, Some(rgb)) => {
-            host_color::mark(rgb, dot_size(t), t.roles.layer.sidebar.paint())
-        }
-        _ => {
-            let f = face(mark, t);
-            let icon = rune::icon(f.icon, t.icon.size.sm).color(f.ink);
-            match f.word {
-                Some(word) => icon.label(word),
-                None => icon.a11y_hidden(),
-            }
-        }
-    };
-    el().size(t.icon.size.md, t.icon.size.md)
-        .center()
-        .child(mark)
 }
 
 /// What a session's terminals ask of you, loudest first:

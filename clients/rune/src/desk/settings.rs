@@ -110,7 +110,7 @@ impl Settings {
             confirm_close: prefs.get("confirm_close").unwrap_or(false),
             glass: prefs.get::<u8>("glass").unwrap_or(0).min(100),
             title_bar: bars::saved(prefs),
-            tab_bar: TabBar::Top,
+            tab_bar: TabBar::Auto,
         }
     }
 
@@ -277,6 +277,18 @@ impl Desk {
     }
 
     /// Whether the sidebar is drawn.
+    /// Where the tabs go now: `auto` resolves to the title bar while the
+    /// sidebar is not docked beside the panes, and to nowhere else while it
+    /// is, since its rows are the tabs then. A peeking sidebar covers the
+    /// panes for a moment and moves nothing.
+    pub fn tab_bar(&self) -> TabBar {
+        match self.settings.tab_bar {
+            TabBar::Auto if self.sidebar_open && !self.sidebar_narrow() => TabBar::Hidden,
+            TabBar::Auto => TabBar::Top,
+            at => at,
+        }
+    }
+
     pub fn sidebar_shown(&self) -> bool {
         if self.sidebar_narrow() {
             self.sidebar_peek

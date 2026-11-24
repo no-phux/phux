@@ -38,6 +38,10 @@ pub enum Renaming {
 #[derive(Default)]
 pub struct Tabs {
     pub list: Vec<Tab>,
+    /// Every session's tabs, by session id, for the sidebar's one list of
+    /// work; the selected session's are `list`. A session whose arrangement
+    /// the replica does not hold yet has none.
+    pub by_session: HashMap<u32, Vec<Tab>>,
     /// The pane each tab last had the keyboard in.
     focus: HashMap<[u8; 16], ResourceId>,
     /// The terminal the keyboard left last (`last-pane`).
@@ -96,12 +100,45 @@ impl Desk {
         self.connection.tabs.list = self
             .arrangement(client)
             .map_or_else(Vec::new, |(_, doc)| list(&doc, listed));
+        self.sync_session_tabs(client, listed);
         let shown = self.connection.shown.as_ref().map(|s| s.resource.clone());
         if let (Some(tab), Some(shown)) =
             (self.connection.tabs.list.iter().find(|t| t.active), shown)
         {
             self.connection.tabs.focus.insert(tab.id, shown);
         }
+    }
+
+    /// Every other session's tabs, fetching each arrangement once.
+    fn sync_session_tabs(&mut self, client: &Client, listed: &[ResourceId]) {
+        let selected = client.selected_session();
+        let sessions: Vec<_> = (self.connection.topology.iter())
+            .flat_map(|t| &t.sessions)
+            .map(|s| (s.id, s.key, s.arrangement))
+            .collect();
+        let mut by_session = HashMap::with_capacity(sessions.len());
+        for (id, key, held) in sessions {
+            if Some(id) == selected {
+                by_session.insert(id, self.connection.tabs.list.clone());
+                continue;
+            }
+            let doc = key.and_then(|key| client.organization().arrangement_document(&key));
+            if let Some((_, _, doc, _)) = doc {
+                by_session.insert(id, list(&doc, listed));
+            } else if let Some(arrangement) = held
+                && !self.connection.fetched.contains(&arrangement)
+                // Asked again next time when the link was not ready.
+                && client.fetch_arrangement(arrangement).is_some()
+            {
+                self.connection.fetched.insert(arrangement);
+            }
+        }
+        self.connection.tabs.by_session = by_session;
+    }
+
+    /// The pane `tab` last had the keyboard in, while it still holds it.
+    pub fn tab_focus(&self, tab: &Tab) -> Option<&ResourceId> {
+        (self.connection.tabs.focus.get(&tab.id)).filter(|id| tab.resources.contains(id))
     }
 
     /// Bring the phone strip's active tab into view when another becomes
