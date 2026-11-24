@@ -189,7 +189,7 @@ macro_rules! supervisory_commands {
     },
     /// One step of a TCP forward, gated on `features_ext.FORWARD_TCP`, or
     /// of ssh-agent forwarding, gated on `features_ext.FORWARD_AGENT`
-    /// (`docs/forwarding.md`).
+    /// (`docs/ssh.md#forwarding-a-port`).
     Forward {
         /// Open, read, write, or close; or an ssh-agent offer or reply.
         op: crate::forward::ForwardOp,

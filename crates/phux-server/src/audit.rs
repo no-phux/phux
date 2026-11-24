@@ -1,5 +1,5 @@
 //! `phux.audit/v1`: an append-only, hash-chained, ed25519-signed record of
-//! who did what on this host (`docs/audit.md`).
+//! who did what on this host (`docs/security.md#audit-log`).
 //!
 //! The server appends one JSON line per decision to
 //! `$STATE/audit/audit.jsonl`. Each record's `hash` is the SHA-256 of its

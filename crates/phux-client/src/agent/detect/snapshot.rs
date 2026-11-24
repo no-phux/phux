@@ -118,7 +118,7 @@ fn window_label(snapshot: &SessionSnapshot, pane: &ResourceInfo, in_session: boo
 }
 
 /// The `agent list --json` / `agent show --json` document. Its shape is
-/// documented in docs/build-a-client.md and checked against it by a test.
+/// documented in docs/building.md and checked against it by a test.
 #[must_use]
 pub fn agents_document(states: &[AgentStateReport]) -> serde_json::Value {
     serde_json::json!({

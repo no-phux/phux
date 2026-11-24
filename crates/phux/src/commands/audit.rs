@@ -1,5 +1,5 @@
 //! `phux audit tail|verify`: read this profile's `phux.audit/v1` log
-//! straight from disk (`docs/audit.md`); no server is needed.
+//! straight from disk (`docs/security.md#audit-log`); no server is needed.
 
 use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::fs::MetadataExt;

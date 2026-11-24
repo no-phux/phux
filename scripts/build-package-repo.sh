@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build the signed apt and dnf repository metadata for the newest releases'
-# packages (docs/runbooks/linux-packages.md) into SITE.
+# packages (docs/releasing.md#linux-packages) into SITE.
 #
 #   PHUX_PACKAGES_GPG_KEY=<armored secret signing key> \
 #     bash scripts/build-package-repo.sh <site> [<packages-dir>]

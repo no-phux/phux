@@ -6,7 +6,7 @@
 # repo_key, embedded by scripts/generate-install.sh from packaging/phux.asc:
 # it is as trusted as this script, and nothing else is fetched to trust it.
 # Packages stay on their releases; the signed metadata is the `repodata`
-# release (docs/runbooks/linux-packages.md).
+# release (docs/releasing.md#linux-packages).
 REPO_URL="${PHUX_REPO_URL:-https://github.com/no-phux/phux/releases/download}"
 
 # apt or dnf when this host is one phux's repositories serve, and the

@@ -65,7 +65,7 @@ And headless: every command in the sections below works with no screen
 attached, which is how scripts and agents use it.
 
 The browser client is an experiment that a server does not serve by default,
-and native phone apps are not out yet. [Clients](./docs/clients.md) has what
+and native phone apps are not out yet. [Clients](./docs/clients.md#native-terminal-windows) has what
 each one can and cannot do, and [Embed phux](./docs/embedding.md) covers
 putting a terminal in your own app.
 
@@ -159,16 +159,16 @@ MCP, plugins and [distros](./docs/distros.md) are opt-in; a local shell
 session needs none of them.
 
 The wire protocol is `1.x`: any 1.x client works with any 1.x server.
-[Clients](./docs/clients.md) and [protocol](./docs/protocol.md) have the
+[Clients](./docs/clients.md#native-terminal-windows) and [protocol](./docs/protocol.md) have the
 limits.
 
 ## More
 
 | | |
 | --- | --- |
-| New here | [Getting started](./docs/getting-started.md) · [Concepts](./docs/concepts.md) · [Coming from tmux](./docs/tmux-import.md) |
+| New here | [Getting started](./docs/getting-started.md) · [Concepts](./docs/concepts.md) · [Coming from tmux](./docs/config.md#coming-from-another-multiplexer) |
 | Agents | [Know when one is waiting](https://docs.phux.sh/agent-waiting) · [Give an agent a terminal over MCP](https://docs.phux.sh/terminal-mcp) · [Missions in isolated worktrees](./docs/organization.md#work-and-missions) |
-| Building | [Report status from any program](./docs/any-program-status.md) · [OSC 7501](https://docs.phux.sh/program-protocol) · [Native terminal windows](./docs/native-terminal.md) |
+| Building | [Report status from any program](./docs/program-protocol.md) · [OSC 7501](https://docs.phux.sh/program-protocol) · [Native terminal windows](./docs/clients.md#native-terminal-windows) |
 | Everything | [All docs](./docs/README.md) · [Releases](https://github.com/no-phux/phux/releases) |
 
 ## Help

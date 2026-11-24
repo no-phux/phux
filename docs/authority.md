@@ -1,37 +1,35 @@
+---
+group: internals
+order: 3
+---
+
 # Authority over pages, windows, and displays
 
 Who may watch or control a mirrored browser page, application window, or
-whole display. Watching a display shows every application on the machine,
-and input to it is control of the machine, so window and display grants are
-separate from terminal grants and from each other. A device paired to watch
-terminals does not inherit a desktop. The kinds themselves are in
-[Resource kinds](./resource-kinds.md); granting a device is in
+whole display. Watching a display shows every application on the machine
+and input to it controls the machine, so these grants are separate from
+terminal grants and from each other. Granting a device is in
 [Remote machines](./remote.md#who-can-do-what).
 
 ## Control classes
 
-A producer declares a control class when it opens a document: `page` (a
-browser page, `phux agent page mirror`), `window` (one application window,
-`phux agent surface mirror App`), `display` (a whole screen, `phux agent
-surface mirror display[:OUTPUT]`), or none. Plain `phux agent tree open`,
-`doc open` and `surface open` declare none unless `surface open --control
-CLASS` says otherwise. `phux ls --json`, `phux resource show --json` and MCP
-`phux_documents` report it as `control`.
+A producer declares a class when it opens a document: `page` (`phux agent
+page mirror`), `window` (`phux agent surface mirror App`), `display`
+(`phux agent surface mirror display[:OUTPUT]`), or none. `tree open`, `doc
+open` and `surface open` declare none unless `surface open --control CLASS`
+says so. `phux ls --json`, `phux resource show --json` and `phux_documents`
+report it as `control`.
 
-Only the owner socket opens a document that declares a class, `page`
-included: the class decides which viewers' `input@CLASS` grants reach its
-producer. A scoped grant opens a tree, surface or document with no class
-beside a Terminal it may bind (`CREATE` on its Group, `BIND` on it), as it
-opens an agent session, and only over the Unix socket or localhost, the
-connections that may publish to it. A delegated agent holds no `CREATE`,
-so it opens none.
+Only the owner socket opens a document that declares a class. A scoped
+grant opens a classless tree, surface or document beside a Terminal it may
+bind (`CREATE` on its Group, `BIND` on it), over the Unix socket or
+localhost only. A delegated agent holds no `CREATE`, so it opens none.
 
 ## Watching
 
-Attaching to a window or display, its snapshots (`phux agent surface
-snapshot`, MCP `phux_surface_snapshot` and `phux_tree_snapshot`, which
-attach), its stream, and a subscription to its own events need `OBSERVE` on a grant that names the
-class:
+Attaching to a window or display, snapshotting it, or subscribing to its
+events needs `OBSERVE` on a grant that names the class, plus `BIND` through
+the parent pane:
 
 | Caller | Watches |
 | --- | --- |
@@ -39,30 +37,16 @@ class:
 | `observe@window`, `observe@display` | Windows, or displays, on this host |
 | `observe@window:HOST`, `observe@display:HOST` | Windows, or displays, on satellite `HOST` |
 | `observe@resource:KEY` | That one document |
-| `global`, `host`, `host:NAME`, `group`, `session`, `terminal` grants, or a grant on the parent pane | No window or display |
+| Any other grant, including one on the parent pane | No window or display |
 
 `observe@display` does not reach a window, nor `observe@window` a display.
-The attach also needs `BIND` as before, through the parent pane. A `page`,
-or a document with no class, is watched through its parent pane's grants: a
-browser page shows one site, not the machine. Inventory is unchanged: a
-grant with `INVENTORY` still lists a display it cannot watch, with its id,
-kind, parent, name and `control`.
-
-A refused attach names the missing grant and the owner's remedy, for
-example `phux workload grant sha256:... observe@display`, when the caller
-could have watched it through its parent before; anyone else gets a plain
-`permission denied`. Rune shows that reason in place of the mirror.
-
-A hub admits the attach to a satellite's document on the host grant, then
-learns the document's class from the satellite's inventory and refuses a
-window or display the caller has no `CLASS:HOST` grant for, before the
-shared link carries anything. The satellite still checks the hub's own link
-credential, which `phux host add` enrolled as a paired device. A satellite
-older than control classes reports none, and its documents are watched as
-before.
-
-Removing a watch grant (`phux workload ungrant`) ends live connections that
-relied on it, even when a broader grant remains.
+A `page` or a classless document is watched through its parent pane's
+grants. Inventory still lists a document the caller cannot watch. A refused
+attach names the missing grant and the owner's remedy (`phux workload grant
+sha256:... observe@display`). A hub learns a satellite document's class from
+the satellite's inventory and refuses before the link carries anything.
+Removing a grant with `phux workload ungrant` ends live connections that
+relied on it.
 
 ## Control
 
@@ -70,93 +54,59 @@ relied on it, even when a broader grant remains.
 
 | Caller | Reaches |
 | --- | --- |
-| The owner socket | Every document, whatever its class |
+| The owner socket | Every document |
 | `input@page`, `input@window`, `input@display` | Documents of that class on this host |
-| `input@page:HOST`, `input@window:HOST`, `input@display:HOST` | Documents of that class on satellite `HOST` |
+| `input@CLASS:HOST` | Documents of that class on satellite `HOST` |
 | `input@resource:KEY` | That one document, if it has a class |
-| `global`, `host`, `host:NAME`, `group`, `session`, `terminal` grants, or a grant on the parent pane | Nothing |
+| Any other grant, including one on the parent pane | Nothing |
 
-`?input@CLASS` (or `?input@CLASS:HOST`) holds each such input for approval
-instead ([Held actions](./approvals.md)). A document with no class takes input
-only from the owner socket. A hub
-authorizes input to a satellite's document with the `CLASS:HOST` forms and
-stamps the classes it allowed on the relayed command; the satellite, which
-knows the document's class, refuses one outside them, and checks the hub's
-own link credential as usual. Removing a control grant ends live
-connections that relied on it, even when a broader grant remains.
+`?input@CLASS` holds each input for approval
+([security](./security.md)). A classless document takes input only from the
+owner socket. A hub stamps the classes it allowed on the relayed command,
+and the satellite refuses input outside them. A satellite older than
+control classes ignores the stamp, so there the hub's check is the only
+gate.
 
 ## Relayed identity
 
-When a hub relays document input to a satellite, it also says who sent it:
-the sender's credential id on the hub (`owner` for the hub's own socket)
-and its client name. The satellite uses that for the control notice
-("phux: iPhone is controlling this display") and its input log line
-(`via hub sha256:HUB, on behalf of sha256:PHONE ("iPhone")`), instead of
-naming the hub.
-
-The satellite believes this only from its owner socket (an `ssh://` or
-uplink hub) or a credential holding every verb on `global`, the
-full-control ceiling `phux host add` pairs a hub with. A hub paired as a
-person's device before `organize` and `terminate` existed holds the older
-six-verb ceiling (`inventory,observe,create,bind,input,signal@global`) and
-is believed too. From anything narrower, such as an automation key, it is
-ignored. The log always names
-the link's own credential next to the claim. The relayed identity is never
-used to authorize: the satellite still checks the hub's link credential,
-and the hub checks the sender's grants.
+A hub relaying input also names the sender: its credential id on the hub
+(`owner` for the hub's socket) and client name. The satellite uses it only
+for the control notice and its input log, and believes it only from its
+owner socket, a credential holding every verb on `global` (the ceiling
+`phux host add` pairs a hub with), or a person's device paired with the
+legacy six-verb ceiling. It never authorizes: the satellite checks
+the hub's link credential, and the hub checks the sender's grants.
 
 ## Paired devices
 
 A person's device paired with the full-control ceiling (`phux host add`, a
-`phux pair --enroll` ticket, or `phux workload add-key --principal human`
-with that ceiling) is also enrolled with `observe@display` and
-`observe@window`: the person owns both machines. An automation key never
-gets them. Devices paired before watching needed a grant were given both
-once; [Remote machines](./remote.md#watching-windows-and-displays) has the
-details.
+`phux pair --enroll` ticket, or `phux workload add-key --principal human`)
+also gets `observe@display` and `observe@window`. An automation key never
+does.
 
 ## On the wire
 
-The class is `SPAWN_RESOURCE` field 18 and `RESOURCE_STATE` field 6 (`page`
-1, `window` 2, `display` 3; absent is none), and the hub's input stamp is one
-trailing byte on `SEND_DOCUMENT_INPUT`, bit `1 << class` per class allowed.
-The relayed identity follows it as two strings (credential, then name, each
-at most 255 bytes); when the hub allowed every class, the byte is `0xff`.
-An older server ignores all of these, and an older satellite then judges
-the hub's link alone. Watching adds nothing to the wire.
+The class is `SPAWN_RESOURCE` field 18 and `RESOURCE_STATE` field 6
+(`page` 1, `window` 2, `display` 3; absent is none). The hub's stamp is one
+trailing byte on `SEND_DOCUMENT_INPUT`, bit `1 << class` per allowed class
+(`0xff` for all), followed by the relayed credential and name, each at most
+255 bytes. An older peer ignores them.
 
 ## In Rune
 
-Rune's panes send input too. A surface whose document declares
-a class takes a click at the frame pixel under the pointer (contain-fit, so
-a press in the letterbox bars sends nothing), a press that moves 4 points or
-more as `Drag` from where it went down to where it came up (selecting text),
-the wheel as `Scroll` in frame
-pixels (positive `dy` scrolls the page down), and, while focused, printable
-keys as `Type` and Enter, Tab, Backspace, Escape and the arrows as `Key`;
-Cmd and Ctrl chords stay the app's. A document with no class, or one whose
-send was refused for a missing grant or producer, is a view-only mirror: it
-captures neither pointer nor keys, and the refusal is said once.
+A surface whose document declares a class takes clicks at the frame pixel
+under the pointer (letterbox presses send nothing), a press that moves 4
+points or more as `Drag`, the wheel as `Scroll`, and, while focused,
+printable keys as `Type` and Enter, Tab, Backspace, Escape and arrows as
+`Key`. Cmd and Ctrl chords stay Rune's. A classless or refused surface is
+view-only and says why once.
 
 ## The clipboard
 
-A paste and a copy are input too, under the same grant. `Paste` puts text
-(up to 1 MiB) on the host clipboard (`pbcopy`, or `wl-copy` from
-wl-clipboard on Wayland; a missing tool is an error, never typing) and
-presses Cmd+V or Ctrl+V (Ctrl+Shift+V when Hyprland's focused window is a
-terminal such as kitty, foot, Alacritty, Ghostty or WezTerm; on Linux through
-the virtual keyboard, else `wtype` or `ydotool`); a page inserts the text
-instead. The server holds a paste up to 3 s for the producer's outcome, so a
-chord that could not be pressed is an error the viewer sees; an older
-producer never answers, and the paste then succeeds. `CopyClipboard`
-returns the host clipboard's text, at most 1 MiB, to the viewer that asked
-and no one else: the server holds the command open until the producer
-answers; an empty clipboard is the error "Nothing copied on the host".
-`CopySelection` copies what is selected on the host first: the producer
-presses Cmd+C or Ctrl+C (a terminal's Ctrl+Shift+C), waits a moment, then
-answers as `CopyClipboard` does; with `cut` it presses Cmd+X or Ctrl+X (a
-terminal copies). `SelectAll` presses Cmd+A or Ctrl+A (skipped in a
-terminal); a page runs the browser's own select-all, copy and cut. From the
-CLI, `phux agent page paste|copy`; in Rune, Cmd+V and Cmd+C (Ctrl+Shift+V
-and Ctrl+Shift+C on Linux) over a surface pane; on a phone, the paste and
-copy buttons beside the keyboard and the menu over a selection.
+Paste and copy are input under the same grant. `Paste` puts up to 1 MiB on
+the host clipboard (`pbcopy`, or `wl-copy`) and presses the paste chord; a
+page inserts the text. `CopyClipboard` returns the host clipboard, at most 1
+MiB, to the requesting viewer only. `CopySelection` presses the copy chord
+first (or cut, with `cut`), and `SelectAll` the select-all chord. From the
+CLI: `phux agent page paste|copy`; in Rune: Cmd+V and Cmd+C (Ctrl+Shift+V
+and Ctrl+Shift+C on Linux) over a surface pane.

@@ -240,7 +240,7 @@ fn watch_exit(
 }
 
 /// The `--json` resume line on stderr. Its shape is documented in
-/// docs/build-a-client.md and checked against it by a test.
+/// docs/building.md and checked against it by a test.
 pub(crate) fn cursor_json(cursor: Option<&str>, cursor_void: bool) -> serde_json::Value {
     serde_json::json!({ "cursor": cursor, "cursor_void": cursor_void })
 }

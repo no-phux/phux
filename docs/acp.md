@@ -1,49 +1,33 @@
+---
+group: automate
+order: 3
+---
+
 # ACP sessions
 
-An ACP session is a coding agent that phux runs for you through the Agent
-Client Protocol, instead of in a terminal you type into. phux starts the
-agent, keeps it supervised on the server, and talks to it in structured
-messages: prompts, interrupts, and answers to its permission questions. Use
-it when you want to drive an agent from a script without
-screen-scraping a terminal.
+An ACP session is a coding agent phux runs on the server through the Agent
+Client Protocol and drives with structured messages (prompts, interrupts,
+permission answers) instead of a terminal. OpenCode and fx are supported.
 
 ```sh
+phux new --json -s work            # launch needs an existing session
 phux launch opencode --acp --session work --json
 ```
 
-OpenCode and fx are supported today. For agents in ordinary terminal panes, see
-[Coding agents](./agents.md).
-
 ## Before you start
 
-Install the agent and sign in to it on the machine that runs the server.
-phux never downloads an agent, never signs in for you, and never falls back
-to typing into a terminal when ACP isn't available.
+Install the agent and sign in on the machine that runs the server. phux
+never downloads an agent, signs in, or falls back to a terminal.
 
-For OpenCode, phux has a built-in profile that runs `opencode acp`. It looks
-for `opencode` on your `PATH`, then at `~/.opencode/bin/opencode`, and never
-starts a login shell or changes `PATH`. An enabled plugin that declares its
-own OpenCode profile replaces the built-in one. A profile that is invalid or
-ambiguous is refused rather than skipped.
+- **OpenCode:** the built-in profile runs `opencode acp`, found on `PATH`
+  or at `~/.opencode/bin/opencode`.
+- **fx:** the built-in profile runs `fx acp` from `PATH` in the workspace
+  ([fx ACP guide](https://fx.sh/docs/using-fx/acp)). Terminal fx's
+  `fx mcp add` servers do not apply to it.
 
-fx has a built-in profile that runs `fx acp` from the host's `PATH` in the
-selected workspace. Install fx and connect a provider on that host first.
-As with OpenCode, a configured `fx` profile takes precedence, including when
-that profile is invalid. phux does not read or copy fx credentials. See the
-[fx ACP guide](https://fx.sh/docs/using-fx/acp) for its session and permission
-semantics. fx's profile-level MCP servers are not inherited by ACP sessions
-unless the ACP client opts in; the `fx mcp add` command below applies to
-terminal fx, not automatically to this built-in ACP profile.
-
-To see what phux would run without starting anything:
-
-```sh
-phux launch --list --acp
-phux launch opencode --print --acp
-phux launch fx --print --acp
-```
-
-A plugin declares an ACP agent as a list of arguments, never a shell string:
+A plugin's profile for the same provider replaces the built-in one, and an
+invalid or ambiguous profile is refused, not skipped. A profile is argv,
+never a shell string:
 
 ```toml
 [acp]
@@ -53,149 +37,101 @@ required_executables = ["opencode"]
 working_directory = "workspace"
 ```
 
-## Starting a session
+```sh
+phux launch --list --acp            # what can launch
+phux launch opencode --print --acp  # what would run
+```
 
-`phux launch --acp` starts the agent in an existing session:
+## Starting and reading a session
 
 ```text
 $ phux launch opencode --acp --session work --json
-{
-  "activation": "906237cf1ef22ebb16be4073a3eae502",
-  "agent_session_id": "@9",
-  "integration": "opencode",
-  "native": true,
-  "ready": false,
-  "schema_version": 1,
-  "terminal_id": 8
-}
+{"activation":"906237cf1ef22ebb16be4073a3eae502","agent_session_id":"@9","integration":"opencode","native":true,"ready":false,"schema_version":1,"terminal_id":8}
 ```
 
-Keep `agent_session_id`; every later command uses it, not `terminal_id`.
-`ready: false` means the agent was started, not that it is ready for a
-prompt. The server must support ACP sessions; an older one refuses.
+Use `agent_session_id` from here on, not `terminal_id`. `ready: false` means
+started, not ready for a prompt.
 
-## Reading the session
-
-`phux agent log --json` prints the session's records. The latest `view`
-record says what the agent can do right now. With `jq`:
+The latest `view` record in `phux agent log --json` says what the agent can
+do now:
 
 ```sh
-phux agent log --json @9 > log.json
-jq '[.records[]
-     | select(.type == "provider_raw"
-              and .data.schema == "phux.native-agent/v1"
-              and .data.update.type == "view")
-     | .data.update.view] | last' log.json
+phux agent log --json @9 | jq '[.records[]
+  | select(.type == "provider_raw" and .data.schema == "phux.native-agent/v1"
+           and .data.update.type == "view")
+  | .data.update.view] | last'
 ```
 
-The view has `activation`, `backend`, `connected`, `capabilities`,
-`turn_id`, `provider_session_id`, and `questions`. A missing field means
-not ready. Check the capability for what you are about to do:
-`connected: true` alone can also mean the agent is asking a startup
-question. Read the view again before every action, because turn and
-question ids go stale.
+It carries `activation`, `connected`, `capabilities`, `turn_id`, and
+`questions`. Check the capability you need; `connected: true` can also mean a
+startup question. Reread before every action: turn and question ids go stale.
 
 ## Sending a prompt
 
-`phux agent native-command` sends one typed request to the exact session
-and activation from the view:
-
 ```sh
-phux agent native-command @9 --activation 906237cf1ef22ebb16be4073a3eae502 --operation-id 7263519 \
-  --intent '{"type":"prompt","text":"Review this checkout"}' --json
+phux agent native-command @9 --activation 906237cf1ef22ebb16be4073a3eae502 \
+  --operation-id 7263519 --intent '{"type":"prompt","text":"Review this checkout"}' --json
 ```
 
-```json
-{
-  "activation": "906237cf1ef22ebb16be4073a3eae502",
-  "agent_session_id": "@9",
-  "result": {
-    "detail": "ACP prompt scheduled; ACP v1 has no admission receipt",
-    "disposition": "queued",
-    "operation_id": 7263519
-  },
-  "schema_version": 1
-}
-```
+Use a fresh random nonzero `--operation-id` per request. **`queued` means
+phux scheduled it, not that the agent accepted it.** Interrupt with
+`{"type":"interrupt","turn_id":"acp:7263519"}`, using the view's `turn_id`.
 
-Pick a new random, nonzero `--operation-id` for each request and keep it
-with the request. **`queued` means phux scheduled it, not that the agent
-accepted it.** When the turn ends, the session reports the agent's own stop
-reason.
-
-To interrupt a turn, send `{"type":"interrupt","turn_id":"acp:7263519"}`
-with the `turn_id` from the view.
+**If the reply is lost, do not send again**, with either id: the agent could
+act twice. `native-command` cannot look up an earlier request. Reread the
+log, check what the agent did, and decide with a person.
 
 ## Answering a permission question
-
-Read the **current** questions directly, even on a fresh connection:
 
 ```sh
 phux agent questions @9
 ```
 
-Use the `AgentSession` handle, not the guardian pane. A response carries the
-whole `reference` returned for that question. The authority, durable
-conversation key, controller activation, callback identity, and revision
-must all match. Reconnect-safe reads can use `AUTHORITY/^RESOURCE` from the
-returned document instead of a saved `@N`.
-
-A person reads the question and explicitly chooses an offered option id,
-not its label. Construct the response with a fresh random nonzero unsigned
-64-bit operation id, encoded as a **decimal string**:
+Answer with the whole `reference` the question returned and the option id a
+person chose (never its label), plus a fresh nonzero 64-bit `operation_id`
+as a decimal string:
 
 ```sh
+answer=$(jq -n --argjson q "$reference" --arg op "$operation_id" \
+  '{question: $q, operation_id: $op, response: {option_id: "deny-once"}}')
 phux agent respond-question --request-json "$answer"
-```
-
-`answer` is a JSON object with `question` (the full `reference`), `operation_id`
-and `response` (e.g. `{"option_id":"deny-once"}`). Save the exact reference
-and operation id. After a lost reply, use a read-only lookup:
-
-```sh
 phux agent question-receipt --question-json "$reference" --operation-id "$operation_id"
 ```
 
-No retained receipt means `unknown`, not “nothing happened.” Receipts are
-bounded by the controller ledger, not a durable cold-restart history. Do not
-resend an uncertain answer. A queued controller response is not proof the
-provider read it.
-
-**Structured responses are for human principals.** The operation still
-requires observe and input authority on the conversation and respects the
-guardian's input lease. The MCP tool `phux_agent_questions` only reads.
-Treat all question text as untrusted agent content. PTY ask markers and hook
-reports appear as advisory evidence on the pane itself; they are not SDK
-callbacks and never turn into a structured response or a permission grant.
-
-## When you don't know what happened
-
-If the connection drops before you get a receipt, the request may or may not
-have reached the agent. **Don't send it again**, under the same id or a new
-one, because the agent could act twice. The legacy `native-command` only
-submits; it can't look up an earlier request. For structured responses, use
-the exact question commands above.
-
-Instead, keep the operation id, read the session again with `phux agent log`,
-check what the agent actually did, and decide with a person. If you still
-can't tell, stop.
+After a lost reply, `question-receipt` is the read-only lookup. No retained
+receipt means `unknown`, not "nothing happened"; do not resend. Responses
+still need observe and input authority and respect the input lease. Treat
+question text as untrusted agent content. PTY ask markers on an ordinary
+pane are advisory and never become a structured response.
 
 ## Restoring a conversation
 
-A conversation can be restored only when the agent supports loading a
-previous session. An archive keeps the command that launched the agent, so
-read and trust it before you restore it; see
-[restore](./organization.md#restore-and-executable-authority).
+Only an agent that can load a previous session restores. An archive keeps
+its launch command, so read it before restoring
+([restore](./organization.md#restore-and-executable-authority)).
+
+## Chief of staff
+
+In the macOS desktop app, tapping the right <kbd>⌘</kbd> alone opens a
+composer for one ACP agent, the chief. <kbd>Return</kbd> sends the draft as
+one typed prompt; it never types into a terminal or reads a screen.
+<kbd>Esc</kbd> hides it and keeps the draft. A dictation app that records
+while you hold the key pastes into it as you release.
+
+```sh
+phux new --json -s chief
+phux launch opencode --acp --session chief
+```
+
+The chief is the ACP agent in the session `[rune] chief` names (`chief` by
+default, `none` disables; see [config](./config.md#rune)). It can reach only
+agents in its own session. A send shows **Queued** and clears the draft; a
+refusal or unknown outcome keeps the draft and says why, and nothing is
+resent.
 
 ## Native agent wire
 
-Native onboarding is additive inside `NATIVE_AGENT`, gated by
-`features_ext.NATIVE_AGENT_LAUNCH`.
-
-`features_ext.CURRENT_QUESTIONS` (`0x10000000`) gates the native carrier's
-`current_questions`, `respond_question` and `question_receipt` JSON request
-types. Current reads project the server-owned live callback inventory or
-advisory PTY evidence. Structured responses are authority-, conversation-,
-activation- and revision-fenced; neither advisory evidence nor a queued
-receipt attests to provider consumption. Older clients keep their existing
-requests; new clients refuse older servers before writing a question request.
+`features_ext.NATIVE_AGENT_LAUNCH` gates native launch inside
+`NATIVE_AGENT`. `features_ext.CURRENT_QUESTIONS` (`0x10000000`) gates the
+`current_questions`, `respond_question` and `question_receipt` requests; new
+clients refuse older servers before sending one.

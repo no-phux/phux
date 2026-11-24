@@ -1,3 +1,7 @@
+---
+publish: false
+---
+
 # Substrate
 
 The authority and work-store constraints below extend the
@@ -24,7 +28,7 @@ status is not the live decision.
 The shipping [keeper exchange](../crates/phux-work/src/wire.rs) is a private
 local-socket interface between equal builds, **not** a public cross-host
 coordinator protocol. Joined satellites can already use their hub's mail
-and claims through the [hub work-store route](./hub-mail.md).
+and claims through the [hub work-store route](./remote.md#mail-across-a-hub).
 That route does not implement the proposed multi-host task coordinator.
 
 The accepted forward-compatible design for a future coordinator uses a

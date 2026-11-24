@@ -1,5 +1,5 @@
 //! TCP port forwarding over the phux connection
-//! (`features_ext.FORWARD_TCP`, `docs/forwarding.md`).
+//! (`features_ext.FORWARD_TCP`, `docs/ssh.md#forwarding-a-port`).
 //!
 //! A client asks the server to dial a TCP port with `FORWARD_OPEN`
 //! (answered with `CommandValue::ForwardOpened`, the forward's id), pulls
@@ -11,6 +11,19 @@
 //! `AGENT_OFFER`, receives each request as an `agent_request` event, and
 //! answers with `AGENT_REPLY`. The decoder enforces every bound here with
 //! [`DecodeError::ForwardLimitExceeded`](crate::wire::DecodeError::ForwardLimitExceeded).
+//!
+//! The server's contract: `FORWARD_OPEN` answers once connected, within
+//! 10 s. A read returns what the target sent, else the first bytes within
+//! 20 s, else nothing with `eof` false; `eof` closes only the target's side.
+//! A write is acknowledged after the server wrote it all (the backpressure);
+//! a write after `fin` is `INVALID_COMMAND`. One read and one write per
+//! forward are in flight at a time (`RESOURCE_EXHAUSTED` otherwise), which
+//! keeps bytes in order. A connection holds at most 32 forwards. A forward
+//! untouched for a minute after its dial, or idle for five, is closed, so a
+//! client keeps a read waiting to hold a quiet connection open. Ids are never
+//! reused within a server process: a stale id is `NOT_FOUND`. A target
+//! outside loopback and `[forward] allow` is `PERMISSION_DENIED`; a failed or
+//! reset dial is `UNAVAILABLE` and ends the forward.
 
 /// The most bytes one `FORWARD_READ` may ask for and one `FORWARD_WRITE`
 /// may carry, and so the largest [`ForwardChunk`].

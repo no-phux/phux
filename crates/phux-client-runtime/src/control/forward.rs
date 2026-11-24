@@ -1,5 +1,5 @@
 //! TCP port forwarding (`FORWARD_*`, behind `features_ext.FORWARD_TCP`;
-//! `docs/forwarding.md`).
+//! `docs/ssh.md#forwarding-a-port`).
 //!
 //! Each call is one correlated command whose answer resolves a
 //! [`ForwardCall`], and [`relay`] pumps one local connection through a

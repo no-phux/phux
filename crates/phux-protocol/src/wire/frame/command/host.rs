@@ -60,7 +60,7 @@ macro_rules! host_commands {
         contract: u8,
     },
     /// Send one HTTP request to a service on this server's host, or on the
-    /// named satellite's (`docs/host-services.md`). The reply is
+    /// named satellite's (`docs/protocol-files.md#host-services`). The reply is
     /// [`CommandValue::ServiceHttpHead`], sent once the response head
     /// arrives; the body is pulled with [`Command::ServiceHttpRead`].
     ServiceHttpOpen {

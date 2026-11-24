@@ -175,7 +175,6 @@ check_tree() {
         './compatibility.md'
         './spec/wire-schema.json'
         './program-protocol.md'
-        './any-program-status.md'
         './plugins.md'
         './agents.md#agent-setup'
         './agent-quickstart.md#call-phux-from-a-program'
@@ -192,8 +191,8 @@ check_tree() {
     require_phrase "$hub" 'There is no JSON socket.'
     require_phrase "$hub" 'There is no example application.'
     require_phrase "$hub" 'The static plugin index is built from the GitHub topic `phux-plugin`'
-    # any-program-status.md is required above. This gate does not require
-    # every file under docs/; libghostty.md is not an entry point.
+    # This gate does not require every file under docs/; libghostty.md is
+    # not an entry point.
     require_phrase "$index" 'evidence-ranked; screen is the floor'
     require_phrase "$index" 'It has not been measured on a live Claude Code, Codex, OpenCode, or pi session'
     require_phrase "$index" 'There is no public SDK.'
@@ -227,7 +226,6 @@ self_test() {
     printf '# Compatibility\n\n## Making a change compatible\n' >"$repo/docs/compatibility.md"
     printf '{}\n' >"$repo/docs/spec/wire-schema.json"
     printf '# Program protocol\n' >"$repo/docs/program-protocol.md"
-    printf '# Any program can report status\n' >"$repo/docs/any-program-status.md"
     printf '# Sequences\n\n## Precedence\n' >"$repo/docs/program-sequences.md"
     printf '# Plugins\n\n## Managing plugins\n\n## Examples\n' >"$repo/docs/plugins.md"
     printf '# Quickstart\n\n## Call phux from a program\n\n## Run without a terminal\n' >"$repo/docs/agent-quickstart.md"
@@ -245,8 +243,6 @@ self_test() {
 
 [llms.txt](./llms.txt)
 
-<!-- TODO: the page titled "Any program can report status" is not on main. -->
-
 ## Entry points
 
 - [Versioned `--json`](./scripting.md#json-output-and-errors) and the [CLI reference](./reference/cli.md).
@@ -254,7 +250,6 @@ self_test() {
 - [`phux watch`](./scripting.md#watching-events).
 - [Wire protocol](./protocol.md) and [compatibility](./compatibility.md) and [`wire-schema.json`](./spec/wire-schema.json).
 - [OSC 7501](./program-protocol.md).
-- [Any program can report status](./any-program-status.md).
 - [Plugins](./plugins.md).
 - [Agent integrations](./agents.md#agent-setup).
 - [Calling phux from a program](./agent-quickstart.md#call-phux-from-a-program) and [embedding](./embedding.md).
@@ -309,7 +304,6 @@ https://docs.phux.sh/llms.txt
 - [`phux watch`](./scripting.md#watching-events).
 - [Wire protocol](./protocol.md) and [compatibility](./compatibility.md) and [`wire-schema.json`](./spec/wire-schema.json).
 - [OSC 7501](./program-protocol.md).
-- [Any program can report status](./any-program-status.md).
 - [Plugins](./plugins.md).
 - [Agent integrations](./agents.md#agent-setup).
 - [Calling phux from a program](./agent-quickstart.md#call-phux-from-a-program) and [embedding](./embedding.md).

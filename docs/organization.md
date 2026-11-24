@@ -1,128 +1,81 @@
+---
+group: internals
+order: 2
+---
+
 # Organization and execution
 
-The server owns session membership and shared arrangements. Clients project
-that organization into tabs and panes; they do not independently decide where
-a resource belongs. Start with [concepts](./concepts.md) for user vocabulary,
-[protocol](./protocol.md) for commands, and [troubleshooting](./troubleshooting.md#downgrading)
-for recovery operations.
+The server owns session membership, arrangements, and the durable record of
+what runs; clients project it into tabs and panes and never decide on their
+own where a resource belongs. Vocabulary is in [concepts](./concepts.md);
+commands are in [protocol](./protocol.md).
 
 ## Records, handles, and arrangements
 
-Use the [identity terms](./concepts.md#names-ids-and-keys) consistently.
-Clients must validate authority, record key and activation/incarnation when
-reconnecting, rather than adopting whichever object now has the same number.
+Use the [identity terms](./concepts.md) consistently. On reconnect, a client
+validates authority, record key and activation, rather than adopting whatever
+object now has the same number.
 
-Every resource belongs to exactly one server-owned session. Moving it
-preserves its identity and execution; removing the last member of an
-Ephemeral session deletes that session in the same transition. The designated
-Intake is persistent and cannot be deleted. An arrangement is presentation,
-not membership: it may name only members of its session, and moving a member
-prunes its old arrangement entries atomically. Splits are binary, with finite
-ratios strictly between zero and one. Focus, selection, scroll and zoom are
-client-local; a shared layout edit must not take over human focus.
+- Every resource belongs to exactly one session. Moving it keeps its identity
+  and process. Removing the last member of an Ephemeral session deletes the
+  session in the same transition; the Intake session cannot be deleted.
+- An arrangement is presentation, not membership. It names only members of
+  its session, and moving a member prunes its old entries atomically.
+- Splits are binary, with finite ratios strictly between zero and one.
+- Focus, selection, scroll, zoom and the shown slot tab are client-local. A
+  shared layout edit never takes over a person's focus.
+- A locked group (`ARRANGEMENT_LOCK`, feature `TAB_LOCK`) refuses any close or
+  `ARRANGEMENT_REPLACE` that would empty or drop it, with `INVALID_ARGUMENT`
+  and no change. A replace carries locks over by group id, so a client that
+  does not know the flag cannot clear it. `SESSION_KILL` overrides locks, and
+  a natural exit is not a close.
 
-A group can be **locked** (`ARRANGEMENT_LOCK`, behind `features_ext.TAB_LOCK`).
-While it is, terminating its last member, a legacy kill that would empty it,
-and an `ARRANGEMENT_REPLACE` that drops it are all refused with
-`INVALID_ARGUMENT` naming the tab, and nothing changes. A replacement
-never locks or unlocks: the server carries each lock over by group id, so a
-client that does not know the flag cannot clear it. `SESSION_KILL` overrides
-locks, because a locked tab guards against closing that tab, not against
-ending the session. A natural exit is not a close, so it isn't refused. The
-flag is stored in the arrangement record, so it survives a hot upgrade, and on
-the wire it is a trailing byte of the group record that older peers skip.
+The pure [core apply](../crates/phux-core/src/apply.rs) owns these invariants
+and [arrangement validation](../crates/phux-core/src/arrangement.rs) owns tree
+validity. The legacy layout codec translates into this model; it does not
+replace it.
 
 ### Slot tabs
 
-A layout slot (a leaf) can hold several terminals as **slot tabs**: one shows,
-and the rest keep running at the slot's size, so switching never reflows.
-"Stacked" already means a vertical split, so the feature isn't called that.
+A leaf can hold several terminals as slot tabs: one shows, the rest keep
+running at the slot's size, so switching never reflows. A slot tab holds
+one terminal, never a subtree.
 
-- **Shape.** The leaf's own entry is the slot's default tab. Its other tabs
-  ride on the leaf as `tabs`, an ordered list of entries, with `shown_at` giving
-  the default's place in the strip. On the wire they are trailing fields
-  of the leaf record, which older peers skip, the same way they skip the
-  lock byte. In the stored JSON (the org store and upgrade blob) they are
-  default-empty fields an older server ignores. A tab holds one terminal,
-  never a subtree.
-- **Older peers.** An older client sees and edits the default tab only; the
-  others are session members with no place in its layout. An older server
-  loads the record without them, so a rollback starts and their terminals
-  keep running, unarranged. A new node kind would instead make every older
-  client's `ARRANGEMENT_GET` unreadable, block the TUI's layout writes, and
-  stop an older server from loading its store, so there is none.
-- **Carry-over.** An `ARRANGEMENT_REPLACE` from a client that doesn't know
-  tabs cannot drop them: the server carries each slot's tabs over by the
-  leaf's entry id, then by its default's member key (the legacy layout
-  adapter mints fresh ids). A tab the replacement places somewhere else
-  leaves the slot, because an explicit placement wins. If the replacement
-  removed the slot, its tabs become unarranged members; nothing is closed.
-- **Invariants.** A member appears at most once in an arrangement, tabs
-  included, and every tab is a member of the session. Moving a member out
-  (`phux mv`) or ending it removes it from its slot. When it was the default,
-  the next tab in strip order takes the leaf. The last tab leaving
-  removes the leaf, and its split collapses as today. Undo restores whole
-  groups, so it restores tabs with them.
-- **What shows is client-local.** Which tab a client shows is client-local,
-  like the active group, so switching on a phone never flips a desktop. The
-  stored default is what a fresh attach and an older client show; it moves
-  only when tabs are added, removed or reordered.
-- **Layout verbs.** A slot is one unit for split, zoom, swap and move.
-  `name:G.P` counts slots, not tabs, and `@N` names any tab. Clients keep
-  their split tree as it is and hold each group's slot tabs beside it, keyed
-  by the shown leaf, so no tree walker changes.
-- **Advertised.** The server advertises `features_ext.SLOT_TABS`. A client
-  writes tabs only to a server that advertises it, because an older server
-  would drop the trailing fields and the tabs with them.
-- **Surface.** `phux slot add @N --to @M` makes terminal `@N` a tab of the
-  slot showing `@M`. `phux slot out @N` gives a tab a slot of its own, split
-  beside the one it left. `phux slot next|prev [@M]` moves the slot's
-  default, since a headless verb has no view of its own. In an attached
-  client the keys switch only what that client shows: `C-a }` and `C-a {`
-  in the TUI. In Rune they are
-  Cmd+Shift+→ and Cmd+Shift+← on macOS (beside Cmd+← and Cmd+→, which walk
-  terminals) and Ctrl+Shift+→ and Ctrl+Shift+← elsewhere. In Rune,
-  dragging a terminal's sidebar row onto a pane of the same session makes
-  it that pane's slot's last tab. In the TUI, dragging a pane by its title
-  onto another pane does the same. A slot with two
-  or more tabs shows a one-row strip of their titles and agent states.
-
-The pure [core apply function](../crates/phux-core/src/apply.rs) owns these
-invariants; [arrangement validation](../crates/phux-core/src/arrangement.rs)
-owns tree validity. Expected revisions, operation ids and live activation
-fences are concurrency/authority checks, not optional UI bookkeeping. The
-legacy TUI layout metadata adapter translates into this model; it does not
-supplant it.
+- The leaf's own entry is the default tab; the others are a trailing `tabs`
+  list on the leaf, with `shown_at` placing the default in the strip. Older
+  peers skip the trailing fields: an older client sees only the default, and
+  an older server loads the record without the extra tabs, leaving their
+  terminals running unarranged.
+- A client writes tabs only to a server advertising `SLOT_TABS`, because an
+  older server would drop them.
+- A replace from a client that does not know tabs cannot drop them: the server
+  carries them over by leaf entry id, then by the default's member key. An
+  explicit new placement wins; a removed slot leaves its tabs unarranged, not
+  closed.
+- A member appears once per arrangement, tabs included. When the default tab
+  leaves, the next tab takes the leaf; when the last leaves, the leaf goes and
+  its split collapses.
+- A slot is one unit for split, zoom, swap and move. `name:G.P` counts slots;
+  `@N` names any tab.
+- The stored default is what a fresh attach and an older client show. It
+  moves only when tabs are added, removed or reordered, or by
+  [`phux slot next|prev`](./reference/cli.md#phux-slot). An attached client's
+  keys ([keys](./reference/keys.md)) change only what that client shows.
 
 ## Close intents
 
-Closing a view changes client presentation.
-
-| Request | Target and effect | Reply |
+| Request | Target | Reply |
 | --- | --- | --- |
-| `KILL_RESOURCE` | Live handle and bound descendants. Session lifetime governs emptied sessions. | Close committed by the serving host. |
-| `KILL_RESOURCES` | Host-local groups. Naming all members can delete a persistent session. | Keyed replies report each id. Unkeyed skips and relay failures appear in server logs. |
-| `CLOSE_TAB_RESOURCES` | Host-local groups. Preserves keep-empty sessions. Requires its feature bit. | Skips missing locals and forwards satellite groups without waiting. |
-| `RESOURCE_TERMINATE` | Handle, instance, and activation on an organization peer. | Matching `Accepted` confirms admission. Lifecycle events report effects. Each request settles separately. |
+| `KILL_RESOURCE` | live handle and bound descendants | close committed by the serving host |
+| `KILL_RESOURCES` | host-local groups; naming every member can delete a persistent session | keyed replies per id |
+| `CLOSE_TAB_RESOURCES` | host-local groups; keeps keep-empty sessions; needs its feature bit | forwards satellite groups without waiting |
+| `RESOURCE_TERMINATE` | handle, instance and activation | `Accepted` confirms admission; lifecycle events report the effect |
 
-`KILL_RESOURCE_IF` checks allocation instance and use for delayed cleanup.
-`SESSION_KILL` ends the session and overrides tab locks. See
-[retry and incarnation rules](./protocol.md#receipts-retries-and-backpressure).
-
-Native `close_terminals` and browser `kill_pane` use graceful terminate on
-organization peers after verifying activation. Missing identity makes close
-unavailable or refused. On older peers, `close_terminals` requires advertised
-keep-empty support and the browser uses single kill. Native `kill_terminal`
-explicitly uses single kill. Lost or unreadable replies can leave outcomes
-unknown. Reconcile from the serving host's state and receipts.
-
-## Complete creation intentions
-
-The [public terminal workflow](./public-api.md) commits membership, a stable
-arrangement entry and launch intent together. Invalid or stale placement
-refuses before any process starts; callers do not spawn then publish a layout
-or compensate with a kill. OS launch follows the durable commit and can fail.
-Its receipt distinguishes that failure from refusing the organization edit.
+`KILL_RESOURCE_IF` checks allocation instance for delayed cleanup.
+`SESSION_KILL` ends the session and overrides locks. Every close is planned
+first; admission and teardown use the same plan, and children close before
+parents. A lost reply leaves the outcome unknown: reconcile from the serving
+host's state and receipts ([retries](./protocol.md)).
 
 ## Commit before publication
 
@@ -135,148 +88,67 @@ owns durability, retry retention and stale-writer fencing.
 
 A hot handoff can preserve live PTYs; a cold restart cannot. Startup
 [reconciliation](./organization-store.md#activations-and-reconciliation)
-checks process identity and preserves uncertainty as **Lost**, never implicitly
-relaunching a possibly live process. Executor persistence retries record evidence,
-not execution.
+checks process identity and preserves uncertainty as **Lost**, never
+implicitly relaunching a possibly live process. Executor persistence retries
+record evidence, not execution.
 
 ## Work and missions
 
-Organization records own execution, not task scheduling. The separate
-[work store](../crates/phux-work/src/lib.rs) has one keeper writer per store,
-on the host that runs it. Mission documents compose over its client and
-never open SQLite directly.
-Operation ids deduplicate work/mail mutations and expected revisions refuse
-stale edits. Mail/path claims are advisory host-local coordination, not
-filesystem enforcement or an authenticated execution identity; see
-[claims and acquisition fences](./agents.md#mail-and-path-claims).
+Organization records own execution, not scheduling. The
+[work store](../crates/phux-work/src/lib.rs) has one keeper writer per store on
+its host; missions use its client and never open SQLite. Operation ids
+deduplicate mutations and expected revisions refuse stale edits. Mail and path
+claims are advisory ([agents](./agents.md)).
 
-The shipping [`mission start`](./reference/cli.md#phux-mission-start) creates
-a task worktree, brief, session and configured harness worker, with a bounded
-agent cap and a revision-checked keeper commit. Queued work pins its owner
-before any worker effect; an unrelated authority cannot promote it. Its
-[CLI implementation](../crates/phux/src/commands/mission_start.rs),
-[pure launch planning](../crates/phux-work/src/mission/start.rs) and
-[keeper start transaction](../crates/phux-work/src/start.rs) own the sequence.
-
-The keeper binds each started run to the execution in the host's placed-create
-receipt: owning authority, resource key, activation, and instance. A pane ID
-is an optional presentation hint and is never used to settle the run. The
-keeper reads the exact durable state on startup, on wakeups, and after a
-journal gap. Replaying the same derived observation ID writes nothing.
+[`phux mission start`](./reference/cli.md#phux-mission-start) creates a
+worktree, brief, session and worker under an agent cap, pinning the queued
+owner before any worker effect. The keeper binds each run to the exact
+execution in the placed-create receipt (authority, resource key, activation,
+instance); a pane id is only a hint. It rereads that state on startup, on wake
+and after a journal gap.
 
 | Observed fact | Task state |
 | --- | --- |
-| the keeper launches a queued task | `working` |
-| agent `working` | `working` |
+| keeper launches a queued task; agent `working` | `working` |
 | agent `blocked` | `needs_you` |
-| agent `done` | `done_unchecked` |
-| process exit 0 after `done` | `done_unchecked` |
-| process exit non-zero, or exit with no `done` | `failed` |
-| confirmed worker launch failure | `failed` |
-| exact execution missing, superseded, lost, or legacy pane-only binding | `needs_you` (`binding_uncertain`) |
+| agent `done`, or exit 0 after `done` | `done_unchecked` |
+| non-zero exit, exit without `done`, confirmed launch failure | `failed` |
+| execution missing, superseded, lost, or a pane-only binding | `needs_you` (`binding_uncertain`) |
 | unresolved `credential_lost` | `needs_you` |
 
-`done` is reserved for merge cleanup and is not written from agent state.
-`needs_you` keeps the agent slot. `done_unchecked` and `failed` free it, and
-the keeper then starts the oldest queued task through the same worktree and
-brief path as `mission start`. The keeper stays up while any task is
-`working` or `queued` and its server still accepts connections; once the
-server is gone it exits at its idle limit and the next verb starts another.
-On exit it waits a short bounded grace and re-reads
-that terminal's agent record before recording `failed`, so a `done` that
-lands in the same moment becomes `done_unchecked`.
+`done` is written only by merge cleanup. `needs_you` keeps the agent slot;
+`done_unchecked` and `failed` free it and start the oldest queued task. On exit
+the keeper rereads the agent record after a short grace, so a simultaneous
+`done` is not recorded as `failed`. Failed setup leaves the worktree; a retry
+reads the retained worker receipt and does not relaunch without it.
 
-The work store migrates to `user_version` 3 to preserve exact execution
-bindings and queued owners. Legacy work, receipts, and pane hints remain
-readable; no execution or owner is inferred from an old pane ID. Legacy
-unpinned queued runs are not automatically launched. Older keepers refuse the migrated
-store rather than observing it with obsolete identity rules. Failed or
-uncertain worker setup leaves the worktree in place. A retry for that same
-worktree checks the authorized session and reads the retained worker receipt;
-it does not launch again if the receipt is missing.
-
-The transition is pure in
-[state.rs](../crates/phux-work/src/mission/state.rs) and applied by
-[the keeper projector](../crates/phux/src/commands/mission_project.rs).
-Journal wake-ups follow
-[ADR-0123](https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0123-events-are-journaled.md)
-and
-[ADR-0130](https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0130-on-disk-pty-journal-is-not-built.md).
-The single keeper writer is
-[ADR-0092](https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0092-durable-work-coordinator-authority.md).
-Agent records are
-[ADR-0040](https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0040-agent-identity-metadata.md)
-and
-[ADR-0046](https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0046-server-side-agent-state-detection.md).
-Delegated grants are
-[ADR-0163](https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0163-actors-and-delegated-agent-grants.md).
-Agents coordinate through phux per
-[ADR-0187](https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0187-agents-coordinate-through-phux.md).
-Single-writer work authority and delegation limits are the
-[substrate decision](./substrate.md). A multi-host
-coordinator, an autonomous Lead, and a durable grant ledger are not
-shipping contracts. Do not infer them from historical design names.
+The projection is pure in [`mission/state.rs`](../crates/phux-work/src/mission/state.rs)
+and applied by [`mission_project.rs`](../crates/phux/src/commands/mission_project.rs).
 
 ## Restore and executable authority
 
-Importing dormant organization records is not permission to execute them.
-Explicit restore/relaunch creates a new execution; it never resurrects the
-old PTY or its scrollback. There are two different agent restore lanes:
+Importing dormant records is not permission to run them. Restore creates a new
+execution; it never resurrects the old PTY or scrollback.
 
-- **Terminal `agent_session` resume:** stores bounded opaque native identity
-  and owning plugin/integration ids. Resume argv is resolved from the
-  **currently enabled, trusted** integration template. Ownership mismatch
-  refuses before creation; other unresolved terminal integrations may warn
-  and fall back to a plain shell. Option-shaped native ids are rejected.
-- **ACP `native_launch` restore:** archives a complete `SpawnNativeAgent`
-  executable recipe, including command argv, cwd and environment. Explicit
-  restore/relaunch currently executes that saved recipe without resolving
-  current integration ownership/templates. **Inspect and trust the archive
-  as executable input before restoring it**; disabling/changing its plugin
-  does not invalidate the saved command. The provider process starts before
-  the `loadSession` capability check, so a later restore failure does not
-  mean no executable ran. `loadSession` is still required to resume the
-  provider conversation, not an executable-trust check.
+- **Terminal `agent_session` resume** stores a bounded native id and the
+  owning integration. Resume argv comes from the currently enabled, trusted
+  integration template; an ownership mismatch refuses, and option-shaped ids
+  are rejected.
+- **ACP `native_launch` restore** runs the archived `SpawnNativeAgent` recipe
+  (argv, cwd, environment) without consulting current integrations. **Treat
+  the archive as executable input.** The provider starts before the
+  `loadSession` check, so a failed restore may still have run it
+  ([ACP](./acp.md)).
 
-The [saved recipe path](../crates/phux-server/src/runtime/organization.rs)
-and [ACP process startup](../crates/phux-agent-host/src/session/acp.rs) define
-that current limitation; [ACP usage](./acp.md) covers
-readiness and operation receipts.
+Owned by [`runtime/organization.rs`](../crates/phux-server/src/runtime/organization.rs),
+[`session/acp.rs`](../crates/phux-agent-host/src/session/acp.rs) and
+[`commands/archive.rs`](../crates/phux/src/commands/archive.rs). Options are in
+the [CLI reference](./reference/cli.md#phux-restore).
 
-The [archive resolver](../crates/phux/src/commands/archive.rs) and
-[live-session bridge tests](../crates/phux/src/commands/archive/bridge.rs)
-own this trust seam; [CLI reference](./reference/cli.md#phux-restore) owns the
-current restore/import options.
+## Durable inspection
 
-## Execution evidence and durable inspection
-
-Organization activation records and creation receipts add optional TLVs:
-`LAUNCH_DIAGNOSTIC` (`47`, at most 128 bytes of JSON `{stage, errno}`) and
-`PERSISTENCE_PENDING` (`48`, boolean, absent means false). Diagnostic stages
-are `pty`, `spawn`, `cwd`, `exec`, `handshake`, `engine`; errno is an optional
-platform OS error, never the program's exit status. There is no command line,
-path or environment payload. Older clients skip these fields; old stored
-activations without a diagnostic remain readable. Unknown exit evidence
-projects as `Unobserved`, never fabricated exit zero.
-
-`features_ext.DURABLE_RESOURCE_INSPECTION` (`0x100000`) gates filter discriminant
-`4` on the existing `GET_ORGANIZATION`: the discriminant is followed by the
-16-byte durable resource key. It returns at most that one resource row, no
-session rows and no continuation cursor. The existing per-resource inventory
-filter uses current membership and authority even without an engine; hidden
-and missing records both yield an empty resource page. New clients check the
-bit before sending; older requests/filters are unchanged. CLI/MCP expose this
-through the existing resource inspection noun; its durable-key JSON document
-is schema 2, while live-engine inspection remains schema 1.
-
-[File transfer and checkout methods](./protocol-files.md) have their own page.
-
-### Where the code lives
-
-Terminal workflow code is split at ownership seams: `runtime/commands/`
-separates dispatch, pane construction, attachment generations, inventory,
-input and satellite forwarding; `runtime/organization/` separates pure command
-translation, execution effects, receipt projection and filtered record reads.
-`state/org/lifecycle.rs` owns bounded retries of executor evidence, not effects.
-The core apply module separates transaction assembly, session edits, placement
-and execution transitions. Public entry points and wire identities are unchanged.
+Activation records and creation receipts carry an optional launch diagnostic
+(stage and OS errno only, never argv, path or environment) and a
+`persistence_pending` flag. With `DURABLE_RESOURCE_INSPECTION`,
+`GET_ORGANIZATION` can filter by a durable resource key and return that one
+row. Field ids are in the [wire schema](./spec/wire-schema.json).

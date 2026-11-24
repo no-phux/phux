@@ -1,5 +1,5 @@
 //! Headless checkout reads: one `CHECKOUT` round trip on the checkout a
-//! Terminal is in (`docs/protocol/host-operations.md`).
+//! Terminal is in (`docs/protocol-files.md#checkout-methods`).
 //!
 //! Never attaches. The server resolves the checkout from the Terminal's live
 //! working directory and answers one typed [`CheckoutAnswer`]; a typed

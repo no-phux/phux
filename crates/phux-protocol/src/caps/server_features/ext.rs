@@ -89,12 +89,12 @@ define_server_feature_word! {
         Credentials = CREDENTIALS = 0x0100_0000,
         /// The server answers `FORWARD_OPEN`, `FORWARD_READ`, `FORWARD_WRITE`,
         /// and `FORWARD_CLOSE`: TCP connections it dials on its own loopback
-        /// for the client (`docs/forwarding.md`). Not advertised when
+        /// for the client (`docs/ssh.md#forwarding-a-port`). Not advertised when
         /// `[forward] tcp = false`.
         ForwardTcp = FORWARD_TCP = 0x0200_0000,
         /// The server answers `AGENT_OFFER` and `AGENT_REPLY`: it brokers
         /// ssh-agent requests from its panes to a client that offered its
-        /// agent (`docs/forwarding.md#ssh-agent`). Advertised only with
+        /// agent (`docs/ssh.md#ssh-agent`). Advertised only with
         /// `[forward] agent = true`.
         ForwardAgent = FORWARD_AGENT = 0x0400_0000,
         /// Arrangement leaves carry slot tabs and the server keeps them

@@ -1,44 +1,21 @@
-# Embed phux
-
-Embed phux in your own app with `phux-client-runtime`: it runs phux's
-libghostty replica in your process, and you paint its `draw::DrawList`. The
-in-repo example is [Phux Rune](../clients/rune/README.md), the desktop client.
-The phone apps reach the same runtime through `phux-client-ffi`'s UniFFI
-surface. Every renderer shares one set of paint rules ([ADR-0189](https://github.com/no-phux/phux/blob/3cd9ddac22075c1b3db2674e2edc4e00c91d67f4/docs/adr/0189-the-terminal-view-is-a-crate-and-paint-rules-are-shared.md)).
-None of these crates is on crates.io yet; depend on them by path or git.
-
+---
+group: build
+order: 7
 ---
 
-## Pick a route
+# Embed phux
 
-| Your app                                               | Depend on                  | You write                                                     |
-| ------------------------------------------------------ | -------------------------- | ------------------------------------------------------------- |
-| A Rust UI (Rune, egui, iced, Slint, a custom renderer)  | `phux-client-runtime`      | Map cells to pixels and draw the [draw list](#the-draw-list). |
-| A phone app                                            | `phux-client-ffi` (UniFFI) | See [phones](./clients.md#phones).                            |
-
-Every route starts the same way: open a client, attach a session, and create a
-view of one terminal. phux does the rest of the terminal: the replica,
-reconnect, acknowledged input, history, selection and search.
-
-## Frames, wakes, and input
-
-One listener and one event drain exist per runtime client. Drain, then
-invalidate affected terminals. A removed slot clears stale presentation even
-when its generation equals the cached number. Never publish a cached frame as
-evidence of recovery.
-
-Raw-send success is a local queue result, not delivery. Unknown delivery is
-terminal-wide. Clear its fence (`acknowledge_projection_if`) only once the
-frame carrying that fence has been presented on a visible, unclipped
-terminal; building or painting a frame is not presentation, and a late
-receipt must not clear a newer fence. Phux Rune does this in
-`clients/rune/src/desk/frame.rs`.
+Embed phux in a Rust app with `phux-client-runtime`: it runs the libghostty
+replica in your process and hands you a `draw::DrawList` to paint.
+[Phux Rune](../clients/rune/README.md) is the in-repo example; phone apps use
+the same runtime through `phux-client-ffi`'s UniFFI surface
+([phones](./clients.md#phones)). The crates are not on crates.io; depend by
+path or git.
 
 ## Any Rust toolkit
 
-Enable the runtime's `engine` feature. This sketch separates connection from
-UI callbacks; `options.control.attach` must select the intended disposable
-server session. Keep the returned client/view alive between callbacks.
+Enable the runtime's `engine` feature. `options.control.attach` selects the
+session. Keep the client and view alive between callbacks.
 
 ```rust
 use phux_client_runtime::draw::{DrawList, Theme, Visibility};
@@ -50,25 +27,40 @@ fn connect(socket: std::path::PathBuf, options: ClientOptions) -> Result<Client,
     Runtime::connect(Target::uds(socket), options)
 }
 
-// After attached/readiness, call client.create_view(&terminal_id)? once.
-// On UI invalidation, acquire the latest immutable frame:
+// Once attached: client.create_view(&terminal_id)?. On invalidation:
 fn draw(client: &Client, view: ViewId, theme: &Theme<Rgb>) -> Option<DrawList<Rgb>> {
     let frame = client.acquire_view(view)?;
     Some(DrawList::build(&frame, theme, Visibility::default()))
 }
-// On closing that view, call client.destroy_view(view)? once.
+// On close: client.destroy_view(view)?.
 ```
 
-`Theme<C>` is generic over your colour type: give it a `fn(Rgb) -> C` and
-optional theme colours, and the list arrives in your colours. Send input
-through `Client::with_control` the way Phux Rune's `desk/input.rs` does, and
-resize the terminal from the view that owns its size.
+`Theme<C>` maps `Rgb` to your colour type. Send input through
+`Client::with_control` as Rune's `desk/input.rs` does; resize from the view
+that owns the terminal's size.
 
-### Inline images
+Build needs `LIBGHOSTTY_VT_SYS_OPTIMIZE = "ReleaseFast"` under `[env]` in
+`.cargo/config.toml` (the only mode with a prebuilt archive), or Zig on
+`PATH`.
 
-Image capabilities default to empty: text-only consumers must not
-advertise protocols they cannot paint. A Rust renderer that paints Kitty images
-adds the matching `phux-protocol` dependency and opts in before connecting:
+## The draw list
+
+Positions are cells; you choose the cell size. Paint in order:
+
+1. Fill the grid with `background`.
+2. Fill each background run.
+3. A solid cursor: fill its cells.
+4. Each text run: one character per column from `col`, at your cell width.
+5. Each block cell: its regions, in eighths of a cell.
+6. Each decoration across `start..end`.
+7. Any other cursor shape.
+
+Faint items paint at half alpha. Colours are final: theme, inverse,
+selection, and hidden or blinked-off text are already applied.
+
+## Inline images
+
+Image protocols default to none; advertise only what you paint:
 
 ```rust
 options.control.image_protocols = phux_protocol::caps::ImageProtocolSet::with(&[
@@ -76,134 +68,70 @@ options.control.image_protocols = phux_protocol::caps::ImageProtocolSet::with(&[
 ]);
 ```
 
-Renderers consume `GridFrame.images` alongside the text draw list. Each
-placement borrows immutable, shared RGBA pixels through an `Arc<ImageData>`,
-with signed cell-space geometry, pixel-space source/crop rectangles and a signed
-z-order. Apply `sample_source` to texture filtering independently of the visible
-`source` slice, so Unicode placeholder cells do not introduce sampling seams.
-Layer them by z-order: planes below `z = -1073741824` paint beneath
-non-default cell backgrounds, other negative planes beneath glyphs, and
-nonnegative planes above text. An explicitly set background masks the lowest
-plane even if its RGB equals the theme default. Placeholder glyphs and their
-decorations do not paint, but their backgrounds still do. Clamp filtering to
-the original source crop so fractional sizes do not bleed neighbouring pixels.
-Report actual cell pixels through `Client::resize_terminal_with_cell` so native
-image sizes and offsets match the renderer.
+Placements arrive in `GridFrame.images`. Filter with `sample_source`, clamped to the source crop,
+so placeholders and fractional sizes do not seam or bleed. Layer by z:
+below `-1073741824` under non-default cell backgrounds (an explicit
+background masks it even if it equals the default), other negatives under
+glyphs, nonnegative above text. Placeholder glyphs do not paint; their
+backgrounds do. Report real cell pixels with
+`Client::resize_terminal_with_cell`. File and shared-memory media are disabled.
 
-Kitty consumers negotiate synthesized Raw/StateSync bootstrap to paint initial
-images eagerly. Native 1.0 snapshots restore the image registry at READY, but
-pixels arrive in later history units, which this viewer requests on demand.
-Synthesized replay includes unplaced payloads and virtual prototypes.
-External file/shared-memory media stay disabled.
+## Frames, wakes, and input
+
+There is one listener and one event drain per client. Drain, then invalidate
+only the affected views. A removed slot clears stale presentation even when
+its generation matches the cache. Never present a cached frame as proof of
+recovery.
+
+Raw-send success means queued, not delivered. Unknown delivery is
+terminal-wide: clear it with `acknowledge_projection_if` only after the frame
+carrying that fence was presented on a visible, unclipped terminal. Building
+or painting is not presenting, and a late receipt must not clear a newer
+fence. Rune does this in `clients/rune/src/desk/frame.rs`.
 
 ## Documents, trees, and surfaces
 
-A session can hold resources that are not terminals
-([resource kinds](./resource-kinds.md#available-now)). Each arrives whole,
-and the runtime publishes it in the same table as a terminal's grid: one
-slot per resource, newest wins. `Event::DocumentPublished` names the
-resource and the slot generation it announces; read the document with
-`Client::acquire_document_at(resource_id, generation)` (or
-`Publication::acquire_document_at`). That returns `None` when the slot has
-moved on, and a newer wake then follows, so a consumer that reads only
-through it never copies one document twice; `acquire_document` reads the
-newest regardless. Its `DocumentPublication` carries the resource id, its
-kind, the publish sequence, the bytes (JSON for a tree, PNG or JPEG for a
-surface, the content type of a typed document) and that content type. Show
-the last one read, not the highest `seq`.
+Non-terminal [resources](./resource-kinds.md) publish whole into the same
+slot table, newest wins. On `Event::DocumentPublished`, read with
+`Client::acquire_document_at(resource_id, generation)`; `None` means a newer
+wake follows, so no document is copied twice. Show the last one read, not
+the highest `seq`. One wake per resource waits undrained and is never
+dropped by the queue cap. A slot retires when its resource closes,
+detaches, or is released, or the server or engine restarts. Without the
+`engine` feature, documents are dropped.
 
-At most one wake waits undrained per resource, and the queue cap never
-drops it. A slot retires, and a drain drops its undrained wake, when the
-resource closes, is detached or released, the server restarts as a new
-incarnation, or a reconnect to the same incarnation rebuilds the engine
-(new bootstrap limits or history policy); the re-attach publishes again. A
-document you hold stays intact. It is live-only, and there is no grid or
-replica to paint. Agent records are the exception to the slot model: a
-log, delivered in order through `Event::AgentPublication`
-([below](#runtime-consumer-contract)).
-
-UniFFI copies each document it delivers out of the slot, so an attached
-document lives twice while delivered: once in the slot and once in the
-`WireEvent` bytes. A build without the
-`engine` feature has no publication table: it drops documents, logging a
-warning, as it publishes no grids.
-
-UniFFI's `RemoteClient` projects the same event as
-`WireEvent::DocumentPublished`, with the document's `control` class
-(`page`, `window` or `display`). Offer input only when `control` is set:
-`send_document_input(resource_id, intent)` returns a request id that a
-`WireEvent::DocumentInputResult` settles, or `0` when nothing was sent.
+UniFFI's `WireEvent::DocumentPublished` carries a `control` class (`page`,
+`window`, `display`). Offer input only when it is set:
+`send_document_input(resource_id, intent)` returns a request id settled by
+`WireEvent::DocumentInputResult`, or `0` if unsent.
 
 ## Runtime consumer contract
 
-The runtime's driver feeds every inbound frame into the control plane, and
-the UI consumes events and immutable `GridFrame` publications. Do not build
-another dialer to move the decode point. Event queues and frame publications
-are bounded.
+- Do not build another dialer; the driver decodes every frame. Queues and
+  publications are bounded.
+- `take_observation` drains events and samples status, topology, failure,
+  and `connection_epoch` under one lock. The same terminal id after a
+  reconnect is not the same observation: validate stable identities before
+  attaching, and spend a lease takeover once, never on every reconnect.
+- Geometry comes from server frames. Only the size-owning view sends resize.
+- `close_terminals` needs a current handshake (and a live organization
+  snapshot on an organization peer). It returns a request id, or `None`
+  (`0` in UniFFI); `TerminalsClosed` settles it, possibly partially. Watch
+  pane lifecycle events for actual closure
+  ([close intents](./organization.md#close-intents)).
+- The listener is a coalesced wake. It runs on the runtime thread, or
+  synchronously on the caller of `set_listener`, `wake`, or `close`, outside
+  runtime locks but maybe inside yours. Make its context thread-safe, post
+  to the UI, and never block or re-enter the client. `with_control` is
+  non-reentrant.
+- Dropping the last `Client` retires callbacks, waits out running ones, and
+  joins the driver. Free callback context after that.
+- Agent records are a log, not slots: `Event::AgentPublication` in order.
+  An undrained publication replays once after reconnect unless a newer full
+  cut supersedes it. Accepting it is not a presentation receipt.
 
-Use `take_observation` to drain events and sample status, topology, failure
-and `connection_epoch` under one lock. An identical terminal id after
-reconnect is not the same observation.
-Caller-validated recovery reads inventory and validates stable identities
-before attaching, never blindly adopts reused handles. Deliberate lease
-takeover is spent once, not repeated automatically on reconnect. Geometry
-comes from authoritative frames; the designated size-owning view sends
-resize intent, while observers do not create resize feedback loops.
-
-`close_terminals` requires a current handshake and, on an organization
-peer, a live organization snapshot. It returns a request id or reports
-unavailability (`None` in Rust, `0` in UniFFI). `TerminalsClosed` settles
-the requests. Errors can include refused, unsent, or unknown members
-after other requests were accepted. Observe pane lifecycle events for
-actual closure. See [close intents](./organization.md#close-intents).
-
-A listener is a coalesced wake, not an event payload. Drain then invalidate
-only affected views. Driver notifications run on the runtime thread;
-registration (`set_listener`) and explicit `wake`/`close` can invoke the
-listener synchronously on their caller's thread. All run outside runtime
-locks, not necessarily outside your locks. Initialize context before
-registration, make it thread-safe, and only post asynchronously to the UI;
-never block or re-enter the client from a callback.
-`with_control` is non-reentrant and must not block or call back into the
-client. Dropping the last `Client` closes the driver, retires callbacks,
-waits out callbacks on other threads, and joins the driver (never joins
-itself from its own callback). Free callback context only after retirement.
-
-Immutable Rust grid frames can outlive a later publication. Draining events
-accepts the agent publications in the batch; a publication still undrained
-when the transport is replaced replays once catalog and attach are ready,
-unless a newer full retained cut superseded it. Resume appends preserve
-their undrained prefix. This acceptance is not the presentation receipt that
-clears an unknown-input fence; see [Frames, wakes, and input](#frames-wakes-and-input).
-
-The [runtime API](../crates/phux-client-runtime/src/runtime.rs),
-[publication delivery seam](../crates/phux-client-runtime/src/control/agent_delivery.rs),
-[epoch observations](../crates/phux-client-runtime/tests/it/control_plane/observation.rs)
-and [recovery tests](../crates/phux-client-runtime/tests/it/control_plane/recovery.rs)
-own these contracts; tolerate additive enum members rather than inventing a
-new binding vocabulary.
-
-## The draw list
-
-Positions are cells; you choose the cell size. Paint in this order:
-
-1. Fill the grid with `background`.
-2. Fill each background run.
-3. A solid cursor: fill its cells. The glyphs on it already have the cell's
-   background colour.
-4. Each text run: one character per column from `col`, at your cell width,
-   not the font's advance, in its face and colour.
-5. Each block cell: fill its regions, given in eighths of the cell.
-6. Each decoration: underline styles, strikethrough and overline across
-   `start..end`.
-7. Any other cursor: a bar, an underline, or a hollow block.
-
-A faint item paints at half alpha. The colours are final: the theme, palette
-provenance, inverse video and selection are applied, and a hidden or
-blinked-off cell has no text.
-
-## Build requirements
-
-`libghostty-vt` downloads its prebuilt archive only in `ReleaseFast`. Set
-`LIBGHOSTTY_VT_SYS_OPTIMIZE = "ReleaseFast"` under `[env]` in your
-`.cargo/config.toml`, as this repository does, or have Zig on `PATH`.
+[`runtime.rs`](../crates/phux-client-runtime/src/runtime.rs),
+[`agent_delivery.rs`](../crates/phux-client-runtime/src/control/agent_delivery.rs),
+and the [observation](../crates/phux-client-runtime/tests/it/control_plane/observation.rs)
+and [recovery](../crates/phux-client-runtime/tests/it/control_plane/recovery.rs)
+tests own these contracts. Tolerate new enum members.

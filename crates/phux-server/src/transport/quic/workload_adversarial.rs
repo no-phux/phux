@@ -16,7 +16,7 @@
 //!
 //! - **Managed credentials.** An organization's root admits only the keys
 //!   its synced registry records name, and only those records skip the
-//!   pairing bearer (`docs/remote.md#managed-by-an-organization`).
+//!   pairing bearer (`docs/security.md#managed-by-an-organization`).
 //!
 //! Each case carries a positive control on the same listener, so a refusal
 //! cannot pass for a listener that admits nothing.

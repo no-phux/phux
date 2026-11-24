@@ -30,7 +30,7 @@ const DOC_INPUTS: Record<string, Surface[]> = {
   // examples_e2e runs this page's automation example.
   "docs/scripting.md": ["phux"],
   // client_contract.rs checks this page's JSON examples.
-  "docs/build-a-client.md": ["phux"],
+  "docs/building.md": ["phux"],
   "CHANGELOG.md": [],
 };
 

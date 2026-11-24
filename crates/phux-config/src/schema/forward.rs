@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 /// `[forward]` table: TCP port and ssh-agent forwarding
-/// (`docs/forwarding.md`).
+/// (`docs/ssh.md#forwarding-a-port`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
 pub struct ForwardCfg {
