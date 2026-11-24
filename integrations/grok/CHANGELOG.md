@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/no-phux/phux/compare/grok-plugin-v0.3.0...grok-plugin-v0.4.0) (2026-11-24)
+
+
+### Features
+
+* **chat:** add native scoped buddy and agent conversations ([#2915](https://github.com/no-phux/phux/issues/2915)) ([7ab5109](https://github.com/no-phux/phux/commit/7ab5109b8b1f61a23ef303ca4eede66e47ac8a04))
+
 ## [0.3.0](https://github.com/no-phux/phux/compare/grok-plugin-v0.2.0...grok-plugin-v0.3.0) (2026-10-22)
 
 
