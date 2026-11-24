@@ -309,5 +309,5 @@ class BundleTests(unittest.TestCase):
         repo = Path(__file__).resolve().parents[3]
         package = (repo / "clients/rune/scripts/package.sh").read_text()
         self.assertEqual(package.count('python3 "$here/scripts/bundle_tmd.py"'), 2)
-        signing = (repo / "scripts/ci/sign-macos-desktop.sh").read_text()
+        signing = (repo / "packaging/sign-macos-desktop.sh").read_text()
         self.assertLess(signing.index("for helper in phux tmd"), signing.index('--timestamp "$app"'))

@@ -5,7 +5,7 @@
 # and check `apt-get upgrade` and `dnf upgrade` pick it up. Then build and
 # install the AUR phux-bin PKGBUILD for the newer one on Arch.
 #
-#   bash scripts/test-linux-packages.sh [<old tag> <new tag>]
+#   bash packaging/test-linux-packages.sh [<old tag> <new tag>]
 #
 # Needs docker (or podman as docker) and gh. Not a CI lane: it pulls images
 # and two releases. docs/releasing.md#linux-packages says when to run it.
@@ -58,11 +58,11 @@ builder() {
     for tag in $OLD $([ "$STEP" = new ] && echo $NEW); do
       [ -d /w/pkgs/$tag ] && continue
       mkdir -p /w/pkgs/$tag && cp /w/dist/phux-$tag-*.tar.gz /w/pkgs/$tag/
-      bash /src/scripts/pack-linux-packages.sh $tag /w/pkgs/$tag >/dev/null
+      bash /src/packaging/pack-linux-packages.sh $tag /w/pkgs/$tag >/dev/null
       rm /w/pkgs/$tag/*.tar.gz /w/pkgs/$tag/*.sha256
     done
     rpm --import /w/test.asc && rpm -K /w/pkgs/*/*.rpm | grep -v "digests signatures OK" && exit 1
-    bash /src/scripts/build-package-repo.sh /w/site /w/pkgs
+    bash /src/packaging/build-package-repo.sh /w/site /w/pkgs
     ls /w/site/repodata
   '
 }
@@ -95,7 +95,7 @@ for host in ubuntu fedora; do
 done
 
 # makepkg refuses root, and Arch publishes x86_64 images only.
-bash "$ROOT/scripts/aur-pkgbuild.sh" "$new" "$TMP/dist" "$TMP/aur"
+bash "$ROOT/packaging/aur-pkgbuild.sh" "$new" "$TMP/dist" "$TMP/aur"
 docker run --rm --platform linux/amd64 -v "$TMP/aur:/aur:ro" archlinux:base-devel bash -euc '
   useradd -m builder && cp -r /aur /home/builder/phux-bin && chown -R builder /home/builder/phux-bin
   cd /home/builder/phux-bin

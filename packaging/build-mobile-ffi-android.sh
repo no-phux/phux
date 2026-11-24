@@ -15,7 +15,7 @@
 # the producing crate's name, because UniFFI names them after the crate and
 # nothing here renames them back.
 #
-# Usage: scripts/build-mobile-ffi-android.sh [--out DIR]
+# Usage: packaging/build-mobile-ffi-android.sh [--out DIR]
 set -euo pipefail
 # shellcheck source=dev/lib/output.sh
 source "$(dirname "${BASH_SOURCE[0]}")/../dev/lib/output.sh"

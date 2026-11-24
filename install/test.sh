@@ -40,11 +40,11 @@ done
 
 [[ $failures -eq 0 ]] || { phux_error "install surface check failed"; exit 1; }
 
-bash scripts/check-product-skills-export.sh
-bash scripts/test-pack-release.sh
+bash packaging/skills/test-export.sh
+bash packaging/test-pack-release.sh
 bash install/test-install.sh
 bash install/test-install-server-app.sh
-bash scripts/test-gen-formula.sh
+bash packaging/test-gen-formula.sh
 bash install/test-install-rune.sh
 bash install/first-run-timing.sh --self-test
 # Real Windows PowerShell 5.1/7 + WSL qualification lives in windows-wsl.yml.

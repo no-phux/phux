@@ -2,7 +2,7 @@
 # Assert that release binaries link only against libraries that exist on an
 # ordinary host, on both macOS and Linux.
 #
-# Usage: scripts/check-binary-portability.sh <binary> [<binary>...]
+# Usage: packaging/check-binary-portability.sh <binary> [<binary>...]
 #
 # WHY THIS EXISTS: release.yml grep'd `otool -L` for "/nix/store" on macOS and
 # checked NOTHING on Linux. That caught exactly one failure mode on exactly one
@@ -30,7 +30,7 @@
 # bump on the runner cannot silently stop the binary launching on older macOS.
 # PHUX_MACOS_MIN_MAX overrides the ceiling.
 #
-# CPU inputs are pinned by scripts/build-release-binaries.sh. ELF GNU property
+# CPU inputs are pinned by packaging/build-release-binaries.sh. ELF GNU property
 # notes are checked below as a second, artifact-level guard against a compiler
 # declaring an x86-64-v2-or-newer requirement.
 set -euo pipefail

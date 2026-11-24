@@ -5,7 +5,7 @@
 //! never read from the network, so a manifest vouches for an asset only
 //! through its digest. `tools/src/release/release-manifest.ts` writes the
 //! manifest and `scripts/install.sh` derives the same names; the golden
-//! manifests in `scripts/fixtures/release-manifest/` keep all three in step.
+//! manifests in `packaging/release-manifest/` keep all three in step.
 //! A digest is trusted only once [`signature`] verifies that a release key
 //! signed it.
 
@@ -381,9 +381,9 @@ mod tests {
         is_newer, manifest_url, parse,
     };
 
-    const STABLE: &str = include_str!("../../../scripts/fixtures/release-manifest/stable.json");
-    const NEXT: &str = include_str!("../../../scripts/fixtures/release-manifest/next.json");
-    const LTS: &str = include_str!("../../../scripts/fixtures/release-manifest/lts.json");
+    const STABLE: &str = include_str!("../../../packaging/release-manifest/stable.json");
+    const NEXT: &str = include_str!("../../../packaging/release-manifest/next.json");
+    const LTS: &str = include_str!("../../../packaging/release-manifest/lts.json");
     const LINUX: &str = "x86_64-unknown-linux-gnu";
 
     fn version(text: &str) -> Version {

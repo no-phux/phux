@@ -98,7 +98,7 @@ runs:
         APPLE_NOTARY_KEY_P8: ${{ inputs.apple_notary_key_p8 }}
         APPLE_NOTARY_KEY_ID: ${{ inputs.apple_notary_key_id }}
         APPLE_NOTARY_ISSUER_ID: ${{ inputs.apple_notary_issuer_id }}
-      run: bash scripts/ci/sign-macos-desktop.sh --check-config
+      run: bash packaging/sign-macos-desktop.sh --check-config
     - name: Package
       if: inputs.qualify == 'true'
       shell: bash
@@ -123,7 +123,7 @@ runs:
         archive="phux-rune-$version-macos-arm64.zip"
         dmg="phux-rune-$version-macos-arm64.dmg"
         rm "$RUNNER_TEMP/dist/$archive" "$RUNNER_TEMP/dist/$archive.sha256"
-        bash scripts/ci/sign-macos-desktop.sh "$RUNNER_TEMP/app/Phux Rune.app" \
+        bash packaging/sign-macos-desktop.sh "$RUNNER_TEMP/app/Phux Rune.app" \
           "$RUNNER_TEMP/signed/$archive" "$RUNNER_TEMP/signed/$dmg"
         mv "$RUNNER_TEMP/signed/$archive" "$RUNNER_TEMP/signed/$dmg" "$RUNNER_TEMP/dist/"
         cd "$RUNNER_TEMP/dist"

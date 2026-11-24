@@ -3,11 +3,11 @@
 # packages, beside them in DIST, with sha256 sidecars. The bytes inside are
 # the tarball's, so a package and a curl | sh install run the same binary.
 #
-#   bash scripts/pack-linux-packages.sh vX.Y.Z <dist>
+#   bash packaging/pack-linux-packages.sh vX.Y.Z <dist>
 #
 # With PHUX_PACKAGES_GPG_KEY set (an armored secret signing key), the .rpm
 # files are signed for dnf's gpgcheck. apt checks the signed repository
-# index instead (scripts/build-package-repo.sh), so a .deb is not signed.
+# index instead (packaging/build-package-repo.sh), so a .deb is not signed.
 set -euo pipefail
 # shellcheck source=dev/lib/output.sh
 source "$(dirname "${BASH_SOURCE[0]}")/../dev/lib/output.sh"
@@ -69,7 +69,7 @@ for pair in x86_64:amd64 aarch64:arm64; do
   stem="phux-${tag}-${target}"
   [[ -f "$dist/$stem.tar.gz" ]] || die "$dist/$stem.tar.gz is missing"
   tar -xzf "$dist/$stem.tar.gz" -C "$work"
-  # The tarball's binaries need glibc 2.35 (scripts/check-binary-portability.sh).
+  # The tarball's binaries need glibc 2.35 (packaging/check-binary-portability.sh).
   cat >"$work/nfpm.yaml" <<EOF
 name: phux
 arch: $arch

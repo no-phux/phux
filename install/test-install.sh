@@ -9,7 +9,7 @@ sh "$ROOT/install/generate.sh" --check
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 SH="$(command -v dash || echo /bin/sh)"
-GOLDEN="$ROOT/scripts/fixtures/release-manifest"
+GOLDEN="$ROOT/packaging/release-manifest"
 BASE=https://github.com/no-phux/phux/releases/download
 TARGET=x86_64-unknown-linux-gnu
 export HOME="$TMP/home" SHELL=/bin/zsh
@@ -161,7 +161,7 @@ EOF
     } > "$TMP/build-$1/$binary"
   done
   chmod 755 "$TMP/build-$1/"*
-  bash "$ROOT/scripts/pack-release.sh" --id "$1" --target "$TARGET" --bin-dir "$TMP/build-$1" --out-dir "$SERVED" >/dev/null 2>&1
+  bash "$ROOT/packaging/pack-release.sh" --id "$1" --target "$TARGET" --bin-dir "$TMP/build-$1" --out-dir "$SERVED" >/dev/null 2>&1
   awk '{ print $1 }' "$SERVED/phux-$1-$TARGET.tar.gz.sha256"
 }
 digest_stable="$(package v9.8.7)"

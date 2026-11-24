@@ -3,14 +3,14 @@
 # (ADR-0178).
 #
 #   PHUX_MINISIGN_SECRET_KEY=<minisign secret key file contents> \
-#     bash scripts/ci/sign-release.sh dist/<asset>.sha256... <channel>.json...
+#     bash packaging/sign-release.sh dist/<asset>.sha256... <channel>.json...
 #
 # Writes <file>.minisig beside each file, then verifies it against
 # the keys scripts/install.sh embeds, so a secret no shipped binary trusts
 # fails here instead of on every user's machine. The key is unencrypted and
 # never touches the workspace.
 set -euo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 die() {
   echo "::error::$*" >&2

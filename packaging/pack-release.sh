@@ -14,7 +14,7 @@ RELEASE_DOCS=(README.md LICENSE NOTICE THIRD-PARTY-NOTICES.md)
 
 usage() {
   cat <<'EOF'
-Usage: scripts/pack-release.sh --id <id> --target <triple> --bin-dir <dir> [options]
+Usage: packaging/pack-release.sh --id <id> --target <triple> --bin-dir <dir> [options]
 
 Package the release tarball. Sole writer of the member list consumed by
 the curl installer, phux update, and Homebrew.

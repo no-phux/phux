@@ -2,11 +2,11 @@
 # Write the AUR phux-bin PKGBUILD and .SRCINFO for a release into OUT: the
 # release tarballs, their digests pinned from the .sha256 sidecars in DIST.
 #
-#   bash scripts/aur-pkgbuild.sh vX.Y.Z <dist> <out>
+#   bash packaging/aur-pkgbuild.sh vX.Y.Z <dist> <out>
 #
 # packages.yml pushes OUT to aur.archlinux.org when AUR_SSH_PRIVATE_KEY is set.
 # .SRCINFO is what `makepkg --printsrcinfo` prints for the PKGBUILD;
-# scripts/test-linux-packages.sh checks that, and builds it, in an Arch container.
+# packaging/test-linux-packages.sh checks that, and builds it, in an Arch container.
 set -euo pipefail
 
 [[ $# -eq 3 && $1 =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]] || {
@@ -29,7 +29,7 @@ mkdir -p "$3"
 
 cat >"$3/PKGBUILD" <<EOF
 # Maintainer: phux <https://github.com/no-phux/phux>
-# Written by scripts/aur-pkgbuild.sh in no-phux/phux for each release.
+# Written by packaging/aur-pkgbuild.sh in no-phux/phux for each release.
 pkgname=phux-bin
 pkgver=$version
 pkgrel=1

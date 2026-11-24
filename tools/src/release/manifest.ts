@@ -24,7 +24,7 @@ export const TARGETS = [
 export function targets(_product: Product): string[] {
   return TARGETS;
 }
-const FIXTURES = "scripts/fixtures/release-manifest";
+const FIXTURES = "packaging/release-manifest";
 
 // The POSIX installers parse the rendered file with awk, so values stay in
 // this alphabet and the document has no arrays.

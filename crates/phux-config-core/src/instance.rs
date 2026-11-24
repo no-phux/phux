@@ -89,7 +89,7 @@ fn sanitize_profile(raw: &str) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuildKind {
     /// A distributed artifact: stamped `PHUX_RELEASE_ARTIFACT=1` at compile
-    /// time by `scripts/build-release-binaries.sh`, the only script the
+    /// time by `packaging/build-release-binaries.sh`, the only script the
     /// release and next workflows build with.
     Release,
     /// An optimised build nobody stamped and that sits outside `target/`:

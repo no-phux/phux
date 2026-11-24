@@ -42,7 +42,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PHUX_PACKAGES_GPG_KEY: ${{ secrets.PHUX_PACKAGES_GPG_KEY }}
-        run: bash scripts/build-package-repo.sh "$RUNNER_TEMP/site"
+        run: bash packaging/build-package-repo.sh "$RUNNER_TEMP/site"
       # Data before the signed indexes that name it, then drop what no
       # index names. Never "latest": the CLI release is.
       - name: Publish the repodata release
@@ -81,7 +81,7 @@ jobs:
           tag="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)"
           gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/dist" \
             --pattern "phux-$tag-*-unknown-linux-gnu.tar.gz.sha256"
-          bash scripts/aur-pkgbuild.sh "$tag" "$RUNNER_TEMP/dist" "$RUNNER_TEMP/aur"
+          bash packaging/aur-pkgbuild.sh "$tag" "$RUNNER_TEMP/dist" "$RUNNER_TEMP/aur"
           echo "TAG=$tag" >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

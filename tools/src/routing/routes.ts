@@ -65,7 +65,7 @@ const ROUTES: Record<string, Surface[]> = {
   ".github/actions/rune-host/**": ["rune"],
   // Also used by release workflows outside the lane model.
   ".github/actions/setup-bun/**": [...SURFACES],
-  "scripts/ci/setup-linux-release-userspace.sh": [],
+  "packaging/setup-linux-release-userspace.sh": [],
   "scripts/ci/prune-build-cache.sh": [],
   // The separate Windows WSL workflow exercises PowerShell and real WSL;
   // these distribution scripts do not change the Unix Rust build.
@@ -93,7 +93,7 @@ const ROUTES: Record<string, Surface[]> = {
   ".github/workflows/rune-macos.yml": ["rune"],
   "just/rune.just": ["rune"],
   // What that lane packages and qualifies with, outside its tree.
-  "scripts/check-binary-portability.sh": ["rune"],
+  "packaging/check-binary-portability.sh": ["rune"],
   "clients/phux-vt-web/vendor/**": ["web", "web_engine"],
   "clients/phux-vt-web/scripts/**": ["web", "web_engine"],
   "{integrations,.claude-plugin,.grok-plugin}/**": ["integrations"],
@@ -104,7 +104,7 @@ const ROUTES: Record<string, Surface[]> = {
   "crates/**": ["phux"],
   "crates/**/{Cargo.toml,Cargo.lock,build.rs,*.ld,*.lds,*.c,*.h}": ["native"],
   // Golden release manifests are include_str! inputs of the updaters' tests.
-  "scripts/fixtures/release-manifest/**": ["phux"],
+  "packaging/release-manifest/**": ["phux"],
   // Path crates inherit `workspace = true` keys from the root manifest, and
   // the Rune build reads the root toolchain and Cargo config. Its lock is
   // its own, so the root Cargo.lock stays off the Rune lane.
@@ -138,9 +138,10 @@ const ROUTES: Record<string, Surface[]> = {
   // still routes through its destination's packaging/build checks.
   "brand.{config,lock}.json": [],
   "scripts/{brand,update-brand,test_brand_update,design-pin}.py": [],
-  "scripts/{export-product-skills.sh,product-skills}": [],
-  "scripts/skills-package/**": [],
-  "scripts/build-mobile-ffi-android.sh": [],
+  // Release checks the guards and release workflows run.
+  "packaging/{check-release-version,test-release-cpu-baselines}.sh": [],
+  "packaging/skills/**": [],
+  "packaging/build-mobile-ffi-android.sh": [],
   // The worktree lease and the mbx target heal are guards. They do not
   // change what any product lane compiles.
   "dev/worktree-lease.sh": [],

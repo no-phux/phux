@@ -2,7 +2,7 @@
 # Sourced by test-install.sh after its installing section: install.sh on
 # Debian, Ubuntu, Fedora and RHEL adds phux's package repository. Fakes stand
 # in for uname, id (root, so sudo never runs) and the package tools; nothing
-# reaches the real system. scripts/test-linux-packages.sh runs it for real.
+# reaches the real system. packaging/test-linux-packages.sh runs it for real.
 [[ $HOME == "$TMP"/* ]] || { echo "source this from install/test-install.sh" >&2; exit 1; }
 # --- package repositories (Linux) -----------------------------------------------
 

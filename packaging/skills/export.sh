@@ -2,16 +2,16 @@
 # Write the product skills package to DEST for the no-phux/skills publish
 # mirror. Source of truth remains .agents/skills/; this tree is generated.
 #
-# Usage: scripts/export-product-skills.sh DEST
+# Usage: packaging/skills/export.sh DEST
 set -euo pipefail
 
-ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-ALLOWLIST="${ROOT}/scripts/product-skills"
+ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+ALLOWLIST="${ROOT}/packaging/skills/allowlist"
 SOURCE="${ROOT}/.agents/skills"
-PACKAGE="${ROOT}/scripts/skills-package"
+PACKAGE="${ROOT}/packaging/skills/package"
 
 usage() {
-  echo "usage: export-product-skills.sh DEST" >&2
+  echo "usage: export.sh DEST" >&2
   exit 2
 }
 
@@ -22,7 +22,7 @@ mkdir -p "$dest"
 dest="$(CDPATH='' cd -- "$dest" && pwd)"
 
 case "$dest" in
-  "$ROOT"|"$SOURCE"|"$PACKAGE"|"${ROOT}/.agents"|"${ROOT}/scripts")
+  "$ROOT"|"$SOURCE"|"$PACKAGE"|"${ROOT}/.agents"|"${ROOT}/packaging"|"${ROOT}/packaging/skills")
     echo "error: DEST must not be the phux source tree" >&2
     exit 1
     ;;

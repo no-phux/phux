@@ -71,7 +71,7 @@ collect_files() {
             done
     else
         find "$ROOT" -name '*.md' -not -path '*/node_modules/*'
-    fi | grep -v -E '(^|/)(CHANGELOG|THIRD-PARTY-NOTICES)\.md$|/\.beads/|/node_modules/|/scripts/skills-package/' |
+    fi | grep -v -E '(^|/)(CHANGELOG|THIRD-PARTY-NOTICES)\.md$|/\.beads/|/node_modules/|/packaging/skills/package/' |
         LC_ALL=C sort
 }
 

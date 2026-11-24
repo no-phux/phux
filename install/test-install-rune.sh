@@ -260,7 +260,7 @@ for candidate in /opt/homebrew/bin/phux /usr/local/bin/phux /usr/bin/phux; do
   [ ! -x "$candidate" ] || host_cli="$candidate"
 done
 if [ -z "$host_cli" ]; then
-  cp "$ROOT/scripts/fixtures/release-manifest/stable.json" "$SERVED/stable.json"
+  cp "$ROOT/packaging/release-manifest/stable.json" "$SERVED/stable.json"
   out="$(PATH="$TMP/bin:/usr/bin:/bin" "$SH" "$ROOT/scripts/install.sh" --dry-run --os linux --arch x86_64 --rune 2>/dev/null)"
   grep -Fxq 'product: phux' <<<"$out" || fail "no CLI plan: $out"
   grep -Fxq 'product: rune' <<<"$out" || fail "no Rune plan: $out"

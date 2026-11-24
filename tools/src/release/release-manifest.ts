@@ -129,7 +129,7 @@ function uploadFiles(tag: string, files: Record<string, string>, signed = false)
       const path = join(dir, name);
       writeFileSync(path, text);
       if (!signed) return [path];
-      capture(["bash", repoPath("scripts/ci/sign-release.sh"), path]);
+      capture(["bash", repoPath("packaging/sign-release.sh"), path]);
       return [path, `${path}.minisig`];
     });
     ghRelease("upload", tag, ...paths, "--clobber");

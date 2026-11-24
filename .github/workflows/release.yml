@@ -198,7 +198,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends rpm
-          bash scripts/pack-linux-packages.sh "$TAG" dist
+          bash packaging/pack-linux-packages.sh "$TAG" dist
       # The design tokens' CSS, for sites that pin a release instead of a commit.
       - name: Stage the design-token CSS
         run: |
@@ -207,7 +207,7 @@ jobs:
       - name: Sign the checksums
         env:
           PHUX_MINISIGN_SECRET_KEY: ${{ secrets.PHUX_MINISIGN_SECRET_KEY }}
-        run: bash scripts/ci/sign-release.sh dist/phux-*.tar.gz.sha256 dist/phux*.deb.sha256 dist/phux*.rpm.sha256 dist/phux-tokens.css.sha256
+        run: bash packaging/sign-release.sh dist/phux-*.tar.gz.sha256 dist/phux*.deb.sha256 dist/phux*.rpm.sha256 dist/phux-tokens.css.sha256
       # `gh release upload` adds assets and never touches the notes.
       - name: Attach every target and publish as Latest
         env:

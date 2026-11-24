@@ -82,7 +82,7 @@ chmod 755 "$BINS/phux" "$BINS/phux-mcp"
 
 PACKED="$TMP/packed"
 mkdir "$PACKED"
-bash "$ROOT/scripts/pack-release.sh" \
+bash "$ROOT/packaging/pack-release.sh" \
   --id "$VERSION" --target "$TARGET" --bin-dir "$BINS" --out-dir "$PACKED"
 assert_current_members "$PACKED/${STAGE}.tar.gz"
 grep -Eq '^[0-9a-f]{64}  '"${STAGE}.tar.gz"'$' "$PACKED/${STAGE}.tar.gz.sha256"
@@ -92,7 +92,7 @@ install_archive "$PACKED" "$TMP/from-packer"
 MISSING="$TMP/missing-docs"
 mkdir "$MISSING"
 cp "$ROOT/README.md" "$MISSING/README.md"
-if bash "$ROOT/scripts/pack-release.sh" \
+if bash "$ROOT/packaging/pack-release.sh" \
   --id "$VERSION" --target "$TARGET" --bin-dir "$BINS" --out-dir "$TMP/should-fail" \
   --docs-dir "$MISSING" 2>"$TMP/missing.err"; then
   echo "packer accepted a docs-dir with no LICENSE" >&2

@@ -22,7 +22,7 @@ What ships and how it is published. Each workflow under
 
 Linux CLI builds link glibc 2.35 (an `ubuntu:22.04` container). Only CLI
 releases are GitHub's "Latest". The Homebrew tap polls for stable releases and
-renders the formula with [`scripts/gen-formula.sh`](../scripts/gen-formula.sh);
+renders the formula with [`packaging/gen-formula.sh`](../packaging/gen-formula.sh);
 `release.yml` only nudges it with a `phux-release` dispatch.
 
 ## Stable
@@ -84,17 +84,17 @@ changed.
 ## Linux packages
 
 `release.yml`'s `cli` job repackages the Linux tarballs with nfpm
-([`pack-linux-packages.sh`](../scripts/pack-linux-packages.sh)), signs the
+([`pack-linux-packages.sh`](../packaging/pack-linux-packages.sh)), signs the
 `.rpm` files, and attaches them. `packages.yml` then rebuilds the apt (flat)
 and dnf repositories from the three newest releases with packages
-([`build-package-repo.sh`](../scripts/build-package-repo.sh)), signs them, and
+([`build-package-repo.sh`](../packaging/build-package-repo.sh)), signs them, and
 replaces the `repodata` release's assets. It also pushes the AUR `phux-bin`
 PKGBUILD when `AUR_SSH_PRIVATE_KEY` is set. Users add the repositories through
 the [install script](./install.md#linux-package-repositories).
 
 ```sh
 gh workflow run packages.yml --ref main    # republish without a release
-bash scripts/test-linux-packages.sh        # rehearse in Ubuntu, Fedora and Arch containers (docker, gh)
+bash packaging/test-linux-packages.sh      # rehearse in Ubuntu, Fedora and Arch containers (docker, gh)
 ```
 
 Rehearse after changing any packaging script. Packages need glibc 2.35, so
@@ -158,7 +158,7 @@ gh workflow run ffi-xcframework.yml -f tag=vX.Y.Z
 The workspace has one version, inherited by every crate; Phux Rune and each
 integration version independently. Release Please writes versions from the
 commit log (`release-please-config.json`, `.release-please-manifest.json`);
-never edit one by hand. `scripts/check-release-version.sh` fails a build whose
+never edit one by hand. `packaging/check-release-version.sh` fails a build whose
 tag disagrees with Cargo. Pre-1.0, `fix:` bumps the patch and `feat:` or a
 breaking change bumps the minor.
 
@@ -170,7 +170,7 @@ until you do.
 
 ## Signing and verification
 
-`scripts/ci/sign-release.sh` minisigns every CLI and Rune checksum and each
+`packaging/sign-release.sh` minisigns every CLI and Rune checksum and each
 channel manifest with `PHUX_MINISIGN_SECRET_KEY`, and checks the signature
 against the public keys compiled into `scripts/install.sh` and `phux update`.
 A missing secret fails the release. On `lts` an invalid or missing manifest
@@ -178,7 +178,7 @@ signature refuses; on `stable` and `next` it warns, and the signed checksum is
 the gate.
 
 Release binaries use rustup and pinned Zig, never Nix. Only
-`scripts/pack-release.sh` writes the tarball layout clients unpack.
+`packaging/pack-release.sh` writes the tarball layout clients unpack.
 
 ### macOS desktop signing
 
@@ -189,7 +189,7 @@ ad hoc. The secrets are `APPLE_DEVELOPER_ID_P12` (base64 Developer ID
 and a notarization-capable App Store Connect API key (`APPLE_NOTARY_KEY_P8`
 base64, `APPLE_NOTARY_KEY_ID`, `APPLE_NOTARY_ISSUER_ID`). Set them with
 `gh secret set` from files or stdin, never command arguments.
-`scripts/ci/sign-macos-desktop.sh --check-config` checks them before a build;
+`packaging/sign-macos-desktop.sh --check-config` checks them before a build;
 missing credentials fail closed.
 
 ### Key rotation
