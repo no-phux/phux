@@ -38,7 +38,6 @@ impl Desk {
             && self.connection.topology.as_ref() != Some(&topology)
         {
             self.connection.topology = Some(topology);
-            self.follow_reveal();
             changed = true;
         }
         if self.connection.server.is_none() {

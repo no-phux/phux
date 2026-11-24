@@ -409,6 +409,12 @@ impl Desk {
         };
         let (news, moved) = self.observe(&client, client.take_activity(), tx);
         let mut changed = updated | news | self.take_globals(&client);
+        let held = self.connection.reveal.is_some();
+        if self.follow_reveal() {
+            tx.wake_after(Duration::from_millis(250));
+        } else {
+            changed |= held && self.connection.reveal.is_none();
+        }
         let rearrange = updated || moved;
         changed |= self.drop_dead_views(&client) | self.tend_popup(&client, tx);
         let opened = self.settle_home(&client) | self.open_wanted(&client);
