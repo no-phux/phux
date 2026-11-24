@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/gen-formula.sh renders the CLI formula: the binaries, the man page, Apache-2.0.
+# packaging/gen-formula.sh renders the CLI formula: the binaries, the man page, Apache-2.0.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"
@@ -19,7 +19,7 @@ write_sha "$arm_mac" v0.1.0 aarch64-apple-darwin
 write_sha "$x86_linux" v0.1.0 x86_64-unknown-linux-gnu
 write_sha "$arm_linux" v0.1.0 aarch64-unknown-linux-gnu
 
-bash "$ROOT/scripts/gen-formula.sh" v0.1.0 "$TMP/dist" "$TMP/phux.rb" >/dev/null
+bash "$ROOT/packaging/gen-formula.sh" v0.1.0 "$TMP/dist" "$TMP/phux.rb" >/dev/null
 formula="$(cat "$TMP/phux.rb")"
 grep -Fq 'url "https://github.com/no-phux/phux/releases/download/v0.1.0/phux-v0.1.0-aarch64-apple-darwin.tar.gz"' <<<"$formula" || fail "primary url"
 grep -Fq "sha256 \"${arm_mac}\"" <<<"$formula" || fail "primary digest"
@@ -38,14 +38,14 @@ fi
 
 # A checksum that is not 64 lowercase hex digits is refused.
 printf 'GGGG  phux-v0.1.0-aarch64-apple-darwin.tar.gz\n' > "$TMP/dist/phux-v0.1.0-aarch64-apple-darwin.tar.gz.sha256"
-if bash "$ROOT/scripts/gen-formula.sh" v0.1.0 "$TMP/dist" "$TMP/bad.rb" >/dev/null 2>"$TMP/err"; then
+if bash "$ROOT/packaging/gen-formula.sh" v0.1.0 "$TMP/dist" "$TMP/bad.rb" >/dev/null 2>"$TMP/err"; then
   fail "accepted an invalid checksum"
 fi
 grep -Fq 'invalid checksum' "$TMP/err" || fail "invalid checksum message: $(cat "$TMP/err")"
 
 rm -rf "$TMP/dist"
 mkdir -p "$TMP/dist"
-if bash "$ROOT/scripts/gen-formula.sh" v0.1.0 "$TMP/dist" "$TMP/empty.rb" >/dev/null 2>"$TMP/err"; then
+if bash "$ROOT/packaging/gen-formula.sh" v0.1.0 "$TMP/dist" "$TMP/empty.rb" >/dev/null 2>"$TMP/err"; then
   fail "accepted an empty dist"
 fi
 grep -Fq 'no artifacts found' "$TMP/err" || fail "empty dist message: $(cat "$TMP/err")"

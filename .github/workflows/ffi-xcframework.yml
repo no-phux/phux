@@ -92,7 +92,7 @@ jobs:
           RELEASE_SPECS: |
             PhuxFFI-|.xcframework.zip|.provenance|phux-rev
             PhuxMobileFFI-|.xcframework.zip|.provenance|phux_rev=
-        run: bash scripts/ci/ffi-build-preflight.sh
+        run: bash packaging/ffi-build-preflight.sh
 
   build:
     name: build native xcframeworks
@@ -172,7 +172,7 @@ jobs:
           set -euo pipefail
           [[ "$RELEASE_TAG" =~ ^v[0-9]+[.][0-9]+[.][0-9]+([-.][0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]
           test "$(git rev-parse HEAD)" = "$(git rev-parse "$RELEASE_TAG^{commit}")"
-          bash scripts/check-release-version.sh "$RELEASE_TAG"
+          bash packaging/check-release-version.sh "$RELEASE_TAG"
           gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
 
       # No rust-cache for this job. Two dep archives, 978198846 and
@@ -192,7 +192,7 @@ jobs:
       - uses: ./.github/actions/setup-bun
 
       - name: Build, verify and smoke-test the mobile xcframework
-        run: bash scripts/build-mobile-ffi-xcframework.sh --full
+        run: bash packaging/build-mobile-ffi-xcframework.sh --full
 
       - name: Package the mobile archive, bindings and checksum
         id: mobile-package

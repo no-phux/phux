@@ -6,7 +6,7 @@ import { git } from "../lib/git.ts";
 import { needsBuild, reason } from "./next-plan.ts";
 
 test.each<[string, string[], boolean]>([
-  ["phux", ["scripts/pack-release.sh"], true],
+  ["phux", ["packaging/pack-release.sh"], true],
   ["phux", ["clients/rune/src/main.rs"], false],
 ])("%s for %p rebuilds: %p", (product, paths, rebuild) => {
   expect(reason(product as "phux", paths) !== undefined).toBe(rebuild);

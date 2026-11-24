@@ -43,7 +43,7 @@ describe("manifest", () => {
       for (const line of render(fixture(channel)).trimEnd().split("\n")) expect(line).toMatch(LINE);
     }
     expect(() => fixtures(true, mkdtempSync(join(tmpdir(), "manifest-")))).toThrow(
-      "stale: scripts/fixtures/release-manifest/stable.json, scripts/fixtures/release-manifest/next.json, scripts/fixtures/release-manifest/lts.json; run bun tools/main.ts release-manifest fixtures",
+      "stale: packaging/release-manifest/stable.json, packaging/release-manifest/next.json, packaging/release-manifest/lts.json; run bun tools/main.ts release-manifest fixtures",
     );
   });
 

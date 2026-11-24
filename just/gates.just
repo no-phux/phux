@@ -44,7 +44,7 @@ guards: brand-check shellcheck tools-check docs-check install-surface-check
     bash scripts/check-frozen-fixtures.sh
     bash scripts/check-frozen-fixtures_test.sh
     bash scripts/check-e2e-lanes.sh
-    bash scripts/check-release-cpu-baselines.sh
+    bash packaging/test-release-cpu-baselines.sh
     bash dev/lib/worktree-owner_test.sh
     node --test scripts/test-npm-audit-gate.mjs
     bash examples/agents/tests/placed-fleet-smoke.sh
@@ -152,7 +152,7 @@ deny:
 # nits (sourced libs shellcheck cannot follow) that are correct as written.
 [group('gates')]
 shellcheck:
-    shellcheck --severity=warning dev/*.sh dev/lib/*.sh scripts/*.sh scripts/lib/*.sh scripts/ci/*.sh \
+    shellcheck --severity=warning dev/*.sh dev/lib/*.sh packaging/*.sh packaging/skills/*.sh scripts/*.sh scripts/lib/*.sh scripts/ci/*.sh \
       clients/rune/upstream/*.sh clients/phux-vt-web/scripts/*.sh \
       examples/agents/*.sh \
       examples/agents/orchestrate-placed-fleet examples/agents/record-pi-live-fleet examples/agents/tests/*.sh \

@@ -110,7 +110,7 @@ function fixture(
         RUNNER_TEMP: dir,
         TMPDIR: dir,
         RELEASE_FILES: join(dir, "release"),
-        PREFLIGHT_SCRIPT: repoPath("scripts/ci/ffi-build-preflight.sh"),
+        PREFLIGHT_SCRIPT: repoPath("packaging/ffi-build-preflight.sh"),
         FAIL_API: "",
         FAIL_COMMAND: "",
         FAIL_MATCH: "",
@@ -146,7 +146,7 @@ test.each(WORKFLOWS)("%s executes the guard from the harness SHA, not the built 
   const checkout = preflight.find((step) => uses(step).startsWith("actions/checkout@")) ?? {};
   expect(withInput(checkout, "ref")).toBe("${{ github.sha }}");
   expect(withInput(checkout, "persist-credentials")).toBe(false);
-  expect(run(decision(name))).toBe("bash scripts/ci/ffi-build-preflight.sh");
+  expect(run(decision(name))).toBe("bash packaging/ffi-build-preflight.sh");
   expect(table(decision(name)["env"])["BARE_ARTIFACTS"]).toBe(
     name === "ffi-xcframework.yml"
       ? "PhuxFFI-xcframework PhuxMobileFFI-xcframework"

@@ -37,12 +37,12 @@ sha() { if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 
 mkdir -p "$TMP/build"
 for binary in phux phux-mcp; do printf '%s v9.8.7\n' "$binary" > "$TMP/build/$binary"; done
 chmod 755 "$TMP/build/"*
-bash "$ROOT/scripts/pack-release.sh" --id v9.8.7 --target "$TARGET" --bin-dir "$TMP/build" \
+bash "$ROOT/packaging/pack-release.sh" --id v9.8.7 --target "$TARGET" --bin-dir "$TMP/build" \
   --out-dir "$SERVED" >/dev/null 2>&1
 jq --indent 2 --arg digest "$(sha "$SERVED/phux-v9.8.7-$TARGET.tar.gz")" \
   ".products.phux.artifacts[\"$TARGET\"].sha256 = \$digest" \
-  "$ROOT/scripts/fixtures/release-manifest/stable.json" > "$SERVED/stable.json"
-cp "$ROOT/scripts/fixtures/release-manifest/next.json" "$SERVED/next.json"
+  "$ROOT/packaging/release-manifest/stable.json" > "$SERVED/stable.json"
+cp "$ROOT/packaging/release-manifest/next.json" "$SERVED/next.json"
 versions="$HOME/Library/Application Support/sh.phux/Server/Versions"
 
 # A release without the asset still installs the CLI, and says so.
@@ -54,7 +54,7 @@ app="$TMP/src/phux Server.app"
 mkdir -p "$app/Contents/MacOS"
 printf 'server v9.8.7\n' > "$app/Contents/MacOS/phux"
 chmod 755 "$app/Contents/MacOS/phux"
-bash "$ROOT/scripts/make-server-app.sh" --pack "$app" "$SERVED" v9.8.7 "$TARGET" >/dev/null 2>&1
+bash "$ROOT/packaging/make-server-app.sh" --pack "$app" "$SERVED" v9.8.7 "$TARGET" >/dev/null 2>&1
 install_mac >/dev/null 2>"$TMP/err" || fail "install: $(cat "$TMP/err")"
 [[ $(readlink "$versions/Current") == v9.8.7 ]] || fail "Current: $(ls -l "$versions")"
 grep -Fxq 'server v9.8.7' "$versions/Current/phux Server.app/Contents/MacOS/phux" || fail "bundle binary"

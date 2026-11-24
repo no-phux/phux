@@ -15,7 +15,7 @@
 #   design/               generated design tokens and resources, manifest.json
 #   provenance            source/toolchain/digest facts for atomic consumers
 #
-# Usage: scripts/build-mobile-ffi-xcframework.sh [--full|--dev]
+# Usage: packaging/build-mobile-ffi-xcframework.sh [--full|--dev]
 #          [--profile ffi-release|ffi-dev] [--out DIR] [--skip-smoke]
 
 set -euo pipefail

@@ -47,7 +47,7 @@ jobs:
           APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
         run: |
           set -euo pipefail
-          bash scripts/export-product-skills.sh .skills-mirror
+          bash packaging/skills/export.sh .skills-mirror
           shortsha="$(git rev-parse --short HEAD)"
           cd .skills-mirror
           git add -A

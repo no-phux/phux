@@ -4,9 +4,9 @@
 # is absent, and README/LICENSE exist.
 set -euo pipefail
 # shellcheck source=dev/lib/output.sh
-source "$(dirname "${BASH_SOURCE[0]}")/../dev/lib/output.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/../../dev/lib/output.sh"
 
-ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/phux-skills-export.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -15,7 +15,7 @@ fail() {
   exit 1
 }
 
-bash "${ROOT}/scripts/export-product-skills.sh" "$TMP"
+bash "${ROOT}/packaging/skills/export.sh" "$TMP"
 
 [[ -f "${TMP}/README.md" ]] || fail "exported README.md missing"
 [[ -f "${TMP}/LICENSE" ]] || fail "exported LICENSE missing"
@@ -44,7 +44,7 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   [[ -f "${TMP}/skills/${name}/agents/openai.yaml" ]] \
     || fail "missing openai.yaml for ${name}"
   expected+=("$name")
-done < "${ROOT}/scripts/product-skills"
+done < "${ROOT}/packaging/skills/allowlist"
 
 [[ ${#expected[@]} -gt 0 ]] || fail "allowlist is empty"
 

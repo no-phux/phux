@@ -3,7 +3,7 @@
 # packages (docs/releasing.md#linux-packages) into SITE.
 #
 #   PHUX_PACKAGES_GPG_KEY=<armored secret signing key> \
-#     bash scripts/build-package-repo.sh <site> [<packages-dir>]
+#     bash packaging/build-package-repo.sh <site> [<packages-dir>]
 #
 # The repositories live on GitHub releases: each package stays on its own
 # vX.Y.Z release, and the metadata goes on the `repodata` release, so

@@ -60,13 +60,13 @@ case "$archive" in
     binary="$app/Contents/MacOS/phux-rune"
     notices="$app/Contents/Resources"
     floor="$(plutil -extract LSMinimumSystemVersion raw "$app/Contents/Info.plist")"
-    PHUX_MACOS_MIN_MAX="$floor" bash "$repo/scripts/check-binary-portability.sh" "$binary"
+    PHUX_MACOS_MIN_MAX="$floor" bash "$repo/packaging/check-binary-portability.sh" "$binary"
     ;;
 *.tar.gz)
     tar -xzf "$archive" -C "$scratch/unpacked"
     notices="$(find "$scratch/unpacked" -mindepth 1 -maxdepth 1 -type d)"
     binary="$notices/phux-rune"
-    PHUX_GLIBC_MAX="$glibc_floor" bash "$repo/scripts/check-binary-portability.sh" "$binary"
+    PHUX_GLIBC_MAX="$glibc_floor" bash "$repo/packaging/check-binary-portability.sh" "$binary"
     ;;
 *) fail "not a release archive: $archive" ;;
 esac
@@ -78,9 +78,9 @@ done
 helper="$(dirname "$binary")/tmd"
 [[ -x "$helper" ]] || fail "the archive has no tmd viewer"
 if [[ "$archive" == *.zip ]]; then
-    PHUX_MACOS_MIN_MAX="$floor" bash "$repo/scripts/check-binary-portability.sh" "$helper"
+    PHUX_MACOS_MIN_MAX="$floor" bash "$repo/packaging/check-binary-portability.sh" "$helper"
 else
-    PHUX_GLIBC_MAX="$glibc_floor" bash "$repo/scripts/check-binary-portability.sh" "$helper"
+    PHUX_GLIBC_MAX="$glibc_floor" bash "$repo/packaging/check-binary-portability.sh" "$helper"
 fi
 printf '**Bundled renderer**\n' | "${clean[@]}" "$helper" --print --no-images --plain-headings \
     > "$scratch/viewer.txt"

@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # Assemble the macOS server bundle, `phux Server.app`, from a phux binary:
 #
-#   scripts/make-server-app.sh PHUX_BINARY OUT_DIR VERSION
-#   scripts/make-server-app.sh --pack APP OUT_DIR ID TARGET
+#   packaging/make-server-app.sh PHUX_BINARY OUT_DIR VERSION
+#   packaging/make-server-app.sh --pack APP OUT_DIR ID TARGET
 #
 # The first form writes OUT_DIR/phux Server.app: Contents/MacOS/phux is the
 # binary itself, Info.plist comes from crates/phux/packaging/server with
 # VERSION (X.Y.Z, a prerelease suffix allowed) filled in, and the icon is
 # Rune's. On macOS it is sealed ad hoc, so even an unsigned build carries
 # the sh.phux.server identifier; release CI re-signs it with the Developer
-# ID (scripts/ci/sign-macos-desktop.sh). The second form packs a finished
+# ID (packaging/sign-macos-desktop.sh). The second form packs a finished
 # bundle into OUT_DIR/phux-server-ID-TARGET.tar.gz plus its .sha256, the
 # asset the installer and `phux update` install beside the CLI.
 set -euo pipefail
