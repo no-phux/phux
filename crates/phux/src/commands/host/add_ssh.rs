@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use super::super::enroll::{self, CertificateStatus, EnrollEvent, EnrollRequest, ServicePolicy};
 use super::super::json_err::{self, CliError, codes};
 use super::super::remote::{self, Endpoint, RemoteEntry};
-use super::super::remote_target::RemoteTarget;
+use super::super::remote_target::{self, RemoteTarget};
 
 use super::HostRole;
 use super::add::add_failure_error;
@@ -35,7 +35,7 @@ pub(super) fn run_add_over_ssh(raw_target: &str, opts: &AddOpts) -> ExitCode {
     };
     // `ssh` takes the typed `user@host` spelling as its destination.
     let ssh_host = target.registry_name();
-    let name = opts.name.clone().unwrap_or_else(|| target.host.clone());
+    let name = add_name(&target, opts);
     let quic_port = target.port.unwrap_or(opts.quic_port);
 
     if opts.ssh_only {
@@ -133,6 +133,14 @@ pub(super) fn run_add_over_ssh(raw_target: &str, opts: &AddOpts) -> ExitCode {
         }
         Err(err) => json_err::emit(json, &err, 1),
     }
+}
+
+/// `--name`, else the host: a second server on the machine at another port
+/// is another host, `HOST-PORT`.
+fn add_name(target: &RemoteTarget, opts: &AddOpts) -> String {
+    opts.name
+        .clone()
+        .unwrap_or_else(|| remote_target::registration_name(opts.role, &target.host, target.port))
 }
 
 /// The `phux` to enroll with: `--remote-phux`, else the one the entry
