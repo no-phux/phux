@@ -30,6 +30,18 @@ impl Replica {
         terminals: u32,
         capabilities: ServerCapabilities,
     ) -> Self {
+        Self::spread(cols, rows, terminals, 1, capabilities)
+    }
+
+    /// `terminals` dealt round `sessions` sessions, one window each; the
+    /// first terminal, in the first session, is attached and fed.
+    pub fn spread(
+        cols: u16,
+        rows: u16,
+        terminals: u32,
+        sessions: u32,
+        capabilities: ServerCapabilities,
+    ) -> Self {
         let client = Runtime::embedded(ControlOptions {
             attach: Some(AttachTarget::ByName("budget".into())),
             viewport: (cols, rows),
@@ -49,17 +61,32 @@ impl Replica {
             })
             .expect("attach request");
         let ids: Vec<ResourceId> = (1..=terminals).map(ResourceId::local).collect();
-        let (session, window) = (SessionId::new(1), WindowId::new(1));
+        let session_of = |index: usize| SessionId::new(index as u32 % sessions + 1);
         let resources = ids
             .iter()
-            .map(|id| ResourceInfo::new(id.clone(), window, cols, rows))
+            .enumerate()
+            .map(|(index, id)| {
+                let session = session_of(index);
+                ResourceInfo::new(id.clone(), WindowId::new(session.get()), cols, rows)
+                    .with_session(Some(session))
+            })
             .collect();
+        let (session, window) = (SessionId::new(1), WindowId::new(1));
+        let names = (1..=sessions).map(|n| {
+            let name = if n == 1 {
+                "budget".to_owned()
+            } else {
+                format!("s{n}")
+            };
+            SessionInfo::new(SessionId::new(n), name)
+        });
+        let windows = (1..=sessions).map(|n| {
+            WindowInfo::new(WindowId::new(n), SessionId::new(n), "shell")
+                .with_active_resource(Some(ids[n as usize - 1].clone()))
+        });
         let snapshot = SessionSnapshot::new(session, window, ids[0].clone())
-            .with_sessions(vec![SessionInfo::new(session, "budget")])
-            .with_windows(vec![
-                WindowInfo::new(window, session, "shell")
-                    .with_active_resource(Some(ids[0].clone())),
-            ])
+            .with_sessions(names.collect())
+            .with_windows(windows.collect())
             .with_resources(resources);
         client
             .feed(attached(attach_id, snapshot, 1))
