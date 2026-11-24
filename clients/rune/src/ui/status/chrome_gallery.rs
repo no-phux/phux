@@ -15,6 +15,7 @@ use crate::desk::{Desk, Pending, Tab};
 use crate::test_support::server::{self, agent, pane, session};
 
 mod attention;
+mod sidebar_focus;
 
 /// The pixel scale every page paints at.
 fn scale() -> f32 {

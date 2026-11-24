@@ -161,6 +161,7 @@ impl Desk {
     }
 
     /// Handlers changed: find the link under a held ⌘ again.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(super) fn rehover(&mut self) {
         self.modifiers_changed(self.pointer.cmd);
     }

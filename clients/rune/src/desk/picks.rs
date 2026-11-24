@@ -36,14 +36,19 @@ impl Desk {
         true
     }
 
-    /// Hand the keyboard to the sidebar's row for the shown terminal,
-    /// showing the sidebar first when it is folded.
+    /// Hand the keyboard to the row containing the shown resource, revealing
+    /// the sidebar and its session first when either is folded.
     pub(super) fn focus_sidebar(&mut self, tx: &mut Tx) {
         if !self.sidebar_shown() {
             self.toggle_sidebar();
         }
-        if let Some(shown) = &self.connection.shown {
-            tx.focus_when_shown(format!("pane-{}", shown.resource), true);
+        if let Some(shown) = &self.connection.shown
+            && let Some((row, session)) = crate::ui::sidebar_focus_target(self, &shown.resource)
+        {
+            if let Some(key) = session {
+                self.sidebar_collapsed.remove(&key);
+            }
+            tx.focus_when_shown(format!("pane-{row}"), true);
         }
     }
 

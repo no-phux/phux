@@ -38,6 +38,7 @@ filters = {
     "phone_accessory_resize_visual_review_frames": "RUNE_NAVIGATION_SNAP",
     "phone_pane_motion_visual_review_frames": "RUNE_NAVIGATION_SNAP",
     "attention_contrast_visual_review_frames": "RUNE_NAVIGATION_SNAP",
+    "sidebar_focus_visual_review_frames": "RUNE_NAVIGATION_SNAP",
     "native_png_headless_renderer_smoke": "RUNE_RESOURCE_SNAP",
 }
 filter = sys.argv[5]

@@ -50,6 +50,7 @@ mod reef;
 pub(crate) mod rows;
 mod settings;
 mod sidebar;
+pub(crate) use sidebar::focus_target as sidebar_focus_target;
 mod spatial;
 mod status;
 mod tabs;
