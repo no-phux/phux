@@ -395,5 +395,4 @@ printf 'variant\nrebuilt\n' >"$SETUP_TEST_BUILDS"
 expect_fail 'two rebuilds differ' "$repo/clients/phux-vt-web/scripts/build-vt-wasm.sh"
 [[ "$(cat "$engine")" = rebuilt ]]
 unset GHOSTTY_SRC SETUP_TEST_BUILDS PHUX_TOOLCHAIN_DIR SETUP_TEST_ZIG_CALLS SETUP_TEST_ARO SETUP_TEST_EXPECT_SOURCE
-bash "$root/scripts/check-ghostty-pin_test.sh"
 echo 'dev setup tests passed (scoped PATH, version/SDK errors, opt-in components, checksum rejection, idempotence)'

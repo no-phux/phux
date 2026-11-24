@@ -43,7 +43,7 @@ guards: brand-check shellcheck tools-check docs-check install-surface-check
     bash scripts/check-cache-portable.sh
     bash scripts/check-frozen-fixtures.sh
     bash scripts/check-frozen-fixtures_test.sh
-    bash scripts/check-e2e-lanes.sh
+    bun tools/main.ts e2e-lanes
     bash scripts/check-release-cpu-baselines.sh
     bash dev/lib/worktree-owner_test.sh
     node --test scripts/test-npm-audit-gate.mjs
@@ -62,8 +62,7 @@ rust-lint: worktree-claim fmt-check lint doc deny
     cargo check --locked -p phux-client -p phux-mcp --all-targets --no-default-features --features phux-client/testkit
     cargo check --locked -p phux --no-default-features --bin phux
     cargo check --locked -p phux-tui --all-targets --no-default-features
-    bash scripts/check-ghostty-pin_test.sh
-    bash scripts/check-ghostty-pin.sh
+    bun tools/main.ts ghostty-pin
     cargo check --locked --manifest-path scripts/plugin-index/Cargo.toml
 
 
@@ -152,7 +151,7 @@ deny:
 # nits (sourced libs shellcheck cannot follow) that are correct as written.
 [group('gates')]
 shellcheck:
-    shellcheck --severity=warning dev/*.sh dev/lib/*.sh scripts/*.sh scripts/lib/*.sh scripts/ci/*.sh \
+    shellcheck --severity=warning dev/*.sh dev/lib/*.sh scripts/*.sh scripts/lib/*.sh scripts/ci/*.sh .github/scripts/*.sh \
       clients/rune/upstream/*.sh clients/phux-vt-web/scripts/*.sh \
       examples/agents/*.sh \
       examples/agents/orchestrate-placed-fleet examples/agents/record-pi-live-fleet examples/agents/tests/*.sh \

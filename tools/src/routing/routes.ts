@@ -66,7 +66,7 @@ const ROUTES: Record<string, Surface[]> = {
   // Also used by release workflows outside the lane model.
   ".github/actions/setup-bun/**": [...SURFACES],
   "scripts/ci/setup-linux-release-userspace.sh": [],
-  "scripts/ci/prune-build-cache.sh": [],
+  ".github/scripts/prune-build-cache.sh": [],
   // The separate Windows WSL workflow exercises PowerShell and real WSL;
   // these distribution scripts do not change the Unix Rust build.
   "scripts/{install-windows,test-install-windows,test-windows-wsl}.ps1": [],
@@ -120,7 +120,7 @@ const ROUTES: Record<string, Surface[]> = {
   "dev/lib/dev-toolchain.sh": [...ZIG, "rune"],
   // The lint lane runs build-features-check against the real graph.
   "just/{gates,test,build}.just": ["phux"],
-  "scripts/lib/e2e-selection.sh": ["phux"],
+  "dev/lib/e2e-selection.sh": ["phux"],
   // Compile-free recipes and scripts that guards or release workflows run.
   // The root justfile is imports and `default`.
   justfile: [],

@@ -26,7 +26,7 @@ The browser runs libghostty-vt compiled to WebAssembly:
 [phux-web](../clients/phux-web/README.md) paints its grid on a canvas.
 
 Native and browser engines build one source revision.
-`scripts/check-ghostty-pin.sh` fails unless the `libghostty-vt` revision in
+`bun tools/main.ts ghostty-pin` fails unless the `libghostty-vt` revision in
 `Cargo.lock`, `revision=` and `archive_sha256=` in
 `clients/phux-vt-web/scripts/build-vt-wasm.sh`, and the Zig version in
 `.config/zig-toolchain.json` agree; bump them together. Build options are in

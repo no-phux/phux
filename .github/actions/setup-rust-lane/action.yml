@@ -110,8 +110,8 @@ runs:
     # which is the same invalidation the old rust-cache key carried. The
     # GitHub entry uses cache_key from this step, not the action's generated
     # rustc-and-commit key. flake.lock already pins that compiler. The
-    # devshell's bun rides along for scripts/ci/mbx-export-headroom.sh, which
-    # these mbx lanes run outside `nix develop`.
+    # devshell's bun rides along for `bun tools/main.ts mbx-export-headroom`,
+    # which these mbx lanes run outside `nix develop`.
     - name: expose the devshell's mbx, rustc and bun
       if: inputs.build-cache == 'mbx'
       id: mbx-env

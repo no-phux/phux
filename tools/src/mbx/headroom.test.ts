@@ -1,4 +1,4 @@
-// scripts/ci/mbx-export-headroom.sh and the collapse it runs, on throwaway trees.
+// `mbx-export-headroom` and the collapse it runs, on throwaway trees.
 import { expect, test } from "bun:test";
 import {
   existsSync,
@@ -32,7 +32,11 @@ function put(path: string, content: string | Uint8Array, mode = 0o644, mtimeNs?:
 }
 
 function headroom(env: Record<string, string>) {
-  const result = Bun.spawnSync(["bash", repoPath("scripts/ci/mbx-export-headroom.sh")], { env });
+  const result = Bun.spawnSync(
+    [process.execPath, repoPath("tools/main.ts"), "mbx-export-headroom"],
+    // An empty HOME would put Bun's transpiler cache under the working directory.
+    { env: { BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", ...env } },
+  );
   return {
     code: result.exitCode,
     stdout: result.stdout.toString(),
@@ -87,7 +91,7 @@ test("byte comparison reads past the first chunk", () => {
   });
 });
 
-test("the script drops downloads and links target copies without calling mbx", () => {
+test("the command drops downloads and links target copies without calling mbx", () => {
   scratch((root) => {
     const home = join(root, "home");
     for (const dir of ["registry", "git", "bin"]) put(join(home, ".cargo", dir, "sentinel"), "x");
@@ -113,13 +117,13 @@ test("the script drops downloads and links target copies without calling mbx", (
 test.each([
   [{ PHUX_MBX_EXPORT_HEADROOM: "0", HOME: "/nonexistent" }, 0, "skipped outside GitHub Actions"],
   [{ PHUX_MBX_EXPORT_HEADROOM: "1", HOME: "" }, 1, "refusing to clean an empty Cargo home"],
-])("the script guards %p", (env, code, message) => {
+])("the command guards %p", (env, code, message) => {
   const run = headroom({ PATH: "/usr/bin:/bin", ...env });
   expect(run.code).toBe(code);
   expect(run.stdout + run.stderr).toContain(message);
 });
 
-test("the script retires pending receipts only when the export cannot fit", () => {
+test("the command retires pending receipts only when the export cannot fit", () => {
   scratch((root) => {
     const home = join(root, "home");
     const store = join(home, ".cache/mbx/actions");

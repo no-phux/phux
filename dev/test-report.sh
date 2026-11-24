@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # Run the whole unit pool to the end and say what is actually new.
 #
-#   scripts/test-report.sh [--base <ref>] [nextest args...]
+#   dev/test-report.sh [--base <ref>] [nextest args...]
 #
 # Unlike `just test`, this does not stop at the first failure, and it reads the
 # result back: with --base every failure is rerun on that ref, so "this also
 # fails on main" is a measurement rather than a claim. Exit 0 means nothing
 # unexplained failed (with --base: nothing that passes on the base ref).
 set -euo pipefail
-source "$(dirname "${BASH_SOURCE[0]}")/../dev/lib/output.sh"
+# shellcheck source=dev/lib/output.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 

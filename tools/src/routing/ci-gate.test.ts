@@ -10,7 +10,7 @@ import { classifyDetection } from "./detect.ts";
 const CI = workflow("ci.yml");
 const AFTER = ["ci", "content", "prune-build-cache"];
 const script = run(
-  steps(job(CI, "ci")).find((step) => run(step).includes("scripts/ci/ci-aggregate.sh")) ?? {},
+  steps(job(CI, "ci")).find((step) => run(step).includes(".github/scripts/ci-aggregate.sh")) ?? {},
 );
 const lanes = Object.keys(jobs(CI)).filter((id) => !AFTER.includes(id));
 const baseline = {

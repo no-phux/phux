@@ -80,7 +80,7 @@ jobs:
         run: nix develop -c cargo check --locked --manifest-path scripts/plugin-index/Cargo.toml
       - name: leave disk headroom for the objects save
         if: steps.lane.outputs.cache-save-eligible == 'true' && steps.lane.outputs.cache-hit != 'true'
-        run: bash scripts/ci/mbx-export-headroom.sh
+        run: bun tools/main.ts mbx-export-headroom
 
   rust-test:
     name: warm rust test
@@ -111,7 +111,7 @@ jobs:
         run: nix develop -c just test-archive
       - name: leave disk headroom for the objects save
         if: steps.lane.outputs.cache-save-eligible == 'true' && steps.lane.outputs.cache-hit != 'true'
-        run: bash scripts/ci/mbx-export-headroom.sh
+        run: bun tools/main.ts mbx-export-headroom
 
   rust-uniffi:
     name: warm rust uniffi
@@ -161,7 +161,7 @@ jobs:
         run: nix develop -c just perf-icount
       - name: leave disk headroom for the objects save
         if: steps.lane.outputs.cache-save-eligible == 'true' && steps.lane.outputs.cache-hit != 'true'
-        run: bash scripts/ci/mbx-export-headroom.sh
+        run: bun tools/main.ts mbx-export-headroom
 
   web-vt:
     name: warm web vt
@@ -217,4 +217,4 @@ jobs:
           persist-credentials: false
       - env:
           GH_TOKEN: ${{ github.token }}
-        run: bash scripts/ci/prune-build-cache.sh
+        run: bash .github/scripts/prune-build-cache.sh

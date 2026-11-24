@@ -53,7 +53,7 @@ The terminal engine is Ghostty's C library ([libghostty in phux](./libghostty.md
 On Linux and macOS (arm64, x86_64) the default static build links a
 checksummed prebuilt `libghostty-vt.a`, so it needs no Zig. Other targets or
 flavors, offline builds and failed downloads build from source with Zig
-0.17.1, cached outside `target/`. `bash scripts/check-ghostty-pin.sh`
+0.17.1, cached outside `target/`. `bun tools/main.ts ghostty-pin`
 validates the pin and reports prebuilt coverage. `LIBGHOSTTY_VT_SYS_FROM_SOURCE=1`
 forces a source build, `GHOSTTY_SOURCE_DIR` builds a local Ghostty checkout,
 and `LIBGHOSTTY_VT_SYS_LIB_DIR` links a library you built.
