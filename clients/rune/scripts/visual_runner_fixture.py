@@ -31,6 +31,7 @@ filters = {
     "retina_navigation_renders_in_native_safe_area_and_desktop_phone_viewports": "RUNE_NAVIGATION_SNAP",
     "phone_header_visual_review_frames": "RUNE_NAVIGATION_SNAP",
     "phone_states_visual_review_frames": "RUNE_NAVIGATION_SNAP",
+    "reconnect_feedback_visual_review_frames": "RUNE_NAVIGATION_SNAP",
     "phone_connections_visual_review_frames": "RUNE_NAVIGATION_SNAP",
     "phone_connections_keyboard_visual_review_frames": "RUNE_NAVIGATION_SNAP",
     "phone_accessory_visual_review_frames": "RUNE_NAVIGATION_SNAP",
@@ -48,11 +49,12 @@ for relative, (width, height, scale) in review.required_inventory().items():
     path = Path(os.environ[variable])
     if variable != "RUNE_RESOURCE_SNAP":
         path = path / case.name
+    pixels = [round(width * scale), round(height * scale)]
     path.write_bytes(struct.pack(">8sI4sIIBBBBBI", b"\x89PNG\r\n\x1a\n",
-                                13, b"IHDR", width * scale, height * scale, 8, 6, 0, 0, 0, 0))
+                                13, b"IHDR", *pixels, 8, 6, 0, 0, 0, 0))
     tree = {
         "schema": 1, "projection": "test fixture", "viewport": [width, height],
-        "scale": scale, "pixels": [width * scale, height * scale],
+        "scale": scale, "pixels": pixels,
         "scenario": "exported fixture", "theme": "dark",
         "elements": [{"path": "root"}], "accessibility": {},
     }
