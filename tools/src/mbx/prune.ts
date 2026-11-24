@@ -56,24 +56,26 @@ export function listEndpoint(repository: string, prefix: string): string {
   return `repos/${repository}/actions/caches?key=${prefix}&ref=${MAIN}&sort=created_at&direction=desc&per_page=100`;
 }
 
+/** The `--jq` filter over one listing page: main's caches only, one JSON object per line. */
+export const LIST_QUERY = `.actions_caches[] | select(.ref == "${MAIN}") | {id: (.id | tostring), key, created_at}`;
+
+/** One `LIST_QUERY` output line as a cache entry. */
+export function cacheEntry(line: unknown): CacheEntry {
+  const row = table(line);
+  return {
+    id: str(row["id"]) ?? "",
+    key: str(row["key"]) ?? "",
+    created: str(row["created_at"]) ?? "",
+  };
+}
+
 /** The repository's caches through `gh`. */
 export function githubStore(repository: string): CacheStore {
   return {
     list: (prefix) =>
-      ghLines([
-        "api",
-        "--paginate",
-        listEndpoint(repository, prefix),
-        "--jq",
-        `.actions_caches[] | select(.ref == "${MAIN}") | {id: (.id | tostring), key, created_at}`,
-      ]).map((line) => {
-        const row = table(line);
-        return {
-          id: str(row["id"]) ?? "",
-          key: str(row["key"]) ?? "",
-          created: str(row["created_at"]) ?? "",
-        };
-      }),
+      ghLines(["api", "--paginate", listEndpoint(repository, prefix), "--jq", LIST_QUERY]).map(
+        cacheEntry,
+      ),
     remove(id) {
       // A failure (404: another main run already pruned it) is not fatal.
       try {

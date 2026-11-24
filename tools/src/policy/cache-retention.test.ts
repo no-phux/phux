@@ -2,7 +2,14 @@
 // store mimics GitHub's listing: main's caches for one prefix, newest first.
 import { afterEach, beforeEach, expect, spyOn, test, type Mock } from "bun:test";
 import { repoPath } from "../lib/repo.ts";
-import { listEndpoint, prune, SWEEP, type CacheStore } from "../mbx/prune.ts";
+import {
+  cacheEntry,
+  LIST_QUERY,
+  listEndpoint,
+  prune,
+  SWEEP,
+  type CacheStore,
+} from "../mbx/prune.ts";
 
 const PREFIX = "linux-arm64-mbx-phux-test-";
 const MAIN = "refs/heads/main";
@@ -118,4 +125,27 @@ test("pre-upload replacement mode is rejected rather than deleting the sole rest
 
 test("the sweep names each series once", () => {
   expect(new Set(SWEEP).size).toBe(SWEEP.length);
+});
+
+test("the production listing query keeps only main's caches and parses each line", () => {
+  // The fixture store above filters refs itself; this runs the real `--jq`
+  // filter (gh evaluates it with jq semantics) over one listing page.
+  const page = JSON.stringify({
+    actions_caches: [
+      { id: 7, key: `${PREFIX}a`, created_at: "2026-11-14T00:00:00Z", ref: MAIN },
+      { id: 8, key: `${PREFIX}b`, created_at: "2026-11-13T00:00:00Z", ref: "refs/pull/9/merge" },
+    ],
+  });
+  const proc = Bun.spawnSync(["jq", "-c", LIST_QUERY], {
+    stdin: Buffer.from(page),
+    stdout: "pipe",
+  });
+  expect(proc.exitCode).toBe(0);
+  const lines = proc.stdout
+    .toString()
+    .split("\n")
+    .filter((line) => line.trim() !== "");
+  expect(lines.map((line) => cacheEntry(JSON.parse(line)))).toEqual([
+    { id: "7", key: `${PREFIX}a`, created: "2026-11-14T00:00:00Z" },
+  ]);
 });
