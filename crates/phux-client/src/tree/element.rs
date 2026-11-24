@@ -1,5 +1,5 @@
 //! Elements of an accessibility tree, by node instead of pixel
-//! (`docs/applications.md#agents-clicking-elements`).
+//! (`docs/resource-kinds.md#agents-clicking-elements`).
 //!
 //! A tree document names each node by a stable `id`: the macOS and AT-SPI
 //! mirrors write the path of child indices from the root (`0.3.1`) and the

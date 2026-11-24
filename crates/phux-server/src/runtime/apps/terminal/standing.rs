@@ -1,5 +1,5 @@
 //! Standing mirrors (`[[mirrors]]`, `docs/resource-kinds.md#standing-mirrors`)
-//! and producers (`[[producers]]`, `docs/applications.md#standing-producers`).
+//! and producers (`[[producers]]`, `docs/resource-kinds.md#standing-producers`).
 //!
 //! One task keeps each entry's command running in a pane of its own
 //! ephemeral session: an exited pane is replaced after a backoff, a hot

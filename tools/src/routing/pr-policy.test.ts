@@ -31,7 +31,7 @@ function fixture(ref = "topic", headRepo = "no-phux/phux") {
 function aggregate(event: string, results: Record<string, unknown>): number | null {
   const script = run(steps(job(workflow("ci.yml"), "ci")).find((step) => run(step) !== "") ?? {});
   const defaults = Object.fromEntries(
-    [...LANES, "rune_qualify", "docs_catalog", "release_qualify"].map((key) => [key, "false"]),
+    [...LANES, "rune_qualify", "release_qualify"].map((key) => [key, "false"]),
   );
   const complete = {
     ...Object.fromEntries(

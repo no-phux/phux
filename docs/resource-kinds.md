@@ -1,359 +1,240 @@
+---
+group: build
+order: 6
+---
+
 # Resource kinds beyond terminals
 
-Hosting resources that are not terminals: an application's accessibility tree,
-a window's pixels, a browser page, a typed document. Everything up to
-[Not done](#not-done) is implemented. The wire and host rules also live in
-their home pages ([architecture](./architecture.md),
-[protocol](./protocol.md), [decisions](./decisions.md)) and this page links
-to them. [Not done](#not-done) lists the gaps; [History](#history) links the
-work that built this.
+How phux hosts resources that are not terminals (an accessibility tree, a
+window's pixels, a browser page, a typed document) and how to produce one.
+The kind catalog, with each kind's methods and grants, is
+[kinds](./reference/kinds.md).
 
 ## Available now
 
-The host supports Terminal, AgentSession, AccessibilityTree, PixelSurface and
-Document. A Document carries a content type fixed when it is opened, so a
-producer publishes Markdown, HTML, SVG, CSV, JSON or images without a new
-kind or a wire change; `phux agent doc open|publish|snapshot|follow` drive
-one ([protocol](./protocol.md#commands-events-resources)).
-Membership and aggregate attach are kind-neutral but stream only the kinds a
-client's `HELLO` lists. Apps supply bounded captures; the host publishes the
-attach barrier before live output or lifecycle closes. AgentSession is listed
-at attach; its records wait for an explicit, cursor-bearing `ATTACH_RESOURCE`,
-so it neither gates aggregate readiness nor sends an unsolicited replacement.
-Document-only and agent-only sessions can attach without a Terminal codec.
-The server links only the pure Terminal contract; the executable
-supplies the concrete engine ([architecture](./architecture.md#where-to-look)).
+Besides `Terminal` and `AgentSession`, the host carries three
+whole-document kinds:
 
-Phux Rune discovers tree/surface resources before the first frame,
-renders plain JSON or letterboxed PNG or JPEG frames, and distinguishes pending, empty and invalid
-documents. It draws a Document by its content type: PNG, JPEG, GIF and
-WebP as images, JSON pretty-printed, Markdown through the
-[desktop viewer](./config.md#markdown-viewer), other text and `+xml`/`+json`
-as source (HTML is not rendered), anything else as its size and type.
-A tree or surface is named for what it observes (`--app Safari`, `--window
-display`, a mirrored page's title) and a typed document for its `--name`;
-that name is the tab title in Rune, `name` in `phux ls --json`
-resources and MCP `phux_documents`, and `title` in `phux resource show`.
-Rune lists a session's documents after its terminals in the sidebar, the
-palette and pane cycling, and names the window for a shown one. phux-web
-draws each in a read-only tile by its content type
-([clients](./clients.md#browser)).
-Documents can occupy mixed or document-only arrangements and survive
-restore/reconnect. Their streams are **read-only**: typing, paste, terminal grid
-resizing and file uploads do not control their source. Input goes to the
-producer instead: `SEND_DOCUMENT_INPUT` relays one typed intent to the
-connection that opened the document ([protocol](./protocol.md#commands-events-resources)),
-and `phux agent page navigate|click|type|key|scroll` drive a mirrored browser page
-this way. The same verbs drive a macOS `phux agent surface mirror`: it posts
-clicks, text, keys and scrolls as system input at the window's or display's
-screen points (raising a window's app first), which needs the Accessibility
-grant for the app that started it; `--dry-run-input` logs the events
-instead. Rune and mobile send input to a surface pane
-([authority](./authority.md#in-rune)). Closing a document placement leaves its producer and
-other viewers running.
+- `AccessibilityTree`: an application's or page's tree as JSON.
+- `PixelSurface`: a window's, display's or page's frames, PNG or JPEG.
+- `Document`: whole documents of one content type fixed at open
+  ([typed documents](#typed-documents)).
 
-Phux Rune offers mirror startup actions. These launch a dedicated
-supervised producer with argv, not commands typed into a person's shell.
-Browser mirroring needs an existing Chrome DevTools endpoint; macOS capture
-needs the relevant system permission. Local-only startup actions refuse remote
-or unsupported platforms. Moving or reopening a view keeps the source on its
-original host; it is not browser interactivity or cross-host process migration.
+Each is a pane child, survives restore and reconnect, and is named for what it observes (`--app Safari`,
+`display`, a page's title) or by its `--name`. Clients draw a document by
+its type: images as images, JSON pretty-printed, Markdown through the
+[Markdown viewer](./config.md#markdown-viewer), other text as source (HTML
+is not rendered). A client attaches only the kinds its `HELLO` lists, so a
+document-only client needs no Terminal codec.
 
-Frame formats, the Linux producers and what the host shows while input
-arrives are in [Mirror formats and platforms](./mirrors.md).
+Document streams are read-only. Typing, paste and resizing do not reach the
+source; input goes to the producer as typed intents
+([producers](#producers)). Closing a placement leaves the producer and other
+viewers running.
 
-Agents read documents like panes, over MCP or the pi, Oh My Pi and OpenCode
-plugins: `phux_documents` lists them, `phux_tree_snapshot` and
-`phux_tree_wait` read a tree's JSON, and `phux_surface_snapshot` a frame
-([parity](./reference/parity.md)). MCP agents drive one with `phux_document_navigate`,
-`phux_document_click`, `phux_document_type`, `phux_document_key` and
-`phux_document_scroll`, one tool per intent. The loop: find a surface and its
-`control` in `phux_documents`, look at it with `phux_surface_snapshot`, click
-at pixel coordinates read off that image, and snapshot again to confirm. A
-document with no `control` refuses input, and a connection other than the
-owner socket needs an `input@CLASS` grant ([authority](#authority)).
-
-## Supervision
-
-The producer of a document is the connection that opened it. While that
-connection lives, the document reports `producer: "connected"` in
-`phux ls --json` resources, `phux resource show --json` and MCP
-`phux_documents`; once it disconnects the document stays with its last
-frame and reports `"gone"`. Other kinds omit the field (`null` in
-`resource show`). On the wire it is `RESOURCE_STATE` field `PRODUCER`
-(`u8`, `1` connected, `0` gone), absent from an older server. A restarted
-producer opens a fresh document. A gone document is re-bound only by a
-publish to it: the publishing local connection becomes its producer and
-receives its input.
-
-`phux upgrade` carries every document whose parent pane crosses: same id,
-same record, its newest document and `control`, with `producer: "gone"`.
-A running `phux agent surface|tree|page mirror` redials
-when its connection closes (backing off, for up to a minute) and publishes
-again, which re-binds it, so viewers keep the same resource. A surface
-capture that yields no frame (the display asleep, the session locked, a
-refused grant) keeps the surface and its last frame and retries, backing
-off to 30 s; only the first capture, before the surface exists, ends the
-mirror when it fails.
-
-A server restart (not `phux upgrade`, which keeps every pane running)
-ends producers with every other program. A mirror run as a pane
-(`phux new -- phux agent page mirror ...`, or a Rune startup action) is an
-ordinary pane with a recorded command, so `phux restore` relaunches it
-and it opens fresh documents (`phux service install --restore` keeps the
-panes; it does not run `phux restore`). The old document records cannot
-be relaunched: `phux restore` lists them as refused, and `phux rm ^KEY`
-forgets one.
-
-A mirror can also run as the child of the app that holds the macOS grants
-(Rune, for standing mirrors). `phux agent tree|surface|page mirror
---parent-pid PID` exits within a second of process `PID` ending, so a
-parent killed without dropping its children leaves no producer behind.
-
-## Standing mirrors
-
-A host can keep displays and windows mirrored without anyone running a
-mirror by hand. Each `[[mirrors]]` entry in `config.toml` names a
-`phux agent surface mirror` target (`display`, `display:OUTPUT`, `App`,
-`App:title`), with optional `format`, `quality`, `max-width` and
-`interval-ms`. The server runs each in a pane of its own ephemeral
-session, `mirror-` plus the target (`mirror-display`,
-`mirror-display-hdmi-a-1`). The pane is the surface's parent, so clients
-list the surface under that session and a `display` or `window` grant
-applies as usual. A mirror that exits is restarted after a backoff (1 s,
-doubling to 60 s; a run over a minute resets it). `phux upgrade` keeps the
-pane and the mirror re-adopts its surface, restarting on the new binary
-if `phux update` replaced it. A cold start recreates it.
-`phux config reload` starts new entries, restarts changed ones, closes
-`mirror-*` sessions no entry names. Do not name sessions of your own
-`mirror-*`.
-
-On macOS a server's children cannot hold Screen Recording, so the pane
-only waits and Rune, while open, runs the mirrors into it as children
-(`phux agent surface standing`); the grant prompts name Rune. An older
-server refuses a config with the table; upgrade first.
-
-## Applications
-
-`phux spawn --app NAME` (MCP `phux_app_open`) launches an application as a
-resource: a pane runs `phux agent app run NAME`, which starts the app, runs
-the mirrors against that pane, and ties their lifetime to the app. The
-launch, lifetime and platform rules are in [Applications](./applications.md).
+Prefer meaning over pixels: an application integration (DevTools for a
+browser) first, then the accessibility tree, then pixels. Agents read and
+drive documents over MCP: `phux_documents` lists them with their `control`,
+`phux_tree_snapshot` and `phux_tree_wait` read a tree,
+`phux_surface_snapshot` returns a frame, and the `phux_document_*` tools send
+one intent each ([parity](./reference/parity.md)). The CLI equivalents are
+`phux agent tree|surface|doc snapshot|follow` and `phux agent page
+navigate|click|type|key|scroll|drag|paste|copy`.
 
 ## Typed documents
 
-A `Document`'s content type is ASCII `type/subtype` with optional `;`
-parameters, at most 255 bytes; any other value fails the `SPAWN_RESOURCE`
-frame. It is fixed for the resource's life. A publish (at most 4 MiB) is
-checked by type family: `image/png` must be a PNG, `application/json` must
-parse, `text/*` and `+xml`/`+json` must be UTF-8, and any other type is
-opaque bytes. The `DocumentTypedV1` bootstrap payload is one length byte,
-the content type, then the newest document (empty before the first
-publish), so a late viewer learns the type; each `RESOURCE_OUTPUT` is a
-whole document of that type.
+A content type is ASCII `type/subtype` with optional `;` parameters, at
+most 255 bytes, fixed for the resource's life. A publish is at most 4 MiB
+and must match its type family: `image/png` must be a PNG,
+`application/json` must parse, `text/*` and `+xml`/`+json` must be UTF-8;
+any other type is opaque bytes. The bootstrap (`DocumentTypedV1`) is one
+length byte, the content type, then the newest document, so a late viewer
+learns the type.
+
+## Publish your own kind
+
+Any program adds a kind without a client change: open a typed `Document`
+under a pane and publish whole documents. `phux agent doc serve` is the
+contract over a pipe, from any language. It opens the document under
+`--pane`, or its own pane, and prints JSON lines:
+
+- `{"event": "opened", "resource": "@12", "parent": "@3", ...}` first;
+- `{"event": "input", "intent": ...}` per viewer intent: `navigate` (`url`),
+  `click` (`x`, `y`), `type` (`text`), `key` (`key`), `scroll` (`dx`, `dy`),
+  `paste` (`text`, `chord`), `activate` (`node`), `drag` (`from`, `to`).
+
+A typed document declares no control class, so only the owner socket sends
+it input. Each stdin line `{"text": ...}` or `{"base64": ...}` replaces the
+document; a refused publish is reported on stderr. Across `phux upgrade` it
+redials and republishes the same resource. End of stdin ends it, leaving the
+document `producer: "gone"`.
+
+```python
+import json, subprocess, time
+p = subprocess.Popen(["phux", "agent", "doc", "serve", "--type", "text/markdown",
+                      "--name", "clock"], stdin=subprocess.PIPE, text=True)
+while True:
+    p.stdin.write(json.dumps({"text": "# " + time.strftime("%T")}) + "\n")
+    p.stdin.flush()
+    time.sleep(1)
+```
+
+Rust programs can link `phux-client`'s `tree` module instead.
+Two producers ship built in: `phux agent doc folder PATH` (a directory
+listing that `navigate` walks, never above PATH) and `phux agent doc
+notifications` (the host's recent desktop notifications; Linux only).
+
+## Standing producers
+
+`[[producers]]` in `config.toml` keeps a command running as a producer.
+Each entry has a `name` and a `command` argv; a first word `phux` is the
+server's own binary. It runs in its own session, `producer-<name>`,
+restarts with backoff (1 s doubling to 60 s), survives `phux upgrade`, and
+follows `phux config reload`. Do not name your own sessions `producer-*`.
+
+```toml
+[[producers]]
+name = "downloads"
+command = ["phux", "agent", "doc", "folder", "/home/me/Downloads"]
+```
+
+## Applications
+
+`phux spawn --app NAME` (MCP `phux_app_open`) opens a pane running
+`phux agent app run NAME`, which launches the app, mirrors it against that
+pane, and ties their lifetimes together:
+
+- `--browser [URL]`: a Chromium-family browser with a fresh temporary
+  profile and a debugging port; its first page is mirrored (control `page`).
+- macOS: `open -n -a NAME` starts a new instance, never an existing one; its
+  first window (control `window`) and its tree are mirrored.
+- Linux: NAME is a command or `.desktop` id run in the foreground; the tree
+  is read by pid, and on Hyprland the surface is the pid's window.
+
+The app quitting closes the pane and its documents. Killing the pane quits
+only the app the helper launched (a browser's profile is removed). A pane
+holds no macOS capture grant, so on macOS `phux spawn --app` refuses a
+non-browser app: run `phux agent app run NAME --pane @N` from a terminal
+that holds Screen Recording and Accessibility instead.
+
+## Agents clicking elements
+
+`phux agent tree click TREE --node ID` or `--name TEXT [--role ROLE]` (MCP
+`phux_click_element`) acts on an element instead of a pixel. Tree mirrors
+give every node an `id` (child-index path such as `0.3.1`, or a page's
+DevTools `nodeId`) and a `frame` in screen points. The click sends an
+`Activate` intent; the producer presses the node (`AXPress`, AT-SPI
+`DoAction(0)`, or a DevTools click). If the tree refuses it, or with
+`--pixel`, the node's centre is clicked on the surface beside the tree. App
+trees take input of class `window`, so the same `input@window` grant
+applies.
+
+## Standing mirrors
+
+`[[mirrors]]` in `config.toml` keeps displays and windows mirrored. Each
+entry names a `phux agent surface mirror` target (`display`,
+`display:OUTPUT`, `App`, `App:title`) and runs in a pane of its own session,
+`mirror-<target>`, restarted with backoff like a standing producer and
+reconciled by `phux config reload`. Do not name your own sessions
+`mirror-*`. On macOS a server's children cannot hold Screen Recording, so
+Rune, while open, runs the mirrors into those panes (`phux agent surface
+standing`).
+
+## Picking a screen or window
+
+The `MIRROR` command lists what a host can mirror (`Targets`) and starts or
+stops a mirror on demand (`Start`, `Stop`) in the same `mirror-<target>`
+session. Rune's palette and the phone apps use it; `phux agent surface
+targets` prints the same list. `Start` waits up to 20 s for the first frame.
+Listing, and starting or stopping any non-display target, needs
+`observe@window`; a `display` target needs `observe@display` (append
+`:HOST` for a satellite). On macOS it needs Rune
+open on that host, else `UNAVAILABLE`.
+
+## Mirror formats and platforms
+
+Frames are PNG or JPEG, told apart by signature. Page mirrors default to
+JPEG, window and display mirrors to PNG; `--format`, `--quality` and
+`--max-width` are in [cli](./reference/cli.md#phux-agent-surface-mirror). A
+frame over 4 MiB switches a PNG mirror to JPEG; a JPEG still too large is
+refused, so lower `--max-width`. A window or display mirror captures every
+`--interval`, faster for two seconds after input; a page sends a frame on
+each repaint.
+
+On Linux neither mirror needs a grant. `phux agent tree mirror APP` reads
+AT-SPI over D-Bus. `phux agent surface mirror` captures with `grim` on a
+wlroots compositor (Hyprland, Sway); window targets need Hyprland. Input
+uses the wlroots virtual-pointer and virtual-keyboard protocols, falling
+back to `wtype` and `wlrctl` or `ydotool`. On macOS the window mirror needs
+Screen Recording, and input needs Accessibility, both held by the app that
+started it ([macOS permissions](./install.md#macos-permissions)).
+
+While input arrives the host notifies who is in control and logs each
+burst with the sender's credential, never the text.
+
+## Supervision
+
+A document's producer is the connection that opened it. `phux ls --json`,
+`phux resource show --json` and `phux_documents` report `producer:
+"connected"`, or `"gone"` once it disconnects; the document keeps its last
+frame. A publish to a gone document re-binds the publisher as producer.
+
+`phux upgrade` carries every document whose parent pane crosses, as
+`producer: "gone"`. A running mirror or `doc serve` redials for up to a
+minute and republishes, re-binding the same resource. A surface whose
+capture stops yielding frames (display asleep, session locked) keeps its
+last frame and retries.
+
+A server restart ends producers. A mirror run as a pane has a recorded
+command, so `phux restore` relaunches it into fresh documents; old document
+records are listed as refused, and `phux rm ^KEY` forgets one. `--parent-pid
+PID` on a mirror exits within a second of `PID` ending.
+
+## Authority
+
+A new kind starts denied. A scoped grant opens a kind only once its spawn
+contract opts in (`scoped_child`), and then with `CREATE` on the parent's
+Group and `BIND` on the parent. Window and display grants are separate from
+terminal grants and from each other: a display shows every app on the
+machine. Who may watch and control which class is in
+[authority](./authority.md).
 
 ## The seam
 
-A kind's engine owns its semantics and binary codecs. phux owns connection
-negotiation, stream and bootstrap identity, ordering and fences, resource
-bounds, routing and tombstones.
-
-A kind supplies:
-
-- its state and a codec for it (VT bytes, a record, a whole document);
-- the frames and commands it owns, through its `ResourceApp`;
-- what of it crosses `phux upgrade`, which the same app writes into the
-  upgrade blob at the cut and rebuilds on resume;
-- its row in the kind catalog (`KindSpec`): gate, methods, events,
-  metadata keys, and two contracts:
-  - its stream: the codec tags it streams with their feature gates, its
-    [delivery mode](#delivery-modes), its geometry (none, cells for a
-    Terminal, the newest image's own size in pixels for a `PixelSurface`),
-    whether a cursor resumes it, and whether it is the connection's
-    Terminal profile;
-  - its spawn: whether it names a parent, what `provider` and `native_id`
-    mean and how long they may be, which other fields it refuses, any
-    check of its own (a `Document`'s content type), and whether a scoped
-    grant may open it beside its parent.
-
-The decoder, the authorization classifier, the hub relay, session attach,
-`SPAWN_RESOURCE` and the client kernel read those contracts instead of
-matching on kinds, so a new kind is its app plus one catalog row. A codec
-with no variant of its own decodes as `BootstrapCodec::Kind`. Only a
-Terminal's stream needs the connection's Terminal profile: a client that
-selected none at `HELLO` still spawns and watches every other kind.
-
-phux supplies, the same for every kind: identity, authorization from the
-kind catalog, generations and fences, sequence numbers, bounded mailboxes,
-gap recovery and tombstones. Any resource in a session's arrangement can be
-a layout leaf. The Terminal invariant "one PTY, one authoritative geometry"
-holds.
-
-Wire fields named `terminal_id` carry the resource id of any kind. Renaming
-them in source is free, because the wire matches field ids, not names.
+A kind's engine owns its semantics and codecs. phux owns negotiation,
+stream and bootstrap identity, ordering and fences, bounds, routing and
+tombstones. A kind supplies its `ResourceApp` (state, codec, frames and
+commands, what crosses `phux upgrade`) and one `KindSpec` row in the catalog:
+gate, methods, events, metadata keys, its stream contract (codec tags,
+[delivery mode](#delivery-modes), geometry, cursor resume) and its spawn
+contract (parent, `provider` and `native_id`, refused fields, its own
+checks, `scoped_child`). The decoder, authorization classifier, hub relay,
+session attach and client kernel read those contracts instead of matching
+on kinds.
+Wire `terminal_id` fields carry any kind's resource id.
 
 ## Delivery modes
-
-Each kind delivers in one or more of four modes.
 
 | Mode | Kinds | Catch-up |
 | --- | --- | --- |
 | Log | `AgentSession` records | resume from a cursor, or an explicit gap |
 | Raw stream | Terminal PTY bytes | a gap fences the generation and rebootstraps |
 | Replicated state | Terminal StateSync | deltas against the viewer's acknowledged reference |
-| Whole document | `AccessibilityTree`, `PixelSurface`, `Document` | the newest document; a lapped viewer is recut from it |
+| Whole document | `AccessibilityTree`, `PixelSurface`, `Document` | the newest document; a lapped viewer is recut |
 
-Replicated state gives each viewer its own reference, so a phone on a slow
-link and a desktop on a LAN get different deltas from one source. The
-newest state wins because a delta is computed against what the viewer
-acknowledged, not because bytes are dropped: "never silently skip bytes"
-holds for every stream. The per-viewer engine (sequence numbers, ack
-acceptance, RTT, cadence, loss tolerance) is
-`phux_resource::replication::ConsumerSync`, generic over the kind's
-reference type. The Terminal actor (`phux-terminal`, `actor/sync.rs`)
-supplies its cell reference and synthesizer.
-
-A whole-document stream takes no `FRAME_ACK`. Each viewer gets the newest
-document, so a slow viewer skips only intermediate documents
-([protocol](./protocol.md#commands-events-resources)). A federation hub
-that cannot deliver to a viewer fences its generation without a recut, so a
-client that sees no recut within 30 seconds attaches that document again,
-waiting longer each time. After three re-attaches with no document between
-them, it reports the document lost; the connection is never replaced.
-
-In the client runtime, a grid and a whole document publish through one
-table: one slot per resource with one generation counter, newest wins, and
-the slot retires when the resource closes, is detached or released, the
-server restarts, or a reconnect rebuilds the engine. A log is the exception: an `AgentSession`'s records stay on their
-own ordered, acknowledged queue, because every record counts
-([embedding](./embedding.md#documents-trees-and-surfaces)).
+Replicated state never skips bytes: each viewer gets deltas against what it
+acknowledged (`phux_resource::replication::ConsumerSync`). A whole-document
+stream takes no `FRAME_ACK`; a slow viewer skips intermediate documents. A
+client that sees no recut within 30 s after a hub fence re-attaches, and
+reports the document lost after three empty re-attaches.
 
 ## Producers
 
-OpenCode owns its conversations; phux owns a projection of them (the
-`AgentSession` record stream), the guardian's lifecycle, and an
-authenticated, fenced control channel. That composition is the template for
-every external source. macOS owns windows; phux owns the view ("mirror
-window X", "the accessibility tree of app Y") and the helper that produces
-it. A window that disappears is the view's exit, not a resource phux failed
-to keep.
-
-A projection's parent supervises its producer and carries the activation
-the producer is checked against. The binding names no kind: the
-organization checks structure, that a projection has a parent and that the
-parent can supervise (`ResourceKind::requires_parent`, `can_parent`; only a
-Terminal can). At spawn the app checks the parent is fit, its handle
-carrying the `AgentParent` companion (agent sessions and documents alike),
-and checks a guardian against the parent record's activation. So a producer
-runs in a Terminal, as the ACP guardian does, and inherits supervision, logs
-and upgrade survival.
-
-Encoding happens where the state is, so the server stays a fenced relay and
-its single-threaded runtime does no pixel work. Viewer input reaches the
-producer as typed intents: `SEND_DOCUMENT_INPUT` is a command, and the
-server queues it on the producer's own connection as an unjournaled
-`document_input` event, so the producer receives it beside its publishes
-without polling. The producer is the connection that opened the document,
-or the one that re-bound it ([supervision](#supervision)); once it is gone
-the intent is refused, never held.
-
-On macOS the Screen Recording and Accessibility grants belong to the app
-that starts the producer, not to the server: a server's children cannot
-hold Screen Recording, so Rune runs standing mirrors as its own children
-([standing mirrors](#standing-mirrors)). The server's own grants belong to
-**phux Server**, its signed bundle, run through `Versions/Current`
-([macOS permissions](./install.md#macos-permissions)).
-
-## Semantic first
-
-phux ranks agent evidence with the screen as the floor
-([agents](./agents.md#agent-states)). Applications get the same ladder:
-
-1. An application integration, such as the Chrome DevTools Protocol for a
-   browser.
-2. The accessibility tree.
-3. Pixels.
-
-Pixels are for a person watching and the last resort for an agent. An
-agent reads a tree with
-[`phux snapshot` and `phux wait`](./scripting.md#reading-a-screen),
-`phux agent tree snapshot|follow`, or MCP `phux_tree_snapshot` and
-`phux_tree_wait`; producing one on macOS needs the Accessibility grant, not
-Screen Recording. A browser page has no kind of its own: `phux agent page
-mirror` drives one over the DevTools Protocol and publishes its
-accessibility tree into an `AccessibilityTree` and its screencast into a
-`PixelSurface` under one pane, so `phux agent tree snapshot` and `phux agent
-surface snapshot` read it like any other. Navigation and input are typed intents to the page's
-producer, addressed to either of its documents.
-
-## Authority
-
-The kind catalog stays the one table for discovery and authorization, so a
-new kind starts denied: a scoped grant opens one only once its spawn
-contract opts in (`scoped_child`), as `AgentSession`, `AccessibilityTree`,
-`PixelSurface` and `Document` do, and then on the agent session's rows:
-`CREATE` on the parent's Group and `BIND` on the parent. A document that
-declares a control class is the owner socket's to open
-([authority](./authority.md#control-classes)). Observing a display shows every application on the
-machine, and input to it is control of the machine, so window and display
-grants are separate from terminal grants and from each other. A device paired
-to watch terminals does not inherit a desktop. Control classes, who may watch
-and control a page, window or display, and what Rune's panes
-send are in [Authority over pages, windows, and displays](./authority.md).
-
-## Not done
-
-Beads epic `phux-rbz0y` tracks the work to make every layer kind-neutral.
-Each gap below holds on current `main`:
-
-- **Producer feedback.** The server relays typed intents only. Per-viewer
-  acknowledgements, viewport and RTT do not reach a producer.
-- **A PTY-less producer.** Every producer runs in a Terminal pane,
-  `phux agent app run` included. A supervised process without a PTY is
-  added only if a PTY proves costly.
-- **The kind catalog.** `KindSpec` does not own a kind's input
-  vocabulary, and a new kind still adds a `ResourceKind` variant and its
-  app (`phux-rbz0y.7`).
-- **Clients.** The terminal UI shows a non-terminal pane as a placeholder
-  tile, not its content ([clients](./clients.md)).
-
-## History
-
-[krd](https://github.com/zzjcool/krd) paints a Mac desktop into a terminal
-with kitty graphics and reads windows as text through the accessibility API.
-Run inside a phux pane, it showed where phux assumed every resource was a
-terminal. Beads epic `phux-phiio` (closed) made the host kind-neutral and
-added the document kinds:
-
-- the design: [#1906](https://github.com/no-phux/phux/pull/1906);
-- a kind-neutral substrate and host, with stream and input frames routed
-  through `ResourceApp`: [#1909](https://github.com/no-phux/phux/pull/1909),
-  [#1910](https://github.com/no-phux/phux/pull/1910),
-  [#1912](https://github.com/no-phux/phux/pull/1912),
-  [#1913](https://github.com/no-phux/phux/pull/1913),
-  [#1933](https://github.com/no-phux/phux/pull/1933);
-- the per-consumer replication engine, `ConsumerSync`:
-  [#1914](https://github.com/no-phux/phux/pull/1914);
-- lagged `AgentSession` consumers recovered instead of losing records
-  (`phux-o5e95`): [#1915](https://github.com/no-phux/phux/pull/1915);
-- kitty images sent to the outer terminal once (`phux-hjvbk`):
-  [#1916](https://github.com/no-phux/phux/pull/1916);
-- per-stream codec negotiation: [#1950](https://github.com/no-phux/phux/pull/1950);
-- `AccessibilityTree`: [#1955](https://github.com/no-phux/phux/pull/1955),
-  [#1960](https://github.com/no-phux/phux/pull/1960),
-  [#1961](https://github.com/no-phux/phux/pull/1961);
-- `PixelSurface`: [#1970](https://github.com/no-phux/phux/pull/1970),
-  [#1971](https://github.com/no-phux/phux/pull/1971),
-  [#1976](https://github.com/no-phux/phux/pull/1976);
-- document streams in clients: [#1973](https://github.com/no-phux/phux/pull/1973);
-- a browser page over CDP: [#1975](https://github.com/no-phux/phux/pull/1975).
-
-Later work added document input
-([#2021](https://github.com/no-phux/phux/pull/2021),
-[#2060](https://github.com/no-phux/phux/pull/2060),
-[#2074](https://github.com/no-phux/phux/pull/2074)), the typed `Document`
-kind ([#2023](https://github.com/no-phux/phux/pull/2023),
-[#2053](https://github.com/no-phux/phux/pull/2053)), applications as
-resources ([#2068](https://github.com/no-phux/phux/pull/2068)) and standing
-mirrors run by Rune on macOS
-([#2152](https://github.com/no-phux/phux/pull/2152)).
+A projection's parent supervises its producer. Only a Terminal can parent
+(`ResourceKind::requires_parent`, `can_parent`), so every producer runs in a
+pane and inherits supervision, logs and upgrade survival. Encoding happens
+in the producer; the server stays a fenced relay and does no pixel work.
+`SEND_DOCUMENT_INPUT` is queued on the producer's own connection as an
+unjournaled `document_input` event. Once the producer is gone the intent is
+refused, never held. On macOS the capture grants belong to the app that
+starts the producer, not the server.

@@ -385,7 +385,7 @@
     },
     "ForwardCfg": {
       "additionalProperties": false,
-      "description": "`[forward]` table: TCP port and ssh-agent forwarding\n(`docs/forwarding.md`).",
+      "description": "`[forward]` table: TCP port and ssh-agent forwarding\n(`docs/ssh.md#forwarding-a-port`).",
       "properties": {
         "agent": {
           "default": false,
@@ -1470,6 +1470,11 @@
           "default": "left",
           "description": "Which edge the sidebar docks to."
         },
+        "rail": {
+          "default": true,
+          "description": "Keep a three-column rail while the sidebar is hidden or does not fit\n(default `true`): an agents-need-you count, one state dot per session\n(the active one marked), and an expand chevron. `false` hides the\nsidebar completely.",
+          "type": "boolean"
+        },
         "recent-first": {
           "default": false,
           "description": "List sessions most recently used first instead of in the arranged\norder.",
@@ -2157,6 +2162,7 @@
         "hosts-provider": [],
         "hosts-refresh-secs": 10,
         "position": "left",
+        "rail": true,
         "recent-first": false,
         "width": 20
       },

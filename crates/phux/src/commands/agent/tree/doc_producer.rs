@@ -1,7 +1,7 @@
 //! The producer loop `phux agent doc serve|folder|notifications` share:
 //! open a typed document under a pane, publish whole documents, receive the
 //! input intents viewers send, and re-adopt the document when a server
-//! upgrade drops the connection (`docs/applications.md#publish-your-own-kind`).
+//! upgrade drops the connection (`docs/resource-kinds.md#publish-your-own-kind`).
 
 use std::collections::VecDeque;
 use std::path::PathBuf;

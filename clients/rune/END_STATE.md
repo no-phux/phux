@@ -77,5 +77,5 @@ that reads like a log line.
 ## Coming from another app
 
 `phux migrate` reads tmux, zellij, Ghostty, herdr and Rex configs and hands
-the result to your agent ([migrate](../../docs/migrate.md)). Onboarding
+the result to your agent ([migrate](../../docs/config.md#coming-from-another-multiplexer)). Onboarding
 offers it on the first run, so "take me from X to phux" is one step.

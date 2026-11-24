@@ -1,5 +1,5 @@
 //! `MIRROR` over the production dispatch loop
-//! (`docs/applications.md#picking-a-screen-or-window`): Rune's macOS runner
+//! (`docs/resource-kinds.md#picking-a-screen-or-window`): Rune's macOS runner
 //! reports a host's targets (`MIRROR_PROVIDE`, owner socket) and is told the
 //! mirrors to run; a viewer lists the targets, from the runner on macOS and
 //! from `phux agent surface targets` elsewhere.

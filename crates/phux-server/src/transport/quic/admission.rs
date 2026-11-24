@@ -202,7 +202,7 @@ pub(super) async fn admit(
 
 /// [`admit`], except for a workload credential an organization manages under
 /// the pairing store: the organization's CA and the registry entry are its
-/// authority (`docs/remote.md#managed-by-an-organization`), so its client's
+/// authority (`docs/security.md#managed-by-an-organization`), so its client's
 /// preamble is read and the value ignored. So is a tailnet owner device's,
 /// empty from a client with no token: the tailnet is its authority. `None`
 /// refuses; `Some(None)` admits with no bearer.

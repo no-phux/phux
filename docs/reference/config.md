@@ -101,6 +101,7 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `sidebar.hosts` | `true` |
 | `sidebar.hosts-refresh-secs` | `10` |
 | `sidebar.position` | `"left"` |
+| `sidebar.rail` | `true` |
 | `sidebar.recent-first` | `false` |
 | `sidebar.width` | `20` |
 | `status.position` | `"top"` |
@@ -570,7 +571,7 @@ exclusive = true
 # interval-ms = 1000
 
 # Standing producers: any command this server keeps running as a document
-# producer (`docs/applications.md#standing-producers`), in its own session
+# producer (`docs/resource-kinds.md#standing-producers`), in its own session
 # `producer-<name>`, restarted and reloaded like the mirrors above. A first
 # word `phux` is this server's own binary.
 #

@@ -1,25 +1,22 @@
+---
+group: build
+order: 3
+---
+
 # Server protocol
 
-How a client talks to a phux server, in length-prefixed frames. The code in
-[`crates/phux-protocol`](../crates/phux-protocol) is the definition; this
-page is the map. [`wire-schema.json`](./spec/wire-schema.json) lists every
-frame and field and is generated from the codec, so it cannot be stale.
-
-If you are writing a client in Rust, use `phux-client-core` and
-`phux-client-runtime` rather than this. If you are writing one in another
-language, [`clients/phux-web`](../clients/phux-web) is a non-native
-Terminal client to read alongside.
-
-If you only need agent status or to wait on a screen, you don't need the protocol: use `phux agent list --json` or `phux wait --until/--regex/--idle`.
+The rules a client must follow to speak to a phux server.
+[`crates/phux-protocol`](../crates/phux-protocol) is the definition. Every
+frame, tag, and field is in the generated
+[`wire-schema.json`](./spec/wire-schema.json); every command, verb, and
+feature bit is in the generated [kinds reference](./reference/kinds.md).
+Rust clients use `phux-client-core` and `phux-client-runtime`;
+[`clients/phux-web`](../clients/phux-web) is a non-Rust one.
 
 ## Transports
 
-A Unix socket for local clients. QUIC (one bidirectional stream per
-connection, more with `QUIC_STREAMS`), WebSocket (one binary message per
-frame), or WebTransport for remote ones, all under TLS. Manual
-`phux stdio-bridge` carries frames over SSH stdio; this is not the normal
-[`attach --ssh` bootstrap path](./remote.md#attaching-over-ssh). The frame format
-is the same on every transport.
+A Unix socket locally; QUIC, WebSocket (one binary message per frame), or
+WebTransport under TLS remotely; `phux stdio-bridge` over SSH stdio.
 
 ## Framing
 
@@ -38,316 +35,173 @@ length:    varint
 value:     bytes
 ```
 
-Decoders match fields by id in any order and skip ids they do not know, so
-an older peer skips additive optional fields. Most nested
-records are positional and big-endian, with string leaves encoded as
-`u32 length || bytes`; top-level UTF-8 field values are raw bytes. A
-record that is not last in its field (list rows, input events,
-arrangement nodes) carries a `u32` length; readers skip bytes past the
-fields they know, so any record can grow at its tail. Ids and other
-leaves are frozen; a new shape is a new tag.
-Organization bodies/records and selected extensible event bodies instead
-use nested tagged fields: see the [organization codec](../crates/phux-protocol/src/wire/frame/org.rs).
-Do not infer a nested grammar from a type name in the schema. Field ids
-are append-only; a retired id is never reused, and the schema lists them.
+- Match fields by id in any order; skip unknown ids.
+- Nested records are positional and big-endian, with `u32 length || bytes`
+  strings, except organization records and some event bodies, which nest
+  tagged fields ([organization codec](../crates/phux-protocol/src/wire/frame/org.rs)).
+  Top-level UTF-8 values are raw bytes.
+- A record that is not last in its field carries a `u32` length; readers
+  skip bytes past the fields they know.
+- Field ids are append-only and never reused.
 
-`FRAME_COMPRESSED` (`0x9A`) wraps one deflated frame. A server uses it only
-if the client's `HELLO` offered compression, only for bodies of 4 KiB or
-more, and never for a frame that settles a request.
+`FRAME_COMPRESSED` wraps one deflated frame, only when the client's `HELLO`
+offered compression, only for bodies of 4 KiB or more, and never for a frame
+that settles a request.
 
 ## Handshake
 
-1. The client sends `HELLO` (`0x01`): its name, protocol
-   `major.minor.patch`, and `ClientCapabilities` (color support, image and
-   keyboard protocols, which bootstrap profiles and
-   [resource kinds](./compatibility.md) it can consume, compression, a `platform` label).
-2. The server checks the client's major against its own. Any minor or
-   patch is admitted; another major gets `ERROR` with
-   `VERSION_INCOMPATIBLE` and a close.
-3. The server authorizes the connection ([owner, delegated, or scoped
-   remote authority](./remote.md#who-can-do-what)) and picks a Terminal
-   bootstrap profile the client offered. A client that offers no Terminal
-   profile is admitted without one; a client whose offered profiles the
-   server cannot serve gets `ERROR` with `CODEC_UNAVAILABLE` and a close.
-4. The server replies `HELLO_OK` (`0x80`): its version, `ServerCapabilities`
-   (two words of feature bits, `features` and `features_ext`), a server
-   instance id, the selected profile (absent when none was offered), and
-   size limits.
+1. The client sends `HELLO`: name, protocol `major.minor.patch`, and
+   capabilities (Terminal bootstrap profiles, [resource kinds](./compatibility.md#a-newer-server-an-older-client),
+   compression, display features).
+2. Another major gets `ERROR` `VERSION_INCOMPATIBLE` and a close. Any minor
+   or patch is admitted.
+3. The server authorizes the connection ([remote authority](./remote.md)) and
+   picks one offered Terminal profile. If it can serve none of those offered,
+   it sends `ERROR` `CODEC_UNAVAILABLE` and closes.
+4. `HELLO_OK` carries the server version, feature bits (`features`,
+   `features_ext`), instance id, selected profile, and size limits.
 
-A connection with no Terminal profile consumes every other kind as usual.
-A Terminal stream it binds (`ATTACH`, `ATTACH_RESOURCE` on a Terminal,
-`STREAM_BIND`, or the stream a `SPAWN_RESOURCE` opens) is refused with
-`CODEC_UNAVAILABLE`, and the connection stays.
+Without a Terminal profile, binding a Terminal stream is refused
+`CODEC_UNAVAILABLE` and the connection stays. Before `HELLO_OK` only `HELLO`
+and `PING` are accepted. `PONG` echoes the `PING` nonce and is
+server-to-client only.
 
-Before `HELLO_OK`, only `HELLO` and `PING` are accepted. Clients accept a
-`HELLO_OK` on their own major with any minor or patch, older or newer, and
-keep the server's version beside its feature bits; only another major is
-refused.
-
-A client sends `PING` (`0x7F`); the server replies with `PONG` (`0xFF`)
-carrying the same nonce. `PONG` is server-to-client only; the classifier
-denies a client-originated `PONG`.
-
-## Compatibility
-
-The protocol is `1.0`. Any 1.x client works with any 1.x server, older or
-newer, and servers may be far older than clients. Minor and patch are
-informational. New behavior is a feature bit in `HELLO_OK` or a field or
-record tail an old peer skips; a client checks the bit and degrades that
-one feature. A peer answers a value it does not know with `UNSUPPORTED` and
-stays connected; only unreadable bytes close. A new major is a deliberate,
-announced break. [Compatibility](./compatibility.md) has the full rules.
-
-The feature names, their bits, and which commands each gates are in the
-generated [kinds reference](./reference/kinds.md). `phux status --json`
-prints the running server's.
+Check a feature bit before sending what it gates, and degrade that one
+feature without it. [Compatibility](./compatibility.md) has the 1.x rules.
 
 ## Attach and output
 
-`ATTACH` (`0x02`) names a session or pane and the client's viewport. The
-server answers `ATTACHED` (`0x81`), then streams a bootstrap
-(`BOOTSTRAP_BEGIN`, `BOOTSTRAP_CHUNK`..., `BOOTSTRAP_READY`) in its kind's
-codec for each Terminal and document, then `ATTACH_READY` (`0x83`). From
-there, `RESOURCE_OUTPUT` (`0x90`) frames carry each resource's payload with
-a per-stream sequence number: a Terminal's VT output for the client's own
-emulator, or a whole newer document. `RESOURCE_CLOSED` ends a stream.
-`DETACH` (`0x03`) gets `DETACHED`.
+`ATTACH` (session or pane, plus viewport) gets `ATTACHED`, a bootstrap per
+Terminal and document (`BOOTSTRAP_BEGIN`, `BOOTSTRAP_CHUNK`...,
+`BOOTSTRAP_READY`), then `ATTACH_READY`. `RESOURCE_OUTPUT` carries payloads
+with a per-stream sequence; `RESOURCE_CLOSED` ends a stream; `DETACH` gets
+`DETACHED`. To read text without attaching, send `GET_SCREEN`.
 
-A Terminal's bootstrap follows the selected profile:
+Terminal bootstrap profiles:
 
-- **Native state**: a libghostty checkpoint, for clients that run
-  libghostty themselves. Exact, and the only profile that supports history
-  paging (`HISTORY_REQUEST` / `HISTORY_PAGE`).
-- **Synthesized VT, raw**: a VT sequence that repaints the screen, then the
-  raw PTY bytes. Works with any emulator.
-- **Synthesized VT, state sync**: the server keeps a per-client reference
-  screen and sends deltas against it, acknowledged with `FRAME_ACK`.
+- **Native state**: a libghostty checkpoint; the only profile with history
+  paging.
+- **Synthesized VT, raw**: a repaint, then raw PTY bytes. Any emulator.
+- **Synthesized VT, state sync**: deltas against a per-client reference,
+  acknowledged with `FRAME_ACK`.
 
-A fresh successful `SPAWN_RESOURCE` subscribes its connection to the new
-Terminal, even without a session `ATTACH`: output and terminal-scoped
-fanout reach it, and `INPUT_*` passes the subscription gate. This does not
-bypass input leases, authorization, or acknowledged-input checks.
-
-A client that only wants text does not attach: it sends `GET_SCREEN`
-through `COMMAND` and gets the server's rendering.
+A successful `SPAWN_RESOURCE` subscribes its connection to the new Terminal
+without `ATTACH`. Input leases and authorization still apply.
 
 ### Generations, publication, and history
 
-An attach cuts one terminal actor's state at an inclusive `base_seq`.
-A generation has nonzero application `stream_id` and `bootstrap_id`;
-bootstrap chunks are contiguous, and live output begins at `base_seq + 1`.
-Native checkpoint bytes belong to the engine: transport and UI layers must
-not rewrite them. Decode into invisible staging. Publish atomically only
-when both the matching engine decode and protocol `BOOTSTRAP_READY` are
-ready; `ATTACH_READY` is not a substitute for either.
-
-A tombstone retires that generation even if late chunks/output arrive.
-Keep the last published view display-only until the replacement is ready.
-On gaps, overflow, resize or codec discontinuity, fence and recut; never
-silently skip bytes or replay them into an obsolete replica. Consumer
-mailboxes, stale-output recovery and resync attempts are bounded; failure
-ends in an explicit error rather than unbounded backlog or a frozen view.
-An `AgentSession` consumer that lags is replayed the skipped records from
-the session's ring in the same generation. If the ring has evicted any of
-them, the generation is tombstoned with `OUTBOUND_GAP` at the last delivered
-record and replaced by a full retained bootstrap.
-Only StateSync live output gets a cumulative, generation-bound `FRAME_ACK`,
-after application to the replica; raw output and bootstrap never do.
-Normal reliable StateSync advances its server reference on emit: an ACK is
-not proof of a paint or application consumption, nor a lossy-delivery promise.
-
-Native history is a bounded, pull-based lease on immutable encoded snapshot
-storage, not durable scrollback ([snapshot compatibility](./libghostty.md#snapshot-compatibility)).
-Follow the engine cursor and authenticate each page before requesting its
-successor; the final page must authenticate `FINISH` with no trailing bytes.
-A rejected page/request and an invalidated cursor are distinct outcomes;
-a history tombstone invalidates that history, not the live replica or input.
-Source pruning cannot invalidate the stored bytes, and history decode failure
-must not retire a healthy live generation.
-The [kernel](../crates/phux-client-core/src/session.rs), its
-[generation/ACK/history tests](../crates/phux-client-core/src/session/tests.rs)
-and the server [pump](../crates/phux-server/src/runtime/pump.rs) own these transitions.
+- An attach cuts a terminal's state at an inclusive `base_seq`; live output
+  starts at `base_seq + 1`. A generation has nonzero `stream_id` and
+  `bootstrap_id`, and its chunks are contiguous.
+- Decode into invisible staging; never rewrite native checkpoint bytes. Publish atomically only after both the
+  engine decode and `BOOTSTRAP_READY`; `ATTACH_READY` replaces neither.
+- A tombstone retires its generation even if late frames arrive. Keep the
+  last view display-only until the replacement is ready.
+- On a gap, overflow, resize, or codec discontinuity, fence and recut. Never
+  skip bytes or replay into an obsolete replica. Every recovery path is
+  bounded and ends in an explicit error.
+- A lagging `AgentSession` consumer is replayed from the session ring; if
+  records were evicted, the generation is tombstoned `OUTBOUND_GAP` and
+  rebootstrapped.
+- Only StateSync live output is acknowledged: `FRAME_ACK` is cumulative,
+  generation-bound, and sent after applying to the replica. It does not prove
+  a paint.
+- Native history is a bounded pull lease on immutable snapshots, not durable
+  scrollback. Authenticate each page before requesting the next; the final
+  page must authenticate `FINISH` with no trailing bytes. A history tombstone
+  or decode failure never retires a healthy live generation.
 
 ### QUIC stream routing
 
-With negotiated `QUIC_STREAMS`, keep connection control on the control
-stream and terminal traffic on client-opened bidirectional terminal streams.
-Each begins with `STREAM_BIND`; its application stream id is not the QUIC
-stream number. Binding requires authorization for that terminal and frame
-provenance must match the binding. A control-stream viewport update must
-cross the ordering barrier before dependent terminal-stream work; ordering
-within two separate QUIC streams does not provide that barrier for you.
-See [server stream admission](../crates/phux-server/src/transport/quic.rs)
-and the [runtime stream router](../crates/phux-client-runtime/src/session/multistream.rs).
-The [viewport barrier](../crates/phux-client-runtime/src/session.rs) uses a
-control `PING`/matching `PONG` while retaining preceding control frames.
-Without the capability, use the single-stream path.
+With `QUIC_STREAMS`, control stays on the control stream and terminal traffic
+goes on client-opened bidirectional streams, each starting with
+`STREAM_BIND` (its stream id is not the QUIC stream number). Binding needs
+authorization for that terminal; frame provenance must match the binding.
+Separate QUIC streams are unordered, so a viewport update must cross a
+control `PING`/`PONG` [barrier](../crates/phux-client-runtime/src/session.rs)
+before dependent terminal-stream work.
 
 ## Input
 
-Input is per kind; a document takes `SEND_DOCUMENT_INPUT`
-([below](#commands-events-resources)). For a Terminal,
-`INPUT_KEY` (`0x10`) carries a key event in
-libghostty's vocabulary: action, physical key, modifiers, text,
-unshifted codepoint. `INPUT_MOUSE`, `INPUT_FOCUS`, `INPUT_PASTE`, and
-`VIEWPORT_RESIZE` (`0x20`) likewise. The server encodes them to bytes for
-the PTY according to the terminal's current modes (application cursor
-keys, kitty keyboard protocol, bracketed paste...), so clients never
-generate escape sequences. `VIEWPORT_COLORS` (`0x2B`, behind
-`features_ext.VIEWPORT_COLORS`) carries the outer terminal's new default
-colours after a theme switch; the client's panes answer OSC 10/11 with them
-and its later spawns start with them.
+A Terminal takes `INPUT_KEY` (libghostty key vocabulary), `INPUT_MOUSE`,
+`INPUT_FOCUS`, `INPUT_PASTE`, and `VIEWPORT_RESIZE`. The server encodes them
+for the PTY from the terminal's modes; clients never generate escape
+sequences. `VIEWPORT_COLORS` sends the outer terminal's colors after a theme switch.
+A document takes `SEND_DOCUMENT_INPUT` ([below](#commands-events-resources)).
 
 ### Terminal queries
 
-The canonical server terminal answers each child query once. Replica
-emulator replies are not another source of PTY input. `INPUT_TERMINAL_REPLY`
-remains for compatibility but the server [discards it](../crates/phux-server/src/runtime/apps/terminal/commands/terminal_input.rs).
-New clients suppress replica replies; never resend them as paste or raw input.
-[Engine tests](../crates/phux-client-core/src/engine/ghostty/tests/synthesized.rs)
-pin this single reply.
+The server's terminal answers each child query once. Suppress replica
+emulator replies; the server discards `INPUT_TERMINAL_REPLY`.
 
 ### Receipts, retries, and backpressure
 
-With `ACKNOWLEDGED_INPUT`, one logical batch uses `APPLY_INPUT`. Retry an
-unresolved request with the same random operation id and unchanged semantic
-payload, not its connection-local `request_id`. This is safe only against
-the same `HELLO_OK` server incarnation within the dedupe retention horizon
-(currently ten minutes from admission). Keyed spawn/session creates and
-supervisory operations have the same bounded incarnation rule. Saturation
-refuses new ids rather than evicting live receipts. After a changed
-incarnation or expired horizon, read current state and reconcile; never
-blindly replay, even with the old key. A cached create result may name a
-resource that has since closed.
+With `ACKNOWLEDGED_INPUT`, one logical batch is one `APPLY_INPUT`.
 
-Input OK means the PTY writer completed `write_all`/flush, not child
-consumption, shell completion, or model admission. A provably not-written
-refusal differs from `INPUT_DELIVERY_UNKNOWN`, which may already have
-written bytes: report/reconcile unknown, never resubmit under a fresh id.
-Looking up the retained outcome under the original id is not permission to
-execute it again. Legacy `INPUT_*`/`ROUTE_INPUT` are ordered and bounded by
-connected backpressure, not reconnect receipts. Do not fragment one logical
-command into fire-and-forget paste events. See the shared
-[dedupe store](../crates/phux-server/src/runtime/operation_dedupe.rs),
-[acknowledged lane](../crates/phux-server/src/runtime/apps/terminal/input_lane/acknowledged.rs)
-and [incarnation recovery tests](../crates/phux-client-runtime/tests/it/control_plane/recovery.rs).
+- Retry with the same operation id and payload, never a new id. That is safe
+  only against the same `HELLO_OK` server incarnation within the ten-minute
+  dedupe window; keyed creates and supervisory operations follow the same
+  rule. Otherwise read state and reconcile.
+- Saturation refuses new ids; it never evicts live receipts.
+- OK means the PTY writer flushed, not that the child consumed it.
+- `INPUT_DELIVERY_UNKNOWN` may have written bytes: reconcile, never resubmit.
+- Legacy `INPUT_*` and `ROUTE_INPUT` are ordered by connection backpressure,
+  with no reconnect receipts. Never split one logical command into pastes.
 
-Events are bounded in-memory wakeups over level state. On a journal gap,
-reread authoritative state rather than inferring the missing transitions.
-For delayed cleanup, `KILL_RESOURCE_IF` binds the allocation instance token
-(not `HELLO_OK.server_id`) and attachment/use conditions atomically. A
-refusal leaves the resource alone; never fall back to unconditional kill.
+Events are bounded wakeups over level state; after a journal gap, reread
+state. For delayed cleanup use `KILL_RESOURCE_IF`, bound to the allocation
+instance token (not `HELLO_OK.server_id`); on refusal, never fall back to an
+unconditional kill.
 
 ## Commands, events, resources
 
-Everything that is not attach, input, or output is a `COMMAND` (`0x31`)
-with a sub-tag and a `COMMAND_RESULT`, or an `EVENT` (`0xB3`) the client
-subscribed to. Commands include listing sessions, spawning and killing
-panes, `GET_SCREEN`, tags, organization moves, agent session streams,
-approvals. Events include pane lifecycle, agent state changes, asks,
-bells, and command boundaries from shell integration.
+Everything else is a `COMMAND` answered by `COMMAND_RESULT`, or a subscribed
+`EVENT`. Every resource has a kind; tolerate kinds you do not know.
 
-`PERF_CONTROL` (command tag `0x39`) is gated on
-`features_ext.PERF_CONTROL` (`0x80`). Its positional body is one op byte:
-trace start (`0`), trace stop (`1`), heap accounting on (`2`), or off (`3`).
-An undefined op is refused `UNSUPPORTED`. The ordinary owner
-socket alone can use it: traces write files on the server host and heap
-accounting affects every allocation. Delegated and remote grants cannot
-enable it. Older servers do not advertise the bit; clients check before
-sending. Reports remain schema 1, with optional `rss_bytes` and `alloc`
-JSON fields that old readers ignore.
+- `AccessibilityTree` and `PixelSurface` are whole documents (at most
+  4 MiB) the producer replaces with `PUBLISH_RESOURCE_STATE`.
+  `ATTACH_RESOURCE` bootstraps the newest at `0 x 0`; each later one is one
+  `RESOURCE_OUTPUT`. A lapped viewer is tombstoned `OUTBOUND_GAP` and recut
+  from the newest. These streams take no input, ACK, or history request.
+- A `Document` names its MIME type in `SPAWN_RESOURCE`'s `provider`
+  ([resource kinds](./resource-kinds.md)).
+- `SEND_DOCUMENT_INPUT` is relayed unread and unjournaled to the connection
+  that spawned the document only. It answers `OK` once queued, `NOT_PRODUCER`
+  if that connection is gone, `OVERFLOW` if its mailbox is full.
+- An `AgentSession` or document has one immutable parent Terminal. Purging
+  the parent closes its children atomically; closing a child never kills the
+  parent ([organization](./organization.md)).
+- Organization commands own membership and arrangement; the
+  `phux.tui.layout/v1` metadata key is a
+  [legacy adapter](./compatibility.md#legacy-tui-layouts).
+- A `RESOURCE_CREATE` placement needs `CREATE` and `ORGANIZE` on the
+  destination session and admits no cross-session anchor.
+- `GET_CREATION` returns a retained creation receipt or `NOT_FOUND`; it
+  needs `INVENTORY` on the original session, and a missing receipt does not
+  prove the mutation never ran. `DESCRIBE_API` returns the public workflow
+  schemas ([scripting](./scripting.md)).
+- `PERF_CONTROL` (traces, heap accounting) works on the owner socket only:
+  traces write files on the host and accounting slows every allocation.
+  Delegated and remote grants cannot enable it.
 
-Every resource has a **kind**: `Terminal` (a pane), `AgentSession`,
-`AccessibilityTree`, `PixelSurface` or `Document` so far, each with its own
-methods and events. A client
-tolerates kinds it does not know. The kind catalog in `phux-protocol::kinds`
-lists every method with the authorization verb it needs; the generated
-[kinds reference](./reference/kinds.md) renders it.
-
-An `AccessibilityTree` (wire tag 2, gated on `features_ext.ACCESSIBILITY_TREE`)
-and a `PixelSurface` (wire tag 3, gated on `features_ext.PIXEL_SURFACE`)
-are replicated documents: a producer running in the parent Terminal
-replaces the whole document with the substrate's `PUBLISH_RESOURCE_STATE`
-(at most 4 MiB; a JSON document for a tree, a PNG or JPEG told apart by
-signature for a surface, sized to the surface's geometry), and the engine
-keeps the newest. A viewer's `ATTACH_RESOURCE` bootstraps it under the
-kind's codec (`AccessibilityTreeJsonV1`, `PixelSurfacePngV1`), `0 x 0`,
-with the newest document in the chunks and its sequence as `base_seq`; each
-later document arrives as one `RESOURCE_OUTPUT`. A viewer the broadcast
-laps is tombstoned (`OUTBOUND_GAP`) and recut from the newest document, so
-a slow viewer skips only intermediate documents. The stream takes no
-input, acknowledgement or history request.
-
-A `Document` (wire tag 4, `features_ext.TYPED_DOCUMENT`) is one for any
-format: `SPAWN_RESOURCE` names its MIME content type in `provider` and an
-optional name in `native_id`. Its `DocumentTypedV1` bootstrap (codec tag 6)
-carries the content type ahead of the document
-([typed documents](./resource-kinds.md#typed-documents)).
-
-Input for a document goes to its producer, not into the stream:
-`SEND_DOCUMENT_INPUT` (command tag `0x48`) names a document and one typed
-intent (navigate to a URL, click at a point in the surface image's
-pixels, insert text, press a named key, scroll, or activate an accessibility
-node by its id). The server relays it,
-unread, as an unstamped `document_input` event (tag `0x20`) on the
-connection that spawned the document, and answers `OK` once queued;
-`NOT_PRODUCER` when that connection is gone, `OVERFLOW` when its mailbox is
-full. Nobody else sees the event and it is never journaled. Only the owner
-socket or a control grant reaches it; the class fields and the hub's stamp
-are in [resource kinds](./resource-kinds.md#authority).
-
-`MIRROR` (tag `0x4a`, `MIRRORS`) lists, starts or stops a host's screen
-mirrors ([picker](./applications.md#picking-a-screen-or-window)).
-
-`GET_METADATA` / `SET_METADATA` / `SUBSCRIBE_METADATA` (`0x50`-`0x54`)
-attach small keyed values to resources. Some keys are plain storage; some
-are read by the server (`phux.agent/v1` is the agent record).
-`ORGANIZATION` gates typed server-owned organization commands;
-`phux.tui.layout/v1` is a legacy layout adapter, not a competing source of
-membership or arrangement authority. See [organization](./organization.md).
-
-An `AgentSession` or document has an immutable, one-level parent that
-runs its producer; today a Terminal. Purging the parent closes its children
-atomically; closing a child never kills its parent. Process exit under
-Retain is not purge: see
-[activations and exit policy](./organization.md#activations-and-reconciliation).
-
-### Complete terminal creation and discovery
-
-`features_ext.CREATE_PLACEMENT` (`0x2000`) gates the optional `RESOURCE_CREATE`
-placement field and creation receipts. The placement is either a new group or
-a split beside a stable entry with a durable resource key, incarnation and
-activation fence. It requires both `CREATE` and `ORGANIZE` on the destination
-session; no cross-session anchor is admitted. The new fields are append-only
-organization TLVs: placement `43`, entry `44`, replayed `45`, authority `46`.
-Creation receipts additionally use the existing arrangement/activation fields.
-Absent placement keeps the legacy create bytes and `CREATE`-only authority.
-
-`features_ext.API_DESCRIPTION` (`0x4000`) gates `DESCRIBE_API` (command tag
-`0x40`, no body) and `GET_CREATION` (`0x41`, organization operation/session
-TLVs). Description returns JSON containing complete nested public workflow
-schemas, not an application IDL inferred from top-level frame shapes. Lookup
-is read-only, needs `INVENTORY` on the original destination session, and
-returns a retained creation receipt or `NOT_FOUND`. A missing receipt cannot
-establish that the original mutation never ran. See the [public contract](./public-api.md).
-
-[File transfer and checkout methods](./protocol-files.md) have their own page.
-
-## Minimal client
-
-1. Framing and tagged fields, including skipping unknown ids.
-2. `HELLO` offering the synthesized raw profile and no compression; check
-   `HELLO_OK`.
-3. `ATTACH`; handle `ATTACHED`, the bootstrap frames, `ATTACH_READY`,
-   `BOOTSTRAP_TOMBSTONE` and replacement, `RESOURCE_OUTPUT` with exact
-   generation/sequence checks, `RESOURCE_CLOSED`, `ERROR`. Publish only at
-   the readiness boundary above; raw/bootstrap never send `FRAME_ACK`.
-4. Send `PING` for liveness and handle `PONG`. Send `INPUT_KEY` and
-   `VIEWPORT_RESIZE`. `DETACH` to leave.
-5. Feed terminal bytes to an emulator. Tolerate unknown kinds, events, and
-   close reasons.
+[Host operations](./protocol-files.md) covers files, checkout, host services,
+and push.
 
 ## Changing the wire
 
-See the [wire-change checklist](./protocol-changes.md) and the
-[native agent wire contract](./acp.md#native-agent-wire).
+- Allocate type bytes in `wire/frame/catalog.rs` and sub-tags in the
+  `*tags.rs` files beside it; duplicates fail to compile.
+- Append field ids to `tlv_body!` in `wire/field/`.
+- Gate new behavior with a bit in
+  [`caps/server_features/ext.rs`](../crates/phux-protocol/src/caps/server_features/ext.rs)
+  (the `features` word is frozen) and follow
+  [Making a change compatible](./compatibility.md#making-a-change-compatible).
+- Classify every new command in `kinds.rs`, or dispatch denies it.
+- Regenerate, then fill in any `?` types in the schema:
+
+  ```sh
+  PHUX_UPDATE_WIRE_SCHEMA=1 cargo nextest run -p phux-protocol wire_schema_matches
+  just docs-gen
+  ```
+
+- Add roundtrip and snapshot tests in `crates/phux-protocol/tests/it/`.

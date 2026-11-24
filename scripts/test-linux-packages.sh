@@ -8,7 +8,7 @@
 #   bash scripts/test-linux-packages.sh [<old tag> <new tag>]
 #
 # Needs docker (or podman as docker) and gh. Not a CI lane: it pulls images
-# and two releases. docs/runbooks/linux-packages.md says when to run it.
+# and two releases. docs/releasing.md#linux-packages says when to run it.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 old="${1:-v0.148.0}"

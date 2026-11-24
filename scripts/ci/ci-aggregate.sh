@@ -22,7 +22,7 @@ if [[ "${DRAFT:-}" == true ]]; then
 fi
 jq -e --arg event "$event" '
   def flags: ["guards", "lint", "tests", "e2e", "ffi", "icount",
-    "integrations", "web", "native", "rune", "rune_qualify", "docs_catalog", "release_qualify"];
+    "integrations", "web", "native", "rune", "rune_qualify", "release_qualify"];
   .plan.outputs as $p |
   ($event == "pull_request" and .plan.outputs.release_qualify == "true") as $release |
   ($event == "push" or $event == "merge_group" or $release) as $mandatory |
@@ -36,8 +36,7 @@ jq -e --arg event "$event" '
     "web-vt": ($p.web == "true"), "web-client": ($p.web == "true"),
     native: ($mandatory or $p.native == "true"),
     icount: ($mandatory or $p.icount == "true"),
-    rune: ($p.rune == "true"), "queue-apple": $apple,
-    "docs-catalog": ($p.docs_catalog == "true")
+    rune: ($p.rune == "true"), "queue-apple": $apple
   } as $required |
   .plan.result == "success" and
   (flags | all(. as $key | $p[$key] == "true" or $p[$key] == "false")) and
