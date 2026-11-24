@@ -83,6 +83,7 @@ Generated from the `phux` binary.
 
 - [Architecture](./architecture.md): process model, crates, clients, and rule ownership.
 - [Architecture end state](./architecture-end-state.md): accepted implementation target and required qualification, not a shipping-status claim.
+- [Architecture materialization](./architecture-materialization.md): backward prerequisites, ownership tracks, and required exits.
 - [Decisions](./decisions.md): the constraints the code keeps.
 - [Organization](./organization.md): how the server owns sessions.
 - [Organization store](./organization-store.md): durability, receipts, and restart reconciliation.
