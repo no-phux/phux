@@ -5,11 +5,11 @@ use super::{
     SidebarReservation, StatusBarPaint, StatusBarPainter, ToastOverlay, adopt_config_reload,
     content_rect, finish_return_onboarding_after_paint, paint_chrome_in_place, paint_full_frame,
     paint_pane_rows_in_place, paint_panes_in_place, refresh_window_chrome, sidebar_reservation,
-    sync_overlays_to_focused_pane,
 };
 
 mod delivery_fences;
 mod empty_state;
+mod live_overlays;
 mod overlay;
 mod timers;
 
@@ -264,6 +264,7 @@ impl super::SessionLoop {
         // was opened before its host inventory landed.
         if std::mem::take(&mut self.session_picker_dirty) {
             self.refresh_session_picker(out, sidebar);
+            self.refresh_command_palette(out, sidebar);
         }
         // A full or pane repaint discharges every paint the pacer was holding.
         if matches!(drained.level, RepaintLevel::Full | RepaintLevel::Panes) {
@@ -287,7 +288,17 @@ impl super::SessionLoop {
         // Arm the next window from the settle, not from the burst that filled
         // it, so a sustained producer paints on a steady cadence.
         self.pacer.rearm(tokio::time::Instant::now());
-        if self.overlays.is_active() || self.paint_held() {
+        if self.paint_held() {
+            return;
+        }
+        if self.overlays.is_active() {
+            // A floating overlay (the welcome card, the palette, a prompt)
+            // leaves the panes visible: repaint them under it so output keeps
+            // landing, instead of freezing the screen until it closes. A
+            // full-screen overlay hides them, so there is nothing to show.
+            if self.overlay_floats() {
+                self.paint_overlay(out, sidebar);
+            }
             return;
         }
         // ADR-0147: under the floating overlay only the overlay paints; the
@@ -333,60 +344,6 @@ impl super::SessionLoop {
         {
             self.clear_focused_delivery_fence_after_paint();
         }
-    }
-
-    /// Rebuild and repaint the session picker, if it is open.
-    pub(super) fn refresh_session_picker<W: crate::attach::RenderSink>(
-        &mut self,
-        out: &mut W,
-        sidebar: Option<SidebarReservation>,
-    ) {
-        if !self.overlays.is_active() {
-            return;
-        }
-        let items = crate::attach::input_dispatch::session_picker_rows(
-            &self.peers.inputs(&self.review),
-            &self.mirror.workspace,
-        );
-        let key = crate::attach::input_dispatch::SESSION_PICKER_LIVE_KEY;
-        self.refresh_live_overlay(out, sidebar, key, &items);
-    }
-
-    /// Rebuild and repaint the agent-fleet dashboard, if it is open.
-    pub(super) fn refresh_fleet<W: crate::attach::RenderSink>(
-        &mut self,
-        out: &mut W,
-        sidebar: Option<SidebarReservation>,
-    ) {
-        if !self.overlays.is_active() {
-            return;
-        }
-        let items = crate::attach::fleet::live_fleet_items(
-            &self.mirror.workspace,
-            &self.mirror.panes,
-            &crate::attach::agent_rows::agent_session_rows(&self.mirror.engine_kernel),
-            &self.mirror.agent_meta.records,
-            &mut self.vcs,
-            &self.peers.inputs(&self.review),
-        );
-        let key = crate::attach::fleet::FLEET_LIVE_KEY;
-        self.refresh_live_overlay(out, sidebar, key, &items);
-    }
-
-    // ---- timers, signals, and the periodic paints -----------------------
-
-    /// Hand every surviving overlay the focused pane's current rect.
-    pub(super) fn sync_overlays(&mut self, sidebar: Option<SidebarReservation>) {
-        let bar = self.bar();
-        sync_overlays_to_focused_pane(
-            &mut self.overlays,
-            &self.mirror.workspace,
-            self.mirror.zoomed.as_ref(),
-            self.mirror.focused_resource.as_ref(),
-            self.viewport_dims,
-            bar,
-            sidebar,
-        );
     }
 
     /// The periodic status-bar repaint.

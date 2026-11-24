@@ -6,6 +6,7 @@ mod common;
 mod runner;
 
 mod autosave_e2e;
+mod harness_contracts;
 mod kill_server_e2e;
 mod server_ensure;
 mod service_install_guard;

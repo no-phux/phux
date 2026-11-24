@@ -1,14 +1,25 @@
 #![allow(clippy::expect_used, reason = "tests")]
 
-use std::os::unix::process::CommandExt as _;
+use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 
 use super::*;
 
-fn sleep_group() -> std::process::Child {
+fn sleep_group_command() -> std::process::Command {
     let mut cmd = std::process::Command::new("sleep");
     cmd.arg("1000");
     cmd.process_group(0);
-    cmd.spawn().expect("spawn sleep")
+    cmd
+}
+
+fn sleep_group() -> std::process::Child {
+    sleep_group_command().spawn().expect("spawn sleep")
+}
+
+fn async_sleep_group() -> tokio::process::Child {
+    tokio::process::Command::from(sleep_group_command())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn sleep")
 }
 
 fn group_of(pid: u32) -> i32 {
@@ -54,6 +65,24 @@ fn reap(dir: &tempfile::TempDir) {
         .block_on(reap_orphans(dir.path()));
 }
 
+async fn assert_reaps_child(
+    dir: &tempfile::TempDir,
+    path: &std::path::Path,
+    child: &mut tokio::process::Child,
+) {
+    // Act as the fixture's init: otherwise our own unreaped zombie keeps
+    // the group present through both production grace periods.
+    let ((), status) = tokio::join!(
+        reap_orphans(dir.path()),
+        tokio::time::timeout(Duration::from_secs(10), child.wait()),
+    );
+    let status = status
+        .expect("sidecar did not exit")
+        .expect("wait for sidecar");
+    assert_eq!(status.signal(), Some(libc::SIGTERM));
+    assert!(!path.exists(), "reap should remove the pidfile");
+}
+
 #[test]
 fn reap_refuses_a_start_time_mismatch() {
     let dir = tempfile::tempdir().unwrap();
@@ -88,29 +117,30 @@ fn reap_refuses_when_the_leader_is_dead_even_if_the_group_id_is_live() {
     let _ = innocent.wait();
 }
 
-#[test]
-fn reap_kills_when_the_leader_and_start_time_match() {
+#[tokio::test]
+async fn reap_kills_when_the_leader_and_start_time_match() {
     let dir = tempfile::tempdir().unwrap();
-    let mut child = sleep_group();
-    let pid = child.id().cast_signed();
-    let group = group_of(child.id());
+    let mut child = async_sleep_group();
+    let id = child.id().expect("sidecar pid");
+    let pid = id.cast_signed();
+    let group = group_of(id);
     let start = process_start_time(pid).expect("start time");
-    reap_with(&dir, &orphan(pid, group, start));
-    // The test is the parent, so a killed child is a zombie until waited.
-    // `kill(pid, 0)` still succeeds for a zombie; `try_wait` tells them apart.
-    let status = child.try_wait().unwrap();
-    assert!(
-        status.is_some(),
-        "a matching leader is reaped (group {group})"
-    );
+    let path = pidfile(&dir);
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&orphan(pid, group, start)).unwrap(),
+    )
+    .unwrap();
+    assert_reaps_child(&dir, &path, &mut child).await;
 }
 
-#[test]
-fn reap_skips_while_the_owning_server_is_alive() {
+#[tokio::test]
+async fn reap_skips_while_the_owning_server_is_alive() {
     let dir = tempfile::tempdir().unwrap();
-    let mut sidecar = sleep_group();
-    let pid = sidecar.id().cast_signed();
-    let group = group_of(sidecar.id());
+    let mut sidecar = async_sleep_group();
+    let id = sidecar.id().expect("sidecar pid");
+    let pid = id.cast_signed();
+    let group = group_of(id);
     let path = pidfile(&dir);
     write_pidfile(&path, pid, group).unwrap();
     let record: PidRecord = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -120,7 +150,7 @@ fn reap_skips_while_the_owning_server_is_alive() {
         record.server_start_time,
         process_start_time(self_pid).expect("server start")
     );
-    reap(&dir);
+    reap_orphans(dir.path()).await;
     assert!(
         sidecar.try_wait().unwrap().is_none(),
         "a second start must not reap a sidecar whose server is alive"
@@ -138,11 +168,7 @@ fn reap_skips_while_the_owning_server_is_alive() {
         ..record
     };
     std::fs::write(&path, serde_json::to_vec(&dead_owner).unwrap()).unwrap();
-    reap(&dir);
-    assert!(
-        sidecar.try_wait().unwrap().is_some(),
-        "once the owning server is gone the sidecar is reaped"
-    );
+    assert_reaps_child(&dir, &path, &mut sidecar).await;
 }
 
 #[test]

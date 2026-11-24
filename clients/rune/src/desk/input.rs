@@ -87,6 +87,15 @@ impl Desk {
             self.modal_key(modal, event, action, tx);
             return true;
         }
+        // A focused control owns its keys, including ones it did not handle.
+        // Explicit app chords still work, but typing must not leak to the pane.
+        if tx.focused().is_some() && action.is_none() {
+            if event.key == rune::Key::Escape {
+                tx.blur();
+                return true;
+            }
+            return false;
+        }
         if action == Some(Shortcut::ClearSelection) && self.clear_copy_selection() {
             return true;
         }
@@ -290,6 +299,16 @@ impl Desk {
         {
             let _ = engine.clear_view_selection(view);
         }
+    }
+
+    /// Rune falls back to the app for IME when the focused control is not a
+    /// text field. That doesn't make the terminal the keyboard owner.
+    pub(crate) fn runtime_ime(&mut self, event: &rune::Ime, tx: &Tx) -> bool {
+        if tx.focused().is_some() {
+            self.connection.preedit = None;
+            return false;
+        }
+        self.ime(event)
     }
 
     /// What the input method composed: dead keys, CJK, the emoji picker.

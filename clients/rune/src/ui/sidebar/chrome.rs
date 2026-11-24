@@ -56,7 +56,7 @@ pub(super) fn foot(
         .icon(&icons::PLUS)
         .on_press_tx(move |d: &mut Desk, tx| {
             press(d);
-            super::clicked(tx);
+            super::return_to_terminal_on_click(tx);
         })
         .build(&t.kit)
         .key(key)

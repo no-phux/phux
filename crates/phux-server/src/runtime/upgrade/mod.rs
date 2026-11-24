@@ -185,6 +185,7 @@ pub(super) async fn prepare_upgrade(state: &SharedState) -> Result<UpgradePlan, 
 }
 
 async fn prepare_upgrade_inner(state: &SharedState) -> Result<UpgradePlan, UpgradeError> {
+    refuse_invalid_org_store(state)?;
     let mut cuts = crate::runtime::apps::upgrade::begin(state).ok_or(UpgradeError::TreeChanged)?;
     let UpgradeContext {
         listener_fd,
@@ -218,6 +219,9 @@ async fn prepare_upgrade_inner(state: &SharedState) -> Result<UpgradePlan, Upgra
         let blob_fd = blob_file.as_raw_fd();
         let executable = pin_validated_executable(flags.upgrade_source_exe.as_deref())?;
         preflight_blob(&executable.path, &mut blob_file)?;
+        // Handoffs and candidate probes yield or run subprocesses. A different
+        // connection may have written since the initial validation.
+        refuse_invalid_org_store(state)?;
         let fd_flags = clear_inherited_cloexec(blob_fd, listener_fd, &blob, &cuts)?;
         Ok((
             listener,
@@ -252,6 +256,12 @@ async fn prepare_upgrade_inner(state: &SharedState) -> Result<UpgradePlan, Upgra
         _delegated_listeners: delegated_listeners,
         cuts,
     })
+}
+
+fn refuse_invalid_org_store(state: &SharedState) -> Result<(), UpgradeError> {
+    state
+        .with_mut(crate::ServerState::validate_org_store)
+        .map_err(|error| UpgradeError::Validation(error.to_string()))
 }
 
 /// Lift every kind's cut concurrently, each within its own bound.
@@ -358,18 +368,23 @@ impl UpgradePlan {
     /// Re-exec the new binary with [`resume_args`], replacing this process.
     /// Returns only on failure, after restoring descriptor flags and awaiting
     /// the same bounded stream rollback as a failed preparation.
-    pub(super) async fn exec(mut self) -> std::io::Error {
-        let error = self.try_exec();
+    pub(super) async fn exec(mut self, state: &SharedState) -> std::io::Error {
+        let error = self.try_exec(state);
         drop(self.fd_flags);
         lift(&mut self.cuts).await;
         error
     }
 
-    fn try_exec(&self) -> std::io::Error {
+    fn try_exec(&self, state: &SharedState) -> std::io::Error {
         let exe = match self.executable.exec_path() {
             Ok(path) => path.to_path_buf(),
             Err(err) => return err,
         };
+        // The caller awaited the acknowledgement after preparation. Recheck
+        // now too, before releasing anything or invoking the irreversible exec.
+        if let Err(error) = refuse_invalid_org_store(state) {
+            return std::io::Error::new(std::io::ErrorKind::InvalidData, error);
+        }
         let mut command = Command::new(&exe);
         command
             .env(UPGRADE_SOURCE_EXE, &self.executable.source_path)

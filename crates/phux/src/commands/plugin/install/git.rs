@@ -373,20 +373,31 @@ struct ToolDone {
 
 /// Run `cmd` in its own process group and kill that group on timeout.
 fn run_bounded(
-    mut cmd: Command,
+    cmd: Command,
     what: &str,
     secret_url: Option<&str>,
     timeout: Duration,
 ) -> Result<ToolDone, String> {
+    wait_bounded(spawn_group(cmd, what)?, what, secret_url, timeout)
+}
+
+fn spawn_group(mut cmd: Command, what: &str) -> Result<Child, String> {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt as _;
         cmd.process_group(0);
     }
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = cmd
-        .spawn()
-        .map_err(|err| format!("could not spawn {what}: {err}"))?;
+    cmd.spawn()
+        .map_err(|err| format!("could not spawn {what}: {err}"))
+}
+
+fn wait_bounded(
+    mut child: Child,
+    what: &str,
+    secret_url: Option<&str>,
+    timeout: Duration,
+) -> Result<ToolDone, String> {
     let mut stdout_pipe = child
         .stdout
         .take()
@@ -474,10 +485,15 @@ fn scrub(text: &str, secret_url: Option<&str>, extra: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::process::Command;
+    use std::path::Path;
+    use std::process::{Child, Command};
+    use std::thread;
+    use std::time::{Duration, Instant};
 
-    use super::{git_command, is_commit_id, is_full_commit, run_bounded, timeout_from};
-    use std::time::Duration;
+    use super::{
+        git_command, is_commit_id, is_full_commit, kill_group, spawn_group, timeout_from,
+        wait_bounded,
+    };
 
     #[test]
     fn git_invocation_is_non_interactive_and_protocol_limited() {
@@ -537,15 +553,20 @@ mod tests {
     fn timeout_kills_the_process_group() {
         let dir = tempfile::tempdir().unwrap();
         let pidfile = dir.path().join("child");
-        let script = format!("sleep 60 &\necho $! > {}\nwait\n", pidfile.display());
         let mut cmd = Command::new("sh");
-        cmd.arg("-c").arg(script);
-        let err = run_bounded(cmd, "sleeper", None, Duration::from_millis(400)).unwrap_err();
+        cmd.args(["-c", "sleep 60 &\necho $! > \"$1\"\nwait\n", "fixture"])
+            .arg(&pidfile);
+        let mut child = spawn_group(cmd, "sleeper").expect("start fixture");
+        // Wait for the grandchild to exist before testing the timeout. Under
+        // load a 400ms timeout could kill the shell before it had spawned it.
+        let pid = fixture_pid(&pidfile, &mut child)
+            .expect("fixture did not record a grandchild PID")
+            .to_string();
+        let err = wait_bounded(child, "sleeper", None, Duration::from_millis(400)).unwrap_err();
         assert!(err.contains("timed out"), "{err}");
-        let pid = std::fs::read_to_string(&pidfile).expect("child pid was recorded");
         let alive = || {
             Command::new("kill")
-                .args(["-0", pid.trim()])
+                .args(["-0", &pid])
                 .stderr(std::process::Stdio::null())
                 .status()
                 .expect("kill -0")
@@ -558,5 +579,20 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(!alive(), "process group child {pid} still alive");
+    }
+
+    fn fixture_pid(path: &Path, child: &mut Child) -> Option<u32> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if let Some(pid) = std::fs::read_to_string(path)
+                .ok()
+                .and_then(|text| text.trim().parse().ok())
+            {
+                return Some(pid);
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        kill_group(child);
+        None
     }
 }

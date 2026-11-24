@@ -35,7 +35,7 @@ The home defaults to `rune-upstream` beside the primary checkout:
 | `PHONE.json` | Optional private phone-delivery configuration; never committed. An installation order in steering enables the delivery phase |
 | `JOURNAL.md` | The agent's memory between runs, and the first place a `BLOCKED:` line shows up |
 | `rune.git` | A mirror of upstream for reading ranges |
-| `scratch/` | Snapshots and logs a run makes |
+| `scratch/` | Snapshots and logs a run makes. Each tick deletes entries untouched for `RUNE_UPSTREAM_SCRATCH_KEEP_HOURS` (24) that no process holds open, except `RUNE_UPSTREAM_SCRATCH_KEEP` (`phone-*`) |
 | `tick.log` | What each tick did |
 
 Rerun `install.sh` after `tick.sh` changes; it keeps the worktree, journal and
@@ -89,11 +89,14 @@ ownership, literal pane arrangement and the good command palette stay intact.
 Bumps move all ten upstream manifest entries together: four direct Rune
 dependencies and six crates.io patches, including `sctk-adwaita` for Wayland
 frame corners, not the removed `rune-mac` entry. Recheck upstream's patch set.
-The documented temporary `winit` fork is the sole revision exception: advance
-the other nine entries and rebase/review/test its narrow Wayland cursor patch
-on that same new upstream base. Pin the immutable owned-fork commit; never
-drop the fix or leave its base behind to equalize hashes. Reunify when upstream
-is equivalent. All qualification and release gates still apply.
+All ten pins, including `winit`, now use the same immutable upstream revision.
+Upstream [#1454](https://github.com/anomalyco/rune/pull/1454) supplies `ImeSync`
+to suppress unchanged cursor-area calls; the temporary fork and its six-helper
+gate are retired. Validate this adoption with the two actual upstream
+`ImeSync` tests listed in [DEVELOP.md](../../clients/rune/DEVELOP.md), run from
+the pinned upstream workspace, not a dependency-test wrapper. Client Rust/IME,
+real Wayland compositor, packaged/native qualification and release gates
+remain mandatory.
 The release policy follows the current patch-release train in
 [Releasing](../../docs/releasing.md#phux-rune), not the historic alpha sequence.
 Visual review supplements all existing check, packaged/native qualification

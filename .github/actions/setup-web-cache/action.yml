@@ -4,7 +4,7 @@
 # saves only from main. `shared-key` replaces the job id and ignores `key`,
 # so the flake.lock hash is part of `shared-key`.
 name: setup-web-cache
-description: Browser devshell plus a main-only cargo dependency cache for the web lane.
+description: Web devshell plus a main-only cargo dependency cache.
 
 inputs:
   cachix-auth-token:
@@ -32,13 +32,15 @@ runs:
         authToken: ${{ inputs.cachix-auth-token }}
         pushFilter: '(-source$|nixpkgs\.tar\.gz$)'
 
-    - name: expose the browser shell's rustc
+    - name: expose the web shell's rustc
       id: web-cache
       shell: bash
       run: |
         set -euo pipefail
+        # Both web shells share rustc. Do not realize Chromium for Node-only
+        # VT tests; the client recipe enters .#browser when it needs Chrome.
         # Through a file: the shellHook greets on stdout.
-        nix develop .#browser -c bash -c 'dirname "$(command -v rustc)" > "$1"' _ "$RUNNER_TEMP/rustc-path"
+        nix develop -c bash -c 'dirname "$(command -v rustc)" > "$1"' _ "$RUNNER_TEMP/rustc-path"
         cat "$RUNNER_TEMP/rustc-path" >> "$GITHUB_PATH"
         {
           echo "CARGO_INCREMENTAL=0"

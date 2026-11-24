@@ -2,7 +2,10 @@
 // the plan's own output, running the recipes `just check` runs locally.
 // The web lane is the exception: two jobs. web-lane.test.ts checks that split.
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { runInNewContext } from "node:vm";
 import { repoPath } from "../lib/repo.ts";
 import { capture } from "../lib/process.ts";
 import { list, str, table, type Table } from "../lib/value.ts";
@@ -20,6 +23,7 @@ import {
 } from "../policy/workflows.ts";
 import { classifyEvent } from "./detect.ts";
 import { LANE_RECIPES, LANES, plan, planOutputs } from "./plan.ts";
+import { STRICT_AGGREGATE_STEP } from "../release/pr-ready-proof.ts";
 
 const CI = workflow("ci.yml");
 
@@ -121,7 +125,7 @@ test("each lane's jobs are gated on its plan output and together run its recipes
   }
 });
 
-test("the ci aggregate needs every lane and accepts only success or a skip", () => {
+test("the strict ci aggregate needs every lane and rejects missing plan evidence", () => {
   const aggregate = job(CI, "ci");
   const lanes = Object.keys(jobs(CI)).filter((id) => !AFTER_LANES.includes(id));
   expect(needs(aggregate).toSorted()).toEqual(lanes.toSorted());
@@ -131,27 +135,103 @@ test("the ci aggregate needs every lane and accepts only success or a skip", () 
   expect(script).toBe("bash scripts/ci/ci-aggregate.sh");
   const baseline: Record<string, { result: string; outputs?: Record<string, string> }> =
     Object.fromEntries(lanes.map((id) => [id, { result: "skipped" }]));
-  baseline["plan"] = { result: "success", outputs: {} };
-  for (const [id, result, code] of [
+  const flags = [...LANES, "rune_qualify", "docs_catalog", "release_qualify"];
+  baseline["plan"] = {
+    result: "success",
+    outputs: Object.fromEntries(flags.map((flag) => [flag, "false"])),
+  };
+  expect(steps(aggregate).find((step) => run(step) === script)?.["name"]).toBe(
+    STRICT_AGGREGATE_STEP,
+  );
+  for (const [id, result, code, draft] of [
     ["lint", "skipped", 0],
     ["lint", "success", 0],
     ["integrations", "failure", 1],
     ["tests", "cancelled", 1],
     ["guards", "failure", 1],
     ["plan", "skipped", 1],
+    ["plan", "skipped", 0, "true"],
     ["plan", "failure", 1],
     ["docs-catalog", "skipped", 0],
     ["docs-catalog", "failure", 1],
-  ] as const) {
-    const results = JSON.stringify({ ...baseline, [id]: { result } });
+  ] as [string, string, number, string?][]) {
+    const results = JSON.stringify({
+      ...baseline,
+      [id]: { ...baseline[id], result },
+      ...(draft ? { plan: { result: "skipped" } } : {}),
+    });
     const exit = Bun.spawnSync(["bash", "-euo", "pipefail", "-c", script], {
       cwd: repoPath("."),
-      env: { ...process.env, RESULTS: results, EVENT_NAME: "pull_request" },
+      env: { ...process.env, RESULTS: results, EVENT_NAME: "pull_request", DRAFT: draft ?? "" },
       stdout: "ignore",
     }).exitCode;
-    expect([id, result, exit]).toEqual([id, result, code]);
+    expect([id, result, draft, exit]).toEqual([id, result, draft, code]);
   }
 });
+
+test("every draft skips qualification and reports only a draft notice, including release heads", () => {
+  expect(list(table(table(CI["on"])["pull_request"])["types"])).toContain("converted_to_draft");
+  for (const head of ["topic", "release-please--branches--main", "rune-release/next"]) {
+    for (const draft of [false, true]) {
+      const context = {
+        github: { head_ref: head, event: { action: "synchronize", pull_request: { draft } } },
+      };
+      const evaluate = (value: unknown): unknown =>
+        runInNewContext(String(value).replace(/^\$\{\{\s*|\s*\}\}$/g, ""), context);
+      expect([head, draft, evaluate(job(CI, "plan")["if"])]).toEqual([head, draft, !draft]);
+      expect(evaluate(job(CI, "ci")["name"])).toBe(draft ? "ci (draft)" : "ci");
+    }
+  }
+});
+
+test("every selected lane, archive build and web half must succeed, not skip", () => {
+  const script = run(
+    steps(job(CI, "ci")).find((step) => run(step).includes("ci-aggregate.sh")) ?? {},
+  );
+  const flags = [...LANES, "rune_qualify", "docs_catalog", "release_qualify"];
+  const selected: Record<string, string[]> = {
+    guards: ["guards"],
+    lint: ["lint"],
+    tests: ["test-build", "tests"],
+    e2e: ["test-build", "e2e"],
+    ffi: ["ffi"],
+    integrations: ["integrations"],
+    web: ["web-vt", "web-client"],
+    native: ["native"],
+    icount: ["icount"],
+    rune: ["rune"],
+    docs_catalog: ["docs-catalog"],
+  };
+  const laneIds = needs(job(CI, "ci")).filter((id) => id !== "plan");
+  for (const [flag, requiredJobs] of Object.entries(selected)) {
+    const outputs = Object.fromEntries(flags.map((key) => [key, String(key === flag)]));
+    const baseline = {
+      ...Object.fromEntries(
+        laneIds.map((id) => [id, { result: requiredJobs.includes(id) ? "success" : "skipped" }]),
+      ),
+      plan: { result: "success", outputs },
+    };
+    const execute = (results: unknown) =>
+      Bun.spawnSync(["bash", "-c", script], {
+        cwd: repoPath("."),
+        env: { ...process.env, EVENT_NAME: "pull_request", RESULTS: JSON.stringify(results) },
+        stdout: "ignore",
+        stderr: "ignore",
+      }).exitCode;
+    expect([flag, execute(baseline)]).toEqual([flag, 0]);
+    for (const id of requiredJobs) {
+      for (const result of ["skipped", "failure", "cancelled", "missing"]) {
+        expect([flag, id, result, execute({ ...baseline, [id]: { result } })]).toEqual([
+          flag,
+          id,
+          result,
+          1,
+        ]);
+      }
+    }
+    expect(execute({ ...baseline, plan: { result: "success", outputs: {} } })).toBe(1);
+  }
+}, 15_000);
 
 test("pull requests and merge groups write receipts; content publishes after a green push", () => {
   const ciSteps = steps(job(CI, "ci"));
@@ -162,13 +242,79 @@ test("pull requests and merge groups write receipts; content publishes after a g
   );
   for (const step of ciSteps.slice(gateAt + 1)) {
     expect(str(step["if"])).toBe(
-      "github.event_name == 'pull_request' || github.event_name == 'merge_group'",
+      "needs.plan.result == 'success' && (github.event_name == 'pull_request' || github.event_name == 'merge_group')",
     );
   }
   const content = job(CI, "content");
   expect(needs(content)).toContain("ci");
   expect(str(content["if"])).toContain("needs.ci.result == 'success'");
   expect(str(content["if"])).toContain("github.event_name == 'push'");
+});
+
+test("strict plan checks retain mandatory native, queue Apple and release packaging", () => {
+  const flags = [...LANES, "rune_qualify", "docs_catalog", "release_qualify"];
+  for (const event of ["push", "merge_group", "pull_request"]) {
+    const release = event === "pull_request";
+    const outputs = Object.fromEntries(flags.map((key) => [key, "false"]));
+    if (release)
+      Object.assign(outputs, { release_qualify: "true", rune: "true", rune_qualify: "true" });
+    const baseline = {
+      ...Object.fromEntries(needs(job(CI, "ci")).map((id) => [id, { result: "success" }])),
+      plan: { result: "success", outputs },
+    };
+    const execute = (results: unknown) =>
+      Bun.spawnSync(["bash", "scripts/ci/ci-aggregate.sh"], {
+        cwd: repoPath("."),
+        env: { ...process.env, EVENT_NAME: event, RESULTS: JSON.stringify(results) },
+        stdout: "ignore",
+        stderr: "ignore",
+      }).exitCode;
+    expect([event, execute(baseline)]).toEqual([event, 0]);
+    const mandatory = ["native", "icount"];
+    if (event !== "push") mandatory.push("queue-apple");
+    if (release) mandatory.push("rune");
+    for (const id of mandatory) {
+      expect([event, id, execute({ ...baseline, [id]: { result: "skipped" } })]).toEqual([
+        event,
+        id,
+        1,
+      ]);
+    }
+    if (release) {
+      expect(
+        execute({
+          ...baseline,
+          plan: { result: "success", outputs: { ...outputs, rune_qualify: "false" } },
+        }),
+      ).toBe(1);
+    }
+  }
+});
+
+test("a draft can only report a no-work notice and never writes a receipt", () => {
+  const dir = mkdtempSync(join(tmpdir(), "draft-aggregate-"));
+  try {
+    const execute = (results: unknown) =>
+      Bun.spawnSync(["bash", "scripts/ci/ci-aggregate.sh"], {
+        cwd: repoPath("."),
+        env: {
+          ...process.env,
+          DRAFT: "true",
+          EVENT_NAME: "pull_request",
+          RESULTS: JSON.stringify(results),
+          RECEIPT: "not-proof",
+          RUNNER_TEMP: dir,
+        },
+        stdout: "ignore",
+        stderr: "ignore",
+      }).exitCode;
+    expect(execute({ plan: { result: "skipped" }, native: { result: "skipped" } })).toBe(0);
+    expect(execute({ plan: { result: "success" } })).toBe(1);
+    expect(execute({ plan: { result: "skipped" }, native: { result: "success" } })).toBe(1);
+    expect(existsSync(join(dir, "receipt/receipt.json"))).toBe(false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("both FFI workflows build only on dispatch and tell mobile only about releases", () => {

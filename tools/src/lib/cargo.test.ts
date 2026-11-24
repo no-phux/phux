@@ -211,3 +211,16 @@ test("dev dependencies count only at a dev root", () => {
     "crates/wire",
   ]);
 });
+
+test("each closure rereads manifests and a missing declared path still fails", () => {
+  const builds = [{ dir: "changing/app", dev: false }];
+  write("changing/app/Cargo.toml", '[package]\nname = "app"\n');
+  expect([...pathClosure(builds, root)]).toEqual(["changing/app"]);
+  write(
+    "changing/app/Cargo.toml",
+    '[package]\nname = "app"\n[dependencies]\nleaf = { path = "../leaf" }\n',
+  );
+  expect(() => pathClosure(builds, root)).toThrow();
+  write("changing/leaf/Cargo.toml", '[package]\nname = "leaf"\n');
+  expect([...pathClosure(builds, root)]).toEqual(["changing/app", "changing/leaf"]);
+});

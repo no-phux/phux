@@ -19,6 +19,7 @@ use phux_client_runtime::control::{SessionDescriptor, Topology};
 use phux_protocol::ids::SessionKey;
 use rune::{Color, El, Key, col, memo, row, text};
 
+use super::controls::return_to_terminal_on_click;
 use super::rows::State as Forced;
 use super::{Paint, Tokens, icons, pressable, reveal, tile};
 use crate::addressable::Addressable;
@@ -146,7 +147,7 @@ fn session_header(session: &Header, t: &Tokens) -> El {
                 .help("Drag to reorder session")
                 .on_press_tx(move |d: &mut Desk, tx| {
                     d.show_session(&name);
-                    clicked(tx);
+                    return_to_terminal_on_click(tx);
                 })
                 .on_key(move |d: &mut Desk, event, _| {
                     // A tree's Left folds and Right unfolds.
@@ -207,13 +208,6 @@ fn counts_by_session(desk: &Desk, topology: &Topology) -> HashMap<u32, Counts> {
     counts
 }
 
-/// A click on a row picks it and hands the keyboard back to the shown
-/// terminal; only keys keep focus in the list, where arrows walk it.
-pub(super) fn clicked(tx: &mut rune::Tx) {
-    if !tx.by_keys() {
-        tx.blur();
-    }
-}
 
 /// The rows' source list (the kit `Sidebar`'s): one Tab stop that lands on
 /// the selected row; Up and Down move the selection, which follows focus,

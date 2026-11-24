@@ -5,7 +5,7 @@ use rune::{Color, El, el, row, text};
 
 use super::super::rows::{Base, State as Forced, forced_face};
 use super::super::{Paint, Tokens, tile};
-use super::{clicked, drag, face};
+use super::{drag, face, return_to_terminal_on_click};
 use crate::activity::Mark;
 use crate::desk::Desk;
 use crate::host_color;
@@ -166,7 +166,7 @@ pub(super) fn pane_row(pane: &Row, t: &Tokens) -> El {
     }
     let row = row.on_press_tx(move |d: &mut Desk, tx| {
         d.show(target.clone(), &session);
-        clicked(tx);
+        return_to_terminal_on_click(tx);
     });
     // A split moves as its tab, from the tab strip; a lone pane drags here.
     match key {

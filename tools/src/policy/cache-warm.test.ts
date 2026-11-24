@@ -16,6 +16,7 @@ function evaluate(value: unknown, github: Table, inputs: Table = {}): unknown {
 
 const LINUX = ["rust-lint", "rust-test", "rust-uniffi", "rust-icount"];
 const WARM = workflow("cache-warm.yml");
+const CI = workflow("ci.yml");
 
 test("the two scheduled warms keep Linux dispatch and Rune on their own clocks", () => {
   for (const schedule of ["10 0 * * *", "17 6 * * *"]) {
@@ -73,6 +74,16 @@ test("mbx export headroom uses the real action eligibility output", () => {
     expect(headroom?.["if"]).toBe(
       "steps.lane.outputs.cache-save-eligible == 'true' && steps.lane.outputs.cache-hit != 'true'",
     );
+  }
+  for (const id of ["lint", "test-build", "icount"]) {
+    const jobSteps = steps(job(CI, id));
+    const headroom = jobSteps.find((step) => run(step).includes("mbx-export-headroom.sh"));
+    expect(headroom?.["if"]).toBe(
+      "steps.lane.outputs.cache-save-eligible == 'true' && steps.lane.outputs.cache-hit != 'true'",
+    );
+    expect(
+      jobSteps.find((step) => uses(step) === "./.github/actions/setup-rust-lane")?.["id"],
+    ).toBe("lane");
   }
 });
 

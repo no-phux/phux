@@ -207,6 +207,7 @@ macro_rules! hidden {
     };
 }
 
+mod aliases;
 mod hidden_rows;
 mod palette_rows;
 
@@ -257,7 +258,7 @@ pub fn palette_items(
             let resolved = spec.resolved_action();
             items.push(
                 chord_annotated(SelectItem::new(title, resolved), keybindings)
-                    .keywords(spec.name)
+                    .keywords(row_keywords(spec.name))
                     .indented(),
             );
             for variant in PALETTE_VARIANTS
@@ -274,7 +275,7 @@ pub fn palette_items(
                 };
                 items.push(
                     chord_annotated(SelectItem::new(variant.title, resolved), keybindings)
-                        .keywords(spec.name)
+                        .keywords(row_keywords(spec.name))
                         .indented(),
                 );
             }
@@ -302,13 +303,31 @@ pub fn palette_items(
     items
 }
 
-/// `item` with its bound chord's literal keystrokes as the secondary, when
-/// one is bound.
+/// What a palette row for the action `name` answers to besides its title:
+/// the canonical name (`kill-pane`) and the words people reach for.
+fn row_keywords(name: &str) -> String {
+    format!("{name} {}", aliases::aliases(name))
+        .trim_end()
+        .to_owned()
+}
+
+/// `item` with its bound chord, in key-cap form, as the secondary, when one
+/// is bound.
 fn chord_annotated(item: SelectItem, keybindings: Option<&KeybindingsCfg>) -> SelectItem {
-    match bound_chord_for(keybindings, &item.action) {
+    match display_chord_for(keybindings, &item.action) {
         Some(chord) => item.secondary(chord),
         None => item,
     }
+}
+
+/// [`bound_chord_for`] as a row's shortcut column shows it: key caps
+/// (`⌃A %`), the same in the palette and every menu.
+#[must_use]
+pub fn display_chord_for(
+    keybindings: Option<&KeybindingsCfg>,
+    resolved: &ResolvedAction,
+) -> Option<String> {
+    bound_chord_for(keybindings, resolved).map(|chord| aliases::keycaps(&chord))
 }
 
 /// The chord bound to `resolved`, or `None`, which the palette and context

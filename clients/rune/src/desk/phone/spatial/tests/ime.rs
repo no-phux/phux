@@ -30,10 +30,6 @@ fn inline_question_fields_take_the_terminal_ime_and_return_it_on_blur() {
                 rt.update(|d, tx| {
                     tx.instant();
                     d.settings.option_as_meta = option_as_meta;
-                    d.inbox.questions.drafts.insert(
-                        question.id.clone(),
-                        crate::desk::questions::Draft::new(&question),
-                    );
                     d.inbox.questions.views.insert(
                         id(1),
                         (
@@ -52,11 +48,19 @@ fn inline_question_fields_take_the_terminal_ime_and_return_it_on_blur() {
                             },
                         ),
                     );
+                    d.inbox.questions.reconcile();
                 });
                 settle(&mut rt);
                 assert!(rt.state.modal().is_none());
                 assert!(rt.find("ime-caret").is_some(), "terminal owns the IME");
-                let key = format!("acp-{QUESTION}-field-text");
+                let owner = rt
+                    .state
+                    .inbox
+                    .questions
+                    .owner(&id(1), QUESTION)
+                    .unwrap()
+                    .clone();
+                let key = owner.field_key("text");
                 let (x, y) = rt.find(&key).expect("inline field");
                 rt.pointer_down(x, y);
                 rt.pointer_up(x, y);
@@ -67,7 +71,10 @@ fn inline_question_fields_take_the_terminal_ime_and_return_it_on_blur() {
                 let _ = outbound(&client);
                 rt.ime(rune::Ime::Commit("∫".into()));
                 rt.frame(0.0);
-                assert_eq!(rt.state.inbox.questions.drafts[QUESTION].text("text"), "∫");
+                assert_eq!(
+                    rt.state.inbox.questions.draft(&owner).unwrap().text("text"),
+                    "∫"
+                );
                 no_input(&client);
 
                 // Click below the card, not its controls or the phone's toolbar.

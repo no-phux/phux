@@ -5,8 +5,8 @@ import { readFileSync } from "node:fs";
 import { capture } from "../lib/process.ts";
 import { repoPath } from "../lib/repo.ts";
 import { list, str, table } from "../lib/value.ts";
-import { action, job, run, steps, uses, withInput, workflow } from "../policy/workflows.ts";
-import { LANE_RECIPES } from "./plan.ts";
+import { action, job, needs, run, steps, uses, withInput, workflow } from "../policy/workflows.ts";
+import { LANES, LANE_RECIPES } from "./plan.ts";
 
 const WEB_CHECKS = [
   'if [[ "${PHUX_WEB_ENGINE:-0}" == 1 ]]; then bash scripts/build-vt-wasm.sh --check; fi',
@@ -38,6 +38,21 @@ test("just web-check runs both halves in the lane order", () => {
       .map((line) => list(line).map(String).join(""))
       .filter((line) => line !== "#!/usr/bin/env bash" && line !== "set -euo pipefail");
   expect(LANE_RECIPES.web.flatMap(([recipe]) => commands(recipe))).toEqual(WEB_CHECKS);
+});
+
+test("only the browser client realizes Chromium", () => {
+  const setup = steps(action("setup-web-cache")).map(run).join("\n");
+  expect(setup).toContain("nix develop -c bash");
+  expect(setup).not.toContain("nix develop .#browser");
+  for (const file of ["ci.yml", "cache-warm.yml"]) {
+    const current = workflow(file);
+    expect(steps(job(current, "web-vt")).map(run).join("\n")).toContain(
+      "nix develop -c just web-vt-check",
+    );
+    expect(steps(job(current, "web-client")).map(run).join("\n")).toContain(
+      "nix develop .#browser -c just web-client-check",
+    );
+  }
 });
 
 test("the web jobs cache cargo dependencies and save them only from main", () => {
@@ -87,7 +102,23 @@ test("both web halves fail the aggregate on failure or cancellation", () => {
           ...process.env,
           EVENT_NAME: "pull_request",
           RESULTS: JSON.stringify({
-            plan: { result: "success", outputs: {} },
+            ...Object.fromEntries(
+              needs(job(workflow("ci.yml"), "ci")).map((id) => [id, { result: "skipped" }]),
+            ),
+            plan: {
+              result: "success",
+              outputs: {
+                ...Object.fromEntries(
+                  [...LANES, "rune_qualify", "docs_catalog", "release_qualify"].map((key) => [
+                    key,
+                    "false",
+                  ]),
+                ),
+                web: "true",
+              },
+            },
+            "web-vt": { result: "success" },
+            "web-client": { result: "success" },
             [id]: { result },
           }),
         },

@@ -144,7 +144,7 @@ fn int_row(
         action,
         BTreeMap::from([(key.to_owned(), toml::Value::Integer(value))]),
     );
-    let chord = super::action_registry::bound_chord_for(keybindings, &resolved);
+    let chord = super::action_registry::display_chord_for(keybindings, &resolved);
     MenuRow::item(label, resolved).secondary(chord)
 }
 
@@ -160,7 +160,7 @@ fn row(
         .iter()
         .map(|(k, v)| ((*k).to_owned(), toml::Value::String((*v).to_owned())));
     let resolved = crate::attach::resolved(action, args.collect());
-    let chord = super::action_registry::bound_chord_for(keybindings, &resolved);
+    let chord = super::action_registry::display_chord_for(keybindings, &resolved);
     MenuRow::item(label, resolved).secondary(chord)
 }
 
@@ -310,8 +310,8 @@ mod tests {
             .expect("split row present");
         assert_eq!(
             split.as_deref(),
-            Some("C-a |"),
-            "the row shows the literal keystrokes that run it",
+            Some("⌃A |"),
+            "the row shows the keystrokes that run it, as key caps",
         );
         // With no config nothing is annotated — an unbound row shows no
         // chord rather than the word "unbound" (a menu is not a table).

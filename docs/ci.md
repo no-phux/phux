@@ -37,6 +37,46 @@ full Rust pool and every lane the diff needs. A `main` push whose tree a
 pull request or merge group already validated with the same lanes reuses
 that receipt (`tools/src/routing/receipt.ts`).
 
+## Drafts and automated arming
+
+Every draft, including a release train, skips the real plan and product
+qualification. Its aggregate reports only `ci (draft)` and writes no receipt.
+A fresh draft therefore leaves required `ci` absent rather than red.
+Renaming a job cannot invalidate an older same-SHA `ci` check or commit
+status. Converting a Ready PR back to draft and Ready again does not prove
+the new run has registered. This is not atomic protection for manual merges.
+
+Before enabling or re-enabling auto-merge, automation must keep it off and run:
+
+```sh
+bun tools/main.ts pr-ready-ci PR_NUMBER EXPECTED_FULL_SHA
+```
+
+This read-only gate requires an open, Ready, same-repository PR targeting main at the
+expected full head. Its newest current-head `ci.yml` pull-request run must
+be provably newer than the latest Ready timeline transition (or creation
+for an initially Ready PR). A rerun keeps its original creation time.
+Same-second timestamps are ambiguous and refuse; they are not rounded into
+authorization. Keep auto-merge off until a later normal run exists for the
+current head; retrying an old run does not change its creation time.
+Do not automatically rerun or cycle draft/Ready to bypass this refusal.
+Pending, unregistered, stale, cancelled or missing evidence
+also refuses without dispatching or retrying CI.
+
+The run must contain successful normal `plan` and `ci` jobs and the successful
+`Strict CI aggregate v2` step. That versioned contract checks every plan-selected
+lane, archive build, both web halves and docs catalog against actual job results.
+Only unselected lanes may skip. Mandatory native/icount and release/queue
+Linux/Apple requirements remain. A green old aggregate or `ci (draft)` cannot
+substitute. Current-head normal commitlint must also succeed.
+
+The gate rereads runs, attempts, the PR and its Ready boundary before returning.
+The consumer must still condition its subsequent mutation on the expected
+head (`gh pr merge --match-head-commit`); a read cannot make a later mutation
+atomic. Legacy pending or failed `ci`/`commitlint` commit statuses also refuse.
+A successful Actions check run does not clear a separate commit status.
+This gate creates or updates neither kind of check.
+
 ## After the merge
 
 The live `main` ruleset has no merge queue. A pull request merges once
@@ -157,7 +197,9 @@ fixture uses a regular temporary file, like Actions, not a captured `/dev/stdout
 ## Runner and cache budget
 
 The test lanes compile once (`just test-archive`) and run the unit and e2e
-shards from that nextest archive. Pull requests restore caches and never
+shards from that nextest archive. The shards use `nix develop .#test-archive`,
+which includes the compiler for wire-tag probes but no Zig or browser stack.
+Pull requests restore caches and never
 save them. Main pushes and the 00:10 UTC Linux-only cache-warm dispatch
 save per-lane caches under the 10 GB budget. Post-upload pruning keeps
 current-day keys and never deletes the sole older restore source before

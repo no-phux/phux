@@ -18,6 +18,7 @@ SOURCE = {
     "sourceRevision": "a" * 40, "currentRunePin": "b" * 40, "dirty": True,
     "gitDiffHeadSha256": "c" * 64, "untrackedSourceFiles": [],
 }
+SUBJECT = "inbox/phone-question-dark-320x568-1x.png"
 
 
 def motion_fixture(path, tree):
@@ -41,17 +42,25 @@ class VisualReview(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.tree = {
             "schema": 1, "projection": "ordered geometry and accessibility",
-            "viewport": [10, 20], "scale": 2, "pixels": [20, 40],
+            "viewport": [320, 568], "scale": 1, "pixels": [320, 568],
             "scenario": "exporter-owned scenario", "theme": "exporter-owned theme",
             "elements": [{"path": "same", "text": "first"}, {"path": "same", "text": "second"}],
             "accessibility": {},
         }
-        for relative, (width, height, scale) in review.required_inventory().items():
+        self.subject = SUBJECT
+        self.frame(self.subject)
+        # Most tests exercise one malformed case or the bundle writer, not
+        # the full maintained inventory. Inventory tests opt back into the real set.
+        self.inventory = patch.object(review, "required_inventory",
+                                      return_value={SUBJECT: (320, 568, 1)})
+        self.inventory.start()
+        self.addCleanup(self.inventory.stop)
+
+    def populate(self, inventory):
+        for relative, (width, height, scale) in inventory.items():
             physical = [width * scale, height * scale]
             tree = {**self.tree, "viewport": [width, height], "scale": scale, "pixels": physical}
             self.frame(relative, tree=tree, physical=physical)
-        self.subject = "inbox/phone-question-dark-320x568-1x.png"
-        self.tree = json.loads((self.root / self.subject).with_suffix(".json").read_text())
 
     def frame(self, relative, tree=None, physical=None):
         path = self.root / relative
@@ -70,11 +79,13 @@ class VisualReview(unittest.TestCase):
             return review.produce(self.root, self.root)
 
     def test_bundle_has_all_families_hashes_and_honest_status(self):
+        self.inventory.stop()
+        self.populate(review.required_inventory())
         manifest = self.produce()
-        self.assertEqual(len(manifest["cases"]), 1013)
+        self.assertEqual(len(manifest["cases"]), 1225)
         self.assertEqual({family: sum(case["family"] == family for case in manifest["cases"])
                           for family in review.FAMILIES},
-                          {"inbox": 192, "settings": 226, "navigation": 594, "resources": 1})
+                           {"inbox": 404, "settings": 226, "navigation": 594, "resources": 1})
         case = next(case for case in manifest["cases"] if case["png"] == self.subject)
         self.assertEqual(case["physical"], [320, 568])
         self.assertEqual(case["logical"], [320, 568])
@@ -117,16 +128,58 @@ class VisualReview(unittest.TestCase):
                          "native_png_headless_renderer_smoke")
 
     def test_missing_family_fails_without_writing_bundle(self):
-        for png in (self.root / "inbox").glob("*.png"):
-            png.unlink()
+        self.inventory.stop()
+        (self.root / self.subject).unlink()
+        self.populate({path: size for path, size in review.required_inventory().items()
+                       if not path.startswith("inbox/")})
         with self.assertRaisesRegex(ValueError, "missing required cases: inbox/"):
             self.produce()
         self.assertFalse((self.root / "manifest.json").exists())
 
+    def test_selected_acp_forms_are_required_and_keep_existing_acp_cases(self):
+        self.inventory.stop()
+        self.populate(review.required_inventory())
+        selected = review.form_inventory(review.THEMES)
+        self.assertEqual(len(selected), 152)
+        self.assertTrue(selected.keys() <= review.inbox_inventory().keys())
+        for path in selected:
+            self.assertEqual(review.exporter_for("inbox", Path(path).stem),
+                             "acp_form_visual_review_frames")
+        native = "inbox/acp-form-native-small-long-ax5-dark-"
+        self.assertEqual(selected[native + "top-320x478-2x.png"], (320, 478, 2))
+        self.assertEqual(selected[native + "field-focus-320x340-2x.png"], (320, 340, 2))
+        self.assertEqual(selected[native + "field-heading-320x340-2x.png"], (320, 340, 2))
+        old_acp = {path for path in review.inbox_inventory() if "/phone-acp-" in path}
+        self.assertEqual(len(old_acp), 24)
+        subject = native + "final-action-320x340-2x.png"
+        (self.root / subject).unlink()
+        with self.assertRaisesRegex(ValueError, "missing required cases"):
+            self.produce()
+
+    def test_supported_ask_owner_flow_is_required(self):
+        self.inventory.stop()
+        selected = review.ask_owner_inventory(review.THEMES)
+        self.assertEqual(len(selected), 60)
+        self.assertTrue(selected.keys() <= review.inbox_inventory().keys())
+        for path in selected:
+            self.assertEqual(review.exporter_for("inbox", Path(path).stem),
+                             "acp_ask_owner_visual_review_frames")
+        subject = "inbox/acp-ask-owner-native-small-dark-b-open-320x340-2x.png"
+        self.assertEqual(selected[subject], (320, 340, 2))
+        self.populate(review.required_inventory())
+        (self.root / subject).unlink()
+        with self.assertRaisesRegex(ValueError, "missing required cases"):
+            self.produce()
+
     def test_one_case_per_family_is_not_complete(self):
+        self.inventory.stop()
+        inventory = review.required_inventory()
+        representatives = {}
         for family in review.FAMILIES:
-            for png in sorted((self.root / family).glob("*.png"))[1:]:
-                png.unlink()
+            path = next(path for path in inventory if path.startswith(family + "/"))
+            representatives[path] = inventory[path]
+        (self.root / self.subject).unlink()
+        self.populate(representatives)
         with self.assertRaisesRegex(ValueError, "missing required cases"):
             self.produce()
 
@@ -263,7 +316,7 @@ class VisualReview(unittest.TestCase):
         scripts = repo / "clients/rune/scripts"
         scripts.mkdir(parents=True)
         for name in ("visual-review.sh", "visual_review.py", "visual_motion.py",
-                     "visual_navigation.py", "visual_states.py", "visual_themes.py"):
+                     "visual_navigation.py", "visual_states.py", "visual_themes.py", "visual_acp.py"):
             shutil.copyfile(Path(__file__).with_name(name), scripts / name)
         (scripts.parent / "Cargo.toml").write_text('rune = { rev = "test-pin" }\n')
         for args in (["init", "-q"], ["add", "."],
@@ -292,10 +345,10 @@ class VisualReview(unittest.TestCase):
                                 env=environment, cwd=self.root, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         manifest = json.loads((out / "manifest.json").read_text())
-        self.assertEqual(len(manifest["cases"]), 1013)
+        self.assertEqual(len(manifest["cases"]), 1225)
         self.assertEqual(manifest["currentRunePin"], "test-pin")
         self.assertFalse(manifest["dirty"])
-        self.assertEqual(len(list((out / "logs").glob("*.log"))), 18)
+        self.assertEqual(len(list((out / "logs").glob("*.log"))), 20)
         self.assertEqual(seed.read_bytes(), seed_bytes)
         self.assertEqual({path.relative_to(private_seed).as_posix(): path.read_bytes()
                           for path in private_seed.rglob("*") if path.is_file()},

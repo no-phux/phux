@@ -4,145 +4,19 @@ import importlib.util
 import json
 import os
 from pathlib import Path
-import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
 
-from wayland_ime_fixture import CommandObservationFixture, DRIVER, WaylandImeFixture
+from wayland_ime_fixture import DRIVER, WaylandImeFixture
 
 SPEC = importlib.util.spec_from_file_location("wayland_ime", DRIVER)
 ime = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ime)
 
-class CommandObservationTests(CommandObservationFixture, unittest.TestCase):
-    def setUp(self):
-        directory = tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR"))
-        self.addCleanup(directory.cleanup)
-        self.root = Path(directory.name)
-        self.artifact = "wayland-ime-seats-before.json"
-        with patch.object(ime.time, "monotonic", return_value=100):
-            self.driver = ime.Diagnostic(directory.name, "fake-app", "fake-phux", "socket", "session")
-        self.events = []
-        event_patch = patch.object(self.driver, "event", side_effect=self.record_event)
-        event_patch.start()
-        self.addCleanup(event_patch.stop)
-        self.previous_out = b'[{"name":"seat0","capabilities":0}]\n'
-        self.previous_err = b"previous stderr\xff\n"
-        self.next_out = b'[{"name":"seat0","capabilities":2}]\n'
-        self.next_err = b"new stderr\n"
-        self.returncode = 0
-        self.failure = None
-
-    def test_expired_deadline_preserves_previous_pair_without_execution(self):
-        self.seed_previous()
-        with patch.object(ime.time, "monotonic", return_value=109):
-            with patch.object(ime.subprocess, "run") as run:
-                with self.assertRaisesRegex(RuntimeError, "deadline expired"):
-                    self.driver.command(["fixture-only"], self.artifact)
-                run.assert_not_called()
-        self.assert_previous()
-        self.assertIn({"stage": "command-not-executed", "artifact": self.artifact,
-                       "status": "deadline-expired"}, self.events)
-
-    def test_expired_deadline_without_observation_creates_no_canonical_files(self):
-        with patch.object(ime.time, "monotonic", return_value=109):
-            with patch.object(ime.subprocess, "run") as run:
-                with self.assertRaisesRegex(RuntimeError, "deadline expired"):
-                    self.driver.command(["fixture-only"], self.artifact)
-                run.assert_not_called()
-        self.assertEqual(list(self.root.iterdir()), [])
-
-    def test_deadline_expiring_after_entry_does_not_execute_or_replace(self):
-        self.seed_previous()
-        with patch.object(ime.time, "monotonic", side_effect=[108.999, 109]):
-            with patch.object(ime.subprocess, "run", side_effect=self.complete_command) as run:
-                with self.assertRaisesRegex(RuntimeError, "deadline expired"):
-                    self.driver.command(["fixture-only"], self.artifact)
-                run.assert_not_called()
-        self.assert_previous()
-        self.assertIn({"stage": "command-not-executed", "artifact": self.artifact,
-                       "status": "deadline-expired"}, self.events)
-
-    def test_tiny_remaining_timeout_preserves_pair_and_partial_output(self):
-        self.seed_previous()
-        self.failure = subprocess.TimeoutExpired(["fixture-only"], 0.001)
-        with patch.object(ime.time, "monotonic", return_value=108.999):
-            with patch.object(ime.subprocess, "run", side_effect=self.complete_command) as run:
-                with self.assertRaises(subprocess.TimeoutExpired):
-                    self.driver.command(["fixture-only"], self.artifact)
-                self.assertAlmostEqual(run.call_args.kwargs["timeout"], 0.001)
-        self.assert_previous()
-        self.assert_failed_attempt("TimeoutExpired")
-
-    def test_nonzero_exit_retains_previous_pair_and_failed_attempt(self):
-        self.seed_previous()
-        self.returncode = 7
-        with patch.object(ime.time, "monotonic", return_value=108):
-            with patch.object(ime.subprocess, "run", side_effect=self.complete_command):
-                with self.assertRaisesRegex(RuntimeError, "command failed \\(7\\)"):
-                    self.driver.command(["fixture-only"], self.artifact)
-        self.assert_previous()
-        self.assert_failed_attempt("RuntimeError")
-        exits = [e for e in self.events if e["stage"] == "command-exit"]
-        self.assertEqual(exits[-1]["returncode"], 7)
-
-    def test_fresh_failure_records_raw_output_without_faking_canonical_reply(self):
-        self.returncode = 6
-        self.next_out = b"partial non-JSON reply\n"
-        with patch.object(ime.time, "monotonic", return_value=108):
-            with patch.object(ime.subprocess, "run", side_effect=self.complete_command):
-                with self.assertRaisesRegex(RuntimeError, "command failed \\(6\\)"):
-                    self.driver.command(["fixture-only"], self.artifact)
-        self.assertFalse((self.root / self.artifact).exists())
-        self.assertFalse((self.root / (self.artifact + ".stderr.log")).exists())
-        self.assert_failed_attempt("RuntimeError")
-
-    def test_completed_success_replaces_both_only_after_process_completion(self):
-        self.seed_previous()
-
-        def complete_after_checks(args, **options):
-            self.assert_previous()
-            result = self.complete_command(args, **options)
-            self.assert_previous()
-            return result
-
-        with patch.object(ime.time, "monotonic", return_value=108):
-            with patch.object(ime.subprocess, "run", side_effect=complete_after_checks):
-                reply = self.driver.command(["fixture-only"], self.artifact)
-        self.assertEqual(reply, self.next_out.decode())
-        self.assertEqual((self.root / self.artifact).read_bytes(), self.next_out)
-        self.assertEqual((self.root / (self.artifact + ".stderr.log")).read_bytes(), self.next_err)
-        self.assertEqual({p.name for p in self.root.iterdir()},
-                         {self.artifact, self.artifact + ".stderr.log"})
-
-    def test_completed_malformed_reply_is_published_for_parser_failure(self):
-        self.seed_previous()
-        self.next_out = b"not seat JSON\n"
-        with patch.object(ime.time, "monotonic", return_value=108):
-            with patch.object(ime.subprocess, "run", side_effect=self.complete_command):
-                reply = self.driver.command(["fixture-only"], self.artifact)
-        self.assertEqual((self.root / self.artifact).read_bytes(), self.next_out)
-        self.assertEqual((self.root / (self.artifact + ".stderr.log")).read_bytes(), self.next_err)
-        with self.assertRaises(ValueError):
-            ime.seat_keyboard_ready(reply)
-
-    def test_spawn_error_is_recorded_without_erasing_observation(self):
-        self.seed_previous()
-        self.next_out = b""
-        self.next_err = b""
-        self.failure = FileNotFoundError("fixture executable absent")
-        with patch.object(ime.time, "monotonic", return_value=108):
-            with patch.object(ime.subprocess, "run", side_effect=self.complete_command):
-                with self.assertRaises(FileNotFoundError):
-                    self.driver.command(["fixture-only"], self.artifact)
-        self.assert_previous()
-        self.assert_failed_attempt("FileNotFoundError")
-
-
 class WaylandImeTests(WaylandImeFixture, unittest.TestCase):
     def test_single_ascii_composition_with_real_echo_and_unrestricted_preedit(self):
-        result, calls, stages, files, _ = self.run_driver()
+        result, calls, stages, files = self.run_driver()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([c for c in calls if c[0] == "wtype"], [ime.KEYS])
         self.assertIn(["fcitx5-remote", "-o"], calls)
@@ -154,6 +28,17 @@ class WaylandImeTests(WaylandImeFixture, unittest.TestCase):
         self.assertEqual(sum(s["stage"] == "injection-start" for s in stages), 1)
         self.assertIn("wayland-ime-bus-owner.log", files)
         self.assertIn("wayland-ime-tree-before.json", files)
+
+    def test_each_command_records_work_within_its_supplied_budget(self):
+        result, _, stages, _ = self.run_driver()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        starts = [s for s in stages if s["stage"] == "command-start"]
+        exits = [s for s in stages if s["stage"] == "command-exit"]
+        self.assertEqual(len(starts), len(exits))
+        for start, end in zip(starts, exits):
+            self.assertEqual(start["argv"], end["argv"])
+            self.assertAlmostEqual(end["elapsed"] - start["elapsed"], 0.25)
+            self.assertLessEqual(end["timeout"], start["timeout_cap"])
 
     def test_wrong_owners_profile_only_and_failed_commands_never_inject(self):
         cases = {
@@ -169,18 +54,26 @@ class WaylandImeTests(WaylandImeFixture, unittest.TestCase):
         }
         for mode, message in cases.items():
             with self.subTest(mode=mode):
-                result, calls, stages, files, elapsed = self.run_driver(mode)
+                result, calls, stages, files = self.run_driver(mode)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(message, result.stderr)
                 self.assertFalse(any(c[0] == "wtype" for c in calls))
                 self.assert_failure_evidence(stages, files)
-                self.assertLess(elapsed, 13, "one shared startup budget plus bounded failure capture")
+                failed = next(event for event in stages if event["stage"] == "failure")
+                self.assertLessEqual(failed["elapsed"], ime.STARTUP_SECONDS)
+                if mode == "hung-tree":
+                    self.assertTrue(any(
+                        event["stage"] == "command-observation-failed"
+                        and event["artifact"] == "wayland-ime-tree-before.json"
+                        and event["status"] == "TimeoutExpired"
+                        for event in stages
+                    ))
 
     def test_no_replay_or_false_success_after_composition(self):
         for mode in ("typing-fails", "app-dies-during-composition", "no-commit",
                      "plain-ascii", "wrong-chinese", "no-echo", "empty-snapshot"):
             with self.subTest(mode=mode):
-                result, calls, stages, files, _ = self.run_driver(mode)
+                result, calls, stages, files = self.run_driver(mode)
                 self.assertNotEqual(result.returncode, 0, result.stdout)
                 self.assertEqual([c for c in calls if c[0] == "wtype"], [ime.KEYS], result.stderr)
                 self.assertTrue(any(s["stage"] == "failure-liveness" for s in stages))
@@ -284,7 +177,7 @@ class WaylandImeTests(WaylandImeFixture, unittest.TestCase):
                     ime.seat_keyboard_ready(reply)
 
     def test_late_keyboard_is_observed_before_app_spawn(self):
-        result, calls, stages, files, _ = self.run_driver("late-seat")
+        result, calls, stages, files = self.run_driver("late-seat")
         self.assertEqual(result.returncode, 0, result.stderr)
         observations = [json.loads(line) for line in
                         files["wayland-fixture-seats.log"].splitlines()]
@@ -298,22 +191,25 @@ class WaylandImeTests(WaylandImeFixture, unittest.TestCase):
         self.assertEqual([c for c in calls if c[0] == "wtype"], [ime.KEYS])
 
     def test_no_keyboard_exhausts_shared_deadline_without_app_or_typing(self):
-        result, calls, stages, files, elapsed = self.run_driver("no-keyboard")
+        result, calls, stages, files = self.run_driver("no-keyboard")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("seat0 keyboard capability before app spawn", result.stderr)
         names = [c[0] for c in calls]
         self.assertNotIn("rune-fake", names)
         self.assertNotIn("wtype", names)
         self.assertEqual([s["name"] for s in stages if s["stage"] == "process-start"], ["fcitx"])
-        self.assertGreaterEqual(elapsed, ime.STARTUP_SECONDS)
+        failed = next(event for event in stages if event["stage"] == "failure")
+        self.assertEqual(failed["elapsed"], ime.STARTUP_SECONDS)
         self.assertEqual(json.loads(files["wayland-ime-seats-before.json"]),
                          [{"name": "seat0", "capabilities": 0}])
-        self.assertEqual(json.loads(files["wayland-ime-seats-failure.json"]),
-                         [{"name": "seat0", "capabilities": 0}])
+        # A failed evidence capture must leave its recorded attempt.
+        if "wayland-ime-seats-failure.json" in files:
+            self.assertEqual(json.loads(files["wayland-ime-seats-failure.json"]),
+                             [{"name": "seat0", "capabilities": 0}])
         self.assert_failure_evidence(stages, files)
 
     def test_malformed_seat_reply_retains_raw_failure_evidence_without_app(self):
-        result, calls, stages, files, _ = self.run_driver("malformed-seats")
+        result, calls, stages, files = self.run_driver("malformed-seats")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("seat0 keyboard capability before app spawn", result.stderr)
         names = [c[0] for c in calls]

@@ -1,13 +1,13 @@
 # The one validation workflow: every pull request, merge group and main push.
 #
-# Execution, required lanes, and receipt reuse: docs/ci-plan.md.
+# Execution, required lanes, and receipt reuse: docs/ci.md.
 name: ci
 
 on:
   pull_request:
     # `closed` runs nothing; joining the PR's concurrency group cancels the
     # run still in flight for a merged or abandoned PR.
-    types: [opened, synchronize, reopened, ready_for_review, closed]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, closed]
   push:
     branches: [main]
   # Inert until the main ruleset enables the queue. The queue waits for the
@@ -34,10 +34,9 @@ permissions:
 
 jobs:
   plan:
-    # Drafts skip the suite. A release-please head stays draft while it
-    # accumulates, and still needs every lane. Push and merge_group carry no
-    # pull_request payload, so the draft test passes for them.
-    if: github.event.action != 'closed' && (startsWith(github.head_ref, 'release-please--') || github.event.pull_request.draft != true)
+    # All drafts skip qualification, including release trains. Ready release
+    # heads keep full qualification. Push and queue events have no draft.
+    if: github.event.action != 'closed' && github.event.pull_request.draft != true
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -134,14 +133,16 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-rust-lane
+        id: lane
         with:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
           cache-lane: check
       - run: nix develop -c just rust-lint
       - name: Check the plugin index compiles
         run: nix develop -c cargo check --locked --manifest-path scripts/plugin-index/Cargo.toml
-      - name: leave disk for the mbx objects export
-        if: github.event_name == 'push'
+      - &mbx-export-headroom
+        name: leave disk for the mbx objects export
+        if: steps.lane.outputs.cache-save-eligible == 'true' && steps.lane.outputs.cache-hit != 'true'
         run: bash scripts/ci/mbx-export-headroom.sh
 
   # One compile of the test profile, archived for the tests and e2e jobs. The
@@ -160,13 +161,14 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-rust-lane
+        id: lane
         with:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
           cache-lane: test
       - name: just test-archive
         env:
           PHUX_UNIT_MODE: ${{ needs.plan.outputs.unit_mode }}
-          PHUX_UNIT_TARGETS: ${{ needs.plan.outputs.unit_targets }}
+          PHUX_UNIT_TARGETS: &unit-targets ${{ needs.plan.outputs.unit_targets }}
           PHUX_E2E: ${{ needs.plan.outputs.e2e }}
           PHUX_TEST_ARCHIVE: ${{ runner.temp }}/phux-tests.tar.zst
         run: nix develop -c just test-archive
@@ -190,9 +192,7 @@ jobs:
           compression-level: 0
           retention-days: 1
           overwrite: true
-      - name: leave disk for the mbx objects export
-        if: github.event_name == 'push'
-        run: bash scripts/ci/mbx-export-headroom.sh
+      - *mbx-export-headroom
 
   # The archive runs in count partitions: one 4-vCPU runner took 263 s for
   # 7185 tests (run 41886342790), most of the critical path after the build.
@@ -223,13 +223,12 @@ jobs:
           NEXTEST_PROFILE: ci
           PHUX_NEXTEST_FILTERSET: ${{ needs.plan.outputs.test_filterset }}
           PHUX_UNIT_MODE: ${{ needs.plan.outputs.unit_mode }}
-          PHUX_UNIT_TARGETS: ${{ needs.plan.outputs.unit_targets }}
+          PHUX_UNIT_TARGETS: *unit-targets
           PHUX_TEST_ARCHIVE: ${{ runner.temp }}/phux-tests.tar.zst
           PHUX_NEXTEST_PARTITION: count:${{ matrix.shard }}/3
-        run: nix develop -c just test
+        run: nix develop .#test-archive -c just test
 
-  # Single-threaded by design, so it splits across runners instead: 185 s of
-  # serial e2e on one runner (run 41886342790).
+  # Serial e2e took 185 s on one runner (41886342790); split across two.
   e2e:
     name: rust e2e (${{ matrix.shard }}/2)
     needs: [plan, test-build]
@@ -255,9 +254,10 @@ jobs:
       - name: just e2e
         env:
           NEXTEST_PROFILE: ci
+          PHUX_UNIT_TARGETS: *unit-targets
           PHUX_TEST_ARCHIVE: ${{ runner.temp }}/phux-tests.tar.zst
           PHUX_NEXTEST_PARTITION: count:${{ matrix.shard }}/2
-        run: nix develop -c just e2e
+        run: nix develop .#test-archive -c just e2e
 
   # phux-client-ffi with the mobile artifact's features shares no artifacts
   # with the unit pool.
@@ -291,6 +291,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/setup-rust-lane
+        id: lane
         with:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
           cache-lane: icount
@@ -307,9 +308,7 @@ jobs:
           path: target/perf-icount/iai.jsonl
           if-no-files-found: ignore
           retention-days: 14
-      - name: leave disk for the mbx objects export
-        if: github.event_name == 'push'
-        run: bash scripts/ci/mbx-export-headroom.sh
+      - *mbx-export-headroom
 
   integrations:
     name: agent integrations
@@ -353,7 +352,7 @@ jobs:
         env:
           PHUX_WEB_ENGINE: ${{ needs.plan.outputs.web_engine == 'true' && '1' || '0' }}
           PHUX_TOOLCHAIN_DIR: ${{ runner.temp }}/phux-toolchains
-        run: nix develop .#browser -c just web-vt-check
+        run: nix develop -c just web-vt-check
 
   web-client:
     name: web (client + browser)
@@ -382,6 +381,9 @@ jobs:
     if: needs.plan.outputs.native == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      # The smoke CLI only runs --version.
+      CARGO_PROFILE_DEV_OPT_LEVEL: "0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -442,11 +444,10 @@ jobs:
 
   # The required check. The ruleset matches this display name.
   ci:
-    name: ci
+    # Fresh drafts leave ci absent. This cannot revoke older same-SHA checks:
+    # automated arming must first pass pr-ready-ci (docs/ci.md).
+    name: ${{ github.event.pull_request.draft && 'ci (draft)' || 'ci' }}
     needs: [plan, guards, lint, test-build, tests, e2e, ffi, icount, integrations, web-vt, web-client, native, rune, queue-apple, docs-catalog]
-    # Runs on drafts too, and fails there: plan skipped. A skipped ci would
-    # pass branch protection, so readying a draft with auto-merge armed could
-    # merge before the ready run's own ci exists.
     if: always() && github.event.action != 'closed'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -454,20 +455,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: plan succeeded; every lane passed or was not needed
+      - name: Strict CI aggregate v2
         env:
           RESULTS: ${{ toJSON(needs) }}
           EVENT_NAME: ${{ github.event_name }}
-        run: bash scripts/ci/ci-aggregate.sh
-      - name: write the validation receipt
-        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
-        env:
+          DRAFT: ${{ github.event.pull_request.draft }}
           RECEIPT: ${{ needs.plan.outputs.receipt }}
-        run: |
-          mkdir -p "$RUNNER_TEMP/receipt"
-          printf '%s\n' "$RECEIPT" > "$RUNNER_TEMP/receipt/receipt.json"
+        run: bash scripts/ci/ci-aggregate.sh
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        if: needs.plan.result == 'success' && (github.event_name == 'pull_request' || github.event_name == 'merge_group')
         with:
           name: ${{ needs.plan.outputs.receipt_name }}
           path: ${{ runner.temp }}/receipt/receipt.json

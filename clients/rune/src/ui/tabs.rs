@@ -12,10 +12,11 @@ use phux_design::tokens::{SPACE, Space};
 use rune::{El, row, text, text_input};
 use rune_kit::{Button, ButtonVariant, Dialog};
 
+use super::controls::{return_to_terminal_on_click, terminal_icon_press};
 use super::rows::{Base, State as Forced, forced_face};
 use super::sidebar::face;
 use super::tokens::Tier;
-use super::{Cover, Paint, Tokens, icon_press, icons, reveal, tip};
+use super::{Cover, Paint, Tokens, icons, reveal, tip};
 use crate::activity::Mark;
 use crate::desk::{Desk, Grab, Renaming, Tab};
 use crate::keys::{self, Shortcut};
@@ -172,7 +173,10 @@ fn face_for(base: El, active: bool, state: Forced, t: &Tokens) -> El {
 
 /// What a live tab answers to: select, rename, its menu and a drag.
 fn handled(base: El, index: usize, grab: Grab) -> El {
-    base.on_press(move |d: &mut Desk| d.click_tab(index))
+    base.on_press_tx(move |d: &mut Desk, tx| {
+        d.click_tab(index);
+        return_to_terminal_on_click(tx);
+    })
         // Each press of a double click ran `click_tab`; the tab renamed
         // is the one shown.
         .on_double_press(move |d: &mut Desk| {
@@ -309,9 +313,7 @@ pub fn strip(desk: &Desk, ink: &Tokens) -> Option<El> {
         }
         line = line.child(tab(desk, item, index, width, t, Forced::Rest));
     }
-    let add = icon_press(&icons::PLUS, "New tab", "tab-new", t, |d: &mut Desk| {
-        d.new_tab();
-    });
+    let add = terminal_icon_press(&icons::PLUS, "New tab", "tab-new", t, Desk::new_tab);
     Some(
         row()
             .shrink()

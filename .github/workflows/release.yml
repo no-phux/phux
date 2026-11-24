@@ -13,8 +13,8 @@
 #   (extra-files in release-please-config.json). Nothing patches the branch
 #   afterwards, so there is nothing for an early merge to race.
 # - Release PRs open as drafts and accumulate changes. phux-auto-release.yml
-#   marks one ready every two hours (which runs ci) and auto-merges it;
-#   squash-merging it cuts the stable release.
+#   marks one ready after the two-hour cadence and gates auto-merge on genuine
+#   post-ready ci. Ready PRs are frozen; Release Please still creates tags.
 # - A draft ships only on a green ci push run for its own commit
 #   (tools/src/release/publish-plan.ts), plus full native qualification of
 #   that exact commit/tree. Metadata releases qualify both Apple legs:
@@ -72,6 +72,20 @@ jobs:
         with:
           client-id: ${{ vars.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+      # Do not cancel an armed PR's ci by rewriting its branch on each main
+      # push. Skip only PR updates, never tag creation from merged releases.
+      - name: Is the release PR armed
+        id: armed
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          armed=$(gh pr list --state open --base main --head release-please--branches--main \
+            --label "autorelease: pending" --json isDraft,isCrossRepository \
+            --jq 'map(select((.isCrossRepository | not) and (.isDraft | not))) | length > 0')
+          echo "armed=$armed" >> "$GITHUB_OUTPUT"
+          if [ "$armed" = true ]; then echo "release PR is armed; tags only, no PR update"; fi
       # No last-release-sha (the changelog would grow from it forever) and no
       # root package-name (it aborts root-only releases with no tag).
       - name: Root train (CLI and integrations)
@@ -80,6 +94,7 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+          skip-github-pull-request: ${{ steps.armed.outputs.armed == 'true' }}
 
   plan:
     name: choose drafts

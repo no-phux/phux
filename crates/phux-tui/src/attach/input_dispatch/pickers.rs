@@ -154,7 +154,7 @@ pub(super) fn window_picker_items(
 }
 
 /// What the picker needs to call a window what the tab bar calls it.
-pub(super) struct WindowNames<'a> {
+pub(in crate::attach) struct WindowNames<'a> {
     pub panes: &'a HashMap<ResourceId, crate::attach::pane_state::PaneSlot>,
     pub agent_meta: &'a HashMap<ResourceId, phux_client::agent_meta::AgentRecord>,
 }

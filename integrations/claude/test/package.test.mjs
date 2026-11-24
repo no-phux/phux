@@ -235,10 +235,15 @@ test("an emit refused while the server upgrades is resent, and no other refusal 
   const temp = await mkdtemp(join(tmpdir(), "phux-claude-refusals-"));
   const refusals = join(temp, "left");
   try {
+    // Check the requested backoff, not the time the host takes to run fakes.
+    const sleep = join(temp, "sleep");
+    await writeFile(sleep, '#!/bin/sh\nprintf "sleep:%s\\n" "$*" >> "$PHUX_TEST_LOG"\n', { mode: 0o755 });
+    const backoff = "sleep:0.3";
     const payload = '{"session_id":"sess-1"}';
     const base = {
       FAKE_FEATURES: '["resource_kinds"]', FAKE_FIELDS: "sess-1 PreToolUse Bash - 0 - -",
       FAKE_REFUSALS: refusals, PHUX_AGENT_EMIT_RAW: "1",
+      PATH: `${temp}:${process.env.PATH}`,
     };
     const emitLine = 'agent emit @42 --type tool_start --data {"tool_name":"Bash"}';
     const raw = ["agent emit @42 --type provider_raw --data -", `stdin:${payload}`];
@@ -246,13 +251,14 @@ test("an emit refused while the server upgrades is resent, and no other refusal 
     await writeFile(refusals, "3\n");
     const [sealed] = await driven(base, [["tool-start", payload]]);
     assert.deepEqual(sealed, [
-      "status --json", "agent hook-payload", emitLine, emitLine, emitLine, emitLine, ...raw,
+      "status --json", "agent hook-payload", emitLine, backoff, emitLine, backoff,
+      emitLine, backoff, emitLine, ...raw,
     ], "the record is resent until the resumed server takes it");
 
     await writeFile(refusals, "1\n");
     const [rawSealed] = await driven(base, [["clear", payload, { FAKE_FIELDS: "sess-1 SessionEnd - - 0 other -" }]]);
     assert.deepEqual(rawSealed, [
-      "status --json", "agent hook-payload", ...raw, ...raw,
+      "status --json", "agent hook-payload", ...raw, backoff, ...raw,
       'agent emit @42 --type session_end --data {"reason":"other"}',
       "agent session close @42", "agent clear @42",
     ], "a resent raw record carries its payload again");
@@ -266,10 +272,11 @@ test("an emit refused while the server upgrades is resent, and no other refusal 
       "any other overflow stays a single best-effort try");
 
     await writeFile(refusals, "100\n");
-    const started = Date.now();
     const [forever] = await driven({ ...base, PHUX_AGENT_EMIT_RAW: "0" }, [["tool-start", payload]]);
-    assert.ok(Date.now() - started < 5000, "bounded under the hook's 5s timeout");
-    assert.equal(forever.filter((line) => line === emitLine).length, 10);
+    assert.deepEqual(forever, [
+      "status --json", "agent hook-payload",
+      ...Array.from({ length: 9 }, () => [emitLine, backoff]).flat(), emitLine,
+    ], "the hook requests nine 0.3s backoffs, then stops after the tenth attempt");
   } finally {
     await rm(temp, { recursive: true, force: true });
   }
