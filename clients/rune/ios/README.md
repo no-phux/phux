@@ -165,6 +165,10 @@ out. Before installing, the fixture waits until three consecutive
 minutes, and records the query times in `settle.json`. Still slow at the
 budget, it says so on stderr and continues under the per-command deadlines.
 
+Settling is no guarantee: `simctl` can still stall for minutes. Liveness
+checks the host PID `simctl launch` reported under the owned device directory,
+not `launchctl`; waits check their deadline before liveness.
+
 Cold CoreSimulator registration can outlast installation. Container acquisition
 uses bounded timeout-only retries (at most three 60-second attempts) and must
 return an existing absolute directory. The fixture retains that Documents path

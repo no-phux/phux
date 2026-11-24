@@ -3,6 +3,8 @@
 The lane never selects a user's simulator or inherits a production phux profile.
 """
 
+import subprocess
+
 
 def version_tuple(value):
     return tuple((list(map(int, value.split("."))) + [0, 0])[:3])
@@ -39,3 +41,13 @@ def server_environment(scratch):
             "TMPDIR": str(scratch), "PHUX_PROFILE": "rune-ios-qualification",
             "PHUX_WS_SECURE": "1",
             "RUNE_PREFS_DIR": str(prefs)}
+
+
+def app_running(pid, udid):
+    """`simctl launch` reports the app's host PID: a simulator app is a macOS
+    process whose executable sits under its own simulator's device directory.
+    Ask the host, not the simulator, whose launchctl has stalled past 90s on
+    loaded runners while the app and its report were fine."""
+    path = subprocess.run(["/bin/ps", "-o", "comm=", "-p", str(pid)],
+                          capture_output=True, text=True, timeout=10).stdout
+    return f"/DEVICES/{udid.upper()}/" in path.upper() and ".app/" in path
