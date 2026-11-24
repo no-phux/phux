@@ -271,6 +271,12 @@ pub(super) fn handle_set_metadata(
                 apply_session_keep_empty(state, client_id, request_id, scope, &value, root_token);
                 return;
             }
+            phux_protocol::wire::frame::VIEW_SIZE_LOCK_KEY => {
+                crate::runtime::apps::terminal::commands::terminal_input::handle_size_lock(
+                    state, client_id, &value,
+                );
+                return;
+            }
             _ => {}
         }
     }

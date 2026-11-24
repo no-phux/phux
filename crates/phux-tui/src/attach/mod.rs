@@ -82,7 +82,7 @@ pub use driver::{
 };
 
 // ADR-0127: the CLI declares `--viewer` / `--take` once, before it dials.
-pub use attach_role::set_attach_role;
+pub use attach_role::{set_attach_role, set_size_lock};
 
 /// Tell the tab strip where `[chrome] new-tab-after-current` puts a new tab.
 pub(crate) fn set_new_tab_after_current(on: bool) {

@@ -51,6 +51,17 @@ pub const SESSION_CREATE_RESULT_KEY_PREFIX: &str = "phux.session.created/v1/";
 /// [`ServerFeature::KeepEmptySessions`](crate::caps::ServerFeature::KeepEmptySessions).
 pub const SESSION_KEEP_EMPTY_KEY: &str = "phux.session.keep_empty/v1";
 
+/// Global key claiming (`true`) or releasing (`false`) the writer's view
+/// size lock.
+///
+/// Applied to the writing attachment, not stored or broadcast. While a view
+/// holds the lock, only its `RESIZE_TERMINAL` and viewport size the panes of
+/// its session it subscribes to; other views see them letterboxed or
+/// cropped. A claim puts back the sizes the view last set, the newest claim
+/// wins, and the lock ends with the attachment, so a client re-claims after
+/// each `ATTACHED`. An older server stores the value and ignores it.
+pub const VIEW_SIZE_LOCK_KEY: &str = "phux.view.size-lock/v1";
+
 /// Global key grouping sessions under a project tag.
 ///
 /// Stored, not intercepted (`docs/organization.md`). Value: `name\0project`,

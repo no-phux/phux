@@ -134,11 +134,13 @@ pub(crate) fn run(args: commands::AttachArgs, socket: Option<PathBuf>) -> ExitCo
         udp_ports,
         viewer,
         take,
+        lock_size,
         rec,
     } = args;
     // Every ATTACH this process sends carries it, whichever transport the
     // flags below pick, so a reconnect keeps the role too.
     phux_tui::attach::set_attach_role(declared_attach_role(viewer, take));
+    declare_size_lock(lock_size);
 
     // `phux attach` owns its own `--rec`; the root copy is reserved
     // for the naked invocation below.
@@ -212,6 +214,13 @@ pub(crate) fn run(args: commands::AttachArgs, socket: Option<PathBuf>) -> ExitCo
     }
 }
 
+/// `--lock-size` or `defaults.lock-size`: every ATTACH this process sends
+/// claims the view size lock.
+fn declare_size_lock(flag: bool) {
+    let configured = || phux_config::loader::load().is_ok_and(|cfg| cfg.defaults.lock_size);
+    phux_tui::attach::set_size_lock(flag || configured());
+}
+
 /// Run the naked `phux` — no verb, so attach to the user's session, locally
 /// or at the root `--remote` target.
 pub(crate) fn run_naked_invocation(
@@ -223,6 +232,7 @@ pub(crate) fn run_naked_invocation(
         Ok(spec) => spec,
         Err(code) => return code,
     };
+    declare_size_lock(false);
     if let Some(target) = root_remote {
         // The `--socket` collision was already refused post-parse.
         return attach_remote_target(&target, None, None, false, rec_spec.as_ref());

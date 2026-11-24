@@ -123,6 +123,12 @@ pub(super) async fn send_attach(
         role_policy,
     })
     .await?;
+    // The lock ends with each attachment; frames apply in order, so this
+    // claims it on the attachment just made.
+    if crate::attach::attach_role::size_locked() {
+        conn.send(&crate::attach::attach_role::size_lock_frame(0, true))
+            .await?;
+    }
     Ok(attach_id)
 }
 

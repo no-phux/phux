@@ -141,6 +141,11 @@ pub struct DefaultsCfg {
     #[serde(rename = "window-size")]
     pub window_size: WindowSize,
 
+    /// Whether `phux attach` and a bare `phux` lock their view size, as
+    /// `--lock-size` does: other views no longer resize this client's panes.
+    #[serde(rename = "lock-size")]
+    pub lock_size: bool,
+
     /// Whether the server holds an idle-sleep inhibitor (`caffeinate`,
     /// `systemd-inhibit`) so a working agent is not put to sleep.
     #[serde(rename = "keep-awake")]
@@ -175,6 +180,7 @@ impl Default for DefaultsCfg {
             session_name_template: "${cwd-basename}".to_owned(),
             attach_session: None,
             window_size: WindowSize::default(),
+            lock_size: false,
             keep_awake: KeepAwake::default(),
         }
     }

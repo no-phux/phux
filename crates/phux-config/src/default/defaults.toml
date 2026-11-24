@@ -129,6 +129,12 @@ session-name-template = "${cwd-basename}"
 #   "manual"   keep the current size
 window-size = "smallest"
 
+# Lock the terminal UI's view size when it attaches, as `phux attach
+# --lock-size` does: while it is attached, other clients (a phone, a second
+# laptop) see its panes letterboxed or cropped instead of resizing them.
+# The palette's "Lock view size" / "Unlock view size" switch it live.
+lock-size = false
+
 # Keep the machine from going to sleep by itself while agents are busy:
 #   "off"               never (the default)
 #   "while-agents-work" while any agent is working; sleep is allowed again

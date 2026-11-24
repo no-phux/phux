@@ -327,6 +327,17 @@ pub(super) const ROWS: &[SettingSpec] = &[
         applies: Applies::NextSpawn,
     },
     SettingSpec {
+        key: "defaults.lock-size",
+        section: SettingSection::Defaults,
+        kind: SettingKind::Bool,
+        summary: "Lock the terminal UI's view size on attach",
+        detail: "true makes phux attach and a bare phux claim the view size lock, as \
+                 --lock-size does: while the client is attached, only its own sizes apply \
+                 to the panes it shows, and other views see them letterboxed or cropped. \
+                 The lock-size and unlock-size actions switch it live.",
+        applies: Applies::NextAttach,
+    },
+    SettingSpec {
         key: "defaults.keep-awake",
         section: SettingSection::Defaults,
         kind: SettingKind::Choice(KEEP_AWAKE),

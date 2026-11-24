@@ -17,6 +17,10 @@ use usage::Args;
 /// NAME` dials the registered host instead of the local socket.
 /// Pass `--socket` to force the local reading of the name.
 #[derive(Debug, Args)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent CLI switch"
+)]
 pub(crate) struct AttachArgs {
     /// Session name (matches the name used at creation time).
     ///
@@ -168,6 +172,13 @@ pub(crate) struct AttachArgs {
     /// previous holder stays attached. `phux give` hands it back.
     #[usage(long, conflicts("--viewer"), help_heading = "Attach role")]
     pub(crate) take: bool,
+
+    /// Lock this client's view size: while it is attached, other clients
+    /// see its panes letterboxed or cropped instead of resizing them.
+    /// `defaults.lock-size = true` makes it the default; the palette's
+    /// "Unlock view size" releases it.
+    #[usage(long, help_heading = "Attach role")]
+    pub(crate) lock_size: bool,
 
     /// Tee this attach's composited output to a recording. Declared here
     /// (and on the root command) rather than globally so it only shows up

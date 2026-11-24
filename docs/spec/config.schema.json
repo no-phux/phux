@@ -280,6 +280,11 @@
           "default": "off",
           "description": "Whether the server holds an idle-sleep inhibitor (`caffeinate`,\n`systemd-inhibit`) so a working agent is not put to sleep."
         },
+        "lock-size": {
+          "default": false,
+          "description": "Whether `phux attach` and a bare `phux` lock their view size, as\n`--lock-size` does: other views no longer resize this client's panes.",
+          "type": "boolean"
+        },
         "mouse": {
           "default": true,
           "description": "Whether the client enables outer-terminal mouse tracking on attach\n(ADR-0048). `false` leaves the host's native selection untouched.",
@@ -1852,6 +1857,7 @@
         "history-bytes": 10485760,
         "history-limit": 50000,
         "keep-awake": "off",
+        "lock-size": false,
         "mouse": true,
         "retain-on-exit": false,
         "retain-on-exit-max": 256,
