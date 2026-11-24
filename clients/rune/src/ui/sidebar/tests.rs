@@ -1,3 +1,5 @@
+use crate::activity::Mark;
+use phux_protocol::ids::ResourceId;
 use super::*;
 use crate::theme::contrast;
 use phux_config_core::host_color::PALETTE;
@@ -159,24 +161,20 @@ fn rows_are_one_focusable_source_list_with_their_words() {
     }
     let header = crate::ui::element(&rt, "select-session-1");
     assert!(header.focusable, "the session header is focusable");
-    // The word shows beside the mark, from the vocabulary; and the mark
-    // is named by it where a screen reader meets it.
+    // What asks for you shows its word, from the vocabulary; every badge
+    // is named by its word where a screen reader meets it, and the agent
+    // and word ride in the row's description.
     let said = |words: &str| {
         rt.elements()
             .iter()
             .any(|e| e.text.as_deref() == Some(words) || e.label.as_deref() == Some(words))
     };
-    for words in [
-        "claude · needs you",
-        "claude · working",
-        "claude · done",
-        "claude · idle",
-    ] {
-        assert!(said(words), "{words}");
-    }
+    let shows = |words: &str| (rt.elements().iter()).any(|e| e.text.as_deref() == Some(words));
+    assert!(shows("needs you"), "what needs you says so");
+    assert!(!shows("claude · working"), "one line: no second line of words");
     assert!(
-        said("needs you") && said("done") && said("idle"),
-        "marks are named"
+        said("needs you") && said("done") && said("working"),
+        "badges are named"
     );
 }
 
@@ -187,12 +185,15 @@ fn twins_with_an_agent_still_name_their_pane() {
     let detail = |place: Option<&str>| {
         super::Row {
             id: &id,
+            target: &id,
             session: "rune-3",
             name: "Shopify inventory sync to Meta".to_owned(),
             place: place.map(str::to_owned),
             key: None,
             agent: Some("claude"),
+            kind: Some("claude"),
             mark: crate::activity::Mark::Done,
+            panes: 1,
             selected: false,
             host: ("mini", 0),
             color: None,
@@ -266,4 +267,33 @@ fn a_clicked_new_button_hands_the_keyboard_back_to_the_terminal() {
         // Space would press it again: a second session or terminal.
         assert_eq!(focused(&mut rt), None, "{key} kept focus after a click");
     }
+}
+
+#[test]
+fn a_tab_is_one_row_however_many_panes_it_splits_into() {
+    let mut rt = listed(true);
+    let tab = |n: u8, name: &str, ids: &[u32]| crate::desk::Tab {
+        id: [n; 16],
+        name: name.to_owned(),
+        resources: ids.iter().copied().map(ResourceId::local).collect(),
+        active: false,
+        locked: false,
+    };
+    let tabs = vec![tab(1, "1", &[4, 1]), tab(2, "Deploy", &[2])];
+    rt.update(move |d, _| {
+        d.connection.tabs.by_session.insert(1, tabs);
+    });
+    rt.frame(2.0);
+    let at = |id: u32| rt.find(&format!("pane-{}", ResourceId::local(id)));
+    // The split is named after its first agent's pane, and pane 1 rides
+    // in it; pane 3, in no tab, keeps a row of its own.
+    assert!(at(4).is_some() && at(1).is_none(), "a split tab is one row");
+    let said = |words: &str| (rt.elements().iter()).any(|e| e.text.as_deref() == Some(words));
+    assert!(said("Deploy"), "a tab a person named keeps its name");
+    assert!(said("2"), "a split says how many panes it holds");
+    let order = [4, 2, 3].map(|id| at(id).expect("a row").1);
+    assert!(
+        order.windows(2).all(|w| w[0] < w[1]),
+        "tabs in order, then the rest: {order:?}"
+    );
 }

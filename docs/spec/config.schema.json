@@ -1305,7 +1305,7 @@
             }
           ],
           "default": null,
-          "description": "Where the terminal tabs go: `\"top\"` in the title bar, `\"bottom\"` under\nthe panes, or `\"hidden\"`."
+          "description": "Where the terminal tabs go: `\"auto\"` in the title bar while the\nsidebar is folded (the sidebar lists them while it shows), `\"top\"`\nalways in the title bar, `\"bottom\"` under the panes, or `\"hidden\"`."
         },
         "theme": {
           "default": null,
@@ -1583,6 +1583,11 @@
     "TabBar": {
       "description": "`[rune] tab-bar`: where the terminal tabs go.",
       "oneOf": [
+        {
+          "const": "auto",
+          "description": "In the title bar while the sidebar is folded; while it shows, its\nrows are the tabs.",
+          "type": "string"
+        },
         {
           "const": "top",
           "description": "In the title bar.",

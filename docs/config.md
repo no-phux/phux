@@ -294,7 +294,7 @@ copy-on-select = true
 wheel-arrows = true     # false: the wheel never sends arrows to full-screen programs
 confirm-close = false
 recent-first = true     # list the session you used last first
-tab-bar = "top"         # or "bottom" (under the panes), "hidden"
+tab-bar = "auto"        # title bar while the sidebar is folded; or "top", "bottom", "hidden"
 title-bar = "shown"     # or "hover" (at the window's top edge), "hidden"
 new-window-screen = "current"  # or "mouse" (under the pointer), "main"
 ```

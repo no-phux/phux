@@ -1,5 +1,8 @@
-//! The sidebar: every session and terminal on the server, each terminal
-//! with what it is doing, and what needs you counted per session. Sessions
+//! The sidebar: one list of the work on the server. Each session's rows are
+//! its tabs, then any terminal no tab holds: one line each, led by a tile
+//! for who works there and how it goes, named after the task. What needs
+//! you is counted per session. With the sidebar docked these rows are the
+//! tabs, and the title bar has none (`tab-bar = "auto"`). Sessions
 //! of one project sit together under its name, a linked worktree marked
 //! `└`. They sit under the machine this window is on; the other machines
 //! follow, folded, each opening to a glance at its sessions.
@@ -13,17 +16,21 @@ use crate::ui::tokens::Voice;
 use std::collections::HashMap;
 
 use phux_client_runtime::control::{SessionDescriptor, Topology};
-use phux_protocol::ids::{ResourceId, SessionKey};
-use rune::{Color, El, Key, col, el, memo, row, text};
+use phux_protocol::ids::SessionKey;
+use rune::{Color, El, Key, col, memo, row, text};
 
-use super::rows::{Base, State as Forced, forced_face};
-use super::{Paint, Tokens, icons, pressable};
-use crate::activity::Mark;
+use super::rows::State as Forced;
+use super::{Paint, Tokens, icons, pressable, reveal, tile};
+use crate::addressable::Addressable;
 use crate::desk::{Desk, Grab};
 use crate::host_color;
 use crate::keys::Shortcut;
 
 mod actions;
+mod items;
+use items::{Item, given_name, items};
+mod row;
+use row::{Row, pane_row};
 mod chrome;
 use chrome::{foot, inbox_button, search};
 mod drag;
@@ -33,8 +40,8 @@ mod projects;
 use projects::branch_mark;
 mod marks;
 mod satellites;
-use marks::lead;
-pub(super) use marks::{Counts, Face, dot_size, face, histogram, mark_color, state_of};
+
+pub(super) use marks::{Counts, dot_size, face, histogram, mark_color, state_of};
 use satellites::satellite_list;
 
 /// What a session header draws. Everything its handlers capture is here, so
@@ -171,143 +178,21 @@ fn session_header(session: &Header, t: &Tokens) -> El {
         .gap(t.space.s1)
         .radius(t.radius.md)
         .items_center()
+        .hover_group()
         .children(key.map(|key| disclosure(session, key, t)))
         .child(heading)
-        .child(
+        // Open, its rows are the count; folded, the count stands for them.
+        .children(session.collapsed.then(|| {
             text(session.count.to_string())
                 .font(t.ty.caption)
-                .color(t.roles.text.dim.paint())
-                .a11y_hidden(),
-        )
+                .color(t.roles.text.faint.paint())
+                .a11y_hidden()
+        }))
         .child(histogram(session.counts, t))
-        .child(actions::session_controls(key, session.name, t));
+        // Close waits under the pointer: one on every header is a lot of
+        // ink beside the names.
+        .child(reveal(actions::session_controls(key, session.name, t), true));
     drag::reorderable(header, key, session.target, t)
-}
-
-/// A resource row, always below its session's separately actionable header.
-#[derive(Hash)]
-struct Row<'a> {
-    id: &'a ResourceId,
-    session: &'a str,
-    name: String,
-    place: Option<String>,
-    key: Option<SessionKey>,
-    agent: Option<&'a str>,
-    mark: Mark,
-    selected: bool,
-    /// The terminal's machine and its colour, so a recolour redraws.
-    host: (&'a str, u32),
-    /// The session's colour, for its quiet mark.
-    color: Option<u32>,
-    /// A look forced for the gallery's states page; `Rest` is the live row.
-    state: Forced,
-}
-
-impl Row<'_> {
-    /// The second line: what the terminal is doing, in the status word
-    /// after the agent's name, then where it is, so two rows with one name
-    /// always read differently. Whether the word leads.
-    fn detail(&self, t: &Tokens) -> Option<(String, bool)> {
-        let word = (self.mark != Mark::None)
-            .then(|| face(self.mark, t).word)
-            .flatten();
-        let doing = match (self.agent, word) {
-            (Some(agent), Some(word)) => Some((format!("{agent} · {word}"), true)),
-            (None, Some(word)) => Some((word.to_owned(), true)),
-            (Some(agent), None) => Some((agent.to_owned(), false)),
-            (None, None) => None,
-        };
-        match (doing, &self.place) {
-            (Some((doing, tinted)), Some(place)) => Some((format!("{doing} · {place}"), tinted)),
-            (doing, place) => doing.or_else(|| place.clone().map(|place| (place, false))),
-        }
-    }
-}
-
-fn pane_row(pane: &Row, t: &Tokens) -> El {
-    let (mark, selected) = (pane.mark, pane.selected);
-    let (id, session) = (pane.id.clone(), pane.session.to_owned());
-    let host = host_color::on(pane.host.0, t.roles.layer.sidebar.paint());
-    let key = pane.key;
-    let state = pane.state;
-    let disabled = state == Forced::Disabled;
-    let washed = selected || matches!(state, Forced::Hover | Forced::Press);
-    let detail = pane.detail(t).map(|(words, tinted)| {
-        // Faint never sits on a wash: a lit row promotes it to dim.
-        let quiet = if washed || disabled {
-            t.roles.text.dim
-        } else {
-            t.roles.text.faint
-        };
-        let f = face(mark, t);
-        let lit = tinted && !disabled;
-        let ink = if lit { f.ink } else { quiet.paint() };
-        // What asks for you is set bold beside its mark.
-        let font = if lit && f.bold {
-            t.ty.caption.semibold()
-        } else {
-            t.ty.caption
-        };
-        text(words).font(font).color(ink).truncate().a11y_hidden()
-    });
-    let said = pane.detail(t).map(|(words, _)| words).unwrap_or_default();
-    let name_ink = if disabled {
-        t.roles.text.faint
-    } else {
-        t.roles.text.text
-    };
-    let under = if selected {
-        Base::Selected
-    } else {
-        Base::Plain
-    };
-    let base = forced_face(row().key(format!("pane-{}", pane.id)), under, state, t);
-    let base = if state == Forced::Rest {
-        t.kit.interactive(base)
-    } else {
-        base
-    };
-    let row = base
-        .w_full()
-        .min_h(t.space.row_h)
-        .pl(t.space.s4 + t.space.s0_5)
-        .pr(t.space.icon_gap)
-        .py(t.space.s0_5)
-        .gap(t.space.icon_gap)
-        .radius(t.radius.md)
-        .continuous_corners()
-        .items_center()
-        .focusable(!disabled)
-        .focus_selected(selected)
-        .cursor(rune::Cursor::Pointer)
-        .label(format!("{} in session {}", pane.name, pane.session))
-        .description(said)
-        .child(lead(mark, pane.color, t))
-        .child(
-            col()
-                .grow(1.0)
-                .min_w(0.0)
-                .child(
-                    text(pane.name.clone())
-                        .font(t.ty.label.medium())
-                        .color(name_ink.paint())
-                        .truncate()
-                        .a11y_hidden(),
-                )
-                .children(detail),
-        )
-        .children(selected.then(|| host_color::stripe(host, t)));
-    if disabled {
-        return row;
-    }
-    let row = row.on_press_tx(move |d: &mut Desk, tx| {
-        d.show(id.clone(), &session);
-        clicked(tx);
-    });
-    match key {
-        Some(key) => drag::resource(row, pane.id, key),
-        None => row,
-    }
 }
 
 /// Marks that need you, by session: one pass, for every header and the button.
@@ -371,6 +256,8 @@ fn session_list(desk: &Desk, counts: &HashMap<u32, Counts>, t: &Tokens) -> El {
         let target = dropping.is_some() && dropping == session.key.map(Grab::Session);
         let mut out = Vec::new();
         let rows: Vec<_> = all.iter().filter(|r| r.session_id == session.id).collect();
+        let tabs = desk.connection.tabs.by_session.get(&session.id);
+        let items = items(tabs.map_or(&[][..], Vec::as_slice), &rows);
         let color = crate::session_color::of(&session.name);
         let header = Header {
             id: session.id,
@@ -378,7 +265,7 @@ fn session_list(desk: &Desk, counts: &HashMap<u32, Counts>, t: &Tokens) -> El {
             key: session.key,
             current: current.as_deref() == Some(session.name.as_str()),
             counts: counts_in(session.id),
-            count: rows.len(),
+            count: items.len(),
             collapsed: session
                 .key
                 .is_some_and(|key| desk.sidebar_collapsed.contains(&key)),
@@ -395,20 +282,35 @@ fn session_list(desk: &Desk, counts: &HashMap<u32, Counts>, t: &Tokens) -> El {
         if header.collapsed {
             return out;
         }
-        for resource in &rows {
-            let (id, label) = (&resource.id, &resource.label);
-            let twin = rows.iter().filter(|other| other.label == *label).count() > 1;
-            let mirror = (!resource.kind.is_terminal()).then(|| resource.mirror.to_owned());
-            let (name, place) = (label.clone(), twin.then(|| id.to_string()).or(mirror));
+        let titled: Vec<(&Item, &Addressable, String)> = items
+            .iter()
+            .map(|item| {
+                let lead = item.lead(|id| desk.activities.agent_name(id).is_some());
+                let named = item.tab.and_then(|tab| given_name(&tab.name));
+                (item, lead, named.unwrap_or_else(|| lead.label.clone()))
+            })
+            .collect();
+        for (item, lead, name) in &titled {
+            let id = &lead.id;
+            let twin = titled.iter().filter(|(.., other)| other == name).count() > 1;
+            let mirror = (!lead.kind.is_terminal()).then(|| lead.mirror.to_owned());
+            let target = item
+                .tab
+                .and_then(|tab| desk.tab_focus(tab))
+                .unwrap_or(id);
             let row = Row {
                 id,
-                session: &resource.session,
-                name,
-                place,
+                target,
+                session: &lead.session,
+                name: name.clone(),
+                place: twin.then(|| id.to_string()).or(mirror),
                 key: session.key,
                 agent: desk.activities.agent_name(id),
-                mark: desk.activities.mark(id),
-                selected: shown == Some(id),
+                kind: desk.activities.agent_kind(id),
+                mark: tile::loudest(item.members.iter().map(|m| desk.activities.mark(&m.id)))
+                    .unwrap_or_else(|| desk.activities.mark(id)),
+                panes: item.members.len(),
+                selected: item.members.iter().any(|m| shown == Some(&m.id)),
                 host,
                 color,
                 state: Forced::Rest,
@@ -461,9 +363,9 @@ pub fn view(desk: &Desk, ink: &Tokens, inset: f32, leading: f32) -> El {
                 .items_center()
                 .window_drag()
                 .child(super::machines::switch(desk, ink).grow(1.0))
+                .child(search(t))
                 .child(inbox_button(waiting, t)),
         )
-        .child(el().w_full().px(s.s2).pb(s.s2).child(search(t)))
         .child(
             drag::region(col()
                 .key("sidebar-scroll")
