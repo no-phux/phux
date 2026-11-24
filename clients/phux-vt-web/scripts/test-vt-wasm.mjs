@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-const vendored = fileURLToPath(new URL('../clients/phux-vt-web/vendor/ghostty-vt.wasm', import.meta.url));
+const vendored = fileURLToPath(new URL('../vendor/ghostty-vt.wasm', import.meta.url));
 const engine = readFileSync(vendored);
 const prepare = fileURLToPath(new URL('./prepare-vt-wasm.mjs', import.meta.url));
 const smoke = fileURLToPath(new URL('./smoke-vt-wasm.mjs', import.meta.url));

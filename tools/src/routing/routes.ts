@@ -49,9 +49,7 @@ const ROUTES: Record<string, Surface[]> = {
   // First-party plugins and runnable CLI examples are native test inputs.
   "plugins/**": ["phux"],
   "examples/**": ["phux"],
-  "scripts/examples-smoke.sh": ["phux"],
   "scripts/agent-verify/**": ["phux"],
-  "scripts/test-agent-examples.py": ["phux"],
   // Workflow infrastructure is compile-free (guards only), except ci.yml and
   // shared actions: route each action to the lanes that actually consume it.
   ".github/workflows/*.{yml,yaml}": [],
@@ -94,10 +92,8 @@ const ROUTES: Record<string, Surface[]> = {
   // What that lane packages and qualifies with, outside its tree.
   "scripts/check-binary-portability.sh": ["rune"],
   "clients/phux-vt-web/vendor/**": ["web", "web_engine"],
-  "scripts/build-vt-wasm.sh": ["web", "web_engine"],
-  "scripts/{prepare,smoke,test}-vt-wasm.mjs": ["web", "web_engine"],
+  "clients/phux-vt-web/scripts/**": ["web", "web_engine"],
   "{integrations,.claude-plugin,.grok-plugin}/**": ["integrations"],
-  "scripts/ci/agent-integrations.sh": ["integrations"],
   ".release-please-manifest.json": ["integrations"],
   "just/web.just": ["web"],
   // Root crates reach the web and Rune lanes only through Cargo (see
@@ -142,10 +138,9 @@ const ROUTES: Record<string, Surface[]> = {
   "scripts/{export-product-skills.sh,product-skills}": [],
   "scripts/skills-package/**": [],
   "scripts/build-mobile-ffi-android.sh": [],
-  "scripts/ci/setup-android-ndk.sh": [],
   // The worktree lease and the mbx target heal are guards. They do not
   // change what any product lane compiles.
-  "scripts/worktree-{claim,verify,release}.sh": [],
+  "scripts/worktree-lease.sh": [],
   "scripts/lib/{worktree-owner,worktree-owner_test,mbx-target,mbx-target_test}.sh": [],
 };
 

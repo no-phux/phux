@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# One tick of the Rune upstream follower (scripts/rune-upstream/README.md).
+# One tick of the Rune upstream follower (clients/rune/upstream/README.md).
 # Keeps its phux session and worktree alive, then starts a fresh OpenCode run
 # in that session unless the last run is still going or a steerer holds it.
 # install.sh copies this into RUNE_UPSTREAM_HOME/bin and schedules it.
 # Bash 3.2: launchd runs it with /bin/bash.
 set -euo pipefail
 
-home="${RUNE_UPSTREAM_HOME:?run scripts/rune-upstream/install.sh}"
-repo="${RUNE_UPSTREAM_REPO:?run scripts/rune-upstream/install.sh}"
+home="${RUNE_UPSTREAM_HOME:?run clients/rune/upstream/install.sh}"
+repo="${RUNE_UPSTREAM_REPO:?run clients/rune/upstream/install.sh}"
 session="${RUNE_UPSTREAM_SESSION:-rune-upstream}"
 max_run_hours="${RUNE_UPSTREAM_MAX_RUN_HOURS:-10}"
 shell="${RUNE_UPSTREAM_SHELL:-${SHELL:-/bin/zsh}}"

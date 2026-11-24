@@ -71,7 +71,7 @@ engine_repo="$(const GHOSTTY_REPO <<<"$build_rs")"
 [[ "$engine_repo" =~ ^https://github\.com/([^/]+/[^/.]+)(\.git)?$ ]] ||
   fail "cannot verify engine source repository: $engine_repo"
 engine_fork="${BASH_REMATCH[1]}"
-browser_build="$ROOT/scripts/build-vt-wasm.sh"
+browser_build="$ROOT/clients/phux-vt-web/scripts/build-vt-wasm.sh"
 browser_commit="$(sed -n 's/^revision=//p' "$browser_build")"
 [[ "$browser_commit" == "$commit" ]] ||
   fail "native engine $commit differs from browser engine $browser_commit"

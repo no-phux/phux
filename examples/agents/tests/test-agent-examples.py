@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[3]
 SPEC = importlib.util.spec_from_file_location("agent_loop", ROOT / "examples/agents/agent_loop.py")
 agent_loop = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(agent_loop)

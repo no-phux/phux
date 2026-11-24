@@ -26,13 +26,14 @@
 # the committed artifact.
 set -euo pipefail
 
-repo="$(cd "$(dirname "$0")/.." && pwd)"
+here="$(cd "$(dirname "$0")" && pwd)"
+repo="$(cd "$here/../../.." && pwd)"
 source "$repo/scripts/lib/dev-toolchain.sh"
 revision=ce42b4c3df8d206092d55d7add0a4f15ac29a0a2
 archive_sha256=a3904b78d08bed22364ba16a12d24fbbf2e9ddfcb9adb4d7aba7a1793f4f9894
 mode="${1:-build}"
 [[ $# -le 1 && ( "$mode" = build || "$mode" = --check ) ]] || {
-  echo 'usage: bash scripts/build-vt-wasm.sh [--check]' >&2; exit 2;
+  echo 'usage: bash clients/phux-vt-web/scripts/build-vt-wasm.sh [--check]' >&2; exit 2;
 }
 for tool in node tar; do
   command -v "$tool" >/dev/null || { echo "$tool missing; see docs/development.md#browser-client" >&2; exit 1; }
@@ -76,9 +77,9 @@ rebuild() {
       --seed=0 -j1 \
       --cache-dir "$scratch/zig-cache-$1" \
       --prefix "$out" )
-  node "$repo/scripts/prepare-vt-wasm.mjs" "$out/bin/ghostty-vt.wasm"
+  node "$here/prepare-vt-wasm.mjs" "$out/bin/ghostty-vt.wasm"
   node "$GHOSTTY_SRC/test/wasm-alloc.mjs" "$out/bin/ghostty-vt.wasm"
-  node "$repo/scripts/smoke-vt-wasm.mjs" "$out/bin/ghostty-vt.wasm"
+  node "$here/smoke-vt-wasm.mjs" "$out/bin/ghostty-vt.wasm"
 }
 
 dest="$repo/clients/phux-vt-web/vendor/ghostty-vt.wasm"
@@ -93,7 +94,7 @@ if [[ "$mode" = --check ]]; then
     cmp "$artifact" "$dest" >&2 || true
     echo "attempt $attempt: rebuilt sha256 $(digest "$artifact"); committed sha256 $(digest "$dest")" >&2
   done
-  echo "engine differs in 3 rebuilds with $zig; if they agree with each other, regenerate with bash scripts/build-vt-wasm.sh" >&2
+  echo "engine differs in 3 rebuilds with $zig; if they agree with each other, regenerate with bash clients/phux-vt-web/scripts/build-vt-wasm.sh" >&2
   exit 1
 fi
 rebuild 1

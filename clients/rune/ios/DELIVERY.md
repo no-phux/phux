@@ -1,6 +1,6 @@
 # Scheduled iPhone delivery
 
-The [upstream follower](../../../scripts/rune-upstream/README.md) can update
+The [upstream follower](../upstream/README.md) can update
 an explicitly authorized, already paired iPhone without TestFlight.
 Its standing installation order lives in `STEERING.md`. Its private
 configuration is `PHONE.json` in the follower's home, **outside Git and

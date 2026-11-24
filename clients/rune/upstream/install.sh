@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Install the Rune upstream follower on this Mac (scripts/rune-upstream/README.md):
+# Install the Rune upstream follower on this Mac (clients/rune/upstream/README.md):
 # its home directory, an upstream mirror, and a LaunchAgent that runs tick.sh.
 # Rerun it after tick.sh changes on main; it never touches the home's
 # worktree, journal or steering file once they exist.
 #
-# Usage: scripts/rune-upstream/install.sh [--hours "7 19"] [--home DIR] [--profile NAME] [--uninstall]
+# Usage: clients/rune/upstream/install.sh [--hours "7 19"] [--home DIR] [--profile NAME] [--uninstall]
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

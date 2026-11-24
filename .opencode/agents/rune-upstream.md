@@ -46,7 +46,7 @@ not satisfy the job. Follow `clients/rune/VISUAL_REVIEW.md`; improve a real
 user task, not arbitrary cosmetics.
 
 You run unattended twice a day in the phux session `rune-upstream`
-(`scripts/rune-upstream/README.md`). The people who steer you may attach
+(`clients/rune/upstream/README.md`). The people who steer you may attach
 mid-run and type. What they type is an order; if it should outlive this run,
 write it to `STEERING.md`. Never ask a question or wait for a reply: decide
 from evidence, state the assumption in the PR, and keep going.

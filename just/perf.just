@@ -55,7 +55,7 @@ perf-echo flood="full" cols="188" rows="48" iters="60":
 perf-rune-echo fps="60" keys="200":
     cargo build --release -p phux
     cargo build --release --locked --manifest-path clients/rune/Cargo.toml
-    bash scripts/bench/rune-echo.sh target/release/phux clients/rune/target/release/phux-rune {{keys}} 120 {{fps}}
+    bash clients/rune/bench/rune-echo.sh target/release/phux clients/rune/target/release/phux-rune {{keys}} 120 {{fps}}
 
 # Key to on-screen pixels, Rune against Ghostty on the same display (macOS;
 # Screen Recording, Accessibility, an unlocked screen and uncovered windows).
@@ -64,7 +64,7 @@ perf-rune-echo fps="60" keys="200":
 perf-rune-photon keys="200":
     cargo build --release -p phux
     cargo build --release --locked --manifest-path clients/rune/Cargo.toml
-    bash scripts/bench/rune-echo.sh --photon target/release/phux clients/rune/target/release/phux-rune {{keys}} 250
+    bash clients/rune/bench/rune-echo.sh --photon target/release/phux clients/rune/target/release/phux-rune {{keys}} 250
 
 
 # Cyclomatic complexity of Rust source over a CCN ceiling — advisory.

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 
 const path = process.argv[2];
-assert.ok(path, 'usage: node scripts/prepare-vt-wasm.mjs ARTIFACT');
+assert.ok(path, 'usage: node clients/phux-vt-web/scripts/prepare-vt-wasm.mjs ARTIFACT');
 const bytes = readFileSync(path);
 await WebAssembly.compile(bytes); // Validate section bounds/LEB encodings first.
 let offset = 8;

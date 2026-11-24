@@ -313,8 +313,9 @@ jobs:
       # The npm agent-integration-release.yml packs and publishes with, so a
       # change that only breaks under it fails here instead of at release.
       - run: npm install --global npm@12.2.1
-      # `just agent-integrations-check`, without installing just.
-      - run: bash scripts/ci/agent-integrations.sh
+      # Only just from the pinned nixpkgs; Node, npm and Bun stay the ones above.
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      - run: nix shell --inputs-from . nixpkgs#just -c just agent-integrations-check
 
   # `just web-check` still runs both. The cache action saves only from main.
   web-vt:

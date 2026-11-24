@@ -4,11 +4,9 @@
 #   scripts/test-report.sh [--base <ref>] [nextest args...]
 #
 # Unlike `just test`, this does not stop at the first failure, and it reads the
-# result back: each failure is matched against scripts/known-failing-tests.txt,
-# and with --base every unexplained failure is rerun on that ref, so "this also
+# result back: with --base every failure is rerun on that ref, so "this also
 # fails on main" is a measurement rather than a claim. Exit 0 means nothing
-# unexplained failed. A known-failing entry that passed is reported, not failed:
-# a flake passes sometimes, and a fix should delete its line.
+# unexplained failed (with --base: nothing that passes on the base ref).
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -22,7 +20,6 @@ fi
 
 # Nextest's store sits under the workspace root, whatever CARGO_TARGET_DIR is.
 work="$root/target/nextest/report"
-known="$root/scripts/known-failing-tests.txt"
 mkdir -p "$work"
 rm -f "$work/junit.xml" "$work/run.log"
 
@@ -36,11 +33,6 @@ for suite in ET.parse(sys.argv[1]).getroot().iter("testsuite"):
         if case.find("failure") is not None or case.find("error") is not None:
             print(suite.get("name"), case.get("name"))
 ' "$1" | sort -u
-}
-
-# Entries of the known-failing list: comments and blank lines removed.
-known_failures() {
-    sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' "$known" | sort -u
 }
 
 run_nextest() {
@@ -89,10 +81,8 @@ rerun_on_base() {
 read -r -a features <<<"${PHUX_TEST_FEATURES:---features phux-server/measure}"
 
 args=("$@")
-whole_pool=
 if [[ ${#args[@]} -eq 0 ]]; then
     args=(--workspace "${features[@]}")
-    whole_pool=1
 fi
 
 status=0
@@ -106,10 +96,7 @@ fi
 
 failed="$work/failed.txt" unexplained="$work/unexplained.txt"
 failed_tests "$work/junit.xml" >"$failed"
-known_failures >"$work/known.txt"
-comm -13 "$work/known.txt" "$failed" >"$unexplained"
-comm -12 "$work/known.txt" "$failed" >"$work/known-failed.txt"
-comm -23 "$work/known.txt" "$failed" >"$work/known-passed.txt"
+cp "$failed" "$unexplained"
 : >"$work/also-on-base.txt"
 if [[ -n "$base" && -s "$unexplained" ]]; then
     rerun_on_base "$unexplained" "$work/also-on-base.txt"
@@ -117,12 +104,8 @@ if [[ -n "$base" && -s "$unexplained" ]]; then
     cp "$work/introduced.txt" "$unexplained"
 fi
 
-print_section 'Failed, known:' "$work/known-failed.txt"
 print_section "Failed, also failing on ${base:-base}:" "$work/also-on-base.txt"
 print_section 'Failed, UNEXPLAINED:' "$unexplained"
-if [[ -n "$whole_pool" ]]; then
-    print_section 'Known-failing entries that passed (delete the line if fixed):' "$work/known-passed.txt"
-fi
 printf '\nFull output: %s\n' "$work/run.log"
 
 if [[ -s "$unexplained" ]]; then

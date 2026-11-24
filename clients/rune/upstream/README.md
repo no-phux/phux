@@ -1,6 +1,6 @@
 # Rune upstream follower
 
-An OpenCode agent whose only job is keeping [Phux Rune](../../clients/rune/README.md)
+An OpenCode agent whose only job is keeping [Phux Rune](../README.md)
 on the newest [Rune](https://github.com/anomalyco/rune) `dev`: bump the pin,
 adapt to API and behavior changes, adopt new upstream features, prove it, and
 merge it. **Every tick ships one contained, evidence-based visual or UX
@@ -9,7 +9,7 @@ its own phux session, where anyone attached can watch and steer it.
 
 | Piece | What it is |
 | --- | --- |
-| [`.opencode/agents/rune-upstream.md`](../../.opencode/agents/rune-upstream.md) | The agent: its mission and rules, loaded from the worktree it runs in. It may run anything except the few commands that would move `main` around a PR |
+| [`.opencode/agents/rune-upstream.md`](../../../.opencode/agents/rune-upstream.md) | The agent: its mission and rules, loaded from the worktree it runs in. It may run anything except the few commands that would move `main` around a PR |
 | [`tick.sh`](./tick.sh) | One scheduled tick: heal the session and worktrees, start a fresh run unless one is busy |
 | [`install.sh`](./install.sh) | The home directory and a LaunchAgent that runs `tick.sh` |
 
@@ -18,10 +18,10 @@ its own phux session, where anyone attached can watch and steer it.
 On the Mac that hosts it, from a checkout of `main`:
 
 ```sh
-scripts/rune-upstream/install.sh              # ticks at 07:00 and 19:00
-scripts/rune-upstream/install.sh --hours "6 18"
+clients/rune/upstream/install.sh              # ticks at 07:00 and 19:00
+clients/rune/upstream/install.sh --hours "6 18"
 launchctl kickstart "gui/$(id -u)/sh.phux.rune-upstream"   # tick now
-scripts/rune-upstream/install.sh --uninstall
+clients/rune/upstream/install.sh --uninstall
 ```
 
 The home defaults to `rune-upstream` beside the primary checkout:
@@ -65,10 +65,10 @@ readability; density/responsive layout; navigation/discoverability; input/
 touch ergonomics; feedback/empty/error/loading; motion/responsiveness; and
 accessibility/contrast. Pick the strongest evidenced opportunity, recording
 why an urgent finding takes priority over the next category. Quiet ticks
-take a contained [MOBILE.md](../../clients/rune/MOBILE.md) piece or improve
+take a contained [MOBILE.md](../MOBILE.md) piece or improve
 an existing flow. A current pin is not a no-work exemption.
 
-[Visual review](../../clients/rune/VISUAL_REVIEW.md) defines the maintained
+[Visual review](../VISUAL_REVIEW.md) defines the maintained
 capture command, realistic scenario gallery, before/after judgment template
 and independent fresh-context review:
 
@@ -93,12 +93,12 @@ All ten pins, including `winit`, now use the same immutable upstream revision.
 Upstream [#1454](https://github.com/anomalyco/rune/pull/1454) supplies `ImeSync`
 to suppress unchanged cursor-area calls; the temporary fork and its six-helper
 gate are retired. Validate this adoption with the two actual upstream
-`ImeSync` tests listed in [DEVELOP.md](../../clients/rune/DEVELOP.md), run from
+`ImeSync` tests listed in [DEVELOP.md](../DEVELOP.md), run from
 the pinned upstream workspace, not a dependency-test wrapper. Client Rust/IME,
 real Wayland compositor, packaged/native qualification and release gates
 remain mandatory.
 The release policy follows the current patch-release train in
-[Releasing](../../docs/releasing.md#phux-rune), not the historic alpha sequence.
+[Releasing](../../../docs/releasing.md#phux-rune), not the historic alpha sequence.
 Visual review supplements all existing check, packaged/native qualification
 and device-delivery gates; it cannot replace them. A truly blocked tick
 reports the evidence and exact remedy rather than calling maintenance shipped.
@@ -132,7 +132,7 @@ Phone installation is a separate opt-in from desktop releases. With an
 explicit installation order in `STEERING.md`, the agent reconciles the phone
 after merged Rune changes **and on quiet ticks with an update pending**.
 It uses the existing signed ad-hoc distribution path, not TestFlight.
-[Native delivery](../../clients/rune/ios/README.md#scheduled-phone-updates)
+[Native delivery](../ios/README.md#scheduled-phone-updates)
 documents the private `PHONE.json` schema, source/build identity and commands.
 
 The agent attempts an in-place install through the already paired device
@@ -153,15 +153,15 @@ per-build URLs remain internal evidence/fallbacks, not replacement bookmarks.
 Do not change hosting or start a second daemon. Never put private tailnet
 links or signing/device configuration into a public PR. Page availability,
 signed publication and independently queried installation are separate facts.
-See [One permanent download page](../../clients/rune/ios/DELIVERY.md#one-permanent-download-page).
+See [One permanent download page](../ios/DELIVERY.md#one-permanent-download-page).
 
 ## Steering from another tailnet
 
 The session is ordinary phux, so anyone who can reach this server can attach
 to it. A trusted person on another tailnet either gets this machine shared
-into their tailnet, or a [relay](../../docs/remote.md#relays) both can reach,
+into their tailnet, or a [relay](../../../docs/remote.md#relays) both can reach,
 and then a pairing link from `phux pair`. **A paired device controls the
-whole server**, every session on it ([Who can do what](../../docs/remote.md#who-can-do-what)).
+whole server**, every session on it ([Who can do what](../../../docs/remote.md#who-can-do-what)).
 To give a co-steerer this job and nothing else, run the follower on its own
 server: `install.sh --profile rune` runs every tick against the `rune` profile,
 and pairing that profile's server shares nothing else.

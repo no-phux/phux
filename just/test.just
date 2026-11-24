@@ -71,9 +71,8 @@ test: worktree-claim && (worktree-verify "test")
     {{AUTO_SPAWN_BACKSTOP}} cargo nextest run "${source[@]}" --no-tests=warn \
       ${extra[@]+"${extra[@]}"} ${shard[@]+"${shard[@]}"}
 
-# The whole unit pool to the end, with failures matched against
-# scripts/known-failing-tests.txt. `--base origin/main` reruns anything
-# unexplained on that ref. Other arguments go to nextest in place of the
+# The whole unit pool to the end, listing every failure. `--base origin/main`
+# reruns the failures on that ref and reports only the ones that pass there. Other arguments go to nextest in place of the
 # workspace selection: `just test-report -p phux-server`.
 [group('test')]
 [doc('Run every unit test to the end and report only unexplained failures.')]
@@ -209,7 +208,7 @@ agents-fleet-smoke: worktree-claim
 [doc('Build the checkout CLI and execute every introductory agent example.')]
 examples-smoke: worktree-claim && (worktree-verify "examples-smoke")
     cargo build --locked -p phux --bin phux
-    PHUX="{{justfile_directory()}}/target/debug/phux" bash scripts/test-env-runner.sh --all bash scripts/examples-smoke.sh
+    PHUX="{{justfile_directory()}}/target/debug/phux" bash scripts/test-env-runner.sh --all bash examples/agents/tests/examples-smoke.sh
 
 
 # Real isolated server dogfood for placement/layout/watch/ask with shell panes;

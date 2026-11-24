@@ -256,7 +256,8 @@ expect_pass "$repo/scripts/install-zig.sh" "$scratch/toolchains"
 # old artifact on ABI failure, and never replaces it in comparison mode. It
 # builds only with the digest-verified Zig it installs, never a Zig on PATH,
 # and tolerates the compiler's occasional nondeterministic build.
-cp "$root/scripts/build-vt-wasm.sh" "$repo/scripts/"
+mkdir -p "$repo/clients/phux-vt-web/scripts"
+cp "$root/clients/phux-vt-web/scripts/build-vt-wasm.sh" "$repo/clients/phux-vt-web/scripts/"
 mkdir -p "$repo/scripts/zig-mirrors"
 cp "$root/scripts/zig-mirrors/"{build.zig,build.zig.zon} "$repo/scripts/zig-mirrors/"
 ln -s "$(command -v cmp)" "$bin/cmp"
@@ -273,7 +274,7 @@ cat >"$bin/zig" <<'SH'
 echo 'decoy zig on PATH was used'
 exit 1
 SH
-expect_fail 'source checksum mismatch' "$repo/scripts/build-vt-wasm.sh"
+expect_fail 'source checksum mismatch' "$repo/clients/phux-vt-web/scripts/build-vt-wasm.sh"
 [[ "$(cat "$engine")" = old ]]
 [[ ! -s "$SETUP_TEST_ZIG_CALLS" ]]
 export GHOSTTY_SRC="$scratch/local engine"
@@ -343,7 +344,7 @@ SH
 printf not-consumed >"$SETUP_TEST_BUILDS"
 for mode in build --check; do
     : >"$SETUP_TEST_ZIG_CALLS"
-    SETUP_TEST_FETCH_FAIL=1 expect_fail 'fixture mirror rejected' "$repo/scripts/build-vt-wasm.sh" "$mode"
+    SETUP_TEST_FETCH_FAIL=1 expect_fail 'fixture mirror rejected' "$repo/clients/phux-vt-web/scripts/build-vt-wasm.sh" "$mode"
     [[ "$(cat "$SETUP_TEST_ZIG_CALLS")" = fetch ]]
     [[ "$(cat "$SETUP_TEST_BUILDS")" = not-consumed ]]
     [[ "$(cat "$engine")" = old ]]
@@ -355,21 +356,21 @@ echo 'fixture ABI rejected'
 exit 1
 SH
 : >"$SETUP_TEST_ZIG_CALLS"
-expect_fail 'ABI rejected' "$repo/scripts/build-vt-wasm.sh"
+expect_fail 'ABI rejected' "$repo/clients/phux-vt-web/scripts/build-vt-wasm.sh"
 [[ "$(cat "$SETUP_TEST_ZIG_CALLS")" = $'fetch\ncompile' ]]
 [[ "$(cat "$engine")" = old ]]
 cp "$bin/npm" "$bin/node"
 : >"$SETUP_TEST_ZIG_CALLS"
-expect_fail 'engine differs in 3 rebuilds' "$repo/scripts/build-vt-wasm.sh" --check
+expect_fail 'engine differs in 3 rebuilds' "$repo/clients/phux-vt-web/scripts/build-vt-wasm.sh" --check
 [[ "$(cat "$SETUP_TEST_ZIG_CALLS")" = $'fetch\ncompile\ncompile\ncompile' ]]
 [[ "$(grep -c '^attempt [123]: rebuilt sha256' "$scratch/output")" = 3 ]]
 [[ "$(cat "$engine")" = old ]]
 : >"$SETUP_TEST_ZIG_CALLS"
-expect_pass "$repo/scripts/build-vt-wasm.sh"
+expect_pass "$repo/clients/phux-vt-web/scripts/build-vt-wasm.sh"
 [[ "$(cat "$SETUP_TEST_ZIG_CALLS")" = $'fetch\ncompile\ncompile' ]]
 [[ "$(cat "$engine")" = rebuilt ]]
 : >"$SETUP_TEST_ZIG_CALLS"
-expect_pass "$repo/scripts/build-vt-wasm.sh" --check
+expect_pass "$repo/clients/phux-vt-web/scripts/build-vt-wasm.sh" --check
 [[ "$(cat "$SETUP_TEST_ZIG_CALLS")" = $'fetch\ncompile' ]]
 # Resolve a relative development override (including spaces) before the fetch
 # changes cwd to the manifest shim.
@@ -377,21 +378,21 @@ expect_pass "$repo/scripts/build-vt-wasm.sh" --check
     cd "$scratch"
     export GHOSTTY_SRC="local engine"
     : >"$SETUP_TEST_ZIG_CALLS"
-    expect_pass "$repo/scripts/build-vt-wasm.sh" --check
+    expect_pass "$repo/clients/phux-vt-web/scripts/build-vt-wasm.sh" --check
     [[ "$(cat "$SETUP_TEST_ZIG_CALLS")" = $'fetch\ncompile' ]]
 )
 # One divergent build is retried from fresh caches; two that disagree never
 # become the committed engine.
 printf 'variant\nrebuilt\n' >"$SETUP_TEST_BUILDS"
-expect_pass "$repo/scripts/build-vt-wasm.sh" --check
+expect_pass "$repo/clients/phux-vt-web/scripts/build-vt-wasm.sh" --check
 grep -Fq 'matches the verified source rebuild (attempt 2)' "$scratch/output"
 [[ "$(cat "$engine")" = rebuilt ]]
 printf 'variant-1\nvariant-2\nrebuilt\n' >"$SETUP_TEST_BUILDS"
-expect_pass "$repo/scripts/build-vt-wasm.sh" --check
+expect_pass "$repo/clients/phux-vt-web/scripts/build-vt-wasm.sh" --check
 grep -Fq 'matches the verified source rebuild (attempt 3)' "$scratch/output"
 [[ "$(cat "$engine")" = rebuilt ]]
 printf 'variant\nrebuilt\n' >"$SETUP_TEST_BUILDS"
-expect_fail 'two rebuilds differ' "$repo/scripts/build-vt-wasm.sh"
+expect_fail 'two rebuilds differ' "$repo/clients/phux-vt-web/scripts/build-vt-wasm.sh"
 [[ "$(cat "$engine")" = rebuilt ]]
 unset GHOSTTY_SRC SETUP_TEST_BUILDS PHUX_TOOLCHAIN_DIR SETUP_TEST_ZIG_CALLS SETUP_TEST_ARO SETUP_TEST_EXPECT_SOURCE
 bash "$root/scripts/check-ghostty-pin_test.sh"

@@ -43,7 +43,7 @@ The confusing part: there are **two wasm modules, one nested in the other.**
 
 ```text
 ghostty (Zig)
-   │  zig build               (scripts/build-vt-wasm.sh)
+   │  zig build               (clients/phux-vt-web/scripts/build-vt-wasm.sh)
    ▼
 ghostty-vt.wasm  ── the engine, vendored into phux-vt-web/vendor/
    │  include_bytes!          (baked in as raw bytes)

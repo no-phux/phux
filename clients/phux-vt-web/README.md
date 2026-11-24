@@ -81,8 +81,8 @@ from verified pinned source:
 
 ```sh
 # from the phux repo root; the script installs and uses the release-pinned Zig itself:
-bash scripts/build-vt-wasm.sh          # → clients/phux-vt-web/vendor/ghostty-vt.wasm
-bash scripts/build-vt-wasm.sh --check  # byte-for-byte regeneration check
+bash clients/phux-vt-web/scripts/build-vt-wasm.sh          # → clients/phux-vt-web/vendor/ghostty-vt.wasm
+bash clients/phux-vt-web/scripts/build-vt-wasm.sh --check  # byte-for-byte regeneration check
 ```
 
 `build.rs` errors with a clear message if the artifact is missing. Follow
@@ -91,7 +91,7 @@ source pin maintenance, and local engine development overrides.
 `bash scripts/doctor.sh web` checks tools and artifact presence from the root;
 the tests verify engine ABI compatibility.
 The driver uses 1.0's frozen style/grid-reference/selection layouts and
-option-based formatter. `scripts/prepare-vt-wasm.mjs` checks those layouts,
+option-based formatter. `clients/phux-vt-web/scripts/prepare-vt-wasm.mjs` checks those layouts,
 buffer descriptors, enum values and required exports before an artifact can
 replace the committed engine.
 

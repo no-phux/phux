@@ -45,12 +45,11 @@ guards: brand-check shellcheck tools-check docs-check install-surface-check
     bash scripts/check-frozen-fixtures_test.sh
     bash scripts/check-e2e-lanes.sh
     bash scripts/check-release-cpu-baselines.sh
-    bash scripts/test-demo-pi-setup.sh
     bash scripts/lib/worktree-owner_test.sh
     node --test scripts/test-npm-audit-gate.mjs
     bash examples/agents/tests/placed-fleet-smoke.sh
     bash examples/agents/tests/program-status-smoke.sh
-    python3 -B scripts/test-agent-examples.py
+    python3 -B examples/agents/tests/test-agent-examples.py
     python3 -B -m unittest discover -s distros/crew -p 'test_*.py'
 
 
@@ -80,12 +79,22 @@ binding-uniffi-test:
 integration-check PACKAGE: worktree-claim
     #!/usr/bin/env bash
     set -euo pipefail
-    case "{{PACKAGE}}" in runtime|opencode-v2|omp|pi|claude|grok) ;; *) echo 'choose runtime, opencode-v2, omp, pi, claude, or grok' >&2; exit 2 ;; esac
+    case "{{PACKAGE}}" in runtime|opencode-v2|omp|pi|claude|grok|muse) ;; *) echo 'choose runtime, opencode-v2, omp, pi, claude, grok, or muse' >&2; exit 2 ;; esac
     bash scripts/doctor.sh integrations
+    # Incidental install audits are off; the explicit audit inside each
+    # package's gates script still runs.
     export npm_config_audit=false npm_config_fund=false
     case "{{PACKAGE}}" in
-        omp|opencode-v2) cd "integrations/{{PACKAGE}}"; bun install --frozen-lockfile; bun run gates ;;
+        omp) cd integrations/omp; bun install --frozen-lockfile; bun run gates ;;
+        opencode-v2)
+            cd integrations/opencode-v2
+            bun install --frozen-lockfile
+            bun run gates
+            # index.js and tui.js ship as committed bundles; the build must not change them.
+            git diff --exit-code -- .
+            ;;
         grok) node --test integrations/grok/test/package.test.mjs ;;
+        muse) npm --prefix integrations/muse run gates ;;
         pi)
             npm --prefix integrations/runtime ci
             npm --prefix integrations/runtime run build
@@ -99,8 +108,7 @@ integration-check PACKAGE: worktree-claim
 # The `integrations` lane: every package, the shared runtime, and npm audit.
 [group('gates')]
 [doc('Every agent integration package and the shared runtime.')]
-agent-integrations-check:
-    bash scripts/ci/agent-integrations.sh
+agent-integrations-check: (integration-check "runtime") (integration-check "opencode-v2") (integration-check "omp") (integration-check "pi") (integration-check "claude") (integration-check "grok") (integration-check "muse")
 
 
 # Format every Rust file in place.
@@ -144,7 +152,8 @@ deny:
 # nits (sourced libs shellcheck cannot follow) that are correct as written.
 [group('gates')]
 shellcheck:
-    shellcheck --severity=warning scripts/*.sh scripts/lib/*.sh scripts/ci/*.sh scripts/rune-upstream/*.sh \
+    shellcheck --severity=warning scripts/*.sh scripts/lib/*.sh scripts/ci/*.sh \
+      clients/rune/upstream/*.sh clients/phux-vt-web/scripts/*.sh \
       examples/agents/*.sh \
       examples/agents/orchestrate-placed-fleet examples/agents/record-pi-live-fleet examples/agents/tests/*.sh \
       plugins/*/scripts/*.sh
@@ -191,21 +200,21 @@ install-surface-check:
 # of recipes that depend on it.
 [private]
 worktree-claim:
-    @bash scripts/worktree-claim.sh
+    @bash scripts/worktree-lease.sh claim
 
 
 # After a long run (`test`, `e2e`): fail (exit 3) when HEAD moved or the lease
 # changed hands since the claim, so a straddled run is not a green.
 [private]
 worktree-verify CALLER:
-    @bash scripts/worktree-verify.sh "{{CALLER}}"
+    @bash scripts/worktree-lease.sh verify "{{CALLER}}"
 
 
 # Drop this agent session's worktree lease when handing the worktree on.
 [group('setup')]
 [doc("Release this agent session's worktree lease for the next session.")]
 worktree-release:
-    @bash scripts/worktree-release.sh worktree-release
+    @bash scripts/worktree-lease.sh release worktree-release
 
 # Verify committed branding without accessing the private source library.
 [group('gates')]

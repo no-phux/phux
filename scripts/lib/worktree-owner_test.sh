@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Hermetic coverage for the per-worktree agent lease (worktree-owner.sh), its
-# entrypoints (worktree-claim.sh, worktree-verify.sh, worktree-release.sh), and
+# entrypoint (worktree-lease.sh claim|verify|release), and
 # its wiring into every just recipe that builds, tests or formats the tree: a scratch repo with a linked worktree, every lease rule exercised
 # against it, then the real `worktree-claim` recipe run through just.
 set -euo pipefail
@@ -27,9 +27,7 @@ run_as() {
 # ------------------------------------------------------------- fixture
 REPO="${WORK}/repo"
 mkdir -p "${REPO}/scripts/lib"
-for script in claim verify release; do
-    cp "${ROOT}/scripts/worktree-${script}.sh" "${REPO}/scripts/worktree-${script}.sh"
-done
+cp "${ROOT}/scripts/worktree-lease.sh" "${REPO}/scripts/worktree-lease.sh"
 cp "${ROOT}/scripts/lib/worktree-owner.sh" "${REPO}/scripts/lib/worktree-owner.sh"
 cp "${ROOT}/scripts/lib/mbx-target.sh" "${REPO}/scripts/lib/mbx-target.sh"
 git -C "$REPO" init -q -b main
@@ -43,7 +41,7 @@ SIBLING_LEASE="$(git -C "$SIBLING" rev-parse --absolute-git-dir)/phux-worktree-o
 lease_op() {
     # lease_op <claim|verify|release> <owner> <worktree dir> [env assignments...]
     local op="$1" owner="$2" dir="$3"; shift 3
-    (cd "$dir" && run_as "$owner" env "$@" bash "./scripts/worktree-${op}.sh" test) >"${WORK}/out.log" 2>&1
+    (cd "$dir" && run_as "$owner" env "$@" bash ./scripts/worktree-lease.sh "$op" test) >"${WORK}/out.log" 2>&1
 }
 claim() { lease_op claim "$@"; }
 verify() { lease_op verify "$@"; }
@@ -71,7 +69,7 @@ if grep -qx 'owner=session-a' "$LEASE"; then ok "refusal leaves the lease untouc
 
 # Claiming from a subdirectory resolves the same worktree lease.
 mkdir -p "${REPO}/scripts/lib/nested"
-status=0; (cd "${REPO}/scripts/lib/nested" && run_as session-b bash ../../worktree-claim.sh test) >"${WORK}/out.log" 2>&1 || status=$?
+status=0; (cd "${REPO}/scripts/lib/nested" && run_as session-b bash ../../worktree-lease.sh claim test) >"${WORK}/out.log" 2>&1 || status=$?
 if [[ "$status" == 3 ]]; then ok "a subdirectory shares the worktree lease"; else bad "a subdirectory should hit the same lease (status=$status)"; fi
 
 # A sibling worktree has its own lease.

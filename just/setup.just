@@ -43,13 +43,6 @@ toolchain-check:
     bash scripts/check-toolchain-sync.sh
 
 
-# Runtime half of toolchain-check: both environments, actual binaries.
-# Local only (no Mise on a CI checkout). Skips if either env is missing.
-[group('setup')]
-toolchain-parity:
-    bash scripts/check-toolchain-parity.sh
-
-
 # Print the toolchain we are pinned to.
 [group('setup')]
 toolchain:

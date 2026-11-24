@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const path = process.argv[2];
-assert.ok(path, 'usage: node scripts/smoke-vt-wasm.mjs ARTIFACT');
+assert.ok(path, 'usage: node clients/phux-vt-web/scripts/smoke-vt-wasm.mjs ARTIFACT');
 const { instance } = await WebAssembly.instantiate(readFileSync(path), {});
 const e = instance.exports;
 const view = () => new DataView(e.memory.buffer);

@@ -103,7 +103,6 @@ function mobileFfiPaths(root: string): string[] {
       ...pathClosure([{ dir: "crates/phux-client-ffi", dev: false, features: ["uniffi"] }], root),
     ].map((dir) => `${dir}/**`),
     "scripts/build-mobile-ffi-{xcframework,android}.sh",
-    "scripts/ci/setup-android-ndk.sh",
     // The generator writes the archives' design/ directory.
     "tools/src/design/**",
     ".github/workflows/ffi-{android,xcframework}.yml",

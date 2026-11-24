@@ -6,7 +6,7 @@
 # or the file contents underneath belonged to the other session
 # (phux-cockpit-tnt). Documentation alone did not stop it, so every just recipe
 # that builds, tests or formats the tree takes a lease through
-# scripts/worktree-claim.sh first (scripts/lib/worktree-owner_test.sh holds the
+# `scripts/worktree-lease.sh claim` first (scripts/lib/worktree-owner_test.sh holds the
 # wired list and fails when one loses its claim):
 #
 #   - The lease lives in the worktree's OWN git dir (`git rev-parse
@@ -22,7 +22,7 @@
 #     a session hands the worktree on; PHUX_WORKTREE_TAKEOVER=1 takes over a
 #     live one, for a deliberate handoff the previous session did not release.
 #   - The claim records HEAD. The long runs (`test`, `e2e`) re-check it
-#     after success through scripts/worktree-verify.sh and fail (exit 3) when
+#     after success through `worktree-lease.sh verify` and fail (exit 3) when
 #     HEAD moved or the lease changed hands mid-run, because their green no
 #     longer describes one commit. This is detection, not prevention: a
 #     session that edits files or switches branches without running a guarded

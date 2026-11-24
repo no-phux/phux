@@ -5,7 +5,7 @@
 # never the user's), then runs phux-rune headless with --realtime and a
 # --script that types KEYS keystrokes GAP_MS apart into the shell, a letter
 # then Backspace, so the line stays short. Both processes append to one
-# PHUX_ECHO_HOPS trace, and scripts/bench/echo-hops.py prints p50/p99 per
+# PHUX_ECHO_HOPS trace, and clients/rune/bench/echo-hops.py prints p50/p99 per
 # hop and end to end (stdin->stdout: key event to the first frame drawn
 # that shows the echo).
 #

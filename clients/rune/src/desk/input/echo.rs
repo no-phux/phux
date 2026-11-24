@@ -14,7 +14,7 @@ use phux_client_runtime::publication::GridFrame;
 use phux_client_runtime::{Client, ViewId};
 
 /// The longest a key's frame waits. A local server's echo is back within it
-/// 99 times in 100 (`scripts/bench/rune-echo.sh`), and it stays under the
+/// 99 times in 100 (`clients/rune/bench/rune-echo.sh`), and it stays under the
 /// 8 ms Rune calls a stall.
 pub(super) const ECHO_WAIT: Duration = Duration::from_millis(4);
 

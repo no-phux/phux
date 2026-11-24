@@ -4,7 +4,7 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/phux-pin-test.XXXXXX")"
 trap 'rm -rf "$scratch"' EXIT
-mkdir -p "$scratch/repo/scripts/lib" "$scratch/repo/.config" "$scratch/bin"
+mkdir -p "$scratch/repo/scripts/lib" "$scratch/repo/clients/phux-vt-web/scripts" "$scratch/repo/.config" "$scratch/bin"
 cp "$root/scripts/check-ghostty-pin.sh" "$scratch/repo/scripts/"
 cp "$root/scripts/lib/output.sh" "$scratch/repo/scripts/lib/"
 cp "$root/.config/zig-toolchain.json" "$scratch/repo/.config/"
@@ -18,7 +18,7 @@ cat >"$scratch/build.rs" <<EOF
 const GHOSTTY_REPO: &str = "https://github.com/example/engine.git";
 const GHOSTTY_COMMIT: &str = "$rev";
 EOF
-cat >"$scratch/repo/scripts/build-vt-wasm.sh" <<EOF
+cat >"$scratch/repo/clients/phux-vt-web/scripts/build-vt-wasm.sh" <<EOF
 revision=$rev
 archive_sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 # https://codeload.github.com/example/engine/tar.gz/\$revision
@@ -65,11 +65,11 @@ mv "$scratch/repo/Cargo.lock" "$scratch/good.lock"
 mv "$scratch/bad.lock" "$scratch/repo/Cargo.lock"
 fail 'binding revision does not match'
 mv "$scratch/good.lock" "$scratch/repo/Cargo.lock"
-sed "s/revision=$rev/revision=bad/" "$scratch/repo/scripts/build-vt-wasm.sh" >"$scratch/bad.sh"
-mv "$scratch/repo/scripts/build-vt-wasm.sh" "$scratch/good.sh"
-mv "$scratch/bad.sh" "$scratch/repo/scripts/build-vt-wasm.sh"
+sed "s/revision=$rev/revision=bad/" "$scratch/repo/clients/phux-vt-web/scripts/build-vt-wasm.sh" >"$scratch/bad.sh"
+mv "$scratch/repo/clients/phux-vt-web/scripts/build-vt-wasm.sh" "$scratch/good.sh"
+mv "$scratch/bad.sh" "$scratch/repo/clients/phux-vt-web/scripts/build-vt-wasm.sh"
 fail 'differs from browser engine'
-mv "$scratch/good.sh" "$scratch/repo/scripts/build-vt-wasm.sh"
+mv "$scratch/good.sh" "$scratch/repo/clients/phux-vt-web/scripts/build-vt-wasm.sh"
 PIN_TEST_OFFLINE=1 pass 'skipped'
 PIN_TEST_SOURCE_HTTP=404 fail 'is not served (HTTP 404)'
 printf '.minimum_zig_version = "0.0.0",\n' >"$scratch/build.zig.zon"

@@ -80,7 +80,7 @@ enforces it. Rust `E0514` means the toolchain changed under a build: check
 | docs | `just docs-check` |
 | pure Rust | `just core-check` |
 | server, TUI, CLI, FFI | `just crate-check phux-server` |
-| agent integrations | `just integration-check pi` (or runtime, opencode-v2, omp, claude, grok) |
+| agent integrations | `just integration-check pi` (or runtime, opencode-v2, omp, claude, grok, muse) |
 | browser client | `just web-check` |
 | Phux Rune desktop | `just rune-check` |
 | everything | `just check` |
@@ -101,7 +101,7 @@ wasm-pack test --node
 
 Browser e2e needs Chrome, a matching chromedriver, and a server:
 `PHUX_DEMO_PANE=cat cargo run --locked -p phux-server --example ws_demo_server`.
-`bash scripts/build-vt-wasm.sh` rebuilds the engine with the pinned Zig
+`bash clients/phux-vt-web/scripts/build-vt-wasm.sh` rebuilds the engine with the pinned Zig
 (`--check` verifies the committed one).
 
 ## Rune desktop

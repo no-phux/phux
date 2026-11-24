@@ -9,8 +9,8 @@ import { action, job, needs, run, steps, uses, withInput, workflow } from "../po
 import { LANES, LANE_RECIPES } from "./plan.ts";
 
 const WEB_CHECKS = [
-  'if [[ "${PHUX_WEB_ENGINE:-0}" == 1 ]]; then bash scripts/build-vt-wasm.sh --check; fi',
-  "node --test scripts/test-vt-wasm.mjs",
+  'if [[ "${PHUX_WEB_ENGINE:-0}" == 1 ]]; then bash clients/phux-vt-web/scripts/build-vt-wasm.sh --check; fi',
+  "node --test clients/phux-vt-web/scripts/test-vt-wasm.mjs",
   "(cd clients/phux-vt-web && wasm-pack test --node --locked)",
   "(cd clients/phux-web && wasm-pack test --node --locked)",
   "(cd clients/phux-web && wasm-pack build --target web --release --out-dir pkg --locked)",
