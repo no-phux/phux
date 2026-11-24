@@ -57,7 +57,11 @@ fn a_spawned_pane_names_its_parent_and_keeps_it_when_the_parent_exits() {
     let agent = spawn(&server, None, &[]);
     let explicit = spawn(&server, None, &["--parent", &agent]);
     let inherited = spawn(&server, Some(agent.trim_start_matches('@')), &[]);
-    let orphan = spawn(&server, Some(agent.trim_start_matches('@')), &["--parent", "none"]);
+    let orphan = spawn(
+        &server,
+        Some(agent.trim_start_matches('@')),
+        &["--parent", "none"],
+    );
     assert_eq!(parent_of(&server, &agent), Value::Null);
     assert_eq!(parent_of(&server, &explicit), agent.as_str());
     assert_eq!(parent_of(&server, &inherited), agent.as_str());
