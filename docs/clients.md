@@ -94,6 +94,25 @@ phux host color --local sky
 phux host color mini auto        # back to the hash
 ```
 
+## Host themes
+
+A whole theme says which machine you are on louder than a colour. Name one
+on a host's entry and Rune and the terminal UI wear it while you view that
+machine (attached to it, or a hub's satellite pane of that name), and go
+back to your own theme when you leave:
+
+```toml
+[[remote]]
+name = "prod"
+theme = "red-alert"   # as `phux theme list` (terminal UI) or Rune's picker names it
+
+[host]
+theme = "nord"        # this machine's own panes
+```
+
+Each client looks the name up in its own themes; one it does not have
+keeps your theme. Unset, nothing switches.
+
 ## Pane icons
 
 `[[icons]]` puts an icon before a pane's name by foreground `process` or

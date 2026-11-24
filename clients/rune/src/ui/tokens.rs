@@ -391,7 +391,7 @@ impl Tokens {
     pub(crate) fn for_window(desk: &Desk, cx: &Cx<Desk>) -> Rc<Self> {
         let dark = crate::theme::system_dark(cx.system_dark());
         Self::resolve(&Inputs {
-            theme: desk.settings.theme.copied(),
+            theme: desk.theme().copied(),
             host: Some(crate::host_color::entry(desk.machines.label()).0),
             glass: desk.glass(),
             increased_contrast: cx.system_increased_contrast(),

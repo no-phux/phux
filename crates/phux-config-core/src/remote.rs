@@ -97,6 +97,12 @@ pub struct RemoteConfigEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
 
+    /// Theme a client wears while it views this host, named as that client
+    /// lists themes (`[theme] name` in the TUI, a theme id in Rune); absent
+    /// keeps the client's own theme.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
+
     /// Paused by `phux host disable`: kept in the registry, but nothing
     /// dials it until `phux host enable`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

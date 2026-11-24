@@ -362,7 +362,7 @@ fn terminal_layer(
             ink.selection(),
             grid::Bold {
                 bright: desk.file.bold_is_bright == Some(true),
-                color: desk.settings.theme.and_then(|theme| theme.bold),
+                color: desk.theme().and_then(|theme| theme.bold),
             },
         ))
         .children(overlay::link_underline(desk, id, &metrics, ink));
