@@ -225,11 +225,25 @@ fn waiting_card(desk: &Desk, waiting: &Waiting, picked: bool, t: &Tokens) -> El 
         waiting.mark.word()
     };
     let (_, tone) = mark_icon(waiting.mark, t);
-    let place = match &waiting.kind {
-        Some(kind) if Some(kind) != waiting.agent.as_ref() => {
-            format!("{} · {} · {kind}", waiting.label, waiting.session)
-        }
-        _ => format!("{} · {}", waiting.label, waiting.session),
+    let kind = waiting
+        .kind
+        .as_ref()
+        .filter(|k| Some(*k) != waiting.agent.as_ref());
+    let place = [
+        waiting.host.as_ref(),
+        Some(&waiting.label),
+        Some(&waiting.session),
+        kind,
+    ]
+    .into_iter()
+    .flatten()
+    .map(String::as_str)
+    .collect::<Vec<_>>()
+    .join(" · ");
+    let background = if waiting.background {
+        " · background work"
+    } else {
+        ""
     };
     let mut body = col()
         .w_full()
@@ -237,7 +251,7 @@ fn waiting_card(desk: &Desk, waiting: &Waiting, picked: bool, t: &Tokens) -> El 
         .child(header(
             waiting.mark,
             who,
-            format!("{word}{age}"),
+            format!("{word}{background}{age}"),
             busy,
             phone,
             t,
