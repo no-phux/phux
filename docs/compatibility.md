@@ -143,7 +143,7 @@ with `#[serde(rename)]`, since on a `#[serde(default)]` field a rename loses
 the value silently. Formats with named fields are held to append-only
 fixtures frozen from releases (`phux-frozen`, in
 `crates/<crate>/tests/fixtures/frozen/<format>/`;
-`scripts/check-frozen-fixtures.sh` refuses edits). A check fails when a
+`tools/src/policy/frozen-fixtures.test.ts` refuses edits). A check fails when a
 released fixture loses a value or the newest differs from what this build
 writes or leaves a field empty. To freeze a change, run the test with
 `PHUX_BLESS_FROZEN=<format>` and give every new field a value by hand.

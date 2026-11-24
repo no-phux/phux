@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Compare the tools the Nix and Mise environments actually resolve.
 #
-# check-toolchain-sync.sh is the static, CI-safe half: it reads mise.toml,
+# tools/src/policy/toolchain-sync.test.ts is the static, CI-safe half: it reads mise.toml,
 # flake.nix and the manifests and checks they AGREE ON PAPER. It cannot see
 # what a shell hands you. This is the other half — it realizes both
 # environments and compares binary against binary — which is why it is
