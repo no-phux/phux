@@ -145,6 +145,9 @@ pub struct Desk {
     plugin_actions: plugin_actions::Actions,
     /// The theme a live preview stands in for, restored unless one is chosen.
     theme_before: Option<Option<&'static crate::theme::Theme>>,
+    /// The theme last installed on the terminal: a viewed machine's theme
+    /// differing from it means the window moved to a host with its own.
+    worn: Cell<Option<&'static crate::theme::Theme>>,
     pub sidebar_open: bool,
     /// The window's width in points, from the root's last layout; 0 until then.
     pub window_w: f32,
@@ -309,6 +312,7 @@ impl Desk {
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             plugin_actions: plugin_actions::Actions::default(),
             theme_before: None,
+            worn: Cell::new(None),
             sidebar_open,
             window_w: 0.0,
             window_h: 0.0,
@@ -400,6 +404,7 @@ impl Desk {
             | self.pump_links()
             | self.finish_screenshot()
             | self.pump_settings(tx)
+            | self.follow_host_theme()
             | self.pump_onboarding(tx)
             | self.follow_accessibility()
             | self.expire_notice(tx);

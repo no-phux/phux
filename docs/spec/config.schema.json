@@ -591,6 +591,13 @@
             "string",
             "null"
           ]
+        },
+        "theme": {
+          "description": "Theme a client on this machine wears for its own panes, named as\nthat client lists themes; absent keeps the client's own theme.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -1042,6 +1049,13 @@
         },
         "ssh": {
           "description": "The ssh destination the entry was enrolled through, used to restart a\nserver that does not answer; absent, the name is used.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "theme": {
+          "description": "Theme a client wears while it views this host, named as that client\nlists themes (`[theme] name` in the TUI, a theme id in Rune); absent\nkeeps the client's own theme.",
           "type": [
             "string",
             "null"

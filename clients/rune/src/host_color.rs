@@ -19,6 +19,8 @@ use crate::ui::Paint;
 struct Known {
     local: Option<String>,
     hosts: HashMap<String, (u32, bool)>,
+    /// The theme id a host's entry names, worn while viewing it.
+    themes: HashMap<String, String>,
 }
 
 // ponytail: one process-wide table, so every view can colour a name without
@@ -43,17 +45,36 @@ fn hex(value: &Value) -> Option<(u32, bool)> {
 /// Take in a `phux host ls --json` document. An older phux reports no
 /// colours, and every name falls back to the hash.
 pub fn learn(doc: &Value) {
-    let mut hosts = HashMap::new();
+    *KNOWN.write().unwrap_or_else(PoisonError::into_inner) = read(doc);
+}
+
+fn read(doc: &Value) -> Known {
+    let (mut hosts, mut themes) = (HashMap::new(), HashMap::new());
     for host in doc["hosts"].as_array().into_iter().flatten() {
-        if let (Some(name), Some(color)) = (host["name"].as_str(), hex(&host["color"])) {
+        let Some(name) = host["name"].as_str() else {
+            continue;
+        };
+        if let Some(color) = hex(&host["color"]) {
             hosts.entry(name.to_owned()).or_insert(color);
+        }
+        if let Some(theme) = host["theme"].as_str() {
+            themes.insert(name.to_owned(), theme.to_owned());
         }
     }
     let local = doc["local"]["name"].as_str().map(str::to_owned);
-    if let (Some(name), Some(color)) = (&local, hex(&doc["local"]["color"])) {
-        hosts.insert(name.clone(), color);
+    if let Some(name) = &local {
+        if let Some(color) = hex(&doc["local"]["color"]) {
+            hosts.insert(name.clone(), color);
+        }
+        if let Some(theme) = doc["local"]["theme"].as_str() {
+            themes.insert(name.clone(), theme.to_owned());
+        }
     }
-    *KNOWN.write().unwrap_or_else(PoisonError::into_inner) = Known { local, hosts };
+    Known {
+        local,
+        hosts,
+        themes,
+    }
 }
 
 /// Show a pick before the CLI has written it: `id` is a palette id or `auto`.
@@ -84,6 +105,21 @@ pub fn entry(name: &str) -> (u32, bool) {
         .get(&key)
         .copied()
         .unwrap_or((PALETTE[auto_index(&key)].1, false))
+}
+
+/// The theme `name`'s entry names, when Rune has it; [`LOCAL`] is this
+/// machine. `None` keeps the chosen theme.
+pub fn theme(name: &str) -> Option<&'static crate::theme::Theme> {
+    themed(&KNOWN.read().unwrap_or_else(PoisonError::into_inner), name)
+}
+
+fn themed(known: &Known, name: &str) -> Option<&'static crate::theme::Theme> {
+    let key = if name == LOCAL {
+        local_key(known)
+    } else {
+        name.to_owned()
+    };
+    known.themes.get(&key).and_then(|id| crate::theme::find(id))
 }
 
 /// `name`'s colour as 0–255 channels, for the scenes' own painters.
@@ -188,6 +224,24 @@ mod tests {
         assert!(!entry("box-a").1);
         pick(LOCAL, "copper");
         assert_eq!(entry(LOCAL), (0xC9_926B, true));
+    }
+
+    #[test]
+    fn a_host_entry_names_the_theme_worn_while_viewing_it() {
+        // Read, not learned: the process-wide table is other tests' too.
+        let known = read(&json!({ "hosts": [
+            { "name": "prod", "theme": "solarized-light" },
+            { "name": "dev", "theme": null },
+            { "name": "odd", "theme": "no-such-theme" },
+        ], "local": { "name": "studio", "theme": "nord" } }));
+        assert_eq!(
+            themed(&known, "prod"),
+            crate::theme::find("solarized-light")
+        );
+        assert_eq!(themed(&known, LOCAL), crate::theme::find("nord"));
+        for unthemed in ["dev", "odd", "elsewhere"] {
+            assert_eq!(themed(&known, unthemed), None, "{unthemed}");
+        }
     }
 
     #[test]

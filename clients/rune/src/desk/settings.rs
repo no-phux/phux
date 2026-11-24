@@ -372,20 +372,38 @@ impl Desk {
     }
 
     fn install_terminal_theme(&self) {
+        let theme = self.theme();
+        self.worn.set(theme);
         if let Some(client) = &self.connection.client {
             let dark = self.system_dark.get().unwrap_or(true);
             client.set_terminal_theme(
-                self.settings
-                    .theme
-                    .map_or_else(|| Theme::system_terminal(dark), |t| Some(t.terminal())),
+                theme.map_or_else(|| Theme::system_terminal(dark), |t| Some(t.terminal())),
             );
         }
+    }
+
+    /// The theme this window wears: the viewed machine's own, a satellite's
+    /// while its terminal shows, else the one chosen.
+    pub fn theme(&self) -> Option<&'static Theme> {
+        let shown = self.connection.shown.as_ref();
+        let satellite = shown.and_then(|s| s.resource.host());
+        let host = satellite.map_or(self.machines.label(), |h| h.as_str());
+        crate::host_color::theme(host).or(self.settings.theme)
+    }
+
+    /// The window moved to or from a machine with its own theme: wear it.
+    pub(super) fn follow_host_theme(&mut self) -> bool {
+        if self.worn.get() == self.theme() {
+            return false;
+        }
+        self.apply_theme();
+        true
     }
 
     /// The view saw the system appearance: with no theme picked, the
     /// terminal follows a change to it.
     pub fn follow_appearance(&self, dark: bool) {
-        if self.system_dark.replace(Some(dark)) != Some(dark) && self.settings.theme.is_none() {
+        if self.system_dark.replace(Some(dark)) != Some(dark) && self.theme().is_none() {
             self.install_terminal_theme();
         }
     }
