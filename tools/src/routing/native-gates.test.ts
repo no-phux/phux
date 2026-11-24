@@ -402,10 +402,7 @@ test("ci rejects a failed or cancelled native queue dependency", () => {
           plan: {
             result: "success",
             outputs: Object.fromEntries(
-              [...LANES, "rune_qualify", "release_qualify"].map((key) => [
-                key,
-                "false",
-              ]),
+              [...LANES, "rune_qualify", "release_qualify"].map((key) => [key, "false"]),
             ),
           },
           native: { result: "success" },

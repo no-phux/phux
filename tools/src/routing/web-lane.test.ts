@@ -109,10 +109,7 @@ test("both web halves fail the aggregate on failure or cancellation", () => {
               result: "success",
               outputs: {
                 ...Object.fromEntries(
-                  [...LANES, "rune_qualify", "release_qualify"].map((key) => [
-                    key,
-                    "false",
-                  ]),
+                  [...LANES, "rune_qualify", "release_qualify"].map((key) => [key, "false"]),
                 ),
                 web: "true",
               },
