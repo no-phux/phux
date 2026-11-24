@@ -241,6 +241,14 @@ fn session_list(desk: &Desk, counts: &HashMap<u32, Counts>, t: &Tokens) -> El {
     // same id (Omarchy) or a contrast change still repaints.
     let version = t.version;
     let all = desk.addressable();
+    // One pass, not one scan of every resource per session.
+    let mut by_session: HashMap<u32, Vec<&Addressable>> = HashMap::new();
+    for resource in &all {
+        by_session
+            .entry(resource.session_id)
+            .or_default()
+            .push(resource);
+    }
     let here = desk.machines.label();
     let host = (here, host_color::entry(here).0);
     let counts_in = |id: u32| counts.get(&id).copied().unwrap_or_default();
@@ -248,9 +256,9 @@ fn session_list(desk: &Desk, counts: &HashMap<u32, Counts>, t: &Tokens) -> El {
     let session_rows = |session: &SessionDescriptor, branch: bool| {
         let target = dropping.is_some() && dropping == session.key.map(Grab::Session);
         let mut out = Vec::new();
-        let rows: Vec<_> = all.iter().filter(|r| r.session_id == session.id).collect();
+        let rows = by_session.get(&session.id).map_or(&[][..], Vec::as_slice);
         let tabs = desk.connection.tabs.by_session.get(&session.id);
-        let items = items(tabs.map_or(&[][..], Vec::as_slice), &rows);
+        let items = items(tabs.map_or(&[][..], Vec::as_slice), rows);
         let color = crate::session_color::of(&session.name);
         let header = Header {
             id: session.id,

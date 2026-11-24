@@ -265,7 +265,7 @@ impl Desk {
             .connection
             .shown
             .as_ref()
-            .and_then(|s| self.addressable().into_iter().find(|r| r.id == s.resource))
+            .and_then(|s| self.addressable_of(&s.resource))
             .map_or_else(
                 || "phux".to_owned(),
                 |r| format!("{} — {}", r.label, r.session),
