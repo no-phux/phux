@@ -49,7 +49,7 @@ const ROUTES: Record<string, Surface[]> = {
   // First-party plugins and runnable CLI examples are native test inputs.
   "plugins/**": ["phux"],
   "examples/**": ["phux"],
-  "scripts/agent-verify/**": ["phux"],
+  "benchmarks/agent-verify/**": ["phux"],
   // Workflow infrastructure is compile-free (guards only), except ci.yml and
   // shared actions: route each action to the lanes that actually consume it.
   ".github/workflows/*.{yml,yaml}": [],
@@ -66,7 +66,6 @@ const ROUTES: Record<string, Surface[]> = {
   // Also used by release workflows outside the lane model.
   ".github/actions/setup-bun/**": [...SURFACES],
   "packaging/setup-linux-release-userspace.sh": [],
-  ".github/scripts/prune-build-cache.sh": [],
   // The separate Windows WSL workflow exercises PowerShell and real WSL;
   // these distribution scripts do not change the Unix Rust build.
   "scripts/install-windows.ps1": [],
@@ -132,14 +131,15 @@ const ROUTES: Record<string, Surface[]> = {
   "just/{perf,release,mutation}.just": [],
   "release-please-config.json": [],
   "scripts/check-*": [],
-  // Lint lane only for a generator-only diff (classify skips the unit pool).
+  // The plugin index generator, not a plugin. Lint lane only for a
+  // generator-only diff (classify skips the unit pool).
   // plugin-index.yml runs the generator tests. A phux-config change still
   // compiles this tree because the rust lane cargo-checks it.
-  "scripts/plugin-index/**": ["phux"],
+  "plugins/index/**": ["phux"],
   // Brand release plumbing is verified by guards. Changed application artwork
   // still routes through its destination's packaging/build checks.
   "brand.{config,lock}.json": [],
-  "scripts/{brand,update-brand,test_brand_update,design-pin}.py": [],
+  "brand/**": [],
   // Release checks the guards and release workflows run.
   "packaging/{check-release-version,test-release-cpu-baselines}.sh": [],
   "packaging/skills/**": [],

@@ -89,7 +89,7 @@ Agent state is evidence-ranked; screen is the floor. The order is in
 rule reads as `idle`, never `blocked`.
 
 It has not been measured on a live Claude Code, Codex, OpenCode, or pi session, with or without an integration installed.
-[`scripts/agent-verify`](../scripts/agent-verify/README.md) would record it
+[`benchmarks/agent-verify`](../benchmarks/agent-verify/README.md) would record it
 (billable model calls); CI runs it against a stub.
 
 ## Read and answer asks

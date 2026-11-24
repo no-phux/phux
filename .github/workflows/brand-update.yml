@@ -55,4 +55,4 @@ jobs:
           args=()
           if [ -n "$BRAND_VERSION" ]; then args+=(--version "$BRAND_VERSION"); fi
           if [ "$BRAND_ROLLBACK" = true ]; then args+=(--allow-rollback); fi
-          python3 -B scripts/update-brand.py "${args[@]}"
+          python3 -B brand/update-brand.py "${args[@]}"

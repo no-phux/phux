@@ -4,14 +4,14 @@
 Reads agent state only through the public CLI (`agent show`, `resource show`,
 `watch`) and through two `phux attach` clients on the same session. Missing
 agents are `not_installed`. Codex has no lifecycle integration, so that row
-is `integration_unavailable`. Nothing here is invented when a run does not
+is `integration_unavailable`. Nothing is invented when a run does not
 happen.
 
 A manual run starts each real agent it finds and sends it a prompt. That
 makes billable model calls on the operator's own agent logins. The CI
 self-test uses a stub and does not.
 
-  python3 scripts/agent-verify/run.py
+  python3 benchmarks/agent-verify/run.py
 """
 
 from __future__ import annotations

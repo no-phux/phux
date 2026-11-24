@@ -43,7 +43,7 @@ perf interval="1":
 [doc('Reproducible echo-latency benchmark against an isolated release server.')]
 perf-echo flood="full" cols="188" rows="48" iters="60":
     cargo build --release -p phux
-    bash scripts/bench/tui-load.sh target/release/phux "{{flood}}-{{cols}}x{{rows}}" {{flood}} {{cols}} {{rows}} {{iters}}
+    bash benchmarks/tui-load/tui-load.sh target/release/phux "{{flood}}-{{cols}}x{{rows}}" {{flood}} {{cols}} {{rows}} {{iters}}
 
 # Rune's keystroke-echo hops (clients/rune/DEVELOP.md#keystroke-latency):
 # headless phux-rune typing into an isolated release server, frames paced at

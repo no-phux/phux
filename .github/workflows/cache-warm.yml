@@ -77,7 +77,7 @@ jobs:
         run: echo "hit=${{ steps.lane.outputs.cache-hit }} reason=${{ steps.lane.outputs.cache-save-reason }} key=${{ steps.lane.outputs.cache-key }}"
       - run: nix develop -c just rust-lint
       - name: Check the plugin index compiles
-        run: nix develop -c cargo check --locked --manifest-path scripts/plugin-index/Cargo.toml
+        run: nix develop -c cargo check --locked --manifest-path plugins/index/Cargo.toml
       - name: leave disk headroom for the objects save
         if: steps.lane.outputs.cache-save-eligible == 'true' && steps.lane.outputs.cache-hit != 'true'
         run: bun tools/main.ts mbx-export-headroom
@@ -215,6 +215,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/setup-bun
       - env:
           GH_TOKEN: ${{ github.token }}
-        run: bash .github/scripts/prune-build-cache.sh
+        run: bun tools/main.ts prune-build-cache

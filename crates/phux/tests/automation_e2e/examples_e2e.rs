@@ -28,7 +28,7 @@ fn assert_script_passes(program: &str, script: &str, env: &[(&str, &str)], what:
 fn agent_verify_self_test_covers_the_harness_without_real_agents() {
     assert_script_passes(
         "python3",
-        "scripts/agent-verify/self_test.py",
+        "benchmarks/agent-verify/self_test.py",
         &[("PYTHONDONTWRITEBYTECODE", "1")],
         "agent-verify self-test",
     );

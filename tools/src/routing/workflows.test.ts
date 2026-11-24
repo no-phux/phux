@@ -130,9 +130,9 @@ test("the strict ci aggregate needs every lane and rejects missing plan evidence
   const lanes = Object.keys(jobs(CI)).filter((id) => !AFTER_LANES.includes(id));
   expect(needs(aggregate).toSorted()).toEqual(lanes.toSorted());
   const script = run(
-    steps(aggregate).find((step) => run(step).includes(".github/scripts/ci-aggregate.sh")) ?? {},
+    steps(aggregate).find((step) => run(step).includes("tools/main.ts ci-aggregate")) ?? {},
   );
-  expect(script).toBe("bash .github/scripts/ci-aggregate.sh");
+  expect(script).toBe("bun tools/main.ts ci-aggregate");
   const baseline: Record<string, { result: string; outputs?: Record<string, string> }> =
     Object.fromEntries(lanes.map((id) => [id, { result: "skipped" }]));
   const flags = [...LANES, "rune_qualify", "release_qualify"];
@@ -184,7 +184,7 @@ test("every draft skips qualification and reports only a draft notice, including
 
 test("every selected lane, archive build and web half must succeed, not skip", () => {
   const script = run(
-    steps(job(CI, "ci")).find((step) => run(step).includes("ci-aggregate.sh")) ?? {},
+    steps(job(CI, "ci")).find((step) => run(step).includes("tools/main.ts ci-aggregate")) ?? {},
   );
   const flags = [...LANES, "rune_qualify", "release_qualify"];
   const selected: Record<string, string[]> = {
@@ -232,7 +232,7 @@ test("every selected lane, archive build and web half must succeed, not skip", (
 
 test("pull requests and merge groups write receipts; content publishes after a green push", () => {
   const ciSteps = steps(job(CI, "ci"));
-  const gateAt = ciSteps.findIndex((step) => run(step).includes(".github/scripts/ci-aggregate.sh"));
+  const gateAt = ciSteps.findIndex((step) => run(step).includes("tools/main.ts ci-aggregate"));
   expect(gateAt).toBeGreaterThan(0);
   expect(ciSteps.slice(0, gateAt).some((step) => uses(step).startsWith("actions/checkout@"))).toBe(
     true,
@@ -260,7 +260,7 @@ test("strict plan checks retain mandatory native, queue Apple and release packag
       plan: { result: "success", outputs },
     };
     const execute = (results: unknown) =>
-      Bun.spawnSync(["bash", ".github/scripts/ci-aggregate.sh"], {
+      Bun.spawnSync(["bun", "tools/main.ts", "ci-aggregate"], {
         cwd: repoPath("."),
         env: { ...process.env, EVENT_NAME: event, RESULTS: JSON.stringify(results) },
         stdout: "ignore",
@@ -292,7 +292,7 @@ test("a draft can only report a no-work notice and never writes a receipt", () =
   const dir = mkdtempSync(join(tmpdir(), "draft-aggregate-"));
   try {
     const execute = (results: unknown) =>
-      Bun.spawnSync(["bash", ".github/scripts/ci-aggregate.sh"], {
+      Bun.spawnSync(["bun", "tools/main.ts", "ci-aggregate"], {
         cwd: repoPath("."),
         env: {
           ...process.env,

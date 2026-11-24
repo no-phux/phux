@@ -57,7 +57,7 @@ rust-lint: worktree-claim fmt-check lint doc deny
     cargo check --locked -p phux --no-default-features --bin phux
     cargo check --locked -p phux-tui --all-targets --no-default-features
     bun tools/main.ts ghostty-pin
-    cargo check --locked --manifest-path scripts/plugin-index/Cargo.toml
+    cargo check --locked --manifest-path plugins/index/Cargo.toml
 
 
 # The binding crate with the mobile artifact's exact features (ADR-0135).
@@ -135,21 +135,21 @@ deny:
     # The generator is its own workspace, so the root check never sees its lock.
     # Probe it first: a shared-dep bump leaves this lock stale, and cargo-deny
     # --locked then only says the lock cannot be updated.
-    bash scripts/plugin-index/check-toml-version.sh
+    bash plugins/index/check-toml-version.sh
     # Call the binary: mbx wraps `cargo` and would forward `--config` into
     # `cargo metadata`, which then rejects deny.toml.
-    cargo-deny --manifest-path scripts/plugin-index/Cargo.toml --config deny.toml --locked check
+    cargo-deny --manifest-path plugins/index/Cargo.toml --config deny.toml --locked check
 
 
 # Shell scripts at warning severity: the examples carry deliberate info-level
 # nits (sourced libs shellcheck cannot follow) that are correct as written.
 [group('gates')]
 shellcheck:
-    shellcheck --severity=warning dev/*.sh dev/lib/*.sh install/*.sh install/lib/*.sh packaging/*.sh packaging/skills/*.sh scripts/*.sh scripts/lib/*.sh scripts/ci/*.sh .github/scripts/*.sh \
+    shellcheck --severity=warning dev/*.sh dev/lib/*.sh install/*.sh install/lib/*.sh packaging/*.sh packaging/skills/*.sh scripts/*.sh \
       clients/rune/upstream/*.sh clients/phux-vt-web/scripts/*.sh \
       examples/agents/*.sh \
       examples/agents/orchestrate-placed-fleet examples/agents/record-pi-live-fleet examples/agents/tests/*.sh \
-      plugins/*/scripts/*.sh
+      plugins/*/scripts/*.sh plugins/index/*.sh benchmarks/*/*.sh
 
 
 # The tools package (build and CI logic, ADR-0184): format, types, lint, tests.
@@ -212,14 +212,14 @@ worktree-release:
 # Verify committed branding without accessing the private source library.
 [group('gates')]
 brand-check:
-    python3 -B scripts/brand.py check
-    python3 -B -m unittest discover -s scripts -p 'test_brand*.py'
+    python3 -B brand/brand.py check
+    python3 -B -m unittest discover -s brand -p 'test_brand*.py'
 
 # Install an explicitly checksummed approved release (or roll back to one).
 [positional-arguments]
 brand-sync ARCHIVE SHA256:
-    python3 -B scripts/brand.py sync --archive "$1" --sha256 "$2"
+    python3 -B brand/brand.py sync --archive "$1" --sha256 "$2"
 
 # Restore the current release pin from the public brand archive.
 brand-restore:
-    python3 -B scripts/brand.py restore
+    python3 -B brand/brand.py restore

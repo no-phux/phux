@@ -1,9 +1,10 @@
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { Failure, type Command } from "../lib/command.ts";
+import { Failure, UsageError, type Command } from "../lib/command.ts";
 import { git } from "../lib/git.ts";
 import { ROOT } from "../lib/repo.ts";
 import { committed, manifest, mobile, renderTokens, writeExports } from "./exports.ts";
+import { designPin } from "./pin.ts";
 import { SOURCES, loadSources } from "./sources.ts";
 import { suggest } from "./suggest.ts";
 
@@ -45,5 +46,14 @@ export const commands: Record<string, Command> = {
       "--mobile-out DIR  also write the mobile exports and manifest.json into DIR",
     ].join("\n"),
     run: designGen,
+  },
+  "design-pin": {
+    summary: "Open a PR in each design-token consumer that moves its pin to REVISION.",
+    usage: "REVISION",
+    run([revision, ...rest]) {
+      if (rest.length > 0) throw new UsageError(`unexpected ${rest.join(" ")}`);
+      designPin(revision);
+      return 0;
+    },
   },
 };

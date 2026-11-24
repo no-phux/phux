@@ -3,8 +3,8 @@
 #
 # Starts an isolated phux server (its own HOME, XDG dirs, socket, and a
 # scrubbed environment; never the user's), optionally spawns a sibling pane
-# running scripts/bench/flood.py beside the probe pane, then runs
-# scripts/bench/pty-echo.py against `phux attach` at the requested size. The
+# running benchmarks/tui-load/flood.py beside the probe pane, then runs
+# benchmarks/tui-load/pty-echo.py against `phux attach` at the requested size. The
 # probe measures one typed byte from write(2) on the master until it comes
 # back, so its floor is the pty and the process under test, not a screen
 # scrape. Telemetry snapshots bracket the measured phase after shell

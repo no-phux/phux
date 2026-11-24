@@ -28,7 +28,7 @@ alone. Real CLIs still see your home directory so they can use the logins
 already there. The CI self-test uses a stub and does not call a model.
 
 ```sh
-python3 scripts/agent-verify/run.py
+python3 benchmarks/agent-verify/run.py
 ```
 
 `PHUX` or `--phux` selects the binary. Otherwise it uses `phux` on `PATH`,
@@ -85,7 +85,7 @@ every `results.json`.
 
 ## CI
 
-`python3 scripts/agent-verify/self_test.py` runs the same harness against
+`python3 benchmarks/agent-verify/self_test.py` runs the same harness against
 `stub_agent.py`, which emits each agent's screen signal and, in integration
 mode, the session-open / emit sequence the real integrations use. It does
 not call Claude, Codex, OpenCode, or pi. Real numbers come from a Mac run of
