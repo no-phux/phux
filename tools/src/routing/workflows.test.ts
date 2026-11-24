@@ -135,7 +135,7 @@ test("the strict ci aggregate needs every lane and rejects missing plan evidence
   expect(script).toBe("bash scripts/ci/ci-aggregate.sh");
   const baseline: Record<string, { result: string; outputs?: Record<string, string> }> =
     Object.fromEntries(lanes.map((id) => [id, { result: "skipped" }]));
-  const flags = [...LANES, "rune_qualify", "docs_catalog", "release_qualify"];
+  const flags = [...LANES, "rune_qualify", "release_qualify"];
   baseline["plan"] = {
     result: "success",
     outputs: Object.fromEntries(flags.map((flag) => [flag, "false"])),
@@ -152,8 +152,6 @@ test("the strict ci aggregate needs every lane and rejects missing plan evidence
     ["plan", "skipped", 1],
     ["plan", "skipped", 0, "true"],
     ["plan", "failure", 1],
-    ["docs-catalog", "skipped", 0],
-    ["docs-catalog", "failure", 1],
   ] as [string, string, number, string?][]) {
     const results = JSON.stringify({
       ...baseline,
@@ -188,7 +186,7 @@ test("every selected lane, archive build and web half must succeed, not skip", (
   const script = run(
     steps(job(CI, "ci")).find((step) => run(step).includes("ci-aggregate.sh")) ?? {},
   );
-  const flags = [...LANES, "rune_qualify", "docs_catalog", "release_qualify"];
+  const flags = [...LANES, "rune_qualify", "release_qualify"];
   const selected: Record<string, string[]> = {
     guards: ["guards"],
     lint: ["lint"],
@@ -200,7 +198,6 @@ test("every selected lane, archive build and web half must succeed, not skip", (
     native: ["native"],
     icount: ["icount"],
     rune: ["rune"],
-    docs_catalog: ["docs-catalog"],
   };
   const laneIds = needs(job(CI, "ci")).filter((id) => id !== "plan");
   for (const [flag, requiredJobs] of Object.entries(selected)) {
@@ -252,7 +249,7 @@ test("pull requests and merge groups write receipts; content publishes after a g
 });
 
 test("strict plan checks retain mandatory native, queue Apple and release packaging", () => {
-  const flags = [...LANES, "rune_qualify", "docs_catalog", "release_qualify"];
+  const flags = [...LANES, "rune_qualify", "release_qualify"];
   for (const event of ["push", "merge_group", "pull_request"]) {
     const release = event === "pull_request";
     const outputs = Object.fromEntries(flags.map((key) => [key, "false"]));
@@ -371,34 +368,6 @@ test("ci runs Rune's Linux hosts, and rune-macos owns the Apple legs", () => {
   expect(group).toContain("github.event_name == 'push' && github.sha");
   expect(group.endsWith(" || github.ref }}")).toBe(true);
   expect(group).not.toContain("merge_group");
-});
-
-test("docs catalog is path-filtered, credential-free, and required by ci", () => {
-  const lane = job(CI, "docs-catalog");
-  expect(str(lane["if"])).toBe("needs.plan.outputs.docs_catalog == 'true'");
-  expect(str(lane["runs-on"])).toBe("ubuntu-latest");
-  expect(lane["timeout-minutes"]).toBe(5);
-  expect(needs(lane)).toEqual(["plan"]);
-  expect(needs(job(CI, "ci"))).toContain("docs-catalog");
-  const checkouts = steps(lane).filter((step) => uses(step).startsWith("actions/checkout@"));
-  expect(checkouts).toHaveLength(2);
-  const website = checkouts.find((step) => withInput(step, "repository") === "no-phux/website");
-  expect(website).toBeDefined();
-  expect(withInput(website ?? {}, "ref")).toBe("main");
-  expect(withInput(website ?? {}, "path")).toBe("website");
-  expect(withInput(website ?? {}, "sparse-checkout")).toBe("scripts/docs-catalog.ts");
-  expect(withInput(website ?? {}, "sparse-checkout-cone-mode")).toBe(false);
-  expect(withInput(website ?? {}, "persist-credentials")).toBe(false);
-  expect(withInput(website ?? {}, "token")).toBeUndefined();
-  expect(JSON.stringify(website?.["with"])).not.toMatch(/secrets\.|github\.token/);
-  for (const step of checkouts) expect(withInput(step, "persist-credentials")).toBe(false);
-  const repoCheckout = checkouts.find((step) => withInput(step, "repository") === undefined);
-  expect(withInput(repoCheckout ?? {}, "fetch-depth")).toBe(0);
-  const command = steps(lane).map(run).join("\n");
-  expect(command).toContain("bun scripts/ci/docs-catalog-new-misses.ts");
-  const guards = steps(job(CI, "guards")).map(run);
-  expect(guards).toContain("bash scripts/check-website-docs-catalog.sh");
-  expect(guards).toContain("bash scripts/check-website-docs-catalog_test.sh");
 });
 
 test("post-merge workflows follow ci on main pushes only", () => {

@@ -1,426 +1,180 @@
+---
+group: customize
+order: 5
+---
+
 # Plugin API: build extensions for the phux terminal multiplexer
 
-phux is a terminal multiplexer with a plugin API. A plugin is a
-directory with a `phux-plugin.toml` manifest whose commands run as
-separate processes. A plugin can add actions, panes, status-bar widgets,
-sidebar sections, themes, hooks, agent declarations, and long-running
-startup sidecars.
+phux is a terminal multiplexer with a plugin API. A plugin is a directory
+with a `phux-plugin.toml` manifest whose commands run as separate processes.
+It adds actions, panes, status-bar widgets,
+sidebar sections, themes, hooks, agent declarations, and supervised
+sidecars. Every `phux plugin` subcommand and flag is in the
+[CLI reference](./reference/cli.md#phux-plugin); the manifest schema is
+[plugin.schema.json](./spec/plugin.schema.json).
 
-```sh
-phux plugin install someone/phux-plugin
-phux config reload
-```
-
-`someone/phux-plugin` is shorthand for
-`https://github.com/someone/phux-plugin`. A plugin that lives in a
-subdirectory is `someone/dotfiles/plugins/usage`, or any git URL with
-`--subdir`. `phux config reload` shows the plugin's actions, keys, panes,
-widgets, and sidebar sections in attached clients.
-
-**A plugin runs as you.** phux never loads plugin code into the server,
-and every plugin command runs as a separate process, but that is not a
-sandbox. A plugin's commands, and the build steps `phux plugin install`
-and `phux plugin update` run, can do anything your user can. Read a
-plugin before you install it.
+**A plugin runs as you.** phux never loads plugin code into the server and
+runs every command as a separate process, but that is not a sandbox. A
+plugin's commands and build steps can do anything your user can. Read one
+before you install it.
 
 ## Managing plugins
 
-Plugins are listed in your [configuration file](./config.md) as
-`[[plugins]]` entries. The `phux plugin` commands edit those entries.
-`enable` and `disable` also ring the config-reload doorbell so a running
-server starts or stops that plugin's startup sidecars. The other
-commands only edit the file:
-
-| Command | Does |
-| --- | --- |
-| `phux plugin install REF` | Fetches GitHub `owner/repo[/subdir]`, a git URL, a local directory, or a tarball, runs its build steps, validates it, and links it |
-| `phux plugin update [NAME]` | Re-fetches, rebuilds, and revalidates installed plugins, or just NAME |
-| `phux plugin new NAME` | Writes a minimal plugin: a manifest, one action, one hook, a script, and a README |
-| `phux plugin link PATH` | Adds a manifest already on disk, such as one you're writing |
-| `phux plugin unlink ID` | Removes a plugin's entry |
-| `phux plugin enable ID` | Turns a plugin on and, if a server is running, starts its startup sidecars |
-| `phux plugin disable ID` | Turns a plugin off, keeps its entry, and stops its startup sidecars |
-| `phux plugin list` | Lists configured plugins and whether each is enabled |
-| `phux plugin validate [PATH]` | Checks one manifest, or every configured one |
-| `phux plugin log` | Shows recent plugin action, hook, and startup lifecycle lines |
-| `phux plugin log --startup [ID]` | Prints the tail of a startup sidecar's log |
-
 ```sh
-$ phux plugin list
-com.phux.usage 0.1.0 (enabled)
-com.phux.demo.theme-pack 0.1.0 (disabled)
+phux plugin install someone/phux-plugin          # github.com/someone/phux-plugin
+phux plugin install someone/dotfiles/plugins/x   # a subdirectory
+phux plugin install https://git.example/p.git --subdir plugins/x --rev v1.2.0
+phux config reload
 ```
 
-`install` copies the plugin into `$XDG_DATA_HOME/phux/plugins` (or
-`~/.local/share/phux/plugins`) and records where it came from, so
-`update` can fetch it again. `--rev` installs a branch or tag of a git
-URL or of `owner/repo` shorthand, and `--disabled` links it turned off.
-A plugin can require a minimum phux version; installing it on an older
-phux fails with a message saying so.
+`install` copies the plugin, runs its `[[build]]` steps, and adds a
+`[[plugins]]` entry to your config; sources, `plugins.lock`, and `update`
+are in the [CLI reference](./reference/cli.md#phux-plugin-install).
 
-### Where `install` looks
+Trust is explicit. A git install or update with `[[build]]` steps prints
+them and asks `[y/N]` (`--yes` skips; without a terminal it refuses).
+Approval is remembered by a hash of the step argv, not of the files those
+steps run. A token in a URL is stripped before it is stored or printed; use
+a git credential helper for private repositories.
 
-`REF` is chosen in this order:
+When changes apply:
 
-1. An existing local directory is copied. An existing local file whose
-   name ends in `.tar`, `.tar.gz`, or `.tgz` is extracted. Any other
-   existing file is an error.
-2. A git URL (`https://…`, `git@…`, `file://…`) is cloned as given, with
-   the system `git`. The URL is not rewritten. `--subdir PATH` uses the
-   plugin in that subdirectory of the clone instead of the repository
-   root.
-3. `owner/repo` or `owner/repo/sub/dir` is GitHub shorthand. phux clones
-   `https://github.com/owner/repo` and, when more path segments follow
-   the repo, uses them as the subdirectory. A trailing `.git` on the
-   repo name is ignored. Nothing is contacted except that clone.
-
-An existing local path wins over shorthand. `./foo/bar`, `../foo`, an
-absolute path, a `~` path, a trailing slash, and a reference with a `.`
-or `..` segment are always local paths, never shorthand. When a reference
-matches both an existing path and `owner/repo`, the message says which
-one was chosen. `--subdir` on a reference that already names a
-subdirectory is an error, and the message names both.
-
-```sh
-phux plugin install someone/phux-plugin --rev v1.2.0
-phux plugin install someone/phux-plugin --rev 0123456789abcdef0123456789abcdef01234567
-phux plugin install https://github.com/someone/plugins --subdir plugins/usage
-```
-
-`--rev` is a branch, a tag, or a full 40-character commit SHA. A SHA is
-fetched and checked out, and that commit stays pinned. A password or
-token in a URL (`https://user:token@host/...`) is removed before the
-address is stored or printed; the clone itself still uses the URL you
-typed. For a private repository, use a git credential helper rather than
-putting a token in the URL. A git install or update whose manifest has
-`[[build]]` steps prints those commands and asks `[y/N]` on a terminal.
-Pass `--yes` to run them without asking. Without a terminal, the error
-names `--yes` and lists the steps it refused. `update` stores a hash of
-the approved build commands (the argv of each step), not of the files
-those commands run. The same argv is not asked again: a changed script
-behind an approved command, such as `build.sh` after `sh build.sh` was
-approved, is not re-asked. That is the same trust model as install. A
-hash written by an older phux does not match, so `update` asks again.
-Control characters in a step are shown escaped, in the prompt and in the
-refusal, so that text is the command that will run. Refusing on install
-installs nothing. Refusing on update leaves the installed copy in place.
-
-### What install and update trust
-
-`install` and `update` fetch with the system `git`: a shallow clone of a
-branch or tag, or a fetch of one commit when `--rev` is a SHA. The only
-protocols git is allowed are `https`, `ssh`, `git`, and `file`. `file` is
-for a repository already on disk, including tests. GitHub shorthand is
-`https://github.com/owner/repo` and nothing else is contacted. Each git
-command waits at most 180 seconds (`PHUX_PLUGIN_GIT_TIMEOUT_MS` is that
-limit in milliseconds). If `GIT_SSH_COMMAND` is set, that command is
-kept and phux appends `-o BatchMode=yes`, unless it already sets
-`BatchMode` or the program is PuTTY `plink` or `tortoiseplink` (those
-do not take OpenSSH `-o` options, so the command is left unchanged). If
-`GIT_SSH` or git `core.sshCommand` is set, `BatchMode` is not forced, so
-a password prompt can wait until the 180 second clone timeout. The
-resolved commit SHA is written to `plugins.lock`. Two installs at once can lose one of those lockfile
-writes; the file is not locked.
-
-`update` moves a branch only when the new commit is that recorded SHA or
-a descendant of it, looking 100 commits back. A force-moved or rewritten
-branch is refused, including when the real history is deeper than that
-window. `--latest` accepts the rewritten history. A commit pinned with
-`--rev` does not move unless you pass `--latest`, which then follows the
-repository's default branch.
-
-A symlink anywhere in the repository root refuses an install of that
-root. An install from a subdirectory checks that subdirectory instead.
-
-A plugin is not reviewed. It runs as you, unsandboxed: its commands and
-its build steps can do anything your user can. Read it before you
-install it.
-
-`link` takes a manifest path, or a directory holding one. The entry it
-writes looks like this, and you can write it by hand:
-
-```toml
-[[plugins]]
-manifest = "~/code/my-plugin/phux-plugin.toml"
-enabled = true
-```
-
-A relative `manifest` path is relative to the config file that names it.
-
-**Hooks need a server restart.** Enabling, disabling, or updating a
-plugin reaches the palette, keys, panes, widgets, and sidebar on
-`phux config reload`. Its `[[events]]` hooks run in the server, which
-reads them at start; run `phux upgrade` to restart it in place. Startup
-sidecars are different: `enable`, `disable`, and `phux config reload`
-reconcile them in the running server. An entry whose manifest has not
-changed is left running.
+- Actions, keys, panes, widgets, sidebar sections, themes: `phux config reload`.
+- `[[events]]` hooks: server start (`phux upgrade` restarts in place).
+- `[[startup]]` sidecars: `phux plugin enable`, `disable`, and
+  `phux config reload` reconcile them in the running server.
 
 ## Writing a plugin
 
-`phux plugin new NAME` writes a new plugin directory. `NAME` is the
-plugin id (`hello`, `com.example.tools`) and the manifest's `name`.
-Without `--dir`, the directory is `./NAME`. `min_phux_version` is the
-version of the phux that wrote the file. The directory holds one `hello`
-action that runs `scripts/hello.sh`, one `pane-exit` hook, and a README.
-A directory that already has files is left untouched.
-
 ```sh
-phux plugin new hello
+phux plugin new hello        # manifest, one action, one hook, a script, a README
 phux plugin validate hello
 phux plugin link hello
 ```
 
-A minimal plugin is a manifest and the scripts it runs:
+A manifest:
 
 ```toml
-# phux-plugin.toml
 id = "example.pane-tools"
 name = "Pane Tools"
 version = "0.1.0"
 min_phux_version = "0.0.2"
-description = "Summarize the focused pane."
 
 [[actions]]
 id = "summarize"
 title = "Summarize pane"
 contexts = ["pane"]
 command = ["python3", "summarize.py"]
-keys = "t s"
+keys = "t s"                       # C-a t s; your bindings win
 
 [[events]]
 id = "log-exit"
-title = "Log pane exits"
-on = "pane-exit"
+on = "pane-exit"                   # a hook event
 command = ["sh", "-c", "echo \"$PHUX_EXIT_CODE\" >> exits.log"]
-```
 
-Link it while you work on it, check it, then reload:
-
-```sh
-phux plugin link ~/code/pane-tools
-phux plugin validate ~/code/pane-tools
-phux config reload
-```
-
-`id` must be unique across your plugins. `command` is always an argument
-list, run directly and never through a shell unless you call one, as
-above. Commands run from the plugin's own directory, so relative paths
-like `summarize.py` work.
-
-### What a manifest can declare
-
-| Table | Adds |
-| --- | --- |
-| `[[actions]]` | A command run on the invoking machine. `keys` binds it in the TUI prefix table (`"t s"` is <kbd>C-a</kbd> <kbd>t</kbd> <kbd>s</kbd>); user and shipped bindings win. |
-| `[[events]]` | A hook: `on` names a [hook event](./hooks.md#events), and `command` runs every time it fires, with the same environment as a config hook. An `on` that is no hook event would never fire: `phux plugin validate` rejects it, suggesting the nearest event, and the server skips it with a warning. |
-| `[[panes]]` | A program to open as a pane. `placement` is `split`, `tab`, `zoomed`, or `overlay` (a floating box). |
-| `[[widgets]]` | A status-bar widget: `id`, a `slot` (`left`, `center`, or `right`, the default), and a `kind` with its [options](./reference/widgets.md). It goes after your own widgets. |
-| `[[sidebar]]` | A fixed section between Agents and Sessions: `title`, a `format` for each pane's row, and `rows` (1 to 8, default 3). |
-| `[[themes]]` | A [theme](./themes.md): a `name` and the `path` of a directory holding `colors.toml`. |
-| `[[agents]]` | An agent the plugin integrates, with a `label`, a declared `state`, and an `attention` level. |
-| `[[build]]` | A `command` that `install` and `update` run to build the plugin. |
-| `[[startup]]` | A long-running sidecar the server supervises. See [Startup sidecars](#startup-sidecars). |
-
-`platforms = ["linux", "macos"]` limits the plugin, or one entry, to those
-systems.
-
-A sidebar section's `format` uses `{agent}`, `{cwd}`, `{exit}`,
-`{index}`, `{state}`, `{title}`, and `{window}`. A pane gets a row only
-when every token in the format has a value for it:
-
-```toml
 [[sidebar]]
 id = "exits"
 title = "Last exit"
-format = "{window}: exit {exit}"
+format = "{window}: exit {exit}"   # a pane gets a row only when every token resolves
 rows = 3
 ```
 
-### What a plugin process receives
+`command` is always an argv, never a shell string; it runs from the plugin
+directory. The tables are `[[actions]]`, `[[events]]`, `[[panes]]`
+(`placement` = `split`, `tab`, `zoomed`, `overlay`), `[[widgets]]` (a
+[widget](./reference/widgets.md) plus a `slot`), `[[sidebar]]`,
+`[[themes]]` (a `path` to a directory with `colors.toml`), `[[agents]]`,
+`[[build]]` (killed after five minutes), and `[[startup]]`.
+`platforms = ["linux", "macos"]` limits the plugin or one entry.
 
-A plugin command is a normal child process and is not sandboxed. Install
-only plugins you trust. Environment handling differs by entrypoint.
+### What each process gets
 
-**Actions** (`[[actions]]`) receive explicit context in a scrubbed
-environment. See [the action process interface](./plugin-actions.md#process-environment).
+All run with the plugin directory as working directory and get
+`PHUX_PLUGIN_ID` and `PHUX_PLUGIN_ROOT`.
 
-**Event hooks** (`[[events]]`) run with the plugin directory as the
-working directory. They receive the same variables as a
-[config hook](./hooks.md#what-the-command-gets), plus:
+- **Actions** get a scrubbed environment: only `PATH`, `HOME`, `LANG`,
+  `LC_ALL`, `TMPDIR`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`,
+  and `PHUX_BIN`, plus `PHUX_PLUGIN_ACTION_ID` and `PHUX_ACTION_CONTEXT`. On
+  Unix `PHUX_SOCKET` is deliberately unusable, so a nested `phux` does not
+  silently reach your server.
+- **Event hooks** get a [config hook's environment](./hooks.md#matching)
+  plus `PHUX_PLUGIN_EVENT_ID`.
+- **Panes** are ordinary panes with `PHUX_PLUGIN_PANE_ID`, `PHUX_SOCKET`,
+  and `PHUX_TERMINAL_ID`.
+- **Startup sidecars**: see [below](#startup-sidecars).
 
-| Variable | Value |
-| --- | --- |
-| `PHUX_PLUGIN_ID` | The plugin's manifest `id` |
-| `PHUX_PLUGIN_EVENT_ID` | The hook's `id` |
-| `PHUX_PLUGIN_ROOT` | The plugin directory |
+A plugin's `exec` widget runs in the client with no plugin variables.
 
-Every hook also gets `PHUX_EVENT` (the event name) and `PHUX_SOCKET`
-(the server's socket) when the process that fires the hook knows that
-socket. `phux worktree new` fires `worktree-created` from the CLI and
-sets `PHUX_SOCKET` to the socket that command is using. Each context key
-is an environment variable: hyphens become underscores and the name is
-uppercased with a `PHUX_` prefix, so `exit-code` is `PHUX_EXIT_CODE` and
-`terminal-id` is `PHUX_TERMINAL_ID`. The keys for each event are listed
-in [Hooks](./hooks.md#events).
+## Running actions
 
-**Panes** (`[[panes]]`) are ordinary panes whose working directory is the
-plugin directory. The spawn adds `PHUX_PLUGIN_ID`, `PHUX_PLUGIN_ROOT`,
-and `PHUX_PLUGIN_PANE_ID`. The server also sets `PHUX_SOCKET` to its
-socket, `PHUX_TERMINAL_ID` to that pane's id, `TERM` from `defaults.term`,
-and `COLORTERM=truecolor`. It removes `PHUX_UPGRADE_SOURCE_EXE`,
-`PHUX_UPGRADE_SNAPSHOT_DIR`, and any `CLAUDE_CODE_*` or `CLAUDECODE`
-variable inherited from the server, so a nested server or `claude` does
-not reuse the outer session.
+An action runs on the machine that invokes it: the TUI palette or a key,
+Rune's palette, `phux config run`, or MCP.
 
-**Build steps** (`[[build]]`, run by `install` and `update`) use the
-plugin directory as the working directory and receive `PHUX_PLUGIN_ID`
-and `PHUX_PLUGIN_ROOT`. Each step is killed after five minutes.
-
-An `exec` status widget contributed by a plugin is run by the client
-with no plugin variables and not in the plugin directory. Themes and
-sidebar sections do not start a process.
-
-### Running actions
-
-See [Running plugin actions](./plugin-actions.md) for the palette, key,
-CLI and MCP invocation interfaces.
-
-## Listing a plugin
-
-Add the GitHub topic `phux-plugin` and a `phux-plugin.toml` at the root of
-the default branch that `phux plugin validate` accepts. The static index
-is built from that public topic and from the plugins in this repository.
-A repository with several plugins lists their directories in
-`phux-plugin-dirs.toml`:
-
-```toml
-subdirs = ["plugins/pane-tools"]
+```sh
+phux config run example.pane-tools summarize \
+  --target-json '{"host":"hub","resource_handle":"worker/@7"}' \
+  --input-json '{"format":"short"}'
 ```
 
-Plugins run as you and aren't sandboxed (see the top of this page). The
-index document is [plugin-index.schema.json](spec/plugin-index.schema.json).
+It prints the action's output and exits with its code. Bind one yourself
+with `plugin-action` ([Key bindings](./keys.md#tables)); `input = { ... }`
+in the binding passes JSON input.
 
-## First-party plugins
-
-The optional [first-party plugins](../plugins/README.md) are in `plugins/`:
-
-- `usage` publishes your AI plan limits to every client.
-- `agent-stats` publishes each agent's
-  [work done](../plugins/agent-stats/README.md#contract) to every client.
-- `continuum` saves workspace archives through host hooks.
-- `agent-tools` packages coding-agent integrations and bench demo scripts.
-
-`phux config init --distro starter` turns on all but `agent-stats` from a
-source checkout.
-
-For a minimal plugin to copy, see the working
-[theme example](../examples/plugins/theme-pack/README.md).
+`PHUX_ACTION_CONTEXT` is versioned JSON (at most 16 KiB) with
+`schema_version`, `executor`, `source`, `target`, `input`, and `observed`.
+The UI captures the target before the job starts, so an action must not
+look up the client's later focus. Missing or ambiguous target facts are
+absent, never guessed. An action that needs the server must call a public
+operation from an authorized client.
 
 ## Startup sidecars
 
-A `[[startup]]` entry is a process the server keeps running for the life
-of the server. It is not a hook (hooks are killed after 30 seconds) and
-not a pane. One process runs per entry. Use it for a local web server or
-anything else that should come up with phux and go down with it.
+A `[[startup]]` entry is a long-running process the server supervises for
+its lifetime, such as a local web server.
 
 ```toml
 [[startup]]
 id = "web"
 command = ["bun", "server.ts"]
-platforms = ["linux", "macos"]
 ```
 
-`command` is an argument list, never a shell string. Write
-`["sh", "-c", "..."]` when you need a shell. `id` is unique in the
-manifest and uses the same rules as an action id. A plugin id or a
-startup id of `.`, `..`, or `server` is rejected: those names escape
-the startup directory or collide with files the server writes there.
-`platforms` is optional. The entry runs only when both that list and the manifest's
-top-level `platforms` allow this operating system. Leaving a list out
-means every system. A manifest may declare at most 8 startup entries.
-The server starts at most 8 across every enabled plugin, in `[[plugins]]`
-order; the rest are skipped and a `skipped: cap` line is written to the
-run log. `phux plugin validate` checks the per-manifest rules on every
-operating system. It does not apply the platform filter, so one machine
-can validate a multi-platform manifest. There is no `timeout` key.
+- At most 8 per manifest and 8 across all plugins, in `[[plugins]]` order.
+- Started once the server accepts connections, including after `phux
+  upgrade`. Environment is the server's minus pane identity, plus
+  `PHUX_SOCKET`, `PHUX_PLUGIN_NAME`, `PHUX_PLUGIN_VERSION`, and
+  `PHUX_PLUGIN_STATE` (a private state directory). Stdin is `/dev/null`;
+  output goes to a rotated log ([files](./reference/files.md)).
+- A failure restarts it with backoff from 1 to 30 seconds; the sixth failure
+  in ten minutes gives up until the next start or a disable/enable. Exit 0
+  is a deliberate stop.
+- On server exit, upgrade, or disable, the process group gets `SIGTERM`,
+  then `SIGKILL` after 5 seconds. Orphans from a killed server are reaped on
+  the next start.
 
-The server starts sidecars after it is accepting connections, including
-after `phux upgrade`. The child runs as you, with cwd set to the plugin
-directory (`PHUX_PLUGIN_ROOT`) and umask `077`. Its environment is the
-server's, plus:
+**A sidecar has owner-level access to `PHUX_SOCKET`**, and while connected
+it keeps an idle server alive.
 
-| Variable | Value |
-| --- | --- |
-| `PHUX_SOCKET` | This server's socket |
-| `PHUX_PLUGIN_ID` | Manifest `id` |
-| `PHUX_PLUGIN_NAME` | Manifest `name` |
-| `PHUX_PLUGIN_VERSION` | Manifest `version` |
-| `PHUX_PLUGIN_ROOT` | Directory containing the manifest |
-| `PHUX_PLUGIN_STATE` | `<state-dir>/plugin-startup/<plugin-id>/<startup-id>/`, mode `0700` |
+## Listing a plugin
 
-Pane identity the server may have inherited (`PHUX_TERMINAL_ID`,
-`PHUX_PANE`, `PHUX_SESSION`, and the other per-pane variables) is
-removed. Stdin is `/dev/null`. Stdout and stderr append to
-`<state-dir>/plugin-startup/<plugin-id>/<startup-id>.log`, mode `0600`.
-The server rotates that file at 1 MiB, keeping three older generations,
-by copying it aside and truncating it in place.
+Give the repository the GitHub topic `phux-plugin` and a root
+`phux-plugin.toml` that `phux plugin validate` accepts. A repository with
+several plugins lists them in `phux-plugin-dirs.toml`
+(`subdirs = ["plugins/pane-tools"]`). The index document is
+[plugin-index.schema.json](./spec/plugin-index.schema.json).
 
-A non-zero exit or a signal restarts the process after a backoff of 1,
-2, 4, 8, 16, then 30 seconds. The backoff returns to 1 second after the
-process has been up for at least 60 seconds. Exit 0 is a deliberate
-stop: the run log records `exited 0 (not restarting)` and the process
-is not started again. The sixth failure inside ten minutes gives up
-until the next server start or a disable/enable cycle.
+## First-party plugins
 
-On server exit, upgrade, and plugin disable, every sidecar's process
-group gets `SIGTERM`, then `SIGKILL` after a shared 5 second deadline.
-Upgrade stops them before the new binary runs and starts them again
-once the new process is accepting; they are not restored from the
-upgrade handoff. A server killed with `SIGKILL` cannot do that. The
-next start reads the pidfile, which names the sidecar and the server
-that owned it. It does not signal the group while that server is still
-alive. When the owner is gone, it signals the group if the leader pid
-is still alive and its start time still matches, or if the leader is
-already dead but the process group still has a member that started in
-or after the recorded spawn tick (a grandchild left behind when the
-leader honored `SIGTERM`, including one forked in the same 10ms tick).
-A live pid that started at a different time is left alone. A pidfile
-from a different boot is stale and is not signaled, because start-time
-ticks are not comparable across reboots. On macOS the boot id is
-`kern.boottime`, which moves when the wall clock is set. A changed id
-skips the reap instead of signaling a group. The pidfile is named
-`<startup-id>.<server-pid>.pid` so two servers sharing a state
-directory do not overwrite each other. Pidfiles for sidecars that have
-already exited are removed.
-
-**A sidecar's socket connection keeps the server alive.** Connecting to
-`PHUX_SOCKET` counts as a client connection, the same as any other
-client. While that connection is open, `--exit-after-idle` does not
-fire. A sidecar that never connects does not keep the server alive by
-merely existing.
-
-**The sidecar gets owner-level access to `PHUX_SOCKET`.** It can do
-anything you can do through phux. It is not sandboxed. Narrower
-per-plugin keys come later. Read a plugin before you install it.
+[`plugins/`](../plugins/README.md) holds the optional first-party plugins;
+the starter [distro](./distros.md) enables some of them. For a minimal
+plugin to copy, see the [theme example](../examples/plugins/theme-pack/README.md).
 
 ## Debugging
 
-- `phux plugin validate` checks every configured manifest and says what
-  is wrong with one that fails, including an event hook that can never
-  fire.
-- `phux config keys` lists plugin keys with `plugin <id>` as their source.
-- `phux plugin log` lists the newest runs of every action and hook, and
-  startup lifecycle lines, oldest first, with exit status and duration.
-  `--failed` shows only failures, with the end of their output; `-n`
-  sets how many runs. `phux plugin log --startup` prints the tail of
-  each sidecar log; `--startup plugin-id/startup-id` prints one.
+- `phux plugin validate` checks every configured manifest, including an
+  `on` that names no hook event.
+- `phux config keys` lists plugin keys as `plugin <id>`.
+- `phux plugin log [--failed]` shows recent action, hook, and sidecar runs
+  with exit status and duration; `--startup [ID]` prints sidecar logs.
 
-```text
-$ phux plugin log --failed
-2026-10-21 22:34:06  action  example.pane-tools/summarize  exit 1  79ms
-    summarize.py: no pane text
-```
-
-If an action is missing from the palette, check that the plugin is
-enabled and run `phux config reload`. If its hook never shows up in the
-log, the server hasn't restarted since you enabled it.
+A missing action means the plugin is disabled or you haven't reloaded. A
+hook that never logs means the server hasn't restarted since you enabled it.

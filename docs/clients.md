@@ -1,193 +1,108 @@
+---
+group: connect
+order: 2
+---
+
 # Clients
 
-A client is a program that shows sessions from a phux server: the terminal
-UI, the desktop app, or something you build. Every client talks to the same
-server protocol, so several clients can show one session at once. Individual
-clients differ in supported features and maturity.
-
-The terminal UI is the core client. The separately released desktop is
-maintained but newer; the browser client is experimental and unshipped.
-The phone apps are in testing: Android on Google Play, iOS not generally
-available yet. Remote hosts and agent integrations are
-optional; no extra client is required to use the server from the CLI.
-
-```sh
-phux attach work        # the terminal UI, in this terminal
-```
+The programs that show sessions from a phux server. All speak the same
+[protocol](./protocol.md), so several can show one session at once.
 
 ## Terminal UI
 
-`phux` and `phux attach` run the terminal UI in whatever terminal you are
-in. It ships in every release, and every other client is measured against
-it. It draws panes with libghostty, the same terminal emulator the server
-uses, so what you see is what the server has. See
-[libghostty in phux](./libghostty.md).
+`phux` and `phux attach` run the terminal UI in your current terminal. It
+ships in every release and is the reference client; it draws panes with
+[libghostty](./libghostty.md), the emulator the server uses.
+[Getting started](./getting-started.md) covers it.
 
-A session's arrangement can also hold a document, window mirror,
-accessibility tree, or agent pane that another client placed there
-([resource kinds](./resource-kinds.md)). The terminal UI shows each as a
-tile naming its kind and title; it can take focus, but typing there does
-nothing and the tile is never resized. Killing such a pane, or a tab
-holding one, only closes its view: the resource and its producer keep
-running, and `reopen-views` shows a hidden document again.
+A document, window mirror, accessibility tree, or agent pane another client
+placed in the arrangement ([resource kinds](./resource-kinds.md)) shows as a
+tile naming its kind and title. Typing there does nothing. Killing such a
+pane only closes the view; `reopen-views` shows a hidden document again.
 
-[Getting started](./getting-started.md) covers this client.
-<kbd>C-a</kbd> <kbd>S</kbd> opens settings, which edit your config file;
-[when a change takes effect](./config.md#when-a-change-takes-effect)
-explains when you see it.
-
-`phux rec` records a pane to a cast, GIF, or APNG. A recording only watches
-output; it is not a backup of the process. `phux play` plays one back in a
-new pane and never overwrites an existing one.
+`phux rec` records a pane to a cast, GIF, or APNG; `phux play` plays one in a
+new pane.
 
 ## Native terminal windows
 
-`phux native create` displays a distinct terminal in a native emulator window,
-without the TUI sidebar, tabs, status bar, or pane layout. The default shared
-session is `omarchy`; the window manager tiles the windows.
-[Native terminal windows](./native-terminal.md) covers creation, reattachment,
-detach, and the client's current limits.
+`phux native create` shows one server-owned terminal in your emulator's own
+window, with no sidebar, tabs, status bar, or layout; your window manager
+tiles the windows.
+
+```sh
+phux native create                      # a new terminal in session omarchy
+phux native create -s work -c ~/src -- bash
+phux ls omarchy
+phux native attach @3                   # reattach by exact address
+```
+
+Each `create` makes a distinct terminal. Ctrl-] detaches and the process
+keeps running; Ctrl-C and Ctrl-Z go to the program; closing the window
+leaves the shell running. Rune and the CLI see and manage the same
+terminals when on the same server. Native clients never change layout or
+focus. One PTY has one size, so the last resize wins.
+
+Limits: local sockets only, VT output rendered by the emulator (image and
+scrollback fidelity follow the compatibility emitter), and no automatic
+reconnect: reattach after a connection failure.
 
 ## Desktop
 
-The desktop app is [Phux Rune](../clients/rune/README.md), an alpha client
-built on the [Rune](https://github.com/anomalyco/rune) UI framework, for macOS
-14 or later on Apple silicon and x86_64 or arm64 Linux with Vulkan and glibc
-2.39:
+[Phux Rune](../clients/rune/README.md) is the desktop app, an alpha client
+for macOS 14+ (Apple silicon) and x86_64 or arm64 Linux with Vulkan and
+glibc 2.39:
 
 ```sh
 curl -fsSL https://phux.sh/install | sh -s -- --rune
 ```
 
-`--desktop` and `https://phux.sh/install-desktop` install the same app. It
-installs the CLI when none is found, starts or reuses the server, and updates
-itself. It never creates sessions on its own or stops the server; quitting
-detaches. Windows has no native desktop app: the CLI and server run in WSL 2,
-with PowerShell launchers.
-
-It shows every session and terminal with each agent's state, on this machine
-and on each machine you added with `phux host add` or **Add a machine**. It
-also draws documents, accessibility trees, and pixel surfaces as panes,
-sends input to a mirrored page, window, or display, and starts mirrors from
-its palette ([resource kinds](./resource-kinds.md#available-now)). It has
-a command palette, splits from the session's server-stored arrangement (the
-same layout the terminal UI shows), find in history, ⌘-clickable links, an
-agent inbox with notifications, tabs, themes, and a read-only view of the
-Git changes in a terminal's checkout (**Show Changes** in the palette), and
-a popup that runs one command in a floating terminal and closes when it
-exits (**Popup…** in the palette). It ships as `rune-v*`
-releases, Developer ID signed and notarized on macOS, and draws Kitty images
-(direct and Unicode placeholder placements), locally and from remote hosts.
-The same app has a phone form ([MOBILE.md](../clients/rune/MOBILE.md)).
-Expect rough edges: the terminal UI is ahead of the desktop.
-
-The previous GPUI desktop was retired after Desktop 0.62.0; its source is the
-`desktop-v0.62.0` tag (`git checkout desktop-v0.62.0 -- clients/desktop`).
+It installs the CLI if missing, starts or reuses the server, and updates
+itself. It never creates sessions or stops the server on its own; quitting
+detaches. It shows every session and agent state on this machine and every
+added machine, draws documents, trees, and pixel surfaces, sends input to
+mirrors, and has a command palette, the server-stored splits, find, Git
+changes, and popups. It ships as signed `rune-v*` releases. The same app has
+a [phone form](../clients/rune/MOBILE.md). On Windows, run the CLI and
+server in WSL 2.
 
 ## Browser
 
-A browser client exists in the phux repository. It draws a session on a
-canvas with libghostty compiled to WebAssembly, over WebTransport or
-WebSocket. It works, but it isn't shipped: nothing serves it, and the
-server's browser listeners are off by default. Documents, trees, and
-surfaces get read-only tiles beside the terminals: text and JSON as source,
-PNG, JPEG, GIF and WebP as images, anything else as its type and size. It
-shows at most four panes; a new terminal takes the last document's tile,
-which comes back when a pane closes. Use it as a starting point for putting
-a terminal in a web page.
-
-**A browser needs a client certificate to connect to a paired server.**
-Over WebSocket, install an enrolled client certificate in the browser.
-WebTransport from a browser can't present one, so a paired server refuses
-it. A token alone never gets a browser in.
+An experimental browser client in the repository draws a session with
+libghostty compiled to WebAssembly over WebTransport or WebSocket. It is not
+shipped and the server's browser listeners are off by default. **A browser
+needs an enrolled client certificate to reach a paired server**, which
+WebTransport can't present, so use WebSocket.
 
 ## Phones
 
 The Android app is in open testing on
-[Google Play](https://play.google.com/store/apps/details?id=dev.phux.mobile).
-The iOS app is in testing and not generally available yet. `phux pair --qr`
-prints the pairing code they scan; see
-[pairing with a link](./remote.md#pairing-with-a-link).
-
-A phone off your network can reach a server through a
-[relay you run](./remote.md#relays), with no VPN: `phux pair --relay-route
-home` prints the code to scan. The apps list this under **Your own relay**
-when you add a computer, and show which hosts are reached through one.
+[Google Play](https://play.google.com/store/apps/details?id=dev.phux.mobile);
+iOS is in testing. Scan `phux pair --qr`
+([pairing with a link](./remote.md#pairing-with-a-link)). Off your network,
+pair through a [relay](./remote.md#relays) with
+`phux pair --relay-route home`.
 
 ## Host colours
 
-Every client draws each machine in one of eight colours (blue, violet,
-magenta, sky, coral, olive, slate, copper), picked from a hash of its name,
-so `mini` looks the same on the desktop, on mobile, and in `phux host ls
---json`. Two more, green and navy, are yours to pick but never assigned.
-Amber, mint, and red stay reserved for agent state, and a name is always
-shown beside the colour. Pick a colour yourself when two machines
-land on the same one:
+Each machine gets one of eight palette colours hashed from its name, the
+same on every client. Amber, mint, and red stay reserved for agent state.
+Override one:
 
 ```sh
-phux host color mini violet      # [[remote]] color = "violet"
-phux host color --local sky      # this machine: [host] color = "sky"
-phux host color mini auto        # back to the hashed colour
-phux host color --role satellite box navy   # [[satellites]] color = "navy"
+phux host color mini violet
+phux host color --local sky
+phux host color mini auto        # back to the hash
 ```
-
-A name registered as both a remote and a satellite needs `--role`. One
-name is one machine, so an override on either role colours it in both,
-unless the other role has its own override.
-
-`phux host ls --json` reports each host's resolved `color` (`id`, `hex`,
-and whether an `override` chose it) and this machine under `local`, with
-the `cert_fingerprint` its server presents. The
-desktop's Machines sheet sets the same override, and a desktop window's
-sessions, tabs and focused terminal take its machine's colour.
-
-## Session colours
-
-A session takes a colour from the same palette when your `config.toml`
-names it:
-
-```toml
-[[sessions]]
-name = "api"
-color = "coral"
-```
-
-The colour lives in your config, not on the server, so it shows wherever
-that file is read and nowhere else. The terminal UI and the desktop draw
-the session's mark in the sidebar in that colour, and the desktop puts a
-dot of it before the name of a session with several terminals. A mark that
-is asking for you (blocked, done) keeps its state colour. A session with no entry looks as it always did: nothing is hashed. The name must match exactly, the first entry for a name wins, and
-a colour outside the palette fails the config load with the names to use.
-`phux config reload` applies an edit to an attached terminal UI; the
-desktop reads the table when it starts.
 
 ## Pane icons
 
-A pane can wear an icon, an emoji or a Nerd Font symbol, before its name in
-the terminal UI's tab bar and the desktop's tabs, sidebar and palette. Your
-`config.toml` names icons by the foreground program or the folder:
-
-```toml
-[[icons]]
-icon = "🦀"
-process = "cargo"
-
-[[icons]]
-icon = "🏢"
-cwd = "~/work/*"
-```
-
-`process` matches the foreground program's name exactly. In `cwd`, `*`
-matches any run of characters, `/` included, and a leading `~` is your home
-folder. When an entry names both, both must match, and the first matching
-entry wins. An icon a program in the pane sets with
-[`OSC 1337 ; SetUserVar=phux_icon`](./program-sequences.md#pane-icon-osc-1337-setuservar)
-comes first. Like session colours, the table lives in your config:
-`phux config reload` applies an edit to an attached terminal UI, and the
-desktop reads it when it starts.
+`[[icons]]` puts an icon before a pane's name by foreground `process` or
+`cwd` glob, and `[[sessions]]` gives a session a palette colour
+([config reference](./reference/config.md)). An icon a program sets with
+[`OSC 1337 SetUserVar=phux_icon`](./program-sequences.md#pane-icon-osc-1337-setuservar)
+wins. Both live in your config, not on the server: `phux config reload`
+applies an edit to the terminal UI; Rune reads them at start.
 
 ## Your own
 
-To put a phux terminal in your own app, see
-[Embed a terminal](./embedding.md). [Protocol](./protocol.md) describes what
-clients send and receive.
+[Embed a terminal](./embedding.md) puts a phux terminal in your app.

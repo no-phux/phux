@@ -53,7 +53,6 @@ jobs:
       rune_qualify: ${{ steps.plan.outputs.rune_qualify }}
       release_qualify: ${{ steps.plan.outputs.release_qualify }}
       docs_only: ${{ steps.plan.outputs.docs_only }}
-      docs_catalog: ${{ steps.plan.outputs.docs_catalog }}
       web_engine: ${{ steps.plan.outputs.web_engine }}
       content: ${{ steps.plan.outputs.content }}
       unit_mode: ${{ steps.plan.outputs.unit_mode }}
@@ -82,28 +81,15 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      # Warning-only: a miss or a failed fetch exits 0 and must not fail guards or ci.
-      - name: website docs catalog
-        if: github.event_name == 'pull_request'
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: bash scripts/check-website-docs-catalog.sh
-      - name: website docs catalog fixture
-        run: bash scripts/check-website-docs-catalog_test.sh
-      # The pre-commit size ratchet again, for commits whose hooks never ran.
-      - name: file size ratchet
-        if: github.event_name == 'pull_request'
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: bash scripts/check-file-tokens.sh --base "$BASE_SHA"
       - uses: ./.github/actions/setup-bun
-      # A docs-only diff needs only the two guards that read docs, with the
+      # A docs-only diff needs only the guards that read docs, with the
       # runner's own bash and no Nix.
       - name: docs guards
         if: needs.plan.outputs.docs_only == 'true'
         run: |
           bash scripts/check-docs.sh
           bash scripts/check-install-surface.sh
+          bash scripts/check-file-tokens.sh --merge-base origin/main
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
         if: needs.plan.outputs.docs_only != 'true'
       - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
@@ -138,8 +124,6 @@ jobs:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
           cache-lane: check
       - run: nix develop -c just rust-lint
-      - name: Check the plugin index compiles
-        run: nix develop -c cargo check --locked --manifest-path scripts/plugin-index/Cargo.toml
       - &mbx-export-headroom
         name: leave disk for the mbx objects export
         if: steps.lane.outputs.cache-save-eligible == 'true' && steps.lane.outputs.cache-hit != 'true'
@@ -419,35 +403,12 @@ jobs:
     with:
       qualify: true
 
-  docs-catalog:
-    name: docs catalog
-    needs: plan
-    if: needs.plan.outputs.docs_catalog == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: no-phux/website
-          ref: main
-          path: website
-          sparse-checkout: scripts/docs-catalog.ts
-          sparse-checkout-cone-mode: false
-          persist-credentials: false
-      - uses: ./.github/actions/setup-bun
-      - name: website docs catalog
-        run: bun scripts/ci/docs-catalog-new-misses.ts
-
   # The required check. The ruleset matches this display name.
   ci:
     # Fresh drafts leave ci absent. This cannot revoke older same-SHA checks:
     # automated arming must first pass pr-ready-ci (docs/ci.md).
     name: ${{ github.event.pull_request.draft && 'ci (draft)' || 'ci' }}
-    needs: [plan, guards, lint, test-build, tests, e2e, ffi, icount, integrations, web-vt, web-client, native, rune, queue-apple, docs-catalog]
+    needs: [plan, guards, lint, test-build, tests, e2e, ffi, icount, integrations, web-vt, web-client, native, rune, queue-apple]
     if: always() && github.event.action != 'closed'
     runs-on: ubuntu-24.04
     timeout-minutes: 5

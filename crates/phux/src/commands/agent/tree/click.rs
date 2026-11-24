@@ -1,6 +1,6 @@
 //! `phux agent tree click TREE --node ID | --name TEXT [--role ROLE]`:
 //! activate one element of an accessibility tree by node instead of pixel
-//! (`docs/applications.md#agents-clicking-elements`). The finding, the
+//! (`docs/resource-kinds.md#agents-clicking-elements`). The finding, the
 //! semantic intent and the pixel fallback live in
 //! `phux_client::tree::element`, shared with the MCP `phux_click_element`.
 

@@ -1,50 +1,36 @@
 ---
+group: build
+order: 1
 title: Program Status Protocol (OSC 7501): report status from any program
 description: phux supports OSC 7501, the escape sequence a program writes to report its status: working, blocked, done, or error.
 ---
 
 # Program Status Protocol (OSC 7501): report status from any program
 
-phux supports the Program Status Protocol, OSC 7501, the escape sequence a program writes to report its status: working, blocked, done, or error. Support shipped in v0.53.0.
-
-This page specifies how a program in a phux pane tells phux what it is doing, and what phux does with that.
-
-A program writes that sequence to its terminal. phux records it and ranks it. It needs no phux library and no socket.
+A program in a phux pane reports its status by writing one escape sequence
+to its terminal: no library, socket, or hook.
 
 ```sh
-printf '\033]7501;state=working:app=deploy\033\\'
+printf '\033]7501;state=blocked:kind=permission:app=mytool:title=ZGVwbG95\033\\' > /dev/tty
 ```
 
-[Any program can report status](./any-program-status.md) is a short
-walkthrough.
+`title` is base64 (`printf deploy | base64`). phux uses it as the pane's
+agent name and `app` as its kind, so the pane above is `%deploy`, `blocked`,
+in the sidebar, the agents view, and `phux agent list`. Without `title` the
+name is the kind, made unique (`%mytool`, `%mytool-2`). Every report
+replaces its record, so send the same keys each time.
+See [`report-status.sh`](../examples/agents/report-status.sh) and
+[`05-program-status.sh`](../examples/agents/05-program-status.sh).
 
-[Program sequences and agent reports](./program-sequences.md) covers the
-other sequences phux reads, and the commands a program can run instead
-of writing escapes.
-
-## Which programs support OSC 7501
-
-phux reads OSC 7501 reports and shows them as the pane's state in the
-sidebar, the agents view, notifications, and `phux agent list`.
-
-- [Otty](https://docs.otty.sh/vt/osc/osc-7501) supports OSC 7501 and shows
-  a pane's most urgent status in the tab badge, the Dock icon, the Inbox,
-  tab previews, and notifications.
-- [Rex](https://www.superlogical.com/rex/docs/build/program-status) uses
-  OSC 7501 and shows task status in the session picker and unfocused tab
-  headers; Lua scripts can react to `terminal.program_status_changed`.
-- [Solo](https://soloterm.com/docs/terminal/program-status) uses OSC 7501
-  for agent activity indicators and attention alerts, and holds automated
-  messages while a program waits for you.
-- [TUIOS](https://tuios.dev/docs/program-status) reads OSC 7501 and shows
-  the state in the rail, the Inbox, and the pane's title bar.
+Other sequences phux reads, the agent record, and the `phux agent` commands
+a program can run instead are in
+[Program sequences](./program-sequences.md).
 
 ## Conventions
 
 The key words MUST, MUST NOT, SHOULD, and MAY are used as in RFC 2119 and
-RFC 8174, and only when they appear in capitals. Where this page says
-"phux does", it describes the code on `main`. Where behaviour is not
-defined, the page says so. Do not depend on it.
+RFC 8174, and only when they appear in capitals. Behaviour not defined here
+is undefined; do not depend on it.
 
 | Name | Bytes |
 | --- | --- |
@@ -53,48 +39,23 @@ defined, the page says so. Do not depend on it.
 | `ST` | `ESC \`, that is `0x1B 0x5C`, or `BEL`, that is `0x07` |
 
 A **pane** is one phux terminal and its pseudo-terminal. A **program** is
-anything that writes to that pseudo-terminal. A **report** is one OSC 7501
-sequence. A **record** is what phux stores as a result of a report.
-
-## What a program can tell phux
-
-| Channel | What it carries | Specified in |
-| --- | --- | --- |
-| OSC 7501 | State, what the program waits on, progress, a label, a message | [Program status](#program-status-osc-7501) |
-| OSC 0 and 2 | The pane's title | [Titles](./program-sequences.md#titles-osc-0-and-2) |
-| `phux-ask` title | A question for a person, with suggested answers | [Questions](./program-sequences.md#questions-the-phux-ask-title) |
-| OSC 133 | Prompt and command boundaries, exit codes | [Shell integration](./program-sequences.md#shell-integration-osc-133) |
-| OSC 9;4 | Progress, for agent detection rules | [Progress](./program-sequences.md#progress-osc-94) |
-| OSC 52 | A clipboard write | [Clipboard](./program-sequences.md#clipboard-osc-52) |
-| `phux agent ...` | The pane's agent record, over the socket | [Agent record](./program-sequences.md#the-agent-record) |
+anything that writes to it. A **report** is one OSC 7501 sequence. A
+**record** is what phux stores as a result.
 
 ## Detecting phux
 
-phux sets two variables in every local pane's environment:
-
-| Variable | Value |
-| --- | --- |
-| `PHUX_TERMINAL_ID` | The pane's number: `7` for pane `@7`. |
-| `PHUX_SOCKET` | The socket of the server that owns the pane. |
-
-A program that finds both is running in a phux pane and MAY call the `phux`
-command line with target `@$PHUX_TERMINAL_ID`. phux does not set
-`TERM_PROGRAM`, `PHUX`, or `PHUX_PANE`. `TERM` is `xterm-256color` unless
-the user configures `defaults.term`. Every newly spawned pane also gets
-`COLORTERM=truecolor`: truecolor support does not depend on the environment
-inherited by a terminal-, service-, or GUI-launched server.
-
-A program that only writes OSC 7501 needs none of this; it can use
-[feature detection](#feature-detection) or send reports without asking.
+phux sets `PHUX_TERMINAL_ID` (`7` for pane `@7`) and `PHUX_SOCKET` in every
+local pane. A program that finds both MAY run `phux` with target
+`@$PHUX_TERMINAL_ID`. phux does not set `TERM_PROGRAM`; `TERM` is
+`defaults.term`, and `COLORTERM=truecolor` is always set. A program that
+only writes OSC 7501 needs none of this.
 
 ## Program status (OSC 7501)
 
 phux implements revision 0.4 of the
 [Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status),
-a terminal-neutral specification. Mitchell Hashimoto
-[introduced OSC 7501](https://mitchellh.com/writing/program-status-osc7501).
-The parser is libghostty's. This section
-restates the protocol as phux applies it, including where phux differs.
+with libghostty's parser. This section states the protocol as phux applies
+it, including where phux differs.
 
 ### Syntax
 
@@ -108,20 +69,18 @@ key      := [a-z]+
 value    := [A-Za-z0-9_.,+/=-]*
 ```
 
-- The body is `key=value` pairs separated by `:`. Whitespace around a key
-  or value is removed. Keys are case-sensitive: `State=idle` is an unknown
-  key, and `state=IDLE` is an unknown state.
-- A malformed pair (no `=`, or a byte outside the value set) is skipped,
-  and the rest of the report still applies. An `id` pair is the exception:
-  a malformed `id` discards the report (see [Records and ids](#records-and-ids)).
-- Unknown keys are ignored. If a key repeats, the last value wins.
-- `title` and `msg` are standard base64 of UTF-8 text. Padding is optional.
-  The decoded text MUST NOT contain a control character (`U+0000` to
-  `U+001F`, `U+007F`, `U+0080` to `U+009F`), so no newline and no tab.
-- A report is discarded whole when it breaks a [limit](#limits), has a
-  missing or unknown `state`, an invalid `id`, base64 that does not decode,
-  or decoded text that is not UTF-8 or holds a control character. Nothing
-  from a discarded report is applied, and phux sends no error back.
+- Whitespace around a key or value is removed. Keys and values are
+  case-sensitive: `State=idle` is an unknown key, `state=IDLE` an unknown
+  state.
+- A malformed pair (no `=`, or a byte outside the value set) is skipped and
+  the rest applies, except a malformed `id`, which discards the report.
+- Unknown keys are ignored. A repeated key: the last value wins.
+- `title` and `msg` are standard base64 of UTF-8, padding optional. The
+  decoded text MUST NOT contain a control character (`U+0000`-`U+001F`,
+  `U+007F`, `U+0080`-`U+009F`).
+- A report is discarded whole, silently, when it breaks a [limit](#limits),
+  has a missing or unknown `state`, an invalid `id`, base64 that does not
+  decode, or decoded text that is not UTF-8 or holds a control character.
 - CAN (`0x18`) or SUB (`0x1A`) inside the sequence cancels it.
 
 ### Records and ids
@@ -133,78 +92,63 @@ id      := segment ("/" segment)*
 segment := [A-Za-z0-9_.+-]{1,32}
 ```
 
-- A report with no `id` addresses the **root record**. A program that only
-  reports its own state uses the root record and can skip the rest of this
-  section.
+- No `id` addresses the **root record**.
 - **Each report replaces its record completely.** A key missing from the
-  report is missing from the record afterwards, so a program that wants
-  `app` or `title` on a record sends them in every report.
-- An `id` that breaks the grammar discards the report, whether it is made
-  of value-set bytes (`id=`, `id=/a`, `id=a//b`, `id=a,b`, a segment over
-  32 bytes, more than 8 segments) or contains a byte outside the value set
-  (`id=a@b`, `id=my task`). It is never skipped as a malformed pair, so a
-  report meant for one record cannot fall back to the root record, and a
-  `state=clear` with a bad id cannot remove every record. One bad `id`
-  pair discards the report even when another `id` pair is valid.
-- `/` makes `build/test` a child of `build`, and `build` a child of the
-  root. A parent does not have to exist. The relationship is used for
-  clearing and for `app` inheritance, and for nothing else.
-- Records belong to the pane, not to a screen. Switching to or from the
-  alternate screen and a soft reset (`DECSTR`) leave them alone. A full
-  reset (`RIS`, `ESC c`) removes every record.
-- Records survive `phux upgrade`: the new server replays them in their
-  original order.
+  report is missing from the record.
+- An `id` that breaks the grammar (`id=`, `id=/a`, `id=a//b`, `id=a,b`,
+  `id=a@b`, a segment over 32 bytes, more than 8 segments) discards the
+  report, even when another `id` pair is valid. It never falls back to the
+  root, so a `state=clear` with a bad id cannot remove every record.
+- `build/test` is a child of `build`, `build` of the root. A parent need not
+  exist. The tree is used only for clearing and `app` inheritance.
+- Records belong to the pane, not a screen: alternate screen switches and
+  `DECSTR` keep them; `RIS` (`ESC c`) removes them all. They survive
+  `phux upgrade`, replayed in order.
 
 ### States
 
 `state` is required.
 
-| `state` | Meaning | phux keeps it until |
+| `state` | Meaning | Kept until |
 | --- | --- | --- |
-| `idle` | At rest, waiting for the user's next instruction. | Replaced, cleared, or reset. |
-| `working` | Running. May carry `progress`. | Replaced, cleared, reset, the pane's process exits, or a shell prompt starts. |
-| `done` | Finished; the result is ready to look at. | Replaced, cleared, or reset. |
-| `blocked` | Cannot continue until the user acts. `kind` says what, `msg` says why. May carry `progress`. | Same as `working`. |
+| `idle` | Waiting for the user's next instruction. | Replaced, cleared, or reset. |
+| `working` | Running. May carry `progress`. | Replaced, cleared, reset, the pane's process exits, or a shell prompt starts (OSC 133 `A`). |
+| `done` | Finished; the result is ready. | Replaced, cleared, or reset. |
+| `blocked` | Needs the user. `kind` says what, `msg` why. May carry `progress`. | Same as `working`. |
 | `error` | Failed and stopped. | Same as `done`. |
-| `clear` | Not a state. Removes the addressed record and every record beneath it; with no `id`, every record. | |
+| `clear` | Not a state. Removes the addressed record and its descendants; with no `id`, every record. | |
 
-A shell prompt starting means OSC 133 `A`. There is no heartbeat: a record
-never expires because time passed. phux keeps `idle` across a prompt and a
-process exit; the specification allows either. phux never drops `done` or
-`error` on its own, not even when the user looks at the pane.
-
-When the user interrupts or cancels the program, report `idle`. A program
-that exits as soon as it finishes SHOULD report `done` or `error` first,
-so the user finds a record afterwards.
+Records never expire with time, and phux never drops `done` or `error` on
+its own. After a user interrupt, report `idle`. A program that exits on
+completion SHOULD report `done` or `error` first.
 
 ### Keys
 
 | Key | Value | Notes |
 | --- | --- | --- |
 | `state` | `idle` \| `working` \| `done` \| `blocked` \| `error` \| `clear` | Required. |
-| `id` | path, see [Records and ids](#records-and-ids) | Absent means the root record. |
-| `kind` | `permission` \| `question` \| `auth` | With `blocked` only, ignored otherwise. An unknown value is treated as absent. |
-| `progress` | integer `0` to `100` | With `working` or `blocked` only. Leading zeros are allowed. Anything else, including `101`, `-1`, and `4.5`, is treated as absent. Absent means indeterminate. |
-| `app` | `[A-Za-z0-9_.+-]{1,32}` | A stable program identifier such as `cargo` or `terraform`. A value outside the set is treated as absent. A record without `app` takes it from its nearest ancestor that has one, when read. |
-| `title` | base64 UTF-8 | A short label. phux uses the active record's title as the pane's agent name. Empty is absent. |
-| `msg` | base64 UTF-8 | One line: what the record is doing, waiting for, or finished. phux shows it but reads no meaning into it. Empty is absent. |
-| `resume` | `[A-Za-z0-9_.+,/=-]{1,256}`, not starting with `-` | A phux extension, not part of the Program Status Protocol; other terminals ignore it as an unknown key. See [Resume](#resume). |
+| `id` | see [Records and ids](#records-and-ids) | Absent: the root record. |
+| `kind` | `permission` \| `question` \| `auth` | `blocked` only. Unknown is absent. |
+| `progress` | integer `0` to `100` | `working` or `blocked` only. Leading zeros allowed; anything else (`101`, `-1`, `4.5`) is absent. Absent is indeterminate. |
+| `app` | `[A-Za-z0-9_.+-]{1,32}` | Stable program id such as `cargo`. Invalid is absent. A record without `app` inherits its nearest ancestor's when read. |
+| `title` | base64 UTF-8 | Short label; the active record's is the pane's agent name. Empty is absent. |
+| `msg` | base64 UTF-8 | One line of status. Shown, never interpreted. Empty is absent. |
+| `resume` | `[A-Za-z0-9_.+,/=-]{1,256}`, not starting with `-` | phux extension; see [Resume](#resume). |
 
 ### Limits
 
-Limits count bytes, not characters. A report that breaks any of them is
-discarded whole, even when a later pair with the same key would replace
-the offending one.
+Limits count bytes. A report that breaks one is discarded whole, even when a
+later pair would replace the offending one.
 
 | Item | Limit |
 | --- | --- |
-| Whole sequence, `OSC` through `ST` | 4096 bytes when ended with `ESC \`; 4095 with `BEL` |
-| Key | 16 bytes, including unknown keys |
-| `msg` | 2732 bytes encoded, 2048 decoded |
-| `title` | 256 bytes encoded, 192 decoded |
-| `app` | 32 bytes |
-| `id` | 128 bytes, 32 per segment, 8 segments |
-| Records per pane | 256. A report that would create the 257th removes the least recently updated record. |
+| Whole sequence, `OSC` through `ST` | 4096 with `ESC \`; 4095 with `BEL` |
+| Key | 16, including unknown keys |
+| `msg` | 2732 encoded, 2048 decoded |
+| `title` | 256 encoded, 192 decoded |
+| `app` | 32 |
+| `id` | 128 total, 32 per segment, 8 segments |
+| Records per pane | 256; the 257th evicts the least recently updated. |
 
 ### Feature detection
 
@@ -213,73 +157,46 @@ program → OSC 7501 ; ? ST
 phux    → OSC 7501 ; ?:states=idle,working,done,blocked,error:kinds=permission,question,auth ST
 ```
 
-phux answers the query itself, with the terminator the query used, and in
-byte order with its other replies. A program that sends primary device
-attributes (`CSI c`) right after the query gets the OSC 7501 reply first;
-if the DA reply comes first, the terminal does not support the protocol.
-A query creates no record.
-
-Detection is optional. Terminals ignore unknown OSCs, so a program MAY send
-reports without asking. A program MUST ignore pairs in the reply that it
-does not understand.
+phux replies itself, with the query's terminator, in byte order with its
+other replies: a program that sends `CSI c` right after the query and gets
+the DA reply first is on a terminal without the protocol. A query creates no
+record. Detection is optional. A program MUST ignore reply pairs it does not
+understand.
 
 ### How phux shows program status
 
-phux ranks a pane's records by state, `blocked` first, then `error`,
-`done`, `working`, `idle`, and by most recent update within a state. The
-first is the **active record**. It becomes the pane's agent record, which
-drives the sidebar, the agents view, `phux agent list`, `phux agent wait`,
-and notifications:
+Records rank by state (`blocked`, `error`, `done`, `working`, `idle`), then
+most recent update. The first is the **active record**, projected onto the
+pane's [agent record](./program-sequences.md#the-agent-record):
 
-| Agent record field | Comes from |
+| Agent record field | From |
 | --- | --- |
-| `name` | The active record's `title`, with invisible formatting removed; else its `app`; else `Program`. |
-| `kind` | The active record's `app`, else `program`. |
-| `state` | The active record's `state`, except that `error` becomes `done`. |
-| `attention` | `high` for `error`. Otherwise derived from `state`: `blocked` high, `working` normal, `done` low, `idle` none. |
+| `name` | Active `title` with invisible formatting removed, else `app`, else `Program`. |
+| `kind` | Active `app`, else `program`. |
+| `state` | Active `state`; `error` becomes `done`. |
+| `attention` | `high` for `error`; otherwise derived from `state`. |
 
-phux applies this only while nothing stronger holds the pane. A record
-someone declared with `phux agent set --state`, and a live agent session,
-both outrank OSC 7501. OSC 7501 outranks everything else: while a pane has
-any record, phux does not read its screen for agent rules and ignores
-`phux agent report-state` for it. [Precedence](./program-sequences.md#precedence)
-has the whole order. When the last record goes, the projected state is
-removed, or set to `unknown` if someone declared the pane's name or kind.
+A declared `phux agent set --state` and a live agent session outrank OSC
+7501; while a pane has any record, phux ignores its screen rules and
+`phux agent report-state` ([Precedence](./program-sequences.md#precedence)).
+When the last record goes, the projection is removed, or set to `unknown` if
+the name or kind was declared.
 
-phux does not yet show `msg`, `kind`, `progress`, or records other than the
-active one in its chrome. Read all of them with:
-
-```sh
-phux resource show @7           # program_status: the active record and every id
-phux resource show --json @7
-```
-
-Records are stored as server-owned metadata on the pane:
-`phux.program-status/v1` holds `{"record_ids": [...], "active": {...}}`,
-and `phux.program-status.record/v1/<id>` holds each record (the root's id
-is the empty string). A record is `{"id", "state", "kind", "progress",
-"app", "title", "msg"}`, with absent keys omitted and `app` resolved
-through inheritance. No client can write either key.
+phux chrome shows only the active record. `phux resource show [--json] @7`
+shows every record. They are server-owned, client-unwritable metadata:
+`phux.program-status/v1` is `{"record_ids": [...], "active": {...}}`, and
+`phux.program-status.record/v1/<id>` (root id empty) is `{"id", "state",
+"kind", "progress", "app", "title", "msg"}`, absent keys omitted, `app`
+resolved.
 
 ### Resume
 
-`resume` is a phux extension. A program hands phux an opaque token, and
-after a crash or a reboot `phux restore` starts the pane with a command the
-user wrote for that program, with the token as one argument. The program
-never names a command.
+`resume` is a phux extension: an opaque token that lets `phux restore`
+relaunch the pane with a command the user configured for that `app`:
 
 ```sh
-#!/bin/sh
-# notes: keeps a draft open; `notes ID` picks it up again.
-id=${1:-$(date +%s)}
-case $id in */* | .*) echo "notes: bad id" >&2; exit 2 ;; esac   # the id is untrusted
-report() { printf '\033]7501;state=%s:app=notes:resume=%s\033\\' "$1" "$2" > /dev/tty; }
-report working "$id"            # from now on, a restore reopens this draft
-"${EDITOR:-vi}" "$HOME/.notes/$id"
-report idle ""                  # finished: nothing left to resume
+printf '\033]7501;state=working:app=notes:resume=%s\033\\' "$id" > /dev/tty
 ```
-
-The user allows it in `config.toml`, read when the server starts:
 
 ```toml
 [[restore.program]]
@@ -287,124 +204,56 @@ app = "notes"
 command = ["notes", "${PHUX_RESUME_TOKEN}"]
 ```
 
-- A token counts only when the same report carries a valid `app`. A token
-  that breaks the grammar is ignored and the previous one stays. `resume=`
-  with an empty value withdraws it. A report without `resume` changes
-  nothing, so a program does not have to repeat it.
-- phux reads `app` and `resume` itself, apart from the record: a token is
-  taken from a report even when the rest of it is discarded, and it does
-  not belong to an `id`. A pane holds one token.
-- phux forgets the token when the program withdraws it, when a shell
-  prompt starts (OSC 133 `A`), and when the pane's process exits with a
-  status while the server is running. It keeps the token when the server
-  is stopped, upgraded, or killed, and when the machine reboots.
-- At relaunch, phux looks up `[[restore.program]]` by `app`. With an entry,
-  it runs that `command` in the pane's recorded directory, as the pane's
-  process, in place of the recorded command. No shell is involved: each
-  element that is exactly `${PHUX_RESUME_TOKEN}` becomes the token, and
-  nothing else is substituted. Without an entry the pane starts as it
-  always did. A pane that resumes an agent session through its integration
-  does that instead.
-- An entry is refused when the config is read unless `command` starts with
-  a program name and has `${PHUX_RESUME_TOKEN}` as a whole element, never
-  inside a longer one. `app` may be listed once.
-- If a prompt starts and the program reports a token in the same burst of
-  output, phux may forget the token. The program's next report with
-  `resume` restores it.
+- A token counts only when the same report carries a valid `app`. An
+  invalid token is ignored and the previous one kept; `resume=` withdraws
+  it; a report without `resume` changes nothing.
+- phux reads `app` and `resume` apart from the record: the token is taken
+  even from a discarded report, belongs to no `id`, and a pane holds one.
+- phux forgets it on withdrawal, on OSC 133 `A`, and when the pane's process
+  exits while the server runs. It survives server stop, upgrade, kill, and
+  reboot. A prompt and a token in the same output burst may lose the token;
+  the next `resume` report restores it.
+- At relaunch, a matching entry runs `command` in the pane's recorded
+  directory instead of the recorded command, with no shell: each element
+  exactly `${PHUX_RESUME_TOKEN}` becomes the token. No entry: the pane
+  starts as before. An agent integration's own resume takes precedence.
+- Config load refuses an entry unless `command` starts with a program name
+  and contains `${PHUX_RESUME_TOKEN}` as a whole element. Each `app` once.
 
 ### Security
 
-Everything in a report is untrusted input from a program that already
-controls the pane.
+Everything in a report is untrusted, and any process that can write to the
+pane can send one; records describe the pane, not a process.
 
-- Any process that can write to the pane's terminal can send reports, and
-  phux cannot tell which one did. Records describe the pane, not a process.
-- phux refuses text with control characters, never treats `title` or `msg`
-  as markup, and removes text direction overrides and other invisible
-  formatting characters from the agent name and from human
-  `phux resource show` output. The stored record and `--json` keep the
-  text as sent.
-- The only bytes phux writes back are the feature detection reply, which
-  contains nothing from any report. There is no sequence for reading
-  records back.
-- Everything phux shows from a record names the pane it came from.
-- Notifications for agent state are batched within one second and sent at
-  most once every ten seconds per pane and kind, however fast a program
-  changes state.
-- Any client that can read the pane's metadata can read its records,
-  including remote clients the server admits. Do not put secrets in `msg`
-  or `title`.
-- A stored `resume` token is not metadata or an organization wire field,
-  and that field is not mirrored to a hub. **It is not a secret:** the
-  original OSC is ordinary pane output, visible to clients and hubs that
-  read that stream and to terminal recordings. The token is also stored in
-  the server's organization database on disk, without secret-storage
-  protections, and is passed in the resumed process's argv.
-- Any writer to the pane can set a token for any `app`, so a
-  `[[restore.program]]` command MUST treat the token as untrusted input: it
-  may contain `/` and `..`, and it may name something the user never
-  opened. The command should look the token up among things it created,
-  not open it as a path. phux guarantees only its shape: one argument, the
-  listed bytes, no leading `-`. Do not place the placeholder where the
-  command evaluates it as source code (for example `sh -c` or `python -c`).
-  Explicitly allowing an interpreter is not a sandbox.
+- Control characters are refused; `title` and `msg` are never markup.
+  Invisible formatting is stripped from the agent name and human output;
+  the stored record and `--json` keep the raw text.
+- phux writes back only the feature-detection reply, which holds nothing
+  from any report.
+- Anyone who can read the pane's metadata, including admitted remote
+  clients, can read records. Keep secrets out of `msg` and `title`.
+- A `resume` token is not a secret: it is ordinary pane output, stored
+  unprotected on disk, and passed in argv.
+- Any writer can set a token for any `app`. A `[[restore.program]]` command
+  MUST treat it as untrusted (it may hold `/` and `..`): look it up among
+  things it created, never open it as a path or evaluate it as code
+  (`sh -c`). phux guarantees only its shape.
 
 ### Examples
 
-Shell, with base64 values decoded in a trailing comment. Write to
-`/dev/tty` when standard output may be redirected.
-
 ```sh
-# One program, root record
-printf '\033]7501;state=working:app=brew:msg=SW5zdGFsbGluZyB1cGRhdGVz\033\\'   # Installing updates
-printf '\033]7501;state=blocked:kind=auth:app=brew:msg=UGFzc3dvcmQgcmVxdWlyZWQ=\033\\'   # Password required
-printf '\033]7501;state=done:app=brew:msg=VXBncmFkZWQgMTIgcGFja2FnZXM=\033\\'   # Upgraded 12 packages
-
-# Several records, then clear one subtree and the rest
-printf '\033]7501;state=working:app=deploy\033\\'
 printf '\033]7501;state=working:id=us-east:progress=40\033\\'
-printf '\033]7501;state=blocked:kind=permission:id=eu-west:msg=QXBwcm92ZSBwcm9kdWN0aW9uPw==\033\\'   # Approve production?
-printf '\033]7501;state=clear:id=eu-west\033\\'
-printf '\033]7501;state=clear\033\\'
+printf '\033]7501;state=blocked:kind=auth:app=brew:msg=UGFzc3dvcmQgcmVxdWlyZWQ=\033\\'  # "Password required"
+printf '\033]7501;state=clear:id=us-east\033\\'   # one subtree
+printf '\033]7501;state=clear\033\\'              # every record
 ```
-
-A function that encodes the message:
-
-```sh
-status() {
-  printf '\033]7501;state=%s:app=sync:msg=%s\033\\' "$1" \
-    "$(printf '%s' "$2" | base64 | tr -d '\n')" > /dev/tty
-}
-status working "Syncing photos"
-rsync -a ~/Photos backup:/photos && status done "Photos synced" || status error "rsync failed"
-```
-
-Ask for support, then fall back after a short wait:
-
-```sh
-printf '\033]7501;?\033\\\033[c' > /dev/tty
-```
-
-Read the reply from the terminal in raw mode; an answer starting
-`ESC ] 7501 ; ?` means supported.
 
 ### Relationship to other sequences
 
-- **OSC 9;4 (progress).** phux reads it for agent detection rules but does
-  not turn it into OSC 7501 records, so it never overwrites a real report.
-  A program MAY send both.
-- **OSC 9, OSC 777, OSC 99 (desktop notifications).** Ignored from a pane
-  by default: a program reports state and phux decides when to notify. A
-  program with something to say runs [`phux notify`](./scripting.md#notes),
-  or the user opts OSC 9 and OSC 777 into notes there.
-- **OSC 133 (shell integration).** Emitted by the shell. OSC 133 `A` ends a
-  pane's `working` and `blocked` records.
-- **OSC 0 and 2 (title).** Free-form. An OSC 7501 `title` labels a record
-  without touching the pane's title.
-
-## Revision history
-
-| Date | Revision | Changes |
-| --- | --- | --- |
-| 2026-10-21 | 1 | First version. Describes phux's implementation of Program Status Protocol 0.4. |
-| 2026-11-13 | 2 | Adds `resume`, a phux extension. |
+- **OSC 9;4** feeds agent rules only and never becomes a record. A program
+  MAY send both.
+- **OSC 9, 777, 99** are ignored by default; use
+  [`phux notify`](./scripting.md#notes).
+- **OSC 133 `A`** ends `working` and `blocked` records.
+- **OSC 0 and 2** set the pane title; OSC 7501 `title` labels a record
+  without touching it.

@@ -1,4 +1,16 @@
 //! Ephemeral, explicitly approved 1Password exchanges. Values never belong in metadata.
+//!
+//! `CREDENTIALS` (`features_ext.CREDENTIALS`) carries one [`CredentialOp`] as
+//! length-prefixed UTF-8 JSON of at most [`MAX_CREDENTIAL_PAYLOAD`] bytes:
+//! `request` (provider, references, purpose), `next` (a provider binds its
+//! name to its connection and claims at most one approved exchange), or
+//! `complete` (exchange id and values). All need `BIND` and `INPUT` on
+//! global. Every request opens an approval record, even on the owner socket;
+//! only a connection that offered HELLO `CREDENTIAL_APPROVALS` may approve
+//! it, others may only deny. The requester gets its values once, as an
+//! ordered string array in `CommandValue` tag `0x0e`. An exchange expires
+//! within 120 s or the approval TTL and is withdrawn on disconnect; nothing
+//! is journaled, cached, or replayed.
 
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;

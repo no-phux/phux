@@ -56,7 +56,7 @@ pub static ATTACH_PUBLISH_WALL: Histogram = Histogram::new();
 
 // --- audit -----------------------------------------------------------------
 
-/// Audit records that could not be written (`docs/audit.md`); `phux doctor`
+/// Audit records that could not be written (`docs/security.md#audit-log`); `phux doctor`
 /// warns while it is non-zero.
 pub static AUDIT_WRITE_FAILURES: Counter = Counter::new();
 

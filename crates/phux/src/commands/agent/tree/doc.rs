@@ -2,7 +2,7 @@
 //! `Document`, whose documents are of the content type it was opened with.
 //! `serve` is the producer contract any language speaks over a pipe;
 //! `folder` and `notifications` are producers built on it
-//! (`docs/applications.md#publish-your-own-kind`).
+//! (`docs/resource-kinds.md#publish-your-own-kind`).
 
 use std::path::PathBuf;
 use std::process::ExitCode;
