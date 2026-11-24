@@ -231,8 +231,8 @@ impl Desk {
         self.connection.zoomed = None;
     }
 
-    /// Finder's "New phux Terminal at Folder" (`services.rs`).
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    /// A tab in a local folder: Finder's service (`services.rs`) or a
+    /// `phux://folder/` link (`reveal.rs`).
     pub fn terminal_at_folder(&mut self, folder: std::path::PathBuf) {
         if self.machines.current.is_some() {
             return self.say(

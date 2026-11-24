@@ -37,8 +37,8 @@ pub struct Connection {
     pub wanted: Option<(ResourceId, Instant)>,
     /// A session created here: show its terminal once selected.
     pub(super) pending_session: Option<String>,
-    /// A `phux://pane/` link's pane, until the server's panes are known.
-    pub(super) reveal: Option<ResourceId>,
+    /// What a `phux://` link asked to show, until it can be.
+    pub(super) reveal: Option<super::reveal::Reveal>,
     /// The connection incarnation the shown view belongs to.
     pub(super) epoch: u64,
     /// A path search on the focused pane's host.

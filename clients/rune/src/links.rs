@@ -7,7 +7,7 @@
 use phux_client_core::grid::CELL_HYPERLINK;
 use phux_client_runtime::publication::GridFrame;
 
-mod open;
+pub(crate) mod open;
 
 /// libghostty's `CellWide::SpacerTail`: the right half of a wide glyph.
 const WIDE_SPACER_TAIL: u8 = 2;
