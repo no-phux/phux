@@ -114,7 +114,7 @@ test.each<[string[], Surface[]]>([
   [["justfile"], []],
   [[".beads/issues.jsonl"], []],
   [[".beads/config.yaml"], []],
-  [["scripts/check-docs.sh"], []],
+  [["tools/src/docs/check.ts"], []],
   [["scripts/plugin-index/src/lib.rs"], ["phux"]],
   [[".github/workflows/plugin-index.yml"], []],
   [["docs/spec/plugin-index.schema.json"], []],

@@ -188,7 +188,7 @@ need git 'Install Git with your platform package manager'
 git_hooks
 case "$scope" in
     docs)
-        for tool in awk sed grep find sort; do need "$tool" 'Install standard Unix utilities'; done
+        need bun 'mise install; or: nix develop'
         ;;
     core) rust_tools core ;;
     native) native_tools ;;

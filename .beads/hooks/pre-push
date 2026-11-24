@@ -32,9 +32,9 @@ if command -v bd >/dev/null 2>&1; then
 fi
 # --- END BEADS INTEGRATION v1.1.0 ---
 # --- BEGIN PHUX INTEGRATION ---
-# A dead docs link otherwise surfaces only in CI's guards lane. Takes ~30 s, so
-# only for a branch that changes Markdown.
+# A dead docs link otherwise surfaces only in CI's guards lane. Only for a
+# branch that changes Markdown.
 if [ -n "$(git diff --name-only origin/main...HEAD -- '*.md' 2>/dev/null)" ]; then
-  bash "$(git rev-parse --show-toplevel)/scripts/check-docs.sh" || exit 1
+  bun "$(git rev-parse --show-toplevel)/tools/main.ts" docs-check || exit 1
 fi
 # --- END PHUX INTEGRATION ---
