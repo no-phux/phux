@@ -259,7 +259,12 @@ pub(crate) fn theme_input(t: &Theme) -> phux_design::Theme {
 /// (or the house terminal picked as a theme), else the theme derived.
 /// Under increased contrast, the same solved for its higher floors.
 fn roles_for(inputs: &Inputs) -> Roles {
-    let roles = solved(inputs);
+    let mut roles = solved(inputs);
+    // A grey accent quieter than dim text would invert every emphasis it
+    // inks: a palette match, an accent icon or link would be the dimmest
+    // thing on screen (Omarchy's Vantablack). Emphasis takes body text
+    // there, as the TUI's focus does; weight still marks a match.
+    roles.accent.accent_text = roles.emphasis();
     inputs.forced.map_or(roles, |f| f.roles(&roles))
 }
 

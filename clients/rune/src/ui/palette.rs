@@ -413,7 +413,8 @@ fn mark(hit: &Hit, washed: bool, t: &Tokens) -> Option<El> {
 }
 
 /// One ranked result (OWN): its kind or swatch, the title with the
-/// matched characters in the accent's text ink one weight heavier, a
+/// matched characters in the accent's text ink one weight heavier (and
+/// underlined when that ink is body text), a
 /// detail, and for a screen its machine. The picked row is the keyboard's
 /// cursor.
 fn hit_row(hit: &Hit, index: usize, picked: bool, phone: bool, t: &Tokens) -> El {
@@ -421,14 +422,19 @@ fn hit_row(hit: &Hit, index: usize, picked: bool, phone: bool, t: &Tokens) -> El
     let r = &t.roles;
     let title = &hit.item.title;
     let heavy = t.ty.label.semibold().weight;
+    // Where the accent fell back to body text (a grey accent,
+    // `Roles::emphasis`), its colour cannot mark a match; an underline does.
+    let underline = (r.accent.accent_text == r.text.text).then(|| r.text.text.paint());
     let spans = hit
         .matched
         .iter()
         .filter_map(|&at| title.char_indices().nth(at))
         .map(|(start, ch)| {
-            Span::new(start, start + ch.len_utf8())
+            let mut span = Span::new(start, start + ch.len_utf8())
                 .color(r.accent.accent_text.paint())
-                .weight(heavy)
+                .weight(heavy);
+            span.underline = underline;
+            span
         })
         .collect();
     // Faint never sits on a wash: the picked row's detail reads dim.

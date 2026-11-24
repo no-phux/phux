@@ -109,18 +109,6 @@ impl Default for Theme {
     }
 }
 
-/// The focus colour: the accent, unless it is a grey quieter than
-/// unfocused text ([`Roles::recedes`]), where the focused pane would be
-/// the dimmest one. Focus takes body text there instead.
-fn focus_ink(roles: &Roles) -> Rgba8 {
-    let accent = roles.accent.accent_text;
-    if roles.recedes(accent) {
-        roles.text.text
-    } else {
-        accent
-    }
-}
-
 /// An 8-bit role as a 24-bit ratatui colour.
 const fn rgb(c: Rgba8) -> Color {
     Color::Rgb(c.r, c.g, c.b)
@@ -243,7 +231,7 @@ impl Theme {
         let text = rgb(roles.text.text);
         let dim = rgb(roles.text.dim);
         let faint = rgb(roles.text.faint);
-        let accent = rgb(focus_ink(roles));
+        let accent = rgb(roles.emphasis());
         let s = &roles.status;
         let mut theme = Self {
             accent,

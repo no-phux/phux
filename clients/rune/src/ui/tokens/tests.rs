@@ -322,3 +322,24 @@ fn a_focused_pane_rim_reads_without_its_shadow() {
         assert!(contrast(phux_design::solve::over(b.base, ground)) < 3.0);
     }
 }
+
+/// A grey accent quieter than dim text would make every emphasis (a
+/// palette match, an accent icon) the dimmest ink on screen, so it takes
+/// body text; a hued accent keeps its ink.
+#[test]
+fn a_grey_accent_never_dims_what_it_emphasises() {
+    let black = Tokens::resolve(&Inputs {
+        theme: Some(VANTABLACK),
+        ..Inputs::system(true)
+    });
+    assert_eq!(black.roles.accent.accent_text, black.roles.text.text);
+    for dark in [true, false] {
+        let house = system(dark);
+        assert_eq!(
+            house.roles.accent.accent_text,
+            Roles::house(if dark { Mode::Dark } else { Mode::Light })
+                .accent
+                .accent_text
+        );
+    }
+}
