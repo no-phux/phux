@@ -103,12 +103,12 @@ test.each<[string[], Surface[]]>([
   [[".beads/issues.jsonl"], []],
   [[".beads/config.yaml"], []],
   [["scripts/check-docs.sh"], []],
-  [["scripts/plugin-index/src/lib.rs"], ["phux"]],
+  [["plugins/index/src/lib.rs"], ["phux"]],
   [[".github/workflows/plugin-index.yml"], []],
   [["docs/spec/plugin-index.schema.json"], []],
   [
     [
-      "scripts/plugin-index/src/lib.rs",
+      "plugins/index/src/lib.rs",
       ".github/workflows/plugin-index.yml",
       "docs/spec/plugin-index.schema.json",
       "docs/plugins.md",
@@ -197,13 +197,13 @@ test("the unit plan narrows to the integration test a diff touches", () => {
   expect(plan(["crates/phux-server/src/lib.rs"])).toEqual(["rdeps", "", true]);
   expect(plan(["Cargo.toml"])).toEqual(["workspace", "", true]);
   expect(plan(["docs/development.md"])).toEqual(["skip", "", false]);
-  expect(plan(["scripts/plugin-index/src/lib.rs"])).toEqual(["skip", "", false]);
+  expect(plan(["plugins/index/src/lib.rs"])).toEqual(["skip", "", false]);
   expect(plan([])).toEqual(["workspace", "", true]);
 });
 
 test("a plugin-index-only diff lints and leaves the unit pool, e2e, and ffi off", () => {
-  const classified = classifier.classify(["scripts/plugin-index/src/lib.rs"]);
-  const paths = ["scripts/plugin-index/src/lib.rs"];
+  const classified = classifier.classify(["plugins/index/src/lib.rs"]);
+  const paths = ["plugins/index/src/lib.rs"];
   const decided = plan(classified, "pull_request", { scope: { kind: "diff", paths } });
   expect(decided.lanes.has("guards")).toBe(true);
   expect(decided.lanes.has("lint")).toBe(true);

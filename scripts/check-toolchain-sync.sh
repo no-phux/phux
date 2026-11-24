@@ -85,7 +85,7 @@ grep -Fq 'libexec/mbx:$PATH' "$FLAKE" || fail 'flake.nix shellHook must put the 
 while IFS=: read -r file line; do
     version="$(printf '%s\n' "$line" | sed -n -E 's/.*"([0-9]+\.[0-9]+)".*/\1/p')"
     [[ "$version" == "$rust_msrv" ]] || fail "$file rust-version must be $rust_msrv"
-done < <(grep -H 'rust-version = "[0-9]' "$ROOT"/Cargo.toml "$ROOT"/clients/*/Cargo.toml "$ROOT"/scripts/plugin-index/Cargo.toml)
+done < <(grep -H 'rust-version = "[0-9]' "$ROOT"/Cargo.toml "$ROOT"/clients/*/Cargo.toml "$ROOT"/plugins/index/Cargo.toml)
 grep -Fq "msrv = \"$rust_msrv\"" "$ROOT/clippy.toml" || fail "clippy MSRV must be $rust_msrv"
 
 bindgen_version="$(sed -n -E 's/^wasm-bindgen = "=([^"]+)"/\1/p' "$ROOT/clients/phux-web/Cargo.toml")"

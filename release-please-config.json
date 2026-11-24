@@ -102,7 +102,7 @@
         },
         {
           "type": "toml",
-          "path": "scripts/plugin-index/Cargo.lock",
+          "path": "plugins/index/Cargo.lock",
           "jsonpath": "$.package[?(!@.source && (@.name.value=='phux-config' || @.name.value=='phux-config-core' || @.name.value=='phux-protocol'))].version"
         }
       ]

@@ -184,7 +184,7 @@ export class Classifier {
     // The generator is compiled by the lint lane. Its own workflow runs its
     // tests. A diff that is only that tree must not pull the workspace pool,
     // e2e, or the binding lane. The ci aggregate still runs.
-    if (productive.every((path) => path.startsWith("scripts/plugin-index/"))) return SKIP;
+    if (productive.every((path) => path.startsWith("plugins/index/"))) return SKIP;
     if (productive.some((path) => nonLibraryKind(path) === undefined)) {
       return testFilterset === "" ? WORKSPACE : { ...WORKSPACE, unitMode: "rdeps" };
     }
