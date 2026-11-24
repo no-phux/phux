@@ -6,16 +6,17 @@
 # live lease from scripts/lib/worktree-owner.sh, no process working inside it,
 # not locked):
 #
-#   - a clean worktree on a pushed branch (one with an upstream, live or gone)
-#     whose HEAD is merged (an ancestor of the base ref, or, once the upstream
-#     is gone after a squash merge, the head of a merged PR per gh) is removed
-#     with `git worktree remove` (never --force) and its local branch deleted;
+#   - a clean worktree on a branch whose work has landed is removed with
+#     `git worktree remove` (never --force) and its local branch deleted.
+#     Landed means HEAD is an ancestor of the base ref, or merging it into the
+#     base would change nothing, or GitHub finds a merged PR that contains
+#     HEAD (a squash merge, under any branch name, pushed or not);
 #   - any other idle worktree only loses its build output: `target` (mbx clean
 #     for an mbx-managed link, rm for a real directory) and ignored
 #     node_modules directories.
 #
-# Dirty worktrees, unpushed commits, unmerged or never-pushed branches, and
-# detached checkouts are reported and left alone; `git worktree lock` opts a
+# Dirty worktrees, work that has not landed, and detached checkouts are
+# reported and left alone; `git worktree lock` opts a
 # worktree out entirely. The primary checkout and the caller's worktree are
 # never touched. Dry run by default; --apply acts.
 #
@@ -114,36 +115,27 @@ busy_reason() {
 
 is_dirty() { [[ -n "$(git -C "$1" --no-optional-locks status --porcelain --untracked-files=normal 2>/dev/null)" ]]; }
 
-has_upstream() {
-    [[ -n "$1" ]] || return 1
-    git rev-parse -q --verify "$1@{upstream}" >/dev/null 2>&1 && return 0
-    upstream_gone "$1"
-}
-
-upstream_gone() {
-    local branch="$1"
-    [[ -n "$branch" ]] || return 1
-    [[ "$(git for-each-ref --format='%(upstream:track)' "refs/heads/$branch")" == "[gone]" ]]
-}
-
-# A squash merge leaves no ancestry, so ask GitHub whether a merged PR's head
-# is exactly this commit.
-merged_pr_head() {
-    local branch="$1" head="$2"
+# The merged PR that contains `head`, by number: GitHub's commit search finds
+# it whatever the branch was called and whether this clone ever pushed it.
+merged_pr_containing() {
     command -v gh >/dev/null 2>&1 || return 1
-    gh pr list --state merged --head "$branch" --json headRefOid --jq '.[].headRefOid' 2>/dev/null |
-        grep -qx -- "$head"
+    local number
+    number="$(gh pr list --state merged --search "$1" --json number --jq '.[0].number // empty' 2>/dev/null)" || return 1
+    [[ -n "$number" ]] && echo "$number"
 }
 
-# How the worktree's pushed branch reached the base, or nothing when it has
-# not. Detached and never-pushed checkouts (baselines, tooling) never qualify.
-merged_how() {
-    local wt="$1" branch="$2" head
-    has_upstream "$branch" || return 0
+# How the worktree's work reached the base, or nothing when it has not.
+# Detached checkouts (baselines, tooling) never qualify.
+landed_how() {
+    local wt="$1" branch="$2" head merged pr
+    [[ -n "$branch" ]] || return 0
     head="$(git -C "$wt" rev-parse HEAD 2>/dev/null)" || return 0
-    if git merge-base --is-ancestor "$head" "$BASE" 2>/dev/null; then echo "ancestor"
-    elif upstream_gone "$branch" && merged_pr_head "$branch" "$head"; then echo "squash"
-    fi
+    if git merge-base --is-ancestor "$head" "$BASE" 2>/dev/null; then echo "ancestor"; return; fi
+    # A squash or cherry-pick already in the base leaves a merge with
+    # nothing to add.
+    merged="$(git merge-tree --write-tree "$BASE" "$head" 2>/dev/null | head -n 1)" || merged=""
+    if [[ -n "$merged" && "$merged" == "$(git rev-parse "$BASE^{tree}")" ]]; then echo "already in $BASE"; return; fi
+    if pr="$(merged_pr_containing "$head")"; then echo "PR #$pr"; fi
 }
 
 unpushed_count() { git -C "$1" rev-list --count HEAD --not --remotes 2>/dev/null || echo "?"; }
@@ -178,24 +170,23 @@ prune_node_modules() {
 remove_worktree() {
     local wt="$1" branch="$2" how="$3" kb
     kb="$(size_kb "$wt")"
-    say remove "$wt" "${branch:-detached}, merged ($how), $(human "$kb")"
+    say remove "$wt" "${branch:-detached}, landed ($how), $(human "$kb")"
     FREED_KB=$((FREED_KB + kb))
     [[ "$APPLY" == 1 ]] || return 0
     if command -v mbx >/dev/null 2>&1; then mbx clean --under "$wt" >/dev/null 2>&1 || true; fi
     git worktree remove "$wt" || { KEPT+=("$wt: git worktree remove failed"); return 0; }
     [[ -n "$branch" ]] || return 0
+    # Landed by a squash or another branch, so not an ancestor: -D.
     if [[ "$how" == ancestor ]]; then git branch -q -d "$branch"; else git branch -q -D "$branch"; fi
 }
 
 keep_reason() {
     local wt="$1" branch="$2" unpushed
     if is_dirty "$wt"; then echo "uncommitted changes"; return; fi
-    unpushed="$(unpushed_count "$wt")"
-    if [[ "$unpushed" != 0 ]]; then echo "$unpushed unpushed commit(s)"; return; fi
     if [[ -z "$branch" ]]; then echo "detached checkout"; return; fi
-    if ! has_upstream "$branch"; then echo "branch never pushed"; return; fi
-    if upstream_gone "$branch"; then echo "upstream gone but no merged PR matches HEAD"; return; fi
-    echo "not merged into $BASE"
+    unpushed="$(unpushed_count "$wt")"
+    if [[ "$unpushed" != 0 ]]; then echo "not landed, $unpushed unpushed commit(s)"; return; fi
+    echo "not landed in $BASE or a merged PR"
 }
 
 handle_worktree() {
@@ -203,7 +194,7 @@ handle_worktree() {
     busy="$(busy_reason "$wt" "$locked")"
     if [[ -n "$busy" ]]; then say skip "$wt" "$busy"; return; fi
     if [[ "$REMOVE" == 1 ]] && ! is_dirty "$wt"; then
-        how="$(merged_how "$wt" "$branch")"
+        how="$(landed_how "$wt" "$branch")"
         if [[ -n "$how" ]]; then remove_worktree "$wt" "$branch" "$how"; return; fi
     fi
     [[ "$REMOVE" == 1 ]] && KEPT+=("$wt (${branch:-detached}): $(keep_reason "$wt" "$branch")")

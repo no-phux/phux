@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Hermetic coverage for scripts/worktree-prune.sh: a scratch origin and clone
 # with one linked worktree per rule, aged past --idle-hours, then a dry run
-# (changes nothing) and an applied run (removes only the merged clean one and
-# prunes build output only where allowed).
+# (changes nothing) and an applied run (removes only clean worktrees whose
+# work landed, and prunes build output only where allowed).
 # shellcheck disable=SC2034 # OUT is read through check's eval
 set -euo pipefail
 
@@ -16,10 +16,19 @@ ok() { printf '  ok: %s\n' "$*"; }
 bad() { printf '  FAILED: %s\n' "$*" >&2; FAILURES=$((FAILURES + 1)); }
 check() { if eval "$2"; then ok "$1"; else bad "$1"; fi; }
 
-# Stub mbx and gh that always fail: the fixture has no managed targets or
-# squash merges, and the test must not reach a real cache or the network.
+# Stub mbx, which always fails, and gh, which knows one merged PR (#42) and
+# the commits listed in $WORK/squashed: the test must not reach a real cache
+# or the network.
 mkdir -p "$WORK/bin"
-for tool in mbx gh; do printf '#!/bin/sh\nexit 1\n' >"$WORK/bin/$tool"; chmod +x "$WORK/bin/$tool"; done
+printf '#!/bin/sh\nexit 1\n' >"$WORK/bin/mbx"
+cat >"$WORK/bin/gh" <<EOF
+#!/bin/sh
+for sha in \$(cat "$WORK/squashed" 2>/dev/null); do
+    case "\$*" in *"\$sha"*) echo 42; exit 0 ;; esac
+done
+exit 0
+EOF
+chmod +x "$WORK/bin/mbx" "$WORK/bin/gh"
 SAFE_PATH="$WORK/bin:$PATH"
 
 g() { git -c user.name=t -c user.email=t@t -c init.defaultBranch=main "$@"; }
@@ -65,7 +74,27 @@ g -C "$WORK/unpushed" commit -q -m local
 mkdir -p "$WORK/unpushed/target/debug" "$WORK/unpushed/tools/node_modules/pkg"
 echo build >"$WORK/unpushed/target/debug/out"
 
+# Never pushed under this name, squash-merged as PR #42 from another branch.
+g -C "$REPO" worktree add -q -b local/squashed "$WORK/squashed-wt" main
+echo squashed >"$WORK/squashed-wt/squashed.txt"
+g -C "$WORK/squashed-wt" add squashed.txt
+g -C "$WORK/squashed-wt" commit -q -m squashed
+git -C "$WORK/squashed-wt" rev-parse HEAD >"$WORK/squashed"
+
+# Never pushed, but the same change reached main by another commit.
+g -C "$REPO" worktree add -q -b local/picked "$WORK/picked" main
+echo picked >"$WORK/picked/picked.txt"
+g -C "$WORK/picked" add picked.txt
+g -C "$WORK/picked" commit -q -m picked
+cp "$WORK/picked/picked.txt" "$REPO/picked.txt"
+g -C "$REPO" add picked.txt
+g -C "$REPO" commit -q -m "picked (squashed)"
+g -C "$REPO" push -q
+
 g -C "$REPO" worktree add -q -b never-pushed "$WORK/never" main
+echo mine >"$WORK/never/mine.txt"
+g -C "$WORK/never" add mine.txt
+g -C "$WORK/never" commit -q -m mine
 g -C "$REPO" worktree add -q --detach "$WORK/detached" main
 add_wt locked feat/locked
 g -C "$REPO" worktree lock "$WORK/locked"
@@ -103,10 +132,13 @@ check "deletes its merged branch" '! git -C "$REPO" rev-parse -q --verify refs/h
 check "keeps a dirty worktree" '[[ -f "$WORK/dirty/untracked.txt" ]]'
 check "lists the dirty worktree" '[[ "$OUT" == *"$WORK/dirty (feat/dirty): uncommitted changes"* ]]'
 check "keeps unpushed commits" '[[ -f "$WORK/unpushed/local.txt" ]]'
-check "lists unpushed commits" '[[ "$OUT" == *"$WORK/unpushed (feat/unpushed): 1 unpushed commit(s)"* ]]'
+check "lists unpushed commits" '[[ "$OUT" == *"$WORK/unpushed (feat/unpushed): not landed, 1 unpushed commit(s)"* ]]'
+check "removes work a merged PR holds" '[[ ! -e "$WORK/squashed-wt" && "$OUT" == *"landed (PR #42)"* ]]'
+check "deletes the squashed branch" '! git -C "$REPO" rev-parse -q --verify refs/heads/local/squashed >/dev/null'
+check "removes work already in main" '[[ ! -e "$WORK/picked" && "$OUT" == *"landed (already in origin/main)"* ]]'
 check "prunes the idle target" '[[ ! -e "$WORK/unpushed/target" ]]'
 check "prunes ignored node_modules" '[[ ! -e "$WORK/unpushed/tools/node_modules" ]]'
-check "keeps a never-pushed branch" '[[ -d "$WORK/never" && "$OUT" == *"branch never pushed"* ]]'
+check "keeps never-pushed work nothing landed" '[[ -f "$WORK/never/mine.txt" && "$OUT" == *"$WORK/never (never-pushed): not landed"* ]]'
 check "keeps a detached checkout" '[[ -d "$WORK/detached" && "$OUT" == *"detached checkout"* ]]'
 check "skips a locked worktree" '[[ -d "$WORK/locked" && "$OUT" == *"$WORK/locked  (locked)"* ]]'
 check "skips a live lease" '[[ -d "$WORK/leased" && "$OUT" == *"holds its lease"* ]]'
