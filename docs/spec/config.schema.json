@@ -1129,6 +1129,14 @@
       "additionalProperties": false,
       "description": "`[rune]` table: settings the Rune app otherwise keeps in its own prefs.\n\nA key set here wins over the app's saved choice and cannot be changed\nfrom Settings; an unset key stays the app's to remember.",
       "properties": {
+        "bold-is-bright": {
+          "default": null,
+          "description": "Bold text in ANSI colours 0 to 7 draws in the bright variant, 8 to\n15, like xterm's `boldColors`. Off when unset; true colour never\nbrightens.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "chief": {
           "default": null,
           "description": "The phux session whose ACP agent a tap of the right Command key\nprompts; `\"chief\"` when unset, `\"none\"` turns the tap off.",
@@ -2094,6 +2102,7 @@
         }
       ],
       "default": {
+        "bold-is-bright": null,
         "chief": null,
         "confirm-close": null,
         "copy-on-select": null,

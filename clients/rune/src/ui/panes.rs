@@ -360,6 +360,10 @@ fn terminal_layer(
             desk.blink_on,
             &metrics,
             ink.selection(),
+            grid::Bold {
+                bright: desk.file.bold_is_bright == Some(true),
+                color: desk.settings.theme.and_then(|theme| theme.bold),
+            },
         ))
         .children(overlay::link_underline(desk, id, &metrics, ink));
     if keyboard && desk.modal().is_none() && !editing {
