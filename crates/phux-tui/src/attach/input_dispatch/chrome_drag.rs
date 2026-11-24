@@ -149,13 +149,17 @@ fn join_slot(
 
 /// Whether an outer-viewport cell is the sidebar's resize handle: the
 /// separator rule, which always sits on the pane-facing side. Its bottom
-/// cell stays the collapse chevron.
+/// cell stays the collapse chevron, and the collapsed rail has none.
 pub(super) fn on_sidebar_edge(ctx: &DispatchCtx<'_>, x: u16, y: u16) -> bool {
     let Some(res) = ctx.sidebar else {
         return false;
     };
     let strip = sidebar_rect(ctx.viewport, res);
-    if strip.w == 0 || y < strip.y || y >= strip.y.saturating_add(strip.h) {
+    // The collapsed rail has no handle: its rule is part of each row's target.
+    if crate::render::chrome::sidebar::rail::is_rail(strip.w)
+        || y < strip.y
+        || y >= strip.y.saturating_add(strip.h)
+    {
         return false;
     }
     x == strip.x + ctx.sidebar_targets.counts.rule.column(strip.w)

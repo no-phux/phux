@@ -18,6 +18,7 @@ mod compose;
 mod layout;
 mod lines;
 mod painter;
+pub mod rail;
 mod rows;
 use compose::justify;
 pub use layout::{hit_test, row_model};
@@ -43,6 +44,9 @@ pub const PLUGIN_EMPTY: &str = "none";
 /// The collapse chevron painted in the strip's bottom corner.
 /// Clicking it runs `toggle-sidebar`.
 pub const COLLAPSE_GLYPH: &str = "‹";
+/// The collapsed rail's width: an outer marker column, the glyph column,
+/// and the separator rule. A strip this narrow paints as the [`rail`].
+pub const RAIL_WIDTH: u16 = 3;
 
 /// Minimum strip height (rows) at which the footer affordances render.
 /// Below this every row goes to the section body — a 2–3 row strip

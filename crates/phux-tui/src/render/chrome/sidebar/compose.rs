@@ -27,6 +27,9 @@ impl SidebarPainter {
     /// Render the sections + affordances + separator into a fresh
     /// `rect`-sized buffer, row-for-row from [`row_model`].
     pub(super) fn compose(&self, rect: Rect, rule: SidebarRule, junctions: &[u16]) -> Buffer {
+        if super::rail::is_rail(rect.w) {
+            return self.compose_rail(rect, rule, junctions);
+        }
         let area = RataRect::new(0, 0, rect.w, rect.h);
         let mut buf = Buffer::empty(area);
         buf.set_style(
@@ -298,7 +301,7 @@ fn fit_line(mut line: Line<'static>, width: u16) -> Line<'static> {
     line
 }
 
-fn paint_separator(
+pub(super) fn paint_separator(
     buf: &mut Buffer,
     rect: Rect,
     rule: SidebarRule,

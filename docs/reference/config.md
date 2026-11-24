@@ -101,6 +101,7 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `sidebar.hosts` | `true` |
 | `sidebar.hosts-refresh-secs` | `10` |
 | `sidebar.position` | `"left"` |
+| `sidebar.rail` | `true` |
 | `sidebar.recent-first` | `false` |
 | `sidebar.width` | `20` |
 | `status.position` | `"top"` |

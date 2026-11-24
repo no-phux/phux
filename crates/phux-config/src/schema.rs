@@ -124,11 +124,20 @@ pub enum StatusPosition {
 }
 
 /// `[sidebar]`: the vertical window list.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent config toggles, not a state machine"
+)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct SidebarCfg {
     /// Show the sidebar (default `true`).
     pub enabled: bool,
+    /// Keep a three-column rail while the sidebar is hidden or does not fit
+    /// (default `true`): an agents-need-you count, one state dot per session
+    /// (the active one marked), and an expand chevron. `false` hides the
+    /// sidebar completely.
+    pub rail: bool,
     /// Width in columns (default `20`). `0` sizes automatically to a quarter
     /// of the viewport, bounded to 28-40 columns.
     pub width: u16,
@@ -171,6 +180,7 @@ impl Default for SidebarCfg {
     fn default() -> Self {
         Self {
             enabled: true,
+            rail: true,
             width: 20,
             position: SidebarPosition::default(),
             agents_share: 50,

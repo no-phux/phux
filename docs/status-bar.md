@@ -142,9 +142,17 @@ Press <kbd>C-a</kbd> <kbd>b</kbd> to hide or show it. That choice lasts
 until you detach, across session switches. <kbd>C-a</kbd> <kbd>a</kbd>
 steps the Agents filter, and phux remembers the filter across attaches.
 
+Hidden, the sidebar folds to a three-column rail instead of vanishing.
+At the top is how many agents need you; click it for the agents list.
+Below that is one dot per session, colored the way its Sessions row
+would be, with a bar beside the session you're in. Click a dot to switch
+to that session, and click the bottom row (`›`) to open the sidebar
+again. Set `rail = false` to hide the sidebar completely.
+
 ```toml
 [sidebar]
 enabled = true        # shown when you attach
+rail = true           # hidden, keep the three-column rail
 width = 20            # columns; 0 adapts to a quarter of the terminal, 28 to 40
 position = "left"     # or "right"
 agents-share = 50     # percent of the height for Agents; 0 drops the panel
@@ -169,8 +177,10 @@ run `phux attach` again.
 
 The sidebar steps aside when the terminal is too narrow to afford it.
 Below its width plus `min-pane-cols` (40 columns by default; see
-[Breakpoints](#breakpoints)), phux gives the panes the whole width and
-<kbd>C-a</kbd> <kbd>b</kbd> rings the bell instead of toggling. On a
+[Breakpoints](#breakpoints)), phux shows the rail instead, and
+<kbd>C-a</kbd> <kbd>b</kbd> rings the bell instead of toggling. The rail
+steps aside too when even its three columns would leave the panes under
+`min-pane-cols`. On a
 terminal that narrow, <kbd>C-a</kbd> <kbd>A</kbd> (or the status bar's
 `agents` chip) opens the agents list full-screen.
 

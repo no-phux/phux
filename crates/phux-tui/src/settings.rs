@@ -40,6 +40,8 @@ pub struct SidebarSettings {
     /// `[sidebar] enabled` -- the FIRST attach's seed for the runtime
     /// `toggle-sidebar` state, which lives on the loop, not here.
     pub enabled: bool,
+    /// `[sidebar] rail`: keep the collapsed rail while the strip is off.
+    pub rail: bool,
     /// `[sidebar] width`, in columns.
     pub width: u16,
     /// `[sidebar] position`, folded to the reservation's edge.
@@ -316,6 +318,7 @@ impl TuiSettings {
             sessions: cfg.sessions.clone(),
             sidebar: SidebarSettings {
                 enabled: cfg.sidebar.enabled,
+                rail: cfg.sidebar.rail,
                 width: cfg.sidebar.width,
                 edge: sidebar_edge(cfg.sidebar.position),
                 agents_share: cfg.sidebar.agents_share,
