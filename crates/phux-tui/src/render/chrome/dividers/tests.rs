@@ -38,7 +38,7 @@ fn rail_row(content: Rect) -> Option<u16> {
 
 fn label(text: &'static str) -> PaneLabel<'static> {
     PaneLabel {
-        text,
+        text: Cow::Borrowed(text),
         agent: None,
         attention: false,
         seen: true,
@@ -60,9 +60,15 @@ fn render_full(
     pane_label: Option<PaneLabel<'static>>,
 ) -> String {
     let mut bytes: Vec<u8> = Vec::new();
-    render_dividers(&mut bytes, layout, content, rail, focus, &theme(), |_| {
-        pane_label
-    })
+    render_dividers(
+        &mut bytes,
+        layout,
+        content,
+        rail,
+        focus,
+        &theme(),
+        move |_| pane_label.clone(),
+    )
     .unwrap();
     String::from_utf8(bytes).unwrap()
 }

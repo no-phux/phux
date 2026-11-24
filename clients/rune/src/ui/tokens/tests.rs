@@ -270,3 +270,35 @@ fn kit_components_paint_only_token_colours() {
         }
     }
 }
+
+/// Omarchy's Vantablack: every colour a grey, so `failed` is too.
+const VANTABLACK: crate::theme::Theme = crate::theme::Theme {
+    id: "vantablack",
+    name: "Vantablack",
+    dark: true,
+    ansi: [
+        0x00_0000, 0xa4_a4a4, 0xb6_b6b6, 0xce_cece, 0x8d_8d8d, 0x9b_9b9b, 0xb0_b0b0, 0xff_ffff,
+        0x7a_7a7a, 0xa4_a4a4, 0xb6_b6b6, 0xce_cece, 0x8d_8d8d, 0x9b_9b9b, 0xb0_b0b0, 0xff_ffff,
+    ],
+    foreground: 0xff_ffff,
+    background: 0x00_0000,
+    cursor: 0xff_ffff,
+    accent: 0x8d_8d8d,
+    selection: Some(0x1a_1a1a),
+};
+
+/// A grey `failed` cannot say danger, only look disabled, so a button that
+/// ends something takes body text there; a hued one keeps the danger ink.
+#[test]
+fn a_grey_failed_tone_never_greys_out_the_verb() {
+    use rune_kit::ButtonVariant;
+    let grey = Tokens::resolve(&Inputs {
+        theme: Some(VANTABLACK),
+        ..Inputs::system(true)
+    });
+    assert!(grey.roles.recedes(grey.roles.status.failed));
+    assert_eq!(grey.danger_button(), ButtonVariant::Neutral);
+    for dark in [true, false] {
+        assert_eq!(system(dark).danger_button(), ButtonVariant::Danger);
+    }
+}

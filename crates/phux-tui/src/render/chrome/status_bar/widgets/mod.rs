@@ -76,7 +76,8 @@ pub struct WindowInfo {
     pub active: bool,
     /// A pane in this (active) window is zoomed; marked `Z`.
     pub zoomed: bool,
-    /// A pane is waiting on a human answer (ADR-0035); marked `!`.
+    /// A pane is waiting on a human answer (ADR-0035); marked with the
+    /// ladder's needs-you mark (`●`, `*` in ASCII).
     pub attention: bool,
     /// VCS branch of the focused pane's cwd (shown by the sidebar only).
     pub branch: Option<String>,
@@ -100,6 +101,16 @@ pub struct WindowBadge {
 }
 
 impl WindowInfo {
+    /// ` ●` (` *` in ASCII) when a pane here waits on a human, as the
+    /// sidebar and status bar mark it. `None` when the tab's badge already
+    /// is that mark, so the tab never says it twice.
+    #[must_use]
+    pub fn needs_you_marker(&self) -> Option<String> {
+        let mark = crate::render::chrome::column(self.glyphs, phux_design::State::NeedsYou);
+        (self.attention && self.badge.as_ref().is_none_or(|badge| badge.glyph != mark))
+            .then(|| format!(" {mark}"))
+    }
+
     /// Compact chrome suffix for a retained pane, as the sidebar draws it:
     /// ` ✕3` or ` ✕sig9` for a failure, ` –` for a clean or unreported exit
     /// (` x3` and ` -` in the ASCII column).

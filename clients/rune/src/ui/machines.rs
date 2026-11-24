@@ -91,7 +91,7 @@ fn danger(
     press: impl Fn(&mut Desk) + 'static,
 ) -> El {
     Button::new(label)
-        .variant(ButtonVariant::Danger)
+        .variant(t.danger_button())
         .control_size(ControlSize::Small)
         .on_press(press)
         .build(&t.kit)

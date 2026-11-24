@@ -94,6 +94,36 @@ fn a_fresh_input_origin_badges_the_label_until_it_expires() {
     );
 }
 
+/// Arch's bash, and so Omarchy's, writes `user@host:path` into every pane.
+/// The rule must not show it (`clip_text` would keep only the user and
+/// host): a shell pane reads as what runs and where.
+#[test]
+fn a_shell_prompt_title_reads_as_what_runs_and_where() {
+    let id = ResourceId::local(1);
+    let mut slot = PaneSlot::new().expect("slot");
+    slot.last_title = "me@box:~/src/phux".to_owned();
+    slot.cwd = Some("/home/me/src/phux".to_owned());
+    slot.foreground = Some("bash".to_owned());
+    let mut panes = HashMap::from([(id.clone(), slot)]);
+    let (kernel, _, _) = published_test_state(&[]);
+    let text = |panes: &HashMap<ResourceId, PaneSlot>| {
+        pane_label(&kernel, panes, &id)
+            .expect("label")
+            .text
+            .into_owned()
+    };
+    assert_eq!(text(&panes), "bash \u{b7} phux");
+
+    let slot = panes.get_mut(&id).expect("slot");
+    slot.last_title = "OC | Polish omarchy TUI".to_owned();
+    slot.foreground = Some("opencode".to_owned());
+    assert_eq!(
+        text(&panes),
+        "Polish omarchy TUI",
+        "an agent's task stands even when a foreground is known"
+    );
+}
+
 /// A republish at unchanged geometry must serve fresh rows through an
 /// incremental paint: the kernel's new token reaches the renderer. (The
 /// deterministic guard lives in `phux_vt::render_pool::tests`.)

@@ -100,12 +100,14 @@ fn isolated_preferences_rejects_a_missing_test() {
     });
 }
 
+/// A window with the System theme picked, so a test never paints the
+/// host's Omarchy theme (a never-chosen theme follows Omarchy's).
 pub fn window() -> Desk {
-    Desk::with_preferences(
-        &Resolved::offline("test window"),
-        None,
-        rune::prefs::Prefs::memory(),
-    )
+    let mut prefs = rune::prefs::Prefs::memory();
+    prefs
+        .set("theme", &String::new())
+        .expect("memory prefs take a theme");
+    Desk::with_preferences(&Resolved::offline("test window"), None, prefs)
 }
 
 pub fn settings_window() -> Desk {

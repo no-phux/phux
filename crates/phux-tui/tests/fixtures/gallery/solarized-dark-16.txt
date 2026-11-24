@@ -29,13 +29,13 @@
   1-8 gray/- +b, 27-27 gray/-, 29-29 gray/-
 14| ● development         ●1 ◆1 │|
   1-2 yellow/-, 3-13 cyan/- +b, 23-24 yellow/-, 26-27 green/-, 29-29 gray/-
-15|   ● editor                  │|
+15|   › editor                  │|
   0-2 -/- +r, 3-4 cyan/- +r, 5-10 cyan/- +br, 11-28 -/- +r, 29-29 gray/-
-16|   ● review ●                │|
-  3-4 yellow/-, 11-12 yellow/- +b, 29-29 gray/-
-17|   ○ build ✕3                │|
+16|   ● review                  │|
+  3-4 yellow/- +b, 29-29 gray/-
+17|     build ✕3                │|
   3-9 gray/-, 10-12 red/- +b, 29-29 gray/-
-18|   ○ lint –                  │|
+18|     lint –                  │|
   3-10 gray/-, 29-29 gray/-
 19| ● ops                    ●2 │|
   1-2 yellow/-, 26-27 yellow/-, 29-29 gray/-

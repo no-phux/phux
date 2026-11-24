@@ -165,6 +165,22 @@ impl Roles {
             glow,
         }
     }
+
+    /// Whether `ink` is a grey that reads quieter than `text.dim` on the
+    /// sidebar. A grey can only stand out by lightness: in a monochrome
+    /// theme (Omarchy's Vantablack) the accent and every tone solve to mid
+    /// greys, so focus, or a button's verb, would be the dimmest thing on
+    /// screen. Clients paint body text there instead.
+    #[must_use]
+    pub fn recedes(&self, ink: Rgba8) -> bool {
+        /// The widest channel spread (of 255) still read as grey.
+        const GREY: u8 = 8;
+        let spread = ink.r.max(ink.g).max(ink.b) - ink.r.min(ink.g).min(ink.b);
+        let lut = crate::tokens::DERIVE.srgb_lut;
+        let ground = self.layer.sidebar.rgb();
+        let contrast = |c: Rgba8| crate::solve::contrast(c.rgb(), ground, lut);
+        spread <= GREY && contrast(ink) < contrast(self.text.dim)
+    }
 }
 
 /// A status tone with its three companions: the alpha lives in each.
