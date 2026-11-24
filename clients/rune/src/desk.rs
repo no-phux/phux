@@ -39,6 +39,7 @@ pub mod hive;
 mod home;
 mod inbox;
 mod input;
+pub mod keep_awake;
 pub mod kitchen;
 mod layout;
 pub mod link;

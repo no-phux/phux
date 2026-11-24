@@ -319,6 +319,9 @@ impl Desk {
                 }
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
                 items.extend(self.plugin_actions.items());
+                items.extend(super::keep_awake::items(
+                    self.connection.keep_awake.as_ref(),
+                ));
                 items.extend(self.resource_items());
                 let listed: Vec<_> = shown.into_iter().map(|r| r.id).collect();
                 palette::rank_grouped(items, &self.palette_tabs(&listed), query)
@@ -462,6 +465,7 @@ impl Desk {
             Target::NewSession(name) => self.create_session(name),
             Target::NewWorktree(branch) => self.new_worktree(&branch),
             Target::Popup(line) => self.open_popup(&line),
+            Target::KeepAwake(mode) => self.set_keep_awake(mode),
             Target::Path(path) => {
                 if let Some(search) = search {
                     self.insert_path(&path, search);

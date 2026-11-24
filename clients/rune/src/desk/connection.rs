@@ -53,6 +53,8 @@ pub struct Connection {
     pub popup: popup::Popup,
     pub tabs: tabs::Tabs,
     pub reorder: reorder::Reorder,
+    /// The server's keep-awake record; `None` while its mode is `off`.
+    pub keep_awake: Option<super::keep_awake::Awake>,
     /// A screenshot being taken for a terminal on this client. Replacing the
     /// connection drops it, which cancels the picker and reaps its worker.
     pub(super) capture: Option<screenshot::Capture>,
@@ -129,6 +131,7 @@ impl Default for Connection {
             popup: popup::Popup::default(),
             tabs: tabs::Tabs::default(),
             reorder: reorder::Reorder::default(),
+            keep_awake: None,
             capture: None,
             uploads: Vec::new(),
             pastes: HashSet::new(),
