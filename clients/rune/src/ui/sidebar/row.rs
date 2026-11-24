@@ -109,7 +109,10 @@ pub(super) fn pane_row(pane: &Row, t: &Tokens) -> El {
     let lead = tile::tile(pane.kind.or(pane.agent), pane.mark, sidebar, t);
     // The tile is named by its state's word where a screen reader meets
     // it, an idle one too, whose quiet tile has no badge to say so.
-    let lead = match (pane.mark != Mark::None).then(|| face(pane.mark, t).word).flatten() {
+    let lead = match (pane.mark != Mark::None)
+        .then(|| face(pane.mark, t).word)
+        .flatten()
+    {
         Some(word) => el().child(lead).label(word),
         None => lead,
     };

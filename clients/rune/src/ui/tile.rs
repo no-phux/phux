@@ -112,7 +112,13 @@ mod tests {
 
     #[test]
     fn only_a_state_worth_telling_gets_a_badge() {
-        for mark in [Mark::Blocked, Mark::Failed, Mark::Done, Mark::Working, Mark::Bell] {
+        for mark in [
+            Mark::Blocked,
+            Mark::Failed,
+            Mark::Done,
+            Mark::Working,
+            Mark::Bell,
+        ] {
             assert!(tells(mark), "{mark:?}");
         }
         for mark in [Mark::None, Mark::Idle] {

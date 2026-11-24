@@ -11,9 +11,15 @@ use crate::keys::Shortcut;
 /// The way to the palette: an icon beside the inbox, its chord waiting in
 /// the tooltip, so the list starts right under the window's top edge.
 pub(super) fn search(t: &Tokens) -> El {
-    let button = icon_press(&icons::SEARCH, "Jump to…", "sidebar-search", t, |d: &mut Desk| {
-        d.toggle_palette();
-    });
+    let button = icon_press(
+        &icons::SEARCH,
+        "Jump to…",
+        "sidebar-search",
+        t,
+        |d: &mut Desk| {
+            d.toggle_palette();
+        },
+    );
     tip(button, "Jump to…", Shortcut::Palette)
 }
 

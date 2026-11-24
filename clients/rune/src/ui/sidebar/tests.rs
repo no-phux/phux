@@ -1,9 +1,9 @@
-use crate::activity::Mark;
-use phux_protocol::ids::ResourceId;
 use super::*;
+use crate::activity::Mark;
 use crate::theme::contrast;
 use phux_config_core::host_color::PALETTE;
 use phux_design::tokens::IDENTITY;
+use phux_protocol::ids::ResourceId;
 
 fn tokens(dark: bool, theme: Option<&'static crate::theme::Theme>) -> std::rc::Rc<Tokens> {
     super::super::tokens_for(dark, theme)
@@ -171,7 +171,10 @@ fn rows_are_one_focusable_source_list_with_their_words() {
     };
     let shows = |words: &str| (rt.elements().iter()).any(|e| e.text.as_deref() == Some(words));
     assert!(shows("needs you"), "what needs you says so");
-    assert!(!shows("claude · working"), "one line: no second line of words");
+    assert!(
+        !shows("claude · working"),
+        "one line: no second line of words"
+    );
     assert!(
         said("needs you") && said("done") && said("working"),
         "badges are named"

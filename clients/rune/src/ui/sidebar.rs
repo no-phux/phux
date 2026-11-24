@@ -208,7 +208,6 @@ fn counts_by_session(desk: &Desk, topology: &Topology) -> HashMap<u32, Counts> {
     counts
 }
 
-
 /// The rows' source list (the kit `Sidebar`'s): one Tab stop that lands on
 /// the selected row; Up and Down move the selection, which follows focus,
 /// typing a row's first letters jumps to it, and Esc leaves.
@@ -288,10 +287,7 @@ fn session_list(desk: &Desk, counts: &HashMap<u32, Counts>, t: &Tokens) -> El {
             let id = &lead.id;
             let twin = titled.iter().filter(|(.., other)| other == name).count() > 1;
             let mirror = (!lead.kind.is_terminal()).then(|| lead.mirror.to_owned());
-            let target = item
-                .tab
-                .and_then(|tab| desk.tab_focus(tab))
-                .unwrap_or(id);
+            let target = item.tab.and_then(|tab| desk.tab_focus(tab)).unwrap_or(id);
             let row = Row {
                 id,
                 target,

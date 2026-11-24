@@ -154,8 +154,8 @@ fn loudest(desk: &Desk, tab: &Tab) -> Option<Mark> {
 /// the same tile.
 fn lead(desk: &Desk, tab: &Tab, t: &Tokens) -> El {
     let acts = &desk.activities;
-    let agent = (tab.resources.iter())
-        .find_map(|id| acts.agent_kind(id).or_else(|| acts.agent_name(id)));
+    let agent =
+        (tab.resources.iter()).find_map(|id| acts.agent_kind(id).or_else(|| acts.agent_name(id)));
     let mark = loudest(desk, tab).unwrap_or(Mark::None);
     super::tile::tile(agent, mark, t.roles.layer.ground.paint(), t)
 }
