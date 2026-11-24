@@ -7,7 +7,7 @@
     "logos/docs-wordmark.png": "docs/assets/logo.png",
     "logos/wordmark-light.svg": "docs/assets/logo-light.svg",
     "logos/wordmark-dark.svg": "docs/assets/logo-dark.svg",
-    "tooling/brand.py": "scripts/brand.py",
+    "tooling/brand.py": "brand/brand.py",
     "desktop/AppIcon.png": "clients/rune/packaging/AppIcon.png",
     "playground/fox/idle.png": "clients/rune/assets/brand/fox/idle.png",
     "playground/fox/celebrate.png": "clients/rune/assets/brand/fox/celebrate.png",
