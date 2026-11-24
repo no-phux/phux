@@ -187,11 +187,13 @@ class BumpPrTest(unittest.TestCase):
 
     def test_lookup_is_scoped_to_same_repository_open_main_bumps(self):
         own = {**self.pr, "isCrossRepository": False}
-        with patch("release.sh", return_value=json.dumps([own])) as sh:
+        listed = subprocess.CompletedProcess([], 0, json.dumps([own]), "")
+        with patch("release.sh", return_value=listed) as sh:
             self.assertEqual(release.open_bump_pr(), own)
         sh.assert_called_once_with(
             "gh", "pr", "list", "--base", "main", "--head", release.BRANCH, "--state", "open",
             "--json", "number,isDraft,headRefOid,isCrossRepository",
+            check=False,
         )
 
 
