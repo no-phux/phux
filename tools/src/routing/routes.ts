@@ -119,7 +119,7 @@ const ROUTES: Record<string, Surface[]> = {
   "dev/lib/dev-toolchain.sh": [...ZIG, "rune"],
   // The lint lane runs build-features-check against the real graph.
   "just/{gates,test,build}.just": ["phux"],
-  "scripts/lib/e2e-selection.sh": ["phux"],
+  "dev/lib/e2e-selection.sh": ["phux"],
   // Compile-free recipes and scripts that guards or release workflows run.
   // The root justfile is imports and `default`.
   justfile: [],

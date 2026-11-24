@@ -109,7 +109,7 @@ test-archive: worktree-claim
         targets+=(--test "$bin")
       done
       if [[ "${PHUX_E2E:-true}" == "true" ]]; then
-        source scripts/lib/e2e-selection.sh
+        source dev/lib/e2e-selection.sh
         e2e_select
         targets+=("${e2e_targets[@]}")
       fi
@@ -135,7 +135,7 @@ test-archive: worktree-claim
 e2e: worktree-claim && (worktree-verify "e2e")
     #!/usr/bin/env bash
     set -euo pipefail
-    source scripts/lib/e2e-selection.sh
+    source dev/lib/e2e-selection.sh
     e2e_select
     if [[ -n "${PHUX_TEST_ARCHIVE:-}" ]]; then
       source=(--archive-file "$PHUX_TEST_ARCHIVE" --workspace-remap "{{justfile_directory()}}")

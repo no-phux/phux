@@ -56,8 +56,8 @@ if [ ! -f justfile ]; then
     exit 1
 fi
 
-# shellcheck source=scripts/lib/e2e-selection.sh
-source scripts/lib/e2e-selection.sh
+# shellcheck source=dev/lib/e2e-selection.sh
+source dev/lib/e2e-selection.sh
 # Only the stress recipe names candidates independently. This check does not
 # need just or nextest installed.
 lanes="$(cat "${RECIPE_FILES[@]}" | awk '
@@ -121,7 +121,7 @@ while IFS= read -r path; do
     phux_hint "names the binary. This one is named nowhere, so it never executes"
     phux_hint "in CI and will stay green no matter what it asserts."
     echo "" >&2
-    phux_hint "Fix by adding ${binary_id} to E2E_BINARIES in scripts/lib/e2e-selection.sh,"
+    phux_hint "Fix by adding ${binary_id} to E2E_BINARIES in dev/lib/e2e-selection.sh,"
     phux_hint "or, if it is too slow for the PR critical path, to the \`stress\`"
     phux_hint "recipe (run locally with \`just stress\`)."
     echo "" >&2
