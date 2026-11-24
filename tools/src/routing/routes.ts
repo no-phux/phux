@@ -65,7 +65,7 @@ const ROUTES: Record<string, Surface[]> = {
   ".github/actions/setup-rust-lane/**": ["phux"],
   ".github/actions/setup-web-cache/**": ["web"],
   ".github/actions/rune-host/**": ["rune"],
-  // Also used by docs-catalog and release workflows outside the lane model.
+  // Also used by release workflows outside the lane model.
   ".github/actions/setup-bun/**": [...SURFACES],
   "scripts/ci/setup-linux-release-userspace.sh": [],
   "scripts/ci/prune-build-cache.sh": [],

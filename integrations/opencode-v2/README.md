@@ -28,7 +28,7 @@ pane's sessions to phux: working and idle, each tool call, and every
 permission or question OpenCode asks, so `phux agent list` shows the pane
 `blocked` with the question until you answer it. It also registers `phux mcp`
 as an MCP server for the phux tools, unless your `opencode.json` already
-names one `phux`; `opencode mcp list` shows `phux connected`. The terminal
+names one `phux`; `opencode mcp list` shows it as connected. The terminal
 companion and the desktop UI need 2.2 or newer; on 1.x the server part does
 the companion's reporting.
 

@@ -18,7 +18,7 @@ const baseline = {
   plan: {
     result: "success",
     outputs: Object.fromEntries(
-      [...LANES, "rune_qualify", "docs_catalog", "release_qualify"].map((key) => [key, "false"]),
+      [...LANES, "rune_qualify", "release_qualify"].map((key) => [key, "false"]),
     ),
   },
   "queue-apple": { result: "success" },
@@ -107,18 +107,6 @@ test.each(["pull_request", "push", "merge_group"])(
     }
   },
 );
-
-test("a skipped docs catalog passes on main and a failure does not", () => {
-  const ready = {
-    ...baseline,
-    native: { result: "success" },
-    icount: { result: "success" },
-  };
-  expect(aggregate({ ...ready, "docs-catalog": { result: "skipped" } }, "push")).toBe(0);
-  expect(aggregate({ ...ready, "docs-catalog": { result: "skipped" } }, "merge_group")).toBe(0);
-  expect(aggregate({ ...ready, "docs-catalog": { result: "failure" } }, "pull_request")).toBe(1);
-  expect(aggregate({ ...ready, "docs-catalog": { result: "failure" } }, "push")).toBe(1);
-});
 
 test("a draft's skipped plan fails ci, so it cannot satisfy a readied PR", () => {
   // GitHub counts a skipped required check as passing.
