@@ -312,3 +312,16 @@ pub enum KeepAwake {
     /// For as long as the server runs.
     Always,
 }
+
+impl KeepAwake {
+    /// Global metadata key a client writes to switch the running server's
+    /// mode until it restarts; the value is the mode as a JSON string
+    /// (`"always"`). Unset, the server follows `defaults.keep-awake`.
+    pub const MODE_KEY: &str = "phux.keep-awake.mode/v1";
+
+    /// Global metadata key of the server's keep-awake state, published while
+    /// the mode is not `off`: `{"state": "on" | "idle" | "unavailable",
+    /// "working": N, "mode": "while-agents-work" | "always"}`;
+    /// `unavailable` means the inhibitor is wanted but could not be held.
+    pub const STATUS_KEY: &str = "phux.keep-awake/v1";
+}

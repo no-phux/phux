@@ -40,6 +40,8 @@ pub enum Target {
     Popup(String),
     /// An absolute path on the pane's host, to insert at its prompt.
     Path(String),
+    /// Switch the server's keep-awake mode.
+    KeepAwake(phux_config::KeepAwake),
 }
 
 /// What the palette lists.

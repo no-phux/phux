@@ -335,7 +335,8 @@ pub(super) const ROWS: &[SettingSpec] = &[
                  systemd-inhibit on Linux) while any agent's state is working and drops it \
                  within about 15 seconds of the last one stopping; always holds it for as \
                  long as the server runs. The display may still sleep, and closing a laptop \
-                 lid still sleeps it. phux status shows the current state.",
+                 lid still sleeps it. phux status shows the current state, and Rune can \
+                 switch the mode until the server restarts.",
         applies: Applies::NextSpawn,
     },
 ];

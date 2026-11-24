@@ -33,7 +33,7 @@ use items::{Item, given_name, items};
 mod row;
 use row::{Row, pane_row};
 mod chrome;
-use chrome::{foot, inbox_button, search};
+use chrome::{awake_button, foot, inbox_button, search};
 mod drag;
 mod hosts;
 use hosts::other_machines;
@@ -354,6 +354,7 @@ pub fn view(desk: &Desk, ink: &Tokens, inset: f32, leading: f32) -> El {
                 .window_drag()
                 .child(super::machines::switch(desk, ink).grow(1.0))
                 .child(search(t))
+                .children(awake_button(desk, t))
                 .child(inbox_button(waiting, t)),
         )
         .child(
