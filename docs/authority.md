@@ -1,6 +1,7 @@
 ---
 group: internals
 order: 3
+title: Authority over pages, windows, and displays
 ---
 
 # Authority over pages, windows, and displays
