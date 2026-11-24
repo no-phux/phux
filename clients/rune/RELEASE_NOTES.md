@@ -1,10 +1,17 @@
-**Phux Rune 0.1.52**
+**Phux Rune 0.1.53**: 15 changes since 0.1.52.
 
-- Wrap phone reconnect messages and recovery actions instead of truncating
-  long names or clipping buttons.
-- Let the recovery card scroll on short screens and with larger text, while
-  keeping terminal input shielded and keyboard focus rings visible.
-- Repair automatic patch releases when no bump pull request is open.
-
-The Rune engine pin is unchanged. The newer strict-modal upstream change remains
-deferred; this release preserves terminal input ownership and pane arrangement.
+- A viewer's screen does not name the agent in its pane (#2932)
+- Fail loudly with gh stderr when the bump PR lookup fails (#2936)
+- Focus the sidebar row containing a split pane (#2935)
+- Child panes record their parent and fold under it (#2934)
+- Legible focus and emphasis on black and grey Omarchy themes (#2912)
+- Per-host theme while viewing a host (#2930)
+- Run plugin link handlers on click with the pane's context (#2929)
+- Let a client lock its view size (#2927)
+- Stop window work scaling with idle terminals (#2926)
+- Show and switch keep-awake from the sidebar and palette (#2922)
+- Open the attention list on the longest wait (#2921)
+- Draw bold text in bright colours and a theme bold colour (#2916)
+- Open sessions, tabs and folders from phux:// links (#2914)
+- Polish both clients under grey Omarchy themes and shell panes (#2889)
+- Stop iOS qualification failing on simulator stalls (#2910)
