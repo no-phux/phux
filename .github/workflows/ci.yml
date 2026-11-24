@@ -89,7 +89,7 @@ jobs:
         run: |
           bash scripts/check-docs.sh
           bash scripts/check-install-surface.sh
-          bash scripts/check-file-tokens.sh --base "$(git merge-base origin/main HEAD)"
+          bash scripts/check-file-tokens.sh --merge-base origin/main
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
         if: needs.plan.outputs.docs_only != 'true'
       - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17

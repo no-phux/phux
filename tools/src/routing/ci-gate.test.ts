@@ -23,10 +23,10 @@ const baseline = {
   },
   "queue-apple": { result: "success" },
 };
-const aggregate = (results: unknown, event: string): number =>
+const aggregate = (results: unknown, event: string, draft = ""): number =>
   Bun.spawnSync(["bash", "-euo", "pipefail", "-c", script], {
     cwd: repoPath("."),
-    env: { ...process.env, RESULTS: JSON.stringify(results), EVENT_NAME: event },
+    env: { ...process.env, RESULTS: JSON.stringify(results), EVENT_NAME: event, DRAFT: draft },
     stdout: "ignore",
   }).exitCode;
 
@@ -108,11 +108,15 @@ test.each(["pull_request", "push", "merge_group"])(
   },
 );
 
-test("a draft's skipped plan fails ci, so it cannot satisfy a readied PR", () => {
-  // GitHub counts a skipped required check as passing.
+test("a skipped plan passes only as a draft, which never reports the required ci", () => {
+  // GitHub counts a skipped required check as passing, so the job always runs
+  // and a draft reports under another name.
   expect(String(job(CI, "ci")["if"])).not.toContain("draft");
+  expect(String(job(CI, "ci")["name"])).toContain("'ci (draft)' || 'ci'");
   const draft = { ...baseline, plan: { result: "skipped" }, "queue-apple": { result: "skipped" } };
   expect(aggregate(draft, "pull_request")).toBe(1);
+  expect(aggregate(draft, "pull_request", "false")).toBe(1);
+  expect(aggregate(draft, "pull_request", "true")).toBe(0);
 });
 
 test("native setup's path list covers every script that job runs", () => {

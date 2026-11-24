@@ -16,12 +16,21 @@
 #
 # `--base <commit>` checks HEAD against that commit instead of the index, which
 # is how CI enforces this on a pull request whose hooks never ran.
+# `--merge-base <ref>` does the same against HEAD's merge base with ref.
 set -euo pipefail
 
 max_tokens=5000
 max_bytes=$((max_tokens * 4))
 
 base=HEAD
+if [[ "${1:-}" == --merge-base ]]; then
+    ref="${2:?--merge-base needs a ref}"
+    if ! merge="$(git merge-base "$ref" HEAD 2>/dev/null)"; then
+        echo "check-file-tokens: no merge base between $ref and HEAD; fetch it (git fetch origin main)" >&2
+        exit 1
+    fi
+    set -- --base "$merge"
+fi
 if [[ "${1:-}" == --base ]]; then
     base="${2:?--base needs a commit}"
     GIT_INDEX_FILE="$(mktemp "${TMPDIR:-/tmp}/check-file-tokens.XXXXXX")"
