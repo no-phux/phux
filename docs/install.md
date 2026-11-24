@@ -73,6 +73,21 @@ carries `.deb` and `.rpm` files. On Arch, install `phux-bin` from the AUR.
 brew install no-phux/tap/phux
 ```
 
+## Nix
+
+The flake builds `phux` and `phux-mcp` from source. Apple silicon macOS and
+x86_64 Linux are tested; arm64 Linux uses the same recipe, untested.
+
+```sh
+nix run github:no-phux/phux -- --version
+nix profile install github:no-phux/phux
+```
+
+In a flake, use `inputs.phux.packages.${system}.default`. There is no
+binary cache, so the first build compiles the terminal engine with Zig and
+then phux, which takes several minutes. `phux update` leaves a Nix install
+alone; update with `nix profile upgrade phux`.
+
 ## macOS permissions
 
 macOS charges every program in a pane to the server, so the server holds

@@ -111,3 +111,6 @@ Runners are hosted Ubuntu x64 and arm64 and macOS. The test lanes compile once
 Pull requests restore caches and never save them. `main` pushes and
 [`cache-warm.yml`](../.github/workflows/cache-warm.yml) save them: 00:10 UTC
 for the Linux and browser lanes, 06:17 UTC for Rune.
+
+[`nix-package.yml`](../.github/workflows/nix-package.yml) builds the flake's
+`phux` package on Ubuntu x64 when its inputs change. It is not required.
