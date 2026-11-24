@@ -1,5 +1,6 @@
 """Maintained navigation exporter matrix: reading, focus, scrolling and motion."""
 from itertools import product
+from struct import pack, unpack
 
 from visual_motion import accessory_resize_inventory, pane_motion_inventory
 from visual_states import states_inventory
@@ -34,6 +35,7 @@ def navigation_inventory(themes=("dark", "light")):
             themes, ("top", "bottom"), ((320, 340), (393, 480)))
     })
     cases.update(states_inventory(themes))
+    cases.update(reconnect_inventory(themes))
     cases.update(pane_motion_inventory(themes))
     cases.update(accessory_inventory(themes))
     cases.update(accessory_resize_inventory(themes))
@@ -45,6 +47,32 @@ def navigation_inventory(themes=("dark", "light")):
             ((1100, 720), (640, 360)))
     })
     return cases
+
+
+def reconnect_inventory(themes):
+    return {
+        f"navigation/reconnect-{state}-{theme}-large-{large}-phone-{phone}-"
+        f"native-{native}-{scale}x-{phase}-{width * scale}.png":
+            reconnect_geometry(width, height, scale, phone, large)
+        for state, theme, large, (width, height, scale, phone, native), phase in product(
+            ("reconnecting", "long", "pair", "update"), themes, ("false", "true"),
+            ((393, 852, 1, "true", "false"), (320, 568, 1, "true", "false"),
+             (393, 480, 2, "true", "true"), (320, 340, 2, "true", "true"),
+             (1100, 720, 1, "false", "false"), (640, 360, 1, "false", "false")),
+            ("top", "bottom", "focused"))
+        if phone == "true" or phase == "top"
+    }
+
+
+def reconnect_geometry(width, height, scale, phone, large):
+    # Rune's interface zoom changes logical viewport and effective scale, not
+    # the requested physical output. Match its f32 math without loosening the
+    # maintained geometry check. Phones use native text size instead of zoom.
+    if phone == "false" and large == "true":
+        zoom = unpack("f", pack("f", 1.4))[0]
+        logical = [unpack("f", pack("f", value / zoom))[0] for value in (width, height)]
+        return (*logical, zoom)
+    return (width, height, scale)
 
 
 def accessory_inventory(themes):
@@ -74,6 +102,7 @@ def connections_inventory(themes):
 
 def navigation_exporter(stem):
     for prefix, exporter in (
+        ("reconnect-", "reconnect_feedback_visual_review_frames"),
         ("attention-", "attention_contrast_visual_review_frames"),
         ("accessory-resize-", "phone_accessory_resize_visual_review_frames"),
         ("accessory-", "phone_accessory_visual_review_frames"),

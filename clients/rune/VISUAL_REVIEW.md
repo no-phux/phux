@@ -122,6 +122,15 @@ native UIKit behavior or evidence that the accessory fix repaired that stand-in.
 
 ## Review behavior as well as pixels
 
+Reconnect feedback cases retain an attached terminal, then exercise an ordinary
+drop, a long explanation and a real failed pairing status. Compare top, scrolled
+bottom and keyboard-focused Retry on both phone widths and native keyboard-reduced
+2× viewports at standard/AX5 text sizes, light and dark. Require complete recovery
+targets above the accessory and unchanged terminal geometry while scrolling.
+Keep desktop/minimum and 140% interface-zoom captures as nonregression evidence.
+The live-server comparison induces a real loss only after witnessing attachment;
+run it separately from GPU exporters to avoid capture-window contention.
+
 ACP multi-field form cases retain field-heading and focused-editor scrolls,
 selected choices, final actions, required errors and in-flight responses.
 Compare ordinary/long content at standard and largest native text sizes,

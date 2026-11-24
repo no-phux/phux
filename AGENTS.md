@@ -52,14 +52,10 @@ the schema regenerated ([protocol](./docs/protocol.md#changing-the-wire)).
 
 ## Pull requests
 
-CI shares a small macOS pool, and every push to a ready PR cancels and
-requeues its lanes. Open PRs with `gh pr create --draft` (all drafts skip the
-lanes and report only `ci (draft)`), run `just check` until it passes, then `gh pr ready`
-once. Fix review or CI findings in one push, not one push per fix. Flows
-that validate before the first push and use `gh pr merge --auto` may open
-ready. A draft display cannot revoke older same-SHA checks. Automated arming
-must pass `bun tools/main.ts pr-ready-ci PR_NUMBER EXPECTED_FULL_SHA` after
-the latest Ready transition before enabling auto-merge; see [CI](./docs/ci.md).
+Open PRs draft or ready, whichever fits. Drafts skip the CI lanes; each push
+to a ready PR requeues them on a small shared macOS pool, so batch fixes
+into one push when you can. How CI gates and auto-merge work is in
+[CI](./docs/ci.md).
 
 ## Worktree isolation
 

@@ -1,6 +1,7 @@
 ---
 group: internals
 order: 4
+title: A terminal multiplexer built on libghostty — phux
 ---
 
 # libghostty in phux

@@ -1,6 +1,8 @@
 ---
 group: build
 order: 0
+title: Build on phux: JSON CLI, MCP, wire protocol, OSC 7501 and plugins
+description: There is no published SDK or client library yet. A program builds on the JSON CLI, MCP, the wire protocol, unpublished Rust client crates, OSC 7501, or plugins.
 ---
 
 # Build on phux

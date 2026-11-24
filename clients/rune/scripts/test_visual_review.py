@@ -58,7 +58,7 @@ class VisualReview(unittest.TestCase):
 
     def populate(self, inventory):
         for relative, (width, height, scale) in inventory.items():
-            physical = [width * scale, height * scale]
+            physical = [round(width * scale), round(height * scale)]
             tree = {**self.tree, "viewport": [width, height], "scale": scale, "pixels": physical}
             self.frame(relative, tree=tree, physical=physical)
 
@@ -82,10 +82,10 @@ class VisualReview(unittest.TestCase):
         self.inventory.stop()
         self.populate(review.required_inventory())
         manifest = self.produce()
-        self.assertEqual(len(manifest["cases"]), 1225)
+        self.assertEqual(len(manifest["cases"]), 1449)
         self.assertEqual({family: sum(case["family"] == family for case in manifest["cases"])
                           for family in review.FAMILIES},
-                           {"inbox": 404, "settings": 226, "navigation": 594, "resources": 1})
+                            {"inbox": 404, "settings": 226, "navigation": 818, "resources": 1})
         case = next(case for case in manifest["cases"] if case["png"] == self.subject)
         self.assertEqual(case["physical"], [320, 568])
         self.assertEqual(case["logical"], [320, 568])
@@ -102,6 +102,7 @@ class VisualReview(unittest.TestCase):
         self.assertEqual(case["exporter"], "phone_inbox_visual_review_frames")
         self.assertEqual(review.exporter_for("inbox", "phone-acp-input-dark-320x280-1x"),
                          "phone_acp_visual_review_frames")
+
         self.assertEqual(review.exporter_for("settings", "phone-appearance-before"),
                          "mobile_appearance_and_real_theme_palette_render_accept_and_cancel")
         self.assertEqual(review.exporter_for("navigation", "retina-2x-native-false-640"),
@@ -125,7 +126,28 @@ class VisualReview(unittest.TestCase):
         self.assertEqual(review.exporter_for("navigation", "inventory-light-393"),
                          "session_browser_renders_realistic_dark_light_and_search_states")
         self.assertEqual(review.exporter_for("resources", "mixed"),
-                         "native_png_headless_renderer_smoke")
+                          "native_png_headless_renderer_smoke")
+
+    def test_reconnect_matrix_keeps_constrained_native_and_desktop_cases(self):
+        self.inventory.stop()
+        inventory = {path: geometry for path, geometry in review.required_inventory().items()
+                     if path.startswith("navigation/reconnect-")}
+        self.assertEqual(len(inventory), 224)
+        for path, geometry in inventory.items():
+            self.assertEqual(review.exporter_for("navigation", Path(path).stem),
+                             "reconnect_feedback_visual_review_frames")
+            if "-native-true-" in path:
+                self.assertIn(geometry, ((320, 340, 2), (393, 480, 2)))
+            elif "-phone-false-" in path:
+                width = 1100 if path.endswith("-1100.png") else 640
+                height = 720 if width == 1100 else 360
+                self.assertAlmostEqual(geometry[0] * geometry[2], width, places=3)
+                self.assertAlmostEqual(geometry[1] * geometry[2], height, places=3)
+                self.assertAlmostEqual(geometry[2], 1.4 if "-large-true-" in path else 1)
+                if "-large-true-" in path:
+                    with self.assertRaisesRegex(ValueError, "geometry differs"):
+                        review.validate_required_geometry(
+                            {"png": path, "logical": [width, height], "scale": 1}, geometry)
 
     def test_missing_family_fails_without_writing_bundle(self):
         self.inventory.stop()
@@ -345,10 +367,10 @@ class VisualReview(unittest.TestCase):
                                 env=environment, cwd=self.root, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         manifest = json.loads((out / "manifest.json").read_text())
-        self.assertEqual(len(manifest["cases"]), 1225)
+        self.assertEqual(len(manifest["cases"]), 1449)
         self.assertEqual(manifest["currentRunePin"], "test-pin")
         self.assertFalse(manifest["dirty"])
-        self.assertEqual(len(list((out / "logs").glob("*.log"))), 20)
+        self.assertEqual(len(list((out / "logs").glob("*.log"))), 21)
         self.assertEqual(seed.read_bytes(), seed_bytes)
         self.assertEqual({path.relative_to(private_seed).as_posix(): path.read_bytes()
                           for path in private_seed.rglob("*") if path.is_file()},

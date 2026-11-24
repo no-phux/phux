@@ -1,15 +1,10 @@
-**Phux Rune 0.1.51**
+**Phux Rune 0.1.52**
 
-- Keep question choices and unfinished replies with the right agent, even when
-  different agents reuse the same question identifier.
-- Retire replaced editors safely: queued composition, Return and late phone
-  touches cannot answer a replacement question or reach its terminal.
-- Group phone form labels, help and controls without shrinking the 44-point
-  touch rows.
-- Use the shared palette matcher and show shortcuts as key caps.
-- Avoid redundant native control reorders and unchanged accessibility updates.
-- Update the Rune engine to a compatible upstream dev snapshot, including
-  unchanged-frame IME synchronization.
+- Wrap phone reconnect messages and recovery actions instead of truncating
+  long names or clipping buttons.
+- Let the recovery card scroll on short screens and with larger text, while
+  keeping terminal input shielded and keyboard focus rings visible.
+- Repair automatic patch releases when no bump pull request is open.
 
-Optional provider form elicitation is still unsupported. The newer strict-modal
-upstream change remains deferred; this release does not bypass input ownership.
+The Rune engine pin is unchanged. The newer strict-modal upstream change remains
+deferred; this release preserves terminal input ownership and pane arrangement.

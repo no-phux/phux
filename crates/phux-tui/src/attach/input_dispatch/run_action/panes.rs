@@ -512,14 +512,11 @@ pub(in crate::attach) fn toggle_zoom(ActionCall { ctx, effects, .. }: ActionCall
 /// nothing on screen, so that bells instead; hiding is always allowed.
 pub(in crate::attach) const fn toggle_sidebar(ActionCall { ctx, effects, .. }: ActionCall<'_, '_>) {
     if !*ctx.sidebar_enabled
-        && crate::attach::paint::sidebar_reservation(
+        && !crate::attach::paint::full_sidebar_fits(
             ctx.viewport.0,
-            true,
             *ctx.sidebar_width,
-            crate::attach::paint::SidebarEdge::Left,
             ctx.chrome.min_pane_cols,
         )
-        .is_none()
     {
         effects.bell = true;
         return;

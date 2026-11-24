@@ -4,7 +4,7 @@
 
 use phux_design::State;
 use phux_design::tokens::SPACE;
-use rune::{El, col, el, text};
+use rune::{El, ScrollSpec, col, el, text};
 
 use super::super::phone::top_bar_height;
 use super::super::tokens::layout::STATUS;
@@ -163,6 +163,8 @@ fn capsule(act: Act, t: &Tokens) -> El {
             .font(words)
             .color(ink)
             .align(rune::Align::Center)
+            .w_full()
+            .wrap()
             .a11y_hidden(),
     )
 }
@@ -172,21 +174,93 @@ fn capsule(act: Act, t: &Tokens) -> El {
 /// full-width touch targets. Still: nothing here animates while idle.
 pub(super) fn stage(said: &Said, acts: &[Act], extra: Option<El>, t: &Tokens) -> El {
     let s = &t.space;
-    let buttons = (!acts.is_empty()).then(|| {
-        col()
-            .key("placeholder-actions")
-            .w_full()
-            .gap(s.s2)
-            .pt(s.s5)
-            // One filled button leads; any further remedy is quieter.
-            .children(acts.iter().enumerate().map(|(at, act)| {
-                let leads = act.primary && !acts[..at].iter().any(|a| a.primary);
-                capsule(Act { primary: leads, ..*act }, t)
-            }))
-    });
+    let buttons =
+        (!acts.is_empty()).then(|| action_stack(acts, t).key("placeholder-actions").pt(s.s5));
     message("placeholder", tile(said, t), &said.title, &said.detail, t)
         .children(extra.map(|e| el().pt(s.s4).child(e)))
         .children(buttons)
+}
+
+/// One remedy leads; further actions stay quieter. Shared by the cold-start
+/// stage and feedback over a retained terminal, with the same handlers.
+fn action_stack(acts: &[Act], t: &Tokens) -> El {
+    col()
+        .w_full()
+        .gap(t.space.s2)
+        .children(acts.iter().enumerate().map(|(at, act)| {
+            let leads = act.primary && !acts[..at].iter().any(|a| a.primary);
+            capsule(
+                Act {
+                    primary: leads,
+                    ..*act
+                },
+                t,
+            )
+        }))
+}
+
+/// Phone feedback gives its words the whole measure, not the space left by
+/// desktop buttons. The existing content parent already excludes the keyboard
+/// and accessory. Bound the card there; large text can scroll to every action
+/// without changing the terminal's measured viewport.
+pub(super) fn banner(desk: &Desk, title: String, detail: String, acts: &[Act], t: &Tokens) -> El {
+    let s = &t.space;
+    let r = &t.roles;
+    let words = ty(t.type_scale);
+    let content = col()
+        .key("reconnect-content")
+        .w_full()
+        .min_h(0.0)
+        .shrink()
+        .padding(s.s3)
+        .gap(s.s3)
+        .scroll(ScrollSpec { stick_bottom: false })
+        .scroll_margin(s.s2)
+        // Takes blank-content presses without a drag handler or button role;
+        // Rune must keep finger panning and never reach the pane underneath.
+        .no_window_drag()
+        .child(
+            col()
+                .w_full()
+                .gap(s.s1)
+                .child(
+                    text(title)
+                        .key("reconnect-title")
+                        .font(words.body.semibold())
+                        .color(r.text.text.paint())
+                        .w_full()
+                        .wrap()
+                        .role("heading"),
+                )
+                .child(
+                    text(detail)
+                        .key("reconnect-detail")
+                        .font(words.body)
+                        .color(r.text.dim.paint())
+                        .w_full()
+                        .wrap(),
+                ),
+        )
+        .child(action_stack(acts, t))
+        // Real content past the last button keeps its outward ring unclipped.
+        .child(el().h(s.s1));
+    let card = col()
+        .key("reconnect-banner")
+        .w_full()
+        .max_w(STATUS.banner_w)
+        .min_h(0.0)
+        .shrink()
+        .radius(t.radius.md)
+        .continuous_corners()
+        .fill(r.layer.raised.paint())
+        .border(s.hairline, r.border.base.paint())
+        .no_window_drag()
+        .child(content);
+    col()
+        .pin(Some(0.0), Some(banner_top(desk)), Some(0.0), Some(s.s3))
+        .px(s.s3)
+        .items_center()
+        .child(t.elevate(card, super::Tier::Raised))
 }
 
 /// A phone's empty list on the raised tier: its symbol, what is missing

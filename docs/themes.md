@@ -74,6 +74,9 @@ body text and its dim and faint tiers, `accent` the focus colour,
 needs-you, working, done, and failed tones. Each colour moves toward black
 or white only as far as it must to clear 4.5:1 on every panel; a theme that
 already clears it comes through unchanged.
+A grey accent that would read quieter than unfocused labels, as in
+Omarchy's Vantablack, gives focus body text instead, so the focused pane is
+never the dimmest thing on screen.
 
 The result is then fitted to the terminal:
 

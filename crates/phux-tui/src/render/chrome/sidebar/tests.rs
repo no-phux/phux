@@ -16,6 +16,7 @@ mod attention;
 mod bounds;
 mod frame;
 mod hit_test;
+mod rail;
 mod row_model;
 mod session_colors;
 mod windows;

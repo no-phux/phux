@@ -59,6 +59,10 @@ must match the golden vectors exactly. Luminance uses the shipped table, never
   `phux_design::word` and `plural` give its words. GUI clients draw marks as
   icons; the TUI and CLI use glyphs, or the ASCII column in a CJK or
   non-UTF-8 locale.
+- Focus is never a status mark: the TUI marks the current tab `›` (`>` in
+  ASCII). A grey can only stand out by lightness, so when the accent or the
+  failed tone is a grey quieter than `dim` (`Roles::recedes`), focus takes
+  body text and a destructive button draws as Neutral.
 - Type, radius, space, elevation, motion and materials are token groups.
   Off-scale values are bugs; Rune and web have a raw-style-literal check whose baseline only shrinks.
 - Accessibility modes (increased contrast, forced colours, reduced

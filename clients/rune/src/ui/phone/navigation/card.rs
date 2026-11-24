@@ -72,6 +72,8 @@ pub(super) fn session_card(
                     .truncate()
                     .a11y_hidden(),
             )
+            // The summary carries "1 working": it wraps, never cut, at the
+            // largest text sizes, as a pane row's detail does (audit row 25).
             .child(
                 text(summary.join(" · "))
                     .font(p.ty.caption)
@@ -80,7 +82,7 @@ pub(super) fn session_card(
                     } else {
                         dim
                     })
-                    .truncate()
+                    .wrap()
                     .a11y_hidden(),
             ),
     )
