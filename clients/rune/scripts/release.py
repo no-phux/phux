@@ -182,11 +182,18 @@ def tag_step(version):
 
 def open_bump_pr():
     """Find the same-repository bump; never arm a fork's matching branch."""
-    return json.loads(sh(
+    prs = json.loads(sh(
         "gh", "pr", "list", "--base", "main", "--head", BRANCH, "--state", "open",
         "--json", "number,isDraft,headRefOid,isCrossRepository",
-        "-q", "[.[] | select(.isCrossRepository | not)][0] // null",
     ))
+    if not isinstance(prs, list):
+        raise ValueError("gh pr list did not return a JSON array")
+    for pr in prs:
+        if not isinstance(pr, dict) or type(pr.get("isCrossRepository")) is not bool:
+            raise ValueError("gh pr list returned an unsupported repository identity")
+        if not pr["isCrossRepository"]:
+            return pr
+    return None
 
 
 def arm_bump_pr(pr):
