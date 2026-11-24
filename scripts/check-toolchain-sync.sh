@@ -4,8 +4,7 @@
 # their native consumers require them: rust-toolchain.toml and zig-toolchain.json.
 #
 # This is a STATIC check: it reads files, so it runs on a CI checkout with no
-# Nix, no Mise and no compilers. `just toolchain-parity` is the complementary
-# runtime check that actually resolves both environments and compares binaries.
+# Nix, no Mise and no compilers.
 set -euo pipefail
 
 ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
