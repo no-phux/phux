@@ -30,15 +30,11 @@ pub(in crate::attach) fn display_panes(ActionCall { ctx, effects, .. }: ActionCa
 pub(in crate::attach) fn focus_sidebar(call: ActionCall<'_, '_>) {
     let ActionCall { ctx, effects, .. } = call;
     if !*ctx.sidebar_enabled {
-        let fits = crate::attach::paint::sidebar_reservation(
+        if !crate::attach::paint::full_sidebar_fits(
             ctx.viewport.0,
-            true,
             *ctx.sidebar_width,
-            crate::attach::paint::SidebarEdge::Left,
             ctx.chrome.min_pane_cols,
-        )
-        .is_some();
-        if !fits {
+        ) {
             effects.bell = true;
             return;
         }

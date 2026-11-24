@@ -69,17 +69,24 @@ the rest of the attach; <kbd>C-a</kbd> <kbd>a</kbd> steps the filter, which
 is remembered across attaches. Plugins can add fixed sections between the
 two panels.
 
+Hidden, the sidebar folds to a three-column rail: how many agents need you
+(click for the agents list), one dot per session colored like its Sessions
+row with a bar beside the current one (click to switch), and `›` on the
+bottom row to open it again. `rail = false` hides it completely.
+
 ```toml
 [sidebar]
 width = 0           # 0 adapts to a quarter of the terminal, 28 to 40 columns
 position = "right"
 agents-share = 50   # percent of the height for Agents; 0 drops the panel
+rail = true         # hidden, keep the three-column rail
 ```
 
 **`[sidebar]` applies on attach**, not on reload: detach and attach again.
 
-Below the sidebar's width plus `[chrome] min-pane-cols`, the sidebar steps
-aside and <kbd>C-a</kbd> <kbd>b</kbd> rings the bell; <kbd>C-a</kbd>
+Below the sidebar's width plus `[chrome] min-pane-cols`, the sidebar folds
+to the rail (or steps aside entirely when even the rail would not fit) and
+<kbd>C-a</kbd> <kbd>b</kbd> rings the bell; <kbd>C-a</kbd>
 <kbd>A</kbd> or the `agents` chip opens the agents list full-screen instead.
 
 With `hosts = true`, Sessions lists every machine you use, refreshed every

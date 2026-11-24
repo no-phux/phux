@@ -26,7 +26,7 @@ use super::{SidebarHit, hit_test, row_model};
 pub struct SidebarPainter {
     pub(super) windows: Vec<WindowInfo>,
     /// Every agent the projection supplied, before the filter.
-    agents: Vec<AgentEntry>,
+    pub(super) agents: Vec<AgentEntry>,
     /// What the Agents panel admits.
     pub(super) agent_filter: AgentFilter,
     /// The agents the filter admits: the rows the panel lists.
