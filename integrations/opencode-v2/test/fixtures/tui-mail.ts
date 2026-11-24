@@ -15,7 +15,7 @@ mock.module("../../src/lifecycle.js", () => ({
   },
 }));
 
-const { default: plugin } = await import("../../src/tui.js");
+const { default: plugin } = await import(process.env.TEST_TUI_ENTRY ?? "../../src/tui.js");
 const slots: { append: string; render: () => unknown }[] = [];
 const handlers = new Map<string, (event: unknown) => void>();
 const admitted: unknown[] = [];

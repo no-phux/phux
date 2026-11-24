@@ -72,6 +72,35 @@ test("a TUI-local explicit chat mailbox delivers without pane lifecycle or sideb
   }
 });
 
+test("the shipping TUI bundle delivers explicit chat mail but refuses an address alone", async () => {
+  const entrypoint = join(import.meta.dir, "../tui.js");
+  const delivered = await launch({
+    TEST_TUI_ENTRY: entrypoint,
+    PHUX_CHAT_RECORD: "/private/chat record",
+    PHUX_AGENT_ADDRESS: "buddy",
+  });
+  expect(delivered.slots).toEqual(["app"]);
+  expect(delivered.subscriptions).toEqual(["session.idle"]);
+  expect(delivered.remainingSubscriptions).toBe(0);
+  expect(delivered.admitted).toEqual([{
+    sessionID: "visible", text, description: "phux mail",
+    metadata: { phux_mail_ids: ["one"] }, delivery: "queue", resume: true,
+  }]);
+  expect(delivered.errors).toEqual([]);
+  expect(delivered.calls.length).toBeGreaterThan(0);
+  for (const call of delivered.calls) {
+    expect(call).toEqual({
+      args: ["mail", "wait", "--json", "--until-stdin-closes", "--timeout", "300"],
+      record: "/private/chat record", address: "buddy", binary: delivered.executable,
+    });
+  }
+  const refused = await launch({ TEST_TUI_ENTRY: entrypoint, PHUX_AGENT_ADDRESS: "ordinary-address" });
+  expect(refused.slots).toEqual([]);
+  expect(refused.subscriptions).toEqual([]);
+  expect(refused.admitted).toEqual([]);
+  expect(refused.calls).toEqual([]);
+});
+
 test("outside a pane, missing or empty chat identity refuses all integration work", async () => {
   for (const env of [
     {}, { PHUX_AGENT_ADDRESS: "ordinary-address" },
