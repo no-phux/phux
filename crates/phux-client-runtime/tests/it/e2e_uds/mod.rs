@@ -498,8 +498,8 @@ fn acknowledged_input_across_a_server_restart_always_resolves() {
 
 /// An acknowledged line submitted into a half-open connection resolves
 /// promptly (phux-8u7ii): submitting it probes the link, the silent link is
-/// dropped within the probe timeout instead of the 30-second idle timeout,
-/// and the reconnect replays the line under its original operation id.
+/// dropped within the probe timeout, not the 13 s quiet probe, and the
+/// reconnect replays the line under its original operation id.
 #[test]
 fn acknowledged_input_into_a_half_open_link_resolves_promptly() {
     use phux_client_runtime::control::DeliveryOutcome;
@@ -538,7 +538,7 @@ fn acknowledged_input_into_a_half_open_link_resolves_promptly() {
         let elapsed = started.elapsed();
         assert!(
             elapsed < Duration::from_secs(10),
-            "the receipt took {elapsed:?}; the 30-second idle timeout, not a probe, found the dead link"
+            "the receipt took {elapsed:?}; the quiet probe found the dead link"
         );
         assert_eq!(outcome, DeliveryOutcome::Delivered, "{message}");
         wait_for_text(&client, &terminal, "through-the-black-hole").await;
