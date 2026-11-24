@@ -29,3 +29,34 @@ fn the_foreground_names_the_pane_and_follows_it() {
         label(&plane)
     );
 }
+
+/// `phux.parent/v1` names the pane a pane was started from, and a refresh
+/// keeps it as it keeps the foreground.
+#[test]
+fn the_parent_folds_the_pane_and_survives_a_refresh() {
+    use phux_protocol::wire::frame::RESOURCE_PARENT_KEY;
+    let mut plane = settled();
+    let parent = |plane: &ControlPlane| {
+        plane
+            .topology()
+            .unwrap()
+            .pane(&terminal())
+            .unwrap()
+            .parent
+            .clone()
+    };
+    metadata_changed(&mut plane, RESOURCE_PARENT_KEY, Some(b"7"));
+    assert_eq!(parent(&plane), Some(ResourceId::local(7)));
+    assert!(
+        (plane.take_events().iter()).any(|event| matches!(event, Event::TopologyChanged)),
+        "lists re-read the topology"
+    );
+    let _ = refresh_after_settling(&mut plane, snapshot());
+    assert_eq!(
+        parent(&plane),
+        Some(ResourceId::local(7)),
+        "a refresh keeps it"
+    );
+    metadata_changed(&mut plane, RESOURCE_PARENT_KEY, None);
+    assert_eq!(parent(&plane), None, "a delete makes it a root");
+}

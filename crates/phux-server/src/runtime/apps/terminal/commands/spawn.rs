@@ -318,6 +318,7 @@ pub(crate) fn launch_of(
         notify: None,
         last_cwd: None,
         pane_id: None,
+        parent: None,
     }
 }
 

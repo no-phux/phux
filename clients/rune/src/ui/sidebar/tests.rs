@@ -83,6 +83,11 @@ fn the_histogram_counts_only_what_asks_for_you() {
 
 /// A window with one session of four terminals in different states.
 fn listed(dark: bool) -> rune::Runtime<Desk> {
+    listed_with(dark, &[])
+}
+
+/// [`listed`], each `(child, parent)` pane started from its parent.
+fn listed_with(dark: bool, parents: &[(u32, u32)]) -> rune::Runtime<Desk> {
     let mut desk = crate::test_support::settings_window();
     desk.settings_open = false;
     let mut rt = crate::test_support::runtime(
@@ -125,6 +130,9 @@ fn listed(dark: bool) -> rune::Runtime<Desk> {
             exec: None,
             foreground: None,
             icon: None,
+            parent: (parents.iter())
+                .find(|(child, _)| *child == id)
+                .map(|(_, parent)| ResourceId::local(*parent)),
         })
         .collect();
     let mut topology = crate::desk::topology(vec![session], panes);
@@ -198,6 +206,9 @@ fn twins_with_an_agent_still_name_their_pane() {
             mark: crate::activity::Mark::Done,
             panes: 1,
             selected: false,
+            children: 0,
+            open: false,
+            child: false,
             host: ("mini", 0),
             color: None,
             state: Forced::Rest,
@@ -299,4 +310,46 @@ fn a_tab_is_one_row_however_many_panes_it_splits_into() {
         order.windows(2).all(|w| w[0] < w[1]),
         "tabs in order, then the rest: {order:?}"
     );
+}
+
+#[test]
+fn child_panes_fold_under_their_root_and_a_cycle_folds_nothing() {
+    let pane = |id: u32, parent: Option<u32>| crate::addressable::Addressable {
+        id: ResourceId::local(id),
+        label: String::new(),
+        session_id: 1,
+        session: "work".to_owned(),
+        kind: phux_protocol::ids::ResourceKind::Terminal,
+        mirror: "",
+        parent: parent.map(ResourceId::local),
+    };
+    // 3 is 2's child, so it sits with 2 under 1; 4's parent closed; 5 and
+    // 6 name each other.
+    let panes = [
+        pane(1, None),
+        pane(2, Some(1)),
+        pane(3, Some(2)),
+        pane(4, Some(9)),
+        pane(5, Some(6)),
+        pane(6, Some(5)),
+    ];
+    let rows: Vec<_> = panes.iter().collect();
+    let items = items::items(&[], &rows);
+    assert_eq!(
+        items::fold(&items),
+        vec![(0, vec![1, 2]), (3, vec![]), (4, vec![]), (5, vec![])]
+    );
+}
+
+#[test]
+fn a_parent_row_starts_folded_and_its_count_unfolds_it() {
+    let mut rt = listed_with(true, &[(3, 2), (4, 2)]);
+    let child = format!("pane-{}", ResourceId::local(3));
+    assert!(!focusable(&rt, &child), "children start folded");
+    let fold = format!("fold-{}", ResourceId::local(2));
+    let (x, y) = rt.find(&fold).expect("the parent row's fold");
+    rt.pointer_down(x, y);
+    rt.pointer_up(x, y);
+    rt.frame(0.0);
+    assert!(focusable(&rt, &child), "unfolded, the children show");
 }

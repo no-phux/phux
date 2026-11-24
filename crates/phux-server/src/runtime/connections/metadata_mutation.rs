@@ -1,6 +1,6 @@
 use super::metadata_read::protected_key_refusal;
 use super::session_create::{apply_session_keep_empty, handle_session_create_metadata};
-use crate::runtime::apps::terminal::notify_mode;
+use crate::runtime::apps::terminal::{notify_mode, parent};
 use crate::state::{ClientId, Outbound, ServerInterceptedKey, ServerState, SharedState};
 use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::{FrameKind, MAX_AGENT_RECORD_BYTES, RESOURCE_AGENT_KEY, Scope};
@@ -106,7 +106,9 @@ fn reject_set_metadata(
     if reject_unknown_local_terminal_scope(state, client_id, request_id, scope, key) {
         return true;
     }
-    if let Some(reason) = notify_mode::refusal(scope, key, value) {
+    if let Some(reason) =
+        notify_mode::refusal(scope, key, value).or_else(|| parent::refusal(scope, key, value))
+    {
         warn!(?client_id, request_id, %key, reason, "SET_METADATA: ignoring");
         return true;
     }
@@ -289,6 +291,7 @@ pub(super) fn handle_set_metadata(
     let config_reload =
         key == phux_protocol::wire::frame::CONFIG_RELOAD_KEY && matches!(scope, Scope::Global);
     notify_mode::persist(state, scope, key, Some(&value));
+    parent::persist(state, scope, key, Some(&value));
     store_metadata_value(state, client_id, request_id, scope, key, value);
     // A hub is a doorbell consumer too: it re-reads its own `[[satellites]]`
     //, before any later frame on this connection is handled, so a
@@ -410,6 +413,7 @@ pub(super) fn handle_delete_metadata(
     });
     invalidate_agent_detector(state, scope, key);
     notify_mode::persist(state, scope, key, None);
+    parent::persist(state, scope, key, None);
     if let Some(event) = hook {
         crate::hooks::fire_hook(state, event);
     }

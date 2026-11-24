@@ -7527,6 +7527,9 @@ Flags:
                                  spawn with an unknown reply, use `phux terminal
                                  operation` to check its receipt without
                                  resolving the selector again.
+      --parent <PANE>            The pane the new one is a child of, folded
+                                 under it in lists; `none` for no parent.
+                                 Default: the pane this runs in.
       --app <NAME>               Run an application in the new pane instead of a
                                  command: launched, mirrored into documents
                                  under the pane, and quit when the pane is
