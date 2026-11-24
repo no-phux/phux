@@ -57,7 +57,8 @@ def qualify(lane, pid):
     time.sleep(2)
     lane.require_alive(pid)
     screenshot = lane.out / "ios-glass-sessions.png"
-    lane.simctl("io", lane.udid, "screenshot", screenshot)
+    # Read-only: a stalled screenshot call may be retried (qualify.QUERY_ATTEMPTS).
+    lane.simctl("io", lane.udid, "screenshot", screenshot, attempts=3)
     if not screenshot.stat().st_size:
         raise ValueError("empty Liquid Glass screenshot")
     return glass

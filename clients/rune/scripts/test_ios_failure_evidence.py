@@ -97,21 +97,20 @@ class FailureEvidenceTests(FailureEvidenceFixture, unittest.TestCase):
                 actions = []
                 final_error = None
 
-                def command(args, timeout=30, env=None):
+                def health_query(pid, udid):
                     nonlocal final_error
+                    self.assertEqual((pid, udid), (123, lane.udid))
+                    queries.append(pid)
+                    pending = lane.documents / "report.pending"
+                    pending.write_bytes(FIRST_FAILURE)
+                    pending.replace(lane.documents / "rune-qualification.json")
+                    self.seed_native(lane)
+                    final_error = subprocess.TimeoutExpired(["/bin/ps"], 10)
+                    raise final_error
+
+                def command(args, timeout=30, env=None):
                     self.assertEqual(args[:2], [qualify.XCRUN, "simctl"])
                     self.assertEqual(args[3], lane.udid)
-                    if args[2] == "spawn":
-                        self.assertEqual(args[4:], ["launchctl", "list"])
-                        self.assertEqual(timeout, 30)
-                        queries.append(args)
-                        if len(queries) == 1:
-                            pending = lane.documents / "report.pending"
-                            pending.write_bytes(FIRST_FAILURE)
-                            pending.replace(lane.documents / "rune-qualification.json")
-                            self.seed_native(lane)
-                        final_error = subprocess.TimeoutExpired(args, timeout)
-                        raise final_error
                     actions.append(args[2])
                     self.assertEqual(timeout, 60)
                     if args[2] == "shutdown":
@@ -126,16 +125,17 @@ class FailureEvidenceTests(FailureEvidenceFixture, unittest.TestCase):
                     return ""
 
                 lane.run = Mock(side_effect=command)
-                if not prefix:
-                    with self.assertRaises(subprocess.TimeoutExpired) as raised:
-                        self.pipeline(lane)
-                else:
-                    with self.assertRaises(subprocess.TimeoutExpired) as raised:
-                        lane.collect_report(123, resumed=True)
-                    lane.failure_evidence_requested = True
-                    lane.cleanup()
+                with patch.object(qualify, "app_running", side_effect=health_query):
+                    if not prefix:
+                        with self.assertRaises(subprocess.TimeoutExpired) as raised:
+                            self.pipeline(lane)
+                    else:
+                        with self.assertRaises(subprocess.TimeoutExpired) as raised:
+                            lane.collect_report(123, resumed=True)
+                        lane.failure_evidence_requested = True
+                        lane.cleanup()
                 self.assertIs(raised.exception, final_error)
-                self.assertEqual(len(queries), qualify.QUERY_ATTEMPTS)
+                self.assertEqual(len(queries), 1)
                 self.assertEqual(actions, ["shutdown", "delete"])
                 self.assertFalse((lane.out / "evidence.json").exists())
                 self.assertFalse((lane.out / (prefix + "rune-qualification.json")).exists())
@@ -167,12 +167,12 @@ class FailureEvidenceTests(FailureEvidenceFixture, unittest.TestCase):
         actions = []
         foregrounded = False
 
-        def health_query(args, timeout):
+        def health_query(pid, udid):
             if kind == "lifecycle" and not foregrounded:
-                return f"123 0 {qualify.BUNDLE_ID}\n"
-            queries.append(args)
+                return True
+            queries.append(pid)
             (lane.documents / name).write_bytes(data)
-            raise subprocess.TimeoutExpired(args, timeout)
+            raise subprocess.TimeoutExpired(["/bin/ps"], 10)
 
         def launch_scene(bundle):
             nonlocal foregrounded
@@ -195,15 +195,14 @@ class FailureEvidenceTests(FailureEvidenceFixture, unittest.TestCase):
                 self.assertEqual((lane.out / failure.DIRECTORY / retained).read_bytes(), data)
 
         def command(args, timeout=30, env=None):
-            if args[2:] == ["spawn", lane.udid, "launchctl", "list"]:
-                return health_query(args, timeout)
             if args[2] == "launch":
                 launch_scene(args[4])
             check_cleanup_boundary(args[2])
             return ""
 
         lane.run = Mock(side_effect=command)
-        with self.assertRaises(subprocess.TimeoutExpired):
+        with self.assertRaises(subprocess.TimeoutExpired), \
+                patch.object(qualify, "app_running", side_effect=health_query):
             if kind == "glass":
                 lane.qualify_glass(123)
             elif kind in ("background", "lifecycle"):
@@ -212,7 +211,7 @@ class FailureEvidenceTests(FailureEvidenceFixture, unittest.TestCase):
                 lane.finish_connection_diagnostics()
         lane.failure_evidence_requested = True
         lane.cleanup()
-        self.assertEqual(len(queries), qualify.QUERY_ATTEMPTS)
+        self.assertEqual(len(queries), 1)
         self.assertEqual(actions, ["shutdown", "delete"])
         self.assertEqual(lane.failure_evidence_receipt["status"], "UNVALIDATED")
         self.assertFalse((lane.out / "evidence.json").exists())
