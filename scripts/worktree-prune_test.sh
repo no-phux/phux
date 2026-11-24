@@ -25,9 +25,13 @@ SAFE_PATH="$WORK/bin:$PATH"
 g() { git -c user.name=t -c user.email=t@t -c init.defaultBranch=main "$@"; }
 
 # ------------------------------------------------------------- fixture
+# Name the branch explicitly: cloning an empty repository takes the remote's
+# unborn HEAD, which follows the host's init.defaultBranch, not ours.
 git init -q --bare "$WORK/origin.git"
+git -C "$WORK/origin.git" symbolic-ref HEAD refs/heads/main
 g clone -q "$WORK/origin.git" "$WORK/repo" 2>/dev/null
 REPO="$WORK/repo"
+git -C "$REPO" symbolic-ref HEAD refs/heads/main
 mkdir -p "$REPO/scripts/lib"
 cp "$ROOT/scripts/worktree-prune.sh" "$REPO/scripts/"
 cp "$ROOT/scripts/lib/worktree-owner.sh" "$REPO/scripts/lib/"
