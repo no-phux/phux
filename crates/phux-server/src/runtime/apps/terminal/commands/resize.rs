@@ -37,6 +37,17 @@ pub(crate) fn handle_terminal_resize(
         let Some(terminal) = resize_destination(s, client_id, local.id, &local.handle) else {
             return;
         };
+        // Another view holds the size lock: its size stands.
+        if s.terminal_size_owner(local.id)
+            .is_some_and(|owner| owner != client_id)
+        {
+            debug!(
+                ?client_id,
+                ?wire_terminal_id,
+                "RESIZE_TERMINAL: size-locked by another view; dropping"
+            );
+            return;
+        }
         // Match the actor's clamp. Record this target only after admission;
         // the replacement bootstrap carries the actor's settled geometry.
         let cols = cols.max(1);
@@ -51,6 +62,7 @@ pub(crate) fn handle_terminal_resize(
         ) && let Some(pane) = s.registry_mut().terminal_mut(local.id)
         {
             pane.dims = (cols, rows);
+            s.note_explicit_size(client_id, local.id, (cols, rows), cell_px);
         }
     });
 }

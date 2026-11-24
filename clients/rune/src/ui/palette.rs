@@ -372,6 +372,7 @@ fn kind_mark(kind: &str) -> Option<&'static rune::Icon> {
         "terminal" | "pane" => Some(&icons::PROMPT),
         "session" => Some(&icons::WINDOW),
         "path" => Some(&icons::FOLDER),
+        "keep-awake" => Some(&icons::AWAKE),
         _ => None,
     }
 }

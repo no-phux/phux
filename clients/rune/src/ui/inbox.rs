@@ -205,17 +205,16 @@ pub(super) fn touch_input(input: El, font: TextStyle, phone: bool, t: &Tokens) -
         .py((s.touch_min - font.line_px()) / 2.0)
 }
 
-/// Where a waiting pane is: its label (when an agent's name heads the
-/// card; without one the label already does), its session, and a kind the
-/// agent's name does not already say.
+/// Where a waiting pane is: its machine, its label (when an agent's name
+/// heads the card; without one the label already does), its session, and
+/// a kind the agent's name does not already say.
 fn place(waiting: &Waiting) -> String {
-    let named = waiting.agent.is_some().then_some(waiting.label.as_str());
-    let kind = (waiting.kind.as_ref())
-        .filter(|kind| Some(*kind) != waiting.agent.as_ref())
-        .map(String::as_str);
-    (named.into_iter())
-        .chain([waiting.session.as_str()])
-        .chain(kind)
+    let named = waiting.agent.is_some().then_some(&waiting.label);
+    let kind = (waiting.kind.as_ref()).filter(|kind| Some(*kind) != waiting.agent.as_ref());
+    [waiting.host.as_ref(), named, Some(&waiting.session), kind]
+        .into_iter()
+        .flatten()
+        .map(String::as_str)
         .collect::<Vec<_>>()
         .join(" · ")
 }
@@ -241,13 +240,18 @@ fn waiting_card(desk: &Desk, waiting: &Waiting, picked: bool, t: &Tokens) -> El 
     };
     let (_, tone) = mark_icon(waiting.mark, t);
     let place = place(waiting);
+    let background = if waiting.background {
+        " · background work"
+    } else {
+        ""
+    };
     let mut body = col()
         .w_full()
         .gap(t.space.s2)
         .child(header(
             waiting.mark,
             who,
-            format!("{word}{age}"),
+            format!("{word}{background}{age}"),
             busy,
             phone,
             t,

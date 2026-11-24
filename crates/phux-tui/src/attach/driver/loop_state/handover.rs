@@ -183,7 +183,7 @@ impl super::SessionLoop {
         for id in own {
             self.peers.foreign_attention.remove(&id);
             if let Some(slot) = self.mirror.panes.get_mut(&id) {
-                slot.attention = true;
+                slot.raise_attention();
             }
         }
     }

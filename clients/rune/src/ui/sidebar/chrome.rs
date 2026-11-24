@@ -23,6 +23,28 @@ pub(super) fn search(t: &Tokens) -> El {
     tip(button, "Jump to…", Shortcut::Palette)
 }
 
+/// Shown only while the server keeps the machine awake, saying why; a
+/// click opens the palette on the keep-awake modes.
+pub(super) fn awake_button(desk: &Desk, t: &Tokens) -> Option<El> {
+    let awake = desk
+        .connection
+        .keep_awake
+        .as_ref()
+        .filter(|a| a.holding())?;
+    let words = awake.words();
+    let button = icon_press(
+        &icons::AWAKE,
+        "Keep awake",
+        "keep-awake",
+        t,
+        |d: &mut Desk| {
+            d.toggle_palette();
+            d.palette_query.replace_text("Keep awake");
+        },
+    );
+    Some(button.label(words.clone()).help(words))
+}
+
 /// The way into the inbox, loud only when something waits: a dot in the
 /// needs-you tone, its glow the one coloured shadow it may cast.
 pub(super) fn inbox_button(waiting: usize, t: &Tokens) -> El {

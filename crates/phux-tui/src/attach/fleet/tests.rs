@@ -497,3 +497,34 @@ fn satellite_agents_group_by_name_with_a_host_badge() {
     assert!(!items[2].attention);
     assert_eq!(items[2].secondary.as_deref(), Some("working"));
 }
+
+#[test]
+fn opens_on_the_longest_wait_and_names_background_work() {
+    let workspace = two_window_workspace();
+    let now = std::time::Instant::now();
+    let asked = |secs, background| FleetPaneMeta {
+        attention: true,
+        asked_at: now.checked_sub(std::time::Duration::from_secs(secs)),
+        background,
+        ..FleetPaneMeta::default()
+    };
+    let mut meta = HashMap::from([(tid(1), asked(5, false)), (tid(3), asked(60, true))]);
+    let agents = HashMap::from([(tid(2), record("b", None, AgentMetaState::Blocked))]);
+    let at = |meta: &HashMap<_, _>| {
+        let action = oldest_waiting(&workspace, &agents, meta).expect("one waits");
+        (
+            action.args["window"].as_integer(),
+            action.args["pane"].as_integer(),
+        )
+    };
+    // Pane 3 (window 1) asked first; pane 2's record blocks with no date.
+    assert_eq!(at(&meta), (Some(1), Some(0)));
+    meta.clear();
+    assert_eq!(at(&meta), (Some(0), Some(1)), "undated waits still count");
+    meta.insert(tid(3), asked(60, true));
+    let items = local_fleet_items(&workspace, &agents, &meta);
+    assert_eq!(
+        items[2].secondary.as_deref(),
+        Some("needs you \u{b7} background work")
+    );
+}

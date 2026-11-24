@@ -285,6 +285,7 @@ const VANTABLACK: crate::theme::Theme = crate::theme::Theme {
     cursor: 0xff_ffff,
     accent: 0x8d_8d8d,
     selection: Some(0x1a_1a1a),
+    bold: None,
 };
 
 /// A grey `failed` cannot say danger, only look disabled, so a button that

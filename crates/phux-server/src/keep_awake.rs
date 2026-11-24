@@ -5,7 +5,8 @@
 //! is a child process that watches the server's pid, so it exits by itself
 //! if the server dies: `caffeinate` on macOS, `systemd-inhibit` on Linux,
 //! nothing elsewhere. The outcome is published at [`STATUS_KEY`] for
-//! `phux status`.
+//! `phux status` and Rune. A client switches the mode until the server
+//! restarts by writing [`KeepAwake::MODE_KEY`]; the write wakes the ticker.
 
 use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -13,6 +14,7 @@ use std::time::Duration;
 
 use phux_config::KeepAwake;
 use phux_protocol::wire::frame::{RESOURCE_AGENT_KEY, Scope};
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -21,12 +23,25 @@ use crate::state::SharedState;
 /// How often the ticker re-decides.
 const TICK: Duration = Duration::from_secs(15);
 
-/// Global metadata key of the keep-awake state, published while the setting
-/// is not `off`.
-///
-/// The value is `{"state": "on" | "idle" | "unavailable", "working": N}`;
-/// `unavailable` means the inhibitor is wanted but could not be held.
-pub const STATUS_KEY: &str = "phux.keep-awake/v1";
+/// Global metadata key of the keep-awake state ([`KeepAwake::STATUS_KEY`]).
+pub const STATUS_KEY: &str = KeepAwake::STATUS_KEY;
+
+/// Wakes the ticker when a client writes [`KeepAwake::MODE_KEY`].
+static NUDGE: Notify = Notify::const_new();
+
+/// Re-decide now rather than at the next tick.
+pub(crate) fn nudge() {
+    NUDGE.notify_one();
+}
+
+/// The mode in force: a client's override at [`KeepAwake::MODE_KEY`], else
+/// the configured one.
+#[must_use]
+pub fn mode(configured: KeepAwake, stored: Option<&[u8]>) -> KeepAwake {
+    stored
+        .and_then(|bytes| serde_json::from_slice(bytes).ok())
+        .unwrap_or(configured)
+}
 
 /// The running inhibitor. Process-wide so [`release`] can stop it from the
 /// upgrade path.
@@ -121,22 +136,21 @@ fn hold(want: bool, failed: &mut bool) -> bool {
     slot.is_some()
 }
 
-/// Start the ticker on the current `LocalSet`; with the setting `off` (or
-/// on a platform with no inhibitor) only clear a state an upgrade carried.
+/// Start the ticker on the current `LocalSet`; on a platform with no
+/// inhibitor only clear a state an upgrade carried.
 pub(crate) fn spawn(state: &SharedState, root_token: &CancellationToken) {
-    let mode = state.with(|s| s.config().keep_awake);
-    if mode == KeepAwake::Off || command(0).is_none() {
+    if command(0).is_none() {
         state.with_mut(|s| drop(s.metadata_delete(&Scope::Global, STATUS_KEY)));
         return;
     }
-    tokio::task::spawn_local(ticker(state.clone(), mode, root_token.clone()));
+    tokio::task::spawn_local(ticker(state.clone(), root_token.clone()));
 }
 
 // ponytail: polled, so the inhibitor lags an agent's state by up to one
 // TICK. The agent record has many writers and deleters; hook them
 // (`ServerState::metadata_set_by` / `metadata_delete_by`) if that lag ever
 // matters.
-async fn ticker(state: SharedState, mode: KeepAwake, token: CancellationToken) {
+async fn ticker(state: SharedState, token: CancellationToken) {
     let mut tick = tokio::time::interval(TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut failed = false;
@@ -144,15 +158,19 @@ async fn ticker(state: SharedState, mode: KeepAwake, token: CancellationToken) {
         tokio::select! {
             () = token.cancelled() => break,
             _ = tick.tick() => {}
+            () = NUDGE.notified() => {}
         }
-        let working = state.with(|s| {
-            s.metadata()
+        let (mode, working) = state.with(|s| {
+            let stored = s.metadata().get(&Scope::Global, KeepAwake::MODE_KEY);
+            let working = s
+                .metadata()
                 .resource_values(RESOURCE_AGENT_KEY)
                 .filter(|value| {
                     phux_agent_session::state::stored_state(Some(value)).as_deref()
                         == Some("working")
                 })
-                .count()
+                .count();
+            (mode(s.config().keep_awake, stored.as_deref()), working)
         });
         let want = wanted(mode, working);
         let label = match (hold(want, &mut failed), want) {
@@ -160,8 +178,13 @@ async fn ticker(state: SharedState, mode: KeepAwake, token: CancellationToken) {
             (false, true) => "unavailable",
             (false, false) => "idle",
         };
-        let record = serde_json::json!({ "state": label, "working": working }).to_string();
-        state.with_mut(|s| drop(s.metadata_set(&Scope::Global, STATUS_KEY, record.into_bytes())));
+        if mode == KeepAwake::Off {
+            state.with_mut(|s| drop(s.metadata_delete(&Scope::Global, STATUS_KEY)));
+            continue;
+        }
+        let record = serde_json::json!({ "state": label, "working": working, "mode": mode });
+        let record = record.to_string().into_bytes();
+        state.with_mut(|s| drop(s.metadata_set(&Scope::Global, STATUS_KEY, record)));
     }
     release();
 }
@@ -177,5 +200,16 @@ mod tests {
             assert!(wanted(KeepAwake::Always, working));
             assert_eq!(wanted(KeepAwake::WhileAgentsWork, working), working > 0);
         }
+    }
+
+    #[test]
+    fn a_stored_mode_overrides_the_configured_one() {
+        assert_eq!(mode(KeepAwake::Off, None), KeepAwake::Off);
+        assert_eq!(mode(KeepAwake::Off, Some(b"\"always\"")), KeepAwake::Always);
+        assert_eq!(mode(KeepAwake::Always, Some(b"\"off\"")), KeepAwake::Off);
+        assert_eq!(
+            mode(KeepAwake::WhileAgentsWork, Some(b"junk")),
+            KeepAwake::WhileAgentsWork
+        );
     }
 }

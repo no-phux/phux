@@ -24,6 +24,10 @@ pub struct Waiting {
     pub kind: Option<String>,
     pub mark: Mark,
     pub ask: Option<Ask>,
+    /// Where it runs, named only when the list spans more than one host.
+    pub host: Option<String>,
+    /// Work it started still runs in the background.
+    pub background: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -83,15 +87,17 @@ const fn rank(mark: Mark) -> u8 {
     }
 }
 
-/// The list, stable within a rank so rows don't swap under the pointer.
+/// The list, oldest first within a rank, so what waited longest leads and
+/// rows don't swap under the pointer. `here` names the connected machine.
 pub fn items(
     topology: Option<&Topology>,
     activities: &Activities,
     approvals: &[Approval],
+    here: &str,
 ) -> Vec<Item> {
-    let mut waiting: Vec<Waiting> = topology
-        .iter()
-        .flat_map(|t| t.panes.iter())
+    let panes = || topology.iter().flat_map(|t| t.panes.iter());
+    let several = panes().any(|p| p.terminal_id.host().is_some());
+    let mut waiting: Vec<Waiting> = panes()
         .filter_map(|pane| {
             let mark = activities.mark(&pane.terminal_id);
             mark.needs_you().then(|| Waiting {
@@ -102,10 +108,22 @@ pub fn items(
                 kind: activities.agent_kind(&pane.terminal_id).map(str::to_owned),
                 mark,
                 ask: question(pane, activities),
+                host: several.then(|| {
+                    let host = pane.terminal_id.host();
+                    host.map_or(here, |h| h.as_str()).to_owned()
+                }),
+                background: activities.background(&pane.terminal_id),
             })
         })
         .collect();
-    waiting.sort_by_key(|w| rank(w.mark));
+    // A question dates from when it was asked, anything else from its mark.
+    waiting.sort_by_key(|w| {
+        let since = w.ask.as_ref().and_then(|ask| ask.since);
+        (
+            rank(w.mark),
+            since.or_else(|| activities.changed_at(&w.terminal)),
+        )
+    });
     approvals
         .iter()
         .cloned()
@@ -287,6 +305,8 @@ mod tests {
                     suggestions: Vec::new(),
                     since: None,
                 }),
+                host: None,
+                background: false,
             })
         };
         assert_ne!(waiting(Some("q1")).key(), waiting(Some("q2")).key());
@@ -340,6 +360,44 @@ mod tests {
         assert_eq!(at(Some(1)), id(3));
         assert_eq!(at(None), id(3));
         assert!(next_jump(&[], &a, None).is_none());
+    }
+
+    #[test]
+    fn the_longest_wait_leads_and_hosts_are_named_across_machines() {
+        let mut far = pane(3);
+        far.terminal_id = ResourceId::satellite("mini", 3);
+        let topology = crate::desk::topology(Vec::new(), vec![pane(1), pane(2), far]);
+        let mut a = Activities::default();
+        let blocked = |id: ResourceId| Event::AgentMetadata {
+            terminal_id: id,
+            value: Some(br#"{"name":"c","state":"blocked"}"#.to_vec()),
+        };
+        a.apply(&blocked(ResourceId::local(2)), &[]);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        a.apply(&blocked(ResourceId::satellite("mini", 3)), &[]);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        a.apply(&blocked(ResourceId::local(1)), &[]);
+        let running = Event::BackgroundWork {
+            terminal_id: ResourceId::local(1),
+            running: true,
+        };
+        a.apply(&running, &[]);
+        let rows: Vec<(Option<String>, bool)> = items(Some(&topology), &a, &[], "here")
+            .into_iter()
+            .filter_map(|item| match item {
+                Item::Terminal(w) => Some((w.host, w.background)),
+                Item::Approval(_) => None,
+            })
+            .collect();
+        let row = |host: &str, background| (Some(host.to_owned()), background);
+        assert_eq!(
+            rows,
+            [row("here", false), row("mini", false), row("here", true)]
+        );
+        // One machine: no host to tell apart.
+        let alone = crate::desk::topology(Vec::new(), vec![pane(1)]);
+        assert!(matches!(&items(Some(&alone), &a, &[], "here")[..],
+            [Item::Terminal(w)] if w.host.is_none()));
     }
 
     #[test]

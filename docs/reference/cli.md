@@ -58,6 +58,7 @@ Agents:
   agent         See and drive the agents running in panes
   launch        Start an agent integration in a new pane
   ask           Report that an agent is waiting on a human
+  pick          Offer a list in the attached client and print the choice
   take          Take exclusive input control of a pane
   give          Give back input control taken with `take`
   signal        Send a signal to a pane's process group
@@ -2142,6 +2143,12 @@ Attach role:
                                   lease of every pane this attach opens, in the
                                   same step as the attach. The previous holder
                                   stays attached. `phux give` hands it back.
+      --lock-size                 Lock this client's view size: while it is
+                                  attached, other clients see its panes
+                                  letterboxed or cropped instead of resizing
+                                  them. `defaults.lock-size = true` makes it the
+                                  default; the palette's "Unlock view size"
+                                  releases it.
 
 Recording:
       --rec <PATH>                Record this session (.cast, .gif, or .apng)
@@ -5498,6 +5505,36 @@ Flags:
 
 Global flags:
       --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux pick`
+
+```text
+Offer a list and print the item chosen.
+
+Items are the arguments, else stdin's lines. The list is drawn on this terminal,
+where you type an item or its number and Enter. Inside a phux pane it is also
+raised as a `phux-ask` question, so a client's question card (or `phux agent
+answer`) can answer it; at most 16 items go to the card. The choice is printed
+on stdout and the exit code is 0; Escape, Ctrl-C or Ctrl-D cancel with exit 1.
+With no terminal (/dev/tty) it exits 2.
+
+Examples:
+git branch --format='%(refname:short)' | phux pick --prompt Branch
+host=$(phux pick mini macbook powerhouse-1)
+
+Usage: phux pick [--prompt <TEXT>] [ITEMS]…
+
+Arguments:
+  [ITEMS]…  Items to choose from. Omit to read one per line from stdin.
+
+Flags:
+      --prompt <TEXT>  The question shown above the list.
+                       (default: Pick one)
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux play`

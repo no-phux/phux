@@ -471,8 +471,15 @@ fn a_waiting_card_places_its_pane_without_repeating_the_title() {
         kind: None,
         mark: crate::activity::Mark::Blocked,
         ask: None,
+        host: None,
+        background: false,
     };
     assert_eq!(super::place(&shell), "phux");
+    let remote = crate::inbox::Waiting {
+        host: Some("mini".to_owned()),
+        ..shell.clone()
+    };
+    assert_eq!(super::place(&remote), "mini \u{b7} phux");
     let agent = crate::inbox::Waiting {
         agent: Some("codex".to_owned()),
         label: "review #2617".to_owned(),

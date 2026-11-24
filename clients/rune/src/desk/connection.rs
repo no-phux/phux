@@ -37,8 +37,8 @@ pub struct Connection {
     pub wanted: Option<(ResourceId, Instant)>,
     /// A session created here: show its terminal once selected.
     pub(super) pending_session: Option<String>,
-    /// A `phux://pane/` link's pane, until the server's panes are known.
-    pub(super) reveal: Option<ResourceId>,
+    /// What a `phux://` link asked to show, until it can be.
+    pub(super) reveal: Option<super::reveal::Reveal>,
     /// The connection incarnation the shown view belongs to.
     pub(super) epoch: u64,
     /// A path search on the focused pane's host.
@@ -53,6 +53,10 @@ pub struct Connection {
     pub popup: popup::Popup,
     pub tabs: tabs::Tabs,
     pub reorder: reorder::Reorder,
+    /// The server's keep-awake record; `None` while its mode is `off`.
+    pub keep_awake: Option<super::keep_awake::Awake>,
+    /// This window holds the view size lock; claimed again on each attach.
+    pub size_locked: bool,
     /// A screenshot being taken for a terminal on this client. Replacing the
     /// connection drops it, which cancels the picker and reaps its worker.
     pub(super) capture: Option<screenshot::Capture>,
@@ -129,6 +133,8 @@ impl Default for Connection {
             popup: popup::Popup::default(),
             tabs: tabs::Tabs::default(),
             reorder: reorder::Reorder::default(),
+            keep_awake: None,
+            size_locked: false,
             capture: None,
             uploads: Vec::new(),
             pastes: HashSet::new(),

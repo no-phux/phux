@@ -33,6 +33,11 @@ shell can't find phux on the host (some Homebrew or Nix installs), pass
 `--remote-phux /opt/homebrew/bin/phux`; the entry remembers it. Every flag is
 in the [CLI reference](./reference/cli.md#phux-host-add).
 
+A second server on the same machine at another port is another host:
+`phux host add mini:9788` next to `mini` saves `mini-9788` and leaves `mini`
+alone. `phux attach mini-9788` and `--remote mini:9788` reach it; pass
+`--name` to pick the name yourself.
+
 ### Machines on your tailnet
 
 ```sh

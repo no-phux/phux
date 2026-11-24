@@ -31,7 +31,9 @@ use super::json_err::CliError;
 use super::rec::RecordSpec;
 use super::remote::{self, Endpoint, RemoteEntry};
 
-pub(crate) use phux_client_runtime::target::{DEFAULT_QUIC_PORT, RemoteTarget, endpoint_host};
+pub(crate) use phux_client_runtime::target::{
+    DEFAULT_QUIC_PORT, RemoteTarget, endpoint_host, endpoint_port,
+};
 use quic_upgrade::promote_direct_route;
 pub(crate) use quic_upgrade::{QuicUpgrade, upgrade_to_quic};
 
@@ -42,8 +44,9 @@ pub(crate) fn parse_target(raw: &str) -> Result<RemoteTarget, String> {
     RemoteTarget::parse_labeled(raw, "--remote")
 }
 
-/// Find the registry entry for this target: the exact `user@host`, then the
-/// bare host, then any entry whose endpoint points at the host. An unreadable
+/// Find the registry entry for this target: a typed port's `host-PORT`, the
+/// exact `user@host`, the bare host, then any entry whose endpoint points at
+/// the host (at the typed port, when one was typed). An unreadable
 /// config yields `None`, falling through to the bootstrap rungs.
 pub(crate) fn find_entry(target: &RemoteTarget) -> Option<RemoteEntry> {
     let entries = remote::load_registry().ok()?;
@@ -51,6 +54,26 @@ pub(crate) fn find_entry(target: &RemoteTarget) -> Option<RemoteEntry> {
         (&entry.name, &entry.endpoint)
     })
     .cloned()
+}
+
+/// The name a new `role` entry for `base` typed with `port` is saved under:
+/// `base`, or `base-PORT` when `base` is another server's at another port.
+pub(crate) fn registration_name(role: host::HostRole, base: &str, port: Option<u16>) -> String {
+    let entries: Vec<(String, String)> = match role {
+        host::HostRole::Remote => remote::load_registry()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|entry| (entry.name, entry.endpoint))
+            .collect(),
+        host::HostRole::Satellite => super::satellite::load_registry()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|entry| (entry.name, entry.endpoint))
+            .collect(),
+    };
+    phux_client_runtime::target::registration_name_by(&entries, base, port, |(name, endpoint)| {
+        (name, endpoint)
+    })
 }
 
 /// Apply an explicit `:PORT` to a registered entry for this dial only; the
@@ -253,14 +276,6 @@ fn attach_registered(args: &RemoteAttach<'_>, entry: RemoteEntry) -> ExitCode {
         }
     };
     attach::run_attach_remote(&entry, args.session.clone(), args.rec)
-}
-
-/// The port of a `quic://` or `wss://` registry endpoint.
-fn endpoint_port(endpoint: &str) -> Option<u16> {
-    let rest = endpoint.split_once("://").map(|(_, rest)| rest)?;
-    let authority = rest.split(['/', '?']).next().unwrap_or(rest);
-    let port = authority.rsplit_once(':').map(|(_, port)| port)?;
-    port.parse::<u16>().ok().filter(|port| *port != 0)
 }
 
 /// Walk the ladder: registered, pasted code, ssh, refuse. Shared with the

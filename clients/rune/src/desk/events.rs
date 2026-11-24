@@ -38,7 +38,6 @@ impl Desk {
             && self.connection.topology.as_ref() != Some(&topology)
         {
             self.connection.topology = Some(topology);
-            self.follow_reveal();
             changed = true;
         }
         if self.connection.server.is_none() {
@@ -211,8 +210,13 @@ impl Desk {
             Event::StatusChanged(_)
             | Event::TopologyChanged
             | Event::OrganizationChanged
-            | Event::BackgroundWork { .. }
-            | Event::Attached { .. } => true,
+            | Event::BackgroundWork { .. } => true,
+            Event::Attached { .. } => {
+                if self.connection.size_locked {
+                    self.claim_size_lock(true);
+                }
+                true
+            }
             other => self.apply_document_subscription(client, other),
         }
     }

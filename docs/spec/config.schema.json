@@ -280,6 +280,11 @@
           "default": "off",
           "description": "Whether the server holds an idle-sleep inhibitor (`caffeinate`,\n`systemd-inhibit`) so a working agent is not put to sleep."
         },
+        "lock-size": {
+          "default": false,
+          "description": "Whether `phux attach` and a bare `phux` lock their view size, as\n`--lock-size` does: other views no longer resize this client's panes.",
+          "type": "boolean"
+        },
         "mouse": {
           "default": true,
           "description": "Whether the client enables outer-terminal mouse tracking on attach\n(ADR-0048). `false` leaves the host's native selection untouched.",
@@ -1129,6 +1134,14 @@
       "additionalProperties": false,
       "description": "`[rune]` table: settings the Rune app otherwise keeps in its own prefs.\n\nA key set here wins over the app's saved choice and cannot be changed\nfrom Settings; an unset key stays the app's to remember.",
       "properties": {
+        "bold-is-bright": {
+          "default": null,
+          "description": "Bold text in ANSI colours 0 to 7 draws in the bright variant, 8 to\n15, like xterm's `boldColors`. Off when unset; true colour never\nbrightens.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "chief": {
           "default": null,
           "description": "The phux session whose ACP agent a tap of the right Command key\nprompts; `\"chief\"` when unset, `\"none\"` turns the tap off.",
@@ -1844,6 +1857,7 @@
         "history-bytes": 10485760,
         "history-limit": 50000,
         "keep-awake": "off",
+        "lock-size": false,
         "mouse": true,
         "retain-on-exit": false,
         "retain-on-exit-max": 256,
@@ -2094,6 +2108,7 @@
         }
       ],
       "default": {
+        "bold-is-bright": null,
         "chief": null,
         "confirm-close": null,
         "copy-on-select": null,

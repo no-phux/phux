@@ -131,6 +131,61 @@ fn the_theme_maps_palette_provenance_and_yields_to_application_defaults() {
 }
 
 #[test]
+fn bold_brightens_palette_colours_only_and_takes_the_bold_colour() {
+    let mut frame = frame(&[], 1);
+    frame.colors.palette[1] = rgb(205, 0, 0);
+    frame.colors.palette[9] = RED;
+    let theme = Theme {
+        bold_is_bright: true,
+        bold: Some(BLUE),
+        ..theme()
+    };
+    let defaults = default_colors(&frame, &theme);
+    let red = Cell {
+        foreground_r: 205,
+        flags: CELL_BOLD,
+        ..Cell::default()
+    };
+    let indexed = CellMetadata {
+        foreground_kind: COLOR_KIND_PALETTE,
+        foreground_palette_index: 1,
+        ..CellMetadata::default()
+    };
+    let truecolor = CellMetadata {
+        foreground_kind: COLOR_KIND_RGB,
+        ..CellMetadata::default()
+    };
+    let fg = |cell: &Cell, metadata, theme: &Theme<Rgb>| {
+        cell_colors(cell, metadata, &frame, theme, defaults).foreground
+    };
+    assert_eq!(fg(&red, indexed, &theme), RED, "bold 31 paints as 91");
+    assert_eq!(fg(&red, truecolor, &theme), rgb(205, 0, 0), "rgb stays");
+    let plain = Cell { flags: 0, ..red };
+    assert_eq!(fg(&plain, indexed, &theme), rgb(205, 0, 0), "not bold");
+    let off = Theme {
+        bold_is_bright: false,
+        ..theme
+    };
+    assert_eq!(fg(&red, indexed, &off), rgb(205, 0, 0), "off by default");
+    let bold = Cell {
+        flags: CELL_BOLD,
+        ..Cell::default()
+    };
+    let default_fg = CellMetadata::default();
+    assert_eq!(
+        fg(&bold, default_fg, &theme),
+        BLUE,
+        "the theme's bold colour"
+    );
+    assert_eq!(fg(&Cell::default(), default_fg, &theme), WHITE);
+    assert_eq!(
+        fg(&bold, default_fg, &off),
+        BLUE,
+        "independent of brightening"
+    );
+}
+
+#[test]
 fn faces_hidden_cells_and_blink() {
     let bold_italic = Cell {
         flags: CELL_BOLD | CELL_ITALIC,

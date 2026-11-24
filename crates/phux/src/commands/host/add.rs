@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use super::super::enroll::{self, CertificateStatus, EnrollFailure};
 use super::super::json_err::{self, CliError, codes};
 use super::super::remote::{self};
-use super::super::remote_target::endpoint_host;
+use super::super::remote_target::{endpoint_host, endpoint_port, registration_name};
 use super::super::satellite as satellite_registry;
 
 use super::HostRole;
@@ -77,13 +77,15 @@ impl AddMode {
         } else if target.contains("://") {
             let name = match &opts.name {
                 Some(name) => name.clone(),
-                None => endpoint_host(target).ok_or_else(|| {
-                    CliError::new(
-                        codes::REGISTRY,
-                        format!("could not derive a name from {target:?}"),
-                        "pass --name NAME, or `phux host add NAME ENDPOINT`",
-                    )
-                })?,
+                None => endpoint_host(target)
+                    .map(|host| registration_name(opts.role, &host, endpoint_port(target)))
+                    .ok_or_else(|| {
+                        CliError::new(
+                            codes::REGISTRY,
+                            format!("could not derive a name from {target:?}"),
+                            "pass --name NAME, or `phux host add NAME ENDPOINT`",
+                        )
+                    })?,
             };
             Some((name, target.to_owned()))
         } else {
