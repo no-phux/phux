@@ -34,7 +34,7 @@ done
 # install.sh appends to the invoking shell's profile; a test that runs it
 # against the real home leaves PATH lines behind (phux-gh85y).
 shopt -s nullglob
-for test in $(grep -lE 'install(-desktop|-rune)?\.sh|install/src/' install/test-*.sh scripts/test-*.sh); do
+for test in $(grep -lE 'install(-desktop|-rune)?\.sh|install/src/' install/test-*.sh packaging/test-*.sh); do
   grep -qE '^export HOME="\$TMP' "$test" || fail "$test runs an installer; export HOME=\"\$TMP/...\" first"
 done
 

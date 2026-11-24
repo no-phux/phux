@@ -130,7 +130,6 @@ const ROUTES: Record<string, Surface[]> = {
   justfile: [],
   "just/{perf,release,mutation}.just": [],
   "release-please-config.json": [],
-  "scripts/check-*": [],
   // The plugin index generator, not a plugin. Lint lane only for a
   // generator-only diff (classify skips the unit pool).
   // plugin-index.yml runs the generator tests. A phux-config change still
