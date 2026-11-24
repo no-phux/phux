@@ -166,11 +166,11 @@ tools-check:
     cd tools && bun install --frozen-lockfile && bun run check
 
 
-# Check documentation links, commands, crate maps, and code citations.
+# Check documentation links, commands, crate maps, code citations, and llms.txt.
+# Its fixtures are tools/src/docs/*.test.ts, which tools-check runs.
 [group('gates')]
-docs-check:
-    bash scripts/check-docs.sh
-    bash scripts/check-docs_test.sh
+docs-check *ARGS:
+    bun tools/main.ts docs-check {{ARGS}}
 
 
 # Regenerate docs/reference/ from the compiled binary after CLI changes.

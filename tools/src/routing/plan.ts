@@ -124,7 +124,6 @@ export const NATIVE_SETUP_PATHS = [
   "dev/native-smoke.sh",
   "dev/test-env-runner.sh",
   "dev/doctor.sh",
-  "scripts/check-docs.sh",
   "clients/phux-vt-web/scripts/build-vt-wasm.sh",
   "dev/zig-mirrors/build.zig",
   "dev/zig-mirrors/build.zig.zon",

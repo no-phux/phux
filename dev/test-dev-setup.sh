@@ -42,18 +42,10 @@ expect_fail() {
     grep -Fq "$expected" "$scratch/output" || { cat "$scratch/output" >&2; exit 1; }
 }
 
-# A docs contributor has only shell/Git utilities; no compiler or Node probes.
-expect_pass "$repo/dev/doctor.sh" docs
-cp "$root/scripts/check-docs.sh" "$repo/scripts/"
-mkdir -p "$repo/docs"
-printf '# Guide\n\n## Build cache (mbx)\n\nSee [setup](#build-cache-mbx) and [index](./README.md).\n' >"$repo/docs/guide.md"
-printf '# Docs\n\n[Guide](./guide.md#build-cache-mbx)\n' >"$repo/docs/README.md"
-expect_pass "$repo/scripts/check-docs.sh" --only=links
-printf '[gone](./missing.md)\n' >>"$repo/docs/README.md"
-expect_fail 'missing.md does not exist' "$repo/scripts/check-docs.sh" --only=links
-printf '# Docs\n\n[Guide](./guide.md#no-such-heading)\n' >"$repo/docs/README.md"
-expect_fail 'has no heading #no-such-heading' "$repo/scripts/check-docs.sh" --only=links
-rm -rf "$repo/docs"
+# A docs contributor needs Bun for the docs gate (tools/src/docs) and no
+# compiler or Node: on a PATH without Bun, Bun is the one problem.
+expect_fail 'doctor docs: 1 problem(s)' "$repo/dev/doctor.sh" docs
+grep -Fq 'missing/incompatible: bun' "$scratch/output" || { cat "$scratch/output" >&2; exit 1; }
 expect_fail 'usage:' "$repo/dev/doctor.sh" typo
 # Doctor names Mise/Nix first; the rustup helper is the native-CI fallback.
 # Unset IN_NIX_SHELL so a leftover Nix shell from the runner cannot flip the
