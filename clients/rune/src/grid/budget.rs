@@ -22,7 +22,7 @@ use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::FrameKind;
 use rune::{Cx, El, Env, Runtime, row};
 
-use super::{DEFAULT_FONT_SIZE, Metrics, paint};
+use super::{Bold, DEFAULT_FONT_SIZE, Metrics, paint};
 use crate::desk::Shown;
 use crate::perf;
 
@@ -45,7 +45,14 @@ fn panes(state: &Panes, _: &mut Cx<Panes>) -> El {
         perf::RENDERS.incr();
         let frame = state.client.acquire_view(*view).expect("a frame");
         let selection = crate::theme::Selection::system();
-        out = out.child(paint(&frame, true, true, &state.metrics, selection));
+        out = out.child(paint(
+            &frame,
+            true,
+            true,
+            &state.metrics,
+            selection,
+            Bold::default(),
+        ));
     }
     out
 }

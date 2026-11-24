@@ -44,6 +44,12 @@ pub struct Theme<C> {
     pub selection_background: C,
     /// The renderer's colour for an RGB the frame carries.
     pub rgb: fn(Rgb) -> C,
+    /// Bold text in palette colours 0-7 paints with 8-15 (xterm's
+    /// `boldColors`, Ghostty's `bold-color = bright`). Direct RGB never
+    /// brightens.
+    pub bold_is_bright: bool,
+    /// Bold text in the default foreground paints in this colour.
+    pub bold: Option<C>,
 }
 
 impl Theme<Rgb> {
@@ -59,6 +65,8 @@ impl Theme<Rgb> {
             selection_foreground: selection.0,
             selection_background: selection.1,
             rgb: |color| color,
+            bold_is_bright: false,
+            bold: None,
         }
     }
 }
@@ -146,7 +154,8 @@ fn themed<C: Copy>(frame: &GridFrame, theme: &Theme<C>, kind: u8, index: u8, col
 }
 
 /// One cell's colours; `defaults` is [`default_colors`] for this frame and
-/// theme. Inverse swaps first, then selection replaces both.
+/// theme. Bold takes the theme's bold colours first, inverse swaps, then
+/// selection replaces both.
 #[must_use]
 pub fn cell_colors<C: Copy>(
     cell: &Cell,
@@ -155,16 +164,25 @@ pub fn cell_colors<C: Copy>(
     theme: &Theme<C>,
     defaults: (C, C),
 ) -> CellColors<C> {
+    let bold = cell.flags & CELL_BOLD != 0;
     let mut foreground = if metadata.foreground_kind == COLOR_KIND_DEFAULT {
-        defaults.0
+        theme
+            .bold
+            .filter(|_| bold && !frame.colors.reversed)
+            .unwrap_or(defaults.0)
     } else {
-        themed(
-            frame,
-            theme,
-            metadata.foreground_kind,
-            metadata.foreground_palette_index,
-            rgb(cell.foreground_r, cell.foreground_g, cell.foreground_b),
-        )
+        let index = metadata.foreground_palette_index;
+        let (index, color) = if bold
+            && theme.bold_is_bright
+            && metadata.foreground_kind == COLOR_KIND_PALETTE
+            && index < 8
+        {
+            (index + 8, frame.colors.palette[usize::from(index + 8)])
+        } else {
+            let color = rgb(cell.foreground_r, cell.foreground_g, cell.foreground_b);
+            (index, color)
+        };
+        themed(frame, theme, metadata.foreground_kind, index, color)
     };
     let mut background = if metadata.background_kind == COLOR_KIND_DEFAULT {
         defaults.1

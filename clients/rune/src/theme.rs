@@ -40,6 +40,8 @@ pub struct Theme {
     pub accent: u32,
     /// The theme's own terminal selection fill, when it names one.
     pub selection: Option<u32>,
+    /// Bold text in the default foreground, when the theme names a colour.
+    pub bold: Option<u32>,
 }
 
 const fn bytes(hex: u32) -> [u8; 3] {
