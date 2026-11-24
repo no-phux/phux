@@ -288,11 +288,13 @@ where
         Ok(())
     }
 
-    /// Pane metadata does not cross an upgrade; the notify mode lives on
-    /// the record, so put it back before any client attaches.
+    /// Pane metadata does not cross an upgrade; the notify mode and parent
+    /// live on the record, so put them back before any client attaches.
     fn restore(&mut self, state: &mut ServerState, blob: &StateBlob) {
         for p in &blob.panes {
-            super::notify_mode::reinstall(state, &WireResourceId::local(p.wire_id));
+            let wire = WireResourceId::local(p.wire_id);
+            super::notify_mode::reinstall(state, &wire);
+            super::parent::reinstall(state, &wire);
         }
     }
 }

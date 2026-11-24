@@ -10,7 +10,9 @@ use phux_client::selector::format_terminal_id;
 use phux_client::spatial::{Direction, SpatialError, SpatialOp};
 use phux_client::spawn::{PlacedSpawn, PlacedSpawnError};
 use phux_protocol::ids::{GroupId, IdempotencyKey, SatelliteHost};
-use phux_protocol::wire::frame::{FrameKind, SpawnError, SpawnResource, SpawnResult};
+use phux_protocol::wire::frame::{
+    FrameKind, SpawnError, SpawnResource, SpawnResult, decode_pane_parent,
+};
 use serde_json::{Value, json};
 
 use crate::cli_adapter::{bounded_string, bounded_strings, enum_string, ratio};
@@ -185,6 +187,12 @@ pub(crate) async fn spawn(args: &Value) -> Result<Value, ToolError> {
                 .0
         }
     };
+    // An agent's panes fold under the pane it runs in (`phux.parent/v1`).
+    let own = std::env::var("PHUX_TERMINAL_ID").ok();
+    let own = own.and_then(|id| decode_pane_parent(id.trim_start_matches('@').as_bytes()));
+    if let (SpawnResult::Ok(child), None, Some(parent)) = (&result, &request.satellite, own) {
+        let _ = phux_client::spawn::record_parent(&socket, child, parent).await;
+    }
     spawn_document(result)
 }
 

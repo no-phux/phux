@@ -65,6 +65,11 @@ pub(crate) struct SpawnArgs {
     #[usage(long = "idempotency-key", value_name = "HEX32")]
     pub(crate) idempotency_key: Option<String>,
 
+    /// The pane the new one is a child of, folded under it in lists;
+    /// `none` for no parent. Default: the pane this runs in.
+    #[usage(long, value_name = "PANE", conflicts("--satellite"))]
+    pub(crate) parent: Option<String>,
+
     /// Run an application in the new pane instead of a command: launched,
     /// mirrored into documents under the pane, and quit when the pane is
     /// killed (`phux agent app run NAME`). A macOS app name, a Linux

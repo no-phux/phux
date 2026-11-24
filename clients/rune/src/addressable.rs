@@ -22,6 +22,9 @@ pub struct Addressable {
     pub kind: ResourceKind,
     /// What a list calls the document when `!kind.is_terminal()`.
     pub mirror: &'static str,
+    /// The pane a terminal was started from, which the sidebar folds it
+    /// under (`phux.parent/v1`).
+    pub parent: Option<ResourceId>,
 }
 
 /// The topology's terminals and documents that `wanted` keeps. An agent
@@ -61,6 +64,7 @@ fn list(topology: &Topology, wanted: impl Fn(&ResourceId) -> bool) -> Vec<Addres
                 session,
                 kind: r.kind,
                 mirror: "Read-only mirror",
+                parent: panes.get(&r.id).and_then(|pane| pane.parent.clone()),
             }
         })
         .collect();

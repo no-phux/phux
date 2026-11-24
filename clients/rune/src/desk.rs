@@ -195,6 +195,8 @@ pub struct Desk {
     pub settings_ui: settings::SettingsUi,
     /// Session disclosure belongs to this window, independent of selection.
     pub sidebar_collapsed: HashSet<SessionKey>,
+    /// Rows whose child panes show; every parent starts folded.
+    pub sidebar_unfolded: HashSet<ResourceId>,
     pub updater: updates::Updater,
     pub machines: machines::Machines,
     pub link: link::Link,
@@ -339,6 +341,7 @@ impl Desk {
             news: news::News::load(&prefs),
             settings_ui: settings::SettingsUi::default(),
             sidebar_collapsed: HashSet::new(),
+            sidebar_unfolded: HashSet::new(),
             updater: updates::Updater::new(&prefs, resolved),
             machines: machines::Machines::new(machine, resolved.phux.clone()),
             link: link::Link::default(),
