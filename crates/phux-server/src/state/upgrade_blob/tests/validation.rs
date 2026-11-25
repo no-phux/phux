@@ -59,6 +59,7 @@ pub(super) fn no_pty_pane(wire_id: u32, window_wire_id: u32) -> PaneBlob {
         scrollback_bytes: Vec::new(),
         retained_exit: None,
         retain_secs: None,
+        asked: None,
         key: None,
     }
 }

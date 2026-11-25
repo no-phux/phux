@@ -94,6 +94,10 @@ pub(crate) fn run_spawn(
     let SpawnCommand { app, argv: command } = command;
     let socket_path = socket.unwrap_or_else(default_socket_path);
     let request_id = 1u32;
+    // A child with no other placement joins the pane it was started from.
+    let owner_terminal = parent
+        .filter(|_| target.is_none() && satellite.is_none())
+        .and_then(|parent| owner_pane(&socket_path, parent));
     let frame = FrameKind::SpawnResource {
         request_id,
         // v0.1 servers expose the single default group.
@@ -107,7 +111,7 @@ pub(crate) fn run_spawn(
         env: None,
         term: None,
         satellite: satellite.map(SatelliteHost::new),
-        owner_terminal: None,
+        owner_terminal,
         agent_session: None,
         // phux-a5xj: a headless `phux spawn` has no viewport and owns no
         // layout, so it has nothing honest to name here. The pane takes the
@@ -162,6 +166,13 @@ pub(crate) fn run_spawn(
     }
 }
 
+/// Pane `id` as the new pane's owner ([`phux_client::spawn::owner_pane`]). An
+/// unreachable server is the spawn's to report.
+pub(crate) fn owner_pane(socket_path: &Path, id: u32) -> Option<ResourceId> {
+    let owner = phux_client::spawn::owner_pane(socket_path, id);
+    cli_runtime().ok()?.block_on(owner).ok().flatten()
+}
+
 /// Name `parent` as the new pane's `phux.parent/v1`. The pane exists either
 /// way, so a failure only warns.
 fn record_parent(socket_path: &Path, child: &ResourceId, parent: u32) {
@@ -178,12 +189,11 @@ fn record_parent(socket_path: &Path, child: &ResourceId, parent: u32) {
     }
 }
 
-/// `--parent PANE`: `@N` or `N`, or `none`. Omitted, the pane this runs in,
-/// unless the spawn goes to a satellite, whose panes are not this server's.
-fn parse_parent(raw: Option<&str>, satellite: bool) -> Result<Option<u32>, String> {
+/// `--parent PANE`: `@N` or `N`, or `none`. Omitted, `own`: the pane this
+/// runs in.
+fn parse_parent(raw: Option<&str>, own: Option<u32>) -> Result<Option<u32>, String> {
     match raw {
-        None if satellite => Ok(None),
-        None => Ok(crate::environment::own_terminal_id()),
+        None => Ok(own),
         Some("none") => Ok(None),
         Some(text) => (text.strip_prefix('@').unwrap_or(text).parse::<u32>().ok())
             .filter(|id| *id != 0)
@@ -406,7 +416,14 @@ pub(crate) fn run(args: crate::commands::SpawnArgs, socket: Option<PathBuf>) -> 
             crate::exit_codes::EXIT_USAGE,
         );
     }
-    let parent = match parse_parent(parent.as_deref(), satellite.is_some()) {
+    // A satellite's panes are not this server's.
+    let own = if satellite.is_some() {
+        None
+    } else {
+        let socket = socket.clone().unwrap_or_else(default_socket_path);
+        crate::environment::own_terminal_id_on(&socket)
+    };
+    let parent = match parse_parent(parent.as_deref(), own) {
         Ok(parent) => parent,
         Err(message) => {
             return json_err::emit(

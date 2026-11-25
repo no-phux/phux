@@ -66,7 +66,9 @@ pub(crate) struct SpawnArgs {
     pub(crate) idempotency_key: Option<String>,
 
     /// The pane the new one is a child of, folded under it in lists;
-    /// `none` for no parent. Default: the pane this runs in.
+    /// `none` for no parent. Default: the pane this runs in. Without
+    /// `--target`, the new pane joins its parent's session and starts in
+    /// its directory.
     #[usage(long, value_name = "PANE", conflicts("--satellite"))]
     pub(crate) parent: Option<String>,
 

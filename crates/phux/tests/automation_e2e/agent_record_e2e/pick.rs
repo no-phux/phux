@@ -62,3 +62,32 @@ fn pick_prints_the_answered_item_and_escape_cancels() {
     server.success(&["send-keys", &target, "Escape"]);
     assert_eq!(await_lines(&out, 3), "beta\nexit=0\nexit=1\n");
 }
+
+/// phux-dsako.3: a `phux ask` question, which sets no title, is answered by
+/// the same verb, once: the answer closes it, so a second one types nothing.
+#[test]
+#[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
+fn a_phux_ask_question_is_answered_once() {
+    let home = tempfile::tempdir().expect("create temp dir");
+    let out = home.path().join("answers.txt");
+    let script = home.path().join("asker");
+    common::write_executable(&script, format!("#!/bin/sh\ncat > '{}'\n", out.display()));
+    let server = ServerGuard::start("phux-ask");
+    let target = format!("@{}", server.spawn_pane(&script));
+    server.success(&[
+        "ask", "--id", "q3", "--suggest", "Yes", "--suggest", "No", &target, "Deploy?",
+    ]);
+    let questions = || server.run_with_env(&["agent", "questions", &target], &[]);
+    assert!(questions().contains("\"q3\""), "{}", questions());
+
+    let choose = ["agent", "answer", "--id", "q3", "--choice", "2", &target];
+    assert_ne!(
+        server.run(&["agent", "answer", "--id", "q2", "--choice", "2", &target]).0,
+        0,
+        "another question's id is refused"
+    );
+    assert_eq!(server.run(&choose).0, 0, "the open question is answered");
+    assert!(!questions().contains("\"q3\""), "{}", questions());
+    assert_ne!(server.run(&choose).0, 0, "an answered question is closed");
+    assert_eq!(await_lines(&out, 1), "No\n", "one answer, typed once");
+}

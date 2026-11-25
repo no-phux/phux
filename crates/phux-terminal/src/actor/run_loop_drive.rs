@@ -37,6 +37,9 @@ impl TerminalActor {
         let tick = armed_interval(tick_interval).await;
 
         self.install_agent_detector();
+        // A resumed pane's title came with its seed, before any sink, and a
+        // program waiting on its title question prints nothing.
+        self.source_ask_marker();
         let detect_interval = crate::agent_detect::TICK_UNIDENTIFIED;
         let detect_tick = armed_interval(detect_interval).await;
 

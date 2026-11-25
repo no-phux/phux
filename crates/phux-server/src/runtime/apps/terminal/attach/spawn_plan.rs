@@ -153,6 +153,7 @@ pub(super) fn spawn_argv_builder(
 pub(super) async fn build_spawn_command(
     state: &SharedState,
     client_id: ClientId,
+    owner_terminal: Option<&phux_protocol::ids::ResourceId>,
     command: Option<Vec<String>>,
     cwd: Option<String>,
     env: Option<Vec<(String, String)>>,
@@ -166,7 +167,7 @@ pub(super) async fn build_spawn_command(
     }
     if let Some(path) = cwd {
         builder.cwd(path);
-    } else if let Some(path) = resolve_inherited_cwd(state, client_id).await {
+    } else if let Some(path) = resolve_inherited_cwd(state, client_id, owner_terminal).await {
         builder.cwd(path);
     }
     if let Some(pairs) = env {
