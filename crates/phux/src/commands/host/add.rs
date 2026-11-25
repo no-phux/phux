@@ -1,17 +1,17 @@
-//! `phux host add`: choosing the form, the manual (`NAME ENDPOINT`) path,
+//! `phux host add`: running the chosen form, the manual (`NAME ENDPOINT`) path,
 //! and the error shapes every add path shares.
 
 use std::process::ExitCode;
 
-use super::super::enroll::{self, CertificateStatus, EnrollFailure};
+use super::super::enroll::{CertificateStatus, EnrollFailure};
 use super::super::json_err::{self, CliError, codes};
 use super::super::remote::{self};
-use super::super::remote_target::{endpoint_host, endpoint_port, registration_name};
 use super::super::satellite as satellite_registry;
 use super::super::service;
 
 use super::HostRole;
 use super::add_code::run_add_from_code;
+pub(super) use super::add_mode::AddMode;
 use super::add_ssh::run_add_over_ssh;
 use super::args::AddOpts;
 use super::enrollment::{EnrollmentReport, report_registered};
@@ -40,145 +40,6 @@ pub(super) fn role_flag_mismatch(
              `phux host add --role satellite HOST --disabled`",
         )),
         _ => None,
-    }
-}
-
-/// Which of `host add`'s two forms an invocation is, decided from the
-/// arguments alone so the rule is one place and testable.
-#[derive(Debug, PartialEq, Eq)]
-pub(super) enum AddMode {
-    /// Register `endpoint` under `name` from what was typed.
-    Manual { name: String, endpoint: String },
-    /// Set `target` up over ssh.
-    Ssh { target: String },
-    /// Register `name` from the `--code` connect link.
-    Code { name: String },
-}
-
-impl AddMode {
-    /// `NAME ENDPOINT` and a bare endpoint URI are the manual form; anything
-    /// else is an ssh destination. A flag from the other form is refused.
-    pub(super) fn classify(
-        target: &str,
-        endpoint: Option<&str>,
-        opts: &AddOpts,
-    ) -> Result<Self, CliError> {
-        if opts.code.is_some() {
-            return Self::code(target, endpoint, opts);
-        }
-        let manual = if let Some(endpoint) = endpoint {
-            if opts.name.is_some() {
-                return Err(CliError::new(
-                    codes::REGISTRY,
-                    "--name does not combine with a NAME ENDPOINT pair: the first argument is the name",
-                    "drop --name, or pass only the endpoint URI with --name NAME",
-                ));
-            }
-            Some((target.to_owned(), endpoint.to_owned()))
-        } else if target.contains("://") {
-            let name = match &opts.name {
-                Some(name) => name.clone(),
-                None => endpoint_host(target)
-                    .map(|host| registration_name(opts.role, &host, endpoint_port(target)))
-                    .ok_or_else(|| {
-                        CliError::new(
-                            codes::REGISTRY,
-                            format!("could not derive a name from {target:?}"),
-                            "pass --name NAME, or `phux host add NAME ENDPOINT`",
-                        )
-                    })?,
-            };
-            Some((name, target.to_owned()))
-        } else {
-            None
-        };
-
-        let Some((name, endpoint)) = manual else {
-            if manual_credentials_given(opts) {
-                return Err(CliError::new(
-                    codes::REGISTRY,
-                    "--token-file, --cert-fingerprint, --tls-server-name, and --ca-fingerprint belong to the manual form, which registers an endpoint you already hold credentials for",
-                    format!(
-                        "pass the endpoint too (`phux host add {target} quic://HOST:PORT --token-file PATH --cert-fingerprint FP`), \
-                         or drop them and let `phux host add {target}` pair over ssh"
-                    ),
-                ));
-            }
-            return Ok(Self::Ssh {
-                target: target.to_owned(),
-            });
-        };
-        if let Some(flag) = ssh_form_flag_given(opts) {
-            return Err(CliError::new(
-                codes::REGISTRY,
-                format!(
-                    "{flag} belongs to the ssh form (`phux host add [USER@]HOST`), which sets the machine up itself"
-                ),
-                format!(
-                    "drop {flag}, or drop the endpoint URI and let `phux host add HOST` pair over ssh"
-                ),
-            ));
-        }
-        Ok(Self::Manual { name, endpoint })
-    }
-
-    /// `NAME --code LINK`: the link carries the endpoint and every
-    /// credential, so nothing that names them too is taken.
-    fn code(target: &str, endpoint: Option<&str>, opts: &AddOpts) -> Result<Self, CliError> {
-        let conflict = if endpoint.is_some() {
-            Some("an ENDPOINT")
-        } else if opts.role != HostRole::Remote {
-            Some("--role satellite")
-        } else if opts.name.is_some() {
-            Some("--name")
-        } else if opts.session.is_some() {
-            Some("--session")
-        } else if manual_credentials_given(opts) {
-            Some("a manual credential flag")
-        } else {
-            ssh_form_flag_given(opts)
-        };
-        if let Some(conflict) = conflict {
-            return Err(CliError::new(
-                codes::REGISTRY,
-                format!(
-                    "--code does not combine with {conflict}: the link carries the endpoint and its credentials"
-                ),
-                "pass only the name to register and the link: `phux host add NAME --code LINK`",
-            ));
-        }
-        Ok(Self::Code {
-            name: target.to_owned(),
-        })
-    }
-}
-
-/// Whether a flag only the manual form takes names a credential or route.
-const fn manual_credentials_given(opts: &AddOpts) -> bool {
-    opts.token_file.is_some()
-        || opts.cert_fingerprint.is_some()
-        || opts.tls_server_name.is_some()
-        || opts.ca_fingerprint.is_some()
-}
-
-/// The first ssh-form flag present on a manual invocation, by its spelling.
-pub(super) fn ssh_form_flag_given(opts: &AddOpts) -> Option<&'static str> {
-    if opts.ssh_only {
-        Some("--ssh-only")
-    } else if opts.endpoint_override.is_some() {
-        Some("--endpoint")
-    } else if opts.no_service {
-        Some("--no-service")
-    } else if opts.remote_phux != "phux" {
-        Some("--remote-phux")
-    } else if opts.install {
-        Some("--install")
-    } else if opts.accept_new_host_key {
-        Some("--accept-new-host-key")
-    } else if opts.quic_port != enroll::default_quic_port() {
-        Some("--quic-port")
-    } else {
-        None
     }
 }
 
@@ -213,7 +74,7 @@ pub(super) fn run_add(target: &str, endpoint: Option<&str>, opts: &AddOpts) -> E
         Err(err) => json_err::emit(json, &err, 2),
         Ok(AddMode::Manual { name, endpoint }) => run_add_manual(&name, &endpoint, opts),
         Ok(AddMode::Ssh { target }) => run_add_over_ssh(&target, opts),
-        Ok(AddMode::Code { name }) => run_add_from_code(&name, opts),
+        Ok(AddMode::Code { name, link }) => run_add_from_code(&name, &link, opts),
     }
 }
 
