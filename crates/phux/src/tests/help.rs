@@ -199,6 +199,24 @@ fn misplaced_flag_hint_follows_the_flag_position() {
     );
     assert!(!after.contains("place it after the verb"), "{after}");
     assert_eq!(hint(&["phux", "ls", "--no-such-flag"]), None);
+
+    // The exact command is named, and nothing unrelated is listed.
+    let nested = hint(&["phux", "relay", "pair", "--route", "lab", "--json"]).expect("hint");
+    assert_eq!(
+        nested,
+        "`phux relay pair` does not take `--json`; see `phux relay pair --help`"
+    );
+    // A relative under the same verb that takes the flag is offered.
+    let relative = hint(&["phux", "config", "path", "--json"]).expect("hint");
+    assert!(
+        relative.starts_with("`phux config path` does not take `--json`; `phux config "),
+        "{relative}"
+    );
+    assert!(
+        relative.ends_with("see `phux config path --help`"),
+        "{relative}"
+    );
+    assert!(!relative.contains("`phux ls`"), "{relative}");
 }
 
 /// A required flag reads as it is typed in a usage line, `--route <NAME>`,
