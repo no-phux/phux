@@ -68,24 +68,47 @@ async fn input_to_a_retained_pane_is_dropped_by_the_dispatcher() {
     }
 }
 
-/// What is typed while a chosen satellite pane still attaches was meant for
-/// it: nothing reaches the pane in view, and typing works again after.
+/// What is typed over a pane while a chosen satellite pane attaches was meant
+/// for the latter and reaches nothing; a pane the user moves to or clicks, the
+/// same one included, takes typing at once.
 #[tokio::test]
-async fn typing_while_a_chosen_pane_attaches_reaches_no_other_pane() {
+async fn typing_while_a_chosen_pane_attaches_reaches_no_pane_the_user_left() {
     use crate::attach::actions::{Adopt, PendingWindow};
-    let mut env = two_pane_env(&[(tid(1), b"")], (8, 16));
-    env.fx.pending_windows.insert(
-        9,
-        PendingWindow {
-            name: "edge/build".to_owned(),
-            adopt: Some(Adopt::Existing(ResourceId::satellite("edge", 9))),
-        },
-    );
     let key = || vec![press(PhysicalKey::A, Some("a"))];
-    let sent = env.dispatch(key()).await;
-    assert!(sent.frames.is_empty(), "{:?}", sent.frames);
-    env.fx.pending_windows.clear();
-    assert_eq!(env.dispatch(key()).await.frames.len(), 1);
+    for (click, typed_into) in [(Some(5.0), tid(1)), (Some(70.0), tid(2)), (None, tid(2))] {
+        let mut env = two_pane_env(&[(tid(1), b""), (tid(2), b"")], (8, 16));
+        env.fx.pending_windows.insert(
+            9,
+            PendingWindow {
+                name: "edge/build".to_owned(),
+                adopt: Some(Adopt::Existing {
+                    pane: ResourceId::satellite("edge", 9),
+                    over: Some(tid(1)),
+                }),
+            },
+        );
+        let sent = env.dispatch(key()).await;
+        assert!(sent.frames.is_empty(), "{:?}", sent.frames);
+
+        if let Some(column) = click {
+            env.dispatch(vec![
+                mouse(MouseAction::Press, MouseButton::Left, column, 5.0),
+                mouse(MouseAction::Release, MouseButton::Left, column, 5.0),
+            ])
+            .await;
+        } else {
+            // The keyboard moved focus.
+            let group = env.fx.workspace.active_group_mut().expect("window");
+            group.focus = Some(typed_into.clone());
+        }
+        let sent = env.dispatch(key()).await;
+        assert!(
+            sent.frames.iter().any(|frame| matches!(frame,
+                FrameKind::InputKey { terminal_id, .. } if *terminal_id == typed_into)),
+            "{:?}",
+            sent.frames
+        );
+    }
 }
 
 /// A second press during a divider drag is consumed (no focus move, no

@@ -1434,7 +1434,7 @@ fn a_refused_attach_never_kills_a_referenced_pane() {
     held.add_group("edge".to_owned(), edge_pane());
     let picker_open = PendingWindow {
         name: "edge/build".to_owned(),
-        adopt: Some(Adopt::Existing(edge_pane())),
+        adopt: Some(Adopt::existing(edge_pane())),
     };
     for (ws, in_flight, parked) in [
         (held, Vec::new(), 0),
@@ -1489,7 +1489,7 @@ fn an_unreachable_refusal_strands_only_a_bound_unreferenced_pane() {
 /// and saved (refusals: `refused_opens`).
 #[test]
 fn satellite_session_attach_opens_its_window() {
-    let existing = || Adopt::Existing(edge_pane());
+    let existing = || Adopt::existing(edge_pane());
     let ws = || ArrangementDoc::single(tid(1));
     let (outcome, h) = adopt_reply_in(ws(), Vec::new(), "edge/build", existing(), command_ok(9));
     assert_eq!(h.mirror.workspace.groups.len(), 2);

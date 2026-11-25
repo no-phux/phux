@@ -44,7 +44,7 @@ impl PendingSplit {
 
     /// Whether this split opens an existing pane this client did not spawn.
     pub(in crate::attach) const fn opens_existing(&self) -> bool {
-        matches!(self.adopt, Some(Adopt::Existing(_)))
+        matches!(self.adopt, Some(Adopt::Existing { .. }))
     }
 }
 
@@ -140,16 +140,27 @@ pub(in crate::attach) struct PendingWindow {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::attach) enum Adopt {
     /// A satellite session's existing pane; a refused attach leaves it alone.
-    Existing(ResourceId),
+    Existing {
+        /// The pane being opened.
+        pane: ResourceId,
+        /// The pane in view when the user asked. What they type there is
+        /// meant for `pane`, until the attach answers or they click back.
+        over: Option<ResourceId>,
+    },
     /// A pane this client just spawned; a refused attach kills it.
     Spawned(SpawnedPane),
 }
 
 impl Adopt {
+    #[cfg(test)]
+    pub(in crate::attach) const fn existing(pane: ResourceId) -> Self {
+        Self::Existing { pane, over: None }
+    }
+
     /// The pane, whichever way it came.
     pub(in crate::attach) const fn pane(&self) -> &ResourceId {
         match self {
-            Self::Existing(pane) | Self::Spawned(SpawnedPane { id: pane, .. }) => pane,
+            Self::Existing { pane, .. } | Self::Spawned(SpawnedPane { id: pane, .. }) => pane,
         }
     }
 }

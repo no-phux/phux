@@ -22,7 +22,7 @@ fn a_refused_satellite_session_opens_nothing_or_opens_down() {
             ArrangementDoc::single(tid(1)),
             Vec::new(),
             "edge/build",
-            Adopt::Existing(edge_pane()),
+            Adopt::existing(edge_pane()),
             frame,
         );
         let focus = if down { edge_pane() } else { tid(1) };

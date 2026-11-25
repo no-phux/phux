@@ -9,8 +9,8 @@ use super::{
     MouseAction, MouseButton, MouseEvent, PhysicalKey, Point, PointCoordinate, PointSpace,
     ResourceId, ScreenSelectionPoint, SidebarHit, StageOutcome, WindowStrip, actions, chrome_drag,
     content_rect, focused_pane_rect, hit_test, make_named_key, published_terminal,
-    reanchor_predict_to_pane, replica_scroll_moved, scale_to_surface_pixels, sidebar_click_action,
-    terminal_in_alt_screen, terminal_wants_mouse_tracking, wheel_scroll_delta,
+    replica_scroll_moved, scale_to_surface_pixels, sidebar_click_action, terminal_in_alt_screen,
+    terminal_wants_mouse_tracking, wheel_scroll_delta,
 };
 
 use std::time::Instant;
@@ -331,6 +331,9 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         // dividers + all leaves so the focused pane's
         // surrounding edges render heavy.
         let layout_changed = focus_changed;
+        if mouse.action == MouseAction::Press && mouse.button == MouseButton::Left {
+            self.release_held_typing();
+        }
         if focus_changed {
             self.focus_pane_from_click(&target);
         }
@@ -369,18 +372,6 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         )
         .await?;
         Ok(StageOutcome::consumed(layout_changed))
-    }
-
-    /// Move client-local focus to the clicked pane.
-    fn focus_pane_from_click(&mut self, target: &ResourceId) {
-        if let Some(ls) = self.ctx.workspace.active_group_mut() {
-            ls.focus = Some(target.clone());
-        }
-        self.ctx
-            .focus_history
-            .transition(self.focused_resource, Some(target.clone()));
-        // Re-anchor predict so the next keystroke echoes in the new pane.
-        reanchor_predict_to_pane(self.predict, self.panes, target);
     }
 
     /// Handle a wheel notch over `target`. `None` when the event is not a

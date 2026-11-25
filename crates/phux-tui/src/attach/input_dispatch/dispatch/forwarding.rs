@@ -5,6 +5,7 @@ use super::{
     mint_input_operation_id, predict_now_ms, published_replica, published_terminal, render_overlay,
     send_replay_frames, snap_scrolled_viewport, terminal_in_alt_screen,
 };
+use crate::attach::actions::Adopt;
 
 #[allow(
     clippy::future_not_send,
@@ -31,15 +32,15 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             .cloned()
     }
 
-    /// Whether a pane the user asked for is still attaching. What they type
-    /// is meant for it, so it goes to no other pane meanwhile.
-    fn opening_a_pane(&self) -> bool {
-        use crate::attach::actions::Adopt;
+    /// Whether what is typed into `pane` is meant for another pane: one the
+    /// user asked for while `pane` was in view, whose attach is unanswered.
+    /// Moving to any other pane, or clicking this one, types there again.
+    fn held_for_an_opening_pane(&self, pane: &ResourceId) -> bool {
         let windows = self.ctx.pending_windows.values().map(|w| &w.adopt);
         let splits = self.ctx.pending_splits.values().map(|s| &s.adopt);
-        windows
-            .chain(splits)
-            .any(|adopt| matches!(adopt, Some(Adopt::Existing(_))))
+        windows.chain(splits).any(
+            |adopt| matches!(adopt, Some(Adopt::Existing { over: Some(over), .. }) if over == pane),
+        )
     }
 
     /// Feed a key to predictive echo, peeking the focused grid so arrows can
@@ -50,7 +51,9 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             return false;
         };
         if !self.predict.is_enabled()
-            || self.opening_a_pane()
+            || self
+                .input_target()
+                .is_some_and(|pane| self.held_for_an_opening_pane(&pane))
             || crate::attach::floating::floating_pane(self.panes).is_some()
         {
             return false;
@@ -122,7 +125,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             tracing::debug!("dropping input received before ATTACHED");
             return Ok(false);
         };
-        if self.opening_a_pane() {
+        if self.held_for_an_opening_pane(&pane) {
             tracing::debug!(terminal = ?pane, "dropping input: another pane is opening");
             let _ = crate::attach::actions::write_bell(self.out);
             return Ok(false);

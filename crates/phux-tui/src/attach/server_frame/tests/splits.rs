@@ -111,7 +111,7 @@ fn a_split_spawned_on_a_satellite_waits_for_its_attach() {
 #[test]
 fn a_satellite_split_applies_when_its_attach_succeeds() {
     let mut existing = satellite_split(None);
-    existing.adopt = Some(Adopt::Existing(edge_pane()));
+    existing.adopt = Some(Adopt::existing(edge_pane()));
     for split in [satellite_split(Some(edge_pane())), existing] {
         let (outcome, h) = split_reply(split, command_ok(9));
         assert_eq!(h.leaves(), vec![tid(1), edge_pane()]);
@@ -129,7 +129,7 @@ fn a_satellite_split_applies_when_its_attach_succeeds() {
 fn a_refused_open_of_an_existing_satellite_pane_does_not_kill_it() {
     for (frame, down) in [(unreachable_refusal(9), true), (reachable_refusal(), false)] {
         let mut split = satellite_split(None);
-        split.adopt = Some(Adopt::Existing(edge_pane()));
+        split.adopt = Some(Adopt::existing(edge_pane()));
         let (outcome, h) = split_reply(split, frame);
         let mut leaves = vec![tid(1)];
         leaves.extend(down.then(edge_pane));

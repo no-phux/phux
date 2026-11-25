@@ -213,12 +213,16 @@ fn open_existing_pane(
     }
     let request_id = ctx.take_request_id();
     let host = split_host(target.host().cloned());
+    let adopt = Adopt::Existing {
+        pane: target.clone(),
+        over: Some(focused_id.clone()),
+    };
     let pending = PendingSplit {
         focused_at_request: focused_id,
         dir,
         zoom_on_spawn: false,
         host,
-        adopt: Some(Adopt::Existing(target.clone())),
+        adopt: Some(adopt),
     };
     effects.spawn_terminal = Some((request_id, pending, attach_frame(request_id, target)));
 }
