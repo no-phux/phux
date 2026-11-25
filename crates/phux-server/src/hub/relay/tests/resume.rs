@@ -4,13 +4,13 @@ use super::*;
 use std::time::{Duration, Instant};
 
 /// Another Terminal's frame, from Terminal 7's.
-fn on(terminal: u32, mut frame: FrameKind) -> FrameKind {
+pub(super) fn on(terminal: u32, mut frame: FrameKind) -> FrameKind {
     *stream_frame_scope_mut(&mut frame).expect("scope") = ResourceId::local(terminal);
     frame
 }
 
 /// Answer every command in flight.
-fn answer(session: &mut RelaySession, result: &CommandResult) {
+pub(super) fn answer(session: &mut RelaySession, result: &CommandResult) {
     let mut in_flight: Vec<u32> = session.pending.keys().copied().collect();
     in_flight.sort_unstable();
     for request_id in in_flight {
@@ -26,19 +26,25 @@ fn refusal(code: ErrorCode) -> CommandResult {
 }
 
 /// Terminal 7's only viewer.
-fn viewer(session: &mut RelaySession) -> &mut ProxySubscriber {
+pub(super) fn viewer(session: &mut RelaySession) -> &mut ProxySubscriber {
     &mut session.subscribers.get_mut(&7).expect("viewers")[0]
 }
 
-/// Make the viewer's next ask due, and send it.
-fn ask_now(session: &mut RelaySession) -> usize {
+/// Reach the viewer's deadline; how many asks that sent.
+fn at_deadline(session: &mut RelaySession) -> usize {
     let content = viewer(session).content.as_mut().expect("content");
-    assert!(content.ask_at.is_some(), "no bootstrap is owed");
-    content.ask_at = Some(Instant::now());
-    session.take_bootstrap_asks().len()
+    assert!(content.deadline.is_some(), "undrawn without a deadline");
+    content.deadline = Some(Instant::now());
+    session.settle_undrawn().len()
 }
 
-fn frames(rx: &mut mpsc::Receiver<Outbound>) -> Vec<FrameKind> {
+/// Time left to the viewer's deadline.
+fn wait_left(session: &mut RelaySession) -> Duration {
+    let content = viewer(session).content.as_ref().expect("content");
+    content.deadline.expect("a deadline") - Instant::now()
+}
+
+pub(super) fn frames(rx: &mut mpsc::Receiver<Outbound>) -> Vec<FrameKind> {
     std::iter::from_fn(|| rx.try_recv().ok())
         .map(|message| {
             let Outbound::Frame(frame) = message else {
@@ -49,47 +55,31 @@ fn frames(rx: &mut mpsc::Receiver<Outbound>) -> Vec<FrameKind> {
         .collect()
 }
 
-/// A failed subscription ends in one error, and upstream in a detach.
-fn assert_failed(session: &mut RelaySession, rx: &mut mpsc::Receiver<Outbound>, code: ErrorCode) {
+/// A failed subscription ends in the hub's own error and an upstream detach.
+fn assert_failed(session: &mut RelaySession, rx: &mut mpsc::Receiver<Outbound>) {
     session.flush_pending_snapshots();
     assert!(!session.subscribers.contains_key(&7), "still subscribed");
-    assert!(
-        matches!(frames(rx).as_slice(), [FrameKind::Error { request_id: None, code: got, .. }] if *got == code)
+    let told = frames(rx);
+    let [
+        FrameKind::Error {
+            request_id: None,
+            code,
+            message,
+        },
+    ] = told.as_slice()
+    else {
+        panic!("{told:?}");
+    };
+    assert_eq!(
+        code.scope(),
+        phux_protocol::wire::frame::ErrorScope::Terminal
+    );
+    assert_ne!(*code, ErrorCode::SatelliteUnreachable, "greys a whole host");
+    assert_eq!(
+        message,
+        "satellite devbox terminal 7: its screen could not be delivered; open it again"
     );
     assert_eq!(session.take_delivery_detaches().len(), 1);
-}
-
-/// A consumer whose other producers always wait for a slot still gets its
-/// bootstrap: a bare `try_send` loses every slot to them.
-#[tokio::test]
-async fn waiting_producers_do_not_starve_a_retained_bootstrap() {
-    let mut session = session();
-    let (tx, mut rx) = mpsc::channel(1);
-    attach(&mut session, 7, ClientId(1), tx.clone());
-    let busy = |tx: mpsc::Sender<Outbound>| async move {
-        while tx.send(Outbound::Frame(FrameKind::Detach)).await.is_ok() {}
-    };
-    let producers = [tokio::spawn(busy(tx.clone())), tokio::spawn(busy(tx))];
-    while rx.is_empty() {
-        tokio::task::yield_now().await;
-    }
-    let first = Upstream(5);
-    for frame in [first.begin(0), first.chunk(0), first.ready()] {
-        session.feed(&frame);
-    }
-    let mut relayed = 0;
-    for _ in 0..64 {
-        if !matches!(rx.recv().await, Some(Outbound::Frame(FrameKind::Detach))) {
-            relayed += 1;
-        }
-        tokio::task::yield_now().await;
-        session.flush_pending_snapshots();
-        tokio::task::yield_now().await;
-    }
-    assert_eq!(relayed, 3, "BEGIN, CHUNK and READY each took their turn");
-    for producer in producers {
-        producer.abort();
-    }
 }
 
 /// Content subscribers cross a redial of the same satellite process, less the
@@ -140,11 +130,7 @@ fn only_live_attaches_of_the_same_satellite_process_resume() {
         [ClientId(2), ClientId(3)],
         "a stale detach is ignored"
     );
-    assert_eq!(
-        next.take_bootstrap_asks().len(),
-        1,
-        "one attach serves both"
-    );
+    assert_eq!(next.settle_undrawn().len(), 1, "one attach serves both");
 
     let (resume, _receivers) = lost();
     let mut restarted = session();
@@ -152,109 +138,240 @@ fn only_live_attaches_of_the_same_satellite_process_resume() {
     assert!(resume.satellite_restarted(restarted.incarnation()));
     restarted.resume(resume);
     assert!(restarted.subscribers.is_empty());
-    assert!(restarted.take_bootstrap_asks().is_empty());
+    assert!(restarted.settle_undrawn().is_empty());
 }
 
-/// Panes of a lost satellite hold no mailbox slot while the link is down: the
-/// consumer's local output, replies and pongs need them.
+/// Whatever a satellite answers the hub's asks with, its viewers see only the
+/// hub's error, at the end of the asks, and its other panes see nothing.
 #[test]
-fn panes_of_a_lost_satellite_hold_no_mailbox_slots() {
-    let mut session = session();
-    let (tx, mut rx) = mpsc::channel(8);
-    for terminal in 1..=8 {
-        attach(&mut session, terminal, ClientId(1), tx.clone());
-    }
-    for _ in 0..8 {
-        tx.try_send(Outbound::Frame(FrameKind::Detach))
-            .expect("fill");
-    }
-    for terminal in 1..=8 {
-        session.feed(&on(terminal, Upstream(1).begin(0)));
-    }
-    answer(&mut session, &CommandResult::Ok);
-    let resume = session.teardown("lost");
-    assert_eq!(frames(&mut rx).len(), 8);
-    assert!(
-        tx.try_reserve_many(8).is_ok(),
-        "the lost panes hold the consumer's slots"
-    );
-    drop(resume);
-}
-
-/// A refused fresh attach ends its viewer's subscription with the refusal; a
-/// terminal that is gone closes; silence is an error too.
-#[test]
-fn a_refused_or_unanswered_ask_is_told_to_the_viewer() {
-    let asked = || {
+fn a_refusal_of_the_hubs_ask_never_reaches_a_viewer() {
+    let hostile = [
+        (
+            ErrorCode::VersionIncompatible,
+            "unsupported protocol version",
+        ),
+        (ErrorCode::PermissionDenied, "denied"),
+        (
+            ErrorCode::SatelliteUnreachable,
+            "satellite otherhost is unreachable: x",
+        ),
+        (ErrorCode::FrameTooLarge, "\u{1b}]0;title\u{7}"),
+        (ErrorCode::Unknown(60_000), "?"),
+    ];
+    for (code, text) in hostile {
         let mut session = session();
-        session.set_incarnation(Some([1; 16]));
-        let (tx, rx) = mpsc::channel(8);
+        let (tx, mut rx) = mpsc::channel(8);
+        let (other_tx, mut other_rx) = mpsc::channel(8);
         attach(&mut session, 7, ClientId(1), tx);
+        attach(&mut session, 8, ClientId(2), other_tx);
+        let eight = [Upstream(1).begin(0), Upstream(1).ready()];
+        for frame in eight {
+            session.feed(&on(8, frame));
+        }
+        let _ = frames(&mut other_rx);
         answer(&mut session, &CommandResult::Ok);
-        assert_eq!(ask_now(&mut session), 1);
-        assert!(session.take_bootstrap_asks().is_empty(), "one at a time");
-        (session, rx)
-    };
-
-    let (mut session, mut rx) = asked();
-    answer(&mut session, &refusal(ErrorCode::PermissionDenied));
-    assert!(session.take_bootstrap_asks().is_empty());
-    assert_failed(&mut session, &mut rx, ErrorCode::PermissionDenied);
-
-    let (mut session, mut rx) = asked();
-    session.bootstrap_asks[0].deadline = Instant::now();
-    assert!(session.take_bootstrap_asks().is_empty());
-    assert_failed(&mut session, &mut rx, ErrorCode::SatelliteUnreachable);
-
-    let (mut session, mut rx) = asked();
-    answer(&mut session, &refusal(ErrorCode::TerminalNotFound));
-    assert!(session.take_bootstrap_asks().is_empty());
-    assert!(matches!(
-        frames(&mut rx).as_slice(),
-        [FrameKind::ResourceClosed { .. }]
-    ));
-    assert!(!session.subscribers.contains_key(&7));
+        for _ in 0..MAX_BOOTSTRAP_ASKS {
+            assert_eq!(at_deadline(&mut session), 1, "refusals may be momentary");
+            answer(&mut session, &CommandResult::error(code, text));
+            assert_eq!(frames(&mut rx), Vec::new());
+        }
+        assert_eq!(at_deadline(&mut session), 0);
+        assert_failed(&mut session, &mut rx);
+        assert_eq!(frames(&mut other_rx), Vec::new());
+        assert_eq!(session.subscribers[&8].len(), 1);
+    }
 }
 
-/// Attaches answered without a generation are repeated a bounded number of
-/// times, then told. One whose bootstrap is on its way, or that is not
-/// answered yet, is left alone however long it takes.
+/// A resize under the capture refuses one attach; the next one draws.
 #[test]
-fn an_attach_answered_without_a_screen_is_repeated_then_fails() {
+fn a_momentary_refusal_is_asked_again_soon() {
     let mut session = session();
     let (tx, mut rx) = mpsc::channel(8);
     attach(&mut session, 7, ClientId(1), tx);
-    assert!(
-        viewer(&mut session)
-            .content
-            .as_ref()
-            .expect("content")
-            .ask_at
-            .is_none(),
-        "nothing is owed before the answer"
-    );
-    session.feed(&Upstream(1).begin(0));
-    session.feed(&Upstream(1).chunk(0));
     answer(&mut session, &CommandResult::Ok);
+    assert_eq!(at_deadline(&mut session), 1);
+    assert!(session.settle_undrawn().is_empty(), "one at a time");
+    answer(&mut session, &refusal(ErrorCode::CodecUnavailable));
+    assert!(wait_left(&mut session) < Duration::from_secs(2));
+    assert_eq!(at_deadline(&mut session), 1);
+    for frame in [Upstream(2).begin(0), Upstream(2).ready()] {
+        session.feed(&frame);
+    }
+    answer(&mut session, &CommandResult::Ok);
+    assert!(session.settle_undrawn().is_empty());
     assert!(
         viewer(&mut session)
             .content
             .as_ref()
             .expect("content")
-            .ask_at
-            .is_none(),
-        "a generation is on its way"
+            .deadline
+            .is_none()
     );
-    session.feed(&Upstream(1).tombstone());
-    let _ = frames(&mut rx);
+    assert_eq!(frames(&mut rx).len(), 2);
+}
 
-    session.attach_answered(7);
-    for _ in 0..MAX_BOOTSTRAP_ASKS {
-        assert_eq!(ask_now(&mut session), 1);
-        answer(&mut session, &CommandResult::Ok);
-        let _ = session.take_bootstrap_asks();
+/// A terminal that closed while the link was down closes for its viewers.
+#[test]
+fn an_ask_for_a_closed_terminal_closes_it() {
+    let mut session = session();
+    let (tx, mut rx) = mpsc::channel(8);
+    attach(&mut session, 7, ClientId(1), tx);
+    answer(&mut session, &CommandResult::Ok);
+    assert_eq!(at_deadline(&mut session), 1);
+    answer(&mut session, &refusal(ErrorCode::TerminalNotFound));
+    let told = frames(&mut rx);
+    assert!(
+        matches!(told.as_slice(), [FrameKind::ResourceClosed { .. }]),
+        "{told:?}"
+    );
+    assert!(!session.subscribers.contains_key(&7));
+}
+
+/// Every way a content subscriber can be left undrawn has a deadline, at which
+/// the hub asks: no case needs its own event.
+#[test]
+fn every_undrawn_viewer_has_a_deadline() {
+    type Case = (&'static str, fn(&mut RelaySession));
+    let cases: [Case; 7] = [
+        ("attach unanswered", |_| ()),
+        ("answered with nothing", |s| answer(s, &CommandResult::Ok)),
+        ("silent after BEGIN", |s| {
+            s.feed(&Upstream(1).begin(0));
+            answer(s, &CommandResult::Ok);
+        }),
+        ("tombstoned without a replacement", |s| {
+            for frame in [
+                Upstream(1).begin(0),
+                Upstream(1).ready(),
+                Upstream(1).tombstone(),
+            ] {
+                s.feed(&frame);
+            }
+            answer(s, &CommandResult::Ok);
+        }),
+        ("another's attach refused", |s| {
+            let (tx, _) = mpsc::channel(8);
+            attach(s, 7, ClientId(2), tx);
+            let mut ids: Vec<u32> = s.pending.keys().copied().collect();
+            ids.sort_unstable();
+            s.feed(&FrameKind::CommandResult {
+                request_id: ids[0],
+                result: CommandResult::Ok,
+            });
+            s.feed(&FrameKind::CommandResult {
+                request_id: ids[1],
+                result: refusal(ErrorCode::PermissionDenied),
+            });
+        }),
+        ("another's attach abandoned", |s| {
+            answer(s, &CommandResult::Ok);
+            let (tx, _) = mpsc::channel(8);
+            attach(s, 7, ClientId(2), tx);
+            s.prune_abandoned();
+        }),
+        ("tombstone retained behind output", |s| {
+            for frame in [Upstream(1).begin(0), Upstream(1).ready()] {
+                s.feed(&frame);
+            }
+            answer(s, &CommandResult::Ok);
+            let sub = viewer(s);
+            sub.gate = SnapshotGate::Retained {
+                frames: VecDeque::new(),
+                retained_bytes: 0,
+                open_after: true,
+            };
+            s.feed(&Upstream(1).tombstone());
+            s.flush_pending_snapshots();
+            assert!(matches!(viewer(s).gate, SnapshotGate::Open));
+        }),
+    ];
+    for (case, leave_undrawn) in cases {
+        let mut session = session();
+        let (tx, _rx) = mpsc::channel(32);
+        attach(&mut session, 7, ClientId(1), tx);
+        leave_undrawn(&mut session);
+        assert!(session.settle_undrawn().is_empty(), "{case}: early");
+        assert!(wait_left(&mut session) <= RELAY_COMMAND_TIMEOUT, "{case}");
+        if let Some(flow) = session.bootstrap_flows.get_mut(&7) {
+            flow.progress_at = Instant::now()
+                .checked_sub(RELAY_COMMAND_TIMEOUT)
+                .expect("boot");
+        }
+        assert_eq!(at_deadline(&mut session), 1, "{case}");
     }
-    assert_failed(&mut session, &mut rx, ErrorCode::InternalError);
+}
+
+/// A bootstrap that keeps arriving is left alone however long it takes; so is
+/// an attach not yet answered, whose own wait is the longest there is.
+#[test]
+fn a_slow_bootstrap_is_not_restarted() {
+    let mut session = session();
+    let (tx, _rx) = mpsc::channel(32);
+    attach(&mut session, 7, ClientId(1), tx);
+    session.feed(&Upstream(1).begin(0));
+    for chunk_seq in 0..4 {
+        session.feed(&Upstream(1).chunk(chunk_seq));
+        viewer(&mut session)
+            .content
+            .as_mut()
+            .expect("content")
+            .deadline = Some(Instant::now());
+        assert!(
+            session.settle_undrawn().is_empty(),
+            "chunk {chunk_seq} just came"
+        );
+    }
+    assert!(wait_left(&mut session) > RELAY_COMMAND_TIMEOUT / 2);
+}
+
+/// Only an attach's answer says what an attach delivered.
+#[test]
+fn an_event_subscription_answer_hurries_nothing() {
+    let mut session = session();
+    let (tx, _rx) = mpsc::channel(8);
+    attach(&mut session, 7, ClientId(1), tx.clone());
+    session.pending.clear();
+    assert!(session.settle_undrawn().is_empty());
+    let (reply, _answer) = oneshot::channel();
+    session.handle_request(RelayRequest::Command {
+        command: Command::SubscribeResourceEvents {
+            terminal_id: ResourceId::local(7),
+            event_types: Vec::new(),
+        },
+        reply,
+        subscribe: Some(proxy(7, ClientId(1), tx)),
+    });
+    answer(&mut session, &CommandResult::Ok);
+    assert!(wait_left(&mut session) > RELAY_COMMAND_TIMEOUT / 2);
+}
+
+/// A viewer that was failed neither streams nor types into the pane behind
+/// its frozen screen.
+#[test]
+fn a_failed_viewer_loses_its_typing_permission() {
+    let state = crate::state::SharedState::new();
+    let mut session = session();
+    session.set_journal(Some(state.clone()));
+    let host = host();
+    for client in [ClientId(1), ClientId(2)] {
+        state.with_mut(|s| {
+            s.federation_mut()
+                .register_satellite_proxy_attach(client, host.clone(), 7);
+        });
+    }
+    let (tx, mut rx) = mpsc::channel(8);
+    attach(&mut session, 7, ClientId(1), tx);
+    answer(&mut session, &CommandResult::Ok);
+    for _ in 0..MAX_BOOTSTRAP_ASKS {
+        assert_eq!(at_deadline(&mut session), 1);
+        answer(&mut session, &CommandResult::Ok);
+    }
+    assert_eq!(at_deadline(&mut session), 0);
+    assert_failed(&mut session, &mut rx);
+    let may_type =
+        |client| state.with(|s| s.federation().has_satellite_proxy_attach(client, &host, 7));
+    assert!(!may_type(ClientId(1)));
+    assert!(may_type(ClientId(2)), "only the failed viewer");
 }
 
 /// Overflow the viewer's delivery once: fenced, with its tombstone delivered.
@@ -283,10 +400,9 @@ fn an_overflowing_viewer_is_bootstrapped_again_but_not_forever() {
     for generation in 1..=u64::from(MAX_BOOTSTRAP_ASKS) {
         overflow(&mut session, &mut rx, generation * 2);
         assert!(session.take_delivery_detaches().is_empty(), "kept");
-        assert!(session.take_bootstrap_asks().is_empty(), "not at once");
-        let content = viewer(&mut session).content.as_ref().expect("content");
-        waits.push(content.ask_at.expect("owed") - Instant::now());
-        assert_eq!(ask_now(&mut session), 1);
+        assert!(session.settle_undrawn().is_empty(), "not at once");
+        waits.push(wait_left(&mut session));
+        assert_eq!(at_deadline(&mut session), 1);
 
         // The fresh one is delivered whole.
         let fresh = Upstream(generation * 2 + 1);
@@ -295,7 +411,7 @@ fn an_overflowing_viewer_is_bootstrapped_again_but_not_forever() {
             assert_eq!(received(&mut rx).len(), 1);
         }
         answer(&mut session, &CommandResult::Ok);
-        let _ = session.take_bootstrap_asks();
+        assert!(session.settle_undrawn().is_empty());
         assert!(matches!(viewer(&mut session).gate, SnapshotGate::Open));
     }
     assert!(
@@ -305,7 +421,8 @@ fn an_overflowing_viewer_is_bootstrapped_again_but_not_forever() {
     assert!(waits[0] < Duration::from_millis(300), "the first is soon");
 
     overflow(&mut session, &mut rx, 99);
-    assert_failed(&mut session, &mut rx, ErrorCode::ResourceExhausted);
+    assert_eq!(at_deadline(&mut session), 0);
+    assert_failed(&mut session, &mut rx);
 }
 
 /// A consumer whose first content attach failed keeps only its events: told
@@ -344,30 +461,4 @@ fn an_abandoned_attach_is_withdrawn_and_detached() {
     assert_eq!(session.prune_abandoned(), 1);
     assert!(session.subscribers.is_empty());
     assert_eq!(session.take_delivery_detaches().len(), 1);
-}
-
-/// A generation that replaces retained output opens the gate on its own READY,
-/// not on what the gate was when the output was retained.
-#[test]
-fn a_replacement_behind_retained_output_waits_for_its_ready() {
-    let mut session = session();
-    let (tx, mut rx) = mpsc::channel(2);
-    attach(&mut session, 7, ClientId(1), tx);
-    let (first, next) = (Upstream(1), Upstream(2));
-    for frame in [first.begin(0), first.ready(), first.output(1)] {
-        session.feed(&frame);
-    }
-    session.feed(&next.begin(1));
-    let _ = frames(&mut rx);
-    session.flush_pending_snapshots();
-    assert_eq!(
-        received(&mut rx).first().map(|frame| frame.0),
-        Some("begin")
-    );
-    assert!(matches!(
-        viewer(&mut session).gate,
-        SnapshotGate::AwaitingFirst
-    ));
-    session.feed(&next.ready());
-    assert!(matches!(viewer(&mut session).gate, SnapshotGate::Open));
 }

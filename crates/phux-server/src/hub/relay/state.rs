@@ -1,11 +1,11 @@
 //! A relay session's state: subscribers, pending requests, bootstrap flows, and their budgets.
 
 use super::{
-    Arc, AtomicU64, BootstrapAsk, BootstrapId, BootstrapLimits, BootstrapProfile,
-    BootstrapStreamProfile, BytesMut, CancellationToken, ClientId, CommandResult, ContentAttach,
-    DirectoryListingResult, FrameKind, HashMap, HashSet, Outbound, PathQueryResult, ResourceId,
-    ResourceKindCatalog, SatelliteHost, ServerFeatureExtSet, ServerFeatureSet, SpawnResult,
-    StreamId, VecDeque, mpsc, oneshot,
+    Arc, AtomicU64, BootstrapId, BootstrapLimits, BootstrapProfile, BootstrapStreamProfile,
+    BytesMut, CancellationToken, ClientId, CommandResult, ContentAttach, DirectoryListingResult,
+    FrameKind, HashMap, HashSet, Outbound, PathQueryResult, ResourceId, ResourceKindCatalog,
+    SatelliteHost, ServerFeatureExtSet, ServerFeatureSet, SpawnResult, StreamId, VecDeque, mpsc,
+    oneshot,
 };
 use futures_util::FutureExt;
 
@@ -36,11 +36,7 @@ impl ProxySubscriber {
         &mut self,
         frame: &FrameKind,
     ) -> Result<(), mpsc::error::TrySendError<()>> {
-        self.turn.send(&self.out_tx, frame)?;
-        if let (FrameKind::BootstrapReady { .. }, Some(content)) = (frame, &mut self.content) {
-            content.drawn();
-        }
-        Ok(())
+        self.turn.send(&self.out_tx, frame)
     }
 }
 
@@ -155,6 +151,8 @@ pub(super) struct FanOutFrame<'a> {
 #[derive(Debug)]
 pub(super) struct PendingCommand {
     pub(super) reply: oneshot::Sender<CommandResult>,
+    /// The terminal an `ATTACH_RESOURCE` opens; with no rider, the hub's own.
+    pub(super) attach: Option<u32>,
     /// `(terminal, client, effect)` of the subscription rider.
     pub(super) subscription: Option<(u32, ClientId, Registration)>,
 }
@@ -179,6 +177,8 @@ pub(super) struct RelayBootstrapFlow {
     pub(super) bootstrap_id: BootstrapId,
     /// The id consumers see it under; see [`RelaySession::generations`].
     pub(super) outward: BootstrapId,
+    /// When the satellite last sent part of it.
+    pub(super) progress_at: std::time::Instant,
     /// Last sequence the satellite sent under it.
     pub(super) last_seq: u64,
     pub(super) profile: BootstrapStreamProfile,
@@ -410,8 +410,6 @@ pub(crate) struct RelaySession {
     /// generation it retired, so the hub names each one itself. Shared with
     /// the link's other sessions.
     pub(super) generations: Arc<AtomicU64>,
-    /// Attaches the hub sent for consumers with nothing to draw.
-    pub(super) bootstrap_asks: Vec<BootstrapAsk>,
     pub(super) retained_bytes: usize,
     pub(super) retained_frames: usize,
     /// Terminals whose last subscriber was removed by delivery failure,

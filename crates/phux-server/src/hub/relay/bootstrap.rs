@@ -64,6 +64,7 @@ impl RelaySession {
                 stream_id,
                 bootstrap_id,
                 outward,
+                progress_at: std::time::Instant::now(),
                 last_seq: base_seq,
                 profile,
                 next_chunk_seq: 0,
@@ -144,6 +145,7 @@ impl RelaySession {
                 self.host
             )
         })?;
+        flow.progress_at = std::time::Instant::now();
         flow.generation_frames = next_frames;
         flow.generation_bytes = next_bytes;
         self.inflight_generation_frames = connection_frames;

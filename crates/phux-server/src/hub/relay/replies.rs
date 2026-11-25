@@ -1,8 +1,8 @@
 //! Settling pending commands and spawns, and retagging inbound ids.
 
 use super::{
-    ClientId, CommandResult, Registration, RelaySession, ResourceId, SnapshotGate, SpawnResult,
-    debug, retag_spawn_result, warn,
+    ClientId, CommandResult, ErrorCode, Registration, RelaySession, ResourceId, SnapshotGate,
+    SpawnResult, debug, retag_spawn_result, warn,
 };
 
 impl RelaySession {
@@ -28,12 +28,21 @@ impl RelaySession {
                         }
                     }
                 }
-                if let Some((terminal, client, effect)) = pending.subscription {
-                    if matches!(result, CommandResult::Error { .. }) {
-                        self.roll_back_subscription(terminal, client, effect);
-                    } else {
-                        self.attach_answered(terminal);
+                let refused = match &result {
+                    CommandResult::Error { code, .. } => Some(*code),
+                    _ => None,
+                };
+                if refused.is_some()
+                    && let Some((terminal, client, effect)) = pending.subscription
+                {
+                    self.roll_back_subscription(terminal, client, effect);
+                }
+                if let Some(terminal) = pending.attach {
+                    let asked = pending.subscription.is_none();
+                    if asked && refused == Some(ErrorCode::TerminalNotFound) {
+                        self.asked_for_a_closed_terminal(terminal);
                     }
+                    self.attach_answered(terminal);
                 }
                 // A dropped receiver (detached relay) is fine.
                 let _ = pending.reply.send(result);

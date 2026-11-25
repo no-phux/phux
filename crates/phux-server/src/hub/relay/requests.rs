@@ -71,6 +71,7 @@ impl RelaySession {
                     request_id,
                     PendingCommand {
                         reply,
+                        attach: None,
                         subscription: None,
                     },
                 );
@@ -198,11 +199,16 @@ impl RelaySession {
             let effect = self.register_subscriber(sub);
             (terminal, client, effect)
         });
+        let attach = match &command {
+            Command::AttachResource { terminal_id, .. } => terminal_id.local_id(),
+            _ => None,
+        };
         let request_id = self.allocate_request_id();
         self.pending.insert(
             request_id,
             PendingCommand {
                 reply,
+                attach,
                 subscription,
             },
         );

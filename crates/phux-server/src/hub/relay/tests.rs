@@ -160,6 +160,7 @@ pub(super) fn attach(
 mod bootstrap;
 mod capabilities;
 mod commands;
+mod delivery;
 mod events;
 mod kind_profiles;
 mod kinds;

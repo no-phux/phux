@@ -48,7 +48,6 @@ impl RelaySession {
             legacy_events: HashSet::new(),
             bootstrap_flows: HashMap::new(),
             generations: first_generation(),
-            bootstrap_asks: Vec::new(),
             retained_bytes: 0,
             retained_frames: 0,
             orphaned_by_delivery: HashSet::new(),

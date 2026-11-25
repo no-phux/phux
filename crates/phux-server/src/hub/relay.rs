@@ -404,7 +404,7 @@ pub(crate) use resume::RelayResume;
 pub(crate) use routing::*;
 pub(crate) use state::*;
 
-use resume::{BootstrapAsk, ContentAttach};
+use resume::ContentAttach;
 
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "tests")]

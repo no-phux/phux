@@ -1,9 +1,6 @@
 //! Pending snapshots, request ids, and the satellite metadata mirror.
 
-use super::{
-    ContentAttach, ErrorCode, FrameKind, ProxySubscriber, RelaySession, ResourceId, Scope,
-    SnapshotGate, mpsc,
-};
+use super::{FrameKind, ProxySubscriber, RelaySession, ResourceId, Scope, SnapshotGate, mpsc};
 
 impl RelaySession {
     /// Retry one subscriber's retained bootstrap prefix. Returns
@@ -16,27 +13,20 @@ impl RelaySession {
             detach_upstream,
         } = gate
         {
-            return match sub.deliver(&failure) {
-                // The fence landed, so there is room again: bootstrap afresh.
-                // Dropped here, the consumer kept a fenced (or empty) pane for
-                // good, since nothing tells it to attach.
+            // A content consumer is bootstrapped afresh: dropped here it kept a
+            // fenced (or empty) pane for good, since nothing tells it to
+            // attach. With no generation to fence, there is nothing to say.
+            let recover = detach_upstream && !sub.retire_after_flush && sub.content.is_some();
+            let delivered = if recover && matches!(failure, FrameKind::Error { .. }) {
                 Ok(())
-                    if detach_upstream
-                        && !sub.retire_after_flush
-                        && matches!(failure, FrameKind::BootstrapTombstone { .. })
-                        && sub.content.is_some() =>
-                {
+            } else {
+                sub.deliver(&failure)
+            };
+            return match delivered {
+                Ok(()) if recover => {
                     sub.current_generation = None;
-                    if !sub
-                        .content
-                        .as_mut()
-                        .is_some_and(ContentAttach::owe_bootstrap)
-                    {
-                        sub.fail(
-                            ErrorCode::ResourceExhausted,
-                            "a relayed pane kept exceeding this connection's capacity; subscription closed"
-                                .to_owned(),
-                        );
+                    if let Some(content) = &mut sub.content {
+                        content.hurry();
                     }
                     (false, true)
                 }

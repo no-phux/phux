@@ -306,7 +306,7 @@ pub(super) async fn run_relay_session<C: LinkConn>(
             _ = delivery_retry.tick() => {
                 session.flush_pending_snapshots();
                 let mut frames = session.take_delivery_detaches();
-                frames.extend(session.take_bootstrap_asks());
+                frames.extend(session.settle_undrawn());
                 if let Err(error) = queue_link_write(&write_tx, &queued_write_bytes, LinkWrite::Frames(frames)) {
                     break (true, error);
                 }
