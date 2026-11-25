@@ -234,13 +234,10 @@ pub(super) async fn run_relay_session<C: LinkConn>(
         journal.with_mut(|s| {
             s.federation_mut()
                 .set_satellite_features(host.clone(), features);
-            // Another process's terminal ids: what a consumer attached under
-            // them is gone, and its typing must not land in a pane that
-            // reused the id.
-            if resume.satellite_restarted(session.incarnation()) {
-                s.federation_mut().forget_satellite_proxy_attaches(host);
-            }
         });
+    }
+    if resume.satellite_restarted(session.incarnation()) {
+        forget_restarted_satellite(host, relay_rx, journal);
     }
     session.set_operation_fence(operations.clone());
     session.resume(std::mem::take(resume));
@@ -319,6 +316,22 @@ pub(super) async fn run_relay_session<C: LinkConn>(
     drop(write_tx);
     *resume = session.teardown(&reason);
     lost.then_some(reason)
+}
+
+/// The satellite is another process: its terminal ids name other panes. Typing
+/// a consumer attached under the old ids must land in none of them, queued or
+/// still to come.
+fn forget_restarted_satellite(
+    host: &SatelliteHost,
+    relay_rx: &mut tokio::sync::mpsc::Receiver<crate::hub::relay::RelayRequest>,
+    journal: Option<&crate::state::SharedState>,
+) {
+    while let Ok(request) = relay_rx.try_recv() {
+        crate::hub::relay::fail_fast(request, host, "the satellite restarted");
+    }
+    if let Some(journal) = journal {
+        journal.with_mut(|s| s.federation_mut().forget_satellite_proxy_attaches(host));
+    }
 }
 
 pub(super) fn negotiated_relay_session<C: LinkConn>(

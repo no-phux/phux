@@ -310,15 +310,18 @@ impl RelaySession {
             existing.consumer_cancel = consumer_cancel;
             // Keep the freshest token.
             existing.seq = existing.seq.max(seq);
+            let first_content = content.is_some() && existing.content.is_none();
             existing.content = content.or_else(|| existing.content.take());
             // An upgrade from an `Open` stream to a snapshot attach re-gates
             // until this attach's snapshot lands. Other gates
             // already suppress deltas; event-only re-subscribes leave it.
-            if awaits_snapshot && matches!(existing.gate, SnapshotGate::Open) {
+            let regated = awaits_snapshot && matches!(existing.gate, SnapshotGate::Open);
+            if regated {
                 existing.gate = SnapshotGate::AwaitingFirst;
-                Registration::Regated
-            } else {
-                Registration::Idempotent
+            }
+            Registration::Existing {
+                regated,
+                first_content,
             }
         } else {
             subs.push(ProxySubscriber {

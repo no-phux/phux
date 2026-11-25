@@ -56,13 +56,9 @@ const RELAY_RETIREMENT_TIMEOUT: std::time::Duration = std::time::Duration::from_
 /// this catches quiet partitions and satellites that never answer.
 pub(crate) const RELAY_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// How long a content subscriber waits for its next bootstrap frame before
-/// the hub asks the satellite for a fresh one; doubles per ask, up to 8x.
-const BOOTSTRAP_PATIENCE: std::time::Duration = std::time::Duration::from_secs(3);
-/// Least time between the asks one overflowing consumer causes.
-const OVERFLOW_SPACING: std::time::Duration = std::time::Duration::from_secs(2);
-/// Asks without a whole generation delivered before the hub gives up.
-const MAX_BOOTSTRAP_ASKS: u32 = 8;
+/// Fresh bootstraps the hub asks for one consumer in quick succession (each
+/// four times later than the last) before it fails the subscription.
+const MAX_BOOTSTRAP_ASKS: u32 = 4;
 
 /// Upper bound on one relayed `LIST_DIRECTORY`: the satellite's own 5 s walk
 /// bound plus link time. Shorter than [`RELAY_COMMAND_TIMEOUT`] because a
@@ -408,7 +404,7 @@ pub(crate) use resume::RelayResume;
 pub(crate) use routing::*;
 pub(crate) use state::*;
 
-use resume::ContentAttach;
+use resume::{BootstrapAsk, ContentAttach};
 
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "tests")]

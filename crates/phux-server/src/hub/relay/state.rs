@@ -1,11 +1,11 @@
 //! A relay session's state: subscribers, pending requests, bootstrap flows, and their budgets.
 
 use super::{
-    Arc, AtomicU64, BootstrapId, BootstrapLimits, BootstrapProfile, BootstrapStreamProfile,
-    BytesMut, CancellationToken, ClientId, CommandResult, ContentAttach, DirectoryListingResult,
-    FrameKind, HashMap, HashSet, Outbound, PathQueryResult, ResourceId, ResourceKindCatalog,
-    SatelliteHost, ServerFeatureExtSet, ServerFeatureSet, SpawnResult, StreamId, VecDeque, mpsc,
-    oneshot,
+    Arc, AtomicU64, BootstrapAsk, BootstrapId, BootstrapLimits, BootstrapProfile,
+    BootstrapStreamProfile, BytesMut, CancellationToken, ClientId, CommandResult, ContentAttach,
+    DirectoryListingResult, FrameKind, HashMap, HashSet, Outbound, PathQueryResult, ResourceId,
+    ResourceKindCatalog, SatelliteHost, ServerFeatureExtSet, ServerFeatureSet, SpawnResult,
+    StreamId, VecDeque, mpsc, oneshot,
 };
 use futures_util::FutureExt;
 
@@ -37,8 +37,8 @@ impl ProxySubscriber {
         frame: &FrameKind,
     ) -> Result<(), mpsc::error::TrySendError<()>> {
         self.turn.send(&self.out_tx, frame)?;
-        if let Some(content) = &mut self.content {
-            content.note_delivered(frame);
+        if let (FrameKind::BootstrapReady { .. }, Some(content)) = (frame, &mut self.content) {
+            content.drawn();
         }
         Ok(())
     }
@@ -164,12 +164,11 @@ pub(super) struct PendingCommand {
 pub(super) enum Registration {
     /// A new `(terminal, client)` subscriber; an error removes it.
     New,
-    /// A re-subscribe that upgraded an `Open` subscriber to a snapshot
-    /// attach and re-gated it. An error restores `Open` if still
-    /// `AwaitingFirst` (a snapshot retained meanwhile stays gated).
-    Regated,
-    /// A re-subscribe that left the gate alone; an error undoes nothing.
-    Idempotent,
+    /// A re-subscribe. If it upgraded an `Open` subscriber to a snapshot
+    /// attach it re-gated it, and an error restores `Open` if still
+    /// `AwaitingFirst` (a snapshot retained meanwhile stays gated). If it was
+    /// the first content attach, an error leaves an event-only subscriber.
+    Existing { regated: bool, first_content: bool },
 }
 
 /// One in-flight bootstrap generation on the return leg.
@@ -411,6 +410,8 @@ pub(crate) struct RelaySession {
     /// generation it retired, so the hub names each one itself. Shared with
     /// the link's other sessions.
     pub(super) generations: Arc<AtomicU64>,
+    /// Attaches the hub sent for consumers with nothing to draw.
+    pub(super) bootstrap_asks: Vec<BootstrapAsk>,
     pub(super) retained_bytes: usize,
     pub(super) retained_frames: usize,
     /// Terminals whose last subscriber was removed by delivery failure,

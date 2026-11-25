@@ -104,7 +104,8 @@ without `ATTACH`. Input leases and authorization still apply.
   relayed generation is a tombstone plus that BEGIN; every later frame of the
   old one still ends the link. The hub attaches again for a consumer left with
   nothing to draw: after a redial of the same satellite process, after its
-  delivery overflowed, or when no bootstrap came.
+  delivery overflowed, or when an answered attach brought none. Asks are few and
+  spaced; a consumer past them, or refused, gets an error or the close.
 - On a gap, overflow, resize, or codec discontinuity, fence and recut. Never
   skip bytes or replay into an obsolete replica. Every recovery path is
   bounded and ends in an explicit error.

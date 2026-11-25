@@ -227,18 +227,19 @@ fn a_second_viewer_draws_and_the_link_survives() {
 /// it carries the next connection at once, as a network that came back does.
 struct Hop {
     port: u16,
-    cuts: tokio::sync::watch::Sender<u32>,
+    /// The satellite's port; sending one severs what is connected.
+    target: tokio::sync::watch::Sender<u16>,
 }
 
 impl Hop {
     async fn to(target: u16) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let (cuts, seen) = tokio::sync::watch::channel(0);
+        let (sender, seen) = tokio::sync::watch::channel(target);
         tokio::task::spawn_local(async move {
             while let Ok((mut near, _)) = listener.accept().await {
                 let mut seen = seen.clone();
-                seen.mark_unchanged();
+                let target = *seen.borrow_and_update();
                 tokio::task::spawn_local(async move {
                     let mut far = TcpStream::connect(("127.0.0.1", target)).await.unwrap();
                     tokio::select! {
@@ -248,11 +249,19 @@ impl Hop {
                 });
             }
         });
-        Self { port, cuts }
+        Self {
+            port,
+            target: sender,
+        }
     }
 
     fn cut(&self) {
-        self.cuts.send_modify(|cuts| *cuts += 1);
+        let port = *self.target.borrow();
+        self.cut_over_to(port);
+    }
+
+    fn cut_over_to(&self, port: u16) {
+        self.target.send_replace(port);
     }
 }
 
@@ -309,37 +318,121 @@ fn a_redial_draws_every_viewer_again() {
     });
 }
 
-/// A consumer that stops reading while its pane is cut again and again (a
-/// phone on a bad link, its keyboard opening and closing) still ends on a
-/// drawn pane once it reads: its relayed bootstraps overflowed, and nothing
-/// ever sent it another.
+/// Prints until told otherwise, in more frames than a stalled consumer's
+/// mailbox, socket and the hub's retention hold, then marks the end.
+const FLOOD: &str = "read go; i=0; while [ $i -lt 200 ]; do printf '%0999d\\n' $i; \
+     sleep 0.01; i=$((i+1)); done; echo FLOOD-OVER; exec cat";
+
+/// A consumer that stops reading while its pane prints (a phone on a bad
+/// link) overflows, and still ends on the pane as it is once it reads. The
+/// overflow used to end its stream with nothing to say so.
 #[test]
 fn a_consumer_that_stalled_is_drawn_once_it_reads() {
     phux_server_testkit::run_local(async {
         let mut seed = LaunchCommand::new("/bin/sh");
-        seed.args(["-c", "seq 1 400; exec cat"]);
+        seed.args(["-c", FLOOD]);
         let fed = Fed::boot_with(Some(seed), None).await;
-        let mut resizer = Viewer::new(fed.linked_hub().await, &fed.sat_id());
-        resizer.attach().await;
-        resizer.see_drawn().await;
-        let mut stalled = Viewer::new(fed.hub().await, &fed.sat_id());
-        stalled.attach().await;
-        for round in 0..40 {
-            resizer.resize(40 + round, 30).await;
+        let mut stalled = Viewer::new(fed.linked_hub().await, &fed.sat_id());
+        let mut reader = Viewer::new(fed.hub().await, &fed.sat_id());
+        for viewer in [&mut stalled, &mut reader] {
+            viewer.attach().await;
+            viewer.see_drawn().await;
         }
-        let last = resizer.drawn();
-        stalled
-            .read_until("a drawn pane after the stall", |viewer, frame| {
-                viewer.drawn().is_some()
-                    && (viewer.drawn() == last || {
-                        // Bootstrapped again after the overflow.
-                        matches!(frame, Some(FrameKind::BootstrapReady { .. }))
-                            && viewer.drawn() > last
-                    })
-            })
-            .await;
+        reader.paste("go").await;
+        reader.see_output("FLOOD-OVER").await;
+        stalled.see_output("FLOOD-OVER").await;
 
-        drop((resizer, stalled));
+        drop((stalled, reader));
+        fed.shutdown().await;
+    });
+}
+
+/// A link that comes back to another satellite process carries no typing from
+/// a consumer attached under the old one: the same id names another pane, and
+/// another consumer's attach there would let the link's input through.
+#[test]
+fn a_restarted_satellite_gets_no_typing_meant_for_its_predecessor() {
+    phux_server_testkit::run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let (old_port, old_shutdown, old_task) =
+            spawn_satellite_runtime(tmp.path().join("old.sock"), Some(echoing_seed())).await;
+        let seed = discover_satellite_pane(old_port).await;
+        let hop = Hop::to(old_port).await;
+        let hub_path = tmp.path().join("hub.sock");
+        let (hub_shutdown, hub_task) =
+            spawn_hub(hub_path.clone(), vec![satellite_entry("sat", hop.port)]);
+        let mut viewer = Viewer::new(
+            hub_client(&hub_path).await,
+            &ResourceId::satellite("sat", seed),
+        );
+        get_screen_until_ok(&mut viewer.stream, seed).await;
+        viewer.attach().await;
+        viewer.paste("to-the-old").await;
+        viewer.see_output("to-the-old").await;
+
+        let (new_port, new_shutdown, new_task) =
+            spawn_satellite_runtime(tmp.path().join("new.sock"), Some(echoing_seed())).await;
+        assert_eq!(discover_satellite_pane(new_port).await, seed, "id reused");
+        hop.cut_over_to(new_port);
+        viewer
+            .read_until("the link loss", |viewer, _| viewer.unreachable > 0)
+            .await;
+        let mut other = Viewer::new(
+            hub_client(&hub_path).await,
+            &ResourceId::satellite("sat", seed),
+        );
+        get_screen_until_ok(&mut other.stream, seed).await;
+        other.attach().await;
+        viewer.paste("stray").await;
+        // Attached again, the same consumer types into it; its stray did not.
+        viewer.attach().await;
+        viewer.paste("meant").await;
+        viewer.see_output("meant").await;
+        let screen = get_screen_via_hub(&mut other.stream, 1, other.pane.clone()).await;
+        let CommandResult::OkWith(CommandValue::Json(screen)) = screen else {
+            panic!("{screen:?}");
+        };
+        assert!(
+            screen.contains("meant") && !screen.contains("stray"),
+            "{screen}"
+        );
+
+        drop((viewer, other));
+        stop(hub_shutdown, hub_task).await;
+        stop(old_shutdown, old_task).await;
+        stop(new_shutdown, new_task).await;
+    });
+}
+
+/// One connection straight to a server: an attach is never given an id that
+/// connection has seen, whatever its pumps resynced to and whether or not it
+/// detached its session. No hub renames or repeats anything here.
+#[test]
+fn a_direct_reattach_never_reuses_a_generation() {
+    phux_server_testkit::run_local(async {
+        let fed = Fed::boot_with(Some(echoing_seed()), None).await;
+        let stream = hub_client(&fed.tmp.path().join("sat.sock")).await;
+        let mut viewer = Viewer::new(stream, &ResourceId::local(fed.seed));
+        viewer.attach().await;
+        for (cols, rows) in [(47, 32), (47, 20), (47, 32)] {
+            viewer.resize(cols, rows).await;
+        }
+        for detach_session in [false, true, false] {
+            let before = viewer.drawn();
+            viewer.detach().await;
+            if detach_session {
+                send_frame(&mut viewer.stream, &FrameKind::Detach).await;
+            }
+            viewer.attach().await;
+            assert!(
+                viewer.drawn().is_some() && viewer.drawn() != before,
+                "offered a generation already retired"
+            );
+            viewer.resize(50, 20).await;
+            viewer.resize(50, 21).await;
+        }
+
+        drop(viewer);
         fed.shutdown().await;
     });
 }

@@ -102,7 +102,31 @@ impl RelaySession {
     /// grow the map without bound.
     pub(crate) fn prune_abandoned(&mut self) -> usize {
         let before = self.pending_request_count();
-        self.pending.retain(|_, pending| !pending.reply.is_closed());
+        let mut abandoned = Vec::new();
+        self.pending.retain(|_, pending| {
+            let waiting = !pending.reply.is_closed();
+            if !waiting {
+                abandoned.extend(pending.subscription.take());
+            }
+            waiting
+        });
+        // Its consumer was told the attach failed: a late answer finds nobody
+        // and is detached.
+        for (terminal, client, effect) in abandoned {
+            // A retry still in flight decides instead.
+            let retried = self.pending.values().any(|pending| {
+                pending
+                    .subscription
+                    .is_some_and(|rider| (rider.0, rider.1) == (terminal, client))
+            });
+            if retried {
+                continue;
+            }
+            self.roll_back_subscription(terminal, client, effect);
+            if !self.subscribers.contains_key(&terminal) {
+                self.orphaned_by_delivery.insert(terminal);
+            }
+        }
         self.pending_spawns
             .retain(|_, (reply, _)| !reply.is_closed());
         self.pending_listings

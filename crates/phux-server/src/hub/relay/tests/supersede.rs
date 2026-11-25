@@ -1,21 +1,20 @@
-//! A generation replaced without a tombstone, and the hub's own recovery of a
-//! subscriber left with nothing to draw.
+//! A generation replaced without a tombstone.
 
 use super::*;
 
 /// One generation of Terminal 7 under the satellite's own ids.
 #[derive(Clone, Copy)]
-struct Upstream(u64);
+pub(super) struct Upstream(pub(super) u64);
 
 impl Upstream {
-    fn ids(self) -> (StreamId, BootstrapId) {
+    pub(super) fn ids(self) -> (StreamId, BootstrapId) {
         (
             StreamId::new(4).expect("stream"),
             BootstrapId::new(self.0).expect("bootstrap"),
         )
     }
 
-    fn begin(self, base_seq: u64) -> FrameKind {
+    pub(super) fn begin(self, base_seq: u64) -> FrameKind {
         let (stream_id, bootstrap_id) = self.ids();
         FrameKind::BootstrapBegin {
             terminal_id: ResourceId::local(7),
@@ -28,7 +27,7 @@ impl Upstream {
         }
     }
 
-    fn chunk(self, chunk_seq: u32) -> FrameKind {
+    pub(super) fn chunk(self, chunk_seq: u32) -> FrameKind {
         let (stream_id, bootstrap_id) = self.ids();
         FrameKind::BootstrapChunk {
             terminal_id: ResourceId::local(7),
@@ -39,7 +38,7 @@ impl Upstream {
         }
     }
 
-    fn ready(self) -> FrameKind {
+    pub(super) fn ready(self) -> FrameKind {
         let (stream_id, bootstrap_id) = self.ids();
         FrameKind::BootstrapReady {
             terminal_id: ResourceId::local(7),
@@ -49,7 +48,7 @@ impl Upstream {
         }
     }
 
-    fn output(self, seq: u64) -> FrameKind {
+    pub(super) fn output(self, seq: u64) -> FrameKind {
         let (stream_id, bootstrap_id) = self.ids();
         FrameKind::ResourceOutput {
             terminal_id: ResourceId::local(7),
@@ -60,7 +59,7 @@ impl Upstream {
         }
     }
 
-    fn tombstone(self) -> FrameKind {
+    pub(super) fn tombstone(self) -> FrameKind {
         let (stream_id, bootstrap_id) = self.ids();
         FrameKind::BootstrapTombstone {
             terminal_id: ResourceId::local(7),
@@ -72,12 +71,12 @@ impl Upstream {
     }
 }
 
-fn session() -> RelaySession {
+pub(super) fn session() -> RelaySession {
     negotiated(&[ServerFeature::ListDirectory])
 }
 
 /// Every frame a consumer was sent, as its kind and the generation it names.
-fn received(rx: &mut mpsc::Receiver<Outbound>) -> Vec<(&'static str, Option<u64>)> {
+pub(super) fn received(rx: &mut mpsc::Receiver<Outbound>) -> Vec<(&'static str, Option<u64>)> {
     std::iter::from_fn(|| rx.try_recv().ok())
         .map(|message| {
             let Outbound::Frame(frame) = message else {
@@ -243,133 +242,4 @@ fn a_frame_ack_reaches_the_satellite_under_its_own_id() {
     let wire = forward(&mut session, ack(outward)).expect("live ack");
     assert_eq!(decode(&wire), ack(5));
     assert!(forward(&mut session, ack(5)).is_none());
-}
-
-/// A consumer whose other producers always wait for a slot still gets its
-/// bootstrap: a bare `try_send` loses every slot to them.
-#[tokio::test]
-async fn waiting_producers_do_not_starve_a_retained_bootstrap() {
-    let mut session = session();
-    let (tx, mut rx) = mpsc::channel(1);
-    attach(&mut session, 7, ClientId(1), tx.clone());
-    let busy = |tx: mpsc::Sender<Outbound>| async move {
-        while tx.send(Outbound::Frame(FrameKind::Detach)).await.is_ok() {}
-    };
-    let producers = [tokio::spawn(busy(tx.clone())), tokio::spawn(busy(tx))];
-    while rx.is_empty() {
-        tokio::task::yield_now().await;
-    }
-    let first = Upstream(5);
-    for frame in [first.begin(0), first.chunk(0), first.ready()] {
-        session.feed(&frame);
-    }
-    let mut relayed = 0;
-    for _ in 0..64 {
-        if !matches!(rx.recv().await, Some(Outbound::Frame(FrameKind::Detach))) {
-            relayed += 1;
-        }
-        tokio::task::yield_now().await;
-        session.flush_pending_snapshots();
-        tokio::task::yield_now().await;
-    }
-    assert_eq!(relayed, 3, "BEGIN, CHUNK and READY each took their turn");
-    for producer in producers {
-        producer.abort();
-    }
-}
-
-/// A subscriber that overflowed is fenced, kept, and bootstrapped again.
-#[test]
-fn an_overflowed_viewer_is_fenced_and_bootstrapped_again() {
-    let mut session = session();
-    let (tx, mut rx) = mpsc::channel(1);
-    attach(&mut session, 7, ClientId(1), tx);
-    let first = Upstream(5);
-    session.feed(&first.begin(0));
-    for chunk_seq in 0..=u32::try_from(MAX_RELAY_SUBSCRIBER_RETAINED_FRAMES).expect("small") {
-        session.feed(&first.chunk(chunk_seq));
-    }
-    assert!(matches!(
-        session.subscribers[&7][0].gate,
-        SnapshotGate::Retiring { .. }
-    ));
-    assert_eq!(received(&mut rx).len(), 1, "only BEGIN fit");
-    session.flush_pending_snapshots();
-    assert_eq!(received(&mut rx)[0].0, "tombstone");
-    assert!(session.take_delivery_detaches().is_empty(), "kept");
-    assert!(session.take_bootstrap_asks().is_empty(), "not at once");
-
-    std::thread::sleep(std::time::Duration::from_millis(300));
-    let asks = session.take_bootstrap_asks();
-    assert_eq!(asks.len(), 1);
-    assert!(matches!(
-        decode(&asks[0]),
-        FrameKind::Command { command: Command::AttachResource { terminal_id, .. }, .. }
-            if terminal_id == ResourceId::local(7)
-    ));
-    session.feed(&Upstream(6).begin(0));
-    assert_eq!(received(&mut rx)[0].0, "begin");
-}
-
-/// Content subscribers cross a redial of the same satellite process, less the
-/// ones that left or whose attach was refused; a restarted satellite's ids
-/// name other panes, so nothing crosses to it.
-#[test]
-fn only_live_attaches_of_the_same_satellite_process_resume() {
-    let lost = || {
-        let mut session = session();
-        session.set_incarnation(Some([1; 16]));
-        let mut receivers = Vec::new();
-        for client in 1..=4 {
-            let (tx, rx) = mpsc::channel(8);
-            attach(&mut session, 7, ClientId(client), tx);
-            receivers.push(rx);
-        }
-        // Answered: every attach but client 4's, still in flight.
-        let mut answered: Vec<u32> = session.pending.keys().copied().collect();
-        answered.sort_unstable();
-        for request_id in answered.into_iter().take(3) {
-            session.feed(&FrameKind::CommandResult {
-                request_id,
-                result: CommandResult::Ok,
-            });
-        }
-        let (tx, rx) = mpsc::channel(8);
-        subscribe(&mut session, 7, ClientId(5), tx);
-        receivers.push(rx);
-        let mut resume = session.teardown("lost");
-        resume.withdraw(&Unsubscribe::Client(ClientId(1)));
-        resume.withdraw(&Unsubscribe::Terminal {
-            client: ClientId(2),
-            terminal: 7,
-            seq: 1,
-            reply: None,
-        });
-        (resume, receivers)
-    };
-
-    let (resume, _receivers) = lost();
-    let mut next = session();
-    next.set_incarnation(Some([1; 16]));
-    assert!(!resume.satellite_restarted(next.incarnation()));
-    next.resume(resume);
-    let held: Vec<_> = next.subscribers[&7].iter().map(|sub| sub.client).collect();
-    assert_eq!(
-        held,
-        [ClientId(2), ClientId(3)],
-        "a stale detach is ignored"
-    );
-    assert_eq!(
-        next.take_bootstrap_asks().len(),
-        1,
-        "one attach serves both"
-    );
-
-    let (resume, _receivers) = lost();
-    let mut restarted = session();
-    restarted.set_incarnation(Some([2; 16]));
-    assert!(resume.satellite_restarted(restarted.incarnation()));
-    restarted.resume(resume);
-    assert!(restarted.subscribers.is_empty());
-    assert!(restarted.take_bootstrap_asks().is_empty());
 }

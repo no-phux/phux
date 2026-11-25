@@ -1,6 +1,9 @@
 //! Pending snapshots, request ids, and the satellite metadata mirror.
 
-use super::{FrameKind, ProxySubscriber, RelaySession, ResourceId, Scope, SnapshotGate, mpsc};
+use super::{
+    ContentAttach, ErrorCode, FrameKind, ProxySubscriber, RelaySession, ResourceId, Scope,
+    SnapshotGate, mpsc,
+};
 
 impl RelaySession {
     /// Retry one subscriber's retained bootstrap prefix. Returns
@@ -14,19 +17,27 @@ impl RelaySession {
         } = gate
         {
             return match sub.deliver(&failure) {
-                // The fence landed, so there is room again: ask for a fresh
-                // bootstrap. Dropped here, the consumer kept a fenced (or
-                // empty) pane for good, since nothing tells it to attach.
+                // The fence landed, so there is room again: bootstrap afresh.
+                // Dropped here, the consumer kept a fenced (or empty) pane for
+                // good, since nothing tells it to attach.
                 Ok(())
                     if detach_upstream
                         && !sub.retire_after_flush
                         && matches!(failure, FrameKind::BootstrapTombstone { .. })
                         && sub.content.is_some() =>
                 {
-                    if let Some(content) = &mut sub.content {
-                        content.ask_after_overflow();
-                    }
                     sub.current_generation = None;
+                    if !sub
+                        .content
+                        .as_mut()
+                        .is_some_and(ContentAttach::owe_bootstrap)
+                    {
+                        sub.fail(
+                            ErrorCode::ResourceExhausted,
+                            "a relayed pane kept exceeding this connection's capacity; subscription closed"
+                                .to_owned(),
+                        );
+                    }
                     (false, true)
                 }
                 Ok(()) | Err(mpsc::error::TrySendError::Closed(())) => (false, false),

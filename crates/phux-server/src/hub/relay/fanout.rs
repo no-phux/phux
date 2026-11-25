@@ -201,9 +201,11 @@ impl RelaySession {
         connection_frames: &mut usize,
     ) -> bool {
         let frame_bytes = Self::retained_frame_bytes(&frame);
-        let mut retained_bytes = retained_bytes;
+        let (mut retained_bytes, mut open_after) = (retained_bytes, open_after);
         if matches!(frame, FrameKind::BootstrapBegin { .. }) {
-            // The older generations it replaces need not be drawn first.
+            // The older generations it replaces need not be drawn first, and
+            // the gate opens on this one's READY alone.
+            open_after = false;
             let (bytes, count) = (retained_bytes, frames.len());
             frames.retain(|kept| stream_frame_generation(kept).is_none());
             retained_bytes = frames.iter().map(Self::retained_frame_bytes).sum();
