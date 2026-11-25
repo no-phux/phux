@@ -62,9 +62,10 @@ async fn presentation_metadata_matches_real_pane_rectangles_and_painted_pixels()
     let listener =
         Closure::<dyn FnMut(web_sys::CustomEvent)>::new(move |event: web_sys::CustomEvent| {
             // A listener is allowed to borrow mutably: dispatch must be outside App's borrow.
-            let reentrant = Client {
+            // Dropping an unsupervised `Client` disposes the app under test.
+            let reentrant = std::mem::ManuallyDrop::new(Client {
                 app: Rc::clone(&app),
-            };
+            });
             reentrant.focus_pane("@1").unwrap();
             recorded.borrow_mut().push(event.detail());
         });

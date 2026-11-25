@@ -383,9 +383,10 @@ async fn canonical_receipt_event_preserves_correlation_and_allows_reentrant_clie
     let app = Rc::clone(&client.app);
     let listener =
         Closure::<dyn FnMut(web_sys::CustomEvent)>::new(move |event: web_sys::CustomEvent| {
-            let reentrant = Client {
+            // Dropping an unsupervised `Client` disposes the app under test.
+            let reentrant = std::mem::ManuallyDrop::new(Client {
                 app: Rc::clone(&app),
-            };
+            });
             reentrant.focus_pane("@1").unwrap();
             recorded.borrow_mut().push(event.detail());
         });

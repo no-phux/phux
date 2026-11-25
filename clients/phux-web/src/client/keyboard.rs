@@ -195,10 +195,7 @@ pub(super) fn on_paste(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlT
         .and_then(ClipboardEvent::clipboard_data)
         .and_then(|data| data.get_data("text/plain").ok())
         .unwrap_or_default();
-    let client = Client {
-        app: Rc::clone(app),
-    };
-    let _ = client.submit_user_paste(&text);
+    let _ = super::handle::submit_user_paste(app, &text);
 }
 
 /// Copy the selection through the browser's copy command, which raises the

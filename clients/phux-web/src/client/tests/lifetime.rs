@@ -235,3 +235,61 @@ async fn paint_requests_share_one_animation_frame_and_teardown_cancels_it() {
         "teardown cancels the pending frame"
     );
 }
+
+/// The DOM paste handler must not tear its own connection down: an
+/// unsupervised `Client` disposes on drop, so a handler that wrapped the
+/// app in a temporary one closed the socket and stranded the paste.
+#[wasm_bindgen_test]
+async fn a_clipboard_paste_keeps_its_unsupervised_connection_open() {
+    let ws = open_websocket().await;
+    let vt = Vt::load().await.unwrap();
+    let canvas = test_canvas();
+    let tx = crate::client::WireTx::Ws(crate::client::WsTx::new(ws.clone()));
+    let (app, _ready) = crate::client::build_app(&vt, tx, canvas.clone(), 80, 24, false).unwrap();
+    for mut frame in attached_frames(1, b"ready") {
+        if let FrameKind::HelloOk {
+            server_id,
+            server_caps,
+            ..
+        } = &mut frame
+        {
+            *server_id = vec![7; 16];
+            server_caps.features = phux_protocol::caps::ServerFeatureSet::with(&[
+                phux_protocol::caps::ServerFeature::AcknowledgedInput,
+            ]);
+        }
+        assert!(app.borrow_mut().session.on_frame(frame).fatal.is_none());
+    }
+    let clipboard = web_sys::DataTransfer::new().unwrap();
+    clipboard.set_data("text/plain", "pasted").unwrap();
+    let init = web_sys::ClipboardEventInit::new();
+    init.set_clipboard_data(Some(&clipboard));
+    init.set_cancelable(true);
+    let paste = web_sys::ClipboardEvent::new_with_event_init_dict("paste", &init).unwrap();
+    let surface = web_sys::window()
+        .unwrap()
+        .document()
+        .unwrap()
+        .create_element("textarea")
+        .unwrap()
+        .dyn_into()
+        .unwrap();
+    crate::client::keyboard::on_paste(&app, &paste, &surface);
+
+    assert!(paste.default_prevented(), "the client consumed the paste");
+    assert_eq!(
+        canvas.get_attribute("data-phux-input-status").as_deref(),
+        Some("awaiting-receipt")
+    );
+    assert_eq!(
+        ws.ready_state(),
+        WebSocket::OPEN,
+        "the paste closed its socket"
+    );
+    assert!(!app.borrow().session.is_failed());
+    assert!(
+        app.borrow().session.take_input_reports().is_empty(),
+        "nothing settled: the attempt is in flight, not stranded"
+    );
+    app.borrow_mut().dispose();
+}

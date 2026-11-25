@@ -145,42 +145,7 @@ impl Client {
         &self,
         text: &str,
     ) -> Result<phux_client_core::input_replay::InputSubmission, JsValue> {
-        use phux_client_core::input_replay::InputSubmission;
-        if text.is_empty() {
-            return Ok(InputSubmission::NotQueued);
-        }
-        if text.len() > MAX_OUTBOUND_BYTES - 4096 {
-            let app = self.app.borrow();
-            let submission = app
-                .session
-                .refuse_browser_input("paste exceeds the browser's atomic outbound byte budget");
-            app.publish_input_reports();
-            return Ok(submission);
-        }
-        let paste = {
-            let app = self.app.borrow();
-            match app.session.prepare_user_paste(text) {
-                Ok(paste) => paste,
-                Err(submission) => {
-                    app.publish_input_reports();
-                    return Ok(submission);
-                }
-            }
-        };
-        let submission = super::keyboard::submit_event(&self.app, InputEvent::Paste(paste))
-            .map_err(|message| JsValue::from_str(&message))?;
-        if matches!(
-            submission,
-            InputSubmission::QueuedRaw | InputSubmission::AwaitingReceipt { .. }
-        ) {
-            let app = self.app.borrow();
-            app.acknowledge_input();
-            app.clear_selection();
-            if app.session.scroll_to_bottom() {
-                app.request_paint();
-            }
-        }
-        Ok(submission)
+        submit_user_paste(&self.app, text).map_err(|message| JsValue::from_str(&message))
     }
 
     /// Close the focused pane's view; its terminal keeps running.
@@ -261,4 +226,48 @@ impl Drop for Client {
             self.app.borrow_mut().dispose();
         }
     }
+}
+
+/// The user-paste path [`Client::submit_user_paste`] and the DOM `paste`
+/// handler share. Handlers hold the app, never a temporary [`Client`]:
+/// dropping an unsupervised `Client` disposes the connection.
+pub(super) fn submit_user_paste(
+    app: &Rc<RefCell<App>>,
+    text: &str,
+) -> Result<phux_client_core::input_replay::InputSubmission, String> {
+    use phux_client_core::input_replay::InputSubmission;
+    if text.is_empty() {
+        return Ok(InputSubmission::NotQueued);
+    }
+    if text.len() > MAX_OUTBOUND_BYTES - 4096 {
+        let app = app.borrow();
+        let submission = app
+            .session
+            .refuse_browser_input("paste exceeds the browser's atomic outbound byte budget");
+        app.publish_input_reports();
+        return Ok(submission);
+    }
+    let paste = {
+        let app = app.borrow();
+        match app.session.prepare_user_paste(text) {
+            Ok(paste) => paste,
+            Err(submission) => {
+                app.publish_input_reports();
+                return Ok(submission);
+            }
+        }
+    };
+    let submission = super::keyboard::submit_event(app, InputEvent::Paste(paste))?;
+    if matches!(
+        submission,
+        InputSubmission::QueuedRaw | InputSubmission::AwaitingReceipt { .. }
+    ) {
+        let app = app.borrow();
+        app.acknowledge_input();
+        app.clear_selection();
+        if app.session.scroll_to_bottom() {
+            app.request_paint();
+        }
+    }
+    Ok(submission)
 }

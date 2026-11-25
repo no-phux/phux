@@ -57,8 +57,12 @@ is borrowed from an older run.
 
 ## Not executed
 
-- Chrome lane (`bun tools/main.ts web-browser`): local Chrome 158 does not
-  match ChromeDriver 156. CI runs it.
+- Chrome lane on macOS: run locally with a matching Chrome for Testing 156
+  pair, `e2e_input` passes 13/13 (it caught a paste handler that closed the
+  browser connection, now fixed) and the lib suite passes except
+  `stale_hidden_and_clipped_presentation_cannot_release_delivery_fence`,
+  which fails in macOS headless Chrome without these changes too and passes
+  in CI's Linux Chrome. CI's Linux Chrome lane is the qualifying run.
 - Rune iOS on a physical device, photon latency (needs Screen Recording and Accessibility grants on an
   unlocked display) and Android interaction on a device or emulator.
 - Foreign-language scenarios beyond the Swift smoke and the Rust-side UniFFI
