@@ -185,3 +185,31 @@ fn resolve(config: &Path, integration: &str, cwd: &str) -> Result<SpawnNativeAge
         guardian_expected: None,
     })
 }
+
+/// Re-resolve a saved SDK intent against enabled current-host templates.
+/// Provider identity must have a unique current template; archived argv/env
+/// never becomes an implicit template or an archive trust bit.
+pub(super) fn admit_saved(saved: &SpawnNativeAgent) -> Result<SpawnNativeAgent, CommandResult> {
+    admit_saved_at(&phux_config::loader::config_path(), saved)
+}
+
+fn admit_saved_at(config: &Path, saved: &SpawnNativeAgent) -> Result<SpawnNativeAgent, CommandResult> {
+    if !saved.env.is_empty() {
+        return Err(refusal("saved native environment requires exact local-owner raw recipe approval"));
+    }
+    let cwd = saved.cwd.as_deref().ok_or_else(|| refusal("saved native cwd is missing"))?;
+    let templates = phux_plugin::list_launchable(config, LaunchMode::Native)
+        .map_err(|error| refusal(error.to_string()))?;
+    let mut admitted = None;
+    for template in templates {
+        let Ok(mut current) = resolve(config, &template.integration_id, cwd) else { continue; };
+        if current.backend != saved.backend || current.provider != saved.provider
+            || current.command != saved.command || current.cwd != saved.cwd { continue; }
+        if admitted.is_some() {
+            return Err(refusal("saved native provider has ambiguous current templates; exact local-owner raw recipe approval is required"));
+        }
+        current.native_id.clone_from(&saved.native_id);
+        admitted = Some(current);
+    }
+    admitted.ok_or_else(|| refusal("no current trusted native template admits this saved intent; exact local-owner raw recipe approval is required"))
+}

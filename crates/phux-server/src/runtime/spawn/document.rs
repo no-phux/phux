@@ -118,6 +118,10 @@ pub(crate) async fn spawn_document<A: DocumentApi>(spawn: ResourceSpawn<'_>) {
             return;
         }
     };
+    let reservation = if decodes.contains(A::WIRE_KIND) {
+        let host = crate::runtime::apps::StreamHost::new(state, client_id);
+        host.next_bootstrap().and_then(|bootstrap| host.reserve(core_doc, bootstrap, connection_token))
+    } else { None };
     let finish = SpawnFinish {
         state,
         request_id,
@@ -129,15 +133,14 @@ pub(crate) async fn spawn_document<A: DocumentApi>(spawn: ResourceSpawn<'_>) {
     };
     // The spawner watches its own document.
     let attach = async || {
+        let Some(reservation) = reservation else { return phux_protocol::wire::frame::CommandResult::error(phux_protocol::wire::frame::ErrorCode::InternalError, "spawner stream reservation unavailable"); };
         attach_document::<A>(
-            &crate::runtime::apps::StreamHost::new(state, client_id),
+            reservation,
             client_id,
             &wire_doc,
-            core_doc,
             &bundle.handle,
             out_tx,
             bootstrap_limits,
-            connection_token,
         )
         .await
     };

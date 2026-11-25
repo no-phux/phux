@@ -14,9 +14,9 @@ fn another_operations_valid_receipt_cannot_acknowledge_this_intention() {
         );
     receipt.resource = Some(ResourceKey::new([3; 16]).unwrap());
     let session = "aebagbafaydqqcikbmga2dqpca";
-    let original = api::hex16(receipt.operation.as_bytes());
+    let original = phux_protocol::ids::hex16(receipt.operation.as_bytes());
     assert!(project(session, &original.to_ascii_uppercase(), &receipt).is_ok());
-    let requested = api::hex16(&[0xac; 16]);
+    let requested = phux_protocol::ids::hex16(&[0xac; 16]);
     let error = project(session, &requested, &receipt).unwrap_err();
     assert_eq!(error.document(&requested)["error"]["outcome"], "unknown");
 }

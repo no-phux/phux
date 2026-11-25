@@ -11,9 +11,8 @@ pub(crate) fn execute_terminal(
     root_token: &CancellationToken,
 ) -> Result<(), String> {
     let (scrollback, cmd) = state.with_mut(|s| {
-        let relaunch = activation.activation != phux_core::ActivationId::FIRST;
         let cmd = s.config().attach_create_seeds_pty
-            .then(|| terminal::launch::spec_command(s, spec, relaunch));
+            .then(|| terminal::launch::spec_command(s, spec));
         let wire = s.idspace.intern_resource(resource);
         crate::runtime::commands::terminal::set_agent_session(s, wire.clone(), spec.restore.clone());
         terminal::notify_mode::install(s, &wire, spec);

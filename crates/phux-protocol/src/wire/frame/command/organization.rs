@@ -195,8 +195,11 @@ macro_rules! organization_commands {
         /// The resource.
         resource: ResourceKey,
     },
-    /// Start a new activation from the resource's launch; refused while one
-    /// is current or lost.
+    /// Start a new activation through current executing-host admission;
+    /// refused while one is current or lost. Requires
+    /// `features_ext2.ARCHIVED_LAUNCH_ADMISSION`: older peers must not receive
+    /// archived intent. Raw owner approval uses the separate exact review
+    /// request, never an archive trust bit on this command.
     ResourceRelaunch {
         /// Caller-generated operation id.
         operation: OperationId,

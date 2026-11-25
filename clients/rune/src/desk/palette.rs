@@ -88,6 +88,7 @@ pub fn with_menus(app: App<Desk>) -> App<Desk> {
         item!(VIEW, InterfaceReset),
         item!(VIEW, CopyConfig),
         item!(VIEW, RestoreSessions),
+        item!(VIEW, ReviewRawRelaunch),
         item!(VIEW, Inbox),
         item!(VIEW, Playground),
         item!(VIEW, Palette),

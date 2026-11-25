@@ -118,14 +118,13 @@ impl Fixture {
         pumps: &mut JoinSet<()>,
         future: impl Future<Output = ()> + 'static,
     ) {
-        crate::runtime::pump::spawn_tracked(
-            &self.state,
-            client,
-            self.pane,
+        let reservation = crate::runtime::apps::StreamHost::new(&self.state, client).reserve_next(self.pane, &CancellationToken::new()).unwrap();
+        assert!(reservation.lease.spawn(
             Some(pumps),
             drain,
             future,
-        );
+        ));
+        assert!(reservation.published(|| true));
     }
 
     fn reap(&self) -> ReapAndNotify {

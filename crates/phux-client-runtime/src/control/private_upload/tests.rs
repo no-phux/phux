@@ -40,6 +40,7 @@ fn connected() -> (ControlPlane, PrivateUploadDestination) {
         id: vec![1; 16],
         features: ServerFeatureSet::with(&[ServerFeature::FileUpload]),
         features_ext: ServerFeatureExtSet::default(),
+        features_ext2: phux_protocol::caps::ServerFeatureExt2Set::new(),
         layers: LayerSet::default(),
         protocol: (1, 0, 0),
         profile: BootstrapProfile::SynthesizedVtRaw,

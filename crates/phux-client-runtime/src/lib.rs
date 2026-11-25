@@ -38,6 +38,7 @@
 #![deny(rustdoc::private_intra_doc_links)]
 
 pub mod activation;
+pub mod archived_relaunch;
 pub mod approvals;
 pub mod connection;
 pub mod control;

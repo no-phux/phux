@@ -11,7 +11,6 @@ use phux_agent_session::session::AgentSessionResource as _;
 use phux_protocol::caps::{BootstrapLimits, BootstrapStreamProfile};
 use phux_protocol::wire::frame::{CommandResult, ErrorCode, FrameKind};
 use tokio::sync::{mpsc, oneshot};
-use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use super::DEFAULT_AGENT_CHUNK_BYTES;
@@ -87,28 +86,24 @@ async fn attach_cut(
     reason = "one ordered subscription/cut/retirement/publication transaction with negotiated context"
 )]
 pub(crate) async fn attach_agent_session(
-    host: &crate::runtime::apps::StreamHost,
+    reservation: crate::runtime::apps::StreamReservation,
     client_id: ClientId,
     terminal_id: &phux_protocol::ids::ResourceId,
-    core: phux_core::ids::ResourceId,
     handle: &crate::resource::ResourceHandle,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
     limits: BootstrapLimits,
-    connection_token: &CancellationToken,
     after_seq: Option<u64>,
 ) -> CommandResult {
     let Ok(session) = handle.agent_session() else {
         return CommandResult::error(ErrorCode::WrongResourceKind, "not an agent session");
     };
     let attach = StreamAttach {
-        host,
+        reservation,
         client_id,
         terminal_id,
-        core,
         handle,
         out_tx,
         limits,
-        connection_token,
     };
     let recovery = live::ReplayThenRepublish {
         bootstrap: session.bootstrap.clone(),

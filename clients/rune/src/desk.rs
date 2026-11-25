@@ -67,6 +67,7 @@ mod reveal;
 mod scene_host;
 mod screenshot;
 mod sessions;
+mod archived_relaunch;
 mod settings;
 mod shown;
 mod splits;
@@ -116,6 +117,7 @@ pub struct Desk {
     pub connection: connection::Connection,
     /// An action waiting for the user's confirmation.
     pub pending: Option<Pending>,
+    pub raw_relaunch: archived_relaunch::Review,
     /// The front toast: what the user was last told, until it expires or
     /// they dismiss it. A terminal opening takes down only what was in
     /// passing. A copy of `toasts`' front for one-line readers; change it
@@ -292,6 +294,7 @@ impl Desk {
         let mut desk = Self {
             connection: connection::Connection::default(),
             pending: None,
+            raw_relaunch: archived_relaunch::Review::default(),
             notice: None,
             toasts: notice::Toasts::default(),
             input_refusals: 0,
@@ -393,6 +396,7 @@ impl Desk {
             | self.pump_link()
             | self.pump_links()
             | self.finish_screenshot()
+            | self.pump_raw_relaunch()
             | self.pump_settings(tx)
             | self.pump_onboarding(tx)
             | self.follow_accessibility()

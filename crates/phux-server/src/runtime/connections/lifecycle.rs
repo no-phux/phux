@@ -17,16 +17,18 @@ use tracing::{debug, error, info, warn};
 /// is left to [`release_connection_state`]. A dropped `consumer_detach`
 /// is self-healing: the actor reaps the entry once the mailbox closes.
 pub(crate) fn detach_and_release_consumer_state(state: &SharedState, client_id: ClientId) {
-    // Captured before teardown, for the `client-detached` hook.
-    let attached_session = state.with(|s| attached_session_name(s, client_id));
-    state.with(|s| release_actor_consumers(s, client_id));
-    // The `Released` transitions name this client as their actor.
-    state.with(|s| {
-        announce_lease_releases(s, client_id, Some(crate::runtime::wire_client(client_id)));
-    });
-    state.with(|s| release_relay_state(s, client_id));
-    state.with_mut(|s| s.detach(client_id));
+    let attached_session = state.with_mut(|s| detach_consumer_state(s, client_id));
     fire_client_detached(state, client_id, attached_session);
+}
+
+/// Synchronous attachment retirement, usable under an exact host generation check.
+pub(crate) fn detach_consumer_state(s: &mut ServerState, client_id: ClientId) -> Option<DetachedFrom> {
+    let attached_session = attached_session_name(s, client_id);
+    release_actor_consumers(s, client_id);
+    announce_lease_releases(s, client_id, Some(crate::runtime::wire_client(client_id)));
+    release_relay_state(s, client_id);
+    s.detach(client_id);
+    attached_session
 }
 
 /// `docs/remote.md#managing-credentials`: [`detach_and_release_consumer_state`] in

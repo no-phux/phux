@@ -183,6 +183,9 @@ impl Desk {
             }
             Modal::Settings if action.is_none() => self.settings_key(event, tx),
             Modal::Confirm => self.confirm_bar_key(event, tx),
+            Modal::RawRelaunch => {
+                if event.key == rune::Key::Escape { self.cancel_raw_relaunch(); }
+            }
             Modal::PhonePicker => {
                 self.phone_picker_key(event);
             }
@@ -390,6 +393,7 @@ impl Desk {
 
     pub fn cancel_pending(&mut self) {
         self.pending = None;
+        self.cancel_raw_relaunch();
     }
 
     /// To the terminal it was meant for, wherever the keyboard went since.

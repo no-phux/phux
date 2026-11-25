@@ -10,7 +10,7 @@ pub(super) fn describe(state: &SharedState) -> CommandResult {
     let (authority, instance) = state.with(|s| {
         (
             phux_protocol::ids::AuthorityId::new(*s.org().authority().id.as_bytes()),
-            api::hex16(s.idspace.instance().as_bytes()),
+            phux_protocol::ids::hex16(s.idspace.instance().as_bytes()),
         )
     });
     let document = serde_json::json!({

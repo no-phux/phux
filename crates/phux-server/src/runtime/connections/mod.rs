@@ -35,7 +35,7 @@ pub(super) use commands::{Route, route};
 #[cfg(test)]
 pub(super) use dispatch::handle_client;
 pub(crate) use lifecycle::{
-    accept_loop, detach_and_release_consumer_state, fire_client_detached,
+    accept_loop, detach_and_release_consumer_state, detach_consumer_state, fire_client_detached,
     release_revoked_consumer_state,
 };
 pub(crate) use metadata_subscriptions::broadcast_event;

@@ -90,6 +90,9 @@ impl ServerState {
     /// Remove a peer identity and its grant on disconnect (not detach).
     pub fn remove_peer_identity(&mut self, client_id: ClientId) {
         self.clients.remove_peer_identity(client_id);
+        if self.native_agents().relaunch_proposals.contains_key(&client_id) {
+            self.native_agents_mut().relaunch_proposals.remove(&client_id);
+        }
         self.clients.grants.remove(&client_id);
     }
 

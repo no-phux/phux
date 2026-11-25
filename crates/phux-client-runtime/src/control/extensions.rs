@@ -68,7 +68,7 @@ impl ControlPlane {
     pub(super) fn method_advertised(&self, name: &str) -> bool {
         self.server.as_ref().is_some_and(|server| {
             phux_protocol::kinds::method_named(name)
-                .is_some_and(|method| method.advertised(server.features, server.features_ext))
+                .is_some_and(|method| method.advertised(server.features, server.features_ext, server.features_ext2))
         })
     }
 

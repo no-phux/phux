@@ -16,7 +16,7 @@ use phux_client::attach::{AttachError, Dial};
 use phux_client::state::StateView;
 use phux_config::socket::default_socket_path;
 
-use super::attach::{self, DialPlan, DialRefusal};
+use super::attach::native::{self, DialPlan, DialRefusal};
 use super::json_err::{self, CliError, Refusal, codes};
 use super::remote::{self, Endpoint, RemoteEntry};
 use super::remote_target::{self, Bootstrap};
@@ -182,7 +182,6 @@ fn plan_entry_inner(
         .map_err(|err| entry_refusal(entry, &DialRefusal::Malformed(err)))?;
     let token = remote::read_token(entry)
         .map_err(|err| unusable_entry(entry, &err, &re_pair_remedy(&entry.name)))?;
-    let fingerprint = entry.cert_fingerprint.clone();
     let server_name = entry.tls_server_name.clone();
     let identity = entry
         .client_identity()
@@ -190,19 +189,21 @@ fn plan_entry_inner(
     if warn_renewal {
         entry.warn_if_renewal_due();
     }
+    let credentials = native::RemoteCredentials {
+        name: Some(entry.name.clone()),
+        token,
+        cert_fingerprint: entry.cert_fingerprint.clone(),
+        authority: entry.authority_pin(),
+        identity,
+    };
     let plan = match endpoint {
-        Endpoint::Quic(addr) => attach::plan_quic_dial(rt, &addr, token, fingerprint, server_name),
-        Endpoint::Ws(url) => attach::plan_ws_dial(url, token, fingerprint, server_name),
+        Endpoint::Quic(addr) => native::plan_quic_dial(rt, &addr, credentials, server_name),
+        Endpoint::Ws(url) => native::plan_ws_dial(url, credentials, server_name),
         Endpoint::Ssh(destination) => {
             return Err(ssh_only_refusal(&entry.name, &destination, verb));
         }
     };
-    let DialPlan { dial, loopback } = plan
-        .and_then(|plan| {
-            plan.with_identity(identity)
-                .with_authority(&entry.name, &entry.authority_pin())
-        })
-        .map_err(|refusal| entry_refusal(entry, &refusal))?;
+    let DialPlan { dial, loopback } = plan.map_err(|refusal| entry_refusal(entry, &refusal))?;
     Ok(RemoteServer {
         name: entry.name.clone(),
         endpoint: entry.endpoint.clone(),
@@ -283,7 +284,7 @@ fn unresolved_remedy(dns_name: bool, re_pair: &str) -> String {
     let mut lines: Vec<String> = Vec::new();
     if dns_name {
         lines.extend(
-            attach::OVERLAY_REACHABILITY_HINT
+            native::OVERLAY_REACHABILITY_HINT
                 .lines()
                 .map(|line| line.trim().to_owned()),
         );
@@ -415,7 +416,7 @@ impl RemoteServer {
     /// The way out: the overlay hint for an unanswered dial, else where to
     /// look on each end.
     fn remedy(&self, err: &AttachError) -> String {
-        attach::reachability_hint(err, self.loopback).map_or_else(
+        native::reachability_hint(err, self.loopback).map_or_else(
             || {
                 format!(
                     "confirm the server on {} is running (`phux status` there) and that \

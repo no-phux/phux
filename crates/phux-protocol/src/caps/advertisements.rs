@@ -168,9 +168,8 @@ impl Default for ClientCapabilities {
     }
 }
 
-/// What the server implements, advertised in `HELLO_OK`. New
-/// server-owned capabilities append as trailing fields; the next is a second
-/// feature word (ADR-0137).
+/// What the server implements, advertised in `HELLO_OK`. Server-owned
+/// capability words append at the end; absent words never imply support.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ServerCapabilities {
     /// The conformance tiers the server mounts.
@@ -179,6 +178,8 @@ pub struct ServerCapabilities {
     pub features: ServerFeatureSet,
     /// Additive features in the second trailing `u32` of the caps record.
     pub features_ext: ServerFeatureExtSet,
+    /// Additive features in the third trailing capability word.
+    pub features_ext2: ServerFeatureExt2Set,
     /// The frame compression this server selected for the connection
     /// (`docs/protocol.md#framing`). Always one the client offered.
     pub compression: Compression,
@@ -192,6 +193,7 @@ impl ServerCapabilities {
             layers: LayerSet::new(),
             features: ServerFeatureSet::new(),
             features_ext: ServerFeatureExtSet::new(),
+            features_ext2: ServerFeatureExt2Set::new(),
             compression: Compression::None,
         }
     }
@@ -201,6 +203,7 @@ impl ServerCapabilities {
         const fn with_layers(layers: LayerSet) => layers;
         const fn with_features(features: ServerFeatureSet) => features;
         const fn with_features_ext(features: ServerFeatureExtSet) => features_ext;
+        const fn with_features_ext2(features_ext2: ServerFeatureExt2Set) => features_ext2;
     }
 }
 

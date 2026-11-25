@@ -5,7 +5,7 @@
 use super::hello::NegotiatedConnection;
 use super::plumbing::ClientPlumbing;
 use crate::runtime::{
-    bootstrap_attach_terminal, handle_detach_terminal, subscribe_attach_terminal,
+    bootstrap_attach_terminal, subscribe_attach_terminal,
 };
 use crate::state::{ClientId, SharedState};
 use crate::transport::quic::{
@@ -68,7 +68,7 @@ pub(in crate::runtime) async fn handle_stream_event(
             stream_id,
         } => {
             if plumbing.is_current_stream(&terminal_id, stream_id) {
-                teardown_terminal_stream(state, client_id, plumbing, &terminal_id).await;
+                teardown_terminal_stream(plumbing, &terminal_id, stream_id).await;
             } else {
                 debug!(
                     ?client_id,
@@ -82,14 +82,13 @@ pub(in crate::runtime) async fn handle_stream_event(
             stream_id,
             failure,
         } => {
-            handle_stream_failure(state, client_id, plumbing, terminal_id, stream_id, failure)
+            handle_stream_failure(client_id, plumbing, terminal_id, stream_id, failure)
                 .await;
         }
     }
 }
 
 async fn handle_stream_failure(
-    state: &SharedState,
     client_id: ClientId,
     plumbing: &mut ClientPlumbing,
     terminal_id: WireResourceId,
@@ -104,6 +103,7 @@ async fn handle_stream_failure(
         );
         return;
     }
+    let source = plumbing.stream_source(&terminal_id, stream_id);
     let (code, message) = match failure {
         QuicStreamFailure::Framing(framing) => (ErrorCode::FrameTooLarge, framing.wire_message()),
         QuicStreamFailure::IncompleteFrame => (
@@ -190,30 +190,24 @@ async fn bind_terminal_stream(
         .await;
         return;
     };
+    let subscription = subscribe_attach_terminal(state, client_id, &terminal_id, &plumbing.out_tx, None);
+    let Ok(crate::runtime::commands::AttachSubscription { core, handle, .. }) = subscription else {
+        refuse_terminal_stream(send, recv);
+        crate::runtime::send_error(&plumbing.out_tx, ErrorCode::TerminalNotFound, "STREAM_BIND raced terminal death").await;
+        return;
+    };
+    let Some(reservation) = crate::runtime::apps::StreamHost::new(state, client_id).reserve_next(core, token) else {
+        refuse_terminal_stream(send, recv);
+        return;
+    };
+    let lease = reservation.lease.clone();
     let writer = QuicWriter::from_terminal_stream(send, window);
     let diagnostics = writer.diagnostic_tracker();
     debug!(?client_id, ?stream_id, context = ?diagnostics.context(), "bound QUIC diagnostic stream");
     let bind_started = std::time::Instant::now();
     let (stream_tx, ingress_active, ingress_cancel) = plumbing
-        .bind_stream(client_id, terminal_id.clone(), stream_id, writer)
+        .bind_stream(client_id, terminal_id.clone(), stream_id, writer, lease)
         .await;
-    // Subscribe against control before bootstrapping, so lifecycle fanout
-    // resolves there even if the Terminal dies mid-bootstrap. The role was
-    // declared by the `ATTACH_RESOURCE` (ADR-0127).
-    let subscription =
-        subscribe_attach_terminal(state, client_id, &terminal_id, &plumbing.out_tx, None);
-    let Ok(crate::runtime::commands::AttachSubscription { core, handle, .. }) = subscription else {
-        let mut recv = recv;
-        let _ = recv.stop(0x10_u32.into());
-        plumbing.drop_stream_binding(&terminal_id).await;
-        crate::runtime::send_error(
-            &plumbing.out_tx,
-            ErrorCode::TerminalNotFound,
-            &format!("STREAM_BIND raced terminal death: {terminal_id}"),
-        )
-        .await;
-        return;
-    };
     tokio::spawn(pump_terminal_stream(
         recv,
         terminal_id.clone(),
@@ -225,23 +219,14 @@ async fn bind_terminal_stream(
         ingress_cancel,
         Some(diagnostics.clone()),
     ));
-    if let Err(failure) = bootstrap_attach_terminal(
-        state,
-        client_id,
-        &terminal_id,
-        core,
-        &handle,
-        &stream_tx,
-        stream_id,
-        selection.client_caps,
-        Some(profile),
-        selection.limits,
-        token,
-        None,
-    )
+    if let Err(failure) = bootstrap_attach_terminal(crate::runtime::apps::StreamBootstrap {
+        reservation, client_id, wire: &terminal_id, handle: &handle,
+        content_tx: &stream_tx, stream_id, client_caps: selection.client_caps,
+        profile: Some(profile), limits: selection.limits, after_seq: None,
+    })
     .await
     {
-        plumbing.drop_stream_binding(&terminal_id).await;
+        if plumbing.is_current_stream(&terminal_id, stream_id) { plumbing.drop_stream_binding(&terminal_id).await; }
         crate::runtime::send_error(&plumbing.out_tx, failure.code, &failure.message).await;
     } else {
         diagnostics.record_ready_latency(
@@ -253,12 +238,7 @@ async fn bind_terminal_stream(
 
 /// Tear one Terminal stream down: unsubscribe, then drop the binding so its
 /// writer drains and finishes the QUIC stream.
-async fn teardown_terminal_stream(
-    state: &SharedState,
-    client_id: ClientId,
-    plumbing: &mut ClientPlumbing,
-    terminal_id: &WireResourceId,
-) {
-    handle_detach_terminal(state, client_id, terminal_id).await;
-    plumbing.drop_stream_binding(terminal_id).await;
+async fn teardown_terminal_stream(plumbing: &mut ClientPlumbing, terminal_id: &WireResourceId, stream_id: StreamId) {
+    if let Some(source) = plumbing.stream_source(terminal_id, stream_id) { source.detach(terminal_id).await; }
+    if plumbing.is_current_stream(terminal_id, stream_id) { plumbing.drop_stream_binding(terminal_id).await; }
 }

@@ -94,7 +94,7 @@ fn routable_quic_without_a_pin_is_refused_after_resolution() {
 }
 
 #[test]
-fn a_relay_route_rides_the_tls_server_name_on_both_lanes() {
+fn a_relay_route_is_end_to_end_on_quic_and_refused_on_websocket() {
     let runtime = current_thread();
     let pin = "AB".repeat(32);
     let mut routed = resolved("quic://127.0.0.1:4433", Some(&pin));
@@ -129,8 +129,10 @@ fn a_relay_route_rides_the_tls_server_name_on_both_lanes() {
     assert_eq!(inner.trust, CertTrust::Authority { ca });
     assert_eq!(inner.server_name, "mini-route");
 
-    let ws = plan_ws(&routed, "ws://127.0.0.1:8787", None).expect("routed ws plan");
-    assert_eq!(ws.tls_server_name.as_deref(), Some("mini-route"));
+    assert!(
+        plan_ws(&routed, "ws://127.0.0.1:8787", None).is_err(),
+        "WebSocket cannot disclose a relayed session without inner TLS",
+    );
 }
 
 #[test]
@@ -195,5 +197,35 @@ fn quic_closes_are_worded_by_their_cause() {
         for needle in never {
             assert!(!msg.contains(needle), "{label}: {msg}");
         }
+    }
+}
+
+#[test]
+fn native_token_override_never_reads_the_registry_file() {
+    let runtime = current_thread();
+    for mut target in [
+        crate::Target::quic("127.0.0.1:8788"),
+        crate::Target::ws("ws://127.0.0.1:8787"),
+    ] {
+        // A directory cannot be a token file on any supported platform.
+        target.token_file = Some(std::env::temp_dir());
+        target.token = Some(" ab ".into());
+        let dial = runtime.block_on(target.plan()).expect("in-memory override");
+        match dial {
+            Dial::Quic(dial) => assert_eq!(dial.token, Some(vec![0xab])),
+            Dial::Ws(dial) => assert_eq!(dial.token.as_deref(), Some("ab")),
+            _ => panic!("native transport"),
+        }
+        target.token = Some("top-secret-invalid".into());
+        let error = runtime
+            .block_on(target.plan())
+            .expect_err("malformed override");
+        assert!(error.contains("not valid hex"), "{error}");
+        assert!(!error.contains("top-secret-invalid"), "{error}");
+        target.token = None;
+        assert!(
+            runtime.block_on(target.plan()).is_err(),
+            "the file is read without an override"
+        );
     }
 }

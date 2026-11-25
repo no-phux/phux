@@ -131,6 +131,14 @@ impl OperationFence {
         self.lock().admit(key, incarnation, actor, terminals, now)
     }
 
+    /// Whether this retained exact operation may already have reached an
+    /// executing peer. A capability refusal must not erase that uncertainty.
+    pub(crate) fn was_forwarded(&self, key: OperationKey, now: Instant) -> bool {
+        let mut store = self.lock();
+        store.prune_expired(now);
+        store.entries.contains_key(&key)
+    }
+
     /// What the `operation_id` a satellite stamped on an event for its
     /// terminal `terminal` means to the hub, while the record holds it.
     pub(crate) fn event_operation(

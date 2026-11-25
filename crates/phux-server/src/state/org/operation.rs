@@ -58,7 +58,7 @@ pub(crate) fn relaunch_admitted(
         return CommandResult::Refused(ow::refusal(&Refusal::NotFound));
     };
     let request = phux_protocol::wire::frame::Command::ResourceRelaunch {
-        operation, resource, expected: ow::revision(*expected), launch: None,
+        operation, resource, expected: ow::revision(*expected),
     };
     execute(state, client_id, request, Some(command), root_token)
 }

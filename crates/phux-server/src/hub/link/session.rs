@@ -311,10 +311,12 @@ pub(super) fn negotiated_relay_session<C: LinkConn>(
     let limits = conn.bootstrap_limits()?;
     let features = conn.server_features()?;
     let features_ext = conn.server_features_ext()?;
+    let features_ext2 = conn.server_features_ext2()?;
     info!(satellite = %host, ?profile, "hub relay using negotiated bootstrap profile");
     let mut session =
         crate::hub::relay::RelaySession::new_negotiated(host.clone(), limits, profile, features);
     session.set_satellite_features_ext(features_ext);
+    session.set_satellite_features_ext2(features_ext2);
     session.set_incarnation(conn.satellite_incarnation());
     Ok(session)
 }

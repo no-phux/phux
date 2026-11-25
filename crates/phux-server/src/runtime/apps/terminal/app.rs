@@ -58,21 +58,19 @@ impl ResourceApp for TerminalApp {
 /// the caller's subscription; a failure cancels the generation only.
 async fn bootstrap_stream(stream: StreamBootstrap<'_>) -> Result<(), AttachResourceFailure> {
     let StreamBootstrap {
-        host,
+        reservation,
         client_id,
         wire: terminal_id,
-        core,
         handle,
         content_tx,
         stream_id,
         client_caps,
         profile: bootstrap_profile,
         limits: bootstrap_limits,
-        connection_token,
         ..
     } = stream;
     let Some(bootstrap_profile) = bootstrap_profile else {
-        return Err(AttachResourceFailure {
+        return Err(AttachResourceFailure { generation: None,
             code: ErrorCode::CodecUnavailable,
             message: NO_TERMINAL_PROFILE.to_owned(),
         });
@@ -80,34 +78,25 @@ async fn bootstrap_stream(stream: StreamBootstrap<'_>) -> Result<(), AttachResou
     let Some(stream_profile) =
         crate::runtime::apps::terminal::attach::bootstrap_stream_profile(bootstrap_profile)
     else {
-        return Err(AttachResourceFailure {
+        return Err(AttachResourceFailure { generation: None,
             code: ErrorCode::CodecUnavailable,
             message: "ATTACH_RESOURCE selected an unsupported bootstrap profile".to_owned(),
-        });
-    };
-
-    let Some(bootstrap_id) = host.next_bootstrap() else {
-        return Err(AttachResourceFailure {
-            code: ErrorCode::ResourceExhausted,
-            message: "ATTACH_RESOURCE bootstrap id space exhausted".to_owned(),
         });
     };
 
     let terminal = match handle.terminal() {
         Ok(terminal) => terminal.clone(),
         Err(error) => {
-            return Err(AttachResourceFailure {
+            return Err(AttachResourceFailure { generation: None,
                 code: ErrorCode::WrongResourceKind,
                 message: error.to_string(),
             });
         }
     };
     let session = AttachResourceSession {
-        host: &host,
         out_tx: content_tx,
         connection_token,
         terminal_id,
-        core,
         handle: handle.clone(),
         terminal,
         client_id,
@@ -117,6 +106,6 @@ async fn bootstrap_stream(stream: StreamBootstrap<'_>) -> Result<(), AttachResou
         bootstrap_limits,
     };
 
-    let generation = session.establish_generation(bootstrap_id).await?;
+    let generation = session.establish_generation(reservation).await?;
     session.publish_generation(generation).await
 }

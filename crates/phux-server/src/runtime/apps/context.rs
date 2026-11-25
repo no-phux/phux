@@ -2,22 +2,19 @@
 
 use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities};
 use phux_protocol::ids::StreamId;
-use tokio_util::sync::CancellationToken;
 
 use crate::resource::ResourceHandle;
-use crate::state::{ClientId, Outbound, SharedState};
+use crate::state::{ClientId, Outbound};
 
 /// One client's stream onto one resource, ready to bootstrap.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct StreamBootstrap<'a> {
-    /// This admitted client's resource stream capability.
-    pub(crate) host: super::StreamHost,
+    /// Reserved by the host before the first bootstrap await.
+    pub(crate) reservation: super::StreamReservation,
     /// The attaching connection.
     pub(crate) client_id: ClientId,
     /// The resource's wire id.
     pub(crate) wire: &'a phux_protocol::ids::ResourceId,
-    /// The resource.
-    pub(crate) core: phux_core::ids::ResourceId,
     /// Its engine handle.
     pub(crate) handle: &'a ResourceHandle,
     /// Where the stream's frames go.
@@ -31,8 +28,6 @@ pub(crate) struct StreamBootstrap<'a> {
     pub(crate) profile: Option<BootstrapProfile>,
     /// The negotiated bootstrap limits.
     pub(crate) limits: BootstrapLimits,
-    /// The connection's cancellation.
-    pub(crate) connection_token: &'a CancellationToken,
     /// A replay cursor, for kinds that resume from one.
     pub(crate) after_seq: Option<u64>,
 }

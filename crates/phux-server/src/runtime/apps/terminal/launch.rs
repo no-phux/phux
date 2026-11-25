@@ -134,24 +134,15 @@ pub(crate) fn seed_initial_session(
 
 /// The command a Terminal launch spec runs: its argv, else the default
 /// shell, in its last directory (else its cwd), with its environment and
-/// the server's `TERM`. A `relaunch` never repeats an agent's one-shot
-/// task ([`super::resume::is_agent_task`]): it starts the shell instead.
+/// the server's `TERM`. Admission chose the exact executable recipe; execution
+/// never substitutes an archived fallback or re-resolves a template.
 pub(crate) fn spec_command(
     s: &ServerState,
     launch: &phux_core::TerminalLaunch,
-    relaunch: bool,
 ) -> LaunchCommand {
     let cwd = launch.relaunch_cwd().map(std::path::Path::to_path_buf);
     let launch = launch.clone();
-    // A program the user allowlisted picks up where it left off; it runs
-    // as the pane's process, like any other recorded argv.
-    let argv = super::resume::argv(s, &launch).unwrap_or_else(|| {
-        if relaunch && super::resume::is_agent_task(&launch.argv) {
-            Vec::new()
-        } else {
-            launch.argv
-        }
-    });
+    let argv = launch.argv;
     let mut cmd = argv_command((!argv.is_empty()).then_some(argv)).unwrap_or_else(|| {
         engine_launch::default_shell_command(s.config().shell.as_str(), s.config().login_shell)
     });

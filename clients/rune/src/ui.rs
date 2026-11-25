@@ -12,6 +12,7 @@ use crate::features::changes;
 use phux_config_core::rune::TabBar;
 
 mod badge;
+mod archived_relaunch;
 mod chief;
 mod controls;
 pub(crate) use controls::{
@@ -267,6 +268,7 @@ fn surface_view(
     cx: &mut Cx<Desk>,
 ) -> Option<El> {
     match surface {
+        Surface::RawRelaunch => archived_relaunch::view(desk, p),
         Surface::PhoneNavigation => phone::navigation::view(desk, top),
         Surface::Inbox => Some(inbox::view(desk, p)),
         Surface::Playground(_) => playground::open(desk, p, cx),

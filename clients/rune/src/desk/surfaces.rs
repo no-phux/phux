@@ -115,6 +115,8 @@ pub enum Surface {
     ContextMenu,
     /// The toast region: painted, but never the keyboard's owner.
     Toasts,
+    /// Exact local-owner archived recipe review, above other input surfaces.
+    RawRelaunch,
 }
 
 impl Surface {
@@ -134,6 +136,7 @@ impl Surface {
             Self::Palette => Modal::Palette,
             Self::Chief => Modal::Chief,
             Self::ContextMenu => Modal::ContextMenu,
+            Self::RawRelaunch => Modal::RawRelaunch,
             Self::Toasts => return None,
         })
     }
@@ -169,6 +172,7 @@ impl Desk {
             self.chief.open.then_some(Surface::Chief),
             self.toasts_surface(),
             self.pointer.menu.map(|_| Surface::ContextMenu),
+            self.raw_relaunch.open().then_some(Surface::RawRelaunch),
         ]
         .into_iter()
         .flatten()

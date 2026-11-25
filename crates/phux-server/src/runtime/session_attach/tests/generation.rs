@@ -126,7 +126,7 @@ async fn dropped_aggregate_future_withdraws_staged_and_pending_actor_generations
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn aggregate_ready_transfers_every_registration_to_connection_lifetime() {
+async fn aggregate_ready_transfers_every_registration_to_exact_resource_lifetimes() {
     crate::runtime::test_support::local(async {
         let (state, client, _, [mut first, mut second]) = panes();
         let (outbound, mut output) = mpsc::channel(32);
@@ -181,4 +181,50 @@ async fn aggregate_ready_transfers_every_registration_to_connection_lifetime() {
         assert!(second_interest.is_cancelled());
     })
     .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_resource_replacement_cancels_pending_aggregate_without_detaching_the_replacement() {
+    crate::runtime::test_support::local(async {
+        let (state, client, resources, [mut first, mut second]) = panes();
+        let (outbound, mut output) = mpsc::channel(32);
+        let connection = CancellationToken::new();
+        let aggregate = start(&state, client, &outbound, &connection);
+        let (_, captured) = next_registration(&mut first, &mut second).await;
+        let old_interest = captured.cancellation.clone();
+        captured.reply.send(Ok(state_sync_outcome(b"captured"))).unwrap();
+        let (is_first, pending) = next_registration(&mut first, &mut second).await;
+        let core = resources[usize::from(!is_first)];
+        let (wire, handle) = state.with_mut(|s| (s.idspace.intern_resource(core), s.resources().handle(core).unwrap().clone()));
+        let state_for_new = state.clone();
+        let out_for_new = outbound.clone();
+        let connection_for_new = connection.clone();
+        let replacement = tokio::task::spawn_local(async move {
+            let reservation = crate::runtime::apps::StreamHost::new(&state_for_new, client).reserve_next(core, &connection_for_new).unwrap();
+            crate::runtime::bootstrap_attach_terminal(crate::runtime::apps::StreamBootstrap {
+                reservation, client_id: client, wire: &wire, handle: &handle, content_tx: &out_for_new,
+                stream_id: StreamId::new(19).unwrap(),
+                client_caps: ClientCapabilities::default().with_output_mode(OutputMode::StateSync),
+                profile: Some(BootstrapProfile::SynthesizedVtStateSync), limits: BootstrapLimits::default(), after_seq: None,
+            }).await
+        });
+        let (_, current) = next_registration(&mut first, &mut second).await;
+        let interest = current.cancellation.clone();
+        let live = current.live_gate.clone();
+        current.reply.send(Ok(state_sync_outcome(b"replacement"))).unwrap();
+        replacement.await.unwrap().unwrap();
+        let (attached, owners) = aggregate.await.unwrap();
+        assert!(!attached);
+        drop(owners);
+        assert!(pending.cancellation.is_cancelled());
+        assert!(pending.reply.send(Ok(state_sync_outcome(b"stale"))).is_err());
+        assert!(old_interest.is_cancelled());
+        assert!(*live.borrow());
+        assert!(!interest.is_cancelled());
+        assert!(!connection.is_cancelled());
+        assert!(state.with(|s| s.attached().contains_key(&client)));
+        assert!(first.consumer_detach.try_recv().is_err());
+        assert!(second.consumer_detach.try_recv().is_err());
+        while let Ok(frame) = output.try_recv() { assert!(!matches!(frame, Outbound::FatalError { .. })); }
+    }).await;
 }

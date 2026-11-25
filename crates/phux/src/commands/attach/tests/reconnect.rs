@@ -1,8 +1,7 @@
-//! Reconnect timing and refusal regressions.
+//! Reconnect deadlines, refusals, repair classification and diagnostics.
+
 use super::*;
-use std::time::Instant;
-use phux_client_runtime::reconnect::Ladder;
-use crate::commands::attach::reconnect::{ReconnectOutcome, ReconnectPolicy, UDS_RECONNECT, reconnect_failure_lines, reconnect_policy, reconnect_progress_line, wait_until_connectable};
+
     /// The reconnect probe is three-way: missing socket is `SocketGone`, a
     /// bound listener is `Connectable`, a path that never accepts is `TimedOut`.
     #[tokio::test]
@@ -72,8 +71,6 @@ use crate::commands::attach::reconnect::{ReconnectOutcome, ReconnectPolicy, UDS_
         peer.abort();
         let _ = peer.await;
     }
-
-
     /// A TCP peer that answers every WebSocket upgrade with `status`,
     /// counting how many it was asked for. Enough HTTP for tungstenite to
     /// read a rejection: the client never gets past the handshake, so the
@@ -212,13 +209,6 @@ use crate::commands::attach::reconnect::{ReconnectOutcome, ReconnectPolicy, UDS_
         let _ = peer.await;
     }
 
-    /// The UDS policy with a test-length deadline; cadence untouched.
-    pub(super) fn with_deadline(deadline: Duration) -> ReconnectPolicy {
-        ReconnectPolicy {
-            deadline,
-            ..UDS_RECONNECT
-        }
-    }
 
     /// The local lane's numbers are pinned: 100ms flat over 10s keeps the
     /// graceful-upgrade blink invisible.
@@ -319,4 +309,49 @@ use crate::commands::attach::reconnect::{ReconnectOutcome, ReconnectPolicy, UDS_
             reconnect_failure_lines(&ReconnectOutcome::Connectable(None), deadline).is_empty(),
             "a successful reconnect has nothing to report"
         );
+    }
+
+    /// The overlay hint fires only for a reachability failure on a
+    /// non-loopback target — never for pin/auth failures (a host that
+    /// answered) and never for loopback (no overlay involved).
+    #[test]
+    fn reachability_hint_gates_on_variant_and_loopback() {
+        let unreachable = AttachError::Unreachable("x".to_owned());
+        assert_eq!(
+            reachability_hint(&unreachable, false),
+            Some(OVERLAY_REACHABILITY_HINT)
+        );
+        assert_eq!(reachability_hint(&unreachable, true), None);
+
+        let pin_mismatch = AttachError::Connect(
+            "server certificate fingerprint mismatch (pinned AA, got BB)".to_owned(),
+        );
+        assert_eq!(reachability_hint(&pin_mismatch, false), None);
+
+        let io = AttachError::Io(std::io::Error::from(std::io::ErrorKind::BrokenPipe));
+        assert_eq!(reachability_hint(&io, false), None);
+    }
+
+    #[test]
+    fn remote_repair_is_limited_to_early_transport_failures() {
+        // A refused credential means a host answered: only a re-pair helps.
+        // Nobody answering means the server is most likely stopped.
+        for (result, repair) in [
+            (
+                Err(AttachError::Connect("bad credential".to_owned())),
+                Repair::RePair,
+            ),
+            (
+                Err(AttachError::Unreachable("no route".to_owned())),
+                Repair::Start,
+            ),
+            (
+                Err(AttachError::Refused("no such session".to_owned())),
+                Repair::None,
+            ),
+            (Err(AttachError::Disconnected), Repair::None),
+            (Ok(AttachEnd::Detached { reason: None }), Repair::None),
+        ] {
+            assert_eq!(remote_repair(&result), repair);
+        }
     }

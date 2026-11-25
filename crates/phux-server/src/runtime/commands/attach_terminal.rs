@@ -37,45 +37,50 @@ pub(super) async fn handle_attach_terminal(
             Ok(subscription) => subscription,
             Err(refusal) => return refusal,
         };
-    announce_role_effects(&subscription, client_id).await;
-    let AttachSubscription {
-        core,
-        handle,
-        effects,
-        was_viewer,
-        ..
-    } = subscription;
-
-    let stream_id = crate::runtime::stream_id_from(client_id.0);
-    match bootstrap_attach_terminal(
-        state,
-        client_id,
-        terminal_id,
-        core,
-        &handle,
-        out_tx,
-        stream_id,
-        ctx.client_caps,
-        ctx.profile,
-        ctx.limits,
-        &ctx.token,
-        agent_after_seq,
-    )
-    .await
+    let host = crate::runtime::apps::StreamHost::new(state, client_id);
+    let Some(reservation) = host.reserve_next(subscription.core, &ctx.token) else {
+        state.with_mut(|s| {
+            if !subscription.was_subscribed { s.resources_mut().unsubscribe(client_id, subscription.core); }
+            if subscription.was_viewer && !role.is_viewer() { s.clients_mut().mark_viewer(client_id, terminal_id, true); }
+            s.undo_attach_takeover(client_id, subscription.core, subscription.effects);
+        });
+        return CommandResult::error(ErrorCode::InternalError, "stream admission unavailable");
+    };
+    let lease = reservation.lease.clone();
+    let stream = crate::runtime::apps::StreamBootstrap {
+        reservation, client_id, wire: terminal_id, handle: &subscription.handle,
+        content_tx: out_tx, stream_id: crate::runtime::stream_id_from(client_id.0),
+        client_caps: ctx.client_caps, profile: ctx.profile, limits: ctx.limits,
+        after_seq: agent_after_seq,
+    };
+    let result = lease.run(async {
+        announce_role_effects(&subscription, client_id).await;
+        bootstrap_attach_terminal(stream).await
+    }).await.unwrap_or_else(|| Err(AttachResourceFailure {
+        generation: Some(std::sync::Arc::clone(&lease.last_seq)),
+        ..AttachResourceFailure::internal("stream superseded while announcing role")
+    }));
+    let AttachSubscription { core, handle, effects, was_viewer, .. } = subscription;
+    match result
     {
         Ok(()) => CommandResult::Ok,
         Err(failure) => {
             // The COMMAND path drops its subscription on failure and undoes
             // any lease seizure or role widening it made (ADR-0127).
             let restore = was_viewer && !role.is_viewer();
-            let (released, holder) = state.with_mut(|s| {
+            let rollback = state.with_mut(|s| {
+                let current = failure.generation.as_ref().is_some_and(|fence| s.resources().pump_matches(client_id, core, fence));
+                if !current { return None; }
                 s.resources_mut().unsubscribe(client_id, core);
                 if restore {
                     s.clients_mut().mark_viewer(client_id, terminal_id, true);
                 }
                 let released = s.undo_attach_takeover(client_id, core, effects);
-                (released, s.leases().holder(core))
+                Some((released, s.leases().holder(core)))
             });
+            let Some((released, holder)) = rollback else {
+                return CommandResult::error(failure.code, failure.message);
+            };
             let lease = handle.companion::<crate::resource::companions::Leasable>();
             if restore
                 && effects.role_changed
@@ -103,48 +108,13 @@ pub(super) async fn handle_attach_terminal(
     }
 }
 
-/// Bootstrap one Terminal's content stream into `content_tx` without
-/// touching the caller's subscription. The QUIC `STREAM_BIND` path
-/// (docs/protocol.md#quic-stream-routing) subscribes on the control mailbox and bootstraps on the
-/// stream's; the COMMAND path uses one mailbox for both.
-///
-/// Failures cancel the generation but never unsubscribe; the returned
-/// [`AttachResourceFailure`] shapes the caller's refusal.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "negotiated connection context plus the split mailboxes"
-)]
-pub(crate) async fn bootstrap_attach_terminal(
-    state: &SharedState,
-    client_id: ClientId,
-    terminal_id: &phux_protocol::ids::ResourceId,
-    core: phux_core::ids::ResourceId,
-    handle: &ResourceHandle,
-    content_tx: &tokio::sync::mpsc::Sender<Outbound>,
-    stream_id: phux_protocol::ids::StreamId,
-    client_caps: ClientCapabilities,
-    bootstrap_profile: Option<BootstrapProfile>,
-    bootstrap_limits: BootstrapLimits,
-    connection_token: &CancellationToken,
-    agent_after_seq: Option<u64>,
-) -> Result<(), AttachResourceFailure> {
-    let stream = crate::runtime::apps::StreamBootstrap {
-        host: crate::runtime::apps::StreamHost::new(state, client_id),
-        client_id,
-        wire: terminal_id,
-        core,
-        handle,
-        content_tx,
-        stream_id,
-        client_caps,
-        profile: bootstrap_profile,
-        limits: bootstrap_limits,
-        connection_token,
-        after_seq: agent_after_seq,
-    };
-    crate::runtime::apps::app_for(handle.kind)
-        .bootstrap(stream)
-        .await
+/// Bootstrap only the host-admitted exact source. The reservation is captured
+/// before role announcements or transport retirement can suspend its caller.
+pub(crate) async fn bootstrap_attach_terminal(stream: crate::runtime::apps::StreamBootstrap<'_>) -> Result<(), AttachResourceFailure> {
+    let lease = stream.reservation.lease.clone();
+    lease.run(crate::runtime::apps::app_for(stream.handle.kind).bootstrap(stream)).await
+        .unwrap_or_else(|| Err(AttachResourceFailure::internal("stream reservation superseded")))
+        .map_err(|mut failure| { failure.generation = Some(std::sync::Arc::clone(&lease.last_seq)); failure })
 }
 
 /// Resolve the wire terminal id and register the caller as an output
@@ -189,6 +159,7 @@ pub(crate) fn subscribe_attach_terminal(
             handle,
             effects,
             was_viewer,
+            was_subscribed,
             holder: s.leases().holder(core),
         })
     })
@@ -206,6 +177,8 @@ pub(crate) struct AttachSubscription {
     /// Whether the connection had declared `VIEWER` on this Terminal
     /// before this attach, so a failed widening can put the tombstone back.
     pub(crate) was_viewer: bool,
+    /// Whether this command created the subscription before admission failed.
+    pub(crate) was_subscribed: bool,
     /// The lease holder once the role applied, which every broadcast names.
     pub(crate) holder: Option<ClientId>,
 }

@@ -9,11 +9,13 @@ use phux_config::socket::default_socket_path;
 use crate::commands::rec::RecordSpec;
 use crate::commands::remote as host_registry;
 use crate::commands::{print_attach_error, server::ensure_server};
-use super::{
-    attach_with_reconnect, configured_spawn_on_attach, fallback_lookup_name,
-    finalize_recording, home, interactive_tty_preflight, nested_attach_guard,
-    predictive_config_for, report_attach_end, requested_attach_target,
+use super::home::{
+    configured_spawn_on_attach, fallback_lookup_name, requested_attach_target,
     resolved_default_session_name,
+};
+use super::{
+    attach_with_reconnect, finalize_recording, home, interactive_tty_preflight,
+    nested_attach_guard, predictive_config_for, report_attach_end,
 };
 
 /// `phux attach [NAME]` without recording.

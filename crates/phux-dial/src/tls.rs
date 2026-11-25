@@ -65,6 +65,36 @@ impl CertTrust {
         }
         leaf.filter(|pin| !pin.trim().is_empty()).map(Self::Pinned)
     }
+
+    /// Select pins for a direct server or a relay's outer handshake. A
+    /// server CA behind a relay must never authenticate the relay itself.
+    #[must_use]
+    pub fn from_route_pins(
+        leaf: Option<&str>,
+        ca: Option<&str>,
+        route: Option<&str>,
+    ) -> Option<Self> {
+        Self::from_pins(None, ca.filter(|_| route.is_none()).map(str::to_owned))
+            .or_else(|| Self::from_pins(leaf.map(str::to_owned), None))
+    }
+
+    /// Require pinned trust except for a platform-established loopback route.
+    ///
+    /// # Errors
+    ///
+    /// Refuses absent, blank, or explicitly skipped trust off loopback.
+    pub fn for_endpoint(trust: Option<Self>, loopback: bool) -> Result<Self, crate::PlanRefusal> {
+        let trust = match trust {
+            Some(Self::Pinned(pin)) => Self::from_pins(Some(pin), None),
+            Some(Self::Authority { ca }) => Self::from_pins(None, Some(ca)),
+            Some(Self::SkipVerify) | None => None,
+        };
+        match trust {
+            Some(trust) => Ok(trust),
+            None if loopback => Ok(Self::SkipVerify),
+            None => Err(crate::PlanRefusal::Unpinned),
+        }
+    }
 }
 
 /// A server that did not present the pinned certificate authority

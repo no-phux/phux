@@ -108,8 +108,8 @@ pub(super) fn decode_bootstrap_capabilities(
 
 /// Decode a `HELLO_OK` frame's `server_caps` field value.
 ///
-/// The feature word is trailing-optional, and bytes after it are ignored:
-/// ADR-0137 reserves them for `features_ext`.
+/// Feature words are trailing-optional. Missing words mean no support;
+/// bytes after known complete words remain reserved for future words.
 pub(super) fn decode_server_capabilities(
     d: &mut Decoder<'_>,
 ) -> Result<crate::caps::ServerCapabilities, DecodeError> {
@@ -122,6 +122,9 @@ pub(super) fn decode_server_capabilities(
         caps = caps.with_features_ext(crate::caps::ServerFeatureExtSet::from_wire(
             d.read_u32_be()?,
         ));
+    }
+    if !d.at_body_end() {
+        caps = caps.with_features_ext2(crate::caps::ServerFeatureExt2Set::from_wire(d.read_u32_be()?));
     }
     Ok(caps)
 }

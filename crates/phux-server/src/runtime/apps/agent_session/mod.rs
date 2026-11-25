@@ -63,14 +63,12 @@ impl ResourceApp for AgentSessionApp {
     ) -> LocalBoxFuture<'a, Result<(), AttachResourceFailure>> {
         async move {
             let result = attach::attach_agent_session(
-                &stream.host,
+                stream.reservation,
                 stream.client_id,
                 stream.wire,
-                stream.core,
                 stream.handle,
                 stream.content_tx,
                 stream.limits,
-                stream.connection_token,
                 stream.after_seq,
             )
             .await;

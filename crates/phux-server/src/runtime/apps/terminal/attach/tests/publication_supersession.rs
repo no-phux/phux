@@ -97,8 +97,9 @@ async fn a_real_actor_resize_after_ready_does_not_close_either_replacement_conne
         for (i, connection) in connections.iter().enumerate() {
             let (ctx, out_rx) = context(held_terminal.clone(), ClientId(7 + i as u64));
             let mut live = output.subscribe();
-            let state = state.clone();
-            let connection = connection.clone();
+            let reservation = crate::runtime::apps::StreamHost::new(&state, ctx.client_id).reserve(ResourceId::default(), ctx.initial_bootstrap_id, connection).unwrap();
+            let lease = reservation.lease.clone();
+            assert!(reservation.published(|| true));
             tasks.push(tokio::task::spawn_local(async move {
                 let mut generation = PumpGeneration::opened_at(0, two_pump_initial_generation());
                 let result = ctx
@@ -115,7 +116,7 @@ async fn a_real_actor_resize_after_ready_does_not_close_either_replacement_conne
                     )
                     .await;
                 if let ControlFlow::Break(Some(fault)) = result {
-                    release_after_pump_fault(fault, &state, ctx.client_id, &connection);
+                    lease.retire_terminal_fault(fault);
                 }
                 result
             }));
@@ -175,8 +176,9 @@ async fn a_real_actor_teardown_after_ready_is_quiet_pane_gone_not_supersession()
         let connection = CancellationToken::new();
         let (ctx, mut mailbox) = context(terminal, ClientId(7));
         let mut live = output.subscribe();
-        let state_for_pump = state.clone();
-        let connection_for_pump = connection.clone();
+        let reservation = crate::runtime::apps::StreamHost::new(&state, ctx.client_id).reserve(ResourceId::default(), ctx.initial_bootstrap_id, &connection).unwrap();
+        let lease = reservation.lease.clone();
+        assert!(reservation.published(|| true));
         let pump = tokio::task::spawn_local(async move {
             let mut generation = PumpGeneration::opened_at(0, two_pump_initial_generation());
             let result = ctx
@@ -193,12 +195,7 @@ async fn a_real_actor_teardown_after_ready_is_quiet_pane_gone_not_supersession()
                 )
                 .await;
             if let ControlFlow::Break(Some(fault)) = result {
-                release_after_pump_fault(
-                    fault,
-                    &state_for_pump,
-                    ctx.client_id,
-                    &connection_for_pump,
-                );
+                lease.retire_terminal_fault(fault);
             }
             result
         });

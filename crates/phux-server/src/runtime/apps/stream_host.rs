@@ -14,7 +14,7 @@ type ReplacedPump = (
     CancellationToken,
     CancellationToken,
     Arc<AtomicU64>,
-    Option<(BootstrapId, CancellationToken, Arc<AtomicU64>)>,
+    Option<(BootstrapId, Arc<AtomicU64>)>,
 );
 
 #[derive(Debug, Clone)]
@@ -32,49 +32,68 @@ impl StreamHost {
         self.state.with_mut(|s| s.resources_mut().next_bootstrap_id(self.client))
     }
 
-    pub(crate) fn replace(&self, resource: ResourceId, bootstrap: BootstrapId) -> ReplacedPump {
-        self.state.with_mut(|s| s.resources_mut().replace_pump(self.client, resource, bootstrap))
+    pub(crate) fn reserve_next(&self, resource: ResourceId, connection: &CancellationToken) -> Option<StreamReservation> {
+        self.state.with_mut(|s| {
+            if connection.is_cancelled() { return None; }
+            let bootstrap = s.resources_mut().next_bootstrap_id(self.client)?;
+            let admitted = s.resources_mut().reserve_pump(self.client, resource, bootstrap, connection.child_token(), None);
+            Some(StreamReservation::new(self.clone(), resource, bootstrap, connection, admitted))
+        })
+    }
+
+    pub(crate) fn reserve(&self, resource: ResourceId, bootstrap: BootstrapId, connection: &CancellationToken) -> Option<StreamReservation> {
+        self.state.with_mut(|s| {
+            if connection.is_cancelled() { return None; }
+            let admitted = s.resources_mut().reserve_pump(self.client, resource, bootstrap, connection.child_token(), None);
+            Some(StreamReservation::new(self.clone(), resource, bootstrap, connection, admitted))
+        })
+    }
+
+    pub(crate) fn reserve_session(&self, panes: &[crate::state::AttachSnapshotPane], bootstrap: BootstrapId, connection: &CancellationToken, publication: &CancellationToken) -> Result<Vec<StreamReservation>, &'static str> {
+        let mut reservations = Vec::new();
+        reservations.try_reserve_exact(panes.len()).map_err(|_| "host allocation failed")?;
+        self.state.with_mut(|s| {
+            if connection.is_cancelled() || publication.is_cancelled() { return Err("ATTACH superseded before reservation"); }
+            for pane in panes {
+                let admitted = s.resources_mut().reserve_pump(self.client, pane.terminal_id, bootstrap, connection.child_token(), Some(publication.clone()));
+                reservations.push(StreamReservation::new(self.clone(), pane.terminal_id, bootstrap, connection, admitted));
+            }
+            Ok(reservations)
+        })
     }
 
     pub(crate) fn advance(&self, resource: ResourceId, cursor: &Arc<AtomicU64>) -> Option<BootstrapId> {
         self.state.with_mut(|s| s.resources_mut().advance_pump_generation(self.client, resource, cursor))
     }
 
-    pub(crate) async fn stop(&self, resource: ResourceId) {
-        crate::runtime::pump::stop_output(&self.state, self.client, resource).await;
+    pub(crate) fn publish_session(&self, reservations: Vec<StreamReservation>, publication: &CancellationToken, connection: &CancellationToken, handoff: impl FnOnce() -> bool) -> bool {
+        let published = self.state.with_mut(|s| {
+            if publication.is_cancelled() || connection.is_cancelled()
+                || reservations.iter().any(|reservation| !s.resources().pump_is_current(self.client, reservation.lease.resource, &reservation.lease.last_seq)) { return false; }
+            if !handoff() { return false; }
+            for reservation in &reservations {
+                if !s.resources_mut().publish_pump(self.client, reservation.lease.resource, &reservation.lease.last_seq) { return false; }
+            }
+            for reservation in reservations {
+                let emitter_owns_close = s.resources().source_has_emitter(self.client, reservation.lease.resource, &reservation.lease.last_seq);
+                reservation.committed(emitter_owns_close);
+            }
+            true
+        });
+        published
     }
 
-    pub(crate) fn spawn(
-        &self,
-        resource: ResourceId,
-        tasks: Option<&mut tokio::task::JoinSet<()>>,
-        drain: Option<CancellationToken>,
-        future: impl Future<Output = ()> + 'static,
-    ) {
-        crate::runtime::pump::spawn_tracked(&self.state, self.client, resource, tasks, drain, future);
+    pub(crate) fn abort_pending(&self, publication: &CancellationToken, connection: &CancellationToken, fatal: Option<(tokio::sync::mpsc::Permit<'_, crate::state::Outbound>, crate::state::Outbound)>) -> bool {
+        let detached = self.state.with_mut(|s| {
+            if publication.is_cancelled() || connection.is_cancelled() { return None; }
+            let from = crate::runtime::connections::detach_consumer_state(s, self.client);
+            if let Some((permit, frame)) = fatal { permit.send(frame); }
+            connection.cancel();
+            Some(from)
+        });
+        if let Some(from) = detached { crate::runtime::connections::fire_client_detached(&self.state, self.client, from); true } else { false }
     }
 
-    pub(crate) fn track(
-        &self,
-        resource: ResourceId,
-        abort: tokio::task::AbortHandle,
-        done: CancellationToken,
-    ) {
-        self.state.with_mut(|s| s.resources_mut().track_output_pump(self.client, resource, abort, done, None));
-    }
-
-    pub(crate) fn abort_publication(&self, connection: &CancellationToken) {
-        crate::runtime::connections::detach_and_release_consumer_state(&self.state, self.client);
-        connection.cancel();
-    }
-
-    pub(crate) fn retire_terminal_fault(
-        &self,
-        fault: super::terminal::attach::PumpFault,
-        connection: &CancellationToken,
-    ) {
-        super::terminal::attach::release_after_pump_fault(fault, &self.state, self.client, connection);
-    }
 /// Apply a session `ATTACH`'s declared role (ADR-0127) to every Terminal it
 /// returned in one critical section, then announce what changed.
 pub(crate) async fn apply_session_role(
@@ -128,3 +147,6 @@ pub(crate) async fn apply_session_role(
         });
     }
 }
+
+mod reservation;
+pub(crate) use reservation::{StreamLease, StreamReservation};

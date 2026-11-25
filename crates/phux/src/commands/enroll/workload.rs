@@ -204,14 +204,19 @@ pub(crate) fn enroll_with_ticket(
         ca: Some(pinned.to_owned()),
         route: pins.route.map(str::to_owned),
     };
-    let plan = super::super::attach::plan_quic_dial(
+    let plan = super::super::attach::native::plan_quic_dial(
         &rt,
         quic_target,
-        None,
-        pins.leaf.map(str::to_owned),
+        super::super::attach::native::RemoteCredentials {
+            name: None,
+            token: None,
+            cert_fingerprint: pins.leaf.map(str::to_owned),
+            authority: pin,
+            // Enrollment deliberately presents no existing workload identity.
+            identity: Some(TlsClientIdentity::None),
+        },
         pins.route.map(str::to_owned),
     )
-    .and_then(|plan| plan.with_authority(quic_target, &pin))
     .map_err(|refusal| format!("{refusal:?}"))?;
     let phux_client::attach::Dial::Quic(dial) = plan.dial else {
         return Err("enrollment needs a quic:// endpoint".to_owned());
@@ -220,7 +225,7 @@ pub(crate) fn enroll_with_ticket(
         addr: dial.addr,
         server_name: dial.server_name,
         trust: dial.trust,
-        inner: pin.inner(&TlsClientIdentity::None),
+        inner: dial.inner,
     };
     let chain = rt
         .block_on(async {

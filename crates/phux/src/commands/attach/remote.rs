@@ -6,11 +6,11 @@ use phux_client::attach::{AttachEnd, AttachError};
 
 use crate::commands::rec::RecordSpec;
 use crate::commands::remote::{self as host_registry, Endpoint, RemoteEntry};
-use super::{
-    DialPlan, attach_with_reconnect, fallback_lookup_name, finalize_recording,
-    plan_quic_dial, plan_ws_dial, predictive_config_for, reachability_hint,
-    report_attach_end, requested_attach_target, resolved_default_session_name,
+use super::native::{
+    DialPlan, RelayHop, RemoteCredentials, plan_quic_dial, plan_ws_dial, reachability_hint,
 };
+use super::home::{fallback_lookup_name, requested_attach_target, resolved_default_session_name};
+use super::{attach_with_reconnect, finalize_recording, predictive_config_for, report_attach_end};
 
 /// Turn a finished WebSocket attach into its exit code and repair hint,
 /// reporting the ending.
@@ -74,24 +74,12 @@ fn run_attach_ws_outcome(
     tls_server_name: Option<String>,
     rec: Option<&RecordSpec>,
 ) -> RemoteAttachOutcome {
-    let RemoteCredentials {
-        name,
-        token,
-        cert_fingerprint,
-        authority,
-        identity,
-    } = credentials;
-    let label = name.unwrap_or_else(|| url.clone());
-    let DialPlan { dial, loopback } =
-        match plan_ws_dial(url, token, cert_fingerprint, tls_server_name).and_then(|plan| {
-            plan.with_identity(identity)
-                .with_authority(&label, &authority)
-        }) {
-            Ok(plan) => plan,
-            Err(refusal) => {
-                return RemoteAttachOutcome::repairable(refusal.report_for_attach());
-            }
-        };
+    let DialPlan { dial, loopback } = match plan_ws_dial(url, credentials, tls_server_name) {
+        Ok(plan) => plan,
+        Err(refusal) => {
+            return RemoteAttachOutcome::repairable(refusal.report_for_attach());
+        }
+    };
 
     let rt = match crate::commands::cli_runtime() {
         Ok(rt) => rt,
@@ -117,16 +105,6 @@ fn run_attach_ws_outcome(
     ));
     finalize_recording(rec);
     report_ws_attach_outcome(result, loopback)
-}
-/// A one-off dial's relay route and the CA of the server behind it
-/// (`--tls-server-name`, `--ca-fingerprint`): the dial runs an end-to-end
-/// session to that server inside the relayed stream (ADR-0180).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RelayHop {
-    /// The route, offered as the outer TLS server name.
-    pub(crate) route: String,
-    /// The server's CA, `sha256:` form. `None` is refused at planning.
-    pub(crate) ca: Option<String>,
 }
 
 /// Attach over QUIC (ADR-0007) to `HOST:PORT`. TLS trust keys on the
@@ -164,19 +142,6 @@ pub(crate) fn run_attach_quic(
     run_attach_quic_outcome(session, target, credentials, server_name, rec).code
 }
 
-/// What a remote dial authenticates with: the bearer token, the server pin,
-/// and the workload client identity (`None` reads the environment).
-struct RemoteCredentials {
-    /// The registry entry's name, which labels refusals; `None` for a typed
-    /// target, which then labels them itself.
-    name: Option<String>,
-    token: Option<String>,
-    cert_fingerprint: Option<String>,
-    /// The CA pin beside the leaf pin (ADR-0153); default for a typed
-    /// `--cert-fingerprint`, which pins the leaf alone.
-    authority: phux_client_runtime::target::AuthorityPin,
-    identity: Option<phux_dial::TlsClientIdentity>,
-}
 
 #[allow(
     clippy::needless_pass_by_value,
@@ -189,29 +154,17 @@ fn run_attach_quic_outcome(
     server_name: Option<String>,
     rec: Option<&RecordSpec>,
 ) -> RemoteAttachOutcome {
-    let RemoteCredentials {
-        name,
-        token,
-        cert_fingerprint,
-        authority,
-        identity,
-    } = credentials;
     let rt = match crate::commands::cli_runtime() {
         Ok(rt) => rt,
         Err(code) => return RemoteAttachOutcome::terminal(code),
     };
 
-    let label = name.as_deref().unwrap_or(&target);
-    let plan =
-        match plan_quic_dial(&rt, &target, token, cert_fingerprint, server_name).and_then(|plan| {
-            plan.with_identity(identity)
-                .with_authority(label, &authority)
-        }) {
-            Ok(plan) => plan,
-            Err(refusal) => {
-                return RemoteAttachOutcome::repairable(refusal.report_for_attach());
-            }
-        };
+    let plan = match plan_quic_dial(&rt, &target, credentials, server_name) {
+        Ok(plan) => plan,
+        Err(refusal) => {
+            return RemoteAttachOutcome::repairable(refusal.report_for_attach());
+        }
+    };
     attach_quic_planned(&rt, plan, &target, session, rec, None)
 }
 

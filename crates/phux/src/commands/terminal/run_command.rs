@@ -11,9 +11,9 @@ use phux_protocol::{
     api::{
         ExecutionOutcome, ExecutionResult, ExecutionResultRequest, ExecutionResultStatus,
         ExecutionState, MAX_EXECUTION_WAIT_SECS, TerminalCreate, TerminalCreated,
-        TerminalOperation, hex16,
+        TerminalOperation,
     },
-    ids::{AuthorityId, SessionKey},
+    ids::{AuthorityId, SessionKey, hex16},
     wire::frame::OrgFilter,
 };
 use serde_json::{Value, json};

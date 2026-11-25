@@ -9,10 +9,8 @@ use phux_terminal_api::actor::TerminalResource as _;
 
 /// The negotiated shape shared by every pane capture in one ATTACH.
 pub(super) struct PaneCaptureContext<'a> {
-    pub(in crate::runtime) host: &'a crate::runtime::apps::StreamHost,
+    pub(in crate::runtime) lease: &'a crate::runtime::apps::StreamLease,
     pub(in crate::runtime) out_tx: &'a tokio::sync::mpsc::Sender<Outbound>,
-    /// Cancelled by a pump whose generation became unrecoverable.
-    pub(super) connection_token: &'a CancellationToken,
     /// Released once the aggregate publication is on the wire.
     pub(super) live_gate_rx: tokio::sync::watch::Receiver<bool>,
     pub(in crate::runtime) client_id: ClientId,
@@ -56,7 +54,7 @@ impl PaneCaptureContext<'_> {
             return ConsumerRegistration::default();
         };
         let registration = phux_terminal_api::actor::ConsumerRegistrationGuard::new(
-            self.connection_token,
+            &self.lease.cancellation,
         );
         let (attach_reply_tx, attach_reply_rx) = oneshot::channel();
         if terminal
@@ -143,7 +141,7 @@ impl PaneCaptureContext<'_> {
         wire_terminal_id: &phux_protocol::ids::ResourceId,
         handle: &ResourceHandle,
         terminal: &phux_terminal_api::actor::TerminalHandle,
-    ) {
+    ) -> Result<(), CaptureFailure> {
         let output_rx = handle.output.subscribe();
         let ctx = OutputPumpContext {
             out_tx: self.out_tx.clone(),
@@ -157,14 +155,13 @@ impl PaneCaptureContext<'_> {
             limits: self.limits,
             lag_label: "ResourceOutput pump",
             stale_skip: true,
-            cancel: None,
+            cancel: Some(self.lease.cancellation.clone()),
             drain: Some(CancellationToken::new()),
             snapshot: Some(terminal.snapshot.clone()),
-            last_seq: None,
+            last_seq: Some(std::sync::Arc::clone(&self.lease.last_seq)),
             terminal: terminal.clone(),
         };
-        let pump_host = self.host.clone();
-        let pump_connection_token = self.connection_token.clone();
+        let owner = self.lease.clone();
         let (gate_tx, gate_rx) = oneshot::channel::<OutputPumpStart>();
         staging.publication.gates.push(SnapshotGate {
             terminal_id,
@@ -173,17 +170,17 @@ impl PaneCaptureContext<'_> {
             cut: None,
             native_capture: None,
         });
-        self.host.spawn(
-            terminal_id,
+        if !self.lease.spawn(
             Some(&mut staging.publication.pumps),
             ctx.drain.clone(),
             async move {
                 let Some(fault) = run_output_pump(&ctx, gate_rx, output_rx).await else {
                     return;
                 };
-                pump_host.retire_terminal_fault(fault, &pump_connection_token);
+                owner.retire_terminal_fault(fault);
             },
-        );
+        ) { return Err(CaptureFailure::Failed("aggregate stream reservation superseded".to_owned())); }
+        Ok(())
     }
 
     /// Adapt one pane's synthesized snapshot to the client's capabilities,

@@ -28,7 +28,8 @@ pub(super) fn reference_reply(frame: &FrameKind, spec: &mut ScriptSpec) -> Vec<F
                     message,
                 }];
             }
-            let hello = HelloOk::new(spec.server_id.clone(), ServerCapabilities::new())
+            let hello = HelloOk::new(spec.server_id.clone(), ServerCapabilities::new()
+                .with_features_ext2(phux_protocol::caps::ServerFeatureExt2Set::all()))
                 .features(spec.server_features)
                 .features_ext(spec.server_features_ext)
                 .negotiated_from(client_caps);

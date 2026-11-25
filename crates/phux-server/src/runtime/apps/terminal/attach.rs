@@ -58,7 +58,7 @@ pub(crate) use output_pump::*;
 use output_pump::{PaneResync, tombstone_reason_for};
 use pane_capture::PaneCaptureContext;
 use prepare::{AttachStaging, CaptureFailure, ConsumerRegistration};
-pub(crate) use prepare::{fence_consumer, prepare_consumers, release_consumer};
+pub(crate) use prepare::{prepare_consumers, release_consumer};
 use publication::release_gates;
 #[cfg(test)]
 use pump_loop::next_wait;

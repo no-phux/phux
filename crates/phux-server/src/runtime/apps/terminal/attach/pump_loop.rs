@@ -5,7 +5,6 @@
 )]
 
 use super::*;
-use phux_terminal_api::actor::TerminalResource as _;
 
 /// Why a pump gave up on its generation and asked for a resync.
 #[derive(Debug, Clone, Copy)]
@@ -193,65 +192,5 @@ async fn dispatch_output(
                 .await
         }
         Err(tokio::sync::broadcast::error::RecvError::Closed) => ControlFlow::Break(None),
-    }
-}
-
-/// Release a shared pane's consumer after its pump failed. The pane itself
-/// belongs to others: an unrecoverable generation detaches only this client
-/// and closes its connection.
-pub(crate) fn release_after_pump_fault(
-    fault: PumpFault,
-    state: &SharedState,
-    client_id: ClientId,
-    connection_token: &CancellationToken,
-) {
-    fault.record();
-    match fault {
-        PumpFault::OutboundClosed | PumpFault::ReplayAbandoned | PumpFault::PaneGone => {}
-        PumpFault::TombstoneNotQueued | PumpFault::GenerationLost => {
-            warn!(?client_id, ?fault, "attach pump failed; closing the client");
-            crate::runtime::connections::detach_and_release_consumer_state(state, client_id);
-            connection_token.cancel();
-        }
-        PumpFault::PublicationNotActivated => {
-            warn!(
-                ?client_id,
-                "attach pump publication not activated; closing the client"
-            );
-            connection_token.cancel();
-        }
-    }
-}
-
-/// Release `client_id`'s consumers of Terminal `handles` after a failed
-/// session `ATTACH`, each within a bounded wait so a wedged actor cannot hold
-/// the rollback.
-pub(crate) async fn release_aborted_consumers(
-    client_id: ClientId,
-    stream_id: StreamId,
-    bootstrap_id: BootstrapId,
-    handles: &[ResourceHandle],
-) {
-    let wire_client_id = crate::runtime::wire_client(client_id);
-    let producer_deadline = std::time::Duration::from_secs(1);
-    for handle in handles {
-        let Ok(terminal) = handle.terminal() else {
-            continue;
-        };
-        let (reply, done) = oneshot::channel();
-        if matches!(
-            tokio::time::timeout(
-                producer_deadline,
-                terminal.consumer_detach.send(ConsumerDetachRequest {
-                    client_id: wire_client_id,
-                    generation: Some((stream_id, bootstrap_id)),
-                    reply,
-                }),
-            )
-            .await,
-            Ok(Ok(()))
-        ) {
-            let _ = tokio::time::timeout(producer_deadline, done).await;
-        }
     }
 }

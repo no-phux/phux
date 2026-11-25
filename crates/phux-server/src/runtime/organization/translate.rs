@@ -239,11 +239,7 @@ pub(crate) fn translate(
             expected,
         } => (
             ow::core_operation(&operation),
-            Ok(Op::ResourceRelaunch {
-                resource: ow::core_resource_key(&resource),
-                expected: rev(expected),
-                launch: None,
-            }),
+            super::launch_admission::relaunch_op(s, operation, resource, expected),
         ),
         Command::InboxResolve {
             operation,

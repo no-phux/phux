@@ -59,7 +59,10 @@ that settles a request.
    picks one offered Terminal profile. If it can serve none of those offered,
    it sends `ERROR` `CODEC_UNAVAILABLE` and closes.
 4. `HELLO_OK` carries the server version, feature bits (`features`,
-   `features_ext`), instance id, selected profile, and size limits.
+   `features_ext`, `features_ext2`), instance id, selected profile, and size limits.
+   Trailing capability words are omitted when empty and absent words mean no
+   support. `features_ext2` bit `0x1` is `ARCHIVED_LAUNCH_ADMISSION`: current-host
+   archived execution enforcement, not raw execution approval.
 
 Without a Terminal profile, binding a Terminal stream is refused
 `CODEC_UNAVAILABLE` and the connection stays. Before `HELLO_OK` only `HELLO`
@@ -192,10 +195,12 @@ and push.
 - Allocate type bytes in `wire/frame/catalog.rs` and sub-tags in the
   `*tags.rs` files beside it; duplicates fail to compile.
 - Append field ids to `tlv_body!` in `wire/field/`.
-- Gate new behavior with a bit in
-  [`caps/server_features/ext.rs`](../crates/phux-protocol/src/caps/server_features/ext.rs)
-  (the `features` word is frozen) and follow
-  [Making a change compatible](./compatibility.md#making-a-change-compatible).
+- Gate new behavior with an extension capability bit; `features` and all
+  published bit positions are frozen. `ServerFeatureExt` owns the first
+  extension word and `ServerFeatureExt2` the next. An absent word means
+  unsupported, not permission to try the operation. Restore/relaunch admission
+  checks the executing peer's current word, including at federation hops.
+  Follow [Making a change compatible](./compatibility.md#making-a-change-compatible).
 - Classify every new command in `kinds.rs`, or dispatch denies it.
 - Regenerate, then fill in any `?` types in the schema:
 

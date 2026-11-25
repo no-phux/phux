@@ -4,8 +4,7 @@
 use super::*;
 
 pub(super) async fn release_gates(
-    host: &crate::runtime::apps::StreamHost,
-    connection_token: &CancellationToken,
+    lease: &crate::runtime::apps::StreamLease,
     gates: Vec<SnapshotGate>,
 ) -> Result<(), ()> {
     for gate in gates {
@@ -31,14 +30,14 @@ pub(super) async fn release_gates(
                 // published, but RESOURCE_CLOSED ends it without an error.
                 Err(failure) if failure.actor_gone() => continue,
                 Err(_) => {
-                    host.abort_publication(connection_token);
+                    lease.abort_connection();
                     return Err(());
                 }
             };
             start.adopt_native_publication(publication);
         }
         if gate.gate.send(start).is_err() {
-            host.abort_publication(connection_token);
+            lease.abort_connection();
             return Err(());
         }
     }
@@ -58,14 +57,13 @@ pub(super) struct TerminalPublication {
 impl TerminalPublication {
     pub(super) async fn run(
         mut self,
-        host: crate::runtime::apps::StreamHost,
-        token: CancellationToken,
+        lease: crate::runtime::apps::StreamLease,
     ) {
-        if release_gates(&host, &token, self.gates).await.is_err() {
+        if release_gates(&lease, self.gates).await.is_err() {
             return;
         }
         if self.pumps.is_empty() {
-            // No task exists for tick consumers: their parent connection is
+            // No task exists for tick consumers: their exact resource lease is
             // the published lifetime, and its actor-owned wait retires them.
             for registration in self.registrations {
                 registration.published();

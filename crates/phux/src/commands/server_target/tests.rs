@@ -7,7 +7,7 @@ use phux_client::attach::{AttachError, CertTrust, Dial};
 use super::{
     ServerSpec, ServerTarget, dial_entry, entry_refusal, ladder_refusal_error, ssh_only_refusal,
 };
-use crate::commands::attach::DialRefusal;
+use crate::commands::attach::native::DialRefusal;
 use crate::commands::json_err::codes;
 use crate::commands::remote::RemoteEntry;
 

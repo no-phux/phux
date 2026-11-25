@@ -263,14 +263,18 @@ pub(crate) struct RmArgs {
 
 /// Start a stopped pane again
 ///
-/// Starts a new run of `TARGET` (a pane selector or key `^ab23cd`) with
-/// the command, directory, and environment it was launched with, in the
-/// same session. Refused while it still runs, or while a run that a
-/// server restart lost track of may still be running.
+/// Starts a new run of `TARGET` through a current trusted host template.
+/// An archived raw command requires `--approve-raw`: print its exact recipe
+/// and explicitly confirm it on the local owner socket. Never replaces a
+/// running or uncertain execution.
 #[derive(Debug, Args)]
 pub(crate) struct RelaunchArgs {
     /// The pane to start again.
     pub(crate) target: String,
+    /// Review the complete raw archived recipe and explicitly approve this one
+    /// operation interactively. Local owner only; never implied by --json.
+    #[usage(long)]
+    pub(crate) approve_raw: bool,
     /// Emit a schema-versioned JSON result or error.
     #[usage(long)]
     pub(crate) json: bool,

@@ -7,11 +7,17 @@ use super::{OrgOutcome, OrganizationCommand};
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub enum OrgReplyExpectation {
+    /// No organization mutation identity is required by this request.
     Read,
+    /// A mutation must acknowledge this operation before it can be accepted.
     Mutation(OperationId),
+    /// Exact creation must commit this operation and identify its new session.
     SessionCreate(OperationId),
+    /// Ensure must identify the session and whether this operation created it.
     SessionEnsure(OperationId),
+    /// Resource creation must commit this operation and identify its resource.
     ResourceCreate(OperationId),
+    /// Termination retains this operation and its admission/end evidence.
     Terminate(OperationId),
 }
 

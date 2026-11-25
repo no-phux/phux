@@ -133,6 +133,10 @@ pub(crate) async fn handle(ctx: &CommandContext, request: NativeRequest) -> Comm
         return result;
     }
     match request {
+        NativeRequest::PrepareRelaunch { operation, resource, expected } =>
+            crate::runtime::organization::launch_admission::prepare(ctx, operation, resource, expected),
+        NativeRequest::ApproveRelaunch { approval } =>
+            crate::runtime::organization::launch_admission::approve(ctx, approval),
         request @ (NativeRequest::CurrentQuestions { .. }
         | NativeRequest::RespondQuestion { .. }
         | NativeRequest::QuestionReceipt { .. }) => questions::handle(ctx, request),
@@ -256,7 +260,8 @@ fn sealed_request(state: &SharedState, request: &NativeRequest) -> Option<Comman
                 )
             })))
         }
-        NativeRequest::Spawn { .. } | NativeRequest::LaunchIntegration { .. } => {
+        NativeRequest::Spawn { .. } | NativeRequest::LaunchIntegration { .. }
+        | NativeRequest::PrepareRelaunch { .. } | NativeRequest::ApproveRelaunch { .. } => {
             Some(CommandResult::error(
                 ErrorCode::Overflow,
                 "daemon upgrade is in progress; no agent was started; reconnect before launching again",

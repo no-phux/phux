@@ -1,4 +1,4 @@
-//! `ATTACH` preparation: session role, prior consumers, and staging.
+//! `ATTACH` palette preparation and Terminal capture staging.
 #![allow(
     clippy::wildcard_imports,
     reason = "the split attach modules share the parent attach namespace"
@@ -7,51 +7,12 @@
 use super::*;
 use phux_terminal_api::actor::TerminalResource as _;
 
-/// Reattach fences the prior consumers before applying the viewport palette.
+/// Apply palette changes after the host has fenced exact predecessor lifetimes.
 pub(crate) async fn prepare_consumers(
     panes: &[AttachSnapshotPane],
-    client_id: ClientId,
     caps: ClientCapabilities,
-    same_session: bool,
 ) {
-    if same_session {
-        detach_prior_state_sync_consumers(panes, crate::runtime::wire_client(client_id), caps)
-            .await;
-    }
     apply_client_default_colors(panes, caps.default_colors).await;
-}
-
-/// Stop a state-sync consumer's prior actor-side emitters before the new
-/// ATTACHED, so an old delta cannot land between it and the new bootstrap.
-async fn detach_prior_state_sync_consumers(
-    panes: &[AttachSnapshotPane],
-    wire_client_id: phux_protocol::ids::ClientId,
-    client_caps: ClientCapabilities,
-) {
-    if !matches!(
-        client_caps.output_mode,
-        phux_protocol::caps::OutputMode::StateSync
-    ) {
-        return;
-    }
-    for pane in panes {
-        let Ok(terminal) = pane.handle.terminal() else {
-            continue;
-        };
-        let (reply, done) = oneshot::channel();
-        if terminal
-            .consumer_detach
-            .send(ConsumerDetachRequest {
-                client_id: wire_client_id,
-                generation: None,
-                reply,
-            })
-            .await
-            .is_ok()
-        {
-            let _ = done.await;
-        }
-    }
 }
 
 /// The most recent attach that advertises a palette sets the panes' default
@@ -123,24 +84,6 @@ pub(crate) fn release_consumer(handle: &ResourceHandle, client_id: ClientId) {
             );
         }
     }
-}
-
-/// Drop a consumer and wait for the actor's reply, so nothing it emitted can
-/// follow what the caller queues next.
-pub(crate) async fn fence_consumer(handle: &ResourceHandle, client_id: ClientId) {
-    let Some(terminal) = routed_terminal(handle) else {
-        return;
-    };
-    let (reply_tx, reply_rx) = oneshot::channel();
-    let _ = terminal
-        .consumer_detach
-        .send(phux_terminal_api::actor::ConsumerDetachRequest {
-            client_id: crate::runtime::wire_client(client_id),
-            generation: None,
-            reply: reply_tx,
-        })
-        .await;
-    let _ = reply_rx.await;
 }
 
 /// The staging state one ATTACH accumulates, one pane at a time: each

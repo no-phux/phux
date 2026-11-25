@@ -27,9 +27,8 @@ pub(crate) async fn stage_session(
         ..AttachStaging::default()
     };
     let context = PaneCaptureContext {
-        host: &capture.host,
+        lease: &capture.lease,
         out_tx: capture.out_tx,
-        connection_token: capture.connection_token,
         live_gate_rx: capture.live_gate.clone(),
         client_id: capture.client_id,
         wire_client_id: crate::runtime::wire_client(capture.client_id),
@@ -49,10 +48,9 @@ pub(crate) async fn stage_session(
         terminal_staging.frames,
         terminal_staging.budget.staged_bytes,
     )?;
-    let host = capture.host.clone();
-    let token = capture.connection_token.clone();
+    let lease = capture.lease.clone();
     let publication = terminal_staging.publication;
-    staging.park_owner(&capture, Box::pin(publication.run(host, token)));
+    staging.park_owner(&capture, Box::pin(publication.run(lease)));
     Ok(())
 }
 

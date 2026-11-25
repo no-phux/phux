@@ -251,54 +251,20 @@ pub(super) fn subscribe_spawning_client(
 pub(super) fn spawn_terminal_output_pump(
     ctx: OutputPumpContext,
     output_rx: tokio::sync::broadcast::Receiver<ResourceOutput>,
-    state: &SharedState,
-    connection_token: &CancellationToken,
-    core_terminal_id: ResourceId,
+    lease: &crate::runtime::apps::StreamLease,
     output_pumps: &mut JoinSet<()>,
-) -> oneshot::Sender<OutputPumpStart> {
-    let pump_state = state.clone();
-    let pump_connection_token = connection_token.clone();
+) -> Option<oneshot::Sender<OutputPumpStart>> {
+    let owner = lease.clone();
     let (gate_tx, gate_rx) = oneshot::channel::<OutputPumpStart>();
-    pump::spawn_tracked(
-        state,
-        ctx.client_id,
-        core_terminal_id,
+    if !lease.spawn(
         Some(output_pumps),
         ctx.drain.clone(),
         async move {
             let Some(fault) = run_output_pump(&ctx, gate_rx, output_rx).await else {
                 return;
             };
-            fault.record();
-            match fault {
-                PumpFault::OutboundClosed
-                | PumpFault::TombstoneNotQueued
-                | PumpFault::ReplayAbandoned
-                | PumpFault::PaneGone => {}
-                PumpFault::GenerationLost => {
-                    let reaped = pump_state.with_mut(|s| {
-                        crate::runtime::connections::reap_pane_journaling_close(s, core_terminal_id)
-                    });
-                    // A pane that already closed ended with RESOURCE_CLOSED;
-                    // losing the generation on the way out is no reason to
-                    // drop the client.
-                    if reaped {
-                        warn!(
-                            ?core_terminal_id,
-                            "spawn pump lost its generation; reaped the pane, closing the client"
-                        );
-                        pump_connection_token.cancel();
-                    }
-                }
-                PumpFault::PublicationNotActivated => {
-                    warn!(
-                        ?core_terminal_id,
-                        "spawn pump publication not activated; closing the client"
-                    );
-                    pump_connection_token.cancel();
-                }
-            }
+            owner.retire_spawn_fault(fault);
         },
-    );
-    gate_tx
+    ) { return None; }
+    Some(gate_tx)
 }

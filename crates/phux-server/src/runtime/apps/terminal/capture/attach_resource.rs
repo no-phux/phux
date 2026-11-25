@@ -13,12 +13,9 @@ use crate::state::{ClientId, Outbound};
 /// One unpublished cut and its lifetime. Only complete publication can hand
 /// its interest to the tracked host generation.
 pub(in crate::runtime) struct AttachResourceGeneration {
-    pub(super) bootstrap_id: phux_protocol::ids::BootstrapId,
-    pub(super) generation_last_seq: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    pub(super) lifetime: CancellationToken,
+    pub(super) reservation: crate::runtime::apps::StreamReservation,
     pub(super) delivery: GenerationDelivery,
     pub(super) registration: phux_terminal_api::actor::ConsumerRegistrationGuard,
-    pub(super) pending_pump: tokio_util::sync::DropGuard,
 }
 
 pub(super) enum GenerationDelivery {
@@ -34,11 +31,8 @@ pub(super) enum GenerationDelivery {
 /// One in-flight `ATTACH_RESOURCE`: the resolved terminal plus the negotiated
 /// connection context every stage needs.
 pub(in crate::runtime) struct AttachResourceSession<'a> {
-    pub(in crate::runtime) host: &'a crate::runtime::apps::StreamHost,
     pub(in crate::runtime) out_tx: &'a tokio::sync::mpsc::Sender<Outbound>,
-    pub(in crate::runtime) connection_token: &'a CancellationToken,
     pub(in crate::runtime) terminal_id: &'a phux_protocol::ids::ResourceId,
-    pub(in crate::runtime) core: phux_core::ids::ResourceId,
     /// The resource's generic channels (output, consumers, control).
     pub(in crate::runtime) handle: ResourceHandle,
     /// The Terminal facet of `handle`, resolved once at entry.
@@ -67,7 +61,6 @@ impl AttachResourceSession<'_> {
         &self,
         bootstrap_id: phux_protocol::ids::BootstrapId,
         live_gate: tokio::sync::watch::Receiver<bool>,
-        lifetime: &CancellationToken,
         registration: &phux_terminal_api::actor::ConsumerRegistrationGuard,
     ) -> Option<phux_terminal_api::actor::ConsumerAttachOutcome> {
         use phux_terminal_api::actor::ConsumerAttachRequest;
@@ -97,18 +90,8 @@ impl AttachResourceSession<'_> {
             loss_tolerant: false,
             reply,
         });
-        tokio::select! {
-            biased;
-            () = self.connection_token.cancelled() => return None,
-            () = lifetime.cancelled() => return None,
-            result = send => result.ok()?,
-        }
-        let outcome = tokio::select! {
-            biased;
-            () = self.connection_token.cancelled() => return None,
-            () = lifetime.cancelled() => return None,
-            result = reply_rx => result.ok()?.ok()?,
-        };
+        send.await.ok()?;
+        let outcome = reply_rx.await.ok()?.ok()?;
         Some(outcome)
     }
 
@@ -117,26 +100,31 @@ impl AttachResourceSession<'_> {
     /// pump unless the actor's tick owns emission.
     pub(in crate::runtime) async fn establish_generation(
         &self,
-        bootstrap_id: phux_protocol::ids::BootstrapId,
+        reservation: crate::runtime::apps::StreamReservation,
     ) -> Result<AttachResourceGeneration, AttachResourceFailure> {
+        let lease = reservation.lease.clone();
+        lease.run(self.establish_reserved(reservation)).await
+            .unwrap_or_else(|| Err(AttachResourceFailure::internal("ATTACH_RESOURCE reservation superseded")))
+    }
+
+    async fn establish_reserved(&self, reservation: crate::runtime::apps::StreamReservation) -> Result<AttachResourceGeneration, AttachResourceFailure> {
+        let lease = reservation.lease.clone();
+        let bootstrap_id = lease.bootstrap;
         // Subscribe before stopping the old pump so replacement never loses a
         // byte emitted in the handoff window. The new receiver remains gated
         // until this generation reaches READY.
         let output_rx = self.handle.output.subscribe();
-        self.host.stop(self.core).await;
-        let (token, pump_done, generation_last_seq, prior) = self.host.replace(self.core, bootstrap_id);
-        let pending_pump = token.clone().drop_guard();
-        let mut pump_done_guard = Some(pump_done.drop_guard());
-        if let Some((_, prior_done, _)) = &prior {
-            prior_done.cancelled().await;
+        if !reservation.ready().await {
+            return Err(AttachResourceFailure::internal("ATTACH_RESOURCE superseded while retiring predecessor"));
         }
+        let token = lease.cancellation.clone();
         let (live_gate_tx, live_gate_rx) = tokio::sync::watch::channel(false);
 
         let registration = phux_terminal_api::actor::ConsumerRegistrationGuard::new(&token);
         let outcome = self
-            .register_consumer(bootstrap_id, live_gate_rx, &token, &registration)
+            .register_consumer(bootstrap_id, live_gate_rx, &registration)
             .await;
-        if self.connection_token.is_cancelled() || token.is_cancelled() {
+        if token.is_cancelled() {
             return Err(AttachResourceFailure::internal("ATTACH_RESOURCE cancelled"));
         }
         if self.wants_state_sync() && outcome.is_none() {
@@ -145,50 +133,37 @@ impl AttachResourceSession<'_> {
             ));
         }
         let tick_managed = outcome.as_ref().is_some_and(|outcome| outcome.tick_managed);
-        if tick_managed {
-            // No raw pump will own this generation.
-            drop(pump_done_guard.take());
-        }
-        if let Some((prior_bootstrap_id, _, prior_last_seq)) = prior
-            && self
-                .out_tx
-                .send(Outbound::Frame(FrameKind::BootstrapTombstone {
+        if let Some((prior_bootstrap_id, prior_last_seq)) = &reservation.prior
+            && !lease.queue(self.out_tx, FrameKind::BootstrapTombstone {
                     terminal_id: self.terminal_id.clone(),
                     stream_id: self.stream_id,
-                    bootstrap_id: prior_bootstrap_id,
+                    bootstrap_id: *prior_bootstrap_id,
                     reason: phux_protocol::wire::frame::TombstoneReason::ExplicitReattach,
                     last_valid_seq: prior_last_seq.load(std::sync::atomic::Ordering::Acquire),
-                }))
-                .await
-                .is_err()
+                }).await
         {
             return Err(AttachResourceFailure::internal(
                 "consumer went away during ATTACH_RESOURCE replacement",
             ));
         }
 
-        let lifetime = token.clone();
         let delivery = if tick_managed {
             let Some(bootstrap) = outcome.and_then(|outcome| outcome.state_sync_bootstrap) else {
                 return Err(AttachResourceFailure::internal("tick consumer omitted its atomic bootstrap"));
             };
             GenerationDelivery::Tick { bootstrap, live: live_gate_tx }
         } else {
-            let Some(pump_done_guard) = pump_done_guard.take() else {
-                return Err(AttachResourceFailure::internal("pump generation lost its completion guard"));
-            };
             let (gate, published) = oneshot::channel();
             let channels = AttachResourcePumpChannels { token, output_rx, published };
-            self.spawn_output_pump(channels, bootstrap_id, std::sync::Arc::clone(&generation_last_seq), pump_done_guard);
+            if !self.spawn_output_pump(channels, &lease) {
+                return Err(AttachResourceFailure::internal("ATTACH_RESOURCE superseded before pump handoff"));
+            }
             GenerationDelivery::Raw { gate }
         };
         Ok(AttachResourceGeneration {
-            bootstrap_id,
-            generation_last_seq,
-            lifetime,
+            reservation,
             delivery,
             registration,
-            pending_pump,
         })
     }
 }

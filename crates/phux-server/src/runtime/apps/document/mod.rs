@@ -83,14 +83,12 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
     ) -> LocalBoxFuture<'a, Result<(), AttachResourceFailure>> {
         async move {
             let result = attach_document::<A>(
-                &stream.host,
+                stream.reservation,
                 stream.client_id,
                 stream.wire,
-                stream.core,
                 stream.handle,
                 stream.content_tx,
                 stream.limits,
-                stream.connection_token,
             )
             .await;
             super::producer_stream::result_to_attach_failure(A::LABEL, result)

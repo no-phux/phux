@@ -16,7 +16,7 @@ pub(crate) async fn handle_detach_terminal(
     client_id: ClientId,
     terminal_id: &phux_protocol::ids::ResourceId,
 ) -> CommandResult {
-    let handle = state.with_mut(|s| {
+    let core = state.with_mut(|s| {
         s.unsubscribe_resource_events(client_id, terminal_id);
         // A declared `VIEWER` outlives the subscription (ADR-0127).
         let core = s
@@ -24,17 +24,14 @@ pub(crate) async fn handle_detach_terminal(
             .resource_from_wire(terminal_id)
             .or_else(|| s.resources().draining_terminal(terminal_id))?;
         s.resources_mut().unsubscribe(client_id, core);
-        Some((core, s.resources().handle(core).cloned()))
+        Some(core)
     });
-    let Some((core, handle)) = handle else {
+    let Some(core) = core else {
         return CommandResult::Ok;
     };
     pump::stop_output(state, client_id, core).await;
-    state.with_mut(|s| s.resources_mut().cancel_pump(client_id, core));
-    // Fence engine-emitted output before COMMAND_RESULT is queued.
-    if let Some(handle) = &handle {
-        crate::runtime::apps::terminal::attach::fence_consumer(handle, client_id).await;
-    }
+    // The generation root is cancelled before stop_output awaits. Actor emission
+    // checks that root synchronously; no late broad detach can touch a successor.
     debug!(?client_id, ?terminal_id, "DETACH_RESOURCE unsubscribed");
     CommandResult::Ok
 }

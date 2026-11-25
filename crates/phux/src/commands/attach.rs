@@ -10,9 +10,7 @@ use std::process::ExitCode;
 use std::rc::Rc;
 
 use phux_client::attach::connection::Connection;
-use phux_client::attach::{
-    AttachEnd, AttachError, Dial, InputReplayJournal,
-};
+use phux_client::attach::{AttachEnd, AttachError, Dial, InputReplayJournal};
 use phux_client::predict::PredictiveConfig;
 use phux_config::loader as config_loader;
 use phux_protocol::wire::frame::AttachTarget;
@@ -289,17 +287,6 @@ fn close_recorder(recorder: Option<RecorderHandle>) {
     }
 }
 
-/// Stderr hint for a non-loopback dial that got no answer: either an overlay
-/// network is down, or a packet filter on the server host (on macOS the
-/// application firewall silently drops an unrecognized, adhoc-signed binary)
-/// swallows it. `phux doctor` on the server probes for the latter.
-pub(crate) const OVERLAY_REACHABILITY_HINT: &str = "      The server did not answer or its name could not be resolved; credentials were never checked.\n      If the host lives on an overlay network (Tailscale/WireGuard), confirm the overlay is up on both ends.\n      If the overlay is up and ssh to the host works, suspect a firewall on the SERVER host instead:\n      run `phux doctor` there, which probes its own remote listener and names the blocker.";
-
-/// The reachability hint applies only to [`AttachError::Unreachable`] on a
-/// non-loopback target; a pin or auth failure means a host answered.
-pub(crate) fn reachability_hint(err: &AttachError, loopback: bool) -> Option<&'static str> {
-    (!loopback && matches!(err, AttachError::Unreachable(_))).then_some(OVERLAY_REACHABILITY_HINT)
-}
 
 /// The predictive-echo setting for one dial: the config's explicit value,
 /// else on for a dial that leaves the machine. A config that fails to load
@@ -336,28 +323,22 @@ fn dial_leaves_the_machine(dial: &Dial) -> bool {
 }
 
 mod home;
-mod reconnect;
-mod stdio;
 mod local;
-mod remote;
-mod dial;
+pub(crate) mod native;
+mod reconnect;
+pub(crate) mod remote;
+mod stdio;
 pub(crate) use local::{run_naked, run_attach, run_attach_rec};
 pub(crate) use remote::{
-    RemoteAttachOutcome, Repair, RelayHop, run_attach_remote, run_attach_remote_outcome,
-    run_attach_quic, attach_quic_planned, run_attach_ws,
+    RemoteAttachOutcome, Repair, run_attach_remote, run_attach_remote_outcome,
 };
-pub(crate) use dial::{DialPlan, DialRefusal, plan_quic_dial, plan_ws_dial};
-#[cfg(test)]
-use dial::split_host_port;
 #[cfg(test)]
 use local::{session_is_missing, missing_session_lines};
-#[cfg(test)]
-use remote::remote_repair;
 pub(crate) use home::{
     configured_session_name_template, configured_spawn_on_attach, render_default_session_name,
     resolved_default_session_name,
 };
-use home::{default_lookup_target, fallback_lookup_name, requested_attach_target};
+use home::default_lookup_target;
 pub(crate) use reconnect::attach_with_reconnect;
 pub(crate) use stdio::run_attach_stdio;
 

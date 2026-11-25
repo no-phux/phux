@@ -157,3 +157,25 @@ fn catalog_auth_tracks_the_absolute_opencode_override_but_never_wrappers_or_cust
     write(&missing, "'acp'");
     assert_eq!(auth(), None);
 }
+
+#[test]
+fn saved_native_intent_never_uses_disabled_changed_or_archived_environment() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = profile(dir.path());
+    let template = dir.path().join("integrations/exact-test.toml");
+    let write = |arg: &str| std::fs::write(&template, format!(
+        "id = 'exact-test'\n[acp]\nprovider = 'exact-test-provider'\ncommand = ['sh', '{arg}']\nrequired_executables = ['sh']\nworking_directory = 'workspace'\n"
+    )).unwrap();
+    write("old");
+    let mut saved = resolve(&config, "exact-test", dir.path().to_str().unwrap()).unwrap();
+    saved.native_id = Some("resume-123".into());
+    assert_eq!(admit_saved_at(&config, &saved).unwrap().native_id, saved.native_id);
+    write("changed");
+    assert!(admit_saved_at(&config, &saved).is_err(), "a changed template cannot run old argv");
+    write("old");
+    saved.env.insert("LD_PRELOAD".into(), "/archived/code".into());
+    assert!(admit_saved_at(&config, &saved).is_err(), "all executable environment requires exact approval");
+    saved.env.clear();
+    std::fs::write(&config, "").unwrap();
+    assert!(admit_saved_at(&config, &saved).is_err(), "disabled plugin is not archive trust");
+}

@@ -125,15 +125,15 @@ fn path_query_catalog_requires_its_extended_feature() {
     );
     assert!(!method.advertised(
         ServerFeatureSet::with(ServerFeature::ALL),
-        ServerFeatureExtSet::new()
+        ServerFeatureExtSet::new(), phux_protocol::caps::ServerFeatureExt2Set::new()
     ));
     assert!(!method.advertised(
         ServerFeatureSet::new(),
-        ServerFeatureExtSet::with(&[ServerFeatureExt::Checkout])
+        ServerFeatureExtSet::with(&[ServerFeatureExt::Checkout]), phux_protocol::caps::ServerFeatureExt2Set::new()
     ));
     assert!(method.advertised(
         ServerFeatureSet::new(),
-        ServerFeatureExtSet::with(&[ServerFeatureExt::PathQuery])
+        ServerFeatureExtSet::with(&[ServerFeatureExt::PathQuery]), phux_protocol::caps::ServerFeatureExt2Set::new()
     ));
 }
 
@@ -153,7 +153,7 @@ fn extended_masks_require_all_bits_and_reject_zero_and_unknown_bits() {
         };
         assert!(!gate.advertised(
             empty,
-            ServerFeatureExtSet::with(&[ServerFeatureExt::PathQuery])
+            ServerFeatureExtSet::with(&[ServerFeatureExt::PathQuery]), phux_protocol::caps::ServerFeatureExt2Set::new()
         ));
     }
     let combined = kinds::FeatureGate::FeaturesExt {
@@ -162,13 +162,23 @@ fn extended_masks_require_all_bits_and_reject_zero_and_unknown_bits() {
     };
     assert!(combined.advertised(
         empty,
-        ServerFeatureExtSet::with(&[ServerFeatureExt::PathQuery, ServerFeatureExt::Checkout])
+        ServerFeatureExtSet::with(&[ServerFeatureExt::PathQuery, ServerFeatureExt::Checkout]), phux_protocol::caps::ServerFeatureExt2Set::new()
     ));
     assert!(
         kinds::method_named("GET_SCREEN")
             .expect("GET_SCREEN")
-            .advertised(empty, ServerFeatureExtSet::new())
+            .advertised(empty, ServerFeatureExtSet::new(), phux_protocol::caps::ServerFeatureExt2Set::new())
     );
+}
+
+#[test]
+fn archived_relaunch_metadata_requires_the_executing_peers_third_word() {
+    use phux_protocol::caps::{ServerFeatureExt2, ServerFeatureExt2Set};
+    let method = kinds::method_named("RESOURCE_RELAUNCH").unwrap();
+    assert_eq!(method.gate, Some(kinds::FeatureGate::ext2(ServerFeatureExt2::ArchivedLaunchAdmission)));
+    assert!(!method.advertised(ServerFeatureSet::all(), ServerFeatureExtSet::all(), ServerFeatureExt2Set::new()));
+    assert!(method.advertised(ServerFeatureSet::new(), ServerFeatureExtSet::new(), ServerFeatureExt2Set::all()));
+    assert_eq!(method.gate.unwrap().word().field_name(), "features_ext2");
 }
 
 /// Read the allocated event tags from the codec declarations, not a second

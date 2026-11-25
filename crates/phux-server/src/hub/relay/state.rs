@@ -250,6 +250,7 @@ pub(crate) struct RelaySession {
     /// The satellite's `HELLO_OK` features; listings need `LIST_DIRECTORY`.
     pub(super) satellite_features: ServerFeatureSet,
     pub(super) satellite_features_ext: ServerFeatureExtSet,
+    pub(super) satellite_features_ext2: phux_protocol::caps::ServerFeatureExt2Set,
     /// Upstream detach barriers: old frames may arrive until the reply.
     pub(super) pending_detaches: HashMap<u32, PendingDetach>,
     /// Terminals whose metadata allowlist is already mirrored (ADR-0136).

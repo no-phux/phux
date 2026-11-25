@@ -224,6 +224,12 @@ rule_table! {
     C_NATIVE_LAUNCH = verbs(
         "`NATIVE_AGENT { type: launch_integration }`", [Create, Bind, Input], KeyedSession
     );
+    C_PREPARE_RELAUNCH = verbs(
+        "`NATIVE_AGENT { type: prepare_relaunch }`", [Inventory], GlobalOwnerUds
+    );
+    C_APPROVE_RELAUNCH = verbs(
+        "`NATIVE_AGENT { type: approve_relaunch }`", [Create, Bind, Input], GlobalOwnerUds
+    );
     C_NATIVE_COMMAND = verbs("`NATIVE_AGENT { type: command }`", [Input], NamedTerminal);
     C_CURRENT_QUESTIONS = verbs(
         "`NATIVE_AGENT { type: current_questions }` with handle", [Observe], NamedTerminal

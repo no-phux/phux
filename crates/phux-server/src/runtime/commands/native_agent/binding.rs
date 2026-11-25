@@ -21,6 +21,8 @@ pub(crate) struct NativeAgents {
     pub wakes: BTreeMap<ResourceId, Arc<Notify>>,
     pub sealed: bool,
     pub close_workers: std::collections::BTreeSet<ResourceId>,
+    /// One inert, exact raw proposal per live owner connection. Never exported.
+    pub relaunch_proposals: std::collections::HashMap<ClientId, phux_protocol::native_agent::relaunch::RelaunchApproval>,
 }
 
 impl AppSlot for NativeAgents {

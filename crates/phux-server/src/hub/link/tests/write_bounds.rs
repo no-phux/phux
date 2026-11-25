@@ -138,6 +138,10 @@ impl LinkConn for ScriptConn {
             phux_protocol::caps::ServerFeature::ListDirectory,
         ]))
     }
+
+    fn server_features_ext2(&self) -> Result<phux_protocol::caps::ServerFeatureExt2Set, String> {
+        Ok(phux_protocol::caps::ServerFeatureExt2Set::new())
+    }
 }
 
 impl LinkConn for BlockedWriteConn {
@@ -169,6 +173,10 @@ impl LinkConn for BlockedWriteConn {
         Ok(phux_protocol::caps::ServerFeatureSet::with(&[
             phux_protocol::caps::ServerFeature::ListDirectory,
         ]))
+    }
+
+    fn server_features_ext2(&self) -> Result<phux_protocol::caps::ServerFeatureExt2Set, String> {
+        Ok(phux_protocol::caps::ServerFeatureExt2Set::new())
     }
 }
 

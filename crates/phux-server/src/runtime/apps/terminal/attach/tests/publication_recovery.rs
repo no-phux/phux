@@ -236,12 +236,13 @@ async fn session_entry(
     core: ResourceId,
     output: tokio::sync::broadcast::Receiver<ResourceOutput>,
 ) {
+    let reservation = crate::runtime::apps::StreamHost::new(state, ctx.client_id).reserve(core, ctx.initial_bootstrap_id, connection).unwrap();
+    let lease = reservation.lease.clone();
     let reply = capture(&ctx).await;
     let (cut, capture) = publish_native_bootstrap(&ctx.out_tx, reply)
         .await
         .expect("queue capture");
     let (gate, receive) = oneshot::channel();
-    let client_id = ctx.client_id;
     let snapshot_gate = SnapshotGate {
         terminal_id: core,
         terminal: ctx.terminal.clone(),
@@ -249,20 +250,20 @@ async fn session_entry(
         cut: Some(cut),
         native_capture: Some(capture),
     };
-    let state_for_pump = state.clone();
-    let connection_for_pump = connection.clone();
-    let pump = tokio::task::spawn_local(async move {
+    let owner = lease.clone();
+    let mut pumps = JoinSet::new();
+    assert!(lease.spawn(Some(&mut pumps), ctx.drain.clone(), async move {
         if let Some(fault) = run_output_pump(&ctx, receive, output).await {
-            release_after_pump_fault(fault, &state_for_pump, client_id, &connection_for_pump);
+            owner.retire_terminal_fault(fault);
         }
-    });
+    }));
     release_gates(
-        &crate::runtime::apps::StreamHost::new(state, client_id),
-        connection,
+        &lease,
         vec![snapshot_gate],
     )
     .await.expect("session publication");
-    pump.await.expect("session pump");
+    assert!(reservation.published(|| true));
+    while let Some(result) = pumps.join_next().await { result.expect("session pump"); }
 }
 
 async fn replacement_entry(

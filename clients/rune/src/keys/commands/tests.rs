@@ -103,6 +103,7 @@ every_shortcut!(
     CopyMode,
     CopyConfig,
     RestoreSessions,
+    ReviewRawRelaunch,
     Inbox,
     Changes,
     Popup,

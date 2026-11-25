@@ -180,6 +180,10 @@ async fn spawn_local_session(
         }
     };
 
+    let reservation = if decodes.contains(ResourceKind::AgentSession) {
+        let host = crate::runtime::apps::StreamHost::new(state, client_id);
+        host.next_bootstrap().and_then(|bootstrap| host.reserve(core_session, bootstrap, connection_token))
+    } else { None };
     let finish = SpawnFinish {
         state,
         request_id,
@@ -192,15 +196,14 @@ async fn spawn_local_session(
     // ADR-0103 §6: the parent's `REPORT_AGENT_STATE` now lands on this stream.
     let bind = async || bind_agent_stream(state, core_parent, &bundle.handle).await;
     let attach = async || {
+        let Some(reservation) = reservation else { return phux_protocol::wire::frame::CommandResult::error(phux_protocol::wire::frame::ErrorCode::InternalError, "spawner stream reservation unavailable"); };
         attach_agent_session(
-            &crate::runtime::apps::StreamHost::new(state, client_id),
+            reservation,
             client_id,
             &wire_session,
-            core_session,
             &bundle.handle,
             out_tx,
             bootstrap_limits,
-            connection_token,
             None,
         )
         .await

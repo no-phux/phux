@@ -104,6 +104,8 @@ pub fn command_rule(command: &Command) -> &'static Rule {
             crate::native_agent::NativeRequest::RespondQuestion { .. } => &C_RESPOND_QUESTION,
             crate::native_agent::NativeRequest::QuestionReceipt { .. } => &C_QUESTION_RECEIPT,
             crate::native_agent::NativeRequest::ListIntegrations {} => &C_NATIVE_LIST,
+            crate::native_agent::NativeRequest::PrepareRelaunch { .. } => &C_PREPARE_RELAUNCH,
+            crate::native_agent::NativeRequest::ApproveRelaunch { .. } => &C_APPROVE_RELAUNCH,
             crate::native_agent::NativeRequest::LaunchIntegration { .. } => &C_NATIVE_LAUNCH,
             crate::native_agent::NativeRequest::Spawn { .. } => &C_NATIVE_SPAWN,
             crate::native_agent::NativeRequest::Command { .. } => &C_NATIVE_COMMAND,

@@ -1,6 +1,7 @@
 use super::binding::NativeBinding;
 use super::controller::{denied, json, refusal};
-use crate::runtime::apps::terminal::{commands as terminal, launch as terminal_launch};
+use crate::runtime::apps::terminal::launch as terminal_launch;
+use crate::runtime::commands::terminal;
 use crate::runtime::commands::CommandContext;
 use crate::state::SharedState;
 use phux_agent_session::session::AgentSessionActor;
@@ -554,5 +555,16 @@ fn launch_native_guardian(
 }
 
 pub(super) fn spawn(ctx: &CommandContext, spec: &SpawnNativeAgent) -> CommandResult {
+    if spec.guardian.is_some() || spec.guardian_key.is_some() {
+        let mut current = match super::integrations::admit_saved(spec) {
+            Ok(current) => current,
+            Err(error) => return error,
+        };
+        current.session.clone_from(&spec.session);
+        current.guardian.clone_from(&spec.guardian);
+        current.guardian_key = spec.guardian_key;
+        current.guardian_expected = spec.guardian_expected;
+        return spawn_transaction(ctx, &current, None).map_or_else(|error| error, |spawned| json(&spawned));
+    }
     spawn_transaction(ctx, spec, None).map_or_else(|error| error, |spawned| json(&spawned))
 }

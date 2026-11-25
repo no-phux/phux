@@ -19,16 +19,31 @@ pub(crate) fn claim_relaunch(
     resource: &ResourceKey,
     expected: Revision,
 ) -> Option<CommandResult> {
-    if let Some(result) = ctx
-        .state
-        .with(|s| replay_native_relaunch(s, operation, resource, expected))
-    {
-        return Some(result);
+    let command = phux_protocol::wire::frame::Command::ResourceRelaunch {
+        operation, resource: *resource, expected,
+    };
+    if !matches!(ctx.state.with(|s| crate::policy::authorize_command(s, ctx.client_id, &command)),
+        Ok(crate::policy::Admission::Run)) {
+        return Some(super::controller::denied("relaunch requires current authority on the exact saved resource"));
+    }
+    if ctx.state.with(|s| s.org().receipt(&ow::core_operation(&operation)).is_some()) {
+        return ctx.state.with(|s| replay_native_relaunch(s, operation, resource, expected));
     }
     match ctx
         .state
-        .with(|s| native_relaunch_spec(s, resource, expected))
+        .with(|s| native_relaunch_spec(s, resource, expected, false))
     {
+        Ok(Some(spec)) => Some(spawn_relaunch(ctx, spec, operation)),
+        Ok(None) => None,
+        Err(result) => Some(result),
+    }
+}
+
+/// Only the exact, freshly checked local-owner proposal reaches this path.
+pub(crate) fn claim_approved_relaunch(
+    ctx: &CommandContext, operation: OperationId, resource: &ResourceKey, expected: Revision,
+) -> Option<CommandResult> {
+    match ctx.state.with(|s| native_relaunch_spec(s, resource, expected, true)) {
         Ok(Some(spec)) => Some(spawn_relaunch(ctx, spec, operation)),
         Ok(None) => None,
         Err(result) => Some(result),
@@ -76,6 +91,7 @@ fn native_relaunch_spec(
     s: &ServerState,
     resource: &phux_protocol::ids::ResourceKey,
     expected: phux_protocol::ids::Revision,
+    raw_approved: bool,
 ) -> Result<Option<phux_protocol::native_agent::SpawnNativeAgent>, CommandResult> {
     let Some(id) = s.registry().resource_id(&ow::core_resource_key(resource)) else {
         return Ok(None);
@@ -119,6 +135,9 @@ fn native_relaunch_spec(
         return Err(invalid(
             "saved native recipe contains private bootstrap or stale destination data".into(),
         ));
+    }
+    if !raw_approved {
+        spec = super::integrations::admit_saved(&spec)?;
     }
     let session = s
         .registry()

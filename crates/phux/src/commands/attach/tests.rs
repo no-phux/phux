@@ -1,108 +1,19 @@
-//! Attach contracts and dial planning regressions.
+//! Attach lookup, ending and transport-shape contracts.
+
+use std::time::{Duration, Instant};
+
+use phux_client_runtime::reconnect::Ladder;
+use phux_dial::{CertTrust, QuicDial, WsDial};
+use phux_protocol::wire::frame::DetachReason;
+
+use super::native::{OVERLAY_REACHABILITY_HINT, reachability_hint};
+use super::reconnect::{ReconnectOutcome, ReconnectPolicy, UDS_RECONNECT, reconnect_failure_lines, reconnect_policy, reconnect_progress_line, wait_until_connectable};
+use super::remote::remote_repair;
 use super::*;
-use std::time::Duration;
-use phux_client::attach::{CertTrust, QuicDial, WsDial};
+
 mod reconnect;
-use crate::commands::attach::reconnect::{ReconnectOutcome, wait_until_connectable};
-use self::reconnect::with_deadline;
-    /// The overlay hint fires only for a reachability failure on a
-    /// non-loopback target — never for pin/auth failures (a host that
-    /// answered) and never for loopback (no overlay involved).
-    #[test]
-    fn reachability_hint_gates_on_variant_and_loopback() {
-        let unreachable = AttachError::Unreachable("x".to_owned());
-        assert_eq!(
-            reachability_hint(&unreachable, false),
-            Some(OVERLAY_REACHABILITY_HINT)
-        );
-        assert_eq!(reachability_hint(&unreachable, true), None);
+mod ws_hello;
 
-        let pin_mismatch = AttachError::Connect(
-            "server certificate fingerprint mismatch (pinned AA, got BB)".to_owned(),
-        );
-        assert_eq!(reachability_hint(&pin_mismatch, false), None);
-
-        let io = AttachError::Io(std::io::Error::from(std::io::ErrorKind::BrokenPipe));
-        assert_eq!(reachability_hint(&io, false), None);
-    }
-
-    #[test]
-    fn remote_repair_is_limited_to_early_transport_failures() {
-        // A refused credential means a host answered: only a re-pair helps.
-        // Nobody answering means the server is most likely stopped.
-        for (result, repair) in [
-            (
-                Err(AttachError::Connect("bad credential".to_owned())),
-                Repair::RePair,
-            ),
-            (
-                Err(AttachError::Unreachable("no route".to_owned())),
-                Repair::Start,
-            ),
-            (
-                Err(AttachError::Refused("no such session".to_owned())),
-                Repair::None,
-            ),
-            (Err(AttachError::Disconnected), Repair::None),
-            (Ok(AttachEnd::Detached { reason: None }), Repair::None),
-        ] {
-            assert_eq!(remote_repair(&result), repair);
-        }
-    }
-
-    /// `--quic` targets split on the last `:`, so IPv4 literals, bracketed
-    /// IPv6 literals, and DNS names all parse; a missing or malformed port
-    /// is rejected up front with a usage error.
-    #[test]
-    fn split_host_port_accepts_documented_target_shapes() {
-        assert_eq!(
-            split_host_port("127.0.0.1:8788"),
-            Ok(("127.0.0.1", 8788_u16))
-        );
-        assert_eq!(split_host_port("[::1]:1"), Ok(("[::1]", 1_u16)));
-        assert_eq!(
-            split_host_port("myhost.tailnet-name.ts.net:8788"),
-            Ok(("myhost.tailnet-name.ts.net", 8788_u16))
-        );
-
-        for (target, reason) in [
-            ("myhost.tailnet-name.ts.net", "missing a port"),
-            ("myhost:notaport", "invalid port"),
-            (":8788", "missing a host"),
-        ] {
-            let err = split_host_port(target).expect_err(target);
-            assert!(err.contains(reason), "{target}: {err}");
-        }
-    }
-
-    /// A relay route with no CA pinned is refused by the name the caller
-    /// gave (the registry entry), not the dialed address, with the CLI's
-    /// own remedy appended to the runtime's transport-neutral reason.
-    #[test]
-    fn an_unpinned_relay_route_is_refused_by_name_with_the_cli_remedy() {
-        let plan = DialPlan {
-            dial: Dial::Quic(phux_client::attach::QuicDial {
-                addr: "192.0.2.1:4433".parse().expect("addr"),
-                server_name: "studio-route".into(),
-                token: None,
-                trust: CertTrust::Pinned("relay-leaf".into()),
-                identity: Some(phux_dial::TlsClientIdentity::None),
-                inner: None,
-            }),
-            loopback: false,
-        };
-        let pin = phux_client_runtime::target::AuthorityPin {
-            ca: None,
-            route: Some("studio-route".into()),
-        };
-        let Err(DialRefusal::Malformed(refused)) = plan.with_authority("studio", &pin) else {
-            panic!("a relay route without the server's CA must be refused");
-        };
-        assert!(refused.starts_with("studio is reached"), "{refused}");
-        assert!(!refused.contains("192.0.2.1"), "{refused}");
-        assert!(refused.contains("--relay-route studio-route"), "{refused}");
-        assert!(refused.contains("--ca-fingerprint"), "{refused}");
-    }
     /// Only a pane attaching to its own server is refused, and the override
     /// or a different socket lets it through.
     #[test]
@@ -121,55 +32,6 @@ use self::reconnect::with_deadline;
         );
         assert!(!is_nested_attach(own, true, None, false), "no pane socket");
     }
-
-    /// The typed refusal renders the exact lines attach printed before the
-    /// planners stopped printing: the flag-naming remedy for attach, and the
-    /// overlay hint only after a DNS name failed to resolve.
-    #[test]
-    fn dial_refusals_keep_attach_wording() {
-        let unpinned = DialRefusal::UnpinnedQuic {
-            target: "mini:8788".to_owned(),
-        }
-        .attach_lines();
-        assert_eq!(
-            unpinned,
-            vec![
-                "refusing to dial non-loopback QUIC server mini:8788 without --cert-fingerprint.",
-                "Run `phux pair` on the server host to print its certificate fingerprint,",
-                "then pass it: phux attach --quic mini:8788 --cert-fingerprint <FP>",
-            ]
-        );
-
-        let unresolved = |dns_name| {
-            DialRefusal::Unresolved {
-                target: "mini:8788".to_owned(),
-                detail: "name resolution failed: nope".to_owned(),
-                dns_name,
-            }
-            .attach_lines()
-        };
-        assert_eq!(
-            unresolved(true),
-            vec![
-                "QUIC attach to mini:8788 failed: name resolution failed: nope".to_owned(),
-                OVERLAY_REACHABILITY_HINT.to_owned(),
-            ]
-        );
-        assert_eq!(
-            unresolved(false).len(),
-            1,
-            "an IP literal never earns the hint"
-        );
-
-        assert_eq!(
-            DialRefusal::NoToken {
-                url: "wss://h:1".to_owned()
-            }
-            .attach_lines()[0],
-            "refusing remote WebSocket attach to wss://h:1 without --token."
-        );
-    }
-
     /// The gate is whether the dial actually crosses a network, not whether
     /// the transport could: a loopback QUIC or WebSocket dial has no round
     /// trip to hide, so it must not predict.
@@ -211,7 +73,6 @@ use self::reconnect::with_deadline;
             identity: None,
         })
     }
-
     /// `phux attach X` against a live server that has no `X` used to print
     /// only the server's refusal. Attach stays lookup-only (tmux's `attach -t`
     /// refuses the same way), so the miss names the verb that creates it.
@@ -272,5 +133,10 @@ use self::reconnect::with_deadline;
             assert_eq!(end.explanation().as_deref(), expected);
         }
     }
-use phux_protocol::wire::frame::DetachReason;
-mod ws_hello;
+    /// The UDS policy with a test-length deadline; cadence untouched.
+    fn with_deadline(deadline: Duration) -> ReconnectPolicy {
+        ReconnectPolicy {
+            deadline,
+            ..UDS_RECONNECT
+        }
+    }

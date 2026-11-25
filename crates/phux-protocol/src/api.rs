@@ -2,6 +2,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use crate::ids::parse_hex16;
 
 mod errors;
 mod execution;
@@ -394,30 +395,6 @@ impl TerminalPlacement {
             }
         }
     }
-}
-
-/// Parse an exact 16-byte hexadecimal identity, accepting either case.
-#[must_use]
-pub fn parse_hex16(text: &str) -> Option<[u8; 16]> {
-    if text.len() != 32 || !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return None;
-    }
-    let mut bytes = [0; 16];
-    for (slot, pair) in bytes.iter_mut().zip(text.as_bytes().as_chunks::<2>().0) {
-        *slot = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
-    }
-    Some(bytes)
-}
-
-/// Canonical lowercase hexadecimal representation of a 16-byte identity.
-#[must_use]
-pub fn hex16(bytes: &[u8; 16]) -> String {
-    use std::fmt::Write as _;
-    let mut text = String::with_capacity(32);
-    for byte in bytes {
-        let _ = write!(text, "{byte:02x}");
-    }
-    text
 }
 
 /// Input schema derived from every nested request type.

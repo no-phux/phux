@@ -43,6 +43,7 @@ impl RelaySession {
             pending_paths: HashMap::new(),
             satellite_features,
             satellite_features_ext: ServerFeatureExtSet::new(),
+            satellite_features_ext2: phux_protocol::caps::ServerFeatureExt2Set::new(),
             pending_detaches: HashMap::new(),
             mirrored: HashSet::new(),
             pending_mirror_gets: HashMap::new(),
@@ -97,6 +98,10 @@ impl RelaySession {
 
     pub(crate) const fn set_satellite_features_ext(&mut self, features: ServerFeatureExtSet) {
         self.satellite_features_ext = features;
+    }
+
+    pub(crate) const fn set_satellite_features_ext2(&mut self, features: phux_protocol::caps::ServerFeatureExt2Set) {
+        self.satellite_features_ext2 = features;
     }
 
     pub(crate) fn set_resource_kinds(&mut self, resource_kinds: ResourceKindCatalog) {

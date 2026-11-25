@@ -324,6 +324,23 @@ impl OrgJournal {
         reports
     }
 
+    /// Retire archived relaunches before sending to an unenforcing peer.
+    /// An earlier possible send stays Unknown; a never-sent request is NotSent.
+    pub fn reject_unenforced_relaunches(&mut self) -> Vec<OrgReport> {
+        let mut reports = Vec::new();
+        self.ops.retain(|op| {
+            if !matches!(op.command, Command::ResourceRelaunch { .. }) { return true; }
+            let reason = "executing peer cannot prove archived launch admission; no relaunch was sent on this connection".to_owned();
+            reports.push(OrgReport { operation: op.operation, outcome: if op.attempts == 0 {
+                OrgOutcome::NotSent { reason }
+            } else {
+                OrgOutcome::Unknown { reason }
+            } });
+            false
+        });
+        reports
+    }
+
     /// Frames for every operation not in flight, each under a request id
     /// from `request_id`, in submission order. Nothing while no live
     /// connection advertises `ORGANIZATION`.

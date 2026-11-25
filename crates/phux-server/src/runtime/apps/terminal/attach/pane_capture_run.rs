@@ -168,7 +168,7 @@ impl PaneCaptureContext<'_> {
         // A tick-managed consumer's deltas come from the actor, in its own
         // sequence space: a broadcast pump beside it would double-emit.
         if !registration.tick_managed {
-            self.spawn_pane_pump(staging, terminal_id, &wire_terminal_id, &handle, &terminal);
+            self.spawn_pane_pump(staging, terminal_id, &wire_terminal_id, &handle, &terminal)?;
         }
         if let Some(state_sync) = registration.state_sync_bootstrap {
             return Ok(self.stage_synthesized_frames(

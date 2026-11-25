@@ -63,7 +63,7 @@ impl ExecutionPin {
             authority: self.authority.to_string(),
             resource: self.resource.to_string(),
             activation: self.activation.get(),
-            instance: phux_protocol::api::hex16(&self.instance),
+            instance: phux_protocol::ids::hex16(&self.instance),
         }
     }
 

@@ -52,13 +52,14 @@ impl Harness {
         )
     }
 
+    fn reserve(&self, bootstrap: BootstrapId) -> crate::runtime::apps::StreamReservation {
+        self.host.reserve(self.core, bootstrap, &self.connection).unwrap()
+    }
+
     fn session(&self) -> AttachResourceSession<'_> {
         AttachResourceSession {
-            host: &self.host,
             out_tx: &self.outbound,
-            connection_token: &self.connection,
             terminal_id: &self.wire,
-            core: self.core,
             handle: self.handle.clone(),
             terminal: self.handle.terminal().unwrap().clone(),
             client_id: self.client,
@@ -87,7 +88,7 @@ async fn cancellation_before_mailbox_admission_sends_no_registration() {
                 .unwrap(),
         );
     }
-    let mut establish = Box::pin(session.establish_generation(bootstrap));
+    let mut establish = Box::pin(session.establish_generation(harness.reserve(bootstrap)));
     assert!(establish.as_mut().now_or_never().is_none());
     drop(establish);
     drop(reservations);
@@ -101,7 +102,7 @@ async fn dropping_the_attach_future_with_an_unanswered_actor_retires_exact_inter
     let (harness, mut actor) = Harness::new();
     let session = harness.session();
     let bootstrap = BootstrapId::new(1).unwrap();
-    let mut establish = Box::pin(session.establish_generation(bootstrap));
+    let mut establish = Box::pin(session.establish_generation(harness.reserve(bootstrap)));
     assert!(establish.as_mut().now_or_never().is_none());
     let request = actor.consumer_attach.try_recv().unwrap();
     assert!(!request.cancellation.is_cancelled());
@@ -118,7 +119,7 @@ async fn unread_success_and_unpublished_generation_both_remain_drop_owned() {
         let (harness, mut actor) = Harness::new();
         let session = harness.session();
         let bootstrap = BootstrapId::new(1).unwrap();
-        let mut establish = Box::pin(session.establish_generation(bootstrap));
+        let mut establish = Box::pin(session.establish_generation(harness.reserve(bootstrap)));
         assert!(establish.as_mut().now_or_never().is_none());
         let request = actor.consumer_attach.try_recv().unwrap();
         let cancellation = request.cancellation.clone();
@@ -144,7 +145,7 @@ async fn dropping_an_old_bootstrap_cannot_cancel_its_replacement_generation() {
     let session = harness.session();
     let old_id = BootstrapId::new(1).unwrap();
     let new_id = BootstrapId::new(2).unwrap();
-    let mut old = Box::pin(session.establish_generation(old_id));
+    let mut old = Box::pin(session.establish_generation(harness.reserve(old_id)));
     assert!(old.as_mut().now_or_never().is_none());
     actor
         .consumer_attach
@@ -154,7 +155,7 @@ async fn dropping_an_old_bootstrap_cannot_cancel_its_replacement_generation() {
         .send(Ok(state_sync_outcome(b"old")))
         .unwrap();
     let old = old.await.unwrap();
-    let mut new = Box::pin(session.establish_generation(new_id));
+    let mut new = Box::pin(session.establish_generation(harness.reserve(new_id)));
     assert!(new.as_mut().now_or_never().is_none());
     let replacement = actor.consumer_attach.try_recv().unwrap();
     let cancellation = replacement.cancellation.clone();
@@ -181,7 +182,7 @@ async fn dropping_an_old_bootstrap_cannot_cancel_its_replacement_generation() {
 async fn cancellation_during_a_full_publication_mailbox_never_opens_the_live_gate() {
     let (harness, mut actor) = Harness::new();
     let session = harness.session();
-    let mut establish = Box::pin(session.establish_generation(BootstrapId::new(1).unwrap()));
+    let mut establish = Box::pin(session.establish_generation(harness.reserve(BootstrapId::new(1).unwrap())));
     assert!(establish.as_mut().now_or_never().is_none());
     let request = actor.consumer_attach.try_recv().unwrap();
     let cancellation = request.cancellation.clone();
@@ -199,5 +200,89 @@ async fn cancellation_during_a_full_publication_mailbox_never_opens_the_live_gat
     assert!(publish.await.is_err());
     assert!(cancellation.is_cancelled());
     assert!(!*live.borrow());
+    assert!(actor.consumer_detach.try_recv().is_err());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn suspended_establish_cannot_retire_or_reap_a_newer_published_stream() {
+    crate::runtime::test_support::local(async {
+        let (mut harness, mut actor) = Harness::new();
+        let session = harness.session();
+        let predecessor = harness.reserve(BootstrapId::new(1).unwrap());
+        let old_scope = predecessor.lease.clone();
+        let (started, running) = oneshot::channel();
+        assert!(old_scope.spawn(None, None, async move {
+            started.send(()).unwrap();
+            std::future::pending::<()>().await;
+        }));
+        assert!(predecessor.published(|| true));
+        running.await.unwrap();
+
+        // Both real establish futures must retain the actual emitter's fence.
+        // No runtime turn occurs between aborting it and polling these sources.
+        let mut older = Box::pin(session.establish_generation(harness.reserve(BootstrapId::new(2).unwrap())));
+        assert!(older.as_mut().now_or_never().is_none());
+        let newest = harness.reserve(BootstrapId::new(3).unwrap());
+        let newest_scope = newest.lease.clone();
+        let mut newer = Box::pin(session.establish_generation(newest));
+        assert!(newer.as_mut().now_or_never().is_none());
+        assert!(actor.consumer_attach.try_recv().is_err());
+        assert!(older.await.is_err());
+        assert!(!newest_scope.cancellation.is_cancelled());
+        tokio::task::yield_now().await;
+        assert!(newer.as_mut().now_or_never().is_none());
+        let request = actor.consumer_attach.try_recv().unwrap();
+        let interest = request.cancellation.clone();
+        request.reply.send(Ok(state_sync_outcome(b"newest"))).unwrap();
+        session.publish_generation(newer.await.unwrap()).await.unwrap();
+
+        // Delayed faults and creation withdrawal all carry the original fence.
+        old_scope.detach(&harness.wire).await;
+        old_scope.retire_terminal_fault(crate::runtime::apps::terminal::attach::PumpFault::GenerationLost);
+        old_scope.retire_spawn_fault(crate::runtime::apps::terminal::attach::PumpFault::GenerationLost);
+        old_scope.reap_spawn(&harness.wire, None);
+        assert!(!interest.is_cancelled());
+        assert!(!harness.connection.is_cancelled());
+        assert!(harness.state.with(|s| s.registry().resource(harness.core).is_some()));
+        assert!(actor.consumer_detach.try_recv().is_err());
+        let mut ready = false;
+        while let Ok(Outbound::Frame(frame)) = harness._output.try_recv() {
+            ready |= matches!(frame, FrameKind::BootstrapReady { bootstrap_id, .. } if bootstrap_id == BootstrapId::new(3).unwrap());
+        }
+        assert!(ready, "the surviving real publication reaches READY");
+    }).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_full_old_publication_cannot_open_or_withdraw_the_replacement_gate() {
+    let (mut harness, mut actor) = Harness::new();
+    let session = harness.session();
+    let mut establish = Box::pin(session.establish_generation(harness.reserve(BootstrapId::new(1).unwrap())));
+    assert!(establish.as_mut().now_or_never().is_none());
+    let old = actor.consumer_attach.try_recv().unwrap();
+    let old_gate = old.live_gate.clone();
+    old.reply.send(Ok(state_sync_outcome(b"old"))).unwrap();
+    let generation = establish.await.unwrap();
+    while harness.outbound.try_send(Outbound::Frame(FrameKind::ResourceClosed {
+        terminal_id: harness.wire.clone(), exit_status: None,
+        reason: phux_protocol::wire::frame::CloseReason::Unknown, signal: None,
+    })).is_ok() {}
+    let mut publish = Box::pin(session.publish_generation(generation));
+    assert!(publish.as_mut().now_or_never().is_none());
+    let reservation = harness.reserve(BootstrapId::new(2).unwrap());
+    assert!(publish.await.is_err());
+    assert!(!*old_gate.borrow());
+    while harness._output.try_recv().is_ok() {}
+    let session = harness.session();
+    let mut replacement = Box::pin(session.establish_generation(reservation));
+    assert!(replacement.as_mut().now_or_never().is_none());
+    let current = actor.consumer_attach.try_recv().unwrap();
+    let live = current.live_gate.clone();
+    let interest = current.cancellation.clone();
+    current.reply.send(Ok(state_sync_outcome(b"current"))).unwrap();
+    session.publish_generation(replacement.await.unwrap()).await.unwrap();
+    assert!(*live.borrow());
+    assert!(!interest.is_cancelled());
+    assert!(!harness.connection.is_cancelled());
     assert!(actor.consumer_detach.try_recv().is_err());
 }

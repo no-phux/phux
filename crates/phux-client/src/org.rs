@@ -28,6 +28,8 @@ pub use phux_client_runtime::control::mint_operation;
 
 mod edit;
 mod inventory;
+mod relaunch_approval;
+pub use relaunch_approval::{approve_relaunch, prepare_relaunch};
 mod verbs;
 mod session_workflows;
 

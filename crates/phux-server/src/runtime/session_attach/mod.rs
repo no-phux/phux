@@ -14,7 +14,6 @@ use tokio_util::sync::CancellationToken;
 use super::apps::{self, terminal};
 use super::pump::initial_bootstrap_id;
 use super::{send_error, stream_id_from};
-use crate::resource::ResourceHandle;
 use crate::state::{AttachSnapshotPane, ClientId, Outbound, SharedState};
 use prepare::{is_same_session_reattach, prepare_attach_or_refuse};
 use publication::AttachPublication;
@@ -42,9 +41,8 @@ struct SessionAttach<'a> {
 /// The immutable generation and remaining resource ceilings lent to an app.
 #[derive(Clone)]
 pub(crate) struct SessionCapture<'a> {
-    pub(crate) host: apps::StreamHost,
+    pub(crate) lease: apps::StreamLease,
     pub(crate) out_tx: &'a tokio::sync::mpsc::Sender<Outbound>,
-    pub(crate) connection_token: &'a CancellationToken,
     pub(crate) live_gate: tokio::sync::watch::Receiver<bool>,
     pub(crate) client_id: ClientId,
     pub(crate) client_caps: ClientCapabilities,
@@ -55,25 +53,19 @@ pub(crate) struct SessionCapture<'a> {
     pub(crate) scrollback: Option<u32>,
 }
 
-impl SessionCapture<'_> {
-    async fn capture(
-        &self,
+async fn capture_panes<'a>(
+        make: impl Fn(apps::StreamLease) -> SessionCapture<'a>,
         staging: &mut SessionStaging,
-        panes: Vec<AttachSnapshotPane>,
+        panes: Vec<(AttachSnapshotPane, apps::StreamLease)>,
         mut closed: Vec<phux_protocol::ids::ResourceId>,
     ) -> Result<(), String> {
-        staging
-            .handles
-            .try_reserve(panes.len())
-            .map_err(|_| "host allocation failed".to_owned())?;
         closed
             .try_reserve(panes.len())
             .map_err(|_| "host allocation failed".to_owned())?;
-        for pane in panes {
-            staging.handles.push(pane.handle.clone());
+        for (pane, lease) in panes {
             let wire = pane.wire_terminal_id.clone();
             match apps::app_for(pane.handle.kind)
-                .stage_session(self.clone(), staging, pane)
+                .stage_session(make(lease), staging, pane)
                 .await
             {
                 Ok(()) => {}
@@ -99,7 +91,6 @@ impl SessionCapture<'_> {
         staging
             .append(closures, 0)
             .map_err(|failure| format!("{failure:?}"))
-    }
 }
 
 /// Refuse a missing Terminal profile before resolving a target that could seed
@@ -149,23 +140,23 @@ async fn prepare_panes(
     attach: SessionAttach<'_>,
     panes: &[AttachSnapshotPane],
     viewport: ViewportInfo,
-) {
+    reservations: &[apps::StreamReservation],
+) -> bool {
     // Single-resource pumps are not owned by the aggregate JoinSet. Fence all
     // prior paths, not just Terminal ticks, before staging their replacements.
-    for pane in panes {
-        super::pump::stop_output(attach.state, attach.client_id, pane.terminal_id).await;
+    for reservation in reservations {
+        if !reservation.ready().await { return false; }
     }
     terminal::attach::prepare_consumers(
         panes,
-        attach.client_id,
         attach.client_caps,
-        attach.same_session,
     )
     .await;
     if viewport.cols == 0 || viewport.rows == 0 {
-        return;
+        return true;
     }
     apps::StreamHost::new(attach.state, attach.client_id).apply_viewport(panes, viewport);
+    true
 }
 
 /// [`prepare_panes`] for a first attach with no palette, driven to
@@ -185,7 +176,7 @@ pub(crate) fn prepare_panes_now(
     };
     // Nothing in this path awaits an actor: no pump to fence, no prior
     // consumer, no palette to apply.
-    futures_util::FutureExt::now_or_never(prepare_panes(attach, panes, viewport))
+    futures_util::FutureExt::now_or_never(prepare_panes(attach, panes, viewport, &[]))
         .expect("a first attach with no palette prepares without waiting");
 }
 
@@ -196,55 +187,31 @@ async fn apply_role(attach: SessionAttach<'_>, panes: &[AttachSnapshotPane], rol
         .await;
 }
 
-/// Roll back a session `ATTACH` that failed before publication: stop every
-/// staged and committed pump, release Terminal consumers, drop the
-/// client's consumer state, then end the connection with
-/// a fatal error.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "single rollback boundary deliberately receives every staged and committed resource so cancellation, producer detach, pump abortion, and the fatal sentinel remain strictly ordered"
-)]
+/// Retire only this unpublished cohort. Mailbox capacity is awaited before
+/// the final exact-token cleanup, so an older failure cannot detach a successor.
 async fn fail_prepublication(
-    state: &SharedState,
-    client_id: ClientId,
+    host: &apps::StreamHost,
     attach_id: u32,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
-    connection_token: &CancellationToken,
-    staged_handles: &[ResourceHandle],
-    staged_pumps: &mut JoinSet<()>,
-    committed_pumps: &mut JoinSet<()>,
+    connection: &CancellationToken,
+    staged: &mut JoinSet<()>,
     reason: &str,
+    publication: &CancellationToken,
 ) {
-    staged_pumps.abort_all();
-    while staged_pumps.join_next().await.is_some() {}
-    super::connections::abort_output_pumps(committed_pumps, client_id, "failed ATTACH").await;
-    terminal::attach::release_aborted_consumers(
-        client_id,
-        stream_id_from(u64::from(attach_id)),
-        initial_bootstrap_id(),
-        staged_handles,
-    )
-    .await;
-    super::connections::detach_and_release_consumer_state(state, client_id);
-
-    // The writer closes right after this terminal ERROR, discarding anything
-    // a surviving producer races in behind it.
-    let deadline = std::time::Duration::from_secs(1);
-    if !matches!(
-        tokio::time::timeout(
-            deadline,
-            out_tx.send(Outbound::FatalError {
-                request_id: None,
-                code: ErrorCode::CodecUnavailable,
-                message: format!("ATTACH {attach_id} failed before publication: {reason}"),
-            }),
-        )
-        .await,
-        Ok(Ok(()))
-    ) {
-        tracing::warn!(client = ?client_id, attach_id, "failed to enqueue terminal ATTACH error");
-    }
-    connection_token.cancel();
+    staged.abort_all();
+    while staged.join_next().await.is_some() {}
+    let permit = tokio::select! {
+        biased;
+        () = publication.cancelled() => return,
+        () = connection.cancelled() => return,
+        result = tokio::time::timeout(std::time::Duration::from_secs(1), out_tx.reserve()) => result.ok().and_then(Result::ok),
+    };
+    let fatal = permit.map(|permit| (permit, Outbound::FatalError {
+        request_id: None,
+        code: ErrorCode::CodecUnavailable,
+        message: format!("ATTACH {attach_id} failed before publication: {reason}"),
+    }));
+    host.abort_pending(publication, connection, fatal);
 }
 
 #[allow(
@@ -295,7 +262,7 @@ pub(crate) async fn handle_attach(
     };
     terminal::attach::refresh_registry_cwds(state).await;
     let same_session = is_same_session_reattach(state, client_id, session);
-    let Some((snapshot, initial_client_id, panes, closed, _publication_guard)) =
+    let Some((snapshot, initial_client_id, panes, closed, publication_guard)) =
         prepare_attach_or_refuse(
             state,
             client_id,
@@ -315,11 +282,22 @@ pub(crate) async fn handle_attach(
         client_caps,
         same_session,
     };
-    prepare_panes(attach, &panes, viewport).await;
+    let publication_token = publication_guard.disarm();
+    let _publication_guard = publication_token.clone().drop_guard();
+    let host = apps::StreamHost::new(state, client_id);
+    let Ok(reservations) = host.reserve_session(&panes, initial_bootstrap_id(), connection_token, &publication_token) else { return false; };
+    let prepared = tokio::select! {
+        biased;
+        () = publication_token.cancelled() => false,
+        () = connection_token.cancelled() => false,
+        result = prepare_panes(attach, &panes, viewport, &reservations) => result,
+    };
+    if !prepared { return false; }
     let publication = AttachPublication {
         state,
         out_tx,
-        cancellation: connection_token,
+        cancellation: &publication_token,
+        connection: connection_token,
         client_id,
         attach_id,
     };
@@ -331,15 +309,14 @@ pub(crate) async fn handle_attach(
     // Only Terminal supports deferred STREAM_BIND. Other apps still capture in
     // this transaction and their control-stream output shares ATTACH_READY.
     let captured_panes = panes
-        .iter()
-        .filter(|pane| !defer_subscription || !apps::defers_stream_bootstrap(pane.handle.kind))
-        .cloned()
+        .iter().zip(&reservations)
+        .filter(|(pane, _)| !defer_subscription || !apps::defers_stream_bootstrap(pane.handle.kind))
+        .map(|(pane, reservation)| (pane.clone(), reservation.lease.clone()))
         .collect();
-    let capture = SessionCapture {
-        host: apps::StreamHost::new(state, client_id),
+    let capture = |lease| SessionCapture {
+        lease,
         out_tx,
-        connection_token,
-        live_gate: gate,
+        live_gate: gate.clone(),
         client_id,
         client_caps,
         stream_id: stream_id_from(u64::from(attach_id)),
@@ -352,37 +329,40 @@ pub(crate) async fn handle_attach(
     let result = tokio::select! {
         biased;
         () = connection_token.cancelled() => Err("connection cancelled during ATTACH capture".to_owned()),
-        result = capture.capture(&mut staging, captured_panes, closed) => result,
+        () = publication_token.cancelled() => Err("ATTACH superseded during capture".to_owned()),
+        result = capture_panes(capture, &mut staging, captured_panes, closed) => result,
     };
     crate::perf::ATTACH_CAPTURE_WALL.record_elapsed(started);
     if let Err(reason) = result {
+        if publication_token.is_cancelled() || connection_token.is_cancelled() { return false; }
         fail_prepublication(
-            state,
-            client_id,
+            &host,
             attach_id,
             out_tx,
             connection_token,
-            &staging.handles,
             &mut staging.pumps,
-            output_pumps,
             &reason,
+            &publication_token,
         )
         .await;
         return false;
     }
-    if same_session {
-        super::connections::abort_output_pumps(output_pumps, client_id, "replacement ATTACH").await;
-    }
-    let mut pumps = staging.pumps;
-    output_pumps.spawn_local(async move { while pumps.join_next().await.is_some() {} });
     let started = std::time::Instant::now();
     let published = publication
         .publish(snapshot, initial_client_id, staging.frames, &session_name)
         .await;
     crate::perf::ATTACH_PUBLISH_WALL.record_elapsed(started);
     if published {
-        apply_role(attach, &panes, role).await;
-        let _ = release.send(true);
-    }
+        tokio::select! {
+            biased;
+            () = publication_token.cancelled() => return false,
+            () = connection_token.cancelled() => return false,
+            () = apply_role(attach, &panes, role) => {},
+        }
+        if !host.publish_session(reservations, &publication_token, connection_token, || release.send(true).is_ok()) { return false; }
+        let mut pumps = staging.pumps;
+        while output_pumps.try_join_next().is_some() {}
+        output_pumps.spawn_local(async move { while pumps.join_next().await.is_some() {} });
+    } else { host.abort_pending(&publication_token, connection_token, None); }
     published
 }

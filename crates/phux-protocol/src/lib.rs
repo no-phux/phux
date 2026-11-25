@@ -48,7 +48,8 @@ pub use caps::{
     EngineCodec, EngineCodecSet, EngineFeature, EngineFeatureSet, FILE_UPLOAD, ImageProtocol,
     ImageProtocolSet, KeyboardProtocol, KeyboardProtocolSet, Layer, LayerSet,
     MAX_BOOTSTRAP_CHUNK_BYTES, MAX_HISTORY_PAGE_BYTES, MOVE_RESOURCE, OutputMode, RESOURCE_KINDS,
-    ResourceKindSet, ServerFeature, ServerFeatureExt, ServerFeatureExtSet, ServerFeatureSet,
+    ResourceKindSet, ServerFeature, ServerFeatureExt, ServerFeatureExtSet, ServerFeatureExt2,
+    ServerFeatureExt2Set, ServerFeatureSet,
     TERMINAL_REPLY, TerminalColor, TerminalDefaultColors, select_bootstrap_profile,
 };
 pub use ids::{

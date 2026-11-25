@@ -336,7 +336,7 @@ fn anchor_entry(
         )),
         _ => Err(OrgError::Ambiguous {
             prefix: resource.to_string(),
-            candidates: entries.iter().map(phux_protocol::api::hex16).collect(),
+            candidates: entries.iter().map(phux_protocol::ids::hex16).collect(),
         }),
     }
 }

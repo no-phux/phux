@@ -4,7 +4,6 @@ use futures_util::future::LocalBoxFuture;
 use phux_protocol::wire::frame::FrameKind;
 use tokio::task::JoinSet;
 
-use crate::resource::ResourceHandle;
 use crate::state::AttachSnapshotPane;
 
 /// One maximal native prefix retained across all kinds until publication.
@@ -77,7 +76,6 @@ impl From<String> for CaptureFailure {
 pub(crate) struct SessionStaging {
     pub(crate) budget: BootstrapStagingBudget,
     pub(crate) frames: Vec<FrameKind>,
-    pub(crate) handles: Vec<ResourceHandle>,
     pub(crate) pumps: JoinSet<()>,
 }
 
@@ -89,7 +87,6 @@ impl Default for SessionStaging {
                 MAX_STAGED_BOOTSTRAP_FRAMES,
             ),
             frames: Vec::new(),
-            handles: Vec::new(),
             pumps: JoinSet::new(),
         }
     }
@@ -134,21 +131,20 @@ impl SessionStaging {
     pub(crate) fn park(
         &mut self,
         capture: &super::SessionCapture<'_>,
-        pane: &AttachSnapshotPane,
+        _pane: &AttachSnapshotPane,
         live: LocalBoxFuture<'static, ()>,
-    ) {
+    ) -> Result<(), CaptureFailure> {
         let drain = tokio_util::sync::CancellationToken::new();
-        capture.host.spawn(
-            pane.terminal_id,
+        if !capture.lease.spawn(
             Some(&mut self.pumps),
             Some(drain.clone()),
             after_publication(
                 capture.live_gate.clone(),
-                capture.connection_token.clone(),
                 Some(drain),
                 live,
             ),
-        );
+        ) { return Err(CaptureFailure::Failed("aggregate stream reservation superseded".to_owned())); }
+        Ok(())
     }
 
     /// Own an app's already-tracked pumps without registering their supervisor
@@ -159,30 +155,19 @@ impl SessionStaging {
         capture: &super::SessionCapture<'_>,
         live: LocalBoxFuture<'static, ()>,
     ) {
-        self.pumps.spawn_local(after_publication(
-            capture.live_gate.clone(),
-            capture.connection_token.clone(),
-            None,
-            live,
-        ));
+        let lease = capture.lease.clone();
+        let parked = after_publication(capture.live_gate.clone(), None, live);
+        self.pumps.spawn_local(async move { let _ = lease.run(parked).await; });
     }
 }
 
 async fn after_publication(
     mut gate: tokio::sync::watch::Receiver<bool>,
-    token: tokio_util::sync::CancellationToken,
     drain: Option<tokio_util::sync::CancellationToken>,
     live: LocalBoxFuture<'static, ()>,
 ) {
-    tokio::select! {
-        () = token.cancelled() => return,
-        ready = gate.wait_for(|ready| *ready) => { if ready.is_err() { return; } }
-    }
-    let drain = drain.unwrap_or_default();
-    tokio::select! {
-        biased;
-        () = token.cancelled() => {},
-        () = drain.cancelled() => {},
-        () = live => {},
-    }
+    if gate.wait_for(|ready| *ready).await.is_err() { return; }
+    if let Some(drain) = drain {
+        tokio::select! { biased; () = drain.cancelled() => {}, () = live => {} }
+    } else { live.await; }
 }

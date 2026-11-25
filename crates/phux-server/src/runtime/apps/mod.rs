@@ -16,7 +16,7 @@ pub(crate) mod agent_session;
 pub(crate) mod agent_tracking;
 mod context;
 mod stream_host;
-pub(crate) use stream_host::StreamHost;
+pub(crate) use stream_host::{StreamHost, StreamLease, StreamReservation};
 pub(crate) mod document;
 pub(crate) mod mirror_demand;
 pub(crate) mod producer_stream;

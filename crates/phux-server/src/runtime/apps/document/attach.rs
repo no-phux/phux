@@ -13,7 +13,6 @@ use phux_protocol::wire::frame::{CommandResult, ErrorCode, FrameKind};
 
 use super::DocumentApi;
 use tokio::sync::{mpsc, oneshot};
-use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use crate::mailbox::Outbound;
@@ -59,15 +58,11 @@ pub(super) async fn stage_session<A: DocumentApi>(
     let frames =
         staging.collect_frames(producer_stream::bootstrap_frames(&cut, ids, capture.limits))?;
     staging.append(frames, bytes)?;
-    let (cancel, done, last_seq, prior) = capture.host.replace(pane.terminal_id, capture.bootstrap_id);
-    if let Some((_, done, _)) = prior {
-        done.cancelled().await;
-    }
+    let cancel = capture.lease.cancellation.clone();
+    let last_seq = std::sync::Arc::clone(&capture.lease.last_seq);
     last_seq.store(cut.base_seq, Ordering::Release);
-    let pump_done = done.drop_guard();
     let pump = PumpCore {
-        host: capture.host.clone(),
-        core: pane.terminal_id,
+        lease: capture.lease.clone(),
         out_tx: capture.out_tx.clone(),
         terminal_id: pane.wire_terminal_id.clone(),
         stream_id: capture.stream_id,
@@ -82,10 +77,9 @@ pub(super) async fn stage_session<A: DocumentApi>(
         &capture,
         &pane,
         Box::pin(async move {
-            let _done = pump_done;
             pump.run(recovery, live, base_seq).await;
         }),
-    );
+    )?;
     Ok(())
 }
 
@@ -95,27 +89,23 @@ pub(super) async fn stage_session<A: DocumentApi>(
     reason = "one ordered subscription/cut/retirement/publication transaction with negotiated context"
 )]
 pub(crate) async fn attach_document<A: DocumentApi>(
-    host: &crate::runtime::apps::StreamHost,
+    reservation: crate::runtime::apps::StreamReservation,
     client_id: ClientId,
     terminal_id: &phux_protocol::ids::ResourceId,
-    core: phux_core::ids::ResourceId,
     handle: &crate::resource::ResourceHandle,
     out_tx: &mpsc::Sender<Outbound>,
     limits: BootstrapLimits,
-    connection_token: &CancellationToken,
 ) -> CommandResult {
     let Ok(document) = handle.document::<A>() else {
         return CommandResult::error(ErrorCode::WrongResourceKind, format!("not a {}", A::LABEL));
     };
     let attach = StreamAttach {
-        host,
+        reservation,
         client_id,
         terminal_id,
-        core,
         handle,
         out_tx,
         limits,
-        connection_token,
     };
     let recovery = Recut::of::<A>(document.snapshot.clone(), document.target.clone());
     let cut = async {

@@ -22,6 +22,8 @@ pub enum FeatureWord {
     Features,
     /// `server_caps.features_ext`, the first trailing word.
     FeaturesExt,
+    /// `server_caps.features_ext2`, the second trailing word.
+    FeaturesExt2,
 }
 
 impl FeatureWord {
@@ -31,6 +33,7 @@ impl FeatureWord {
         match self {
             Self::Features => "features",
             Self::FeaturesExt => "features_ext",
+            Self::FeaturesExt2 => "features_ext2",
         }
     }
 }
@@ -48,6 +51,8 @@ pub enum FeatureGate {
         /// The spec constant, e.g. `"PATH_QUERY"`.
         wire_name: &'static str,
     },
+    /// A bit in the current executing peer's third capability word.
+    FeaturesExt2(crate::caps::ServerFeatureExt2),
 }
 
 impl FeatureGate {
@@ -60,6 +65,12 @@ impl FeatureGate {
         }
     }
 
+    /// Gate a method on the third capability word.
+    #[must_use]
+    pub const fn ext2(feature: crate::caps::ServerFeatureExt2) -> Self {
+        Self::FeaturesExt2(feature)
+    }
+
     /// Whether this bit is advertised in its own negotiated caps word.
     /// Zero masks are never advertised; unknown bits have already been
     /// removed by the typed feature sets. This is not authorization.
@@ -68,9 +79,11 @@ impl FeatureGate {
         self,
         features: crate::caps::ServerFeatureSet,
         features_ext: crate::caps::ServerFeatureExtSet,
+        features_ext2: crate::caps::ServerFeatureExt2Set,
     ) -> bool {
         match self {
             Self::Features(feature) => features.contains(feature),
+            Self::FeaturesExt2(feature) => features_ext2.contains(feature),
             Self::FeaturesExt { mask, .. } => {
                 mask != 0 && features_ext.as_wire() & mask == mask
             }
@@ -83,6 +96,7 @@ impl FeatureGate {
         match self {
             Self::Features(_) => FeatureWord::Features,
             Self::FeaturesExt { .. } => FeatureWord::FeaturesExt,
+            Self::FeaturesExt2(_) => FeatureWord::FeaturesExt2,
         }
     }
 
@@ -92,6 +106,7 @@ impl FeatureGate {
         match self {
             Self::Features(feature) => feature as u32,
             Self::FeaturesExt { mask, .. } => mask,
+            Self::FeaturesExt2(feature) => feature.mask(),
         }
     }
 
@@ -101,6 +116,7 @@ impl FeatureGate {
         match self {
             Self::Features(feature) => feature.wire_name(),
             Self::FeaturesExt { wire_name, .. } => wire_name,
+            Self::FeaturesExt2(feature) => feature.wire_name(),
         }
     }
 
@@ -148,8 +164,9 @@ impl MethodSpec {
         &self,
         features: crate::caps::ServerFeatureSet,
         features_ext: crate::caps::ServerFeatureExtSet,
+        features_ext2: crate::caps::ServerFeatureExt2Set,
     ) -> bool {
-        self.gate.is_none_or(|gate| gate.advertised(features, features_ext))
+        self.gate.is_none_or(|gate| gate.advertised(features, features_ext, features_ext2))
     }
 
     /// Every verb any of the method's rows can require.
@@ -224,6 +241,12 @@ macro_rules! methods {
     (@apply $spec:expr; ext($bit:ident) $($rest:tt)*) => {
         methods!(@apply MethodSpec {
             gate: Some(FeatureGate::ext(ServerFeatureExt::$bit)),
+            ..$spec
+        }; $($rest)*)
+    };
+    (@apply $spec:expr; ext2($bit:ident) $($rest:tt)*) => {
+        methods!(@apply MethodSpec {
+            gate: Some(FeatureGate::ext2(crate::caps::ServerFeatureExt2::$bit)),
             ..$spec
         }; $($rest)*)
     };
@@ -332,7 +355,7 @@ pub static SERVER_METHODS: &[MethodSpec] = methods! {
     "RESOURCE_REMOVE" => Command(COMMAND_TAG_RESOURCE_REMOVE) [C_RESOURCE_REMOVE]
         ext(Organization) dangerous;
     "RESOURCE_RELAUNCH" => Command(COMMAND_TAG_RESOURCE_RELAUNCH) [C_RESOURCE_RELAUNCH]
-        ext(Organization);
+        ext2(ArchivedLaunchAdmission);
     "INBOX_RESOLVE" => Command(COMMAND_TAG_INBOX_RESOLVE) [C_SESSION_ORGANIZE] ext(Organization);
     "ORGANIZATION_UNDO" => Command(COMMAND_TAG_ORGANIZATION_UNDO) [C_ORGANIZATION_UNDO]
         ext(Organization);

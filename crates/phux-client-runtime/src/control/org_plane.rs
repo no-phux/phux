@@ -329,6 +329,10 @@ impl ControlPlane {
     /// [`SubmitError`] — a read, a reused id with another payload, or a full
     /// journal.
     pub fn submit_organization(&mut self, command: Command) -> Result<OperationId, SubmitError> {
+        if matches!(command, Command::ResourceRelaunch { .. }) && !self.server.as_ref().is_some_and(|server|
+            server.features_ext2.contains(phux_protocol::caps::ServerFeatureExt2::ArchivedLaunchAdmission)) {
+            return Err(SubmitError::Unsupported);
+        }
         let now_ms = self.now_ms();
         let operation = self.journal_org_operation(command)?;
         if self.handshake_ready && !self.organization_supported() {
@@ -370,6 +374,11 @@ impl ControlPlane {
     pub(super) fn flush_org_journal(&mut self) {
         if !self.org.ready || !self.handshake_ready {
             return;
+        }
+        if !self.server.as_ref().is_some_and(|server|
+            server.features_ext2.contains(phux_protocol::caps::ServerFeatureExt2::ArchivedLaunchAdmission)) {
+            let reports = self.org.journal.reject_unenforced_relaunches();
+            self.handle_org_reports(reports);
         }
         let mut seq = self.request_seq;
         let frames = self.org.journal.next_frames(&mut || {

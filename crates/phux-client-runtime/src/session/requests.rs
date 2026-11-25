@@ -38,6 +38,22 @@ impl Session {
         request_id: u32,
         command: Command,
     ) -> Result<Reply, SessionError> {
+        let archived = matches!(&command, Command::ResourceRelaunch { .. })
+            || matches!(&command, Command::NativeAgent { request } if match request.request() {
+                phux_protocol::native_agent::NativeRequest::Spawn { spec } =>
+                    spec.guardian.is_some() || spec.guardian_key.is_some(),
+                phux_protocol::native_agent::NativeRequest::PrepareRelaunch { .. }
+                | phux_protocol::native_agent::NativeRequest::ApproveRelaunch { .. } => true,
+                _ => false,
+            });
+        if archived && !self.negotiated_bootstrap().is_some_and(|negotiated| {
+            negotiated.server_features_ext2.contains(phux_protocol::caps::ServerFeatureExt2::ArchivedLaunchAdmission)
+        }) {
+            return Ok(Reply::new(CommandResult::error(
+                phux_protocol::wire::frame::ErrorCode::Unsupported,
+                "executing peer cannot prove archived launch admission; no archived execution was sent",
+            ), Vec::new()));
+        }
         if matches!(&command, Command::NativeAgent { .. })
             && !self.negotiated_bootstrap().is_some_and(|negotiated| {
                 negotiated

@@ -29,31 +29,20 @@ pub(in crate::runtime) struct SpawnPublication<'a> {
 impl SpawnPublication<'_> {
     /// Drop the pane nobody can reach: the client never received a usable
     /// generation for it.
-    fn reap(&self) {
-        self.state.with_mut(|s| {
-            let _ =
-                crate::runtime::connections::reap_pane_journaling_close(s, self.core_terminal_id);
-            crate::runtime::idempotent_create::unbind_spawned(
-                s,
-                self.idempotency_key,
-                &self.wire_terminal_id,
-            );
-        });
+    fn reap(&self, lease: &crate::runtime::apps::StreamLease) {
+        lease.reap_spawn(&self.wire_terminal_id, self.idempotency_key);
     }
 
     /// Queue the successful `RESOURCE_SPAWNED` reply. `false` once the
     /// client's outbound mailbox has closed.
-    async fn queue_spawned_ok(&self) -> bool {
+    async fn queue_spawned_ok(&self, lease: &crate::runtime::apps::StreamLease) -> bool {
         let instance = self
             .bind_instance
             .then(|| self.state.with(|s| s.idspace.instance()));
-        self.out_tx
-            .send(Outbound::Frame(FrameKind::ResourceSpawned {
+        lease.queue(self.out_tx, FrameKind::ResourceSpawned {
                 request_id: self.request_id,
                 result: spawned_result(self.wire_terminal_id.clone(), instance),
-            }))
-            .await
-            .is_ok()
+            }).await
     }
 
     /// Capture the pane's first native checkpoint. `None` once the actor is
@@ -91,14 +80,22 @@ impl SpawnPublication<'_> {
         connection_token: &CancellationToken,
         defer_subscription: bool,
     ) {
+        let host = crate::runtime::apps::StreamHost::new(self.state, self.client_id);
+        let Some(reservation) = host.reserve(self.core_terminal_id, initial_bootstrap_id(), connection_token) else { return; };
+        let lease = reservation.lease.clone();
+        let _ = lease.run(self.publish_reserved(output_pumps, reservation, defer_subscription)).await;
+    }
+
+    async fn publish_reserved(self, output_pumps: &mut JoinSet<()>, reservation: crate::runtime::apps::StreamReservation, defer_subscription: bool) {
+        let lease = reservation.lease.clone();
+        let mut withdrawal = PendingSpawn { publication: &self, lease: &lease, published: false };
+        if !reservation.ready().await { return; }
         if defer_subscription {
-            if !self.queue_spawned_ok().await {
-                self.reap();
-            }
+            if self.queue_spawned_ok(&lease).await && reservation.published(|| true) { withdrawal.published = true; }
             return;
         }
         let output_rx = self.handle.output.subscribe();
-        let gate_tx = spawn_terminal_output_pump(
+        let Some(gate_tx) = spawn_terminal_output_pump(
             OutputPumpContext {
                 out_tx: self.out_tx.clone(),
                 resize: self.terminal.resize.clone(),
@@ -111,19 +108,17 @@ impl SpawnPublication<'_> {
                 limits: self.limits,
                 lag_label: "SPAWN_RESOURCE output pump",
                 stale_skip: true,
-                cancel: None,
+                cancel: Some(lease.cancellation.clone()),
                 drain: Some(CancellationToken::new()),
                 snapshot: Some(self.terminal.snapshot.clone()),
-                last_seq: None,
+                last_seq: Some(std::sync::Arc::clone(&lease.last_seq)),
                 terminal: self.terminal.clone(),
             },
             output_rx,
-            self.state,
-            connection_token,
-            self.core_terminal_id,
+            &lease,
             output_pumps,
-        );
-        self.publish_first_generation(gate_tx).await;
+        ) else { return; };
+        withdrawal.published = self.publish_first_generation(gate_tx, reservation).await;
     }
 
     /// Capture the pane's first synthesized snapshot and the actor cut it was
@@ -188,30 +183,24 @@ impl SpawnPublication<'_> {
 
     /// Reply, queue the first generation, activate a native publication, then
     /// release the parked output pump. Any failure reaps the pane.
-    async fn publish_first_generation(&self, gate_tx: oneshot::Sender<OutputPumpStart>) {
+    async fn publish_first_generation(&self, gate_tx: oneshot::Sender<OutputPumpStart>, reservation: crate::runtime::apps::StreamReservation) -> bool {
+        let lease = reservation.lease.clone();
         let generation = match self.stage_first_generation().await {
             Ok(generation) => generation,
             Err(reason) => {
-                self.reap();
-                refuse_spawn(
-                    self.out_tx,
-                    self.request_id,
-                    SpawnError::SpawnFailed(reason.to_owned()),
-                )
-                .await;
-                return;
+                lease.queue(self.out_tx, FrameKind::ResourceSpawned {
+                    request_id: self.request_id,
+                    result: phux_protocol::wire::frame::SpawnResult::Err(SpawnError::SpawnFailed(reason.to_owned())),
+                }).await;
+                return false;
             }
         };
-        if !self.queue_spawned_ok().await {
-            self.reap();
-            return;
-        }
+        if !self.queue_spawned_ok(&lease).await { return false; }
         crate::runtime::session_attach::publication_phase("spawn_bootstrap_queue", "started");
         for frame in generation.frames {
-            if self.out_tx.send(Outbound::Frame(frame)).await.is_err() {
+            if !lease.queue(self.out_tx, frame).await {
                 crate::runtime::session_attach::publication_phase("spawn_bootstrap_queue", "outbound_closed");
-                self.reap();
-                return;
+                return false;
             }
         }
         crate::runtime::session_attach::publication_phase("spawn_bootstrap_queue", "queued");
@@ -229,13 +218,26 @@ impl SpawnPublication<'_> {
             )
             .await
             else {
-                self.reap();
-                return;
+                return false;
             };
             start.adopt_native_publication(publication);
         }
-        let _ = gate_tx.send(start);
+        reservation.published(|| {
+            lease.last_seq.store(start.published_cut, std::sync::atomic::Ordering::Release);
+            gate_tx.send(start).is_ok()
+        })
     }
+}
+
+/// Exact authority survives future cancellation without reaping a successor.
+struct PendingSpawn<'a, 'b> {
+    publication: &'a SpawnPublication<'b>,
+    lease: &'a crate::runtime::apps::StreamLease,
+    published: bool,
+}
+
+impl Drop for PendingSpawn<'_, '_> {
+    fn drop(&mut self) { if !self.published { self.publication.reap(self.lease); } }
 }
 
 /// How often a spawn's first capture is asked for before the spawn is

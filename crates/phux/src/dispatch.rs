@@ -38,7 +38,7 @@ pub(crate) fn dispatch(
         Some(Command::Mv(args)) => commands::spatial::mv(args, socket),
         Some(Command::Rm(args)) => commands::org::run_rm(&args.target, args.yes, args.json, socket),
         Some(Command::Relaunch(args)) => {
-            commands::org::run_relaunch(&args.target, args.json, socket)
+            commands::org::run_relaunch(&args.target, args.approve_raw, args.json, socket)
         }
         Some(Command::Restore(args)) => {
             commands::org::run_restore(args.session.as_deref(), args.verbose, args.json, socket)

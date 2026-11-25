@@ -116,7 +116,18 @@ impl RelaySession {
                     command,
                 }))
             }
-            RelayRequest::Forward { frame } => Some(self.encode(&frame)),
+            RelayRequest::Forward { frame } => {
+                if matches!(&frame, FrameKind::Command { command: Command::ResourceRelaunch { .. }, .. }) {
+                    tracing::warn!(satellite = %self.host, "archived relaunch refused on uncorrelated route; use the actor-owned keyed route");
+                    return None;
+                }
+                if let FrameKind::Command { command, .. } = &frame
+                    && let Some(refusal) = self.command_rejection(command) {
+                    tracing::warn!(satellite = %self.host, ?refusal, "uncorrelated command refused before forwarding; never retried");
+                    return None;
+                }
+                Some(self.encode(&frame))
+            },
             RelayRequest::Spawn { spawn, reply } => {
                 if let Some(refusal) = self.spawn_capability_rejection(&spawn) {
                     let _ = reply.send(SpawnResult::Err(refusal));
@@ -175,6 +186,11 @@ impl RelaySession {
                     .as_ref()
                     .is_some_and(|sub| sub.consumer_cancel.is_cancelled()))
         {
+            return None;
+        }
+        if matches!(command, Command::ResourceRelaunch { .. }) {
+            let _ = reply.send(CommandResult::error(super::ErrorCode::PreconditionFailed,
+                "archived relaunch requires the actor-owned keyed relay route; nothing was forwarded"));
             return None;
         }
         if let Some(refusal) = self.command_rejection(&command) {

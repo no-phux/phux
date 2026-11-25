@@ -115,8 +115,7 @@ pub(super) enum RepublishEnd {
 
 /// One viewer's live subscription to a producer stream.
 pub(super) struct PumpCore {
-    pub(super) host: super::StreamHost,
-    pub(super) core: phux_core::ids::ResourceId,
+    pub(super) lease: super::StreamLease,
     pub(super) out_tx: mpsc::Sender<Outbound>,
     pub(super) terminal_id: WireResourceId,
     pub(super) stream_id: StreamId,
@@ -198,7 +197,7 @@ impl PumpCore {
         cursor: u64,
         cut: &impl StreamCut,
     ) -> Result<u64, RepublishEnd> {
-        let next = self.host.advance(self.core, &self.last_seq)
+        let next = self.lease.advance()
             .ok_or(RepublishEnd::Fenced)?;
         let tombstone = FrameKind::BootstrapTombstone {
             terminal_id: self.terminal_id.clone(),
@@ -231,14 +230,13 @@ impl PumpCore {
 
 /// The negotiated context of one stream attach.
 pub(super) struct StreamAttach<'a> {
-    pub(super) host: &'a super::StreamHost,
+    pub(super) reservation: super::StreamReservation,
     pub(super) client_id: ClientId,
     pub(super) terminal_id: &'a WireResourceId,
     pub(super) core: phux_core::ids::ResourceId,
     pub(super) handle: &'a ResourceHandle,
     pub(super) out_tx: &'a mpsc::Sender<Outbound>,
     pub(super) limits: BootstrapLimits,
-    pub(super) connection_token: &'a CancellationToken,
 }
 
 /// Bootstrap a viewer at one cut, then live: allocate the generation,
@@ -251,45 +249,43 @@ pub(super) async fn attach_stream<C: StreamCut>(
     cut: impl Future<Output = Result<C, CommandResult>>,
     recovery: impl LagRecovery + 'static,
 ) -> CommandResult {
+    let lease = attach.reservation.lease.clone();
+    lease.run(attach_reserved_stream(attach, cut, recovery)).await
+        .unwrap_or_else(|| CommandResult::error(ErrorCode::InternalError, "stream reservation superseded"))
+}
+
+async fn attach_reserved_stream<C: StreamCut>(attach: StreamAttach<'_>, cut: impl Future<Output = Result<C, CommandResult>>, recovery: impl LagRecovery + 'static) -> CommandResult {
     let StreamAttach {
-        host,
+        reservation,
         client_id,
         terminal_id,
-        core,
         handle,
         out_tx,
         limits,
-        connection_token,
     } = attach;
-    let Some(bootstrap_id) = host.next_bootstrap()
-    else {
-        return CommandResult::error(
-            ErrorCode::ResourceExhausted,
-            "ATTACH_RESOURCE bootstrap id space exhausted",
-        );
-    };
+    let lease = reservation.lease.clone();
+    let bootstrap_id = lease.bootstrap;
     let stream_id = crate::runtime::stream_id_from(client_id.0);
     let live = handle.output.subscribe();
     // Await the old task's exit before BEGIN: no prior generation may leak
     // output between this replacement's bootstrap frames.
-    host.stop(core).await;
+    if !reservation.ready().await { return CommandResult::error(ErrorCode::InternalError, "stream superseded while retiring predecessor"); }
     let cut = match cut.await {
         Ok(cut) => cut,
         Err(result) => return result,
     };
 
-    let (cancel, done, last_seq, prior) = host.replace(core, bootstrap_id);
-    let pump_done = done.clone().drop_guard();
-    if let Some((prior_id, prior_done, prior_seq)) = prior {
-        prior_done.cancelled().await;
+    let cancel = lease.cancellation.clone();
+    let last_seq = Arc::clone(&lease.last_seq);
+    if let Some((prior_id, prior_seq)) = &reservation.prior {
         let tombstone = FrameKind::BootstrapTombstone {
             terminal_id: terminal_id.clone(),
             stream_id,
-            bootstrap_id: prior_id,
+            bootstrap_id: *prior_id,
             reason: TombstoneReason::ExplicitReattach,
             last_valid_seq: prior_seq.load(Ordering::Acquire),
         };
-        if out_tx.send(Outbound::Frame(tombstone)).await.is_err() {
+        if !lease.queue(out_tx, tombstone).await {
             return CommandResult::error(
                 ErrorCode::ResourceExhausted,
                 "the client went away before its replacement bootstrap",
@@ -302,7 +298,7 @@ pub(super) async fn attach_stream<C: StreamCut>(
         bootstrap_id,
     };
     for frame in bootstrap_frames(&cut, ids, limits) {
-        if out_tx.send(Outbound::Frame(frame)).await.is_err() {
+        if !lease.queue(out_tx, frame).await {
             return CommandResult::error(
                 ErrorCode::ResourceExhausted,
                 "the client went away mid-bootstrap",
@@ -313,7 +309,7 @@ pub(super) async fn attach_stream<C: StreamCut>(
     last_seq.store(base_seq, Ordering::Release);
 
     let pump = PumpCore {
-        host: host.clone(),
+        lease: lease.clone(),
         core,
         out_tx: out_tx.clone(),
         terminal_id: terminal_id.clone(),
@@ -323,15 +319,9 @@ pub(super) async fn attach_stream<C: StreamCut>(
         cancel,
         last_seq,
     };
-    let connection_cancel = connection_token.clone();
-    let task = tokio::task::spawn_local(async move {
-        let _done = pump_done;
-        tokio::select! {
-            () = connection_cancel.cancelled() => {}
-            () = pump.run(recovery, live, base_seq) => {}
-        }
-    });
-    host.track(core, task.abort_handle(), done);
+    if !lease.spawn(None, None, pump.run(recovery, live, base_seq)) || !reservation.published(|| true) {
+        return CommandResult::error(ErrorCode::InternalError, "stream superseded before publication handoff");
+    }
     CommandResult::Ok
 }
 
@@ -342,7 +332,7 @@ pub(super) fn result_to_attach_failure(
 ) -> Result<(), AttachResourceFailure> {
     match result {
         CommandResult::Ok | CommandResult::OkWith(_) => Ok(()),
-        CommandResult::Error { code, message } => Err(AttachResourceFailure { code, message }),
+        CommandResult::Error { code, message } => Err(AttachResourceFailure { generation: None, code, message }),
         other => Err(AttachResourceFailure::internal(&format!(
             "{label} attach returned an unexpected result: {other:?}"
         ))),

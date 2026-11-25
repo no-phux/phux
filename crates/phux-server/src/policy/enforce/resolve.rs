@@ -33,6 +33,8 @@ fn command_terminal(command: &Command) -> Option<&WireResourceId> {
             } => Some(resource),
             phux_protocol::native_agent::NativeRequest::Spawn { .. }
             | phux_protocol::native_agent::NativeRequest::ListIntegrations {}
+            | phux_protocol::native_agent::NativeRequest::PrepareRelaunch { .. }
+            | phux_protocol::native_agent::NativeRequest::ApproveRelaunch { .. }
             | phux_protocol::native_agent::NativeRequest::CurrentQuestions { .. }
             | phux_protocol::native_agent::NativeRequest::RespondQuestion { .. }
             | phux_protocol::native_agent::NativeRequest::QuestionReceipt { .. }
@@ -217,6 +219,10 @@ fn keyed_resource(s: &ServerState, request: Request<'_>) -> Option<Point> {
     };
     match command {
         Command::NativeAgent { request } => match request.request() {
+            phux_protocol::native_agent::NativeRequest::PrepareRelaunch { resource, .. } =>
+                resource_key_point(s, resource),
+            phux_protocol::native_agent::NativeRequest::ApproveRelaunch { approval } =>
+                resource_key_point(s, &approval.resource),
             phux_protocol::native_agent::NativeRequest::CurrentQuestions {
                 target: phux_protocol::native_agent::questions::QuestionTarget::Key { resource, .. },
             } => resource_key_point(s, resource),
