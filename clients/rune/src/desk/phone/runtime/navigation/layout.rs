@@ -137,8 +137,8 @@ fn editing_a_filter_resets_the_old_scroll_offset_to_the_first_result() {
     settle(&mut rt);
     let list = element(&rt, "phone-session-list").rect;
     let first = element(&rt, "phone-session-1").rect;
-    // The list's top inset (clear of the edge fade) and the card's own
-    // padding, and nothing of the old offset.
+    // The list's top inset (clear of the edge fade), and nothing of the
+    // old offset.
     let space = phux_design::tokens::SPACE;
     let inset = space.s2 + space.s1;
     assert!(
@@ -238,6 +238,7 @@ fn large_connections_and_search_scroll_without_covering_the_last_action() {
         assert!(element(&rt, "phone-session-connections").rect[1] < connections[1] - 44.0);
         assert!(element(&rt, "phone-session-query").rect[1] < search[1] - 44.0);
         let last = element(&rt, "phone-session-new");
+        assert!(last.radius <= phux_design::tokens::RADIUS.lg + 0.5);
         assert!(last.rect[1] >= list[1], "{last:?} vs {list:?}");
         assert!(last.rect[1] + last.rect[3] <= list[1] + list[3]);
         assert!(last.visible[3] >= last.rect[3] - 0.5, "{last:?}");

@@ -78,10 +78,10 @@ class VisualReview(unittest.TestCase):
         self.inventory.stop()
         self.populate(review.required_inventory())
         manifest = self.produce()
-        self.assertEqual(len(manifest["cases"]), 1545)
+        self.assertEqual(len(manifest["cases"]), 1561)
         self.assertEqual({family: sum(case["family"] == family for case in manifest["cases"])
                           for family in review.FAMILIES},
-                            {"inbox": 404, "settings": 226, "navigation": 914, "resources": 1})
+                            {"inbox": 404, "settings": 226, "navigation": 930, "resources": 1})
         case = next(case for case in manifest["cases"] if case["png"] == self.subject)
         self.assertEqual(case["physical"], [320, 568])
         self.assertEqual(case["logical"], [320, 568])
@@ -128,6 +128,18 @@ class VisualReview(unittest.TestCase):
                          "session_browser_renders_realistic_dark_light_and_search_states")
         self.assertEqual(review.exporter_for("resources", "mixed"),
                           "native_png_headless_renderer_smoke")
+
+    def test_sessions_canvas_matrix_keeps_large_long_filter_and_empty_cases(self):
+        self.inventory.stop()
+        inventory = review.required_inventory()
+        for width, height, keyboard_height in ((320, 478, 340), (393, 759, 480)):
+            for theme in ("dark", "light"):
+                for state in ("connections", "query-top", "query-bottom", "empty"):
+                    stem = f"canvas-{state}-{theme}-{width * 2}"
+                    expected_height = keyboard_height if state.startswith("query-") else height
+                    self.assertEqual(inventory[f"navigation/{stem}.png"], (width, expected_height, 2))
+                    self.assertEqual(review.exporter_for("navigation", stem),
+                                     "phone_session_canvas_visual_review_frames")
 
     def test_reconnect_matrix_keeps_constrained_native_and_desktop_cases(self):
         self.inventory.stop()

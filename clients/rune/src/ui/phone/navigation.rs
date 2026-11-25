@@ -1,10 +1,9 @@
 //! Touch-first session browsing and contextual actions, separate from search
 //! commands. Ordinary chrome stays fixed; large text scrolls the whole body.
 //!
-//! One inset and rhythm for the page, cards and their touch rows, all from
-//! the phone's tokens: the page margin, `xl` cards with rows nested inside
-//! them, touch-height rows and the session dock, the phone's one pane of
-//! glass.
+//! Sessions share one canvas: session names anchor indented pane lists.
+//! Actions retain grouped cards. Both use touch-height rows and the
+//! session dock is the phone's one pane of glass.
 
 use crate::ui::tokens::Voice;
 use rune::{El, Key, Tx, col, el, row, text, text_input};
@@ -16,16 +15,16 @@ use crate::ui::tokens::Paint;
 use crate::ui::{icons, pressable};
 
 mod actions;
-mod card;
 mod connections;
 mod dock;
 mod resource;
+mod section;
 mod states;
 use crate::ui::Cover;
 use actions::actions;
-use card::session_card;
 use connections::view as connections;
 use resource::resource_row;
+use section::session_section;
 use states::empty_state;
 
 pub(in crate::ui) fn view(desk: &Desk, top: f32) -> Option<El> {
@@ -247,11 +246,21 @@ fn sessions(desk: &Desk, p: &Look) -> El {
                     .scroll(rune::ScrollSpec {
                         stick_bottom: false,
                     })
-                    .gap(s.s3)
-                    .child(search)
-                    .children(connections)
-                    .child(list)
-                    .child(footer),
+                    .scroll_margin(s.s1)
+                    .child(
+                        col()
+                            .w_full()
+                            .px(s.s1)
+                            .pt(s.s1)
+                            .gap(s.s3)
+                            .child(search)
+                            .children(connections)
+                            .child(list)
+                            .child(footer)
+                            // A real tail protects the last outside focus ring
+                            // where reveal margins cannot scroll farther.
+                            .child(el().w_full().h(s.s1).inert().a11y_hidden()),
+                    ),
             );
     }
     col()
@@ -276,7 +285,7 @@ fn sessions(desk: &Desk, p: &Look) -> El {
                         .h_full()
                         .min_h(0.0)
                         .scroll(rune::ScrollSpec { stick_bottom: false })
-                        // Cards slide under the search field and the dock
+                        // Rows slide under the search field and the dock
                         // instead of being cut by a hard edge.
                         .scroll_edge_fade(s.s4)
                         .scroll_margin(s.s4)
@@ -326,7 +335,8 @@ fn resource_matches(desk: &Desk, resource: &Addressable, query: &str) -> bool {
 fn session_list(desk: &Desk, p: &Look) -> El {
     let query = &desk.phone.as_ref().expect("phone").query.text;
     let all = desk.addressable();
-    let mut list = col().w_full().gap(p.space.s3);
+    // Leave room for an outside keyboard ring without restoring card insets.
+    let mut list = col().w_full().px(p.space.s1).gap(p.space.s6);
     let mut count = 0;
     for session in desk.ordered_sessions() {
         let members: Vec<_> = all.iter().filter(|r| r.session_id == session.id).collect();
@@ -339,7 +349,7 @@ fn session_list(desk: &Desk, p: &Look) -> El {
             continue;
         }
         count += 1;
-        list = list.child(session_card(desk, session, &members, &filtered, p));
+        list = list.child(session_section(desk, session, &members, &filtered, p));
     }
     // Hub satellite resources aren't members of a local session, but still
     // belong in the navigator with their host-qualified resource addresses.
