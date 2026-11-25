@@ -241,3 +241,30 @@ fn a_held_close_names_the_terminal() {
             .starts_with("build (@4) wants")
     );
 }
+
+/// The whole link is laid out, its site outside the box that scrolls, and
+/// the bar stays inside the window however long the link is.
+#[test]
+fn a_held_link_shows_its_site_and_stays_on_screen() {
+    let mut desk = crate::test_support::settings_window();
+    desk.settings_open = false;
+    let long = format!("https://id.example/{}", "x".repeat(8000));
+    desk.hold_link_for_test(&long);
+    let env = rune::Env::new(false, 1.0);
+    let mut rt = crate::test_support::runtime(desk, crate::ui::view, (800.0, 600.0), env);
+    rt.frame(0.0);
+    let drawn = |key: &str| rt.presented(key).expect(key).0;
+    let (bar, site, link) = (
+        drawn("confirm-bar"),
+        drawn("open-url-site"),
+        drawn("open-url-link"),
+    );
+    let bottom = |rect: [f32; 4]| rect[1] + rect[3];
+    assert!(bottom(bar) <= 600.0, "{bar:?}");
+    assert!(site[1] >= bar[1] && bottom(site) <= bottom(bar), "{site:?}");
+    assert!(
+        link[2] <= bar[2] && link[3] > bar[3],
+        "wrapped, and scrolls: {link:?}"
+    );
+    assert!(rt.find("confirm-ok").is_some() && rt.find("confirm-cancel").is_some());
+}

@@ -52,6 +52,7 @@ pub(crate) mod native_input;
 pub mod news;
 pub mod notice;
 pub mod onboarding;
+pub mod open_url;
 mod palette;
 mod pending;
 mod picks;
@@ -462,6 +463,7 @@ impl Desk {
         changed |= self.take_changes(&client);
         changed |= self.sync_alerts();
         changed |= self.tick_inbox(tx);
+        changed |= self.tick_open_url(tx);
         changed |= self.tick_playground(tx);
         self.settle_pointer();
         changed |= self.autoscroll(tx);

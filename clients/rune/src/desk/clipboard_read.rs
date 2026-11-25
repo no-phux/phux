@@ -143,7 +143,8 @@ impl Desk {
     }
 
     /// The confirm bar's button: [`Self::confirm_pending`], reading the
-    /// clipboard for a held read and setting it for a held write.
+    /// clipboard for a held read, setting it for a held write and opening a
+    /// held link.
     pub fn confirm_pending_tx(&mut self, tx: &mut Tx) {
         match self.pending.take() {
             Some(Pending::ClipboardRead(terminal, selection)) => {
@@ -152,6 +153,10 @@ impl Desk {
             write @ Some(Pending::ClipboardWrite(..)) => {
                 self.pending = write;
                 self.allow_clipboard_write(tx);
+            }
+            link @ Some(Pending::OpenUrl(_)) => {
+                self.pending = link;
+                self.accept_open_url(tx);
             }
             other => {
                 self.pending = other;
