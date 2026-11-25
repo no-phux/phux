@@ -1,11 +1,10 @@
-**Phux Rune 0.1.54**
+**Phux Rune 0.1.55**: 8 changes since 0.1.54.
 
-- Browse phone sessions on one continuous surface, with clear session headings,
-  nested pane names, quiet attention counts, and a thin current-pane marker.
-- Keep Connections, long search filters, and the complete New session action
-  readable at large accessibility text sizes, with clear keyboard focus.
-- Read long pane-picker names without fixed-height clipping, and scroll to
-  terminal actions and Done at the largest text sizes.
-
-The Rune engine pin is unchanged. Newer strict-modal revisions remain deferred
-to preserve phone accessory input ownership and the literal pane arrangement.
+- Make the iOS app safe to update over the Swift app (#2986)
+- Give the terminal back the keyboard and the pane in use (#2979)
+- Draw typing ahead of a remote server's echo (#2975)
+- Keep unseen marks on the server (#2976)
+- Keep terminal-browser splits visible and restore native images
+- Restore panes whose launch a server stop cut off (#2948)
+- Declare disk space in the iOS app's one privacy manifest
+- Build the iOS host under a distributor's identity
