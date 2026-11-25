@@ -13,7 +13,7 @@ Each family needs a selectable scenario, stimulus/failure cut, expected observat
 
 Crash/store evidence: durable records/receipts/journal before/after, affected set, process attempts, live handles and notifications. Client evidence: actions/outcomes, generations and visible results. Frozen inputs/independent expectations cannot come from the implementation under test. Missing receipt never proves nonexecution.
 
-Existing commands below are not claims of complete destination coverage. Recipes in `just/`, [development](./development.md) and [CI](./ci.md) define operational details.
+Commands below do not claim complete coverage; observed runs are in [evidence](./architecture-qualification-evidence.md). Recipes in `just/`, [development](./development.md) and [CI](./ci.md) define operational details.
 
 | Surface | Current route; limit |
 | --- | --- |
