@@ -87,7 +87,10 @@ fn malformed_download_arguments_do_not_connect_or_write() {
 #[ignore = "spawns a real private server; runs in the e2e lane"]
 fn download_pulls_multichunk_files_verifies_them_and_respects_force() {
     let dir = tempfile::tempdir().unwrap();
-    let server = ServerGuard::builder("download-pull").start();
+    // Silent: a shell's prompt would mark the pane unseen between the listings.
+    let server = ServerGuard::builder("download-pull")
+        .seed_command("exec sleep 600")
+        .start();
     let source = dir.path().join("deck.pptx");
     let data = vec![0xa5; phux_protocol::wire::frame::MAX_FILE_UPLOAD_CHUNK + 321];
     std::fs::write(&source, &data).unwrap();
