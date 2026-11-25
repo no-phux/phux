@@ -58,9 +58,8 @@ async fn aggregate_document_backpressure_recuts_to_a_fresh_generation_then_live(
             panic!("replacement BEGIN");
         };
         assert_eq!(stream_id, crate::runtime::stream_id_from(1));
-        assert_eq!(
-            bootstrap_id.get(),
-            2,
+        assert!(
+            bootstrap_id.get() > 1,
             "aggregate generation 1 must not be reused"
         );
         assert_eq!(base_seq, u64::try_from(published).unwrap() + 1);

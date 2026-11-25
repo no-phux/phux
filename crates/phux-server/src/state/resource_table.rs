@@ -18,6 +18,13 @@ use tokio_util::sync::CancellationToken;
 use super::ClientId;
 use crate::resource::{ResourceHandle, ResourceId};
 
+/// How far apart two ids [`ResourceTable::next_bootstrap_id`] hands out are.
+/// A Terminal pump counts its own resyncs up from its attach's id without
+/// asking here, and the first block belongs to session ATTACH and SPAWN, whose
+/// generations all start at 1. Adjacent ids handed a re-attach one a client
+/// had already retired, and the client drew nothing.
+const BOOTSTRAP_ID_BLOCK: u64 = 1 << 32;
+
 /// Last sequence a pump emitted before being superseded, so a replacement
 /// resumes rather than replaying from zero.
 pub(super) type LastValidAttachSequence = Arc<AtomicU64>;
@@ -96,8 +103,8 @@ pub(crate) struct ResourceTable {
     /// All raw-output tasks (aggregate replacements, `SPAWN_RESOURCE`
     /// pumps); staged and published may coexist, and detach retires both.
     output_pumps: HashMap<(ClientId, ResourceId), Vec<OutputPumpTask>>,
-    /// Next per-client bootstrap id; monotonic, so tombstoned ids never
-    /// recur.
+    /// Next per-client bootstrap id block; monotonic, so tombstoned ids
+    /// never recur.
     next_bootstrap: HashMap<ClientId, u64>,
     /// Retired wire ids remain detachable while final publication is pending.
     draining_resources: HashMap<phux_protocol::ids::ResourceId, ResourceId>,
@@ -404,10 +411,6 @@ impl ResourceTable {
         terminal: ResourceId,
         bootstrap_id: BootstrapId,
     ) -> AttachResourcePumpReplacement {
-        // SESSION ATTACH supplies a shared generation rather than allocating
-        // one per resource. Its first lag recovery must still choose a fresh id.
-        let next = self.next_bootstrap.entry(client).or_insert(1);
-        *next = (*next).max(bootstrap_id.get().saturating_add(1));
         let cancel = CancellationToken::new();
         let done = CancellationToken::new();
         let last_valid_seq: LastValidAttachSequence = Arc::new(AtomicU64::new(0));
@@ -455,9 +458,12 @@ impl ResourceTable {
     /// Next per-terminal bootstrap id for `client`; `None` on overflow (the
     /// connection must reconnect).
     pub(crate) fn next_bootstrap_id(&mut self, client: ClientId) -> Option<BootstrapId> {
-        let next = self.next_bootstrap.entry(client).or_insert(1);
+        let next = self
+            .next_bootstrap
+            .entry(client)
+            .or_insert(BOOTSTRAP_ID_BLOCK);
         let raw = *next;
-        *next = raw.checked_add(1)?;
+        *next = raw.checked_add(BOOTSTRAP_ID_BLOCK)?;
         BootstrapId::new(raw)
     }
 
