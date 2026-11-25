@@ -191,17 +191,18 @@ pub(crate) enum ServerAction {
     },
 }
 
-/// Run a standalone relay, or enroll a route with it
+/// Run a relay, enroll a route with it, or connect a server to one
 ///
 /// The relay is a separate rendezvous process for reaching a phux
 /// server that cannot accept inbound connections: the server dials
 /// OUT to the relay and registers a tunnel for a named route, remote
 /// consumers dial IN naming that route, and the relay splices the
-/// two as opaque bytes — it never reads what crosses. `run` serves
-/// in the foreground; `pair` enrolls a route name and mints the
-/// token the server's tunnel authenticates with. Relay state (the
-/// route-token store and a self-signed certificate) lives at fixed
-/// paths under the phux state directory.
+/// two as opaque bytes — it never reads what crosses. On the relay,
+/// `run` serves in the foreground and `pair` enrolls a route name and
+/// mints the token the server's tunnel authenticates with; on the
+/// server, `connect` hands that token to its `[[connector]]`. Relay
+/// state (the route-token store and a self-signed certificate) lives
+/// at fixed paths under the phux state directory.
 #[derive(Debug, Args)]
 pub(crate) struct RelayArgs {
     #[usage(subcommand)]

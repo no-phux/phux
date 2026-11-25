@@ -79,7 +79,7 @@ Machines:
   server        Run a server in the foreground
   service       Keep a server running across logout and reboot
   pair          Mint, rotate, revoke, list, or prune remote credentials
-  relay         Run a standalone relay, or enroll a route with it
+  relay         Run a relay, enroll a route with it, or connect a server to one
   workload      Manage the mTLS workload authority
   download      Download a file from a server or one of its satellites
   forward       Forward a port or your ssh-agent to the server's machine
@@ -6497,23 +6497,25 @@ Global flags:
 ## `phux relay`
 
 ```text
-Run a standalone relay, or enroll a route with it
+Run a relay, enroll a route with it, or connect a server to one
 
 The relay is a separate rendezvous process for reaching a phux server that
 cannot accept inbound connections: the server dials OUT to the relay and
 registers a tunnel for a named route, remote consumers dial IN naming that
 route, and the relay splices the two as opaque bytes — it never reads what
-crosses. `run` serves in the foreground; `pair` enrolls a route name and mints
-the token the server's tunnel authenticates with. Relay state (the route-token
+crosses. On the relay, `run` serves in the foreground and `pair` enrolls a route
+name and mints the token the server's tunnel authenticates with; on the server,
+`connect` hands that token to its `[[connector]]`. Relay state (the route-token
 store and a self-signed certificate) lives at fixed paths under the phux state
 directory.
 
 Usage: phux relay <SUBCOMMAND>
 
 Commands:
-  pair  Enroll a route and mint (or rotate) its tunnel token.
-  run   Run the relay in the foreground.
-  help  Print this message or the help of the given subcommand(s)
+  connect  Have this machine's server dial a relay with a route's token.
+  pair     Enroll a route and mint (or rotate) its tunnel token.
+  run      Run the relay in the foreground.
+  help     Print this message or the help of the given subcommand(s)
 
 Flags:
   -h, --help           Print help
@@ -6522,21 +6524,51 @@ Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
+## `phux relay connect`
+
+```text
+Have this machine's server dial a relay with a route's token.
+
+Reads the tunnel token `phux relay pair` printed from stdin (paste it at the
+prompt, or pipe it), stores it owner-only under the state directory, and writes
+the `[[connector]]` entry for RELAY, replacing one for the same relay. A
+connector needs `[policy] mode = "paired"`, so an unset mode is set. A running
+server is restarted in place, panes kept, and the command waits for the tunnel;
+otherwise the server dials when it next starts. Then `phux pair --relay-route
+ROUTE` mints device links.
+
+Usage: phux relay connect [--cert-fingerprint <FP>] [--json] <HOST:PORT>
+
+Arguments:
+  <HOST:PORT>  The relay's `HOST:PORT`, as consumers and this server reach it.
+
+Flags:
+      --cert-fingerprint <FP>  The relay certificate's SHA-256 fingerprint `phux
+                               relay pair` printed. Required unless RELAY is
+                               loopback.
+      --json                   Emit stable, versioned JSON on stdout instead of
+                               the human view. On failure, stdout stays empty
+                               and stderr carries one JSON error object.
+  -h, --help                   Print help
+
+Global flags:
+      --socket <PATH>          Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
 ## `phux relay pair`
 
 ```text
 Enroll a route and mint (or rotate) its tunnel token.
 
 Writes one entry binding a fresh secret token to NAME in the relay's route-token
-store and prints the token once, alongside the relay certificate's SHA-256
-fingerprint. Give both to the phux server that will dial out to this relay: the
-token authenticates its tunnel, and the fingerprint pins the relay's
-certificate. Pairing a route that is already enrolled REPLACES its token
-(rotation) — exactly one token per route. Revoke a route by deleting its line
-from the store. This never contacts a running relay — it only writes the token
-file, and a running relay picks the change up at the next tunnel handshake.
+store and prints the token once, with the relay certificate's SHA-256
+fingerprint and the `phux relay connect` command that hands both to the phux
+server. Pairing a route that is already enrolled REPLACES its token (rotation) —
+exactly one token per route. Revoke a route by deleting its line from the store.
+This never contacts a running relay; a running relay picks the change up at the
+next tunnel handshake.
 
-Usage: phux relay pair <--route <NAME>>
+Usage: phux relay pair <--route <NAME>> [--json]
 
 Flags:
       --route <NAME>   Route name the token is bound to. Consumers select the
@@ -6544,6 +6576,9 @@ Flags:
                        DNS label: `[a-z0-9-]`, at most 63 characters, no leading
                        or trailing hyphen. Anything else is rejected, never
                        normalized.
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
   -h, --help           Print help
 
 Global flags:
@@ -6560,7 +6595,8 @@ dial out from behind NAT and register a tunnel for their enrolled route, and
 remote consumers dial in naming a route, each spliced onto that route's live
 tunnel as opaque bytes. Enroll routes with `phux relay pair`; the token store is
 re-read whenever it changes, so pairing a new route (or revoking one by deleting
-its line) needs no restart. Serves until Ctrl-C.
+its line) needs no restart. Logs each tunnel and bridged consumer on stderr.
+Serves until Ctrl-C.
 
 Usage: phux relay run <--listen <HOST:PORT>> [--max-conns <N>]
 

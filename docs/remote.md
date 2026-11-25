@@ -121,15 +121,26 @@ phux.sh. `phux pair --qr` shows only the QR, for a phone.
 When neither machine can reach the other, run a relay both can reach:
 
 ```sh
-phux relay pair --route home          # on the relay: prints a token and a fingerprint
+# on the relay
+phux relay pair --route home          # prints a token, a fingerprint, and the next command
 phux relay run --listen 0.0.0.0:4433
+
+# on the server: paste the token at the prompt
+phux relay connect relay.example:4433 --cert-fingerprint AB:CD:...
+phux pair --relay-route home          # a link for each device
 ```
 
-Give the server a `[[connector]]` entry with the relay address, token file,
-and fingerprint ([config](./reference/config.md)), then mint the client's
-link with `phux pair --relay-route home`. The server dials out, so it needs
-no open port. **The relay sees only ciphertext**: TLS runs end to end with
-the server inside the relayed stream.
+`phux relay connect` stores the token owner-only, writes the server's
+`[[connector]]` entry ([config](./reference/config.md)), sets
+`[policy] mode = "paired"` if it is unset, and restarts a running server in
+place, panes kept, then waits for the tunnel. The server dials out, so it
+needs no open port. **The relay sees only ciphertext**: TLS runs end to end
+with the server inside the relayed stream.
+
+`phux relay run` logs each tunnel and bridged consumer; on the server,
+`phux doctor` shows the tunnel as `Remote reach … through relay`. A token the
+relay refuses (rotated by a second `phux relay pair`) says so in the server
+log and in `phux doctor`; give the new one to `phux relay connect`.
 
 ## Linking machines
 
