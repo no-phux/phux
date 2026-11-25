@@ -5,7 +5,8 @@ SESSION = "rune-ios-native"
 INPUT_CONTRACTS = ("field-editing", "rejected-edit", "composition-revision", "raw-composition",
                    "raw-replacement", "hardware-routing", "directional-selection", "dismissal",
                    "pairing-import", "pairing-confirmation", "pairing-save-retry", "pairing-cancelled-identity",
-                   "tailnet-account", "tailnet-errors", "tailnet-import", "native-control-stability")
+                   "tailnet-account", "tailnet-errors", "tailnet-import", "native-control-stability",
+                   "native-control-teardown")
 
 
 def validate_report(report, transport="quic", resumed=False):
