@@ -199,7 +199,8 @@ fn sessions(desk: &Desk, p: &Look) -> El {
         .on_submit(|d: &mut Desk, tx| d.blur_phone_search(tx));
     let search = row()
         .w_full()
-        .px(s.s3)
+        .pl(s.s3)
+        .pr(s.s1)
         .gap(s.s2)
         .items_center()
         .radius(p.radius.lg)
@@ -222,7 +223,18 @@ fn sessions(desk: &Desk, p: &Look) -> El {
                 .color(dim)
                 .a11y_hidden(),
         )
-        .child(search);
+        .child(search)
+        .children((!phone.query.text.is_empty()).then(|| {
+            control("phone-session-clear", "Clear search", p, Desk::clear_phone_search)
+                .px(0.0)
+                .center()
+                .preserve_focus_on_press(true)
+                .child(
+                    rune::icon(&icons::CLOSE, p.icon.grid * p.type_scale)
+                        .color(dim)
+                        .a11y_hidden(),
+                )
+        }));
     let list = session_list(desk, p);
     let large_text = p.type_scale >= crate::ui::tokens::layout::PHONE.stacked_title_scale;
     let footer = dock::footer(desk, phone.query.text.trim(), ink, large_text, p);

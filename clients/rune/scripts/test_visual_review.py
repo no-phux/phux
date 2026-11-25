@@ -78,10 +78,10 @@ class VisualReview(unittest.TestCase):
         self.inventory.stop()
         self.populate(review.required_inventory())
         manifest = self.produce()
-        self.assertEqual(len(manifest["cases"]), 1561)
+        self.assertEqual(len(manifest["cases"]), 1657)
         self.assertEqual({family: sum(case["family"] == family for case in manifest["cases"])
                           for family in review.FAMILIES},
-                            {"inbox": 404, "settings": 226, "navigation": 930, "resources": 1})
+                            {"inbox": 404, "settings": 226, "navigation": 1026, "resources": 1})
         case = next(case for case in manifest["cases"] if case["png"] == self.subject)
         self.assertEqual(case["physical"], [320, 568])
         self.assertEqual(case["logical"], [320, 568])
@@ -128,6 +128,23 @@ class VisualReview(unittest.TestCase):
                          "session_browser_renders_realistic_dark_light_and_search_states")
         self.assertEqual(review.exporter_for("resources", "mixed"),
                           "native_png_headless_renderer_smoke")
+
+    def test_session_search_matrix_keeps_matching_and_no_match_at_both_text_sizes(self):
+        self.inventory.stop()
+        cases = review.required_inventory()
+        for state in ("matching", "no-match", "long", "blurred"):
+            for theme in ("dark", "light"):
+                for text in ("standard", "ax5"):
+                    for width, height, native in (
+                        (320, 568, "false"), (393, 852, "false"),
+                        (320, 478, "true"), (393, 759, "true"),
+                        (320, 340, "true"), (393, 480, "true"),
+                    ):
+                        stem = (f"session-search-{state}-{theme}-{text}-native-{native}-"
+                                f"{width}x{height}-{width * 2}")
+                        self.assertEqual(cases[f"navigation/{stem}.png"], (width, height, 2))
+                        self.assertEqual(review.exporter_for("navigation", stem),
+                                         "phone_session_search_visual_review_frames")
 
     def test_sessions_canvas_matrix_keeps_large_long_filter_and_empty_cases(self):
         self.inventory.stop()

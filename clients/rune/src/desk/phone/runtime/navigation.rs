@@ -9,6 +9,7 @@ mod canvas;
 mod layout;
 mod render;
 mod review;
+mod search;
 mod wheel;
 
 fn inventory(rt: &mut Runtime<Desk>) {
