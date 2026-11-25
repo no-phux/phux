@@ -47,6 +47,7 @@ mod parse_error;
 mod refdocs;
 mod refusals;
 mod skill;
+mod terminal_browser;
 
 #[cfg(test)]
 mod help_inventory;
