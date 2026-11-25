@@ -3074,7 +3074,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -3103,7 +3104,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -3171,7 +3173,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -3212,7 +3215,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -3262,7 +3266,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -3314,7 +3319,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -4259,7 +4265,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -4350,7 +4357,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -4431,7 +4439,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -5110,7 +5119,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -6224,7 +6234,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -6341,7 +6352,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -6609,7 +6621,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -8232,7 +8245,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -8379,7 +8393,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -8415,7 +8430,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -8598,7 +8614,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot

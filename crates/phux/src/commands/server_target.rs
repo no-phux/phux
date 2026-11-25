@@ -3,10 +3,11 @@
 //! the same ladder and dial as `phux attach --remote`.
 //!
 //! The headless verbs take no `--code`/`--no-enroll`. Without `--json` an
-//! unregistered host still pairs over ssh; with `--json` the ssh rung is
-//! skipped, because a machine-readable call must not narrate or prompt. Every
-//! refusal is reported once, worded for the registry entry rather than for
-//! `phux attach`'s flags.
+//! unregistered host still pairs over ssh for a verb that changes something.
+//! The ssh rung is skipped for a verb that only reads, which must not set up
+//! a machine nobody added, and with `--json`, because a machine-readable call
+//! must not narrate or prompt. Every refusal is reported once, worded for the
+//! registry entry rather than for `phux attach`'s flags.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -83,8 +84,7 @@ impl ServerSpec {
         verb: &str,
         json: bool,
     ) -> Result<ServerTarget, ExitCode> {
-        let bootstrap = bootstrap_for(json || matches!(verb, "upload" | "download"));
-        self.resolve_inner(rt, verb, bootstrap, true)
+        self.resolve_inner(rt, verb, bootstrap_for(verb, json), true)
             .map_err(|error| error.emit(json && error.err.code != codes::USAGE_ERROR))
     }
 
@@ -140,9 +140,14 @@ fn resolve_remote(
 }
 
 /// Whether a cold target may pair over ssh: as under attach, except for a
-/// `--json` call, which must neither narrate on stderr nor block on a prompt.
-const fn bootstrap_for(json: bool) -> Bootstrap {
-    if json {
+/// `--json` call, which must neither narrate on stderr nor block on a prompt,
+/// and for verbs that read or transfer, which leave the far end as it is.
+fn bootstrap_for(verb: &str, json: bool) -> Bootstrap {
+    let never_pairs = matches!(
+        verb,
+        "ls" | "version" | "whoami" | "doctor" | "upload" | "download"
+    );
+    if json || never_pairs {
         Bootstrap::Never
     } else {
         Bootstrap::Auto
