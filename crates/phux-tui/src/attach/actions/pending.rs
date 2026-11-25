@@ -143,9 +143,9 @@ pub(in crate::attach) enum Adopt {
     Existing {
         /// The pane being opened.
         pane: ResourceId,
-        /// The pane in view when the user asked. What they type there is
-        /// meant for `pane`, until the attach answers or they click back.
-        over: Option<ResourceId>,
+        /// Whether what is typed is meant for `pane`: until its attach
+        /// answers, or the user does anything else (a chord or a click).
+        hold: bool,
     },
     /// A pane this client just spawned; a refused attach kills it.
     Spawned(SpawnedPane),
@@ -154,7 +154,7 @@ pub(in crate::attach) enum Adopt {
 impl Adopt {
     #[cfg(test)]
     pub(in crate::attach) const fn existing(pane: ResourceId) -> Self {
-        Self::Existing { pane, over: None }
+        Self::Existing { pane, hold: false }
     }
 
     /// The pane, whichever way it came.

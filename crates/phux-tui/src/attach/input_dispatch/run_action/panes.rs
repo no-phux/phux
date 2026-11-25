@@ -209,13 +209,14 @@ fn open_existing_pane(
             .values()
             .any(|split| split.adopt.as_ref().map(Adopt::pane) == Some(&target))
     {
+        ctx.hold_typing(true);
         return;
     }
     let request_id = ctx.take_request_id();
     let host = split_host(target.host().cloned());
     let adopt = Adopt::Existing {
         pane: target.clone(),
-        over: Some(focused_id.clone()),
+        hold: true,
     };
     let pending = PendingSplit {
         focused_at_request: focused_id,

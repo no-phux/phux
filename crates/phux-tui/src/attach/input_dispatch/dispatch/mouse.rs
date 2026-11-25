@@ -332,7 +332,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         // surrounding edges render heavy.
         let layout_changed = focus_changed;
         if mouse.action == MouseAction::Press && mouse.button == MouseButton::Left {
-            self.release_held_typing();
+            self.ctx.hold_typing(false);
         }
         if focus_changed {
             self.focus_pane_from_click(&target);
