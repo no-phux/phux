@@ -29,6 +29,13 @@ def navigation_inventory(themes=("dark", "light")):
     })
     cases.update(connections_inventory(themes))
     cases.update({
+        f"navigation/canvas-{state}-{theme}-{width * 2}.png":
+            (width, keyboard_height if state.startswith("query-") else height, 2)
+        for state, theme, (width, height, keyboard_height) in product(
+            ("connections", "query-top", "query-bottom", "empty"), themes,
+            ((320, 478, 340), (393, 759, 480)))
+    })
+    cases.update({
         f"navigation/connections-keyboard-{theme}-{state}-{width * 2}.png":
             (width, height, 2)
         for theme, state, (width, height) in product(
@@ -119,6 +126,7 @@ def connections_inventory(themes):
 
 def navigation_exporter(stem):
     for prefix, exporter in (
+        ("canvas-", "phone_session_canvas_visual_review_frames"),
         ("reconnect-", "reconnect_feedback_visual_review_frames"),
         ("attention-", "attention_contrast_visual_review_frames"),
         ("sidebar-focus-", "sidebar_focus_visual_review_frames"),

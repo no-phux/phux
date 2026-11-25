@@ -28,6 +28,7 @@ filters = {
     "settings_theme_visual_review_frames": "RUNE_SETTINGS_SNAP",
     "mobile_appearance_and_real_theme_palette_render_accept_and_cancel": "RUNE_SETTINGS_SNAP",
     "session_browser_renders_realistic_dark_light_and_search_states": "RUNE_NAVIGATION_SNAP",
+    "phone_session_canvas_visual_review_frames": "RUNE_NAVIGATION_SNAP",
     "retina_navigation_renders_in_native_safe_area_and_desktop_phone_viewports": "RUNE_NAVIGATION_SNAP",
     "phone_header_visual_review_frames": "RUNE_NAVIGATION_SNAP",
     "phone_states_visual_review_frames": "RUNE_NAVIGATION_SNAP",

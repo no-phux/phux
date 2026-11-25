@@ -2,6 +2,7 @@
 use super::*;
 
 mod accessory;
+mod canvas;
 mod connections;
 mod header;
 mod reconnect;

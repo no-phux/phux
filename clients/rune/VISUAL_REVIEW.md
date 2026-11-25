@@ -120,6 +120,15 @@ above the native keyboard, not just a visible fragment. Keep the desktop
 drawn-keyboard cases too; their inherited large-text glyph clipping is not
 native UIKit behavior or evidence that the accessory fix repaired that stand-in.
 
+Sessions canvas cases add an empty inventory and a long unbroken filter at
+true 2× on both native-sized phone widths. At AX5, compare the whole Connections
+destination after explicit keyboard-focus/reveal requests and the long-filter editor plus the
+explicitly scrolled final action. Preserve requested text sizes and complete
+controls; an offscreen fragment is not a pass. Explicit bottom scrolls are not
+claims of Tab-driven focus reveal. Long-filter cases use the keyboard-reduced
+320×340 and 393×480 viewports. Ordinary UIKit Glass remains separate
+from the large-text opaque inline action.
+
 ## Review behavior as well as pixels
 
 Sidebar keyboard cases start in a non-leading split pane. Compare idle,
