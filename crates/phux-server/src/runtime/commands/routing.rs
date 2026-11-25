@@ -36,6 +36,7 @@ pub(crate) const fn command_kind(command: &Command) -> &'static str {
         Command::Checkout { .. } => "checkout",
         Command::GetPerf { .. } => "get_perf",
         Command::PerfControl { .. } => "perf_control",
+        Command::OpenUrl { .. } => "open_url",
         Command::Transcribe { .. } => "transcribe",
         Command::AppendResourceOutput { .. } => "append_resource_output",
         Command::Mirror { .. } => "mirror",

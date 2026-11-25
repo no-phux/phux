@@ -152,3 +152,36 @@ and each signature request, never the data. The wire contract (timeouts,
 windows, limits, errors) is
 [`phux-protocol/src/forward.rs`](../crates/phux-protocol/src/forward.rs);
 tags are in [kinds](./reference/kinds.md).
+
+## Opening links
+
+A program on a machine with no screen can ask to open a link on yours:
+
+```sh
+phux open-url https://phux.sh
+```
+
+With `[defaults] browser-shim = true` on the server, panes' programs do it by
+themselves: `BROWSER` is a stand-in that runs `phux open-url`, also last on
+panes' `PATH` as `xdg-open`, so a real one wins. (A login shell that rebuilds
+`PATH` drops it.) When nothing opens the link, the stand-in prints it and
+copies it to your clipboard.
+
+The terminal UI or Rune asks, if it is the client that last typed in the pane:
+it names the machine, the pane and the whole link. **O** opens it, once the
+question has been up for a second with no key pressed; Enter or Esc declines,
+and so does no answer for 60 s. It always asks. Only `http` and `https` links
+with a host and no user name are asked about, with a non-ASCII host in
+punycode. One request per pane waits at a time, eight per server.
+
+Nobody is asked for a pane on a [linked machine](./remote.md#linking-machines),
+from a phone, or from a terminal UI that itself runs over SSH, in a phux pane,
+or without a desktop.
+
+A sign-in that comes back to a `localhost` port comes back to your machine,
+where nothing listens. The question shows the `phux forward -L` command that
+carries the port to a registered machine; run it first.
+
+Asking needs `input` on the pane. The [audit log](./security.md#audit-log)
+records the request and its answer, with the link's host only. The wire
+contract is [`phux-protocol/src/open_url.rs`](../crates/phux-protocol/src/open_url.rs).

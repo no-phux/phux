@@ -8,6 +8,10 @@ use phux_protocol::wire::frame::{AttachTarget, RolePolicy};
 
 /// What a consumer asks the control plane to do on every connection.
 #[derive(Debug, Clone)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent switches a consumer sets by name"
+)]
 pub struct ControlOptions {
     /// The `HELLO` client name.
     pub client_name: String,
@@ -53,6 +57,10 @@ pub struct ControlOptions {
     /// Image protocols this consumer can paint. Currently Kitty is supported;
     /// unsupported protocols are not advertised. Empty for text-only and ABI consumers.
     pub image_protocols: ImageProtocolSet,
+    /// Whether this consumer asks its user about [`super::Event::OpenUrl`]
+    /// and answers with [`super::ControlPlane::open_url_reply`]. The server
+    /// sends it none otherwise.
+    pub open_urls: bool,
     /// How predictive echo is drawn. Applied to every engine this plane starts.
     pub prediction_style: PredictionStyle,
 }
@@ -93,6 +101,7 @@ impl Default for ControlOptions {
             subscribe_agent_sessions: false,
             bootstrap_limits: BootstrapLimits::default(),
             image_protocols: ImageProtocolSet::new(),
+            open_urls: false,
             prediction_style: PredictionStyle::Underline,
         }
     }
@@ -119,6 +128,7 @@ impl ControlOptions {
             )
             .with_layers(LayerSet::with(&[Layer::L3]))
             .with_credential_approvals(true)
+            .with_open_url(self.open_urls)
             .with_bootstrap(self.bootstrap_caps())
             .with_resource_kinds(phux_client_core::session::KERNEL_RESOURCE_KINDS)
     }

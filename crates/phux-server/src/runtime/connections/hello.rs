@@ -263,6 +263,7 @@ const fn runtime_server_features_ext() -> ServerFeatureExtSet {
         ServerFeatureExt::HostChecklist,
         ServerFeatureExt::ForwardTcp,
         ServerFeatureExt::ForwardAgent,
+        ServerFeatureExt::OpenUrl,
     ])
 }
 

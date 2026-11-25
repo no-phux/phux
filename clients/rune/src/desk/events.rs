@@ -144,6 +144,11 @@ impl Desk {
                 terminal_id,
                 selection,
             } => self.clipboard_read(terminal_id, selection, tx),
+            Event::OpenUrl {
+                terminal_id,
+                id,
+                url,
+            } => self.open_url_asked(terminal_id, id, &url),
             Event::Note {
                 terminal_id,
                 note: Some(note),

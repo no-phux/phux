@@ -482,6 +482,12 @@ fn samples(world: &World, agent: &WireResourceId) -> Vec<FrameKind> {
         command(Command::Forward {
             op: phux_protocol::forward::ForwardOp::Close { id: 1 },
         }),
+        command(Command::OpenUrl {
+            terminal_id: t.clone(),
+            op: phux_protocol::open_url::OpenUrlOp::Request {
+                url: "https://phux.sh/".to_owned(),
+            },
+        }),
         command(Command::Transcribe {
             upload_id: upload,
             terminal_id: t.clone(),
@@ -543,17 +549,4 @@ fn viewport_colors() -> FrameKind {
             background: white,
         },
     }
-}
-
-/// `VIEWPORT_COLORS` is gated exactly as `VIEWPORT_RESIZE`: `BIND` on the
-/// Terminals the connection views.
-fn viewport_colors_row(rows: &[Row]) -> Option<Row> {
-    let resize = rows
-        .iter()
-        .find(|row| matches!(row.frame, FrameKind::ViewportResize { .. }))?;
-    Some(Row {
-        frame: viewport_colors(),
-        admit: resize.admit.clone(),
-        deny: resize.deny.clone(),
-    })
 }

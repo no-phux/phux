@@ -34,6 +34,7 @@ impl ServerState {
             federation: Federation::default(),
             uplinks: crate::uplink::Uplinks::default(),
             forward_agent: crate::runtime::forward::agent::Broker::default(),
+            open_urls: crate::runtime::open_url::OpenUrls::default(),
             hook_dispatcher: None,
             plugin_startup: None,
             standing_mirrors: None,

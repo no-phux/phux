@@ -9,7 +9,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Padding, Paragraph, Widget, Wrap};
 
-use crate::render::{ChromeBreakpoints, Theme};
+use crate::render::{ChromeBreakpoints, Theme, clip_text, display_width};
 
 /// Horizontal inner padding of a floating modal, in cells. Text never sits
 /// flush against the border.
@@ -213,6 +213,33 @@ pub fn centered_panel(
         r.height = outer.height;
     }
     r
+}
+
+/// Greedy word wrap to `width` cells; a word wider than the line is cut.
+#[must_use]
+pub fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return Vec::new();
+    }
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        let word_w = display_width(word);
+        let cur_w = display_width(&current);
+        if cur_w == 0 {
+            current.push_str(&clip_text(word, width));
+        } else if cur_w + 1 + word_w <= width {
+            current.push(' ');
+            current.push_str(word);
+        } else {
+            lines.push(std::mem::take(&mut current));
+            current.push_str(&clip_text(word, width));
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
 }
 
 /// Scroll `offset` minimally so row `cursor` is inside a `height`-row window
@@ -441,5 +468,15 @@ mod tests {
         assert!(modal.y >= content.y && modal.bottom() <= content.bottom());
         let (left, right) = (modal.x - content.x, content.right() - modal.right());
         assert!(left.abs_diff(right) <= 1, "L={left} R={right}");
+    }
+
+    #[test]
+    fn wrap_words_fills_lines_and_cuts_long_words() {
+        assert_eq!(
+            wrap_words("one two three four", 9),
+            vec!["one two", "three", "four"]
+        );
+        assert_eq!(wrap_words("abcdefghij", 4), vec!["abc\u{2026}"]);
+        assert!(wrap_words("x", 0).is_empty());
     }
 }

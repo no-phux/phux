@@ -226,7 +226,8 @@ async fn connect_attach_dial(
     if let Some(colors) = default_colors {
         crate::render::theme::record_reported(colors);
     }
-    let client_caps = attach_client_caps(default_colors, dial);
+    let client_caps = attach_client_caps(default_colors, dial)
+        .with_open_url(crate::attach::open_url::opens_here());
     let mut conn =
         Connection::connect_dial_with_hello(dial, attach_client_name(), client_caps).await?;
     // The deadline bounds the handshake only; an attach is a long-lived stream.

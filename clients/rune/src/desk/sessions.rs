@@ -345,6 +345,8 @@ pub(super) fn connect(target: Target) -> Result<Client, String> {
                 scrollback_lines: SCROLLBACK_LINES,
                 // Typed text shows as typed, never underlined while unconfirmed.
                 prediction_style: PredictionStyle::Plain,
+                // A phone has no prompt for a pane's links.
+                open_urls: cfg!(any(target_os = "linux", target_os = "macos")),
                 // ACP questions arrive as AgentSession views.
                 subscribe_agent_sessions: true,
                 // A native checkpoint encodes Kitty pixels as one history

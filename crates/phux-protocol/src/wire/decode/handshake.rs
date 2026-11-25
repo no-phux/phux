@@ -48,6 +48,7 @@ impl Decoder<'_> {
         let mut resource_kinds = crate::caps::ResourceKindSet::LEGACY;
         let mut platform = None;
         let mut credential_approvals = false;
+        let mut open_url = false;
         for_each_field!(self, value, {
             f::CLIENT_NAME => client_name = Some(utf8_value(value)?),
             f::PROTOCOL_MAJOR => protocol_major = Some(sub!(value, Decoder::read_u16_be)),
@@ -65,6 +66,7 @@ impl Decoder<'_> {
             f::CREDENTIAL_APPROVALS => {
                 credential_approvals = sub!(value, Decoder::read_u8) == 1;
             }
+            f::OPEN_URL => open_url = sub!(value, Decoder::read_u8) == 1,
             f::RESOURCE_KINDS => {
                 resource_kinds =
                     crate::caps::ResourceKindSet::from_wire(sub!(value, Decoder::read_u64_be));
@@ -89,7 +91,8 @@ impl Decoder<'_> {
             .with_quic_streams(quic_streams)
             .with_resource_kinds(resource_kinds)
             .with_platform(platform)
-            .with_credential_approvals(credential_approvals);
+            .with_credential_approvals(credential_approvals)
+            .with_open_url(open_url);
         Ok(FrameKind::Hello {
             client_name: req(client_name)?,
             protocol_major: req(protocol_major)?,

@@ -120,8 +120,8 @@ from the notification.
 
 The server keeps a signed, hash-chained, append-only record of connections,
 authorization decisions, approvals, credential changes, file transfer
-chunks, forwarded connections and ssh-agent signatures, input leases, and
-clipboard reads. It lives in `audit/` in the
+chunks, forwarded connections and ssh-agent signatures, input leases,
+clipboard reads, and links panes asked to open (the host only). It lives in `audit/` in the
 [state directory](./reference/files.md#state), rotating at 64 MiB with four
 old files kept.
 

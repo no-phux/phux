@@ -355,6 +355,8 @@ pub(super) struct SessionLoop {
     parser: StdinParser,
     /// OSC 52 reads: grants, prompts, and the host round trip.
     clipboard_reads: crate::attach::clipboard_read::SharedClipboardReads,
+    /// Links panes ask to open here.
+    open_urls: crate::attach::open_url::SharedOpenUrls,
     /// The outer terminal's stdin (see [`crate::attach::tty_input`]).
     stdin: TtyInput,
     /// One read's worth of stdin bytes.
@@ -417,15 +419,6 @@ pub(super) struct SessionLoop {
 }
 
 impl SessionLoop {
-    pub(super) fn set_control_dial(&mut self, dial: crate::attach::Dial) {
-        self.control_dial = Some(Box::new(dial));
-    }
-
-    /// Run background jobs on `jobs` instead of this loop's own facility.
-    pub(super) fn set_jobs(&mut self, jobs: Jobs) {
-        self.jobs = jobs;
-    }
-
     /// Allocate the next L3/command correlation id.
     const fn take_request_id(&mut self) -> u32 {
         let id = self.next_request_id;
@@ -555,6 +548,7 @@ impl SessionLoop {
                     .server_features_ext
                     .contains(phux_protocol::ServerFeatureExt::ClipboardRead),
             ),
+            open_urls: crate::attach::open_url::SharedOpenUrls::default(),
             stdin: TtyInput::open(),
             stdin_buf: [0u8; 4096],
             input_events: Vec::new(),
@@ -613,3 +607,4 @@ pub(super) use spawns::{parked_spawned_panes, spawned_satellite_panes, unanswere
 mod peers;
 mod project_tag;
 mod step;
+mod wiring;

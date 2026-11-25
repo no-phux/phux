@@ -8,6 +8,7 @@ mod git;
 mod machines;
 mod maintain;
 mod more;
+mod open_url;
 mod options;
 mod pane_input;
 mod pane_read;
@@ -26,6 +27,7 @@ pub(crate) use self::git::*;
 pub(crate) use self::machines::*;
 pub(crate) use self::maintain::*;
 pub(crate) use self::more::*;
+pub(crate) use self::open_url::*;
 pub(crate) use self::options::*;
 pub(crate) use self::pane_input::*;
 pub(crate) use self::pane_read::*;
@@ -97,6 +99,10 @@ pub(crate) enum Command {
 
     #[usage(help_heading = "Panes", display_order = 27)]
     Resize(ResizeArgs),
+
+    #[usage(name = "open-url")]
+    #[usage(help_heading = "Panes", display_order = 33)]
+    OpenUrl(OpenUrlArgs),
 
     #[usage(help_heading = "Sessions", display_order = 14)]
     Detach(DetachArgs),

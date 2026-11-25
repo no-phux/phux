@@ -33,9 +33,11 @@ impl super::super::SessionLoop {
         let depth = self.overlays.depth();
         self.deliver_clipboard_writes(out, &mut outcome)?;
         self.deliver_clipboard_reads(out, &mut outcome)?;
-        // A clipboard prompt goes up over panes whose program may print
-        // nothing more: paint it now rather than on the next repaint.
-        if self.overlays.depth() > depth && !defer_paint {
+        self.ask_open_url(&mut outcome);
+        // A prompt goes up over panes whose program may print nothing more:
+        // paint it now, even from a frame whose panes wait for the pacer. A
+        // held switch paints it at its release.
+        if self.overlays.depth() > depth && !self.paint_held() {
             self.paint_overlay(out, sidebar);
         }
         for terminal_id in &outcome.authoritative_damage {

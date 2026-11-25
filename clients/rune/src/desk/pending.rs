@@ -19,6 +19,8 @@ pub enum Pending {
     CloseSession(SessionKey, String),
     /// A program's clipboard read (OSC 52).
     ClipboardRead(ResourceId, phux_client_core::engine::ClipboardSelection),
+    /// A pane's request to open a link here.
+    OpenUrl(Box<super::open_url::Asked>),
     /// A program's clipboard write (OSC 52) and the text it would set.
     ClipboardWrite(ResourceId, String),
 }

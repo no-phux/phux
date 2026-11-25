@@ -214,6 +214,7 @@ impl Desk {
     pub(super) fn confirm_bar_key(&mut self, event: &rune::KeyEvent, tx: &mut Tx) {
         if self.clipboard_read_key(event, tx).is_none()
             && self.clipboard_write_key(event, tx).is_none()
+            && self.open_url_key(event, tx).is_none()
         {
             self.confirm_key(event);
         }
@@ -389,8 +390,11 @@ impl Desk {
         match self.pending.take() {
             Some(Pending::Mirror(source, target)) => self.start_mirror(source, &target),
             Some(Pending::Paste(terminal, text)) => self.send_paste(&terminal, &text),
-            // Answered through `confirm_pending_tx`, which can reach the clipboard.
-            Some(Pending::ClipboardRead(..) | Pending::ClipboardWrite(..)) => {}
+            // Answered through `confirm_pending_tx`, which can reach the
+            // clipboard and the browser.
+            Some(
+                Pending::ClipboardRead(..) | Pending::ClipboardWrite(..) | Pending::OpenUrl(_),
+            ) => {}
             Some(Pending::Close(terminal)) => self.close_now(&terminal),
             Some(Pending::CloseTab(terminals)) => {
                 let terminals = terminals
@@ -411,6 +415,7 @@ impl Desk {
     }
 
     pub fn cancel_pending(&mut self) {
+        self.decline_open_url();
         self.pending = None;
     }
 

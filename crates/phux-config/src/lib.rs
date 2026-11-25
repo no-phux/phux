@@ -19,6 +19,7 @@ pub mod keybind;
 pub mod loader;
 pub mod mirror;
 pub mod onboarding;
+pub mod open_url;
 pub mod overlay;
 pub mod plugin;
 pub mod producer;

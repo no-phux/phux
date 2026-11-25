@@ -44,6 +44,10 @@ impl KeyboardProtocolSet {
 /// [`Self::new`] and the `with_*` setters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent HELLO offers, each its own wire field"
+)]
 pub struct ClientCapabilities {
     /// The client's color tier.
     pub color_support: ColorSupport,
@@ -83,6 +87,10 @@ pub struct ClientCapabilities {
     /// The client can review exact credential references and bound provider identity.
     /// Explicit HELLO offer: legacy clients cannot approve opaque credential requests.
     pub credential_approvals: bool,
+    /// The client asks its user before opening a link a pane asks for and
+    /// answers `open_url` events (HELLO field 14). Only such a client is sent
+    /// one.
+    pub open_url: bool,
 }
 
 /// Effective default colors reported by the client's outer terminal.
@@ -124,12 +132,14 @@ impl ClientCapabilities {
             resource_kinds: ResourceKindSet::LEGACY,
             platform: None,
             credential_approvals: false,
+            open_url: false,
         }
     }
 
     builder_setters! {
         const fn with_platform(platform: Option<ClientPlatform>) => platform;
         const fn with_credential_approvals(enabled: bool) => credential_approvals;
+        const fn with_open_url(enabled: bool) => open_url;
         const fn with_resource_kinds(kinds: ResourceKindSet) => resource_kinds;
         const fn with_compression(compression: CompressionSet) => compression;
     }

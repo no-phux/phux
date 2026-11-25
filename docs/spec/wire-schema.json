@@ -60,7 +60,8 @@
         {"id":10,"name":"QUIC_STREAMS","type":"bool","presence":"optional"},
         {"id":11,"name":"RESOURCE_KINDS","type":"u64","presence":"optional"},
         {"id":12,"name":"PLATFORM","type":"str","presence":"optional"},
-        {"id":13,"name":"CREDENTIAL_APPROVALS","type":"u8","presence":"optional"}
+        {"id":13,"name":"CREDENTIAL_APPROVALS","type":"u8","presence":"optional"},
+        {"id":14,"name":"OPEN_URL","type":"u8","presence":"optional"}
       ]
     },
     {

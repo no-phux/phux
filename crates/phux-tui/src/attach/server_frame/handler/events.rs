@@ -59,6 +59,14 @@ pub(super) fn handle_agent_event<W: crate::attach::RenderSink>(
             event: AgentEvent::InputActivity { origin },
             ..
         } => fold_input_activity(ctx, &terminal, origin),
+        FrameKind::Event {
+            terminal: Some(terminal),
+            event: AgentEvent::OpenUrl { id, url },
+            ..
+        } => FrameOutcome {
+            open_url: Some((terminal, id, url)),
+            ..FrameOutcome::default()
+        },
         // A document, tree, or surface spawned: its kind names a placeholder
         // leaf before its bootstrap; the inventory refresh brings its name.
         FrameKind::Event {

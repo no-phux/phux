@@ -392,7 +392,8 @@ fn connection_samples() -> Vec<(FrameKind, &'static Rule)> {
                     })
                     .with_quic_streams(true)
                     .with_platform(crate::caps::ClientPlatform::parse("macos"))
-                    .with_credential_approvals(true),
+                    .with_credential_approvals(true)
+                    .with_open_url(true),
             },
             &F_HELLO,
         ),

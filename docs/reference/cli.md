@@ -53,6 +53,7 @@ Panes:
   resource      Inspect a resource or wait for its process to exit
   slot          Keep several panes in one layout slot, as tabs
   git           Read the Git checkout a pane is in
+  open-url      Ask to open a link on your own machine
 
 Agents:
   agent         See and drive the agents running in panes
@@ -5335,6 +5336,33 @@ Flags:
 
 Global flags:
       --socket <PATH>    Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux open-url`
+
+```text
+Open a link on the machine of the person typing in this pane.
+
+Run inside a phux pane. The attached client that last typed here asks its user,
+showing the whole link; only http and https links are asked about. Exits 0 once
+the link is opened, 1 when it was not: declined, unanswered for 60 seconds, or
+no attached client can ask.
+
+`[defaults] browser-shim` makes panes' programs use it.
+
+Example:
+phux open-url https://phux.sh
+
+Usage: phux open-url <URL>
+
+Arguments:
+  <URL>  The link.
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux organize`

@@ -41,6 +41,9 @@ jiff.workspace = true
 # `json_schema`: the editor schemas under `docs/spec/`, derived from the
 # serde types (phux-protocol already builds it at this spec).
 schemars = "1.2.3"
+# The WHATWG parser browsers use, for the links a pane may ask a client to
+# open (`open_url`): already in the lockfile, and Rune's at this spec.
+url = "2"
 
 [dev-dependencies]
 insta.workspace = true

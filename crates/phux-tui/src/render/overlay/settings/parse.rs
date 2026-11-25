@@ -1,6 +1,6 @@
 //! Parsing the value editor's text, and text layout helpers.
 
-use super::{Color, Edit, FromStr, Path, SettingKind, clip_text, display_width, home_to_tilde};
+use super::{Color, Edit, FromStr, Path, SettingKind, home_to_tilde};
 
 /// Parse the editor's text into an edit for `kind`.
 pub(super) fn parse_input(kind: SettingKind, text: &str) -> Result<Edit, String> {
@@ -163,32 +163,6 @@ pub(super) fn read_double_quoted(
     }
 }
 
-/// Greedy word wrap to `width` cells; a word wider than the line is cut.
-pub(super) fn wrap_words(text: &str, width: usize) -> Vec<String> {
-    if width == 0 {
-        return Vec::new();
-    }
-    let mut lines = Vec::new();
-    let mut current = String::new();
-    for word in text.split_whitespace() {
-        let word_w = display_width(word);
-        let cur_w = display_width(&current);
-        if cur_w == 0 {
-            current.push_str(&clip_text(word, width));
-        } else if cur_w + 1 + word_w <= width {
-            current.push(' ');
-            current.push_str(word);
-        } else {
-            lines.push(std::mem::take(&mut current));
-            current.push_str(&clip_text(word, width));
-        }
-    }
-    if !current.is_empty() {
-        lines.push(current);
-    }
-    lines
-}
-
 /// The header's path: `~` for the home directory, so the header fits.
 pub(super) fn display_path_for(path: &Path, home: Option<&str>) -> String {
     home_to_tilde(&path.display().to_string(), home)
@@ -226,16 +200,6 @@ mod tests {
             "unterminated single quote"
         );
         assert_eq!(split_words("x\\").unwrap_err(), "trailing backslash");
-    }
-
-    #[test]
-    fn wrap_words_fills_lines_and_cuts_long_words() {
-        assert_eq!(
-            wrap_words("one two three four", 9),
-            vec!["one two", "three", "four"]
-        );
-        assert_eq!(wrap_words("abcdefghij", 4), vec!["abc\u{2026}"]);
-        assert!(wrap_words("x", 0).is_empty());
     }
 
     #[test]

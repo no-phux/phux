@@ -205,7 +205,7 @@
         },
         "browser-shim": {
           "default": false,
-          "description": "Give panes a stand-in `BROWSER` that prints a link and copies it to\nthe attached person's clipboard, for a machine with no screen. Read\nat server start.",
+          "description": "Give panes a stand-in `BROWSER`, and an `xdg-open` where there is\nnone, for a machine with no screen: it asks the person typing in the\npane to open the link on their machine, else prints it and copies it\nto their clipboard (`docs/ssh.md#opening-links`). Read at server\nstart.",
           "type": "boolean"
         },
         "clipboard-read": {

@@ -65,6 +65,14 @@ and docs, not a quiet rewrite. Retired records are
   can add, remove or lock keys. Both sides opt in (`[forward] agent`,
   `phux forward --agent`), and the client asks before each signature unless
   run with `--yes`.
+- A pane opens a link on a client through a typed request, not an escape
+  sequence: printed bytes must never raise a prompt, nor every viewer see it.
+  It reaches only the client typing in the pane. That client always asks,
+  naming the machine, the pane and the whole `http(s)` link; declining is the
+  default and the answer to 60 s of silence, typing cannot accept, and no
+  host is remembered. A sign-in's loopback port is never forwarded with it.
+  Printing and copying the link, the whole feature until #2973, is the
+  fallback ([ssh](./ssh.md#opening-links)).
 - Slot tabs are trailing fields on the leaf record, not a new node kind,
   because a new kind would break older clients' arrangement reads and older
   servers' store loads ([slot tabs](./organization.md#slot-tabs)).

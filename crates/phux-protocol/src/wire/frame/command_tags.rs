@@ -56,6 +56,10 @@ pub(crate) const COMMAND_TAG_FORWARD_CLOSE: u8 = 0x47;
 pub(crate) const COMMAND_TAG_AGENT_OFFER: u8 = 0x4f;
 /// Wire tag for [`Command::Forward`] carrying `ForwardOp::AgentReply`.
 pub(crate) const COMMAND_TAG_AGENT_REPLY: u8 = 0x50;
+/// Wire tag for [`Command::OpenUrl`] carrying `OpenUrlOp::Request`.
+pub(crate) const COMMAND_TAG_OPEN_URL: u8 = 0x51;
+/// Wire tag for [`Command::OpenUrl`] carrying `OpenUrlOp::Reply`.
+pub(crate) const COMMAND_TAG_OPEN_URL_REPLY: u8 = 0x52;
 pub(crate) const COMMAND_TAG_DESCRIBE_API: u8 = 0x40;
 pub(crate) const COMMAND_TAG_GET_CREATION: u8 = 0x41;
 pub(crate) const COMMAND_TAG_SHUTDOWN: u8 = 0x16;

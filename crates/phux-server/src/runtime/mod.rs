@@ -31,6 +31,7 @@ mod ephemeral_listener;
 pub(crate) mod forward;
 pub mod idempotent_create;
 pub mod keyed_ops;
+pub(crate) mod open_url;
 pub mod operation_dedupe;
 mod organization;
 mod path_search;

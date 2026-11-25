@@ -365,6 +365,16 @@ pub enum AgentEvent {
         /// `SSH_AGENTC_REQUEST_IDENTITIES` or `SSH_AGENTC_SIGN_REQUEST`.
         message: Vec<u8>,
     },
+    /// The envelope's Terminal asks to open a link on the receiving client's
+    /// machine, sent only to the attached connection that last typed into it
+    /// and offered `OPEN_URL` at `HELLO`, which answers with
+    /// `OPEN_URL_REPLY`. Unjournaled: no stamp.
+    OpenUrl {
+        /// Names the request in the reply.
+        id: u64,
+        /// The link as the server normalized it. The client checks it again.
+        url: String,
+    },
     /// An event tag this build does not know, body kept verbatim. Produced
     /// only by the decoder.
     Unknown {
