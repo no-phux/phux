@@ -98,8 +98,10 @@ impl CommandContext {
 
 /// Dispatch a `COMMAND` and reply with its correlated `COMMAND_RESULT`
 ///. The result may follow frames the command triggered.
+// `debug`: the span's close timing would otherwise log a line per command at
+// the default level (`RUST_LOG=phux=debug` shows it).
 #[tracing::instrument(
-    level = "info",
+    level = "debug",
     name = "handle_command",
     skip_all,
     fields(client_id = ?ctx.client_id, request_id, kind = command_kind(&command)),

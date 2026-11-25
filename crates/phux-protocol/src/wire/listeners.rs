@@ -69,6 +69,10 @@ pub enum RemoteListenerTransport {
     Quic,
     /// WebTransport (HTTP/3 over QUIC).
     Wt,
+    /// An outbound `[[connector]]` tunnel to a relay: not a bound socket,
+    /// so `addr` is the relay this server dials and `bound` means the tunnel
+    /// is up. One row per relay. Older readers see it as `unknown`.
+    Relay,
     /// A transport this build does not know, from a newer server.
     #[serde(other)]
     Unknown,
@@ -82,6 +86,7 @@ impl RemoteListenerTransport {
             Self::Wss => "wss",
             Self::Quic => "quic",
             Self::Wt => "wt",
+            Self::Relay => "relay",
             Self::Unknown => "unknown",
         }
     }
@@ -192,14 +197,38 @@ impl RemoteListenerSlot {
             && self.disabled_reason == Some(ListenerDisabledReason::NoOverlayAddress)
     }
 
+    /// A relay tunnel this server dials and has up.
+    #[must_use]
+    pub fn relay_up(relay: impl Into<String>) -> Self {
+        Self::bound(RemoteListenerTransport::Relay, relay)
+    }
+
+    /// A relay tunnel being dialed or redialed; `error` is the last
+    /// failure, `None` before the first attempt ends.
+    #[must_use]
+    pub fn relay_down(relay: impl Into<String>, error: Option<String>) -> Self {
+        Self {
+            waiting: Some(error.unwrap_or_else(|| "connecting".to_owned())),
+            ..Self::disabled(
+                RemoteListenerTransport::Relay,
+                Some(relay.into()),
+                ListenerDisabledReason::BindFailed,
+            )
+        }
+    }
+
     /// Why this row is not listening, for humans: `waiting for a private
-    /// network address`, `waiting to bind (<error>)`, or `disabled (<reason>)`.
+    /// network address`, `waiting to bind (<error>)`, `redialing the relay
+    /// (<error>)`, or `disabled (<reason>)`.
     #[must_use]
     pub fn unbound_label(&self) -> String {
         if self.is_waiting_for_address() {
             return "waiting for a private network address".to_owned();
         }
         match (&self.waiting, self.disabled_reason) {
+            (Some(error), _) if self.transport == RemoteListenerTransport::Relay => {
+                format!("redialing ({error})")
+            }
             (Some(error), _) => format!("waiting to bind ({error})"),
             (None, reason) => format!(
                 "disabled ({})",
@@ -240,13 +269,14 @@ impl RemoteListenersReport {
         fn with_listeners(listeners: Vec<RemoteListenerSlot>) => listeners;
     }
 
-    /// Upsert a slot by transport (later writes win for the same transport).
+    /// Upsert a slot by transport (later writes win for the same transport);
+    /// relay rows are keyed by transport and relay, one per connector.
     pub fn upsert(&mut self, slot: RemoteListenerSlot) {
-        if let Some(existing) = self
-            .listeners
-            .iter_mut()
-            .find(|row| row.transport == slot.transport)
-        {
+        let same = |row: &RemoteListenerSlot| {
+            row.transport == slot.transport
+                && (slot.transport != RemoteListenerTransport::Relay || row.addr == slot.addr)
+        };
+        if let Some(existing) = self.listeners.iter_mut().find(|row| same(row)) {
             *existing = slot;
         } else {
             self.listeners.push(slot);
@@ -342,6 +372,25 @@ mod tests {
         assert_eq!(
             old.listeners[0].unbound_label(),
             "disabled (no_overlay_address)"
+        );
+    }
+
+    /// Each connector keeps its own relay row, replaced in place as its
+    /// tunnel comes and goes, and says it is redialing while it is down.
+    #[test]
+    fn relay_rows_are_one_per_relay_and_say_they_redial() {
+        let mut report = RemoteListenersReport::new();
+        report.upsert(RemoteListenerSlot::relay_down("a.example:4433", None));
+        report.upsert(RemoteListenerSlot::relay_down("b.example:4433", None));
+        report.upsert(RemoteListenerSlot::relay_up("a.example:4433"));
+        assert_eq!(report.listeners.len(), 2);
+        assert!(report.listeners[0].bound);
+        let down = RemoteListenerSlot::relay_down("b.example:4433", Some("timed out".into()));
+        assert!(down.is_unhealthy());
+        assert_eq!(down.unbound_label(), "redialing (timed out)");
+        assert_eq!(
+            RemoteListenersReport::from_json(&report.to_json()).expect("round trip"),
+            report
         );
     }
 }

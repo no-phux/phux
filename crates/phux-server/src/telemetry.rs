@@ -8,7 +8,7 @@
 //!   at `PHUX_LOG` or a per-pid default, written synchronously
 //!   (`std::process::exit` would lose a buffered tail).
 //!
-//! `RUST_LOG` filters (default `phux=info,warn`); `PHUX_LOG_FORMAT` picks
+//! `RUST_LOG` filters (default `phux=info,quictun=info,warn`); `PHUX_LOG_FORMAT` picks
 //! `text` or `json`. Both layers report span-close timing. Call either at
 //! most once per process. The canonical server log is also rotated while
 //! the server runs ([`run_log_rotation_task`]).
@@ -26,9 +26,11 @@ use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt as _;
 use tracing_subscriber::{EnvFilter, fmt};
 
-/// Default filters, `RUST_LOG` unset; stderr has no dialing.
-const DEFAULT_FILTER: &str = "phux=info,warn";
-const STDERR_FILTER: &str = "phux=info,phux_client_runtime=warn,warn";
+/// Default filters, `RUST_LOG` unset; stderr has no dialing. `quictun` is
+/// the relay `phux relay run` serves: its tunnels and bridged consumers are
+/// the relay's whole story.
+const DEFAULT_FILTER: &str = "phux=info,quictun=info,warn";
+const STDERR_FILTER: &str = "phux=info,quictun=info,phux_client_runtime=warn,warn";
 
 /// Explicit log file path: a server tee, or the client's file instead of
 /// the per-pid default.
@@ -82,89 +84,13 @@ where
     }
 }
 
-/// Size at which a log is rolled aside, bounding growth within one run and
-/// across many short-lived servers.
-const LOG_ROTATE_THRESHOLD_BYTES: u64 = 8 * 1024 * 1024;
-
-/// Rotated generations kept (`<path>.1` ..), capping total history. A
-/// constant because the config schema is frozen (ADR-0071).
-const LOG_ROTATE_MAX_GENERATIONS: usize = 4;
-
-/// How often [`run_log_rotation_task`] checks the server log's size.
-const LOG_ROTATE_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
-
-/// The path of the `n`th rotated generation of `base`: `base.1`, `base.2`, …
-fn generation_path(base: &Path, n: usize) -> PathBuf {
-    let mut path = base.as_os_str().to_owned();
-    path.push(format!(".{n}"));
-    PathBuf::from(path)
-}
-
-/// Renames that shift rotated generations up one slot, highest first so
-/// nothing is clobbered early. The last rename overwrites `.{max}`, which
-/// is how the oldest generation is dropped. Empty for `max_generations <= 1`.
-fn shift_plan(base: &Path, max_generations: usize) -> Vec<(PathBuf, PathBuf)> {
-    (1..max_generations)
-        .rev()
-        .map(|n| (generation_path(base, n), generation_path(base, n + 1)))
-        .collect()
-}
-
-/// Roll `path` aside past `threshold`, keeping up to `max_generations`
-/// generations: shift, copy the live file to `.1`, then truncate `path` in
-/// place. Truncating (not renaming) keeps existing writers and `tail -f`
-/// readers on the same inode. Returns whether it rotated; callers ignore
-/// errors, since logging must never stop the server.
-fn rotate_log(path: &Path, threshold: u64, max_generations: usize) -> std::io::Result<bool> {
-    let Ok(meta) = std::fs::metadata(path) else {
-        return Ok(false);
-    };
-    if meta.len() < threshold {
-        return Ok(false);
-    }
-    for (from, to) in shift_plan(path, max_generations) {
-        if from.exists() {
-            std::fs::rename(&from, &to)?;
-        }
-    }
-    if max_generations > 0 {
-        let gen1 = generation_path(path, 1);
-        std::fs::copy(path, &gen1)?;
-        // Re-harden explicitly (ADR-0028) rather than rely on `fs::copy`.
-        harden_log_sink(&gen1)?;
-    }
-    // In place, not rename + recreate (see above).
-    std::fs::OpenOptions::new()
-        .write(true)
-        .truncate(true)
-        .open(path)?;
-    Ok(true)
-}
-
-/// One rotation check of the server log at `path` with production limits
-/// (the synchronous body of each [`run_log_rotation_task`] tick).
-fn rotate_server_log_if_needed(path: &Path) -> std::io::Result<bool> {
-    rotate_log(path, LOG_ROTATE_THRESHOLD_BYTES, LOG_ROTATE_MAX_GENERATIONS)
-}
-
-/// Periodically rotate the canonical `server.log` while the server runs; spawn
-/// once on the server runtime.
-///
-/// The first tick is immediate. Each check runs in `spawn_blocking`, since a
-/// rotation copies megabytes and must not stall the current-thread reactor
-/// (ADR-0003).
-pub async fn run_log_rotation_task() {
-    let mut ticker = tokio::time::interval(LOG_ROTATE_CHECK_INTERVAL);
-    loop {
-        ticker.tick().await;
-        let outcome =
-            tokio::task::spawn_blocking(|| rotate_server_log_if_needed(&server_log_path())).await;
-        if let Ok(Err(err)) = outcome {
-            tracing::debug!(error = %err, "server log rotation check failed");
-        }
-        // A panicked or failed check is ignored.
-    }
-}
+mod rotation;
+pub use rotation::run_log_rotation_task;
+#[allow(
+    unused_imports,
+    reason = "the rotation pieces `init` and the tests use"
+)]
+use rotation::*;
 
 /// A non-blocking appender at `path` (parent made), plus its
 /// [`WorkerGuard`]. Rotates at open.

@@ -281,6 +281,10 @@ fn remote_reach(server: Option<&ServerInputs>, reachable: Option<&Check>) -> Ite
                     );
                 }
                 if let Some(error) = &slot.waiting {
+                    if slot.transport == phux_protocol::wire::RemoteListenerTransport::Relay {
+                        let relay = slot.addr.as_deref().unwrap_or("?");
+                        return format!("relay {relay} not connected, redialing: {error}");
+                    }
                     return format!(
                         "{} listener waiting to bind: {}",
                         slot.transport,
@@ -305,23 +309,38 @@ fn remote_reach(server: Option<&ServerInputs>, reachable: Option<&Check>) -> Ite
     if let Some(check) = reachable.filter(|check| check.status == Status::Fail) {
         return Item::new(ID, TITLE, Verdict::Off, check.detail.clone());
     }
-    let bound = report
+    Item::new(ID, TITLE, Verdict::Ok, reach_words(report))
+}
+
+/// How the bound rows of `report` reach this server: `listening on quic
+/// 0.0.0.0:8788`, `through relay relay.example:4433`, or both.
+fn reach_words(report: &RemoteListenersReport) -> String {
+    use phux_protocol::wire::RemoteListenerTransport;
+    let (relays, listeners): (Vec<_>, Vec<_>) = report
         .listeners
         .iter()
         .filter(|slot| slot.bound)
-        .map(|slot| {
-            slot.addr.as_ref().map_or_else(
-                || slot.transport.to_string(),
-                |addr| format!("{} {addr}", slot.transport),
-            )
-        })
-        .collect::<Vec<_>>();
-    Item::new(
-        ID,
-        TITLE,
-        Verdict::Ok,
-        format!("listening on {}", bound.join(", ")),
-    )
+        .partition(|slot| slot.transport == RemoteListenerTransport::Relay);
+    let named = |slots: Vec<&phux_protocol::wire::RemoteListenerSlot>, relay: bool| {
+        slots
+            .iter()
+            .map(|slot| match (&slot.addr, relay) {
+                (Some(addr), true) => addr.clone(),
+                (Some(addr), false) => format!("{} {addr}", slot.transport),
+                (None, _) => slot.transport.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    match (listeners.is_empty(), relays.is_empty()) {
+        (false, true) => format!("listening on {}", named(listeners, false)),
+        (true, false) => format!("through relay {}", named(relays, true)),
+        _ => format!(
+            "listening on {}, and through relay {}",
+            named(listeners, false),
+            named(relays, true)
+        ),
+    }
 }
 
 /// A retried bind's error in plain words.
