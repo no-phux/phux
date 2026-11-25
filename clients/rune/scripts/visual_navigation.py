@@ -37,6 +37,15 @@ def navigation_inventory(themes=("dark", "light")):
     cases.update(states_inventory(themes))
     cases.update(reconnect_inventory(themes))
     cases.update(pane_motion_inventory(themes))
+    cases.update({
+        f"navigation/pane-picker-{theme}-{text}-{width}x{height}-{scale}x-"
+        f"native-{native}-{state}.png": (width, height, scale)
+        for theme, text, (width, height, scale, native), state in product(
+            themes, ("standard", "ax5"),
+            ((393, 852, 1, "false"), (320, 568, 1, "false"),
+             (393, 480, 2, "true"), (320, 340, 2, "true")),
+            ("top", "focused", "bottom"))
+    })
     cases.update(accessory_inventory(themes))
     cases.update(accessory_resize_inventory(themes))
     cases.update({
@@ -118,6 +127,7 @@ def navigation_exporter(stem):
         ("connections-keyboard-", "phone_connections_keyboard_visual_review_frames"),
         ("connections-", "phone_connections_visual_review_frames"),
         ("pane-motion-", "phone_pane_motion_visual_review_frames"),
+        ("pane-picker-", "phone_pane_picker_visual_review_frames"),
         ("header-", "phone_header_visual_review_frames"),
         ("states-", "phone_states_visual_review_frames"),
         ("retina-", "retina_navigation_renders_in_native_safe_area_and_desktop_phone_viewports"),

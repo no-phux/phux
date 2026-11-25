@@ -173,6 +173,16 @@ cancellation, reduced motion and keyboard-open cases supplement the small,
 light/dark and native-sized 2× matrix. They establish rendered trajectories
 and input semantics, not physical-device smoothness.
 
+Pane-picker cases compare long, similarly named panes at standard and AX5
+text sizes, light/dark, both phone widths and native keyboard-reduced 2×
+viewports. Retain top, keyboard-focused row and scrolled final-action frames.
+Names may be ellipsized, never spilled outside their targets; visible IDs
+distinguish similar names and accessible labels retain the full identity.
+Require every focused target and its text to fit completely in the scroller,
+including Done and Terminal actions. Exercise both final touch actions,
+hostile-but-valid names, input trapping and unchanged literal arrangement.
+The toolbar remains 44 points: picker typography must not resize the terminal.
+
 Inspect full images and the changed region's surroundings. Explain upstream
 rendering changes too. Reproduce regressions, fix their cause and recapture.
 Never delete hard cases, weaken assertions or regenerate until it looks good.
