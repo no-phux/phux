@@ -4,7 +4,7 @@ use phux_protocol::ids::{ResourceId, SessionKey};
 use rune::{Color, El, Key, el, row, text};
 
 use super::super::rows::{Base, State as Forced, forced_face};
-use super::super::{Paint, Tokens, icons, tile};
+use super::super::{Paint, Tokens, tile};
 use super::{drag, face, return_to_terminal_on_click};
 use crate::activity::Mark;
 use crate::desk::Desk;
@@ -48,6 +48,35 @@ pub(super) struct Row<'a> {
 }
 
 impl Row<'_> {
+    /// The existing identity tile, with its spoken state kept beside the row.
+    fn identity(&self, ground: Color, t: &Tokens) -> El {
+        let lead = tile::tile(self.kind.or(self.agent), self.mark, ground, t);
+        match (self.mark != Mark::None)
+            .then(|| face(self.mark, t).word)
+            .flatten()
+        {
+            Some(word) => el().child(lead).label(word),
+            None => lead,
+        }
+    }
+
+    /// Promote quiet detail for selected and forced interaction states.
+    fn inks(&self, t: &Tokens) -> (Color, Color) {
+        let quiet = if self.selected
+            || matches!(self.state, Forced::Hover | Forced::Press | Forced::Disabled)
+        {
+            t.roles.text.dim
+        } else {
+            t.roles.text.faint
+        };
+        let name = if self.state == Forced::Disabled {
+            t.roles.text.faint
+        } else {
+            t.roles.text.text
+        };
+        (quiet.paint(), name.paint())
+    }
+
     /// What a screen reader and the tooltip add to the name: the agent and
     /// its status word, where it is, and how many panes it holds, so two
     /// rows with one name always read differently. Whether the word leads.
@@ -96,17 +125,14 @@ impl Row<'_> {
     }
 }
 
-/// The fold on a parent row: how many child rows it holds, and a chevron
-/// that shows or hides them. Pointer only, as the session disclosure is; the
-/// row's Left and Right fold it from the keyboard.
+/// A parent's leading disclosure. Its child count stays in the trailing lane.
+/// Pointer only: the row's Left and Right fold it from the keyboard.
 fn fold_toggle(pane: &Row, t: &Tokens) -> El {
     let (id, open) = (pane.id.clone(), pane.open);
     super::pressable(format!("fold-{}", pane.id), t)
-        .h(t.space.s6)
-        .px(t.space.s1)
-        .gap(t.space.s0_5)
+        .size(t.space.pointer_min, t.space.pointer_min)
+        .center()
         .radius(t.radius.xs)
-        .items_center()
         .focusable(false)
         .expanded(open)
         .label(format!(
@@ -120,61 +146,21 @@ fn fold_toggle(pane: &Row, t: &Tokens) -> El {
                 d.sidebar_unfolded.insert(id.clone());
             }
         })
-        .child(
-            text(pane.children.to_string())
-                .font(t.ty.caption)
-                .color(t.roles.text.faint.paint())
-                .a11y_hidden(),
-        )
-        .child(
-            rune::icon(
-                if open {
-                    &icons::CHEVRON
-                } else {
-                    &icons::CHEVRON_RIGHT
-                },
-                t.icon.size.sm,
-            )
-            .color(t.roles.text.dim.paint())
-            .a11y_hidden(),
-        )
+        .child(super::disclosure_mark(open, t))
 }
 
 pub(super) fn pane_row(pane: &Row, t: &Tokens) -> El {
     let selected = pane.selected;
-    let (target, session) = (pane.target.clone(), pane.session.to_owned());
     let sidebar = t.roles.layer.sidebar.paint();
     let host = host_color::on(pane.host.0, sidebar);
-    let key = pane.key;
     let state = pane.state;
     let disabled = state == Forced::Disabled;
-    let washed = selected || matches!(state, Forced::Hover | Forced::Press);
-    // Faint never sits on a wash: a lit row promotes it to dim.
-    let quiet = if washed || disabled {
-        t.roles.text.dim
-    } else {
-        t.roles.text.faint
-    };
+    let (quiet, name_ink) = pane.inks(t);
     let said = pane.detail(t).map(|(words, _)| words).unwrap_or_default();
-    let lead = tile::tile(pane.kind.or(pane.agent), pane.mark, sidebar, t);
-    // The tile is named by its state's word where a screen reader meets
-    // it, an idle one too, whose quiet tile has no badge to say so.
-    let lead = match (pane.mark != Mark::None)
-        .then(|| face(pane.mark, t).word)
-        .flatten()
-    {
-        Some(word) => el().child(lead).label(word),
-        None => lead,
-    };
     let tip = if said.is_empty() {
         pane.name.clone()
     } else {
         format!("{}: {said}", pane.name)
-    };
-    let name_ink = if disabled {
-        t.roles.text.faint
-    } else {
-        t.roles.text.text
     };
     let under = if selected {
         Base::Selected
@@ -190,9 +176,9 @@ pub(super) fn pane_row(pane: &Row, t: &Tokens) -> El {
     let row = base
         .w_full()
         .h(t.space.row_h)
-        .pl(t.space.s4 + t.space.s0_5 + if pane.child { t.space.s4 } else { 0.0 })
+        .pl(t.space.s1 + if pane.child { t.space.pointer_min } else { 0.0 })
         .pr(t.space.s2)
-        .gap(t.space.s2)
+        .gap(t.space.icon_gap)
         .radius(t.radius.md)
         .continuous_corners()
         .items_center()
@@ -202,22 +188,42 @@ pub(super) fn pane_row(pane: &Row, t: &Tokens) -> El {
         .label(format!("{} in session {}", pane.name, pane.session))
         .description(said)
         .help(tip)
-        .child(lead)
+        .child(if pane.children > 0 {
+            fold_toggle(pane, t)
+        } else {
+            el().size(t.space.pointer_min, t.space.pointer_min)
+                .inert()
+                .a11y_hidden()
+        })
+        .child(pane.identity(sidebar, t))
         .child(
             text(pane.name.clone())
                 .font(t.ty.label.medium())
-                .color(name_ink.paint())
+                .color(name_ink)
                 .truncate()
                 .grow(1.0)
                 .min_w(0.0)
                 .a11y_hidden(),
         )
-        .children(pane.trailing(quiet.paint(), disabled, t))
-        .children((pane.children > 0).then(|| fold_toggle(pane, t)))
+        .children(pane.trailing(quiet, disabled, t))
+        .children((pane.children > 0).then(|| {
+            text(format!("+{}", pane.children))
+                .key(format!("child-count-{}", pane.id))
+                .font(t.ty.caption)
+                // This count must read on live hover/press washes too.
+                .color(t.roles.text.dim.paint())
+                .a11y_hidden()
+        }))
         .children(selected.then(|| host_color::stripe(host, t)));
-    if disabled {
+    row_actions(row, pane)
+}
+
+/// Keep pointer selection, remembered split targets, folding and drag ownership.
+fn row_actions(row: El, pane: &Row) -> El {
+    if pane.state == Forced::Disabled {
         return row;
     }
+    let (target, session) = (pane.target.clone(), pane.session.to_owned());
     let row = row.on_press_tx(move |d: &mut Desk, tx| {
         d.show(target.clone(), &session);
         return_to_terminal_on_click(tx);
@@ -245,7 +251,7 @@ pub(super) fn pane_row(pane: &Row, t: &Tokens) -> El {
         row
     };
     // A split moves as its tab, from the tab strip; a lone pane drags here.
-    match key {
+    match pane.key {
         Some(key) if pane.panes == 1 => drag::resource(row, pane.id, key),
         _ => row,
     }

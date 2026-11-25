@@ -36,11 +36,12 @@ pub fn switch(desk: &Desk, p: &Tokens) -> El {
         .on_press(|d: &mut Desk| d.toggle_machines())
         .child(host_color::dot(
             desk.machines.label(),
-            s.s2,
+            super::sidebar::dot_size(t),
             t.roles.layer.sidebar.paint(),
         ))
         .child(
             text(desk.machines.label().to_owned())
+                .key("machine-switch-name")
                 .font(t.ty.label.semibold().host(desk.machines.label()))
                 .color(t.roles.text.text.paint())
                 .truncate()

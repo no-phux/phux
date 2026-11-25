@@ -71,7 +71,19 @@ def navigation_inventory(themes=("dark", "light")):
             ("idle", "row", "inbox-focus", "inbox-open"),
             ((1100, 720), (640, 360)))
     })
+    cases.update(sidebar_hierarchy_inventory(themes))
     return cases
+
+
+def sidebar_hierarchy_inventory(themes):
+    return {
+        f"navigation/sidebar-hierarchy-{theme}-{mode}-{state}-{width}x{height}-2x.png":
+            zoomed_geometry(width, height, 2) if mode == "large" else (width, height, 2)
+        for theme, mode, state, (width, height) in product(
+            themes, ("normal", "large", "forced"),
+            ("expanded", "collapsed", "children", "hosts", "focused", "empty"),
+            ((1100, 720), (640, 360)))
+    }
 
 
 def session_search_inventory(themes):
@@ -101,14 +113,19 @@ def reconnect_inventory(themes):
     }
 
 
+def zoomed_geometry(width, height, scale):
+    zoom = unpack("f", pack("f", 1.4))[0]
+    logical = [unpack("f", pack("f", value / zoom))[0] for value in (width, height)]
+    effective_scale = unpack("f", pack("f", scale * zoom))[0]
+    return (*logical, effective_scale)
+
+
 def reconnect_geometry(width, height, scale, phone, large):
     # Rune's interface zoom changes logical viewport and effective scale, not
     # the requested physical output. Match its f32 math without loosening the
     # maintained geometry check. Phones use native text size instead of zoom.
     if phone == "false" and large == "true":
-        zoom = unpack("f", pack("f", 1.4))[0]
-        logical = [unpack("f", pack("f", value / zoom))[0] for value in (width, height)]
-        return (*logical, zoom)
+        return zoomed_geometry(width, height, scale)
     return (width, height, scale)
 
 
@@ -144,6 +161,7 @@ def navigation_exporter(stem):
         ("reconnect-", "reconnect_feedback_visual_review_frames"),
         ("attention-", "attention_contrast_visual_review_frames"),
         ("sidebar-focus-", "sidebar_focus_visual_review_frames"),
+        ("sidebar-hierarchy-", "sidebar_hierarchy_visual_review_frames"),
         ("accessory-resize-", "phone_accessory_resize_visual_review_frames"),
         ("accessory-", "phone_accessory_visual_review_frames"),
         ("connections-keyboard-", "phone_connections_keyboard_visual_review_frames"),

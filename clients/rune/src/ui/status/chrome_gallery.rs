@@ -16,6 +16,7 @@ use crate::test_support::server::{self, agent, pane, session};
 
 mod attention;
 mod sidebar_focus;
+mod sidebar_hierarchy;
 
 /// The pixel scale every page paints at.
 fn scale() -> f32 {

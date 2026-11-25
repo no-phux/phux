@@ -4,7 +4,7 @@
 //! you is counted per session. With the sidebar docked these rows are the
 //! tabs, and the title bar has none (`tab-bar = "auto"`). Sessions
 //! of one project sit together under its name, a linked worktree marked
-//! `└`. They sit under the machine this window is on; the other machines
+//! by a branch glyph. They sit under this window's machine; other machines
 //! follow, folded, each opening to a glance at its sessions.
 //!
 //! Rows are phux's own (OWN), drawn only from the window's tokens:
@@ -17,7 +17,7 @@ use std::collections::HashMap;
 
 use phux_client_runtime::control::{SessionDescriptor, Topology};
 use phux_protocol::ids::SessionKey;
-use rune::{Color, El, Key, col, memo, row, text};
+use rune::{Color, El, Key, col, el, memo, row, text};
 
 use super::controls::return_to_terminal_on_click;
 use super::rows::State as Forced;
@@ -67,13 +67,31 @@ struct Header<'a> {
     target: bool,
 }
 
+/// One disclosure gutter for sessions, child panes and other machines.
+fn disclosure_mark(open: bool, t: &Tokens) -> El {
+    el().size(t.space.pointer_min, t.space.pointer_min)
+        .center()
+        .a11y_hidden()
+        .child(
+            rune::icon(
+                if open {
+                    &icons::DISCLOSURE_DOWN
+                } else {
+                    &icons::DISCLOSURE_RIGHT
+                },
+                t.icon.size.sm,
+            )
+            .color(t.roles.text.dim.paint()),
+        )
+}
+
 /// The header's disclosure: pointer only. The list's arrows press what they
 /// reach, so a Tab stop here would fold the session as focus passed;
 /// Left and Right on the header fold it instead.
 fn disclosure(session: &Header, key: SessionKey, t: &Tokens) -> El {
     let collapsed = session.collapsed;
     pressable(format!("disclose-session-{}", session.id), t)
-        .size(t.icon.grid, t.space.s6)
+        .size(t.space.pointer_min, t.space.pointer_min)
         .center()
         .radius(t.radius.xs)
         .focusable(false)
@@ -93,18 +111,7 @@ fn disclosure(session: &Header, key: SessionKey, t: &Tokens) -> El {
                 d.sidebar_collapsed.insert(key);
             }
         })
-        .child(
-            rune::icon(
-                if collapsed {
-                    &icons::CHEVRON_RIGHT
-                } else {
-                    &icons::CHEVRON
-                },
-                t.icon.size.sm,
-            )
-            .color(t.roles.text.dim.paint())
-            .a11y_hidden(),
-        )
+        .child(disclosure_mark(!collapsed, t))
 }
 
 fn session_header(session: &Header, t: &Tokens) -> El {
@@ -176,8 +183,9 @@ fn session_header(session: &Header, t: &Tokens) -> El {
         .key(format!("session-{}", session.id))
         .w_full()
         .h(t.space.row_h)
-        .px(t.space.icon_gap)
-        .gap(t.space.s1)
+        .mt(t.space.s1)
+        .px(t.space.s1)
+        .gap(t.space.icon_gap)
         .radius(t.radius.md)
         .items_center()
         .hover_group()
@@ -344,6 +352,34 @@ fn session_list(desk: &Desk, counts: &HashMap<u32, Counts>, t: &Tokens) -> El {
     )
 }
 
+/// Native controls keep their own band; the machine menu gets a readable row.
+/// Without native leading controls, the original single-row pitch is enough.
+fn header(desk: &Desk, t: &Tokens, inset: f32, leading: f32, waiting: usize) -> El {
+    let native = leading > 0.0;
+    col()
+        .w_full()
+        .children(native.then(|| {
+            el().key("sidebar-native-titlebar")
+                .w_full()
+                .h(inset)
+                .window_drag()
+        }))
+        .child(
+            row()
+                .key("sidebar-titlebar")
+                .w_full()
+                .h(if native { t.space.row_h } else { inset })
+                .px(t.space.s2)
+                .gap(t.space.s1)
+                .items_center()
+                .window_drag()
+                .child(super::machines::switch(desk, t).grow(1.0))
+                .child(search(t))
+                .children(awake_button(desk, t))
+                .child(inbox_button(waiting, t)),
+        )
+}
+
 pub fn view(desk: &Desk, ink: &Tokens, inset: f32, leading: f32) -> El {
     let t = ink;
     let s = &t.space;
@@ -365,21 +401,7 @@ pub fn view(desk: &Desk, ink: &Tokens, inset: f32, leading: f32) -> El {
         } else {
             t.roles.layer.sidebar.paint()
         })
-        .child(
-            row()
-                .key("sidebar-titlebar")
-                .w_full()
-                .h(inset)
-                .pl(leading + s.s2)
-                .pr(s.s2)
-                .gap(s.s1)
-                .items_center()
-                .window_drag()
-                .child(super::machines::switch(desk, ink).grow(1.0))
-                .child(search(t))
-                .children(awake_button(desk, t))
-                .child(inbox_button(waiting, t)),
-        )
+        .child(header(desk, t, inset, leading, waiting))
         .child(
             drag::region(col()
                 .key("sidebar-scroll")
