@@ -195,7 +195,9 @@ macro_rules! supervisory_commands {
         op: crate::forward::ForwardOp,
     },
     /// Report that an agent in `terminal_id` is blocked on a question
-    /// (ADR-0036); the server emits [`AgentEvent::Asked`].
+    /// (ADR-0036); the server emits [`AgentEvent::Asked`]. An empty question
+    /// with an id withdraws the question reported under that id, and does
+    /// nothing when the pane no longer holds it.
     ReportAsked {
         /// The Terminal/pane that owns the blocked agent.
         terminal_id: ResourceId,

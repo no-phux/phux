@@ -40,8 +40,9 @@ printf '\033]2;phux-ask[deploy-7]:Deploy v2.4.1 to production??s=yes|no\033\\'
 phux raises an `asked` event and notifies. `phux agent answer --id
 deploy-7 --choice 1 @7` pastes the answer plus Enter; it refuses a question
 without an id. A program SHOULD use a new id per question. `phux ask` raises
-the same question without a title, outranks it, and lasts until the pane
-closes, so a program that can set its title SHOULD prefer the title.
+the same question without a title, outranks it, and lasts until `phux agent
+answer` answers it or the pane closes, so a program that can set its title
+SHOULD prefer the title.
 
 ## Shell integration (OSC 133)
 

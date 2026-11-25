@@ -67,6 +67,8 @@ pub(crate) async fn handle_report_agent_state(
     )
 }
 
+/// Record a reported question (ADR-0036), or, with an empty question,
+/// withdraw the reported one `id` names.
 pub(crate) fn handle_report_asked(
     state: &SharedState,
     terminal_id: &phux_protocol::ids::ResourceId,
@@ -85,6 +87,21 @@ pub(crate) fn handle_report_asked(
             ErrorCode::NotProducer,
             "SDK-owned questions require its native controller",
         );
+    }
+    if question.is_empty() && !id.is_empty() {
+        state.with_mut(|s| {
+            if s.asked_observation(terminal)
+                .is_some_and(|(source, ask)| source == AskedSource::Hook && ask.id == id)
+            {
+                s.retract_agent_asked(terminal, AskedSource::Hook);
+                crate::hub::metadata_mirror::publish_asked_flag(
+                    s,
+                    terminal_id,
+                    s.agent_is_asked(terminal),
+                );
+            }
+        });
+        return CommandResult::Ok;
     }
     if let Some(message) = validate_asked_payload(&id, &question, &suggestions) {
         return CommandResult::Error {

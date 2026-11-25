@@ -2,10 +2,9 @@
 //! hook ingress), and answer one ([`parse_ask_title`] + [`deliver_answer`])
 //! with a choice the asking agent published (ADR-0035).
 //!
-//! Answering reads the live ask from the pane's title sentinel, which
-//! `GET_STATE` already carries; nothing on the wire reads the server's own
-//! ask state back. So a hook-reported ask (which sets no title) cannot be
-//! answered this way.
+//! A title ask is read from the pane's live title; a reported one sets no
+//! title, so [`reported`] reads it from the server's own ask state, and
+//! [`withdraw`] closes it once answered (a title ask closes itself).
 
 use std::path::Path;
 
@@ -13,12 +12,14 @@ use phux_protocol::ResourceId;
 use phux_protocol::ids::InputOperationId;
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
-use phux_protocol::wire::frame::{Command, CommandResult};
+use phux_protocol::native_agent::questions::{CurrentQuestion, PtyQuestionSource, QuestionTarget};
+use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode};
 
 use crate::agent_prompt::{ApplyVerdict, apply_input_once};
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
 use crate::attach::input::StdinParser;
+use crate::native_agent::{ClientError, questions};
 
 /// Payload reported by an opt-in agent ask hook.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +49,13 @@ pub async fn report(
     pane: ResourceId,
     payload: AskedPayload,
 ) -> Result<(), AttachError> {
+    // On the wire an empty question withdraws one ([`withdraw`]).
+    if payload.question.trim().is_empty() {
+        return Err(AttachError::refusal(
+            ErrorCode::InvalidCommand,
+            "asked question must not be empty".to_owned(),
+        ));
+    }
     let mut conn = Connection::connect(socket).await?;
     // This fresh connection never subscribes, so nothing interleaves.
     match conn
@@ -70,6 +78,73 @@ pub async fn report(
             "REPORT_ASKED",
             &other,
         ))),
+    }
+}
+
+/// The question [`report`]ed on `pane` and still open, if any. `None` too
+/// when the server predates the read or will not answer it.
+///
+/// Only a reported ask: the other sources either have a title to read, or
+/// come from a stream whose prompt is not answered by typing a line.
+///
+/// # Errors
+///
+/// Transport failure.
+pub async fn reported(
+    conn: &mut Connection,
+    pane: &ResourceId,
+) -> Result<Option<AskMarker>, AttachError> {
+    let target = QuestionTarget::Handle {
+        resource: pane.clone(),
+    };
+    match questions::current_over(conn, target).await {
+        Ok(current) => Ok(current.questions.into_iter().find_map(reported_marker)),
+        Err(ClientError::Transport(error)) => Err(error),
+        Err(_) => Ok(None),
+    }
+}
+
+fn reported_marker(question: CurrentQuestion) -> Option<AskMarker> {
+    match question {
+        CurrentQuestion::PtyEvidence {
+            source: PtyQuestionSource::Hook,
+            id,
+            question,
+            suggestions,
+        } => Some(AskMarker {
+            id,
+            question,
+            suggestions,
+        }),
+        _ => None,
+    }
+}
+
+/// Withdraw the question `id` [`report`]ed on `pane`: the server drops it and
+/// clears the pane's asked flag, unless another question took its place.
+///
+/// # Errors
+///
+/// Transport failure, or the refusal of a server that predates withdrawal.
+pub async fn withdraw(
+    conn: &mut Connection,
+    pane: ResourceId,
+    id: String,
+) -> Result<(), AttachError> {
+    let command = Command::ReportAsked {
+        terminal_id: pane,
+        id,
+        question: String::new(),
+        suggestions: Vec::new(),
+        elapsed_seconds: None,
+    };
+    match conn
+        .request(1, command)
+        .await?
+        .into_result_ignoring_interleaved()
+    {
+        CommandResult::Error { code, message } => Err(AttachError::refusal(code, message)),
+        _ => Ok(()),
     }
 }
 
