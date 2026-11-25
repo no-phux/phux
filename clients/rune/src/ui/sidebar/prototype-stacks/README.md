@@ -9,11 +9,17 @@ From the repository root:
 python3 -m http.server 7147 --bind 127.0.0.1 --directory clients/rune/src/ui/sidebar/prototype-stacks
 ```
 
-Open `http://127.0.0.1:7147/?variant=B` (`A` and `C` are alternatives).
+Open `http://127.0.0.1:7147/?variant=A` (the default and selected direction).
+`B` and `C` preserve the earlier alternatives for comparison.
 The bottom bar switches variants, sidebar width and light/dark appearance.
 Click a pane thumbnail or exposed surface to change the in-memory focus.
 
-- **A / Inline:** a compact row with a shallow stacked split thumbnail.
+- **A / Inline — selected:** smaller, almost-flat rows. A split row is 38px
+  rather than 55px, with a 28 × 17px mark rather than 50 × 30px. Only faint
+  1px/2px layered edges suggest depth; no shadow, tilt or exposed deck. Keep
+  readable labels, visible attention and plain singles instead of shrinking
+  every element. This captures the user's request for depth discovered only
+  on close inspection, not a loud 3D treatment.
 - **B / Exposed:** selected work becomes a labelled dimensional deck; other
   groups stay single lines.
 - **C / Spatial:** pane labels and focus live inside a shallow stacked thumbnail

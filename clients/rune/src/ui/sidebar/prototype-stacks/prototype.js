@@ -9,12 +9,12 @@ const groups = [
   { id: 'scratch', session: 'Scratch', name: 'Terminal', panes: ['Shell'], status: 'quiet' },
 ];
 const variants = {
-  A: { name: 'An inline stack, not a tree.', description: 'Every split gets one compact row. A shallow stack shows that panes belong together; the front thumbnail preserves their split geometry. All member names stay visible beside it. Singles use one plain line—no duplicate header, chevron or reserved disclosure gutter.' },
+  A: { name: 'Inline. Depth you notice up close.', description: 'Selected direction: tighter 38px rows, a small 28 × 17px split mark and just two faint 1px layered edges. No cast shadow, tilt or exposed deck. Names stay readable; attention stays visible. Singles remain plain lines, with no arrows or empty disclosure gutter.' },
   B: { name: 'Let the active split open itself.', description: 'Inactive work stays one line. The selected group exposes its panes as a shallow 3D deck—each labelled surface can be selected directly. The small geometry mark distinguishes membership from the literal split layout. No separate expand control or hidden disclosure target.' },
   C: { name: 'The split is the navigator.', description: 'The actual split arrangement becomes a small, clickable window. Layered edges give it depth without surrounding it in a card. Pane labels live inside their real regions; selection has one quiet accent. Singles stay plain rows, rather than miniature windows with nothing to explain.' },
 };
-let variant = new URLSearchParams(location.search).get('variant') || 'B';
-if (!variants[variant]) variant = 'B';
+let variant = new URLSearchParams(location.search).get('variant') || 'A';
+if (!variants[variant]) variant = 'A';
 let selected = 'sidebar';
 let focused = 0;
 let filter = '';
