@@ -58,7 +58,7 @@ use list::run_list;
 use manage::{run_attach, run_enabled, run_remove, run_rename, run_show};
 use renew::{run_renew, run_upgrade};
 
-mod inbound;
+pub(crate) mod inbound;
 
 /// Which machine registry a `phux host` operation applies to: the flag names
 /// the trust direction, the verb stays one.

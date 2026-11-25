@@ -702,56 +702,9 @@ pub(super) fn close_frame_reporting<W: Write>(
     (StatusBarPaint::NotPublished, false)
 }
 
-/// Which edge a reserved sidebar strip docks to (mirrors
-/// `phux_config::SidebarPosition`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SidebarEdge {
-    /// Dock on the left; panes tile to its right.
-    Left,
-    /// Dock on the right; panes tile to its left.
-    Right,
-}
-
-/// The sidebar's reservation: `width` columns on `edge`. Built once per frame
-/// and threaded to every layout site so they agree on the inset.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct SidebarReservation {
-    /// The edge the strip docks to.
-    pub edge: SidebarEdge,
-    /// Strip width in columns.
-    pub width: u16,
-}
-
-/// Fold the sidebar's on/off state and geometry into the per-frame
-/// reservation: `None` below `width + min_pane_cols`; automatic width (`0`)
-/// is a quarter of the viewport clamped to `28..=40`.
-pub(super) const fn sidebar_reservation(
-    outer_cols: u16,
-    enabled: bool,
-    width: u16,
-    edge: SidebarEdge,
-    min_pane_cols: u16,
-) -> Option<SidebarReservation> {
-    // Automatic sizing follows the viewport, never changing titles or counts:
-    // background activity must not reflow the terminal under someone's hands.
-    let width = if width == 0 {
-        let preferred = outer_cols / 4;
-        if preferred < 28 {
-            28
-        } else if preferred > 40 {
-            40
-        } else {
-            preferred
-        }
-    } else {
-        width
-    };
-    if enabled && width <= outer_cols && outer_cols - width >= min_pane_cols {
-        Some(SidebarReservation { edge, width })
-    } else {
-        None
-    }
-}
+mod reservation;
+pub use reservation::SidebarEdge;
+pub(super) use reservation::{SidebarReservation, full_sidebar_fits, sidebar_reservation};
 
 /// The residual content `Rect` panes tile into: [`content_layout`]'s rect.
 pub(super) fn content_rect(
@@ -906,7 +859,6 @@ mod tests {
     use crate::attach::render::SYNC_OUTPUT_END;
     use crate::layout::Rect;
     use crate::layout::{LayoutNode, SplitDir};
-    use crate::render::ChromeBreakpoints;
     use crate::render::chrome::sidebar::SidebarPainter;
     use crate::render::chrome::status_bar::widgets::{StatusBar, WidgetRegistry, WindowInfo};
     use crate::render::theme::Theme;
@@ -1009,73 +961,6 @@ mod tests {
                 .get(&other)
                 .copied();
             assert_eq!((cache.misses, got), (misses, Some(content)));
-        }
-    }
-
-    /// The strip yields rather than starving the panes: reserved only when
-    /// `width + min_pane_cols` fits; automatic width grows with the viewport
-    /// (28..=40); the leftover content, strip, and bar inset always tile.
-    #[test]
-    fn the_sidebar_reserves_only_what_the_panes_can_afford() {
-        let min = ChromeBreakpoints::DEFAULT.min_pane_cols;
-        let res = |cols, width, min| sidebar_reservation(cols, true, width, SidebarEdge::Left, min);
-        assert_eq!(res(59, 20, min), None);
-        assert_eq!(res(60, 20, min), Some(LEFT20));
-        assert!(
-            res(50, 10, min).is_some(),
-            "a narrower strip is affordable sooner"
-        );
-        assert_eq!(
-            res(55, 20, 30),
-            Some(LEFT20),
-            "a lowered floor keeps the strip"
-        );
-        assert_eq!(res(70, 20, 60), None, "a raised floor takes it away");
-        for cols in [0u16, 60, 200] {
-            assert_eq!(
-                sidebar_reservation(cols, false, 20, SidebarEdge::Left, min),
-                None
-            );
-        }
-        for cols in 0u16..=120 {
-            let sidebar = res(cols, 20, min);
-            let w = content_rect((cols, 24), Some(Position::Bottom), sidebar).w;
-            assert!(
-                if sidebar.is_some() {
-                    w >= min
-                } else {
-                    w == cols
-                },
-                "cols={cols}"
-            );
-        }
-        for edge in [SidebarEdge::Left, SidebarEdge::Right] {
-            for (cols, expected) in [
-                (67, None),
-                (68, Some(28)),
-                (80, Some(28)),
-                (120, Some(30)),
-                (144, Some(36)),
-                (160, Some(40)),
-                (240, Some(40)),
-            ] {
-                let res = sidebar_reservation(cols, true, 0, edge, 40);
-                assert_eq!(res.map(|r| r.width), expected, "cols={cols}");
-                if let Some(res) = res {
-                    let content = content_rect((cols, 24), Some(Position::Bottom), Some(res));
-                    assert!(content.w >= 40);
-                    assert_eq!(content.w + sidebar_rect((cols, 24), res).w, cols);
-                    assert_eq!(
-                        bar_inset((cols, 24), Some(res)).span(cols),
-                        (content.x, content.w)
-                    );
-                }
-            }
-            assert_eq!(
-                sidebar_reservation(200, true, 22, edge, 40).map(|r| r.width),
-                Some(22)
-            );
-            assert!(sidebar_reservation(u16::MAX, true, u16::MAX, edge, 40).is_none());
         }
     }
 

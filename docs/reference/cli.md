@@ -58,10 +58,12 @@ Agents:
   agent         See and drive the agents running in panes
   launch        Start an agent integration in a new pane
   ask           Report that an agent is waiting on a human
+  pick          Offer a list in the attached client and print the choice
   take          Take exclusive input control of a pane
   give          Give back input control taken with `take`
   signal        Send a signal to a pane's process group
   mission       Track tasks in the local work store
+  chat          Talk with a friend or agent over native phux mail
   mail          Send, read and acknowledge mail between agents
   claim         Claim paths so other agents leave them alone
   notify        Post a note for a pane, shown as a toast
@@ -2142,6 +2144,12 @@ Attach role:
                                   lease of every pane this attach opens, in the
                                   same step as the attach. The previous holder
                                   stays attached. `phux give` hands it back.
+      --lock-size                 Lock this client's view size: while it is
+                                  attached, other clients see its panes
+                                  letterboxed or cropped instead of resizing
+                                  them. `defaults.lock-size = true` makes it the
+                                  default; the palette's "Unlock view size"
+                                  releases it.
 
 Recording:
       --rec <PATH>                Record this session (.cast, .gif, or .apng)
@@ -2240,6 +2248,226 @@ Arguments:
              [possible values: stable, next, lts]
 
 Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux chat`
+
+```text
+Talk with a friend or agent over native phux mail
+
+Requires an already reachable, paired phux hub. One person creates an invite;
+the other joins by pasting it. Messages stay in that hub's durable mail store.
+The hub can read them; neither participant gets terminal access. Local mail,
+claims and existing hub connections are unchanged.
+
+Usage: phux chat <SUBCOMMAND>
+
+Commands:
+  ack     Acknowledge a received message in this conversation
+  invite  Create a single-use messaging invite and store a welcome message
+  join    Paste and redeem a messaging invite; receive the welcome and confirm
+          it
+  open    Open a line-oriented conversation; enter /quit to leave the view
+  read    Show conversation history without consuming agent delivery
+  run     Run an agent with only its mail scoped to this conversation
+  send    Store a message for the other participant
+  status  Check the actual mailbox and whether the peer confirmed the welcome
+  help    Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux chat ack`
+
+```text
+Acknowledge a received message in this conversation
+
+Usage: phux chat ack <FLAGS> [NAME]
+
+Arguments:
+  [NAME]  The local conversation name.
+
+Flags:
+      --record <PATH>  Exact private record; independent of HOME, profile and
+                       alias.
+      --id <HEX32>     The message id printed by read.
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux chat invite`
+
+```text
+Create a single-use messaging invite and store a welcome message
+
+Usage: phux chat invite [FLAGS] <NAME>
+
+Arguments:
+  <NAME>  A new local name for this conversation.
+
+Flags:
+      --hub <HOST:PORT>       Address the friend can reach. Defaults to the live
+                              QUIC listener.
+  -m, --message <MESSAGE>     The first real message the joining peer receives.
+                              (default: Hello! Welcome to our phux
+                              conversation.)
+      --expires-in <MINUTES>  Minutes the invitation remains redeemable.
+                              (default: 10)
+      --json                  Emit stable, versioned JSON on stdout instead of
+                              the human view. On failure, stdout stays empty and
+                              stderr carries one JSON error object.
+  -h, --help                  Print help
+
+Global flags:
+      --socket <PATH>         Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux chat join`
+
+```text
+Paste and redeem a messaging invite; receive the welcome and confirm it
+
+Reads one invite from stdin, keeping its secret out of process arguments and
+shell history. Re-run after a partial connection failure with the same local
+name to resume an identity already saved here.
+
+Usage: phux chat join [--json] <NAME>
+
+Arguments:
+  <NAME>  A new local name; it need not match the inviter's name.
+
+Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux chat open`
+
+```text
+Open a line-oriented conversation; enter /quit to leave the view
+
+Reads do not take or mark mail read. The newest 500 messages remain visible
+through the existing mail history interface.
+
+Usage: phux chat open [--record <PATH>] [NAME]
+
+Arguments:
+  [NAME]  The local conversation name.
+
+Flags:
+      --record <PATH>  Exact private record; independent of HOME, profile and
+                       alias.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux chat read`
+
+```text
+Show conversation history without consuming agent delivery
+
+Usage: phux chat read [--record <PATH>] [--json] [NAME]
+
+Arguments:
+  [NAME]  The local conversation name.
+
+Flags:
+      --record <PATH>  Exact private record; independent of HOME, profile and
+                       alias.
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux chat run`
+
+```text
+Run an agent with only its mail scoped to this conversation
+
+Requires that harness's phux integration. pi, Oh My Pi and `OpenCode` can wake
+an idle conversation. Claude and Grok receive at their next hook. Claims and
+terminal permissions are not redirected.
+
+Usage: phux chat run [--record <PATH>] [NAME] <COMMAND>…
+
+Arguments:
+  [NAME]      The local conversation name.
+  <COMMAND>…  Program and arguments, after `--`.
+
+Flags:
+      --record <PATH>  Exact private record; independent of HOME, profile and
+                       alias.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux chat send`
+
+```text
+Store a message for the other participant
+
+Usage: phux chat send <FLAGS> [NAME]
+
+Arguments:
+  [NAME]  The local conversation name.
+
+Flags:
+      --record <PATH>         Exact private record; independent of HOME, profile
+                              and alias.
+  -m, --message <TEXT>        Message text; `-` reads bounded text from stdin.
+      --operation-id <HEX32>  Retry an uncertain send with the same id and
+                              identical text.
+      --json                  Emit stable, versioned JSON on stdout instead of
+                              the human view. On failure, stdout stays empty and
+                              stderr carries one JSON error object.
+  -h, --help                  Print help
+
+Global flags:
+      --socket <PATH>         Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux chat status`
+
+```text
+Check the actual mailbox and whether the peer confirmed the welcome
+
+Usage: phux chat status [--record <PATH>] [--json] [NAME]
+
+Arguments:
+  [NAME]  The local conversation name.
+
+Flags:
+      --record <PATH>  Exact private record; independent of HOME, profile and
+                       alias.
       --json           Emit stable, versioned JSON on stdout instead of the
                        human view. On failure, stdout stays empty and stderr
                        carries one JSON error object.
@@ -5500,6 +5728,36 @@ Global flags:
       --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
+## `phux pick`
+
+```text
+Offer a list and print the item chosen.
+
+Items are the arguments, else stdin's lines. The list is drawn on this terminal,
+where you type an item or its number and Enter. Inside a phux pane it is also
+raised as a `phux-ask` question, so a client's question card (or `phux agent
+answer`) can answer it; at most 16 items go to the card. The choice is printed
+on stdout and the exit code is 0; Escape, Ctrl-C or Ctrl-D cancel with exit 1.
+With no terminal (/dev/tty) it exits 2.
+
+Examples:
+git branch --format='%(refname:short)' | phux pick --prompt Branch
+host=$(phux pick mini macbook powerhouse-1)
+
+Usage: phux pick [--prompt <TEXT>] [ITEMS]…
+
+Arguments:
+  [ITEMS]…  Items to choose from. Omit to read one per line from stdin.
+
+Flags:
+      --prompt <TEXT>  The question shown above the list.
+                       (default: Pick one)
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
 ## `phux play`
 
 ```text
@@ -7490,6 +7748,9 @@ Flags:
                                  spawn with an unknown reply, use `phux terminal
                                  operation` to check its receipt without
                                  resolving the selector again.
+      --parent <PANE>            The pane the new one is a child of, folded
+                                 under it in lists; `none` for no parent.
+                                 Default: the pane this runs in.
       --app <NAME>               Run an application in the new pane instead of a
                                  command: launched, mirrored into documents
                                  under the pane, and quit when the pane is

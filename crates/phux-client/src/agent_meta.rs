@@ -160,7 +160,16 @@ pub async fn pane_shell_reading(
     socket: &Path,
     terminal: &ResourceId,
 ) -> (Option<PaneOccupantRecord>, ShellAvailability) {
-    let occupant = read_pane_occupant(socket, terminal).await;
+    let mut occupant = read_pane_occupant(socket, terminal).await;
+    // The record is the detector's last tick, not a live reading: a job that
+    // has just exited (`make`, a `( ... )` subshell) can hold it for one tick
+    // after the shell is back. Only a busy reading that outlives a tick refuses.
+    let until = tokio::time::Instant::now() + PANE_OCCUPANT_WAIT;
+    while occupant.as_ref().is_some_and(|o| !o.is_pane_shell) && tokio::time::Instant::now() < until
+    {
+        tokio::time::sleep(crate::wait::DEFAULT_POLL_INTERVAL).await;
+        occupant = read_pane_occupant_within(socket, terminal, Duration::ZERO).await;
+    }
     let screen = crate::snapshot::get_screen_scrollback(socket, terminal.clone(), None, true).await;
     let screen = screen
         .as_ref()

@@ -12,6 +12,8 @@
 //! `window_stream` draws the real window (sidebar, tabs, status line, one
 //! pane), so chrome that starts rebuilding a pane shows up there too.
 //! The same embedded fixture checks key delivery through that window.
+//! `crowd` streams through that window's poll too, beside a thousand idle
+//! terminals in other sessions.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -22,9 +24,11 @@ use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::FrameKind;
 use rune::{Cx, El, Env, Runtime, row};
 
-use super::{DEFAULT_FONT_SIZE, Metrics, paint};
+use super::{Bold, DEFAULT_FONT_SIZE, Metrics, paint};
 use crate::desk::Shown;
 use crate::perf;
+
+mod crowd;
 
 use crate::test_support::input_fixture;
 use crate::test_support::terminal::{FILL, Replica};
@@ -45,7 +49,14 @@ fn panes(state: &Panes, _: &mut Cx<Panes>) -> El {
         perf::RENDERS.incr();
         let frame = state.client.acquire_view(*view).expect("a frame");
         let selection = crate::theme::Selection::system();
-        out = out.child(paint(&frame, true, true, &state.metrics, selection));
+        out = out.child(paint(
+            &frame,
+            true,
+            true,
+            &state.metrics,
+            selection,
+            Bold::default(),
+        ));
     }
     out
 }
@@ -382,6 +393,7 @@ fn perf_budget() {
         split_phase();
         window_phase();
         image_phases();
+        crowd::phases();
         return;
     }
     let module = module_path!().split_once("::").map_or("", |(_, rest)| rest);
@@ -398,10 +410,7 @@ fn perf_budget() {
         String::from_utf8_lossy(&output.stderr)
     );
     // A renamed module would match no test and pass with nothing measured.
-    assert!(
-        stdout.contains("image_animation"),
-        "no budget ran: {stdout}"
-    );
+    assert!(stdout.contains("crowd_1024"), "no budget ran: {stdout}");
     for line in stdout.lines().filter(|line| line.starts_with('{')) {
         println!("{line}");
     }

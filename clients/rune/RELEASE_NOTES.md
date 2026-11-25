@@ -1,15 +1,17 @@
-**Phux Rune 0.1.51**
+**Phux Rune 0.1.53**
 
-- Keep question choices and unfinished replies with the right agent, even when
-  different agents reuse the same question identifier.
-- Retire replaced editors safely: queued composition, Return and late phone
-  touches cannot answer a replacement question or reach its terminal.
-- Group phone form labels, help and controls without shrinking the 44-point
-  touch rows.
-- Use the shared palette matcher and show shortcuts as key caps.
-- Avoid redundant native control reorders and unchanged accessibility updates.
-- Update the Rune engine to a compatible upstream dev snapshot, including
-  unchanged-frame IME synchronization.
+- Focus Sidebar reaches the row containing a split pane and reveals a collapsed
+  session. Keyboard navigation can then open Inbox without switching panes.
+- Child panes fold under their parent in the desktop sidebar, while the pane
+  being viewed stays visible.
+- Improve focus and emphasis on black and grey Omarchy themes. Bold terminal
+  text can use bright colours and the theme's bold colour.
+- Apply per-computer themes while viewing a host, open sessions and folders
+  from `phux://` links, and run plugin link handlers with the pane's context.
+- Add view-size locking and keep-awake controls, and reduce repeated work
+  as the number of idle terminals grows.
+- Restore native iOS compilation after desktop link-handler integration, and
+  retain bounded simulator-settling checks for native qualification.
 
-Optional provider form elicitation is still unsupported. The newer strict-modal
-upstream change remains deferred; this release does not bypass input ownership.
+The Rune engine pin is unchanged. Newer strict-modal revisions remain deferred
+to preserve phone accessory input ownership and the literal pane arrangement.

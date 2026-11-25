@@ -296,8 +296,9 @@ fn json_confidence_is_the_shortest_decimal() {
 }
 
 /// A shell in the foreground runs no agent: "claude" in its prompt or in
-/// output it printed is text, not identity. Another foreground keeps the
-/// screen heuristic.
+/// output it printed is text, not identity. Nor is a viewer's screen (top,
+/// less, an editor). Another foreground, such as a runtime an agent may
+/// run under, keeps the screen heuristic.
 #[test]
 fn a_shell_foreground_outranks_agent_words_on_the_screen() {
     use crate::agent_meta::PaneOccupantRecord;
@@ -323,6 +324,18 @@ fn a_shell_foreground_outranks_agent_words_on_the_screen() {
         infer_agent_state(&evidence, &[]).agent.kind,
         AgentKind::Codex
     );
+
+    // A viewer's screen is other programs' text: `claude` in top's process
+    // list does not make the pane a Claude.
+    evidence.occupant = Some(PaneOccupantRecord {
+        foreground: "top".to_owned(),
+        is_pane_shell: false,
+        background: false,
+        icon: None,
+    });
+    let state = infer_agent_state(&evidence, &[]);
+    assert_eq!(state.agent.kind, AgentKind::Unknown);
+    assert_eq!(state.sources[0].observed, "top");
 }
 
 /// A name `%` cannot use prints the command that names the pane; a partial

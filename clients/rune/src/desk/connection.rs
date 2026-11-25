@@ -37,8 +37,8 @@ pub struct Connection {
     pub wanted: Option<(ResourceId, Instant)>,
     /// A session created here: show its terminal once selected.
     pub(super) pending_session: Option<String>,
-    /// A `phux://pane/` link's pane, until the server's panes are known.
-    pub(super) reveal: Option<ResourceId>,
+    /// What a `phux://` link asked to show, until it can be.
+    pub(super) reveal: Option<super::reveal::Reveal>,
     /// The connection incarnation the shown view belongs to.
     pub(super) epoch: u64,
     /// A path search on the focused pane's host.
@@ -53,6 +53,10 @@ pub struct Connection {
     pub popup: popup::Popup,
     pub tabs: tabs::Tabs,
     pub reorder: reorder::Reorder,
+    /// The server's keep-awake record; `None` while its mode is `off`.
+    pub keep_awake: Option<super::keep_awake::Awake>,
+    /// This window holds the view size lock; claimed again on each attach.
+    pub size_locked: bool,
     /// A screenshot being taken for a terminal on this client. Replacing the
     /// connection drops it, which cancels the picker and reaps its worker.
     pub(super) capture: Option<screenshot::Capture>,
@@ -87,7 +91,7 @@ pub struct Connection {
     pub(super) pending_splits: HashMap<u32, (Option<SessionKey>, Placement)>,
     pub(super) wheel_pane: Option<ResourceId>,
     pub(super) mouse_capture: Option<(ResourceId, mouse::Press)>,
-    pub(super) mouse_cell: Option<(u16, u16)>,
+    pub(super) mouse_position: Option<mouse::ReportedPosition>,
     pub(super) split_sizes: HashMap<SplitPath, [f32; 2]>,
     pub(super) fetched: HashSet<ArrangementKey>,
     pub(super) gesture: u64,
@@ -129,6 +133,8 @@ impl Default for Connection {
             popup: popup::Popup::default(),
             tabs: tabs::Tabs::default(),
             reorder: reorder::Reorder::default(),
+            keep_awake: None,
+            size_locked: false,
             capture: None,
             uploads: Vec::new(),
             pastes: HashSet::new(),
@@ -148,7 +154,7 @@ impl Default for Connection {
             pending_splits: HashMap::new(),
             wheel_pane: None,
             mouse_capture: None,
-            mouse_cell: None,
+            mouse_position: None,
             split_sizes: HashMap::new(),
             fetched: HashSet::new(),
             gesture: 0,

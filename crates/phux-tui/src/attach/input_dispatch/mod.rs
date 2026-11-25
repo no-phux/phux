@@ -14,6 +14,7 @@ pub(super) mod organize;
 mod pickers;
 pub(super) mod run_action;
 pub(super) mod session_management;
+pub(super) mod size_lock;
 pub(super) mod tab_lock;
 #[cfg(test)]
 mod test_support;

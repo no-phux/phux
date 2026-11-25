@@ -231,7 +231,7 @@ impl Theme {
         let text = rgb(roles.text.text);
         let dim = rgb(roles.text.dim);
         let faint = rgb(roles.text.faint);
-        let accent = rgb(roles.accent.accent_text);
+        let accent = rgb(roles.emphasis());
         let s = &roles.status;
         let mut theme = Self {
             accent,

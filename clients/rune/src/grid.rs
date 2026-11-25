@@ -186,7 +186,15 @@ pub fn color(rgb: Rgb) -> Color {
     }
 }
 
-pub fn theme(selection: Selection) -> Theme<Color> {
+/// How bold text is coloured: `[rune] bold-is-bright`, and the theme's
+/// colour for bold text in the default foreground.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Bold {
+    pub bright: bool,
+    pub color: Option<u32>,
+}
+
+pub fn theme(selection: Selection, bold: Bold) -> Theme<Color> {
     Theme {
         foreground: None,
         background: None,
@@ -195,6 +203,8 @@ pub fn theme(selection: Selection) -> Theme<Color> {
         selection_foreground: selection.foreground,
         selection_background: selection.background,
         rgb: color,
+        bold_is_bright: bold.bright,
+        bold: bold.color.map(crate::theme::color),
     }
 }
 
@@ -400,6 +410,7 @@ pub fn paint(
     blink_on: bool,
     metrics: &Metrics,
     selection: Selection,
+    bold: Bold,
 ) -> El {
     let preparing = Instant::now();
     // A generation restarts with its presentation, and an allocation can
@@ -411,11 +422,12 @@ pub fn paint(
         (focused, blink_on),
         (metrics.font_size.to_bits(), metrics.cell_w.to_bits()),
         selection.key(),
+        bold,
     );
     let mut built = false;
     let grid = memo(format!("grid-{}", frame.terminal_id), version, || {
         built = true;
-        build(frame, focused, blink_on, metrics, selection)
+        build(frame, focused, blink_on, metrics, selection, bold)
     });
     if built {
         if focused {
@@ -435,13 +447,14 @@ fn build(
     blink_on: bool,
     metrics: &Metrics,
     selection: Selection,
+    bold: Bold,
 ) -> El {
     let visibility = phux_client_runtime::draw::Visibility {
         focused,
         cursor_visible: true,
         blink_visible: blink_on,
     };
-    let list = DrawList::build(frame, &theme(selection), visibility);
+    let list = DrawList::build(frame, &theme(selection, bold), visibility);
     let mut grid = rune::col()
         .size(
             f32::from(list.cols) * metrics.cell_w,
@@ -529,8 +542,10 @@ fn text_cells(text: &str) -> u16 {
 
 /// The frame's own default background, for the area around the grid.
 pub fn background(frame: &GridFrame) -> Color {
-    let (_, background) =
-        phux_client_runtime::draw::default_colors(frame, &theme(Selection::system()));
+    let (_, background) = phux_client_runtime::draw::default_colors(
+        frame,
+        &theme(Selection::system(), Bold::default()),
+    );
     background
 }
 

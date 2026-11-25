@@ -205,6 +205,20 @@ pub(super) fn touch_input(input: El, font: TextStyle, phone: bool, t: &Tokens) -
         .py((s.touch_min - font.line_px()) / 2.0)
 }
 
+/// Where a waiting pane is: its machine, its label (when an agent's name
+/// heads the card; without one the label already does), its session, and
+/// a kind the agent's name does not already say.
+fn place(waiting: &Waiting) -> String {
+    let named = waiting.agent.is_some().then_some(&waiting.label);
+    let kind = (waiting.kind.as_ref()).filter(|kind| Some(*kind) != waiting.agent.as_ref());
+    [waiting.host.as_ref(), named, Some(&waiting.session), kind]
+        .into_iter()
+        .flatten()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
 fn waiting_card(desk: &Desk, waiting: &Waiting, picked: bool, t: &Tokens) -> El {
     let r = &t.roles;
     let phone = desk.phone.is_some();
@@ -225,11 +239,11 @@ fn waiting_card(desk: &Desk, waiting: &Waiting, picked: bool, t: &Tokens) -> El 
         waiting.mark.word()
     };
     let (_, tone) = mark_icon(waiting.mark, t);
-    let place = match &waiting.kind {
-        Some(kind) if Some(kind) != waiting.agent.as_ref() => {
-            format!("{} · {} · {kind}", waiting.label, waiting.session)
-        }
-        _ => format!("{} · {}", waiting.label, waiting.session),
+    let place = place(waiting);
+    let background = if waiting.background {
+        " · background work"
+    } else {
+        ""
     };
     let mut body = col()
         .w_full()
@@ -237,7 +251,7 @@ fn waiting_card(desk: &Desk, waiting: &Waiting, picked: bool, t: &Tokens) -> El 
         .child(header(
             waiting.mark,
             who,
-            format!("{word}{age}"),
+            format!("{word}{background}{age}"),
             busy,
             phone,
             t,
@@ -365,7 +379,7 @@ fn approval_card(approval: &Approval, phone: bool, t: &Tokens) -> El {
         row()
             .w_full()
             .gap(t.space.icon_gap)
-            .child(decide(Decision::Deny, "Deny", "⌫", ButtonVariant::Danger))
+            .child(decide(Decision::Deny, "Deny", "⌫", t.danger_button()))
             .child(decide(
                 Decision::Approve,
                 "Approve",

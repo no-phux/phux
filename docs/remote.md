@@ -8,6 +8,10 @@ order: 0
 Reach another machine's phux server: add it once over SSH, then attach to
 its sessions directly. There are no accounts and no hosted service.
 
+For messaging with another person rather than controlling your own
+machines, use [conversations](./chat.md): one native messaging invite,
+explicit private routing, and no terminal sharing.
+
 ```sh
 phux host add me@mini --install
 phux attach mini
@@ -32,6 +36,11 @@ SSH signs in once for every step ([SSH](./ssh.md)). If a non-interactive
 shell can't find phux on the host (some Homebrew or Nix installs), pass
 `--remote-phux /opt/homebrew/bin/phux`; the entry remembers it. Every flag is
 in the [CLI reference](./reference/cli.md#phux-host-add).
+
+A second server on the same machine at another port is another host:
+`phux host add mini:9788` next to `mini` saves `mini-9788` and leaves `mini`
+alone. `phux attach mini-9788` and `--remote mini:9788` reach it; pass
+`--name` to pick the name yourself.
 
 ### Machines on your tailnet
 

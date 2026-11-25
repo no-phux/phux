@@ -25,6 +25,8 @@ A capital letter means Shift: <kbd>X</kbd> is <kbd>Shift</kbd>+<kbd>x</kbd>. Whe
 | <kbd>;</kbd> | Previous pane | `previous-pane` |
 | <kbd>=</kbd> | Last pane | `last-pane` |
 | <kbd>i</kbd> | Show pane numbers | `display-panes` |
+| <kbd>}</kbd> | Next split tab | `next-slot-tab` |
+| <kbd>{</kbd> | Previous split tab | `previous-slot-tab` |
 | <kbd>z</kbd> | Zoom pane | `toggle-zoom` |
 | <kbd>[</kbd> | Copy mode | `copy-mode` |
 | <kbd>F</kbd> | Insert path… | `find-path` |
@@ -32,6 +34,8 @@ A capital letter means Shift: <kbd>X</kbd> is <kbd>Shift</kbd>+<kbd>x</kbd>. Whe
 | <kbd>g</kbd> | Give back the wheel | `give-input` |
 | <kbd>f</kbd> | Freeze pane | `signal-terminal` |
 | <kbd>u</kbd> | Resume pane | `signal-terminal` |
+| <kbd>q</kbd> | Next waiting pane | `next-attention` |
+| <kbd>Q</kbd> | Back where you were | `return-from-attention` |
 | <kbd>U</kbd> | Copy a link… | `url-picker` |
 | <kbd>y</kbd> | Type in every pane | `sync-panes` |
 
@@ -55,31 +59,27 @@ A capital letter means Shift: <kbd>X</kbd> is <kbd>Shift</kbd>+<kbd>x</kbd>. Whe
 
 | Keys | Does | Action |
 |---|---|---|
-| <kbd>d</kbd> | Detach | `detach` |
 | <kbd>C</kbd> | New session… | `new-session` |
+| <kbd>T</kbd> | New worktree… | `new-worktree` |
 | <kbd>s</kbd> | Go to session… | `session-picker` |
 | <kbd>N</kbd> | Next session | `next-session` |
 | <kbd>P</kbd> | Previous session | `previous-session` |
 | <kbd>)</kbd> | Last session | `last-session` |
 | <kbd>$</kbd> | Rename session… | `rename-session` |
+| <kbd>O</kbd> | Organize everything | `organize` |
 
 ## phux
 
 | Keys | Does | Action |
 |---|---|---|
-| <kbd>}</kbd> | Next split tab | `next-slot-tab` |
-| <kbd>{</kbd> | Previous split tab | `previous-slot-tab` |
-| <kbd>T</kbd> | New worktree… | `new-worktree` |
+| <kbd>d</kbd> | Detach | `detach` |
 | <kbd>:</kbd> <kbd>?</kbd> <kbd>Space</kbd> | Command palette | `command-palette` |
 | <kbd>A</kbd> | Agents | `agent-fleet` |
-| <kbd>q</kbd> | Next waiting pane | `next-attention` |
-| <kbd>Q</kbd> | Back where you were | `return-from-attention` |
 | <kbd>b</kbd> | Toggle sidebar | `toggle-sidebar` |
 | <kbd>S</kbd> | Settings | `settings` |
 | <kbd>B</kbd> | Report a bug | `report-bug` |
 | <kbd>a</kbd> | Cycle agents filter | `agents-filter` |
 | <kbd>e</kbd> | Focus sidebar | `focus-sidebar` |
-| <kbd>O</kbd> | Organize everything | `organize` |
 | <kbd>R</kbd> | Resize mode | `enter-mode` |
 
 ## Without the prefix

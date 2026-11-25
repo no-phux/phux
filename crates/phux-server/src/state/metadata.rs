@@ -313,6 +313,9 @@ impl ServerState {
         if prev.as_ref() == Some(&value) {
             return Vec::new();
         }
+        if matches!(scope, Scope::Global) && key == phux_config::KeepAwake::MODE_KEY {
+            crate::keep_awake::nudge();
+        }
         // Every writer of the agent record (detector, program status, a
         // client's SET_METADATA, the satellite mirror) stores it here, so
         // this is where an absent phone hears that an agent finished.

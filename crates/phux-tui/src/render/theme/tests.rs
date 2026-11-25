@@ -314,3 +314,31 @@ fn dark_surface_and_missing_theme_handling() {
     assert_eq!(tolerant.dim, Theme::default().dim);
     assert!(Theme::resolve(&missing, &[]).is_err());
 }
+
+/// Omarchy's Vantablack: every colour a grey, the accent a mid grey.
+const VANTABLACK: &str = "mode = \"dark\"\naccent = \"#8d8d8d\"\nselection = \"#1a1a1a\"\n\
+    muted = \"#7a7a7a\"\nbackground = \"#000000\"\nlighter_background = \"#1a1a1a\"\n\
+    foreground = \"#ffffff\"\nbright_foreground = \"#ffffff\"\nlight_foreground = \"#ececec\"\n\
+    red = \"#a4a4a4\"\nyellow = \"#cecece\"\norange = \"#b9b9b9\"\ngreen = \"#b6b6b6\"\n\
+    cyan = \"#b0b0b0\"\nblue = \"#8d8d8d\"\nmagenta = \"#9b9b9b\"\nbrown = \"#5c5c5c\"\n";
+
+/// A grey accent can only stand out by lightness. When it solves quieter
+/// than unfocused labels, focus takes body text, so the focused pane is
+/// never the dimmest one; a hued accent is left alone.
+#[test]
+fn a_grey_accent_never_makes_focus_the_quietest_label() {
+    let dir = ThemeDir::new("vantablack", VANTABLACK);
+    let roles = roles_of(&dir.file());
+    assert!(
+        roles.recedes(roles.accent.accent_text),
+        "the fixture still reproduces the inversion"
+    );
+    let t = Theme::from_cfg(&cfg(&[("file", &dir.file())]), &[]);
+    assert_eq!(t.pane_title_focus, ink(roles.text.text));
+    assert_eq!(t.divider_focus, ink(roles.text.text));
+    assert_eq!(t.pane_title, ink(roles.text.dim));
+
+    let hued = ThemeDir::new("hued", LIGHT_COLORS);
+    let t = Theme::from_cfg(&cfg(&[("file", &hued.file())]), &[]);
+    assert_eq!(t.accent, ink(roles_of(&hued.file()).accent.accent_text));
+}

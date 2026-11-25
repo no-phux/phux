@@ -125,7 +125,8 @@ pub struct ResourceJson {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// Canonical selector of the parent, or `null` for a root (emitted, not
-    /// omitted).
+    /// omitted). A Terminal's parent is the pane it was started from
+    /// (`phux.parent/v1`), which may have closed; closing it closes nothing.
     #[serde(default)]
     pub parent: Option<String>,
     /// Process lifecycle: `running`, `frozen`, or `exited` (ADR-0124).

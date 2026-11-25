@@ -316,6 +316,21 @@ fn bare_asks_reach_the_sidebar_and_the_notifier() {
     assert_eq!(rows[1].phase, Phase::Blocked);
     assert!(rows[1].asking);
     assert!(!rows[1].viewing);
+
+    // A shell prompt is not a name: the ask is listed by what runs there,
+    // not as `user@host:path`.
+    let slot = panes.get_mut(&shell).expect("seeded");
+    slot.last_title = "me@box:~/src/phux".to_owned();
+    slot.cwd = Some("/home/me/src/phux".to_owned());
+    slot.foreground = Some("bash".to_owned());
+    let entries = agent_entries(
+        &workspace,
+        &panes,
+        &meta_index(HashMap::new()),
+        &HashMap::new(),
+        &ReviewIndex::new(),
+    );
+    assert_eq!(entries[0].name, "bash", "{entries:?}");
 }
 
 /// A bound `AgentSession` stream's state outranks the record, which still

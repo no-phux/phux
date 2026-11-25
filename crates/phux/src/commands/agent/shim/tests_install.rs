@@ -8,6 +8,60 @@ use crate::commands::sh_quote;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 
+/// Run an interactive shim outside a pane and collect its real PTY output.
+fn run_on_pty(wrapper: &Path, envs: &[(&str, &str)]) -> (u32, String) {
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+    use std::io::Read as _;
+
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 24,
+            cols: 100,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .expect("open test pty");
+    let mut command = CommandBuilder::new(wrapper);
+    command.env("SHELL", "/bin/sh");
+    command.env("TERM", "xterm-256color");
+    for key in [
+        "PHUX_TERMINAL_ID",
+        "PHUX_AGENT_PHUX_BIN",
+        "PHUX_CHAT_RECORD",
+        "PHUX_AGENT_ADDRESS",
+    ] {
+        command.env_remove(key);
+    }
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    let mut child = pair
+        .slave
+        .spawn_command(command)
+        .expect("spawn wrapper under pty");
+    drop(pair.slave);
+    let mut reader = pair.master.try_clone_reader().expect("clone pty reader");
+    let drain = std::thread::spawn(move || {
+        let mut output = Vec::new();
+        let mut buf = [0_u8; 8192];
+        while let Ok(read) = reader.read(&mut buf) {
+            if read == 0 {
+                break;
+            }
+            output.extend_from_slice(&buf[..read]);
+        }
+        output
+    });
+    drop(pair.master);
+    // A hung child is bounded by nextest's slow-timeout, as in the other PTY tests.
+    let status = child.wait().expect("wait for the wrapper to exit");
+    let output = drain.join().expect("pty reader thread");
+    (
+        status.exit_code(),
+        String::from_utf8_lossy(&output).into_owned(),
+    )
+}
+
 /// Install over a stale, unstamped (schema-1) install, then uninstall: the
 /// stale shim is replaced and reported, the hook settings are private, and
 /// uninstall removes exactly its own three files plus the rc block.
@@ -119,6 +173,121 @@ fn install_over_a_stale_shim_upgrades_it_and_uninstall_removes_exactly_its_own_f
     assert!(uninstall_claude_from(&shim_dir).unwrap().is_none());
 }
 
+/// A chat process already has its routing context. Adoption shims must not
+/// wrap it in `phux new`, even on a real terminal outside a phux pane.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one linear PTY-driven install scenario"
+)]
+#[allow(
+    clippy::literal_string_with_formatting_args,
+    reason = "shell parameter expansion in fixture scripts"
+)]
+fn chat_launches_preserve_context_and_claude_settings_outside_a_pane() {
+    use super::agents::install_agent_into;
+    use crate::skill::setup::SkillAgent;
+
+    let dir = tempfile::tempdir().expect("scratch dir");
+    let shim_dir = dir.path().join("shims");
+    let rc = dir.path().join("rc");
+    let real = dir.path().join("real-agent");
+    let phux = dir.path().join("fake-phux");
+    let phux_log = dir.path().join("fake-phux.log");
+    let injection = dir.path().join("must-not-exist");
+    std::fs::create_dir_all(&shim_dir).unwrap();
+    std::fs::write(
+        &real,
+        r#"#!/bin/sh
+set -u
+[ -t 0 ] && [ -t 1 ] || exit 71
+[ -z "${PHUX_TERMINAL_ID:-}" ] || exit 72
+printf 'record:%s\naddress:%s\n' "$PHUX_CHAT_RECORD" "$PHUX_AGENT_ADDRESS"
+if [ "$FAKE_AGENT" = claude ]; then
+  [ "$#" -eq 2 ] && [ "$1" = --settings ] || exit 73
+  [ -s "$2" ] || exit 74
+  printf 'settings:%s\n' "$2"
+else
+  [ "$#" -eq 0 ] || exit 75
+fi
+exit 17
+"#,
+    )
+    .unwrap();
+    std::fs::write(&phux, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$FAKE_LOG\"\n").unwrap();
+    for path in [&real, &phux] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    for agent in [
+        SkillAgent::Claude,
+        SkillAgent::Codex,
+        SkillAgent::Opencode,
+        SkillAgent::Pi,
+    ] {
+        let wrapper = shim_dir.join(agent.name());
+        if agent == SkillAgent::Claude {
+            install_claude_into(&shim_dir, &rc, "bash", Some(&real), &phux).unwrap();
+        } else {
+            std::fs::write(
+                shim_dir.join(format!("{}-install.json", agent.name())),
+                serde_json::json!({ "real": real, "rc": rc }).to_string(),
+            )
+            .unwrap();
+            install_agent_into(agent, &shim_dir, &rc, "bash", &phux).unwrap();
+        }
+        // The shim neither parses nor executes the record. Even malformed
+        // context reaches the CLI unchanged, where validation fails closed.
+        for record in [
+            "/a chat's record.json",
+            "malformed; $(touch \"$SHIM_INJECTION\")\n'\"",
+        ] {
+            std::fs::write(&phux_log, b"").unwrap();
+            let (status, output) = run_on_pty(
+                &wrapper,
+                &[
+                    ("PHUX_CHAT_RECORD", record),
+                    ("PHUX_AGENT_ADDRESS", "reviewer@chat-test"),
+                    ("FAKE_AGENT", agent.name()),
+                    ("FAKE_LOG", phux_log.to_str().unwrap()),
+                    ("SHIM_INJECTION", injection.to_str().unwrap()),
+                ],
+            );
+            let output = output.replace("\r\n", "\n");
+            assert_eq!(status, 17, "{agent:?}: {output}");
+            assert!(output.contains(&format!("record:{record}\n")), "{output}");
+            assert!(output.contains("address:reviewer@chat-test\n"), "{output}");
+            if agent == SkillAgent::Claude {
+                let settings = shim_dir.join("claude-hooks.json");
+                assert!(
+                    output.contains(&format!("settings:{}\n", settings.display())),
+                    "{output}"
+                );
+            }
+            assert_eq!(std::fs::read_to_string(&phux_log).unwrap(), "", "{output}");
+            assert!(!injection.exists(), "record text must never execute");
+        }
+
+        // An empty record is not an explicit chat launch: ordinary adoption
+        // still goes through phux rather than silently disabling wrapping.
+        let (status, output) = run_on_pty(
+            &wrapper,
+            &[
+                ("PHUX_CHAT_RECORD", ""),
+                ("FAKE_LOG", phux_log.to_str().unwrap()),
+            ],
+        );
+        assert_eq!(status, 0, "{agent:?}: {output}");
+        assert!(
+            std::fs::read_to_string(&phux_log)
+                .unwrap()
+                .starts_with("new "),
+            "{agent:?}: expected ordinary phux wrapping: {output}"
+        );
+        assert!(!output.contains("record:"), "{output}");
+    }
+}
+
 /// A rendered wrapper, run for real on a pty (the launch path needs a
 /// tty), must not relaunch Claude after the phux session started and
 /// later died.
@@ -129,10 +298,6 @@ fn install_over_a_stale_shim_upgrades_it_and_uninstall_removes_exactly_its_own_f
     reason = "`${...}` here is shell parameter expansion in a fixture script, not a std format arg"
 )]
 fn wrapper_never_relaunches_claude_after_a_mid_session_crash() {
-    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
-    use std::io::Read as _;
-    use std::sync::{Arc, Mutex};
-
     /// The `phux` subcommands the wrapper dispatched, one per line.
     fn phux_calls(phux_log: &Path) -> Vec<String> {
         std::fs::read_to_string(phux_log)
@@ -149,61 +314,6 @@ fn wrapper_never_relaunches_claude_after_a_mid_session_crash() {
             .permissions();
         perms.set_mode(0o755);
         std::fs::set_permissions(path, perms).expect("chmod fixture script");
-    }
-
-    /// Run `wrapper` attached to a real pty (both stdin and stdout,
-    /// so the wrapper's tty guard sees an interactive session) and
-    /// return `(exit_code, combined_stdout_and_stderr)`.
-    fn run_on_pty(wrapper: &Path, envs: &[(&str, &str)]) -> (u32, String) {
-        let pty = native_pty_system();
-        let pair = pty
-            .openpty(PtySize {
-                rows: 24,
-                cols: 100,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .expect("open test pty");
-        let mut command = CommandBuilder::new(wrapper);
-        command.env("SHELL", "/bin/sh");
-        command.env("TERM", "xterm-256color");
-        // Running inside a phux pane would send the outer wrapper down the
-        // in-session branch, and PHUX_AGENT_PHUX_BIN would override the fake.
-        for key in ["PHUX_TERMINAL_ID", "PHUX_AGENT_PHUX_BIN"] {
-            command.env_remove(key);
-        }
-        for (key, value) in envs {
-            command.env(key, value);
-        }
-        let mut child = pair
-            .slave
-            .spawn_command(command)
-            .expect("spawn wrapper under pty");
-        drop(pair.slave);
-
-        let output = Arc::new(Mutex::new(Vec::new()));
-        let sink = Arc::clone(&output);
-        let mut reader = pair.master.try_clone_reader().expect("clone pty reader");
-        let drain = std::thread::spawn(move || {
-            let mut buf = [0_u8; 8192];
-            while let Ok(read) = reader.read(&mut buf) {
-                if read == 0 {
-                    break;
-                }
-                sink.lock()
-                    .expect("output lock")
-                    .extend_from_slice(&buf[..read]);
-            }
-        });
-        drop(pair.master);
-
-        // No deadlines: `wait` returns when the wrapper exits and the drain
-        // ends at pty EOF, once every spawned process is gone. A wedge
-        // hangs here and is bounded by nextest's slow-timeout.
-        let status = child.wait().expect("wait for the wrapper to exit");
-        drain.join().expect("pty reader thread");
-        let text = String::from_utf8_lossy(&output.lock().expect("output lock")).into_owned();
-        (status.exit_code(), text)
     }
 
     let dir = tempfile::tempdir().expect("scratch dir");

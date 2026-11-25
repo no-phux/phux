@@ -30,6 +30,15 @@ fn word_starts_and_runs_outrank_scattered_matches() {
 }
 
 #[test]
+fn a_title_the_query_starts_outranks_a_later_word() {
+    let (start, _) = score("re", "Rename session").expect("matches");
+    for later in ["Open Reef", "Theme: Retro 82"] {
+        let (word, _) = score("re", later).expect("matches");
+        assert!(start > word, "{start} vs {word} for {later}");
+    }
+}
+
+#[test]
 fn matched_positions_are_title_chars() {
     let (_, at) = score("bt", "Bigger text").expect("matches");
     assert_eq!(at, vec![0, 7]);

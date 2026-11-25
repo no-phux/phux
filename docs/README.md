@@ -1,6 +1,6 @@
 ---
 group: start
-order: 0
+order: 9
 slug: docs
 ---
 

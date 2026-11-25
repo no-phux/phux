@@ -17,7 +17,10 @@ impl LaunchCommand {
         Self {
             argv: vec![program.as_ref().to_owned()],
             env: std::env::vars_os()
-                .chain(PANE_ENV.get().into_iter().flatten().cloned())
+                // A nested coordinator must not advertise the outer terminal's
+                // pane-control socket. Only its own startup can install one.
+                .filter(|(key, _)| key != TERMINAL_BROWSER_SOCKET_ENV)
+                .chain(pane_env())
                 .collect(),
             removed: BTreeSet::new(),
             cwd: None,
@@ -90,6 +93,9 @@ pub const DEFAULT_TERM: &str = "xterm-256color";
 /// and strips it from the child's environment.
 pub const STRICT_CWD_KEY: &str = "PHUX_FD_SHRINK_STRICT_CWD";
 
+/// Discovery endpoint for terminal-browser's optional local pane controls.
+pub const TERMINAL_BROWSER_SOCKET_ENV: &str = "TERMINAL_BROWSER_TERMINAL_SOCKET";
+
 /// A plain interactive `shell`. With `login`, a known shell gets its login
 /// flag (`-l` for bash/zsh/sh, `--login` for fish); an unknown shell gets
 /// none, because an unrecognized flag can fail the exec.
@@ -112,12 +118,35 @@ pub fn default_shell_command(shell: &str, login: bool) -> LaunchCommand {
 }
 
 /// Variables every pane's program starts with, beyond the server's own
-/// environment; set once at start (the `[defaults] browser-shim` stand-in).
-static PANE_ENV: std::sync::OnceLock<Vec<(OsString, OsString)>> = std::sync::OnceLock::new();
+/// environment. Startup installs configured values, then listener endpoints.
+static PANE_ENV: std::sync::Mutex<BTreeMap<OsString, OsString>> =
+    std::sync::Mutex::new(BTreeMap::new());
 
-/// Give every program this process launches these variables.
+/// Add or replace variables for every program this process launches.
 pub fn set_pane_env(vars: Vec<(OsString, OsString)>) {
-    let _ = PANE_ENV.set(vars);
+    PANE_ENV
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .extend(vars);
+}
+
+fn pane_env() -> Vec<(OsString, OsString)> {
+    PANE_ENV
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
+}
+
+/// Fill startup variables in a command prepared before listeners bound.
+/// Explicit overrides and removals remain launch intent.
+pub fn apply_pane_env(command: &mut LaunchCommand) {
+    for (key, value) in pane_env() {
+        if command.get_env(&key).is_none() && !command.was_removed(&key) {
+            command.env(key, value);
+        }
+    }
 }
 
 /// Where the server keeps the files that make a shell mark its prompts and
@@ -221,7 +250,17 @@ mod tests {
 
     #[test]
     fn pane_variables_reach_every_launch() {
+        let mut prepared = LaunchCommand::new("prepared-before-listening");
+        let mut cleared = prepared.clone();
+        cleared.env_remove("PHUX_TEST_PANE_VAR");
         set_pane_env(vec![("PHUX_TEST_PANE_VAR".into(), "set".into())]);
+        apply_pane_env(&mut prepared);
+        apply_pane_env(&mut cleared);
+        assert_eq!(
+            prepared.get_env("PHUX_TEST_PANE_VAR"),
+            Some(OsStr::new("set"))
+        );
+        assert_eq!(cleared.get_env("PHUX_TEST_PANE_VAR"), None);
         let command = LaunchCommand::new("anything");
         let seen = command.environment().get(OsStr::new("PHUX_TEST_PANE_VAR"));
         assert_eq!(

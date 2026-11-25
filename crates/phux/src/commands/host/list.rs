@@ -155,13 +155,23 @@ pub(super) fn run_list(role: Option<HostRole>, json: bool) -> ExitCode {
     sort_rows(&mut rows);
 
     if json {
-        let hosts: Vec<_> = rows.iter().map(row_json).collect();
+        // The theme a client wears while viewing each host, when one is set.
+        let cfg = phux_config::loader::load().unwrap_or_default();
+        let hosts: Vec<_> = rows
+            .iter()
+            .map(|row| {
+                let mut json = row_json(row);
+                json["theme"] = cfg.host_theme(Some(&row.name)).into();
+                json
+            })
+            .collect();
         return crate::output::json(&serde_json::json!({
             "schema_version": 1,
             "hosts": hosts,
             "local": {
                 "name": phux_config::instance::local_host_name(),
                 "color": super::color::local_color(),
+                "theme": cfg.host_theme(None),
                 "cert_fingerprint": local_fingerprint(),
             },
         }));

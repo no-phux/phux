@@ -444,6 +444,11 @@ impl Activities {
         self.terminals.get(id)?.changed_at
     }
 
+    /// Whether work runs outside the terminal's foreground.
+    pub fn background(&self, id: &ResourceId) -> bool {
+        self.terminals.get(id).is_some_and(|a| a.background)
+    }
+
     /// The question `id` is waiting on, when one is known.
     pub fn ask(&self, id: &ResourceId) -> Option<&Ask> {
         self.terminals.get(id)?.ask.as_ref()

@@ -74,6 +74,14 @@ pub(crate) const ENV_VARS: &[EnvVarSpec] = &[
         ],
     },
     EnvVarSpec {
+        name: phux_client::conversation::CONTEXT_ENV,
+        lines: &[
+            "Private record selected by `phux chat run` (absolute path).",
+            "Scopes mail only, never path claims or terminal authority.",
+            "A bad record fails closed; no fallback to another store.",
+        ],
+    },
+    EnvVarSpec {
         name: "PHUX_WS_ADDR",
         lines: &[
             "Also accept WebSocket clients on HOST:PORT. Equivalent to",

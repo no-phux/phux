@@ -52,10 +52,44 @@ fn boxed_call<'a>(name: &'static str, args: &'a Value) -> ToolFuture<'a> {
 /// the CLI's `phux.coord/v1` error document.
 async fn call(name: &str, args: &Value) -> Result<Value, ToolError> {
     let operation = Operation::parse(name, args)?;
-    let client = store()?;
+    let client = if matches!(
+        operation,
+        Operation::Send(_) | Operation::Read(_) | Operation::Ack(_)
+    ) {
+        mail_store(args)?
+    } else {
+        store()?
+    };
     tokio::task::spawn_blocking(move || operation.run(&client))
         .await
         .map_err(|err| ToolError::new(format!("work store call did not finish: {err}")))?
+}
+
+/// A shared MCP host must receive the conversation explicitly, not inherit
+/// whichever TUI's environment happened to start its background process.
+fn mail_record(args: &Value) -> Result<Option<phux_client::conversation::Conversation>, ToolError> {
+    string(args, "conversation_record")?
+        .map(|path| phux_client::conversation::load_path(Path::new(path)).map_err(ToolError::new))
+        .transpose()
+}
+
+fn mail_store(args: &Value) -> Result<Client, ToolError> {
+    let Some(chat) = mail_record(args)? else {
+        return store();
+    };
+    let phux_client::conversation::ConversationRoute::Hub { entry, .. } = chat.route;
+    let link = phux_client::hub_mail::HubLink::from_entry(&entry).map_err(ToolError::new)?;
+    Ok(Client::remote(std::sync::Arc::new(link)))
+}
+
+fn mail_me(args: &Value) -> Result<String, ToolError> {
+    if let Some(explicit) = string(args, "as")? {
+        return Ok(explicit.to_owned());
+    }
+    match mail_record(args)? {
+        Some(chat) => Ok(chat.local_address),
+        None => me(args),
+    }
 }
 
 /// The hub's work store when this host joined one, else this host's,
@@ -281,7 +315,14 @@ fn fence(args: &Value) -> Result<u64, ToolError> {
 fn mail_send(args: &Value) -> Result<Operation, ToolError> {
     strict_object(
         args,
-        &["to", "thread", "message", "as", "operation_id"],
+        &[
+            "to",
+            "thread",
+            "message",
+            "as",
+            "operation_id",
+            "conversation_record",
+        ],
         &["to", "thread", "message"],
     )?;
     let to = strings(args, "to")?;
@@ -293,7 +334,7 @@ fn mail_send(args: &Value) -> Result<Operation, ToolError> {
         .map_err(|err| failure(&err))?;
     Ok(Operation::Send(SendMail {
         thread: string(args, "thread")?.unwrap_or_default().to_owned(),
-        from: me(args)?,
+        from: mail_me(args)?,
         to,
         body: string(args, "message")?.unwrap_or_default().to_owned(),
         operation_id,
@@ -301,9 +342,13 @@ fn mail_send(args: &Value) -> Result<Operation, ToolError> {
 }
 
 fn mail_read(args: &Value) -> Result<Operation, ToolError> {
-    strict_object(args, &["thread", "all", "peek", "as"], &[])?;
+    strict_object(
+        args,
+        &["thread", "all", "peek", "as", "conversation_record"],
+        &[],
+    )?;
     Ok(Operation::Read(ReadMail {
-        reader: me(args)?,
+        reader: mail_me(args)?,
         thread: string(args, "thread")?.map(str::to_owned),
         all: flag(args, "all")?,
         mark_read: !flag(args, "peek")?,
@@ -312,7 +357,7 @@ fn mail_read(args: &Value) -> Result<Operation, ToolError> {
 }
 
 fn mail_ack(args: &Value) -> Result<Operation, ToolError> {
-    strict_object(args, &["id", "as"], &["id"])?;
+    strict_object(args, &["id", "as", "conversation_record"], &["id"])?;
     let id = string(args, "id")?.unwrap_or_default();
     let id: OpaqueId = serde_json::from_value(Value::from(id)).map_err(|_| {
         ToolError::new(format!(
@@ -320,7 +365,7 @@ fn mail_ack(args: &Value) -> Result<Operation, ToolError> {
         ))
     })?;
     Ok(Operation::Ack(AckMail {
-        reader: me(args)?,
+        reader: mail_me(args)?,
         id,
     }))
 }

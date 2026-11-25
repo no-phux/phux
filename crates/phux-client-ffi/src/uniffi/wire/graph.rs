@@ -433,6 +433,7 @@ mod tests {
                 exec: Some(ExecState::Running),
                 foreground: None,
                 icon: None,
+                parent: None,
             }],
             agent_sessions: vec![AgentSessionDescriptor {
                 id: ResourceId::local(8),

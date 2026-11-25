@@ -3,7 +3,8 @@
 //!
 //! A server joined to a hub with `phux host join` has an `[[uplink]]` entry:
 //! the hub's address, its CA fingerprint, and the satellite credential.
-//! [`hub_link`] reads the first enabled one, and its [`HubLink`] sends each
+//! [`hub_link`] reads the sole enabled one,
+//! and its [`HubLink`] sends each
 //! work-store call there under [`COORD_ALPN`], one stream per call, so
 //! `phux mail` and `phux claim` in a box use the hub's store. The hub
 //! answers in the satellite's own name.
@@ -30,8 +31,7 @@ const MAX_LINE: usize = 1 << 20;
 /// How often the lifeline watcher checks whether the call is over.
 const LIFELINE_POLL: Duration = Duration::from_millis(200);
 
-/// The hub this server joined, as its first enabled `[[uplink]]` entry
-/// names it.
+/// An explicitly selected hub enrollment.
 #[derive(Debug, Clone)]
 pub struct HubLink {
     /// The satellite name the hub knows this server by.
@@ -50,23 +50,39 @@ pub struct HubLink {
 ///
 /// # Errors
 ///
-/// Wording naming the `[[uplink]]` entry that cannot be dialed. `Ok(None)`
-/// when this host joined no hub, or its config does not load.
+/// Configuration failures, ambiguous enabled uplinks, or an invalid enrollment.
+/// `Ok(None)` means no enabled uplinks. Conversation selection does not affect
+/// this host-wide resolver, which is also used for claims.
 pub fn hub_link() -> Result<Option<HubLink>, String> {
-    let Ok(config) = phux_config::loader::load() else {
-        return Ok(None);
-    };
-    config
-        .uplink
-        .into_iter()
-        .find(|entry| entry.enabled)
-        .map(|entry| HubLink::from_entry(&entry))
-        .transpose()
+    let config = phux_config::loader::load().map_err(|err| format!("load hub config: {err}"))?;
+    configured_link(&config.uplink)
+}
+
+fn configured_link(entries: &[phux_config::UplinkConfigEntry]) -> Result<Option<HubLink>, String> {
+    let mut enabled = entries.iter().filter(|entry| entry.enabled);
+    let first = enabled.next();
+    if enabled.next().is_some() {
+        return Err(
+            "multiple enabled uplinks; the host-wide mail/claims route is ambiguous".to_owned(),
+        );
+    }
+    first.map(HubLink::from_entry).transpose()
 }
 
 impl HubLink {
-    fn from_entry(entry: &phux_config::UplinkConfigEntry) -> Result<Self, String> {
+    /// Construct a route from an enrollment, including full host joins.
+    ///
+    /// # Errors
+    ///
+    /// Invalid endpoints, CA fingerprints, or non-absolute identity paths.
+    /// Conversation records additionally require enabled, mail-only entries.
+    pub fn from_entry(entry: &phux_config::UplinkConfigEntry) -> Result<Self, String> {
         let refused = |why: String| format!("[[uplink]] {:?} to {}: {why}", entry.name, entry.hub);
+        if !entry.client_cert.is_absolute() || !entry.client_key.is_absolute() {
+            return Err(refused(
+                "client-cert and client-key must be absolute paths".to_owned(),
+            ));
+        }
         let (host, port) = entry.hub_host_port().map_err(refused)?;
         let ca = phux_config::known_authorities::canonical_authority(&entry.ca_fingerprint)
             .ok_or_else(|| refused("ca-fingerprint is not a sha256: fingerprint".to_owned()))?;
@@ -229,4 +245,74 @@ fn readable(fd: &OwnedFd) -> bool {
         tv_nsec: i64::from(LIFELINE_POLL.subsec_nanos()),
     };
     matches!(rustix::event::poll(&mut fds, Some(&timeout)), Ok(n) if n > 0)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
+
+    use super::*;
+
+    fn entry() -> phux_config::UplinkConfigEntry {
+        phux_config::UplinkConfigEntry {
+            name: "participant".to_owned(),
+            hub: "hub.example:8788".to_owned(),
+            server_name: None,
+            ca_fingerprint: format!("sha256:{}", "ab".repeat(32)),
+            client_cert: PathBuf::from("/credentials/cert.pem"),
+            client_key: PathBuf::from("/credentials/key.pem"),
+            enabled: true,
+            mail_only: false,
+        }
+    }
+
+    #[test]
+    fn public_constructor_preserves_full_join_and_validates_identity() {
+        let mut entry = entry();
+        let link = HubLink::from_entry(&entry).unwrap();
+        assert_eq!(link.name(), "participant");
+        assert_eq!(link.hub(), "hub.example:8788");
+        assert_eq!(link.server_name, "hub.example");
+        entry.server_name = Some("tls.example".to_owned());
+        assert_eq!(
+            HubLink::from_entry(&entry).unwrap().server_name,
+            "tls.example"
+        );
+        entry.client_key = PathBuf::from("relative/key.pem");
+        assert!(
+            HubLink::from_entry(&entry)
+                .unwrap_err()
+                .contains("absolute")
+        );
+        entry = self::entry();
+        entry.client_cert = PathBuf::from("relative/cert.pem");
+        assert!(HubLink::from_entry(&entry).is_err());
+        entry = self::entry();
+        entry.ca_fingerprint = "untrusted".to_owned();
+        assert!(HubLink::from_entry(&entry).is_err());
+        entry = self::entry();
+        entry.hub = "no-port".to_owned();
+        assert!(HubLink::from_entry(&entry).is_err());
+    }
+
+    #[test]
+    fn global_routing_requires_one_unambiguous_enabled_entry() {
+        assert!(configured_link(&[]).unwrap().is_none());
+        let mut disabled = entry();
+        disabled.enabled = false;
+        assert!(configured_link(&[disabled.clone()]).unwrap().is_none());
+        let enabled = entry();
+        assert_eq!(
+            configured_link(&[disabled, enabled.clone()])
+                .unwrap()
+                .unwrap()
+                .name(),
+            enabled.name
+        );
+        assert!(
+            configured_link(&[enabled.clone(), enabled])
+                .unwrap_err()
+                .contains("multiple")
+        );
+    }
 }

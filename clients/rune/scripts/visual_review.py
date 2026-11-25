@@ -223,7 +223,7 @@ def settings_inventory():
 
 
 def required_inventory():
-    """1225 required cases: 404 Inbox, 226 Settings, 594 navigation, 1 resource.
+    """Maintained core and selected-flow cases.
 
     Values are (logical width, logical height, scale); additional cases are
     welcome, but cannot replace any maintained case.

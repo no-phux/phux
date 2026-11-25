@@ -42,7 +42,7 @@ thiserror.workspace = true
 tracing.workspace = true
 tokio.workspace = true
 # `explain::peer_pid` compares the peer uid with `getuid`; `hub_mail` polls.
-rustix = { version = "1.1", default-features = false, features = ["std", "process", "event"] }
+rustix = { version = "1.1", default-features = false, features = ["std", "process", "event", "fs"] }
 bytes.workspace = true
 phux-perf.workspace = true
 serde = { workspace = true }

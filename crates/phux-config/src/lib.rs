@@ -12,6 +12,7 @@ pub mod check;
 pub mod connector;
 pub mod distro;
 pub mod document;
+mod host_theme;
 pub mod integration;
 pub mod json_schema;
 pub mod keybind;

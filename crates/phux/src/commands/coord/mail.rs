@@ -1,5 +1,5 @@
 //! Mail submission and observation over the durable work-store client.
-use super::{SCHEMA, emit, store, usage_error};
+use super::{SCHEMA, emit, mail_store as store, usage_error};
 use phux_work::{AckMail, ReadMail, SendMail};
 use std::io::Read as _;
 use std::process::ExitCode;

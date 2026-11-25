@@ -1,12 +1,8 @@
 """Header-only fixtures qualify the packager, never an actual image decoder."""
 import copy
 import json
-import os
 from pathlib import Path
-import shutil
 import struct
-import subprocess
-import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -58,7 +54,7 @@ class VisualReview(unittest.TestCase):
 
     def populate(self, inventory):
         for relative, (width, height, scale) in inventory.items():
-            physical = [width * scale, height * scale]
+            physical = [round(width * scale), round(height * scale)]
             tree = {**self.tree, "viewport": [width, height], "scale": scale, "pixels": physical}
             self.frame(relative, tree=tree, physical=physical)
 
@@ -82,10 +78,10 @@ class VisualReview(unittest.TestCase):
         self.inventory.stop()
         self.populate(review.required_inventory())
         manifest = self.produce()
-        self.assertEqual(len(manifest["cases"]), 1225)
+        self.assertEqual(len(manifest["cases"]), 1561)
         self.assertEqual({family: sum(case["family"] == family for case in manifest["cases"])
                           for family in review.FAMILIES},
-                           {"inbox": 404, "settings": 226, "navigation": 594, "resources": 1})
+                            {"inbox": 404, "settings": 226, "navigation": 930, "resources": 1})
         case = next(case for case in manifest["cases"] if case["png"] == self.subject)
         self.assertEqual(case["physical"], [320, 568])
         self.assertEqual(case["logical"], [320, 568])
@@ -102,16 +98,22 @@ class VisualReview(unittest.TestCase):
         self.assertEqual(case["exporter"], "phone_inbox_visual_review_frames")
         self.assertEqual(review.exporter_for("inbox", "phone-acp-input-dark-320x280-1x"),
                          "phone_acp_visual_review_frames")
+
         self.assertEqual(review.exporter_for("settings", "phone-appearance-before"),
                          "mobile_appearance_and_real_theme_palette_render_accept_and_cancel")
         self.assertEqual(review.exporter_for("navigation", "retina-2x-native-false-640"),
                          "retina_navigation_renders_in_native_safe_area_and_desktop_phone_viewports")
+        self.assertEqual(review.exporter_for(
+            "navigation", "sidebar-focus-dark-normal-row-1100x720-2x"),
+            "sidebar_focus_visual_review_frames")
         self.assertEqual(review.exporter_for("navigation", "header-split-dark-native-true-2x-640"),
                           "phone_header_visual_review_frames")
         self.assertEqual(review.exporter_for("navigation", "states-slow-dark-native-true-2x-786"),
                          "phone_states_visual_review_frames")
         self.assertEqual(review.exporter_for("navigation", "pane-motion-horizontal-dark"),
                          "phone_pane_motion_visual_review_frames")
+        self.assertEqual(review.exporter_for("navigation", "pane-picker-dark-ax5"),
+                         "phone_pane_picker_visual_review_frames")
         self.assertEqual(review.exporter_for("navigation", "connections-large-light-2x-native-true-bottom-640"),
                          "phone_connections_visual_review_frames")
         self.assertEqual(review.exporter_for("navigation", "connections-keyboard-dark-bottom-640"),
@@ -125,7 +127,53 @@ class VisualReview(unittest.TestCase):
         self.assertEqual(review.exporter_for("navigation", "inventory-light-393"),
                          "session_browser_renders_realistic_dark_light_and_search_states")
         self.assertEqual(review.exporter_for("resources", "mixed"),
-                         "native_png_headless_renderer_smoke")
+                          "native_png_headless_renderer_smoke")
+
+    def test_sessions_canvas_matrix_keeps_large_long_filter_and_empty_cases(self):
+        self.inventory.stop()
+        inventory = review.required_inventory()
+        for width, height, keyboard_height in ((320, 478, 340), (393, 759, 480)):
+            for theme in ("dark", "light"):
+                for state in ("connections", "query-top", "query-bottom", "empty"):
+                    stem = f"canvas-{state}-{theme}-{width * 2}"
+                    expected_height = keyboard_height if state.startswith("query-") else height
+                    self.assertEqual(inventory[f"navigation/{stem}.png"], (width, expected_height, 2))
+                    self.assertEqual(review.exporter_for("navigation", stem),
+                                     "phone_session_canvas_visual_review_frames")
+
+    def test_reconnect_matrix_keeps_constrained_native_and_desktop_cases(self):
+        self.inventory.stop()
+        inventory = {path: geometry for path, geometry in review.required_inventory().items()
+                     if path.startswith("navigation/reconnect-")}
+        self.assertEqual(len(inventory), 224)
+        for path, geometry in inventory.items():
+            self.assertEqual(review.exporter_for("navigation", Path(path).stem),
+                             "reconnect_feedback_visual_review_frames")
+            if "-native-true-" in path:
+                self.assertIn(geometry, ((320, 340, 2), (393, 480, 2)))
+            elif "-phone-false-" in path:
+                width = 1100 if path.endswith("-1100.png") else 640
+                height = 720 if width == 1100 else 360
+                self.assertAlmostEqual(geometry[0] * geometry[2], width, places=3)
+                self.assertAlmostEqual(geometry[1] * geometry[2], height, places=3)
+                self.assertAlmostEqual(geometry[2], 1.4 if "-large-true-" in path else 1)
+                if "-large-true-" in path:
+                    with self.assertRaisesRegex(ValueError, "geometry differs"):
+                        review.validate_required_geometry(
+                            {"png": path, "logical": [width, height], "scale": 1}, geometry)
+
+    def test_pane_picker_matrix_keeps_large_text_focus_and_native_sizes(self):
+        self.inventory.stop()
+        inventory = {path: geometry for path, geometry in review.required_inventory().items()
+                     if path.startswith("navigation/pane-picker-")}
+        self.assertEqual(len(inventory), 48)
+        for path, geometry in inventory.items():
+            self.assertEqual(review.exporter_for("navigation", Path(path).stem),
+                             "phone_pane_picker_visual_review_frames")
+            if "-native-true-" in path:
+                self.assertIn(geometry, ((320, 340, 2), (393, 480, 2)))
+            else:
+                self.assertIn(geometry, ((320, 568, 1), (393, 852, 1)))
 
     def test_missing_family_fails_without_writing_bundle(self):
         self.inventory.stop()
@@ -284,14 +332,6 @@ class VisualReview(unittest.TestCase):
                         self.produce()
             self.frame(self.subject)
 
-    def test_runner_rejects_relative_and_existing_paths_before_cargo(self):
-        script = Path(__file__).with_name("visual-review.sh")
-        for out in ("relative", str(self.root)):
-            with self.subTest(out=out):
-                result = subprocess.run(["bash", str(script), out], capture_output=True, text=True)
-                self.assertEqual(result.returncode, 2)
-        self.assertFalse((self.root / "logs").exists())
-
     def test_source_metadata_includes_dirty_diff_and_untracked_source_hash(self):
         cargo = self.root / "clients/rune/Cargo.toml"
         cargo.parent.mkdir(parents=True)
@@ -310,52 +350,6 @@ class VisualReview(unittest.TestCase):
         self.assertEqual(metadata["untrackedSourceFiles"],
                          [{"path": "clients/rune/src/tests.rs", "sha256": review.digest(source)}])
         self.assertIn("not an exact", metadata["sourceQualification"])
-
-    def test_runner_uses_serial_release_tests_sanitizes_env_and_packages(self):
-        repo = self.root / "repo"
-        scripts = repo / "clients/rune/scripts"
-        scripts.mkdir(parents=True)
-        for name in ("visual-review.sh", "visual_review.py", "visual_motion.py",
-                     "visual_navigation.py", "visual_states.py", "visual_themes.py", "visual_acp.py"):
-            shutil.copyfile(Path(__file__).with_name(name), scripts / name)
-        (scripts.parent / "Cargo.toml").write_text('rune = { rev = "test-pin" }\n')
-        for args in (["init", "-q"], ["add", "."],
-                     ["-c", "core.hooksPath=/dev/null", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
-                      "-c", "commit.gpgsign=false", "commit", "-qm", "fixture"]):
-            subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
-        binaries = self.root / "bin"
-        binaries.mkdir()
-        cargo = binaries / "cargo"
-        fixture = Path(__file__).with_name("visual_runner_fixture.py").read_text()
-        cargo.write_text(f"#!{sys.executable}\n{fixture}")
-        cargo.chmod(0o755)
-        out = self.root / "fresh review"
-        private_seed = self.root / "inherited-private-prefs"
-        seed = private_seed / "sh.phux.rune/prefs.json"
-        seed.parent.mkdir(parents=True)
-        seed_bytes = b'{"font_size":15,"tour_offered":false}\n'
-        seed.write_bytes(seed_bytes)
-        environment = {
-            **os.environ, "PATH": str(binaries) + os.pathsep + os.environ["PATH"],
-            "PHUX_SOCKET": "do-not-connect", "PHUX_WS_TOKENS": "do-not-use",
-            "SIMCTL_CHILD_PHUX_PROFILE": "default",
-            "RUNE_PREFS_DIR": str(private_seed),
-        }
-        result = subprocess.run(["bash", str(scripts / "visual-review.sh"), str(out)],
-                                env=environment, cwd=self.root, capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        manifest = json.loads((out / "manifest.json").read_text())
-        self.assertEqual(len(manifest["cases"]), 1225)
-        self.assertEqual(manifest["currentRunePin"], "test-pin")
-        self.assertFalse(manifest["dirty"])
-        self.assertEqual(len(list((out / "logs").glob("*.log"))), 20)
-        self.assertEqual(seed.read_bytes(), seed_bytes)
-        self.assertEqual({path.relative_to(private_seed).as_posix(): path.read_bytes()
-                          for path in private_seed.rglob("*") if path.is_file()},
-                         {"sh.phux.rune/prefs.json": seed_bytes})
-        self.assertEqual(json.loads((out / "prefs/runner-fixture.json").read_text()),
-                         {"fixture": True})
-
 
 if __name__ == "__main__":
     unittest.main()

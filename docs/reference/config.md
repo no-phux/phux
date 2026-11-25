@@ -67,6 +67,7 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `defaults.history-bytes` | `10485760` |
 | `defaults.history-limit` | `50000` |
 | `defaults.keep-awake` | `"off"` |
+| `defaults.lock-size` | `false` |
 | `defaults.mouse` | `true` |
 | `defaults.retain-on-exit` | `false` |
 | `defaults.retain-on-exit-max` | `256` |
@@ -101,6 +102,7 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `sidebar.hosts` | `true` |
 | `sidebar.hosts-refresh-secs` | `10` |
 | `sidebar.position` | `"left"` |
+| `sidebar.rail` | `true` |
 | `sidebar.recent-first` | `false` |
 | `sidebar.width` | `20` |
 | `status.position` | `"top"` |
@@ -242,6 +244,12 @@ session-name-template = "${cwd-basename}"
 #              desktop and it fits the desktop again
 #   "manual"   keep the current size
 window-size = "smallest"
+
+# Lock the terminal UI's view size when it attaches, as `phux attach
+# --lock-size` does: while it is attached, other clients (a phone, a second
+# laptop) see its panes letterboxed or cropped instead of resizing them.
+# The palette's "Lock view size" / "Unlock view size" switch it live.
+lock-size = false
 
 # Keep the machine from going to sleep by itself while agents are busy:
 #   "off"               never (the default)
@@ -458,8 +466,8 @@ exclusive = true
 # recent action and hook runs with their exit status and output tail.
 # The server runs enabled plugins' `[[events]]` hooks, and the TUI opens
 # their `[[panes]]` (every placement) and lays out their `[[sidebar]]`
-# sections; link handlers are still declarative only. The manifest path
-# may be absolute or relative to this config file.
+# sections; Rune runs their `[[links]]` handlers on ⌘-click. The manifest
+# path may be absolute or relative to this config file.
 #
 # [[plugins]]
 # manifest = "/path/to/plugin/phux-plugin.toml"
@@ -505,8 +513,9 @@ exclusive = true
 #   [[links]]
 #   id = "ticket"
 #   title = "Open ticket"
-#   patterns = ["https://linear.app/*"]
-#   command = ["agent-ticket", "{url}"]
+#   patterns = ["https://linear.app/*"]   # whole-link globs; or schemes = ["https"]
+#   run_on = "client"      # client | pane-host (a split beside the pane)
+#   command = ["agent-ticket", "{url}"]   # url path line pane host cwd
 
 # Federation satellites are remote phux servers a hub can route to. The registry
 # lands before routing so operators can declare stable names and endpoints.

@@ -16,6 +16,9 @@ use crate::resource::ResourceHandle;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ClientId(pub u64);
 
+/// A `RESIZE_TERMINAL` a view set: `(cols, rows)` and the cell pixel size.
+pub(crate) type ExplicitSize = ((u16, u16), Option<(u16, u16)>);
+
 /// An attached client: routing identity plus outbound mailbox.
 #[derive(Debug)]
 pub struct AttachedClient {
@@ -42,6 +45,13 @@ pub struct AttachedClient {
     /// Viewport-clock stamp of the last time this view was used (input,
     /// focus, attach or resize), for the `active` window-size policy.
     pub active_seq: u64,
+    /// Viewport-clock stamp of this view's size-lock claim
+    /// (`phux.view.size-lock/v1`), 0 when unlocked. The newest claim among a
+    /// Terminal's views holds it.
+    pub size_lock_seq: u64,
+    /// The last size and cell size this view set on each Terminal with
+    /// `RESIZE_TERMINAL`, put back when it claims the size lock.
+    pub explicit_sizes: HashMap<ResourceId, ExplicitSize>,
     /// The session attach declared `VIEWER` (ADR-0127); panes it spawns are
     /// observe-only too.
     pub viewer: bool,
@@ -200,6 +210,8 @@ impl ServerState {
                     viewport: None,
                     viewport_seq: 0,
                     active_seq: 0,
+                    size_lock_seq: 0,
+                    explicit_sizes: HashMap::new(),
                     viewer: false,
                     publication_gate: None,
                 },

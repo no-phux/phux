@@ -37,8 +37,8 @@ fn parses_the_cli_target_spellings() {
     let bare_v6 = target("fd7a::1");
     assert_eq!(bare_v6.port, None);
     assert_eq!(bare_v6.authority(), "[fd7a::1]:8788");
-    // `mini` and `mini:8788` are one registry host, and a portless
-    // target means the ADR-0081 auto-listen port.
+    // The registry key drops the port, and a portless target means the
+    // ADR-0081 auto-listen port.
     assert_eq!(target("mini:8788").registry_name(), "mini");
     assert_eq!(target("mini").authority(), "mini:8788");
 }
@@ -84,6 +84,39 @@ fn matches_name_then_bare_host_then_endpoint_host() {
         Some("lab")
     );
     assert!(find_entry(&entries, &target("elsewhere")).is_none());
+}
+
+#[test]
+fn a_second_server_at_another_port_is_another_host() {
+    let register = |entries: &[RemoteConfigEntry], raw: &str| {
+        let target = target(raw);
+        registration_name_by(entries, &target.host, target.port, |e| {
+            (&e.name, &e.endpoint)
+        })
+    };
+    let mut entries = vec![entry("mini", "quic://mini:8788")];
+    // One server per machine reads and writes as before.
+    assert_eq!(register(&entries, "mini"), "mini");
+    assert_eq!(register(&entries, "mini:8788"), "mini");
+    // A second server never replaces the first, and its name is stable.
+    assert_eq!(register(&entries, "mini:9788"), "mini-9788");
+    entries.push(entry("mini-9788", "quic://mini:9788"));
+    assert_eq!(register(&entries, "mini:9788"), "mini-9788");
+    let found = |raw: &str| find_entry(&entries, &target(raw)).map(|e| e.name.as_str());
+    assert_eq!(found("mini"), Some("mini"));
+    assert_eq!(found("mini:8788"), Some("mini"));
+    assert_eq!(found("mini:9788"), Some("mini-9788"));
+    assert_eq!(found("me@mini:9788"), Some("mini-9788"));
+    // A port with no entry of its own keeps the per-dial override.
+    assert_eq!(found("mini:7000"), Some("mini"));
+
+    // The endpoint-host fallback honours a typed port.
+    let entries = [entry("lab", "quic://lab.example:8788")];
+    let found = |raw: &str| find_entry(&entries, &target(raw)).map(|e| e.name.as_str());
+    assert_eq!(found("lab.example:8788"), Some("lab"));
+    assert_eq!(found("lab.example:9788"), None);
+    assert_eq!(endpoint_port("quic://[fd7a::1]:9788"), Some(9788));
+    assert_eq!(endpoint_port("ssh://me@mini"), None);
 }
 
 #[test]

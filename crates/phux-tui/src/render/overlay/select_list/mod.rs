@@ -200,6 +200,16 @@ impl SelectList {
         self
     }
 
+    /// Open on the row committing `action`, when it is listed.
+    #[must_use]
+    pub fn with_selected(mut self, action: Option<&phux_config::keybind::ResolvedAction>) -> Self {
+        let indices = self.filtered_indices();
+        if let Some(row) = action.and_then(|action| self.row_of_action(&indices, action)) {
+            self.model.cursor = Some(indices[row]);
+        }
+        self
+    }
+
     /// Reserve bare `j`/`k` for filter text, even before typing starts.
     #[must_use]
     pub const fn without_vi_navigation(mut self) -> Self {

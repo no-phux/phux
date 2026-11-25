@@ -12,10 +12,7 @@ use phux_plugin_index::{
 };
 
 fn root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .expect("repo root")
+    root_pkg().join("../..").canonicalize().expect("repo root")
 }
 
 fn fixture_index() -> Index {
@@ -33,7 +30,9 @@ fn fixture_index() -> Index {
 }
 
 fn root_pkg() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("the test runner sets CARGO_MANIFEST_DIR"),
+    )
 }
 
 #[test]

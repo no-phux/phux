@@ -40,7 +40,7 @@ scaffold-config:
 [group('setup')]
 [doc('Toolchain pins agree across manifests, Mise, Nix, CI, and containers.')]
 toolchain-check:
-    bash scripts/check-toolchain-sync.sh
+    cd tools && bun test ./src/policy/toolchain-sync.test.ts
 
 
 # Runtime half of toolchain-check: both environments, actual binaries.

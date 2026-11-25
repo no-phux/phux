@@ -57,7 +57,9 @@ Closing a client changes nothing on the server.
 
 When several clients show one session, the smallest view sets each pane's
 size by default; `[defaults] window-size = "active"` sizes it for the client
-you used last.
+you used last. A client can lock its view size (`phux attach --lock-size`, or
+Lock view size in the palette): while it is attached, other clients see its
+panes letterboxed or cropped instead of resizing them.
 
 ## Hosts
 

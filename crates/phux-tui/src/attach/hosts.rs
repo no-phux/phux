@@ -54,6 +54,31 @@ pub fn recorded_origin() -> Option<AttachOrigin> {
     ORIGIN.get().cloned()
 }
 
+/// The satellite whose pane has focus, if one does: the chrome wears its
+/// theme over the origin's.
+static FOCUSED_SATELLITE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Note the focused pane's satellite (`None` for a pane on the attached
+/// server). True when it changed.
+pub fn focus_satellite(host: Option<&str>) -> bool {
+    let Ok(mut focused) = FOCUSED_SATELLITE.lock() else {
+        return false;
+    };
+    if focused.as_deref() == host {
+        return false;
+    }
+    *focused = host.map(str::to_owned);
+    true
+}
+
+/// The machine whose theme the chrome wears: a focused satellite pane's
+/// host, else the attach origin. `None` with neither, which keeps `[theme]`.
+#[must_use]
+pub fn viewed_host() -> Option<AttachOrigin> {
+    let focused = FOCUSED_SATELLITE.lock().ok().and_then(|f| f.clone());
+    focused.map(AttachOrigin::Remote).or_else(recorded_origin)
+}
+
 /// The last provider answer this process received. A session switch
 /// rebuilds the attach loop from empty; seeding from here keeps the other
 /// machines' segments on screen instead of blinking out until the next run.

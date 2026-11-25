@@ -37,6 +37,15 @@ the store until the next one; nothing is ever typed into the pane. With
 `PHUX_AGENT_REPORTING=0` the mail hook is silent too, since an SDK
 controller owns that conversation.
 
+With this plugin installed, `phux chat run NAME -- claude` permits mail-only
+delivery without a pane: the launcher supplies a nonempty `PHUX_CHAT_RECORD`
+and pins `PHUX_AGENT_PHUX_BIN` to its own binary. The CLI validates the record
+and selects its inbox, leaving `PHUX_AGENT_ADDRESS` unchanged for claims.
+The hook forwards that environment to `mail hook-context`. An address alone
+does not enable delivery, and lifecycle reporting still requires a pane.
+Chat mail is colleague data, not authoritative user instructions. This does
+not wake an idle Claude; delivery still waits for the next registered hook.
+
 For development:
 
 ```sh
