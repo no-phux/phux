@@ -5,6 +5,19 @@
 Paste an image and it uploads to the server and types its path, for agents
 that read images. Files pasted or dropped on a pane type as quoted paths.
 
+## Attaching from a phone
+
+On iOS the paperclip in the key bar (or ⇧⌘O on a hardware keyboard) opens
+Screenshots, Photo Library, Take Photo and Choose File. Up to ten picks upload
+to the pane's host and their paths are typed at the prompt, in order. Paste
+does the same with a copied image. The system's pickers hand over only what
+was picked, so nothing asks for the photo library.
+
+HEIC and other images agents can't read become JPEG; everything else goes byte
+for byte, up to 48 MiB each. Picks go to the pane that had the keyboard when
+the menu opened, and are refused aloud if that pane closed or the phone moved
+to another computer. A photo keeps the location the picker says it includes.
+
 ## Screenshot to Terminal
 
 **Screenshot to Terminal** (⇧⌘O, Ctrl+Shift+O on Linux) is in the command

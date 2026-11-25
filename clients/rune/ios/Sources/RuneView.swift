@@ -27,6 +27,7 @@ final class RuneView: UIView {
     private var nextIdentity: UInt64 = 0
     private var cadence = FrameCadence()
     private var controls: NativeControls?
+    private let attachments = Attachments()
     private let path = NWPathMonitor()
     private var pathSettled = false
     private var pathWork: DispatchWorkItem?
@@ -49,6 +50,14 @@ final class RuneView: UIView {
         editor.send = { [weak self] operation, context in self?.send(operation, context: context) }
         editor.didDismiss = { [weak self] context in _ = self?.send(["op":"dismiss"], context: context) }
         addSubview(editor)
+        attachments.covering = { [weak self] covered in
+            self?.editor.covered = covered
+            if !covered { self?.wake() }
+        }
+        attachments.picked = { [weak self] request, file in
+            self?.bridge?.attach(file, request: request)
+            self?.wake()
+        }
         // The text size and contrast are the view's own traits; the
         // appearance is the scene's (see `systemDark`).
         registerForTraitChanges([UITraitPreferredContentSizeCategory.self, UITraitAccessibilityContrast.self]) {
@@ -228,9 +237,9 @@ final class RuneView: UIView {
     /// opener or haptics from inside a layer, so UIKit answers for it.
     private func serve(_ requests: [String: Any]) {
         if let text = requests["copied_text"] as? String { UIPasteboard.general.string = text }
-        if requests["paste"] as? Bool == true, let text = UIPasteboard.general.string {
-            bridge?.paste(text)
-            wake()
+        if requests["paste"] as? Bool == true { paste(requests["attaching"] as? UInt64) }
+        if let at = requests["attach"] as? [Double], at.count == 4, let request = requests["attaching"] as? UInt64 {
+            attachments.show(request: request, over: self, at: CGRect(x: at[0], y: at[1], width: at[2], height: at[3]))
         }
         for link in requests["open_urls"] as? [String] ?? [] {
             guard let url = URL(string: link), ["http", "https", "mailto"].contains(url.scheme?.lowercased() ?? "")
@@ -243,6 +252,13 @@ final class RuneView: UIView {
         default: break
         }
         if requests["connection"] as? Bool == true { connectionRequested?() }
+    }
+
+    /// The pasteboard's text, or its image as an attachment to `request`.
+    private func paste(_ request: UInt64?) {
+        if let text = UIPasteboard.general.string { bridge?.paste(text) }
+        else if let request, let image = Attachments.pasted() { bridge?.attach(image, request: request) }
+        wake()
     }
 
     private func nativeControls() -> NativeControls {

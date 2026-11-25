@@ -52,6 +52,10 @@ void phux_rune_ios_touch(void *host, uint64_t identity, uint32_t phase,
 bool phux_rune_ios_press(void *host, const char *id);
 // Answers a frame's `paste` request with the system pasteboard's text.
 void phux_rune_ios_paste(void *host, const char *text);
+// One picked file for a frame's `attaching` request, borrowed for this call.
+// Null data: it could not be read, which is said rather than dropped.
+void phux_rune_ios_attach(void *host, uint64_t id, const char *extension,
+                          const uint8_t *data, size_t length);
 // The network path changed: rebind the connection and probe it now.
 void phux_rune_ios_path_changed(void *host);
 // One step of terminal text size, from a pinch.

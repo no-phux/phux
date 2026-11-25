@@ -186,7 +186,9 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
         // camera permission prompt or Tailscale's approval browser. Without
         // one, a passing interruption (Control Center, a banner) keeps the
         // keyboard it would only bring straight back.
+        // The camera is a navigation controller too, but not setup.
         let covered = presentedViewController is UINavigationController
+            && !(presentedViewController is UIImagePickerController)
         surface?.setActive(active && !covered, keepingKeyboard: !covered)
     }
 

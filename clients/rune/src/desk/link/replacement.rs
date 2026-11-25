@@ -57,6 +57,7 @@ impl Desk {
         }
         if let Some(native) = &mut self.native {
             native.paste_requested = false;
+            native.attach_requested = false;
         }
         // The opener's asynchronous error channel belongs to the window.
         let failed = self.pointer.failed.clone();

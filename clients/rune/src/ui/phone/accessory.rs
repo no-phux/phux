@@ -48,7 +48,7 @@ const TYPED: [(&str, &str, char); 4] = [
     ("-", "Hyphen", '-'),
 ];
 
-fn strip(phone: &Phone, native_field: bool, pad: Option<El>, p: &Look) -> El {
+fn strip(phone: &Phone, native_field: bool, pinned: [Option<El>; 2], p: &Look) -> El {
     let send = |label: &'static str, name: &'static str, key: Key| {
         chip(format!("phone-key-{name}"), name, label, false, p)
             .on_press_tx(move |d: &mut Desk, tx| d.soft(Soft::Key(key.clone()), tx))
@@ -82,7 +82,7 @@ fn strip(phone: &Phone, native_field: bool, pad: Option<El>, p: &Look) -> El {
     // A field being edited by the system keyboard takes neither chords nor
     // terminal keys.
     if native_field {
-        return key_rail(strip.children(pad), p);
+        return key_rail(strip.children(pinned.into_iter().flatten()), p);
     }
     let interrupt = chip("phone-key-Interrupt".into(), "Control C", "⌃C", false, p)
         .on_press_tx(|d: &mut Desk, tx| d.soft_chord('c', tx));
@@ -102,7 +102,7 @@ fn strip(phone: &Phone, native_field: bool, pad: Option<El>, p: &Look) -> El {
                 .on_press_tx(move |d: &mut Desk, tx| d.soft(Soft::Char(typed), tx))
         }))
         .child(paste)
-        .children(pad);
+        .children(pinned.into_iter().flatten());
     key_rail(strip, p)
 }
 
@@ -186,16 +186,19 @@ pub(super) fn accessory(desk: &Desk, phone: &Phone, p: &Look) -> El {
     // immediate drag capture still owns arrows rather than strip scrolling.
     let scrolling_pad =
         native_field || p.type_scale >= crate::ui::tokens::layout::PHONE.stacked_title_scale;
+    // Only a native host has photos and files to attach, and only a
+    // terminal takes them. It shares the pad's room.
+    let clip = (desk.native.is_some() && !native_field && !desk.settings_open).then(|| attach(p));
     let (strip_pad, pair_pad) = if scrolling_pad {
-        (Some(pad), None)
+        ([clip, Some(pad)], [None, None])
     } else {
-        (None, Some(pad))
+        ([None, None], [clip, Some(pad)])
     };
     let pair = surface(
         row().key("phone-pair").radius(p.radius.full).items_center(),
         p,
     )
-    .children(pair_pad)
+    .children(pair_pad.into_iter().flatten())
     .child(keyboard_control(desk, native_field, p));
     let command = touchable(
         surface(
@@ -231,6 +234,26 @@ pub(super) fn accessory(desk: &Desk, phone: &Phone, p: &Look) -> El {
         .child(el().pb(s.s2).child(command))
         .child(strip(phone, native_field, strip_pad, p))
         .child(el().pb(s.s2).child(pair))
+}
+
+/// The paperclip: the phone's photos, camera and files, for the agent in
+/// this pane. What ⇧⌘O is to a desktop's screenshots.
+fn attach(p: &Look) -> El {
+    touchable(
+        el().key("phone-attach")
+            .min_w(p.round())
+            .min_h(p.round())
+            .radius(p.radius.full)
+            .center(),
+        p,
+    )
+    .label("Attach a photo or file")
+    .on_press_tx(|d: &mut Desk, tx| d.shortcut(Shortcut::Screenshot, tx))
+    .child(glyph(
+        &icons::PAPERCLIP,
+        p.icon.size.lg,
+        p.roles.text.text.paint(),
+    ))
 }
 
 fn keyboard_control(desk: &Desk, native_field: bool, p: &Look) -> El {
