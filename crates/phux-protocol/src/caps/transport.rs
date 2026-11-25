@@ -35,7 +35,7 @@ pub enum OutputMode {
 }
 
 // -----------------------------------------------------------------------------
-// Native bootstrap negotiation — ADR-0070 / protocol 0.7.
+// Native bootstrap negotiation (ADR-0070).
 // -----------------------------------------------------------------------------
 
 /// Hard upper bound for one `BOOTSTRAP_CHUNK.payload`; leaves envelope

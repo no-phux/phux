@@ -250,13 +250,13 @@ fn the_ssh_refusal_names_the_verb() {
 #[test]
 fn a_ladder_refusal_splits_into_message_and_remedy() {
     let err = ladder_refusal_error(
-        "phux: mini is not a registered host\nphux: to pair without ssh, run `phux pair`\nphux:   phux --remote mini --code '<link>'",
+        "phux: mini is not a registered host\nphux: to pair without ssh, run `phux pair`\nphux:   phux attach --remote mini --code '<link>'",
     );
     assert_eq!(err.code, codes::REMOTE_UNRESOLVED);
     assert_eq!(err.message, "mini is not a registered host");
     assert_eq!(
         err.remedy,
-        "to pair without ssh, run `phux pair`\nphux --remote mini --code '<link>'"
+        "to pair without ssh, run `phux pair`\nphux attach --remote mini --code '<link>'"
     );
 }
 

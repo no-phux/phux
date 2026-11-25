@@ -130,6 +130,69 @@ pub(crate) const ENV_VARS: &[EnvVarSpec] = &[
         ],
     },
     EnvVarSpec {
+        name: "PHUX_NO_AUTO_LISTEN",
+        lines: &[
+            "Set (to anything) to keep the server from auto-binding a",
+            "remote listener on the private network address.",
+        ],
+    },
+    EnvVarSpec {
+        name: "PHUX_WORKLOAD_CA",
+        lines: &[
+            "The server's workload CA certificate. Default:",
+            "workload-ca.pem in the state directory. With this,",
+            "PHUX_WORKLOAD_CA_KEY, or PHUX_WORKLOAD_KEYS set,",
+            "`[policy] mode` must be set too.",
+        ],
+    },
+    EnvVarSpec {
+        name: "PHUX_WORKLOAD_CA_KEY",
+        lines: &[
+            "Its private key. Default: workload-ca.key in the state",
+            "directory.",
+        ],
+    },
+    EnvVarSpec {
+        name: "PHUX_WORKLOAD_KEYS",
+        lines: &[
+            "Registry of the client keys the server admits. Default:",
+            "workload-keys in the state directory. enrollment-tickets and",
+            "workload-org-roots/ move with it.",
+        ],
+    },
+    EnvVarSpec {
+        name: "PHUX_WORKLOAD_CERT",
+        lines: &[
+            "Client certificate (PEM) a remote dial presents when the",
+            "host entry names none. Set with PHUX_WORKLOAD_KEY; one",
+            "alone is an error.",
+        ],
+    },
+    EnvVarSpec {
+        name: "PHUX_WORKLOAD_KEY",
+        lines: &["Private key of PHUX_WORKLOAD_CERT."],
+    },
+    EnvVarSpec {
+        name: "PHUX_WORKLOAD_REQUIRE_PAIRED",
+        lines: &[
+            "Set (to anything) to refuse a server that does not request",
+            "the PHUX_WORKLOAD_CERT identity.",
+        ],
+    },
+    EnvVarSpec {
+        name: "PHUX_AGENT_DETECT",
+        lines: &["Set to `0` to turn agent detection off."],
+    },
+    EnvVarSpec {
+        name: "PHUX_AGENT_RULES_DIR",
+        lines: &[
+            "Directory of *.toml agent manifests that override or extend",
+            "the built-in ones; empty means none. Default:",
+            "$XDG_CONFIG_HOME/phux/agent-rules, else",
+            "~/.config/phux/agent-rules.",
+        ],
+    },
+    EnvVarSpec {
         name: "PHUX_UPLOAD_DIR",
         lines: &[
             "Where the server lands file uploads (PUT_FILE). Default:",
@@ -248,8 +311,8 @@ pub(crate) const ENV_VARS: &[EnvVarSpec] = &[
     },
 ];
 
-/// The width of the name column in [`environment_section`]: long enough
-/// for every name but one, which gets its meaning on the following lines.
+/// The width of the name column in [`environment_section`]: a longer
+/// name gets its meaning on the following lines.
 const NAME_COLUMN: usize = 18;
 
 /// Render the `phux help environment` topic from [`ENV_VARS`].
@@ -280,7 +343,7 @@ pub(crate) fn environment_section() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ENV_VARS, deadline_from, environment_section};
+    use super::{ENV_VARS, NAME_COLUMN, deadline_from, environment_section};
 
     #[test]
     fn deadline_reads_seconds_and_zero_disables() {
@@ -305,7 +368,15 @@ mod tests {
         let mut last = 0;
         for spec in ENV_VARS {
             let at = section
-                .find(&format!("  {}", spec.name))
+                .find(&format!(
+                    "  {}{}",
+                    spec.name,
+                    if spec.name.len() >= NAME_COLUMN {
+                        "\n"
+                    } else {
+                        " "
+                    }
+                ))
                 .unwrap_or_else(|| panic!("{} is missing from the topic", spec.name));
             assert!(at >= last, "{} is out of table order", spec.name);
             last = at;
