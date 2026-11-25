@@ -71,6 +71,7 @@ pub mod resources;
 mod reveal;
 mod scene_host;
 mod screenshot;
+mod seen;
 mod sessions;
 mod settings;
 mod shown;
@@ -437,6 +438,7 @@ impl Desk {
         if rearrange || opened || self.layout_is_stale() {
             changed |= self.refresh_layout(&client);
         }
+        self.report_in_view(&client);
         self.reveal_active_tab(tx);
         // The replica's news may never come, and a split only waits so long.
         if unfocused || self.splits_waiting() {

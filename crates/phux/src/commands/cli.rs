@@ -116,6 +116,9 @@ pub(crate) enum Command {
     #[usage(help_heading = "Agents", display_order = 39)]
     NotifyMode(NotifyModeArgs),
 
+    #[usage(help_heading = "Agents", display_order = 39)]
+    Seen(SeenArgs),
+
     #[usage(help_heading = "Agents", display_order = 36)]
     Mission(MissionArgs),
 

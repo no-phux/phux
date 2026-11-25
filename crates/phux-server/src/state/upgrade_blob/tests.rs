@@ -332,6 +332,7 @@ async fn an_upgrade_keeps_the_user_title_beside_the_program_title() {
 }
 
 mod merge;
+mod unseen;
 mod validation;
 
 impl ServerState {

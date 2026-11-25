@@ -29,6 +29,8 @@ use crate::resource;
 use crate::selector::format_terminal_id;
 use crate::state::{Degradation, StateView};
 
+pub mod unseen;
+
 /// The `GET_STATE` view a session listing (`phux ls -l`, `phux status`, MCP
 /// `phux_ls`) is built from.
 ///
@@ -43,7 +45,8 @@ pub async fn listing_view(conn: &mut Connection) -> Result<StateView, AttachErro
     let mut view = glance_view(conn).await?;
     count_layout_windows(conn, &mut view).await?;
     read_pane_parents(conn, view.snapshot_mut()).await?;
-    Ok(view)
+    let marks = unseen::read(conn, view.snapshot()).await?;
+    Ok(view.with_unseen(marks))
 }
 
 /// First request id [`read_pane_parents`] reads with, clear of the layout
@@ -193,6 +196,15 @@ pub async fn count_layout_windows(
     Ok(())
 }
 
+/// The `phux ls --json` document for one [`listing_view`]: [`document`] with
+/// the panes' unseen marks, which no snapshot carries.
+#[must_use]
+pub fn view_document(view: &StateView) -> SessionListJson {
+    let mut list = document(view.snapshot(), view.organization(), view.degradation());
+    unseen::annotate(&mut list, view.unseen());
+    list
+}
+
 /// The stable `phux ls --json` document for one fetched view.
 ///
 /// Sessions are name-sorted, so the document is stable across runs.
@@ -234,6 +246,7 @@ pub fn document(
             key: organization
                 .and_then(|org| org.resource_by_live(&pane.id))
                 .map(|record| record.key.to_string()),
+            unseen: None,
         })
         .collect();
     SessionListJson::new(entries)

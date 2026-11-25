@@ -107,6 +107,7 @@ mod payload;
 mod role;
 mod status;
 pub mod typed_document;
+mod unseen_keys;
 mod whoami;
 
 pub(in crate::wire) use catalog::frame_catalog;
@@ -148,6 +149,7 @@ pub use status::{
     CloseReason, DetachReason, ErrorCode, ErrorScope, HistoryRejectionReason,
     HistoryTombstoneReason, TombstoneReason,
 };
+pub use unseen_keys::*;
 pub use whoami::{
     AUTH_ROUTE_BEARER_QUIC, AUTH_ROUTE_BEARER_WEBTRANSPORT, AUTH_ROUTE_BEARER_WSS,
     AUTH_ROUTE_LOOPBACK_QUIC, AUTH_ROUTE_LOOPBACK_WEBTRANSPORT, AUTH_ROUTE_LOOPBACK_WS,

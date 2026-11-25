@@ -106,8 +106,9 @@ fn reject_set_metadata(
     if reject_unknown_local_terminal_scope(state, client_id, request_id, scope, key) {
         return true;
     }
-    if let Some(reason) =
-        notify_mode::refusal(scope, key, value).or_else(|| parent::refusal(scope, key, value))
+    if let Some(reason) = notify_mode::refusal(scope, key, value)
+        .or_else(|| parent::refusal(scope, key, value))
+        .or_else(|| crate::state::unseen::refusal(scope, key, value))
     {
         warn!(?client_id, request_id, %key, reason, "SET_METADATA: ignoring");
         return true;
@@ -282,6 +283,12 @@ pub(super) fn handle_set_metadata(
             _ => {}
         }
     }
+    if key == phux_protocol::wire::frame::RESOURCE_IN_VIEW_KEY {
+        if let Scope::Resource(pane) = scope {
+            state.with_mut(|s| s.set_in_view(client_id, pane, value == b"true"));
+        }
+        return;
+    }
     if translate_layout_metadata(state, client_id, request_id, scope, key, &value) {
         return;
     }
@@ -393,6 +400,12 @@ pub(super) fn handle_delete_metadata(
     debug!(?client_id, request_id, ?scope, %key, "DELETE_METADATA");
     if let Some(reason) = protected_key_refusal(scope, key) {
         warn!(?client_id, request_id, %key, reason, "DELETE_METADATA: ignoring");
+        return;
+    }
+    if let (Scope::Resource(pane), phux_protocol::wire::frame::RESOURCE_UNSEEN_KEY) = (scope, key) {
+        if !reject_unknown_local_terminal_scope(state, client_id, request_id, scope, key) {
+            let _ = state.with_mut(|s| s.note_seen(client_id, pane));
+        }
         return;
     }
     let (delivered, hook) = state.with_mut(|s| {

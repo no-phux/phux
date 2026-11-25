@@ -438,6 +438,7 @@ mod tests {
                 foreground: None,
                 icon: None,
                 parent: None,
+                unseen: None,
             }],
             agent_sessions: vec![AgentSessionDescriptor {
                 id: ResourceId::local(8),

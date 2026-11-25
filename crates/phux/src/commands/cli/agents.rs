@@ -185,6 +185,28 @@ pub(crate) struct NotifyModeArgs {
     pub(crate) json: JsonOpt,
 }
 
+/// Mark a pane seen.
+#[derive(Debug, Args)]
+#[usage(
+    about = "Mark a pane seen on every client",
+    long_about = "Clear a pane's unseen mark.\n\n\
+            The server marks a pane when it prints, rings its bell, or its \
+            agent finishes while no client reports showing it. `phux ls \
+            --json` lists the mark as `unseen`. Clearing it clears it on \
+            every client. A session, group or tag target clears every pane \
+            it holds now.\n\n\
+            Examples:\n  \
+            phux seen @4\n  \
+            phux seen work"
+)]
+pub(crate) struct SeenArgs {
+    /// The pane, or the session, group or tag whose panes to clear.
+    pub(crate) target: String,
+
+    #[usage(flatten)]
+    pub(crate) json: JsonOpt,
+}
+
 /// Signal a pane's process group.
 #[derive(Debug, Args)]
 #[usage(

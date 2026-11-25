@@ -130,6 +130,7 @@ fn listed_with(dark: bool, parents: &[(u32, u32)]) -> rune::Runtime<Desk> {
             exec: None,
             foreground: None,
             icon: None,
+            unseen: None,
             parent: (parents.iter())
                 .find(|(child, _)| *child == id)
                 .map(|(_, parent)| ResourceId::local(*parent)),

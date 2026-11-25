@@ -68,6 +68,7 @@ Agents:
   claim         Claim paths so other agents leave them alone
   notify        Post a note for a pane, shown as a toast
   notify-mode   Mute or unmute a pane's notifications
+  seen          Mark a pane seen on every client
   approvals     List actions held for approval
   approve       Approve a held action
   deny          Deny a held action
@@ -6969,6 +6970,35 @@ Global flags:
 Inspect this binary's protocol and capabilities
 
 Usage: phux runtime-info [--json]
+
+Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux seen`
+
+```text
+Clear a pane's unseen mark.
+
+The server marks a pane when it prints, rings its bell, or its agent finishes
+while no client reports showing it. `phux ls --json` lists the mark as `unseen`.
+Clearing it clears it on every client. A session, group or tag target clears
+every pane it holds now.
+
+Examples:
+phux seen @4
+phux seen work
+
+Usage: phux seen [--json] <TARGET>
+
+Arguments:
+  <TARGET>  The pane, or the session, group or tag whose panes to clear.
 
 Flags:
       --json           Emit stable, versioned JSON on stdout instead of the

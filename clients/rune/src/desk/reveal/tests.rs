@@ -21,6 +21,7 @@ fn pane(n: u32, session: &str) -> PaneDescriptor {
         foreground: None,
         icon: None,
         parent: None,
+        unseen: None,
     }
 }
 
