@@ -155,13 +155,6 @@ async fn sleep_until_or_pending(deadline: Option<tokio::time::Instant>) {
     }
 }
 
-/// The relative-delay twin of [`sleep_until_or_pending`].
-pub(super) fn sleep_for_or_pending(interval: Option<Duration>) -> impl Future<Output = ()> {
-    // Anchor relative delays when armed, not when select first polls them.
-    let deadline = interval.map(|interval| tokio::time::Instant::now() + interval);
-    sleep_until_or_pending(deadline)
-}
-
 /// Restore the terminal explicitly (Drop wouldn't fire on `exit()`), then
 /// exit with the shell-conventional code for the signal.
 #[allow(clippy::exit, reason = "signal-driven graceful exit; Drop won't run")]
@@ -382,6 +375,8 @@ pub(super) struct SessionLoop {
     /// Bare-ESC deadline, anchored when the parser first went pending so
     /// other arms firing cannot keep restarting it.
     esc_deadline: Option<tokio::time::Instant>,
+    /// The next status-bar repaint; anchored like `esc_deadline`.
+    status_tick_at: Option<tokio::time::Instant>,
     /// Frame-rate governor: bursts inside the previous frame's window apply
     /// but withhold the paint until `paint_deadline` (see [`PaintPacer`]).
     pacer: PaintPacer,
@@ -569,6 +564,7 @@ impl SessionLoop {
             sighup: signal(SignalKind::hangup()).map_err(AttachError::Io)?,
             detach_pending: false,
             esc_deadline: None,
+            status_tick_at: None,
             pacer: PaintPacer::default(),
             paint_hold: None,
             painted_view: None,
