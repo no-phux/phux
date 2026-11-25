@@ -277,6 +277,7 @@ impl ServerState {
         {
             gate.cancel();
         }
+        self.open_urls.withdraw(client_id);
         // Drop local and satellite leases; the runtime already broadcast and
         // relayed the releases. Each local release opens a new epoch.
         self.release_all_input_leases(client_id);

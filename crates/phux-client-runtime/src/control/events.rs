@@ -226,6 +226,20 @@ pub enum Event {
         /// The selection it asked for.
         selection: phux_client_core::engine::ClipboardSelection,
     },
+    /// A pane asks to open a link on this machine, sent only to a consumer
+    /// with [`ControlOptions::open_urls`]. The host checks the link, always
+    /// asks its user, and answers with [`ControlPlane::open_url_reply`].
+    ///
+    /// [`ControlOptions::open_urls`]: super::ControlOptions::open_urls
+    /// [`ControlPlane::open_url_reply`]: super::ControlPlane::open_url_reply
+    OpenUrl {
+        /// The asking terminal.
+        terminal_id: ResourceId,
+        /// Names the request in the answer.
+        id: u64,
+        /// The link.
+        url: String,
+    },
     /// The terminal's title changed; the topology entry is updated too.
     TitleChanged {
         /// The terminal.

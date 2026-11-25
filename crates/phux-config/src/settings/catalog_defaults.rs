@@ -126,10 +126,11 @@ pub(super) const ROWS: &[SettingSpec] = &[
         section: SettingSection::Defaults,
         kind: SettingKind::Bool,
         summary: "Hand links to you when a pane's program opens a browser",
-        detail: "For a server with no screen. Panes start with BROWSER set to a small script \
-                 that prints the link in the pane and copies it to the attached person's \
-                 clipboard, so a sign-in started there can be finished on your own machine. \
-                 Nothing opens by itself. The server reads this when it starts.",
+        detail: "For a server with no screen. Panes start with BROWSER set to a small script, \
+                 also last on their PATH as xdg-open, that asks the person typing in the pane \
+                 to open the link on their own machine. Declined, or with nobody to ask, it \
+                 prints the link in the pane and copies it to their clipboard. Nothing opens \
+                 by itself. The server reads this when it starts.",
         applies: Applies::NextSpawn,
     },
     SettingSpec {

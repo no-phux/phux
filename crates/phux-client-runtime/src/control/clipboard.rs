@@ -1,10 +1,12 @@
 //! Answering a pane's OSC 52 clipboard read
-//! (`docs/program-sequences.md#clipboard-osc-52`).
+//! (`docs/program-sequences.md#clipboard-osc-52`) and its link request
+//! (`docs/ssh.md#opening-links`).
 
 use phux_client_core::engine::ClipboardSelection;
 use phux_protocol::caps::ServerFeatureExt;
 use phux_protocol::input::paste::ClipboardData;
-use phux_protocol::wire::frame::MAX_CLIPBOARD_TEXT;
+use phux_protocol::open_url::OpenUrlOp;
+use phux_protocol::wire::frame::{Command, MAX_CLIPBOARD_TEXT};
 
 use super::{ControlPlane, Event, FrameKind, ResourceId, Status};
 
@@ -34,6 +36,22 @@ impl ControlPlane {
                 selection,
             });
         }
+    }
+
+    /// Answer link request `id` from `terminal_id` ([`Event::OpenUrl`]):
+    /// opened, or not. The server ignores an answer it no longer waits for.
+    pub fn open_url_reply(&mut self, terminal_id: &ResourceId, id: u64, opened: bool) {
+        if !self.handshake_ready {
+            return;
+        }
+        let request_id = self.next_request_id();
+        self.queue_frame(&FrameKind::Command {
+            request_id,
+            command: Command::OpenUrl {
+                terminal_id: terminal_id.clone(),
+                op: OpenUrlOp::Reply { id, opened },
+            },
+        });
     }
 
     /// Answer `terminal_id`'s OSC 52 read of `selection` with `text`, the

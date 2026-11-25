@@ -297,6 +297,14 @@ pub(super) fn reply_samples() -> Vec<FrameKind> {
             },
             stamp: None,
         },
+        FrameKind::Event {
+            terminal: Some(crate::ids::ResourceId::local(7)),
+            event: AgentEvent::OpenUrl {
+                id: u64::MAX,
+                url: "https://phux.sh/".to_owned(),
+            },
+            stamp: None,
+        },
         ok_with(CommandValue::ServiceHttpHead(ServiceHttpHead {
             exchange: 9,
             status: 401,

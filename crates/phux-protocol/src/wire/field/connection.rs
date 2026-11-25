@@ -38,6 +38,9 @@ tlv_body! {
         pub const PLATFORM: u32 = 12;
         /// Client reviews credential request details (`u8` boolean); absent = false.
         pub const CREDENTIAL_APPROVALS: u32 = 13;
+        /// Client prompts for and answers `open_url` events (`u8` boolean);
+        /// absent = false.
+        pub const OPEN_URL: u32 = 14;
     }
 }
 

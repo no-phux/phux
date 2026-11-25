@@ -186,6 +186,9 @@ rule_table! {
         [Input],
         Global,
     );
+    // Any process in the Terminal asks with its socket; the answer comes from
+    // whoever types there.
+    C_OPEN_URL = verbs("`OPEN_URL`, `OPEN_URL_REPLY`", [Input], NamedTerminal);
     C_TRANSCRIBE = verbs("`TRANSCRIBE`", [Input], NamedTerminal);
     C_DETACH_CLIENTS_SESSION = verbs("`DETACH_CLIENTS { session: Some }`", [Signal], ResolvedGroup);
     C_DETACH_CLIENTS_ALL = verbs("`DETACH_CLIENTS { session: None }`", [Signal], Global);

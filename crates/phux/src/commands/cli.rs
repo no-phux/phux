@@ -98,6 +98,10 @@ pub(crate) enum Command {
     #[usage(help_heading = "Panes", display_order = 27)]
     Resize(ResizeArgs),
 
+    #[usage(name = "open-url")]
+    #[usage(help_heading = "Panes", display_order = 33)]
+    OpenUrl(OpenUrlArgs),
+
     #[usage(help_heading = "Sessions", display_order = 14)]
     Detach(DetachArgs),
 

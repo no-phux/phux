@@ -182,8 +182,10 @@ shell-integration = false
 
 # On a machine with no screen, a program that opens a browser (a sign-in,
 # `gh auth login`) goes nowhere. With this on, panes get a stand-in `BROWSER`
-# that prints the link in the pane and copies it to your clipboard. Nothing
-# opens by itself. Read when the server starts.
+# (and an `xdg-open`, last on PATH) that asks you whether to open the link on
+# your own machine; declined, or with nobody to ask, it prints the link in the
+# pane and copies it to your clipboard. Nothing opens by itself. Read when the
+# server starts.
 browser-shim = false
 
 # Keep a pane inspectable after its program exits: its exit status, last

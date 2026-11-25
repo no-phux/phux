@@ -482,6 +482,12 @@ fn samples(world: &World, agent: &WireResourceId) -> Vec<FrameKind> {
         command(Command::Forward {
             op: phux_protocol::forward::ForwardOp::Close { id: 1 },
         }),
+        command(Command::OpenUrl {
+            terminal_id: t.clone(),
+            op: phux_protocol::open_url::OpenUrlOp::Request {
+                url: "https://phux.sh/".to_owned(),
+            },
+        }),
         command(Command::Transcribe {
             upload_id: upload,
             terminal_id: t.clone(),

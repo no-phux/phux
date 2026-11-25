@@ -50,6 +50,7 @@ mod event_decode;
 mod event_encode;
 mod forward;
 mod mirror;
+mod open_url;
 mod result;
 mod service_http;
 

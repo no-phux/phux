@@ -87,6 +87,7 @@ pub(crate) mod mission_start;
 pub(crate) mod native_terminal;
 pub(crate) mod new;
 pub(crate) mod omarchy;
+pub(crate) mod open_url;
 pub(crate) mod org;
 pub(crate) mod organize;
 pub(crate) mod pair;
