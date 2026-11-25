@@ -44,8 +44,7 @@ pub(crate) fn scratch() -> Result<TempDir, Error> {
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |duration| duration.as_nanos());
     let path = std::env::temp_dir().join(format!(
         "phux-plugin-index-{}-{nanos}-{n}",
         std::process::id()

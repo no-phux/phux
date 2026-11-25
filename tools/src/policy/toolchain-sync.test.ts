@@ -7,7 +7,7 @@
 // tools-check). `just toolchain-parity` is the runtime half that resolves both
 // environments and compares binaries.
 import { expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { Glob } from "bun";
 import { repoPath, ROOT } from "../lib/repo.ts";
 import { str, table, type Table } from "../lib/value.ts";
@@ -32,10 +32,6 @@ const read = (path: string): string => readFileSync(repoPath(path), "utf8");
 
 function load(): Sources {
   const cargo = ["Cargo.toml", ...new Glob("clients/*/Cargo.toml").scanSync(ROOT)];
-  // scripts/plugin-index is its own workspace; it may move under crates/.
-  if (existsSync(repoPath("scripts/plugin-index/Cargo.toml"))) {
-    cargo.push("scripts/plugin-index/Cargo.toml");
-  }
   return {
     mise: read("mise.toml"),
     rustToolchain: read("rust-toolchain.toml"),
@@ -82,7 +78,6 @@ interface Pins {
   bun: string;
   usage: string;
   mbx: string;
-  deny: string;
 }
 
 function pins(sources: Sources): Pins {
@@ -96,7 +91,6 @@ function pins(sources: Sources): Pins {
     bun: miseTool(tools, "bun") ?? "",
     usage: miseTool(tools, "usage") ?? "",
     mbx: miseTool(tools, "mr-boxington") ?? "",
-    deny: miseTool(tools, "cargo-deny") ?? "",
   };
 }
 
@@ -200,22 +194,6 @@ function workflowFailures(sources: Sources, pin: Pins): string[] {
   return failures;
 }
 
-// Pins spelled outside a `node-version:` key or a Cargo manifest, in the
-// plugin-index workflow. Kept apart so the generator can move on its own.
-function pluginIndexFailures(sources: Sources, pin: Pins): string[] {
-  const text = sources.workflows["plugin-index.yml"] ?? "";
-  const failures: string[] = [];
-  if (!new RegExp(`^\\s*toolchain: ${pin.rust.replaceAll(".", "\\.")}$`, "m").test(text)) {
-    failures.push(`plugin-index.yml must install Rust ${pin.rust}`);
-  }
-  if (!new RegExp(`^\\s*version=${pin.deny.replaceAll(".", "\\.")}$`, "m").test(text)) {
-    failures.push(
-      `plugin-index.yml must download cargo-deny ${pin.deny} (mise.toml), with its digest`,
-    );
-  }
-  return failures;
-}
-
 function failures(sources: Sources): string[] {
   const pin = pins(sources);
   return [
@@ -223,7 +201,6 @@ function failures(sources: Sources): string[] {
     ...flakeFailures(sources, pin),
     ...cargoFailures(sources, pin),
     ...workflowFailures(sources, pin),
-    ...pluginIndexFailures(sources, pin),
   ];
 }
 
@@ -244,10 +221,6 @@ test("Cargo manifests and clippy share the MSRV, and the web clients one wasm-bi
 
 test("workflows install the mise Node major", () => {
   expect(workflowFailures(SOURCES, PIN)).toEqual([]);
-});
-
-test("plugin-index.yml installs the pinned Rust and cargo-deny", () => {
-  expect(pluginIndexFailures(SOURCES, PIN)).toEqual([]);
 });
 
 /** SOURCES with one file's text rewritten. */
@@ -273,7 +246,6 @@ test("each drift is named", () => {
       .filter((path) => /rust-version = "/.test(SOURCES.cargo[path] ?? ""))
       .map((path) => `${path} rust-version must be 1.98 (found ${PIN.msrv})`),
     "clippy.toml msrv must be 1.98",
-    "plugin-index.yml must install Rust 1.98.0",
   ]);
   expect(failures(edit("flake", (text) => text.replace("libexec/mbx:$PATH", "")))).toEqual([
     "flake.nix shellHook must put the mbx Cargo wrapper first on PATH",

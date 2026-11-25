@@ -4,6 +4,7 @@
 //! only as an Authorization header so the rate limit is higher. Offline
 //! builds never construct a client.
 
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -175,10 +176,9 @@ pub(crate) fn fetch_repo(source: &Source, full_name: &str) -> Result<Option<Repo
 /// the build cannot vouch for the index.
 fn repo_from_fetched(fetched: Fetched) -> Result<Option<RepoMeta>, Error> {
     match fetched {
-        Fetched::Text(text) => match serde_json::from_str::<RawRepo>(&text) {
-            Ok(raw) => Ok(normalize_repo(raw).ok()),
-            Err(_) => Ok(None),
-        },
+        Fetched::Text(text) => Ok(serde_json::from_str::<RawRepo>(&text)
+            .ok()
+            .and_then(|raw| normalize_repo(raw).ok())),
         Fetched::Missing => Ok(None),
         Fetched::Skip(reason) => Err(Error::new(format!(
             "could not read repository metadata: {reason}"
@@ -287,10 +287,7 @@ fn offline_file(fixtures: &Path, repo: &str, path: &str) -> Result<Fetched, Erro
         Ok(bytes) => bytes,
         Err(err) => return Ok(Fetched::Skip(format!("could not read manifest: {err}"))),
     };
-    match String::from_utf8(bytes) {
-        Ok(text) => Ok(Fetched::Text(text)),
-        Err(_) => Ok(Fetched::Skip("manifest is not UTF-8".to_owned())),
-    }
+    Ok(text_or_skip(bytes))
 }
 
 fn repo_dir(fixtures: &Path, repo: &str) -> Result<PathBuf, Error> {
@@ -360,7 +357,7 @@ fn collect_search(
         if !next.starts_with(API_ROOT) {
             return Err(Error::new("GitHub search next link left api.github.com"));
         }
-        url = next.to_owned();
+        next.clone_into(&mut url);
         if page + 1 == MAX_PAGES {
             return Err(Error::new(
                 "GitHub search exceeded 1000 repositories; refusing a partial index",
@@ -390,10 +387,10 @@ fn read_online_with(
             "GitHub rate limit needs longer than 20s; set GITHUB_TOKEN to raise it",
         ));
     }
-    if let Some(len) = content_length(&head.headers) {
-        if len > limit {
-            return Ok(Fetched::Skip("manifest exceeds 1 MiB".to_owned()));
-        }
+    if let Some(len) = content_length(&head.headers)
+        && len > limit
+    {
+        return Ok(Fetched::Skip("manifest exceeds 1 MiB".to_owned()));
     }
     // A HEAD 403 has no body. Secondary rate limits often say so only in the
     // GET body, with no retry-after on the header response.
@@ -407,7 +404,7 @@ fn read_online_with(
                 "GitHub rate limit needs longer than 20s; set GITHUB_TOKEN to raise it",
             ));
         }
-        return classify_body(got.status, &got.headers, got.body, limit);
+        return Ok(classify_body(got.status, &got.headers, got.body, limit));
     }
     if head.status == 404 {
         return Ok(Fetched::Missing);
@@ -419,55 +416,53 @@ fn read_online_with(
         Call::Done(got) => got,
         Call::Capped => return Err(Error::new("request cap reached")),
     };
-    if let Some(len) = content_length(&got.headers) {
-        if len > limit {
-            return Ok(Fetched::Skip("manifest exceeds 1 MiB".to_owned()));
-        }
+    if let Some(len) = content_length(&got.headers)
+        && len > limit
+    {
+        return Ok(Fetched::Skip("manifest exceeds 1 MiB".to_owned()));
     }
     if rate_limited(got.status, &got.headers, &got.body) {
         return Err(Error::new(
             "GitHub rate limit needs longer than 20s; set GITHUB_TOKEN to raise it",
         ));
     }
-    classify_body(got.status, &got.headers, got.body, limit)
+    Ok(classify_body(got.status, &got.headers, got.body, limit))
 }
 
-pub(crate) fn classify_body(
-    status: u16,
-    headers: &str,
-    body: Vec<u8>,
-    limit: u64,
-) -> Result<Fetched, Error> {
+pub(crate) fn classify_body(status: u16, headers: &str, body: Vec<u8>, limit: u64) -> Fetched {
     // Rate limits are decided in `read_online_with` before this, so a caller
     // that skips those checks cannot still fail closed here.
     if status == 404 {
-        return Ok(Fetched::Missing);
+        return Fetched::Missing;
     }
     if status == 403 {
-        return Ok(Fetched::Skip("HTTP 403".to_owned()));
+        return Fetched::Skip("HTTP 403".to_owned());
     }
     if status != 200 {
-        return Ok(Fetched::Skip(format!("HTTP {status}")));
+        return Fetched::Skip(format!("HTTP {status}"));
     }
     if body.len() as u64 > limit {
-        return Ok(Fetched::Skip("manifest exceeds 1 MiB".to_owned()));
+        return Fetched::Skip("manifest exceeds 1 MiB".to_owned());
     }
     if header(headers, "content-type").is_some_and(|kind| kind.contains("application/json"))
         && body.first().is_none_or(|byte| *byte == b'[')
     {
-        return Ok(Fetched::Skip("manifest path is a directory".to_owned()));
+        return Fetched::Skip("manifest path is a directory".to_owned());
     }
-    match String::from_utf8(body) {
-        Ok(text) => Ok(Fetched::Text(text)),
-        Err(_) => Ok(Fetched::Skip("manifest is not UTF-8".to_owned())),
-    }
+    text_or_skip(body)
+}
+
+fn text_or_skip(bytes: Vec<u8>) -> Fetched {
+    String::from_utf8(bytes).map_or_else(
+        |_| Fetched::Skip("manifest is not UTF-8".to_owned()),
+        Fetched::Text,
+    )
 }
 
 fn rate_limited(status: u16, headers: &str, body: &[u8]) -> bool {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0);
+        .map_or(0, |duration| duration.as_secs());
     status == 429 || (status == 403 && retry_wait(status, headers, body, now).is_some())
 }
 
@@ -493,8 +488,7 @@ fn get_retrying(
 ) -> Result<Response, Error> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0);
+        .map_or(0, |duration| duration.as_secs());
     let first = client.get(url, accept, limit)?;
     if let Some(delay) = retry_wait(first.status, &first.headers, &first.body, now) {
         if delay > MAX_WAIT {
@@ -522,12 +516,11 @@ fn retry_wait(status: u16, headers: &str, body: &[u8], now: u64) -> Option<Durat
     if let Some(after) = header(headers, "retry-after").and_then(|text| text.parse::<u64>().ok()) {
         return Some(Duration::from_secs(after));
     }
-    if header(headers, "x-ratelimit-remaining") == Some("0") {
-        if let Some(reset) =
+    if header(headers, "x-ratelimit-remaining") == Some("0")
+        && let Some(reset) =
             header(headers, "x-ratelimit-reset").and_then(|text| text.parse::<u64>().ok())
-        {
-            return Some(Duration::from_secs(reset.saturating_sub(now)));
-        }
+    {
+        return Some(Duration::from_secs(reset.saturating_sub(now)));
     }
     let text = String::from_utf8_lossy(body);
     if text.to_ascii_lowercase().contains("rate limit") {
@@ -568,7 +561,7 @@ fn percent_encode(text: &str) -> String {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
             out.push(char::from(byte));
         } else {
-            out.push_str(&format!("%{byte:02X}"));
+            let _ = write!(out, "%{byte:02X}");
         }
     }
     out

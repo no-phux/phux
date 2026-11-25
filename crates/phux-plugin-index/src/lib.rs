@@ -9,6 +9,10 @@
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
+#![expect(
+    clippy::redundant_pub_crate,
+    reason = "pub(crate) in private modules keeps unreachable_pub quiet"
+)]
 
 mod github;
 mod index;
@@ -28,8 +32,9 @@ pub use render::{render_json, render_markdown};
 /// in a compatible way: an additive field is still a new document.
 pub const SCHEMA_VERSION: u32 = 1;
 
-/// GitHub requests one index build may make before it fails. Search pages
-/// count, and so do the repository document and the HEAD and GET of each
+/// GitHub requests one index build may make before it fails.
+///
+/// Search pages count, and so do the repository document and the HEAD and GET of each
 /// manifest, about three per repository: room for some 600 repositories
 /// under the topic, well inside the 5000/hour an authenticated token gets.
 pub const MAX_HTTP_REQUESTS: u32 = 2000;

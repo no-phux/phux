@@ -132,7 +132,7 @@ impl CurlClient {
         let len = if head {
             0
         } else {
-            fs::metadata(&body_path).map(|meta| meta.len()).unwrap_or(0)
+            fs::metadata(&body_path).map_or(0, |meta| meta.len())
         };
         // The announced size was checked before this GET. A body that still
         // grew past the cap is not stored.
@@ -164,7 +164,7 @@ fn last_header_block(raw: &str) -> &str {
     last
 }
 
-pub(crate) fn curl_config(accept: &str, token: Option<&str>) -> String {
+pub(super) fn curl_config(accept: &str, token: Option<&str>) -> String {
     let mut lines = vec![
         "user-agent = \"phux-plugin-index\"".to_owned(),
         format!("header = \"Accept: {accept}\""),

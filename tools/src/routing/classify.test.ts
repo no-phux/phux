@@ -5,7 +5,6 @@ import { workspaceMembers } from "../lib/cargo.ts";
 import { git } from "../lib/git.ts";
 import { ROOT } from "../lib/repo.ts";
 import { Classifier, toOutputs, type Classification } from "./classify.ts";
-import { plan } from "./plan.ts";
 import { routes, SURFACES, type Surface } from "./routes.ts";
 
 const classifier = new Classifier();
@@ -103,12 +102,12 @@ test.each<[string[], Surface[]]>([
   [[".beads/issues.jsonl"], []],
   [[".beads/config.yaml"], []],
   [["scripts/check-docs.sh"], []],
-  [["scripts/plugin-index/src/lib.rs"], ["phux"]],
+  [["crates/phux-plugin-index/src/lib.rs"], ["phux"]],
   [[".github/workflows/plugin-index.yml"], []],
-  [["docs/spec/plugin-index.schema.json"], []],
+  [["docs/spec/plugin-index.schema.json"], ["phux"]],
   [
     [
-      "scripts/plugin-index/src/lib.rs",
+      "crates/phux-plugin-index/src/lib.rs",
       ".github/workflows/plugin-index.yml",
       "docs/spec/plugin-index.schema.json",
       "docs/plugins.md",
@@ -197,19 +196,8 @@ test("the unit plan narrows to the integration test a diff touches", () => {
   expect(plan(["crates/phux-server/src/lib.rs"])).toEqual(["rdeps", "", true]);
   expect(plan(["Cargo.toml"])).toEqual(["workspace", "", true]);
   expect(plan(["docs/development.md"])).toEqual(["skip", "", false]);
-  expect(plan(["scripts/plugin-index/src/lib.rs"])).toEqual(["skip", "", false]);
+  expect(plan(["crates/phux-plugin-index/src/lib.rs"])).toEqual(["rdeps", "", true]);
   expect(plan([])).toEqual(["workspace", "", true]);
-});
-
-test("a plugin-index-only diff lints and leaves the unit pool, e2e, and ffi off", () => {
-  const classified = classifier.classify(["scripts/plugin-index/src/lib.rs"]);
-  const paths = ["scripts/plugin-index/src/lib.rs"];
-  const decided = plan(classified, "pull_request", { scope: { kind: "diff", paths } });
-  expect(decided.lanes.has("guards")).toBe(true);
-  expect(decided.lanes.has("lint")).toBe(true);
-  expect(decided.lanes.has("tests")).toBe(false);
-  expect(decided.lanes.has("e2e")).toBe(false);
-  expect(decided.lanes.has("ffi")).toBe(false);
 });
 
 test("docs_only holds only for documentation no build reads", () => {
@@ -218,7 +206,7 @@ test("docs_only holds only for documentation no build reads", () => {
     [["docs/install.md", "docs/README.md"], true],
     [["README.md"], false],
     [["docs/development.md", "docs/spec/wire-schema.json"], false],
-    [["docs/spec/plugin-index.schema.json"], true],
+    [["docs/spec/plugin-index.schema.json"], false],
     [["docs/plugins.md"], true],
     [["docs/reference/cli.md"], false],
     [["docs/agents.md"], false],

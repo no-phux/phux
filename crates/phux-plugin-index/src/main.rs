@@ -4,6 +4,12 @@
 //! the public GitHub API is queried; `GITHUB_TOKEN` is sent only to raise
 //! the rate limit.
 
+#![allow(
+    clippy::print_stdout,
+    reason = "stdout carries the help text and the written-index summary"
+)]
+#![allow(clippy::print_stderr, reason = "stderr carries the fatal error")]
+
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -63,10 +69,10 @@ fn run() -> Result<(), Failure> {
     let generated_at = args.generated_at.unwrap_or_else(utc_now);
     let token = credential_from(args.offline.is_some(), args.token.as_deref())
         .map_err(|err| Failure::fail(err.to_string()))?;
-    let source = match args.offline {
-        Some(fixtures) => Source::Offline { fixtures },
-        None => Source::github(token),
-    };
+    let source = args.offline.map_or_else(
+        || Source::github(token),
+        |fixtures| Source::Offline { fixtures },
+    );
     let index = build_index(&Options {
         source,
         examples_dir: examples,
@@ -159,8 +165,7 @@ fn need(tokens: &mut impl Iterator<Item = String>, flag: &str) -> Result<String,
 fn utc_now() -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0);
+        .map_or(0, |duration| duration.as_secs());
     format_unix(secs)
 }
 

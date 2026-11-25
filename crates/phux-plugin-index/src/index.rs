@@ -108,7 +108,7 @@ where
                             let path = format!("{subdir}/phux-plugin.toml");
                             match take(read, repo, &path, &subdir, skipped)? {
                                 Got::Missing => {
-                                    skipped.push(skip(repo, &subdir, "no valid manifest"))
+                                    skipped.push(skip(repo, &subdir, "no valid manifest"));
                                 }
                                 Got::Failed => {}
                                 Got::Text(body) => {
@@ -120,7 +120,7 @@ where
                                             &subdir,
                                         )),
                                         Ok(Err(reason)) => {
-                                            skipped.push(skip(repo, &subdir, &reason))
+                                            skipped.push(skip(repo, &subdir, &reason));
                                         }
                                         Err(err) => return Err(err),
                                     }
@@ -166,10 +166,10 @@ where
             Err(err) => return Err(err),
         };
         let destination = temp.path().join(&relative);
-        if let Some(parent) = destination.parent() {
-            if let Err(err) = fs::create_dir_all(parent) {
-                return Ok(Err(format!("could not store manifest: {err}")));
-            }
+        if let Some(parent) = destination.parent()
+            && let Err(err) = fs::create_dir_all(parent)
+        {
+            return Ok(Err(format!("could not store manifest: {err}")));
         }
         if let Err(err) = fs::write(&destination, body) {
             return Ok(Err(format!("could not store manifest: {err}")));
@@ -223,16 +223,16 @@ fn add_examples(
     {
         CatalogMeta::from(repo)
     } else {
-        match github::fetch_repo(&options.source, &options.examples_repo)? {
-            Some(repo) => CatalogMeta::from(&repo),
-            None => CatalogMeta {
+        github::fetch_repo(&options.source, &options.examples_repo)?.map_or(
+            CatalogMeta {
                 stars: None,
                 pushed_at: None,
                 license: None,
             },
-        }
+            |repo| CatalogMeta::from(&repo),
+        )
     };
-    for examples_dir in example_dirs(options)? {
+    for examples_dir in example_dirs(options) {
         index_example_dir(options, &examples_dir, &meta, plugins, skipped)?;
     }
     Ok(())
@@ -241,7 +241,7 @@ fn add_examples(
 /// `--examples` plus `plugins/` when that tree is a different directory.
 /// Main keeps the theme sample under `examples/plugins` and the first-party
 /// plugins under `plugins/`.
-fn example_dirs(options: &Options) -> Result<Vec<PathBuf>, Error> {
+fn example_dirs(options: &Options) -> Vec<PathBuf> {
     let mut dirs = vec![options.examples_dir.clone()];
     let shipped = options.repo_root.join("plugins");
     if shipped.is_dir() {
@@ -255,7 +255,7 @@ fn example_dirs(options: &Options) -> Result<Vec<PathBuf>, Error> {
             dirs.push(shipped);
         }
     }
-    Ok(dirs)
+    dirs
 }
 
 fn index_example_dir(
@@ -269,7 +269,7 @@ fn index_example_dir(
         .map_err(|err| Error::new(format!("reading {}: {err}", examples_dir.display())))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|err| Error::new(err.to_string()))?;
-    children.sort_by_key(|entry| entry.file_name());
+    children.sort_by_key(std::fs::DirEntry::file_name);
     for entry in children {
         let path = entry.path();
         if !path.is_dir() {
@@ -296,7 +296,7 @@ fn index_example_dir(
         }
         let logical = logical_root(&options.examples_repo, &subdir);
         match validate::judge(&manifest, &logical) {
-            Ok(facts) => plugins.push(plugin_from(facts, &meta, &options.examples_repo, &subdir)),
+            Ok(facts) => plugins.push(plugin_from(facts, meta, &options.examples_repo, &subdir)),
             Err(reason) => skipped.push(Skipped {
                 repo: options.examples_repo.clone(),
                 subdir,
@@ -415,7 +415,12 @@ mod tests {
         let offline = crate::Source::Offline { fixtures };
         let read = |repo: &RepoMeta, path: &str| {
             if repo.full_name == "acme/denied" {
-                return github::classify_body(403, "", b"forbidden".to_vec(), 1024 * 1024);
+                return Ok(github::classify_body(
+                    403,
+                    "",
+                    b"forbidden".to_vec(),
+                    1024 * 1024,
+                ));
             }
             github::read_text(&offline, repo, path)
         };
