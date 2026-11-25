@@ -269,7 +269,8 @@ fn picker(desk: &Desk, all: &[(ResourceId, Rect)], focus: &ResourceId, p: &Look)
         .fill(p.roles.layer.overlay.paint())
         .scroll(rune::ScrollSpec {
             stick_bottom: false,
-        });
+        })
+        .scroll_margin(s.s2);
     let mut list = p.elevate(list, Tier::Floating);
     let mut directions = row().w_full();
     for (label, dir) in [
@@ -295,8 +296,11 @@ fn picker(desk: &Desk, all: &[(ResourceId, Rect)], focus: &ResourceId, p: &Look)
         let target = id.clone();
         let name = pane_name(desk, id);
         let current = id == focus;
-        let label = format!("{name} · {id}{}", if current { " · current" } else { "" });
-        let pick = picker_button(&format!("phone-pick-{id}"), &label, &label, p, move |d| {
+        let status = if current { " · current" } else { "" };
+        let label = format!("{name} · {id}{status}");
+        // Keep identity visible even when a long name needs an ellipsis.
+        let words = format!("{id} · {name}{status}");
+        let pick = picker_button(&format!("phone-pick-{id}"), &label, &words, p, move |d| {
             d.phone_pick(&target)
         })
         .w_full();
@@ -329,6 +333,8 @@ fn picker(desk: &Desk, all: &[(ResourceId, Rect)], focus: &ResourceId, p: &Look)
         )
         .w_full(),
     );
+    // A real scroll tail lets the last focus ring clear the viewport too.
+    list = list.child(el().w_full().h(s.s2));
     el().key("phone-picker-modal")
         .cover()
         .fill(p.roles.layer.scrim.paint())
@@ -354,8 +360,10 @@ fn pane_name(desk: &Desk, id: &ResourceId) -> String {
         .unwrap_or_else(|| id.to_string())
 }
 
-/// Focusability belongs only inside this modal, never the terminal chrome:
-/// outside it Tab must continue to mean the terminal's Tab key.
+/// Picker rows grow with their text, unlike the fixed-height toolbar.
+/// At accessibility sizes a single line keeps each whole target revealable
+/// even in the keyboard-reduced small phone. The full accessible name remains.
+/// Focusability belongs only inside this modal: outside it Tab is terminal input.
 fn picker_button(
     key: &str,
     label: &str,
@@ -364,15 +372,42 @@ fn picker_button(
     action: impl Fn(&mut Desk) + Clone + 'static,
 ) -> El {
     let pressed = action.clone();
-    control(key, label, words, p)
-        .focusable(true)
-        .on_press(move |d: &mut Desk| pressed(d))
-        .on_key(move |d: &mut Desk, event, _| {
-            if event.key == Key::Enter || event.key == Key::Text(" ".into()) {
-                action(d);
-                true
-            } else {
-                false
-            }
-        })
+    let lines = if p.type_scale >= PHONE.stacked_title_scale {
+        1
+    } else {
+        2
+    };
+    touchable(
+        el().key(key.to_owned())
+            .min_h(p.space.touch_min)
+            .min_w(p.space.touch_min)
+            .px(p.space.s3)
+            .py(p.space.s2)
+            .radius(p.radius.sm)
+            .center(),
+        p,
+    )
+    .label(label.to_owned())
+    .child(
+        text(words.to_owned())
+            .key(format!("{key}-text"))
+            .w_full()
+            .min_w(0.0)
+            .font(p.ty.label.medium())
+            .color(p.roles.text.text.paint())
+            .align(rune::Align::Center)
+            .wrap_anywhere()
+            .max_lines(lines)
+            .a11y_hidden(),
+    )
+    .focusable(true)
+    .on_press(move |d: &mut Desk| pressed(d))
+    .on_key(move |d: &mut Desk, event, _| {
+        if event.key == Key::Enter || event.key == Key::Text(" ".into()) {
+            action(d);
+            true
+        } else {
+            false
+        }
+    })
 }
