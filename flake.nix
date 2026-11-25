@@ -272,7 +272,6 @@
             # download the prebuilt archive, requires the exact Zig 0.17.1.
             zigPinned
             pkgs.pkg-config
-            # Developer ergonomics.
             toolPins.just
             pkgs.cargo-nextest
             toolPins.cargo-deny
@@ -326,7 +325,6 @@
             # test fixtures, examples and benchmarks. Python is a TOOLING
             # dependency only: no `cargo build` or CI decision needs it.
             toolPins.python
-            # Debugging.
             pkgs.lldb
           ]
           # Fast linker for Linux builds (CI + Linux contributors). `mold`
@@ -416,6 +414,11 @@
           nativeBuildInputs =
             old.nativeBuildInputs ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.chromium ];
         });
+
+        packages = rec {
+          phux = pkgs.callPackage ./nix/package.nix { inherit toolchain zigPinned; };
+          default = phux;
+        };
 
         formatter = pkgs.nixfmt-rfc-style;
       }

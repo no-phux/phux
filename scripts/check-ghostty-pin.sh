@@ -75,6 +75,9 @@ browser_build="$ROOT/scripts/build-vt-wasm.sh"
 browser_commit="$(sed -n 's/^revision=//p' "$browser_build")"
 [[ "$browser_commit" == "$commit" ]] ||
   fail "native engine $commit differs from browser engine $browser_commit"
+nix_commit="$(sed -n 's/^ *ghosttyRev = "\([0-9a-f]*\)";$/\1/p' "$ROOT/nix/package.nix")"
+[[ "$nix_commit" == "$commit" ]] ||
+  fail "native engine $commit differs from the Nix package's ${nix_commit:-missing} (nix/package.nix)"
 browser_sha="$(sed -n 's/^archive_sha256=//p' "$browser_build")"
 [[ "$browser_sha" =~ ^[0-9a-f]{64}$ ]] || fail "browser engine source checksum is missing or malformed"
 grep -Fq "https://codeload.github.com/$engine_fork/tar.gz/\$revision" "$browser_build" ||
