@@ -241,39 +241,63 @@ pub(super) fn auth_display(endpoint: &str, has_token: bool, has_pin: bool) -> &'
 }
 
 /// The human table: NAME / ROLE / ENDPOINT / STATE / AUTH / KEY, one header
-/// line, one row per entry. KEY is where the client key is (`file`,
-/// `hardware`), or `-` with none.
+/// line, one row per entry, each column as wide as its widest cell. KEY is
+/// where the client key is (`file`, `hardware`), or `-` with none.
 pub(super) fn render_table(rows: &[HostRow]) -> String {
     use std::fmt::Write as _;
 
+    let header = ["NAME", "ROLE", "ENDPOINT", "STATE", "AUTH", "KEY"].map(str::to_owned);
+    let cells: Vec<[String; 6]> = std::iter::once(header)
+        .chain(rows.iter().map(table_cells))
+        .collect();
+    let mut widths = [0_usize; 6];
+    for row in &cells {
+        for (width, cell) in widths.iter_mut().zip(row) {
+            *width = (*width).max(cell.chars().count());
+        }
+    }
     let mut out = String::new();
-    let _ = writeln!(
-        out,
-        "{:<16} {:<10} {:<40} {:<9} {:<9} KEY",
-        "NAME", "ROLE", "ENDPOINT", "STATE", "AUTH"
-    );
-    for row in rows {
-        let state = match row.enabled {
-            None => "-",
-            Some(true) => "enabled",
-            Some(false) if row.role == HostRole::Remote => "paused",
-            Some(false) => "disabled",
-        };
-        let auth = auth_display(
-            &row.endpoint,
-            row.token_file.is_some(),
-            row.cert_fingerprint.is_some(),
-        );
-        let _ = writeln!(
-            out,
-            "{:<16} {:<10} {:<40} {state:<9} {auth:<9} {}",
-            row.name,
-            row.role.as_str(),
-            row.endpoint,
-            row.key_kind().unwrap_or("-")
-        );
+    for row in &cells {
+        let mut line = String::new();
+        for (cell, width) in row.iter().zip(widths) {
+            let _ = write!(line, "{cell:<width$}  ");
+        }
+        let _ = writeln!(out, "{}", line.trim_end());
     }
     out
+}
+
+/// One entry's table cells, in header order.
+fn table_cells(row: &HostRow) -> [String; 6] {
+    let state = match row.enabled {
+        None => "-",
+        Some(true) => "enabled",
+        Some(false) if row.role == HostRole::Remote => "paused",
+        Some(false) => "disabled",
+    };
+    let auth = auth_display(
+        &row.endpoint,
+        row.token_file.is_some(),
+        row.cert_fingerprint.is_some(),
+    );
+    [
+        row.name.clone(),
+        row.role.as_str().to_owned(),
+        endpoint_cell(row),
+        state.to_owned(),
+        auth.to_owned(),
+        row.key_kind().unwrap_or("-").to_owned(),
+    ]
+}
+
+/// The endpoint, naming the relay route a QUIC entry dials through.
+fn endpoint_cell(row: &HostRow) -> String {
+    match &row.tls_server_name {
+        Some(route) if row.endpoint.starts_with("quic://") => {
+            format!("{} (relay route {route})", row.endpoint)
+        }
+        _ => row.endpoint.clone(),
+    }
 }
 
 pub(super) fn row_json(row: &HostRow) -> serde_json::Value {

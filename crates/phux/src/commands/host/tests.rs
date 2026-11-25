@@ -254,6 +254,38 @@ fn table_renders_role_state_and_auth_columns() {
     assert!(edge.contains("satellite") && edge.contains("disabled") && edge.contains("ssh"));
 }
 
+/// Columns are as wide as their widest cell, so a long name or endpoint
+/// never shifts the columns after it, and a relay entry names its route.
+#[test]
+fn table_columns_fit_their_widest_cell_and_name_relay_routes() {
+    let rows = vec![
+        HostRow {
+            endpoint: "quic://relay.example.com:4433".to_owned(),
+            tls_server_name: Some("lab".to_owned()),
+            ..row("a-rather-long-machine-name", HostRole::Remote)
+        },
+        HostRow {
+            endpoint: "quic://mini:8788".to_owned(),
+            ..row("mini", HostRole::Remote)
+        },
+    ];
+    let table = render_table(&rows);
+    let lines: Vec<&str> = table.lines().collect();
+    let role_at = |line: &str| line.find("remote").or_else(|| line.find("ROLE"));
+    assert_eq!(role_at(lines[0]), role_at(lines[1]), "{table}");
+    assert_eq!(role_at(lines[1]), role_at(lines[2]), "{table}");
+    assert!(
+        lines[1].contains("quic://relay.example.com:4433 (relay route lab)"),
+        "{table}"
+    );
+    let state_at = |line: &str| line.find(" - ").or_else(|| line.find("STATE"));
+    assert_eq!(
+        state_at(lines[1]).map(|i| i + 1),
+        state_at(lines[0]),
+        "{table}"
+    );
+}
+
 /// `host ls` says where each client key is: a PEM file, this machine's
 /// hardware, or nowhere; the JSON row carries the same word.
 #[test]
