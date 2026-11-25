@@ -12,7 +12,7 @@ pub(crate) enum AgentAction {
     /// Internal durable SDK guardian, bootstrapped by the native spawn transaction.
     #[usage(hide)]
     Host,
-    /// Send a typed SDK intent to the exact `AgentSession` and activation.
+    /// Send a typed SDK intent to the exact `AgentSession` and activation
     ///
     /// This never pastes, sends keys, takes another viewer's lease, or
     /// assumes that a queued dialog response was consumed.
@@ -22,18 +22,18 @@ pub(crate) enum AgentAction {
         #[usage(flatten)]
         flags: NativeCommandFlags,
     },
-    /// Read current questions from the server, without reading a title or transcript.
+    /// Read current questions from the server, without reading a title or transcript
     Questions {
         /// Exact local @N or AUTHORITY/^RESOURCE, not a focus selector.
         target: String,
     },
-    /// Respond to an exact structured question as a human; never types into a pane.
+    /// Respond to an exact structured question as a human; never types into a pane
     RespondQuestion {
         /// JSON with the returned question reference, decimal-string `operation_id` and response.
         #[usage(long)]
         request_json: String,
     },
-    /// Read a previously submitted response receipt without resending.
+    /// Read a previously submitted response receipt without resending
     QuestionReceipt {
         /// Original exact question reference as JSON.
         #[usage(long)]
@@ -42,7 +42,7 @@ pub(crate) enum AgentAction {
         #[usage(long)]
         operation_id: String,
     },
-    /// List every pane's detected or declared agent and current state.
+    /// List every pane's detected or declared agent and current state
     ///
     /// The third column is the pane's `%name` (`opencode`, `opencode-2`),
     /// `-` with no agent record, or the `phux agent set` that names the pane
@@ -53,7 +53,7 @@ pub(crate) enum AgentAction {
         #[usage(flatten)]
         flags: ListFlags,
     },
-    /// Show inferred state for one pane.
+    /// Show inferred state for one pane
     Show {
         /// Target selector (resolves to one pane). Omit for the focused
         /// pane.
@@ -62,7 +62,7 @@ pub(crate) enum AgentAction {
         #[usage(long)]
         json: bool,
     },
-    /// Explain the evidence behind one pane's state.
+    /// Explain the evidence behind one pane's state
     ///
     /// With `--file` this runs OFFLINE: it evaluates the compiled detection
     /// manifests against a captured screen and contacts no server at all.
@@ -79,7 +79,7 @@ pub(crate) enum AgentAction {
         #[usage(flatten)]
         flags: ExplainFlags,
     },
-    /// Declare the agent identity and state associated with a pane.
+    /// Declare the agent identity and state associated with a pane
     ///
     /// Writes the whole agent record (last writer wins), keeping the pane's
     /// kind when `--kind` is omitted, then reads it back. Exits 1 (`agent_record_unconfirmed`) when the read-back shows
@@ -92,7 +92,7 @@ pub(crate) enum AgentAction {
         #[usage(flatten)]
         flags: SetFlags,
     },
-    /// Report hook-sourced lifecycle evidence to the pane's detector.
+    /// Report hook-sourced lifecycle evidence to the pane's detector
     ReportState {
         /// Target selector (resolves to one pane).
         target: String,
@@ -100,7 +100,7 @@ pub(crate) enum AgentAction {
         #[usage(choices("working", "blocked", "done"))]
         state: String,
     },
-    /// Block until a pane's agent TRANSITIONS into a lifecycle state.
+    /// Block until a pane's agent TRANSITIONS into a lifecycle state
     ///
     /// Satisfied only by an observed transition, never by a level read of
     /// the current state. That distinction is the point of the verb: `idle`
@@ -126,7 +126,7 @@ pub(crate) enum AgentAction {
         #[usage(flatten)]
         flags: super::action_flags::WaitFlags,
     },
-    /// Hand an agent a turn's worth of work, with a delivery receipt.
+    /// Hand an agent a turn's worth of work, with a delivery receipt
     ///
     /// The prompt text and Enter ride ONE acknowledged, idempotent operation,
     /// so a caller that does not get an answer can ask again under the same
@@ -162,7 +162,7 @@ pub(crate) enum AgentAction {
         #[usage(flatten)]
         flags: PromptFlags,
     },
-    /// Send keys to a pane, but only if it still hosts the expected agent.
+    /// Send keys to a pane, but only if it still hosts the expected agent
     ///
     /// The agent-addressed sibling of top-level `phux send-keys`, and it
     /// differs from it in exactly one way: it re-checks the pane's declared
@@ -188,7 +188,7 @@ pub(crate) enum AgentAction {
         #[usage(flatten)]
         flags: SendKeysFlags,
     },
-    /// Answer a pane's pending agent question by validated choice.
+    /// Answer a pane's pending agent question by validated choice
     ///
     /// The `asked` event carries the question AND the suggestions the asking
     /// agent itself published, so an orchestrator can reply with a string the
@@ -211,7 +211,7 @@ pub(crate) enum AgentAction {
         flags: AnswerFlags,
     },
     /// Start an agent INSIDE an existing shell pane, and return when it is
-    /// ready for input.
+    /// ready for input
     ///
     /// The layout-free sibling of `phux launch`: it creates, splits, and
     /// moves nothing. `launch` returns a Terminal id ("a pane now exists");
@@ -245,7 +245,7 @@ pub(crate) enum AgentAction {
         #[usage(trailing_var_arg, value_name = "ARGS")]
         args: Vec<String>,
     },
-    /// Clear a pane's declared agent identity.
+    /// Clear a pane's declared agent identity
     ///
     /// Deletes the agent record, then reads it back. Exits 1
     /// (`agent_record_unconfirmed`) when a record is still there or the
@@ -259,7 +259,7 @@ pub(crate) enum AgentAction {
         #[usage(long)]
         json: bool,
     },
-    /// Open or close a pane's agent session (an `AgentSession` resource).
+    /// Open or close a pane's agent session (an `AgentSession` resource)
     ///
     /// An agent session is the server-side, producer-fed event log an agent
     /// harness appends to with `phux agent emit` and anyone reads with
@@ -270,6 +270,8 @@ pub(crate) enum AgentAction {
         #[usage(subcommand)]
         action: resource_session::SessionAction,
     },
+    /// Read, follow, and mirror a pane's accessibility tree
+    ///
     /// An accessibility tree is a pane's child resource that a producer
     /// feeds with whole documents of an application's accessibility tree;
     /// `snapshot` reads the newest and `follow --until TEXT` waits on it.
@@ -278,6 +280,8 @@ pub(crate) enum AgentAction {
         #[usage(subcommand)]
         action: super::tree::TreeAction,
     },
+    /// Read, follow, and mirror a pane's pixel surface
+    ///
     /// A pixel surface is a pane's child resource that a producer feeds
     /// with PNG or JPEG images of a window or display; `snapshot` writes the newest
     /// and `follow` every one. Needs a server that advertises
@@ -286,6 +290,8 @@ pub(crate) enum AgentAction {
         #[usage(subcommand)]
         action: super::tree::SurfaceAction,
     },
+    /// Read, follow, and produce a pane's typed document
+    ///
     /// A typed document is a pane's child resource that a producer feeds
     /// with whole documents of the content type it was opened with
     /// (Markdown, SVG, CSV, JSON, PNG...). Needs `TYPED_DOCUMENT`.
@@ -293,6 +299,8 @@ pub(crate) enum AgentAction {
         #[usage(subcommand)]
         action: super::tree::DocAction,
     },
+    /// Mirror and drive a browser page over the Chrome debugging protocol
+    ///
     /// A browser page over the Chrome debugging protocol (CDP), as a tree (its
     /// accessibility tree) and a surface (its screencast) under one pane.
     /// Needs a browser started with `--remote-debugging-port`.
@@ -300,13 +308,15 @@ pub(crate) enum AgentAction {
         #[usage(subcommand)]
         action: super::tree::PageAction,
     },
+    /// Launch an application and mirror it as resources
+    ///
     /// An application as resources: launched, mirrored from its own pane,
     /// and quit with it. `phux spawn --app` is the short form.
     App {
         #[usage(subcommand)]
         action: super::tree::AppAction,
     },
-    /// Append one record to a pane's agent session.
+    /// Append one record to a pane's agent session
     ///
     /// The record is one `AgentEventsJsonlV1` line: `--type` from the closed
     /// set (`session_start`, `prompt`, `tool_start`, `tool_end`,
@@ -324,7 +334,7 @@ pub(crate) enum AgentAction {
         #[usage(flatten)]
         flags: EmitFlags,
     },
-    /// Read a pane's agent session stream.
+    /// Read a pane's agent session stream
     ///
     /// Attaches to the session as an observer, the way `phux rec` attaches
     /// to a pane: the retained records arrive first and, with `--follow`,
@@ -339,15 +349,15 @@ pub(crate) enum AgentAction {
         #[usage(flatten)]
         flags: LogFlags,
     },
-    /// Make plain `claude` launch inside phux and declare its identity.
+    /// Make plain `claude` launch inside phux and declare its identity
     InstallClaude {
         #[usage(flatten)]
         flags: super::action_flags::InstallClaudeFlags,
     },
-    /// Remove the claude-in-phux shim and shell activation.
+    /// Remove the claude-in-phux shim and shell activation
     UninstallClaude,
     /// Make plain agent commands (`claude`, `codex`, `opencode`, `pi`)
-    /// launch inside phux.
+    /// launch inside phux
     ///
     /// Claude gets the same hook-fed shim as `install-claude`. Codex,
     /// `OpenCode` and pi get a launch-only shim that declares the pane's
@@ -359,12 +369,12 @@ pub(crate) enum AgentAction {
         #[usage(flatten)]
         flags: super::action_flags::InstallShimFlags,
     },
-    /// Remove agent shims; the shell rc block goes with the last one.
+    /// Remove agent shims; the shell rc block goes with the last one
     UninstallShim {
         #[usage(flatten)]
         flags: super::action_flags::UninstallShimFlags,
     },
-    /// Show the AI plan limits this host can see.
+    /// Show the AI plan limits this host can see
     ///
     /// Reads each signed-in subscription's limit windows from the vendor's
     /// own credentials: Claude Code (its OAuth usage endpoint), Codex (the
@@ -386,7 +396,7 @@ pub(crate) enum AgentAction {
         #[usage(flatten)]
         flags: UsageFlags,
     },
-    /// Show each pane's agent work: tasks finished and time spent working.
+    /// Show each pane's agent work: tasks finished and time spent working
     ///
     /// Prints the `phux.agent-stats/v1` document. `--publish` records the
     /// hook event in the environment, then writes that Global key; the

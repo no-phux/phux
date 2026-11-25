@@ -97,6 +97,11 @@ pub(super) fn no_server_lines(
     }
     let refusal = json_err::transport_refusal(err, socket_path, verb, pid);
     let mut lines = vec![refusal.message];
+    // A refusal whose message carries its own fix (an over-long socket
+    // path) has no remedy, and the log and health check would not help.
+    if refusal.remedy.is_empty() {
+        return lines;
+    }
     if refusal.code == json_err::codes::NO_SERVER {
         lines.push(START_SERVER_REMEDY.to_owned());
     }

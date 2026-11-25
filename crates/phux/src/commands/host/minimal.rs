@@ -51,7 +51,7 @@ const TICKET_MINUTES: i64 = 5;
 /// `phux host minimal <action>`.
 #[derive(Debug, Subcommands)]
 pub(crate) enum MinimalAction {
-    /// Make every Minimal box join this hub.
+    /// Make every Minimal box join this hub
     ///
     /// Writes the `phux` Minimal loadout, which copies a Linux phux into
     /// each box and starts its server, adds it to Minimal's
@@ -76,7 +76,7 @@ pub(crate) enum MinimalAction {
         no_service: bool,
     },
 
-    /// Join each running box that has not joined, and forget destroyed ones.
+    /// Join each running box that has not joined, and forget destroyed ones
     ///
     /// A box joins as satellite `min-NAME`, NAME being its Minimal session
     /// name, and gets session `min-NAME` here: one pane running `min session
@@ -87,7 +87,7 @@ pub(crate) enum MinimalAction {
         opts: MinimalOpts,
     },
 
-    /// Run `sync` every few seconds until stopped; what the service runs.
+    /// Run `sync` every few seconds until stopped; what the service runs
     Watch {
         #[usage(flatten)]
         opts: MinimalOpts,
@@ -104,7 +104,7 @@ pub(crate) enum MinimalAction {
         interval: u64,
     },
 
-    /// Undo `setup`: stop the watcher, remove the loadout, forget every box.
+    /// Undo `setup`: stop the watcher, remove the loadout, forget every box
     ///
     /// Running boxes keep their phux; they stop reaching this hub because
     /// their credentials are revoked.

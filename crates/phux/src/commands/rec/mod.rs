@@ -44,7 +44,7 @@ const DEFAULT_COMPOSITE_HEIGHT_PX: u32 = 1080;
 /// Subcommands of `phux rec`. Absent, the verb captures or re-renders.
 #[derive(Debug, Subcommands)]
 pub(crate) enum RecAction {
-    /// Post an asciicast marker to every recording in progress.
+    /// Post an asciicast marker to every recording in progress
     Mark {
         /// Label stored on the marker. At most 256 characters; empty is allowed.
         label: String,

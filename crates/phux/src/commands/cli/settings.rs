@@ -42,7 +42,7 @@ pub(crate) struct ThemeArgs {
 /// `phux theme <action>` — the theme catalog.
 #[derive(Debug, Subcommands)]
 pub(crate) enum ThemeAction {
-    /// List installed and plugin-provided themes; `*` marks the selected one.
+    /// List installed and plugin-provided themes; `*` marks the selected one
     #[usage(alias = "ls")]
     List {
         /// Emit a stable JSON document instead of human text.
@@ -51,7 +51,7 @@ pub(crate) enum ThemeAction {
     },
 
     /// Show a theme's resolved colours, or the selected theme's when NAME
-    /// is omitted.
+    /// is omitted
     ///
     /// Prints the mode, every semantic colour after Omarchy's fallback
     /// cascade, the shared palette-0..15 mapping, and the foreground-on-
@@ -66,7 +66,7 @@ pub(crate) enum ThemeAction {
         json: bool,
     },
 
-    /// Select a theme: write `[theme] name` (or `file`) and signal a reload.
+    /// Select a theme: write `[theme] name` (or `file`) and signal a reload
     ///
     /// With NAME, the catalog entry must exist and load. With `--file`, any
     /// `colors.toml` path is accepted (`~/` expands), so pointing it at
@@ -82,7 +82,7 @@ pub(crate) enum ThemeAction {
         file: Option<std::path::PathBuf>,
     },
 
-    /// Install a theme from a git URL or a local directory.
+    /// Install a theme from a git URL or a local directory
     ///
     /// SOURCE is cloned with the system `git` (or copied) into the managed
     /// theme directory (`$XDG_DATA_HOME/phux/themes`, else
@@ -102,7 +102,7 @@ pub(crate) enum ThemeAction {
         json: bool,
     },
 
-    /// Remove an installed theme by name.
+    /// Remove an installed theme by name
     ///
     /// A plugin-provided theme is refused here: disable the plugin instead.
     #[usage(visible_aliases = ["rm"])]
@@ -130,7 +130,9 @@ pub(crate) struct OmarchyArgs {
 /// `phux omarchy <action>` — the Omarchy desktop integration.
 #[derive(Debug, Subcommands)]
 pub(crate) enum OmarchyAction {
-    /// Put phux in place on this Omarchy desktop. Safe to run again.
+    /// Put phux in place on this Omarchy desktop
+    ///
+    /// Safe to run again.
     ///
     /// Installs a distro layer with Omarchy's tmux keys and selects it (a
     /// distro you had selected stays underneath), follows Omarchy's
@@ -145,22 +147,23 @@ pub(crate) enum OmarchyAction {
         dry_run: bool,
     },
 
-    /// Show which parts of the Omarchy integration are in place.
+    /// Show which parts of the Omarchy integration are in place
     Status {
         /// Emit a stable JSON document instead of human text.
         #[usage(long)]
         json: bool,
     },
 
-    /// Undo `setup`: restore the previous distro and theme selection and
-    /// delete the hook, the layer, and the marked Hyprland blocks.
+    /// Undo `setup`: restore the previous distro and theme selection
+    ///
+    /// Also deletes the hook, the layer, and the marked Hyprland blocks.
     Remove {
         /// Print what would change without writing anything.
         #[usage(long)]
         dry_run: bool,
     },
 
-    /// Print every key binding as `KEYS → what it does`, one per line.
+    /// Print every key binding as `KEYS → what it does`, one per line
     ///
     /// The input Omarchy's `omarchy-menu-select` takes, so Super+Ctrl+K
     /// can show phux's keys in Omarchy's own menu.
@@ -170,7 +173,7 @@ pub(crate) enum OmarchyAction {
 /// `phux plugin <action>` — local plugin registry lifecycle.
 #[derive(Debug, Subcommands)]
 pub(crate) enum PluginAction {
-    /// List configured plugin manifests.
+    /// List configured plugin manifests
     #[usage(alias = "ls")]
     List {
         /// Emit a stable JSON document instead of human text.
@@ -178,7 +181,7 @@ pub(crate) enum PluginAction {
         json: bool,
     },
 
-    /// Add or update a manifest entry in `config.toml`.
+    /// Add or update a manifest entry in `config.toml`
     Link {
         /// Path to a `phux-plugin.toml` file, or a directory containing one.
         manifest: std::path::PathBuf,
@@ -192,7 +195,7 @@ pub(crate) enum PluginAction {
         json: bool,
     },
 
-    /// Write a minimal plugin directory.
+    /// Write a minimal plugin directory
     ///
     /// NAME is the plugin id (`hello`, `com.example.tools`). It is also
     /// the manifest `name` and, unless `--dir` is set, the directory
@@ -217,7 +220,7 @@ pub(crate) enum PluginAction {
         json: bool,
     },
 
-    /// Fetch, build, validate, and link a plugin package.
+    /// Fetch, build, validate, and link a plugin package
     ///
     /// REF is chosen in this order. An existing local directory is copied.
     /// An existing local file whose name ends in `.tar`, `.tar.gz`, or
@@ -283,7 +286,7 @@ pub(crate) enum PluginAction {
         json: bool,
     },
 
-    /// Re-fetch, rebuild, and revalidate installed plugins.
+    /// Re-fetch, rebuild, and revalidate installed plugins
     ///
     /// Reads the managed directory's `plugins.lock`, re-fetches each
     /// recorded source (all of them, or just NAME), reruns its `[[build]]`
@@ -311,7 +314,7 @@ pub(crate) enum PluginAction {
         json: bool,
     },
 
-    /// Remove a configured plugin by id.
+    /// Remove a configured plugin by id
     // `rm` / `remove` are the alias-policy spellings (ADR-0065 §5): every
     // remove-shaped registry verb answers to both, and this registry's
     // canonical name predates the policy. A code comment, not a doc comment —
@@ -326,7 +329,7 @@ pub(crate) enum PluginAction {
         json: bool,
     },
 
-    /// Enable a configured plugin by id.
+    /// Enable a configured plugin by id
     Enable {
         /// Plugin id from its manifest.
         id: String,
@@ -336,7 +339,7 @@ pub(crate) enum PluginAction {
         json: bool,
     },
 
-    /// Disable a configured plugin by id.
+    /// Disable a configured plugin by id
     Disable {
         /// Plugin id from its manifest.
         id: String,
@@ -346,7 +349,7 @@ pub(crate) enum PluginAction {
         json: bool,
     },
 
-    /// Validate one manifest, or every configured manifest when omitted.
+    /// Validate one manifest, or every configured manifest when omitted
     Validate {
         /// Optional path to a `phux-plugin.toml` file or plugin directory.
         manifest: Option<std::path::PathBuf>,
@@ -356,7 +359,7 @@ pub(crate) enum PluginAction {
         json: bool,
     },
 
-    /// Show recent plugin action and hook runs, oldest first.
+    /// Show recent plugin action and hook runs, oldest first
     ///
     /// Every plugin action run (a TUI keybinding, `phux config run`, the MCP
     /// tool) and every server hook run appends one record to a bounded log

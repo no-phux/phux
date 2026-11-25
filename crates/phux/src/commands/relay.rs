@@ -22,7 +22,7 @@ use super::json_err::{self, CliError, codes};
 /// `phux relay <action>` — serve the relay, enroll a route, or dial one.
 #[derive(Debug, Subcommands)]
 pub(crate) enum RelayAction {
-    /// Run the relay in the foreground.
+    /// Run the relay in the foreground
     ///
     /// Binds one QUIC endpoint on LISTEN and serves both relay legs on
     /// it: phux servers dial out from behind NAT and register a tunnel
@@ -51,7 +51,7 @@ pub(crate) enum RelayAction {
         max_conns: usize,
     },
 
-    /// Enroll a route and mint (or rotate) its tunnel token.
+    /// Enroll a route and mint (or rotate) its tunnel token
     ///
     /// Writes one entry binding a fresh secret token to NAME in the
     /// relay's route-token store and prints the token once, with the
@@ -74,7 +74,7 @@ pub(crate) enum RelayAction {
         json: JsonOpt,
     },
 
-    /// Have this machine's server dial a relay with a route's token.
+    /// Have this machine's server dial a relay with a route's token
     ///
     /// Reads the tunnel token `phux relay pair` printed from stdin
     /// (paste it at the prompt, or pipe it), stores it owner-only under
@@ -130,9 +130,10 @@ fn guarded(json: bool, body: impl FnOnce() -> ExitCode) -> ExitCode {
             let err = CliError::new(
                 codes::USAGE_ERROR,
                 format!("relay: {refusal}"),
-                "run the installed release `phux` to use this machine's relay state",
+                // The refusal carries its own remedies as hint lines.
+                String::new(),
             );
-            return json_err::emit(json, &err, 2);
+            return json_err::emit(json, &err, 1);
         }
     }
     body()

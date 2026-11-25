@@ -255,15 +255,15 @@ pub(crate) struct ApiArgs {
 
 #[derive(Debug, Subcommands)]
 pub(crate) enum ApiAction {
-    /// List the connected server's public operations and their contracts.
+    /// List the connected server's public operations and their contracts
     List,
-    /// Read the full input, output, authorization and recovery contract for one operation.
+    /// Read the full input, output, authorization, and recovery contract for one operation
     Describe {
         /// Public operation name.
         #[usage(value_name = "OPERATION")]
         operation: String,
     },
-    /// Call a typed public operation without resolving names or changing focus.
+    /// Call a typed public operation without resolving names or changing focus
     Call {
         /// Public operation name.
         #[usage(value_name = "OPERATION")]
@@ -277,9 +277,10 @@ pub(crate) enum ApiAction {
 /// `phux terminal <action>` — the complete-intention terminal workflow.
 #[derive(Debug, Subcommands)]
 pub(crate) enum TerminalAction {
-    /// Start argv directly in a new terminal and wait for that exact execution.
+    /// Start argv directly in a new terminal and wait for that exact execution
     Run(TerminalRunArgs),
-    /// Recover a retained creation receipt without executing or retrying anything.
+    /// Recover a retained creation receipt without executing or retrying anything
+    ///
     /// A missing receipt means unknown, not that the original request was refused.
     Operation {
         /// Original full durable destination session key.
@@ -292,7 +293,7 @@ pub(crate) enum TerminalAction {
         #[usage(long, value_name = "HOST")]
         remote: Option<String>,
     },
-    /// Create, place and start a terminal from one strict JSON intention.
+    /// Create, place, and start a terminal from one strict JSON intention
     ///
     /// Use `api describe terminal.create` for the complete nested request schema.
     /// Argv runs in a new process, never by typing into an existing shell.
@@ -366,7 +367,7 @@ pub(crate) struct TagArgs {
 /// resumable wait on its exit.
 #[derive(Debug, Subcommands)]
 pub(crate) enum ResourceAction {
-    /// Read or wait for one exact durable execution; outputs JSON.
+    /// Read or wait for one exact durable execution; outputs JSON
     Execution {
         /// Exact execution identity and optional `timeout_secs` as a JSON object.
         #[usage(long, value_name = "JSON")]
@@ -376,7 +377,7 @@ pub(crate) enum ResourceAction {
         remote: Option<String>,
     },
 
-    /// Show one resource: kind, lifecycle, exit, process, tags, agent.
+    /// Show one resource: kind, lifecycle, exit, process, tags, agent
     ///
     /// Prints `key: value` lines, or with `--json` the stable document.
     /// Read-only: never attaches or resizes. `controller` is the connection
@@ -394,7 +395,7 @@ pub(crate) enum ResourceAction {
         target: Option<String>,
     },
 
-    /// Wait until a resource's process exits.
+    /// Wait until a resource's process exits
     ///
     /// Exit 0 when it exited (now or earlier, while the server still holds
     /// it), 1 when it is gone (it closed unretained, or never existed), 124
@@ -423,7 +424,7 @@ pub(crate) enum ResourceAction {
         target: String,
     },
 
-    /// List the methods a resource answers on this server.
+    /// List the methods a resource answers on this server
     ///
     /// Each method's verb, whether it changes state, and whether it is
     /// available here: a method another kind owns, or one that needs a
@@ -446,7 +447,7 @@ pub(crate) enum ResourceAction {
 /// the aliases here are the long forms.
 #[derive(Debug, Subcommands)]
 pub(crate) enum TagAction {
-    /// List the tags on each pane a selector resolves to.
+    /// List the tags on each pane a selector resolves to
     #[usage(alias = "list")]
     Ls {
         /// Target selector (session, `session:group`, `@id`, `.`, `#tag`).
@@ -456,7 +457,7 @@ pub(crate) enum TagAction {
         json: JsonOpt,
     },
 
-    /// Add one or more tags to each pane a selector resolves to.
+    /// Add one or more tags to each pane a selector resolves to
     Add {
         /// Target selector.
         target: String,
@@ -468,7 +469,7 @@ pub(crate) enum TagAction {
         json: JsonOpt,
     },
 
-    /// Remove one or more tags from each pane a selector resolves to.
+    /// Remove one or more tags from each pane a selector resolves to
     #[usage(alias = "remove")]
     Rm {
         /// Target selector.

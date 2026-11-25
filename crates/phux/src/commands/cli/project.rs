@@ -34,7 +34,7 @@ pub(crate) struct WorktreeArgs {
 /// `phux project <action>` — named checkouts and trusted recipes.
 #[derive(Debug, Subcommands)]
 pub(crate) enum ProjectAction {
-    /// Attach to a project's session, building it from its recipe if absent.
+    /// Attach to a project's session, building it from its recipe if absent
     ///
     /// TARGET is a `[[projects]]` name or a directory (default: the current
     /// one); inside git, the checkout root is used. An unapproved recipe is
@@ -57,7 +57,7 @@ pub(crate) enum ProjectAction {
         prefer_native: bool,
     },
 
-    /// List the `[[projects]]` catalog and whether each session is open.
+    /// List the `[[projects]]` catalog and whether each session is open
     #[usage(alias = "ls")]
     List {
         /// Emit a stable JSON document instead of human text.
@@ -65,7 +65,7 @@ pub(crate) enum ProjectAction {
         json: bool,
     },
 
-    /// Write a starter `.phux/project.toml` into a checkout.
+    /// Write a starter `.phux/project.toml` into a checkout
     ///
     /// Refuses to overwrite an existing recipe. The starter is approved as
     /// written; editing it makes it untrusted until `phux project trust`.
@@ -74,7 +74,7 @@ pub(crate) enum ProjectAction {
         target: Option<String>,
     },
 
-    /// Validate a recipe and approve its exact bytes on this machine.
+    /// Validate a recipe and approve its exact bytes on this machine
     ///
     /// The approval covers every worktree of the same repository and ends
     /// the moment one byte of the recipe changes.
@@ -83,14 +83,14 @@ pub(crate) enum ProjectAction {
         target: Option<String>,
     },
 
-    /// Withdraw this machine's approval of a recipe.
+    /// Withdraw this machine's approval of a recipe
     Untrust {
         /// Project name or directory (default: the current one).
         target: Option<String>,
     },
 
     /// Report whether a recipe is approved: exit 0 trusted, 1 untrusted or
-    /// absent, 2 undeterminable.
+    /// absent, 2 undeterminable
     Status {
         /// Project name or directory (default: the current one).
         target: Option<String>,
@@ -100,7 +100,7 @@ pub(crate) enum ProjectAction {
         json: bool,
     },
 
-    /// Link a session into a named project, on any machine.
+    /// Link a session into a named project, on any machine
     ///
     /// The link is stored on the server that owns SESSION, so every client
     /// (desktop, TUI, `phux ls`) sees it, and groups sessions by project
@@ -123,7 +123,7 @@ pub(crate) enum ProjectAction {
         remote: RemoteOpt,
     },
 
-    /// Clear a session's project link; it groups by its repository again.
+    /// Clear a session's project link; it groups by its repository again
     ///
     /// Only the link is cleared, never the free-text project a recipe or
     /// archive recorded.
@@ -139,7 +139,7 @@ pub(crate) enum ProjectAction {
         remote: RemoteOpt,
     },
 
-    /// Map a git repository and its checked-out worktrees.
+    /// Map a git repository and its checked-out worktrees
     ///
     /// A local repo operation: it never contacts a phux server and never
     /// creates or deletes a worktree. Agents use it to map checkouts to
@@ -158,7 +158,7 @@ pub(crate) enum ProjectAction {
 /// `phux worktree <action>` — git worktrees bound to sessions by name.
 #[derive(Debug, Subcommands)]
 pub(crate) enum WorktreeAction {
-    /// List the repository's worktrees and their bound sessions.
+    /// List the repository's worktrees and their bound sessions
     ///
     /// The `bound` column reads `live` when a session by the derived name
     /// exists, `-` when it does not, and `?` when no server is running —
@@ -174,7 +174,7 @@ pub(crate) enum WorktreeAction {
         json: bool,
     },
 
-    /// Create a worktree and a session rooted in it.
+    /// Create a worktree and a session rooted in it
     ///
     /// An existing local branch is checked out; a missing one is created,
     /// from `--from` when given and from the current HEAD otherwise. The
@@ -217,7 +217,7 @@ pub(crate) enum WorktreeAction {
         command: Vec<String>,
     },
 
-    /// Open the session bound to an existing worktree, creating it if absent.
+    /// Open the session bound to an existing worktree, creating it if absent
     ///
     /// Idempotent: an already-live session is reported and left alone, so
     /// scripts and keybindings can call this without checking first.
@@ -240,7 +240,7 @@ pub(crate) enum WorktreeAction {
         json: bool,
     },
 
-    /// Remove a worktree, killing the session bound to it first.
+    /// Remove a worktree, killing the session bound to it first
     ///
     /// The session is killed before git runs, because git refuses to remove
     /// a worktree whose files are held open and a shell sitting in that

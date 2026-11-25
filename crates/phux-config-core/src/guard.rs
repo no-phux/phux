@@ -141,7 +141,8 @@ fn current_layout() -> Layout {
 ///
 /// # Errors
 ///
-/// The refusal, as a message for the caller to surface.
+/// The refusal, as a message for the caller to surface: the failure on
+/// its first line, then one `hint: ` line per remedy ([`split_hints`]).
 pub fn refuse_dev_on_production_state(path: &Path) -> Result<(), String> {
     if instance::build_kind() != instance::BuildKind::Dev {
         return Ok(());
@@ -155,16 +156,41 @@ fn refuse_in(layout: &Layout, path: &Path) -> Result<(), String> {
         .map_or(Ok(()), |root| Err(refusal(path, &root)))
 }
 
+/// What starts each remedy line of a refusal.
+///
+/// A refusal is a short failure line, then one `hint: ` line per remedy. A
+/// CLI prints the failure as its error and each remedy as a hint
+/// ([`split_hints`]); a log keeps the text whole.
+pub const HINT_PREFIX: &str = "hint: ";
+
+/// Split a refusal into its failure and its remedies.
+///
+/// Each remedy comes back without [`HINT_PREFIX`]. Text with no hint lines
+/// is all failure.
+#[must_use]
+pub fn split_hints(text: &str) -> (&str, Vec<&str>) {
+    let marker = format!("\n{HINT_PREFIX}");
+    let Some(at) = text.find(&marker) else {
+        return (text, Vec::new());
+    };
+    let hints = text[at + 1..]
+        .lines()
+        .map(|line| line.strip_prefix(HINT_PREFIX).unwrap_or(line))
+        .collect();
+    (&text[..at], hints)
+}
+
+/// The refusal: a short failure line, then one `hint: ` line per remedy.
 fn refusal(path: &Path, root: &Path) -> String {
     format!(
-        "refusing to touch production phux state {} (inside {}) from a development \
-         build; dev builds keep their own state under the `{}` profile. An inherited \
-         path is the usual cause: a pane of the production server exports \
-         PHUX_WS_TOKENS, PHUX_WS_TLS_CERT, and PHUX_WS_TLS_KEY, and \
-         PHUX_PROFILE=default aims every default at production. Unset them, or point \
-         HOME and XDG_STATE_HOME/XDG_CONFIG_HOME/XDG_DATA_HOME at a scratch directory \
-         inside the temp directory ({}; set TMPDIR to move it); change production \
-         state only with the installed release `phux`",
+        "refusing to touch production phux state {} (inside {}) from a development build\n\
+         hint: dev builds keep their own state under the `{}` profile\n\
+         hint: an inherited path is the usual cause: a production pane exports \
+         PHUX_WS_TOKENS, PHUX_WS_TLS_CERT and PHUX_WS_TLS_KEY, and PHUX_PROFILE=default \
+         aims every default at production\n\
+         hint: unset them, or point HOME and XDG_STATE_HOME/XDG_CONFIG_HOME/XDG_DATA_HOME \
+         at a scratch directory inside {} (set TMPDIR to move it)\n\
+         hint: change production state only with the installed release `phux`",
         path.display(),
         root.display(),
         instance::DEV_PROFILE,
@@ -240,6 +266,30 @@ mod tests {
             assert!(refusal.contains("development build"), "{refusal}");
             assert!(refusal.contains("PHUX_WS_TOKENS"), "{refusal}");
         }
+    }
+
+    /// The refusal is a short failure line and one `hint: ` line per
+    /// remedy, never one paragraph-long line.
+    #[test]
+    fn a_refusal_is_a_failure_line_and_hint_lines() {
+        let layout = layout(Path::new("/phux-test-home/u"));
+        let refusal = refuse_in(
+            &layout,
+            Path::new("/phux-test-home/u/.local/state/phux/relay-cert.pem"),
+        )
+        .expect_err("production");
+        let (failure, hints) = split_hints(&refusal);
+        assert!(failure.ends_with("from a development build"), "{failure}");
+        assert!(!failure.contains('\n'), "{failure}");
+        assert_eq!(hints.len(), 4, "{refusal}");
+        assert!(hints.iter().all(|hint| !hint.starts_with(HINT_PREFIX)));
+        assert!(hints.iter().any(|hint| hint.contains("PHUX_WS_TOKENS")));
+        assert!(hints.iter().any(|hint| hint.contains("installed release")));
+        for line in refusal.lines() {
+            assert!(line.chars().count() <= 200, "line too long: {line}");
+        }
+        assert_eq!(split_hints("one line"), ("one line", Vec::new()));
+        assert_eq!(split_hints("a\nb"), ("a\nb", Vec::new()));
     }
 
     #[test]

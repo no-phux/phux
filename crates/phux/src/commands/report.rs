@@ -27,15 +27,19 @@ pub(crate) fn run_report(action: Option<ReportAction>, list_json: bool) -> ExitC
 /// Subcommands of `phux report`.
 #[derive(Debug, Subcommands)]
 pub(crate) enum ReportAction {
-    /// Write a logs-and-version bundle (no live screen). Prefer the TUI
-    /// action (`C-a B`) while attached so the session and pane are included.
+    /// Write a logs-and-version bundle (no live screen)
+    ///
+    /// Prefer the TUI action (`C-a B`) while attached so the session and pane
+    /// are included.
     New {
         /// Optional free-text description of what went wrong.
         note: Vec<String>,
         #[usage(flatten)]
         json: super::JsonOpt,
     },
-    /// Print one report. Omit ID to show the latest.
+    /// Print one report
+    ///
+    /// Omit ID to show the latest.
     Show {
         /// Report id (`r-…`), or `latest`.
         id: Option<String>,
