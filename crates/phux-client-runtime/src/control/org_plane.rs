@@ -22,6 +22,8 @@ use phux_protocol::wire::frame::{
 
 mod bulk;
 mod commands;
+#[cfg(test)]
+mod tests;
 
 use bulk::{BulkMove, BulkPhase};
 pub use commands::ArrangementSubmitError;
@@ -145,10 +147,14 @@ impl ControlPlane {
         if !self.handshake_ready || !self.organization_supported() {
             return None;
         }
-        Some(self.queue_org_read(
+        Some(self.queue_arrangement_read(arrangement))
+    }
+
+    fn queue_arrangement_read(&mut self, arrangement: ArrangementKey) -> u32 {
+        self.queue_org_read(
             Command::ArrangementGet { arrangement },
             Pending::OrgArrangement(arrangement),
-        ))
+        )
     }
 
     /// A connection negotiated: resolve what can no longer be resent, then
@@ -188,8 +194,14 @@ impl ControlPlane {
     /// A `GET_ORGANIZATION` page or `ARRANGEMENT_GET` reply.
     pub(super) fn resolve_org_read(&mut self, pending: &Pending, result: CommandResult) {
         match (pending, result) {
-            (Pending::OrgPage(_), CommandResult::OkWith(CommandValue::OrganizationPage(page))) => {
+            (
+                Pending::OrgPage(filter),
+                CommandResult::OkWith(CommandValue::OrganizationPage(page)),
+            ) => {
                 let action = self.organization.apply_page(*page);
+                if action == ReplicaAction::Seeded {
+                    self.refresh_seeded_arrangements(*filter);
+                }
                 self.act_on_replica(action);
             }
             (
@@ -215,6 +227,27 @@ impl ControlPlane {
                 });
             }
             _ => {}
+        }
+    }
+
+    fn refresh_seeded_arrangements(&mut self, filter: OrgFilter) {
+        // The seed's journal cut can cover an ArrangementChanged in the same
+        // transaction as a ResourceCreated, but pages carry only the key, not
+        // the arrangement itself. Re-read cached documents in the seeded scope.
+        let keys: Vec<_> = self
+            .organization
+            .sessions()
+            .iter()
+            .filter(|session| match filter {
+                OrgFilter::All => true,
+                OrgFilter::Session(key) => session.key == key,
+                _ => false,
+            })
+            .filter_map(|session| session.arrangement)
+            .filter(|key| self.organization.arrangement(key).is_some())
+            .collect();
+        for key in keys {
+            self.queue_arrangement_read(key);
         }
     }
 
@@ -258,10 +291,7 @@ impl ControlPlane {
                 self.organization_changed();
             }
             ReplicaAction::RefetchArrangement(arrangement) => {
-                self.queue_org_read(
-                    Command::ArrangementGet { arrangement },
-                    Pending::OrgArrangement(arrangement),
-                );
+                self.queue_arrangement_read(arrangement);
             }
         }
         self.advance_bulk_moves();

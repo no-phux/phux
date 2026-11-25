@@ -398,6 +398,9 @@ fn startup_environment_duplicate_start_and_reexec_keep_the_right_endpoint() {
     );
     let endpoint = PathBuf::from(lines.next().unwrap());
     assert_ne!(endpoint, Path::new("/outer/terminal.sock"));
+    // Unlinking the old socket lets filesystems immediately reuse its inode.
+    // Keep that inode allocated so a successful rebind can't look unchanged.
+    std::fs::hard_link(&endpoint, endpoint.with_extension("before-upgrade")).unwrap();
     let before = std::fs::metadata(&endpoint).unwrap().ino();
     assert_ne!(server.run(&["server", "--no-seed"]).0, 0);
     assert_eq!(std::fs::metadata(&endpoint).unwrap().ino(), before);
@@ -414,7 +417,10 @@ fn startup_environment_duplicate_start_and_reexec_keep_the_right_endpoint() {
         }
         assert!(
             Instant::now() < deadline,
-            "adapter did not restart after reexec"
+            "adapter did not restart after reexec at {} (old inode {before}, current metadata {:?})\n{}",
+            endpoint.display(),
+            std::fs::metadata(&endpoint),
+            std::fs::read_to_string(&log).unwrap()
         );
         std::thread::sleep(Duration::from_millis(20));
     }
