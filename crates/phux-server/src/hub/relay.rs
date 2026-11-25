@@ -98,6 +98,8 @@ pub(crate) fn path_refusal(root: &str, message: impl Into<String>) -> PathQueryE
 /// generation counter is not: it must outlive the link.
 #[derive(Debug)]
 pub(crate) struct RelayCatalog {
+    /// Process-unique negotiated link identity; zero means disconnected.
+    epoch: u64,
     kinds: HashMap<u32, phux_protocol::ids::ResourceKind>,
     /// Each enumerated resource's control class, which the hub judges a
     /// watch by (`docs/authority.md`); learned only from inventory.
@@ -110,11 +112,24 @@ pub(crate) struct RelayCatalog {
 impl Default for RelayCatalog {
     fn default() -> Self {
         Self {
+            epoch: 0,
             kinds: HashMap::new(),
             controls: HashMap::new(),
             terminal_profile: None,
             generations: first_generation(),
         }
+    }
+}
+
+impl RelayCatalog {
+    /// Retire every negotiated fact of the link that ended; the generation
+    /// counter outlives it.
+    fn end_link(&mut self) {
+        let generations = Arc::clone(&self.generations);
+        *self = Self {
+            generations,
+            ..Self::default()
+        };
     }
 }
 
@@ -319,14 +334,28 @@ pub(crate) enum RelayRequest {
     },
 }
 
+/// A queued operation belongs to exactly the connection its producer observed.
+#[derive(Debug)]
+pub(crate) struct QueuedRelayRequest {
+    pub(crate) epoch: u64,
+    pub(crate) owner: Option<CancellationToken>,
+    pub(crate) request: RelayRequest,
+}
+
+#[derive(Debug)]
+pub(crate) struct QueuedUnsubscribe {
+    pub(crate) epoch: u64,
+    pub(crate) unsubscribe: Unsubscribe,
+}
+
 /// Receiving half of one satellite's relay, drained by
 /// [`super::link::run_link`].
 #[derive(Debug)]
 pub(crate) struct RelayMailbox {
     /// Bounded consumer-request mailbox ([`RELAY_MAILBOX`]).
-    pub(crate) requests: mpsc::Receiver<RelayRequest>,
+    pub(crate) requests: mpsc::Receiver<QueuedRelayRequest>,
     /// Unbounded, undroppable subscription teardown (phux-v45.11).
-    pub(crate) unsubscribes: mpsc::UnboundedReceiver<Unsubscribe>,
+    pub(crate) unsubscribes: mpsc::UnboundedReceiver<QueuedUnsubscribe>,
     /// The hub state whose journal re-stamps relayed events (ADR-0123);
     /// `None` forwards the satellite's stamp.
     pub(crate) journal: Option<crate::state::SharedState>,
@@ -373,12 +402,15 @@ fn satellite_gap_as_source_gap(event: &mut AgentEvent) {
 #[derive(Debug, Clone)]
 pub(crate) struct RelayHandle {
     host: SatelliteHost,
-    tx: mpsc::Sender<RelayRequest>,
-    unsub_tx: mpsc::UnboundedSender<Unsubscribe>,
+    tx: mpsc::Sender<QueuedRelayRequest>,
+    unsub_tx: mpsc::UnboundedSender<QueuedUnsubscribe>,
     /// Issue-order token source shared by every handle for this host, so
     /// all of its subscribe/detach operations are totally ordered.
     seq: Arc<AtomicU64>,
     resource_kinds: ResourceKindCatalog,
+    /// Registry lookups pin the observed link, including disconnected zero.
+    epoch: Option<u64>,
+    owner: Option<CancellationToken>,
 }
 
 mod admission;

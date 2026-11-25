@@ -48,6 +48,13 @@ pub struct Panel {
     moving: bool,
 }
 
+impl Panel {
+    /// Forget a move whose receipt can no longer arrive on this connection.
+    pub(in crate::desk) const fn forget_move(&mut self) {
+        self.moving = false;
+    }
+}
+
 /// Whether `session` is the quick terminal's, which the main window doesn't
 /// list.
 pub fn hidden(session: &str) -> bool {

@@ -9,9 +9,11 @@ use super::*;
 /// Spawn a terminal that waits for a line, and return its id once the
 /// server reports it.
 fn spawn_waiting(remote: &RemoteClient, seen: &mut Vec<WireEvent>) -> String {
-    let request_id =
-        remote.spawn_terminal_with_command(vec!["/bin/sh".into(), "-c".into(), "read x".into()]);
-    assert_ne!(request_id, 0);
+    let WireWorkflowSubmission::Queued { request_id } =
+        remote.spawn_terminal_with_command(vec!["/bin/sh".into(), "-c".into(), "read x".into()])
+    else {
+        panic!("live attached terminal must queue a correlated spawn");
+    };
     let spawned = |event: &WireEvent| match event {
         WireEvent::TerminalSpawned {
             request_id: id,

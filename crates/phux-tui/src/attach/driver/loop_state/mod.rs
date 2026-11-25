@@ -73,7 +73,7 @@ pub(super) use super::overlay_paint::paint_active_overlay;
 pub(super) use super::session_io::{
     peer_gone, send_attach, send_unless_peer_gone, should_emit_frame_ack,
 };
-pub(super) use super::subscriptions::{PeerWatch, sync_agent_meta_subscriptions};
+pub(super) use super::subscriptions::{PeerPresentation, PeerWatch, sync_agent_meta_subscriptions};
 pub(super) use super::terminal::{desired_mouse_capture, sync_hover_tracking, sync_mouse_capture};
 pub(super) use super::viewport::{
     HOST_CELL_PX_FALLBACK, current_viewport, current_viewport_or_default,
@@ -334,6 +334,8 @@ pub(super) struct SessionLoop {
     rename_notice: Option<String>,
     /// The peer-session caches the roster and window picker read.
     peers: PeerWatch,
+    /// Collapse/order preferences and deferred chrome invalidation.
+    peer_presentation: PeerPresentation,
     /// A one-step cross-session pick, resolved once the layout lands (the
     /// resource even without a persisted layout).
     pick: EntryPick,
@@ -520,16 +522,10 @@ impl SessionLoop {
             resize_cell_px,
             rename_pending: None,
             rename_notice: None,
-            peers: PeerWatch {
-                sweep_pending: true,
-                remote_hosts: if origin.is_some() {
-                    crate::attach::hosts::last_known()
-                } else {
-                    Vec::new()
-                },
-                origin,
+            peers: PeerWatch::new(origin),
+            peer_presentation: PeerPresentation {
                 collapsed_projects: crate::attach::client_state::collapsed(),
-                ..PeerWatch::default()
+                ..PeerPresentation::default()
             },
             pick: initial_pick,
             parser: StdinParser::new(),

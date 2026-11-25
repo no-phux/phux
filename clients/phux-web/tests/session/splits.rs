@@ -59,9 +59,13 @@ async fn refused_split_and_attach_leave_the_original_usable() {
         ErrorCode::InvalidCommand,
         "attach refused",
     ));
-    assert!(matches!(decode_one(&refused.send[0]), FrameKind::Command {
-        command: Command::KillResource { terminal_id, .. }, ..
-    } if terminal_id == spawned));
+    assert!(
+        refused.send.is_empty(),
+        "a view failure cannot kill the created execution"
+    );
+    let notice = session.pane_error().unwrap();
+    assert!(notice.contains(&spawned.to_string()));
+    assert!(notice.contains("may still be running"));
     assert_eq!(session.pane_rects().len(), 1);
     assert!(!session.is_failed());
     assert!(matches!(decode_one(&session.key_frame(key()).unwrap()),
@@ -197,6 +201,16 @@ async fn failed_split_quarantines_queued_frames_without_weakening_other_streams(
     let too_long = session.bootstrap_limits().unwrap().max_chunk_bytes() as usize + 1;
     let refused = session.on_frame(split.chunk(0, vec![b'x'; too_long]));
     assert!(refused.fatal.is_none());
+    assert!(
+        refused.send.is_empty(),
+        "bootstrap failure must leave execution running until an explicit exact-activation kill"
+    );
+    assert!(
+        session
+            .pane_error()
+            .unwrap()
+            .contains("may still be running")
+    );
     assert!(session.pane_error().is_some());
     let late = session.on_frame(split.ready());
     assert!(

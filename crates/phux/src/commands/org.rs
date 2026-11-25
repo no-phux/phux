@@ -34,6 +34,7 @@ pub(crate) enum Target {
 }
 
 mod lock;
+mod raw_relaunch;
 mod targeting;
 pub(crate) use lock::run_lock;
 pub(crate) use targeting::resolve;
@@ -176,7 +177,12 @@ pub(crate) fn run_set_project(
 }
 
 /// `phux relaunch TARGET`: start a new run of a stopped resource.
-pub(crate) fn run_relaunch(target: &str, json: bool, socket: Option<PathBuf>) -> ExitCode {
+pub(crate) fn run_relaunch(
+    target: &str,
+    approve_raw: bool,
+    json: bool,
+    socket: Option<PathBuf>,
+) -> ExitCode {
     run_on(socket, "relaunch", json, async |_, conn| {
         let inventory = match records(conn, "relaunch").await {
             Ok(inventory) => inventory,
@@ -202,6 +208,9 @@ pub(crate) fn run_relaunch(target: &str, json: bool, socket: Option<PathBuf>) ->
             Err(failure) => return failure.emit(json),
         };
         let key = key_text(&inventory, *record.key.as_bytes());
+        if approve_raw {
+            return raw_relaunch::run(conn, &record, target, json).await;
+        }
         let result = org::relaunch(conn, record.key).await;
         let line = result
             .as_ref()
@@ -238,7 +247,7 @@ fn finish(
             outln!("{line}");
             ExitCode::SUCCESS
         }
-        Err(err) => Refusal::org(verb, &err).emit(json),
+        Err(err) => raw_relaunch::refusal(verb, target, &err).emit(json),
     }
 }
 
@@ -320,6 +329,8 @@ fn restore_document(
                 "result": "refused",
                 "code": err.code(),
                 "message": err.to_string(),
+                "review": raw_relaunch::needs_review(err)
+                    .then(|| raw_relaunch::review_command(&names.display(*key.as_bytes()))),
             }),
         })
         .collect();
@@ -387,7 +398,7 @@ fn restore_lines(
                 },
             )),
             Ok(_) => {}
-            Err(err) => lines.push(format!("  {key}  refused: {err}")),
+            Err(err) => lines.extend(raw_relaunch::refused_lines(&key, err)),
         }
     }
     lines

@@ -138,4 +138,12 @@ printf '//! Header.\n' >"$repo/crates/phux-fixture/src/lib.rs"
 expect_fail 'proto.md is a retired spec page' --only=citations
 rm "$repo/clients/web/src/tool.py"
 expect_pass --only=citations
+# A removed indexed source must not abort scanning before a live bad citation.
+printf '// Removed source.\n' >"$repo/crates/phux-fixture/src/a_deleted.rs"
+git -C "$repo" add -- crates/phux-fixture/src/a_deleted.rs
+rm "$repo/crates/phux-fixture/src/a_deleted.rs"
+printf '//! Live citation (docs/after-deletion.md).\n' >"$repo/crates/phux-fixture/src/lib.rs"
+expect_fail 'docs/after-deletion.md does not exist' --only=citations
+printf '//! Header.\n' >"$repo/crates/phux-fixture/src/lib.rs"
+expect_pass --only=citations
 printf 'docs fixtures: all cases passed\n'

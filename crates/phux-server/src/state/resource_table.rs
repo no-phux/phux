@@ -29,12 +29,10 @@ const BOOTSTRAP_ID_BLOCK: u64 = 1 << 32;
 /// resumes rather than replaying from zero.
 pub(super) type LastValidAttachSequence = Arc<AtomicU64>;
 
-/// A superseded pump generation: bootstrap id to tombstone, a token that
-/// resolves when it exits, and its last sequence.
-pub(super) type PriorAttachResourcePump = (BootstrapId, CancellationToken, LastValidAttachSequence);
+/// A superseded generation's tombstone identity and final sequence.
+pub(super) type PriorAttachResourcePump = (BootstrapId, LastValidAttachSequence);
 
-/// The new generation's `(cancel, done, last_valid_seq)` and what it
-/// displaced.
+/// The admitted generation's lifetime, cursor, and predecessor metadata.
 pub(super) type AttachResourcePumpReplacement = (
     CancellationToken,
     CancellationToken,
@@ -42,20 +40,30 @@ pub(super) type AttachResourcePumpReplacement = (
     Option<PriorAttachResourcePump>,
 );
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamDisposition {
+    Active,
+    Draining,
+}
+
 /// One generation of an `ATTACH_RESOURCE` output pump. A re-attach replaces
 /// its predecessor (clients re-bootstrap to change profile or recover): the
-/// old `cancel` fires, `done` reports when it drained, and its bootstrap id
-/// is tombstoned so late frames are dropped.
+/// old `cancel` fires and actual emitter tasks retain the completion fences.
+/// Its bootstrap id is tombstoned so late frames are dropped.
 #[derive(Debug)]
 pub(super) struct AttachResourceGeneration {
     /// Fires to stop this pump.
     pub(super) cancel: CancellationToken,
-    /// Resolves once the pump task has actually exited.
-    pub(super) done: CancellationToken,
+    /// The publication owner hands this close fence to its actual emitter,
+    /// or resolves it at tick publication/drop. Replacements use task fences.
+    pub(super) source_done: CancellationToken,
+    disposition: StreamDisposition,
     /// Highest sequence this generation emitted.
     pub(super) last_valid_seq: LastValidAttachSequence,
     /// Bootstrap id this generation streams under.
     pub(super) bootstrap_id: BootstrapId,
+    /// Cancels a still-unpublished aggregate if any member is displaced.
+    publication: Option<CancellationToken>,
 }
 
 /// An output task's lifetime; dropping the owner aborts the task.
@@ -64,6 +72,7 @@ struct OutputPumpTask {
     abort: Option<AbortHandle>,
     done: CancellationToken,
     drain: Option<CancellationToken>,
+    generation: LastValidAttachSequence,
 }
 
 impl Drop for OutputPumpTask {
@@ -287,229 +296,6 @@ impl ResourceTable {
             .collect()
     }
 
-    // -- output task lifetimes and ATTACH_RESOURCE generations --------
-
-    /// Track a task from any of the three output subscription paths.
-    pub(crate) fn track_output_pump(
-        &mut self,
-        client: ClientId,
-        terminal: ResourceId,
-        abort: AbortHandle,
-        done: CancellationToken,
-        drain: Option<CancellationToken>,
-    ) {
-        let tasks = self.output_pumps.entry((client, terminal)).or_default();
-        tasks.retain(|task| !task.done.is_cancelled());
-        tasks.push(OutputPumpTask {
-            abort: Some(abort),
-            done,
-            drain,
-        });
-    }
-
-    /// Ask terminal pumps for their final capture, retaining completion fences
-    /// before the resource and subscription tables are removed.
-    pub(super) fn begin_output_drain(
-        &self,
-        terminal: ResourceId,
-    ) -> Vec<(ClientId, Vec<CancellationToken>)> {
-        self.output_pumps
-            .iter()
-            .filter_map(|((client, pane), tasks)| {
-                if *pane != terminal {
-                    return None;
-                }
-                let done: Vec<_> = tasks
-                    .iter()
-                    .filter_map(|task| {
-                        let drain = task.drain.as_ref()?;
-                        if task.done.is_cancelled() {
-                            return None;
-                        }
-                        drain.cancel();
-                        Some(task.done.clone())
-                    })
-                    .collect();
-                (!done.is_empty()).then_some((*client, done))
-            })
-            .collect()
-    }
-
-    pub(super) fn remember_draining_terminal(
-        &mut self,
-        wire: phux_protocol::ids::ResourceId,
-        core: ResourceId,
-    ) {
-        self.draining_resources.insert(wire, core);
-    }
-
-    /// The core id of a closed Terminal whose output is still draining, by
-    /// its retired wire id.
-    #[must_use]
-    pub(crate) fn draining_terminal(
-        &self,
-        wire: &phux_protocol::ids::ResourceId,
-    ) -> Option<ResourceId> {
-        self.draining_resources.get(wire).copied()
-    }
-
-    /// End `terminal`'s close drain: cancel its pumps and forget its wire id.
-    pub(crate) fn finish_output_drain(&mut self, terminal: ResourceId) {
-        self.cancel_pumps_for_terminal(terminal);
-        self.draining_resources.retain(|_, core| *core != terminal);
-    }
-
-    /// Let this pane's output pumps finish without aborting them.
-    fn release_output_pumps(&mut self, terminal: ResourceId) {
-        let keys: Vec<_> = self
-            .output_pumps
-            .keys()
-            .filter(|(_, pane)| *pane == terminal)
-            .copied()
-            .collect();
-        for key in keys {
-            let mut draining = Vec::new();
-            for task in self.output_pumps.remove(&key).unwrap_or_default() {
-                if task
-                    .drain
-                    .as_ref()
-                    .is_some_and(CancellationToken::is_cancelled)
-                    && !task.done.is_cancelled()
-                {
-                    draining.push(task);
-                } else {
-                    task.release();
-                }
-            }
-            if !draining.is_empty() {
-                self.output_pumps.insert(key, draining);
-            }
-        }
-    }
-
-    /// Abort every output task for this subscription, returning their exit
-    /// fences; await them off the lock before acknowledging.
-    pub(crate) fn stop_output_pumps(
-        &mut self,
-        client: ClientId,
-        terminal: ResourceId,
-    ) -> Vec<CancellationToken> {
-        self.output_pumps
-            .remove(&(client, terminal))
-            .unwrap_or_default()
-            .into_iter()
-            .map(|task| task.done.clone())
-            .collect()
-    }
-
-    /// Install a new `ATTACH_RESOURCE` pump generation, displacing any live
-    /// one. The caller awaits the prior `done` before tombstoning its
-    /// bootstrap id.
-    pub(crate) fn replace_pump(
-        &mut self,
-        client: ClientId,
-        terminal: ResourceId,
-        bootstrap_id: BootstrapId,
-    ) -> AttachResourcePumpReplacement {
-        let cancel = CancellationToken::new();
-        let done = CancellationToken::new();
-        let last_valid_seq: LastValidAttachSequence = Arc::new(AtomicU64::new(0));
-        let prior = self
-            .pumps
-            .insert(
-                (client, terminal),
-                AttachResourceGeneration {
-                    cancel: cancel.clone(),
-                    done: done.clone(),
-                    last_valid_seq: Arc::clone(&last_valid_seq),
-                    bootstrap_id,
-                },
-            )
-            .map(|prior| {
-                prior.cancel.cancel();
-                (prior.bootstrap_id, prior.done, prior.last_valid_seq)
-            });
-        (cancel, done, last_valid_seq, prior)
-    }
-
-    /// Move a still-current pump onto a fresh bootstrap id before it publishes
-    /// a replacement generation, so a later re-attach tombstones the right
-    /// one. `None` when the pump was displaced or ids are exhausted.
-    pub(crate) fn advance_pump_generation(
-        &mut self,
-        client: ClientId,
-        terminal: ResourceId,
-        last_valid_seq: &LastValidAttachSequence,
-    ) -> Option<BootstrapId> {
-        let current = self
-            .pumps
-            .get(&(client, terminal))
-            .is_some_and(|generation| Arc::ptr_eq(&generation.last_valid_seq, last_valid_seq));
-        if !current {
-            return None;
-        }
-        let bootstrap_id = self.next_bootstrap_id(client)?;
-        if let Some(generation) = self.pumps.get_mut(&(client, terminal)) {
-            generation.bootstrap_id = bootstrap_id;
-        }
-        Some(bootstrap_id)
-    }
-
-    /// Next per-terminal bootstrap id for `client`; `None` on overflow (the
-    /// connection must reconnect).
-    pub(crate) fn next_bootstrap_id(&mut self, client: ClientId) -> Option<BootstrapId> {
-        let next = self
-            .next_bootstrap
-            .entry(client)
-            .or_insert(BOOTSTRAP_ID_BLOCK);
-        let raw = *next;
-        *next = raw.checked_add(BOOTSTRAP_ID_BLOCK)?;
-        BootstrapId::new(raw)
-    }
-
-    /// Cancel and forget the pump for `(client, terminal)`. Idempotent.
-    pub(crate) fn cancel_pump(&mut self, client: ClientId, terminal: ResourceId) {
-        self.stop_output_pumps(client, terminal);
-        if let Some(generation) = self.pumps.remove(&(client, terminal)) {
-            generation.cancel.cancel();
-        }
-    }
-
-    /// Cancel every client's pumps for `terminal`: a killed Terminal's
-    /// process outlives its close (the hangup grace), and nothing it prints
-    /// then may follow its `RESOURCE_CLOSED`.
-    pub(crate) fn cancel_pumps_for_terminal(&mut self, terminal: ResourceId) {
-        let clients: Vec<ClientId> = self
-            .pumps
-            .keys()
-            .chain(self.output_pumps.keys())
-            .filter(|(_, pane)| *pane == terminal)
-            .map(|(client, _)| *client)
-            .collect();
-        for client in clients {
-            self.cancel_pump(client, terminal);
-        }
-    }
-
-    /// Cancel every pump `client` owns.
-    pub(super) fn cancel_pumps_for_client(&mut self, client: ClientId) {
-        self.output_pumps.retain(|(owner, _), _| *owner != client);
-        self.pumps.retain(|(owner, _), generation| {
-            if *owner == client {
-                generation.cancel.cancel();
-                false
-            } else {
-                true
-            }
-        });
-    }
-
-    /// Forget `client`'s generation ids; only when its connection ends. A
-    /// `DETACH` keeps the connection, whose peer still holds what it retired.
-    pub(super) fn forget_bootstrap_ids(&mut self, client: ClientId) {
-        self.next_bootstrap.remove(&client);
-    }
-
     // -- teardown -----------------------------------------------------
 
     /// Drop every entry keyed on a removed resource and return its actor
@@ -524,8 +310,13 @@ impl ResourceTable {
         let token = self.tokens.remove(&terminal);
         self.subscribers.remove(&terminal);
         self.spawns.remove(&terminal);
-        // Release, don't cancel: see above.
-        self.pumps.retain(|(_, pane), _| *pane != terminal);
+        // A natural close retains exact publication authority through its
+        // source and final emitter fences. Synchronous reap has no such drain.
+        self.pumps.retain(|(_, pane), generation| {
+            *pane != terminal || generation.disposition == StreamDisposition::Draining
+        });
         token
     }
 }
+
+mod pumps;

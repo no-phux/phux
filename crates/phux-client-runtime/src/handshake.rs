@@ -82,6 +82,7 @@ impl HelloOk {
             id: self.server_id,
             features: self.server_caps.features,
             features_ext: self.server_caps.features_ext,
+            features_ext2: self.server_caps.features_ext2,
             layers: self.server_caps.layers,
             protocol: self.protocol,
             profile,
@@ -99,6 +100,8 @@ pub struct ServerInfo {
     pub features: ServerFeatureSet,
     /// Capabilities from the trailing extension word (absent on older servers).
     pub features_ext: ServerFeatureExtSet,
+    /// Capabilities authenticated in the third trailing word.
+    pub features_ext2: phux_protocol::caps::ServerFeatureExt2Set,
     /// The layers the server advertised.
     pub layers: LayerSet,
     /// The server's protocol triple from `HELLO_OK`. Any minor or patch on
@@ -133,6 +136,7 @@ impl ServerInfo {
             limits: self.limits,
             server_features: self.features,
             server_features_ext: self.features_ext,
+            server_features_ext2: self.features_ext2,
         }
     }
 }
@@ -148,6 +152,8 @@ pub struct NegotiatedBootstrap {
     pub server_features: ServerFeatureSet,
     /// Extended additive features, negotiated in the trailing `HELLO_OK` word.
     pub server_features_ext: ServerFeatureExtSet,
+    /// Third-word features; empty when the executing peer predates enforcement.
+    pub server_features_ext2: phux_protocol::caps::ServerFeatureExt2Set,
 }
 
 #[cfg(test)]

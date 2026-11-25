@@ -60,6 +60,8 @@ pub use pty::isolated_attach_command;
 #[allow(unused_imports, reason = "not every suite drives a PTY")]
 pub use pty::{PtyAttach, clear_pty_env, pty_transcript};
 
+pub mod raw_review;
+
 /// Owns a directly spawned server until it has actually been reaped.
 pub struct ServerProcess {
     child: Child,

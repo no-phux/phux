@@ -26,8 +26,8 @@ and docs, not a quiet rewrite. Retired records are
   missed or a gap marker, never silence.
 - A detached process group is signalled only while its recorded leader
   still matches, never by a reused PID.
-- An upgrade rebuilds resources in `APP_KINDS` order, so a parent's kind
-  comes first.
+- The host upgrade owner rebuilds resources in `KIND_ORDER`, so a parent's
+  kind comes first.
 - A session `ATTACH` never replaces committed `AgentSession` history with an
   unsolicited full cut.
 - A close is planned before it commits. Tab-lock checks run on the plan,
@@ -39,9 +39,9 @@ and docs, not a quiet rewrite. Retired records are
 - Each kind declares its stream contract and spawn rule in its `KindSpec`
   catalog row. A connection that negotiates no Terminal profile is still
   admitted; binding a Terminal stream is refused with `CODEC_UNAVAILABLE`.
-- Stream and input frames reach their resource's `ResourceApp`. A kind that
-  does not serve a frame refuses it with `WRONG_RESOURCE_KIND`, and the
-  connection stays.
+- Kind-owned frame facts reject unsupported stream/input operations; the host
+  routes admitted operations without lending apps generic server state.
+  A wrong-kind frame is refused and the connection stays.
 - Any 1.x client works with any 1.x server. New behavior ships as a feature
   bit or a skippable field; unknown requests get `UNSUPPORTED` and the
   connection stays ([compatibility](./compatibility.md)).

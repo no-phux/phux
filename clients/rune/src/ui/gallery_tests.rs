@@ -70,6 +70,8 @@ fn window_with(
     let mut desk = crate::test_support::window().with_phone(phone);
     desk.settings.theme = theme;
     desk.connection.client = Some(std::sync::Arc::clone(&replica.client));
+    desk.connection
+        .seed_view_sources(vec![1; 16], &replica.sources);
     let first = LayoutNode::Leaf(replica.terminal.clone());
     desk.connection.layout = Some(if split {
         let second = phux_protocol::ids::ResourceId::local(2);

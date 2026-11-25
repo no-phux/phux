@@ -102,8 +102,10 @@ fn keyed_spawn_never_replays_to_a_different_server_incarnation() {
     if let FrameKind::HelloOk { server_id, .. } = &mut hello {
         server_id.fill(0xCD);
     }
-    plane.feed(hello).unwrap();
-    finish_reconnected_attach(&mut plane);
+    assert!(matches!(
+        plane.feed(hello),
+        Err(phux_client_runtime::control::ControlError::Refused(_))
+    ));
     assert!(sends_no_spawn(&mut plane));
     assert!(plane.take_events().iter().any(|event| matches!(event,
         Event::TerminalSpawned { request_id: id, terminal_id: None, error: Some(message) }
@@ -124,21 +126,34 @@ fn reconnect_target(plane: &mut ControlPlane, incarnation: u8) -> AttachTarget {
         .expect("reconnect must request the selected session")
 }
 
-/// The session a reconnect asks for: `same` from the same server
-/// incarnation, `other` from a different one.
-fn assert_reconnect_targets(plane: &mut ControlPlane, same: &AttachTarget, other: &AttachTarget) {
+/// Same-incarnation ids remain valid; absent durable identity must never
+/// authorize a replacement session by a reused name on a new incarnation.
+fn assert_reconnect_targets(plane: &mut ControlPlane, same: &AttachTarget) {
     assert_eq!(&reconnect_target(plane, 0xAB), same, "same incarnation");
-    assert_eq!(&reconnect_target(plane, 0xCD), other, "new incarnation");
+    plane.connection_lost(None);
+    plane.connection_opened();
+    let _ = plane.take_outbound();
+    assert!(matches!(
+        plane.feed(replacement_hello(0xCD)),
+        Err(phux_client_runtime::control::ControlError::Refused(_))
+    ));
+    assert!(
+        plane.take_outbound().is_empty(),
+        "missing identity cannot become a name-based attach"
+    );
 }
 
 #[test]
 fn consumer_validated_sessions_browse_before_replaying_any_terminal_on_reconnect() {
-    let mut plane = ControlPlane::new(ControlOptions {
-        session_recovery: phux_client_runtime::control::SessionRecovery::CallerValidated,
-        auto_attach_foreign_spawns: false,
-        subscribe_agent_sessions: false,
-        ..ControlOptions::default()
-    });
+    let mut plane = ControlPlane::new(
+        std::time::Instant::now(),
+        ControlOptions {
+            session_recovery: phux_client_runtime::control::SessionRecovery::CallerValidated,
+            auto_attach_foreign_spawns: false,
+            subscribe_agent_sessions: false,
+            ..ControlOptions::default()
+        },
+    );
     reopen(&mut plane, hello_ok(PROTOCOL_VERSION.patch));
     let initial = outbound(&mut plane);
     let request_id = initial
@@ -191,11 +206,7 @@ fn named_attach_reconnect_follows_a_rename_not_the_reused_name() {
     snapshot.sessions[0].name = "renamed".to_owned();
     snapshot.sessions[1].name = "main".to_owned();
     refresh_to(&mut plane, snapshot);
-    assert_reconnect_targets(
-        &mut plane,
-        &AttachTarget::ById(SessionId::new(1)),
-        &AttachTarget::ByName("renamed".to_owned()),
-    );
+    assert_reconnect_targets(&mut plane, &AttachTarget::ById(SessionId::new(1)));
 }
 
 #[test]
@@ -208,19 +219,18 @@ fn a_live_named_switch_reconnects_to_its_renamed_identity() {
     snapshot.sessions[0].name = "beta".to_owned();
     snapshot.sessions[1].name = "renamed-beta".to_owned();
     refresh_to(&mut plane, snapshot);
-    assert_reconnect_targets(
-        &mut plane,
-        &AttachTarget::ById(SessionId::new(2)),
-        &AttachTarget::ByName("renamed-beta".to_owned()),
-    );
+    assert_reconnect_targets(&mut plane, &AttachTarget::ById(SessionId::new(2)));
 }
 
 #[test]
 fn a_new_server_cannot_inherit_an_unresolved_numeric_session_target() {
-    let mut plane = ControlPlane::new(ControlOptions {
-        attach: Some(AttachTarget::ById(SessionId::new(7))),
-        ..ControlOptions::default()
-    });
+    let mut plane = ControlPlane::new(
+        std::time::Instant::now(),
+        ControlOptions {
+            attach: Some(AttachTarget::ById(SessionId::new(7))),
+            ..ControlOptions::default()
+        },
+    );
     plane.connection_opened();
     plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
     // The first server disappeared before confirming what session 7 meant.

@@ -1,6 +1,6 @@
 use super::super::*;
 use super::support::*;
-use crate::runtime::apps::agent_session::upgrade::AGENT_ROLLBACK_TIMEOUT;
+use crate::runtime::upgrade::kinds::agent_session::AGENT_ROLLBACK_TIMEOUT;
 use phux_agent_session::session::BootstrapRequest;
 use tokio::sync::oneshot;
 

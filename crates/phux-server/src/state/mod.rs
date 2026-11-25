@@ -86,6 +86,8 @@ pub(crate) use federation::{Federation, SatelliteLease};
 pub use id_space::IdSpace;
 pub use journal::EventRecord;
 pub(crate) use journal::now_unix_ms;
+pub(crate) use org::launch::execute_terminal as execute_admitted_terminal;
+pub(crate) use org::operation as org_operation;
 pub(crate) use retained::Retention;
 pub use retained::{RetainPolicy, close_reason_name, process_exit};
 pub use roles::RoleEffects;
@@ -98,7 +100,9 @@ pub use metadata::{
     KeepEmptyOutcome, MetadataSetOutcome, MetadataStore, RenameOutcome, ServerInterceptedKey,
 };
 pub(crate) use org::ensure_arrangements;
-pub use org::{OrgCommit, OsKeys, Reconciled, TerminalTarget, fresh_org, now_stamp};
+pub use org::{
+    ActivationToken, OrgCommit, OsKeys, Reconciled, TerminalTarget, fresh_org, now_stamp,
+};
 pub use registration::ResourceRegistrationError;
 pub(crate) use resolve::{RelayRoute, Resolved, ResolvedOwned};
 use resource_table::ResourceTable;
@@ -215,7 +219,7 @@ pub struct ServerState {
     /// a kill reaped it ahead of its process (`docs/protocol.md#commands-events-resources`); see
     /// [`bindings`].
     exit_watches: std::collections::HashMap<
-        phux_core::ids::ResourceId,
+        (phux_core::ids::ResourceId, ActivationToken),
         Option<phux_protocol::ids::ResourceId>,
     >,
     /// Retain-on-exit bookkeeping (ADR-0124); see [`retained`].

@@ -1,4 +1,4 @@
-//! How a session stands, and how one input operation ended.
+//! How a session stands.
 
 /// Where the session is in its life.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,16 +25,4 @@ impl Status {
     pub const fn is_terminal(self) -> bool {
         matches!(self, Self::Closed | Self::Failed)
     }
-}
-
-/// How one acknowledged input operation ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeliveryOutcome {
-    /// The server acknowledged the write.
-    Delivered,
-    /// Nothing was written; retyping is safe.
-    Refused,
-    /// Some, all, or none of the bytes may have landed; read the pane
-    /// before retyping.
-    Unknown,
 }

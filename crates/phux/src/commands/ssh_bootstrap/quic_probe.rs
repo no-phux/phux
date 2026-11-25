@@ -12,21 +12,20 @@ pub(super) fn probe(
     target: &str,
     report: &Report,
     identity: Option<phux_dial::TlsClientIdentity>,
-) -> Result<(super::attach::DialPlan, Box<Connection>), String> {
-    let plan = super::attach::plan_quic_dial(
+) -> Result<(super::attach::native::DialPlan, Box<Connection>), String> {
+    let plan = super::attach::native::plan_quic_dial(
         rt,
         target,
-        Some(report.token.clone()),
-        Some(report.cert_fingerprint.clone()),
+        super::attach::native::RemoteCredentials {
+            name: None,
+            token: Some(report.token.clone()),
+            // The leaf pin arrived over ssh this second; nothing to learn.
+            cert_fingerprint: Some(report.cert_fingerprint.clone()),
+            authority: phux_client_runtime::target::AuthorityPin::default(),
+            identity,
+        },
         None,
     )
-    .and_then(|plan| {
-        // The leaf pin arrived over ssh this second; nothing to learn.
-        plan.with_identity(identity).with_authority(
-            target,
-            &phux_client_runtime::target::AuthorityPin::default(),
-        )
-    })
     .map_err(|refusal| format!("{refusal:?}"))?;
     let deadline = super::super::enroll::probe_deadline();
     let connected = rt.block_on(async {

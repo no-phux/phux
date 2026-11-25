@@ -32,9 +32,8 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     pub engine_kernel: &'a mut crate::attach::pane_state::AttachKernel,
     /// Non-Terminal resources the server's graph named: placeholder leaves.
     pub leaves: &'a crate::attach::surface_leaf::LeafBook,
-    /// Keybind resolver; `None` when the config failed to parse, so every
-    /// key forwards to the focused pane.
-    pub resolver: Option<&'a mut phux_config::keybind::Resolver>,
+    /// Resolver built from the required keybinding snapshot.
+    pub resolver: &'a mut phux_config::keybind::Resolver,
     /// Client-local focus transition/MRU bookkeeping.
     pub focus_history: FocusHistory,
     /// Client-side multi-window mirror; pane actions operate on the active
@@ -89,9 +88,8 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     pub pending_kills: &'a mut HashMap<u32, ResourceId>,
     /// Overlay stack: when non-empty, keys route to the top overlay.
     pub overlays: &'a mut OverlayState,
-    /// The on-disk keybindings, for chord labels; `None` when config load
-    /// failed.
-    pub keybindings: Option<&'a phux_config::KeybindingsCfg>,
+    /// Plugin-merged snapshot used to build the resolver.
+    pub keybindings: &'a phux_config::KeybindingsCfg,
     /// Chrome and overlay theme.
     pub theme: &'a Theme,
     /// The peer-wide view: session graph, host inventory, peer layouts,

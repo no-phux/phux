@@ -158,7 +158,7 @@ pub(super) fn apply_session_keep_empty(
 /// Detach the clients attached to a session that was just killed, with
 /// `DETACHED { SESSION_KILLED }`. Each delivery waits in its own task, so a
 /// wedged client's full mailbox cannot block the write that killed it.
-pub(in crate::runtime) fn detach_clients_of_killed_session(
+pub(crate) fn detach_clients_of_killed_session(
     state: &SharedState,
     clients: Vec<(ClientId, mpsc::Sender<Outbound>)>,
 ) {

@@ -83,7 +83,7 @@ impl ControlPlane {
     }
 
     pub(super) fn advance_bulk_moves(&mut self) {
-        self.expire_bulk_reads(Instant::now());
+        self.expire_bulk_reads(self.observed_time());
         if !self.handshake_ready || !self.org.ready || !self.organization.is_live() {
             return;
         }
@@ -186,10 +186,13 @@ mod tests {
 
     #[test]
     fn inventory_deadline_is_scheduled_and_cancels_only_the_never_sent_tail() {
-        let mut plane = ControlPlane::new(ControlOptions::default());
+        let mut plane = ControlPlane::new(Instant::now(), ControlOptions::default());
         let first = mint_operation();
         let tail = mint_operation();
-        let deadline = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
+        let deadline = plane
+            .observed_time()
+            .checked_sub(Duration::from_secs(1))
+            .unwrap();
         plane.org.moves.push(BulkMove {
             authority: AuthorityId::new([1; 16]).unwrap(),
             to: SessionKey::new([2; 16]).unwrap(),

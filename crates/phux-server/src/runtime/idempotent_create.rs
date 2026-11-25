@@ -21,7 +21,7 @@ use tokio_util::sync::CancellationToken;
 use super::operation_dedupe::{
     Admission, CachedOutcome, Claim, OperationClaim, OperationDomain, OperationKey, join_nothing,
 };
-use crate::runtime::apps::spawn::{SpawnConnection, SpawnRequest, dispatch_spawn};
+use crate::runtime::spawn::{SpawnConnection, SpawnRequest, dispatch_spawn};
 use crate::state::{ClientId, Outbound, ServerState, SharedState};
 
 /// Handle `SPAWN_RESOURCE`, honoring its idempotency key (field 17).

@@ -41,6 +41,20 @@ set up [remote access](./remote.md).
 `phux lock NAME:G` stops every client from closing a tab until
 `phux unlock`.
 
+`phux new NAME` is exact creation: an existing name is refused, including
+with `--ephemeral`. `phux attach NAME` only selects an existing session; it
+never creates one. With `defaults.attach-session`, a no-name attach asks the
+host to ensure that session atomically, then selects the receipt's exact
+identity. Ensuring an existing session does not start another pane. Older
+servers that cannot ensure refuse without creating; an uncertain receipt
+requires inspecting `phux ls`, not automatically creating again.
+
+`phux worktree open` uses the same atomic ensure: it preserves an existing
+session and its panes, or creates the worktree's persistent session with its
+project identity. `--attach` selects the receipt's exact session; a missing
+live pane in headless output is a committed intent to reconcile, not permission
+to create again.
+
 ## Resources
 
 Everything the server hosts is a **resource** with a **kind**: a terminal,
@@ -114,7 +128,11 @@ phux rm @4         # forget it instead
 ```
 
 `phux restore` never replays an agent's one-shot task, and never types into
-a program. To restore automatically, and to resume other programs that
+a program. It starts your default shell, enabled agent integrations and
+`[[restore.program]]` resumes. Any other saved command is refused, and
+nothing runs, until you review its exact recipe and type yes:
+`phux relaunch ^KEY --approve-raw`, with the key `phux restore` prints
+([why](./organization.md#restore-and-executable-authority)). To restore automatically, and to resume other programs that
 report a resume token ([Resume](./program-protocol.md#resume)):
 
 ```toml

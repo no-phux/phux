@@ -184,6 +184,11 @@ impl Desk {
             }
             Modal::Settings if action.is_none() => self.settings_key(event, tx),
             Modal::Confirm => self.confirm_bar_key(event, tx),
+            Modal::RawRelaunch => {
+                if event.key == rune::Key::Escape {
+                    self.cancel_raw_relaunch();
+                }
+            }
             Modal::PhonePicker => {
                 self.phone_picker_key(event);
             }
@@ -286,14 +291,14 @@ impl Desk {
         let behind = frame.as_ref().is_some_and(|f| !f.scrollbar.at_tail());
         let sent = client.with_control(|control| {
             if !control.input_ready(&terminal) {
-                control.trace_input(false);
+                client.trace_input(false);
                 return false;
             }
             if behind {
                 let _ = control.scroll_view(view, Scroll::Bottom);
             }
             let sent = send(control, &terminal);
-            control.trace_input(sent);
+            client.trace_input(sent);
             if let Some(text) = guess.filter(|_| sent) {
                 let _ = control.predict_view_text(view, text);
             }
@@ -421,6 +426,7 @@ impl Desk {
     pub fn cancel_pending(&mut self) {
         self.decline_open_url();
         self.pending = None;
+        self.cancel_raw_relaunch();
     }
 
     /// To the terminal it was meant for, wherever the keyboard went since.
@@ -453,16 +459,17 @@ impl Desk {
         let Some(client) = self.connection.client.clone() else {
             return Err(OFFLINE);
         };
-        if !client.input_ready(terminal) {
-            return Err(OFFLINE);
+        use phux_client_core::input_replay::InputSubmission;
+        match client.apply_user_paste(terminal, text) {
+            InputSubmission::NotQueued => return Err(OFFLINE),
+            InputSubmission::Refused { .. } => {
+                return Err("Paste refused; nothing was written.");
+            }
+            InputSubmission::QueuedRaw => {}
+            InputSubmission::AwaitingReceipt { delivery_id } => {
+                self.connection.pastes.insert(delivery_id);
+            }
         }
-        // The server brackets it per DEC 2004 and classifies it. A paste too
-        // large for acknowledged input goes as one atomic event, unreceipted.
-        // A refusal's receipt is left untracked: the caller says it instead.
-        let receipt = client.with_control(|control| control.apply_user_paste(terminal, text));
-        client.wake();
-        let receipt = receipt.map_err(|_| "Paste refused; nothing was written.")?;
-        self.connection.pastes.extend(receipt);
         self.reclaim_fits();
         Ok(())
     }

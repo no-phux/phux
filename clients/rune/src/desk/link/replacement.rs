@@ -1,6 +1,5 @@
 //! Replace a runtime namespace, not the window that happens to display it.
 use super::Desk;
-use std::time::Instant;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(in crate::desk) enum Replacement {
@@ -19,12 +18,6 @@ impl Desk {
     }
 
     pub(in crate::desk) fn replace_connection(&mut self, policy: Replacement) {
-        let wanted = self
-            .connection
-            .shown
-            .as_ref()
-            .filter(|s| s.view.is_some())
-            .map(|shown| (shown.resource.clone(), Instant::now()));
         let returning = self.connection.resources.returning.or_else(|| {
             self.connection
                 .shown
@@ -42,7 +35,6 @@ impl Desk {
         let mut old = std::mem::replace(&mut self.connection, next);
         old.resources.carry_images(&mut self.connection.resources);
         if policy == Replacement::Retry {
-            self.connection.wanted = wanted;
             self.connection.resources.returning = returning;
             self.connection.resources.dismissed = old.resources.dismissed;
             self.retire_answers();
@@ -54,6 +46,9 @@ impl Desk {
     }
 
     fn reset_connection_interactions(&mut self) {
+        if let Some(panel) = self.quick.as_mut() {
+            panel.forget_move();
+        }
         if let Some(phone) = &mut self.phone {
             phone.reconcile(None, None);
             phone.picker = false;

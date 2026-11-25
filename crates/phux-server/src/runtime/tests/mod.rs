@@ -1,11 +1,11 @@
 use super::*;
 use crate::runtime::apps::terminal::attach::handle_attach;
-use crate::runtime::apps::terminal::commands::seed::*;
-use crate::runtime::apps::terminal::commands::{
-    handle_client_activity, handle_terminal_input, handle_terminal_resize, handle_viewport_resize,
-};
 use crate::runtime::apps::terminal::test_support::{
     StubRx, TerminalInput, seeded_terminal, snapshot_bytes, state_sync_outcome, stub_terminal,
+};
+use crate::runtime::commands::terminal::seed::*;
+use crate::runtime::commands::terminal::{
+    handle_client_activity, handle_terminal_input, handle_terminal_resize, handle_viewport_resize,
 };
 use crate::runtime::committed_close;
 use crate::runtime::config::{
@@ -245,6 +245,9 @@ fn spawn_attach(
             false,
         )
         .await;
+        // This helper represents a still-connected client after ATTACH returns.
+        // Do not abort the app's pending publication/interest owner on return.
+        output_pumps.detach_all();
     })
 }
 

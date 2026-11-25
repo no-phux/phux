@@ -222,6 +222,8 @@ pub static KINDS: [KindSpec; 5] = [
                 C_NATIVE_SPAWN,
                 C_NATIVE_LIST,
                 C_NATIVE_LAUNCH,
+                C_PREPARE_RELAUNCH,
+                C_APPROVE_RELAUNCH,
                 C_NATIVE_COMMAND,
                 C_NATIVE_CONTROLLER,
                 C_CURRENT_QUESTIONS,

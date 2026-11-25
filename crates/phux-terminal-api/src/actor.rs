@@ -27,8 +27,9 @@ pub use input::{EncodedInputRequest, WriteCompletion, WriteCompletionSink, echo_
 #[path = "actor/requests_native.rs"]
 mod native;
 pub use native::{
-    NativeBootstrapReply, NativeBootstrapRequest, NativeHistoryReply, NativeHistoryRequest,
-    NativePublicationReply, NativePublicationRequest, NativeReleaseRequest,
+    NativeBootstrapReply, NativeBootstrapRequest, NativeCapture, NativeCaptureInterest,
+    NativeHistoryReply, NativeHistoryRequest, NativePublicationReply, NativePublicationRequest,
+    NativeReleaseRequest,
 };
 
 /// Register a consumer with the actor (ADR-0018), sent by the ATTACH path.
@@ -49,6 +50,9 @@ pub struct ConsumerAttachRequest {
     pub stream_id: StreamId,
     /// Current replica generation for this subscription.
     pub bootstrap_id: BootstrapId,
+    /// Generation-owned interest. Cancellation prevents installation and
+    /// retires an installed consumer, including raw consumers with no tick output.
+    pub cancellation: tokio_util::sync::CancellationToken,
     /// Whether the consumer negotiated `OutputMode::StateSync`; if so the
     /// tick serves it and the runtime suppresses its broadcast pump.
     pub wants_state_sync: bool,
@@ -68,7 +72,7 @@ pub struct ConsumerAttachRequest {
     pub loss_tolerant: bool,
     /// Aggregate-attach gate: while false, no live state-sync frames.
     pub live_gate: watch::Receiver<bool>,
-    /// Acknowledges the registration; dropping the receiver is benign.
+    /// Acknowledges registration. A lost receiver withdraws this generation.
     pub reply: oneshot::Sender<Result<ConsumerAttachOutcome, ConsumerAttachError>>,
 }
 
@@ -87,7 +91,7 @@ pub struct StateSyncBootstrap {
 pub struct ConsumerAttachOutcome {
     /// `true` when this actor's tick is the sole live emitter.
     pub tick_managed: bool,
-    /// Atomic synthesized bootstrap for a state-sync consumer.
+    /// Atomic synthesized bootstrap when the actor owns live emission.
     pub state_sync_bootstrap: Option<StateSyncBootstrap>,
 }
 
@@ -103,16 +107,62 @@ pub enum ConsumerAttachError {
     /// The actor-global sequence cannot represent a post-bootstrap frame.
     #[error("state-sync sequence exhausted")]
     SequenceExhausted,
+    /// The registration's owner withdrew before installation completed.
+    #[error("consumer registration cancelled")]
+    Cancelled,
 }
 
-/// Drop the per-consumer state for `client_id` (detach or EOF cleanup);
-/// idempotent.
+/// Withdraw an exact generation, or fence all interest during serialized
+/// whole-client teardown/preparation.
 #[derive(Debug)]
 pub struct ConsumerDetachRequest {
     /// Identifier whose engine-private consumer entry to remove.
     pub client_id: ClientId,
+    /// Exact generation to withdraw. `None` is reserved for a serialized
+    /// whole-client fence, never cleanup of an in-flight registration.
+    pub generation: Option<(StreamId, BootstrapId)>,
     /// Fired once the entry is gone; dropping the receiver is benign.
     pub reply: oneshot::Sender<()>,
+}
+
+/// Own unpublished interest until publication transfers it to its parent lifetime.
+/// Drop cancels the actor-owned wait directly, without allocating a teardown
+/// request or relying on detach-mailbox capacity.
+#[derive(Debug)]
+pub struct ConsumerRegistrationGuard {
+    cancellation: tokio_util::sync::CancellationToken,
+    pending: bool,
+}
+
+impl ConsumerRegistrationGuard {
+    /// Begin unpublished interest under an existing connection/pump lifetime.
+    #[must_use]
+    pub fn new(lifetime: &tokio_util::sync::CancellationToken) -> Self {
+        Self {
+            cancellation: lifetime.child_token(),
+            pending: true,
+        }
+    }
+
+    /// The actor's cancellation observation for this exact registration.
+    #[must_use]
+    pub fn cancellation(&self) -> tokio_util::sync::CancellationToken {
+        self.cancellation.clone()
+    }
+
+    /// Publication succeeded; the enclosing connection/pump now owns interest.
+    pub fn published(mut self) {
+        self.pending = false;
+    }
+}
+
+impl Drop for ConsumerRegistrationGuard {
+    fn drop(&mut self) {
+        if !self.pending {
+            return;
+        }
+        self.cancellation.cancel();
+    }
 }
 
 /// Inbound `FRAME_ACK` for the state-sync loop, forwarded by the runtime

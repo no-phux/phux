@@ -6,7 +6,7 @@ use phux_protocol::ids::{
 use phux_protocol::wire::frame::{OrgFilter, OrganizationPage, ResourceRecord, SessionRecord};
 
 fn document_session(kind: ResourceKind, live: bool) -> ControlPlane {
-    let mut plane = ControlPlane::new(ControlOptions::default());
+    let mut plane = ControlPlane::new(std::time::Instant::now(), ControlOptions::default());
     plane.attached_session = Some(1);
     plane.selected_session = Some(2);
     let session = SessionKey::new([2; 16]).unwrap();
@@ -67,4 +67,39 @@ fn explicit_session_wins_over_selection_and_home_needs_no_owner() {
             ..
         }
     ));
+}
+
+#[test]
+fn typed_unavailable_spawn_leaves_no_queue_journal_or_reply() {
+    let mut plane = ControlPlane::new(std::time::Instant::now(), ControlOptions::default());
+    assert!(matches!(
+        plane.submit_spawn(SpawnRequest::default()),
+        WorkflowSubmission::NotQueued { .. }
+    ));
+    assert!(plane.take_outbound().is_empty());
+    assert!(plane.take_events().is_empty());
+    assert!(plane.pending_organization_operations().next().is_none());
+}
+
+#[test]
+fn lost_once_only_spawn_receipt_is_typed_unknown_and_never_replayable() {
+    let mut plane = document_session(ResourceKind::Terminal, true);
+    plane.handshake_ready = true;
+    plane.status = Status::Attached;
+    let WorkflowSubmission::Queued { request_id } =
+        plane.submit_spawn_once(SpawnRequest::default())
+    else {
+        panic!("once-only spawn must queue");
+    };
+    let _ = plane.take_outbound();
+    plane.connection_lost(Some("receipt lost".into()));
+    assert!(plane.take_events().iter().any(|event| matches!(event,
+        Event::TerminalCreation { request_id: actual,
+            outcome: crate::control::TerminalCreationOutcome::Unknown { .. } }
+            if *actual == request_id)));
+    assert!(!plane.pending.contains_key(&request_id));
+    assert!(
+        plane.take_outbound().is_empty(),
+        "unknown is never permission to launch another terminal"
+    );
 }

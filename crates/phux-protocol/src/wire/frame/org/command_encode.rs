@@ -21,6 +21,7 @@ pub(super) const fn org_command_tag(command: &Command) -> Option<u8> {
         Command::GetOrganization { .. } => COMMAND_TAG_GET_ORGANIZATION,
         Command::GetCreation { .. } => crate::wire::frame::COMMAND_TAG_GET_CREATION,
         Command::SessionCreate { .. } => COMMAND_TAG_SESSION_CREATE,
+        Command::SessionEnsure { .. } => crate::wire::frame::COMMAND_TAG_SESSION_ENSURE,
         Command::SessionRename { .. } => COMMAND_TAG_SESSION_RENAME,
         Command::SessionSetLifetime { .. } => COMMAND_TAG_SESSION_SET_LIFETIME,
         Command::SessionDelete { .. } => COMMAND_TAG_SESSION_DELETE,
@@ -69,6 +70,23 @@ pub(in crate::wire) fn encode_org_command(command: &Command, enc: &mut Encoder<'
             }
         }
         Command::SessionCreate {
+            operation,
+            name,
+            lifetime,
+            attrs,
+            launch,
+        } => {
+            write_operation(enc, operation);
+            write_name(enc, name);
+            enc.write_u8_field(field::org::LIFETIME, lifetime.to_u8());
+            for pair in attrs {
+                encode_pair(enc, field::org::ATTR, pair);
+            }
+            if let Some(launch) = launch {
+                enc.write_field_with(field::org::LAUNCH, |e| encode_launch(launch, e));
+            }
+        }
+        Command::SessionEnsure {
             operation,
             name,
             lifetime,

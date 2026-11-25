@@ -9,10 +9,8 @@ use phux_terminal_api::actor::TerminalResource as _;
 
 /// The negotiated shape shared by every pane capture in one ATTACH.
 pub(super) struct PaneCaptureContext<'a> {
-    pub(in crate::runtime) state: &'a SharedState,
+    pub(in crate::runtime) lease: &'a crate::runtime::apps::StreamLease,
     pub(in crate::runtime) out_tx: &'a tokio::sync::mpsc::Sender<Outbound>,
-    /// Cancelled by a pump whose generation became unrecoverable.
-    pub(super) connection_token: &'a CancellationToken,
     /// Released once the aggregate publication is on the wire.
     pub(super) live_gate_rx: tokio::sync::watch::Receiver<bool>,
     pub(in crate::runtime) client_id: ClientId,
@@ -55,6 +53,8 @@ impl PaneCaptureContext<'_> {
         let Ok(terminal) = handle.terminal() else {
             return ConsumerRegistration::default();
         };
+        let registration =
+            phux_terminal_api::actor::ConsumerRegistrationGuard::new(&self.lease.cancellation);
         let (attach_reply_tx, attach_reply_rx) = oneshot::channel();
         if terminal
             .consumer_attach
@@ -64,6 +64,7 @@ impl PaneCaptureContext<'_> {
                 wire_terminal_id: wire_id,
                 stream_id: self.stream_id,
                 bootstrap_id: self.bootstrap_id,
+                cancellation: registration.cancellation(),
                 wants_state_sync: self.wants_state_sync(),
                 state_sync_scrollback: self.scrollback,
                 image_protocols: self.client_caps.image_protocols,
@@ -84,6 +85,7 @@ impl PaneCaptureContext<'_> {
             );
             return ConsumerRegistration {
                 actor_gone: true,
+                guard: Some(registration),
                 ..ConsumerRegistration::default()
             };
         }
@@ -99,6 +101,7 @@ impl PaneCaptureContext<'_> {
                     tick_managed: outcome.tick_managed,
                     state_sync_bootstrap: outcome.state_sync_bootstrap,
                     actor_gone: false,
+                    guard: Some(registration),
                 }
             }
             Ok(Err(err)) => {
@@ -107,7 +110,10 @@ impl PaneCaptureContext<'_> {
                     error = %err,
                     "per-consumer state-sync register failed; broadcast path still serves this pane",
                 );
-                ConsumerRegistration::default()
+                ConsumerRegistration {
+                    guard: Some(registration),
+                    ..ConsumerRegistration::default()
+                }
             }
             Err(_) => {
                 warn!(
@@ -116,6 +122,7 @@ impl PaneCaptureContext<'_> {
                 );
                 ConsumerRegistration {
                     actor_gone: true,
+                    guard: Some(registration),
                     ..ConsumerRegistration::default()
                 }
             }
@@ -133,7 +140,7 @@ impl PaneCaptureContext<'_> {
         wire_terminal_id: &phux_protocol::ids::ResourceId,
         handle: &ResourceHandle,
         terminal: &phux_terminal_api::actor::TerminalHandle,
-    ) {
+    ) -> Result<(), CaptureFailure> {
         let output_rx = handle.output.subscribe();
         let ctx = OutputPumpContext {
             out_tx: self.out_tx.clone(),
@@ -147,37 +154,36 @@ impl PaneCaptureContext<'_> {
             limits: self.limits,
             lag_label: "ResourceOutput pump",
             stale_skip: true,
-            cancel: None,
+            cancel: Some(self.lease.cancellation.clone()),
             drain: Some(CancellationToken::new()),
             snapshot: Some(terminal.snapshot.clone()),
-            last_seq: None,
+            last_seq: Some(std::sync::Arc::clone(&self.lease.last_seq)),
             terminal: terminal.clone(),
         };
-        let pump_state = self.state.clone();
-        let pump_connection_token = self.connection_token.clone();
-        let client_id = self.client_id;
+        let owner = self.lease.clone();
         let (gate_tx, gate_rx) = oneshot::channel::<OutputPumpStart>();
-        staging.gates.push(SnapshotGate {
+        staging.publication.gates.push(SnapshotGate {
             terminal_id,
-            wire_terminal_id: wire_terminal_id.clone(),
             terminal: terminal.clone(),
             gate: gate_tx,
             cut: None,
-            native_cursor: None,
+            native_capture: None,
         });
-        pump::spawn_tracked(
-            self.state,
-            client_id,
-            terminal_id,
-            Some(&mut staging.pumps),
+        if !self.lease.spawn(
+            Some(&mut staging.publication.pumps),
             ctx.drain.clone(),
             async move {
                 let Some(fault) = run_output_pump(&ctx, gate_rx, output_rx).await else {
                     return;
                 };
-                release_after_pump_fault(fault, &pump_state, client_id, &pump_connection_token);
+                owner.retire_terminal_fault(fault);
             },
-        );
+        ) {
+            return Err(CaptureFailure::Failed(
+                "aggregate stream reservation superseded".to_owned(),
+            ));
+        }
+        Ok(())
     }
 
     /// Adapt one pane's synthesized snapshot to the client's capabilities,

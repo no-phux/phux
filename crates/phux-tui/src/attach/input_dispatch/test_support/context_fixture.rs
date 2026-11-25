@@ -17,6 +17,8 @@ pub(super) use crate::test_util::kernel as test_engine_kernel;
 pub(super) struct CtxFixture {
     pub(super) engine_kernel: AttachKernel,
     pub(super) leaves: crate::attach::surface_leaf::LeafBook,
+    pub(super) keybindings: phux_config::KeybindingsCfg,
+    pub(super) resolver: phux_config::keybind::Resolver,
     pub(super) focus_history: FocusHistory,
     pub(super) workspace: ArrangementDoc,
     pub(super) layout_read_complete: bool,
@@ -82,10 +84,14 @@ impl Default for CtxFixture {
     /// A single-window workspace on an 80x24 viewport with 1x1 cells, no
     /// sidebar or bar, a confirmed layout read, and every server feature.
     fn default() -> Self {
+        let cfg = default_cfg();
+        let resolver = phux_config::keybind::Resolver::new(&cfg.keybindings).expect("resolver");
         Self {
             engine_kernel: test_engine_kernel(),
             leaves: crate::attach::surface_leaf::LeafBook::default(),
             focus_history: FocusHistory::default(),
+            keybindings: cfg.keybindings,
+            resolver,
             workspace: ArrangementDoc::single(tid(1)),
             layout_read_complete: true,
             unloaded_arrangement_read: None,
@@ -158,7 +164,7 @@ impl CtxFixture {
             control_dial: None,
             engine_kernel: &mut self.engine_kernel,
             leaves: &self.leaves,
-            resolver: None,
+            resolver: &mut self.resolver,
             focus_history: self.focus_history.clone(),
             workspace: &mut self.workspace,
             layout_read_complete: self.layout_read_complete,
@@ -181,7 +187,7 @@ impl CtxFixture {
             session_members: &self.session_members,
             pending_kills: &mut self.pending_kills,
             overlays: &mut self.overlays,
-            keybindings: None,
+            keybindings: &self.keybindings,
             theme: &self.theme,
             peers: crate::attach::sidebar_zones::PeerInputs {
                 serving_host: None,

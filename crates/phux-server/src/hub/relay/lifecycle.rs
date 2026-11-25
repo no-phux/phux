@@ -2,20 +2,48 @@
 
 use super::{
     ClientId, CommandResult, ErrorCode, Outbound, RELAY_COMMAND_TIMEOUT, RelayResume, RelaySession,
-    ResourceId, SpawnError, SpawnResult, debug, listing_refusal, path_refusal, unreachable_error,
+    SpawnError, SpawnResult, debug, listing_refusal, path_refusal, unreachable_error,
 };
 
 impl RelaySession {
+    pub(super) fn link_is_current(&self) -> bool {
+        if let Some(journal) = &self.journal {
+            return journal.with(|s| {
+                s.federation()
+                    .satellite_link_is_current(&self.host, self.epoch)
+            });
+        }
+        self.resource_kinds.as_ref().is_none_or(|catalog| {
+            catalog
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .epoch
+                == self.epoch
+        })
+    }
+
     /// Fail in-flight commands, notify subscribers, clear registries. Once
-    /// per session. Returns what the next connection resumes.
+    /// per session. Returns what the next connection resumes: the content
+    /// attaches only, which it registers again under its own epoch.
     pub(crate) fn teardown(&mut self, why: &str) -> RelayResume {
+        if let Some(journal) = &self.journal {
+            journal.with_mut(|s| {
+                if s.federation()
+                    .satellite_link_is_current(&self.host, self.epoch)
+                {
+                    s.interrupt_satellite_host(&self.host);
+                    s.federation_mut()
+                        .end_satellite_link(&self.host, self.epoch);
+                }
+            });
+        }
         if let Some(catalog) = &self.resource_kinds {
             let mut catalog = catalog
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            catalog.kinds.clear();
-            catalog.controls.clear();
-            catalog.terminal_profile = None;
+            if catalog.epoch == self.epoch {
+                catalog.end_link();
+            }
         }
         let mut refused = Vec::new();
         for (_, pending) in self.pending.drain() {
@@ -63,11 +91,10 @@ impl RelaySession {
                 "notified proxy subscribers of satellite teardown"
             );
         }
-        self.interrupt_consumer_scopes();
         // A consumer told its attach failed is not attached: resuming it would
         // stream to a pane it never opened.
-        for (terminal, client, effect) in refused {
-            self.roll_back_subscription(terminal, client, effect);
+        for registration in refused {
+            self.roll_back_registration(&registration);
         }
         let resume = self.take_resume();
         self.bootstrap_flows.clear();
@@ -81,20 +108,6 @@ impl RelaySession {
         self.inflight_generation_bytes = 0;
         self.inflight_generation_frames = 0;
         resume
-    }
-
-    /// Drop every consumer's satellite scope from the event registry, owing
-    /// each a `journal_gap` (ADR-0123).
-    pub(super) fn interrupt_consumer_scopes(&self) {
-        let Some(journal) = &self.journal else {
-            return;
-        };
-        for (id, subs) in &self.subscribers {
-            let scope = ResourceId::satellite(self.host.clone(), *id);
-            for sub in subs {
-                journal.with_mut(|s| s.interrupt_satellite_scope(sub.client, &scope));
-            }
-        }
     }
 
     /// Drop pending entries whose consumer stopped waiting; returns how many.
@@ -112,17 +125,19 @@ impl RelaySession {
         });
         // Its consumer was told the attach failed: a late answer finds nobody
         // and is detached.
-        for (terminal, client, effect) in abandoned {
+        for registration in abandoned {
+            let (terminal, client) = (registration.terminal, registration.client);
             // A retry still in flight decides instead.
             let retried = self.pending.values().any(|pending| {
                 pending
                     .subscription
-                    .is_some_and(|rider| (rider.0, rider.1) == (terminal, client))
+                    .as_ref()
+                    .is_some_and(|rider| (rider.terminal, rider.client) == (terminal, client))
             });
             if retried {
                 continue;
             }
-            self.roll_back_subscription(terminal, client, effect);
+            self.roll_back_registration(&registration);
             if !self.subscribers.contains_key(&terminal) {
                 self.orphaned_by_delivery.insert(terminal);
             }
@@ -170,5 +185,11 @@ impl RelaySession {
             ));
         }
         Ok(())
+    }
+}
+
+impl Drop for RelaySession {
+    fn drop(&mut self) {
+        self.teardown("link session dropped");
     }
 }

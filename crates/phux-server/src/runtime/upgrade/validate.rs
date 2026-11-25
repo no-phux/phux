@@ -210,7 +210,7 @@ pub(super) fn clear_inherited_cloexec(
     blob_fd: RawFd,
     listener_fd: RawFd,
     blob: &StateBlob,
-    cuts: &[Box<dyn crate::runtime::apps::UpgradeCut>],
+    cuts: &[Box<dyn crate::runtime::upgrade::kinds::UpgradeCut>],
 ) -> Result<FdFlagsGuard, UpgradeError> {
     let mut fd_flags = FdFlagsGuard::new();
     fd_flags.clear_cloexec(blob_fd)?;

@@ -24,6 +24,7 @@ impl RelaySession {
             profile.resume_after_seq().is_some(),
             self.satellite_features,
             self.satellite_features_ext,
+            self.satellite_features_ext2,
         )
     }
 

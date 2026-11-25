@@ -96,7 +96,7 @@ fn requires_native_capability_before_scheduling() {
 
 #[test]
 fn validates_before_scheduling_and_bounds_pending_commands() {
-    let mut offline = ControlPlane::new(ControlOptions::default());
+    let mut offline = ControlPlane::new(std::time::Instant::now(), ControlOptions::default());
     assert_eq!(
         offline.native_agent_command(&AGENT, "activation-A", prompt()),
         None

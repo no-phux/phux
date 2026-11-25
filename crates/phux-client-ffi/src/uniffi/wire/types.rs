@@ -16,12 +16,14 @@ mod document_input;
 mod lowering;
 mod paths;
 mod wire_event;
+mod workflow;
 
 pub use agent_state::*;
 pub use document_input::*;
 pub(in crate::uniffi::wire) use lowering::lower_event;
 pub use paths::*;
 pub use wire_event::*;
+pub use workflow::*;
 
 /// Connection status, polled by Swift to drive UI.
 #[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -128,6 +130,30 @@ impl From<phux_client_runtime::control::TerminalResizeOutcome> for WireResizeOut
             Outcome::InvalidSize => Self::InvalidSize,
             Outcome::Observer => Self::Observer,
             Outcome::NotReady => Self::NotReady,
+        }
+    }
+}
+
+/// Canonical user clipboard submission; queueing is not delivery.
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use]
+pub enum WireInputSubmission {
+    NotQueued,
+    Refused { delivery_id: u64 },
+    QueuedRaw,
+    AwaitingReceipt { delivery_id: u64 },
+}
+
+impl From<phux_client_core::input_replay::InputSubmission> for WireInputSubmission {
+    fn from(value: phux_client_core::input_replay::InputSubmission) -> Self {
+        use phux_client_core::input_replay::InputSubmission;
+        match value {
+            InputSubmission::NotQueued => Self::NotQueued,
+            InputSubmission::Refused { delivery_id } => Self::Refused { delivery_id },
+            InputSubmission::QueuedRaw => Self::QueuedRaw,
+            InputSubmission::AwaitingReceipt { delivery_id } => {
+                Self::AwaitingReceipt { delivery_id }
+            }
         }
     }
 }

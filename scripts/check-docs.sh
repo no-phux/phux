@@ -338,7 +338,12 @@ gate_crates() {
 # relative to $ROOT.
 collect_sources() {
     if git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        git -C "$ROOT" ls-files --cached --others --exclude-standard -- crates clients
+        git -C "$ROOT" ls-files --cached --others --exclude-standard -- crates clients |
+            while IFS= read -r rel; do
+                if [[ -f "$ROOT/$rel" ]]; then
+                    printf '%s\n' "$rel"
+                fi
+            done
     else
         (cd "$ROOT" && find crates clients -type f 2>/dev/null || true)
     fi | grep -E '\.(rs|h|c|m|mm|swift|ts|tsx|js|mjs|kt|java|py|sh|toml|zig|go)$' |

@@ -26,7 +26,7 @@ fn begin_replacements(actor: &mut TerminalActor, pumps: [Pump; 2]) -> [CaptureRe
     let initial = BootstrapId::new(1).expect("initial bootstrap");
     for (owner, stream) in pumps {
         let capture = capture_native_for_pump(actor, owner, stream, initial);
-        activate_native_for_pump(actor, owner, stream, initial, capture.publication_cursor)
+        activate_native_for_pump(actor, owner, stream, initial, capture.capture.cursor)
             .expect("initial publication");
     }
     let receivers = pumps.map(|(owner, stream)| {
@@ -41,6 +41,7 @@ fn begin_replacements(actor: &mut TerminalActor, pumps: [Pump; 2]) -> [CaptureRe
     });
     assert_eq!(
         actor
+            .publication
             .pending_native_bootstrap
             .as_ref()
             .map(|p| p.waiters.len()),
@@ -57,7 +58,11 @@ fn finish_capture(
 ) -> NativeBootstrapReply {
     for _ in 0..64 {
         match response.try_recv() {
-            Ok(reply) => return reply.expect("real native capture"),
+            Ok(reply) => {
+                let mut capture = reply.expect("real native capture");
+                capture.capture.published();
+                return capture;
+            }
             Err(oneshot::error::TryRecvError::Empty) => actor.cooperative_native_step(),
             Err(oneshot::error::TryRecvError::Closed) => panic!("capture reply dropped"),
         }
@@ -70,10 +75,7 @@ fn finish_captures(
     receivers: [CaptureReceiver; 2],
 ) -> [NativeBootstrapReply; 2] {
     let captures = receivers.map(|response| finish_capture(actor, response));
-    assert_eq!(
-        captures[0].publication_cursor,
-        captures[1].publication_cursor
-    );
+    assert_eq!(captures[0].capture.cursor, captures[1].capture.cursor);
     assert!(!actor.native_bootstrap_pending());
     captures
 }
@@ -90,7 +92,7 @@ fn activate_replacements(
             owner,
             stream,
             replacement_id(),
-            captures[i].publication_cursor,
+            captures[i].capture.cursor,
         );
         result.err()
     })
@@ -128,14 +130,15 @@ async fn admitted_resize_after_ready_is_recoverable_for_both_replacement_owners(
     let admitted = actor.resize_rx.try_recv().expect("queued geometry");
     let owed = actor.apply_resize_request(admitted);
     assert_eq!(owed.len(), 1, "the reflow must owe a replacement resync");
-    assert_eq!(actor.native_cursor_owners.len(), 2);
+    assert_eq!(actor.publication.native_cursor_owners.len(), 2);
     assert!(
         actor
+            .publication
             .native_cursor_owners
             .values()
             .all(|binding| binding.superseded)
     );
-    assert!(actor.native_publications.is_empty());
+    assert!(actor.publication.native_publications.is_empty());
     let errors = activate_replacements(&mut actor, pumps, &captures);
     assert_eq!(
         errors,
@@ -312,7 +315,7 @@ async fn releasing_the_old_owner_preserves_the_current_pending_publication() {
         pumps[1].0,
         pumps[1].1,
         replacement_id(),
-        captures[1].publication_cursor,
+        captures[1].capture.cursor,
     )
     .expect("old owner release must not invalidate current publication");
 }
@@ -329,7 +332,7 @@ async fn wrong_bootstrap_identity_is_rejected_without_consuming_valid_publicatio
         pumps[0].0,
         pumps[0].1,
         BootstrapId::new(99).expect("wrong bootstrap"),
-        captures[0].publication_cursor,
+        captures[0].capture.cursor,
     );
     assert_eq!(bad.err(), Some(NativeStateError::InvalidHandle));
     assert_eq!(

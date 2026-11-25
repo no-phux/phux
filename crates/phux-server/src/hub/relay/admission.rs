@@ -13,7 +13,11 @@ use super::{
 impl RelaySession {
     fn method_advertised(&self, name: &str) -> bool {
         phux_protocol::kinds::method_named(name).is_some_and(|method| {
-            method.advertised(self.satellite_features, self.satellite_features_ext)
+            method.advertised(
+                self.satellite_features,
+                self.satellite_features_ext,
+                self.satellite_features_ext2,
+            )
         })
     }
 
@@ -46,6 +50,46 @@ impl RelaySession {
     /// Refuse, without touching the link, a command this satellite cannot
     /// evaluate (conditional kill, or a keyed op without dedupe).
     pub(super) fn command_rejection(&self, command: &Command) -> Option<CommandResult> {
+        if matches!(command, Command::NativeAgent { request } if matches!(request.request(),
+            phux_protocol::native_agent::NativeRequest::PrepareRelaunch { .. }
+            | phux_protocol::native_agent::NativeRequest::ApproveRelaunch { .. }))
+        {
+            return Some(CommandResult::error(
+                ErrorCode::UnsupportedSatelliteRoute,
+                "raw archived recipe review requires a direct local-owner connection to its executing host; nothing was forwarded",
+            ));
+        }
+        let archived = matches!(command, Command::ResourceRelaunch { .. })
+            || matches!(command, Command::NativeAgent { request } if matches!(request.request(),
+                phux_protocol::native_agent::NativeRequest::Spawn { spec }
+                    if spec.guardian.is_some() || spec.guardian_key.is_some()));
+        if archived
+            && !self
+                .satellite_features_ext2
+                .contains(phux_protocol::caps::ServerFeatureExt2::ArchivedLaunchAdmission)
+        {
+            let earlier_send =
+                crate::hub::operation_fence::fenced_key(command).is_some_and(|key| {
+                    self.operations
+                        .was_forwarded(key, std::time::Instant::now())
+                });
+            return Some(CommandResult::error(
+                if earlier_send {
+                    ErrorCode::InputDeliveryUnknown
+                } else {
+                    ErrorCode::UnsupportedSatelliteRoute
+                },
+                format!(
+                    "satellite {} lacks ARCHIVED_LAUNCH_ADMISSION on this connection; no archived execution was forwarded here{}",
+                    self.host,
+                    if earlier_send {
+                        "; the original operation may already have executed: reconcile it before any fresh launch"
+                    } else {
+                        ""
+                    }
+                ),
+            ));
+        }
         if let Some(message) = self.conditional_kill_rejection(command) {
             return Some(CommandResult::Error {
                 code: ErrorCode::PreconditionFailed,

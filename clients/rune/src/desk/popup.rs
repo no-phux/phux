@@ -22,14 +22,22 @@ pub struct Popup {
     /// The focused terminal's folder and session when it was asked for.
     cwd: Option<String>,
     session: Option<u32>,
-    /// The spawn the server hasn't answered. It outlives a dismissed box, so
-    /// the terminal that lands is closed rather than left running unseen.
+    /// The spawn awaiting its correlated answer. Dismissing the box does not
+    /// compensate by terminating a durable execution that may already exist.
     request: Option<u32>,
     /// Its terminal, and that terminal's view once the replica has one.
     terminal: Option<(ResourceId, Option<ViewId>)>,
+    /// Captured when the command was requested, not when a receipt arrives.
+    server: Option<Vec<u8>>,
+    intent: Option<super::view_intent::ViewIntent>,
+    origin_epoch: u64,
+    origin: Option<super::connection::CallbackFence>,
 }
 
 impl Popup {
+    pub(in crate::desk) fn owns_request(&self, request: u32) -> bool {
+        self.request == Some(request)
+    }
     /// The command line of the box on screen.
     pub fn command(&self) -> Option<&str> {
         self.command.as_deref()
@@ -139,27 +147,51 @@ impl Desk {
             .client
             .as_ref()
             .and_then(|c| c.selected_session());
+        self.connection.popup.server = self.connection.view_server.clone();
+        self.connection.popup.origin_epoch = self.connection.view_epoch;
+        self.connection.popup.origin = self.connection.callback_fence();
     }
 
     /// The empty box's grid area in points: run the command through `sh`,
     /// in the focused terminal's folder and session, at that many cells.
     pub fn popup_laid_out(&mut self, area: [f32; 2]) {
-        let (Some(client), Some(line)) = (&self.connection.client, &self.connection.popup.command)
-        else {
+        let (Some(client), Some(line)) = (
+            self.connection.client.clone(),
+            self.connection.popup.command.clone(),
+        ) else {
             return;
         };
         if self.connection.popup.request.is_some() || self.connection.popup.terminal.is_some() {
             return;
         }
-        // ponytail: an answer that crosses a server restart is taken at its
-        // word; fence it with `Receipts`, as splits are, if that bites.
-        self.connection.popup.request = Some(client.spawn_terminal(SpawnRequest {
-            command: Some(vec!["/bin/sh".to_owned(), "-c".to_owned(), line.clone()]),
+        if !self
+            .connection
+            .popup
+            .origin
+            .as_ref()
+            .is_some_and(|origin| origin.is_current(&self.connection))
+        {
+            self.close_popup(&client, false);
+            return;
+        }
+        let request = SpawnRequest {
+            command: Some(vec!["/bin/sh".to_owned(), "-c".to_owned(), line]),
             cwd: self.connection.popup.cwd.clone(),
             env: None,
             session_id: self.connection.popup.session,
             initial_size: Some(self.metrics().fit(area)),
-        }));
+        };
+        let submission = client.with_control(|control| {
+            (control.connection_epoch() == self.connection.popup.origin_epoch
+                && control.server().map(|server| server.id.as_slice())
+                    == self.connection.popup.server.as_deref())
+            .then(|| control.submit_spawn(request))
+        });
+        let Some(submission) = submission else {
+            self.close_popup(&client, false);
+            return;
+        };
+        self.connection.popup.request = self.accept_spawn(submission);
     }
 
     /// The server's answer to a spawn. True when it was the popup's.
@@ -170,18 +202,33 @@ impl Desk {
         id: Option<&ResourceId>,
         error: Option<&str>,
     ) -> bool {
+        if !self.connection.owns_client(client) {
+            return false;
+        }
         if self.connection.popup.request != Some(request) {
             return false;
         }
         self.connection.popup.request = None;
+        self.connection.spawn_servers.remove(&request);
         match (id, self.connection.popup.command.is_some()) {
             (Some(id), true) => {
-                self.connection.popup.terminal = Some((id.clone(), client.create_view(id).ok()));
+                let mut intent = super::view_intent::ViewIntent::new(
+                    client,
+                    id,
+                    self.connection.popup.server.clone(),
+                    self.connection.popup.origin_epoch,
+                );
+                let view = intent.open(client, id);
+                if intent.refused() {
+                    self.close_popup(client, false);
+                    return true;
+                }
+                self.connection.popup.intent = Some(intent);
+                self.connection.popup.terminal = Some((id.clone(), view));
             }
-            // Dismissed while it was starting.
-            (Some(id), false) => {
-                self.report_close_submission(client.close_terminals(vec![id.clone()]));
-            }
+            // No view was installed. The connection's pump is not ours to
+            // detach: another view may already be using this exact resource.
+            (Some(_), false) => {}
             (None, up) => {
                 self.connection.popup = Popup::default();
                 if up {
@@ -193,8 +240,7 @@ impl Desk {
         true
     }
 
-    /// Open the popup's view once its replica is ready, and again when a
-    /// reconnect dropped it. True when the box has something new to draw.
+    /// Retry only the popup's original publication, including offline replicas.
     pub(super) fn tend_popup(&mut self, client: &Client, tx: &mut Tx) -> bool {
         let Some((id, view)) = &mut self.connection.popup.terminal else {
             return false;
@@ -202,22 +248,50 @@ impl Desk {
         if view.is_some_and(|view| client.view_generation(view).is_some()) {
             return false;
         }
-        *view = client.create_view(id).ok();
-        if view.is_none() {
+        let Some(intent) = self.connection.popup.intent.as_mut() else {
+            self.close_popup(client, false);
+            return true;
+        };
+        *view = intent.open(client, id);
+        let opened = view.is_some();
+        if intent.refused() {
+            self.close_popup(client, false);
+            return true;
+        }
+        if !opened {
             tx.wake_after(Duration::from_millis(250));
         }
-        view.is_some()
+        opened
     }
 
-    /// `id`'s command exited (`kill`: the server may keep the terminal for
-    /// its exit status, so it is closed) or its terminal closed. True when
-    /// it was the popup's, whose box goes with it.
-    pub(super) fn popup_ended(&mut self, client: &Client, id: &ResourceId, kill: bool) -> bool {
+    /// An exit/close notification retires presentation, never authorizes a
+    /// compensating execution termination.
+    pub(super) fn popup_ended(&mut self, client: &Client, id: &ResourceId) -> bool {
+        if !self.connection.owns_client(client) {
+            return false;
+        }
         if self.connection.popup.terminal() != Some(id) {
             return false;
         }
-        self.close_popup(client, kill);
+        self.close_popup(client, false);
         true
+    }
+    pub(in crate::desk) fn retire_stale_popup(&mut self, client: &Client) -> bool {
+        if self.connection.popup.command.is_some()
+            && (self.connection.status.is_terminal()
+                || self.connection.popup.server != self.connection.view_server
+                || (self.connection.popup.origin_epoch != self.connection.epoch
+                    && self
+                        .connection
+                        .popup
+                        .intent
+                        .as_ref()
+                        .is_none_or(|intent| !intent.has_source())))
+        {
+            self.close_popup(client, false);
+            return true;
+        }
+        false
     }
 
     /// Close the box and end its command, asking first where closing any
@@ -235,13 +309,30 @@ impl Desk {
     /// Take the box down; `kill` ends its command too.
     pub(super) fn close_popup(&mut self, client: &Client, kill: bool) {
         let popup = std::mem::take(&mut self.connection.popup);
-        self.connection.popup.request = popup.request;
+        if let Some(request) = popup.request {
+            self.connection.spawn_servers.remove(&request);
+        }
         if let Some((id, view)) = popup.terminal {
             if let Some(view) = view {
                 let _ = client.destroy_view(view);
             }
-            if kill {
-                self.report_close_submission(client.close_terminals(vec![id.clone()]));
+            if kill
+                && popup
+                    .intent
+                    .as_ref()
+                    .is_some_and(|intent| intent.owns_client(client))
+            {
+                let request = client.with_control(|control| {
+                    if control.connection_epoch() == popup.origin_epoch
+                        && control.server().map(|server| server.id.as_slice())
+                            == popup.server.as_deref()
+                    {
+                        control.close_terminals(vec![id.clone()])
+                    } else {
+                        None
+                    }
+                });
+                self.report_close_submission(request);
             }
             self.connection.fitted.remove(&id);
             self.connection.areas.remove(&id);
@@ -256,3 +347,6 @@ impl Desk {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod source_admission;

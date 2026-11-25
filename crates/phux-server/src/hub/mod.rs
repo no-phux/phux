@@ -353,7 +353,13 @@ pub(crate) fn reload_satellites(state: &crate::state::SharedState) {
             return;
         }
     }
-    let diff = state.with_mut(|s| s.federation_mut().replace_table(next, state));
+    let diff = state.with_mut(|s| {
+        let diff = s.federation_mut().replace_table(next, state);
+        for host in diff.removed.iter().chain(&diff.changed) {
+            s.interrupt_satellite_host(host);
+        }
+        diff
+    });
     log_reload(&diff);
 }
 

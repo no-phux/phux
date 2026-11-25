@@ -68,7 +68,9 @@ impl From<EngineError> for SearchError {
     fn from(error: EngineError) -> Self {
         match error {
             EngineError::AnchorUnavailable(reason) => Self::StaleMatch { reason },
-            EngineError::Stopped | EngineError::ProjectionUnavailable => Self::Unavailable,
+            EngineError::Stopped
+            | EngineError::ProjectionUnavailable
+            | EngineError::StaleViewSource => Self::Unavailable,
             EngineError::Engine(reason) => Self::Engine { reason },
             EngineError::Spawn(error) => Self::Engine {
                 reason: error.to_string(),

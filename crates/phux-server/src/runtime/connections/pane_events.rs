@@ -28,7 +28,7 @@ pub(crate) struct PaneEvents {
 
 /// Drain a pane's events into the journal for as long as its sink lives:
 /// the fallback for a pane with no exit notification to watch.
-pub(super) fn spawn_pane_event_drain(state: SharedState, mut events: PaneEvents) {
+pub(in crate::runtime) fn spawn_pane_event_drain(state: SharedState, mut events: PaneEvents) {
     tokio::task::spawn_local(async move {
         while let Some(event) = events.source.recv().await {
             let dropped = events.source.take_dropped();

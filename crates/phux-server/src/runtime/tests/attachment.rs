@@ -95,6 +95,7 @@ async fn attach_registers_and_detach_unregisters_consumer_lifecycle() {
         assert_eq!(attach_req.client_id, wire_client(client_id));
         assert!(attach_req.wire_terminal_id >= 1);
         let live_gate = attach_req.live_gate.clone();
+        let prior_interest = attach_req.cancellation.clone();
         assert!(!*live_gate.borrow(), "live output waits for ATTACH_READY");
         attach_req
             .reply
@@ -105,20 +106,25 @@ async fn attach_registers_and_detach_unregisters_consumer_lifecycle() {
         expect_frames(&mut out_rx, &bootstrap).await;
 
         let second = spawn_attach(&state, client_id, 2, "lifecycle", &out_tx, caps, profile);
-        let retired = tokio::time::timeout(MAILBOX_DEADLINE, rx.consumer_detach.recv())
-            .await
-            .expect("replacement did not retire the prior consumer")
-            .expect("consumer detach channel closed");
-        assert_eq!(retired.client_id, wire_client(client_id));
-        assert!(
-            out_rx.try_recv().is_err(),
-            "replacement ATTACHED must wait until prior emission is retired",
-        );
-        retired.reply.send(()).expect("ack retirement");
         let replacement = tokio::time::timeout(MAILBOX_DEADLINE, rx.consumer_attach.recv())
             .await
             .expect("replacement ConsumerAttachRequest did not arrive")
             .expect("consumer attach channel closed");
+        // The replacement's exact reservation cancelled the prior registration
+        // (the actor's emission fence) before it registered or emitted.
+        assert!(
+            prior_interest.is_cancelled(),
+            "replacement retires the prior consumer"
+        );
+        assert!(!replacement.cancellation.is_cancelled());
+        assert!(
+            out_rx.try_recv().is_err(),
+            "replacement ATTACHED must wait until prior emission is retired",
+        );
+        assert!(
+            rx.consumer_detach.try_recv().is_err(),
+            "retirement is exact, not a client-wide detach"
+        );
         let replacement_gate = replacement.live_gate.clone();
         assert!(!*replacement_gate.borrow());
         replacement
@@ -260,7 +266,13 @@ async fn native_resync_capture_failure_closes_connection_and_rolls_back_consumer
                 ],
                 retained_bytes: b"opaque-checkpoint".len(),
                 base_seq: 0,
-                publication_cursor: [9; 32],
+                capture: phux_terminal_api::actor::NativeCapture::new(
+                    initial.owner,
+                    initial.terminal_id.clone(),
+                    stream_id,
+                    bootstrap_id,
+                    [9; 32],
+                ),
             }))
             .expect("initial native reply");
         let publication = tokio::time::timeout(MAILBOX_DEADLINE, rx.native_publication.recv())
@@ -271,6 +283,7 @@ async fn native_resync_capture_failure_closes_connection_and_rolls_back_consumer
         publication
             .reply
             .send(Ok(NativePublicationReply {
+                interest: phux_terminal_api::actor::NativeCaptureInterest::default(),
                 replay: Vec::new(),
                 live: output_tx.subscribe(),
             }))

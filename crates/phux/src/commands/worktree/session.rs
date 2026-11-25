@@ -6,12 +6,12 @@ use std::process::ExitCode;
 
 use phux_config::socket::default_socket_path;
 
-use crate::commands::{attach, cli_runtime, ensure_socket_path_fits, new, server, server_target};
+use crate::commands::{cli_runtime, ensure_socket_path_fits, new, server, server_target};
 
-use super::{
-    binding_json, collect, fail_json, git_bytes, live_session_names, repo_root, report,
-    resolve_target, session_name_for,
-};
+use super::{binding_json, collect, fail_json, git_bytes, repo_root, session_name_for};
+
+mod open;
+pub(super) use open::run_open;
 
 /// The resolved arguments of `phux worktree new`.
 pub(super) struct NewRequest<'a> {
@@ -224,7 +224,7 @@ fn bind_session(req: Binding<'_>) -> ExitCode {
     } else {
         Some(command)
     };
-    match rt.block_on(new::create_session_via_metadata(
+    match rt.block_on(new::create_seeded_session(
         &server_target::ServerTarget::local(&socket_path),
         name,
         command,
@@ -285,12 +285,35 @@ pub(crate) fn create_task_worktree(
         mission_task,
         authority,
     )) {
-        Ok(()) => Ok(TaskSession { session: name }),
-        Err(error) => {
+        Ok(phux_client::session::CreateOutcome::Created(_)) => Ok(TaskSession { session: name }),
+        Ok(
+            phux_client::session::CreateOutcome::Committed { receipt }
+            | phux_client::session::CreateOutcome::LaunchFailed { receipt, .. },
+        ) => Err(crate::commands::json_err::emit(
+            false,
+            &new::committed_session_error(&name, &receipt),
+            1,
+        )),
+        Ok(outcome) => {
+            error!("could not seed mission session: {outcome:?}");
+            Err(ExitCode::FAILURE)
+        }
+        Err(SeedMissionError::Create(error)) => Err(new::report_create_session_error(
+            &server_target::ServerTarget::local(socket),
+            false,
+            error,
+        )),
+        Err(SeedMissionError::Setup(error)) => {
             error!("{error}");
             Err(ExitCode::FAILURE)
         }
     }
+}
+
+/// Setup failures precede creation; typed creation failures retain operation recovery.
+enum SeedMissionError {
+    Setup(String),
+    Create(phux_client::session::CreateSessionError),
 }
 
 async fn seed_mission_session(
@@ -299,16 +322,24 @@ async fn seed_mission_session(
     dest: &Path,
     mission_task: &str,
     authority: phux_protocol::ids::AuthorityId,
-) -> Result<(), String> {
-    use phux_client::session::{CreateOutcome, CreateSessionRequest, create_session};
+) -> Result<phux_client::session::CreateOutcome, SeedMissionError> {
+    use phux_client::session::{CreateSessionRequest, create_session};
     let mut conn = server_target::ServerTarget::local(socket)
         .connect()
         .await
-        .map_err(|error| error.to_string())?;
-    if super::super::mission_start::owner_on(&mut conn).await? != authority {
-        return Err(format!("mission session belongs to authority {authority}"));
+        .map_err(|error| SeedMissionError::Setup(error.to_string()))?;
+    if super::super::mission_start::owner_on(&mut conn)
+        .await
+        .map_err(SeedMissionError::Setup)?
+        != authority
+    {
+        return Err(SeedMissionError::Setup(format!(
+            "mission session belongs to authority {authority}"
+        )));
     }
-    let cwd = dest.to_str().ok_or("mission worktree path is not UTF-8")?;
+    let cwd = dest
+        .to_str()
+        .ok_or_else(|| SeedMissionError::Setup("mission worktree path is not UTF-8".to_owned()))?;
     let mut attrs = phux_client::project_identity::creation_attrs(
         dest,
         &super::super::ls::local_hostname(),
@@ -325,14 +356,9 @@ async fn seed_mission_session(
         lifetime: phux_protocol::wire::frame::SessionLifetime::Persistent,
         attrs: &attrs,
     };
-    let result = create_session(&mut conn, &request, &mut Vec::new())
+    create_session(&mut conn, &request, &mut Vec::new())
         .await
-        .map_err(|error| error.to_string())?;
-    if matches!(result, CreateOutcome::Created(_)) {
-        Ok(())
-    } else {
-        Err(format!("could not seed mission session: {result:?}"))
-    }
+        .map_err(SeedMissionError::Create)
 }
 
 /// Report what `new` / `open` just bound: the bare session name for a human,
@@ -385,77 +411,4 @@ fn branch_exists(root: &Path, branch: &str) -> bool {
         ],
     )
     .is_ok()
-}
-
-pub(super) fn run_open(
-    target: &str,
-    repo: &Path,
-    socket: Option<PathBuf>,
-    attach: bool,
-    json: bool,
-) -> ExitCode {
-    let (_root, entry) = match resolve_target(target, repo) {
-        Ok(found) => found,
-        Err(err) => return report(json, &err),
-    };
-    let name = session_name_for(&entry.path);
-
-    // Already live: report and exit 0 rather than erroring on the duplicate.
-    // `open` is idempotent by design — scripts and keybindings call it
-    // without checking first. With `--attach`, join the live session.
-    if live_session_names(socket.as_deref()).is_some_and(|names| names.contains(&name)) {
-        if attach {
-            return attach::run_attach(Some(name), socket);
-        }
-        if json {
-            // A repeated `open` must return the same document, seed pane included.
-            let Some(terminal_id) = seed_terminal_of(&name, socket.as_deref()) else {
-                return fail_json(
-                    true,
-                    crate::commands::json_err::codes::NO_SUCH_TARGET,
-                    &format!("session '{name}' is live but reported no local pane to address"),
-                    "run `phux ls --json` to see what the server holds for that session",
-                );
-            };
-            return emit_binding(
-                true,
-                entry.branch.as_deref(),
-                &entry.path,
-                &name,
-                u64::from(terminal_id),
-            );
-        }
-        outln!("Session {name} is already open. Next: `phux attach {name}`.");
-        return ExitCode::SUCCESS;
-    }
-
-    bind_session(Binding {
-        name: &name,
-        cwd: &entry.path,
-        branch: entry.branch.as_deref(),
-        socket,
-        command: Vec::new(),
-        attach,
-        json,
-    })
-}
-
-/// The seed pane of live session `name`: the lowest (oldest) local id, so
-/// every `open` answers the same. Satellite panes are skipped.
-pub(crate) fn seed_terminal_of(name: &str, socket: Option<&Path>) -> Option<u32> {
-    let socket_path = socket.map_or_else(default_socket_path, Path::to_path_buf);
-    let selector = phux_client::selector::parse(name).ok()?;
-    let rt = cli_runtime().ok()?;
-    rt.block_on(async {
-        let snapshot = phux_client::state::get_state(&socket_path)
-            .await
-            .ok()?
-            .into_snapshot_ignoring_degradation();
-        let ids = crate::commands::resolve_targets(&socket_path, &selector, &snapshot)
-            .await
-            .ok()?;
-        ids.iter()
-            .filter_map(phux_protocol::ids::ResourceId::local_id)
-            .min()
-    })
 }

@@ -105,6 +105,17 @@ impl Phone {
         }
     }
 
+    /// Drop a gesture in flight; whether there was one. Its target was read
+    /// from the previous connection's screen.
+    pub(super) fn forget_gesture(&mut self) -> bool {
+        let moving = self.navigation.is_some()
+            || self.fling.is_some()
+            || self.refit.is_some()
+            || self.travel != [0.0; 2];
+        self.reset_navigation();
+        moving
+    }
+
     pub(super) fn reset_navigation(&mut self) {
         self.navigation = None;
         self.travel = [0.0; 2];

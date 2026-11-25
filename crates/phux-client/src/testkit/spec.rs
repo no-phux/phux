@@ -54,6 +54,7 @@ impl ScriptSpec {
         Self {
             server_features,
             server_features_ext,
+            server_features_ext2: phux_protocol::caps::ServerFeatureExt2Set::all(),
             ..Self::default()
         }
     }
@@ -163,6 +164,16 @@ impl ScriptSpec {
     #[must_use]
     pub const fn server_features_ext(mut self, features: ServerFeatureExtSet) -> Self {
         self.server_features_ext = features;
+        self
+    }
+
+    /// The third-word features (`HELLO_OK` word 2) the server advertises.
+    #[must_use]
+    pub const fn server_features_ext2(
+        mut self,
+        features: phux_protocol::caps::ServerFeatureExt2Set,
+    ) -> Self {
+        self.server_features_ext2 = features;
         self
     }
 

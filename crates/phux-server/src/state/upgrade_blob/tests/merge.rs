@@ -97,7 +97,7 @@ async fn wrong_kind_rebuild_rolls_back_prior_panes_without_running_the_rejected_
                 &handoff,
                 move |core, pane, scrollback| {
                     let mut rebuilt =
-                        crate::runtime::apps::terminal::upgrade::unwired(core, pane, scrollback)?;
+                        crate::runtime::upgrade::kinds::terminal::unwired(core, pane, scrollback)?;
                     if pane.wire_id == 4 {
                         rebuilt.handle = DocumentActor::<TreeDocument>::build(
                             core,

@@ -21,7 +21,7 @@ pub(crate) mod apps;
 mod checklist;
 mod command_tasks;
 pub mod commands;
-mod committed_close;
+pub(crate) mod committed_close;
 pub mod connections;
 mod credentials;
 pub mod delegation;
@@ -33,7 +33,7 @@ pub mod idempotent_create;
 pub mod keyed_ops;
 pub(crate) mod open_url;
 pub mod operation_dedupe;
-mod organization;
+pub(crate) mod organization;
 mod path_search;
 pub mod perf_control;
 /// Shared per-generation state both pane output pumps enforce.
@@ -47,9 +47,10 @@ pub mod revocation;
 mod revocation_conformance;
 pub(crate) mod service_http;
 pub(crate) mod session_attach;
+pub(crate) mod spawn;
 #[cfg(test)]
 pub(crate) use session_attach::prepare::prepare_attach;
-mod upgrade;
+pub(crate) mod upgrade;
 mod whoami;
 pub(crate) use whoami::route_for;
 

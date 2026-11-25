@@ -1,8 +1,20 @@
 // All public and guardian request shapes carried by NATIVE_AGENT.
-fn native_command_samples() -> [(Command, &'static Rule); 5] {
+fn native_command_samples() -> [(Command, &'static Rule); 7] {
     use crate::native_agent::{NativeCommand, NativeIntent, NativeRequest, SpawnNativeAgent};
     [
         (NativeRequest::ListIntegrations {}, &C_NATIVE_LIST),
+        (NativeRequest::PrepareRelaunch {
+            operation: operation(), resource: resource_key(), expected: crate::ids::Revision::new(1),
+        }, &C_PREPARE_RELAUNCH),
+        (NativeRequest::ApproveRelaunch {
+            approval: crate::native_agent::relaunch::RelaunchApproval {
+                instance: [1; 16],
+                operation: operation(), resource: resource_key(), expected: crate::ids::Revision::new(1),
+                activation: serde_json::Value::Null,
+                recipe: serde_json::json!({"terminal":{"argv":["sh"]}}),
+                execution: serde_json::json!({"terminal":{"argv":["sh"]}}),
+            },
+        }, &C_APPROVE_RELAUNCH),
         (
             NativeRequest::LaunchIntegration {
                 integration: "opencode".into(),

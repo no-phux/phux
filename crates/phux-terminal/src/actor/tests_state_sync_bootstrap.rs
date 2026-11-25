@@ -52,6 +52,7 @@ fn atomic_state_sync_bootstrap_primes_exact_cut_and_sequence() {
         wire_terminal_id: 11,
         stream_id: phux_protocol::ids::StreamId::new(1).expect("stream id"),
         bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("bootstrap id"),
+        cancellation: CancellationToken::new(),
         wants_state_sync: true,
         state_sync_scrollback: None,
         bootstrap_max_bytes: usize::MAX,

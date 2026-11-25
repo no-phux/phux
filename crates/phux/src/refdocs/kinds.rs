@@ -195,6 +195,7 @@ fn gate(gate: Option<FeatureGate>) -> String {
     match gate.word() {
         FeatureWord::Features => format!("`{}`", gate.snake_name()),
         FeatureWord::FeaturesExt => format!("`{}` (features_ext)", gate.snake_name()),
+        FeatureWord::FeaturesExt2 => format!("`{}` (features_ext2)", gate.snake_name()),
     }
 }
 

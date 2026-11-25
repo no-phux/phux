@@ -1,7 +1,6 @@
-use super::{
-    RecOutcome, cast_version, checked_speed, composite_cells, human_bytes, idle_limit,
-    into_timeline, mark::mark_json, parse_resize, rec_json,
-};
+use super::capture::{composite_cells, into_timeline};
+use super::output::{RecOutcome, human_bytes, parse_resize, rec_json};
+use super::{cast_version, checked_speed, idle_limit, mark::mark_json};
 use phux_client::record::HeadlessRecording;
 use phux_record::cast::{CastEvent, CastVersion, EventCode};
 use phux_record::render::OutputFormat;
@@ -125,4 +124,54 @@ fn composite_size_defaults_to_1080p_cells() {
     );
     assert!(composite_cells(Some("0x1080"), false).is_err());
     assert!(composite_cells(Some("wide"), false).is_err());
+}
+
+#[test]
+fn cast_reexport_rejects_unknown_exit_instead_of_fabricating_zero() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (header, _) = into_timeline(recording(80, 24), None).expect("header");
+    for version in [CastVersion::V2, CastVersion::V3] {
+        for status in ["unknown", "", "2147483648", "{\"status\":null}"] {
+            let path = dir.path().join("invalid.cast");
+            let events = [CastEvent {
+                time_ms: 12,
+                code: EventCode::Exit,
+                data: status.into(),
+            }];
+            let error = super::write_cast_file(&path, &header, &events, version)
+                .expect_err("unsupported status");
+            assert!(error.to_string().contains("unsupported exit event"));
+        }
+    }
+}
+
+#[test]
+fn cast_reexport_keeps_normal_exit_status_and_never_writes_input() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (header, _) = into_timeline(recording(80, 24), None).expect("header");
+    for status in [0, 7, -1] {
+        let path = dir.path().join("exit.cast");
+        let events = [
+            CastEvent {
+                time_ms: 1,
+                code: EventCode::Input,
+                data: "password-must-not-appear".into(),
+            },
+            CastEvent {
+                time_ms: 2,
+                code: EventCode::Exit,
+                data: status.to_string(),
+            },
+        ];
+        super::write_cast_file(&path, &header, &events, CastVersion::V3).expect("write");
+        let (_, actual) = super::read_cast_file(&path).expect("read");
+        assert_eq!(actual.len(), 1);
+        assert_eq!(actual[0].code, EventCode::Exit);
+        assert_eq!(actual[0].data, status.to_string());
+        assert!(
+            !std::fs::read_to_string(&path)
+                .expect("file")
+                .contains("password")
+        );
+    }
 }

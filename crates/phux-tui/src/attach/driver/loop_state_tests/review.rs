@@ -86,10 +86,8 @@ async fn intercept_agent_get(
     record: &AgentRecord,
 ) -> RepaintAccumulator {
     let mut repaint = RepaintAccumulator::default();
-    state
-        .peers
-        .foreign_agent_pending
-        .insert(request_id, id.clone());
+    state.peers.watch_agents(client, vec![id.clone()], &mut { request_id })
+        .await.unwrap();
     state
         .intercept_peer_reply(
             client,
@@ -153,14 +151,14 @@ async fn a_reviewed_done_survives_rebuild_in_peer_and_local_chrome() {
 
     let _ = intercept_agent_get(&mut session_b, &mut client, 900, &done_id, &done).await;
     assert!(session_b.peers.foreign_agents.contains_key(&done_id));
-    assert!(session_b.peers.chrome_dirty);
+    assert!(session_b.peer_presentation.chrome_dirty);
     assert!(session_b.review.is_seen(&done_id));
     snapshot_sidebar(&mut session_b, &mut out, sidebar);
     assert_reviewed_row(&out, "reviewer");
     assert_eq!(session_b.sidebar_painter.click_targets().counts.roster, 2);
 
     let mut repaint = intercept_agent_get(&mut session_b, &mut client, 901, &done_id, &done).await;
-    assert!(!session_b.peers.chrome_dirty);
+    assert!(!session_b.peer_presentation.chrome_dirty);
     out.clear();
     session_b.drain_repaint(&mut out, Some(sidebar), &mut repaint);
     assert!(out.is_empty(), "an identical GET must emit no bytes");

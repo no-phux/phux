@@ -138,6 +138,10 @@ impl LinkConn for ScriptConn {
             phux_protocol::caps::ServerFeature::ListDirectory,
         ]))
     }
+
+    fn server_features_ext2(&self) -> Result<phux_protocol::caps::ServerFeatureExt2Set, String> {
+        Ok(phux_protocol::caps::ServerFeatureExt2Set::new())
+    }
 }
 
 impl LinkConn for BlockedWriteConn {
@@ -169,6 +173,10 @@ impl LinkConn for BlockedWriteConn {
         Ok(phux_protocol::caps::ServerFeatureSet::with(&[
             phux_protocol::caps::ServerFeature::ListDirectory,
         ]))
+    }
+
+    fn server_features_ext2(&self) -> Result<phux_protocol::caps::ServerFeatureExt2Set, String> {
+        Ok(phux_protocol::caps::ServerFeatureExt2Set::new())
     }
 }
 
@@ -289,6 +297,12 @@ async fn blocked_session(cancel: CancellationToken) -> Blocked {
         )
         .await
     });
+    // A request is pinned to the link it observed; one stamped before this
+    // session took the link would be refused as an expired link's.
+    let before = relay.link_epoch();
+    while relay.link_epoch() == before {
+        tokio::task::yield_now().await;
+    }
     let (out_tx, out_rx) = tokio::sync::mpsc::channel(4);
     let started = write_started.notified();
     tokio::pin!(started);

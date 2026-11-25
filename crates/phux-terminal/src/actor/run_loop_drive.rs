@@ -14,7 +14,7 @@ impl TerminalActor {
         debug!(
             cols = self.cols,
             rows = self.rows,
-            has_pty = self.pty.is_some(),
+            has_pty = self.process.pty.is_some(),
             "TerminalActor started",
         );
 
@@ -94,13 +94,13 @@ impl TerminalActor {
                 }
 
                 // Encoded input from the input lane: highest priority.
-                Some(request) = self.encoded_input_rx.recv() =>
+                Some(request) = self.process.encoded_input_rx.recv() =>
                     self.service_encoded_input_batch(request),
 
                 // Inline input (ROUTE_INPUT and attached input events), encoded here.
                 // Before PTY output so keystrokes are not starved; batch
                 // bounded by `MAX_INPUT_COALESCE`.
-                Some(input) = self.input_rx.recv(), if !bootstrap_pending =>
+                Some(input) = self.process.input_rx.recv(), if !bootstrap_pending =>
                     self.service_input_batch(&input),
 
                 // Apply admitted geometry before a bootstrap/screen capture
@@ -118,9 +118,16 @@ impl TerminalActor {
                 () = std::future::ready(()), if state.service.due =>
                     self.service_pending_turn(state, resync_deadline.as_mut()),
 
+                Some(((), interest)) =
+                    self.publication.next_cancelled() =>
+                    self.service_cancelled_consumer(
+                        &interest,
+                        &mut state.tick, &mut state.tick_interval,
+                    ),
+
                 ingress = recv_native_or_pty(
                     &mut self.native_requests,
-                    self.pty_rx.as_mut(),
+                    self.process.pty_rx.as_mut(),
                     state.prefer_native,
                 ) => {
                     state.service.due = true;

@@ -532,6 +532,7 @@ fn samples(world: &World, agent: &WireResourceId) -> Vec<FrameKind> {
     .into_iter()
     .chain(organization_samples(world, &t))
     .chain(delegation_samples(world))
+    .chain(relaunch_samples(world))
     .chain(native_samples(world, agent))
     .chain(question_samples(world))
     .collect()

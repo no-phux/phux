@@ -93,7 +93,7 @@ fn a_failed_store_write_refuses_and_leaves_memory_unchanged() {
 }
 
 #[test]
-fn a_committed_launch_with_no_process_fails_instead_of_completing() {
+fn a_committed_launch_without_durable_process_evidence_remains_unresolved() {
     let mut state = ServerState::new();
     let (_, terminal) = state.seed_session("work");
     let before = state
@@ -113,11 +113,14 @@ fn a_committed_launch_with_no_process_fails_instead_of_completing() {
         .activation
         .clone()
         .unwrap();
-    assert_eq!(after.state, ExecState::Failed);
-    assert_ne!(after.state, ExecState::Completed);
-    assert_eq!(after.outcome, Some(Outcome::Unobserved));
-    assert_eq!(counts.never_launched, 1);
+    assert_eq!(after.state, ExecState::Lost);
+    assert_eq!(after.outcome, None);
+    assert_eq!(counts.unresolved, 1);
     assert_eq!(counts.unobserved, 0);
+    assert_eq!(
+        state.reconcile_with(None, |_| panic!("must not probe")),
+        Reconciled::default()
+    );
 }
 
 #[test]
@@ -149,9 +152,13 @@ fn a_remove_policy_exit_removes_the_record_and_an_ephemeral_session() {
             &Actor::owner(),
         )
         .unwrap();
-    state.activation_started(terminal, None);
+    state.activation_started(state.activation_token(terminal).unwrap(), None);
     assert!(state.has_live_activation());
-    state.activation_ended(terminal, ExitOutcome::exited(0), false);
+    state.activation_ended(
+        state.activation_token(terminal).unwrap(),
+        ExitOutcome::exited(0),
+        false,
+    );
     assert!(state.registry().record(terminal).is_none());
     assert!(state.registry().session(session).is_none());
     assert!(!state.has_live_activation());
@@ -171,7 +178,11 @@ fn a_retain_policy_exit_keeps_the_record_with_its_outcome() {
             &Actor::owner(),
         )
         .unwrap();
-    state.activation_ended(terminal, ExitOutcome::exited(3), false);
+    state.activation_ended(
+        state.activation_token(terminal).unwrap(),
+        ExitOutcome::exited(3),
+        false,
+    );
     let record = state.registry().record(terminal).expect("retained");
     let activation = record.activation.as_ref().unwrap();
     assert_eq!(activation.state, ExecState::Completed);
@@ -289,4 +300,45 @@ fn a_cold_start_gives_each_pane_its_saved_id_back() {
     let wire = phux_protocol::ids::ResourceId::local;
     assert_eq!(state.idspace.intern_resource(fresh), wire(8));
     assert_eq!(state.idspace.intern_resource(kept), wire(7));
+}
+
+#[test]
+fn ensure_storage_refusal_publishes_neither_resolution_nor_creation_receipt() {
+    let mut state = ServerState::new();
+    state.seed_empty_session("existing").expect("seed");
+    let store = MemOrgStore::default();
+    let fail = store.fail_commits();
+    state.set_org_store(Box::new(store));
+    for name in ["existing", "absent"] {
+        let operation = state.mint_operation();
+        let command = Command {
+            operation,
+            op: Op::SessionEnsure {
+                name: name.to_owned(),
+                lifetime: SessionLifetime::Persistent,
+                attrs: phux_core::Attrs::default(),
+                resource: None,
+            },
+        };
+        let before = state.org().clone();
+        fail.store(true, Ordering::Relaxed);
+        assert!(matches!(
+            state.commit_command(&command, &Actor::owner()),
+            Err(Refusal::StoreFailure { .. })
+        ));
+        assert_eq!(state.org(), &before);
+        assert!(state.org().receipt(&operation).is_none());
+        fail.store(false, Ordering::Relaxed);
+        let committed = state
+            .commit_command(&command, &Actor::owner())
+            .expect("retry");
+        assert!(
+            matches!(committed.applied.reply, phux_core::Reply::Ensured { created, .. } if created == (name == "absent"))
+        );
+        let replay = state
+            .commit_command(&command, &Actor::owner())
+            .expect("replay");
+        assert!(replay.applied.replayed);
+        assert_eq!(replay.applied.reply, committed.applied.reply);
+    }
 }

@@ -152,6 +152,9 @@ impl RelaySession {
             }
             self.explicit_content.insert(terminal);
             self.register_subscriber(subscription);
+            // The old link's attach authority ended with it; this link
+            // grants it again under its own epoch.
+            self.remember_proxy_attach(client, terminal);
             for sub in self.subscribers.get_mut(&terminal).into_iter().flatten() {
                 if let Some(content) = sub.content.as_mut().filter(|_| sub.client == client) {
                     content.deadline = Some(Instant::now());
@@ -272,7 +275,7 @@ impl RelaySession {
             .filter_map(|terminal| {
                 let (reply, _) = oneshot::channel::<CommandResult>();
                 let attach = Command::attach_terminal(ResourceId::local(terminal), None);
-                self.enqueue_command(attach, reply, None)
+                self.enqueue_command(attach, reply, None, None)
             })
             .collect()
     }
@@ -297,11 +300,31 @@ impl RelaySession {
         self.forget_proxy_attach(client, terminal);
     }
 
+    fn remember_proxy_attach(&self, client: ClientId, terminal: u32) {
+        if let Some(journal) = &self.journal {
+            journal.with_mut(|s| {
+                if s.federation()
+                    .satellite_link_is_current(&self.host, self.epoch)
+                {
+                    s.federation_mut().register_satellite_proxy_attach(
+                        client,
+                        self.host.clone(),
+                        terminal,
+                    );
+                }
+            });
+        }
+    }
+
     fn forget_proxy_attach(&self, client: ClientId, terminal: u32) {
         if let Some(journal) = &self.journal {
             journal.with_mut(|s| {
-                s.federation_mut()
-                    .unregister_satellite_proxy_attach(client, &self.host, terminal);
+                if s.federation()
+                    .satellite_link_is_current(&self.host, self.epoch)
+                {
+                    s.federation_mut()
+                        .unregister_satellite_proxy_attach(client, &self.host, terminal);
+                }
             });
         }
     }

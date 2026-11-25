@@ -145,6 +145,8 @@ pub struct EventPump {
 pub struct SatelliteScopeChange {
     terminal: WireResourceId,
     prior: Option<EventFilter>,
+    subscription_epoch: u64,
+    link_epoch: Option<u64>,
 }
 
 /// One client's event subscription: mailbox (a `watch` client never

@@ -66,6 +66,7 @@ pub(super) fn spawn_two_pump_consumer(
             published_cut,
             replay: Vec::new(),
             live: None,
+            interest: None,
         })
         .unwrap_or_else(|_| panic!("gate receiver alive"));
     let live = output.subscribe();

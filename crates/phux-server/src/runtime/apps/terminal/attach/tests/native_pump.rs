@@ -30,6 +30,7 @@ pub(super) fn spawn_native_pump(
             published_cut: 0,
             replay: Vec::new(),
             live: None,
+            interest: None,
         })
         .unwrap_or_else(|_| panic!("gate receiver alive"));
     let live = output.subscribe();
@@ -203,6 +204,7 @@ async fn a_superseded_final_publication_with_lost_resync_spends_the_existing_gap
                     published_cut: 0,
                     replay: Vec::new(),
                     live: None,
+                    interest: None,
                 },
                 output,
             )
@@ -271,6 +273,12 @@ pub(super) fn empty_native_checkpoint(
         ],
         retained_bytes: 0,
         base_seq: 0,
-        publication_cursor: [9; 32],
+        capture: phux_terminal_api::actor::NativeCapture::new(
+            capture.owner,
+            capture.terminal_id.clone(),
+            capture.stream_id,
+            capture.bootstrap_id,
+            [9; 32],
+        ),
     }
 }

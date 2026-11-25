@@ -93,6 +93,8 @@ fn fixture() -> (Arc<Client>, Desk) {
     for session in &mut desk.connection.topology.as_mut().unwrap().sessions {
         session.key = Some(key(session.id as u8));
     }
+    // The window observed this server's HELLO: selection is scoped to it.
+    desk.connection.seed_view_sources(vec![1; 16], &[]);
     let _ = sent(&client);
     (client, desk)
 }

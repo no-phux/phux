@@ -32,3 +32,48 @@ impl Client {
             .with(|control| control.attach_terminal_preserving_geometry(terminal_id))
     }
 }
+
+impl Client {
+    /// Submit exact creation without an implicit session attach.
+    #[must_use]
+    pub fn create_session(
+        &self,
+        name: String,
+        lifetime: phux_protocol::wire::frame::SessionLifetime,
+        launch: Option<Box<phux_protocol::wire::frame::LaunchSpec>>,
+    ) -> crate::control::WorkflowSubmission {
+        self.inner
+            .with(|control| control.create_session(name, lifetime, launch))
+    }
+
+    /// Submit a terminal creation, retaining its request or operation identity.
+    #[must_use]
+    pub fn submit_spawn(
+        &self,
+        request: crate::control::SpawnRequest,
+    ) -> crate::control::WorkflowSubmission {
+        self.inner.with(|control| control.submit_spawn(request))
+    }
+
+    /// Submit setup once; a lost receipt is not permission to recreate it.
+    #[must_use]
+    pub fn submit_spawn_once(
+        &self,
+        request: crate::control::SpawnRequest,
+    ) -> crate::control::WorkflowSubmission {
+        self.inner
+            .with(|control| control.submit_spawn_once(request))
+    }
+
+    /// Resolve existing/created at the host using a retained exact operation.
+    #[must_use]
+    pub fn ensure_session(
+        &self,
+        name: String,
+        lifetime: phux_protocol::wire::frame::SessionLifetime,
+        launch: Option<Box<phux_protocol::wire::frame::LaunchSpec>>,
+    ) -> crate::control::WorkflowSubmission {
+        self.inner
+            .with(|control| control.ensure_session(name, lifetime, launch))
+    }
+}

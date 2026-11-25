@@ -154,6 +154,8 @@ impl Owner {
     }
 
     pub(super) fn run(mut self, commands: &mpsc::Receiver<QueuedCommand>) {
+        #[cfg(test)]
+        let mut gate = super::testing::ApplyGate::default();
         while let Ok(queued) = commands.recv() {
             crate::perf::OWNER_QUEUE_WAIT.record_elapsed(queued.queued_at);
             let _timed = crate::perf::OWNER_EXECUTE.timer();
@@ -164,8 +166,12 @@ impl Owner {
                     break;
                 }
                 Command::ApplyBatch(events, reply) => {
+                    #[cfg(test)]
+                    gate.wait();
                     let _ = reply.send(self.apply_batch(events));
                 }
+                #[cfg(test)]
+                Command::PauseNextApply(entered, resume) => gate.arm(entered, resume),
                 Command::SetTheme(theme, reply) => {
                     self.set_theme(theme);
                     let _ = reply.send(());

@@ -125,6 +125,7 @@ pub(crate) struct ConnectionClose {
 /// drained by the same writer task every transport uses. Retirement closes
 /// admission, then drains with a bound.
 pub(super) struct StreamBinding {
+    pub(super) source: crate::runtime::apps::StreamLease,
     pub(super) tx: mpsc::Sender<Outbound>,
     pub(super) stream_id: StreamId,
     pub(super) writer: JoinSet<()>,
@@ -136,6 +137,7 @@ pub(super) struct StreamBinding {
 
 impl StreamBinding {
     pub(super) fn begin_retirement(&self) {
+        self.source.cancellation.cancel();
         if let Some(tracker) = &self.diagnostics {
             tracker.set_active(false);
         }
@@ -243,6 +245,7 @@ impl ClientPlumbing {
         terminal_id: WireResourceId,
         stream_id: StreamId,
         writer: QuicWriter,
+        source: crate::runtime::apps::StreamLease,
     ) -> (
         mpsc::Sender<Outbound>,
         Arc<std::sync::atomic::AtomicBool>,
@@ -266,6 +269,7 @@ impl ClientPlumbing {
         if let Some(replaced) = self.stream_bindings.insert(
             terminal_id,
             StreamBinding {
+                source,
                 tx,
                 stream_id,
                 writer: writer_tasks,
@@ -289,6 +293,17 @@ impl ClientPlumbing {
         self.stream_bindings
             .get(terminal_id)
             .is_some_and(|binding| binding.stream_id == stream_id)
+    }
+
+    pub(in crate::runtime) fn stream_source(
+        &self,
+        terminal: &WireResourceId,
+        stream: StreamId,
+    ) -> Option<crate::runtime::apps::StreamLease> {
+        self.stream_bindings
+            .get(terminal)
+            .filter(|binding| binding.stream_id == stream)
+            .map(|binding| binding.source.clone())
     }
 
     /// Drop one stream binding; its retirement runs without blocking others.

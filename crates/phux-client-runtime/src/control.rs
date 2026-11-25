@@ -55,12 +55,11 @@ mod error;
 mod events;
 mod extensions;
 pub mod forward;
-mod frames;
+pub(crate) mod frames;
 mod geometry;
 mod global_metadata;
 mod input;
 mod input_delivery;
-mod input_trace;
 mod kernel;
 pub mod keys;
 mod lifecycle;
@@ -80,7 +79,9 @@ mod topology;
 
 pub use checklist::ChecklistError;
 pub use checkout::{CheckoutFailure, CheckoutOutcome, CheckoutResponse, MAX_CHECKOUT_ANSWERS};
+pub use commands::WorkflowSubmission;
 pub use error::ControlError;
+pub use events::TerminalCreationOutcome;
 pub use events::{
     AgentPublication, AgentRecordMode, AgentSessionInfo, DeliveryOutcome, DocumentPublication,
     Event, Observation, Status,
@@ -209,9 +210,6 @@ pub struct ControlPlane {
     /// per-connection state on its own client's identity uses this instead
     /// once the runtime owns the reconnect.
     connection_epoch: u64,
-    /// The driver attempt this connection opened under, for payload-free
-    /// input evidence; absent on an embedded control plane.
-    attempt_trace: Option<crate::connection::AttemptTrace>,
     /// The epoch authorized to deliver inbound frames; absent after loss.
     live_connection_epoch: Option<u64>,
     offered_caps: ClientCapabilities,
@@ -236,9 +234,8 @@ pub struct ControlPlane {
     topology: Option<Topology>,
     /// The Terminals each snapshot view last listed.
     listings: topology::Listings,
-    /// The target every connection attaches; a `CreateIfMissing` becomes
-    /// `ByName` once sent, then incarnation-scoped `ById` once confirmed,
-    /// so reconnect follows renames and never re-creates.
+    /// Lookup-only target; confirmed numeric ids are incarnation-scoped.
+    /// Cross-incarnation recovery waits for the exact durable authority/key.
     attach_target: Option<AttachTarget>,
     active_attach_id: Option<u32>,
     /// Every resource streamed on this control plane: its kind, how it came
@@ -285,6 +282,7 @@ pub struct ControlPlane {
     command_states: HashMap<ResourceId, bool>,
     clock_origin: Instant,
     outbound: Vec<commands::OutboundFrame>,
+    observed_time: Instant,
     events: Vec<Event>,
     clipboard_event_bytes: usize,
     clipboard_focus: Option<ResourceId>,

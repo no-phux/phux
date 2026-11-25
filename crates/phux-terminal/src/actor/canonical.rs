@@ -24,6 +24,8 @@ impl NativeCursorKey {
 
 #[derive(Debug)]
 pub(super) struct NativeCursorOwner {
+    /// Exact unpublished-reply ownership, independent of history paging.
+    pub(super) cancellation: CancellationToken,
     /// History may finish before the pump consumes its publication handoff.
     pub(super) history_released: bool,
     /// Only a reflow of an unconsumed publication grants one recovery receipt.

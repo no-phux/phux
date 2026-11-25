@@ -129,9 +129,9 @@ impl super::super::SessionLoop {
     /// Tell the bar whether the resolver is waiting at the prefix and which
     /// key mode is active; true when either changed since the last batch.
     fn sync_key_chip(&mut self) -> bool {
-        let resolver = self.settings.resolver.as_ref();
-        let pending = resolver.is_some_and(phux_config::keybind::Resolver::pending_at_prefix);
-        let mode = resolver.and_then(phux_config::keybind::Resolver::active_mode);
+        let resolver = &self.settings.resolver;
+        let pending = resolver.pending_at_prefix();
+        let mode = resolver.active_mode();
         let Some(bar) = self.settings.status_bar.as_mut() else {
             return false;
         };

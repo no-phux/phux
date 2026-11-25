@@ -27,7 +27,7 @@ impl super::super::SessionLoop {
         };
         let resolved = crate::attach::resolved(action, std::collections::BTreeMap::new());
         let chord = crate::attach::action_registry::bound_chord_for(
-            self.settings.keybindings.as_ref(),
+            Some(&self.settings.keybindings),
             &resolved,
         );
         let lines = if running > 0 {

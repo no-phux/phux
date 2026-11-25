@@ -328,10 +328,7 @@ impl super::SessionLoop {
     fn arm_which_key(&mut self) {
         update_which_key_deadline(
             &mut self.which_key_deadline,
-            self.settings
-                .resolver
-                .as_ref()
-                .is_some_and(phux_config::keybind::Resolver::pending_at_prefix),
+            self.settings.resolver.pending_at_prefix(),
             self.settings.which_key.enabled,
             self.overlays.is_active(),
             tokio::time::Instant::now(),

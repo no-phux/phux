@@ -88,7 +88,7 @@ impl TerminalActor {
                     scrollback: Vec::new(),
                 }
             });
-        let pty = self.pty.as_ref();
+        let pty = self.process.pty.as_ref();
         let master_fd = pty.and_then(|p| {
             let master = p.master.lock().ok()?;
             let fd = master.as_raw_fd()?;
@@ -137,6 +137,7 @@ impl TerminalActor {
     /// the query failed).
     pub(super) fn reply_pane_cwd(&self, req: PwdRequest) {
         let cwd = self
+            .process
             .pty
             .as_ref()
             .and_then(|p| p.child.process_id())

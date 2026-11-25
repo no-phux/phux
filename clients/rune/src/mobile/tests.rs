@@ -148,6 +148,11 @@ fn relay_configuration_rejects_invalid_sni_without_dropping_it() {
         assert!(!error.contains("secret"));
     }
     configuration.tls_server_name = Some("mini-route".into());
+    assert!(
+        configuration.target().is_err(),
+        "a loopback relay still needs the server CA"
+    );
+    configuration.authority_ca = Some(format!("sha256:{}", "ab".repeat(32)));
     assert!(configuration.target().is_ok());
     configuration.endpoint = "wss://localhost:8787".into();
     assert!(configuration.target().is_err());
@@ -314,4 +319,157 @@ fn an_absence_is_measured_on_the_wall_clock_from_its_first_edge() {
             assert_eq!(native.set_active(true, at(150)), Some(Duration::ZERO));
         },
     );
+}
+
+#[test]
+fn mobile_and_native_planners_agree_before_phone_enrollment_policy() {
+    use phux_client_runtime::dial::{CertTrust, QuicDial, WsTarget};
+    let leaf = "ab".repeat(32);
+    let ca = format!("sha256:{}", "cd".repeat(32));
+    let token = "ef".repeat(32);
+    for (endpoint, pin, authority, route, bearer, allowed) in [
+        (
+            "quic://192.0.2.1:8788",
+            None,
+            None,
+            None,
+            Some(token.as_str()),
+            false,
+        ),
+        ("quic://127.0.0.1:8788", None, None, None, None, true),
+        ("quic://[::1]:8788", None, None, None, None, true),
+        (
+            "quic://192.0.2.1:8788",
+            Some(leaf.as_str()),
+            None,
+            None,
+            Some(token.as_str()),
+            true,
+        ),
+        (
+            "quic://192.0.2.1:8788",
+            Some(leaf.as_str()),
+            Some(ca.as_str()),
+            Some("route"),
+            Some(token.as_str()),
+            true,
+        ),
+        (
+            "quic://192.0.2.1:8788",
+            Some(leaf.as_str()),
+            None,
+            Some("route"),
+            Some(token.as_str()),
+            false,
+        ),
+        (
+            "quic://127.0.0.1:8788",
+            None,
+            None,
+            Some("route"),
+            None,
+            false,
+        ),
+        (
+            "wss://192.0.2.1:8787",
+            Some(leaf.as_str()),
+            None,
+            None,
+            Some(token.as_str()),
+            true,
+        ),
+        (
+            "wss://192.0.2.1:8787",
+            None,
+            None,
+            None,
+            Some(token.as_str()),
+            false,
+        ),
+        (
+            "wss://192.0.2.1:8787",
+            Some(leaf.as_str()),
+            None,
+            None,
+            None,
+            false,
+        ),
+        (
+            "ws://192.0.2.1:8787",
+            Some(leaf.as_str()),
+            None,
+            None,
+            Some(token.as_str()),
+            false,
+        ),
+        ("ws://127.0.0.1:8787", None, None, None, None, true),
+        (
+            "wss://192.0.2.1:8787",
+            Some(leaf.as_str()),
+            Some(ca.as_str()),
+            Some("route"),
+            Some(token.as_str()),
+            false,
+        ),
+    ] {
+        let mut configuration = config(endpoint);
+        configuration.certificate_pin = pin.map(str::to_owned);
+        configuration.authority_ca = authority.map(str::to_owned);
+        configuration.tls_server_name = route.map(str::to_owned);
+        configuration.token = bearer.map(str::to_owned);
+        let mobile = configuration.target();
+        let native = if let Some(addr) = endpoint.strip_prefix("quic://") {
+            QuicDial::plan(
+                addr.parse().expect("numeric fixture"),
+                "localhost".into(),
+                bearer,
+                pin,
+                authority,
+                route,
+                Some(TlsClientIdentity::None),
+            )
+            .map(|_| ())
+        } else {
+            WsTarget::parse(endpoint)
+                .expect("WebSocket fixture")
+                .credentials(
+                    CertTrust::from_route_pins(pin, authority, route),
+                    bearer.map(str::to_owned),
+                    route,
+                )
+                .map(|_| ())
+        };
+        assert_eq!(mobile.is_ok(), allowed, "mobile {endpoint}: {mobile:?}");
+        assert_eq!(native.is_ok(), allowed, "native {endpoint}: {native:?}");
+    }
+}
+
+#[test]
+fn phone_pairing_constraints_do_not_relax_to_native_quic_ca_only_or_no_token() {
+    use phux_client_runtime::dial::QuicDial;
+    let ca = format!("sha256:{}", "cd".repeat(32));
+    let token = "ef".repeat(32);
+    for (leaf, bearer) in [(None, Some(token.as_str())), (Some("ab".repeat(32)), None)] {
+        let mut configuration = config("quic://192.0.2.1:8788");
+        configuration.certificate_pin = leaf.clone();
+        configuration.authority_ca = Some(ca.clone());
+        configuration.token = bearer.map(str::to_owned);
+        assert!(
+            QuicDial::plan(
+                "192.0.2.1:8788".parse().unwrap(),
+                "localhost".into(),
+                bearer,
+                leaf.as_deref(),
+                Some(&ca),
+                None,
+                Some(TlsClientIdentity::None),
+            )
+            .is_ok(),
+            "native QUIC does not impose phone enrollment policy"
+        );
+        assert!(
+            configuration.target().is_err(),
+            "phone pairing still needs both leaf and token"
+        );
+    }
 }

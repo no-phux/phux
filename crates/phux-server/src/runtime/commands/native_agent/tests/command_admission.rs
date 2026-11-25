@@ -1,0 +1,173 @@
+use super::*;
+use crate::runtime::test_support::error_code;
+
+#[tokio::test(flavor = "current_thread")]
+async fn exact_resource_activation_and_operation_identity_are_required() {
+    crate::runtime::test_support::local(async {
+        let fx = Fixture::new();
+        fx.ready().await;
+        for (label, agent_session_id, operation_id, activation) in [
+            ("wrong resource", fx.parent_wire.clone(), 1, "activation-A"),
+            ("stale activation", fx.agent.clone(), 99, "other-activation"),
+        ] {
+            let refused = fx
+                .request(
+                    fx.owner,
+                    NativeRequest::Command {
+                        agent_session_id,
+                        command: NativeCommand {
+                            operation_id,
+                            activation: activation.into(),
+                            intent: prompt("do not execute"),
+                        },
+                    },
+                )
+                .await;
+            assert_eq!(
+                decode::<NativeCommandResult>(refused).disposition,
+                NativeDisposition::Refused,
+                "{label}"
+            );
+        }
+        for (id, intent, want) in [
+            (
+                99,
+                prompt("changed activation and payload"),
+                NativeDisposition::Refused,
+            ),
+            (1, prompt("reserved input"), NativeDisposition::Queued),
+            (1, prompt("different input"), NativeDisposition::Refused),
+            (1, prompt("reserved input"), NativeDisposition::Queued),
+            (
+                2,
+                NativeIntent::Interrupt {
+                    turn_id: "stale-turn".into(),
+                },
+                NativeDisposition::Refused,
+            ),
+        ] {
+            let label = format!("operation {id}: {intent:?}");
+            assert_eq!(fx.disposition(fx.owner, id, intent).await, want, "{label}");
+        }
+        assert_eq!(
+            fx.state
+                .with(|s| s.native_agents().bindings[&fx.agent].pending.len()),
+            1
+        );
+    })
+    .await;
+}
+#[tokio::test(flavor = "current_thread")]
+async fn concurrent_viewers_get_exactly_one_question_responder() {
+    crate::runtime::test_support::local(Box::pin(async {
+        let fx = Fixture::new();
+        let generation = fx.ready().await;
+        fx.ask(generation, 2, "confirm").await;
+        assert_eq!(
+            fx.asked_inventory(),
+            (Some("question-A".into()), true, Some(b"1".to_vec()))
+        );
+        // Codex nonblocking questions can outlive a completed model turn.
+        // Only the provider's explicit question closure withdraws the request.
+        fx.published(
+            generation,
+            3,
+            NativeUpdate::State {
+                state: NativeState::Done,
+                turn_id: None,
+            },
+        )
+        .await;
+        assert_eq!(
+            fx.asked_inventory(),
+            (Some("question-A".into()), true, Some(b"1".to_vec()))
+        );
+        let second = fx.state.with_mut(|s| {
+            let client = s.clients_mut().new_client_id();
+            s.set_connection_grant(client, ConnectionGrant::owner());
+            client
+        });
+        let answer_a = answer(serde_json::json!({"confirmed":false}));
+        let both: [NativeDisposition; 2] = tokio::join!(
+            fx.disposition(fx.owner, 10, answer_a.clone()),
+            fx.disposition(second, 11, answer_a)
+        )
+        .into();
+        for want in [NativeDisposition::Queued, NativeDisposition::Refused] {
+            assert_eq!(
+                both.iter()
+                    .filter(|disposition| **disposition == want)
+                    .count(),
+                1,
+                "{want:?}"
+            );
+        }
+        fx.published(
+            generation,
+            4,
+            NativeUpdate::QuestionClosed {
+                id: "question-A".into(),
+                reason: "provider withdrew question".into(),
+            },
+        )
+        .await;
+        assert_eq!(fx.asked_inventory(), (None, false, None));
+        assert_eq!(
+            fx.disposition(second, 12, answer(serde_json::json!({"confirmed":true})))
+                .await,
+            NativeDisposition::Refused
+        );
+        fx.state.with_mut(|s| refuse_undeliverable(s, &fx.agent));
+        assert!(
+            fx.state
+                .with(|s| s.native_agents().bindings[&fx.agent].pending.is_empty())
+        );
+    }))
+    .await;
+}
+#[tokio::test(flavor = "current_thread")]
+async fn human_permission_and_parent_input_lease_gate_native_commands() {
+    crate::runtime::test_support::local(async {
+        let fx = Fixture::new();
+        let generation = fx.ready().await;
+        fx.ask(generation, 2, "permission").await;
+        assert_eq!(
+            fx.disposition(
+                fx.host,
+                20,
+                answer(serde_json::json!({"option_id":"deny-once"}))
+            )
+            .await,
+            NativeDisposition::Refused
+        );
+        let other = fx.state.with_mut(|s| {
+            let client = s.clients_mut().new_client_id();
+            s.set_connection_grant(client, ConnectionGrant::owner());
+            s.set_input_lease(fx.parent, client);
+            client
+        });
+        assert_eq!(
+            fx.disposition(fx.owner, 21, prompt("lease-blocked")).await,
+            NativeDisposition::Refused
+        );
+        fx.state.with_mut(|s| {
+            s.release_input_lease(fx.parent, other);
+        });
+        assert_eq!(
+            fx.disposition(fx.owner, 22, answer(serde_json::json!({"cancelled":true})))
+                .await,
+            NativeDisposition::Queued
+        );
+        let raw = crate::runtime::commands::terminal::handle_route_input(
+            &fx.state,
+            fx.owner,
+            &fx.parent_wire,
+            phux_protocol::input::InputEvent::Paste(phux_protocol::input::paste::PasteEvent {
+                trust: phux_protocol::input::paste::PasteTrust::Trusted,
+                data: b"must not reach PTY".to_vec(),
+            }),
+        );
+        assert_eq!(error_code(&raw), Some(ErrorCode::InputNotWritten));
+    })
+    .await;
+}

@@ -3,7 +3,6 @@
 /// An env on pane 1 with a floating overlay `@9` open over it.
 fn env_with_floating() -> Env<'static> {
     let mut env = Env::new(CtxFixture::default())
-        .with_default_bindings()
         .published(&[(&tid(1), 80, 24, b""), (&tid(9), 60, 18, b"")]);
     env.panes.get_mut(&tid(9)).expect("overlay slot").floating = Some("Board".to_owned());
     env

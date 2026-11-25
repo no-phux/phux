@@ -263,6 +263,12 @@ impl RelaySession {
             _ => return,
         };
         journal.with_mut(|s| {
+            if !s
+                .federation()
+                .satellite_link_is_current(&self.host, self.epoch)
+            {
+                return None;
+            }
             s.federation_mut()
                 .mirror_satellite_lease_event(&self.host, id, is_end, seq)
         });

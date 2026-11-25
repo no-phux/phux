@@ -121,6 +121,12 @@ pub const BELL_EVENT: &str = "phux-bell";
 /// Cursor-only blink redraws do not emit it. Listeners may call the client.
 pub const RENDER_EVENT: &str = "phux-render";
 
+/// A settled input receipt, never local queue acceptance. Detail contains
+/// `status` (`delivered`, `refused`, `unknown`), string `deliveryId`,
+/// `operationId`, and `message`. Delivered after releasing the app borrow;
+/// listeners may call the client.
+pub const INPUT_DELIVERY_EVENT: &str = "phux-input-delivery";
+
 /// DOM id of the element that holds the focused pane's agent badges.
 pub const BADGE_CONTAINER_ID: &str = "phux-agent-badges";
 
@@ -303,6 +309,7 @@ struct ReconnectConfig {
     canvas: HtmlCanvasElement,
     cols: u16,
     rows: u16,
+    input_delivery: Rc<RefCell<crate::session::input_delivery::InputDelivery>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

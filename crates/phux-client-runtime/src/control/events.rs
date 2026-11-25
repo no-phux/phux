@@ -20,10 +20,12 @@ use phux_protocol::wire::info::SessionSnapshot;
 use crate::approvals::{Decision, DecisionOutcome};
 
 mod observation;
+mod outcomes;
 mod status;
 
 pub use observation::Observation;
-pub use status::{DeliveryOutcome, Status};
+pub use outcomes::{DeliveryOutcome, TerminalCreationOutcome};
+pub use status::Status;
 
 /// The catalog's facts about an `AgentSession` resource (ADR-0103).
 ///
@@ -104,6 +106,13 @@ pub enum Event {
         terminal_id: Option<ResourceId>,
         /// Why the spawn failed.
         error: Option<String>,
+    },
+    /// Typed settlement of a terminal creation under its original correlation.
+    TerminalCreation {
+        /// The spawn's original command correlation.
+        request_id: u32,
+        /// What is known about the creation.
+        outcome: TerminalCreationOutcome,
     },
     /// The server answered a per-terminal attach.
     TerminalAttached {

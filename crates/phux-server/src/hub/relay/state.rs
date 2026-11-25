@@ -151,10 +151,19 @@ pub(super) struct FanOutFrame<'a> {
 #[derive(Debug)]
 pub(super) struct PendingCommand {
     pub(super) reply: oneshot::Sender<CommandResult>,
+    pub(super) owner: Option<tokio_util::sync::CancellationToken>,
     /// The terminal an `ATTACH_RESOURCE` opens; with no rider, the hub's own.
     pub(super) attach: Option<u32>,
-    /// `(terminal, client, effect)` of the subscription rider.
-    pub(super) subscription: Option<(u32, ClientId, Registration)>,
+    pub(super) subscription: Option<PendingProxyRegistration>,
+}
+
+#[derive(Debug)]
+pub(super) struct PendingProxyRegistration {
+    pub(super) terminal: u32,
+    pub(super) client: ClientId,
+    pub(super) effect: Registration,
+    pub(super) seq: u64,
+    pub(super) content: bool,
 }
 
 /// What registering a subscription rider did, for precise rollback.
@@ -370,6 +379,7 @@ pub(super) struct PendingDetach {
 #[derive(Debug)]
 pub(crate) struct RelaySession {
     pub(super) host: SatelliteHost,
+    pub(crate) epoch: u64,
     pub(super) bootstrap_limits: BootstrapLimits,
     pub(super) bootstrap_profile: BootstrapProfile,
     pub(super) next_request_id: u32,
@@ -389,6 +399,7 @@ pub(crate) struct RelaySession {
     /// The satellite's `HELLO_OK` features; listings need `LIST_DIRECTORY`.
     pub(super) satellite_features: ServerFeatureSet,
     pub(super) satellite_features_ext: ServerFeatureExtSet,
+    pub(super) satellite_features_ext2: phux_protocol::caps::ServerFeatureExt2Set,
     /// Upstream detach barriers: old frames may arrive until the reply.
     pub(super) pending_detaches: HashMap<u32, PendingDetach>,
     /// Terminals whose metadata allowlist is already mirrored (ADR-0136).

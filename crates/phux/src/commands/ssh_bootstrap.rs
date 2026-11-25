@@ -129,7 +129,8 @@ pub(crate) fn run(args: SshAttach<'_>) -> ExitCode {
         }
     };
     info!("attaching over QUIC to {target}; ssh is out of the path");
-    attach::attach_quic_planned(&rt, plan, &target, args.session, args.rec, Some(first)).code
+    attach::remote::attach_quic_planned(&rt, plan, &target, args.session, args.rec, Some(first))
+        .code
 }
 
 /// While this attach rides ssh, bootstrap a listener without a prompt and

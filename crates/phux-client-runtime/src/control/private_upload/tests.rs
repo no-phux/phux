@@ -33,13 +33,14 @@ fn seed(control: &mut ControlPlane, record: ResourceRecord) {
 }
 
 fn connected() -> (ControlPlane, PrivateUploadDestination) {
-    let mut control = ControlPlane::new(ControlOptions::default());
+    let mut control = ControlPlane::new(std::time::Instant::now(), ControlOptions::default());
     control.connection_opened();
     control.take_outbound();
     control.server = Some(ServerInfo {
         id: vec![1; 16],
         features: ServerFeatureSet::with(&[ServerFeature::FileUpload]),
         features_ext: ServerFeatureExtSet::default(),
+        features_ext2: phux_protocol::caps::ServerFeatureExt2Set::new(),
         layers: LayerSet::default(),
         protocol: (1, 0, 0),
         profile: BootstrapProfile::SynthesizedVtRaw,

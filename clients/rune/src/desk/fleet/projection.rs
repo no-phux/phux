@@ -115,8 +115,7 @@ impl Desk {
         if agent.here {
             self.show(agent.terminal, &agent.session);
         } else {
-            self.open_on(agent.machine, agent.session);
-            self.want(agent.terminal);
+            self.handoff_agent(agent.machine, agent.terminal);
         }
     }
 }
@@ -218,6 +217,7 @@ mod tests {
     fn watch(client: Arc<Client>, activities: Activities) -> Watch {
         Watch {
             topology: client.topology(),
+            scope: super::super::WatchScope::capture(&client, client.connection_epoch()),
             client,
             activities,
             status: Status::Attached,
@@ -366,10 +366,17 @@ mod tests {
         desk.fleet.watches.insert(None, watch(client, activities));
         desk.go_to_agent(&ResourceId::satellite(LOCAL.to_owned(), 1));
         assert_eq!(desk.machines.current, None);
-        assert_eq!(desk.launch.session.as_deref(), Some("budget"));
-        assert_eq!(
-            desk.connection.wanted.as_ref().map(|(id, _)| id),
-            Some(&ResourceId::local(1))
+        assert!(
+            desk.launch.session.is_none(),
+            "the old session name is not a destination selector"
+        );
+        assert!(
+            desk.connection.fleet_handoff.is_some(),
+            "the original watch owns the pending exact-pane transfer"
+        );
+        assert!(
+            desk.connection.wanted.is_none(),
+            "the destination must first qualify its own source"
         );
     }
 

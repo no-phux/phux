@@ -103,9 +103,10 @@ async fn native_cursor_expiry_runs_through_the_armed_loop_timer() {
     let bundle = TerminalActor::new(20, 5).expect("actor");
     let mut actor = bundle.actor;
     let stream_id = StreamId::new(1).expect("stream");
-    actor.native_cursor_owners.insert(
+    actor.publication.native_cursor_owners.insert(
         NativeCursorKey::new(7, stream_id),
         NativeCursorOwner {
+            cancellation: tokio_util::sync::CancellationToken::new(),
             history_released: false,
             superseded: false,
             cursor: [0; 32],
@@ -149,7 +150,7 @@ async fn native_cursor_expiry_runs_through_the_armed_loop_timer() {
         ));
     }
     assert!(
-        actor.native_cursor_owners.is_empty(),
+        actor.publication.native_cursor_owners.is_empty(),
         "expiry releases its timer obligation"
     );
     assert!(
@@ -187,6 +188,7 @@ async fn service_rotation_cannot_be_monopolized_by_snapshot_requests() {
         .consumer_detach
         .try_send(ConsumerDetachRequest {
             client_id: ClientId(99),
+            generation: None,
             reply,
         })
         .expect("detach");

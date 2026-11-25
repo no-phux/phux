@@ -6,6 +6,45 @@ use super::{
 };
 
 impl RelaySession {
+    pub(crate) fn handle_queued_unsubscribe(
+        &mut self,
+        queued: super::QueuedUnsubscribe,
+    ) -> Vec<Vec<u8>> {
+        if !self.link_is_current() {
+            return Vec::new();
+        }
+        if queued.epoch != self.epoch && !self.resumed_from(queued.epoch, &queued.unsubscribe) {
+            return Vec::new();
+        }
+        self.handle_unsubscribe(queued.unsubscribe)
+    }
+
+    /// Whether a withdrawal pinned to an earlier link names a subscription
+    /// this one resumed from that link: one registered before the withdrawal
+    /// was issued. A newer re-attach on this link is not the old link's to
+    /// withdraw, so that withdrawal finds no live registration of its own.
+    fn resumed_from(&self, epoch: u64, unsubscribe: &Unsubscribe) -> bool {
+        if epoch >= self.epoch {
+            return false;
+        }
+        match *unsubscribe {
+            Unsubscribe::Client(client) => self
+                .subscribers
+                .values()
+                .flatten()
+                .any(|sub| sub.client == client),
+            Unsubscribe::Terminal {
+                client,
+                terminal,
+                seq,
+                ..
+            } => self
+                .subscribers
+                .get(&terminal)
+                .is_some_and(|subs| subs.iter().any(|sub| sub.client == client && sub.seq < seq)),
+        }
+    }
+
     /// Withdraw proxy subscriptions. Returns the upstream
     /// `DETACH_RESOURCE` frames for terminals that lost their last proxy (or
     /// had none after an automatic spawn). The upstream reply retires the old
@@ -37,10 +76,26 @@ impl RelaySession {
         seq: u64,
     ) -> (CommandResult, Vec<Vec<u8>>) {
         match self.withdraw_terminal(client, terminal, seq) {
-            Ok(orphaned) => (
-                CommandResult::Ok,
-                self.encode_withdrawals(orphaned.into_iter().collect()),
-            ),
+            Ok(orphaned) => {
+                if let Some(journal) = &self.journal {
+                    journal.with_mut(|s| {
+                        if s.federation()
+                            .satellite_link_is_current(&self.host, self.epoch)
+                        {
+                            s.federation_mut()
+                                .unregister_satellite_proxy_attach(client, &self.host, terminal);
+                            s.unsubscribe_resource_events(
+                                client,
+                                &ResourceId::satellite(self.host.clone(), terminal),
+                            );
+                        }
+                    });
+                }
+                (
+                    CommandResult::Ok,
+                    self.encode_withdrawals(orphaned.into_iter().collect()),
+                )
+            }
             Err(result) => (result, Vec::new()),
         }
     }

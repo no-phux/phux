@@ -234,6 +234,7 @@ pub(crate) fn live_pane_wires(blob: &StateBlob) -> HashSet<u32> {
 /// runtime restores its lifecycle watcher from.
 pub(crate) type ExitWatchers = Vec<(
     ResourceId,
+    super::ActivationToken,
     oneshot::Receiver<phux_core::process::ExitOutcome>,
 )>;
 

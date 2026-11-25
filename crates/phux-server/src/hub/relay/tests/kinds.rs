@@ -170,7 +170,7 @@ async fn relay_kind_lookup_uses_one_bounded_inventory_then_only_learned_facts() 
             .recv()
             .await
             .expect("one inventory request");
-        let wire = session.handle_request(request);
+        let wire = session.handle_request(request.request);
         let FrameKind::Command {
             request_id,
             command: Command::GetState {
@@ -265,4 +265,71 @@ fn relay_kind_facts_follow_spawn_events_replies_and_connection_incarnations() {
     assert_eq!(relay.known_resource_kind(10), None);
     assert!(!relay.needs_kind_for_profile(native_profile()));
     assert!(relay.needs_kind_for_profile(BootstrapProfile::SynthesizedVtRaw));
+}
+
+#[tokio::test]
+async fn old_catalog_reply_and_queued_cursor_cannot_cross_a_link_epoch() {
+    let (handle, mut mailbox) = RelayHandle::new(host());
+    let mut old = RelaySession::new(host(), BootstrapLimits::default());
+    old.set_resource_kinds(Arc::clone(&mailbox.resource_kinds));
+    let old_handle = handle.pinned();
+    let (reply, _received) = oneshot::channel();
+    let inventory = old.handle_request(RelayRequest::Command {
+        command: Command::GetState {
+            scope: StateScope::Server,
+        },
+        reply,
+        subscribe: None,
+    });
+    let FrameKind::Command { request_id, .. } = decode(&inventory) else {
+        panic!("inventory command");
+    };
+    let (out_tx, _out_rx) = mpsc::channel(8);
+    let mut cursor = Box::pin(old_handle.command_subscribing(
+        Command::attach_agent_session(ResourceId::local(7), None, Some(99)),
+        ProxySubscription {
+            resource_kind: Some(phux_protocol::ids::ResourceKind::AgentSession),
+            ..proxy(7, ClientId(1), out_tx)
+        },
+    ));
+    assert!(futures_util::poll!(&mut cursor).is_pending());
+    let mut replacement = negotiated(&[ServerFeature::ResourceKinds]);
+    replacement.set_resource_kinds(Arc::clone(&mailbox.resource_kinds));
+    assert!(
+        old.handle_inbound(&encode(&FrameKind::CommandResult {
+            request_id,
+            result: CommandResult::OkWith(CommandValue::State(kind_snapshot())),
+        }))
+        .is_err(),
+        "an old inventory must not populate the new catalog"
+    );
+    assert_eq!(handle.known_resource_kind(7), None);
+    assert!(
+        replacement
+            .handle_queued_request(mailbox.requests.try_recv().unwrap())
+            .is_empty()
+    );
+    assert!(matches!(
+        cursor.await,
+        CommandResult::Error {
+            code: ErrorCode::SatelliteUnreachable,
+            ..
+        }
+    ));
+    assert!(replacement.subscribers.is_empty());
+    assert!(replacement.pending.is_empty());
+    // Old teardown is equally incapable of erasing newly learned facts.
+    replacement.feed(&FrameKind::Event {
+        terminal: Some(ResourceId::local(7)),
+        event: AgentEvent::ResourceSpawned {
+            kind: phux_protocol::ids::ResourceKind::Terminal,
+            parent: None,
+        },
+        stamp: None,
+    });
+    old.teardown("late old teardown");
+    assert_eq!(
+        handle.known_resource_kind(7),
+        Some(phux_protocol::ids::ResourceKind::Terminal)
+    );
 }

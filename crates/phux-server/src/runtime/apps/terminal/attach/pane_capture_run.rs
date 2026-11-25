@@ -52,11 +52,11 @@ impl PaneCaptureContext<'_> {
             }
         };
         let cut = reply.base_seq;
-        let publication_cursor = reply.publication_cursor;
+        let capture = reply.capture;
         let AttachStaging {
             budget,
             frames,
-            gates,
+            publication,
             ..
         } = staging;
         if budget
@@ -67,12 +67,13 @@ impl PaneCaptureContext<'_> {
                 "aggregate bootstrap staging budget exceeded".to_owned(),
             ));
         }
-        if let Some(gate) = gates
+        if let Some(gate) = publication
+            .gates
             .iter_mut()
             .find(|gate| gate.terminal_id == terminal_id)
         {
             gate.cut = Some(cut);
-            gate.native_cursor = Some(publication_cursor);
+            gate.native_capture = Some(capture);
         }
         Ok(())
     }
@@ -148,7 +149,7 @@ impl PaneCaptureContext<'_> {
             self.client_caps,
         );
         let wire_terminal_id = pane.wire_terminal_id;
-        let registration = self
+        let mut registration = self
             .register_consumer(
                 &handle,
                 &wire_terminal_id,
@@ -158,10 +159,18 @@ impl PaneCaptureContext<'_> {
             )
             .await;
         self.check_registration(terminal_id, &registration)?;
+        if let Some(guard) = registration.guard.take() {
+            staging
+                .publication
+                .registrations
+                .try_reserve(1)
+                .map_err(|_| "host allocation failed".to_owned())?;
+            staging.publication.registrations.push(guard);
+        }
         // A tick-managed consumer's deltas come from the actor, in its own
         // sequence space: a broadcast pump beside it would double-emit.
         if !registration.tick_managed {
-            self.spawn_pane_pump(staging, terminal_id, &wire_terminal_id, &handle, &terminal);
+            self.spawn_pane_pump(staging, terminal_id, &wire_terminal_id, &handle, &terminal)?;
         }
         if let Some(state_sync) = registration.state_sync_bootstrap {
             return Ok(self.stage_synthesized_frames(
@@ -195,6 +204,7 @@ impl PaneCaptureContext<'_> {
             "synthesized bootstrap",
         )?;
         if let Some(gate) = staging
+            .publication
             .gates
             .iter_mut()
             .find(|gate| gate.terminal_id == terminal_id)

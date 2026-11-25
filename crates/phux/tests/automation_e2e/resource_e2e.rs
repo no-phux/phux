@@ -229,13 +229,22 @@ fn new_with_a_key_reused_for_another_request_registers_nothing() {
     let server = Server::start();
     let first = server.phux(&["new", "-s", "alpha", "--json", "--idempotency-key", KEY]);
     assert!(first.status.success(), "{first:?}");
-    // The server ignores a different request under a used token and
-    // publishes nothing (no refusal form exists for a create result).
+    // The key is the create's operation identity: the server refuses a
+    // different request under it (`DuplicateOperation`) and publishes
+    // nothing, and the error names the key as the cause.
     let reused = server.phux(&["new", "-s", "beta", "--json", "--idempotency-key", KEY]);
     assert_eq!(reused.status.code(), Some(1), "{reused:?}");
     assert!(reused.stdout.is_empty());
     let stderr = String::from_utf8_lossy(&reused.stderr);
     assert!(stderr.contains("--idempotency-key"), "{stderr}");
+    let error = last_stderr_json(&reused);
+    assert_eq!(error["error"]["code"], "session_create_failed", "{error}");
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("already belongs to another request")),
+        "{error}"
+    );
     let (listing, _) = server.json(&["ls", "--json"]);
     assert!(
         !listing["sessions"]

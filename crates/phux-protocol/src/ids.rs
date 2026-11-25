@@ -65,6 +65,40 @@ pub use resource::{
     ResourceId, ResourceKind, SatelliteHost, ServerInstance,
 };
 
+/// Parse an exact 16-byte hexadecimal identity, accepting either case.
+#[must_use]
+pub fn parse_hex16(text: &str) -> Option<[u8; 16]> {
+    if text.len() != 32 || !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut bytes = [0; 16];
+    for (slot, pair) in bytes.iter_mut().zip(text.as_bytes().as_chunks::<2>().0) {
+        *slot = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+    }
+    Some(bytes)
+}
+
+/// Canonical lowercase hexadecimal representation of a 16-byte identity.
+#[must_use]
+pub fn hex16(bytes: &[u8; 16]) -> String {
+    use std::fmt::Write as _;
+    let mut text = String::with_capacity(32);
+    let _ = write!(text, "{}", Hex16(bytes));
+    text
+}
+
+/// Explicit identity formatting, separate from opaque IDs' redacted Debug.
+pub(crate) struct Hex16<'a>(pub &'a [u8; 16]);
+
+impl core::fmt::Display for Hex16<'_> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        for byte in self.0 {
+            write!(formatter, "{byte:02x}")?;
+        }
+        Ok(())
+    }
+}
+
 /// Lowercase RFC 4648 base32 alphabet, the text form of a 16-byte key.
 const BASE32_ALPHABET: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
 

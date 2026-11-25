@@ -169,7 +169,20 @@ fn binding(
     writer: tokio::task::JoinSet<()>,
     writer_close: tokio::sync::watch::Sender<bool>,
 ) -> StreamBinding {
+    let host = crate::runtime::apps::StreamHost::new(
+        &crate::state::SharedState::new(),
+        crate::state::ClientId(1),
+    );
+    let reservation = host
+        .reserve_next(
+            phux_core::ids::ResourceId::default(),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+    let source = reservation.lease.clone();
+    assert!(reservation.published(|| true));
     StreamBinding {
+        source,
         tx,
         stream_id: StreamId::new(1).expect("stream id"),
         writer,

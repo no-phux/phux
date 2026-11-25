@@ -78,6 +78,8 @@ pub enum Shortcut {
     CopyConfig,
     /// Start again what a server restart ended.
     RestoreSessions,
+    /// Review and explicitly approve one exact local archived recipe.
+    ReviewRawRelaunch,
     Inbox,
     /// What Git says changed in the focused terminal's checkout.
     Changes,

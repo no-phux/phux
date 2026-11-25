@@ -42,6 +42,7 @@ pub mod activation;
 #[cfg(unix)]
 pub mod agent_forward;
 pub mod approvals;
+pub mod archived_relaunch;
 pub mod connection;
 pub mod control;
 pub mod dial;

@@ -8,6 +8,8 @@ fn desk_with_client() -> Desk {
     desk.connection.epoch = replica.client.connection_epoch();
     desk.connection.status = Status::Attached;
     desk.connection.client = Some(replica.client);
+    desk.connection
+        .seed_view_sources(vec![1; 16], &replica.sources);
     desk.connection.action_transport = Some("quic");
     desk.machines.current = Some("remote-a".into());
     desk.connection.shown = Some(Shown {

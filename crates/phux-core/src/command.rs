@@ -138,6 +138,17 @@ pub enum Op {
         /// A first member, created with the session.
         resource: Option<NewResource>,
     },
+    /// Resolve a named session, creating only when absent in this transaction.
+    SessionEnsure {
+        /// Exact live label.
+        name: String,
+        /// Lifetime used only when creating.
+        lifetime: SessionLifetime,
+        /// Descriptive attributes, used only when creating.
+        attrs: Attrs,
+        /// First member used only when creating.
+        resource: Option<NewResource>,
+    },
     /// Relabel a session.
     SessionRename {
         /// Target.
@@ -474,6 +485,15 @@ pub enum Reply {
         revision: Option<Revision>,
         /// Keys created.
         created: Created,
+    },
+    /// A named session resolved atomically; retained unchanged on replay.
+    Ensured {
+        /// The exact session, even if subsequently removed.
+        session: SessionKey,
+        /// Its revision at admission.
+        revision: Revision,
+        /// Whether this operation created it.
+        created: bool,
     },
     /// Committed; execution effects follow as events.
     Accepted {

@@ -6516,17 +6516,20 @@ Global flags:
 ```text
 Start a stopped pane again
 
-Starts a new run of `TARGET` (a pane selector or key `^ab23cd`) with the
-command, directory, and environment it was launched with, in the same session.
-Refused while it still runs, or while a run that a server restart lost track of
-may still be running.
+Starts a new run of `TARGET` through a current trusted host template. An
+archived raw command requires `--approve-raw`: print its exact recipe and
+explicitly confirm it on the local owner socket. Never replaces a running or
+uncertain execution.
 
-Usage: phux relaunch [--json] <TARGET>
+Usage: phux relaunch [--approve-raw] [--json] <TARGET>
 
 Arguments:
   <TARGET>  The pane to start again.
 
 Flags:
+      --approve-raw    Review the complete raw archived recipe and explicitly
+                       approve this one operation interactively. Local owner
+                       only; never implied by --json.
       --json           Emit a schema-versioned JSON result or error.
   -h, --help           Print help
 
@@ -6912,8 +6915,11 @@ Relaunch every pane a server restart ended
 
 Starts each pane whose process ended because the server stopped while it ran,
 and each pane imported but never started, in its session, with its directory and
-agent resume. With `SESSION`, only that session's panes. Prints one summary line
-plus one line per pane that was refused (`-v`: every pane).
+agent resume, through a current trusted host template. A saved raw command no
+current template admits is refused and nothing runs; its line names `phux
+relaunch ^KEY --approve-raw`, which prints the exact recipe for an interactive
+yes. With `SESSION`, only that session's panes. Prints one summary line plus one
+line per pane that was refused (`-v`: every pane).
 
 Usage: phux restore [-v --verbose] [--json] [SESSION]
 

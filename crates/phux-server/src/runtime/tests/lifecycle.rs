@@ -27,7 +27,8 @@ fn pane_lifecycle_hooks_fire() {
 
         let (_sid, pane) = state.with_mut(|s| s.seed_session("dying"));
         let (exit_tx, exit_rx) = tokio::sync::oneshot::channel();
-        spawn_resource_exit_watcher(state.clone(), pane, Some(exit_rx), token, None);
+        let activation = state.with(|s| s.activation_token(pane).unwrap());
+        spawn_resource_exit_watcher(state.clone(), pane, activation, Some(exit_rx), token, None);
         exit_tx
             .send(phux_core::process::ExitOutcome::exited(3))
             .expect("exit notify");
@@ -59,7 +60,15 @@ fn a_pane_killed_before_its_exit_still_fires_pane_exit_and_holds_self_exit() {
         let (_sid, pane) = state.with_mut(|s| s.seed_session("doomed"));
         state.with_mut(|s| s.lifecycle_mut().arm_self_exit());
         let (exit_tx, exit_rx) = tokio::sync::oneshot::channel();
-        spawn_resource_exit_watcher(state.clone(), pane, Some(exit_rx), root.clone(), None);
+        let activation = state.with(|s| s.activation_token(pane).unwrap());
+        spawn_resource_exit_watcher(
+            state.clone(),
+            pane,
+            activation,
+            Some(exit_rx),
+            root.clone(),
+            None,
+        );
 
         let committed = state.with_mut(|s| {
             let plan = s.plan_close(&[pane], phux_protocol::wire::frame::CloseReason::Killed);

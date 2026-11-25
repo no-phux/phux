@@ -65,7 +65,13 @@ impl TerminalActor {
             frames,
             retained_bytes,
             base_seq,
-            publication_cursor: cursor,
+            capture: super::super::NativeCapture::new(
+                req.owner,
+                req.terminal_id.clone(),
+                req.stream_id,
+                req.bootstrap_id,
+                cursor,
+            ),
         })
     }
 
@@ -105,6 +111,11 @@ impl TerminalActor {
             }
         };
         if self.native_publication_conflicts(cursor, base_seq, &replay) {
+            if installed_new
+                && let CanonicalTerminal::Native(manager) = &mut *self.terminal.borrow_mut()
+            {
+                let _ = manager.release_generation(&cursor);
+            }
             fail_native_waiters(
                 prepared,
                 crate::native_state::NativeStateError::LimitExceeded,
@@ -182,7 +193,8 @@ impl TerminalActor {
         base_seq: u64,
         replay: &VecDeque<(u64, Bytes)>,
     ) -> bool {
-        self.native_publications
+        self.publication
+            .native_publications
             .get(&cursor)
             .is_some_and(|existing| existing.base_seq != base_seq || existing.replay != *replay)
     }
@@ -199,7 +211,10 @@ impl TerminalActor {
         let mut waiting = HashSet::new();
         let mut installed = 0_usize;
         for (waiter, reply_value) in prepared {
-            if self.native_cursor_owners.len() >= MAX_NATIVE_HISTORY_CLIENTS {
+            if waiter.reply.is_closed() {
+                continue;
+            }
+            if self.publication.native_cursor_owners.len() >= MAX_NATIVE_HISTORY_CLIENTS {
                 let _ = waiter
                     .reply
                     .send(Err(crate::native_state::NativeStateError::LimitExceeded));
@@ -213,9 +228,13 @@ impl TerminalActor {
             }
             installed += 1;
             let key = NativeCursorKey::new(waiter.owner, waiter.stream_id);
-            self.native_cursor_owners.insert(
+            let cancellation = reply_value.capture.cancellation();
+            self.publication
+                .watch_native(cancellation.clone(), key, waiter.bootstrap_id, cursor);
+            self.publication.native_cursor_owners.insert(
                 key,
                 NativeCursorOwner {
+                    cancellation,
                     history_released: false,
                     superseded: false,
                     cursor,
@@ -270,7 +289,7 @@ impl TerminalActor {
         waiting: HashSet<NativeCursorKey>,
     ) {
         use std::collections::hash_map::Entry;
-        match self.native_publications.entry(cursor) {
+        match self.publication.native_publications.entry(cursor) {
             Entry::Occupied(mut entry) => {
                 entry.get_mut().waiting.extend(waiting);
             }
@@ -320,8 +339,8 @@ impl TerminalActor {
     }
 
     pub(in crate::actor) fn start_next_native_bootstrap(&mut self) {
-        if self.pending_native_bootstrap.is_none()
-            && let Some(next) = self.native_bootstrap_backlog.pop_front()
+        if self.publication.pending_native_bootstrap.is_none()
+            && let Some(next) = self.publication.native_bootstrap_backlog.pop_front()
         {
             self.start_native_bootstrap(next);
         }
@@ -347,6 +366,7 @@ impl TerminalActor {
     pub(in crate::actor) fn buffer_native_live_output(&mut self, seq: u64, bytes: &Bytes) -> bool {
         let mut deferred = false;
         let overflow = self
+            .publication
             .pending_native_bootstrap
             .as_ref()
             .is_some_and(|pending| {
@@ -356,7 +376,7 @@ impl TerminalActor {
                     .is_none_or(|total| total > MAX_NATIVE_REPLAY_BYTES)
             });
         if overflow {
-            if let Some(mut pending) = self.pending_native_bootstrap.take() {
+            if let Some(mut pending) = self.publication.pending_native_bootstrap.take() {
                 if let Some(capture) = pending.capture.take()
                     && let CanonicalTerminal::Native(manager) = &mut *self.terminal.borrow_mut()
                 {
@@ -369,14 +389,14 @@ impl TerminalActor {
                         .send(Err(crate::native_state::NativeStateError::LimitExceeded));
                 }
             }
-        } else if let Some(pending) = self.pending_native_bootstrap.as_mut() {
+        } else if let Some(pending) = self.publication.pending_native_bootstrap.as_mut() {
             pending.replay_bytes += bytes.len();
             pending.replay.push_back((seq, bytes.clone()));
             deferred = true;
         }
 
         let mut overflowed = Vec::new();
-        for (cursor, publication) in &mut self.native_publications {
+        for (cursor, publication) in &mut self.publication.native_publications {
             match publication.replay_bytes.checked_add(bytes.len()) {
                 Some(total) if total <= MAX_NATIVE_REPLAY_BYTES => {
                     publication.replay_bytes = total;
@@ -386,7 +406,7 @@ impl TerminalActor {
             }
         }
         for cursor in overflowed {
-            if let Some(publication) = self.native_publications.remove(&cursor) {
+            if let Some(publication) = self.publication.native_publications.remove(&cursor) {
                 for key in publication.waiting {
                     self.release_native_binding(key);
                 }

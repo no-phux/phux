@@ -41,7 +41,8 @@ fn publish(client: &Client, seq: u64, payload: &[u8]) {
         .unwrap();
 }
 
-/// Attached to `main`'s terminal and an accessibility tree, both bootstrapped.
+/// Attached to `main`'s terminal and an accessibility tree, both bootstrapped,
+/// on a peer that gives `main` a durable identity a restart can recover.
 fn attached_with_tree() -> Client {
     let mut client = phux_client_runtime::Runtime::embedded(ControlOptions {
         attach: Some(AttachTarget::ByName("main".into())),
@@ -50,8 +51,10 @@ fn attached_with_tree() -> Client {
     });
     client.with_control(ControlPlane::connection_opened);
     let _ = client.take_outbound();
-    client.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
-    let attach_id = client.queued_attach_id();
+    client
+        .feed(with_organization(hello_ok(PROTOCOL_VERSION.patch)))
+        .unwrap();
+    let attach_id = client.with_control(seed_durable_main);
     let mut snapshot = snapshot();
     snapshot.resources.push(
         ResourceInfo::resource(tree(), ResourceKind::AccessibilityTree)
@@ -171,7 +174,9 @@ fn a_new_server_incarnation_retires_document_slots() {
         if let FrameKind::HelloOk { server_id: id, .. } = &mut hello {
             *id = vec![server_id; 16];
         }
-        client.feed(hello).unwrap();
+        client.feed(with_organization(hello)).unwrap();
+        // A new incarnation re-attaches `main` only by its exact durable key.
+        let _ = client.with_control(seed_durable_main);
     };
     // The same incarnation resumes its streams: like a grid, the newest
     // document stays readable until the re-attach publishes a newer one.

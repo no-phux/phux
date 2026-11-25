@@ -298,6 +298,7 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
         }
         org @ (Command::GetOrganization { .. }
         | Command::SessionCreate { .. }
+        | Command::SessionEnsure { .. }
         | Command::SessionRename { .. }
         | Command::SessionSetProject { .. }
         | Command::SessionSetLifetime { .. }

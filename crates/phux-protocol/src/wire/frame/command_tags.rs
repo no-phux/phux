@@ -125,9 +125,11 @@ pub(crate) const COMMAND_TAG_SESSION_KILL: u8 = 0x37;
 }
 
 // `ARRANGEMENT_LOCK` (`docs/organization.md`), an organization command gated
-// on `features_ext.TAB_LOCK`.
+// on `features_ext.TAB_LOCK`, and `SESSION_ENSURE`, gated on
+// `features_ext2.SESSION_ENSURE` (after `OPEN_URL`'s 0x51/0x52 pair).
 wire_tags! { Command;
 pub(crate) const COMMAND_TAG_ARRANGEMENT_LOCK: u8 = 0x4d;
+pub(crate) const COMMAND_TAG_SESSION_ENSURE: u8 = 0x53;
 }
 
 // `InputEvent` tags (`ROUTE_INPUT`), mirroring the `INPUT_*` frame atoms.

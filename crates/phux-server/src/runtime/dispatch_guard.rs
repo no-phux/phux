@@ -206,7 +206,7 @@ pub(super) async fn guard_command(
                     ),
                 }
             };
-            crate::runtime::apps::document::audit::record_refusal(
+            crate::runtime::commands::document::audit::record_refusal(
                 state, client_id, command, &result,
             );
             let _ = out_tx

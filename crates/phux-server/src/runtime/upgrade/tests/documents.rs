@@ -79,7 +79,7 @@ async fn upgrade_carries_documents_with_their_id_and_newest_document() {
             rx.await.unwrap().unwrap();
 
             // Every kind's cut, as `prepare_upgrade` takes them.
-            let mut cuts = crate::runtime::apps::upgrade::begin(&state).unwrap();
+            let mut cuts = crate::runtime::upgrade::kinds::begin(&state).unwrap();
             let context = capture_upgrade_context(&state).unwrap();
             assert!(
                 context.tree_identity.documents.is_empty(),

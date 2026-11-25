@@ -132,7 +132,7 @@ pub async fn create_on(
 
 fn project(session: &str, key: &str, receipt: &Committed) -> Result<TerminalCreated, CreateError> {
     // A queued or mismatched acknowledgement is not evidence for this intention.
-    if !api::hex16(receipt.operation.as_bytes()).eq_ignore_ascii_case(key) {
+    if !phux_protocol::ids::hex16(receipt.operation.as_bytes()).eq_ignore_ascii_case(key) {
         return Err(OrgError::OutcomeUnknown { operation: None }.into());
     }
     let missing = |field: &str| {
@@ -154,7 +154,7 @@ fn project(session: &str, key: &str, receipt: &Committed) -> Result<TerminalCrea
         .map(|observation| api::ExecutionRef::from_observation(&authority, &resource, observation));
     Ok(TerminalCreated {
         schema_version: 1,
-        idempotency_key: api::hex16(receipt.operation.as_bytes()),
+        idempotency_key: phux_protocol::ids::hex16(receipt.operation.as_bytes()),
         authority,
         session: session.to_ascii_lowercase(),
         resource,
@@ -163,7 +163,7 @@ fn project(session: &str, key: &str, receipt: &Committed) -> Result<TerminalCrea
                 .arrangement
                 .ok_or_else(|| missing("arrangement"))?
                 .to_string(),
-            entry: api::hex16(&receipt.entry.ok_or_else(|| missing("entry"))?),
+            entry: phux_protocol::ids::hex16(&receipt.entry.ok_or_else(|| missing("entry"))?),
         },
         execution,
         execution_ref,
@@ -193,7 +193,7 @@ pub(crate) fn observation(activation: ActivationInfo) -> ExecutionObservation {
     });
     ExecutionObservation {
         activation: activation.id.get(),
-        instance: api::hex16(activation.instance.as_bytes()),
+        instance: phux_protocol::ids::hex16(activation.instance.as_bytes()),
         state,
         outcome,
         diagnostic: activation.diagnostic,

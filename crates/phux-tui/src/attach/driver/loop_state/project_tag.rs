@@ -1,40 +1,9 @@
 //! The one `phux.session.project/v1` tag, the stored session order, and the
 //! global metadata reads that travel with the sidebar sweep.
 
-use super::{
-    AttachError, Connection, FrameKind, FrameOutcome, RepaintAccumulator, Scope, apply_graph_rename,
-};
+use super::{AttachError, Connection, FrameOutcome, RepaintAccumulator, apply_graph_rename};
 
 impl super::SessionLoop {
-    /// Global metadata the picker and status line follow. An `ORGANIZATION`
-    /// server reports renames as events (ADR-0161), so only an older one's
-    /// session keys are watched.
-    pub(super) async fn subscribe_global_session_keys(
-        &self,
-        conn: &mut Connection,
-    ) -> Result<(), AttachError> {
-        use phux_protocol::wire::frame::{
-            CONFIG_RELOAD_KEY, SESSION_KEEP_EMPTY_KEY, SESSION_NAME_KEY, SESSION_PROJECT_KEY,
-        };
-        let legacy: &[&str] = if self.organization_supported {
-            &[]
-        } else {
-            &[SESSION_KEEP_EMPTY_KEY, SESSION_NAME_KEY]
-        };
-        let order = phux_client::session_order::SESSION_ORDER_KEY;
-        for key in [CONFIG_RELOAD_KEY, SESSION_PROJECT_KEY, order]
-            .into_iter()
-            .chain(legacy.iter().copied())
-        {
-            conn.send(&FrameKind::SubscribeMetadata {
-                scope: Scope::Global,
-                key: key.to_owned(),
-            })
-            .await?;
-        }
-        Ok(())
-    }
-
     /// Serving host, the stored project tag, then the host inventory.
     pub(super) async fn request_sidebar_facts(
         &mut self,
@@ -51,119 +20,38 @@ impl super::SessionLoop {
         &mut self,
         conn: &mut Connection,
     ) -> Result<(), AttachError> {
-        if self.peers.project_tag_pending.is_some() {
-            return Ok(());
-        }
-        let request_id = self.take_request_id();
-        self.peers.project_tag_pending = Some(request_id);
-        super::super::session_io::send_unless_peer_gone(
-            conn,
-            &FrameKind::GetMetadata {
-                request_id,
-                scope: Scope::Global,
-                key: phux_protocol::wire::frame::SESSION_PROJECT_KEY.to_owned(),
-            },
-        )
-        .await
+        self.peers
+            .request_fact(
+                conn,
+                &mut self.next_request_id,
+                super::super::subscriptions::SidebarFact::ProjectTag,
+            )
+            .await
     }
 
     /// Read the stored session order. The subscribe only delivers later writes.
     async fn request_session_order(&mut self, conn: &mut Connection) -> Result<(), AttachError> {
-        if self.peers.session_order_pending.is_some() {
-            return Ok(());
-        }
-        let request_id = self.take_request_id();
-        self.peers.session_order_pending = Some(request_id);
-        super::super::session_io::send_unless_peer_gone(
-            conn,
-            &FrameKind::GetMetadata {
-                request_id,
-                scope: Scope::Global,
-                key: phux_client::session_order::SESSION_ORDER_KEY.to_owned(),
-            },
-        )
-        .await
-    }
-
-    /// Serving-host, project-tag and session-order replies. `None` means
-    /// this frame was one.
-    pub(super) fn take_sidebar_metadata(&mut self, frame: FrameKind) -> Option<FrameKind> {
-        let frame = self.take_serving_host_reply(frame)?;
-        let frame = self.take_project_tag_reply(frame)?;
-        self.take_session_order_reply(frame)
-    }
-
-    fn take_session_order_reply(&mut self, frame: FrameKind) -> Option<FrameKind> {
-        match frame {
-            FrameKind::MetadataValue { request_id, value }
-                if self.peers.session_order_pending == Some(request_id) =>
-            {
-                self.peers.session_order_pending = None;
-                self.fold_session_order(phux_client::session_order::decode(value.as_deref()));
-                None
-            }
-            FrameKind::Error {
-                request_id: Some(request_id),
-                ..
-            } if self.peers.session_order_pending == Some(request_id) => {
-                self.peers.session_order_pending = None;
-                None
-            }
-            other => Some(other),
-        }
+        self.peers
+            .request_fact(
+                conn,
+                &mut self.next_request_id,
+                super::super::subscriptions::SidebarFact::SessionOrder,
+            )
+            .await
     }
 
     /// Adopt the stored session order; every session list redraws.
-    fn fold_session_order(&mut self, order: Vec<phux_protocol::ids::SessionKey>) {
-        if order == self.peers.session_order {
+    pub(super) fn fold_session_order(&mut self, order: Vec<phux_protocol::ids::SessionKey>) {
+        if order == self.peer_presentation.session_order {
             return;
         }
-        self.peers.session_order = order;
-        self.peers.chrome_dirty = true;
+        self.peer_presentation.session_order = order;
+        self.peer_presentation.chrome_dirty = true;
         self.session_picker_dirty = true;
-    }
-
-    fn take_serving_host_reply(&mut self, frame: FrameKind) -> Option<FrameKind> {
-        match frame {
-            FrameKind::MetadataValue { request_id, value }
-                if self.peers.serving_host_pending == Some(request_id) =>
-            {
-                self.fold_serving_host(value.as_deref());
-                None
-            }
-            FrameKind::Error {
-                request_id: Some(request_id),
-                ..
-            } if self.peers.serving_host_pending == Some(request_id) => {
-                self.peers.serving_host_pending = None;
-                None
-            }
-            other => Some(other),
-        }
-    }
-
-    fn take_project_tag_reply(&mut self, frame: FrameKind) -> Option<FrameKind> {
-        match frame {
-            FrameKind::MetadataValue { request_id, value }
-                if self.peers.project_tag_pending == Some(request_id) =>
-            {
-                self.fold_project_tag(value.as_deref());
-                None
-            }
-            FrameKind::Error {
-                request_id: Some(request_id),
-                ..
-            } if self.peers.project_tag_pending == Some(request_id) => {
-                self.peers.project_tag_pending = None;
-                None
-            }
-            other => Some(other),
-        }
     }
 
     /// Join the stored project tag to the session that still has that name.
     pub(super) fn fold_project_tag(&mut self, value: Option<&[u8]>) {
-        self.peers.project_tag_pending = None;
         self.peers.stored_project_tag = value
             .and_then(phux_protocol::wire::frame::decode_session_project)
             .map(|(name, project)| (name.to_owned(), project.to_owned()));
@@ -173,12 +61,12 @@ impl super::SessionLoop {
     /// Flip one project group's sidebar collapse (ADR-0168), keep it on
     /// disk, and redraw.
     pub(super) fn toggle_project_group(&mut self, key: String) {
-        let collapsed = &mut self.peers.collapsed_projects;
+        let collapsed = &mut self.peer_presentation.collapsed_projects;
         if !collapsed.remove(&key) {
             collapsed.insert(key);
         }
         crate::attach::client_state::save_collapsed_projects(collapsed);
-        self.peers.chrome_dirty = true;
+        self.peer_presentation.chrome_dirty = true;
     }
 
     /// Apply an `agents-filter` to the sidebar's Agents panel and save it for
@@ -221,7 +109,7 @@ impl super::SessionLoop {
             return;
         }
         self.peers.project_tags = next;
-        self.peers.chrome_dirty = true;
+        self.peer_presentation.chrome_dirty = true;
         self.session_picker_dirty = true;
     }
 
@@ -233,7 +121,7 @@ impl super::SessionLoop {
     ) {
         if let Some((current, new_name)) = outcome.session_rename.take() {
             apply_graph_rename(&mut self.peers.sessions, &current, &new_name);
-            self.peers.chrome_dirty = true;
+            self.peer_presentation.chrome_dirty = true;
             self.session_picker_dirty = true;
             self.note_chrome_change(repaint);
         }
@@ -246,7 +134,7 @@ impl super::SessionLoop {
             {
                 session.name = new_name;
             }
-            self.peers.chrome_dirty = true;
+            self.peer_presentation.chrome_dirty = true;
             self.session_picker_dirty = true;
             self.note_chrome_change(repaint);
         }
@@ -262,7 +150,7 @@ impl super::SessionLoop {
                     project.as_deref(),
                 );
             }
-            self.peers.chrome_dirty = true;
+            self.peer_presentation.chrome_dirty = true;
             self.session_picker_dirty = true;
             self.note_chrome_change(repaint);
         }

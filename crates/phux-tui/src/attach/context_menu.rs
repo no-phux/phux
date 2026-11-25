@@ -61,7 +61,7 @@ pub(super) fn active_window_menu(ctx: &crate::attach::input_dispatch::DispatchCt
         None => String::new(),
     };
     window_menu(
-        ctx.keybindings,
+        Some(ctx.keybindings),
         &label,
         active.is_some_and(|tab| tab.locked),
     )

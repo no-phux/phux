@@ -9,6 +9,12 @@ impl RelaySession {
     /// Dispatch one frame from the satellite: resolve replies, re-tag and fan
     /// out streams.
     pub(crate) fn handle_inbound(&mut self, framed: &[u8]) -> Result<(), String> {
+        if !self.link_is_current() {
+            return Err(format!(
+                "satellite {} frame belongs to an expired link",
+                self.host
+            ));
+        }
         let frame = FrameKind::decode_with_limits(framed, self.bootstrap_limits)
             .map_err(|err| format!("satellite {} sent an undecodable frame: {err:?}", self.host))?
             .0;

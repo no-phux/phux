@@ -176,7 +176,7 @@ async fn route_command(
             resource,
             expected,
         } = &command
-            && let Some(result) = crate::runtime::apps::claim_native_agent_relaunch(
+            && let Some(result) = crate::runtime::commands::native_agent::claim_relaunch(
                 ctx, *operation, resource, *expected,
             )
         {

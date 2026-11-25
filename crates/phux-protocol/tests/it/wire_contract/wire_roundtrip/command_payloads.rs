@@ -309,3 +309,32 @@ fn command_result_ok_with_values_round_trip() {
         });
     }
 }
+
+#[test]
+fn ensure_command_and_exact_existing_created_receipts_round_trip() {
+    use phux_protocol::ids::{OperationId, Revision, SessionKey};
+    use phux_protocol::wire::frame::{Committed, LaunchSpec, SessionLifetime};
+    let operation = OperationId::new([0x91; 16]).unwrap();
+    assert_round_trip(&FrameKind::Command {
+        request_id: 13,
+        command: Command::SessionEnsure {
+            operation,
+            name: "named".to_owned(),
+            lifetime: SessionLifetime::Persistent,
+            attrs: vec![("project".to_owned(), "atomic-project".to_owned())],
+            launch: Some(Box::new(LaunchSpec::new(vec!["sh".to_owned()]))),
+        },
+    });
+    for created in [false, true] {
+        for replayed in [false, true] {
+            let receipt = Committed::new(operation, Revision::new(7))
+                .with_session(SessionKey::new([0x92; 16]))
+                .with_ensured_created(Some(created))
+                .with_replayed(replayed);
+            assert_round_trip(&FrameKind::CommandResult {
+                request_id: 13,
+                result: CommandResult::OkWith(CommandValue::Committed(Box::new(receipt))),
+            });
+        }
+    }
+}

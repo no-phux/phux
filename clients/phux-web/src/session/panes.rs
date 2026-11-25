@@ -118,8 +118,8 @@ impl Connection {
         let axis = Axis::parse(axis)?;
         self.pane_operation_ready()?;
         let panes = self.pane_rects();
-        if self.terminal_rects().len() + self.retiring_panes.len() >= 4 {
-            return Err("Four terminals are open or closing. Wait for cleanup or close a pane before splitting.".to_owned());
+        if self.terminal_rects().len() + self.failed_pane_views.len() >= 4 {
+            return Err("Four terminals are open or have failed views. Reload to inspect failed views or close a pane before splitting.".to_owned());
         }
         let target = self
             .focused_pane()

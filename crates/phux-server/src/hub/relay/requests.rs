@@ -2,10 +2,35 @@
 
 use super::{
     Command, CommandResult, FrameKind, PendingCommand, ProxySubscription, RelayRequest,
-    RelaySession, ResourceId, Scope, ServerFeatureSet, SpawnResult, link_attach_command, oneshot,
+    RelaySession, ResourceId, Scope, SpawnResult, link_attach_command, oneshot,
 };
 
 impl RelaySession {
+    /// Reject queued work captured before a disconnect or endpoint replacement.
+    pub(crate) fn handle_queued_request(
+        &mut self,
+        queued: super::QueuedRelayRequest,
+    ) -> Vec<Vec<u8>> {
+        if queued.epoch != self.epoch
+            || !self.link_is_current()
+            || queued
+                .owner
+                .as_ref()
+                .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
+        {
+            super::fail_fast(
+                queued.request,
+                &self.host,
+                "request belongs to an expired link",
+            );
+            return Vec::new();
+        }
+        let mut frames = self.prepare_request(&queued.request);
+        if let Some(frame) = self.handle_request_owned(queued.request, queued.owner) {
+            frames.push(frame);
+        }
+        frames
+    }
     /// Before a first explicit attach, fence any automatic SPAWN generation
     /// upstream (no proxy owns it); shared subscriptions keep streaming.
     pub(crate) fn prepare_request(&mut self, request: &RelayRequest) -> Vec<Vec<u8>> {
@@ -15,12 +40,14 @@ impl RelaySession {
         let RelayRequest::Command {
             command: Command::AttachResource { .. },
             subscribe: Some(sub),
-            ..
+            reply,
         } = request
         else {
             return Vec::new();
         };
-        if self.explicit_content.contains(&sub.terminal)
+        if reply.is_closed()
+            || sub.consumer_cancel.is_cancelled()
+            || self.explicit_content.contains(&sub.terminal)
             || self
                 .pending_detaches
                 .values()
@@ -47,13 +74,22 @@ impl RelaySession {
     }
 
     /// Service one request. `None`: rejected locally, consumer already told.
+    #[cfg(test)]
     pub(crate) fn handle_request_checked(&mut self, request: RelayRequest) -> Option<Vec<u8>> {
+        self.handle_request_owned(request, None)
+    }
+
+    fn handle_request_owned(
+        &mut self,
+        request: RelayRequest,
+        owner: Option<tokio_util::sync::CancellationToken>,
+    ) -> Option<Vec<u8>> {
         match request {
             RelayRequest::Command {
                 command,
                 reply,
                 subscribe,
-            } => self.enqueue_command(command, reply, subscribe),
+            } => self.enqueue_command(command, reply, subscribe, owner),
             RelayRequest::Keyed {
                 command,
                 actor,
@@ -71,6 +107,7 @@ impl RelaySession {
                     request_id,
                     PendingCommand {
                         reply,
+                        owner,
                         attach: None,
                         subscription: None,
                     },
@@ -81,6 +118,22 @@ impl RelaySession {
                 }))
             }
             RelayRequest::Forward { mut frame } => {
+                if matches!(
+                    &frame,
+                    FrameKind::Command {
+                        command: Command::ResourceRelaunch { .. },
+                        ..
+                    }
+                ) {
+                    tracing::warn!(satellite = %self.host, "archived relaunch refused on uncorrelated route; use the actor-owned keyed route");
+                    return None;
+                }
+                if let FrameKind::Command { command, .. } = &frame
+                    && let Some(refusal) = self.command_rejection(command)
+                {
+                    tracing::warn!(satellite = %self.host, ?refusal, "uncorrelated command refused before forwarding; never retried");
+                    return None;
+                }
                 if !self.retag_frame_ack(&mut frame) {
                     return None;
                 }
@@ -160,7 +213,22 @@ impl RelaySession {
         mut command: Command,
         reply: oneshot::Sender<CommandResult>,
         subscribe: Option<ProxySubscription>,
+        owner: Option<tokio_util::sync::CancellationToken>,
     ) -> Option<Vec<u8>> {
+        // Cancellation may beat this mailbox: never install abandoned work.
+        if subscribe.is_some()
+            && (reply.is_closed()
+                || subscribe
+                    .as_ref()
+                    .is_some_and(|sub| sub.consumer_cancel.is_cancelled()))
+        {
+            return None;
+        }
+        if matches!(command, Command::ResourceRelaunch { .. }) {
+            let _ = reply.send(CommandResult::error(super::ErrorCode::PreconditionFailed,
+                "archived relaunch requires the actor-owned keyed relay route; nothing was forwarded"));
+            return None;
+        }
         if let Some(refusal) = self.command_rejection(&command) {
             let _ = reply.send(refusal);
             return None;
@@ -193,11 +261,18 @@ impl RelaySession {
         // Register the rider with the enqueue, remembering how to roll it back.
         let subscription = subscribe.map(|sub| {
             let (terminal, client) = (sub.terminal, sub.client);
+            let (seq, content) = (sub.seq, sub.awaits_snapshot);
             if sub.awaits_snapshot {
                 self.explicit_content.insert(terminal);
             }
             let effect = self.register_subscriber(sub);
-            (terminal, client, effect)
+            super::PendingProxyRegistration {
+                terminal,
+                client,
+                effect,
+                seq,
+                content,
+            }
         });
         let attach = match &command {
             Command::AttachResource { terminal_id, .. } => terminal_id.local_id(),
@@ -208,6 +283,7 @@ impl RelaySession {
             request_id,
             PendingCommand {
                 reply,
+                owner,
                 attach,
                 subscription,
             },
@@ -246,10 +322,5 @@ impl RelaySession {
             }));
         }
         frames
-    }
-
-    /// The satellite's `HELLO_OK` features (ADR-0127).
-    pub(crate) const fn satellite_features(&self) -> ServerFeatureSet {
-        self.satellite_features
     }
 }

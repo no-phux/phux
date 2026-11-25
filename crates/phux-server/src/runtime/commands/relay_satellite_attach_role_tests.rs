@@ -3,7 +3,7 @@ use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode, RolePolicy};
 use tokio_util::sync::CancellationToken;
 
 use super::*;
-use crate::hub::relay::{HubRelays, RelayHandle, RelayMailbox, RelayRequest};
+use crate::hub::relay::{HubRelays, RelayHandle, RelayMailbox, RelaySession};
 use crate::runtime::commands::satellite_lease::{SatelliteLeaseTarget, relay_satellite_attach};
 use crate::runtime::test_support::error_code;
 use crate::state::{ClientId, Outbound, SharedState};
@@ -14,6 +14,7 @@ struct Fixture {
     client_id: ClientId,
     handle: RelayHandle,
     mailbox: RelayMailbox,
+    session: RelaySession,
     out_tx: tokio::sync::mpsc::Sender<Outbound>,
 }
 
@@ -22,6 +23,12 @@ impl Fixture {
         let state = SharedState::new();
         let host = SatelliteHost::from("sat");
         let (handle, mailbox) = RelayHandle::new(host.clone());
+        let mut session = RelaySession::new(
+            host.clone(),
+            phux_protocol::caps::BootstrapLimits::default(),
+        );
+        session.set_resource_kinds(std::sync::Arc::clone(&mailbox.resource_kinds));
+        session.set_journal(Some(state.clone()));
         let relays = HubRelays::default();
         relays.insert(handle.clone());
         let client_id = ClientId(1);
@@ -37,6 +44,7 @@ impl Fixture {
             client_id,
             handle,
             mailbox,
+            session,
             out_tx,
         }
     }
@@ -70,15 +78,31 @@ impl Fixture {
             futures_util::poll!(&mut attach).is_pending(),
             "attach must wait on the satellite reply"
         );
-        let RelayRequest::Command { reply, .. } = self
-            .mailbox
-            .requests
-            .try_recv()
-            .expect("attach must reach the link")
-        else {
-            panic!("expected a relayed ATTACH_RESOURCE");
-        };
-        reply.send(result).expect("attach is waiting");
+        let frames = self.session.handle_queued_request(
+            self.mailbox
+                .requests
+                .try_recv()
+                .expect("attach must reach the link"),
+        );
+        let request_id = frames
+            .iter()
+            .find_map(|bytes| {
+                match phux_protocol::wire::frame::FrameKind::decode(bytes)
+                    .unwrap()
+                    .0
+                {
+                    phux_protocol::wire::frame::FrameKind::Command {
+                        request_id,
+                        command: Command::AttachResource { .. },
+                    } => Some(request_id),
+                    _ => None,
+                }
+            })
+            .expect("attach frame");
+        let mut bytes = bytes::BytesMut::new();
+        phux_protocol::wire::frame::FrameKind::CommandResult { request_id, result }
+            .encode(&mut bytes);
+        self.session.handle_inbound(&bytes).expect("attach reply");
         attach.await
     }
 }

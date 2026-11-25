@@ -6,6 +6,7 @@ use phux_client_runtime::Target;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::cell::RefCell;
+use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -127,8 +128,7 @@ impl Configuration {
     pub fn target(&self) -> Result<Target, String> {
         let url = parse_endpoint(&self.endpoint)?;
         let loopback = is_loopback(&url)?;
-        let mut target = endpoint_target(&url, loopback)?;
-        self.require_credentials(loopback)?;
+        let mut target = endpoint_target(&url)?;
         target.cert_fingerprint = self.certificate_pin.as_deref().map(compact_pin);
         target.token = self.token.clone();
         target.authority.ca = self.authority_ca.as_deref().map(|pin| {
@@ -139,6 +139,8 @@ impl Configuration {
         });
         self.validate_credential_shapes()?;
         self.apply_relay_route(&mut target)?;
+        Self::require_native_trust(&mut target, loopback)?;
+        self.require_phone_pairing(loopback)?;
         if let Some(name) = self.display_name() {
             target.name = name.to_owned();
         }
@@ -155,9 +157,6 @@ impl Configuration {
         let Some(name) = &self.tls_server_name else {
             return Ok(());
         };
-        if !matches!(target.transport, phux_client_runtime::Transport::Quic(_)) {
-            return Err("A relay route needs a quic:// endpoint.".into());
-        }
         let route = phux_client_runtime::target::validate_tls_server_name(name)
             .map_err(|_| "The relay route must be a DNS server name.")?;
         target.tls_server_name = Some(route.clone());
@@ -218,7 +217,10 @@ impl Configuration {
         Ok(())
     }
 
-    fn require_credentials(&self, loopback: bool) -> Result<(), String> {
+    /// Phone pairing additionally requires the original leaf and token even
+    /// for QUIC/CA-only trust. Enrollment and the held device key remain
+    /// separate platform requirements, not native transport policy.
+    fn require_phone_pairing(&self, loopback: bool) -> Result<(), String> {
         if !loopback
             && (self.certificate_pin.as_deref().is_none_or(str::is_empty)
                 || self.token.as_deref().is_none_or(str::is_empty))
@@ -227,81 +229,48 @@ impl Configuration {
         }
         Ok(())
     }
+
+    fn require_native_trust(target: &mut Target, loopback: bool) -> Result<(), String> {
+        use phux_client_runtime::dial::{CertTrust, InnerTls, PlanRefusal, WsTarget};
+        let route = target.authority.route.as_deref();
+        let trust = target.authority.trust(target.cert_fingerprint.as_deref());
+        let verdict = match &target.transport {
+            phux_client_runtime::Transport::Quic(_) => CertTrust::for_endpoint(trust, loopback)
+                .and_then(|_| {
+                    InnerTls::for_route(
+                        route,
+                        target.authority.ca.as_deref(),
+                        TlsClientIdentity::None,
+                    )
+                    .map(|_| ())
+                }),
+            phux_client_runtime::Transport::Ws(url) => {
+                let parsed = WsTarget::parse(url).map_err(|err| err.to_string())?;
+                parsed
+                    .credentials(trust, target.token.take(), route)
+                    .map(|(_, token)| {
+                        target.token = token;
+                    })
+            }
+            _ => unreachable!("endpoint_target admits only native QUIC and WebSocket"),
+        };
+        verdict.map_err(|error| match error {
+            PlanRefusal::Unpinned | PlanRefusal::NoToken => {
+                "A remote host needs its pairing certificate pin and token.".into()
+            }
+            PlanRefusal::Plaintext => {
+                "Use quic:// or wss://; plaintext ws:// is allowed only on loopback.".into()
+            }
+            PlanRefusal::BadToken => "The pairing token must contain 64 hexadecimal digits.".into(),
+            PlanRefusal::UnpinnedRelay => {
+                "A relay route needs the server's certificate authority pin from pairing.".into()
+            }
+            PlanRefusal::RelayRequiresQuic => "A relay route needs a quic:// endpoint.".into(),
+        })
+    }
 }
 
-/// Import one complete enrollment link without merging stored credentials.
-/// Returns configuration plus ephemeral ticket and public confirmation labels.
-/// No connection or enrollment starts until the native host obtains consent.
-pub fn parse_pairing_invite(raw: &str) -> Result<Value, String> {
-    validate_invite_input(raw)?;
-    let normalized;
-    let link = if let Some(query) = raw.strip_prefix("phux-rune://connect?") {
-        normalized = format!("https://phux.sh/connect?{query}");
-        normalized.as_str()
-    } else {
-        raw
-    };
-    let invite = phux_client_runtime::pairing::parse_connect_link(link)?;
-    let configuration = invite_configuration(&invite)?;
-    let ticket = invite
-        .enrollment_ticket
-        .as_deref()
-        .ok_or("Pairing needs the single-use enrollment ticket. Generate a new phone QR.")?;
-    if !is_hex_secret(ticket) {
-        return Err("The enrollment ticket must contain 64 hexadecimal digits.".into());
-    }
-    let endpoint = configuration["endpoint"]
-        .as_str()
-        .ok_or("Invalid pairing endpoint.")?;
-    let peer = invite.tls_server_name.as_ref().map_or_else(
-        || endpoint.to_owned(),
-        |route| format!("{route} via {endpoint}"),
-    );
-    Ok(json!({"configuration": configuration, "ticket": ticket,
-        "name": invite.name, "peer": peer}))
-}
-
-fn validate_invite_input(raw: &str) -> Result<(), String> {
-    if raw.len() > phux_client_runtime::pairing::MAX_CONNECT_LINK_BYTES {
-        return Err("Pairing links must not exceed 16 KiB.".into());
-    }
-    if raw.chars().any(char::is_control) {
-        return Err("Pairing links must not contain control characters.".into());
-    }
-    Ok(())
-}
-
-fn invite_configuration(
-    invite: &phux_client_runtime::pairing::ConnectLink,
-) -> Result<Value, String> {
-    let endpoint = invite
-        .quic
-        .as_deref()
-        .ok_or("Phone pairing needs a quic:// endpoint. Generate a new phone QR.")?;
-    let pin = invite
-        .cert_fingerprint
-        .as_deref()
-        .filter(|pin| !pin.is_empty())
-        .ok_or("Pairing needs the server certificate pin.")?;
-    let authority = invite
-        .ca_fingerprint
-        .as_deref()
-        .ok_or("Pairing needs the certificate authority pin. Generate a new phone QR.")?;
-    if !is_hex_secret(&invite.token) {
-        return Err("The pairing token must contain 64 hexadecimal digits.".into());
-    }
-    let mut value = json!({"endpoint": endpoint, "certificate_pin": pin,
-        "authority_ca": authority, "token": invite.token});
-    if let Some(route) = &invite.tls_server_name {
-        value["tls_server_name"] = json!(route);
-    }
-    let configuration: Configuration =
-        serde_json::from_value(value.clone()).map_err(|_| "Invalid pairing configuration.")?;
-    configuration.enrollment_target()?;
-    Ok(value)
-}
-
-fn is_hex_secret(value: &str) -> bool {
+pub(super) fn is_hex_secret(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
@@ -321,7 +290,10 @@ fn compact_pin(pin: &str) -> String {
 
 fn is_loopback(url: &url::Url) -> Result<bool, String> {
     Ok(match url.host().ok_or("The endpoint needs a host.")? {
-        url::Host::Domain(host) => host == "localhost",
+        url::Host::Domain("localhost") => true,
+        // `quic://` is not a special URL scheme, so its IPv4 host parses
+        // as an opaque domain rather than an address.
+        url::Host::Domain(host) => host.parse().is_ok_and(|ip: Ipv4Addr| ip.is_loopback()),
         url::Host::Ipv4(ip) => ip.is_loopback(),
         url::Host::Ipv6(ip) => ip.is_loopback(),
     })
@@ -341,7 +313,7 @@ fn parse_endpoint(raw: &str) -> Result<url::Url, String> {
     Ok(url)
 }
 
-fn endpoint_target(url: &url::Url, loopback: bool) -> Result<Target, String> {
+fn endpoint_target(url: &url::Url) -> Result<Target, String> {
     match url.scheme() {
         "quic" if url.path().is_empty() || url.path() == "/" => {
             let host = url.host().ok_or("The endpoint needs a host.")?;
@@ -350,8 +322,7 @@ fn endpoint_target(url: &url::Url, loopback: bool) -> Result<Target, String> {
                 url.port().unwrap_or(8788)
             )))
         }
-        "wss" => Ok(Target::ws(url.as_str())),
-        "ws" if loopback => Ok(Target::ws(url.as_str())),
+        "wss" | "ws" => Ok(Target::ws(url.as_str())),
         _ => Err("Use quic:// or wss://; plaintext ws:// is allowed only on loopback.".into()),
     }
 }
@@ -413,7 +384,7 @@ pub fn set_active(rt: &mut rune::Runtime<State>, active: bool) {
 /// Qualification log: the probe observed `input_ready` and is about to type.
 pub fn trace_input_ready(rt: &rune::Runtime<State>) {
     if let Some(client) = rt.state.connection.client.as_ref() {
-        client.with_control(|control| control.trace_input_ready());
+        client.trace_input_ready();
     }
 }
 
@@ -461,10 +432,12 @@ pub fn report(rt: &rune::Runtime<State>, frames: u64, marker: &str) -> Value {
 }
 
 mod host;
+mod invite;
 pub use host::{
     controls, edge_srgb, paste, path_changed, press, set_accessibility, take_requests,
     viewport_changed, zoom,
 };
+pub use invite::parse_pairing_invite;
 
 #[cfg(test)]
 mod pairing_tests;

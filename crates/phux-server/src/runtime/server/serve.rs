@@ -235,7 +235,7 @@ impl ServerRuntime {
                     );
                     if let Some(blob) = &resume_blob {
                         resume_session_tree(&state, blob, &root_token)?;
-                        crate::runtime::apps::retry_pending_agent_closures(&state);
+                        crate::runtime::commands::native_agent::retry_pending_closures(&state);
                         delegation::resume_delegations(
                             &state,
                             &blob.delegations,
@@ -264,7 +264,7 @@ impl ServerRuntime {
                     info!(
                         lost = reconciled.lost,
                         unobserved = reconciled.unobserved,
-                        never_launched = reconciled.never_launched,
+                        unresolved = reconciled.unresolved,
                         "reconciled activations a previous run left live"
                     );
                 }

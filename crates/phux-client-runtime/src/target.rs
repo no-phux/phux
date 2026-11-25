@@ -11,8 +11,11 @@ use phux_config_core::RemoteConfigEntry;
 use phux_dial::TlsClientIdentity;
 
 // Beside this file, not under `target/`: the repository ignores that name.
+#[path = "target_authority.rs"]
+mod authority;
 #[path = "target_lookup.rs"]
 mod lookup;
+pub use authority::AuthorityPin;
 pub use lookup::{endpoint_host, endpoint_port, find_entry, find_entry_by, registration_name_by};
 
 /// The QUIC port a server auto-binds on its overlay address (ADR-0081), and
@@ -348,66 +351,6 @@ pub struct Resolved {
     /// [`TlsClientIdentity::None`]. A PEM key is read by the TLS stack at
     /// dial time, a hardware key is held; the environment is not consulted.
     pub client_identity: TlsClientIdentity,
-}
-
-/// The server's certificate-authority pin (ADR-0153): the CA a dial requires
-/// the server's leaf to chain to. It is made at pairing and never learned
-/// from a connection (ADR-0179).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct AuthorityPin {
-    /// The pinned CA, `sha256:` form. `None` pins the leaf alone.
-    pub ca: Option<String>,
-    /// The relay route the server is reached through (ADR-0154 item 5): the
-    /// leaf pin is then the relay's, and [`Self::ca`] is the server's, which
-    /// an end-to-end session inside the relayed stream verifies.
-    pub route: Option<String>,
-}
-
-impl AuthorityPin {
-    /// The pin `known-authorities` beside `config_path` holds for `leaf`
-    /// (through `route` when a relay serves the server).
-    #[must_use]
-    pub fn from_store(config_path: &Path, leaf: Option<&str>, route: Option<&str>) -> Self {
-        let route = route
-            .map(str::trim)
-            .filter(|route| !route.is_empty())
-            .map(str::to_owned);
-        let Some(leaf) = leaf.filter(|leaf| !leaf.trim().is_empty()) else {
-            return Self {
-                route,
-                ..Self::default()
-            };
-        };
-        let store = phux_config_core::known_authorities::path_beside(config_path);
-        let ca = phux_config_core::known_authorities::lookup(&store, leaf, route.as_deref());
-        Self { ca, route }
-    }
-
-    /// The dial trust for `leaf`: [`phux_dial::CertTrust::from_pins`]. For a
-    /// relayed server it is the relay's leaf alone; the server's CA belongs
-    /// to [`Self::inner`].
-    #[must_use]
-    pub fn trust(&self, leaf: Option<&str>) -> Option<phux_dial::CertTrust> {
-        if self.route.is_some() {
-            return phux_dial::CertTrust::from_pins(leaf.map(str::to_owned), None);
-        }
-        phux_dial::CertTrust::from_pins(leaf.map(str::to_owned), self.ca.clone())
-    }
-
-    /// The end-to-end session a relayed dial runs to the server, presenting
-    /// `identity`: when the server's CA is pinned for the route. `None` for a
-    /// relayed server means it cannot be dialed: a connector admits only the
-    /// session, so the relay never reads a consumer (ADR-0180).
-    #[must_use]
-    pub fn inner(&self, identity: &TlsClientIdentity) -> Option<phux_dial::quic::InnerTls> {
-        let route = self.route.clone()?;
-        let ca = self.ca.clone()?;
-        Some(phux_dial::quic::InnerTls {
-            trust: phux_dial::CertTrust::Authority { ca },
-            identity: identity.clone(),
-            server_name: route,
-        })
-    }
 }
 
 /// The TLS identity a registry entry names: its enrolled certificate and

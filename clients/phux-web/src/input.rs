@@ -17,10 +17,10 @@ use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 pub use phux_client_core::keys::key_events_for_text;
 use phux_client_core::keys::{key_event_for_char, named};
 
-/// Largest clipboard payload sent as one `INPUT_PASTE`. Half the outbound
-/// transport budget, so a paste never overflows it and tears the connection
-/// down; a larger clipboard is refused locally instead.
-pub const MAX_PASTE_BYTES: usize = 512 * 1024;
+/// Protocol-bound clipboard payload for one atomic `INPUT_PASTE`.
+/// The live browser additionally applies its smaller outbound byte budget
+/// before copying clipboard text.
+pub const MAX_PASTE_BYTES: usize = phux_protocol::wire::frame::MAX_FRAME_LEN as usize - 4096;
 
 /// The fields of a browser `KeyboardEvent` that routing reads.
 #[derive(Clone, Copy, Debug, Default)]
@@ -339,6 +339,15 @@ pub fn wheel_rows(delta_y: f64, mode: u32, row_px: f64, page_rows: u16, carry: &
 #[must_use]
 pub fn paste_event(text: &str) -> Option<PasteEvent> {
     if text.is_empty() || text.len() > MAX_PASTE_BYTES {
+        return None;
+    }
+    // Atomic raw framing bounds also cover the acknowledged subset; connection
+    // negotiation and ordering choose the actual route at submission time.
+    use phux_client_core::input_replay::{UserPasteDelivery, user_paste_delivery};
+    if !matches!(
+        user_paste_delivery(text, false, false, false),
+        UserPasteDelivery::Raw
+    ) {
         return None;
     }
     Some(PasteEvent {

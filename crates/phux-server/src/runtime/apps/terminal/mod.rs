@@ -7,29 +7,27 @@
 )]
 
 pub(crate) mod agent_state;
+mod app;
 pub(crate) mod attach;
+pub(crate) mod capture;
 pub(crate) mod checkout;
-mod clipboard_read;
-pub(crate) mod commands;
 mod engine;
-mod frames;
 pub(crate) mod history;
 pub(crate) mod input_lane;
 pub(crate) mod launch;
 pub(crate) mod notify_mode;
 pub(crate) mod parent;
-mod program_note;
+pub(crate) mod program_note;
 pub(crate) mod program_status;
 pub(crate) mod resume;
 pub(crate) mod scrollback;
 pub(crate) mod standing;
 #[cfg(test)]
 pub(crate) mod test_support;
-pub(crate) mod upgrade;
 pub(crate) mod upload;
 pub(crate) mod voice;
 
-pub(crate) use commands::TerminalApp;
+pub(crate) use app::TerminalApp;
 
 /// Start the input lane and schedule cleanup of stale uploads off the runtime thread.
 pub(crate) fn start(state: &crate::state::SharedState) -> std::io::Result<input_lane::InputLane> {

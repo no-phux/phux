@@ -33,21 +33,17 @@ pub(super) struct Env<'a> {
     pub(super) panes: HashMap<ResourceId, PaneSlot>,
     pub(super) focused: Option<ResourceId>,
     pub(super) predict: PredictionState,
-    pub(super) resolver: Option<phux_config::keybind::Resolver>,
-    pub(super) keybindings: Option<phux_config::KeybindingsCfg>,
     pub(super) journal: Option<&'a RefCell<InputReplayJournal>>,
 }
 
 impl Env<'_> {
-    /// Focus on pane 1, predictor disabled, no resolver.
+    /// Focus on pane 1, predictor disabled, with shipped keybindings.
     pub(super) fn new(fx: CtxFixture) -> Self {
         Self {
             fx,
             panes: HashMap::new(),
             focused: Some(tid(1)),
             predict: PredictionState::new(PredictiveConfig::disabled(), 80, 24),
-            resolver: None,
-            keybindings: None,
             journal: None,
         }
     }
@@ -61,25 +57,17 @@ impl Env<'_> {
         self
     }
 
-    /// Install the default config's resolver and keybindings.
-    pub(super) fn with_default_bindings(mut self) -> Self {
-        let cfg = default_cfg();
-        self.resolver =
-            Some(phux_config::keybind::Resolver::new(&cfg.keybindings).expect("resolver"));
-        self.keybindings = Some(cfg.keybindings);
-        self
-    }
 
     #[allow(clippy::future_not_send, reason = "current-thread test state")]
     pub(super) async fn dispatch(&mut self, mut events: Vec<InputEvent>) -> Sent {
         let (a, b) = tokio::net::UnixStream::pair().expect("uds pair");
         let mut conn = Connection::from_stream(a);
-        let repainted = {
+        // Drain concurrently: a valid atomic paste can exceed the socket's
+        // write buffer. No spawned task or Send requirement on native state.
+        let (repainted, frames) = tokio::join!(async {
             let mut ctx = self.fx.ctx();
-            ctx.resolver = self.resolver.as_mut();
-            ctx.keybindings = self.keybindings.as_ref();
             ctx.input_replay = self.journal;
-            dispatch_input_events(
+            let repainted = dispatch_input_events(
                 &mut Vec::new(),
                 &mut conn,
                 &mut events,
@@ -89,13 +77,15 @@ impl Env<'_> {
                 &mut ctx,
             )
             .await
-            .expect("dispatch")
-        };
-        drop(conn);
+            .expect("dispatch");
+            drop(ctx);
+            drop(conn);
+            repainted
+        }, drain(Connection::from_stream(b)));
         // Per batch, as the driver's flag is per attach: the next starts clear.
         let detach = std::mem::take(&mut self.fx.detach_pending);
         Sent {
-            frames: drain(Connection::from_stream(b)).await,
+            frames,
             detach,
             repainted,
         }
