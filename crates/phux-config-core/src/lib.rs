@@ -13,6 +13,7 @@
 
 mod clipboard;
 mod error;
+mod experimental;
 pub mod guard;
 pub mod host_color;
 pub mod instance;
@@ -30,6 +31,7 @@ pub mod socket;
 
 pub use clipboard::{ClientDefaults, ClipboardRead, ClipboardWrite};
 pub use error::{ConfigError, byte_offset_to_line_col};
+pub use experimental::ExperimentalCfg;
 pub use layer::{ConfigProvenance, KeyOrigin, LayerSource, MAX_EXTENDS_DEPTH};
 pub use loader::ClientConfig;
 pub use organize::OrganizeCfg;

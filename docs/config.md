@@ -149,10 +149,11 @@ never executes document code or fetches assets.
 ## Predictive echo
 
 `[experimental] predictive-echo` draws your typing before the server echoes
-it. Unset, it is on for remote attaches and off locally. It cannot see when a
-program turns echo off, so a typed password can flash on your screen for up
-to about five seconds; nothing extra is sent. Set it to `false` before typing
-secrets on a shared screen, then reattach.
+it, in `phux attach` and in Rune. Unset, it is on for another machine's
+terminals and off for this computer's. It cannot see when a program turns
+echo off, so a typed password can flash on your screen for up to about five
+seconds; nothing extra is sent. Set it to `false` before typing secrets on a
+shared screen, then reattach or reopen Rune.
 
 ## Tailnet owner devices
 

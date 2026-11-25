@@ -216,6 +216,17 @@ impl ControlPlane {
             .map_err(|error| EngineError::Engine(error.to_string()))
     }
 
+    /// Draw `text` in `view` ahead of the server's echo (see
+    /// [`EngineHandle::predict_view_text`]). The caller sends the input
+    /// itself; a guess the program never echoes is erased when it expires.
+    ///
+    /// [`EngineHandle::predict_view_text`]: crate::engine::EngineHandle::predict_view_text
+    #[cfg(feature = "engine")]
+    pub fn predict_view_text(&self, view: crate::ViewId, text: &str) -> Result<bool, EngineError> {
+        let engine = self.engine.as_ref().ok_or(EngineError::Stopped)?;
+        engine.predict_view_text(view, text.to_owned())
+    }
+
     /// Pin an independent presentation and route its history requests.
     #[cfg(feature = "engine")]
     pub fn pin_viewport_view(

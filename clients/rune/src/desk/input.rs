@@ -240,18 +240,31 @@ impl Desk {
         ) else {
             return false;
         };
-        self.send_input(|control, terminal| match &typed {
+        self.send_typed(&typed);
+        true
+    }
+
+    /// Send what a keyboard typed, drawn ahead of a remote server's echo.
+    pub(super) fn send_typed(&mut self, typed: &Typed) {
+        self.send_input(echo::guess(typed), |control, terminal| match typed {
             Typed::Text(text) => control.send_text(terminal, text),
             Typed::Key(atom) => control.send_key(terminal, atom.clone()),
         });
-        true
     }
 
     /// Send typed input to the focused terminal, whole or not at all: it
     /// returns to the live tail first and clears a stale highlight, as
     /// Ghostty does. Input the connection can't take now is said, not dropped
     /// quietly. With `sync-panes` on, the tab's other terminals get it too.
-    pub(super) fn send_input(&mut self, send: impl Fn(&mut ControlPlane, &ResourceId) -> bool) {
+    ///
+    /// `guess` is what the keys should put on screen. It is drawn at once
+    /// on a terminal whose echo crosses a network (`[experimental]
+    /// predictive-echo`), and the server's echo confirms or replaces it.
+    pub(super) fn send_input(
+        &mut self,
+        guess: Option<&str>,
+        send: impl Fn(&mut ControlPlane, &ResourceId) -> bool,
+    ) {
         self.stop_coast();
         self.leave_copy_mode(false);
         let (Some(client), Some((terminal, Some(view)))) =
@@ -260,6 +273,11 @@ impl Desk {
             return;
         };
         let terminal = terminal.clone();
+        // Only this computer's server echoes inside a frame; anything else
+        // is a round trip away.
+        let local =
+            self.machines.current.is_none() && self.native.is_none() && terminal.host().is_none();
+        let guess = guess.filter(|_| self.predictive_echo.unwrap_or(!local));
         let others = self.sync_others(&terminal);
         let frame = client.acquire_view(view);
         let behind = frame.as_ref().is_some_and(|f| !f.scrollbar.at_tail());
@@ -273,6 +291,9 @@ impl Desk {
             }
             let sent = send(control, &terminal);
             control.trace_input(sent);
+            if let Some(text) = guess.filter(|_| sent) {
+                let _ = control.predict_view_text(view, text);
+            }
             for other in &others {
                 if control.input_ready(other) {
                     send(control, other);
@@ -285,9 +306,7 @@ impl Desk {
             return self.say(NoticeKind::Error, INPUT_PAUSED);
         }
         phux_perf::echo_hop::record("send");
-        // Only this computer's server echoes inside the wait; a remote
-        // one would stall every key for nothing.
-        let local = self.machines.current.is_none() && self.native.is_none();
+        // A remote server would stall every key for nothing.
         if let Some(before) = frame.as_ref().filter(|_| local) {
             echo::await_echo(&client, view, before);
         }
@@ -332,7 +351,9 @@ impl Desk {
             rune::Ime::Commit(text) => {
                 self.connection.preedit = None;
                 self.restart_blink();
-                self.send_input(|control, terminal| control.send_text(terminal, text));
+                self.send_input(Some(text), |control, terminal| {
+                    control.send_text(terminal, text)
+                });
             }
             // Select reconverts editable text, not server-owned terminal
             // output. Enabled/Disabled aren't terminal input either.

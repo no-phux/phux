@@ -187,6 +187,9 @@ pub struct Desk {
     pub settings: settings::Settings,
     /// `config.toml`'s `[rune]` keys, which win over saved choices.
     pub file: phux_config_core::RuneCfg,
+    /// `[experimental] predictive-echo`: unset draws typing ahead of the
+    /// echo on another machine's terminals only.
+    pub(crate) predictive_echo: Option<bool>,
     pub settings_open: bool,
     /// First-run onboarding, while open, and what it has learned.
     pub onboarding: onboarding::Onboarding,
@@ -274,6 +277,11 @@ impl Desk {
         prefs: rune::prefs::Prefs,
     ) -> Self {
         let (config, file_error) = settings::load_file();
+        // A config that didn't load is not consent to draw guesses.
+        let predictive_echo = match file_error {
+            Some(_) => Some(false),
+            None => config.experimental.predictive_echo,
+        };
         let file = config.rune;
         // `defaults.attach-session` opens this computer's server unless a
         // flag or link named a session.
@@ -372,6 +380,7 @@ impl Desk {
             quick: None,
             quick_chord: quick::Chord::default(),
             native: None,
+            predictive_echo,
             file,
         };
         if let Some(error) = file_error {

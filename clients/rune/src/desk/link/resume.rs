@@ -206,7 +206,7 @@ mod tests {
         let (_client, mut rt) = crate::test_support::input_fixture();
         rt.frame(0.0);
         let type_a = |desk: &mut Desk| {
-            desk.send_input(|control, terminal| control.send_text(terminal, "a"));
+            desk.send_input(None, |control, terminal| control.send_text(terminal, "a"));
         };
         rt.update(|desk, _| {
             desk.clock = 7.0;

@@ -111,6 +111,12 @@ impl EngineHandle {
         })?
     }
 
+    /// Draw `text` in this view ahead of the server's echo. Other views of
+    /// the terminal keep showing only what the server sent.
+    pub fn predict_view_text(&self, view: ViewId, text: String) -> Result<bool, EngineError> {
+        self.request_view(view, move |id, reply| Query::PredictText(id, text, reply))?
+    }
+
     /// Clear only this view's selection.
     pub fn clear_view_selection(&self, view: ViewId) -> Result<(), EngineError> {
         self.request_view(view, Query::ClearSelection)?

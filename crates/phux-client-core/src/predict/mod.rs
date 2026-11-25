@@ -21,6 +21,7 @@
 //! contradictions or an overdue front guess hide the overlay on either
 //! screen. The feature is off by default ([`PredictiveConfig`]).
 
+mod deadline;
 mod overlay;
 mod reconcile;
 mod state;

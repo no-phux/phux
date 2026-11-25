@@ -135,6 +135,41 @@ fn synchronized_output_watchdog_publishes_and_wakes_an_idle_driver() {
 }
 
 #[test]
+fn a_guess_nobody_echoes_is_erased_by_an_idle_driver() {
+    run_local(async {
+        let (_tmp, client, mut socket, terminal) = fake_server().await;
+        clear_prefetch(&mut socket, &terminal).await;
+        wait_for_status(&client, Status::Attached).await;
+        let view = client.create_view(&terminal).unwrap();
+        let shown = |view| client.acquire_view(view).unwrap().text();
+        let before = (client.acquire(&terminal).unwrap().text(), shown(view));
+
+        // A phone predicts on the terminal, the desktop on a view while it
+        // sends the key. Neither is followed by any server traffic.
+        client.predict_text(&terminal, "p".to_owned()).unwrap();
+        client.with_control(|control| {
+            assert!(control.send_text(&terminal, "d"));
+            control.predict_view_text(view, "d").unwrap();
+        });
+        assert_eq!(
+            client.acquire(&terminal).unwrap().text(),
+            format!("{}p", before.0)
+        );
+        assert_eq!(shown(view), format!("{}d", before.1));
+
+        tokio::time::timeout(
+            Duration::from_secs(4),
+            wait_until("both guesses erased", || {
+                (client.acquire(&terminal).unwrap().text(), shown(view)) == before
+            }),
+        )
+        .await
+        .expect("the deadline lane must erase unanswered guesses");
+        client.close();
+    });
+}
+
+#[test]
 fn view_scroll_and_pin_wake_an_idle_connected_driver_for_history() {
     run_local(async {
         for pin in [false, true] {
