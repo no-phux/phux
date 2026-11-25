@@ -3,7 +3,7 @@ use super::*;
 
 mod tests;
 
-fn focus_sidebar(rt: &mut Runtime<Desk>) {
+pub(super) fn focus_sidebar(rt: &mut Runtime<Desk>) {
     let event = rune::KeyEvent {
         key: rune::Key::Command('b'),
         mods: rune::Mods {
@@ -66,7 +66,7 @@ fn split_window(size: (u16, u16), dark: bool, mode: &str) -> Runtime<Desk> {
     rt
 }
 
-fn capture(
+pub(super) fn capture(
     gpu: &rune::render::Gpu,
     renderer: &mut rune::render::Renderer,
     rt: &mut Runtime<Desk>,
