@@ -124,7 +124,10 @@ pub(super) fn server_health_checks(
     if checks.is_empty() {
         checks.push(Check::pass(
             "server-health",
-            format!("{} server start(s) in the last hour", recent_starts()),
+            format!(
+                "{} in the last hour",
+                super::count(recent_starts(), "server start", "server starts")
+            ),
         ));
     }
 

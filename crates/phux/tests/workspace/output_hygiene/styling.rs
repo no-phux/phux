@@ -81,7 +81,7 @@ fn json_usage_errors_are_one_unstyled_line_even_when_color_is_forced() {
 }
 
 #[test]
-fn human_info_success_and_doctor_share_labels() {
+fn human_info_label_and_the_doctor_report_render_unstyled() {
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("absent.sock");
     let stopped = phux()
@@ -105,17 +105,22 @@ fn human_info_success_and_doctor_share_labels() {
         .env("NO_COLOR", "1")
         .output()
         .unwrap();
+    // Doctor is a report, not a diagnostic stream: rows carry a status mark,
+    // hints sit indented under their row, and the summary closes it.
     let text = String::from_utf8(doctor.stdout).unwrap();
+    assert!(text.lines().any(|line| line.starts_with("✓ ")), "{text}");
+    assert!(text.lines().any(|line| line.starts_with("! ")), "{text}");
     assert!(
-        text.lines().any(|line| line.starts_with("phux: ok: ")),
+        text.lines()
+            .any(|line| line.starts_with("  ") && line.trim_start().starts_with("hint: ")),
         "{text}"
     );
+    assert!(!text.contains("phux: "), "{text}");
     assert!(
-        text.lines().any(|line| line.starts_with("phux: warn: ")),
-        "{text}"
-    );
-    assert!(
-        text.lines().any(|line| line.starts_with("  hint: ")),
+        text.trim_end()
+            .lines()
+            .last()
+            .is_some_and(|line| line.ends_with(", no failures")),
         "{text}"
     );
     assert!(!text.contains('\x1b'));

@@ -8,7 +8,7 @@ use std::path::Path;
 
 use phux_protocol::wire::{ListenerDisabledReason, RemoteListenersReport};
 
-use super::{Check, Status, cli_runtime};
+use super::{Check, Status, cli_runtime, render};
 use crate::commands::service::supervision::Supervision;
 use crate::skill::setup::Integration;
 
@@ -507,9 +507,7 @@ pub(super) fn to_json(items: &[Item]) -> serde_json::Value {
 
 /// The human section `phux doctor` ends with.
 pub(super) fn render_human(items: &[Item], color: bool) -> String {
-    render_doc(&to_json(items), "What works here", color, &|command| {
-        format!("fix: {command}")
-    })
+    render_doc(&to_json(items), "What works here", color, &str::to_owned)
 }
 
 /// A `checklist` document as text under `heading`, each fix command line
@@ -520,39 +518,34 @@ pub(super) fn render_doc(
     color: bool,
     fix: &dyn Fn(&str) -> String,
 ) -> String {
-    use std::fmt::Write as _;
-
-    let rows = doc["items"].as_array().map_or(&[][..], Vec::as_slice);
-    let text = |row: &serde_json::Value, key| row[key].as_str().unwrap_or_default().to_owned();
-    let width = rows
+    let items = doc["items"].as_array().map_or(&[][..], Vec::as_slice);
+    let rows: Vec<_> = items
         .iter()
-        .map(|row| text(row, "title").len())
-        .max()
-        .unwrap_or(0);
-    let mut out = format!("\n{heading}\n");
-    for row in rows {
-        let severity = match row["status"].as_str() {
-            Some("ok") => crate::output::Severity::Ok,
-            Some("off") => crate::output::Severity::Error,
-            _ => crate::output::Severity::Warn,
-        };
-        let padding = 5 - severity.label().len();
-        let line = crate::output::human_line(
-            severity,
-            format_args!(
-                "{:padding$}{:<width$} {}",
-                "",
-                text(row, "title"),
-                text(row, "reason")
-            ),
-            color,
-        );
-        let _ = writeln!(out, "{line}");
-        for command in text(row, "fix_command").lines() {
-            let _ = writeln!(out, "  {}", fix(command));
-        }
+        .map(|item| render::Row {
+            mark: verdict_mark(item["status"].as_str()),
+            name: text(item, "title"),
+            detail: text(item, "reason"),
+            label: "fix",
+            notes: text(item, "fix_command").lines().map(fix).collect(),
+        })
+        .collect();
+    format!("\n{heading}\n{}", render::rows(&rows, color))
+}
+
+/// A checklist row's string field, empty when absent.
+fn text<'a>(item: &'a serde_json::Value, key: &str) -> &'a str {
+    item[key].as_str().unwrap_or_default()
+}
+
+/// A verdict's mark:a capability that is off is neutral, not a failure;
+/// a verdict newer than this binary reads as unknown.
+fn verdict_mark(status: Option<&str>) -> render::Mark {
+    match status {
+        Some("ok") => render::Mark::OK,
+        Some("off") => render::Mark::OFF,
+        Some("waiting") => render::Mark::WAITING,
+        _ => render::Mark::UNKNOWN,
     }
-    out
 }
 
 #[cfg(test)]
