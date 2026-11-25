@@ -110,8 +110,7 @@ def copy_resources(app, env, out, target):
     fonts = sorted((RUNE / "assets/fonts").glob("*.ttf"))
     if not fonts:
         raise ValueError("no bundled fonts")
-    # Apple reads the privacy manifest only from the bundle root.
-    resources = [REPO / "LICENSE", REPO / "NOTICE", IOS / "PrivacyInfo.xcprivacy", *fonts,
+    resources = [REPO / "LICENSE", REPO / "NOTICE", *fonts,
                  *sorted((RUNE / "assets/fonts").glob("*-OFL.txt"))]
     for source in resources:
         shutil.copy2(source, app / source.name)
