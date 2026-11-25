@@ -40,7 +40,8 @@ fn begin_replacements(actor: &mut TerminalActor, pumps: [Pump; 2]) -> [CaptureRe
         response
     });
     assert_eq!(
-        actor.publication
+        actor
+            .publication
             .pending_native_bootstrap
             .as_ref()
             .map(|p| p.waiters.len()),
@@ -74,10 +75,7 @@ fn finish_captures(
     receivers: [CaptureReceiver; 2],
 ) -> [NativeBootstrapReply; 2] {
     let captures = receivers.map(|response| finish_capture(actor, response));
-    assert_eq!(
-        captures[0].capture.cursor,
-        captures[1].capture.cursor
-    );
+    assert_eq!(captures[0].capture.cursor, captures[1].capture.cursor);
     assert!(!actor.native_bootstrap_pending());
     captures
 }
@@ -134,7 +132,8 @@ async fn admitted_resize_after_ready_is_recoverable_for_both_replacement_owners(
     assert_eq!(owed.len(), 1, "the reflow must owe a replacement resync");
     assert_eq!(actor.publication.native_cursor_owners.len(), 2);
     assert!(
-        actor.publication
+        actor
+            .publication
             .native_cursor_owners
             .values()
             .all(|binding| binding.superseded)

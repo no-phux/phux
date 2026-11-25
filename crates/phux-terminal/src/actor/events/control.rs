@@ -37,8 +37,12 @@ impl TerminalActor {
                     // Only the reversible brake changes the lifecycle;
                     // terminal signals surface via EOF.
                     match signal {
-                        TerminalSignal::Freeze => self.process.lifecycle = ResourceLifecycle::Frozen,
-                        TerminalSignal::Resume => self.process.lifecycle = ResourceLifecycle::Running,
+                        TerminalSignal::Freeze => {
+                            self.process.lifecycle = ResourceLifecycle::Frozen;
+                        }
+                        TerminalSignal::Resume => {
+                            self.process.lifecycle = ResourceLifecycle::Running;
+                        }
                         TerminalSignal::Interrupt
                         | TerminalSignal::Terminate
                         | TerminalSignal::Kill => {}
@@ -124,7 +128,8 @@ impl TerminalActor {
         use nix::sys::signal::{Signal as NixSignal, killpg};
         use nix::unistd::Pid;
 
-        let pid = self.process
+        let pid = self
+            .process
             .pty
             .as_ref()
             .and_then(|p| p.child.process_id())

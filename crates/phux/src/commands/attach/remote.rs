@@ -4,13 +4,13 @@ use std::process::ExitCode;
 use phux_client::attach::connection::Connection;
 use phux_client::attach::{AttachEnd, AttachError};
 
-use crate::commands::rec::RecordSpec;
-use crate::commands::remote::{self as host_registry, Endpoint, RemoteEntry};
+use super::home::{fallback_lookup_name, requested_attach_target, resolved_default_session_name};
 use super::native::{
     DialPlan, RelayHop, RemoteCredentials, plan_quic_dial, plan_ws_dial, reachability_hint,
 };
-use super::home::{fallback_lookup_name, requested_attach_target, resolved_default_session_name};
 use super::{attach_with_reconnect, finalize_recording, predictive_config_for, report_attach_end};
+use crate::commands::rec::RecordSpec;
+use crate::commands::remote::{self as host_registry, Endpoint, RemoteEntry};
 
 /// Turn a finished WebSocket attach into its exit code and repair hint,
 /// reporting the ending.
@@ -141,7 +141,6 @@ pub(crate) fn run_attach_quic(
     };
     run_attach_quic_outcome(session, target, credentials, server_name, rec).code
 }
-
 
 #[allow(
     clippy::needless_pass_by_value,
@@ -333,4 +332,3 @@ pub(crate) fn run_attach_remote_outcome(
         )),
     }
 }
-

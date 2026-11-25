@@ -41,7 +41,10 @@ pub(super) type AttachResourcePumpReplacement = (
 );
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StreamDisposition { Active, Draining }
+enum StreamDisposition {
+    Active,
+    Draining,
+}
 
 /// One generation of an `ATTACH_RESOURCE` output pump. A re-attach replaces
 /// its predecessor (clients re-bootstrap to change profile or recover): the
@@ -309,7 +312,9 @@ impl ResourceTable {
         self.spawns.remove(&terminal);
         // A natural close retains exact publication authority through its
         // source and final emitter fences. Synchronous reap has no such drain.
-        self.pumps.retain(|(_, pane), generation| *pane != terminal || generation.disposition == StreamDisposition::Draining);
+        self.pumps.retain(|(_, pane), generation| {
+            *pane != terminal || generation.disposition == StreamDisposition::Draining
+        });
         token
     }
 }

@@ -283,8 +283,15 @@ fn a_crash_losing_start_evidence_cannot_prove_the_process_was_never_launched() {
                 .unwrap(),
         );
         let mut state = ServerState::new();
+        let store = SqliteOrgStore::open(&store_path).unwrap();
+        // Refuse only the later start transition; admission inserts the
+        // row as `starting` and so still commits.
+        let db = rusqlite::Connection::open(&store_path).unwrap();
+        db.execute_batch(
+            "CREATE TRIGGER reject_start BEFORE UPDATE ON resources WHEN NEW.exec_state <> 'starting' BEGIN SELECT RAISE(FAIL, 'test lost start'); END;",
+        ).unwrap();
         state.install_org(
-            Box::new(SqliteOrgStore::open(&store_path).unwrap()),
+            Box::new(store),
             fresh_org(state.instance_id(), now_stamp()),
             false,
         );
@@ -301,13 +308,6 @@ fn a_crash_losing_start_evidence_cannot_prove_the_process_was_never_launched() {
             )
             .unwrap();
         let producer = state.activation_token(pane).unwrap();
-        let db = rusqlite::Connection::open(&store_path).unwrap();
-        db.execute_batch(
-            "CREATE TRIGGER reject_start BEFORE UPDATE ON resources WHEN NEW.exec_state <> 'starting' BEGIN SELECT RAISE(FAIL, 'test lost start'); END;",
-        ).unwrap();
-        // Only the schema changed: reopen the same durable records, not a
-        // refreshed baseline that could conceal a competing writer.
-        state.set_org_store(Box::new(SqliteOrgStore::open(&store_path).unwrap()));
         let proc =
             phux_server::reconcile::proc_identity(pid(&orphan.0)).expect("live process identity");
         state.activation_started(producer, Some(proc));

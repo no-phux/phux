@@ -124,7 +124,8 @@ impl ServerState {
         // No lease change can follow a removed pane.
         self.leases.forget_resource(pane);
         // The retired wire id keys the metadata scope and the app slots.
-        let wire = self.idspace.retire_terminal(pane);        if let Some(wire) = &wire {
+        let wire = self.idspace.retire_terminal(pane);
+        if let Some(wire) = &wire {
             self.metadata.forget_resource(wire);
             // A viewer mark (ADR-0127) must not outlive the Terminal it names.
             self.clients.forget_viewed_terminal(wire);

@@ -4,8 +4,8 @@
 
 use super::{
     ClientId, ConsumerAttachError, ConsumerAttachOutcome, ConsumerAttachRequest, ConsumerReference,
-    ConsumerSyncState, DEFAULT_TICK_INTERVAL, Outbound, StateSyncBootstrap, TICK_RESET_DEADBAND,
-    TerminalActor, mpsc, trace, warn, watch,
+    ConsumerSyncState, Outbound, StateSyncBootstrap, TICK_RESET_DEADBAND, TerminalActor, mpsc,
+    trace, warn, watch,
 };
 use phux_resource::replication::ConsumerSync;
 
@@ -252,7 +252,11 @@ impl TerminalActor {
         stream_id: phux_protocol::ids::StreamId,
         bootstrap_id: phux_protocol::ids::BootstrapId,
     ) {
-        if self.publication.withdraw(client_id, Some((stream_id, bootstrap_id))).is_some() {
+        if self
+            .publication
+            .withdraw(client_id, Some((stream_id, bootstrap_id)))
+            .is_some()
+        {
             // A matching attachment owns its native recaptures too; bootstrap
             // recovery does not create a new consumer registration.
             self.release_native_binding(super::NativeCursorKey::new(
@@ -268,8 +272,15 @@ impl TerminalActor {
         );
     }
 
-    pub(super) fn on_generation_frame_ack(&mut self, client: ClientId, stream: phux_protocol::ids::StreamId, bootstrap: phux_protocol::ids::BootstrapId, seq: u64) -> bool {
-        self.publication.on_generation_frame_ack(client, stream, bootstrap, seq)
+    pub(super) fn on_generation_frame_ack(
+        &mut self,
+        client: ClientId,
+        stream: phux_protocol::ids::StreamId,
+        bootstrap: phux_protocol::ids::BootstrapId,
+        seq: u64,
+    ) -> bool {
+        self.publication
+            .on_generation_frame_ack(client, stream, bootstrap, seq)
     }
 
     #[cfg(test)]
@@ -306,7 +317,7 @@ impl TerminalActor {
 
     /// Test-only: borrow the per-consumer state for `client_id`.
     #[cfg(test)]
-    pub(crate) fn consumer_state(&self, client_id: ClientId) -> Option<&ConsumerSyncState> {
+    pub(super) fn consumer_state(&self, client_id: ClientId) -> Option<&ConsumerSyncState> {
         self.publication.consumers.get(&client_id)
     }
 }

@@ -17,7 +17,6 @@ use phux_protocol::wire::frame::{
 };
 use phux_protocol::wire::info::SessionSnapshot;
 
-
 use crate::approvals::{Decision, DecisionOutcome};
 
 mod observation;

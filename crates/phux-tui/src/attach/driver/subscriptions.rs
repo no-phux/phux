@@ -30,7 +30,6 @@ pub(super) struct PeerPresentation {
     pub(super) collapsed_projects: std::collections::BTreeSet<String>,
 }
 
-
 /// The peer-session caches the roster, window picker, and fleet dashboard
 /// project from. Written by the same peer sweep, reset together.
 #[derive(Default)]
@@ -91,7 +90,6 @@ pub(super) struct PeerWatch {
     pub(super) sweep_pending: bool,
 }
 
-
 impl PeerWatch {
     pub(super) fn new(origin: Option<crate::attach::hosts::AttachOrigin>) -> Self {
         Self {
@@ -105,7 +103,6 @@ impl PeerWatch {
             ..Self::default()
         }
     }
-
 
     /// The peer-wide projection the sidebar strip renders from.
     pub(super) fn inputs<'a>(

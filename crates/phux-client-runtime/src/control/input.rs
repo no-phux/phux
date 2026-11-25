@@ -415,7 +415,8 @@ mod tests {
             ("apply_paste", ControlPlane::apply_paste, &pasted),
         ];
         for (name, send, text) in sends {
-            let mut control = ControlPlane::new(std::time::Instant::now(), ControlOptions::default());
+            let mut control =
+                ControlPlane::new(std::time::Instant::now(), ControlOptions::default());
             send(&mut control, &pane, text);
             let message = refusal(&mut control).unwrap_or_else(|| panic!("{name} refused"));
             assert!(

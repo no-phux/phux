@@ -27,14 +27,22 @@ pub struct RelaunchApproval {
 /// The native JSON projection deliberately does not define global ID serde.
 pub(super) mod operation_hex {
     use crate::ids::{Hex16, OperationId, parse_hex16};
-    use serde::{Deserializer, Serializer, de::{Error, Visitor}};
+    use serde::{
+        Deserializer, Serializer,
+        de::{Error, Visitor},
+    };
     use std::fmt;
 
-    pub(in crate::native_agent) fn serialize<S: Serializer>(operation: &OperationId, serializer: S) -> Result<S::Ok, S::Error> {
+    pub(in crate::native_agent) fn serialize<S: Serializer>(
+        operation: &OperationId,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
         serializer.collect_str(&Hex16(operation.as_bytes()))
     }
 
-    pub(in crate::native_agent) fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<OperationId, D::Error> {
+    pub(in crate::native_agent) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<OperationId, D::Error> {
         struct OperationVisitor;
         impl Visitor<'_> for OperationVisitor {
             type Value = OperationId;
@@ -85,7 +93,9 @@ mod tests {
         assert_eq!(operation.to_hex(), OPERATION);
         assert_eq!(
             operation.as_bytes(),
-            &[1, 35, 69, 103, 137, 171, 205, 239, 1, 35, 69, 103, 137, 171, 205, 239]
+            &[
+                1, 35, 69, 103, 137, 171, 205, 239, 1, 35, 69, 103, 137, 171, 205, 239
+            ]
         );
         assert_eq!(format!("{operation:?}"), "IdempotencyKey(<redacted>)");
         let proposal = approval_json();

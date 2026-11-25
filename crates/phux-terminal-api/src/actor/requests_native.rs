@@ -144,7 +144,10 @@ pub struct NativeCaptureInterest {
 
 impl Default for NativeCaptureInterest {
     fn default() -> Self {
-        Self { cancellation: tokio_util::sync::CancellationToken::new(), pending: true }
+        Self {
+            cancellation: tokio_util::sync::CancellationToken::new(),
+            pending: true,
+        }
     }
 }
 
@@ -155,7 +158,7 @@ impl NativeCaptureInterest {
     }
 
     /// The real pump/connection now owns the published cursor's lifetime.
-    pub fn published(&mut self) {
+    pub const fn published(&mut self) {
         self.pending = false;
     }
 }
@@ -181,8 +184,21 @@ pub struct NativeCapture {
 
 impl NativeCapture {
     #[must_use]
-    pub fn new(owner: u64, terminal_id: phux_protocol::ids::ResourceId, stream_id: StreamId, bootstrap_id: BootstrapId, cursor: crate::native_state::OpaqueHistoryCursor) -> Self {
-        Self { owner, terminal_id, stream_id, bootstrap_id, cursor, interest: NativeCaptureInterest::default() }
+    pub fn new(
+        owner: u64,
+        terminal_id: phux_protocol::ids::ResourceId,
+        stream_id: StreamId,
+        bootstrap_id: BootstrapId,
+        cursor: crate::native_state::OpaqueHistoryCursor,
+    ) -> Self {
+        Self {
+            owner,
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            cursor,
+            interest: NativeCaptureInterest::default(),
+        }
     }
 
     #[must_use]
@@ -191,7 +207,7 @@ impl NativeCapture {
     }
 
     /// The receiving owner has installed this cut and will release it explicitly.
-    pub fn published(&mut self) {
+    pub const fn published(&mut self) {
         self.interest.published();
     }
 }

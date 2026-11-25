@@ -1,6 +1,8 @@
 //! Hub-side satellite lease ownership, acquire markers, and mirror ordering.
 
-use super::{ClientId, Federation, Outbound, SatelliteHost, SatelliteLease, SatelliteTerminal, mpsc};
+use super::{
+    ClientId, Federation, Outbound, SatelliteHost, SatelliteLease, SatelliteTerminal, mpsc,
+};
 
 impl Federation {
     /// The hub consumer holding the satellite lease, if any.

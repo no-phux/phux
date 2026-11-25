@@ -27,8 +27,9 @@ pub use input::{EncodedInputRequest, WriteCompletion, WriteCompletionSink, echo_
 #[path = "actor/requests_native.rs"]
 mod native;
 pub use native::{
-    NativeBootstrapReply, NativeBootstrapRequest, NativeCapture, NativeCaptureInterest, NativeHistoryReply, NativeHistoryRequest,
-    NativePublicationReply, NativePublicationRequest, NativeReleaseRequest,
+    NativeBootstrapReply, NativeBootstrapRequest, NativeCapture, NativeCaptureInterest,
+    NativeHistoryReply, NativeHistoryRequest, NativePublicationReply, NativePublicationRequest,
+    NativeReleaseRequest,
 };
 
 /// Register a consumer with the actor (ADR-0018), sent by the ATTACH path.
@@ -136,9 +137,7 @@ pub struct ConsumerRegistrationGuard {
 impl ConsumerRegistrationGuard {
     /// Begin unpublished interest under an existing connection/pump lifetime.
     #[must_use]
-    pub fn new(
-        lifetime: &tokio_util::sync::CancellationToken,
-    ) -> Self {
+    pub fn new(lifetime: &tokio_util::sync::CancellationToken) -> Self {
         Self {
             cancellation: lifetime.child_token(),
             pending: true,

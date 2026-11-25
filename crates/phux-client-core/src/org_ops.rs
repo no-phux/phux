@@ -325,7 +325,7 @@ impl OrgJournal {
     }
 
     /// Retire archived relaunches before sending to an unenforcing peer.
-    /// An earlier possible send stays Unknown; a never-sent request is NotSent.
+    /// An earlier possible send stays Unknown; a never-sent request is `NotSent`.
     pub fn reject_unenforced_relaunches(&mut self) -> Vec<OrgReport> {
         let mut reports = Vec::new();
         self.ops.retain(|op| {

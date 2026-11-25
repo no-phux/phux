@@ -6,8 +6,16 @@ use phux_resource::replication::ConsumerSync;
 use tokio::sync::{mpsc, watch};
 
 pub(super) enum PublicationCancellation {
-    Consumer(phux_protocol::ClientId, phux_protocol::ids::StreamId, phux_protocol::ids::BootstrapId),
-    Native(super::NativeCursorKey, phux_protocol::ids::BootstrapId, crate::native_state::OpaqueHistoryCursor),
+    Consumer(
+        phux_protocol::ClientId,
+        phux_protocol::ids::StreamId,
+        phux_protocol::ids::BootstrapId,
+    ),
+    Native(
+        super::NativeCursorKey,
+        phux_protocol::ids::BootstrapId,
+        crate::native_state::OpaqueHistoryCursor,
+    ),
 }
 
 pub(super) type ConsumerCancellation = futures_util::future::Join<

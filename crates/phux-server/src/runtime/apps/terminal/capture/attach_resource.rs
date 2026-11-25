@@ -103,11 +103,20 @@ impl AttachResourceSession<'_> {
         reservation: crate::runtime::apps::StreamReservation,
     ) -> Result<AttachResourceGeneration, AttachResourceFailure> {
         let lease = reservation.lease.clone();
-        lease.run(self.establish_reserved(reservation)).await
-            .unwrap_or_else(|| Err(AttachResourceFailure::internal("ATTACH_RESOURCE reservation superseded")))
+        lease
+            .run(self.establish_reserved(reservation))
+            .await
+            .unwrap_or_else(|| {
+                Err(AttachResourceFailure::internal(
+                    "ATTACH_RESOURCE reservation superseded",
+                ))
+            })
     }
 
-    async fn establish_reserved(&self, reservation: crate::runtime::apps::StreamReservation) -> Result<AttachResourceGeneration, AttachResourceFailure> {
+    async fn establish_reserved(
+        &self,
+        reservation: crate::runtime::apps::StreamReservation,
+    ) -> Result<AttachResourceGeneration, AttachResourceFailure> {
         let lease = reservation.lease.clone();
         let bootstrap_id = lease.bootstrap;
         // Subscribe before stopping the old pump so replacement never loses a
@@ -115,7 +124,9 @@ impl AttachResourceSession<'_> {
         // until this generation reaches READY.
         let output_rx = self.handle.output.subscribe();
         if !reservation.ready().await {
-            return Err(AttachResourceFailure::internal("ATTACH_RESOURCE superseded while retiring predecessor"));
+            return Err(AttachResourceFailure::internal(
+                "ATTACH_RESOURCE superseded while retiring predecessor",
+            ));
         }
         let token = lease.cancellation.clone();
         let (live_gate_tx, live_gate_rx) = tokio::sync::watch::channel(false);
@@ -134,13 +145,18 @@ impl AttachResourceSession<'_> {
         }
         let tick_managed = outcome.as_ref().is_some_and(|outcome| outcome.tick_managed);
         if let Some((prior_bootstrap_id, prior_last_seq)) = &reservation.prior
-            && !lease.queue(self.out_tx, FrameKind::BootstrapTombstone {
-                    terminal_id: self.terminal_id.clone(),
-                    stream_id: self.stream_id,
-                    bootstrap_id: *prior_bootstrap_id,
-                    reason: phux_protocol::wire::frame::TombstoneReason::ExplicitReattach,
-                    last_valid_seq: prior_last_seq.load(std::sync::atomic::Ordering::Acquire),
-                }).await
+            && !lease
+                .queue(
+                    self.out_tx,
+                    FrameKind::BootstrapTombstone {
+                        terminal_id: self.terminal_id.clone(),
+                        stream_id: self.stream_id,
+                        bootstrap_id: *prior_bootstrap_id,
+                        reason: phux_protocol::wire::frame::TombstoneReason::ExplicitReattach,
+                        last_valid_seq: prior_last_seq.load(std::sync::atomic::Ordering::Acquire),
+                    },
+                )
+                .await
         {
             return Err(AttachResourceFailure::internal(
                 "consumer went away during ATTACH_RESOURCE replacement",
@@ -149,14 +165,25 @@ impl AttachResourceSession<'_> {
 
         let delivery = if tick_managed {
             let Some(bootstrap) = outcome.and_then(|outcome| outcome.state_sync_bootstrap) else {
-                return Err(AttachResourceFailure::internal("tick consumer omitted its atomic bootstrap"));
+                return Err(AttachResourceFailure::internal(
+                    "tick consumer omitted its atomic bootstrap",
+                ));
             };
-            GenerationDelivery::Tick { bootstrap, live: live_gate_tx }
+            GenerationDelivery::Tick {
+                bootstrap,
+                live: live_gate_tx,
+            }
         } else {
             let (gate, published) = oneshot::channel();
-            let channels = AttachResourcePumpChannels { token, output_rx, published };
+            let channels = AttachResourcePumpChannels {
+                token,
+                output_rx,
+                published,
+            };
             if !self.spawn_output_pump(channels, &lease) {
-                return Err(AttachResourceFailure::internal("ATTACH_RESOURCE superseded before pump handoff"));
+                return Err(AttachResourceFailure::internal(
+                    "ATTACH_RESOURCE superseded before pump handoff",
+                ));
             }
             GenerationDelivery::Raw { gate }
         };
@@ -182,7 +209,9 @@ pub(in crate::runtime) struct AttachResourcePumpChannels {
 impl AttachResourcePumpChannels {
     /// Wait for the single complete cut/replay/live handoff. `None` when the
     /// generation was cancelled or abandoned first.
-    pub(in crate::runtime) async fn published(self) -> Option<(
+    pub(in crate::runtime) async fn published(
+        self,
+    ) -> Option<(
         crate::runtime::apps::terminal::attach::OutputPumpStart,
         tokio::sync::broadcast::Receiver<crate::resource::ResourceOutput>,
     )> {

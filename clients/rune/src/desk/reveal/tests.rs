@@ -51,11 +51,9 @@ fn desk() -> Desk {
         None,
         rune::prefs::Prefs::memory(),
     );
-    desk.connection.client = Some(std::sync::Arc::new(
-        phux_client_runtime::Runtime::embedded(
-            phux_client_runtime::control::ControlOptions::default(),
-        ),
-    ));
+    desk.connection.client = Some(std::sync::Arc::new(phux_client_runtime::Runtime::embedded(
+        phux_client_runtime::control::ControlOptions::default(),
+    )));
     desk
 }
 
@@ -148,8 +146,8 @@ fn a_pane_is_found_exactly_or_refused() {
 fn a_link_waits_for_the_panes_then_fails_closed() {
     let mut desk = desk();
     desk.open_system_link("phux://pane/@9");
-    let pane = Link::Pane(ResourceId::local(9));
-    assert_eq!(held(&desk), Some(&pane), "held with its original owner");
+    let link = Link::Pane(ResourceId::local(9));
+    assert_eq!(held(&desk), Some(&link), "held with its original owner");
     assert!(desk.notice.is_none());
     desk.connection.topology = Some(crate::desk::topology(Vec::new(), vec![pane(1, "w")]));
     assert!(!desk.follow_reveal());
@@ -173,10 +171,7 @@ fn a_session_or_tab_is_found_exactly_or_refused() {
     desk.connection.topology = Some(crate::desk::topology(sessions, vec![pane(1, "work")]));
 
     desk.open_system_link("phux://session/work");
-    assert_eq!(
-        (held(&desk), notice(&desk)),
-        (None, None)
-    );
+    assert_eq!((held(&desk), notice(&desk)), (None, None));
     desk.open_system_link("phux://session/gone");
     assert!(notice(&desk).is_some_and(|n| n.contains("\"gone\"")));
 
@@ -189,10 +184,7 @@ fn a_session_or_tab_is_found_exactly_or_refused() {
     desk.notice = None;
     desk.open_system_link("phux://tab/work/2");
     assert!(
-        matches!(
-            held(&desk),
-            Some(Link::Tab { since: Some(_), .. })
-        ),
+        matches!(held(&desk), Some(Link::Tab { since: Some(_), .. })),
         "waits for the session's tabs"
     );
     assert!(desk.follow_reveal(), "still waiting");
@@ -213,10 +205,7 @@ fn a_session_or_tab_is_found_exactly_or_refused() {
 
     desk.notice = None;
     desk.open_system_link("phux://tab/work/1");
-    assert_eq!(
-        (held(&desk), notice(&desk)),
-        (None, None)
-    );
+    assert_eq!((held(&desk), notice(&desk)), (None, None));
 
     desk.connection.tabs.by_session.clear();
     desk.open_system_link("phux://tab/work/1");

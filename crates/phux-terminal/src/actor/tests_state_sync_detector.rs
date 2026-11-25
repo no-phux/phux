@@ -48,7 +48,14 @@ fn detect_tick_consumes_the_dirty_flag_when_it_scans() {
 #[test]
 fn input_snapshot_publishes_after_seed_output_and_resize() {
     let seeded = TerminalActor::new_with_seed(80, 24, b"\x1b[?2004h").expect("seeded");
-    assert!(seeded.actor.process.input_snapshot_tx.borrow().bracketed_paste);
+    assert!(
+        seeded
+            .actor
+            .process
+            .input_snapshot_tx
+            .borrow()
+            .bracketed_paste
+    );
 
     let mut actor = seeded.actor;
     let mut snapshots = actor.process.input_snapshot_tx.subscribe();

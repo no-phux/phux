@@ -3,19 +3,30 @@
 use std::cell::RefCell;
 
 use super::PublicationOwner;
-use crate::actor::{CanonicalTerminal, NativeCaptureInterest, NativeCursorKey, NativeCursorOwner, NativePublicationReply, NativePublicationRequest, ResourceOutput};
+use crate::actor::{
+    CanonicalTerminal, NativeCaptureInterest, NativeCursorKey, NativeCursorOwner,
+    NativePublicationReply, NativePublicationRequest, ResourceOutput,
+};
 
 impl PublicationOwner {
-    pub(in crate::actor) fn handle_native_publication(&mut self, req: NativePublicationRequest, terminal: &RefCell<CanonicalTerminal>, output: &tokio::sync::broadcast::Sender<ResourceOutput>) {
+    pub(in crate::actor) fn handle_native_publication(
+        &mut self,
+        req: NativePublicationRequest,
+        terminal: &RefCell<CanonicalTerminal>,
+        output: &tokio::sync::broadcast::Sender<ResourceOutput>,
+    ) {
         // A queued request is fenced by its original capture lifetime before
         // any reply-loss cleanup can touch a binding with repeated identities.
         if req.cancellation.is_cancelled() {
-            let _ = req.reply.send(Err(crate::native_state::NativeStateError::InvalidHandle));
+            let _ = req
+                .reply
+                .send(Err(crate::native_state::NativeStateError::InvalidHandle));
             return;
         }
         let key = NativeCursorKey::new(req.owner, req.stream_id);
         let valid = self.native_cursor_owners.get(&key).is_some_and(|binding| {
-            !binding.cancellation.is_cancelled() && binding.cursor == req.cursor
+            !binding.cancellation.is_cancelled()
+                && binding.cursor == req.cursor
                 && binding.terminal_id == req.terminal_id
                 && binding.stream_id == req.stream_id
                 && binding.bootstrap_id == req.bootstrap_id
@@ -26,9 +37,13 @@ impl PublicationOwner {
                 .send(Err(crate::native_state::NativeStateError::InvalidHandle));
             return;
         }
-        if req.reply.is_closed() || self.consumers.iter().any(|(client, consumer)| {
-            u64::from(client.get()) == req.owner && consumer.sync.stream_id == req.stream_id && consumer.cancellation.is_cancelled()
-        }) {
+        if req.reply.is_closed()
+            || self.consumers.iter().any(|(client, consumer)| {
+                u64::from(client.get()) == req.owner
+                    && consumer.sync.stream_id == req.stream_id
+                    && consumer.cancellation.is_cancelled()
+            })
+        {
             self.unbind_native_cursor(key, terminal);
             return;
         }
@@ -65,10 +80,9 @@ impl PublicationOwner {
             .native_cursor_owners
             .get(&key)
             .is_some_and(|binding| binding.history_released)
+            && let Some(binding) = self.native_cursor_owners.remove(&key)
         {
-            if let Some(binding) = self.native_cursor_owners.remove(&key) {
-                binding.cancellation.cancel();
-            }
+            binding.cancellation.cancel();
         }
         let interest = NativeCaptureInterest::default();
         if let Some(binding) = self.native_cursor_owners.get_mut(&key) {
@@ -76,7 +90,15 @@ impl PublicationOwner {
             binding.cancellation = interest.cancellation();
             self.watch_native(interest.cancellation(), key, req.bootstrap_id, req.cursor);
         }
-        if req.reply.send(Ok(NativePublicationReply { replay, live, interest })).is_err() {
+        if req
+            .reply
+            .send(Ok(NativePublicationReply {
+                replay,
+                live,
+                interest,
+            }))
+            .is_err()
+        {
             self.unbind_native_cursor(key, terminal);
         }
     }
@@ -98,7 +120,10 @@ impl PublicationOwner {
         Some(binding)
     }
 
-    pub(in crate::actor) fn release_history(terminal: &RefCell<CanonicalTerminal>, binding: &NativeCursorOwner) {
+    pub(in crate::actor) fn release_history(
+        terminal: &RefCell<CanonicalTerminal>,
+        binding: &NativeCursorOwner,
+    ) {
         if !binding.history_released
             && let CanonicalTerminal::Native(manager) = &mut *terminal.borrow_mut()
         {

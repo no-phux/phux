@@ -8,10 +8,7 @@ use super::*;
 use phux_terminal_api::actor::TerminalResource as _;
 
 /// Apply palette changes after the host has fenced exact predecessor lifetimes.
-pub(crate) async fn prepare_consumers(
-    panes: &[AttachSnapshotPane],
-    caps: ClientCapabilities,
-) {
+pub(crate) async fn prepare_consumers(panes: &[AttachSnapshotPane], caps: ClientCapabilities) {
     apply_client_default_colors(panes, caps.default_colors).await;
 }
 

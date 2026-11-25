@@ -4,6 +4,11 @@
 //! journaled, and an emptied ephemeral session goes too. Only the process
 //! outlives it, in its hangup grace ([`ServerState::end_exit_watch`]).
 
+#![expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-private close commit shared across the runtime; pub would violate unreachable_pub"
+)]
+
 use phux_core::ids::ResourceId as CoreResourceId;
 use phux_core::process::ExitOutcome;
 use phux_protocol::ids::ResourceId as WireResourceId;

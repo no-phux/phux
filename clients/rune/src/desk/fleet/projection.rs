@@ -366,9 +366,18 @@ mod tests {
         desk.fleet.watches.insert(None, watch(client, activities));
         desk.go_to_agent(&ResourceId::satellite(LOCAL.to_owned(), 1));
         assert_eq!(desk.machines.current, None);
-        assert!(desk.launch.session.is_none(), "the old session name is not a destination selector");
-        assert!(desk.connection.fleet_handoff.is_some(), "the original watch owns the pending exact-pane transfer");
-        assert!(desk.connection.wanted.is_none(), "the destination must first qualify its own source");
+        assert!(
+            desk.launch.session.is_none(),
+            "the old session name is not a destination selector"
+        );
+        assert!(
+            desk.connection.fleet_handoff.is_some(),
+            "the original watch owns the pending exact-pane transfer"
+        );
+        assert!(
+            desk.connection.wanted.is_none(),
+            "the destination must first qualify its own source"
+        );
     }
 
     #[test]

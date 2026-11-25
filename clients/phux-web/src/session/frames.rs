@@ -36,9 +36,16 @@ impl Connection {
         {
             return Outcome::default();
         }
-        if let FrameKind::HelloOk { server_caps, server_id, .. } = &frame {
+        if let FrameKind::HelloOk {
+            server_caps,
+            server_id,
+            ..
+        } = &frame
+        {
             self.input_server_id = Some(server_id.clone());
-            self.acknowledged_input = server_caps.features.contains(ServerFeature::AcknowledgedInput);
+            self.acknowledged_input = server_caps
+                .features
+                .contains(ServerFeature::AcknowledgedInput);
             self.begin_input_connection();
             self.path_query_supported = server_caps
                 .features_ext

@@ -2,78 +2,78 @@
 
 use super::*;
 
-    #[test]
-    fn websocket_remote_credential_refusals_match_runtime() {
-        let rt = crate::commands::build_cli_runtime().expect("runtime");
-        let leaf = "ab".repeat(32);
-        for case in [
-            (
-                "plaintext remote",
-                "ws://192.0.2.1:8787",
-                Some(leaf.as_str()),
-                None,
-                None,
-                Some("ab"),
-                false,
-            ),
-            (
-                "unpinned",
-                "wss://192.0.2.1:8787",
-                None,
-                None,
-                None,
-                Some("ab"),
-                false,
-            ),
-            (
-                "blank pin",
-                "wss://192.0.2.1:8787",
-                Some(" "),
-                None,
-                None,
-                Some("ab"),
-                false,
-            ),
-            (
-                "missing token",
-                "wss://192.0.2.1:8787",
-                Some(leaf.as_str()),
-                None,
-                None,
-                None,
-                false,
-            ),
-            (
-                "empty token",
-                "wss://192.0.2.1:8787",
-                Some(leaf.as_str()),
-                None,
-                None,
-                Some(" "),
-                false,
-            ),
-            (
-                "bad token",
-                "wss://192.0.2.1:8787",
-                Some(leaf.as_str()),
-                None,
-                None,
-                Some("not-valid-secret"),
-                false,
-            ),
-            (
-                "odd hex token",
-                "wss://192.0.2.1:8787",
-                Some(leaf.as_str()),
-                None,
-                None,
-                Some("a"),
-                false,
-            ),
-        ] {
-            assert_ws_case(&rt, case);
-        }
+#[test]
+fn websocket_remote_credential_refusals_match_runtime() {
+    let rt = crate::commands::build_cli_runtime().expect("runtime");
+    let leaf = "ab".repeat(32);
+    for case in [
+        (
+            "plaintext remote",
+            "ws://192.0.2.1:8787",
+            Some(leaf.as_str()),
+            None,
+            None,
+            Some("ab"),
+            false,
+        ),
+        (
+            "unpinned",
+            "wss://192.0.2.1:8787",
+            None,
+            None,
+            None,
+            Some("ab"),
+            false,
+        ),
+        (
+            "blank pin",
+            "wss://192.0.2.1:8787",
+            Some(" "),
+            None,
+            None,
+            Some("ab"),
+            false,
+        ),
+        (
+            "missing token",
+            "wss://192.0.2.1:8787",
+            Some(leaf.as_str()),
+            None,
+            None,
+            None,
+            false,
+        ),
+        (
+            "empty token",
+            "wss://192.0.2.1:8787",
+            Some(leaf.as_str()),
+            None,
+            None,
+            Some(" "),
+            false,
+        ),
+        (
+            "bad token",
+            "wss://192.0.2.1:8787",
+            Some(leaf.as_str()),
+            None,
+            None,
+            Some("not-valid-secret"),
+            false,
+        ),
+        (
+            "odd hex token",
+            "wss://192.0.2.1:8787",
+            Some(leaf.as_str()),
+            None,
+            None,
+            Some("a"),
+            false,
+        ),
+    ] {
+        assert_ws_case(&rt, case);
     }
+}
 
 #[test]
 fn websocket_pins_development_and_relay_refusal_match_runtime() {
@@ -81,53 +81,53 @@ fn websocket_pins_development_and_relay_refusal_match_runtime() {
     let leaf = "ab".repeat(32);
     let ca = format!("sha256:{}", "cd".repeat(32));
     for case in [
-            ("dev", "ws://localhost:8787", None, None, None, None, true),
-            ("ipv6 dev", "ws://[::1]:8787", None, None, None, None, true),
-            (
-                "leaf",
-                "wss://192.0.2.1:8787",
-                Some(leaf.as_str()),
-                None,
-                None,
-                Some(" ab "),
-                true,
-            ),
-            (
-                "CA only",
-                "wss://192.0.2.1:8787",
-                None,
-                Some(ca.as_str()),
-                None,
-                Some("ab"),
-                true,
-            ),
-            (
-                "CA wins",
-                "wss://192.0.2.1:8787",
-                Some(leaf.as_str()),
-                Some(ca.as_str()),
-                None,
-                Some("ab"),
-                true,
-            ),
-            (
-                "relay cannot expose identity",
-                "wss://192.0.2.1:8787",
-                Some(leaf.as_str()),
-                Some(ca.as_str()),
-                Some("route"),
-                Some("ab"),
-                false,
-            ),
-            (
-                "local relay cannot expose identity",
-                "ws://localhost:8787",
-                None,
-                Some(ca.as_str()),
-                Some("route"),
-                None,
-                false,
-            ),
+        ("dev", "ws://localhost:8787", None, None, None, None, true),
+        ("ipv6 dev", "ws://[::1]:8787", None, None, None, None, true),
+        (
+            "leaf",
+            "wss://192.0.2.1:8787",
+            Some(leaf.as_str()),
+            None,
+            None,
+            Some(" ab "),
+            true,
+        ),
+        (
+            "CA only",
+            "wss://192.0.2.1:8787",
+            None,
+            Some(ca.as_str()),
+            None,
+            Some("ab"),
+            true,
+        ),
+        (
+            "CA wins",
+            "wss://192.0.2.1:8787",
+            Some(leaf.as_str()),
+            Some(ca.as_str()),
+            None,
+            Some("ab"),
+            true,
+        ),
+        (
+            "relay cannot expose identity",
+            "wss://192.0.2.1:8787",
+            Some(leaf.as_str()),
+            Some(ca.as_str()),
+            Some("route"),
+            Some("ab"),
+            false,
+        ),
+        (
+            "local relay cannot expose identity",
+            "ws://localhost:8787",
+            None,
+            Some(ca.as_str()),
+            Some("route"),
+            None,
+            false,
+        ),
     ] {
         assert_ws_case(&rt, case);
     }
@@ -153,7 +153,8 @@ fn assert_ws_case(rt: &tokio::runtime::Runtime, case: NativeCase<'_>) {
     let Dial::Ws(cli) = cli.expect("allowed CLI plan").dial else {
         panic!("WebSocket plan")
     };
-    let phux_client_runtime::dial::Dial::Ws(runtime) = runtime.expect("allowed runtime plan") else {
+    let phux_client_runtime::dial::Dial::Ws(runtime) = runtime.expect("allowed runtime plan")
+    else {
         panic!("WebSocket runtime plan")
     };
     assert_eq!(cli.url, runtime.url, "{label}");

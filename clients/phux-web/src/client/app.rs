@@ -113,7 +113,8 @@ impl App {
         for (index, frame) in frames.iter().enumerate() {
             let encoded = crate::session::encode(frame);
             if let Err((message, attempted)) = self.tx.handoff_input(&encoded) {
-                self.session.rollback_input_unsent(&frames[index + usize::from(attempted)..]);
+                self.session
+                    .rollback_input_unsent(&frames[index + usize::from(attempted)..]);
                 self.publish_input_reports();
                 return Err(message);
             }
@@ -176,7 +177,9 @@ impl App {
         // working. Painted before the kernel is failed.
         self.paint_badges();
         let pane_pending = self.session.pane_pending();
-        self.session.stop_input_delivery(self.reconnect.borrow().is_some() && !self.session.is_version_refused());
+        self.session.stop_input_delivery(
+            self.reconnect.borrow().is_some() && !self.session.is_version_refused(),
+        );
         self.publish_input_reports();
         self.session.fail_protocol(message);
         if pane_pending && !self.session.pane_pending() {
@@ -325,6 +328,8 @@ pub(super) fn show_input_notice(canvas: &HtmlCanvasElement, notice: &str) {
             canvas.parent_element()?.append_child(&node).ok()?;
             Some(node)
         });
-        if let Some(node) = node { node.set_text_content(Some(notice)); }
+        if let Some(node) = node {
+            node.set_text_content(Some(notice));
+        }
     }
 }

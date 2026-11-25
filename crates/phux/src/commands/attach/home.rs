@@ -21,36 +21,59 @@ impl ConfiguredSession {
         mut self,
         dial: &phux_client::attach::Dial,
         startup: Option<crate::commands::server::EnsureDisposition>,
-    ) -> Result<(phux_client::attach::connection::Connection, AttachTarget), phux_client::attach::AttachError> {
+    ) -> Result<
+        (phux_client::attach::connection::Connection, AttachTarget),
+        phux_client::attach::AttachError,
+    > {
         use phux_client::{attach::connection::Connection, org};
         use phux_protocol::wire::frame::{LaunchSpec, SessionLifetime};
         let command = self.seed_command(startup);
         let mut conn = Connection::connect_dial(dial).await?;
         let operation = org::mint_operation();
         let receipt = org::ensure_session(
-            &mut conn, operation, self.name, SessionLifetime::Ephemeral,
+            &mut conn,
+            operation,
+            self.name,
+            SessionLifetime::Ephemeral,
             Some(Box::new(LaunchSpec::new(command).with_cwd(self.cwd))),
             Vec::new(),
-        ).await.map_err(|error| match error {
-            org::OrgError::Unsupported | org::OrgError::Refused(_) =>
-                phux_client::attach::AttachError::Refused(error.to_string()),
-            org::OrgError::OutcomeUnknown { operation } =>
-                phux_client::attach::AttachError::OperationOutcomeUnknown { operation },
-            _ => phux_client::attach::AttachError::OperationOutcomeUnknown { operation: Some(operation) },
+        )
+        .await
+        .map_err(|error| match error {
+            org::OrgError::Unsupported | org::OrgError::Refused(_) => {
+                phux_client::attach::AttachError::Refused(error.to_string())
+            }
+            org::OrgError::OutcomeUnknown { operation } => {
+                phux_client::attach::AttachError::OperationOutcomeUnknown { operation }
+            }
+            _ => phux_client::attach::AttachError::OperationOutcomeUnknown {
+                operation: Some(operation),
+            },
         })?;
-        let session = receipt.session.ok_or(phux_client::attach::AttachError::OperationOutcomeUnknown {
-            operation: Some(receipt.operation),
-        })?;
-        let target = org::attach_target_for_receipt(&mut conn, &receipt).await.map_err(|error|
-            phux_client::attach::AttachError::CommittedSelectionUnavailable {
-                operation: receipt.operation, session, message: error.to_string(),
-            })?;
+        let session =
+            receipt
+                .session
+                .ok_or(phux_client::attach::AttachError::OperationOutcomeUnknown {
+                    operation: Some(receipt.operation),
+                })?;
+        let target = org::attach_target_for_receipt(&mut conn, &receipt)
+            .await
+            .map_err(
+                |error| phux_client::attach::AttachError::CommittedSelectionUnavailable {
+                    operation: receipt.operation,
+                    session,
+                    message: error.to_string(),
+                },
+            )?;
         Ok((conn, target))
     }
 
     /// Only the process that actually started this server projects its
     /// first-session command. Joined/reused servers keep plain-shell creation.
-    fn seed_command(&mut self, startup: Option<crate::commands::server::EnsureDisposition>) -> Vec<String> {
+    fn seed_command(
+        &mut self,
+        startup: Option<crate::commands::server::EnsureDisposition>,
+    ) -> Vec<String> {
         use crate::commands::server::EnsureDisposition::{DaemonStarted, SupervisedStarted};
         if !matches!(startup, Some(DaemonStarted | SupervisedStarted)) {
             return Vec::new();
@@ -62,15 +85,22 @@ impl ConfiguredSession {
             || std::env::var_os(crate::commands::service::SERVICE_MANAGED_ENV).is_some();
         // Same known-shell login flags as terminal_api::launch::default_shell_command.
         let flag = if login {
-            match std::path::Path::new(&shell).file_name().and_then(std::ffi::OsStr::to_str) {
+            match std::path::Path::new(&shell)
+                .file_name()
+                .and_then(std::ffi::OsStr::to_str)
+            {
                 Some("bash" | "zsh" | "sh") => Some("-l"),
                 Some("fish") => Some("--login"),
                 _ => None,
             }
-        } else { None };
+        } else {
+            None
+        };
         let mut command = Vec::with_capacity(3 + usize::from(flag.is_some()));
         command.push(shell);
-        if let Some(flag) = flag { command.push(flag.to_owned()); }
+        if let Some(flag) = flag {
+            command.push(flag.to_owned());
+        }
         command.push("-c".to_owned());
         command.push(text);
         command
@@ -94,10 +124,17 @@ fn target_for(
     let cwd = cwd
         .filter(|_| defaults.fixed_start_dir().is_none())
         .map(|dir| dir.to_string_lossy().into_owned());
-    let startup_command = defaults.spawn_on_attach.as_ref().map(|text| (
-        phux_config::shell::resolve_shell(defaults.shell.as_deref()), text.clone(),
-    ));
-    Some(ConfiguredSession { name: name.to_owned(), cwd, startup_command })
+    let startup_command = defaults.spawn_on_attach.as_ref().map(|text| {
+        (
+            phux_config::shell::resolve_shell(defaults.shell.as_deref()),
+            text.clone(),
+        )
+    });
+    Some(ConfiguredSession {
+        name: name.to_owned(),
+        cwd,
+        startup_command,
+    })
 }
 
 /// `name` as the lookup-only retry for a server that cannot resolve
@@ -172,8 +209,8 @@ pub(super) fn default_lookup_target(default_name: &str) -> AttachTarget {
 
 #[cfg(test)]
 mod tests {
-    use phux_config::{CwdInheritance, DefaultsCfg};
     use super::ConfiguredSession;
+    use phux_config::{CwdInheritance, DefaultsCfg};
 
     use super::target_for;
 

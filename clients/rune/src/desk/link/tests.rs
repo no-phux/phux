@@ -428,7 +428,6 @@ fn a_failed_search_keeps_what_the_updater_manages() {
     assert_eq!(desk.updater.target, None);
 }
 
-
 #[test]
 fn transport_errors_read_as_words() {
     assert_eq!(

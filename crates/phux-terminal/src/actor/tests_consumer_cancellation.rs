@@ -18,11 +18,7 @@ struct Pending {
     _host_output: mpsc::Sender<Outbound>,
 }
 
-fn pending(
-    generation: u64,
-    state_sync: bool,
-    lifetime: &CancellationToken,
-) -> Pending {
+fn pending(generation: u64, state_sync: bool, lifetime: &CancellationToken) -> Pending {
     let stream_id = StreamId::new(7).unwrap();
     let bootstrap_id = BootstrapId::new(generation).unwrap();
     let guard = ConsumerRegistrationGuard::new(lifetime);
@@ -57,11 +53,7 @@ fn pending(
 fn withdrawal_before_actor_install_refuses_a_late_queued_registration() {
     let bundle = TerminalActor::new(20, 5).unwrap();
     let mut actor = bundle.actor;
-    let pending = pending(
-        1,
-        true,
-        &CancellationToken::new(),
-    );
+    let pending = pending(1, true, &CancellationToken::new());
     drop(pending.guard);
     actor.handle_consumer_attach(pending.request);
     assert!(matches!(
@@ -76,11 +68,7 @@ fn withdrawal_before_actor_install_refuses_a_late_queued_registration() {
 fn dropped_registration_reply_cannot_install_interest() {
     let bundle = TerminalActor::new(20, 5).unwrap();
     let mut actor = bundle.actor;
-    let pending = pending(
-        1,
-        true,
-        &CancellationToken::new(),
-    );
+    let pending = pending(1, true, &CancellationToken::new());
     drop(pending.reply);
     actor.handle_consumer_attach(pending.request);
     assert_eq!(actor.consumer_count(), 0);

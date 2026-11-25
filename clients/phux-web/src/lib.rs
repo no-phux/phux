@@ -139,11 +139,17 @@ impl HostedClient {
             InputSubmission::NotQueued => ("not-queued", None),
             InputSubmission::QueuedRaw => ("queued-raw", None),
             InputSubmission::Refused { delivery_id } => ("refused", Some(delivery_id)),
-            InputSubmission::AwaitingReceipt { delivery_id } => ("awaiting-receipt", Some(delivery_id)),
+            InputSubmission::AwaitingReceipt { delivery_id } => {
+                ("awaiting-receipt", Some(delivery_id))
+            }
         };
         js_sys::Reflect::set(&result, &"kind".into(), &kind.into())?;
         if let Some(delivery_id) = delivery_id {
-            js_sys::Reflect::set(&result, &"deliveryId".into(), &delivery_id.to_string().into())?;
+            js_sys::Reflect::set(
+                &result,
+                &"deliveryId".into(),
+                &delivery_id.to_string().into(),
+            )?;
         }
         Ok(result.into())
     }

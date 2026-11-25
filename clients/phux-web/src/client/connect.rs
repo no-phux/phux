@@ -345,7 +345,8 @@ pub(super) fn spawn_reconnect(config: ReconnectConfig) {
                 Ok(client) => {
                     {
                         let mut app = client.app.borrow_mut();
-                        app.session.adopt_input_delivery(Rc::clone(&config.input_delivery));
+                        app.session
+                            .adopt_input_delivery(Rc::clone(&config.input_delivery));
                         if let Err(message) = app.flush_input() {
                             app.session.fail_protocol(&message);
                             app.dispose();
@@ -358,7 +359,9 @@ pub(super) fn spawn_reconnect(config: ReconnectConfig) {
                 }
                 Err(error) => {
                     if let Some(message) = error.as_string().filter(|m| is_version_refusal(m)) {
-                        for (delivery_id, report) in config.input_delivery.borrow_mut().stop_reconnecting() {
+                        for (delivery_id, report) in
+                            config.input_delivery.borrow_mut().stop_reconnecting()
+                        {
                             super::app::publish_input_report(&config.canvas, delivery_id, &report);
                         }
                         mark_incompatible(&config.canvas, &message);

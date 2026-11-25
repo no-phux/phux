@@ -6,9 +6,7 @@ use phux_protocol::wire::frame::{ErrorCode, FrameKind};
 use phux_terminal_api::actor::TerminalResource as _;
 
 use crate::runtime::apps::terminal::capture::attach_resource::AttachResourceSession;
-use crate::runtime::apps::{
-    FrameAdmission, NO_TERMINAL_PROFILE, ResourceApp, StreamBootstrap,
-};
+use crate::runtime::apps::{FrameAdmission, NO_TERMINAL_PROFILE, ResourceApp, StreamBootstrap};
 use crate::runtime::commands::AttachResourceFailure;
 
 /// Serves [`ResourceKind::Terminal`](crate::resource::ResourceKind::Terminal).
@@ -25,7 +23,6 @@ impl ResourceApp for TerminalApp {
     {
         super::attach::stage_session(capture, staging, pane).boxed_local()
     }
-
 
     fn bootstrap<'a>(
         &'a self,
@@ -46,13 +43,13 @@ impl ResourceApp for TerminalApp {
         }
     }
 
-    fn frame_error(&self, _frame: &FrameKind)
-        -> Option<(phux_protocol::wire::frame::ErrorCode, String)> {
+    fn frame_error(
+        &self,
+        _frame: &FrameKind,
+    ) -> Option<(phux_protocol::wire::frame::ErrorCode, String)> {
         None
     }
-
 }
-
 
 /// Bootstrap one Terminal's content stream into its mailbox without touching
 /// the caller's subscription; a failure cancels the generation only.
@@ -70,7 +67,8 @@ async fn bootstrap_stream(stream: StreamBootstrap<'_>) -> Result<(), AttachResou
         ..
     } = stream;
     let Some(bootstrap_profile) = bootstrap_profile else {
-        return Err(AttachResourceFailure { generation: None,
+        return Err(AttachResourceFailure {
+            generation: None,
             code: ErrorCode::CodecUnavailable,
             message: NO_TERMINAL_PROFILE.to_owned(),
         });
@@ -78,7 +76,8 @@ async fn bootstrap_stream(stream: StreamBootstrap<'_>) -> Result<(), AttachResou
     let Some(stream_profile) =
         crate::runtime::apps::terminal::attach::bootstrap_stream_profile(bootstrap_profile)
     else {
-        return Err(AttachResourceFailure { generation: None,
+        return Err(AttachResourceFailure {
+            generation: None,
             code: ErrorCode::CodecUnavailable,
             message: "ATTACH_RESOURCE selected an unsupported bootstrap profile".to_owned(),
         });
@@ -87,7 +86,8 @@ async fn bootstrap_stream(stream: StreamBootstrap<'_>) -> Result<(), AttachResou
     let terminal = match handle.terminal() {
         Ok(terminal) => terminal.clone(),
         Err(error) => {
-            return Err(AttachResourceFailure { generation: None,
+            return Err(AttachResourceFailure {
+                generation: None,
                 code: ErrorCode::WrongResourceKind,
                 message: error.to_string(),
             });
@@ -95,7 +95,6 @@ async fn bootstrap_stream(stream: StreamBootstrap<'_>) -> Result<(), AttachResou
     };
     let session = AttachResourceSession {
         out_tx: content_tx,
-        connection_token,
         terminal_id,
         handle: handle.clone(),
         terminal,

@@ -1,8 +1,6 @@
 //! Terminal attach, bootstrap, and subscription.
 
-use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities};
 use phux_protocol::wire::frame::{Command, CommandResult, ControlAction, ErrorCode, RolePolicy};
-use tokio_util::sync::CancellationToken;
 
 use crate::resource::ResourceHandle;
 use crate::runtime::commands::results::{
@@ -40,81 +38,130 @@ pub(super) async fn handle_attach_terminal(
     let host = crate::runtime::apps::StreamHost::new(state, client_id);
     let Some(reservation) = host.reserve_next(subscription.core, &ctx.token) else {
         state.with_mut(|s| {
-            if !subscription.was_subscribed { s.resources_mut().unsubscribe(client_id, subscription.core); }
-            if subscription.was_viewer && !role.is_viewer() { s.clients_mut().mark_viewer(client_id, terminal_id, true); }
+            if !subscription.was_subscribed {
+                s.resources_mut().unsubscribe(client_id, subscription.core);
+            }
+            if subscription.was_viewer && !role.is_viewer() {
+                s.clients_mut().mark_viewer(client_id, terminal_id, true);
+            }
             s.undo_attach_takeover(client_id, subscription.core, subscription.effects);
         });
         return CommandResult::error(ErrorCode::InternalError, "stream admission unavailable");
     };
     let lease = reservation.lease.clone();
     let stream = crate::runtime::apps::StreamBootstrap {
-        reservation, client_id, wire: terminal_id, handle: &subscription.handle,
-        content_tx: out_tx, stream_id: crate::runtime::stream_id_from(client_id.0),
-        client_caps: ctx.client_caps, profile: ctx.profile, limits: ctx.limits,
+        reservation,
+        client_id,
+        wire: terminal_id,
+        handle: &subscription.handle,
+        content_tx: out_tx,
+        stream_id: crate::runtime::stream_id_from(client_id.0),
+        client_caps: ctx.client_caps,
+        profile: ctx.profile,
+        limits: ctx.limits,
         after_seq: agent_after_seq,
     };
-    let result = lease.run(async {
-        announce_role_effects(&subscription, client_id).await;
-        bootstrap_attach_terminal(stream).await
-    }).await.unwrap_or_else(|| Err(AttachResourceFailure {
-        generation: Some(std::sync::Arc::clone(&lease.last_seq)),
-        ..AttachResourceFailure::internal("stream superseded while announcing role")
-    }));
-    let AttachSubscription { core, handle, effects, was_viewer, .. } = subscription;
-    match result
-    {
+    let result = lease
+        .run(async {
+            announce_role_effects(&subscription, client_id).await;
+            bootstrap_attach_terminal(stream).await
+        })
+        .await
+        .unwrap_or_else(|| {
+            Err(AttachResourceFailure {
+                generation: Some(std::sync::Arc::clone(&lease.last_seq)),
+                ..AttachResourceFailure::internal("stream superseded while announcing role")
+            })
+        });
+    match result {
         Ok(()) => CommandResult::Ok,
         Err(failure) => {
-            // The COMMAND path drops its subscription on failure and undoes
-            // any lease seizure or role widening it made (ADR-0127).
-            let restore = was_viewer && !role.is_viewer();
-            let rollback = state.with_mut(|s| {
-                let current = failure.generation.as_ref().is_some_and(|fence| s.resources().pump_matches(client_id, core, fence));
-                if !current { return None; }
-                s.resources_mut().unsubscribe(client_id, core);
-                if restore {
-                    s.clients_mut().mark_viewer(client_id, terminal_id, true);
-                }
-                let released = s.undo_attach_takeover(client_id, core, effects);
-                Some((released, s.leases().holder(core)))
-            });
-            let Some((released, holder)) = rollback else {
-                return CommandResult::error(failure.code, failure.message);
-            };
-            let lease = handle.companion::<crate::resource::companions::Leasable>();
-            if restore
-                && effects.role_changed
-                && let Some(lease) = lease
-            {
-                lease
-                    .lease_changed(crate::resource::LeaseChange {
-                        input_holder: holder.map(super::super::wire_client),
-                        action: ControlAction::RoleChanged,
-                        actor: Some(super::super::wire_client(client_id)),
-                    })
-                    .await;
-            }
-            if released && let Some(lease) = lease {
-                lease
-                    .lease_changed(crate::resource::LeaseChange {
-                        input_holder: None,
-                        action: ControlAction::Released,
-                        actor: Some(super::super::wire_client(client_id)),
-                    })
-                    .await;
-            }
-            CommandResult::error(failure.code, failure.message)
+            roll_back_failed_attach(state, client_id, terminal_id, role, subscription, failure)
+                .await
         }
     }
 }
 
+/// The COMMAND path drops its subscription on failure and undoes any lease
+/// seizure or role widening it made (ADR-0127), unless the failed generation
+/// no longer owns the pump.
+async fn roll_back_failed_attach(
+    state: &SharedState,
+    client_id: ClientId,
+    terminal_id: &phux_protocol::ids::ResourceId,
+    role: RolePolicy,
+    subscription: AttachSubscription,
+    failure: AttachResourceFailure,
+) -> CommandResult {
+    let AttachSubscription {
+        core,
+        handle,
+        effects,
+        was_viewer,
+        ..
+    } = subscription;
+    let restore = was_viewer && !role.is_viewer();
+    let rollback = state.with_mut(|s| {
+        let current = failure
+            .generation
+            .as_ref()
+            .is_some_and(|fence| s.resources().pump_matches(client_id, core, fence));
+        if !current {
+            return None;
+        }
+        s.resources_mut().unsubscribe(client_id, core);
+        if restore {
+            s.clients_mut().mark_viewer(client_id, terminal_id, true);
+        }
+        let released = s.undo_attach_takeover(client_id, core, effects);
+        Some((released, s.leases().holder(core)))
+    });
+    let Some((released, holder)) = rollback else {
+        return CommandResult::error(failure.code, failure.message);
+    };
+    let lease = handle.companion::<crate::resource::companions::Leasable>();
+    if restore
+        && effects.role_changed
+        && let Some(lease) = lease
+    {
+        lease
+            .lease_changed(crate::resource::LeaseChange {
+                input_holder: holder.map(super::super::wire_client),
+                action: ControlAction::RoleChanged,
+                actor: Some(super::super::wire_client(client_id)),
+            })
+            .await;
+    }
+    if released && let Some(lease) = lease {
+        lease
+            .lease_changed(crate::resource::LeaseChange {
+                input_holder: None,
+                action: ControlAction::Released,
+                actor: Some(super::super::wire_client(client_id)),
+            })
+            .await;
+    }
+    CommandResult::error(failure.code, failure.message)
+}
+
 /// Bootstrap only the host-admitted exact source. The reservation is captured
 /// before role announcements or transport retirement can suspend its caller.
-pub(crate) async fn bootstrap_attach_terminal(stream: crate::runtime::apps::StreamBootstrap<'_>) -> Result<(), AttachResourceFailure> {
+pub(crate) async fn bootstrap_attach_terminal(
+    stream: crate::runtime::apps::StreamBootstrap<'_>,
+) -> Result<(), AttachResourceFailure> {
     let lease = stream.reservation.lease.clone();
-    lease.run(crate::runtime::apps::app_for(stream.handle.kind).bootstrap(stream)).await
-        .unwrap_or_else(|| Err(AttachResourceFailure::internal("stream reservation superseded")))
-        .map_err(|mut failure| { failure.generation = Some(std::sync::Arc::clone(&lease.last_seq)); failure })
+    lease
+        .run(crate::runtime::apps::app_for(stream.handle.kind).bootstrap(stream))
+        .await
+        .unwrap_or_else(|| {
+            Err(AttachResourceFailure::internal(
+                "stream reservation superseded",
+            ))
+        })
+        .map_err(|mut failure| {
+            failure.generation = Some(std::sync::Arc::clone(&lease.last_seq));
+            failure
+        })
 }
 
 /// Resolve the wire terminal id and register the caller as an output

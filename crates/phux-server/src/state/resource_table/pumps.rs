@@ -1,6 +1,10 @@
 //! Exact source reservations and the tasks they own.
 
-use super::{Arc, AtomicU64, AttachResourceGeneration, BOOTSTRAP_ID_BLOCK, AttachResourcePumpReplacement, BootstrapId, CancellationToken, ClientId, LastValidAttachSequence, OutputPumpTask, StreamDisposition, ResourceId, ResourceTable, AbortHandle};
+use super::{
+    AbortHandle, Arc, AtomicU64, AttachResourceGeneration, AttachResourcePumpReplacement,
+    BOOTSTRAP_ID_BLOCK, BootstrapId, CancellationToken, ClientId, LastValidAttachSequence,
+    OutputPumpTask, ResourceId, ResourceTable, StreamDisposition,
+};
 
 impl ResourceTable {
     // -- output task lifetimes and ATTACH_RESOURCE generations --------
@@ -11,18 +15,33 @@ impl ResourceTable {
         &mut self,
         terminal: ResourceId,
     ) -> Vec<(ClientId, Vec<CancellationToken>)> {
-        self.pumps.iter_mut().filter_map(|((client, pane), generation)| {
-            if *pane != terminal || generation.cancel.is_cancelled()
-                || generation.publication.as_ref().is_some_and(CancellationToken::is_cancelled) { return None; }
-            generation.disposition = StreamDisposition::Draining;
-            if let Some(tasks) = self.output_pumps.get(&(*client, *pane)) {
-                for task in tasks {
-                    if Arc::ptr_eq(&task.generation, &generation.last_valid_seq)
-                        && !task.done.is_cancelled() && let Some(drain) = &task.drain { drain.cancel(); }
+        self.pumps
+            .iter_mut()
+            .filter_map(|((client, pane), generation)| {
+                if *pane != terminal
+                    || generation.cancel.is_cancelled()
+                    || generation
+                        .publication
+                        .as_ref()
+                        .is_some_and(CancellationToken::is_cancelled)
+                {
+                    return None;
                 }
-            }
-            (!generation.source_done.is_cancelled()).then(|| (*client, vec![generation.source_done.clone()]))
-        }).collect()
+                generation.disposition = StreamDisposition::Draining;
+                if let Some(tasks) = self.output_pumps.get(&(*client, *pane)) {
+                    for task in tasks {
+                        if Arc::ptr_eq(&task.generation, &generation.last_valid_seq)
+                            && !task.done.is_cancelled()
+                            && let Some(drain) = &task.drain
+                        {
+                            drain.cancel();
+                        }
+                    }
+                }
+                (!generation.source_done.is_cancelled())
+                    .then(|| (*client, vec![generation.source_done.clone()]))
+            })
+            .collect()
     }
 
     pub(in crate::state) fn remember_draining_terminal(
@@ -85,14 +104,22 @@ impl ResourceTable {
         terminal: ResourceId,
     ) -> Vec<CancellationToken> {
         self.abort_output_pumps(client, terminal);
-        self.output_pumps.get(&(client, terminal)).into_iter().flatten()
-            .map(|task| task.done.clone()).collect()
+        self.output_pumps
+            .get(&(client, terminal))
+            .into_iter()
+            .flatten()
+            .map(|task| task.done.clone())
+            .collect()
     }
 
     fn abort_output_pumps(&mut self, client: ClientId, terminal: ResourceId) {
         if let Some(tasks) = self.output_pumps.get_mut(&(client, terminal)) {
             tasks.retain(|task| !task.done.is_cancelled());
-            for task in tasks.iter() { if let Some(abort) = &task.abort { abort.abort(); } }
+            for task in tasks.iter() {
+                if let Some(abort) = &task.abort {
+                    abort.abort();
+                }
+            }
         }
     }
 
@@ -124,7 +151,9 @@ impl ResourceTable {
             )
             .map(|prior| {
                 prior.cancel.cancel();
-                if let Some(publication) = prior.publication { publication.cancel(); }
+                if let Some(publication) = prior.publication {
+                    publication.cancel();
+                }
                 (prior.bootstrap_id, prior.last_valid_seq)
             });
         self.abort_output_pumps(client, terminal);
@@ -132,47 +161,120 @@ impl ResourceTable {
     }
 
     /// Identity, not bootstrap numbers: lag recovery changes the latter.
-    pub(crate) fn pump_matches(&self, client: ClientId, terminal: ResourceId, fence: &LastValidAttachSequence) -> bool {
-        self.pumps.get(&(client, terminal)).is_some_and(|generation| Arc::ptr_eq(&generation.last_valid_seq, fence))
+    pub(crate) fn pump_matches(
+        &self,
+        client: ClientId,
+        terminal: ResourceId,
+        fence: &LastValidAttachSequence,
+    ) -> bool {
+        self.pumps
+            .get(&(client, terminal))
+            .is_some_and(|generation| Arc::ptr_eq(&generation.last_valid_seq, fence))
     }
 
-    pub(crate) fn pump_is_current(&self, client: ClientId, terminal: ResourceId, fence: &LastValidAttachSequence) -> bool {
-        self.pumps.get(&(client, terminal)).is_some_and(|generation| {
-            Arc::ptr_eq(&generation.last_valid_seq, fence) && !generation.cancel.is_cancelled()
-                && generation.publication.as_ref().is_none_or(|publication| !publication.is_cancelled())
-        })
+    pub(crate) fn pump_is_current(
+        &self,
+        client: ClientId,
+        terminal: ResourceId,
+        fence: &LastValidAttachSequence,
+    ) -> bool {
+        self.pumps
+            .get(&(client, terminal))
+            .is_some_and(|generation| {
+                Arc::ptr_eq(&generation.last_valid_seq, fence)
+                    && !generation.cancel.is_cancelled()
+                    && generation
+                        .publication
+                        .as_ref()
+                        .is_none_or(|publication| !publication.is_cancelled())
+            })
     }
 
     /// One predecessor at a time: no per-wait scratch allocation or timer.
-    pub(crate) fn retiring_pump(&mut self, client: ClientId, terminal: ResourceId, fence: &LastValidAttachSequence) -> Option<CancellationToken> {
+    pub(crate) fn retiring_pump(
+        &mut self,
+        client: ClientId,
+        terminal: ResourceId,
+        fence: &LastValidAttachSequence,
+    ) -> Option<CancellationToken> {
         let tasks = self.output_pumps.get_mut(&(client, terminal))?;
         tasks.retain(|task| !task.done.is_cancelled());
-        tasks.iter().find(|task| !Arc::ptr_eq(&task.generation, fence))
+        tasks
+            .iter()
+            .find(|task| !Arc::ptr_eq(&task.generation, fence))
             .map(|task| task.done.clone())
     }
 
-    pub(crate) fn source_has_emitter(&self, client: ClientId, terminal: ResourceId, fence: &LastValidAttachSequence) -> bool {
-        self.output_pumps.get(&(client, terminal)).is_some_and(|tasks| tasks.iter().any(|task| Arc::ptr_eq(&task.generation, fence) && !task.done.is_cancelled()))
+    pub(crate) fn source_has_emitter(
+        &self,
+        client: ClientId,
+        terminal: ResourceId,
+        fence: &LastValidAttachSequence,
+    ) -> bool {
+        self.output_pumps
+            .get(&(client, terminal))
+            .is_some_and(|tasks| {
+                tasks
+                    .iter()
+                    .any(|task| Arc::ptr_eq(&task.generation, fence) && !task.done.is_cancelled())
+            })
     }
 
-    pub(crate) fn prepare_output_task(&self, client: ClientId, terminal: ResourceId, fence: &LastValidAttachSequence, drain: Option<&CancellationToken>) -> Option<CancellationToken> {
-        if !self.pump_is_current(client, terminal, fence) { return None; }
+    pub(crate) fn prepare_output_task(
+        &self,
+        client: ClientId,
+        terminal: ResourceId,
+        fence: &LastValidAttachSequence,
+        drain: Option<&CancellationToken>,
+    ) -> Option<CancellationToken> {
+        if !self.pump_is_current(client, terminal, fence) {
+            return None;
+        }
         let generation = self.pumps.get(&(client, terminal))?;
-        if generation.disposition == StreamDisposition::Draining && let Some(drain) = drain { drain.cancel(); }
+        if generation.disposition == StreamDisposition::Draining
+            && let Some(drain) = drain
+        {
+            drain.cancel();
+        }
         Some(generation.source_done.clone())
     }
 
-    pub(crate) fn track_reserved_output(&mut self, client: ClientId, terminal: ResourceId, fence: &LastValidAttachSequence, abort: AbortHandle, done: CancellationToken, drain: Option<CancellationToken>) -> bool {
-        if !self.pump_is_current(client, terminal, fence) { abort.abort(); return false; }
+    pub(crate) fn track_reserved_output(
+        &mut self,
+        client: ClientId,
+        terminal: ResourceId,
+        fence: &LastValidAttachSequence,
+        abort: AbortHandle,
+        done: CancellationToken,
+        drain: Option<CancellationToken>,
+    ) -> bool {
+        if !self.pump_is_current(client, terminal, fence) {
+            abort.abort();
+            return false;
+        }
         let tasks = self.output_pumps.entry((client, terminal)).or_default();
         tasks.retain(|task| !task.done.is_cancelled());
-        tasks.push(OutputPumpTask { abort: Some(abort), done, drain, generation: Arc::clone(fence) });
+        tasks.push(OutputPumpTask {
+            abort: Some(abort),
+            done,
+            drain,
+            generation: Arc::clone(fence),
+        });
         true
     }
 
-    pub(crate) fn publish_pump(&mut self, client: ClientId, terminal: ResourceId, fence: &LastValidAttachSequence) -> bool {
-        if !self.pump_is_current(client, terminal, fence) { return false; }
-        if let Some(generation) = self.pumps.get_mut(&(client, terminal)) { generation.publication = None; }
+    pub(crate) fn publish_pump(
+        &mut self,
+        client: ClientId,
+        terminal: ResourceId,
+        fence: &LastValidAttachSequence,
+    ) -> bool {
+        if !self.pump_is_current(client, terminal, fence) {
+            return false;
+        }
+        if let Some(generation) = self.pumps.get_mut(&(client, terminal)) {
+            generation.publication = None;
+        }
         true
     }
 
@@ -208,13 +310,55 @@ impl ResourceTable {
         BootstrapId::new(raw)
     }
 
-    /// Cancel and forget the pump for `(client, terminal)`. Idempotent.
+    /// Forget exactly this unpublished source, restoring only the retired
+    /// predecessor's identity (no lease matches it) for a later tombstone.
+    /// Its aggregate publication token is shared with sibling panes and stays
+    /// live; a newer source is kept.
+    pub(crate) fn withdraw_pump(
+        &mut self,
+        client: ClientId,
+        terminal: ResourceId,
+        fence: &LastValidAttachSequence,
+        prior: Option<(BootstrapId, u64)>,
+    ) {
+        if !self.pump_matches(client, terminal, fence) {
+            return;
+        }
+        let Some(generation) = self.pumps.remove(&(client, terminal)) else {
+            return;
+        };
+        generation.cancel.cancel();
+        let Some((bootstrap_id, last_seq)) = prior else {
+            return;
+        };
+        let retired = CancellationToken::new();
+        retired.cancel();
+        self.pumps.insert(
+            (client, terminal),
+            AttachResourceGeneration {
+                cancel: retired.clone(),
+                source_done: retired,
+                disposition: StreamDisposition::Active,
+                last_valid_seq: Arc::new(AtomicU64::new(last_seq)),
+                bootstrap_id,
+                publication: None,
+            },
+        );
+    }
+
+    /// Cancel and forget the pump for `(client, terminal)`. Idempotent. A
+    /// close or detach of one pane vacates its slot without cancelling the
+    /// aggregate publication its siblings share; only supersession does.
     pub(crate) fn cancel_pump(&mut self, client: ClientId, terminal: ResourceId) {
         self.abort_output_pumps(client, terminal);
         if let Some(generation) = self.pumps.remove(&(client, terminal)) {
             generation.cancel.cancel();
-            if let Some(publication) = generation.publication { publication.cancel(); }
         }
+    }
+
+    /// No source holds this slot: a close or detach ended it, nothing replaced it.
+    pub(crate) fn pump_vacated(&self, client: ClientId, terminal: ResourceId) -> bool {
+        !self.pumps.contains_key(&(client, terminal))
     }
 
     /// Cancel every client's pumps for `terminal`: a killed Terminal's
@@ -239,7 +383,9 @@ impl ResourceTable {
         self.pumps.retain(|(owner, _), generation| {
             if *owner == client {
                 generation.cancel.cancel();
-                if let Some(publication) = &generation.publication { publication.cancel(); }
+                if let Some(publication) = &generation.publication {
+                    publication.cancel();
+                }
                 false
             } else {
                 true
@@ -252,5 +398,4 @@ impl ResourceTable {
     pub(in crate::state) fn forget_bootstrap_ids(&mut self, client: ClientId) {
         self.next_bootstrap.remove(&client);
     }
-
 }

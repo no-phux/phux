@@ -1,7 +1,7 @@
 //! Config diagnostics/reload and prefix-popup timing and modal isolation.
 
-use super::*;
 use super::chrome_frames::palette_overlay;
+use super::*;
 
 /// One malformed chord disables only itself; detach survives.
 #[test]

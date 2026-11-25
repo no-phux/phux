@@ -338,7 +338,8 @@ mod tests {
         let mut replica = uncertain_replica();
         let mut desk = crate::test_support::window();
         desk.connection.client = Some(Arc::clone(&replica.client));
-        desk.connection.seed_view_sources(vec![1; 16], &replica.sources);
+        desk.connection
+            .seed_view_sources(vec![1; 16], &replica.sources);
         desk.connection.status = Status::Attached;
         let view = replica.views[0];
         let frame = replica.client.acquire_view(view).expect("current frame");
@@ -367,7 +368,8 @@ mod tests {
         let replica = uncertain_replica();
         let mut desk = crate::test_support::window();
         desk.connection.client = Some(Arc::clone(&replica.client));
-        desk.connection.seed_view_sources(vec![1; 16], &replica.sources);
+        desk.connection
+            .seed_view_sources(vec![1; 16], &replica.sources);
         desk.connection.status = Status::Attached;
         let view = replica.views[0];
         let frame = replica.client.acquire_view(view).expect("frame");

@@ -11,12 +11,10 @@ use phux_protocol::ids::ResourceKind;
 use phux_protocol::wire::frame::{SpawnError, SpawnResource};
 use tracing::debug;
 
-use crate::runtime::apps::agent_session::attach_agent_session;
+use super::producer::{SpawnFinish, SpawnedChild, finish_spawn, register_spawned_child};
 use crate::mailbox::Outbound;
+use crate::runtime::apps::agent_session::attach_agent_session;
 use crate::runtime::spawn::ResourceSpawn;
-use super::producer::{
-    SpawnFinish, SpawnedChild, finish_spawn, register_spawned_child,
-};
 use crate::runtime::spawn_reply::{dispatch_satellite_spawn, refuse_spawn};
 use crate::state::{ClientId, SharedState};
 use phux_agent_session::session::AgentSessionActor;
@@ -114,6 +112,29 @@ pub(crate) async fn spawn_agent_session(spawn: ResourceSpawn<'_>) {
     spawn_local_session(spawn, provider, core_parent, parent).await;
 }
 
+/// Validate `core_parent` and create the session's durable record under it,
+/// in the caller's state borrow so the child registers in the same step.
+fn create_session_record(
+    s: &mut crate::state::ServerState,
+    client_id: ClientId,
+    core_parent: phux_core::ids::ResourceId,
+    provider: &str,
+    resource: &SpawnResource,
+) -> Result<phux_core::ids::ResourceId, SpawnError> {
+    let launch = phux_core::LaunchSpec::Agent(phux_core::resource::AgentLaunch {
+        provider: provider.to_owned(),
+        native_id: resource.native_id.clone(),
+    });
+    validate_agent_parent(s, core_parent)?;
+    let actor = s.actor_for(client_id);
+    s.create_child(
+        core_parent,
+        phux_core::NewResource::child(launch, None),
+        &actor,
+    )
+    .map_err(|_| SpawnError::ParentNotFound)
+}
+
 /// Build, register and answer an admitted local session spawn under
 /// `core_parent` (`wire_parent` on the wire).
 async fn spawn_local_session(
@@ -146,19 +167,7 @@ async fn spawn_local_session(
 
     // One borrow: an id observed in an event must already resolve.
     let registered = state.with_mut(|s| {
-        let launch = phux_core::LaunchSpec::Agent(phux_core::resource::AgentLaunch {
-            provider: provider.to_owned(),
-            native_id: resource.native_id.clone(),
-        });
-        validate_agent_parent(s, core_parent)?;
-        let actor = s.actor_for(client_id);
-        let core = s
-            .create_child(
-                core_parent,
-                phux_core::NewResource::child(launch, None),
-                &actor,
-            )
-            .map_err(|_| SpawnError::ParentNotFound)?;
+        let core = create_session_record(s, client_id, core_parent, provider, resource)?;
         let child = SpawnedChild {
             core,
             handle: bundle.handle.clone(),
@@ -182,8 +191,11 @@ async fn spawn_local_session(
 
     let reservation = if decodes.contains(ResourceKind::AgentSession) {
         let host = crate::runtime::apps::StreamHost::new(state, client_id);
-        host.next_bootstrap().and_then(|bootstrap| host.reserve(core_session, bootstrap, connection_token))
-    } else { None };
+        host.next_bootstrap()
+            .and_then(|bootstrap| host.reserve(core_session, bootstrap, connection_token))
+    } else {
+        None
+    };
     let finish = SpawnFinish {
         state,
         request_id,
@@ -196,7 +208,12 @@ async fn spawn_local_session(
     // ADR-0103 §6: the parent's `REPORT_AGENT_STATE` now lands on this stream.
     let bind = async || bind_agent_stream(state, core_parent, &bundle.handle).await;
     let attach = async || {
-        let Some(reservation) = reservation else { return phux_protocol::wire::frame::CommandResult::error(phux_protocol::wire::frame::ErrorCode::InternalError, "spawner stream reservation unavailable"); };
+        let Some(reservation) = reservation else {
+            return phux_protocol::wire::frame::CommandResult::error(
+                phux_protocol::wire::frame::ErrorCode::InternalError,
+                "spawner stream reservation unavailable",
+            );
+        };
         attach_agent_session(
             reservation,
             client_id,

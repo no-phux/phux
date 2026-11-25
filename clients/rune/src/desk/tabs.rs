@@ -219,13 +219,18 @@ impl Desk {
         if self.connection.shown.is_none() {
             return self.new_terminal_at(cwd);
         }
-        let Some(request) = self.spawn_request(&client, SpawnRequest {
-            command: None,
-            cwd,
-            env: None,
-            session_id: client.selected_session(),
-            initial_size: self.tab_spawn_size(),
-        }) else { return; };
+        let Some(request) = self.spawn_request(
+            &client,
+            SpawnRequest {
+                command: None,
+                cwd,
+                env: None,
+                session_id: client.selected_session(),
+                initial_size: self.tab_spawn_size(),
+            },
+        ) else {
+            return;
+        };
         self.connection
             .pending_splits
             .insert(request, (self.placement_session(&client), None));

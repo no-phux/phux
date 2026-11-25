@@ -171,4 +171,3 @@ pub(super) async fn wait_for_attached_serving(
         }
     }
 }
-

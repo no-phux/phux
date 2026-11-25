@@ -136,7 +136,8 @@ impl TerminalActor {
     /// Answer with the PTY child's live cwd, or `None` (no PTY, no pid, or
     /// the query failed).
     pub(super) fn reply_pane_cwd(&self, req: PwdRequest) {
-        let cwd = self.process
+        let cwd = self
+            .process
             .pty
             .as_ref()
             .and_then(|p| p.child.process_id())

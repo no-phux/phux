@@ -176,7 +176,10 @@ impl Desk {
             Some(Err(why)) => self.say(NoticeKind::Error, why),
             Some(Ok(link)) => {
                 let Some(client) = self.connection.client.as_ref() else {
-                    self.say(NoticeKind::Error, "Connect to the server before opening this link.");
+                    self.say(
+                        NoticeKind::Error,
+                        "Connect to the server before opening this link.",
+                    );
                     return;
                 };
                 let Some(origin) = self.connection.callback_fence() else {

@@ -78,10 +78,10 @@ mod tab_lock;
 mod topology;
 
 pub use checklist::ChecklistError;
-pub use commands::WorkflowSubmission;
-pub use events::TerminalCreationOutcome;
 pub use checkout::{CheckoutFailure, CheckoutOutcome, CheckoutResponse, MAX_CHECKOUT_ANSWERS};
+pub use commands::WorkflowSubmission;
 pub use error::ControlError;
+pub use events::TerminalCreationOutcome;
 pub use events::{
     AgentPublication, AgentRecordMode, AgentSessionInfo, DeliveryOutcome, DocumentPublication,
     Event, Observation, Status,

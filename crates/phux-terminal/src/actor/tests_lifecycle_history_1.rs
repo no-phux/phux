@@ -156,7 +156,7 @@ async fn releasing_an_owner_answers_pending_history_and_promotes_the_backlog() {
             actor.publication.native_cursor_owners.insert(
                 NativeCursorKey::new(7, phux_protocol::ids::StreamId::new(1).expect("stream")),
                 NativeCursorOwner {
-            cancellation: tokio_util::sync::CancellationToken::new(),
+                    cancellation: tokio_util::sync::CancellationToken::new(),
                     history_released: false,
                     superseded: false,
                     cursor: [0; 32],
@@ -205,7 +205,8 @@ async fn releasing_an_owner_answers_pending_history_and_promotes_the_backlog() {
             }) if reason == expected_reason
         ));
         assert_eq!(
-            actor.publication
+            actor
+                .publication
                 .pending_native_history
                 .as_ref()
                 .map(|pending| pending.request.owner),

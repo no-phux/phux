@@ -102,7 +102,6 @@ fn finalize_recording(rec: Option<&RecordSpec>) {
     }
 }
 
-
 /// Drive one attach attempt against `socket_path` with `target`, picking
 /// the predict-enabled entry point iff the user opted in.
 pub(crate) async fn run_attach_once(
@@ -287,7 +286,6 @@ fn close_recorder(recorder: Option<RecorderHandle>) {
     }
 }
 
-
 /// The predictive-echo setting for one dial: the config's explicit value,
 /// else on for a dial that leaves the machine. A config that fails to load
 /// disables prediction: an unreadable file may well have said `false`.
@@ -328,18 +326,16 @@ pub(crate) mod native;
 mod reconnect;
 pub(crate) mod remote;
 mod stdio;
-pub(crate) use local::{run_naked, run_attach, run_attach_rec};
-pub(crate) use remote::{
-    RemoteAttachOutcome, Repair, run_attach_remote, run_attach_remote_outcome,
-};
-#[cfg(test)]
-use local::{session_is_missing, missing_session_lines};
+use home::default_lookup_target;
 pub(crate) use home::{
     configured_session_name_template, configured_spawn_on_attach, render_default_session_name,
     resolved_default_session_name,
 };
-use home::default_lookup_target;
+#[cfg(test)]
+use local::{missing_session_lines, session_is_missing};
+pub(crate) use local::{run_attach, run_attach_rec, run_naked};
 pub(crate) use reconnect::attach_with_reconnect;
+pub(crate) use remote::{Repair, run_attach_remote, run_attach_remote_outcome};
 pub(crate) use stdio::run_attach_stdio;
 
 #[cfg(test)]

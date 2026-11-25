@@ -19,9 +19,8 @@ use bytes::{Bytes, BytesMut};
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
     BootstrapCapabilities, BootstrapLimits, BootstrapProfile, BootstrapStreamProfile,
-    ClientCapabilities, Layer, LayerSet, ServerCapabilities, ServerFeatureExt2Set, ServerFeatureExtSet,
-    ServerFeatureSet,
-    select_bootstrap_profile,
+    ClientCapabilities, Layer, LayerSet, ServerCapabilities, ServerFeatureExt2Set,
+    ServerFeatureExtSet, ServerFeatureSet, select_bootstrap_profile,
 };
 use phux_protocol::ids::{BootstrapId, ClientId, ResourceId, StreamId};
 use phux_protocol::wire::frame::{CloseReason, CommandResult, CommandValue, ErrorCode, FrameKind};

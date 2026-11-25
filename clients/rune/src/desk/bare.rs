@@ -90,7 +90,11 @@ impl Desk {
         let argv = command(phux, &origin);
         self.create_session_running(session.clone(), Some(argv));
         if self.link.creating.is_some() {
-            self.bare = Some(Bare { session, origin, key: None });
+            self.bare = Some(Bare {
+                session,
+                origin,
+                key: None,
+            });
         }
     }
 

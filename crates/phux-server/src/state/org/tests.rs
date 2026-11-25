@@ -322,13 +322,22 @@ fn ensure_storage_refusal_publishes_neither_resolution_nor_creation_receipt() {
         };
         let before = state.org().clone();
         fail.store(true, Ordering::Relaxed);
-        assert!(matches!(state.commit_command(&command, &Actor::owner()), Err(Refusal::StoreFailure { .. })));
+        assert!(matches!(
+            state.commit_command(&command, &Actor::owner()),
+            Err(Refusal::StoreFailure { .. })
+        ));
         assert_eq!(state.org(), &before);
         assert!(state.org().receipt(&operation).is_none());
         fail.store(false, Ordering::Relaxed);
-        let committed = state.commit_command(&command, &Actor::owner()).expect("retry");
-        assert!(matches!(committed.applied.reply, phux_core::Reply::Ensured { created, .. } if created == (name == "absent")));
-        let replay = state.commit_command(&command, &Actor::owner()).expect("replay");
+        let committed = state
+            .commit_command(&command, &Actor::owner())
+            .expect("retry");
+        assert!(
+            matches!(committed.applied.reply, phux_core::Reply::Ensured { created, .. } if created == (name == "absent"))
+        );
+        let replay = state
+            .commit_command(&command, &Actor::owner())
+            .expect("replay");
         assert!(replay.applied.replayed);
         assert_eq!(replay.applied.reply, committed.applied.reply);
     }

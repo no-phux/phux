@@ -1,6 +1,6 @@
 //! Edge-triggered native listener delivery and callback retirement.
 
-use super::*;
+use super::{Arc, AtomicBool, Cell, Condvar, Listener, Mutex, Ordering, PoisonError};
 
 /// The listener and its edge trigger. The driver's wake closure holds this,
 /// not the client, and no lock is held while the listener runs.

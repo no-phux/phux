@@ -4,9 +4,7 @@
 
 use super::hello::NegotiatedConnection;
 use super::plumbing::ClientPlumbing;
-use crate::runtime::{
-    bootstrap_attach_terminal, subscribe_attach_terminal,
-};
+use crate::runtime::{bootstrap_attach_terminal, subscribe_attach_terminal};
 use crate::state::{ClientId, SharedState};
 use crate::transport::quic::{
     QuicStreamEvent, QuicStreamFailure, QuicWriter, pump_terminal_stream, refuse_terminal_stream,
@@ -82,8 +80,7 @@ pub(in crate::runtime) async fn handle_stream_event(
             stream_id,
             failure,
         } => {
-            handle_stream_failure(client_id, plumbing, terminal_id, stream_id, failure)
-                .await;
+            handle_stream_failure(client_id, plumbing, terminal_id, stream_id, failure).await;
         }
     }
 }
@@ -103,7 +100,6 @@ async fn handle_stream_failure(
         );
         return;
     }
-    let source = plumbing.stream_source(&terminal_id, stream_id);
     let (code, message) = match failure {
         QuicStreamFailure::Framing(framing) => (ErrorCode::FrameTooLarge, framing.wire_message()),
         QuicStreamFailure::IncompleteFrame => (
@@ -121,7 +117,20 @@ async fn handle_stream_failure(
         &format!("{terminal_id:?} stream {stream_id:?}: {message}"),
     )
     .await;
-    teardown_terminal_stream(state, client_id, plumbing, &terminal_id).await;
+    teardown_terminal_stream(plumbing, &terminal_id, stream_id).await;
+}
+
+/// Whether `client_id` subscribes to the local Terminal `terminal_id` names.
+fn is_subscribed(state: &SharedState, client_id: ClientId, terminal_id: &WireResourceId) -> bool {
+    state.with(|s| {
+        let local = match s.resolve_resource(terminal_id).into_owned() {
+            crate::state::ResolvedOwned::Local(local) => local,
+            crate::state::ResolvedOwned::Remote(_) | crate::state::ResolvedOwned::Unknown => {
+                return false;
+            }
+        };
+        s.resources().subscribers_for(local.id).contains(&client_id)
+    })
 }
 
 /// Subscribe-and-bootstrap one bound Terminal stream. The subscription
@@ -161,16 +170,7 @@ async fn bind_terminal_stream(
         return;
     }
     // Authorization is subscription membership.
-    let subscribed = state.with(|s| {
-        let local = match s.resolve_resource(&terminal_id).into_owned() {
-            crate::state::ResolvedOwned::Local(local) => local,
-            crate::state::ResolvedOwned::Remote(_) | crate::state::ResolvedOwned::Unknown => {
-                return false;
-            }
-        };
-        s.resources().subscribers_for(local.id).contains(&client_id)
-    });
-    if !subscribed {
+    if !is_subscribed(state, client_id, &terminal_id) {
         refuse_terminal_stream(send, recv);
         crate::runtime::send_error(
             &plumbing.out_tx,
@@ -190,13 +190,21 @@ async fn bind_terminal_stream(
         .await;
         return;
     };
-    let subscription = subscribe_attach_terminal(state, client_id, &terminal_id, &plumbing.out_tx, None);
+    let subscription =
+        subscribe_attach_terminal(state, client_id, &terminal_id, &plumbing.out_tx, None);
     let Ok(crate::runtime::commands::AttachSubscription { core, handle, .. }) = subscription else {
         refuse_terminal_stream(send, recv);
-        crate::runtime::send_error(&plumbing.out_tx, ErrorCode::TerminalNotFound, "STREAM_BIND raced terminal death").await;
+        crate::runtime::send_error(
+            &plumbing.out_tx,
+            ErrorCode::TerminalNotFound,
+            "STREAM_BIND raced terminal death",
+        )
+        .await;
         return;
     };
-    let Some(reservation) = crate::runtime::apps::StreamHost::new(state, client_id).reserve_next(core, token) else {
+    let Some(reservation) =
+        crate::runtime::apps::StreamHost::new(state, client_id).reserve_next(core, token)
+    else {
         refuse_terminal_stream(send, recv);
         return;
     };
@@ -220,13 +228,22 @@ async fn bind_terminal_stream(
         Some(diagnostics.clone()),
     ));
     if let Err(failure) = bootstrap_attach_terminal(crate::runtime::apps::StreamBootstrap {
-        reservation, client_id, wire: &terminal_id, handle: &handle,
-        content_tx: &stream_tx, stream_id, client_caps: selection.client_caps,
-        profile: Some(profile), limits: selection.limits, after_seq: None,
+        reservation,
+        client_id,
+        wire: &terminal_id,
+        handle: &handle,
+        content_tx: &stream_tx,
+        stream_id,
+        client_caps: selection.client_caps,
+        profile: Some(profile),
+        limits: selection.limits,
+        after_seq: None,
     })
     .await
     {
-        if plumbing.is_current_stream(&terminal_id, stream_id) { plumbing.drop_stream_binding(&terminal_id).await; }
+        if plumbing.is_current_stream(&terminal_id, stream_id) {
+            plumbing.drop_stream_binding(&terminal_id).await;
+        }
         crate::runtime::send_error(&plumbing.out_tx, failure.code, &failure.message).await;
     } else {
         diagnostics.record_ready_latency(
@@ -238,7 +255,15 @@ async fn bind_terminal_stream(
 
 /// Tear one Terminal stream down: unsubscribe, then drop the binding so its
 /// writer drains and finishes the QUIC stream.
-async fn teardown_terminal_stream(plumbing: &mut ClientPlumbing, terminal_id: &WireResourceId, stream_id: StreamId) {
-    if let Some(source) = plumbing.stream_source(terminal_id, stream_id) { source.detach(terminal_id).await; }
-    if plumbing.is_current_stream(terminal_id, stream_id) { plumbing.drop_stream_binding(terminal_id).await; }
+async fn teardown_terminal_stream(
+    plumbing: &mut ClientPlumbing,
+    terminal_id: &WireResourceId,
+    stream_id: StreamId,
+) {
+    if let Some(source) = plumbing.stream_source(terminal_id, stream_id) {
+        source.detach(terminal_id).await;
+    }
+    if plumbing.is_current_stream(terminal_id, stream_id) {
+        plumbing.drop_stream_binding(terminal_id).await;
+    }
 }

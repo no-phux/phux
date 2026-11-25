@@ -33,11 +33,18 @@ impl Desk {
         }
     }
     pub(super) fn want(&mut self, terminal: ResourceId) {
-        let Some(client) = self.connection.client.as_ref() else { return; };
+        let Some(client) = self.connection.client.as_ref() else {
+            return;
+        };
         let intent = super::view_intent::ViewIntent::new(
-            client, &terminal, self.connection.view_server.clone(), self.connection.view_epoch,
+            client,
+            &terminal,
+            self.connection.view_server.clone(),
+            self.connection.view_epoch,
         );
-        self.connection.view_intents.insert(terminal.clone(), intent);
+        self.connection
+            .view_intents
+            .insert(terminal.clone(), intent);
         self.connection.view_choice += 1;
         self.request_terminal(terminal);
     }
@@ -58,11 +65,18 @@ impl Desk {
     pub(super) fn want_automatic(&mut self, terminal: ResourceId) {
         let returning = self.connection.resources.returning;
         if !self.connection.view_intents.contains_key(&terminal) {
-            let Some(client) = self.connection.client.as_ref() else { return; };
+            let Some(client) = self.connection.client.as_ref() else {
+                return;
+            };
             let intent = super::view_intent::ViewIntent::new(
-                client, &terminal, self.connection.view_server.clone(), self.connection.view_epoch,
+                client,
+                &terminal,
+                self.connection.view_server.clone(),
+                self.connection.view_epoch,
             );
-            self.connection.view_intents.insert(terminal.clone(), intent);
+            self.connection
+                .view_intents
+                .insert(terminal.clone(), intent);
         }
         self.request_terminal(terminal);
         self.connection.resources.returning = returning;
@@ -198,7 +212,12 @@ impl Desk {
     }
 
     fn new_session_target(&mut self, client: &Client) -> Option<ResourceId> {
-        if !self.connection.pending_session_origin.as_ref().is_some_and(|origin| origin.is_current(&self.connection)) {
+        if !self
+            .connection
+            .pending_session_origin
+            .as_ref()
+            .is_some_and(|origin| origin.is_current(&self.connection))
+        {
             self.connection.pending_session = None;
             self.connection.pending_session_origin = None;
             self.link.created = None;
@@ -210,8 +229,14 @@ impl Desk {
         let topology = self.connection.topology.as_ref()?;
         let name = self.connection.pending_session.as_ref()?;
         let session = match self.link.created {
-            Some(key) => topology.sessions.iter().find(|session| session.key == Some(key)),
-            None => topology.sessions.iter().find(|session| &session.name == name),
+            Some(key) => topology
+                .sessions
+                .iter()
+                .find(|session| session.key == Some(key)),
+            None => topology
+                .sessions
+                .iter()
+                .find(|session| &session.name == name),
         }?;
         if client.selected_session() != Some(session.id) {
             return None;
@@ -229,7 +254,6 @@ impl Desk {
         target
     }
 
-
     /// Retry the original presentation intent, never a newer incarnation of
     /// the same numeric handle. Only a missing first publication may attach.
     pub(super) fn create_view(&mut self, client: &Client, terminal: &ResourceId) -> Option<ViewId> {
@@ -237,11 +261,21 @@ impl Desk {
             return None;
         }
         if !self.connection.view_intents.contains_key(terminal) {
-            let intent = super::view_intent::ViewIntent::new(client, terminal,
-                self.connection.view_server.clone(), self.connection.view_epoch);
-            self.connection.view_intents.insert(terminal.clone(), intent);
+            let intent = super::view_intent::ViewIntent::new(
+                client,
+                terminal,
+                self.connection.view_server.clone(),
+                self.connection.view_epoch,
+            );
+            self.connection
+                .view_intents
+                .insert(terminal.clone(), intent);
         }
-        let intent = self.connection.view_intents.get_mut(terminal).expect("captured above");
+        let intent = self
+            .connection
+            .view_intents
+            .get_mut(terminal)
+            .expect("captured above");
         if let Some(view) = intent.open(client, terminal) {
             return Some(view);
         }
@@ -292,7 +326,12 @@ impl Desk {
             None
         } else {
             let Some(view) = self.create_view(client, &target) else {
-                if self.connection.view_intents.get(&target).is_some_and(|intent| intent.refused()) {
+                if self
+                    .connection
+                    .view_intents
+                    .get(&target)
+                    .is_some_and(|intent| intent.refused())
+                {
                     self.connection.wanted = None;
                     return false;
                 }

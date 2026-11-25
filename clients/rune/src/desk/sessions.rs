@@ -8,7 +8,7 @@ use phux_client_runtime::control::{
 use phux_client_runtime::{Client, ClientOptions, Runtime, Target};
 use phux_protocol::ids::{ResourceId, SessionKey};
 use phux_protocol::input::focus::FocusEvent;
-use phux_protocol::wire::frame::{AttachTarget, RolePolicy};
+use phux_protocol::wire::frame::RolePolicy;
 use rune::Tx;
 
 use super::Desk;
@@ -99,13 +99,18 @@ impl Desk {
             return;
         };
         let session_id = client.selected_session();
-        let Some(request) = self.spawn_request(&client, SpawnRequest {
-            command: None,
-            cwd,
-            env: None,
-            session_id,
-            initial_size: self.tab_spawn_size(),
-        }) else { return; };
+        let Some(request) = self.spawn_request(
+            &client,
+            SpawnRequest {
+                command: None,
+                cwd,
+                env: None,
+                session_id,
+                initial_size: self.tab_spawn_size(),
+            },
+        ) else {
+            return;
+        };
         self.connection.pending_spawns.push(request);
     }
 
@@ -118,30 +123,45 @@ impl Desk {
                 .then(|| control.submit_spawn(request))
         });
         let Some(submission) = submission else {
-            self.connection.error = Some("Terminal creation cancelled: its observed server changed.".to_owned());
+            self.connection.error =
+                Some("Terminal creation cancelled: its observed server changed.".to_owned());
             return None;
         };
         self.accept_spawn(submission)
     }
 
-    pub(super) fn accept_spawn(&mut self, submission: phux_client_runtime::control::WorkflowSubmission) -> Option<u32> {
+    pub(super) fn accept_spawn(
+        &mut self,
+        submission: phux_client_runtime::control::WorkflowSubmission,
+    ) -> Option<u32> {
         use phux_client_runtime::control::WorkflowSubmission;
         match submission {
             WorkflowSubmission::Queued { request_id }
-            | WorkflowSubmission::Journaled { request_id: Some(request_id), .. } => {
+            | WorkflowSubmission::Journaled {
+                request_id: Some(request_id),
+                ..
+            } => {
                 self.connection.view_choice += 1;
                 if let Some(client) = self.connection.client.as_ref() {
-                    self.connection.spawn_servers.insert(request_id,
-                        super::connection::SpawnOrigin::new(client, self.connection.view_server.clone(),
-                            self.connection.view_epoch, self.connection.view_choice));
+                    self.connection.spawn_servers.insert(
+                        request_id,
+                        super::connection::SpawnOrigin::new(
+                            client,
+                            self.connection.view_server.clone(),
+                            self.connection.view_epoch,
+                            self.connection.view_choice,
+                        ),
+                    );
                 }
                 Some(request_id)
-            },
+            }
             WorkflowSubmission::NotQueued { reason } => {
                 self.connection.error = Some(format!("Terminal creation was not queued: {reason}"));
                 None
             }
-            WorkflowSubmission::Journaled { request_id: None, .. } => unreachable!("spawn retains a request id"),
+            WorkflowSubmission::Journaled {
+                request_id: None, ..
+            } => unreachable!("spawn retains a request id"),
         }
     }
 
@@ -183,11 +203,23 @@ impl Desk {
     /// As [`Self::create_session`], its seed pane running `command` rather
     /// than the shell, and ephemeral: it ends with its last terminal.
     pub(super) fn create_session_running(&mut self, name: String, command: Option<Vec<String>>) {
-        self.create_session_with_lifetime(name, command, phux_protocol::wire::frame::SessionLifetime::Ephemeral);
+        self.create_session_with_lifetime(
+            name,
+            command,
+            phux_protocol::wire::frame::SessionLifetime::Ephemeral,
+        );
     }
 
-    pub(super) fn create_persistent_session_running(&mut self, name: String, command: Option<Vec<String>>) {
-        self.create_session_with_lifetime(name, command, phux_protocol::wire::frame::SessionLifetime::Persistent);
+    pub(super) fn create_persistent_session_running(
+        &mut self,
+        name: String,
+        command: Option<Vec<String>>,
+    ) {
+        self.create_session_with_lifetime(
+            name,
+            command,
+            phux_protocol::wire::frame::SessionLifetime::Persistent,
+        );
     }
 
     fn create_session_with_lifetime(
@@ -200,23 +232,32 @@ impl Desk {
         let Some(client) = &self.connection.client else {
             return;
         };
-        let launch = phux_protocol::wire::frame::LaunchSpec::new(command.unwrap_or_default())
-            .with_cwd(cwd);
+        let launch =
+            phux_protocol::wire::frame::LaunchSpec::new(command.unwrap_or_default()).with_cwd(cwd);
         let submission = client.create_session(name.clone(), lifetime, Some(Box::new(launch)));
         self.select_submitted_session(name, submission);
     }
 
     /// The host resolves existence; the replica never decides whether to create.
     pub(super) fn ensure_session(&mut self, name: String) {
-        let launch = phux_protocol::wire::frame::LaunchSpec::new(Vec::new())
-            .with_cwd(self.focused_cwd());
-        let Some(client) = &self.connection.client else { return; };
-        let submission = client.ensure_session(name.clone(),
-            phux_protocol::wire::frame::SessionLifetime::Persistent, Some(Box::new(launch)));
+        let launch =
+            phux_protocol::wire::frame::LaunchSpec::new(Vec::new()).with_cwd(self.focused_cwd());
+        let Some(client) = &self.connection.client else {
+            return;
+        };
+        let submission = client.ensure_session(
+            name.clone(),
+            phux_protocol::wire::frame::SessionLifetime::Persistent,
+            Some(Box::new(launch)),
+        );
         self.select_submitted_session(name, submission);
     }
 
-    fn select_submitted_session(&mut self, name: String, submission: phux_client_runtime::control::WorkflowSubmission) {
+    fn select_submitted_session(
+        &mut self,
+        name: String,
+        submission: phux_client_runtime::control::WorkflowSubmission,
+    ) {
         match submission {
             phux_client_runtime::control::WorkflowSubmission::Journaled { operation, .. } => {
                 self.link.creating = Some(operation);
@@ -227,7 +268,9 @@ impl Desk {
                 self.connection.error = Some(format!("Couldn't create session: {reason}"));
                 return;
             }
-            phux_client_runtime::control::WorkflowSubmission::Queued { .. } => unreachable!("session creates are journaled"),
+            phux_client_runtime::control::WorkflowSubmission::Queued { .. } => {
+                unreachable!("session creates are journaled")
+            }
         }
         // Show its seed pane once the topology lists it as selected; the
         // current terminal stays until then.
@@ -257,7 +300,8 @@ impl Desk {
                 if self.link.created.is_none() {
                     self.link.uncertain_session = Some(operation);
                     self.connection.pending_session = None;
-                    self.connection.error = Some("Create committed without a session receipt".into());
+                    self.connection.error =
+                        Some("Create committed without a session receipt".into());
                 }
                 let _ = client.refresh_topology();
             }
@@ -265,14 +309,16 @@ impl Desk {
                 if matches!(other, phux_client_core::org_ops::OrgOutcome::Unknown { .. }) {
                     self.link.uncertain_session = Some(operation);
                 }
-                if self.bare.as_ref().is_some_and(|bare|
-                    self.connection.pending_session.as_ref() == Some(&bare.session))
-                {
+                if self.bare.as_ref().is_some_and(|bare| {
+                    self.connection.pending_session.as_ref() == Some(&bare.session)
+                }) {
                     self.bare = None;
                 }
                 self.link.created = None;
                 self.connection.pending_session = None;
-                self.connection.error = Some(format!("Session operation {operation:?} did not settle: {other:?}"));
+                self.connection.error = Some(format!(
+                    "Session operation {operation:?} did not settle: {other:?}"
+                ));
             }
         }
         true

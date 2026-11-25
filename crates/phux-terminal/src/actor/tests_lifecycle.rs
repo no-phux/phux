@@ -433,7 +433,10 @@ fn activate_native_for_pump(
     response
         .try_recv()
         .expect("publication is answered on the same turn")
-        .map(|mut reply| { reply.interest.published(); reply })
+        .map(|mut reply| {
+            reply.interest.published();
+            reply
+        })
 }
 
 #[path = "tests_lifecycle_construction_1.rs"]

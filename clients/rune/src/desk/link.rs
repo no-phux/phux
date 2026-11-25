@@ -168,7 +168,6 @@ impl Link {
     }
 }
 
-
 /// The server's words from a protocol refusal, when `error` is one.
 fn incompatible(error: &str) -> Option<String> {
     let (_, words) = error.split_once(INCOMPATIBLE)?;

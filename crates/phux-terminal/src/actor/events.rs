@@ -225,11 +225,13 @@ impl TerminalActor {
         } else {
             None
         };
-        let master_fd = self.process
+        let master_fd = self
+            .process
             .pty
             .as_ref()
             .and_then(|p| p.master.lock().ok().and_then(|m| m.as_raw_fd()));
-        let pane_child_pid = self.process
+        let pane_child_pid = self
+            .process
             .pty
             .as_ref()
             .and_then(|p| p.child.process_id().and_then(|pid| i32::try_from(pid).ok()));

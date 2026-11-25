@@ -6,28 +6,29 @@
 
 mod plan;
 pub(in crate::runtime) mod publication;
-use plan::*;
-use publication::SpawnPublication;
+use crate::hub::relay::SatelliteSpawn;
+use crate::resource::{ResourceHandle, ResourceOutput};
 use crate::runtime::apps::terminal::attach::*;
 use crate::runtime::commands::terminal::seed::{SpawnOwnership, spawn_pane_with_pty_and_colors};
+use crate::runtime::spawn::ResourceSpawn;
+use crate::runtime::spawn::SpawnLaunch;
+use crate::runtime::spawn_reply::{dispatch_satellite_spawn, refuse_spawn, spawned_result};
+use crate::runtime::stream_id_from;
+use crate::state::{ClientId, Outbound, SharedState};
 use phux_core::ResourceId;
 use phux_protocol::caps::{BootstrapLimits, BootstrapStreamProfile, ClientCapabilities};
 use phux_protocol::ids::{GroupId, StreamId};
-use phux_protocol::wire::frame::{ErrorCode, FrameKind, MAX_AGENT_SESSION_RECORD_BYTES, SpawnError};
+use phux_protocol::wire::frame::{
+    ErrorCode, FrameKind, MAX_AGENT_SESSION_RECORD_BYTES, SpawnError,
+};
+use phux_terminal_api::actor::SnapshotRequest;
+use phux_terminal_api::actor::TerminalResource as _;
+use plan::*;
+use publication::SpawnPublication;
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
-use crate::hub::relay::SatelliteSpawn;
-use crate::resource::{ResourceHandle, ResourceOutput};
-use crate::runtime::pump;
-use crate::runtime::spawn_reply::{dispatch_satellite_spawn, refuse_spawn, spawned_result};
-use crate::runtime::stream_id_from;
-use crate::state::{ClientId, Outbound, SharedState};
-use phux_terminal_api::actor::SnapshotRequest;
-use crate::runtime::spawn::ResourceSpawn;
-use crate::runtime::spawn::SpawnLaunch;
-use phux_terminal_api::actor::TerminalResource as _;
 
 /// Only an owner explicitly addressed to this satellite can cross its link.
 /// Provenance remains an independent local-only restriction.

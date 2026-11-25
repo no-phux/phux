@@ -4,16 +4,26 @@ use super::*;
 use crate::test_support::terminal::Replica;
 use phux_client_core::layout::SplitDir;
 
-fn id(n: u32) -> ResourceId { ResourceId::local(n) }
+fn id(n: u32) -> ResourceId {
+    ResourceId::local(n)
+}
 fn tree() -> LayoutNode {
-    LayoutNode::Split { dir: SplitDir::Horizontal, ratio: 0.5,
-        left: Box::new(LayoutNode::Leaf(id(1))), right: Box::new(LayoutNode::Leaf(id(2))) }
+    LayoutNode::Split {
+        dir: SplitDir::Horizontal,
+        ratio: 0.5,
+        left: Box::new(LayoutNode::Leaf(id(1))),
+        right: Box::new(LayoutNode::Leaf(id(2))),
+    }
 }
 
 #[test]
 fn a_delayed_other_pane_does_not_retarget_identical_ids_after_server_replacement() {
     for pending in [false, true] {
-        let replica = if pending { Replica::pending(80, 24, 2) } else { Replica::new(80, 24, 2) };
+        let replica = if pending {
+            Replica::pending(80, 24, 2)
+        } else {
+            Replica::new(80, 24, 2)
+        };
         let client = &replica.client;
         let mut desk = replica.window();
         desk.show(id(1), "budget");
@@ -25,7 +35,10 @@ fn a_delayed_other_pane_does_not_retarget_identical_ids_after_server_replacement
         let _ = client.take_outbound();
         assert!(!desk.sync_views(client));
         assert!(!desk.connection.others.contains_key(&id(2)));
-        assert!(client.take_outbound().is_empty(), "no attach or detach of the replacement execution");
+        assert!(
+            client.take_outbound().is_empty(),
+            "no attach or detach of the replacement execution"
+        );
     }
 }
 
@@ -54,10 +67,24 @@ fn releasing_all_window_views_keeps_sibling_views_and_execution_replicas() {
     desk.show(id(1), "budget");
     desk.connection.layout = Some(tree());
     assert!(desk.sync_views(client));
-    let own = [desk.connection.shown.as_ref().unwrap().view.unwrap(), desk.connection.others[&id(2)].unwrap()];
+    let own = [
+        desk.connection.shown.as_ref().unwrap().view.unwrap(),
+        desk.connection.others[&id(2)].unwrap(),
+    ];
     let _ = client.take_outbound();
     desk.release_connection_views();
-    assert!(own.into_iter().all(|view| client.view_generation(view).is_none()));
-    assert!(replica.views.iter().all(|view| client.acquire_view(*view).is_some()));
-    assert!(client.take_outbound().is_empty(), "release never terminates execution or sibling subscriptions");
+    assert!(
+        own.into_iter()
+            .all(|view| client.view_generation(view).is_none())
+    );
+    assert!(
+        replica
+            .views
+            .iter()
+            .all(|view| client.acquire_view(*view).is_some())
+    );
+    assert!(
+        client.take_outbound().is_empty(),
+        "release never terminates execution or sibling subscriptions"
+    );
 }

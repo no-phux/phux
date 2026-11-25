@@ -1,5 +1,24 @@
+//! Shared fixtures for the client binding tests: a sans-IO remote client
+//! attached to bootstrapped panes, with no socket.
+
+#![allow(clippy::expect_used, clippy::unwrap_used, reason = "test fixtures")]
+
 use super::*;
+use phux_client_runtime::control::{ControlOptions, ControlPlane};
+use phux_protocol::ids::{SessionId, WindowId};
+use phux_protocol::wire::frame::FrameKind;
+use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
 use phux_wire_fixtures::{HelloOk, attached, decode_one, l3_caps};
+
+pub(super) const COLS: u16 = 24;
+pub(super) const ROWS: u16 = 4;
+
+/// Feed `bytes` to `terminal_id` as one complete bootstrap.
+fn bootstrap(client: &Client, terminal_id: ResourceId, bytes: &[u8]) {
+    for frame in phux_wire_fixtures::bootstrap_frames(&terminal_id, [1, 1], [COLS, ROWS], bytes) {
+        client.feed(frame).expect("bootstrap frame");
+    }
+}
 
 /// A `RemoteClient` over a sans-IO runtime client attached to `panes`, each
 /// bootstrapped with its bytes. No socket: frames are fed directly.

@@ -1,8 +1,10 @@
 //! Receipt projection, kept separate from request admission and translation.
-use phux_core::{Op, Refusal, Reply};
-use phux_protocol::wire::frame::{CommandResult, CommandValue, Committed, LiveTarget, RecordRevision};
 use crate::org_wire as ow;
 use crate::state::ServerState;
+use phux_core::{Op, Refusal, Reply};
+use phux_protocol::wire::frame::{
+    CommandResult, CommandValue, Committed, LiveTarget, RecordRevision,
+};
 /// The answer a committed (or replayed) operation gets.
 pub(crate) fn answer(s: &mut ServerState, applied: &phux_core::Applied) -> CommandResult {
     let Some(operation) = ow::operation(applied.operation) else {
@@ -11,7 +13,12 @@ pub(crate) fn answer(s: &mut ServerState, applied: &phux_core::Applied) -> Comma
             reason: "must not be all zero".to_owned(),
         }));
     };
-    if let Reply::Ensured { session, revision, created } = applied.reply {
+    if let Reply::Ensured {
+        session,
+        revision,
+        created,
+    } = applied.reply
+    {
         return CommandResult::OkWith(CommandValue::Committed(Box::new(
             Committed::new(operation, ow::revision(revision))
                 .with_session(ow::session_key(session))

@@ -157,9 +157,9 @@ pub(super) fn attach(
     assert!(!wire.is_empty(), "attach must produce the COMMAND frame");
 }
 
+mod archived;
 mod bootstrap;
 mod capabilities;
-mod archived;
 mod commands;
 mod delivery;
 mod events;

@@ -377,7 +377,8 @@ fn phone_keyboard_tab_keeps_question_navigation_and_return_answers_that_question
     let mut desk = crate::test_support::window();
     desk.phone = Some(crate::desk::phone::Phone::default());
     desk.connection.client = Some(client.clone());
-    desk.connection.seed_view_sources(vec![1; 16], &replica.sources);
+    desk.connection
+        .seed_view_sources(vec![1; 16], &replica.sources);
     desk.connection.topology = client.topology();
     desk.connection.shown = Some(crate::desk::Shown {
         resource: replica.terminal.clone(),

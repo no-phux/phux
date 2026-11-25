@@ -44,12 +44,12 @@ mod attach;
 mod documents;
 mod engine;
 mod frames;
+pub(crate) mod input_delivery;
 mod pane_replies;
 mod panes;
 mod path_query;
 mod recovery;
 mod resources;
-pub(crate) mod input_delivery;
 mod view;
 
 pub use attach::AttachPreference;
@@ -275,7 +275,9 @@ impl Connection {
             blank: vt.terminal(cols, rows),
             offered_caps,
             kernel: None,
-            input_delivery: Rc::new(std::cell::RefCell::new(input_delivery::InputDelivery::default())),
+            input_delivery: Rc::new(std::cell::RefCell::new(
+                input_delivery::InputDelivery::default(),
+            )),
             input_server_id: None,
             acknowledged_input: false,
             effects: EffectBuffer::new(),

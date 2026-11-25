@@ -21,8 +21,8 @@ use tokio_util::sync::CancellationToken;
 #[cfg(test)]
 use phux_terminal::{TerminalActor, TerminalActorBundle};
 
-use crate::resource::ResourceHandle;
 use super::{KindResume, UpgradeCut};
+use crate::resource::ResourceHandle;
 use crate::runtime::connections::pane_events::PaneEvents;
 use crate::runtime::upgrade::UpgradeError;
 use crate::state::upgrade_blob::{KindRebuild, RebuildError, ResumeCx};
@@ -448,11 +448,8 @@ fn wired(
             (None, None) => phux_terminal_api::EngineSource::Replay(pane_seed(p)),
             _ => return Err(RebuildError::InvalidPtyPair { wire_id: p.wire_id }),
         };
-        let reports = crate::runtime::commands::terminal::spawn::engine_reports(
-            &state,
-            core,
-            keeper.clone(),
-        );
+        let reports =
+            crate::runtime::commands::terminal::spawn::engine_reports(&state, core, keeper.clone());
         let engine = engine.as_ref().ok_or_else(|| {
             RebuildError::Actor(Box::new(phux_terminal_api::TerminalActorError::Refused(
                 "no Terminal engine supplied".into(),

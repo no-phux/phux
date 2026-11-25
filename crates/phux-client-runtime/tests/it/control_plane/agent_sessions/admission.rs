@@ -170,4 +170,3 @@ fn parent_close_during_detach_cannot_be_undone_by_a_late_refusal() {
         assert_eq!(close_count(&mut plane), 0);
     }
 }
-

@@ -2,8 +2,7 @@
 
 use super::empty::empty_session_json;
 use super::naming::{
-    RANDOM_NAME_ATTEMPTS, fresh_session_name, requested_session_name,
-    unique_session_name,
+    RANDOM_NAME_ATTEMPTS, fresh_session_name, requested_session_name, unique_session_name,
 };
 use super::{new_session_json, seed_cwd};
 use std::path::{Path, PathBuf};

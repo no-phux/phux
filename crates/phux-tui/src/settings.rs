@@ -57,6 +57,7 @@ pub struct TuiSettings {
     /// Plugin-merged snapshot and the resolver built from it. Both are
     /// required, including when a failed load falls back to shipped defaults.
     pub keybindings: KeybindingsCfg,
+    /// The resolver built from `keybindings`; never paired with another snapshot.
     pub resolver: Resolver,
     /// Single source of truth for chrome + overlay colors.
     pub theme: Theme,
@@ -119,7 +120,7 @@ impl std::fmt::Debug for TuiSettings {
             .field("notifications", &self.notifications)
             .field("outer_title", &self.outer_title)
             .field("host_themes", &self.host_themes)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

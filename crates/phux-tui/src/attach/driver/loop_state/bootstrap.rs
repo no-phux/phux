@@ -300,9 +300,11 @@ impl super::SessionLoop {
         &mut self,
         conn: &mut Connection,
     ) -> Result<FrameStep, AttachError> {
-        let session_id = self.peers.focused_session.ok_or_else(|| AttachError::Protocol(
-            "engine requested rebootstrap before ATTACHED identified the session".to_owned(),
-        ))?;
+        let session_id = self.peers.focused_session.ok_or_else(|| {
+            AttachError::Protocol(
+                "engine requested rebootstrap before ATTACHED identified the session".to_owned(),
+            )
+        })?;
         conn.unbind_all_terminals();
         self.pending_stream_binds.clear();
         let attach_id = send_attach(conn, AttachTarget::ById(session_id)).await?;

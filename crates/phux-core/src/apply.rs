@@ -198,9 +198,12 @@ fn dispatch(tx: &mut Tx<'_>, op: &Op, fresh: &mut dyn FreshKeys) -> Result<Out, 
             attrs,
             resource,
         } => session_create(tx, fresh, name, *lifetime, attrs, resource.as_ref()),
-        Op::SessionEnsure { name, lifetime, attrs, resource } => {
-            sessions::session_ensure(tx, fresh, name, *lifetime, attrs, resource.as_ref())
-        }
+        Op::SessionEnsure {
+            name,
+            lifetime,
+            attrs,
+            resource,
+        } => sessions::session_ensure(tx, fresh, name, *lifetime, attrs, resource.as_ref()),
         Op::SessionRename { session, name } => session_rename(tx, *session, name),
         Op::SessionSetProject { session, project } => {
             session_set_project(tx, *session, project.as_deref())

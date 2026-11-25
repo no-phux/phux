@@ -164,12 +164,14 @@ impl Desk {
         };
         let session_id = client.selected_session();
         let Some(request) = self.accept_spawn(client.submit_spawn_once(SpawnRequest {
-                command: Some(command),
-                session_id,
-                // Keep errors visible even in a document-only session.
-                initial_size: Some((100, 28)),
-                ..SpawnRequest::default()
-        })) else { return; };
+            command: Some(command),
+            session_id,
+            // Keep errors visible even in a document-only session.
+            initial_size: Some((100, 28)),
+            ..SpawnRequest::default()
+        })) else {
+            return;
+        };
         self.connection
             .pending_splits
             .insert(request, (self.placement_session(&client), None));

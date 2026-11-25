@@ -1,7 +1,10 @@
 //! Native construction, driver lifetime, and synchronous control handoff.
 
-use super::*;
 use super::wakes::Wakes;
+use super::{
+    Arc, Client, ClientOptions, ControlOptions, ControlPlane, Lane, Mutex, Notify, PoisonError,
+    Publication, Runtime, RuntimeError, Shared, Signals, Target, lock, run_session, watch,
+};
 
 impl Runtime {
     /// Start a session against `target` and return its client. The dial
@@ -50,7 +53,10 @@ impl Runtime {
     }
 
     fn build(lane: Lane, options: ControlOptions) -> (Arc<Inner>, Shared, Signals) {
-        let shared: Shared = Arc::new(Mutex::new(ControlPlane::new(std::time::Instant::now(), options)));
+        let shared: Shared = Arc::new(Mutex::new(ControlPlane::new(
+            std::time::Instant::now(),
+            options,
+        )));
         #[cfg(feature = "engine")]
         let publication = Arc::clone(lock(&shared).publication());
         let outbound = Arc::new(Notify::new());
@@ -165,4 +171,3 @@ impl Drop for Inner {
 fn lock_driver(inner: &Inner) -> std::sync::MutexGuard<'_, Option<std::thread::JoinHandle<()>>> {
     inner.driver.lock().unwrap_or_else(PoisonError::into_inner)
 }
-

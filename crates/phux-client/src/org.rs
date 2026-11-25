@@ -30,11 +30,13 @@ mod edit;
 mod inventory;
 mod relaunch_approval;
 pub use relaunch_approval::{approve_relaunch, prepare_relaunch};
-mod verbs;
 mod session_workflows;
+mod verbs;
 
 pub use inventory::{KeyMatch, KeyNames, OrgInventory, arrangement, fetch, fetch_from_socket};
-pub use session_workflows::{attach_target_for_receipt, create_session, ensure_session, session_inventory_for_receipt};
+pub use session_workflows::{
+    attach_target_for_receipt, create_session, ensure_session, session_inventory_for_receipt,
+};
 pub use verbs::{
     BatchResult, create_resource, delete_session, inbox_resolve, intake_resolve, lock_group,
     move_many, move_resource, relaunch, remove_resource, rename_resource,
@@ -164,9 +166,13 @@ pub async fn request(
     command: Command,
 ) -> Result<(OrgOutcome, Degradation), OrgError> {
     if (command.is_organization()
-        && !conn.server_features_ext().contains(ServerFeatureExt::Organization))
+        && !conn
+            .server_features_ext()
+            .contains(ServerFeatureExt::Organization))
         || (matches!(&command, Command::SessionEnsure { .. })
-            && !conn.server_features_ext2().contains(ServerFeatureExt2::SessionEnsure))
+            && !conn
+                .server_features_ext2()
+                .contains(ServerFeatureExt2::SessionEnsure))
     {
         return Err(OrgError::Unsupported);
     }
@@ -250,7 +256,9 @@ fn checked_outcome(
     operation: Option<OperationId>,
 ) -> Result<OrgOutcome, OrgError> {
     match &outcome {
-        OrgOutcome::Unknown { .. } if operation.is_some() => Err(OrgError::OutcomeUnknown { operation }),
+        OrgOutcome::Unknown { .. } if operation.is_some() => {
+            Err(OrgError::OutcomeUnknown { operation })
+        }
         _ => Ok(outcome),
     }
 }

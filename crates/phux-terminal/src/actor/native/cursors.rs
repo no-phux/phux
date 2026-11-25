@@ -32,7 +32,8 @@ impl TerminalActor {
         if let Some(pending) = self.publication.pending_native_bootstrap.take() {
             self.fail_native_bootstrap(pending, crate::native_state::NativeStateError::Resize);
         }
-        let waiting: HashSet<_> = self.publication
+        let waiting: HashSet<_> = self
+            .publication
             .native_publications
             .values()
             .flat_map(|publication| publication.waiting.iter().copied())
@@ -100,7 +101,8 @@ impl TerminalActor {
         };
         super::super::publication::PublicationOwner::release_history(&self.terminal, &binding);
         binding.history_released = true;
-        let waiting = self.publication
+        let waiting = self
+            .publication
             .native_publications
             .get(&binding.cursor)
             .is_some_and(|publication| publication.waiting.contains(&key));
@@ -152,7 +154,13 @@ impl TerminalActor {
         self.drop_native_bootstrap_waiters(owner, None);
         // At most eight bindings; remove directly instead of allocating a
         // teardown vector for every cancelled connection.
-        while let Some(key) = self.publication.native_cursor_owners.keys().copied().find(|key| key.owner == owner) {
+        while let Some(key) = self
+            .publication
+            .native_cursor_owners
+            .keys()
+            .copied()
+            .find(|key| key.owner == owner)
+        {
             let _ = self.unbind_native_cursor(key);
         }
     }
@@ -187,7 +195,8 @@ impl TerminalActor {
         }
         self.publication.native_bootstrap_backlog.retain(keep);
         let key = NativeCursorKey::new(owner, stream_id);
-        if self.publication
+        if self
+            .publication
             .native_cursor_owners
             .get(&key)
             .is_some_and(|binding| binding.bootstrap_id == bootstrap_id)
@@ -211,11 +220,15 @@ impl TerminalActor {
                 .waiters
                 .retain(|waiter| keeps_native_bootstrap_waiter(waiter, owner, stream_id));
         }
-        self.publication.native_bootstrap_backlog
+        self.publication
+            .native_bootstrap_backlog
             .retain(|waiter| keeps_native_bootstrap_waiter(waiter, owner, stream_id));
     }
 
-    pub(in crate::actor) fn unbind_native_cursor(&mut self, key: NativeCursorKey) -> Option<NativeCursorOwner> {
+    pub(in crate::actor) fn unbind_native_cursor(
+        &mut self,
+        key: NativeCursorKey,
+    ) -> Option<NativeCursorOwner> {
         self.publication.unbind_native_cursor(key, &self.terminal)
     }
 
@@ -225,7 +238,8 @@ impl TerminalActor {
         stream_id: Option<phux_protocol::ids::StreamId>,
         reason: phux_protocol::wire::frame::HistoryTombstoneReason,
     ) {
-        if self.publication
+        if self
+            .publication
             .pending_native_history
             .as_ref()
             .is_some_and(|pending| matches_native_history(&pending.request, owner, stream_id))
@@ -252,7 +266,10 @@ impl TerminalActor {
 
     pub(in crate::actor) fn expire_native_cursors(&mut self) {
         let cutoff = tokio::time::Instant::now() - NATIVE_HISTORY_TTL;
-        while let Some(key) = self.publication.native_cursor_owners.iter()
+        while let Some(key) = self
+            .publication
+            .native_cursor_owners
+            .iter()
             .find_map(|(key, binding)| (binding.touched <= cutoff).then_some(*key))
         {
             self.cancel_native_history_requests(

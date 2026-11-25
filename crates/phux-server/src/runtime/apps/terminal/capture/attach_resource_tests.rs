@@ -4,11 +4,11 @@ use super::*;
 use crate::runtime::apps::terminal::test_support::{
     StubRx, state_sync_outcome, stub_terminal, terminal_state,
 };
+use crate::state::SharedState;
 use futures_util::FutureExt;
 use phux_protocol::caps::{BootstrapStreamProfile, OutputMode};
 use phux_protocol::ids::{BootstrapId, StreamId};
 use phux_terminal_api::actor::TerminalResource as _;
-use crate::state::SharedState;
 
 struct Harness {
     state: SharedState,
@@ -19,7 +19,7 @@ struct Harness {
     client: ClientId,
     connection: CancellationToken,
     outbound: tokio::sync::mpsc::Sender<Outbound>,
-    _output: tokio::sync::mpsc::Receiver<Outbound>,
+    output: tokio::sync::mpsc::Receiver<Outbound>,
 }
 
 impl Harness {
@@ -46,14 +46,16 @@ impl Harness {
                 client,
                 connection: CancellationToken::new(),
                 outbound,
-                _output: output,
+                output,
             },
             rx,
         )
     }
 
     fn reserve(&self, bootstrap: BootstrapId) -> crate::runtime::apps::StreamReservation {
-        self.host.reserve(self.core, bootstrap, &self.connection).unwrap()
+        self.host
+            .reserve(self.core, bootstrap, &self.connection)
+            .unwrap()
     }
 
     fn session(&self) -> AttachResourceSession<'_> {
@@ -93,7 +95,10 @@ async fn cancellation_before_mailbox_admission_sends_no_registration() {
     drop(establish);
     drop(reservations);
     assert!(actor.consumer_attach.try_recv().is_err());
-    assert!(actor.consumer_detach.try_recv().is_err(), "actor-owned cancellation needs no detach allocation");
+    assert!(
+        actor.consumer_detach.try_recv().is_err(),
+        "actor-owned cancellation needs no detach allocation"
+    );
     assert!(!harness.connection.is_cancelled());
 }
 
@@ -182,17 +187,27 @@ async fn dropping_an_old_bootstrap_cannot_cancel_its_replacement_generation() {
 async fn cancellation_during_a_full_publication_mailbox_never_opens_the_live_gate() {
     let (harness, mut actor) = Harness::new();
     let session = harness.session();
-    let mut establish = Box::pin(session.establish_generation(harness.reserve(BootstrapId::new(1).unwrap())));
+    let mut establish =
+        Box::pin(session.establish_generation(harness.reserve(BootstrapId::new(1).unwrap())));
     assert!(establish.as_mut().now_or_never().is_none());
     let request = actor.consumer_attach.try_recv().unwrap();
     let cancellation = request.cancellation.clone();
     let live = request.live_gate.clone();
-    request.reply.send(Ok(state_sync_outcome(b"unpublished"))).unwrap();
+    request
+        .reply
+        .send(Ok(state_sync_outcome(b"unpublished")))
+        .unwrap();
     let generation = establish.await.unwrap();
-    while harness.outbound.try_send(Outbound::Frame(FrameKind::ResourceClosed {
-        terminal_id: harness.wire.clone(), exit_status: None,
-        reason: phux_protocol::wire::frame::CloseReason::Unknown, signal: None,
-    })).is_ok() {}
+    while harness
+        .outbound
+        .try_send(Outbound::Frame(FrameKind::ResourceClosed {
+            terminal_id: harness.wire.clone(),
+            exit_status: None,
+            reason: phux_protocol::wire::frame::CloseReason::Unknown,
+            signal: None,
+        }))
+        .is_ok()
+    {}
     let mut publish = Box::pin(session.publish_generation(generation));
     assert!(publish.as_mut().now_or_never().is_none());
     assert!(!*live.borrow());
@@ -246,7 +261,7 @@ async fn suspended_establish_cannot_retire_or_reap_a_newer_published_stream() {
         assert!(harness.state.with(|s| s.registry().resource(harness.core).is_some()));
         assert!(actor.consumer_detach.try_recv().is_err());
         let mut ready = false;
-        while let Ok(Outbound::Frame(frame)) = harness._output.try_recv() {
+        while let Ok(Outbound::Frame(frame)) = harness.output.try_recv() {
             ready |= matches!(frame, FrameKind::BootstrapReady { bootstrap_id, .. } if bootstrap_id == BootstrapId::new(3).unwrap());
         }
         assert!(ready, "the surviving real publication reaches READY");
@@ -257,30 +272,43 @@ async fn suspended_establish_cannot_retire_or_reap_a_newer_published_stream() {
 async fn a_full_old_publication_cannot_open_or_withdraw_the_replacement_gate() {
     let (mut harness, mut actor) = Harness::new();
     let session = harness.session();
-    let mut establish = Box::pin(session.establish_generation(harness.reserve(BootstrapId::new(1).unwrap())));
+    let mut establish =
+        Box::pin(session.establish_generation(harness.reserve(BootstrapId::new(1).unwrap())));
     assert!(establish.as_mut().now_or_never().is_none());
     let old = actor.consumer_attach.try_recv().unwrap();
     let old_gate = old.live_gate.clone();
     old.reply.send(Ok(state_sync_outcome(b"old"))).unwrap();
     let generation = establish.await.unwrap();
-    while harness.outbound.try_send(Outbound::Frame(FrameKind::ResourceClosed {
-        terminal_id: harness.wire.clone(), exit_status: None,
-        reason: phux_protocol::wire::frame::CloseReason::Unknown, signal: None,
-    })).is_ok() {}
+    while harness
+        .outbound
+        .try_send(Outbound::Frame(FrameKind::ResourceClosed {
+            terminal_id: harness.wire.clone(),
+            exit_status: None,
+            reason: phux_protocol::wire::frame::CloseReason::Unknown,
+            signal: None,
+        }))
+        .is_ok()
+    {}
     let mut publish = Box::pin(session.publish_generation(generation));
     assert!(publish.as_mut().now_or_never().is_none());
     let reservation = harness.reserve(BootstrapId::new(2).unwrap());
     assert!(publish.await.is_err());
     assert!(!*old_gate.borrow());
-    while harness._output.try_recv().is_ok() {}
+    while harness.output.try_recv().is_ok() {}
     let session = harness.session();
     let mut replacement = Box::pin(session.establish_generation(reservation));
     assert!(replacement.as_mut().now_or_never().is_none());
     let current = actor.consumer_attach.try_recv().unwrap();
     let live = current.live_gate.clone();
     let interest = current.cancellation.clone();
-    current.reply.send(Ok(state_sync_outcome(b"current"))).unwrap();
-    session.publish_generation(replacement.await.unwrap()).await.unwrap();
+    current
+        .reply
+        .send(Ok(state_sync_outcome(b"current")))
+        .unwrap();
+    session
+        .publish_generation(replacement.await.unwrap())
+        .await
+        .unwrap();
     assert!(*live.borrow());
     assert!(!interest.is_cancelled());
     assert!(!harness.connection.is_cancelled());

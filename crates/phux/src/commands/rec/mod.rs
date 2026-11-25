@@ -11,9 +11,9 @@
 
 pub(crate) mod spec;
 
-use std::time::Duration;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Duration;
 
 use phux_record::cast::CastVersion;
 use phux_record::render::{OutputFormat, RenderOptions};
@@ -28,11 +28,10 @@ mod attach_target;
 mod capture;
 mod output;
 use capture::{capture, capture_composited};
-use output::{export, read_cast_file, report, report_export_failure, write_cast_file};
 pub(crate) use output::finalize;
+use output::{export, read_cast_file, report, report_export_failure, write_cast_file};
 mod mark;
 use mark::run_mark;
-
 
 /// Subcommands of `phux rec`. Absent, the verb captures or re-renders.
 #[derive(Debug, Subcommands)]
@@ -184,8 +183,6 @@ pub(crate) fn run_rec(args: RecArgs<'_>) -> ExitCode {
     }
 }
 
-
-
 /// `phux rec` without `--out`. `phux rec mark` never reaches here.
 pub(crate) fn missing_out(json: bool) -> ExitCode {
     json_err::emit(
@@ -217,8 +214,6 @@ fn checked_speed(speed: Option<f64>, json: bool) -> Result<Option<f64>, ExitCode
         2,
     ))
 }
-
-
 
 /// Map the `--cast-version` integer clap already range-checked.
 const fn cast_version(version: u8) -> CastVersion {

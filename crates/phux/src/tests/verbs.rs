@@ -181,10 +181,15 @@ fn raw_archived_relaunch_is_an_explicit_review_flag_not_json_or_a_yes_bypass() {
         (&["phux", "relaunch", "@1"][..], false),
         (&["phux", "relaunch", "@1", "--json"][..], false),
         (&["phux", "relaunch", "@1", "--approve-raw"][..], true),
-        (&["phux", "relaunch", "@1", "--approve-raw", "--json"][..], true),
+        (
+            &["phux", "relaunch", "@1", "--approve-raw", "--json"][..],
+            true,
+        ),
     ] {
         let cli = crate::parse_cli(argv.iter().copied()).unwrap();
-        let Some(Command::Relaunch(args)) = cli.command else { panic!("relaunch"); };
+        let Some(Command::Relaunch(args)) = cli.command else {
+            panic!("relaunch");
+        };
         assert_eq!(args.approve_raw, review);
     }
     assert_parses(&[

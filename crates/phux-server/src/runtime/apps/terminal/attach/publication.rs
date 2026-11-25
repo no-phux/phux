@@ -19,12 +19,7 @@ pub(super) async fn release_gates(
             interest: None,
         };
         if let Some(capture) = gate.native_capture {
-            let publication = match activate_native_publication(
-                &gate.terminal,
-                capture,
-            )
-            .await
-            {
+            let publication = match activate_native_publication(&gate.terminal, capture).await {
                 Ok(publication) => publication,
                 // The resource closed after capture: no generation can be
                 // published, but RESOURCE_CLOSED ends it without an error.
@@ -46,7 +41,7 @@ pub(super) async fn release_gates(
 
 /// Captured before publication and retained until either the exact host lifetime
 /// owns a tick consumer or the raw pump ends. Aborting an unread continuation
-/// drops both its JoinSet and registration guards.
+/// drops both its `JoinSet` and registration guards.
 #[derive(Default)]
 pub(super) struct TerminalPublication {
     pub(super) gates: Vec<SnapshotGate>,
@@ -55,10 +50,7 @@ pub(super) struct TerminalPublication {
 }
 
 impl TerminalPublication {
-    pub(super) async fn run(
-        mut self,
-        lease: crate::runtime::apps::StreamLease,
-    ) {
+    pub(super) async fn run(mut self, lease: crate::runtime::apps::StreamLease) {
         if release_gates(&lease, self.gates).await.is_err() {
             return;
         }

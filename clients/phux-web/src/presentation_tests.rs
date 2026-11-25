@@ -26,7 +26,15 @@ async fn fixture_with_server(count: u32, server: Option<u8>) -> Client {
     let (app, _ready) =
         build_app(&vt, WireTx::Ws(WsTx::new(socket)), canvas, 80, 24, false).unwrap();
     for mut frame in super::tests::attached_frames(count, b"\x1b[48;2;255;0;0m \x1b[0mreal") {
-        if let (Some(server), FrameKind::HelloOk { server_id, server_caps, .. }) = (server, &mut frame) {
+        if let (
+            Some(server),
+            FrameKind::HelloOk {
+                server_id,
+                server_caps,
+                ..
+            },
+        ) = (server, &mut frame)
+        {
             *server_id = vec![server; 16];
             server_caps.features = phux_protocol::caps::ServerFeatureSet::with(&[
                 phux_protocol::caps::ServerFeature::AcknowledgedInput,
@@ -229,4 +237,3 @@ async fn glass_hosted_mode_clears_backdrop_borders_and_cursor_then_returns_opaqu
     );
     client.close();
 }
-

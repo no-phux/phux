@@ -45,11 +45,28 @@ pub(super) async fn reattach_on_same_connection(
     agent: Option<&AgentLink>,
 ) -> Result<FrameKind, AttachError> {
     let (attach_target, receipt) = match target {
-        ReattachTarget::Existing { name, id, window, pane, resource } => {
-            *pick = EntryPick { window, pane, resource };
-            (id.map_or(AttachTarget::ByName(name), AttachTarget::ById), None)
+        ReattachTarget::Existing {
+            name,
+            id,
+            window,
+            pane,
+            resource,
+        } => {
+            *pick = EntryPick {
+                window,
+                pane,
+                resource,
+            };
+            (
+                id.map_or(AttachTarget::ByName(name), AttachTarget::ById),
+                None,
+            )
         }
-        ReattachTarget::Create { name, directory, host } => {
+        ReattachTarget::Create {
+            name,
+            directory,
+            host,
+        } => {
             // A satellite launch cannot be silently redirected to this server.
             if host.is_some() {
                 return Err(AttachError::Refused(
@@ -58,7 +75,8 @@ pub(super) async fn reattach_on_same_connection(
             }
             // Check attach policy before accepting any persistent work.
             crate::attach::attach_role::check_attach_role(conn)?;
-            let (receipt, target) = create_and_select(conn, org::mint_operation(), name, directory).await?;
+            let (receipt, target) =
+                create_and_select(conn, org::mint_operation(), name, directory).await?;
             *pick = EntryPick::default();
             (target, Some(receipt))
         }
@@ -67,7 +85,8 @@ pub(super) async fn reattach_on_same_connection(
         detach_and_drain(conn, orphan_kills, review, agent).await?;
         let attach_id = send_attach(conn, attach_target).await?;
         wait_for_attached_serving(conn, attach_id, agent).await
-    }.await;
+    }
+    .await;
     if result.is_ok() {
         tracing::info!("attach loop: re-attach handshake complete");
     }
@@ -85,29 +104,40 @@ async fn create_and_select(
 ) -> Result<(Committed, AttachTarget), AttachError> {
     let launch = LaunchSpec::default().with_cwd(directory.filter(|path| !path.is_empty()));
     let receipt = org::create_session(
-        conn, operation, name, SessionLifetime::Persistent, Some(Box::new(launch)),
-    ).await.map_err(creation_error)?;
-    let target = org::attach_target_for_receipt(conn, &receipt).await
+        conn,
+        operation,
+        name,
+        SessionLifetime::Persistent,
+        Some(Box::new(launch)),
+    )
+    .await
+    .map_err(creation_error)?;
+    let target = org::attach_target_for_receipt(conn, &receipt)
+        .await
         .map_err(|error| committed_selection_error(&receipt, error))?;
     Ok((receipt, target))
 }
 
 fn creation_error(error: org::OrgError) -> AttachError {
     match error {
-        org::OrgError::OutcomeUnknown { operation } => AttachError::OperationOutcomeUnknown { operation },
+        org::OrgError::OutcomeUnknown { operation } => {
+            AttachError::OperationOutcomeUnknown { operation }
+        }
         other => AttachError::Refused(other.to_string()),
     }
 }
 
 fn committed_selection_error(receipt: &Committed, error: impl std::fmt::Display) -> AttachError {
-    match receipt.session {
-        Some(session) => AttachError::CommittedSelectionUnavailable {
+    receipt.session.map_or(
+        AttachError::OperationOutcomeUnknown {
+            operation: Some(receipt.operation),
+        },
+        |session| AttachError::CommittedSelectionUnavailable {
             operation: receipt.operation,
             session,
             message: error.to_string(),
         },
-        None => AttachError::OperationOutcomeUnknown { operation: Some(receipt.operation) },
-    }
+    )
 }
 
 /// Release per-consumer state before ATTACH. Connection-lifetime observers

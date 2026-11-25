@@ -36,12 +36,19 @@ impl Desk {
         let view = shown.view;
         let me = panel.me.clone();
         panel.main.update(move |desk, _| {
-            if !origin.as_ref().is_some_and(|origin| origin.permits_view(view)) {
+            if !origin
+                .as_ref()
+                .is_some_and(|origin| origin.permits_view(view))
+            {
                 me.update(move |desk, _| {
-                    if origin.as_ref().is_some_and(|origin| origin.same_namespace(&desk.connection))
+                    if origin
+                        .as_ref()
+                        .is_some_and(|origin| origin.same_namespace(&desk.connection))
                         && desk.connection.view_choice == choice
                     {
-                        desk.quick_move_finished(Err("The original quick terminal view is no longer available.".to_owned()));
+                        desk.quick_move_finished(Err(
+                            "The original quick terminal view is no longer available.".to_owned(),
+                        ));
                     }
                 });
                 return;
@@ -51,7 +58,9 @@ impl Desk {
                 server,
                 Box::new(move |result| {
                     me.update(move |desk, _| {
-                        if origin.as_ref().is_some_and(|origin| origin.is_current(&desk.connection))
+                        if origin
+                            .as_ref()
+                            .is_some_and(|origin| origin.is_current(&desk.connection))
                             && desk.connection.view_choice == choice
                         {
                             desk.quick_move_finished(result);
@@ -64,14 +73,23 @@ impl Desk {
 
     fn adopt_quick(&mut self, terminal: ResourceId, server: Option<Vec<u8>>, finish: Completion) {
         if self.connection.wanted.is_some() {
-            finish(Err("The main window's pending selection is kept; retry after it opens.".to_owned()));
+            finish(Err(
+                "The main window's pending selection is kept; retry after it opens.".to_owned(),
+            ));
             return;
         }
         let intent = self.connection.client.as_ref().map(|client| {
-            super::super::view_intent::ViewIntent::new(client, &terminal, server, self.connection.view_epoch)
+            super::super::view_intent::ViewIntent::new(
+                client,
+                &terminal,
+                server,
+                self.connection.view_epoch,
+            )
         });
         if intent.as_ref().is_some_and(|intent| intent.refused()) {
-            finish(Err("The quick terminal's original server view is no longer available.".to_owned()));
+            finish(Err(
+                "The quick terminal's original server view is no longer available.".to_owned(),
+            ));
             return;
         }
         match self.submit_quick_move(&terminal) {
@@ -147,7 +165,8 @@ impl Desk {
             self.place_quick_tab(client, &mut pending)
         } else {
             Err(format!(
-                "Quick terminal move operation {operation} did not settle: {outcome:?}. Inspect the original operation and server's panes before retrying."
+                "Quick terminal move operation {} did not settle: {outcome:?}. Inspect the original operation and server's panes before retrying.",
+                phux_protocol::ids::hex16(operation.as_bytes())
             ))
         };
         (pending.finish)(result);
@@ -160,11 +179,16 @@ impl Desk {
         if pending.choice != self.connection.view_choice {
             return Err("The terminal moved, but the window's newer selection is kept.".to_owned());
         }
-        let intent = pending.intent.take().ok_or("The quick terminal has no original view scope.")?;
+        let intent = pending
+            .intent
+            .take()
+            .ok_or("The quick terminal has no original view scope.")?;
         if !intent.select_session(client, &pending.session) {
             return Err("The terminal moved, but its exact destination or original view scope is unavailable.".to_owned());
         }
-        self.connection.view_intents.insert(pending.terminal.clone(), intent);
+        self.connection
+            .view_intents
+            .insert(pending.terminal.clone(), intent);
         self.place_split(client, &pending.terminal, None, Some(pending.session), true);
         Ok(())
     }

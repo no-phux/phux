@@ -3,9 +3,9 @@ use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode
 use tokio::sync::oneshot;
 
 use crate::hub::relay::{HubRelays, RelayHandle, RelayMailbox, RelayRequest};
-use crate::runtime::commands::terminal::signal::{commit_signal, record_signal_failure};
 use crate::runtime::apps::terminal::test_support::ControlRequest;
 use crate::runtime::commands::kill::handle_kill_terminals;
+use crate::runtime::commands::terminal::signal::{commit_signal, record_signal_failure};
 use crate::runtime::keyed_ops::{KeyedAdmission, admit};
 use crate::state::{ClientId, SharedState};
 

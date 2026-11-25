@@ -58,23 +58,23 @@ impl OutputPumpContext {
             .await
             .map_err(|()| PumpFault::GenerationLost)?;
         generation.set_bootstrap_id(bootstrap_id);
-        let publication = activate_native_publication(
-            &self.terminal,
-            capture,
-        )
-        .await
-        .map_err(|failure| {
-            // The pane exited while this pump was blocked publishing its
-            // replacement to a slow consumer: the pane ended, the client
-            // did not.
-            if failure.actor_gone() {
-                super::bootstrap::publication_phase("replacement_generation", "pane_gone");
-                PumpFault::PaneGone
-            } else {
-                super::bootstrap::publication_phase("replacement_generation", "activation_refused");
-                PumpFault::PublicationNotActivated
-            }
-        })?;
+        let publication = activate_native_publication(&self.terminal, capture)
+            .await
+            .map_err(|failure| {
+                // The pane exited while this pump was blocked publishing its
+                // replacement to a slow consumer: the pane ended, the client
+                // did not.
+                if failure.actor_gone() {
+                    super::bootstrap::publication_phase("replacement_generation", "pane_gone");
+                    PumpFault::PaneGone
+                } else {
+                    super::bootstrap::publication_phase(
+                        "replacement_generation",
+                        "activation_refused",
+                    );
+                    PumpFault::PublicationNotActivated
+                }
+            })?;
         let NativePublication::Activated(mut publication) = publication else {
             self.retire_superseded_publication(generation, cut).await?;
             return Ok(false);

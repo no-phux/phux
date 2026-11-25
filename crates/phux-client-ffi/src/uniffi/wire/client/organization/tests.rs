@@ -23,12 +23,8 @@ fn create_and_rename_refuse_what_core_refuses() {
     let key = SessionKey::new([2; 16]).unwrap().to_string();
     for bad in ["x:y", too_long.as_str(), "a\tb", "a\0b", "@3"] {
         assert_eq!(
-            word(remote.create_session(
-                bad.to_owned(),
-                WireSessionLifetime::Persistent,
-                None
-            ))
-            .as_deref(),
+            word(remote.create_session(bad.to_owned(), WireSessionLifetime::Persistent, None))
+                .as_deref(),
             Some("invalid_session_name"),
             "create {bad:?}"
         );
@@ -41,7 +37,8 @@ fn create_and_rename_refuse_what_core_refuses() {
     let at_limit = "a".repeat(phux_client_core::rename::MAX_SESSION_NAME_BYTES);
     for good in ["notes", at_limit.as_str()] {
         assert_eq!(
-            word(remote.create_session(good.to_owned(), WireSessionLifetime::Persistent, None)).as_deref(),
+            word(remote.create_session(good.to_owned(), WireSessionLifetime::Persistent, None))
+                .as_deref(),
             Some("not_connected"),
             "create {good:?}"
         );

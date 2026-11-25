@@ -1,18 +1,18 @@
 use std::sync::{Arc, Mutex};
 
 use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::{
-    BootstrapCapabilities, BootstrapProfileKind, BootstrapProfileSet,
-    ServerCapabilities, select_bootstrap_profile,
-};
-use phux_protocol::ids::{BootstrapId, StreamId};
 #[cfg(feature = "engine")]
 use phux_protocol::caps::BootstrapStreamProfile;
+use phux_protocol::caps::{
+    BootstrapCapabilities, BootstrapProfileKind, BootstrapProfileSet, ServerCapabilities,
+    select_bootstrap_profile,
+};
+use phux_protocol::ids::{BootstrapId, StreamId};
 
 use super::*;
 use crate::control::frames::stepped::{BatchStep, EngineApply, FrameBatch};
-use phux_protocol::ResourceId;
 use crate::control::{ControlOptions, encode};
+use phux_protocol::ResourceId;
 
 fn negotiated() -> ControlPlane {
     let mut plane = ControlPlane::new(std::time::Instant::now(), ControlOptions::default());
@@ -28,14 +28,13 @@ fn negotiate(plane: &mut ControlPlane) {
     else {
         panic!("the opening frame is HELLO");
     };
-    let (profile, limits) =
-        select_bootstrap_profile(
-            &client_caps,
-            &BootstrapCapabilities::new().with_profiles(BootstrapProfileSet::with(&[
-                BootstrapProfileKind::SynthesizedVtRaw,
-            ])),
-        )
-            .expect("intersect");
+    let (profile, limits) = select_bootstrap_profile(
+        &client_caps,
+        &BootstrapCapabilities::new().with_profiles(BootstrapProfileSet::with(&[
+            BootstrapProfileKind::SynthesizedVtRaw,
+        ])),
+    )
+    .expect("intersect");
     plane
         .feed(FrameKind::HelloOk {
             protocol_major: PROTOCOL_VERSION.major,
@@ -131,26 +130,33 @@ fn an_old_completion_cannot_reset_a_replacement_connections_published_frame() {
     let shared: Shared = Arc::new(Mutex::new(negotiated()));
     let (mut old_batch, apply) = handed_out(&shared);
     let outcomes = apply.engine.apply_batch(apply.events);
-    {
-        let mut plane = lock(&shared);
-        plane.connection_lost(None);
-        negotiate(&mut plane);
-    }
+    lock(&shared).connection_lost(None);
+    negotiate(&mut lock(&shared));
     let terminal = ResourceId::local(19);
     let stream_id = StreamId::new(2).expect("stream");
     let bootstrap_id = BootstrapId::new(2).expect("bootstrap");
     for frame in [
         FrameKind::BootstrapBegin {
-            terminal_id: terminal.clone(), stream_id, bootstrap_id,
+            terminal_id: terminal.clone(),
+            stream_id,
+            bootstrap_id,
             profile: BootstrapStreamProfile::SynthesizedVtRaw,
-            cols: 20, rows: 4, base_seq: 0,
+            cols: 20,
+            rows: 4,
+            base_seq: 0,
         },
         FrameKind::BootstrapChunk {
-            terminal_id: terminal.clone(), stream_id, bootstrap_id,
-            chunk_seq: 0, payload: Bytes::from_static(b"replacement"),
+            terminal_id: terminal.clone(),
+            stream_id,
+            bootstrap_id,
+            chunk_seq: 0,
+            payload: Bytes::from_static(b"replacement"),
         },
         FrameKind::BootstrapReady {
-            terminal_id: terminal.clone(), stream_id, bootstrap_id, history_cursor: None,
+            terminal_id: terminal.clone(),
+            stream_id,
+            bootstrap_id,
+            history_cursor: None,
         },
     ] {
         feed_unlocked(&shared, frame).expect("replacement bootstrap");
@@ -158,14 +164,23 @@ fn an_old_completion_cannot_reset_a_replacement_connections_published_frame() {
     let engine = lock(&shared).engine().expect("owner").clone();
     assert!(engine.has_projection(&terminal));
     let _ = lock(&shared).take_events();
-    let BatchStep::Done(result) = lock(&shared).complete_frame_apply(
-        &mut old_batch, apply.geometry, outcomes,
-    ) else { panic!("retired batch cannot resume"); };
+    let BatchStep::Done(result) =
+        lock(&shared).complete_frame_apply(&mut old_batch, apply.geometry, outcomes)
+    else {
+        panic!("retired batch cannot resume");
+    };
     assert!(result.is_ok(), "old errors cannot settle the replacement");
-    assert!(engine.has_projection(&terminal), "old completion cannot reset the new owner state");
+    assert!(
+        engine.has_projection(&terminal),
+        "old completion cannot reset the new owner state"
+    );
     assert!(lock(&shared).take_events().is_empty());
     assert_eq!(
-        lock(&shared).publication().acquire(&terminal).expect("published").text(),
+        lock(&shared)
+            .publication()
+            .acquire(&terminal)
+            .expect("published")
+            .text(),
         "replacement",
     );
 }
@@ -179,10 +194,21 @@ fn native_pump_releases_control_while_the_actual_owner_batch_is_waiting() {
         let shared = Arc::clone(&shared);
         move || feed_shared_unlocked(&shared, vec![stray_output()])
     });
-    entered.recv_timeout(std::time::Duration::from_secs(5)).expect("actual owner apply");
-    let observation_available = shared.try_lock().map(|mut plane| plane.take_observation()).is_ok();
+    entered
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("actual owner apply");
+    let observation_available = shared
+        .try_lock()
+        .map(|mut plane| plane.take_observation())
+        .is_ok();
     resume.send(()).expect("release owner");
     let result = worker.join().expect("native frame pump");
-    assert!(result.is_err(), "the original engine error remains observable");
-    assert!(observation_available, "consumer observations cannot wait for an engine batch");
+    assert!(
+        result.is_err(),
+        "the original engine error remains observable"
+    );
+    assert!(
+        observation_available,
+        "consumer observations cannot wait for an engine batch"
+    );
 }

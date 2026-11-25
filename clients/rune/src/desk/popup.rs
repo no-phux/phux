@@ -34,7 +34,6 @@ pub struct Popup {
     origin: Option<super::connection::CallbackFence>,
 }
 
-
 impl Popup {
     pub(in crate::desk) fn owns_request(&self, request: u32) -> bool {
         self.request == Some(request)
@@ -156,14 +155,22 @@ impl Desk {
     /// The empty box's grid area in points: run the command through `sh`,
     /// in the focused terminal's folder and session, at that many cells.
     pub fn popup_laid_out(&mut self, area: [f32; 2]) {
-        let (Some(client), Some(line)) = (self.connection.client.clone(), self.connection.popup.command.clone())
-        else {
+        let (Some(client), Some(line)) = (
+            self.connection.client.clone(),
+            self.connection.popup.command.clone(),
+        ) else {
             return;
         };
         if self.connection.popup.request.is_some() || self.connection.popup.terminal.is_some() {
             return;
         }
-        if !self.connection.popup.origin.as_ref().is_some_and(|origin| origin.is_current(&self.connection)) {
+        if !self
+            .connection
+            .popup
+            .origin
+            .as_ref()
+            .is_some_and(|origin| origin.is_current(&self.connection))
+        {
             self.close_popup(&client, false);
             return;
         }
@@ -176,8 +183,9 @@ impl Desk {
         };
         let submission = client.with_control(|control| {
             (control.connection_epoch() == self.connection.popup.origin_epoch
-                && control.server().map(|server| server.id.as_slice()) == self.connection.popup.server.as_deref())
-                .then(|| control.submit_spawn(request))
+                && control.server().map(|server| server.id.as_slice())
+                    == self.connection.popup.server.as_deref())
+            .then(|| control.submit_spawn(request))
         });
         let Some(submission) = submission else {
             self.close_popup(&client, false);
@@ -205,7 +213,10 @@ impl Desk {
         match (id, self.connection.popup.command.is_some()) {
             (Some(id), true) => {
                 let mut intent = super::view_intent::ViewIntent::new(
-                    client, id, self.connection.popup.server.clone(), self.connection.popup.origin_epoch,
+                    client,
+                    id,
+                    self.connection.popup.server.clone(),
+                    self.connection.popup.origin_epoch,
                 );
                 let view = intent.open(client, id);
                 if intent.refused() {
@@ -270,14 +281,18 @@ impl Desk {
             && (self.connection.status.is_terminal()
                 || self.connection.popup.server != self.connection.view_server
                 || (self.connection.popup.origin_epoch != self.connection.epoch
-                    && self.connection.popup.intent.as_ref().is_none_or(|intent| !intent.has_source())))
+                    && self
+                        .connection
+                        .popup
+                        .intent
+                        .as_ref()
+                        .is_none_or(|intent| !intent.has_source())))
         {
             self.close_popup(client, false);
             return true;
         }
         false
     }
-
 
     /// Close the box and end its command, asking first where closing any
     /// terminal would.
@@ -301,10 +316,16 @@ impl Desk {
             if let Some(view) = view {
                 let _ = client.destroy_view(view);
             }
-            if kill && popup.intent.as_ref().is_some_and(|intent| intent.owns_client(client)) {
+            if kill
+                && popup
+                    .intent
+                    .as_ref()
+                    .is_some_and(|intent| intent.owns_client(client))
+            {
                 let request = client.with_control(|control| {
                     if control.connection_epoch() == popup.origin_epoch
-                        && control.server().map(|server| server.id.as_slice()) == popup.server.as_deref()
+                        && control.server().map(|server| server.id.as_slice())
+                            == popup.server.as_deref()
                     {
                         control.close_terminals(vec![id.clone()])
                     } else {

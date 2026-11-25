@@ -170,7 +170,8 @@ async fn native_bootstrap_capture_lifetime_retires_staged_state() {
     let mut actor = bundle.actor;
     let (reply, replied) = oneshot::channel();
     actor.start_native_bootstrap(native_bootstrap(31, reply));
-    actor.publication
+    actor
+        .publication
         .pending_native_bootstrap
         .as_mut()
         .expect("pending capture")

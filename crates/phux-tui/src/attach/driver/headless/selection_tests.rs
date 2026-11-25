@@ -25,5 +25,8 @@ async fn rebootstrap_without_attached_identity_does_not_select_or_create() {
     let result = restart_attach(&mut conn, None, &mut HeadlessCompletion::default()).await;
     assert!(matches!(result, Err(AttachError::Protocol(_))));
     drop(conn);
-    assert!(peer.recv().await.is_err(), "no fallback name attach or creation");
+    assert!(
+        peer.recv().await.is_err(),
+        "no fallback name attach or creation"
+    );
 }

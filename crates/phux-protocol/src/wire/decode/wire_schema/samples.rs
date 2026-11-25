@@ -69,7 +69,9 @@ fn connection_samples() -> Vec<FrameKind> {
     vec![
         hello_ok(ServerCapabilities::new()),
         hello_ok(ServerCapabilities::new().with_compression(Compression::Deflate)),
-        hello_ok(ServerCapabilities::new().with_features_ext2(crate::caps::ServerFeatureExt2Set::all())),
+        hello_ok(
+            ServerCapabilities::new().with_features_ext2(crate::caps::ServerFeatureExt2Set::all()),
+        ),
         FrameKind::Pong { nonce: 1 },
         FrameKind::Attached {
             attach_id: 1,

@@ -1,7 +1,7 @@
 //! Translating wire commands into core ops and core replies back into results.
 
 use phux_core::{Op, Refusal, ResourceKind};
-use phux_protocol::wire::frame::{Command, RecordRevision};
+use phux_protocol::wire::frame::{Command, LiveTarget, RecordRevision};
 
 use crate::org_wire as ow;
 use crate::state::ServerState;
@@ -46,7 +46,13 @@ pub(crate) fn translate(
                 }),
             }),
         ),
-        Command::SessionEnsure { operation, name, lifetime, attrs, launch } => (
+        Command::SessionEnsure {
+            operation,
+            name,
+            lifetime,
+            attrs,
+            launch,
+        } => (
             ow::core_operation(&operation),
             request_lifetime(lifetime).map(|lifetime| Op::SessionEnsure {
                 name,
@@ -351,7 +357,6 @@ fn record_pin(s: &ServerState, pin: &RecordRevision) -> phux_core::RevisionPin {
     }
 }
 
-
 fn validate_placed_launch(launch: &phux_protocol::wire::frame::LaunchSpec) -> Result<(), String> {
     launch.validate_terminal()?;
     if let Some(cwd) = &launch.cwd {
@@ -392,4 +397,3 @@ const fn core_placement(
         },
     }
 }
-

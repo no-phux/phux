@@ -4,12 +4,12 @@
 use crate::attach::input_dispatch::args::{bare_action, tab_click_action};
 use crate::attach::input_dispatch::effects::broadcast_layout;
 
-use super::{is_left_press, is_right_press, quantize_cell};
 use super::super::{
     AttachError, ContextMenu, DispatchCtx, DividerGrab, DragGrab, EventEnv, MouseAction,
     MouseEvent, SidebarHit, StageOutcome, WindowStrip, actions, chrome_drag, content_rect,
     hit_test, sidebar_click_action,
 };
+use super::{is_left_press, is_right_press, quantize_cell};
 
 #[allow(
     clippy::future_not_send,
@@ -61,7 +61,9 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
     /// End a drag whose release will never arrive (the outer terminal lost
     /// focus), so the next press is not eaten. A divider keeps and publishes
     /// its ratio; a window drag is cancelled. True when a marker must erase.
-    pub(in crate::attach::input_dispatch::dispatch) async fn abandon_chrome_drag(&mut self) -> Result<bool, AttachError> {
+    pub(in crate::attach::input_dispatch::dispatch) async fn abandon_chrome_drag(
+        &mut self,
+    ) -> Result<bool, AttachError> {
         let Some(grab) = self.ctx.drag.take() else {
             return Ok(false);
         };

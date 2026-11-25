@@ -408,11 +408,21 @@ async fn actual_websocket_handoff_waits_for_receipt_and_lost_reply_is_unknown() 
     let vt = Vt::load().await.unwrap();
     let canvas = test_canvas();
     let (app, _ready) = super::build_app(
-        &vt, super::WireTx::Ws(super::WsTx::new(socket.clone())),
-        canvas.clone(), 80, 24, false,
-    ).unwrap();
+        &vt,
+        super::WireTx::Ws(super::WsTx::new(socket.clone())),
+        canvas.clone(),
+        80,
+        24,
+        false,
+    )
+    .unwrap();
     for mut frame in attached_frames(1, b"ready") {
-        if let FrameKind::HelloOk { server_id, server_caps, .. } = &mut frame {
+        if let FrameKind::HelloOk {
+            server_id,
+            server_caps,
+            ..
+        } = &mut frame
+        {
             *server_id = vec![7; 16];
             server_caps.features = phux_protocol::caps::ServerFeatureSet::with(&[
                 phux_protocol::caps::ServerFeature::AcknowledgedInput,
@@ -420,17 +430,48 @@ async fn actual_websocket_handoff_waits_for_receipt_and_lost_reply_is_unknown() 
         }
         assert!(app.borrow_mut().session.on_frame(frame).fatal.is_none());
     }
-    let client = super::Client { app: Rc::clone(&app) };
-    let submission = client.submit_user_paste("actual websocket handoff").unwrap();
-    let InputSubmission::AwaitingReceipt { delivery_id } = submission else { panic!("{submission:?}"); };
-    assert_eq!(canvas.get_attribute("data-phux-input-status").as_deref(), Some("awaiting-receipt"));
-    assert_eq!(canvas.get_attribute("data-phux-input-delivery-id").as_deref(), Some(delivery_id.to_string().as_str()));
-    assert!(app.borrow().session.take_input_reports().is_empty(), "socket queue acceptance is not a server receipt");
+    let client = super::Client {
+        app: Rc::clone(&app),
+    };
+    let submission = client
+        .submit_user_paste("actual websocket handoff")
+        .unwrap();
+    let InputSubmission::AwaitingReceipt { delivery_id } = submission else {
+        panic!("{submission:?}");
+    };
+    assert_eq!(
+        canvas.get_attribute("data-phux-input-status").as_deref(),
+        Some("awaiting-receipt")
+    );
+    assert_eq!(
+        canvas
+            .get_attribute("data-phux-input-delivery-id")
+            .as_deref(),
+        Some(delivery_id.to_string().as_str())
+    );
+    assert!(
+        app.borrow().session.take_input_reports().is_empty(),
+        "socket queue acceptance is not a server receipt"
+    );
     socket.close().unwrap();
     app.borrow().session.stop_input_delivery(false);
     app.borrow().publish_input_reports();
-    assert_eq!(canvas.get_attribute("data-phux-input-status").as_deref(), Some("unknown"));
-    assert!(canvas.get_attribute("data-phux-input-notice").unwrap().contains("read the pane before retyping"));
-    assert_eq!(canvas.get_attribute("data-phux-input-operation").unwrap().len(), 32);
+    assert_eq!(
+        canvas.get_attribute("data-phux-input-status").as_deref(),
+        Some("unknown")
+    );
+    assert!(
+        canvas
+            .get_attribute("data-phux-input-notice")
+            .unwrap()
+            .contains("read the pane before retyping")
+    );
+    assert_eq!(
+        canvas
+            .get_attribute("data-phux-input-operation")
+            .unwrap()
+            .len(),
+        32
+    );
     client.close();
 }

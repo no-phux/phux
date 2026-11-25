@@ -343,11 +343,7 @@ impl ServerState {
         self.persist_prepared(prepared, leading_journal)
     }
 
-    fn prepare_commit(
-        &mut self,
-        cmd: &Command,
-        actor: &Actor,
-    ) -> Result<PreparedCommit, Refusal> {
+    fn prepare_commit(&mut self, cmd: &Command, actor: &Actor) -> Result<PreparedCommit, Refusal> {
         if self.org.unreadable_receipts.contains_key(&cmd.operation) {
             return Err(Refusal::DuplicateOperation);
         }

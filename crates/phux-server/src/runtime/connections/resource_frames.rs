@@ -1,10 +1,10 @@
 //! Connection admission and routing for reply-less resource frames. Apps see
 //! only their own local resources; absent and satellite ids stay in the host.
 
-mod terminal;
 mod clipboard_read;
 mod input;
 mod relay;
+mod terminal;
 #[cfg(test)]
 mod tests;
 
@@ -15,13 +15,13 @@ use phux_protocol::wire::frame::{FrameKind, HistoryTombstoneReason};
 
 use super::dispatch::{FrameFlow, direction_invalid};
 use super::frames::frame_resource;
-use crate::runtime::apps::{FrameAdmission, app_for};
 use crate::runtime::apps::ConnectionLane;
+use crate::runtime::apps::{FrameAdmission, app_for};
 use crate::runtime::connections::hello::NegotiatedConnection;
 use crate::runtime::connections::plumbing::ClientPlumbing;
 use crate::state::{ClientId, SharedState};
-use tokio_util::sync::CancellationToken;
 use crate::state::{Outbound, ResolvedOwned};
+use tokio_util::sync::CancellationToken;
 /// One client's stream or input frame about a resource, with what the
 /// connection it arrived on lends the app to serve it.
 pub(crate) struct ResourceFrame<'a> {
@@ -60,9 +60,14 @@ pub(super) async fn serve(ctx: ResourceFrame<'_>, frame: FrameKind) -> FrameFlow
             }
             if let Some((code, message)) = app.frame_error(&frame) {
                 if local.handle.kind == phux_core::ResourceKind::AgentSession {
-                    let _ = ctx.plumbing.out_tx.try_send(Outbound::Frame(FrameKind::Error {
-                        request_id: None, code, message,
-                    }));
+                    let _ = ctx
+                        .plumbing
+                        .out_tx
+                        .try_send(Outbound::Frame(FrameKind::Error {
+                            request_id: None,
+                            code,
+                            message,
+                        }));
                 } else {
                     crate::runtime::send_error(&ctx.plumbing.out_tx, code, &message).await;
                 }

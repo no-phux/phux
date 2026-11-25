@@ -8,7 +8,9 @@ use std::marker::PhantomData;
 use std::os::fd::RawFd;
 use std::time::Duration;
 
-use crate::runtime::apps::document::engine::{DocumentActor, DocumentResource as _, SnapshotRequest};
+use crate::runtime::apps::document::engine::{
+    DocumentActor, DocumentResource as _, SnapshotRequest,
+};
 use base64::Engine as _;
 use bytes::Bytes;
 use futures_util::FutureExt as _;
@@ -18,9 +20,9 @@ use phux_protocol::wire::frame::ControlClass;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
+use super::{KindResume, UpgradeCut};
 use crate::runtime::apps::document::{DocumentApi, with_control};
 use crate::runtime::apps::producer_stream::collect_within;
-use super::{KindResume, UpgradeCut};
 use crate::runtime::connections::pane_events::PaneEvents;
 use crate::runtime::upgrade::UpgradeError;
 use crate::state::upgrade_blob::{KindRebuild, Missing, RebuildError, ResumeCx, live_pane_wires};

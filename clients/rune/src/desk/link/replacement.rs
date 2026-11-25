@@ -47,7 +47,7 @@ impl Desk {
 
     fn reset_connection_interactions(&mut self) {
         if let Some(panel) = self.quick.as_mut() {
-            panel.moving = false;
+            panel.forget_move();
         }
         if let Some(phone) = &mut self.phone {
             phone.reconcile(None, None);

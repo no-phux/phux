@@ -68,7 +68,7 @@ Addressed to the server or the connection rather than to one resource.
 | `RESOURCE_RENAME` | command `0x26` | ORGANIZE | yes | `organization` (features_ext) | shipped |
 | `RESOURCE_TERMINATE` | command `0x27` | TERMINATE | yes | `organization` (features_ext) | shipped |
 | `RESOURCE_REMOVE` | command `0x28` | TERMINATE | yes | `organization` (features_ext) | shipped |
-| `RESOURCE_RELAUNCH` | command `0x29` | CREATE | yes | `organization` (features_ext) | shipped |
+| `RESOURCE_RELAUNCH` | command `0x29` | CREATE | yes | `archived_launch_admission` (features_ext2) | shipped |
 | `INBOX_RESOLVE` | command `0x2b` | ORGANIZE | yes | `organization` (features_ext) | shipped |
 | `ORGANIZATION_UNDO` | command `0x2c` | ORGANIZE | yes | `organization` (features_ext) | shipped |
 | `ARRANGEMENT_GET` | command `0x2d` | INVENTORY | no | `organization` (features_ext) | shipped |
@@ -76,6 +76,7 @@ Addressed to the server or the connection rather than to one resource.
 | `DELEGATE_AGENT` | command `0x35` | TERMINATE (owner socket only) | yes | none | shipped |
 | `REVOKE_DELEGATION` | command `0x36` | TERMINATE (owner socket only) | yes | none | shipped |
 | `SESSION_KILL` | command `0x37` | TERMINATE | yes | `session_kill` (features_ext) | shipped |
+| `SESSION_ENSURE` | command `0x53` | CREATE | yes | `session_ensure` (features_ext2) | shipped |
 | `SESSION_SET_PROJECT` | command `0x3a` | ORGANIZE | yes | `session_project` (features_ext) | shipped |
 | `ARRANGEMENT_LOCK` | command `0x4d` | ORGANIZE | yes | `tab_lock` (features_ext) | shipped |
 
@@ -378,6 +379,8 @@ Every command nested in `COMMAND` lands on exactly one row; the envelope alone g
 | `NATIVE_AGENT { type: spawn }` | CREATE+BIND | `KeyedSession` |
 | `NATIVE_AGENT { type: list_integrations }` | INVENTORY | `OrganizationView` |
 | `NATIVE_AGENT { type: launch_integration }` | CREATE+BIND+INPUT | `KeyedSession` |
+| `NATIVE_AGENT { type: prepare_relaunch }` | INVENTORY + owner-UDS transport | `Global { owner_uds_only: true }` |
+| `NATIVE_AGENT { type: approve_relaunch }` | CREATE+BIND+INPUT + owner-UDS transport | `Global { owner_uds_only: true }` |
 | `NATIVE_AGENT { type: command }` | INPUT | `NamedTerminal` |
 | `NATIVE_AGENT { type: current_questions }` with handle | OBSERVE | `NamedTerminal` |
 | `NATIVE_AGENT { type: current_questions }` with durable key | OBSERVE | `KeyedResource` |
@@ -387,7 +390,7 @@ Every command nested in `COMMAND` lands on exactly one row; the envelope alone g
 | `GET_ORGANIZATION` | INVENTORY | `OrganizationView` |
 | `DESCRIBE_API` | INVENTORY | `Global { owner_uds_only: false }` |
 | `GET_CREATION` | INVENTORY | `KeyedSession` |
-| `SESSION_CREATE` | CREATE | `Global { owner_uds_only: false }` |
+| `SESSION_CREATE`, `SESSION_ENSURE` | CREATE | `Global { owner_uds_only: false }` |
 | `SESSION_RENAME`, `SESSION_SET_PROJECT`, `SESSION_SET_LIFETIME`, `INBOX_RESOLVE` | ORGANIZE | `KeyedSession` |
 | `SESSION_DELETE`, `SESSION_KILL` | TERMINATE | `KeyedSession` |
 | `RESOURCE_CREATE` | CREATE | `KeyedSession` |

@@ -168,7 +168,7 @@ SCC/count reports are investigation leads; they are not current measured facts.
 | 1. Domain transitions | Pure membership/arrangement/lifecycle, durable identities and refusals; existing core. |
 | 2. Host operation authority | Current subject/grant, affected set, transaction/receipt/journal, mirror/effect/publication; private workflows, no mega-dispatcher. |
 | 3. Execution lifecycle | Reservations, observed evidence/backlog, retirement, reconciliation, upgrade quiescence; engine facts, durable host interpretation. |
-| 4. Live generations | Connection/attachment/stream/bootstrap/link facts, cancellation and stale-result rejection. |
+| 4. Live generations | Connection/attachment/stream/bootstrap/link facts, cancellation and stale-result rejection. Streams reserve their exact generation before any await, fence on the predecessor's actual task, and natural close drains the admitted emitter ([stream attach](./architecture.md#one-server-many-clients)). |
 | 5. Resource kinds/terminal engine | Existing kind contracts; engine owns PTY/libghostty/encoding/native capture; explicit host assembly. |
 | 6. Portable client semantics | Shared session/intent decisions, explicit facts/clocks/identity and typed outcomes; extend existing kernels/policies. |
 | 7. Platform drivers/views | I/O/locks/scheduling, gestures/presentation/search/selection/scroll, teardown/callbacks. Shared native trust planning; platform credentials/origin constraints. |

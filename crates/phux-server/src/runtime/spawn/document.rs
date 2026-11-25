@@ -4,11 +4,9 @@ use crate::runtime::apps::document::engine::DocumentActor;
 use phux_protocol::wire::frame::SpawnError;
 use tracing::debug;
 
+use super::producer::{SpawnFinish, SpawnedChild, finish_spawn, register_spawned_child};
 use crate::runtime::apps::document::{DocumentApi, attach_document};
 use crate::runtime::spawn::ResourceSpawn;
-use super::producer::{
-    SpawnFinish, SpawnedChild, finish_spawn, register_spawned_child,
-};
 use crate::runtime::spawn_reply::refuse_spawn;
 
 /// The target, wire parent, and core parent a document spawn binds to, or
@@ -55,6 +53,29 @@ fn admit<'a, A: DocumentApi>(
     Ok((target, parent, core_parent))
 }
 
+/// Why the core refused to create the document under its parent.
+fn creation_refusal(refusal: &phux_core::Refusal) -> SpawnError {
+    match refusal {
+        phux_core::Refusal::NotFound => SpawnError::ParentNotFound,
+        phux_core::Refusal::InvalidArgument { field: "name", .. } => {
+            SpawnError::SpawnFailed(refusal.to_string())
+        }
+        _ => SpawnError::ParentKindMismatch,
+    }
+}
+
+/// Reserve the next stream generation for the spawner to watch its document.
+fn reserve_spawner_stream(
+    state: &crate::state::SharedState,
+    client_id: crate::state::ClientId,
+    document: phux_core::ids::ResourceId,
+    connection_token: &tokio_util::sync::CancellationToken,
+) -> Option<crate::runtime::apps::StreamReservation> {
+    let host = crate::runtime::apps::StreamHost::new(state, client_id);
+    host.next_bootstrap()
+        .and_then(|bootstrap| host.reserve(document, bootstrap, connection_token))
+}
+
 /// Handle a `SPAWN_RESOURCE` of document kind `A`.
 pub(crate) async fn spawn_document<A: DocumentApi>(spawn: ResourceSpawn<'_>) {
     let (target, parent, core_parent) = match admit::<A>(&spawn) {
@@ -79,7 +100,8 @@ pub(crate) async fn spawn_document<A: DocumentApi>(spawn: ResourceSpawn<'_>) {
 
     let token = root_token.child_token();
     let bundle = DocumentActor::<A>::build(core_parent, target, token.clone());
-    let handle = crate::runtime::apps::document::with_control(bundle.handle.clone(), resource.control);
+    let handle =
+        crate::runtime::apps::document::with_control(bundle.handle.clone(), resource.control);
     let registered = state.with_mut(|s| {
         let Some(parent_handle) = s.resources().handle(core_parent) else {
             return Err(SpawnError::ParentNotFound);
@@ -90,14 +112,9 @@ pub(crate) async fn spawn_document<A: DocumentApi>(spawn: ResourceSpawn<'_>) {
         }
         let actor = s.actor_for(client_id);
         let name = resource.native_id.as_deref();
-        let core =
-            s.create_child(core_parent, A::creation(target, name), &actor).map_err(|refusal| match refusal {
-                phux_core::Refusal::NotFound => SpawnError::ParentNotFound,
-                phux_core::Refusal::InvalidArgument { field: "name", .. } => {
-                    SpawnError::SpawnFailed(refusal.to_string())
-                }
-                _ => SpawnError::ParentKindMismatch,
-            })?;
+        let core = s
+            .create_child(core_parent, A::creation(target, name), &actor)
+            .map_err(|refusal| creation_refusal(&refusal))?;
         let child = SpawnedChild {
             core,
             handle,
@@ -119,9 +136,10 @@ pub(crate) async fn spawn_document<A: DocumentApi>(spawn: ResourceSpawn<'_>) {
         }
     };
     let reservation = if decodes.contains(A::WIRE_KIND) {
-        let host = crate::runtime::apps::StreamHost::new(state, client_id);
-        host.next_bootstrap().and_then(|bootstrap| host.reserve(core_doc, bootstrap, connection_token))
-    } else { None };
+        reserve_spawner_stream(state, client_id, core_doc, connection_token)
+    } else {
+        None
+    };
     let finish = SpawnFinish {
         state,
         request_id,
@@ -133,7 +151,12 @@ pub(crate) async fn spawn_document<A: DocumentApi>(spawn: ResourceSpawn<'_>) {
     };
     // The spawner watches its own document.
     let attach = async || {
-        let Some(reservation) = reservation else { return phux_protocol::wire::frame::CommandResult::error(phux_protocol::wire::frame::ErrorCode::InternalError, "spawner stream reservation unavailable"); };
+        let Some(reservation) = reservation else {
+            return phux_protocol::wire::frame::CommandResult::error(
+                phux_protocol::wire::frame::ErrorCode::InternalError,
+                "spawner stream reservation unavailable",
+            );
+        };
         attach_document::<A>(
             reservation,
             client_id,

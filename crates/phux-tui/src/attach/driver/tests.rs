@@ -192,13 +192,10 @@ fn sidebar_reservation_changes_view_rects_for_pty_reflow() {
     assert_eq!((inset.x, inset.w), (20, 80));
 }
 
-
 fn default_cfg() -> phux_config::Config {
     phux_config::parse_str(phux_config::DEFAULT_CONFIG_TOML, Path::new("default.toml"))
         .expect("default config parses")
 }
-
-
 
 /// A write to a departed peer must not become the reason the loop ended (it
 /// hid "the last pane exited 7" behind "attach loop io error"); local IO
@@ -358,10 +355,7 @@ async fn attach_negotiation_rejects_non_hello_ok_reply() {
     }
 }
 
-
 mod narrow_sidebar;
-
 
 mod copy_mode_status;
 mod pacing;
-

@@ -44,8 +44,8 @@ impl Fixture {
             client_id,
             handle,
             mailbox,
-            out_tx,
             session,
+            out_tx,
         }
     }
 

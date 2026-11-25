@@ -5,7 +5,10 @@ use super::{
     ResourceId, Scroll, SearchMatch, SearchResults, SelectionGestureEvent, SelectionGestureResult,
     Sender,
 };
-use crate::{ViewId, publication::{Publication, TerminalPublication}};
+use crate::{
+    ViewId,
+    publication::{Publication, TerminalPublication},
+};
 
 /// Original renderable source of an independent view, not a reusable numeric id.
 ///
@@ -27,10 +30,21 @@ impl ViewSource {
         &self.terminal
     }
 
-    pub(crate) fn capture(publication: &Publication, terminal: &ResourceId) -> Result<Self, EngineError> {
-        let slot = publication.slot(terminal).ok_or(EngineError::ProjectionUnavailable)?;
-        let token = slot.source_generation().ok_or(EngineError::ProjectionUnavailable)?;
-        Ok(Self { terminal: terminal.clone(), token, publication: slot })
+    pub(crate) fn capture(
+        publication: &Publication,
+        terminal: &ResourceId,
+    ) -> Result<Self, EngineError> {
+        let slot = publication
+            .slot(terminal)
+            .ok_or(EngineError::ProjectionUnavailable)?;
+        let token = slot
+            .source_generation()
+            .ok_or(EngineError::ProjectionUnavailable)?;
+        Ok(Self {
+            terminal: terminal.clone(),
+            token,
+            publication: slot,
+        })
     }
 }
 

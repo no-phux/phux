@@ -39,10 +39,15 @@ impl SpawnPublication<'_> {
         let instance = self
             .bind_instance
             .then(|| self.state.with(|s| s.idspace.instance()));
-        lease.queue(self.out_tx, FrameKind::ResourceSpawned {
-                request_id: self.request_id,
-                result: spawned_result(self.wire_terminal_id.clone(), instance),
-            }).await
+        lease
+            .queue(
+                self.out_tx,
+                FrameKind::ResourceSpawned {
+                    request_id: self.request_id,
+                    result: spawned_result(self.wire_terminal_id.clone(), instance),
+                },
+            )
+            .await
     }
 
     /// Capture the pane's first native checkpoint. `None` once the actor is
@@ -81,17 +86,38 @@ impl SpawnPublication<'_> {
         defer_subscription: bool,
     ) {
         let host = crate::runtime::apps::StreamHost::new(self.state, self.client_id);
-        let Some(reservation) = host.reserve(self.core_terminal_id, initial_bootstrap_id(), connection_token) else { return; };
+        let Some(reservation) = host.reserve(
+            self.core_terminal_id,
+            initial_bootstrap_id(),
+            connection_token,
+        ) else {
+            return;
+        };
         let lease = reservation.lease.clone();
-        let _ = lease.run(self.publish_reserved(output_pumps, reservation, defer_subscription)).await;
+        let _ = lease
+            .run(self.publish_reserved(output_pumps, reservation, defer_subscription))
+            .await;
     }
 
-    async fn publish_reserved(self, output_pumps: &mut JoinSet<()>, reservation: crate::runtime::apps::StreamReservation, defer_subscription: bool) {
+    async fn publish_reserved(
+        self,
+        output_pumps: &mut JoinSet<()>,
+        reservation: crate::runtime::apps::StreamReservation,
+        defer_subscription: bool,
+    ) {
         let lease = reservation.lease.clone();
-        let mut withdrawal = PendingSpawn { publication: &self, lease: &lease, published: false };
-        if !reservation.ready().await { return; }
+        let mut withdrawal = PendingSpawn {
+            publication: &self,
+            lease: &lease,
+            published: false,
+        };
+        if !reservation.ready().await {
+            return;
+        }
         if defer_subscription {
-            if self.queue_spawned_ok(&lease).await && reservation.published(|| true) { withdrawal.published = true; }
+            if self.queue_spawned_ok(&lease).await && reservation.published(|| true) {
+                withdrawal.published = true;
+            }
             return;
         }
         let output_rx = self.handle.output.subscribe();
@@ -117,7 +143,9 @@ impl SpawnPublication<'_> {
             output_rx,
             &lease,
             output_pumps,
-        ) else { return; };
+        ) else {
+            return;
+        };
         withdrawal.published = self.publish_first_generation(gate_tx, reservation).await;
     }
 
@@ -183,23 +211,39 @@ impl SpawnPublication<'_> {
 
     /// Reply, queue the first generation, activate a native publication, then
     /// release the parked output pump. Any failure reaps the pane.
-    async fn publish_first_generation(&self, gate_tx: oneshot::Sender<OutputPumpStart>, reservation: crate::runtime::apps::StreamReservation) -> bool {
+    async fn publish_first_generation(
+        &self,
+        gate_tx: oneshot::Sender<OutputPumpStart>,
+        reservation: crate::runtime::apps::StreamReservation,
+    ) -> bool {
         let lease = reservation.lease.clone();
         let generation = match self.stage_first_generation().await {
             Ok(generation) => generation,
             Err(reason) => {
-                lease.queue(self.out_tx, FrameKind::ResourceSpawned {
-                    request_id: self.request_id,
-                    result: phux_protocol::wire::frame::SpawnResult::Err(SpawnError::SpawnFailed(reason.to_owned())),
-                }).await;
+                lease
+                    .queue(
+                        self.out_tx,
+                        FrameKind::ResourceSpawned {
+                            request_id: self.request_id,
+                            result: phux_protocol::wire::frame::SpawnResult::Err(
+                                SpawnError::SpawnFailed(reason.to_owned()),
+                            ),
+                        },
+                    )
+                    .await;
                 return false;
             }
         };
-        if !self.queue_spawned_ok(&lease).await { return false; }
+        if !self.queue_spawned_ok(&lease).await {
+            return false;
+        }
         crate::runtime::session_attach::publication_phase("spawn_bootstrap_queue", "started");
         for frame in generation.frames {
             if !lease.queue(self.out_tx, frame).await {
-                crate::runtime::session_attach::publication_phase("spawn_bootstrap_queue", "outbound_closed");
+                crate::runtime::session_attach::publication_phase(
+                    "spawn_bootstrap_queue",
+                    "outbound_closed",
+                );
                 return false;
             }
         }
@@ -212,18 +256,15 @@ impl SpawnPublication<'_> {
             interest: None,
         };
         if let Some(capture) = generation.capture {
-            let Ok(publication) = activate_native_publication(
-                &self.terminal,
-                capture,
-            )
-            .await
-            else {
+            let Ok(publication) = activate_native_publication(&self.terminal, capture).await else {
                 return false;
             };
             start.adopt_native_publication(publication);
         }
         reservation.published(|| {
-            lease.last_seq.store(start.published_cut, std::sync::atomic::Ordering::Release);
+            lease
+                .last_seq
+                .store(start.published_cut, std::sync::atomic::Ordering::Release);
             gate_tx.send(start).is_ok()
         })
     }
@@ -237,7 +278,11 @@ struct PendingSpawn<'a, 'b> {
 }
 
 impl Drop for PendingSpawn<'_, '_> {
-    fn drop(&mut self) { if !self.published { self.publication.reap(self.lease); } }
+    fn drop(&mut self) {
+        if !self.published {
+            self.publication.reap(self.lease);
+        }
+    }
 }
 
 /// How often a spawn's first capture is asked for before the spawn is

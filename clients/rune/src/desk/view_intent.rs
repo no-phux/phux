@@ -1,12 +1,15 @@
 //! A presentation request keeps its observed server and, once available,
 //! its exact publication. A retry never upgrades that authority.
 
-use std::sync::{Arc, Weak};
-use phux_client_runtime::publication::Publication;
-use phux_client_runtime::{Client, ViewId, engine::{EngineError, ViewSource}};
-use phux_protocol::ids::ResourceId;
 use phux_client_runtime::control::Status;
+use phux_client_runtime::publication::Publication;
+use phux_client_runtime::{
+    Client, ViewId,
+    engine::{EngineError, ViewSource},
+};
+use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::AttachTarget;
+use std::sync::{Arc, Weak};
 
 #[derive(Debug)]
 pub(super) struct ViewIntent {
@@ -18,16 +21,36 @@ pub(super) struct ViewIntent {
 }
 
 impl ViewIntent {
-    pub(super) fn new(client: &Client, terminal: &ResourceId, server: Option<Vec<u8>>, epoch: u64) -> Self {
+    pub(super) fn new(
+        client: &Client,
+        terminal: &ResourceId,
+        server: Option<Vec<u8>>,
+        epoch: u64,
+    ) -> Self {
         let mut intent = Self {
-            server, epoch, owner: Arc::downgrade(client.publication()), source: None, refused: false,
+            server,
+            epoch,
+            owner: Arc::downgrade(client.publication()),
+            source: None,
+            refused: false,
         };
         intent.capture(client, terminal);
         intent
     }
     #[cfg(test)]
-    pub(super) fn from_source(client: &Client, server: Vec<u8>, epoch: u64, source: ViewSource) -> Self {
-        Self { server: Some(server), epoch, owner: Arc::downgrade(client.publication()), source: Some(source), refused: false }
+    pub(super) fn from_source(
+        client: &Client,
+        server: Vec<u8>,
+        epoch: u64,
+        source: ViewSource,
+    ) -> Self {
+        Self {
+            server: Some(server),
+            epoch,
+            owner: Arc::downgrade(client.publication()),
+            source: Some(source),
+            refused: false,
+        }
     }
     pub(super) fn owns_client(&self, client: &Client) -> bool {
         Weak::ptr_eq(&self.owner, &Arc::downgrade(client.publication()))
@@ -35,9 +58,6 @@ impl ViewIntent {
     pub(super) fn has_source(&self) -> bool {
         self.source.is_some()
     }
-
-
-
 
     fn capture(&mut self, client: &Client, terminal: &ResourceId) {
         if !Weak::ptr_eq(&self.owner, &Arc::downgrade(client.publication())) {
@@ -50,7 +70,7 @@ impl ViewIntent {
         }
         match client.view_source(terminal, self.server.as_deref(), self.epoch) {
             Ok(source) => self.source = Some(source),
-            Err(EngineError::ProjectionUnavailable) => {},
+            Err(EngineError::ProjectionUnavailable) => {}
             Err(_) => self.refused = true,
         }
     }
@@ -72,13 +92,15 @@ impl ViewIntent {
         }
     }
     pub(super) fn subscribe(&self, client: &Client, terminal: &ResourceId) {
-        if self.refused || self.source.is_some()
+        if self.refused
+            || self.source.is_some()
             || !Weak::ptr_eq(&self.owner, &Arc::downgrade(client.publication()))
         {
             return;
         }
         client.with_control(|control| {
-            if control.status() == Status::Attached && control.connection_epoch() == self.epoch
+            if control.status() == Status::Attached
+                && control.connection_epoch() == self.epoch
                 && control.server().map(|server| server.id.as_slice()) == self.server.as_deref()
             {
                 control.attach_terminal(terminal);
@@ -93,26 +115,34 @@ impl ViewIntent {
             return;
         }
         client.with_control(|control| {
-            if control.status() == Status::Attached && control.connection_epoch() == self.epoch
+            if control.status() == Status::Attached
+                && control.connection_epoch() == self.epoch
                 && control.server().map(|server| server.id.as_slice()) == self.server.as_deref()
-                && let Some(session) = control.topology()
-                    .and_then(|topology| topology.pane(terminal)).map(|pane| pane.session_id)
+                && let Some(session) = control
+                    .topology()
+                    .and_then(|topology| topology.pane(terminal))
+                    .map(|pane| pane.session_id)
                 && control.selected_session() != Some(session)
             {
-                control.attach_session(AttachTarget::ById(phux_protocol::ids::SessionId::new(session)));
+                control.attach_session(AttachTarget::ById(phux_protocol::ids::SessionId::new(
+                    session,
+                )));
             }
         });
     }
 
     /// A move selects its explicit durable destination, not the terminal's
     /// possibly still-unrefreshed previous membership.
-    pub(super) fn select_session(&self, client: &Client, session: &phux_protocol::ids::SessionKey) -> bool {
+    pub(super) fn select_session(
+        &self,
+        client: &Client,
+        session: &phux_protocol::ids::SessionKey,
+    ) -> bool {
         if self.refused || !self.owns_client(client) {
             return false;
         }
         select_keyed_session(client, self.server.as_deref(), self.epoch, session)
     }
-
 
     pub(super) const fn refused(&self) -> bool {
         self.refused
@@ -121,15 +151,25 @@ impl ViewIntent {
 
 /// Exact destination selection shared by source-owning UI continuations.
 pub(super) fn select_keyed_session(
-    client: &Client, server: Option<&[u8]>, epoch: u64, session: &phux_protocol::ids::SessionKey,
+    client: &Client,
+    server: Option<&[u8]>,
+    epoch: u64,
+    session: &phux_protocol::ids::SessionKey,
 ) -> bool {
     client.with_control(|control| {
-        if control.status() != Status::Attached || control.connection_epoch() != epoch
-            || control.server().map(|server| server.id.as_slice()) != server {
+        if control.status() != Status::Attached
+            || control.connection_epoch() != epoch
+            || control.server().map(|server| server.id.as_slice()) != server
+        {
             return false;
         }
-        let Some(id) = control.topology().and_then(|topology| topology.session_keyed(session))
-            .map(|session| session.id) else { return false };
+        let Some(id) = control
+            .topology()
+            .and_then(|topology| topology.session_keyed(session))
+            .map(|session| session.id)
+        else {
+            return false;
+        };
         if control.selected_session() != Some(id) {
             control.attach_session(AttachTarget::ById(phux_protocol::ids::SessionId::new(id)));
         }

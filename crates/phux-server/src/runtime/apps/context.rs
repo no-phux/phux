@@ -32,8 +32,6 @@ pub(crate) struct StreamBootstrap<'a> {
     pub(crate) after_seq: Option<u64>,
 }
 
-
-
 /// The host-side check an app needs before it sees a local frame. These
 /// distinctions preserve the wire's input, hint, and refusal semantics.
 #[derive(Clone, Copy)]
@@ -45,4 +43,3 @@ pub(crate) enum FrameAdmission {
     /// Attached input also respects retained exits, guardians, and leases.
     AttachedInput,
 }
-

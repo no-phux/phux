@@ -3,17 +3,32 @@
 use super::*;
 use crate::test_support::{self, terminal::Replica};
 use phux_client_runtime::control::Event;
-use phux_protocol::{caps::{ServerCapabilities, ServerFeature, ServerFeatureSet}, wire::frame::{CloseReason, Command, ErrorCode, FrameKind, SpawnResult}};
+use phux_protocol::{
+    caps::{ServerCapabilities, ServerFeature, ServerFeatureSet},
+    wire::frame::{CloseReason, Command, ErrorCode, FrameKind, SpawnResult},
+};
 
-fn id(n: u32) -> ResourceId { ResourceId::local(n) }
+fn id(n: u32) -> ResourceId {
+    ResourceId::local(n)
+}
 fn replica() -> Replica {
-    Replica::with_capabilities(80, 24, 2, ServerCapabilities::new()
-        .with_features(ServerFeatureSet::with(&[ServerFeature::CloseTabResources])))
+    Replica::with_capabilities(
+        80,
+        24,
+        2,
+        ServerCapabilities::new()
+            .with_features(ServerFeatureSet::with(&[ServerFeature::CloseTabResources])),
+    )
 }
 fn window(replica: &Replica) -> rune::Runtime<Desk> {
     let mut desk = replica.window();
     desk.show(id(1), "budget");
-    test_support::runtime(desk, crate::ui::view, test_support::SIZE, rune::Env::new(true, 1.0))
+    test_support::runtime(
+        desk,
+        crate::ui::view,
+        test_support::SIZE,
+        rune::Env::new(true, 1.0),
+    )
 }
 fn open(rt: &mut rune::Runtime<Desk>, line: &str) -> u32 {
     rt.update(|desk, _| {
@@ -23,19 +38,33 @@ fn open(rt: &mut rune::Runtime<Desk>, line: &str) -> u32 {
     rt.state.connection.popup.request.unwrap()
 }
 fn spawned(client: &Client, request: u32) {
-    client.feed(FrameKind::ResourceSpawned { request_id: request, result: SpawnResult::Ok(id(2)) }).unwrap();
+    client
+        .feed(FrameKind::ResourceSpawned {
+            request_id: request,
+            result: SpawnResult::Ok(id(2)),
+        })
+        .unwrap();
 }
 fn observe(rt: &mut rune::Runtime<Desk>, client: &Client) {
     let observation = client.take_activity();
-    rt.update(|desk, tx| { desk.observe(client, observation, tx); });
+    rt.update(|desk, tx| {
+        desk.observe(client, observation, tx);
+    });
 }
 fn assert_no_termination_or_detach(client: &Client) {
-    assert!(!client.take_outbound().iter().any(|bytes| matches!(
-        FrameKind::decode(bytes).unwrap().0,
-        FrameKind::Command { command: Command::CloseTabResources { .. }
-            | Command::KillResource { .. } | Command::ResourceTerminate { .. }
-            | Command::DetachResource { .. }, .. }
-    )), "retiring UI interest cannot kill execution or remove a sibling subscription");
+    assert!(
+        !client.take_outbound().iter().any(|bytes| matches!(
+            FrameKind::decode(bytes).unwrap().0,
+            FrameKind::Command {
+                command: Command::CloseTabResources { .. }
+                    | Command::KillResource { .. }
+                    | Command::ResourceTerminate { .. }
+                    | Command::DetachResource { .. },
+                ..
+            }
+        )),
+        "retiring UI interest cannot kill execution or remove a sibling subscription"
+    );
 }
 
 #[test]
@@ -105,7 +134,10 @@ fn delayed_popup_layout_never_spawns_on_a_replaced_server_or_runtime_owner() {
         let _ = client.take_outbound();
         rt.update(|desk, _| desk.popup_laid_out([600.0, 400.0]));
         assert!(rt.state.connection.popup.command().is_none());
-        assert!(client.take_outbound().is_empty(), "the stale layout cannot submit a spawn");
+        assert!(
+            client.take_outbound().is_empty(),
+            "the stale layout cannot submit a spawn"
+        );
     }
 }
 
@@ -128,8 +160,13 @@ fn a_captured_popup_source_is_reused_offline_but_never_upgraded_after_generation
         let sibling_source = client.view_source(&id(2), Some(&[1; 16]), 1).unwrap();
         let sibling = client.create_view(&sibling_source).unwrap();
         let _ = client.take_outbound();
-        rt.update(|desk, tx| { desk.tend_popup(client, tx); });
-        assert_eq!(rt.state.connection.popup.command().is_none(), replace_generation);
+        rt.update(|desk, tx| {
+            desk.tend_popup(client, tx);
+        });
+        assert_eq!(
+            rt.state.connection.popup.command().is_none(),
+            replace_generation
+        );
         if !replace_generation {
             let reopened = rt.state.connection.popup.view_of(&id(2)).unwrap();
             assert_ne!(reopened, old_view);
@@ -154,9 +191,14 @@ fn exit_notification_releases_only_the_popup_view_not_execution_or_sibling_views
     let _ = client.take_outbound();
     let mut observation = client.take_activity();
     observation.events.push(Event::Exited {
-        terminal_id: id(2), exit_status: Some(0), signal: None, reason: CloseReason::Unknown,
+        terminal_id: id(2),
+        exit_status: Some(0),
+        signal: None,
+        reason: CloseReason::Unknown,
     });
-    rt.update(|desk, tx| { desk.observe(client, observation, tx); });
+    rt.update(|desk, tx| {
+        desk.observe(client, observation, tx);
+    });
     assert!(rt.state.connection.popup.command().is_none());
     assert!(client.view_generation(popup_view).is_none());
     assert!(client.acquire_view(replica.views[1]).is_some());
@@ -171,9 +213,14 @@ fn lifecycle_events_before_opened_cannot_dismiss_the_newest_popup_with_the_same_
     let old = open(&mut rt, "old command");
     spawned(client, old);
     observe(&mut rt, client);
-    client.feed(FrameKind::ResourceClosed {
-        terminal_id: id(2), exit_status: Some(0), signal: None, reason: CloseReason::Unknown,
-    }).unwrap();
+    client
+        .feed(FrameKind::ResourceClosed {
+            terminal_id: id(2),
+            exit_status: Some(0),
+            signal: None,
+            reason: CloseReason::Unknown,
+        })
+        .unwrap();
     replica.replace_server(2);
     let source = client.view_source(&id(2), Some(&[2; 16]), 2).unwrap();
     rt.update(|desk, _| {
@@ -185,12 +232,25 @@ fn lifecycle_events_before_opened_cannot_dismiss_the_newest_popup_with_the_same_
     let latest = open(&mut rt, "latest command");
     spawned(client, latest);
     let mut observation = client.take_activity();
-    observation.events.insert(0, Event::Exited {
-        terminal_id: id(2), exit_status: Some(0), signal: None, reason: CloseReason::Unknown,
-    });
-    assert!(observation.events.iter().any(|event| matches!(event, Event::ConnectionOpened { .. })));
+    observation.events.insert(
+        0,
+        Event::Exited {
+            terminal_id: id(2),
+            exit_status: Some(0),
+            signal: None,
+            reason: CloseReason::Unknown,
+        },
+    );
+    assert!(
+        observation
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::ConnectionOpened { .. }))
+    );
     let _ = client.take_outbound();
-    rt.update(|desk, tx| { desk.observe(client, observation, tx); });
+    rt.update(|desk, tx| {
+        desk.observe(client, observation, tx);
+    });
     assert_eq!(rt.state.connection.popup.command(), Some("latest command"));
     assert!(rt.state.connection.popup.view_of(&id(2)).is_some());
     assert_no_termination_or_detach(client);
@@ -207,16 +267,23 @@ fn an_old_runtime_receipt_with_reused_request_and_resource_ids_cannot_touch_the_
         desk.connection.client = Some(replacement.client.clone());
         desk.connection.status = replacement.client.status();
         desk.connection.topology = replacement.client.topology();
-        desk.connection.seed_view_sources(vec![1; 16], &replacement.sources);
+        desk.connection
+            .seed_view_sources(vec![1; 16], &replacement.sources);
         desk.show(id(1), "budget");
     });
     let latest = open(&mut rt, "latest command");
-    assert_eq!(old, latest, "the fixture deliberately reuses the request namespace");
+    assert_eq!(
+        old, latest,
+        "the fixture deliberately reuses the request namespace"
+    );
     spawned(&original.client, old);
     observe(&mut rt, &original.client);
     assert_eq!(rt.state.connection.popup.request, Some(latest));
     assert_eq!(rt.state.connection.popup.command(), Some("latest command"));
-    assert!(!rt.state.popup_spawned(&original.client, old, Some(&id(2)), None));
+    assert!(
+        !rt.state
+            .popup_spawned(&original.client, old, Some(&id(2)), None)
+    );
     spawned(&replacement.client, latest);
     observe(&mut rt, &replacement.client);
     assert!(rt.state.connection.popup.view_of(&id(2)).is_some());
@@ -236,7 +303,9 @@ fn confirmed_popup_close_cannot_terminate_reused_id_before_the_ui_drains_new_hel
     // The confirmation still belongs to the displayed old popup. The backend
     // already knows a new server with all the same short ids.
     replica.replace_server(2);
-    let source = client.view_source(&id(2), Some(&[2; 16]), client.connection_epoch()).unwrap();
+    let source = client
+        .view_source(&id(2), Some(&[2; 16]), client.connection_epoch())
+        .unwrap();
     let independent = client.create_view(&source).unwrap();
     let _ = client.take_outbound();
     rt.update(|desk, _| desk.close_now(&id(2)));

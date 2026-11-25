@@ -10,8 +10,8 @@ use super::{
     NativeRequestReceivers, PerTerminalFocusEncoder, PerTerminalKeyEncoder,
     PerTerminalMouseEncoder, PerTerminalPasteEncoder, PtyEvent, PtyOwned, PtySource, Rc, RefCell,
     ResourceCore, ResourceKind, ResourceLifecycle, SizeReportSize, SnapshotSynthesizer,
-    TerminalActor, TerminalActorBundle, TerminalActorError, TerminalHandle, adopt_pty,
-    effects, mpsc, spawn_pty, watch,
+    TerminalActor, TerminalActorBundle, TerminalActorError, TerminalHandle, adopt_pty, effects,
+    mpsc, spawn_pty, watch,
 };
 use phux_config_core::limits::ScrollbackLimits;
 

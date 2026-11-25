@@ -1,11 +1,11 @@
 use super::*;
 use crate::runtime::apps::terminal::attach::handle_attach;
+use crate::runtime::apps::terminal::test_support::{
+    StubRx, TerminalInput, seeded_terminal, snapshot_bytes, state_sync_outcome, stub_terminal,
+};
 use crate::runtime::commands::terminal::seed::*;
 use crate::runtime::commands::terminal::{
     handle_client_activity, handle_terminal_input, handle_terminal_resize, handle_viewport_resize,
-};
-use crate::runtime::apps::terminal::test_support::{
-    StubRx, TerminalInput, seeded_terminal, snapshot_bytes, state_sync_outcome, stub_terminal,
 };
 use crate::runtime::committed_close;
 use crate::runtime::config::{

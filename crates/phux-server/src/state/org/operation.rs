@@ -44,21 +44,30 @@ pub(crate) fn relaunch_admitted(
     command: phux_core::Command,
     root_token: &CancellationToken,
 ) -> CommandResult {
-    let Op::ResourceRelaunch { resource, expected, launch: Some(_) } = &command.op else {
+    let Op::ResourceRelaunch {
+        resource,
+        expected,
+        launch: Some(_),
+    } = &command.op
+    else {
         return CommandResult::Refused(ow::refusal(&Refusal::InvalidArgument {
-            field: "command", reason: "expected an admitted relaunch".to_owned(),
+            field: "command",
+            reason: "expected an admitted relaunch".to_owned(),
         }));
     };
     let Some(operation) = ow::operation(command.operation) else {
         return CommandResult::Refused(ow::refusal(&Refusal::InvalidArgument {
-            field: "operation", reason: "must not be all zero".to_owned(),
+            field: "operation",
+            reason: "must not be all zero".to_owned(),
         }));
     };
     let Some(resource) = ow::resource_key(*resource) else {
         return CommandResult::Refused(ow::refusal(&Refusal::NotFound));
     };
     let request = phux_protocol::wire::frame::Command::ResourceRelaunch {
-        operation, resource, expected: ow::revision(*expected),
+        operation,
+        resource,
+        expected: ow::revision(*expected),
     };
     execute(state, client_id, request, Some(command), root_token)
 }
@@ -75,20 +84,26 @@ fn execute(
     // activation the effect recorded.
     let committed = state.with_mut(|s| {
         admit_request(s, client_id, &request)?;
-        let phux_core::Command { operation, op } = match admitted {
-            Some(command) => command,
-            None => {
+        let phux_core::Command { operation, op } =
+            if let Some(command) = admitted {
+                command
+            } else {
                 let (operation, op) = crate::runtime::organization::translate(s, request)
                     .ok_or_else(|| Refusal::InvalidArgument {
                         field: "command",
                         reason: "not an organization mutation".to_owned(),
                     })?;
                 phux_core::Command { operation, op: op? }
-            }
-        };
+            };
         arrangement_save = arrangement_save_fields(&op);
         if let Some((owner, expected, groups)) = arrangement_save {
-            debug!(?owner, expected, groups, path = "arrangement", "arrangement save attempt");
+            debug!(
+                ?owner,
+                expected,
+                groups,
+                path = "arrangement",
+                "arrangement save attempt"
+            );
         }
         if let Some(refusal) = launch_refusal(s, operation, &op) {
             return Err(refusal);
@@ -138,14 +153,20 @@ fn admit_request(
 ) -> Result<(), Refusal> {
     use phux_protocol::wire::frame::Command;
     let verb = match request {
-        Command::SessionCreate { .. } | Command::SessionEnsure { .. }
-        | Command::ResourceCreate { .. } | Command::ResourceRelaunch { .. } => phux_core::Verb::Create,
-        Command::SessionDelete { .. } | Command::SessionKill { .. }
-        | Command::ResourceTerminate { .. } | Command::ResourceRemove { .. } => phux_core::Verb::Terminate,
+        Command::SessionCreate { .. }
+        | Command::SessionEnsure { .. }
+        | Command::ResourceCreate { .. }
+        | Command::ResourceRelaunch { .. } => phux_core::Verb::Create,
+        Command::SessionDelete { .. }
+        | Command::SessionKill { .. }
+        | Command::ResourceTerminate { .. }
+        | Command::ResourceRemove { .. } => phux_core::Verb::Terminate,
         _ => phux_core::Verb::Organize,
     };
-    let grant = s.connection_grant(client).ok_or(Refusal::Unauthorized { verb })?;
-    crate::policy::enforce::enforce(s, client, grant, crate::policy::enforce::Request::Command(request))
+    let grant = s
+        .connection_grant(client)
+        .ok_or(Refusal::Unauthorized { verb })?;
+    crate::policy::enforce(s, client, grant, crate::policy::Request::Command(request))
         .map_err(|_| Refusal::Unauthorized { verb })
 }
 
@@ -163,9 +184,11 @@ fn launch_refusal(s: &ServerState, operation: phux_core::OperationId, op: &Op) -
             resource: Some(resource),
             ..
         } => unsupported_launch(resource.kind, "creating this kind through SESSION_CREATE"),
-        Op::SessionEnsure { name, resource: Some(resource), .. }
-            if !s.org().sessions().any(|session| session.name == *name) =>
-        {
+        Op::SessionEnsure {
+            name,
+            resource: Some(resource),
+            ..
+        } if !s.org().sessions().any(|session| session.name == *name) => {
             unsupported_launch(resource.kind, "creating this kind through SESSION_ENSURE")
         }
         Op::ResourceRelaunch {
@@ -199,10 +222,9 @@ fn projection_relaunch_refusal(
 }
 
 fn unsupported_launch(kind: phux_core::ResourceKind, capability: &str) -> Option<Refusal> {
-    (!crate::runtime::apps::supports_organization_launch(kind))
-        .then(|| Refusal::Unsupported {
-            capability: capability.to_owned(),
-        })
+    (!crate::runtime::apps::supports_organization_launch(kind)).then(|| Refusal::Unsupported {
+        capability: capability.to_owned(),
+    })
 }
 
 fn note_arrangement_result(

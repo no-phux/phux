@@ -29,10 +29,12 @@ async fn two_native_pumps_from_one_client_do_not_tombstone_each_other() {
         "a sibling pump must not tombstone the first: {tombstones:?}"
     );
     assert!(
-        actor.publication
+        actor
+            .publication
             .native_cursor_owners
             .contains_key(&NativeCursorKey::new(owner, stream_a))
-            && actor.publication
+            && actor
+                .publication
                 .native_cursor_owners
                 .contains_key(&NativeCursorKey::new(owner, stream_b)),
         "both pumps keep a live binding"
@@ -105,14 +107,16 @@ async fn recapturing_the_same_owner_stream_tombstones_only_that_binding() {
         "recapture tombstones only the same (owner, stream) generation"
     );
     assert_eq!(
-        actor.publication
+        actor
+            .publication
             .native_cursor_owners
             .get(&NativeCursorKey::new(owner, stream_a))
             .map(|binding| binding.bootstrap_id),
         Some(bootstrap_a2)
     );
     assert_eq!(
-        actor.publication
+        actor
+            .publication
             .native_cursor_owners
             .get(&NativeCursorKey::new(owner, stream_b))
             .map(|binding| binding.bootstrap_id),
@@ -171,7 +175,8 @@ async fn two_same_client_pumps_can_share_one_pending_capture() {
     let (reply_b, mut response_b) = oneshot::channel();
     actor.handle_native_bootstrap(request(stream_b, bootstrap_b, reply_b));
     assert_eq!(
-        actor.publication
+        actor
+            .publication
             .pending_native_bootstrap
             .as_ref()
             .map(|pending| pending.waiters.len()),

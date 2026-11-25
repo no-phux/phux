@@ -426,7 +426,6 @@ impl Desk {
         });
     }
 
-
     /// Answers from the CLI, and the grant sheet's next ask. True when
     /// anything on screen changed.
     pub(crate) fn pump_onboarding(&mut self, tx: &mut Tx) -> bool {

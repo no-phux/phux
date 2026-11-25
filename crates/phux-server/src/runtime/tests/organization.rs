@@ -146,7 +146,7 @@ fn a_refused_end_report_backs_off_instead_of_livelocking() {
                     server.activation_token(id).unwrap(),
                     ExitOutcome::UNKNOWN,
                     true,
-                )
+                );
             });
             let token = CancellationToken::new();
             super::super::services::spawn_activation_report_retry(&state, &token);
@@ -181,7 +181,7 @@ fn a_commit_wakes_a_backing_off_report_retry() {
                     server.activation_token(id).unwrap(),
                     ExitOutcome::UNKNOWN,
                     true,
-                )
+                );
             });
             assert_eq!(activation_state(&state, id), ExecState::Starting);
             let token = CancellationToken::new();

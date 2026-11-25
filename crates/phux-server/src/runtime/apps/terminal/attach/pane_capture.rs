@@ -53,9 +53,8 @@ impl PaneCaptureContext<'_> {
         let Ok(terminal) = handle.terminal() else {
             return ConsumerRegistration::default();
         };
-        let registration = phux_terminal_api::actor::ConsumerRegistrationGuard::new(
-            &self.lease.cancellation,
-        );
+        let registration =
+            phux_terminal_api::actor::ConsumerRegistrationGuard::new(&self.lease.cancellation);
         let (attach_reply_tx, attach_reply_rx) = oneshot::channel();
         if terminal
             .consumer_attach
@@ -179,7 +178,11 @@ impl PaneCaptureContext<'_> {
                 };
                 owner.retire_terminal_fault(fault);
             },
-        ) { return Err(CaptureFailure::Failed("aggregate stream reservation superseded".to_owned())); }
+        ) {
+            return Err(CaptureFailure::Failed(
+                "aggregate stream reservation superseded".to_owned(),
+            ));
+        }
         Ok(())
     }
 

@@ -18,8 +18,13 @@ impl OrgFixture {
             CommandResult::OkWith(CommandValue::Committed(Box::new(committed)))
         };
         match command {
-            Command::SessionEnsure { operation, name, lifetime, launch, attrs } =>
-                self.ensure_session(*operation, name, *lifetime, launch, attrs),
+            Command::SessionEnsure {
+                operation,
+                name,
+                lifetime,
+                launch,
+                attrs,
+            } => self.ensure_session(*operation, name, *lifetime, launch.as_deref(), attrs),
             Command::SessionCreate {
                 operation,
                 name,

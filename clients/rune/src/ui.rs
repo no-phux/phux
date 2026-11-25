@@ -11,8 +11,8 @@ use crate::desk::surfaces::Surface;
 use crate::features::changes;
 use phux_config_core::rune::TabBar;
 
-mod badge;
 mod archived_relaunch;
+mod badge;
 mod chief;
 mod controls;
 pub(crate) use controls::{

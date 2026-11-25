@@ -391,4 +391,3 @@ impl Federation {
             .remove(&(client, host.clone(), terminal));
     }
 }
-

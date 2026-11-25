@@ -84,7 +84,7 @@ async fn user_paste_raw_fallback_is_atomic_and_byte_preserving() {
         assert_eq!(events.len(), 1);
         let paste = events.pop().expect("DEC2004 paste");
         let expected = paste.clone().into_frame(target.clone());
-        let mut env = Env::new(fx(ArrangementDoc::single(target.clone())));
+        let mut env = Env::new(fx(crate::layout::ArrangementDoc::single(target.clone())));
         env.focused = Some(target);
         env.journal = Some(&journal);
         let sent = env.dispatch(vec![paste]).await;
@@ -133,7 +133,7 @@ async fn large_raw_fallback_cannot_cross_an_unknown_delivery_fence() {
     let sent = env.dispatch(vec![paste(b"first".to_vec())]).await;
     let (request, _) = apply_input_events(&sent.frames[0]);
     let report = journal.borrow_mut().resolve(request, &CommandResult::Error {
-        code: ErrorCode::UnreadableReply,
+        code: ErrorCode::InputDeliveryUnknown,
         message: "receipt was unreadable".to_owned(),
     }).expect("unknown receipt");
     assert_eq!(report.disposition, ReplayDisposition::Unknown);

@@ -21,13 +21,18 @@ pub(super) struct Reply {
 impl Desk {
     /// Start the requested migration; view interest keeps its original scope.
     pub fn migrate_with(&mut self, agent: &'static str) {
-        if matches!(self.onboarding.migrate, Migrate::Starting(_) | Migrate::Running(..)) {
+        if matches!(
+            self.onboarding.migrate,
+            Migrate::Starting(_) | Migrate::Running(..)
+        ) {
             return;
         }
         self.connection.view_choice += 1;
         let choice = self.connection.view_choice;
         self.onboarding.migration_choice = Some(choice);
-        let scope = self.connection.callback_fence()
+        let scope = self
+            .connection
+            .callback_fence()
             .filter(|_| self.machines.current.is_none())
             .map(|origin| Scope {
                 origin,
@@ -54,7 +59,8 @@ impl Desk {
         {
             let request = client.with_control(|control| {
                 if control.connection_epoch() == scope.epoch
-                    && control.server().map(|server| server.id.as_slice()) == scope.server.as_deref()
+                    && control.server().map(|server| server.id.as_slice())
+                        == scope.server.as_deref()
                 {
                     control.close_terminals(vec![pane.clone()])
                 } else {
@@ -83,7 +89,9 @@ impl Desk {
             Err(error) => {
                 self.onboarding.migrate = Migrate::Failed(if words::unsupported(&error) {
                     "Update phux to enable this.".to_owned()
-                } else { error });
+                } else {
+                    error
+                });
                 return;
             }
         };
@@ -91,12 +99,17 @@ impl Desk {
             self.onboarding.migrate = Migrate::Running(reply.agent, None);
             return;
         }
-        let Some(scope) = reply.scope.filter(|scope| scope.origin.is_current(&self.connection)) else {
+        let Some(scope) = reply
+            .scope
+            .filter(|scope| scope.origin.is_current(&self.connection))
+        else {
             self.onboarding.migrate = Migrate::Running(reply.agent, None);
             self.say(NoticeKind::Info, "The migration may be running, but its original server view is no longer available.");
             return;
         };
-        let Some(client) = self.connection.client.clone() else { return; };
+        let Some(client) = self.connection.client.clone() else {
+            return;
+        };
         let pane = migration.pane.map(ResourceId::local);
         if let Some(pane) = pane.as_ref() {
             let intent = ViewIntent::new(&client, pane, scope.server.clone(), scope.epoch);
@@ -113,12 +126,16 @@ impl Desk {
             let selected = client.with_control(|control| {
                 if control.status() != phux_client_runtime::control::Status::Attached
                     || control.connection_epoch() != scope.epoch
-                    || control.server().map(|server| server.id.as_slice()) != scope.server.as_deref()
+                    || control.server().map(|server| server.id.as_slice())
+                        != scope.server.as_deref()
                 {
                     return false;
                 }
-                let Some(id) = control.topology()
-                    .and_then(|topology| topology.session_named(&session)).map(|session| session.id) else {
+                let Some(id) = control
+                    .topology()
+                    .and_then(|topology| topology.session_named(&session))
+                    .map(|session| session.id)
+                else {
                     return false;
                 };
                 control.attach_session(AttachTarget::ById(phux_protocol::ids::SessionId::new(id)));
@@ -127,7 +144,10 @@ impl Desk {
             if selected {
                 self.wait_for_session(session);
             } else {
-                self.say(NoticeKind::Info, "Migration returned, but its session view is unavailable on this connection.");
+                self.say(
+                    NoticeKind::Info,
+                    "Migration returned, but its session view is unavailable on this connection.",
+                );
             }
         }
         self.onboarding.migration_scope = Some(scope);

@@ -54,12 +54,12 @@ impl PeerWatch {
         conn: &mut Connection,
         organization: bool,
     ) -> Result<(), AttachError> {
-        if self.global_subscribed {
-            return Ok(());
-        }
         use phux_protocol::wire::frame::{
             CONFIG_RELOAD_KEY, SESSION_KEEP_EMPTY_KEY, SESSION_NAME_KEY, SESSION_PROJECT_KEY,
         };
+        if self.global_subscribed {
+            return Ok(());
+        }
         let legacy: &[&str] = if organization {
             &[]
         } else {
@@ -83,7 +83,7 @@ impl PeerWatch {
         Ok(())
     }
 
-    pub(in crate::attach::driver) fn inventory_in_flight(&self) -> bool {
+    pub(in crate::attach::driver) const fn inventory_in_flight(&self) -> bool {
         self.inventory.is_some()
     }
 
@@ -156,7 +156,10 @@ impl PeerWatch {
     }
 
     /// Deadline expiry retires the correlation and releases every held notice.
-    pub(in crate::attach::driver) fn expire_inventory(&mut self, now: std::time::Instant) -> Option<Vec<String>> {
+    pub(in crate::attach::driver) fn expire_inventory(
+        &mut self,
+        now: std::time::Instant,
+    ) -> Option<Vec<String>> {
         let since = self.inventory.as_ref().map(|read| read.since);
         if !crate::attach::driver::loop_state::host_inventory_overdue(since, now) {
             return None;
@@ -201,10 +204,13 @@ impl PeerWatch {
 
     /// Only matched replies consume correlation. Refusals retire the same
     /// pending read as values, without clearing its previously observed cache.
-    pub(in crate::attach::driver) fn take_metadata_reply(&mut self, frame: FrameKind) -> Result<PeerReply, FrameKind> {
+    pub(in crate::attach::driver) fn take_metadata_reply(
+        &mut self,
+        frame: FrameKind,
+    ) -> Result<PeerReply, FrameKind> {
         let request_id = match &frame {
-            FrameKind::MetadataValue { request_id, .. } => *request_id,
-            FrameKind::Error {
+            FrameKind::MetadataValue { request_id, .. }
+            | FrameKind::Error {
                 request_id: Some(request_id),
                 ..
             } => *request_id,

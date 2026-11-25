@@ -1,7 +1,4 @@
-use super::{
-    EncodedInputRequest, SnapshotBytes, TerminalActor,
-    TerminalInput, debug, trace, warn,
-};
+use super::{EncodedInputRequest, SnapshotBytes, TerminalActor, TerminalInput, debug, trace, warn};
 
 impl TerminalActor {
     /// Synthesize an ATTACH snapshot, optionally priming scrollback (see

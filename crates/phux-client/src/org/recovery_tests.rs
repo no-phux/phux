@@ -11,7 +11,8 @@ fn mutation_reply(operation: OperationId, result: &CommandResult) -> OrgOutcome 
         operation,
         session: phux_protocol::ids::SessionKey::new([1; 16]).unwrap(),
         name: "renamed".into(),
-    }).classify(result)
+    })
+    .classify(result)
 }
 
 #[test]

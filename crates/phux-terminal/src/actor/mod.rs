@@ -9,7 +9,7 @@
 //! a pane that is producing output gets its own reader until it goes quiet.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 use std::rc::Rc;
 
 use bytes::Bytes;
@@ -55,11 +55,11 @@ mod osc_scan;
 mod pane_scope;
 mod park;
 mod process;
-mod publication;
 mod process_facet;
 pub mod program_status;
 #[cfg(any(test, feature = "test-support"))]
 mod pty_fixture;
+mod publication;
 pub mod requests;
 mod resume;
 mod run_loop;

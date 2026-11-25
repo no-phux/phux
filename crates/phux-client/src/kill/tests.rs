@@ -1,4 +1,4 @@
-use phux_protocol::ids::{SessionId, WindowId};
+use phux_protocol::ids::{SessionId, SessionKey, WindowId};
 use phux_protocol::wire::frame::{ExecState, FrameKind, Refusal, Scope, SessionLifetime};
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
 
@@ -420,7 +420,9 @@ async fn lost_close_replies_never_become_success_and_keep_the_original_identity(
         let original = match command {
             Command::SessionKill { operation, .. } => Some(operation.to_hex()),
             Command::KillResource { operation_id, .. }
-            | Command::KillResources { operation_id, .. } => operation_id.map(|key| key.to_hex()),
+            | Command::KillResources { operation_id, .. } => {
+                operation_id.map(phux_protocol::IdempotencyKey::to_hex)
+            }
             other => panic!("unexpected command {other:?}"),
         };
         assert_eq!(
@@ -464,4 +466,3 @@ async fn keyed_session_close_uses_the_callers_operation_without_reminting() {
             if *actual == operation
     )));
 }
-

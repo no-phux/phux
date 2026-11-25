@@ -145,7 +145,8 @@ fn an_unreadable_or_newer_error_is_an_unknown_outcome() {
 #[test]
 fn an_unenforcing_replacement_never_replays_archived_intent_or_erases_uncertainty() {
     let relaunch = |n| Command::ResourceRelaunch {
-        operation: op(n), resource: phux_protocol::ids::ResourceKey::new([3; 16]).unwrap(),
+        operation: op(n),
+        resource: phux_protocol::ids::ResourceKey::new([3; 16]).unwrap(),
         expected: Revision::new(1),
     };
     let mut journal = OrgJournal::default();
@@ -163,5 +164,9 @@ fn an_unenforcing_replacement_never_replays_archived_intent_or_erases_uncertaint
     assert!(journal.next_frames(&mut sequence()).is_empty());
     journal.submit(rename(3, "unrelated"), 2).unwrap();
     assert!(journal.reject_unenforced_relaunches().is_empty());
-    assert_eq!(journal.next_frames(&mut sequence()).len(), 1, "unrelated operations retain their contract");
+    assert_eq!(
+        journal.next_frames(&mut sequence()).len(),
+        1,
+        "unrelated operations retain their contract"
+    );
 }

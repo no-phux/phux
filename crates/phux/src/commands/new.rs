@@ -4,10 +4,10 @@ use std::process::ExitCode;
 use phux_protocol::ids::IdempotencyKey;
 use phux_protocol::wire::frame::SessionLifetime;
 
-use crate::commands::server_target::{ServerSpec, ServerTarget};
 use crate::commands::attach::{
     client_cwd, interactive_tty_preflight, report_attach_end, run_attach_once,
 };
+use crate::commands::server_target::{ServerSpec, ServerTarget};
 
 mod create;
 mod empty;
@@ -55,8 +55,8 @@ pub(crate) use create::{
 };
 pub(crate) use empty::ensure_local_unseeded_server;
 use empty::{run_new_empty_attached, run_new_empty_json};
-use naming::{resolve_session_name, report_invalid_session_name, requested_session_name};
 pub(crate) use naming::{existing_session_names, unique_session_name};
+use naming::{report_invalid_session_name, requested_session_name, resolve_session_name};
 
 /// `phux new` — create a *new* session and attach to it.
 pub(crate) fn run_new(
@@ -275,4 +275,3 @@ fn seed_cwd(explicit: Option<PathBuf>, remote: bool) -> Option<String> {
     }
     explicit.or_else(client_cwd)
 }
-

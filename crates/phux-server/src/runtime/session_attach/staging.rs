@@ -138,12 +138,12 @@ impl SessionStaging {
         if !capture.lease.spawn(
             Some(&mut self.pumps),
             Some(drain.clone()),
-            after_publication(
-                capture.live_gate.clone(),
-                Some(drain),
-                live,
-            ),
-        ) { return Err(CaptureFailure::Failed("aggregate stream reservation superseded".to_owned())); }
+            after_publication(capture.live_gate.clone(), Some(drain), live),
+        ) {
+            return Err(CaptureFailure::Failed(
+                "aggregate stream reservation superseded".to_owned(),
+            ));
+        }
         Ok(())
     }
 
@@ -157,7 +157,9 @@ impl SessionStaging {
     ) {
         let lease = capture.lease.clone();
         let parked = after_publication(capture.live_gate.clone(), None, live);
-        self.pumps.spawn_local(async move { let _ = lease.run(parked).await; });
+        self.pumps.spawn_local(async move {
+            let _ = lease.run(parked).await;
+        });
     }
 }
 
@@ -166,8 +168,12 @@ async fn after_publication(
     drain: Option<tokio_util::sync::CancellationToken>,
     live: LocalBoxFuture<'static, ()>,
 ) {
-    if gate.wait_for(|ready| *ready).await.is_err() { return; }
+    if gate.wait_for(|ready| *ready).await.is_err() {
+        return;
+    }
     if let Some(drain) = drain {
         tokio::select! { biased; () = drain.cancelled() => {}, () = live => {} }
-    } else { live.await; }
+    } else {
+        live.await;
+    }
 }

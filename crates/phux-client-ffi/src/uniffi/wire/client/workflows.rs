@@ -2,7 +2,6 @@
 
 use super::*;
 
-
 #[uniffi::export]
 impl RemoteClient {
     pub fn attach_session(&self, name: String) {
@@ -31,22 +30,40 @@ impl RemoteClient {
     }
 
     /// Create a terminal in an existing session, without ensuring or selecting it.
-    pub fn spawn_terminal_in_directory(&self, session: String, cwd: Option<String>) -> WireWorkflowSubmission {
+    pub fn spawn_terminal_in_directory(
+        &self,
+        session: String,
+        cwd: Option<String>,
+    ) -> WireWorkflowSubmission {
         let Some(client) = self.runtime_client() else {
-            return WireWorkflowSubmission::NotQueued { reason: "not_connected".into() };
+            return WireWorkflowSubmission::NotQueued {
+                reason: "not_connected".into(),
+            };
         };
         client.with_control(|control| {
-            let Some(session_id) = control.topology()
+            let Some(session_id) = control
+                .topology()
                 .and_then(|topology| topology.session_named(&session).map(|item| item.id))
             else {
-                return WireWorkflowSubmission::NotQueued { reason: "session_unavailable".into() };
+                return WireWorkflowSubmission::NotQueued {
+                    reason: "session_unavailable".into(),
+                };
             };
-            control.submit_spawn(SpawnRequest { cwd, session_id: Some(session_id), ..SpawnRequest::default() }).into()
+            control
+                .submit_spawn(SpawnRequest {
+                    cwd,
+                    session_id: Some(session_id),
+                    ..SpawnRequest::default()
+                })
+                .into()
         })
     }
 
     pub fn spawn_terminal_with_command(&self, command: Vec<String>) -> WireWorkflowSubmission {
-        self.submit_spawn(SpawnRequest { command: Some(command), ..SpawnRequest::default() })
+        self.submit_spawn(SpawnRequest {
+            command: Some(command),
+            ..SpawnRequest::default()
+        })
     }
 
     pub fn kill_terminal(&self, terminal_id: String) {
@@ -74,7 +91,9 @@ impl RemoteClient {
 impl RemoteClient {
     fn submit_spawn(&self, request: SpawnRequest) -> WireWorkflowSubmission {
         self.runtime_client().map_or_else(
-            || WireWorkflowSubmission::NotQueued { reason: "not_connected".into() },
+            || WireWorkflowSubmission::NotQueued {
+                reason: "not_connected".into(),
+            },
             |client| client.submit_spawn(request).into(),
         )
     }

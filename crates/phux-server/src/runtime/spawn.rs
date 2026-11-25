@@ -20,8 +20,8 @@ use crate::runtime::spawn_reply::refuse_spawn;
 use crate::state::{ClientId, Outbound, SharedState};
 pub(crate) mod agent_session;
 mod document;
-pub(crate) mod terminal;
 mod producer;
+pub(crate) mod terminal;
 
 /// The decoded `SPAWN_RESOURCE` payload, minus `request_id`.
 #[derive(Debug)]
@@ -179,36 +179,49 @@ pub(crate) async fn dispatch_spawn(
         return;
     }
     let spawn = ResourceSpawn {
-            state,
-            client_id,
-            request_id,
-            resource: &resource,
-            satellite: satellite.as_ref(),
-            launch: SpawnLaunch {
-                group,
-                command,
-                cwd,
-                env,
-                term,
-                owner_terminal,
-                agent_session,
-                initial_size,
-            },
-            out_tx,
-            root_token,
-            profile: stream_profile,
-            limits,
-            connection_token,
-            output_pumps,
-            defer_subscription,
-            decodes,
-        };
+        state,
+        client_id,
+        request_id,
+        resource: &resource,
+        satellite: satellite.as_ref(),
+        launch: SpawnLaunch {
+            group,
+            command,
+            cwd,
+            env,
+            term,
+            owner_terminal,
+            agent_session,
+            initial_size,
+        },
+        out_tx,
+        root_token,
+        profile: stream_profile,
+        limits,
+        connection_token,
+        output_pumps,
+        defer_subscription,
+        decodes,
+    };
     match kind {
         phux_core::ResourceKind::Terminal => terminal::handle_spawn_terminal(spawn).await,
         phux_core::ResourceKind::AgentSession => agent_session::spawn_agent_session(spawn).await,
-        phux_core::ResourceKind::AccessibilityTree => document::spawn_document::<crate::runtime::apps::document::engine::TreeDocument>(spawn).await,
-        phux_core::ResourceKind::PixelSurface => document::spawn_document::<crate::runtime::apps::document::engine::SurfaceDocument>(spawn).await,
-        phux_core::ResourceKind::Document => document::spawn_document::<crate::runtime::apps::document::engine::TypedDocument>(spawn).await,
+        phux_core::ResourceKind::AccessibilityTree => {
+            document::spawn_document::<crate::runtime::apps::document::engine::TreeDocument>(spawn)
+                .await;
+        }
+        phux_core::ResourceKind::PixelSurface => {
+            document::spawn_document::<crate::runtime::apps::document::engine::SurfaceDocument>(
+                spawn,
+            )
+            .await;
+        }
+        phux_core::ResourceKind::Document => {
+            document::spawn_document::<crate::runtime::apps::document::engine::TypedDocument>(
+                spawn,
+            )
+            .await;
+        }
     }
 }
 
@@ -222,7 +235,7 @@ pub(crate) async fn refuse_without_terminal_profile(
         .send(Outbound::Frame(FrameKind::Error {
             request_id: Some(request_id),
             code: ErrorCode::CodecUnavailable,
-            message: super::NO_TERMINAL_PROFILE.to_owned(),
+            message: crate::runtime::apps::NO_TERMINAL_PROFILE.to_owned(),
         }))
         .await;
 }
@@ -344,7 +357,7 @@ mod tests {
         else {
             panic!("CODEC_UNAVAILABLE for a Terminal");
         };
-        assert_eq!(message, super::super::NO_TERMINAL_PROFILE);
+        assert_eq!(message, crate::runtime::apps::NO_TERMINAL_PROFILE);
         let SpawnError::SpawnFailed(agent) = refusal(reply(ResourceKind::AgentSession, None).await)
         else {
             panic!("the agent session app refuses");

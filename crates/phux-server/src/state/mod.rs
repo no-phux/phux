@@ -71,8 +71,6 @@ pub(crate) mod upgrade_blob;
 mod viewport;
 
 pub(crate) use app_slots::AppSlot;
-pub(crate) use org::launch::execute_terminal as execute_admitted_terminal;
-pub(crate) use org::operation as org_operation;
 pub use approvals::{Decision, HoldRefusal, OpenedApproval, PendingApproval};
 pub(crate) use bindings::ClosePlan;
 pub use client::{AttachError, AttachSnapshotPane, AttachedClient, ClientId};
@@ -88,6 +86,8 @@ pub(crate) use federation::{Federation, SatelliteLease};
 pub use id_space::IdSpace;
 pub use journal::EventRecord;
 pub(crate) use journal::now_unix_ms;
+pub(crate) use org::launch::execute_terminal as execute_admitted_terminal;
+pub(crate) use org::operation as org_operation;
 pub(crate) use retained::Retention;
 pub use retained::{RetainPolicy, close_reason_name, process_exit};
 pub use roles::RoleEffects;

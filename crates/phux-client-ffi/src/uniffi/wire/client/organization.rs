@@ -16,9 +16,8 @@ use std::collections::VecDeque;
 
 use phux_client_core::org_ops::{OrgOutcome, SubmitError};
 use phux_client_core::rename::check_session_name;
-use phux_client_runtime::control::mint_operation;
 use phux_protocol::ids::{OperationId, ResourceKey, SessionKey};
-use phux_protocol::wire::frame::{Command, Committed, LaunchSpec, SessionLifetime, TerminateMode};
+use phux_protocol::wire::frame::{Committed, LaunchSpec, SessionLifetime, TerminateMode};
 
 use super::*;
 use crate::projection::organization;
@@ -245,13 +244,19 @@ impl RemoteClient {
         cwd: Option<String>,
     ) -> Result<String, WireError> {
         session_name(&name)?;
-        match self.connected()?.create_session(name, lifetime.into(), create_launch(lifetime, cwd)) {
-            phux_client_runtime::control::WorkflowSubmission::Journaled { operation, .. } =>
-                Ok(operation_text(&operation)),
-            phux_client_runtime::control::WorkflowSubmission::NotQueued { reason: why } =>
-                Err(reason(&why)),
-            phux_client_runtime::control::WorkflowSubmission::Queued { .. } =>
-                unreachable!("session creates are journaled"),
+        match self
+            .connected()?
+            .create_session(name, lifetime.into(), create_launch(lifetime, cwd))
+        {
+            phux_client_runtime::control::WorkflowSubmission::Journaled { operation, .. } => {
+                Ok(operation_text(&operation))
+            }
+            phux_client_runtime::control::WorkflowSubmission::NotQueued { reason: why } => {
+                Err(reason(&why))
+            }
+            phux_client_runtime::control::WorkflowSubmission::Queued { .. } => {
+                unreachable!("session creates are journaled")
+            }
         }
     }
 
@@ -265,9 +270,13 @@ impl RemoteClient {
         cwd: Option<String>,
     ) -> WireWorkflowSubmission {
         let Some(client) = self.runtime_client() else {
-            return WireWorkflowSubmission::NotQueued { reason: "not_connected".into() };
+            return WireWorkflowSubmission::NotQueued {
+                reason: "not_connected".into(),
+            };
         };
-        client.ensure_session(name, lifetime.into(), create_launch(lifetime, cwd)).into()
+        client
+            .ensure_session(name, lifetime.into(), create_launch(lifetime, cwd))
+            .into()
     }
 
     /// Rename a session.

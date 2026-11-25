@@ -177,7 +177,12 @@ pub(crate) fn run_set_project(
 }
 
 /// `phux relaunch TARGET`: start a new run of a stopped resource.
-pub(crate) fn run_relaunch(target: &str, approve_raw: bool, json: bool, socket: Option<PathBuf>) -> ExitCode {
+pub(crate) fn run_relaunch(
+    target: &str,
+    approve_raw: bool,
+    json: bool,
+    socket: Option<PathBuf>,
+) -> ExitCode {
     run_on(socket, "relaunch", json, async |_, conn| {
         let inventory = match records(conn, "relaunch").await {
             Ok(inventory) => inventory,

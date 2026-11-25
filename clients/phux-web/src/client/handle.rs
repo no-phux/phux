@@ -130,7 +130,9 @@ impl Client {
             phux_client_core::input_replay::InputSubmission::QueuedRaw
             | phux_client_core::input_replay::InputSubmission::AwaitingReceipt { .. } => Ok(()),
             _ if text.is_empty() => Ok(()),
-            _ => Err(JsValue::from_str("Terminal input is unavailable or refused; read the input notice.")),
+            _ => Err(JsValue::from_str(
+                "Terminal input is unavailable or refused; read the input notice.",
+            )),
         }
     }
 
@@ -139,12 +141,19 @@ impl Client {
     ///
     /// # Errors
     /// Returns a transport failure, whose attempted delivery may be unknown.
-    pub fn submit_user_paste(&self, text: &str) -> Result<phux_client_core::input_replay::InputSubmission, JsValue> {
+    pub fn submit_user_paste(
+        &self,
+        text: &str,
+    ) -> Result<phux_client_core::input_replay::InputSubmission, JsValue> {
         use phux_client_core::input_replay::InputSubmission;
-        if text.is_empty() { return Ok(InputSubmission::NotQueued); }
+        if text.is_empty() {
+            return Ok(InputSubmission::NotQueued);
+        }
         if text.len() > MAX_OUTBOUND_BYTES - 4096 {
             let app = self.app.borrow();
-            let submission = app.session.refuse_browser_input("paste exceeds the browser's atomic outbound byte budget");
+            let submission = app
+                .session
+                .refuse_browser_input("paste exceeds the browser's atomic outbound byte budget");
             app.publish_input_reports();
             return Ok(submission);
         }
@@ -160,11 +169,16 @@ impl Client {
         };
         let submission = super::keyboard::submit_event(&self.app, InputEvent::Paste(paste))
             .map_err(|message| JsValue::from_str(&message))?;
-        if matches!(submission, InputSubmission::QueuedRaw | InputSubmission::AwaitingReceipt { .. }) {
+        if matches!(
+            submission,
+            InputSubmission::QueuedRaw | InputSubmission::AwaitingReceipt { .. }
+        ) {
             let app = self.app.borrow();
             app.acknowledge_input();
             app.clear_selection();
-            if app.session.scroll_to_bottom() { app.request_paint(); }
+            if app.session.scroll_to_bottom() {
+                app.request_paint();
+            }
         }
         Ok(submission)
     }

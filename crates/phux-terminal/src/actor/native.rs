@@ -6,7 +6,7 @@ use super::{
     Bytes, CanonicalTerminal, FrameKind, HashSet, MAX_NATIVE_HISTORY_CLIENTS,
     MAX_NATIVE_REPLAY_BYTES, NATIVE_CAPTURE_LIFETIME, NATIVE_HISTORY_TTL, NativeAlloc,
     NativeBootstrapReply, NativeBootstrapRequest, NativeCursorKey, NativeCursorOwner,
-    NativeHistoryReply, NativeHistoryRequest, NativePublicationGeneration, NativePublicationReply,
+    NativeHistoryReply, NativeHistoryRequest, NativePublicationGeneration,
     NativePublicationRequest, PendingNativeBootstrap, PendingNativeHistory, ResourceOutput,
     VecDeque, native_step_bytes, reserve_native_bytes, warn,
 };
@@ -51,10 +51,16 @@ impl TerminalActor {
             stream_id,
             phux_protocol::wire::frame::TombstoneReason::ExplicitReattach,
         );
-        let queued = self.publication.pending_native_bootstrap.as_ref().map_or(0, |pending| pending.waiters.len())
+        let queued = self
+            .publication
+            .pending_native_bootstrap
+            .as_ref()
+            .map_or(0, |pending| pending.waiters.len())
             + self.publication.native_bootstrap_backlog.len();
         if self.publication.native_cursor_owners.len() + queued >= MAX_NATIVE_HISTORY_CLIENTS {
-            let _ = req.reply.send(Err(crate::native_state::NativeStateError::LimitExceeded));
+            let _ = req
+                .reply
+                .send(Err(crate::native_state::NativeStateError::LimitExceeded));
             return;
         }
         if let Some(pending) = self.publication.pending_native_bootstrap.as_mut() {
@@ -75,7 +81,8 @@ impl TerminalActor {
                 pending.waiters.push(req);
                 return;
             }
-            self.publication.native_bootstrap_backlog
+            self.publication
+                .native_bootstrap_backlog
                 .retain(|waiter| keeps_native_bootstrap_waiter(waiter, owner, Some(stream_id)));
             self.publication.native_bootstrap_backlog.push_back(req);
             return;
@@ -148,7 +155,8 @@ impl TerminalActor {
             }
         };
         let scratch_bytes = initial_native_scratch_bytes(scratch_ceiling);
-        let mut scratch = match reserve_native_bytes(&self.publication.native_alloc, scratch_bytes) {
+        let mut scratch = match reserve_native_bytes(&self.publication.native_alloc, scratch_bytes)
+        {
             Ok(scratch) => scratch,
             Err(error) => {
                 if let CanonicalTerminal::Native(manager) = &mut *self.terminal.borrow_mut() {
@@ -187,7 +195,10 @@ impl TerminalActor {
         };
         pending.waiters.retain(|waiter| !waiter.reply.is_closed());
         if pending.waiters.is_empty() {
-            self.fail_native_bootstrap(pending, crate::native_state::NativeStateError::InvalidHandle);
+            self.fail_native_bootstrap(
+                pending,
+                crate::native_state::NativeStateError::InvalidHandle,
+            );
             return;
         }
         let _timer = crate::perf::BOOTSTRAP_NATIVE_STEP.timer();
@@ -233,8 +244,11 @@ impl TerminalActor {
                 required_bytes,
                 required_rows: 0,
             }) if required_bytes > scratch_len && required_bytes <= step_ceiling => {
-                match grow_native_scratch(&self.publication.native_alloc, &mut pending.scratch, required_bytes)
-                {
+                match grow_native_scratch(
+                    &self.publication.native_alloc,
+                    &mut pending.scratch,
+                    required_bytes,
+                ) {
                     Ok(()) => self.publication.pending_native_bootstrap = Some(pending),
                     Err(error) => self.fail_native_bootstrap(pending, error),
                 }
@@ -333,7 +347,8 @@ impl TerminalActor {
     }
 
     pub(super) const fn native_work_pending(&self) -> bool {
-        self.publication.pending_native_bootstrap.is_some() || self.publication.pending_native_history.is_some()
+        self.publication.pending_native_bootstrap.is_some()
+            || self.publication.pending_native_history.is_some()
     }
 
     pub(super) fn cooperative_native_step(&mut self) {

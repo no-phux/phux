@@ -196,7 +196,8 @@ impl LinkConn for NetLinkConn {
     }
 
     fn server_features_ext2(&self) -> Result<phux_protocol::caps::ServerFeatureExt2Set, String> {
-        self.negotiated().map(|selection| selection.server_features_ext2)
+        self.negotiated()
+            .map(|selection| selection.server_features_ext2)
     }
 
     fn satellite_incarnation(&self) -> Option<[u8; 16]> {

@@ -93,7 +93,10 @@ impl ControlPlane {
 
     /// Decode a frame that is already a view of the socket buffer. Payload
     /// bytes alias that buffer instead of being copied.
-    pub(crate) fn decode_shared_frame(&self, bytes: &Bytes) -> Result<Option<FrameKind>, ControlError> {
+    pub(crate) fn decode_shared_frame(
+        &self,
+        bytes: &Bytes,
+    ) -> Result<Option<FrameKind>, ControlError> {
         let decoded = FrameKind::decode_shared(bytes, self.decode_limits());
         let Some((frame, tail)) = decoded_or_fallback(bytes, decoded)? else {
             return Ok(None);

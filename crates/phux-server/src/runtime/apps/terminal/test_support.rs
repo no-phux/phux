@@ -162,16 +162,18 @@ where
             crate::resource::ResourceId,
             &crate::upgrade::blob::PaneBlob,
             phux_config::ScrollbackLimits,
-        )
-            -> Result<crate::runtime::upgrade::kinds::terminal::RebuiltPane<()>, crate::state::upgrade_blob::RebuildError>
-        + 'static,
+        ) -> Result<
+            crate::runtime::upgrade::kinds::terminal::RebuiltPane<()>,
+            crate::state::upgrade_blob::RebuildError,
+        > + 'static,
 {
     let mut resumes = crate::runtime::upgrade::kinds::resumes(&crate::state::SharedState::new());
     let terminal = crate::runtime::upgrade::kinds::KIND_ORDER
         .iter()
         .position(|kind| *kind == ResourceKind::Terminal)
         .expect("the Terminal app is listed");
-    resumes[terminal] = Box::new(crate::runtime::upgrade::kinds::terminal::TerminalResume::new(build));
+    resumes[terminal] =
+        Box::new(crate::runtime::upgrade::kinds::terminal::TerminalResume::new(build));
     resumes
 }
 
@@ -187,9 +189,10 @@ where
             crate::resource::ResourceId,
             &crate::upgrade::blob::PaneBlob,
             phux_config::ScrollbackLimits,
-        )
-            -> Result<crate::runtime::upgrade::kinds::terminal::RebuiltPane<()>, crate::state::upgrade_blob::RebuildError>
-        + 'static,
+        ) -> Result<
+            crate::runtime::upgrade::kinds::terminal::RebuiltPane<()>,
+            crate::state::upgrade_blob::RebuildError,
+        > + 'static,
 {
     crate::runtime::upgrade::kinds::rebuild(state, blob, &mut resumes_with(build))
 }
@@ -199,5 +202,9 @@ pub(crate) fn rebuild_unwired(
     state: &mut crate::state::ServerState,
     blob: &crate::upgrade::blob::StateBlob,
 ) -> Result<crate::state::upgrade_blob::RebuiltTree, crate::state::upgrade_blob::RebuildError> {
-    rebuild_with(state, blob, crate::runtime::upgrade::kinds::terminal::unwired)
+    rebuild_with(
+        state,
+        blob,
+        crate::runtime::upgrade::kinds::terminal::unwired,
+    )
 }

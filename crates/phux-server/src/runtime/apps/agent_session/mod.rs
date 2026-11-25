@@ -2,7 +2,7 @@
 
 use futures_util::FutureExt as _;
 use futures_util::future::LocalBoxFuture;
-use phux_protocol::wire::frame::{FrameKind};
+use phux_protocol::wire::frame::FrameKind;
 
 use super::{FrameAdmission, ResourceApp, StreamBootstrap};
 use crate::runtime::commands::AttachResourceFailure;
@@ -51,11 +51,12 @@ impl ResourceApp for AgentSessionApp {
     /// An agent session serves no stream or input frame: it is raw-profile
     /// with no history beyond its bootstrap (ADR-0103 §4), and input and
     /// geometry are the Terminal facet's. Every refusal keeps the connection.
-    fn frame_error(&self, frame: &FrameKind)
-        -> Option<(phux_protocol::wire::frame::ErrorCode, String)> {
+    fn frame_error(
+        &self,
+        frame: &FrameKind,
+    ) -> Option<(phux_protocol::wire::frame::ErrorCode, String)> {
         Some(frames::error(frame))
     }
-
 
     fn bootstrap<'a>(
         &'a self,
@@ -76,5 +77,4 @@ impl ResourceApp for AgentSessionApp {
         }
         .boxed_local()
     }
-
 }

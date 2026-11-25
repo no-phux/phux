@@ -250,18 +250,25 @@ fn admitted_relaunch_retains_the_exact_recipe_without_retranslation() {
         let (resource, expected) = state.with_mut(|s| {
             s.set_connection_grant(CLIENT, crate::policy::ConnectionGrant::owner());
             let session = s.seed_empty_session("approved").unwrap();
-            let created = s.commit(phux_core::Op::ResourceCreate {
-                session: s.registry().session_key(session),
-                resource: phux_core::NewResource {
-                    kind: phux_core::ResourceKind::Terminal,
-                    name: None,
-                    launch: Some(phux_core::LaunchSpec::Terminal(phux_core::TerminalLaunch::default())),
-                    on_exit: phux_core::ExitPolicy::Retain,
-                    parent: None,
-                    launch_mode: phux_core::LaunchMode::Deferred,
-                },
-                placement: None,
-            }, &phux_core::Actor::owner()).unwrap();
+            let created = s
+                .commit(
+                    phux_core::Op::ResourceCreate {
+                        session: s.registry().session_key(session),
+                        resource: phux_core::NewResource {
+                            kind: phux_core::ResourceKind::Terminal,
+                            name: None,
+                            launch: Some(phux_core::LaunchSpec::Terminal(
+                                phux_core::TerminalLaunch::default(),
+                            )),
+                            on_exit: phux_core::ExitPolicy::Retain,
+                            parent: None,
+                            launch_mode: phux_core::LaunchMode::Deferred,
+                        },
+                        placement: None,
+                    },
+                    &phux_core::Actor::owner(),
+                )
+                .unwrap();
             let phux_core::Reply::Ok { created, .. } = created.applied.reply else {
                 panic!("resource creation");
             };
@@ -275,22 +282,22 @@ fn admitted_relaunch_retains_the_exact_recipe_without_retranslation() {
         let command = phux_core::Command {
             operation: ow::core_operation(&op(90)),
             op: phux_core::Op::ResourceRelaunch {
-                resource, expected, launch: Some(exact),
+                resource,
+                expected,
+                launch: Some(exact),
             },
         };
         let root = CancellationToken::new();
         root.cancel(); // Inspect admission without attempting an external program.
-        let answer = crate::state::org_operation::relaunch_admitted(
-            &state, CLIENT, command.clone(), &root,
-        );
+        let answer =
+            crate::state::org_operation::relaunch_admitted(&state, CLIENT, command.clone(), &root);
         assert!(matches!(answer, CommandResult::Accepted { .. }));
         let revision = state.with(|s| {
             assert_eq!(s.org().receipt(&command.operation).unwrap().op, command.op);
             s.org().resource(&resource).unwrap().revision
         });
-        let replay = crate::state::org_operation::relaunch_admitted(
-            &state, CLIENT, command.clone(), &root,
-        );
+        let replay =
+            crate::state::org_operation::relaunch_admitted(&state, CLIENT, command.clone(), &root);
         assert_eq!(replay, answer);
         state.with(|s| {
             assert_eq!(s.org().resource(&resource).unwrap().revision, revision);

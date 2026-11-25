@@ -218,12 +218,8 @@ impl RecordingLink<'_> {
         self.completion.observe_frame(&frame, *self.attach_id);
         let outcome = self.session.ingest(frame, self.focused_session)?;
         if outcome.resync_required {
-            *self.attach_id = restart_attach(
-                self.conn,
-                self.focused_session,
-                self.completion,
-            )
-            .await?;
+            *self.attach_id =
+                restart_attach(self.conn, self.focused_session, self.completion).await?;
             return Ok(());
         }
         if let Some(request) = outcome.history_request {

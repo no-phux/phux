@@ -7,15 +7,18 @@ use std::time::Duration;
 
 use futures_util::future::LocalBoxFuture;
 
+use crate::runtime::apps::document::engine::{SurfaceDocument, TreeDocument, TypedDocument};
 use phux_core::ResourceKind;
-use crate::runtime::apps::document::engine::{TreeDocument, SurfaceDocument, TypedDocument};
-pub(crate) mod terminal;
 pub(crate) mod agent_session;
 pub(crate) mod document;
+pub(crate) mod terminal;
 
 pub(crate) const KIND_ORDER: [ResourceKind; 5] = [
-    ResourceKind::Terminal, ResourceKind::AgentSession, ResourceKind::AccessibilityTree,
-    ResourceKind::PixelSurface, ResourceKind::Document,
+    ResourceKind::Terminal,
+    ResourceKind::AgentSession,
+    ResourceKind::AccessibilityTree,
+    ResourceKind::PixelSurface,
+    ResourceKind::Document,
 ];
 use crate::runtime::connections::pane_events::PaneEvents;
 use crate::runtime::upgrade::UpgradeError;
@@ -64,26 +67,36 @@ pub(crate) trait KindResume: KindRebuild {
 
 /// Begin carrying every kind, or `None` while another upgrade holds one.
 pub(crate) fn begin(state: &SharedState) -> Option<Vec<Box<dyn UpgradeCut>>> {
-    KIND_ORDER.into_iter().map(|kind| match kind {
-        ResourceKind::Terminal => Some(Box::<terminal::TerminalCut>::default() as Box<dyn UpgradeCut>),
-        ResourceKind::AgentSession => agent_session::begin(state),
-        ResourceKind::AccessibilityTree => Some(document::DocumentCut::<TreeDocument>::begin()),
-        ResourceKind::PixelSurface => Some(document::DocumentCut::<SurfaceDocument>::begin()),
-        ResourceKind::Document => Some(document::DocumentCut::<TypedDocument>::begin()),
-    }).collect()
+    KIND_ORDER
+        .into_iter()
+        .map(|kind| match kind {
+            ResourceKind::Terminal => {
+                Some(Box::<terminal::TerminalCut>::default() as Box<dyn UpgradeCut>)
+            }
+            ResourceKind::AgentSession => agent_session::begin(state),
+            ResourceKind::AccessibilityTree => Some(document::DocumentCut::<TreeDocument>::begin()),
+            ResourceKind::PixelSurface => Some(document::DocumentCut::<SurfaceDocument>::begin()),
+            ResourceKind::Document => Some(document::DocumentCut::<TypedDocument>::begin()),
+        })
+        .collect()
 }
 
 /// Every kind's half of a resume, made before the rebuild takes the lock.
 pub(crate) fn resumes(state: &SharedState) -> Vec<Box<dyn KindResume>> {
-    KIND_ORDER.into_iter().map(|kind| -> Box<dyn KindResume> {
-        match kind {
-            ResourceKind::Terminal => terminal::resume(state),
-            ResourceKind::AgentSession => Box::new(agent_session::AgentSessionResume),
-            ResourceKind::AccessibilityTree => document::DocumentResume::<TreeDocument>::begin(),
-            ResourceKind::PixelSurface => document::DocumentResume::<SurfaceDocument>::begin(),
-            ResourceKind::Document => document::DocumentResume::<TypedDocument>::begin(),
-        }
-    }).collect()
+    KIND_ORDER
+        .into_iter()
+        .map(|kind| -> Box<dyn KindResume> {
+            match kind {
+                ResourceKind::Terminal => terminal::resume(state),
+                ResourceKind::AgentSession => Box::new(agent_session::AgentSessionResume),
+                ResourceKind::AccessibilityTree => {
+                    document::DocumentResume::<TreeDocument>::begin()
+                }
+                ResourceKind::PixelSurface => document::DocumentResume::<SurfaceDocument>::begin(),
+                ResourceKind::Document => document::DocumentResume::<TypedDocument>::begin(),
+            }
+        })
+        .collect()
 }
 
 /// Rebuild `blob` into `state` through `resumes`, in [`KIND_ORDER`] order: the

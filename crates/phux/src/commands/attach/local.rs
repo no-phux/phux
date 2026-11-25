@@ -6,9 +6,6 @@ use std::time::Duration;
 use phux_client::attach::{AttachError, Dial};
 use phux_config::socket::default_socket_path;
 
-use crate::commands::rec::RecordSpec;
-use crate::commands::remote as host_registry;
-use crate::commands::{print_attach_error, server::ensure_server};
 use super::home::{
     configured_spawn_on_attach, fallback_lookup_name, requested_attach_target,
     resolved_default_session_name,
@@ -17,10 +14,24 @@ use super::{
     attach_with_reconnect, finalize_recording, home, interactive_tty_preflight,
     nested_attach_guard, predictive_config_for, report_attach_end,
 };
+use crate::commands::rec::RecordSpec;
+use crate::commands::remote as host_registry;
+use crate::commands::{print_attach_error, server::ensure_server};
 
 /// `phux attach [NAME]` without recording.
 pub(crate) fn run_attach(session: Option<String>, socket: Option<PathBuf>) -> ExitCode {
     run_attach_rec(session, socket, None)
+}
+
+/// Report a configured session that could not be ensured, and whether its
+/// creation may already have committed.
+fn report_configured_session_failure(name: &str, err: &AttachError) {
+    error!("could not prepare configured session '{name}': {err}");
+    if matches!(err, AttachError::CommittedSelectionUnavailable { .. }) {
+        hint!("The session operation committed. Recover its exact key; do not create it again.");
+    } else {
+        hint!("Inspect `phux ls` before retrying; an uncertain ensure may have committed.");
+    }
 }
 
 /// Run the attach loop on a current-thread runtime and map the result to an
@@ -69,8 +80,10 @@ pub(crate) fn run_attach_rec(
         crate::commands::server::ensure_server_unseeded(&socket_path, false)
     } else {
         ensure_server(
-            &socket_path, &session_for_spawn,
-            configured_spawn_on_attach().as_deref(), false,
+            &socket_path,
+            &session_for_spawn,
+            configured_spawn_on_attach().as_deref(),
+            false,
         )
     };
     let startup = started.as_ref().ok().copied();
@@ -85,26 +98,28 @@ pub(crate) fn run_attach_rec(
 
     let dial = Dial::uds(&socket_path);
     let predict_cfg = predictive_config_for(&dial);
-    let (first, target, default) = match home {
-        Some(home) => match rt.block_on(home.ensure_target(&dial, startup)) {
+    let (first, target, default) = if let Some(home) = home {
+        match rt.block_on(home.ensure_target(&dial, startup)) {
             Ok((connection, target)) => (Some(Box::new(connection)), target, None),
             Err(err) => {
-                error!("could not prepare configured session '{default_name}': {err}");
-                if matches!(err, AttachError::CommittedSelectionUnavailable { .. }) {
-                    hint!("The session operation committed. Recover its exact key; do not create it again.");
-                } else {
-                    hint!("Inspect `phux ls` before retrying; an uncertain ensure may have committed.");
-                }
+                report_configured_session_failure(&default_name, &err);
                 return ExitCode::FAILURE;
             }
-        },
-        None => {
-            let default = session.is_none().then(|| fallback_lookup_name(&default_name)).flatten();
-            (None, requested_attach_target(session), default)
         }
+    } else {
+        let default = session
+            .is_none()
+            .then(|| fallback_lookup_name(&default_name))
+            .flatten();
+        (None, requested_attach_target(session), default)
     };
     let result = rt.block_on(attach_with_reconnect(
-        &dial, first, target, predict_cfg, default, rec,
+        &dial,
+        first,
+        target,
+        predict_cfg,
+        default,
+        rec,
     ));
     finalize_recording(rec);
     let exit = match result {
@@ -148,7 +163,10 @@ pub(crate) fn run_attach_rec(
 
 /// Whether `snapshot` (a complete `GET_STATE`: session lists never
 /// aggregate satellites) holds no session named `name`.
-pub(super) fn session_is_missing(snapshot: &phux_protocol::wire::info::SessionSnapshot, name: &str) -> bool {
+pub(super) fn session_is_missing(
+    snapshot: &phux_protocol::wire::info::SessionSnapshot,
+    name: &str,
+) -> bool {
     snapshot.sessions.iter().all(|session| session.name != name)
 }
 

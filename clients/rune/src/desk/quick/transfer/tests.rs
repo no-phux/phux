@@ -2,7 +2,9 @@ use super::*;
 use crate::desk::{Shown, quick::Panel};
 use phux_client_runtime::control::{ControlPlane, Event, Status};
 use phux_protocol::ids::{Revision, SessionId};
-use phux_protocol::wire::frame::{AttachTarget, CommandResult, CommandValue, Committed, ErrorCode, Refusal};
+use phux_protocol::wire::frame::{
+    AttachTarget, CommandResult, CommandValue, Committed, ErrorCode, Refusal,
+};
 use rune::Env;
 use std::sync::{
     Arc,
@@ -242,12 +244,15 @@ fn a_success_before_a_new_connection_waits_for_identity_and_never_hides_on_failu
     let mut tx = rune::Tx::default();
     desk.observe(&client, client.take_activity(), &mut tx);
     let (request, operation, result) = begin(&mut desk, &client);
-    client.feed(phux_protocol::wire::frame::FrameKind::CommandResult {
-        request_id: request,
-        result: CommandResult::OkWith(CommandValue::Committed(Box::new(
-            Committed::new(operation, Revision::new(2)),
-        ))),
-    }).unwrap();
+    client
+        .feed(phux_protocol::wire::frame::FrameKind::CommandResult {
+            request_id: request,
+            result: CommandResult::OkWith(CommandValue::Committed(Box::new(Committed::new(
+                operation,
+                Revision::new(2),
+            )))),
+        })
+        .unwrap();
     client.with_control(ControlPlane::connection_opened);
     desk.observe(&client, client.take_activity(), &mut tx);
     assert!(
@@ -319,9 +324,23 @@ fn an_older_quick_move_completion_preserves_the_newer_pending_focus_intent() {
     let (request, operation, result) = begin(&mut desk, &client);
     let latest = ResourceId::local(8);
     desk.want(latest.clone());
-    reply(&mut desk, &client, request, CommandResult::Accepted { operation });
-    assert!(result.try_recv().unwrap().unwrap_err().contains("newer selection"));
-    assert_eq!(desk.connection.wanted.as_ref().map(|(id, _)| id), Some(&latest));
+    reply(
+        &mut desk,
+        &client,
+        request,
+        CommandResult::Accepted { operation },
+    );
+    assert!(
+        result
+            .try_recv()
+            .unwrap()
+            .unwrap_err()
+            .contains("newer selection")
+    );
+    assert_eq!(
+        desk.connection.wanted.as_ref().map(|(id, _)| id),
+        Some(&latest)
+    );
     assert!(!desk.splits_waiting());
     assert!(desk.connection.quick_move.is_none());
 }
@@ -330,12 +349,24 @@ fn an_older_quick_move_completion_preserves_the_newer_pending_focus_intent() {
 fn a_panel_from_another_original_server_cannot_capture_the_main_windows_reused_id() {
     let (client, mut desk) = connected();
     let (finish, result) = mpsc::channel();
-    desk.adopt_quick(terminal(), Some(vec![2; 16]),
-        Box::new(move |outcome| finish.send(outcome).unwrap()));
-    assert!(result.try_recv().unwrap().unwrap_err().contains("original server view"));
+    desk.adopt_quick(
+        terminal(),
+        Some(vec![2; 16]),
+        Box::new(move |outcome| finish.send(outcome).unwrap()),
+    );
+    assert!(
+        result
+            .try_recv()
+            .unwrap()
+            .unwrap_err()
+            .contains("original server view")
+    );
     assert!(desk.connection.quick_move.is_none());
     assert!(!desk.splits_waiting());
-    assert!(outbound(&client).is_empty(), "no move, attach or execution close");
+    assert!(
+        outbound(&client).is_empty(),
+        "no move, attach or execution close"
+    );
 }
 
 #[test]
@@ -343,9 +374,14 @@ fn admitted_move_without_committed_receipt_does_not_place_or_complete_as_success
     let (client, mut desk) = connected();
     let (request, operation, result) = begin(&mut desk, &client);
     let selected = client.selected_session();
-    reply(&mut desk, &client, request, CommandResult::Accepted { operation });
+    reply(
+        &mut desk,
+        &client,
+        request,
+        CommandResult::Accepted { operation },
+    );
     let error = result.try_recv().unwrap().unwrap_err();
-    assert!(error.contains(&operation.to_string()));
+    assert!(error.contains(&phux_protocol::ids::hex16(operation.as_bytes())));
     assert!(desk.connection.quick_move.is_none());
     assert!(desk.connection.unplaced_splits.is_empty());
     assert!(!desk.splits_waiting());

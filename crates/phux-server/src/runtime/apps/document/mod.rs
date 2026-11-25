@@ -76,7 +76,6 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
         attach::stage_session::<A>(capture, staging, pane).boxed_local()
     }
 
-
     fn bootstrap<'a>(
         &'a self,
         stream: StreamBootstrap<'a>,
@@ -111,9 +110,9 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
             _ => WrongResourceKind {
                 required: ResourceKind::Terminal,
                 actual: A::KIND,
-            }.to_string(),
+            }
+            .to_string(),
         };
         Some((ErrorCode::WrongResourceKind, message))
     }
 }
-

@@ -118,7 +118,12 @@ pub const COMMANDS: &[Command] = &[
     row!(Shortcut::Popup, "Popup…", [], []),
     row!(Shortcut::CopyConfig, "Copy Settings as TOML", [], []),
     row!(Shortcut::RestoreSessions, "Restore Sessions", [], []),
-    row!(Shortcut::ReviewRawRelaunch, "Review Archived Raw Execution…", [], []),
+    row!(
+        Shortcut::ReviewRawRelaunch,
+        "Review Archived Raw Execution…",
+        [],
+        []
+    ),
     row!(Shortcut::Galaxy, "Open Galaxy", [], []),
     row!(Shortcut::Reef, "Open Reef", [], []),
     row!(Shortcut::Pitch, "Open Pitch", [], []),

@@ -29,8 +29,8 @@ use serde_json::{Value, json};
 
 use crate::cli_adapter::spawn_record;
 
-mod residue;
 mod lifecycle;
+mod residue;
 mod selection;
 mod spawn;
 mod sweep;
@@ -369,7 +369,6 @@ async fn in_process_tools_produce_the_same_documents_as_the_former_subprocess_pa
     );
 }
 
-
 /// [`state`] and [`screen`], with `@1` carrying `record` as its
 /// `phux.agent/v1` record.
 fn agent_spec(record: &AgentRecord) -> ScriptSpec {
@@ -407,5 +406,3 @@ fn contract_code(err: &crate::tools::ToolError) -> String {
         .expect("error.code")
         .to_owned()
 }
-
-

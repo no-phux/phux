@@ -43,6 +43,22 @@ rendering remains pooled and queues, credits and native capture interest are
 bounded. Host capture contexts expose client-scoped stream effects, not general
 server-state borrows.
 
+A stream attach reserves before it awaits. `ATTACH_RESOURCE`, `STREAM_BIND`
+and session `ATTACH` each admit their exact generation in the host's resource
+table under one lock, which cancels the predecessor's interest immediately.
+The source then waits for the predecessor's actual running task before it
+emits; an unpublished establishment future never holds up a successor.
+Publication, cancellation, fault cleanup, detach and reaping act only on the
+reservation they hold, so a delayed older source cannot retire a newer one. A
+session `ATTACH` withdraws the reservation of a stream it does not open (an
+agent session, a deferred Terminal), and a pane closed mid-`ATTACH` vacates
+its slot without cancelling its siblings' publication.
+
+Natural close drains instead of aborting. Close asks the admitted emitter for
+a final capture, including an emitter that a pending publication creates after
+close began, and the generation keeps its authority after the registry forgets
+the resource. `RESOURCE_CLOSED` follows that emitter's final generation.
+
 `phux upgrade` re-executes the server in place. The old process validates the
 candidate binary, then hands it the listening socket and every PTY file
 descriptor; processes in panes never notice.

@@ -199,7 +199,11 @@ impl super::SessionLoop {
         repaint: &mut RepaintAccumulator,
     ) {
         use phux_client_core::org_ops::{OrgOutcome, OrgReplyExpectation};
-        let Some(operation) = self.rename_pending.as_ref().and_then(|pending| pending.operation) else {
+        let Some(operation) = self
+            .rename_pending
+            .as_ref()
+            .and_then(|pending| pending.operation)
+        else {
             self.fail_session_rename("the original rename operation is unavailable", repaint);
             return;
         };

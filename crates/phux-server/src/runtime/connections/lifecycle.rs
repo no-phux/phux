@@ -22,7 +22,10 @@ pub(crate) fn detach_and_release_consumer_state(state: &SharedState, client_id: 
 }
 
 /// Synchronous attachment retirement, usable under an exact host generation check.
-pub(crate) fn detach_consumer_state(s: &mut ServerState, client_id: ClientId) -> Option<DetachedFrom> {
+pub(crate) fn detach_consumer_state(
+    s: &mut ServerState,
+    client_id: ClientId,
+) -> Option<DetachedFrom> {
     let attached_session = attached_session_name(s, client_id);
     release_actor_consumers(s, client_id);
     announce_lease_releases(s, client_id, Some(crate::runtime::wire_client(client_id)));

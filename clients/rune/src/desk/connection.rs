@@ -11,8 +11,8 @@ use std::time::Instant;
 
 use phux_client_core::layout::LayoutNode;
 use phux_client_runtime::control::{PrivateUploadDestination, Status, Topology};
-use phux_client_runtime::{Client, ViewId};
 use phux_client_runtime::publication::Publication;
+use phux_client_runtime::{Client, ViewId};
 use phux_protocol::ids::{ArrangementKey, OperationId, ResourceId, SessionKey};
 
 use super::{
@@ -212,7 +212,12 @@ pub(super) struct SpawnOrigin {
 
 impl SpawnOrigin {
     pub(super) fn new(client: &Client, server: Option<Vec<u8>>, epoch: u64, choice: u64) -> Self {
-        Self { server, epoch, choice, owner: Arc::downgrade(client.publication()) }
+        Self {
+            server,
+            epoch,
+            choice,
+            owner: Arc::downgrade(client.publication()),
+        }
     }
 
     pub(super) fn owns_client(&self, client: &Client) -> bool {
@@ -222,7 +227,9 @@ impl SpawnOrigin {
 
 impl Connection {
     pub(super) fn owns_client(&self, client: &Client) -> bool {
-        self.client.as_deref().is_some_and(|current| std::ptr::eq(current, client))
+        self.client
+            .as_deref()
+            .is_some_and(|current| std::ptr::eq(current, client))
     }
 
     /// An observed-name lookup is local selection only. Qualify and resolve
@@ -232,30 +239,50 @@ impl Connection {
             return false;
         }
         client.with_control(|control| {
-            if control.status() != Status::Attached || control.connection_epoch() != self.view_epoch
-                || control.server().map(|server| server.id.as_slice()) != self.view_server.as_deref() {
+            if control.status() != Status::Attached
+                || control.connection_epoch() != self.view_epoch
+                || control.server().map(|server| server.id.as_slice())
+                    != self.view_server.as_deref()
+            {
                 return false;
             }
-            let Some(id) = control.topology().and_then(|topology| topology.session_named(name))
-                .map(|session| session.id) else { return false };
+            let Some(id) = control
+                .topology()
+                .and_then(|topology| topology.session_named(name))
+                .map(|session| session.id)
+            else {
+                return false;
+            };
             if control.selected_session() != Some(id) {
                 control.attach_session(phux_protocol::wire::frame::AttachTarget::ById(
-                    phux_protocol::ids::SessionId::new(id)));
+                    phux_protocol::ids::SessionId::new(id),
+                ));
             }
             control.selected_session() == Some(id)
         })
     }
 
     #[cfg(test)]
-    pub(crate) fn seed_view_sources(&mut self, server: Vec<u8>, sources: &[phux_client_runtime::engine::ViewSource]) {
+    pub(crate) fn seed_view_sources(
+        &mut self,
+        server: Vec<u8>,
+        sources: &[phux_client_runtime::engine::ViewSource],
+    ) {
         self.view_server = Some(server.clone());
         self.receipts.seed_server(server.clone());
         let client = self.client.as_ref().expect("fixture client");
         self.epoch = client.connection_epoch();
         self.view_epoch = self.epoch;
         for source in sources {
-            self.view_intents.insert(source.terminal_id().clone(),
-                super::view_intent::ViewIntent::from_source(client, server.clone(), self.epoch, source.clone()));
+            self.view_intents.insert(
+                source.terminal_id().clone(),
+                super::view_intent::ViewIntent::from_source(
+                    client,
+                    server.clone(),
+                    self.epoch,
+                    source.clone(),
+                ),
+            );
         }
     }
 
@@ -283,9 +310,11 @@ impl Connection {
 
 impl CallbackFence {
     pub(super) fn same_namespace(&self, connection: &Connection) -> bool {
-        connection.serial == self.serial && connection.client.as_ref().is_some_and(|client| {
-            Weak::ptr_eq(&self.client, &Arc::downgrade(client))
-        })
+        connection.serial == self.serial
+            && connection
+                .client
+                .as_ref()
+                .is_some_and(|client| Weak::ptr_eq(&self.client, &Arc::downgrade(client)))
     }
 
     pub(super) fn permits_view(&self, view: Option<ViewId>) -> bool {
@@ -303,7 +332,8 @@ impl CallbackFence {
                 Weak::ptr_eq(&self.client, &Arc::downgrade(client))
                     && client.with_control(|control| {
                         control.connection_epoch() == self.epoch
-                            && control.server().map(|server| server.id.as_slice()) == self.server.as_deref()
+                            && control.server().map(|server| server.id.as_slice())
+                                == self.server.as_deref()
                     })
             })
     }

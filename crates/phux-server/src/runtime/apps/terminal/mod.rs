@@ -6,10 +6,10 @@
     reason = "private module shared across the runtime; pub would violate unreachable_pub"
 )]
 
-mod app;
-pub(crate) mod capture;
 pub(crate) mod agent_state;
+mod app;
 pub(crate) mod attach;
+pub(crate) mod capture;
 pub(crate) mod checkout;
 mod engine;
 pub(crate) mod history;
@@ -17,7 +17,7 @@ pub(crate) mod input_lane;
 pub(crate) mod launch;
 pub(crate) mod notify_mode;
 pub(crate) mod parent;
-mod program_note;
+pub(crate) mod program_note;
 pub(crate) mod program_status;
 pub(crate) mod resume;
 pub(crate) mod scrollback;

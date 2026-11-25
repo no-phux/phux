@@ -82,12 +82,14 @@ pub(super) fn resolve_session_name(
     target: &ServerTarget,
     requested: Option<String>,
 ) -> String {
-    requested.unwrap_or_else(|| fresh_session_name(
-        &existing_session_names(rt, target),
-        &configured_session_name_template(),
-        &std::env::current_dir().unwrap_or_default(),
-        &mut phux_config::NameRng::from_entropy(),
-    ))
+    requested.unwrap_or_else(|| {
+        fresh_session_name(
+            &existing_session_names(rt, target),
+            &configured_session_name_template(),
+            &std::env::current_dir().unwrap_or_default(),
+            &mut phux_config::NameRng::from_entropy(),
+        )
+    })
 }
 
 /// A session name for an omitted-name `phux new` not in `existing`: render

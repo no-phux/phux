@@ -20,14 +20,26 @@ pub(crate) fn claim_relaunch(
     expected: Revision,
 ) -> Option<CommandResult> {
     let command = phux_protocol::wire::frame::Command::ResourceRelaunch {
-        operation, resource: *resource, expected,
+        operation,
+        resource: *resource,
+        expected,
     };
-    if !matches!(ctx.state.with(|s| crate::policy::authorize_command(s, ctx.client_id, &command)),
-        Ok(crate::policy::Admission::Run)) {
-        return Some(super::controller::denied("relaunch requires current authority on the exact saved resource"));
+    if !matches!(
+        ctx.state
+            .with(|s| crate::policy::authorize_command(s, ctx.client_id, &command)),
+        Ok(crate::policy::Admission::Run)
+    ) {
+        return Some(super::controller::denied(
+            "relaunch requires current authority on the exact saved resource",
+        ));
     }
-    if ctx.state.with(|s| s.org().receipt(&ow::core_operation(&operation)).is_some()) {
-        return ctx.state.with(|s| replay_native_relaunch(s, operation, resource, expected));
+    if ctx
+        .state
+        .with(|s| s.org().receipt(&ow::core_operation(&operation)).is_some())
+    {
+        return ctx
+            .state
+            .with(|s| replay_native_relaunch(s, operation, resource, expected));
     }
     match ctx
         .state
@@ -41,9 +53,15 @@ pub(crate) fn claim_relaunch(
 
 /// Only the exact, freshly checked local-owner proposal reaches this path.
 pub(crate) fn claim_approved_relaunch(
-    ctx: &CommandContext, operation: OperationId, resource: &ResourceKey, expected: Revision,
+    ctx: &CommandContext,
+    operation: OperationId,
+    resource: &ResourceKey,
+    expected: Revision,
 ) -> Option<CommandResult> {
-    match ctx.state.with(|s| native_relaunch_spec(s, resource, expected, true)) {
+    match ctx
+        .state
+        .with(|s| native_relaunch_spec(s, resource, expected, true))
+    {
         Ok(Some(spec)) => Some(spawn_relaunch(ctx, spec, operation)),
         Ok(None) => None,
         Err(result) => Some(result),

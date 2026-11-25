@@ -248,7 +248,7 @@ async fn sealed_cut_refuses_new_input_and_preserves_same_publication_retry() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn generic_hooks_cannot_create_another_source_or_self_input_under_native_guardian() {
-    crate::runtime::test_support::local(async {
+    Box::pin(crate::runtime::test_support::local(async {
         let fx = Fixture::new();
         fx.ready().await;
         assert_eq!(
@@ -305,6 +305,6 @@ async fn generic_hooks_cannot_create_another_source_or_self_input_under_native_g
                 }
             ))
         ));
-    })
+    }))
     .await;
 }

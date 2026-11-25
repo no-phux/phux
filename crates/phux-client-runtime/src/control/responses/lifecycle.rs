@@ -37,10 +37,14 @@ impl ControlPlane {
                 .insert(id, ResourceKind::Terminal, Origin::OwnSpawn);
         }
         let outcome = match (&spawned, result) {
-            (Some(terminal_id), _) => super::super::TerminalCreationOutcome::LiveTarget { terminal_id: terminal_id.clone() },
-            (None, SpawnResult::Err(SpawnError::Unknown(_))) => super::super::TerminalCreationOutcome::Unknown {
-                message: error.unwrap_or_else(|| UNCERTAIN_SPAWN.into()),
+            (Some(terminal_id), _) => super::super::TerminalCreationOutcome::LiveTarget {
+                terminal_id: terminal_id.clone(),
             },
+            (None, SpawnResult::Err(SpawnError::Unknown(_))) => {
+                super::super::TerminalCreationOutcome::Unknown {
+                    message: error.unwrap_or_else(|| UNCERTAIN_SPAWN.into()),
+                }
+            }
             (None, SpawnResult::Err(_)) => super::super::TerminalCreationOutcome::Refused {
                 message: error.unwrap_or_else(|| "spawn refused".into()),
             },
@@ -117,7 +121,9 @@ impl ControlPlane {
                 }
                 let message = error.unwrap_or_else(|| "spawn outcome unavailable".into());
                 let outcome = if uncertain {
-                    super::super::TerminalCreationOutcome::Unknown { message: UNCERTAIN_SPAWN.into() }
+                    super::super::TerminalCreationOutcome::Unknown {
+                        message: UNCERTAIN_SPAWN.into(),
+                    }
                 } else {
                     super::super::TerminalCreationOutcome::Refused { message }
                 };

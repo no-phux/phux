@@ -65,7 +65,13 @@ impl TerminalActor {
             frames,
             retained_bytes,
             base_seq,
-            capture: super::super::NativeCapture::new(req.owner, req.terminal_id.clone(), req.stream_id, req.bootstrap_id, cursor),
+            capture: super::super::NativeCapture::new(
+                req.owner,
+                req.terminal_id.clone(),
+                req.stream_id,
+                req.bootstrap_id,
+                cursor,
+            ),
         })
     }
 
@@ -187,7 +193,8 @@ impl TerminalActor {
         base_seq: u64,
         replay: &VecDeque<(u64, Bytes)>,
     ) -> bool {
-        self.publication.native_publications
+        self.publication
+            .native_publications
             .get(&cursor)
             .is_some_and(|existing| existing.base_seq != base_seq || existing.replay != *replay)
     }
@@ -222,7 +229,8 @@ impl TerminalActor {
             installed += 1;
             let key = NativeCursorKey::new(waiter.owner, waiter.stream_id);
             let cancellation = reply_value.capture.cancellation();
-            self.publication.watch_native(cancellation.clone(), key, waiter.bootstrap_id, cursor);
+            self.publication
+                .watch_native(cancellation.clone(), key, waiter.bootstrap_id, cursor);
             self.publication.native_cursor_owners.insert(
                 key,
                 NativeCursorOwner {
@@ -357,7 +365,8 @@ impl TerminalActor {
 
     pub(in crate::actor) fn buffer_native_live_output(&mut self, seq: u64, bytes: &Bytes) -> bool {
         let mut deferred = false;
-        let overflow = self.publication
+        let overflow = self
+            .publication
             .pending_native_bootstrap
             .as_ref()
             .is_some_and(|pending| {

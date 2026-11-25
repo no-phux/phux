@@ -141,7 +141,7 @@ mod tests {
                 s.activation_token(pane).unwrap(),
                 ExitOutcome::exited(0),
                 false,
-            )
+            );
         });
         // A ResourceLaunchReported after completion is stale: the exit
         // transition must clear it, not depend on task scheduling.
@@ -240,13 +240,22 @@ mod tests {
     fn admitted_execution_does_not_replace_an_exact_owner_approved_task() {
         let state = SharedState::new();
         let task = TerminalLaunch {
-            argv: ["/opt/bin/opencode", "--prompt", "fix the bug"].map(str::to_owned).to_vec(),
+            argv: ["/opt/bin/opencode", "--prompt", "fix the bug"]
+                .map(str::to_owned)
+                .to_vec(),
             ..TerminalLaunch::default()
         };
         state.with(|s| {
             let command = super::super::launch::spec_command(s, &task);
-            let argv = command.get_argv().iter().map(|arg| arg.to_string_lossy().into_owned()).collect::<Vec<_>>();
-            assert_eq!(argv, task.argv, "execution honors admission rather than inferring a shell fallback");
+            let argv = command
+                .get_argv()
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                argv, task.argv,
+                "execution honors admission rather than inferring a shell fallback"
+            );
         });
     }
 }

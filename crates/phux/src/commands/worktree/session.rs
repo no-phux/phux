@@ -8,9 +8,7 @@ use phux_config::socket::default_socket_path;
 
 use crate::commands::{cli_runtime, ensure_socket_path_fits, new, server, server_target};
 
-use super::{
-    binding_json, collect, fail_json, git_bytes, repo_root, session_name_for,
-};
+use super::{binding_json, collect, fail_json, git_bytes, repo_root, session_name_for};
 
 mod open;
 pub(super) use open::run_open;
@@ -288,18 +286,22 @@ pub(crate) fn create_task_worktree(
         authority,
     )) {
         Ok(phux_client::session::CreateOutcome::Created(_)) => Ok(TaskSession { session: name }),
-        Ok(phux_client::session::CreateOutcome::Committed { receipt }
-            | phux_client::session::CreateOutcome::LaunchFailed { receipt, .. }) => {
-            Err(crate::commands::json_err::emit(
-                false, &new::committed_session_error(&name, &receipt), 1,
-            ))
-        }
+        Ok(
+            phux_client::session::CreateOutcome::Committed { receipt }
+            | phux_client::session::CreateOutcome::LaunchFailed { receipt, .. },
+        ) => Err(crate::commands::json_err::emit(
+            false,
+            &new::committed_session_error(&name, &receipt),
+            1,
+        )),
         Ok(outcome) => {
             error!("could not seed mission session: {outcome:?}");
             Err(ExitCode::FAILURE)
         }
         Err(SeedMissionError::Create(error)) => Err(new::report_create_session_error(
-            &server_target::ServerTarget::local(socket), false, error,
+            &server_target::ServerTarget::local(socket),
+            false,
+            error,
         )),
         Err(SeedMissionError::Setup(error)) => {
             error!("{error}");
@@ -327,11 +329,17 @@ async fn seed_mission_session(
         .await
         .map_err(|error| SeedMissionError::Setup(error.to_string()))?;
     if super::super::mission_start::owner_on(&mut conn)
-        .await.map_err(SeedMissionError::Setup)? != authority
+        .await
+        .map_err(SeedMissionError::Setup)?
+        != authority
     {
-        return Err(SeedMissionError::Setup(format!("mission session belongs to authority {authority}")));
+        return Err(SeedMissionError::Setup(format!(
+            "mission session belongs to authority {authority}"
+        )));
     }
-    let cwd = dest.to_str().ok_or_else(|| SeedMissionError::Setup("mission worktree path is not UTF-8".to_owned()))?;
+    let cwd = dest
+        .to_str()
+        .ok_or_else(|| SeedMissionError::Setup("mission worktree path is not UTF-8".to_owned()))?;
     let mut attrs = phux_client::project_identity::creation_attrs(
         dest,
         &super::super::ls::local_hostname(),
@@ -404,5 +412,3 @@ fn branch_exists(root: &Path, branch: &str) -> bool {
     )
     .is_ok()
 }
-
-

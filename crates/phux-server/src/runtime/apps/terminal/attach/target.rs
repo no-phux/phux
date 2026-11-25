@@ -7,7 +7,6 @@
 use super::*;
 use phux_terminal_api::actor::TerminalResource as _;
 
-
 /// A new pane's working directory from `defaults.cwd-inheritance` when the
 /// spawn left `cwd` unset; `None` starts in the home directory. The spawn's
 /// `owner_terminal` stands in for the spawning client's focused pane.

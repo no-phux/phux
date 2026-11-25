@@ -369,5 +369,5 @@ pub use ssh::{
     retry_login as ssh_retry_login, set_agent as set_ssh_agent,
 };
 
-pub use driver::run_session;
 pub(crate) use driver::frames;
+pub use driver::run_session;

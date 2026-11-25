@@ -44,12 +44,21 @@ impl ControlPlane {
     ) {
         use super::super::TerminalCreationOutcome;
         let (terminal_id, error) = match &outcome {
-            TerminalCreationOutcome::LiveTarget { terminal_id } => (Some(terminal_id.clone()), None),
+            TerminalCreationOutcome::LiveTarget { terminal_id } => {
+                (Some(terminal_id.clone()), None)
+            }
             TerminalCreationOutcome::Refused { message }
             | TerminalCreationOutcome::Unknown { message } => (None, Some(message.clone())),
         };
-        self.push_event(Event::TerminalCreation { request_id, outcome });
-        self.push_event(Event::TerminalSpawned { request_id, terminal_id, error });
+        self.push_event(Event::TerminalCreation {
+            request_id,
+            outcome,
+        });
+        self.push_event(Event::TerminalSpawned {
+            request_id,
+            terminal_id,
+            error,
+        });
     }
     /// Submit a spawn with truthful queue/journal evidence, without selecting or
     /// creating a session implicitly. Later receipts are separate events.
@@ -62,10 +71,18 @@ impl ControlPlane {
         self.submit_spawn_with_replay(request, false)
     }
 
-    fn submit_spawn_with_replay(&mut self, request: SpawnRequest, allow_replay: bool) -> WorkflowSubmission {
-        if !self.handshake_ready || (self.attached_session.is_none()
-            && request.session_id.or(self.selected_session).is_none()) {
-            return WorkflowSubmission::NotQueued { reason: "session_unavailable".into() };
+    fn submit_spawn_with_replay(
+        &mut self,
+        request: SpawnRequest,
+        allow_replay: bool,
+    ) -> WorkflowSubmission {
+        if !self.handshake_ready
+            || (self.attached_session.is_none()
+                && request.session_id.or(self.selected_session).is_none())
+        {
+            return WorkflowSubmission::NotQueued {
+                reason: "session_unavailable".into(),
+            };
         }
         let request_id = self.next_request_id();
         self.spawn_terminal_with_replay(request_id, request, allow_replay)
@@ -80,16 +97,29 @@ impl ControlPlane {
         launch: Option<Box<LaunchSpec>>,
     ) -> WorkflowSubmission {
         if phux_client_core::rename::check_session_name(&name).is_err() {
-            return WorkflowSubmission::NotQueued { reason: "invalid_session_name".into() };
+            return WorkflowSubmission::NotQueued {
+                reason: "invalid_session_name".into(),
+            };
         }
         if !self.handshake_ready || !self.organization_supported() || !self.org.ready {
-            return WorkflowSubmission::NotQueued { reason: "organization_unavailable".into() };
+            return WorkflowSubmission::NotQueued {
+                reason: "organization_unavailable".into(),
+            };
         }
         match self.submit_organization(Command::SessionCreate {
-            operation: mint_operation(), name, lifetime, attrs: Vec::new(), launch,
+            operation: mint_operation(),
+            name,
+            lifetime,
+            attrs: Vec::new(),
+            launch,
         }) {
-            Ok(operation) => WorkflowSubmission::Journaled { request_id: None, operation },
-            Err(error) => WorkflowSubmission::NotQueued { reason: error.to_string() },
+            Ok(operation) => WorkflowSubmission::Journaled {
+                request_id: None,
+                operation,
+            },
+            Err(error) => WorkflowSubmission::NotQueued {
+                reason: error.to_string(),
+            },
         }
     }
 
@@ -102,19 +132,38 @@ impl ControlPlane {
         launch: Option<Box<LaunchSpec>>,
     ) -> WorkflowSubmission {
         if phux_client_core::rename::check_session_name(&name).is_err() {
-            return WorkflowSubmission::NotQueued { reason: "invalid_session_name".into() };
+            return WorkflowSubmission::NotQueued {
+                reason: "invalid_session_name".into(),
+            };
         }
         if !self.handshake_ready || !self.org.ready || !self.organization_supported() {
-            return WorkflowSubmission::NotQueued { reason: "organization_unavailable".into() };
+            return WorkflowSubmission::NotQueued {
+                reason: "organization_unavailable".into(),
+            };
         }
-        if !self.server.as_ref().is_some_and(|server| server.features_ext2.contains(phux_protocol::caps::ServerFeatureExt2::SessionEnsure)) {
-            return WorkflowSubmission::NotQueued { reason: "ensure_session_unsupported".into() };
+        if !self.server.as_ref().is_some_and(|server| {
+            server
+                .features_ext2
+                .contains(phux_protocol::caps::ServerFeatureExt2::SessionEnsure)
+        }) {
+            return WorkflowSubmission::NotQueued {
+                reason: "ensure_session_unsupported".into(),
+            };
         }
         match self.submit_organization(Command::SessionEnsure {
-            operation: mint_operation(), name, lifetime, launch, attrs: Vec::new(),
+            operation: mint_operation(),
+            name,
+            lifetime,
+            launch,
+            attrs: Vec::new(),
         }) {
-            Ok(operation) => WorkflowSubmission::Journaled { request_id: None, operation },
-            Err(error) => WorkflowSubmission::NotQueued { reason: error.to_string() },
+            Ok(operation) => WorkflowSubmission::Journaled {
+                request_id: None,
+                operation,
+            },
+            Err(error) => WorkflowSubmission::NotQueued {
+                reason: error.to_string(),
+            },
         }
     }
 }
@@ -142,13 +191,20 @@ impl ControlPlane {
         if let WorkflowSubmission::NotQueued { reason } =
             self.spawn_terminal_with_replay(request_id, request, allow_replay)
         {
-            self.publish_spawn_outcome(request_id,
-                super::super::TerminalCreationOutcome::Refused { message: reason });
+            self.publish_spawn_outcome(
+                request_id,
+                super::super::TerminalCreationOutcome::Refused { message: reason },
+            );
         }
         request_id
     }
 
-    fn spawn_terminal_with_replay(&mut self, request_id: u32, request: SpawnRequest, allow_replay: bool) -> WorkflowSubmission {
+    fn spawn_terminal_with_replay(
+        &mut self,
+        request_id: u32,
+        request: SpawnRequest,
+        allow_replay: bool,
+    ) -> WorkflowSubmission {
         // A foreign session is addressed by an explicit member of any kind.
         // Never omit the owner and accidentally execute in the home session.
         let target_session = request.session_id.or(self.selected_session);
@@ -157,10 +213,15 @@ impl ControlPlane {
         let owner_terminal = match owner_terminal {
             Some((session, None)) => {
                 if !allow_replay {
-                    return WorkflowSubmission::NotQueued { reason: NO_SESSION_HOST.into() };
+                    return WorkflowSubmission::NotQueued {
+                        reason: NO_SESSION_HOST.into(),
+                    };
                 }
                 return match self.create_in_session(request_id, session, request) {
-                    Ok(operation) => WorkflowSubmission::Journaled { request_id: Some(request_id), operation },
+                    Ok(operation) => WorkflowSubmission::Journaled {
+                        request_id: Some(request_id),
+                        operation,
+                    },
                     Err(reason) => WorkflowSubmission::NotQueued { reason },
                 };
             }
@@ -220,12 +281,16 @@ impl ControlPlane {
 }
 
 impl ControlPlane {
-
     /// Create a terminal in `session` by its organization key
     /// (`RESOURCE_CREATE` placed in a new group), for a session with no live
     /// member a `SPAWN_RESOURCE` could name as owner. The operation journal
     /// resends it under the same id, so a reconnect never starts two.
-    fn create_in_session(&mut self, request_id: u32, session: u32, request: SpawnRequest) -> Result<phux_protocol::ids::OperationId, String> {
+    fn create_in_session(
+        &mut self,
+        request_id: u32,
+        session: u32,
+        request: SpawnRequest,
+    ) -> Result<phux_protocol::ids::OperationId, String> {
         let placed = self
             .server
             .as_ref()
@@ -252,7 +317,9 @@ impl ControlPlane {
             launch_mode: LaunchMode::Immediate,
             placement: Some(Box::new(CreatePlacement::NewGroup)),
         };
-        let operation = self.journal_org_operation(command).map_err(|error| error.to_string())?;
+        let operation = self
+            .journal_org_operation(command)
+            .map_err(|error| error.to_string())?;
         self.org.spawns.push((operation, request_id));
         self.flush_org_journal();
         Ok(operation)

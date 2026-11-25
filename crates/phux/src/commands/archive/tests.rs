@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests {
     use phux_protocol::ids::{SessionId, WindowId};
+    use phux_protocol::wire::frame::Command;
     use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
     use phux_client::layout::{Group, LayoutState};
 

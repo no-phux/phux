@@ -21,7 +21,7 @@ use phux_client::layout_ops::LayoutOps;
 use phux_config::socket::default_socket_path;
 use phux_protocol::ids::{ResourceId, ResourceKey, ResourceKind, SessionKey};
 use phux_protocol::wire::frame::{
-    ArrangementDoc as WireDoc, ArrangementGroup, ArrangementNode, Command, EntryRef, EntryTarget,
+    ArrangementDoc as WireDoc, ArrangementGroup, ArrangementNode, EntryRef, EntryTarget,
     LaunchMode, LaunchSpec, OrgFilter, SplitDirection,
 };
 
@@ -266,9 +266,7 @@ pub(crate) async fn relaunch_imported(socket_path: &Path, imported: Imported) ->
     }
 }
 
-
 include!("archive/records.rs");
-
 
 /// Read the archive document (a path or `-` for stdin) and parse it.
 fn load_archive(archive_path: &Path) -> Result<model::WorkspaceArchive, ExitCode> {
@@ -283,8 +281,6 @@ struct SessionOutcome {
     /// could not be resumed, downgraded to a plain shell).
     warnings: Vec<String>,
 }
-
-
 
 /// Place a window's panes in a right-leaning chain when no layout was
 /// captured; also used by `snapshot::unplaced_window`.

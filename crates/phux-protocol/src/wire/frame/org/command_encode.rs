@@ -86,7 +86,13 @@ pub(in crate::wire) fn encode_org_command(command: &Command, enc: &mut Encoder<'
                 enc.write_field_with(field::org::LAUNCH, |e| encode_launch(launch, e));
             }
         }
-        Command::SessionEnsure { operation, name, lifetime, attrs, launch } => {
+        Command::SessionEnsure {
+            operation,
+            name,
+            lifetime,
+            attrs,
+            launch,
+        } => {
             write_operation(enc, operation);
             write_name(enc, name);
             enc.write_u8_field(field::org::LIFETIME, lifetime.to_u8());

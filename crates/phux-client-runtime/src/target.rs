@@ -353,7 +353,6 @@ pub struct Resolved {
     pub client_identity: TlsClientIdentity,
 }
 
-
 /// The TLS identity a registry entry names: its enrolled certificate and
 /// key, or none.
 ///

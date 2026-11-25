@@ -1,27 +1,39 @@
 //! Host-owned producer authority, registration and resource evidence.
+use super::CommandContext;
+use crate::runtime::apps::document::{DocumentApi, engine};
 use bytes::Bytes;
+use engine::{DocumentResource as _, PublishRejection, PublishRequest};
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode};
 use tokio::sync::oneshot;
-use crate::runtime::apps::document::{DocumentApi, engine};
-use engine::{DocumentResource as _, PublishRejection, PublishRequest};
-use super::CommandContext;
 pub(crate) mod audit;
 mod input;
 mod mirror;
 
 pub(super) async fn serve<A: DocumentApi>(ctx: &CommandContext, command: Command) -> CommandResult {
     match command {
-        Command::PublishResourceState { terminal_id, bytes } => publish::<A>(ctx, &terminal_id, bytes.into()).await,
-        Command::SendDocumentInput { terminal_id, intent, control, on_behalf_of } => {
+        Command::PublishResourceState { terminal_id, bytes } => {
+            publish::<A>(ctx, &terminal_id, bytes.into()).await
+        }
+        Command::SendDocumentInput {
+            terminal_id,
+            intent,
+            control,
+            on_behalf_of,
+        } => {
             let audited = intent.clone();
             let relayed = on_behalf_of.as_ref();
             let result = input::relay::<A>(ctx, &terminal_id, intent, control, relayed).await;
-            ctx.state.with(|s| audit::record(s, ctx.client_id, relayed, &terminal_id, &audited, &result));
+            ctx.state.with(|s| {
+                audit::record(s, ctx.client_id, relayed, &terminal_id, &audited, &result);
+            });
             result
         }
         Command::Mirror { op, .. } => mirror::handle(&ctx.state, op).await,
         Command::MirrorProvide { targets } => mirror::provide(&ctx.state, &targets),
-        _ => CommandResult::error(ErrorCode::InvalidCommand, "command not supported by this server"),
+        _ => CommandResult::error(
+            ErrorCode::InvalidCommand,
+            "command not supported by this server",
+        ),
     }
 }
 /// `PUBLISH_RESOURCE_STATE`: a local owner connection replaces the

@@ -1,13 +1,13 @@
 //! Producer resource registration, lifecycle handoff and publication.
-use std::future::Future;
+use crate::resource::ResourceHandle;
+use crate::runtime::spawn_reply::spawned_result;
+use crate::state::{ClientId, Outbound, ServerState, SharedState};
 use phux_protocol::caps::ResourceKindSet;
 use phux_protocol::ids::{IdempotencyKey, ResourceId as WireResourceId, ResourceKind as WireKind};
 use phux_protocol::wire::frame::{AgentEvent, CommandResult, FrameKind, SpawnError};
+use std::future::Future;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
-use crate::resource::ResourceHandle;
-use crate::state::{ClientId, Outbound, ServerState, SharedState};
-use crate::runtime::spawn_reply::spawned_result;
 /// A producer child built and checked by its kind, ready to register.
 pub(super) struct SpawnedChild<'a, F> {
     pub(super) core: phux_core::ids::ResourceId,

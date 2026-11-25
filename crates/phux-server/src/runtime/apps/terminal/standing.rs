@@ -20,7 +20,9 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use crate::runtime::commands::terminal::seed::{SpawnOwnership, seed_session, spawn_pane_with_pty_and_colors};
+use crate::runtime::commands::terminal::seed::{
+    SpawnOwnership, seed_session, spawn_pane_with_pty_and_colors,
+};
 use crate::runtime::commands::{SeedOrigin, SpawnAttribution};
 use crate::runtime::standing::{MirrorSource, Slot, StandingEntries, TICK};
 use crate::state::SharedState;

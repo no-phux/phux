@@ -13,9 +13,7 @@ use phux_protocol::caps::{
     BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ClientCapabilities,
 };
 use phux_protocol::ids::{BootstrapId, StreamId};
-use phux_protocol::wire::frame::{
-    ErrorCode, FrameKind,
-};
+use phux_protocol::wire::frame::{ErrorCode, FrameKind};
 use std::ops::ControlFlow;
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
@@ -27,11 +25,10 @@ use crate::resource::ResourceHandle;
 #[cfg(test)]
 use crate::runtime::prepare_attach;
 use crate::runtime::pump::{self, PumpGeneration};
-use crate::runtime::send_error;
 use crate::state::{AttachSnapshotPane, ClientId, Outbound, SharedState};
 use phux_terminal_api::actor::{
-    ConsumerAttachRequest, ConsumerDetachRequest, PwdRequest, ResizeRequest, ResizeSender,
-    ResourceOutput, ResyncAudience, ResyncTarget, SetDefaultColorsRequest, SnapshotRequest,
+    ConsumerAttachRequest, PwdRequest, ResizeRequest, ResizeSender, ResourceOutput, ResyncAudience,
+    ResyncTarget, SetDefaultColorsRequest, SnapshotRequest,
 };
 
 mod bootstrap;
@@ -47,7 +44,6 @@ mod publication;
 mod pump_loop;
 mod target;
 
-
 pub(crate) use bootstrap::*;
 use bootstrap::{BootstrapStagingBudget, SnapshotGate};
 #[cfg(test)]
@@ -59,11 +55,12 @@ use output_pump::{PaneResync, tombstone_reason_for};
 use pane_capture::PaneCaptureContext;
 use prepare::{AttachStaging, CaptureFailure, ConsumerRegistration};
 pub(crate) use prepare::{prepare_consumers, release_consumer};
+#[cfg(test)]
 use publication::release_gates;
+use pump_loop::GapCause;
 #[cfg(test)]
 use pump_loop::next_wait;
 pub(crate) use pump_loop::*;
-use pump_loop::GapCause;
 pub(crate) use target::*;
 
 #[cfg(test)]

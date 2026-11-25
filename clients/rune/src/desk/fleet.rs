@@ -17,8 +17,8 @@ use super::link::Wake;
 use crate::activity::Activities;
 use crate::creature::{self, Stats};
 
-mod projection;
 mod handoff;
+mod projection;
 pub(super) use handoff::Handoff;
 pub use projection::{Agent, Machine};
 
@@ -48,14 +48,19 @@ impl WatchScope {
             if control.connection_epoch() != epoch {
                 return None;
             }
-            Some(Self { server: control.server()?.id.clone(), epoch })
+            Some(Self {
+                server: control.server()?.id.clone(),
+                epoch,
+            })
         })
     }
 
     fn is_current(&self, client: &Client) -> bool {
         client.with_control(|control| {
-            !control.status().is_terminal() && control.connection_epoch() == self.epoch
-                && control.server().map(|server| server.id.as_slice()) == Some(self.server.as_slice())
+            !control.status().is_terminal()
+                && control.connection_epoch() == self.epoch
+                && control.server().map(|server| server.id.as_slice())
+                    == Some(self.server.as_slice())
         })
     }
 }
@@ -161,8 +166,11 @@ impl Desk {
             );
             if observation.status == Status::Attached
                 && let Some(topology) = observation.topology.take()
-                && let Some(scope) = WatchScope::capture(&watch.client, observation.connection_epoch) {
-                changed |= watch.topology.as_ref() != Some(&topology) || watch.scope.as_ref() != Some(&scope);
+                && let Some(scope) =
+                    WatchScope::capture(&watch.client, observation.connection_epoch)
+            {
+                changed |= watch.topology.as_ref() != Some(&topology)
+                    || watch.scope.as_ref() != Some(&scope);
                 watch.topology = Some(topology);
                 watch.scope = Some(scope);
             }

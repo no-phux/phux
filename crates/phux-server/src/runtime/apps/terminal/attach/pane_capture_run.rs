@@ -67,7 +67,8 @@ impl PaneCaptureContext<'_> {
                 "aggregate bootstrap staging budget exceeded".to_owned(),
             ));
         }
-        if let Some(gate) = publication.gates
+        if let Some(gate) = publication
+            .gates
             .iter_mut()
             .find(|gate| gate.terminal_id == terminal_id)
         {
@@ -160,7 +161,8 @@ impl PaneCaptureContext<'_> {
         self.check_registration(terminal_id, &registration)?;
         if let Some(guard) = registration.guard.take() {
             staging
-                .publication.registrations
+                .publication
+                .registrations
                 .try_reserve(1)
                 .map_err(|_| "host allocation failed".to_owned())?;
             staging.publication.registrations.push(guard);
@@ -202,7 +204,8 @@ impl PaneCaptureContext<'_> {
             "synthesized bootstrap",
         )?;
         if let Some(gate) = staging
-            .publication.gates
+            .publication
+            .gates
             .iter_mut()
             .find(|gate| gate.terminal_id == terminal_id)
         {

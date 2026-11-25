@@ -5,13 +5,13 @@ use std::time::Instant;
 
 use crate::render::overlay::{SelectionGrab, SelectionMode};
 
-use super::{is_left_press, is_right_press, open_context_menu, quantize_cell};
 use super::super::{
     AttachError, EventEnv, InputEvent, ModSet, MouseEvent, PhysicalKey, Point, PointCoordinate,
     PointSpace, ResourceId, ScreenSelectionPoint, StageOutcome, focused_pane_rect, make_named_key,
-    published_terminal, replica_scroll_moved, scale_to_surface_pixels,
-    terminal_in_alt_screen, terminal_wants_mouse_tracking, wheel_scroll_delta,
+    published_terminal, replica_scroll_moved, scale_to_surface_pixels, terminal_in_alt_screen,
+    terminal_wants_mouse_tracking, wheel_scroll_delta,
 };
+use super::{is_left_press, is_right_press, open_context_menu, quantize_cell};
 
 #[allow(
     clippy::future_not_send,

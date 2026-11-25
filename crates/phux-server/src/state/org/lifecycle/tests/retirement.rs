@@ -236,4 +236,3 @@ fn dormant_retirement_is_retained_but_cannot_remove_a_later_activation() {
         assert!(!s.has_pending_activation_reports());
     }
 }
-

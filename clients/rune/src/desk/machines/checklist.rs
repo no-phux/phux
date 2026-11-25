@@ -176,8 +176,12 @@ fn start(target: Target, base: &str, command: Vec<String>) -> Result<String, Str
         return Err("This peer cannot reconcile exact session creation; update phux on it.".into());
     }
     wait(&client, |client| client.organization().is_live())?;
-    let phux_client_runtime::control::WorkflowSubmission::Journaled { operation, .. } =
-        client.create_session(name.clone(), SessionLifetime::Ephemeral, Some(Box::new(LaunchSpec::new(command))))
+    let phux_client_runtime::control::WorkflowSubmission::Journaled { operation, .. } = client
+        .create_session(
+            name.clone(),
+            SessionLifetime::Ephemeral,
+            Some(Box::new(LaunchSpec::new(command))),
+        )
     else {
         client.close();
         return Err("Session creation was not queued.".into());
@@ -185,11 +189,18 @@ fn start(target: Target, base: &str, command: Vec<String>) -> Result<String, Str
     let result = Mutex::new(None);
     let settled = wait(&client, |client| {
         for event in client.take_events() {
-            if let phux_client_runtime::control::Event::OrganizationOperation { operation: id, outcome } = event
+            if let phux_client_runtime::control::Event::OrganizationOperation {
+                operation: id,
+                outcome,
+            } = event
                 && id == operation
             {
                 *result.lock().unwrap() = Some(match outcome {
-                    phux_client_core::org_ops::OrgOutcome::Committed(receipt) if receipt.session.is_some() => Ok(()),
+                    phux_client_core::org_ops::OrgOutcome::Committed(receipt)
+                        if receipt.session.is_some() =>
+                    {
+                        Ok(())
+                    }
                     other => Err(format!("Session creation did not settle: {other:?}")),
                 });
             }
@@ -198,7 +209,10 @@ fn start(target: Target, base: &str, command: Vec<String>) -> Result<String, Str
     });
     client.close();
     settled?;
-    result.into_inner().unwrap().unwrap_or_else(|| Err("Session creation outcome is unknown.".into()))?;
+    result
+        .into_inner()
+        .unwrap()
+        .unwrap_or_else(|| Err("Session creation outcome is unknown.".into()))?;
     Ok(name)
 }
 

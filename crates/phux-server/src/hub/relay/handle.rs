@@ -1,12 +1,11 @@
 //! The producer handle a consumer path uses to reach one satellite relay.
 
 use super::{
-    Arc, AtomicU64, ClientId, Command, CommandResult, DirectoryListingResult,
-    ErrorCode, FrameKind, Mutex, Ordering, Outbound, PathQueryResult, ProxySubscription,
-    RELAY_COMMAND_TIMEOUT, RELAY_LIST_DEADLINE, RELAY_MAILBOX, RelayCatalog, RelayHandle,
-    RelayMailbox, RelayRequest, SatelliteHost, SatelliteSpawn, SpawnError, SpawnResult,
-    Unsubscribe, WithdrawalReceipt, debug, listing_refusal, lock_withdrawal_outcome, mpsc, oneshot,
-    path_refusal, trace, warn,
+    Arc, AtomicU64, ClientId, Command, CommandResult, DirectoryListingResult, ErrorCode, FrameKind,
+    Mutex, Ordering, Outbound, PathQueryResult, ProxySubscription, RELAY_COMMAND_TIMEOUT,
+    RELAY_LIST_DEADLINE, RELAY_MAILBOX, RelayCatalog, RelayHandle, RelayMailbox, RelayRequest,
+    SatelliteHost, SatelliteSpawn, SpawnError, SpawnResult, Unsubscribe, WithdrawalReceipt, debug,
+    listing_refusal, lock_withdrawal_outcome, mpsc, oneshot, path_refusal, trace, warn,
 };
 
 mod catalog;

@@ -91,12 +91,20 @@ impl Desk {
             return false;
         }
         if let Some(key) = self.link.created {
-            let Some(session) = topology.sessions.iter().find(|session| session.key == Some(key)) else {
+            let Some(session) = topology
+                .sessions
+                .iter()
+                .find(|session| session.key == Some(key))
+            else {
                 return false;
             };
             if client.selected_session() != Some(session.id) {
-                return super::view_intent::select_keyed_session(client,
-                    self.connection.view_server.as_deref(), self.connection.view_epoch, &key);
+                return super::view_intent::select_keyed_session(
+                    client,
+                    self.connection.view_server.as_deref(),
+                    self.connection.view_epoch,
+                    &key,
+                );
             }
         }
         let selected = client.selected_session();
@@ -135,14 +143,15 @@ impl Desk {
             Home::Existing,
         );
         match home {
-            Home::Existing(name) => { self.connection.select_named_session(client, &name); }
+            Home::Existing(name) => {
+                self.connection.select_named_session(client, &name);
+            }
             Home::Missing(name) => self.ensure_session(name),
             Home::Nothing => return false,
         }
         true
     }
 }
-
 
 /// The Intake session's name: from the topology when it lists the Intake,
 /// else from the organization replica's record.

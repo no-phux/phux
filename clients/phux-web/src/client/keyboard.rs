@@ -195,7 +195,9 @@ pub(super) fn on_paste(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlT
         .and_then(ClipboardEvent::clipboard_data)
         .and_then(|data| data.get_data("text/plain").ok())
         .unwrap_or_default();
-    let client = Client { app: Rc::clone(app) };
+    let client = Client {
+        app: Rc::clone(app),
+    };
     let _ = client.submit_user_paste(&text);
 }
 
@@ -270,7 +272,9 @@ fn send_events(app: &Rc<RefCell<App>>, events: impl IntoIterator<Item = InputEve
     for event in events {
         let result = submit_event(app, event);
         match result {
-            Ok(InputSubmission::QueuedRaw | InputSubmission::AwaitingReceipt { .. }) => queued = true,
+            Ok(InputSubmission::QueuedRaw | InputSubmission::AwaitingReceipt { .. }) => {
+                queued = true
+            }
             Ok(_) => return queued,
             Err(message) => {
                 close_with_transport_error(app, &message);
@@ -290,7 +294,8 @@ pub(super) fn submit_event(
     let paste = matches!(&event, InputEvent::Paste(_));
     let (submission, raw) = a.session.submit_browser_input(event);
     if let Some(frame) = raw
-        && let Err((message, attempted)) = a.tx.handoff_input(&frame) {
+        && let Err((message, attempted)) = a.tx.handoff_input(&frame)
+    {
         if !attempted {
             let refused = a.session.refuse_browser_input(&message);
             a.publish_input_reports();
@@ -307,18 +312,31 @@ pub(super) fn submit_event(
         InputSubmission::Refused { .. } => "refused",
         InputSubmission::NotQueued => "not-queued",
     };
-    if paste || matches!(submission, InputSubmission::AwaitingReceipt { .. } | InputSubmission::Refused { .. }) {
+    if paste
+        || matches!(
+            submission,
+            InputSubmission::AwaitingReceipt { .. } | InputSubmission::Refused { .. }
+        )
+    {
         let _ = a.canvas.set_attribute("data-phux-input-status", status);
         let _ = a.canvas.remove_attribute("data-phux-input-operation");
-        if let InputSubmission::AwaitingReceipt { delivery_id } | InputSubmission::Refused { delivery_id } = submission {
-            let _ = a.canvas.set_attribute("data-phux-input-delivery-id", &delivery_id.to_string());
+        if let InputSubmission::AwaitingReceipt { delivery_id }
+        | InputSubmission::Refused { delivery_id } = submission
+        {
+            let _ = a
+                .canvas
+                .set_attribute("data-phux-input-delivery-id", &delivery_id.to_string());
         } else {
             let _ = a.canvas.remove_attribute("data-phux-input-delivery-id");
         }
         if paste {
             let notice = match submission {
-                InputSubmission::QueuedRaw => "Paste queued without a delivery receipt; delivery is not confirmed.",
-                InputSubmission::AwaitingReceipt { .. } => "Paste queued; awaiting delivery receipt.",
+                InputSubmission::QueuedRaw => {
+                    "Paste queued without a delivery receipt; delivery is not confirmed."
+                }
+                InputSubmission::AwaitingReceipt { .. } => {
+                    "Paste queued; awaiting delivery receipt."
+                }
                 InputSubmission::NotQueued => "Paste not queued: terminal input is unavailable.",
                 InputSubmission::Refused { .. } => "Paste refused; nothing was queued.",
             };
@@ -326,8 +344,11 @@ pub(super) fn submit_event(
             super::app::show_input_notice(&a.canvas, notice);
         }
     }
-    if matches!(submission, InputSubmission::AwaitingReceipt { .. } | InputSubmission::Refused { .. })
-        && let Err(message) = a.flush_input() {
+    if matches!(
+        submission,
+        InputSubmission::AwaitingReceipt { .. } | InputSubmission::Refused { .. }
+    ) && let Err(message) = a.flush_input()
+    {
         a.fail(&message);
         return Err(message);
     }

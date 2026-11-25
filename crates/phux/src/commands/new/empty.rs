@@ -1,5 +1,6 @@
 //! `phux new --empty`: a session with no terminal yet.
 
+use std::fmt::Write as _;
 use std::process::ExitCode;
 
 use phux_protocol::wire::frame::{Committed, SessionLifetime};
@@ -9,9 +10,7 @@ use crate::commands::{
     attach::report_attach_end, attach::run_attach_once, server::ensure_server_unseeded,
 };
 
-use super::create::{
-    committed_session_error, report_create_refused, report_create_session_error,
-};
+use super::create::{committed_session_error, report_org_create_error};
 use super::naming::resolve_session_name;
 
 /// `phux new --empty [NAME]`: create an empty session, then attach to it. The
@@ -31,12 +30,16 @@ pub(super) fn run_new_empty_attached(
     let session_target = match rt.block_on(async {
         let receipt = create_empty_session_via_metadata(target, &name, false).await?;
         let selected = async {
-            let mut conn = target.connect().await.map_err(phux_client::org::OrgError::Attach)?;
+            let mut conn = target
+                .connect()
+                .await
+                .map_err(phux_client::org::OrgError::Attach)?;
             phux_client::org::attach_target_for_receipt(&mut conn, &receipt).await
-        }.await;
+        }
+        .await;
         selected.map_err(|err| {
             let mut error = committed_session_error(&name, &receipt);
-            error.message.push_str(&format!("; exact attach selection failed: {err}"));
+            let _ = write!(error.message, "; exact attach selection failed: {err}");
             crate::commands::json_err::emit(false, &error, 1)
         })
     }) {
@@ -45,11 +48,7 @@ pub(super) fn run_new_empty_attached(
     };
     let dial = target.dial();
     let predict_cfg = super::super::attach::predictive_config_for(&dial);
-    match rt.block_on(run_attach_once(
-        &dial,
-        session_target,
-        predict_cfg,
-    )) {
+    match rt.block_on(run_attach_once(&dial, session_target, predict_cfg)) {
         Ok(attach_end) => {
             report_attach_end(attach_end);
             ExitCode::SUCCESS
@@ -111,16 +110,17 @@ pub(crate) async fn create_empty_session_via_metadata(
     name: &str,
     json: bool,
 ) -> Result<Committed, ExitCode> {
-    let mut conn = server.connect().await
+    let mut conn = server
+        .connect()
+        .await
         .map_err(|err| server.report_unreachable(json, &err, "new"))?;
     phux_client::org::create_session(
-        &mut conn, phux_client::org::mint_operation(), name.to_owned(),
-        SessionLifetime::Persistent, None,
-    ).await.map_err(|err| {
-        if let Some(refusal) = err.refusal() {
-            report_create_refused(json, name, refusal)
-        } else {
-            report_create_session_error(server, json, phux_client::session::CreateSessionError::Org(err))
-        }
-    })
+        &mut conn,
+        phux_client::org::mint_operation(),
+        name.to_owned(),
+        SessionLifetime::Persistent,
+        None,
+    )
+    .await
+    .map_err(|err| report_org_create_error(server, json, name, err))
 }

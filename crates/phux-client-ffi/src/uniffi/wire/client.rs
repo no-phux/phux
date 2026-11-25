@@ -19,7 +19,10 @@ mod agent_records;
 mod document_input;
 mod endpoint;
 use endpoint::classify_remote_endpoint;
+mod input;
+mod lifetime;
 mod organization;
+mod presentation;
 mod publication;
 #[cfg(test)]
 mod quic_live;
@@ -27,10 +30,9 @@ mod runtime_access;
 mod search;
 mod selection;
 mod service_http;
-mod input;
-mod presentation;
+#[cfg(test)]
+mod test_support;
 mod workflows;
-mod lifetime;
 
 const SCROLLBACK_LINES: u32 = 1000;
 
@@ -216,7 +218,6 @@ impl RemoteClient {
             .unwrap_or_default()
     }
 
-
     pub fn list_directory(&self, path: String) -> u32 {
         self.runtime_client()
             .map_or(0, |client| client.list_directory(path))
@@ -295,7 +296,6 @@ impl RemoteClient {
             .unwrap_or_default()
     }
 
-
     /// Write one client-owned `Global` metadata key: the push grant
     /// `phux.push/v1/<device>` (ADR-0155), or any key the server stores as
     /// an ordinary value. Returns the request id, or 0 when offline (nothing
@@ -355,7 +355,6 @@ impl RemoteClient {
             .unwrap_or_default()
     }
 
-
     /// Resize one pane exactly, without moving the client's viewport vote
     /// (`resize_viewport`). The outcome is local: `Queued` means one
     /// `RESIZE_TERMINAL` left; the server's own geometry arrives in frames.
@@ -383,7 +382,6 @@ impl RemoteClient {
             .unwrap_or(0)
     }
 
-
     pub fn input_ready(&self, terminal_id: String) -> bool {
         self.with_terminal(&terminal_id, Client::input_ready)
             .unwrap_or(false)
@@ -394,7 +392,6 @@ impl RemoteClient {
             let _ = client.refresh_topology();
         }
     }
-
 
     pub fn status(&self) -> WireStatus {
         WireStatus::from(self.runtime_client().map(|client| client.status()))
@@ -427,13 +424,9 @@ impl RemoteClient {
             .topology()
             .map(|graph| session_topology(graph, Some(&replica)))
     }
-
 }
 
-
-
 impl RemoteClient {
-
     /// Lower one runtime event. What [`lower_event`] does not name is a
     /// runtime-owned fact with no Swift vocabulary.
     fn project_event(&self, client: Option<&Client>, event: Event, projected: &mut Vec<WireEvent>) {
@@ -451,8 +444,14 @@ impl RemoteClient {
             return;
         };
         match event {
-            Event::TerminalCreation { request_id, outcome } => {
-                projected.push(WireEvent::TerminalCreation { request_id, outcome: outcome.into() });
+            Event::TerminalCreation {
+                request_id,
+                outcome,
+            } => {
+                projected.push(WireEvent::TerminalCreation {
+                    request_id,
+                    outcome: outcome.into(),
+                });
             }
             Event::TopologyChanged => {
                 projected.push(WireEvent::TopologyChanged);
@@ -487,7 +486,6 @@ impl RemoteClient {
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests;

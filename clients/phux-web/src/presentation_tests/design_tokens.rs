@@ -238,4 +238,3 @@ fn a_finished_agent_stays_seen_until_it_works_again_and_moves_are_announced_once
     memory.keep_only(&[]);
     assert_eq!(memory.settle(&id, "done", None, false), (State::Done, None));
 }
-

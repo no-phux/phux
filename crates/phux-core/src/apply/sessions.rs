@@ -94,8 +94,11 @@ pub(super) fn session_ensure(
     let crate::Reply::Ok { created, .. } = out.reply else {
         unreachable!("session creation returns committed keys");
     };
+    let Some(session) = created.session else {
+        unreachable!("session creation returns a session");
+    };
     out.reply = crate::Reply::Ensured {
-        session: created.session.expect("session creation returns a session"),
+        session,
         revision: Revision::FIRST,
         created: true,
     };

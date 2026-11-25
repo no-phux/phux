@@ -273,6 +273,12 @@ pub(super) fn empty_native_checkpoint(
         ],
         retained_bytes: 0,
         base_seq: 0,
-        capture: phux_terminal_api::actor::NativeCapture::new(capture.owner, capture.terminal_id.clone(), capture.stream_id, capture.bootstrap_id, [9; 32]),
+        capture: phux_terminal_api::actor::NativeCapture::new(
+            capture.owner,
+            capture.terminal_id.clone(),
+            capture.stream_id,
+            capture.bootstrap_id,
+            [9; 32],
+        ),
     }
 }

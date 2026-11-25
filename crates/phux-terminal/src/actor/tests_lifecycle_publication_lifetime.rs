@@ -97,7 +97,10 @@ fn activation(
     response
         .try_recv()
         .expect("immediate activation reply")
-        .map(|mut reply| { reply.interest.published(); reply })
+        .map(|mut reply| {
+            reply.interest.published();
+            reply
+        })
         .err()
 }
 
@@ -114,7 +117,8 @@ async fn only_the_complete_pending_identity_consumes_one_resize_receipt() {
             }
         }
         let mut controls = actor.core.output_tx.subscribe();
-        let touched: Vec<_> = actor.publication
+        let touched: Vec<_> = actor
+            .publication
             .native_cursor_owners
             .values()
             .map(|b| b.touched)
@@ -122,7 +126,8 @@ async fn only_the_complete_pending_identity_consumes_one_resize_receipt() {
         actor.apply_resize_request(resize(30, 8));
         actor.apply_resize_request(resize(31, 9));
         assert_eq!(actor.publication.native_cursor_owners.len(), 2);
-        let after: Vec<_> = actor.publication
+        let after: Vec<_> = actor
+            .publication
             .native_cursor_owners
             .values()
             .map(|b| b.touched)
@@ -182,7 +187,8 @@ fn cleanup(actor: &mut TerminalActor, pump: Pump, mode: &str) {
             actor.release_native_owner(pump.0);
         }
         "expiry" => {
-            actor.publication
+            actor
+                .publication
                 .native_cursor_owners
                 .get_mut(&NativeCursorKey::new(pump.0, pump.1))
                 .unwrap()
@@ -205,7 +211,12 @@ async fn completed_history_and_wrong_identities_cannot_consume_or_refresh_pendin
     let capture = capture_native_for_pump(&mut actor, pump.0, pump.1, replacement_id());
     complete_history(&mut actor, pump, &capture).await;
     let key = NativeCursorKey::new(pump.0, pump.1);
-    let touched = actor.publication.native_cursor_owners.get(&key).unwrap().touched;
+    let touched = actor
+        .publication
+        .native_cursor_owners
+        .get(&key)
+        .unwrap()
+        .touched;
     let (outbound, _mailbox) = mpsc::channel(1);
     let (reply, _response) = oneshot::channel();
     let request = NativeHistoryRequest {
@@ -234,7 +245,12 @@ async fn completed_history_and_wrong_identities_cannot_consume_or_refresh_pendin
         );
     }
     assert_eq!(
-        actor.publication.native_cursor_owners.get(&key).unwrap().touched,
+        actor
+            .publication
+            .native_cursor_owners
+            .get(&key)
+            .unwrap()
+            .touched,
         touched
     );
     assert_eq!(activation(&mut actor, pump, &capture, ""), None);
@@ -318,9 +334,15 @@ async fn finished_and_superseded_waiters_share_the_existing_capacity_and_ttl() {
         assert_no_native_retains(&actor, &capture.capture.cursor);
         captures.push((pump, capture));
     }
-    assert_eq!(actor.publication.native_cursor_owners.len(), MAX_NATIVE_HISTORY_CLIENTS);
+    assert_eq!(
+        actor.publication.native_cursor_owners.len(),
+        MAX_NATIVE_HISTORY_CLIENTS
+    );
     refused_capture(&mut actor, 99);
-    assert_eq!(actor.publication.native_cursor_owners.len(), MAX_NATIVE_HISTORY_CLIENTS);
+    assert_eq!(
+        actor.publication.native_cursor_owners.len(),
+        MAX_NATIVE_HISTORY_CLIENTS
+    );
     actor.apply_resize_request(resize(30, 8));
     refused_capture(&mut actor, 99);
     assert!(
@@ -431,14 +453,8 @@ fn exact_consumer_withdrawal_releases_only_its_native_generation() {
         new
     );
     assert!(
-        activate_native_for_pump(
-            &mut actor,
-            owner,
-            stream,
-            new,
-            replacement.capture.cursor,
-        )
-        .is_ok(),
+        activate_native_for_pump(&mut actor, owner, stream, new, replacement.capture.cursor,)
+            .is_ok(),
         "old withdrawal must not invalidate replacement publication"
     );
     actor.release_native_consumer_generation(owner, stream, new);
@@ -463,14 +479,8 @@ fn withdrawn_native_request_cannot_invalidate_a_newer_binding() {
     ));
     assert!(actor.publication.pending_native_bootstrap.is_none());
     assert!(
-        activate_native_for_pump(
-            &mut actor,
-            owner,
-            stream,
-            new,
-            replacement.capture.cursor,
-        )
-        .is_ok()
+        activate_native_for_pump(&mut actor, owner, stream, new, replacement.capture.cursor,)
+            .is_ok()
     );
 }
 
@@ -494,14 +504,8 @@ fn old_consumer_withdrawal_keeps_replacement_native_capture_waiters() {
         if let Ok(result) = response.try_recv() {
             let capture = result.unwrap();
             assert!(
-                activate_native_for_pump(
-                    &mut actor,
-                    owner,
-                    stream,
-                    new,
-                    capture.capture.cursor,
-                )
-                .is_ok()
+                activate_native_for_pump(&mut actor, owner, stream, new, capture.capture.cursor,)
+                    .is_ok()
             );
             return;
         }

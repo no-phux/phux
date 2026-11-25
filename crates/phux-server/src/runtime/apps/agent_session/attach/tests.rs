@@ -114,8 +114,11 @@ async fn stalled_consumer(log_bytes: u32) -> Stalled {
     let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(STALLED_MAILBOX);
     let connection = CancellationToken::new();
     let result = attach_agent_session(
-        { let host = crate::runtime::apps::StreamHost::new(&state, client);
-          host.reserve(core, host.next_bootstrap().unwrap(), &connection).unwrap() },
+        {
+            let host = crate::runtime::apps::StreamHost::new(&state, client);
+            host.reserve(core, host.next_bootstrap().unwrap(), &connection)
+                .unwrap()
+        },
         client,
         &phux_protocol::ids::ResourceId::local(9),
         &bundle.handle,
@@ -204,7 +207,7 @@ fn seqs_of(payload: &[u8]) -> Vec<u64> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn a_lagged_consumer_is_replayed_the_skipped_records_in_order() {
-    crate::runtime::test_support::local(async {
+    crate::runtime::test_support::local(Box::pin(async {
         let mut stalled = stalled_consumer(4 * 1024 * 1024).await;
         let last = stalled.outrun_the_broadcast().await;
         let frames = stalled.drain_through(last).await;
@@ -239,13 +242,13 @@ async fn a_lagged_consumer_is_replayed_the_skipped_records_in_order() {
             (1..=last).collect::<Vec<_>>(),
             "no gap, no duplicate"
         );
-    })
+    }))
     .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn a_consumer_lagged_past_eviction_gets_a_tombstone_and_a_full_replacement() {
-    crate::runtime::test_support::local(async {
+    crate::runtime::test_support::local(Box::pin(async {
         let mut stalled = stalled_consumer(1024).await;
         let last = stalled.outrun_the_broadcast().await;
         let frames = stalled.drain_through(last).await;
@@ -344,7 +347,7 @@ async fn a_consumer_lagged_past_eviction_gets_a_tombstone_and_a_full_replacement
             )
         });
         assert_eq!(prior.map(|(id, ..)| id), Some(*replacement));
-    })
+    }))
     .await;
 }
 
@@ -356,17 +359,54 @@ async fn a_delayed_producer_cut_cannot_publish_over_a_newer_stream() {
         let client = ClientId(4);
         let core = phux_core::ids::ResourceId::default();
         let root = CancellationToken::new();
-        let bundle = phux_agent_session::session::AgentSessionActor::build(core, "claude", None, root.clone(), 4096);
+        let bundle = phux_agent_session::session::AgentSessionActor::build(
+            core,
+            "claude",
+            None,
+            root.clone(),
+            4096,
+        );
         let connection = CancellationToken::new();
         let host = crate::runtime::apps::StreamHost::new(&state, client);
         let (outbound, mut output) = tokio::sync::mpsc::channel(16);
         let wire = phux_protocol::ids::ResourceId::local(9);
         let limits = BootstrapLimits::default();
-        let first = host.reserve(core, phux_protocol::ids::BootstrapId::new(1).unwrap(), &connection).unwrap();
-        let mut older = Box::pin(attach_agent_session(first, client, &wire, &bundle.handle, &outbound, limits, None));
-        assert!(older.as_mut().now_or_never().is_none(), "the real actor has not answered its cut");
-        let second = host.reserve(core, phux_protocol::ids::BootstrapId::new(2).unwrap(), &connection).unwrap();
-        let mut newer = Box::pin(attach_agent_session(second, client, &wire, &bundle.handle, &outbound, limits, None));
+        let first = host
+            .reserve(
+                core,
+                phux_protocol::ids::BootstrapId::new(1).unwrap(),
+                &connection,
+            )
+            .unwrap();
+        let mut older = Box::pin(attach_agent_session(
+            first,
+            client,
+            &wire,
+            &bundle.handle,
+            &outbound,
+            limits,
+            None,
+        ));
+        assert!(
+            older.as_mut().now_or_never().is_none(),
+            "the real actor has not answered its cut"
+        );
+        let second = host
+            .reserve(
+                core,
+                phux_protocol::ids::BootstrapId::new(2).unwrap(),
+                &connection,
+            )
+            .unwrap();
+        let mut newer = Box::pin(attach_agent_session(
+            second,
+            client,
+            &wire,
+            &bundle.handle,
+            &outbound,
+            limits,
+            None,
+        ));
         assert!(newer.as_mut().now_or_never().is_none());
         let actor = tokio::task::spawn_local(bundle.actor.run());
         assert_eq!(newer.await, CommandResult::Ok);
@@ -376,13 +416,17 @@ async fn a_delayed_producer_cut_cannot_publish_over_a_newer_stream() {
         while let Ok(Outbound::Frame(frame)) = output.try_recv() {
             match frame {
                 FrameKind::BootstrapBegin { bootstrap_id, .. } => assert_eq!(bootstrap_id.get(), 2),
-                FrameKind::BootstrapReady { bootstrap_id, .. } => { assert_eq!(bootstrap_id.get(), 2); ready = true; },
-                _ => {},
+                FrameKind::BootstrapReady { bootstrap_id, .. } => {
+                    assert_eq!(bootstrap_id.get(), 2);
+                    ready = true;
+                }
+                _ => {}
             }
         }
         assert!(ready);
         connection.cancel();
         root.cancel();
         actor.await.unwrap();
-    }).await;
+    })
+    .await;
 }

@@ -1,20 +1,11 @@
 #![allow(clippy::expect_used, clippy::panic, reason = "test assertions")]
 
+use super::super::test_support::{COLS, ROWS, remote_with};
 use super::*;
-use phux_client_runtime::control::{ControlOptions, ControlPlane};
-use phux_protocol::ids::{SessionId, WindowId};
+use phux_client_runtime::control::ControlPlane;
 use phux_protocol::wire::frame::FrameKind;
-use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
-const COLS: u16 = 24;
-const ROWS: u16 = 4;
-#[path = "../search/tests/support.rs"]
-mod support;
-use support::remote_with;
-fn pane(terminal: u32) -> String { id::encode(&ResourceId::local(terminal)) }
-fn bootstrap(client: &Client, terminal_id: ResourceId, bytes: &[u8]) {
-    for frame in phux_wire_fixtures::bootstrap_frames(&terminal_id, [1, 1], [COLS, ROWS], bytes) {
-        client.feed(frame).expect("bootstrap frame");
-    }
+fn pane(terminal: u32) -> String {
+    id::encode(&ResourceId::local(terminal))
 }
 fn unknown_delivery(client: &Client) {
     use phux_protocol::wire::frame::{Command, ErrorCode};
@@ -116,7 +107,9 @@ fn destroyed_views_cannot_acknowledge_a_sibling_views_terminal_fence() {
     let remote = remote_with(&[(1, b"before".to_vec())]);
     let client = remote.runtime_client().expect("connected");
     let id = ResourceId::local(1);
-    let source = client.view_source(&id, Some(&[0xAB; 16]), client.connection_epoch()).expect("source");
+    let source = client
+        .view_source(&id, Some(&[0xAB; 16]), client.connection_epoch())
+        .expect("source");
     let left = client.create_view(&source).expect("left view");
     let right = client.create_view(&source).expect("right view");
     unknown_delivery(&client);
@@ -131,8 +124,14 @@ fn destroyed_views_cannot_acknowledge_a_sibling_views_terminal_fence() {
         .expect("right evidence");
     let _ = client.take_outbound();
     client.destroy_view(left).expect("destroy only left");
-    assert!(client.take_outbound().is_empty(), "closing one view must send no execution command");
-    assert!(client.has_projection(&id), "view retirement preserves the live terminal");
+    assert!(
+        client.take_outbound().is_empty(),
+        "closing one view must send no execution command"
+    );
+    assert!(
+        client.has_projection(&id),
+        "view retirement preserves the live terminal"
+    );
     assert!(!client.acknowledge_presentation(&left_receipt, true, true));
     assert!(client.delivery_fenced(&id));
     assert!(client.acknowledge_presentation(&right_receipt, true, true));

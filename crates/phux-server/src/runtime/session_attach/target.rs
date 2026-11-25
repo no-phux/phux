@@ -5,10 +5,10 @@ use phux_protocol::wire::frame::{AttachTarget, ErrorCode};
 use tokio_util::sync::CancellationToken;
 
 use super::super::apps::terminal;
-use crate::runtime::commands::terminal::seed::seed_session_with_pty_and_colors;
-use tracing::{debug, warn};
 use super::super::send_error;
+use crate::runtime::commands::terminal::seed::seed_session_with_pty_and_colors;
 use crate::state::{Outbound, SharedState};
+use tracing::{debug, warn};
 
 /// Resolve `target` to the session the attach joins: the one the dispatch
 /// guard authorized, pinned by id before the first await, or the one a
@@ -101,9 +101,7 @@ pub(crate) struct SessionSeed<'a> {
 /// ephemeral session when it does not exist. A server-wide seed command wins
 /// over the wire `command`; a stale wire `cwd` falls back. Spawn failure is
 /// `SessionNotFound`.
-async fn resolve_create_if_missing(
-    seed: SessionSeed<'_>,
-) -> Option<String> {
+async fn resolve_create_if_missing(seed: SessionSeed<'_>) -> Option<String> {
     let SessionSeed {
         state,
         name,
@@ -130,9 +128,12 @@ async fn resolve_create_if_missing(
     let cwd = cwd.or_else(|| state.with(|s| s.config().fixed_cwd.clone()));
     let seed_result = if with_pty {
         let mut seed_cmd = terminal::launch::argv_command(command).unwrap_or_else(|| {
-            state.with(|s| phux_terminal_api::launch::default_shell_command(
-                s.config().shell.as_str(), s.config().login_shell,
-            ))
+            state.with(|s| {
+                phux_terminal_api::launch::default_shell_command(
+                    s.config().shell.as_str(),
+                    s.config().login_shell,
+                )
+            })
         });
         phux_terminal_api::launch::apply_spawn_cwd(&mut seed_cmd, cwd.as_deref(), &name);
         phux_terminal_api::launch::apply_term(&mut seed_cmd, &term);

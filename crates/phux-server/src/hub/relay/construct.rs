@@ -106,7 +106,10 @@ impl RelaySession {
         self.satellite_features_ext = features;
     }
 
-    pub(crate) const fn set_satellite_features_ext2(&mut self, features: phux_protocol::caps::ServerFeatureExt2Set) {
+    pub(crate) const fn set_satellite_features_ext2(
+        &mut self,
+        features: phux_protocol::caps::ServerFeatureExt2Set,
+    ) {
         self.satellite_features_ext2 = features;
     }
 

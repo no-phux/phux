@@ -4,11 +4,11 @@ use phux_protocol::wire::frame::AgentEvent;
 use tokio_util::sync::CancellationToken;
 
 use crate::runtime::apps::terminal::agent_state::spawn_agent_state_drain;
+use crate::runtime::apps::terminal::scrollback;
+use crate::runtime::commands::SpawnAttribution;
 use crate::runtime::commands::terminal::seed::{
     AGENT_STATE_SINK_CAPACITY, EVENT_SINK_CAPACITY, spawn_cwd_of, stamp_spawn_cwd,
 };
-use crate::runtime::apps::terminal::scrollback;
-use crate::runtime::commands::SpawnAttribution;
 use crate::runtime::connections::PaneEvents;
 use crate::runtime::spawn_resource_exit_watcher;
 use crate::state::SharedState;
@@ -49,7 +49,7 @@ fn journal_pane_spawned(
 
 /// Install agent-session provenance on a freshly registered pane. A value
 /// outside `1..=MAX_AGENT_SESSION_RECORD_BYTES` installs nothing.
-pub(in crate::runtime) fn set_agent_session(
+pub(crate) fn set_agent_session(
     s: &mut crate::state::ServerState,
     wire: phux_protocol::ids::ResourceId,
     agent_session: Option<Vec<u8>>,
@@ -67,7 +67,7 @@ pub(in crate::runtime) fn set_agent_session(
 
 /// Registry-side setup every PTY pane shares: stamp its spawn cwd and tell
 /// the child which pane and server it belongs to. Returns the wire id.
-pub(in crate::runtime) fn register_pty_command(
+pub(crate) fn register_pty_command(
     s: &mut crate::state::ServerState,
     terminal: phux_core::ids::ResourceId,
     cmd: &mut phux_terminal_api::launch::LaunchCommand,
@@ -124,7 +124,7 @@ pub(in crate::runtime) fn launch_pane_actor(
 /// under that record's original exit policy rather than unconditionally
 /// deleting a retained imported arrangement slot.
 #[allow(clippy::too_many_arguments)]
-pub(in crate::runtime) fn launch_pane_actor_with_failure_policy(
+pub(crate) fn launch_pane_actor_with_failure_policy(
     state: &SharedState,
     terminal: phux_core::ids::ResourceId,
     activation: crate::state::ActivationToken,

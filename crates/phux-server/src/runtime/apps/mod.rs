@@ -21,9 +21,7 @@ pub(crate) mod document;
 pub(crate) mod mirror_demand;
 pub(crate) mod producer_stream;
 pub(crate) mod terminal;
-pub(crate) use context::{
-    FrameAdmission, StreamBootstrap,
-};
+pub(crate) use context::{FrameAdmission, StreamBootstrap};
 pub(crate) use terminal::input_lane::{ConnectionLane, InputLaneHandle as InputLane};
 
 /// What the host asks of the app serving a kind.
@@ -39,21 +37,21 @@ pub(crate) trait ResourceApp: Sync {
         pane: crate::state::AttachSnapshotPane,
     ) -> LocalBoxFuture<'a, Result<(), super::session_attach::staging::CaptureFailure>>;
 
-
     /// Bootstrap one client's stream onto a resource of this kind.
     fn bootstrap<'a>(
         &'a self,
         stream: StreamBootstrap<'a>,
     ) -> LocalBoxFuture<'a, Result<(), AttachResourceFailure>>;
 
-
     /// Which connection check precedes this kind's handling of `frame`.
     fn frame_admission(&self, frame: &FrameKind) -> FrameAdmission;
 
     /// Kind-owned frame validity facts. `None` identifies Terminal engine
     /// frames whose admitted routing is owned by the host.
-    fn frame_error(&self, frame: &FrameKind)
-        -> Option<(phux_protocol::wire::frame::ErrorCode, String)>;
+    fn frame_error(
+        &self,
+        frame: &FrameKind,
+    ) -> Option<(phux_protocol::wire::frame::ErrorCode, String)>;
 }
 
 /// The refusal a stream that needs the connection's Terminal bootstrap
@@ -71,7 +69,6 @@ pub(crate) const fn app_for(kind: ResourceKind) -> &'static dyn ResourceApp {
         ResourceKind::Document => &document::DOCUMENT_APP,
     }
 }
-
 
 /// Every catalog kind has a stream app.
 const _: () = {
@@ -93,3 +90,12 @@ pub(crate) const fn defers_stream_bootstrap(kind: ResourceKind) -> bool {
     matches!(kind, ResourceKind::Terminal)
 }
 
+/// Whether a session `ATTACH` itself publishes this kind's stream generation.
+/// Agent sessions wait for an explicit cursor; a deferred Terminal for
+/// `STREAM_BIND`. Either later request opens the first generation.
+pub(crate) const fn publishes_session_stream(kind: ResourceKind, deferred: bool) -> bool {
+    match kind {
+        ResourceKind::AgentSession => false,
+        kind => !(deferred && defers_stream_bootstrap(kind)),
+    }
+}

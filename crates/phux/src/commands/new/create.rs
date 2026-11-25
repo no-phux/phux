@@ -1,12 +1,13 @@
 //! Exact session creation and truthful admission/execution-stage diagnostics.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::process::ExitCode;
 
+use crate::commands::server_target::ServerTarget;
 use phux_client::session::{CreateOutcome, CreateSessionError, CreateSessionRequest};
 use phux_protocol::ids::IdempotencyKey;
 use phux_protocol::wire::frame::SessionLifetime;
-use crate::commands::server_target::ServerTarget;
 
 /// The server refused the typed `SESSION_CREATE`; nothing was created.
 pub(super) fn report_create_refused(
@@ -94,9 +95,14 @@ pub(crate) async fn create_seeded_session(
         .await
         .map_err(|err| server.report_unreachable(json, &err, "new"))?;
 
-    if !conn.server_features_ext().contains(phux_protocol::caps::ServerFeatureExt::Organization) {
+    if !conn
+        .server_features_ext()
+        .contains(phux_protocol::caps::ServerFeatureExt::Organization)
+    {
         return Err(report_create_session_error(
-            server, json, CreateSessionError::Org(phux_client::org::OrgError::Unsupported),
+            server,
+            json,
+            CreateSessionError::Org(phux_client::org::OrgError::Unsupported),
         ));
     }
 
@@ -135,10 +141,16 @@ pub(crate) async fn create_seeded_session(
             format!("server returned a creation error: {refusal}"),
         )),
         CreateOutcome::Committed { receipt } => Err(crate::commands::json_err::emit(
-            json, &committed_session_error(name, &receipt), 1,
+            json,
+            &committed_session_error(name, &receipt),
+            1,
         )),
         CreateOutcome::Refused(refusal) => Err(report_create_refused(json, name, &refusal)),
-        CreateOutcome::LaunchFailed { diagnostic, receipt, .. } => Err(report_launch_failed(
+        CreateOutcome::LaunchFailed {
+            diagnostic,
+            receipt,
+            ..
+        } => Err(report_launch_failed(
             json,
             name,
             command.as_deref(),
@@ -164,12 +176,14 @@ fn report_launch_failed(
     );
     let mut error = committed_session_error(name, receipt);
     error.code = codes::SPAWN_FAILED;
-    error.message.push_str(&format!(
+    let _ = write!(
+        error.message,
         "; {program} did not start: {}",
         phux_client::session::launch_failure_reason(diagnostic),
-    ));
-    error.remedy = "the session and failed launch are retained; inspect `phux ls --json`, \
-                    correct the command and relaunch that resource, not session creation".to_owned();
+    );
+    "the session and failed launch are retained; inspect `phux ls --json`, \
+     correct the command and relaunch that resource, not session creation"
+        .clone_into(&mut error.remedy);
     emit(json, &error, 1)
 }
 
@@ -194,6 +208,20 @@ pub(crate) fn report_create_session_error(
     }
 }
 
+/// Report a failed organization create: a refusal as the refused creation,
+/// anything else as a create-session failure.
+pub(super) fn report_org_create_error(
+    server: &ServerTarget,
+    json: bool,
+    name: &str,
+    err: phux_client::org::OrgError,
+) -> ExitCode {
+    match err {
+        phux_client::org::OrgError::Refused(refusal) => report_create_refused(json, name, &refusal),
+        other => report_create_session_error(server, json, CreateSessionError::Org(other)),
+    }
+}
+
 /// Print every degradation notice a [`phux_client::session`] wire call
 /// collected, in encounter order.
 pub(super) fn warn_partial_results(notices: &[String]) {
@@ -208,8 +236,8 @@ pub(crate) fn committed_session_error(
     name: &str,
     receipt: &phux_protocol::wire::frame::Committed,
 ) -> crate::commands::json_err::CliError {
-    use phux_client::recovery::{EffectCertainty, NextAction, Recovery, ScopeKind};
     use crate::commands::json_err::{CliError, codes};
+    use phux_client::recovery::{EffectCertainty, NextAction, Recovery, ScopeKind};
     let authority = receipt.authority.map(|id| id.to_string());
     let session = receipt.session.map(|id| id.to_string());
     let resource = receipt.resource.map(|id| id.to_string());
@@ -224,10 +252,16 @@ pub(crate) fn committed_session_error(
         ),
         "inspect `phux ls --json` and reconcile the retained session/launch intent; \
          do not automatically create again under a new operation",
-    ).with_recovery(Recovery::new(
-        ScopeKind::OrganizationAuthority, Some(receipt.operation.to_hex()),
-        EffectCertainty::Applied, NextAction::Reconcile,
-    ).with_scope_id(authority.as_deref()))
+    )
+    .with_recovery(
+        Recovery::new(
+            ScopeKind::OrganizationAuthority,
+            Some(receipt.operation.to_hex()),
+            EffectCertainty::Applied,
+            NextAction::Reconcile,
+        )
+        .with_scope_id(authority.as_deref()),
+    )
 }
 
 fn report_operation_conflict(json: bool, name: &str) -> ExitCode {
@@ -247,34 +281,43 @@ pub(super) async fn create_attached_session(
     cwd: Option<String>,
     lifetime: SessionLifetime,
 ) -> Result<phux_protocol::wire::frame::AttachTarget, ExitCode> {
-    let mut conn = server.connect().await
-        .map_err(|err| server.report_unreachable(false, &err, "new"))?;
     use phux_protocol::wire::frame::{Command, LaunchSpec};
-    if !conn.server_features_ext().contains(phux_protocol::caps::ServerFeatureExt::Organization) {
+    let mut conn = server
+        .connect()
+        .await
+        .map_err(|err| server.report_unreachable(false, &err, "new"))?;
+    if !conn
+        .server_features_ext()
+        .contains(phux_protocol::caps::ServerFeatureExt::Organization)
+    {
         return Err(report_create_session_error(
-            server, false, CreateSessionError::Org(phux_client::org::OrgError::Unsupported),
+            server,
+            false,
+            CreateSessionError::Org(phux_client::org::OrgError::Unsupported),
         ));
     }
     let attrs = match (cwd.as_deref(), server.is_remote()) {
         (Some(dir), false) => phux_client::project_identity::creation_attrs(
-            std::path::Path::new(dir), &super::super::ls::local_hostname(), None,
+            std::path::Path::new(dir),
+            &super::super::ls::local_hostname(),
+            None,
         ),
         _ => Vec::new(),
     };
     let launch = LaunchSpec::new(command).with_cwd(cwd);
-    let receipt = phux_client::org::commit(&mut conn, 1, Command::SessionCreate {
-        operation: phux_client::org::mint_operation(),
-        name: name.to_owned(),
-        lifetime,
-        attrs,
-        launch: Some(Box::new(launch)),
-    }).await.map_err(|err| {
-        if let Some(refusal) = err.refusal() {
-            report_create_refused(false, name, refusal)
-        } else {
-            report_create_session_error(server, false, CreateSessionError::Org(err))
-        }
-    })?;
+    let receipt = phux_client::org::commit(
+        &mut conn,
+        1,
+        Command::SessionCreate {
+            operation: phux_client::org::mint_operation(),
+            name: name.to_owned(),
+            lifetime,
+            attrs,
+            launch: Some(Box::new(launch)),
+        },
+    )
+    .await
+    .map_err(|err| report_org_create_error(server, false, name, err))?;
     if receipt.session.is_none() {
         return Err(report_create_session_error(
             server,
@@ -284,9 +327,11 @@ pub(super) async fn create_attached_session(
             }),
         ));
     }
-    phux_client::org::attach_target_for_receipt(&mut conn, &receipt).await.map_err(|err| {
-        let mut error = committed_session_error(name, &receipt);
-        error.message.push_str(&format!("; exact attach selection failed: {err}"));
-        crate::commands::json_err::emit(false, &error, 1)
-    })
+    phux_client::org::attach_target_for_receipt(&mut conn, &receipt)
+        .await
+        .map_err(|err| {
+            let mut error = committed_session_error(name, &receipt);
+            let _ = write!(error.message, "; exact attach selection failed: {err}");
+            crate::commands::json_err::emit(false, &error, 1)
+        })
 }

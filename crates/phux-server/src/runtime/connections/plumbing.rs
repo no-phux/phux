@@ -295,8 +295,15 @@ impl ClientPlumbing {
             .is_some_and(|binding| binding.stream_id == stream_id)
     }
 
-    pub(in crate::runtime) fn stream_source(&self, terminal: &WireResourceId, stream: StreamId) -> Option<crate::runtime::apps::StreamLease> {
-        self.stream_bindings.get(terminal).filter(|binding| binding.stream_id == stream).map(|binding| binding.source.clone())
+    pub(in crate::runtime) fn stream_source(
+        &self,
+        terminal: &WireResourceId,
+        stream: StreamId,
+    ) -> Option<crate::runtime::apps::StreamLease> {
+        self.stream_bindings
+            .get(terminal)
+            .filter(|binding| binding.stream_id == stream)
+            .map(|binding| binding.source.clone())
     }
 
     /// Drop one stream binding; its retirement runs without blocking others.

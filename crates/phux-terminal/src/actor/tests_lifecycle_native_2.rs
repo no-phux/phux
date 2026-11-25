@@ -180,7 +180,7 @@ async fn a_cursor_invalidated_by_resize_is_tombstoned_never_faulted() {
     let cursor: crate::native_state::OpaqueHistoryCursor = [1; crate::native_state::TOKEN_LEN];
     let wire_cursor = Bytes::copy_from_slice(&cursor);
     let binding = || NativeCursorOwner {
-            cancellation: tokio_util::sync::CancellationToken::new(),
+        cancellation: tokio_util::sync::CancellationToken::new(),
         history_released: false,
         superseded: false,
         cursor,
@@ -221,7 +221,8 @@ async fn a_cursor_invalidated_by_resize_is_tombstoned_never_faulted() {
     };
 
     // The binding is gone entirely: the mid-attach resize drained it.
-    actor.publication
+    actor
+        .publication
         .native_cursor_owners
         .insert(NativeCursorKey::new(7, stream_id), binding());
     actor.invalidate_all_native_cursors(phux_protocol::wire::frame::TombstoneReason::Resize);
@@ -240,7 +241,8 @@ async fn a_cursor_invalidated_by_resize_is_tombstoned_never_faulted() {
     );
 
     // The binding names the generation the resize replaced.
-    actor.publication
+    actor
+        .publication
         .native_cursor_owners
         .insert(NativeCursorKey::new(7, stream_id), binding());
     let superseded = phux_protocol::ids::BootstrapId::new(2).expect("bootstrap id");
@@ -256,7 +258,8 @@ async fn a_cursor_invalidated_by_resize_is_tombstoned_never_faulted() {
         "a superseded generation tombstones the cursor: {frame:?}"
     );
     assert!(
-        actor.publication
+        actor
+            .publication
             .native_cursor_owners
             .contains_key(&NativeCursorKey::new(7, stream_id)),
         "answering a stale request must not release the live binding"

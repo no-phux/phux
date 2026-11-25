@@ -8,8 +8,8 @@ use super::plumbing::{
     AttachIdVerdict, ConnectionClose, classify_attach_id, detach_on_request, reply_pong,
 };
 use super::resource_frames::ResourceFrame;
-use crate::runtime::spawn::SpawnRequest;
 use crate::runtime::session_attach::handle_attach;
+use crate::runtime::spawn::SpawnRequest;
 use crate::transport::FrameReader;
 use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::{Command, DetachReason, ErrorCode, FrameKind};

@@ -189,7 +189,10 @@ mod tests {
         let mut plane = ControlPlane::new(Instant::now(), ControlOptions::default());
         let first = mint_operation();
         let tail = mint_operation();
-        let deadline = plane.observed_time().checked_sub(Duration::from_secs(1)).unwrap();
+        let deadline = plane
+            .observed_time()
+            .checked_sub(Duration::from_secs(1))
+            .unwrap();
         plane.org.moves.push(BulkMove {
             authority: AuthorityId::new([1; 16]).unwrap(),
             to: SessionKey::new([2; 16]).unwrap(),

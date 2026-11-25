@@ -39,23 +39,18 @@ impl AttachResourceSession<'_> {
             terminal: self.terminal.clone(),
         };
         let owner = lease.clone();
-        lease.spawn(
-            None,
-            ctx.drain.clone(),
-            async move {
-                let Some((start, output_rx)) = channels.published().await else {
-                    return;
-                };
-                if let Some(fault) =
-                    crate::runtime::apps::terminal::attach::run_started_output_pump(
-                        &ctx, start, output_rx,
-                    )
-                    .await
-                {
-                    owner.retire_terminal_fault(fault);
-                }
-            },
-        )
+        lease.spawn(None, ctx.drain.clone(), async move {
+            let Some((start, output_rx)) = channels.published().await else {
+                return;
+            };
+            if let Some(fault) = crate::runtime::apps::terminal::attach::run_started_output_pump(
+                &ctx, start, output_rx,
+            )
+            .await
+            {
+                owner.retire_terminal_fault(fault);
+            }
+        })
     }
 
     /// Capture, queue the complete bootstrap and transfer the single lifetime
@@ -66,20 +61,40 @@ impl AttachResourceSession<'_> {
         generation: AttachResourceGeneration,
     ) -> Result<(), AttachResourceFailure> {
         let lease = generation.reservation.lease.clone();
-        lease.run(self.complete_publication(generation)).await
-            .unwrap_or_else(|| Err(AttachResourceFailure::internal("generation superseded during publication")))
+        lease
+            .run(self.complete_publication(generation))
+            .await
+            .unwrap_or_else(|| {
+                Err(AttachResourceFailure::internal(
+                    "generation superseded during publication",
+                ))
+            })
     }
 
-    async fn complete_publication(&self, generation: AttachResourceGeneration) -> Result<(), AttachResourceFailure> {
-        let AttachResourceGeneration { reservation, delivery, registration } = generation;
+    async fn complete_publication(
+        &self,
+        generation: AttachResourceGeneration,
+    ) -> Result<(), AttachResourceFailure> {
+        let AttachResourceGeneration {
+            reservation,
+            delivery,
+            registration,
+        } = generation;
         let lease = reservation.lease.clone();
         match delivery {
             GenerationDelivery::Tick { bootstrap, live } => {
-                self.publish_snapshot(&lease, bootstrap.snapshot, bootstrap.base_seq).await?;
+                self.publish_snapshot(&lease, bootstrap.snapshot, bootstrap.base_seq)
+                    .await?;
                 if !reservation.published(|| {
-                    lease.last_seq.store(bootstrap.base_seq, std::sync::atomic::Ordering::Release);
+                    lease
+                        .last_seq
+                        .store(bootstrap.base_seq, std::sync::atomic::Ordering::Release);
                     live.send(true).is_ok()
-                }) { return Err(AttachResourceFailure::internal("tick consumer retired before publication")); }
+                }) {
+                    return Err(AttachResourceFailure::internal(
+                        "tick consumer retired before publication",
+                    ));
+                }
             }
             GenerationDelivery::Raw { gate } => {
                 let start = if native_checkpoint_profile(self.stream_profile) {
@@ -88,9 +103,15 @@ impl AttachResourceSession<'_> {
                     self.finish_snapshot(&lease).await?
                 };
                 if !reservation.published(|| {
-                    lease.last_seq.store(start.published_cut, std::sync::atomic::Ordering::Release);
+                    lease
+                        .last_seq
+                        .store(start.published_cut, std::sync::atomic::Ordering::Release);
                     gate.send(start).is_ok()
-                }) { return Err(AttachResourceFailure::internal("output pump retired before publication")); }
+                }) {
+                    return Err(AttachResourceFailure::internal(
+                        "output pump retired before publication",
+                    ));
+                }
             }
         }
         // No await between opening the gate and handing off lifetime ownership.
@@ -103,7 +124,9 @@ impl AttachResourceSession<'_> {
         &self,
         bootstrap_id: phux_protocol::ids::BootstrapId,
     ) -> Result<phux_terminal_api::actor::NativeBootstrapReply, AttachResourceFailure> {
-        use crate::runtime::apps::terminal::attach::{NativeRequestFailure, request_native_checkpoint};
+        use crate::runtime::apps::terminal::attach::{
+            NativeRequestFailure, request_native_checkpoint,
+        };
         use crate::runtime::spawn::terminal::publication::past_invalidation;
         past_invalidation(|| {
             request_native_checkpoint(&self.terminal, |reply| {
@@ -125,7 +148,8 @@ impl AttachResourceSession<'_> {
             NativeRequestFailure::Dropped => {
                 AttachResourceFailure::internal("pane actor dropped native ATTACH_RESOURCE")
             }
-            NativeRequestFailure::Refused(error) => AttachResourceFailure { generation: None,
+            NativeRequestFailure::Refused(error) => AttachResourceFailure {
+                generation: None,
                 code: ErrorCode::CodecUnavailable,
                 message: format!("native ATTACH_RESOURCE failed: {error}"),
             },
@@ -136,16 +160,30 @@ impl AttachResourceSession<'_> {
     async fn finish_native(
         &self,
         lease: &crate::runtime::apps::StreamLease,
-    ) -> Result<crate::runtime::apps::terminal::attach::OutputPumpStart, AttachResourceFailure> {
+    ) -> Result<crate::runtime::apps::terminal::attach::OutputPumpStart, AttachResourceFailure>
+    {
         let reply = self.capture_native_bootstrap(lease.bootstrap).await?;
         let cut = reply.base_seq;
-        if !lease.queue_frames(self.out_tx, reply.frames).await { return Err(AttachResourceFailure::internal("consumer went away during native bootstrap")); }
+        if !lease.queue_frames(self.out_tx, reply.frames).await {
+            return Err(AttachResourceFailure::internal(
+                "consumer went away during native bootstrap",
+            ));
+        }
         let capture = reply.capture;
         let publication = crate::runtime::apps::terminal::attach::activate_native_publication(
-            &self.terminal, capture,
-        ).await.map_err(|_| AttachResourceFailure::internal("pane actor unavailable at native publication fence"))?;
+            &self.terminal,
+            capture,
+        )
+        .await
+        .map_err(|_| {
+            AttachResourceFailure::internal("pane actor unavailable at native publication fence")
+        })?;
         let mut start = crate::runtime::apps::terminal::attach::OutputPumpStart {
-            superseded: false, published_cut: cut, replay: Vec::new(), live: None, interest: None,
+            superseded: false,
+            published_cut: cut,
+            replay: Vec::new(),
+            live: None,
+            interest: None,
         };
         start.adopt_native_publication(publication);
         Ok(start)
@@ -179,8 +217,15 @@ impl AttachResourceSession<'_> {
             rows,
             cut,
             adapted.payloads,
-        ).map_err(|()| AttachResourceFailure::internal("resource bootstrap exceeds negotiated limits"))?;
-        if !lease.queue_frames(self.out_tx, frames).await { return Err(AttachResourceFailure::internal("consumer went away during resource bootstrap")); }
+        )
+        .map_err(|()| {
+            AttachResourceFailure::internal("resource bootstrap exceeds negotiated limits")
+        })?;
+        if !lease.queue_frames(self.out_tx, frames).await {
+            return Err(AttachResourceFailure::internal(
+                "consumer went away during resource bootstrap",
+            ));
+        }
         Ok(())
     }
 
@@ -189,7 +234,8 @@ impl AttachResourceSession<'_> {
     async fn finish_snapshot(
         &self,
         lease: &crate::runtime::apps::StreamLease,
-    ) -> Result<crate::runtime::apps::terminal::attach::OutputPumpStart, AttachResourceFailure> {
+    ) -> Result<crate::runtime::apps::terminal::attach::OutputPumpStart, AttachResourceFailure>
+    {
         use phux_terminal_api::actor::SnapshotRequest;
 
         let (snapshot_tx, snapshot_rx) = oneshot::channel();
@@ -221,8 +267,11 @@ impl AttachResourceSession<'_> {
         self.publish_snapshot(lease, snap, cut).await?;
         debug!(client_id = ?self.client_id, terminal_id = ?self.terminal_id, "ATTACH_RESOURCE subscribed");
         Ok(crate::runtime::apps::terminal::attach::OutputPumpStart {
-            superseded: false, published_cut: cut, replay: Vec::new(), live: None,
-        interest: None,
+            superseded: false,
+            published_cut: cut,
+            replay: Vec::new(),
+            live: None,
+            interest: None,
         })
     }
 }

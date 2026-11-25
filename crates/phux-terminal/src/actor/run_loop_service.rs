@@ -40,7 +40,7 @@ impl TerminalActor {
                     .flatten()
                     .map(|((), interest)| {
                         self.service_cancelled_consumer(
-                            interest,
+                            &interest,
                             &mut state.tick,
                             &mut state.tick_interval,
                         );

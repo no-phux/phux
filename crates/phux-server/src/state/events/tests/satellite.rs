@@ -292,7 +292,7 @@ fn an_old_link_subscribe_refusal_cannot_restore_an_interrupted_scope() {
         tx.clone(),
     );
     state.subscribe_satellite_events(client, other.clone(), EventFilter::all(), None, tx.clone());
-    let stale =
+    let old_scope =
         state.subscribe_satellite_events(client, terminal.clone(), EventFilter::all(), None, tx);
     state.interrupt_satellite_host(&host);
     state.federation_mut().begin_satellite_link(
@@ -300,7 +300,7 @@ fn an_old_link_subscribe_refusal_cannot_restore_an_interrupted_scope() {
         2,
         phux_protocol::caps::ServerFeatureSet::new(),
     );
-    state.restore_satellite_scope(client, stale);
+    state.restore_satellite_scope(client, old_scope);
     let _ = drain(&mut rx); // The ended link's owed gap is not an event replay.
     let _ = state.record_relayed_event(terminal, AgentEvent::Bell, None);
     assert!(
@@ -319,7 +319,7 @@ fn an_old_consumer_subscribe_refusal_cannot_remove_a_new_subscription() {
     let client = state.clients_mut().new_client_id();
     let terminal = WireResourceId::satellite("sat", 9);
     let (tx, mut rx) = mpsc::channel(8);
-    let stale = state.subscribe_satellite_events(
+    let old_scope = state.subscribe_satellite_events(
         client,
         terminal.clone(),
         EventFilter::all(),
@@ -328,7 +328,7 @@ fn an_old_consumer_subscribe_refusal_cannot_remove_a_new_subscription() {
     );
     state.detach(client);
     state.subscribe_satellite_events(client, terminal.clone(), EventFilter::all(), None, tx);
-    state.restore_satellite_scope(client, stale);
+    state.restore_satellite_scope(client, old_scope);
     let _ = state.record_relayed_event(terminal.clone(), AgentEvent::Bell, None);
     assert!(
         matches!(rx.try_recv(), Ok(Outbound::Frame(FrameKind::Event { terminal: Some(id), event: AgentEvent::Bell, .. })) if id == terminal)

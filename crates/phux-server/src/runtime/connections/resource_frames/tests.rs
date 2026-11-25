@@ -426,13 +426,23 @@ fn kind_frame_facts_preserve_refusal_codes_without_lending_host_state() {
     let ack = &samples[2];
     let history = &samples[3];
     assert!(app_for(ResourceKind::Terminal).frame_error(ack).is_none());
-    assert!(app_for(ResourceKind::Terminal).frame_error(history).is_none());
+    assert!(
+        app_for(ResourceKind::Terminal)
+            .frame_error(history)
+            .is_none()
+    );
     assert_eq!(
-        app_for(ResourceKind::AgentSession).frame_error(ack).unwrap().0,
+        app_for(ResourceKind::AgentSession)
+            .frame_error(ack)
+            .unwrap()
+            .0,
         ErrorCode::MalformedMessage,
     );
     assert_eq!(
-        app_for(ResourceKind::AgentSession).frame_error(history).unwrap().0,
+        app_for(ResourceKind::AgentSession)
+            .frame_error(history)
+            .unwrap()
+            .0,
         ErrorCode::WrongResourceKind,
     );
     for kind in [
@@ -440,7 +450,13 @@ fn kind_frame_facts_preserve_refusal_codes_without_lending_host_state() {
         ResourceKind::PixelSurface,
         ResourceKind::Document,
     ] {
-        assert_eq!(app_for(kind).frame_error(ack).unwrap().0, ErrorCode::WrongResourceKind);
-        assert_eq!(app_for(kind).frame_error(history).unwrap().0, ErrorCode::WrongResourceKind);
+        assert_eq!(
+            app_for(kind).frame_error(ack).unwrap().0,
+            ErrorCode::WrongResourceKind
+        );
+        assert_eq!(
+            app_for(kind).frame_error(history).unwrap().0,
+            ErrorCode::WrongResourceKind
+        );
     }
 }

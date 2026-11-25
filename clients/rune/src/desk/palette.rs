@@ -1,6 +1,6 @@
 //! Opening, moving through, and running the command palette.
 
-use rune::{App, Key, KeyEvent, MenuItem, Tx};
+use rune::{Key, KeyEvent, Tx};
 
 use super::{Desk, NoticeKind};
 use crate::keys::{self, Shortcut};
@@ -405,12 +405,19 @@ impl Desk {
                 let accepted = client.with_control(|control| {
                     if control.status() != phux_client_runtime::control::Status::Attached
                         || control.connection_epoch() != self.connection.view_epoch
-                        || control.server().map(|server| server.id.as_slice()) != self.connection.view_server.as_deref()
-                    { return false; }
-                    control.attach_session(phux_protocol::wire::frame::AttachTarget::ByName(name.to_owned()));
+                        || control.server().map(|server| server.id.as_slice())
+                            != self.connection.view_server.as_deref()
+                    {
+                        return false;
+                    }
+                    control.attach_session(phux_protocol::wire::frame::AttachTarget::ByName(
+                        name.to_owned(),
+                    ));
                     true
                 });
-                if accepted { self.wait_for_session(name.to_owned()); }
+                if accepted {
+                    self.wait_for_session(name.to_owned());
+                }
             }
             return;
         };

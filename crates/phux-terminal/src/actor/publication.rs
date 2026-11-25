@@ -8,7 +8,11 @@ use std::collections::{HashMap, VecDeque};
 use phux_protocol::ClientId;
 use tokio_util::sync::CancellationToken;
 
-use super::{ConsumerAttachError, ConsumerSyncState, NativeAlloc, NativeBootstrapRequest, NativeCursorKey, NativeCursorOwner, NativePublicationGeneration, PendingNativeBootstrap, PendingNativeHistory, sync};
+use super::{
+    ConsumerAttachError, ConsumerSyncState, NativeAlloc, NativeBootstrapRequest, NativeCursorKey,
+    NativeCursorOwner, NativePublicationGeneration, PendingNativeBootstrap, PendingNativeHistory,
+    sync,
+};
 use futures_util::StreamExt;
 
 pub(super) struct PublicationOwner {
@@ -57,7 +61,11 @@ impl PublicationOwner {
         }
         self.cancellations.push(futures_util::future::join(
             state.cancellation.clone().cancelled_owned(),
-            std::future::ready(sync::PublicationCancellation::Consumer(client, state.sync.stream_id, state.sync.bootstrap_id)),
+            std::future::ready(sync::PublicationCancellation::Consumer(
+                client,
+                state.sync.stream_id,
+                state.sync.bootstrap_id,
+            )),
         ));
         let prior = self.consumers.insert(client, state);
         if let Some(prior) = &prior {
@@ -70,10 +78,15 @@ impl PublicationOwner {
     pub(super) fn withdraw(
         &mut self,
         client: ClientId,
-        generation: Option<(phux_protocol::ids::StreamId, phux_protocol::ids::BootstrapId)>,
+        generation: Option<(
+            phux_protocol::ids::StreamId,
+            phux_protocol::ids::BootstrapId,
+        )>,
     ) -> Option<ConsumerSyncState> {
         let state = self.consumers.get(&client)?;
-        if generation.is_some_and(|(stream, bootstrap)| !state.sync.matches_generation(stream, bootstrap)) {
+        if generation
+            .is_some_and(|(stream, bootstrap)| !state.sync.matches_generation(stream, bootstrap))
+        {
             return None;
         }
         let state = self.consumers.remove(&client)?;
@@ -81,15 +94,27 @@ impl PublicationOwner {
         Some(state)
     }
 
-    #[allow(clippy::future_not_send, reason = "native captures stay on the terminal LocalSet")]
-    pub(super) async fn next_cancelled(
-        &mut self,
-    ) -> Option<((), sync::PublicationCancellation)> {
+    #[allow(
+        clippy::future_not_send,
+        reason = "native captures stay on the terminal LocalSet"
+    )]
+    pub(super) async fn next_cancelled(&mut self) -> Option<((), sync::PublicationCancellation)> {
         self.cancellations.next().await
     }
 
-    pub(super) fn watch_native(&mut self, cancellation: CancellationToken, key: NativeCursorKey, bootstrap: phux_protocol::ids::BootstrapId, cursor: crate::native_state::OpaqueHistoryCursor) {
-        self.cancellations.push(futures_util::future::join(cancellation.cancelled_owned(), std::future::ready(sync::PublicationCancellation::Native(key, bootstrap, cursor))));
+    pub(super) fn watch_native(
+        &self,
+        cancellation: CancellationToken,
+        key: NativeCursorKey,
+        bootstrap: phux_protocol::ids::BootstrapId,
+        cursor: crate::native_state::OpaqueHistoryCursor,
+    ) {
+        self.cancellations.push(futures_util::future::join(
+            cancellation.cancelled_owned(),
+            std::future::ready(sync::PublicationCancellation::Native(
+                key, bootstrap, cursor,
+            )),
+        ));
     }
 
     #[cfg(test)]

@@ -1,5 +1,12 @@
 //! Native lock handoff and engine execution for one ordered transport batch.
 
+#![allow(
+    clippy::redundant_pub_crate,
+    reason = "crate-wide items in a private module: `pub` trips `unreachable_pub` instead"
+)]
+
+use std::sync::MutexGuard;
+
 use bytes::Bytes;
 use phux_protocol::wire::frame::{CommandResult, CommandValue, FrameKind};
 
@@ -13,41 +20,59 @@ pub(crate) fn feed_shared_unlocked(
     shared: &Shared,
     frames: Vec<Bytes>,
 ) -> Result<(), ControlError> {
-    drive(shared, FrameBatch::new(frames.into_iter(), |plane, bytes| {
-        plane.decode_shared_frame(&bytes)
-    }))
+    drive(
+        shared,
+        FrameBatch::new(frames.into_iter(), |plane, bytes| {
+            plane.decode_shared_frame(&bytes)
+        }),
+    )
 }
 
 /// The embedded byte lane uses the same native lock-release protocol.
 pub(crate) fn feed_bytes_unlocked(shared: &Shared, bytes: &[u8]) -> Result<(), ControlError> {
-    drive(shared, FrameBatch::new(std::iter::once(bytes), ControlPlane::decode_frame))
+    drive(
+        shared,
+        FrameBatch::new(std::iter::once(bytes), ControlPlane::decode_frame),
+    )
 }
 
 /// Already-decoded embedded frames keep their owned payload without copying.
 pub(crate) fn feed_unlocked(shared: &Shared, frame: FrameKind) -> Result<(), ControlError> {
-    drive(shared, FrameBatch::new(std::iter::once(frame), |_, frame| Ok(Some(frame))))
+    drive(
+        shared,
+        FrameBatch::new(std::iter::once(frame), |_, frame| Ok(Some(frame))),
+    )
 }
 
 fn drive(shared: &Shared, mut batch: FrameBatch<impl Iterator>) -> Result<(), ControlError> {
-    let mut step = {
-        let mut plane = lock(shared);
-        plane.observe_time(std::time::Instant::now());
+    let mut step = with_plane(shared, |plane| {
         let step = plane.step_frame_batch(&mut batch);
-        advance_frames(&mut plane, &mut batch, step)
-    };
+        advance_frames(plane, &mut batch, step)
+    });
     loop {
         match step {
             BatchStep::Done(result) => return result,
             BatchStep::Apply(apply) => {
                 let outcomes = apply.engine.apply_batch(apply.events);
-                let mut plane = lock(shared);
-                plane.observe_time(std::time::Instant::now());
-                let completed = plane.complete_frame_apply(&mut batch, apply.geometry, outcomes);
-                step = advance_frames(&mut plane, &mut batch, completed);
+                step = with_plane(shared, |plane| {
+                    let completed =
+                        plane.complete_frame_apply(&mut batch, apply.geometry, outcomes);
+                    advance_frames(plane, &mut batch, completed)
+                });
             }
             BatchStep::Frame(_) => unreachable!("advance_frames consumes semantic frames"),
         }
     }
+}
+
+/// Run `f` under the control lock, after stamping the plane with the time.
+fn with_plane<R>(shared: &Shared, f: impl FnOnce(&mut ControlPlane) -> R) -> R {
+    f(&mut stamped(lock(shared)))
+}
+
+fn stamped(mut plane: MutexGuard<'_, ControlPlane>) -> MutexGuard<'_, ControlPlane> {
+    plane.observe_time(std::time::Instant::now());
+    plane
 }
 
 fn advance_frames(

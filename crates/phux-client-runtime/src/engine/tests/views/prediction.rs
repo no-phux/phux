@@ -6,8 +6,12 @@ fn prompt() -> (EngineHandle, Arc<Publication>, ResourceId, ViewId, ViewId) {
     let (owner, publication) = owner();
     let terminal = id(1);
     attach(&owner, &terminal, b"$ ");
-    let typed = owner.create_view(&terminal).unwrap();
-    let other = owner.create_view(&terminal).unwrap();
+    let typed = owner
+        .create_view(&owner.view_source(&terminal).unwrap())
+        .unwrap();
+    let other = owner
+        .create_view(&owner.view_source(&terminal).unwrap())
+        .unwrap();
     (owner, publication, terminal, typed, other)
 }
 
@@ -66,7 +70,9 @@ fn a_view_scrolled_into_history_draws_no_guess() {
     let (owner, publication) = owner();
     let terminal = id(1);
     attach(&owner, &terminal, b"1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n$ ");
-    let view = owner.create_view(&terminal).unwrap();
+    let view = owner
+        .create_view(&owner.view_source(&terminal).unwrap())
+        .unwrap();
     owner.scroll_view(view, Scroll::Row(0)).unwrap();
     let before = publication.acquire_view(view).unwrap();
     owner.predict_view_text(view, "x".to_owned()).unwrap();
@@ -80,7 +86,9 @@ fn a_guess_leaves_a_hidden_cursor_hidden() {
     let (owner, publication) = owner();
     let terminal = id(1);
     attach(&owner, &terminal, b"\x1b[?25l> ");
-    let view = owner.create_view(&terminal).unwrap();
+    let view = owner
+        .create_view(&owner.view_source(&terminal).unwrap())
+        .unwrap();
     owner.predict_view_text(view, "x".to_owned()).unwrap();
     let frame = publication.acquire_view(view).unwrap();
     assert_eq!(frame.row_text(0), "> x");
@@ -95,7 +103,9 @@ fn a_backspace_over_echoed_text_erases_ahead_of_the_server() {
     let (owner, publication) = owner();
     let terminal = id(1);
     attach(&owner, &terminal, b"$ ab");
-    let view = owner.create_view(&terminal).unwrap();
+    let view = owner
+        .create_view(&owner.view_source(&terminal).unwrap())
+        .unwrap();
     owner.predict_view_text(view, "\u{7f}".to_owned()).unwrap();
     let guessed = publication.acquire_view(view).unwrap();
     assert_eq!(guessed.row_text(0), "$ a");
@@ -112,7 +122,9 @@ fn typing_over_a_shell_suggestion_draws_until_the_echo_replaces_it() {
     let terminal = id(1);
     // A grey suggestion after the cursor, as fish and zsh draw one.
     attach(&owner, &terminal, b"$ g\x1b[90mit log\x1b[0m\x1b[4G");
-    let view = owner.create_view(&terminal).unwrap();
+    let view = owner
+        .create_view(&owner.view_source(&terminal).unwrap())
+        .unwrap();
     owner.predict_view_text(view, "r".to_owned()).unwrap();
     assert_eq!(
         publication.acquire_view(view).unwrap().row_text(0),

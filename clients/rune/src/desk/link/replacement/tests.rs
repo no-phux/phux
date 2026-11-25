@@ -116,7 +116,8 @@ fn explicit_replacement_releases_old_view_leases_even_if_the_client_survives() {
     let client = replica.client.clone();
     let mut desk = crate::test_support::window();
     desk.connection.client = Some(client.clone());
-    desk.connection.seed_view_sources(vec![1; 16], &replica.sources);
+    desk.connection
+        .seed_view_sources(vec![1; 16], &replica.sources);
     desk.connection.shown = Some(crate::desk::Shown {
         resource: replica.terminal.clone(),
         view: Some(replica.views[0]),
@@ -133,7 +134,10 @@ fn explicit_replacement_releases_old_view_leases_even_if_the_client_survives() {
             "old view lease retired"
         );
     }
-    assert!(desk.connection.wanted.is_none(), "numeric intent cannot cross a runtime namespace");
+    assert!(
+        desk.connection.wanted.is_none(),
+        "numeric intent cannot cross a runtime namespace"
+    );
     // Deliberately reuse the very same embedded client: the namespace still
     // changed and queued callbacks must not regain authority.
     desk.connection.client = Some(client);

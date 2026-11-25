@@ -7,8 +7,12 @@
 //! observations included. Stepping hands each run back to the caller, which
 //! releases the lock for the round trip and re-takes it to complete the run.
 
-use phux_client_core::session::KernelInput;
+#![allow(
+    clippy::redundant_pub_crate,
+    reason = "crate-wide items in a private module: `pub` trips `unreachable_pub` instead"
+)]
 
+use phux_client_core::session::KernelInput;
 
 pub(crate) use super::super::kernel::EngineApply;
 use super::super::{ControlError, ControlPlane, EngineEvent, EngineOutcome, FrameKind, ResourceId};
@@ -49,7 +53,10 @@ enum AfterApply {
     Finish,
 }
 
-#[allow(clippy::large_enum_variant, reason = "owned frames stay allocation-free between steps")]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "owned frames stay allocation-free between steps"
+)]
 pub(crate) enum BatchStep {
     /// Let the driver execute one semantic frame, with native tracing outside it.
     Frame(FrameKind),
@@ -77,31 +84,22 @@ impl ControlPlane {
     pub(crate) fn step_frame_batch(&mut self, batch: &mut FrameBatch<impl Iterator>) -> BatchStep {
         loop {
             let Some(raw) = batch.frames.next() else {
-                return self
-                    .flush_then(batch, AfterApply::Finish)
-                    .unwrap_or(BatchStep::Done(Ok(())));
+                return self.flush_then(batch, AfterApply::Finish);
             };
             let frame = match (batch.decode)(self, raw) {
                 Ok(Some(frame)) => frame,
                 Ok(None) => continue,
-                Err(error) => {
-                    return self
-                        .flush_then(batch, AfterApply::Fail(error))
-                        .unwrap_or(BatchStep::Done(Ok(())));
-                }
+                Err(error) => return self.flush_then(batch, AfterApply::Fail(error)),
             };
             if !self.handshake_ready && !allowed_before_handshake(&frame) {
                 let error =
                     ControlError::Protocol("server frame arrived before HELLO_OK".to_owned());
-                return self
-                    .flush_then(batch, AfterApply::Fail(error))
-                    .unwrap_or(BatchStep::Done(Ok(())));
+                return self.flush_then(batch, AfterApply::Fail(error));
             }
-            if KernelInput::from_stream_frame(&frame).is_some() {
-                batch.engine_events.push(EngineEvent::Stream(frame));
-            } else if let Some(step) = self.flush_then(batch, AfterApply::Feed(frame)) {
-                return step;
+            if KernelInput::from_stream_frame(&frame).is_none() {
+                return self.flush_then(batch, AfterApply::Feed(frame));
             }
+            batch.engine_events.push(EngineEvent::Stream(frame));
         }
     }
 
@@ -121,46 +119,42 @@ impl ControlPlane {
             return BatchStep::Done(Ok(()));
         }
         let flushed = self.complete_engine_apply(geometry, outcomes);
-        self.resolve_flush(batch, after, flushed)
-            .unwrap_or_else(|| self.step_frame_batch(batch))
+        Self::resolve_flush(batch, after, flushed)
     }
 
     /// Hand out the pending run, or resolve `after` at once when there is
-    /// none. `None` means keep feeding.
+    /// none.
     fn flush_then(
         &mut self,
         batch: &mut FrameBatch<impl Iterator>,
         after: AfterApply,
-    ) -> Option<BatchStep> {
+    ) -> BatchStep {
         if batch.engine_events.is_empty() {
-            return self.resolve_flush(batch, after, Ok(()));
+            return Self::resolve_flush(batch, after, Ok(()));
         }
         match self.prepare_engine_apply(std::mem::take(&mut batch.engine_events)) {
             Ok(apply) => {
                 batch.after = Some(after);
                 batch.epoch = self.live_connection_epoch;
-                Some(BatchStep::Apply(apply))
+                BatchStep::Apply(apply)
             }
-            Err(error) => self.resolve_flush(batch, after, Err(error)),
+            Err(error) => Self::resolve_flush(batch, after, Err(error)),
         }
     }
 
     /// The flushed run's result, then whatever it was flushed for, with the
     /// non-fatal deferral a batch feed applies.
     fn resolve_flush(
-        &mut self,
         batch: &mut FrameBatch<impl Iterator>,
         after: AfterApply,
         flushed: Result<(), ControlError>,
-    ) -> Option<BatchStep> {
+    ) -> BatchStep {
         let deferred = &mut batch.deferred_error;
         let done = match after {
-            AfterApply::Feed(frame) => {
-                match Self::continue_after_nonfatal(deferred, flushed) {
-                    Ok(()) => return Some(BatchStep::Frame(frame)),
-                    Err(error) => Err(error),
-                }
-            }
+            AfterApply::Feed(frame) => match Self::continue_after_nonfatal(deferred, flushed) {
+                Ok(()) => return BatchStep::Frame(frame),
+                Err(error) => Err(error),
+            },
             AfterApply::Fail(error) => match Self::continue_after_nonfatal(deferred, flushed) {
                 Err(pending) => Err(ControlError::prefer(Some(pending), error)),
                 Ok(()) => Err(ControlError::prefer(deferred.take(), error)),
@@ -168,7 +162,6 @@ impl ControlPlane {
             AfterApply::Finish => Self::continue_after_nonfatal(deferred, flushed)
                 .and_then(|()| deferred.take().map_or(Ok(()), Err)),
         };
-        Some(BatchStep::Done(done))
+        BatchStep::Done(done)
     }
 }
-

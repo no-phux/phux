@@ -110,8 +110,10 @@ pub(crate) fn seed_named_session(
     let (with_pty, scrollback) =
         state.with(|s| (s.config().attach_create_seeds_pty, s.config().scrollback));
     let seed_cmd = with_pty.then(|| named_session_command(state, name, command, cwd, env));
-    crate::runtime::commands::terminal::seed::seed_session(state, name, seed_cmd, scrollback, root_token, None, origin)
-        .map_err(|err| err.to_string())
+    crate::runtime::commands::terminal::seed::seed_session(
+        state, name, seed_cmd, scrollback, root_token, None, origin,
+    )
+    .map_err(|err| err.to_string())
 }
 
 /// A fresh start's pre-seeded session `name`: its pane runs `configured`
@@ -126,9 +128,13 @@ pub(crate) fn seed_initial_session(
 ) -> Result<(), String> {
     let seeded = if with_pty {
         let command = seed_pane_command(state, configured);
-        crate::runtime::commands::terminal::seed::seed_session_with_pty(state, name, command, scrollback, root_token)
+        crate::runtime::commands::terminal::seed::seed_session_with_pty(
+            state, name, command, scrollback, root_token,
+        )
     } else {
-        crate::runtime::commands::terminal::seed::seed_session_with_actor(state, name, scrollback, root_token)
+        crate::runtime::commands::terminal::seed::seed_session_with_actor(
+            state, name, scrollback, root_token,
+        )
     };
     seeded.map(|_| ()).map_err(|err| err.to_string())
 }
@@ -137,10 +143,7 @@ pub(crate) fn seed_initial_session(
 /// shell, in its last directory (else its cwd), with its environment and
 /// the server's `TERM`. Admission chose the exact executable recipe; execution
 /// never substitutes an archived fallback or re-resolves a template.
-pub(crate) fn spec_command(
-    s: &ServerState,
-    launch: &phux_core::TerminalLaunch,
-) -> LaunchCommand {
+pub(crate) fn spec_command(s: &ServerState, launch: &phux_core::TerminalLaunch) -> LaunchCommand {
     let cwd = launch.relaunch_cwd().map(std::path::Path::to_path_buf);
     let launch = launch.clone();
     let argv = launch.argv;

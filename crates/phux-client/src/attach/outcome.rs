@@ -83,14 +83,20 @@ pub enum AttachError {
     /// A create/ensure may have committed; redial must not replace its operation.
     #[error("session operation outcome is unknown ({operation:?}); reconcile before retrying")]
     OperationOutcomeUnknown {
+        /// The operation whose outcome is unknown, when one was minted.
         operation: Option<phux_protocol::ids::OperationId>,
     },
 
     /// A session operation committed, but its exact key could not be selected.
-    #[error("session operation committed ({operation:?}, {session}); selection unavailable: {message}")]
+    #[error(
+        "session operation committed ({operation:?}, {session}); selection unavailable: {message}"
+    )]
     CommittedSelectionUnavailable {
+        /// The committed operation.
         operation: phux_protocol::ids::OperationId,
+        /// The session it committed.
         session: phux_protocol::ids::SessionKey,
+        /// Why selecting it failed.
         message: String,
     },
 }

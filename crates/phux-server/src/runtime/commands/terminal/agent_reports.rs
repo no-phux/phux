@@ -4,8 +4,8 @@ use phux_agent_session::asked::{AskedPayload, AskedSource};
 use phux_protocol::wire::frame::{CommandResult, ErrorCode};
 use tokio::sync::oneshot;
 
-use crate::runtime::commands::terminal::signal::local_terminal;
 use crate::runtime::commands::actor_reply;
+use crate::runtime::commands::terminal::signal::local_terminal;
 use crate::state::{ResolvedOwned, SharedState};
 
 /// Feed integration-hook lifecycle evidence into a pane (ADR-0085): as a

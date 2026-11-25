@@ -92,9 +92,8 @@ impl RelaySession {
         self.subscribers
             .get(&registration.terminal)
             .is_some_and(|subs| {
-                subs.iter().any(|sub| {
-                    sub.client == registration.client && sub.seq == registration.seq
-                })
+                subs.iter()
+                    .any(|sub| sub.client == registration.client && sub.seq == registration.seq)
             })
     }
 

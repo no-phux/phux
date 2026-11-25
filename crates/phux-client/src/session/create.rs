@@ -30,7 +30,10 @@ pub enum CreateOutcome {
     ReadRefused(String),
     /// Intent committed, but no complete live/inspection evidence is available.
     /// Reconcile this receipt; never replace it with a fresh creation.
-    Committed { receipt: Box<Committed> },
+    Committed {
+        /// The committed receipt to reconcile.
+        receipt: Box<Committed>,
+    },
     /// The server refused the `SESSION_CREATE`.
     Refused(Refusal),
     /// The session was created, but its seed command did not start. The
@@ -122,9 +125,8 @@ pub async fn create_session(
             let Some(seed_key) = committed.resource else {
                 return Ok(CreateOutcome::Committed { receipt: committed });
             };
-            let seed = match inspect_created_seed(conn, &committed, seed_key).await {
-                Ok(seed) => seed,
-                Err(_) => return Ok(CreateOutcome::Committed { receipt: committed }),
+            let Ok(seed) = inspect_created_seed(conn, &committed, seed_key).await else {
+                return Ok(CreateOutcome::Committed { receipt: committed });
             };
             Ok(match seed {
                 Seed::NoFailureObserved => CreateOutcome::Created(u64::from(terminal)),
@@ -161,7 +163,8 @@ async fn inspect_created_seed(
     seed: ResourceKey,
 ) -> Result<Seed, crate::org::OrgError> {
     let (_, inventory) = crate::org::session_inventory_for_receipt(conn, receipt).await?;
-    if let Some(activation) = inventory.resource(&seed)
+    if let Some(activation) = inventory
+        .resource(&seed)
         .and_then(|record| record.activation.as_ref())
         && activation.state == ExecState::Failed
     {

@@ -5,23 +5,33 @@ use super::*;
 impl WireTx {
     pub(super) fn preflight_input(&self, frame: &[u8]) -> Result<(), String> {
         match self {
-            Self::Ws(tx) if tx.socket.ready_state() != WebSocket::OPEN =>
-                Err("WebSocket is not open".to_owned()),
-            Self::Ws(tx) if (tx.socket.buffered_amount() as usize).saturating_add(frame.len()) > MAX_OUTBOUND_BYTES =>
-                Err("WebSocket outbound byte budget exceeded".to_owned()),
-            Self::Wt(tx) if tx.failed.get() =>
-                Err("WebTransport writer is closed".to_owned()),
-            Self::Wt(tx) if tx.queue.borrow().bytes.saturating_add(frame.len()) > MAX_OUTBOUND_BYTES =>
-                Err("WebTransport outbound byte budget exceeded".to_owned()),
+            Self::Ws(tx) if tx.socket.ready_state() != WebSocket::OPEN => {
+                Err("WebSocket is not open".to_owned())
+            }
+            Self::Ws(tx)
+                if (tx.socket.buffered_amount() as usize).saturating_add(frame.len())
+                    > MAX_OUTBOUND_BYTES =>
+            {
+                Err("WebSocket outbound byte budget exceeded".to_owned())
+            }
+            Self::Wt(tx) if tx.failed.get() => Err("WebTransport writer is closed".to_owned()),
+            Self::Wt(tx)
+                if tx.queue.borrow().bytes.saturating_add(frame.len()) > MAX_OUTBOUND_BYTES =>
+            {
+                Err("WebTransport outbound byte budget exceeded".to_owned())
+            }
             _ => Ok(()),
         }
     }
     /// `false` means no socket/writer handoff happened; the failing frame
     /// itself is therefore safe to roll back, unlike a throwing WS send.
     pub(super) fn handoff_input(&self, frame: &[u8]) -> Result<(), (String, bool)> {
-        self.preflight_input(frame).map_err(|message| (message, false))?;
+        self.preflight_input(frame)
+            .map_err(|message| (message, false))?;
         match self {
-            Self::Ws(tx) => tx.socket.send_with_u8_array(frame)
+            Self::Ws(tx) => tx
+                .socket
+                .send_with_u8_array(frame)
                 .map_err(|_| ("WebSocket send failed".to_owned(), true)),
             Self::Wt(tx) => tx.enqueue(frame).map_err(|message| (message, false)),
         }

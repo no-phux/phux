@@ -64,16 +64,21 @@ impl TerminalProcess {
             Ok(()) => {
                 crate::perf::INPUT_EVENTS.incr();
                 if echo_probe
-                    && self.last_output_at.get().is_none_or(|at| {
-                        at.elapsed() >= crate::perf::ECHO_QUIET_WINDOW
-                    })
+                    && self
+                        .last_output_at
+                        .get()
+                        .is_none_or(|at| at.elapsed() >= crate::perf::ECHO_QUIET_WINDOW)
                 {
                     self.last_input_at.set(Some(std::time::Instant::now()));
                 }
                 debug!(len, "input queued to PTY writer");
             }
             Err(mpsc::error::TrySendError::Full(request)) => {
-                warn!(len, credited = request.credit.is_some(), "PTY writer queue full; dropping input");
+                warn!(
+                    len,
+                    credited = request.credit.is_some(),
+                    "PTY writer queue full; dropping input"
+                );
                 Self::not_written(request);
             }
             Err(mpsc::error::TrySendError::Closed(request)) => {

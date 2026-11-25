@@ -3,10 +3,12 @@
 use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::{ErrorCode, FrameKind};
 
-use crate::runtime::commands::terminal::{handle_frame_ack, handle_terminal_input, handle_terminal_resize};
+use super::ResourceFrame;
 use crate::runtime::apps::terminal::history::{HistoryPageRequest, serve_history_request};
 use crate::runtime::apps::terminal::input_lane::{InputLaneHandle, InputStalled, RoutedInput};
-use super::ResourceFrame;
+use crate::runtime::commands::terminal::{
+    handle_frame_ack, handle_terminal_input, handle_terminal_resize,
+};
 use crate::runtime::connections::dispatch::{ConnectionEnding, FrameFlow, direction_invalid};
 use crate::state::{ClientId, SharedState};
 use phux_terminal_api::TerminalInput;
@@ -210,7 +212,7 @@ async fn route_client_input(
         // in the lane thread; the next printable would otherwise write the
         // PTY ahead of it. `ROUTE_INPUT` and `APPLY_INPUT` arm in the lane
         // admission, so every source for the pane shares this count.
-        let ahead = super::input_lane::arm_pane_lane(state, &terminal_id);
+        let ahead = crate::runtime::apps::terminal::input_lane::arm_pane_lane(state, &terminal_id);
         lane.route(
             RoutedInput::attached(client_id, terminal_id, input, frame_label)
                 .with_credit(credit)

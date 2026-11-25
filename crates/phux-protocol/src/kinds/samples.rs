@@ -366,13 +366,15 @@ fn only_organization_commands_need_the_v2_verbs() {
             let ext = |feature| Some(FeatureGate::ext(feature));
             let gate = match command {
                 Command::SessionKill { .. } => ext(crate::caps::ServerFeatureExt::SessionKill),
-                Command::SessionEnsure { .. } => {
-                    Some(FeatureGate::ext2(crate::caps::ServerFeatureExt2::SessionEnsure))
+                Command::SessionEnsure { .. } => Some(FeatureGate::ext2(
+                    crate::caps::ServerFeatureExt2::SessionEnsure,
+                )),
+                Command::ResourceRelaunch { .. } => Some(FeatureGate::ext2(
+                    crate::caps::ServerFeatureExt2::ArchivedLaunchAdmission,
+                )),
+                Command::SessionSetProject { .. } => {
+                    ext(crate::caps::ServerFeatureExt::SessionProject)
                 }
-                Command::ResourceRelaunch { .. } => {
-                    Some(FeatureGate::ext2(crate::caps::ServerFeatureExt2::ArchivedLaunchAdmission))
-                }
-                Command::SessionSetProject { .. } => ext(crate::caps::ServerFeatureExt::SessionProject),
                 Command::ArrangementLock { .. } => ext(crate::caps::ServerFeatureExt::TabLock),
                 Command::GetCreation { .. } => ext(crate::caps::ServerFeatureExt::ApiDescription),
                 _ => ext(crate::caps::ServerFeatureExt::Organization),

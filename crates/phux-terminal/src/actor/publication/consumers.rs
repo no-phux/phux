@@ -2,8 +2,8 @@
 
 use super::PublicationOwner;
 use crate::actor::{ClientId, DEFAULT_TICK_INTERVAL};
-use tracing::trace;
 use phux_resource::replication::AckRejection;
+use tracing::trace;
 
 impl PublicationOwner {
     /// Handle a cumulative `FRAME_ACK` for `seq`.
@@ -22,7 +22,9 @@ impl PublicationOwner {
         let Some(consumer) = self.consumers.get(&client_id) else {
             return false;
         };
-        if consumer.cancellation.is_cancelled() || !consumer.sync.matches_generation(stream_id, bootstrap_id) {
+        if consumer.cancellation.is_cancelled()
+            || !consumer.sync.matches_generation(stream_id, bootstrap_id)
+        {
             trace!(
                 ?client_id,
                 ?stream_id,
@@ -86,7 +88,6 @@ impl PublicationOwner {
             .min()
             .unwrap_or(DEFAULT_TICK_INTERVAL)
     }
-
 }
 
 /// Trace why a tick ack was dropped; a rejected ack changes nothing.

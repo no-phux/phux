@@ -1,8 +1,8 @@
 //! Consumer commands and outbound frame construction.
 
 mod outbound;
-mod spawn;
 mod selection;
+mod spawn;
 
 pub use spawn::WorkflowSubmission;
 
@@ -144,9 +144,7 @@ impl ControlPlane {
     fn session_id_for_target(&self, target: &AttachTarget) -> Option<u32> {
         let topology = self.topology.as_ref()?;
         match target {
-            AttachTarget::ByName(name) => {
-                topology.session_named(name).map(|session| session.id)
-            }
+            AttachTarget::ByName(name) => topology.session_named(name).map(|session| session.id),
             AttachTarget::ById(id) => topology
                 .sessions
                 .iter()

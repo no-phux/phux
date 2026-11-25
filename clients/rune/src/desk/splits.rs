@@ -68,11 +68,14 @@ impl Desk {
         let Some(client) = self.connection.client.clone() else {
             return;
         };
-        let Some(request) = self.spawn_request(&client, SpawnRequest {
-            session_id: client.selected_session(),
-            initial_size: self.split_spawn_size(&target, dir),
-            ..spawn
-        }) else {
+        let Some(request) = self.spawn_request(
+            &client,
+            SpawnRequest {
+                session_id: client.selected_session(),
+                initial_size: self.split_spawn_size(&target, dir),
+                ..spawn
+            },
+        ) else {
             return;
         };
         self.connection.pending_splits.insert(
@@ -133,9 +136,12 @@ impl Desk {
             return;
         };
         let server = self.connection.view_server.clone();
-        self.connection.view_intents.entry(new.clone()).or_insert_with(|| {
-            super::view_intent::ViewIntent::new(client, new, server, self.connection.view_epoch)
-        });
+        self.connection
+            .view_intents
+            .entry(new.clone())
+            .or_insert_with(|| {
+                super::view_intent::ViewIntent::new(client, new, server, self.connection.view_epoch)
+            });
         self.connection.unplaced_splits.push(Unplaced {
             terminal: new.clone(),
             session,
@@ -213,7 +219,10 @@ impl Desk {
                 Some((operation, preview)) => {
                     // A previewed split is on screen: the keyboard follows it
                     // now, as the terminal UI's does.
-                    if preview.is_some() && item.follow && item.choice == self.connection.view_choice {
+                    if preview.is_some()
+                        && item.follow
+                        && item.choice == self.connection.view_choice
+                    {
                         self.want_automatic(item.terminal.clone());
                     }
                     self.connection.split_write = Some(SplitWrite {
@@ -269,8 +278,10 @@ impl Desk {
             // A previewed split took the keyboard when it was written; it
             // stays wherever the person has moved it since.
             false if preview.is_some() => {}
-            false if item.follow && item.choice == self.connection.view_choice => self.want_automatic(item.terminal),
-            false => {},
+            false if item.follow && item.choice == self.connection.view_choice => {
+                self.want_automatic(item.terminal)
+            }
+            false => {}
             true if late => self.give_up_split(item),
             true => self.connection.unplaced_splits.insert(0, item),
         }

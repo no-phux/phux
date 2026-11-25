@@ -104,11 +104,14 @@ fn changes_coalesce_to_the_newest_value_per_key() {
 
 #[test]
 fn a_watch_before_the_handshake_is_issued_at_attach_and_on_every_reattach() {
-    let mut plane = ControlPlane::new(std::time::Instant::now(), ControlOptions {
-        attach: Some(AttachTarget::ByName("main".to_owned())),
-        viewport: (20, 4),
-        ..ControlOptions::default()
-    });
+    let mut plane = ControlPlane::new(
+        std::time::Instant::now(),
+        ControlOptions {
+            attach: Some(AttachTarget::ByName("main".to_owned())),
+            viewport: (20, 4),
+            ..ControlOptions::default()
+        },
+    );
     assert_eq!(
         plane.watch_global_metadata(KEY.to_owned()),
         0,

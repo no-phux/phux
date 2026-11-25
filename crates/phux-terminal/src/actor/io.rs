@@ -2,8 +2,8 @@
 //! lifecycle plumbing for [`TerminalActor`].
 
 use super::{
-    Bytes, EncodedInputRequest, PtySize, ResourceOutput, ResyncAudience, ResyncReason, SizeReportSize,
-    SnapshotBytes, TerminalActor, TerminalInput, debug, trace, warn,
+    Bytes, EncodedInputRequest, PtySize, ResourceOutput, ResyncAudience, ResyncReason,
+    SizeReportSize, SnapshotBytes, TerminalActor, TerminalInput, debug, trace, warn,
 };
 
 mod input;

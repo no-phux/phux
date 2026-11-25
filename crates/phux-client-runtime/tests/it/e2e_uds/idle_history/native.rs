@@ -11,12 +11,15 @@ use phux_server_testkit::{
 };
 
 fn plane(retained_rows: usize) -> ControlPlane {
-    ControlPlane::new(std::time::Instant::now(), ControlOptions {
-        attach: Some(AttachTarget::ByName("native-progressive".to_owned())),
-        viewport: (200, 3),
-        scrollback_lines: 10_000,
-        ..ControlOptions::default()
-    })
+    ControlPlane::new(
+        std::time::Instant::now(),
+        ControlOptions {
+            attach: Some(AttachTarget::ByName("native-progressive".to_owned())),
+            viewport: (200, 3),
+            scrollback_lines: 10_000,
+            ..ControlOptions::default()
+        },
+    )
     .with_history_config(HistoryCacheConfig {
         max_materialized_rows: retained_rows,
         prefetch_rows: retained_rows + 1,

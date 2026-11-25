@@ -45,12 +45,12 @@ impl Desk {
 #[cfg(test)]
 mod tests {
     use super::*;
-#[test]
-fn retries_widen_to_a_ceiling() {
-    assert_eq!(backoff(0), Duration::from_secs(2));
-    assert_eq!(backoff(1), Duration::from_secs(4));
-    assert_eq!(backoff(3), Duration::from_secs(16));
-    assert_eq!(backoff(9), RETRY_CEILING);
-    assert_eq!(backoff(u32::MAX), RETRY_CEILING);
-}
+    #[test]
+    fn retries_widen_to_a_ceiling() {
+        assert_eq!(backoff(0), Duration::from_secs(2));
+        assert_eq!(backoff(1), Duration::from_secs(4));
+        assert_eq!(backoff(3), Duration::from_secs(16));
+        assert_eq!(backoff(9), RETRY_CEILING);
+        assert_eq!(backoff(u32::MAX), RETRY_CEILING);
+    }
 }

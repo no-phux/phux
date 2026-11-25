@@ -77,7 +77,7 @@ async fn seed_agent(socket: &Path) -> (tokio::net::UnixStream, ResourceId) {
 #[tokio::test(flavor = "current_thread")]
 async fn headless_snapshot_waits_for_explicit_agent_cut_after_aggregate_ready() {
     tokio::task::LocalSet::new()
-        .run_until(async {
+        .run_until(Box::pin(async {
             let dir = tempfile::tempdir().unwrap();
             let socket = dir.path().join("server.sock");
             let (shutdown, server) = spawn_server_seed_pty_no_cmd(socket.clone(), None);
@@ -136,6 +136,6 @@ async fn headless_snapshot_waits_for_explicit_agent_cut_after_aggregate_ready() 
             assert!(session.agent_metadata_complete());
             drop((session, conn, producer));
             join_after_shutdown(shutdown, server).await;
-        })
+        }))
         .await;
 }

@@ -40,7 +40,10 @@ pub(super) async fn kill_session_keyed(
     let command = Command::SessionKill { operation, session };
     match org::request(conn, 2, command).await {
         Ok((OrgOutcome::Committed(receipt), degradation)) => Ok(Selected {
-            recovery: Some(KillIdentity::new(Some(operation)).recovery(crate::recovery::EffectCertainty::Applied)),
+            recovery: Some(
+                KillIdentity::new(Some(operation))
+                    .recovery(crate::recovery::EffectCertainty::Applied),
+            ),
             interleaved: degradation.notices().to_vec(),
             killed: receipt.members,
         }),
@@ -54,7 +57,10 @@ pub(super) async fn kill_session_keyed(
             interleaved: degradation.notices().to_vec(),
         }),
         Ok((OrgOutcome::Accepted, degradation)) => Ok(Selected {
-            recovery: Some(KillIdentity::new(Some(operation)).recovery(crate::recovery::EffectCertainty::Applied)),
+            recovery: Some(
+                KillIdentity::new(Some(operation))
+                    .recovery(crate::recovery::EffectCertainty::Applied),
+            ),
             interleaved: degradation.notices().to_vec(),
             killed: None,
         }),
@@ -130,7 +136,9 @@ fn batch_outcome(
 ) -> Result<Selected, KillError> {
     match reply {
         Ok((KillOutcome::Killed, degradation)) => Ok(Selected {
-            recovery: key.map(|key| KillIdentity::new(Some(key)).recovery(crate::recovery::EffectCertainty::Applied)),
+            recovery: key.map(|key| {
+                KillIdentity::new(Some(key)).recovery(crate::recovery::EffectCertainty::Applied)
+            }),
             interleaved: degradation.notices().to_vec(),
             killed: None,
         }),
@@ -234,4 +242,3 @@ fn unknown(
         interleaved,
     }
 }
-

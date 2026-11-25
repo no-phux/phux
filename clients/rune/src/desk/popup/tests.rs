@@ -172,7 +172,8 @@ fn replacing_the_runtime_releases_its_popup_view_without_terminating_execution()
     let mut desk = crate::test_support::window();
     desk.connection.client = Some(client.clone());
     desk.connection.status = Status::Attached;
-    desk.connection.seed_view_sources(vec![1; 16], &replica.sources);
+    desk.connection
+        .seed_view_sources(vec![1; 16], &replica.sources);
     desk.connection.shown = Some(crate::desk::Shown {
         resource: id(1),
         view: Some(replica.views[0]),
@@ -196,7 +197,10 @@ fn replacing_the_runtime_releases_its_popup_view_without_terminating_execution()
             _ => None,
         })
         .collect();
-    assert!(closed.is_empty(), "runtime replacement is view retirement, not termination");
+    assert!(
+        closed.is_empty(),
+        "runtime replacement is view retirement, not termination"
+    );
 }
 
 #[test]
@@ -210,14 +214,18 @@ fn dismissing_asks_as_closing_a_terminal_does_and_spares_the_pane_under_it() {
     assert_eq!(rt.state.connection.popup.request, None);
     let _ = client.take_outbound();
     rt.update(|d, _| assert!(!d.popup_spawned(&client, request, Some(&id(7)), None)));
-    assert!(!client.take_outbound().iter().any(|bytes| matches!(
-        FrameKind::decode(bytes).unwrap().0,
-        FrameKind::Command {
-            command: phux_protocol::wire::frame::Command::CloseTabResources { .. }
-                | phux_protocol::wire::frame::Command::KillResource { .. }
-                | phux_protocol::wire::frame::Command::ResourceTerminate { .. }, ..
-        }
-    )), "pending view dismissal must not issue an incidental kill");
+    assert!(
+        !client.take_outbound().iter().any(|bytes| matches!(
+            FrameKind::decode(bytes).unwrap().0,
+            FrameKind::Command {
+                command: phux_protocol::wire::frame::Command::CloseTabResources { .. }
+                    | phux_protocol::wire::frame::Command::KillResource { .. }
+                    | phux_protocol::wire::frame::Command::ResourceTerminate { .. },
+                ..
+            }
+        )),
+        "pending view dismissal must not issue an incidental kill"
+    );
     assert!(
         rt.state.connection.popup.terminal().is_none()
             && rt.state.connection.popup.request.is_none()

@@ -158,7 +158,9 @@ impl Desk {
         self.connection.pending_spawns.clear();
         self.connection.pending_splits.clear();
         self.connection.resources.starting.clear();
-        self.connection.spawn_servers.retain(|request, _| self.connection.popup.owns_request(*request));
+        self.connection
+            .spawn_servers
+            .retain(|request, _| self.connection.popup.owns_request(*request));
         self.connection.layout_ops.clear();
         self.connection.unplaced_splits.clear();
         self.connection.split_write = None;

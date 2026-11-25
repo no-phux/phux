@@ -11,7 +11,7 @@ fn missing_exit_evidence_never_becomes_zero_in_inventory() {
             s.activation_token(id).unwrap(),
             phux_core::ExitOutcome::UNKNOWN,
             true,
-        )
+        );
     });
     let key = state.with(|s| ow::resource_key(s.registry().record(id).unwrap().key).unwrap());
     let session =
@@ -41,7 +41,7 @@ fn a_launch_a_stop_cut_off_is_restorable_and_a_failed_one_is_not() {
     state.with_mut(|s| {
         assert_eq!(
             s.reconcile_with(None, |_| panic!("must not probe"))
-                .never_launched,
+                .unresolved,
             1
         );
     });

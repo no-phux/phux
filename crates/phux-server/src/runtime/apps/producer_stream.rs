@@ -19,12 +19,8 @@ use bytes::Bytes;
 use futures_util::StreamExt as _;
 use futures_util::stream::FuturesUnordered;
 use phux_protocol::caps::{BootstrapLimits, BootstrapStreamProfile};
-use phux_protocol::ids::{
-    BootstrapId, ResourceId as WireResourceId, ResourceKind as WireKind, StreamId,
-};
-use phux_protocol::wire::frame::{
-    CommandResult, ErrorCode, FrameKind, TombstoneReason,
-};
+use phux_protocol::ids::{BootstrapId, ResourceId as WireResourceId, StreamId};
+use phux_protocol::wire::frame::{CommandResult, ErrorCode, FrameKind, TombstoneReason};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
@@ -32,7 +28,7 @@ use tokio_util::sync::CancellationToken;
 use crate::mailbox::Outbound;
 use crate::resource::{ResourceHandle, ResourceOutput};
 use crate::runtime::commands::AttachResourceFailure;
-use crate::state::{ClientId, SharedState};
+use crate::state::ClientId;
 
 /// The identity every frame of one bootstrap generation carries.
 #[derive(Clone, Debug)]
@@ -197,8 +193,7 @@ impl PumpCore {
         cursor: u64,
         cut: &impl StreamCut,
     ) -> Result<u64, RepublishEnd> {
-        let next = self.lease.advance()
-            .ok_or(RepublishEnd::Fenced)?;
+        let next = self.lease.advance().ok_or(RepublishEnd::Fenced)?;
         let tombstone = FrameKind::BootstrapTombstone {
             terminal_id: self.terminal_id.clone(),
             stream_id: self.stream_id,
@@ -233,7 +228,6 @@ pub(super) struct StreamAttach<'a> {
     pub(super) reservation: super::StreamReservation,
     pub(super) client_id: ClientId,
     pub(super) terminal_id: &'a WireResourceId,
-    pub(super) core: phux_core::ids::ResourceId,
     pub(super) handle: &'a ResourceHandle,
     pub(super) out_tx: &'a mpsc::Sender<Outbound>,
     pub(super) limits: BootstrapLimits,
@@ -250,11 +244,19 @@ pub(super) async fn attach_stream<C: StreamCut>(
     recovery: impl LagRecovery + 'static,
 ) -> CommandResult {
     let lease = attach.reservation.lease.clone();
-    lease.run(attach_reserved_stream(attach, cut, recovery)).await
-        .unwrap_or_else(|| CommandResult::error(ErrorCode::InternalError, "stream reservation superseded"))
+    lease
+        .run(attach_reserved_stream(attach, cut, recovery))
+        .await
+        .unwrap_or_else(|| {
+            CommandResult::error(ErrorCode::InternalError, "stream reservation superseded")
+        })
 }
 
-async fn attach_reserved_stream<C: StreamCut>(attach: StreamAttach<'_>, cut: impl Future<Output = Result<C, CommandResult>>, recovery: impl LagRecovery + 'static) -> CommandResult {
+async fn attach_reserved_stream<C: StreamCut>(
+    attach: StreamAttach<'_>,
+    cut: impl Future<Output = Result<C, CommandResult>>,
+    recovery: impl LagRecovery + 'static,
+) -> CommandResult {
     let StreamAttach {
         reservation,
         client_id,
@@ -269,7 +271,12 @@ async fn attach_reserved_stream<C: StreamCut>(attach: StreamAttach<'_>, cut: imp
     let live = handle.output.subscribe();
     // Await the old task's exit before BEGIN: no prior generation may leak
     // output between this replacement's bootstrap frames.
-    if !reservation.ready().await { return CommandResult::error(ErrorCode::InternalError, "stream superseded while retiring predecessor"); }
+    if !reservation.ready().await {
+        return CommandResult::error(
+            ErrorCode::InternalError,
+            "stream superseded while retiring predecessor",
+        );
+    }
     let cut = match cut.await {
         Ok(cut) => cut,
         Err(result) => return result,
@@ -310,7 +317,6 @@ async fn attach_reserved_stream<C: StreamCut>(attach: StreamAttach<'_>, cut: imp
 
     let pump = PumpCore {
         lease: lease.clone(),
-        core,
         out_tx: out_tx.clone(),
         terminal_id: terminal_id.clone(),
         stream_id,
@@ -319,8 +325,13 @@ async fn attach_reserved_stream<C: StreamCut>(attach: StreamAttach<'_>, cut: imp
         cancel,
         last_seq,
     };
-    if !lease.spawn(None, None, pump.run(recovery, live, base_seq)) || !reservation.published(|| true) {
-        return CommandResult::error(ErrorCode::InternalError, "stream superseded before publication handoff");
+    if !lease.spawn(None, None, pump.run(recovery, live, base_seq))
+        || !reservation.published(|| true)
+    {
+        return CommandResult::error(
+            ErrorCode::InternalError,
+            "stream superseded before publication handoff",
+        );
     }
     CommandResult::Ok
 }
@@ -332,13 +343,16 @@ pub(super) fn result_to_attach_failure(
 ) -> Result<(), AttachResourceFailure> {
     match result {
         CommandResult::Ok | CommandResult::OkWith(_) => Ok(()),
-        CommandResult::Error { code, message } => Err(AttachResourceFailure { generation: None, code, message }),
+        CommandResult::Error { code, message } => Err(AttachResourceFailure {
+            generation: None,
+            code,
+            message,
+        }),
         other => Err(AttachResourceFailure::internal(&format!(
             "{label} attach returned an unexpected result: {other:?}"
         ))),
     }
 }
-
 
 /// Ask every item through `ask` concurrently and keep the answers that
 /// arrive within `deadline`; an item that misses it, or answers `None`, is

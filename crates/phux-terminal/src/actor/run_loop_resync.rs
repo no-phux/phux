@@ -31,7 +31,7 @@ pub(in crate::actor) struct ResyncDebounce {
 
 impl ResyncDebounce {
     /// Nothing owed.
-    pub(super) const fn idle() -> Self {
+    pub(crate) const fn idle() -> Self {
         Self { owed: None }
     }
 
@@ -51,7 +51,11 @@ impl ResyncDebounce {
     /// retrying independently would otherwise keep resetting it and livelock.
     /// Resizes always re-arm (the last size wins). The audience is recorded
     /// first either way.
-    pub(super) fn arm(&mut self, owed: OwedResync, deadline: std::pin::Pin<&mut tokio::time::Sleep>) {
+    pub(super) fn arm(
+        &mut self,
+        owed: OwedResync,
+        deadline: std::pin::Pin<&mut tokio::time::Sleep>,
+    ) {
         let coalesce_gap = self.is_owed() && owed.reason == ResyncReason::OutboundGap;
         self.include(owed);
         if coalesce_gap {
@@ -91,4 +95,3 @@ impl ResyncDebounce {
         })
     }
 }
-

@@ -6,9 +6,9 @@ use phux_protocol::AgentFacet;
 
 const AGENT: u32 = 31;
 
-mod own_spawn;
 mod admission;
 mod authority;
+mod own_spawn;
 mod replay;
 mod stream;
 use stream::*;
@@ -18,12 +18,15 @@ fn subscribing(subscribe_agent_sessions: bool) -> (ControlPlane, u32) {
 }
 
 fn subscribing_with_resume(subscribe_agent_sessions: bool, resume: bool) -> (ControlPlane, u32) {
-    let mut plane = ControlPlane::new(std::time::Instant::now(), ControlOptions {
-        attach: Some(AttachTarget::ByName("main".to_owned())),
-        viewport: (20, 4),
-        subscribe_agent_sessions,
-        ..ControlOptions::default()
-    });
+    let mut plane = ControlPlane::new(
+        std::time::Instant::now(),
+        ControlOptions {
+            attach: Some(AttachTarget::ByName("main".to_owned())),
+            viewport: (20, 4),
+            subscribe_agent_sessions,
+            ..ControlOptions::default()
+        },
+    );
     reopen(&mut plane, agent_hello(resume, 0xAB));
     let attach_id = plane.queued_attach_id();
     (plane, attach_id)
@@ -160,4 +163,3 @@ fn replace_attached(plane: &mut ControlPlane, snapshot: SessionSnapshot) {
 fn publish_agent(plane: &mut ControlPlane) {
     agent_bootstrap(plane, 1, None, &[(1, "prompt"), (2, "ask")]);
 }
-

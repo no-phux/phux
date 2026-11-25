@@ -22,7 +22,7 @@ impl Desk {
         let mut changed = observation.status != self.connection.status;
         if observation.connection_epoch != self.connection.epoch {
             if let Some(panel) = self.quick.as_mut() {
-                panel.moving = false;
+                panel.forget_move();
             }
             self.retire_documents(client);
             self.first_contact();
@@ -75,7 +75,9 @@ impl Desk {
         let Some(scope) = scope else {
             return (false, false);
         };
-        if observation.topology.is_some() && observation.status == phux_client_runtime::control::Status::Attached {
+        if observation.topology.is_some()
+            && observation.status == phux_client_runtime::control::Status::Attached
+        {
             self.connection.view_server = scope;
             self.connection.view_epoch = observation.connection_epoch;
         }
@@ -153,8 +155,7 @@ impl Desk {
             }
             Event::OrganizationOperation { operation, outcome } => {
                 self.session_creation_outcome(client, operation, &outcome)
-                    |
-                self.quick_move_outcome(client, operation, &outcome)
+                    | self.quick_move_outcome(client, operation, &outcome)
                     | self.sidebar_move_outcome(client, operation, &outcome)
                     | self.layout_outcome(client, operation, outcome)
             }
@@ -283,11 +284,20 @@ impl Desk {
             return true;
         }
         let origin = self.connection.spawn_servers.remove(&request);
-        let follow = origin.as_ref().is_some_and(|origin| origin.choice == self.connection.view_choice);
+        let follow = origin
+            .as_ref()
+            .is_some_and(|origin| origin.choice == self.connection.view_choice);
         let ours = self.connection.pending_spawns.contains(&request)
             || self.connection.pending_splits.contains_key(&request);
-        if ours && id.is_some() && origin.as_ref().is_none_or(|origin| !origin.owns_client(client)) {
-            self.connection.pending_spawns.retain(|pending| *pending != request);
+        if ours
+            && id.is_some()
+            && origin
+                .as_ref()
+                .is_none_or(|origin| !origin.owns_client(client))
+        {
+            self.connection
+                .pending_spawns
+                .retain(|pending| *pending != request);
             self.connection.pending_splits.remove(&request);
             self.connection.resources.starting.remove(&request);
             return true;
@@ -295,9 +305,12 @@ impl Desk {
         if let Some(id) = id.as_ref()
             && let Some(origin) = origin
         {
-            let intent = super::view_intent::ViewIntent::new(client, id, origin.server, origin.epoch);
+            let intent =
+                super::view_intent::ViewIntent::new(client, id, origin.server, origin.epoch);
             if intent.refused() {
-                self.connection.pending_spawns.retain(|pending| *pending != request);
+                self.connection
+                    .pending_spawns
+                    .retain(|pending| *pending != request);
                 self.connection.pending_splits.remove(&request);
                 self.connection.resources.starting.remove(&request);
                 self.say(NoticeKind::Error, "Pending pane view cancelled: its original source is no longer available. Check the server’s panes in the palette before retrying; a producer may already be running.");
@@ -306,7 +319,10 @@ impl Desk {
             if follow {
                 self.connection.view_intents.insert(id.clone(), intent);
             } else {
-                self.connection.view_intents.entry(id.clone()).or_insert(intent);
+                self.connection
+                    .view_intents
+                    .entry(id.clone())
+                    .or_insert(intent);
             }
         }
         let source = self.connection.resources.starting.remove(&request);
@@ -331,7 +347,7 @@ impl Desk {
         self.connection.pending_splits.remove(&request);
         match id {
             Some(id) if follow => self.want_automatic(id),
-            Some(_) => {},
+            Some(_) => {}
             None => {
                 let error = error.unwrap_or_else(|| "spawn failed".to_owned());
                 let text = source.map_or_else(

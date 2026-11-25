@@ -37,5 +37,4 @@ impl TerminalActor {
         let _ =
             self.invalidate_all_native_cursors(phux_protocol::wire::frame::TombstoneReason::Other);
     }
-
 }

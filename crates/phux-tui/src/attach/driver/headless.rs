@@ -272,9 +272,11 @@ async fn restart_attach(
     session_id: Option<SessionId>,
     completion: &mut HeadlessCompletion,
 ) -> Result<u32, AttachError> {
-    let session_id = session_id.ok_or_else(|| AttachError::Protocol(
-        "engine requested rebootstrap before ATTACHED identified the session".to_owned(),
-    ))?;
+    let session_id = session_id.ok_or_else(|| {
+        AttachError::Protocol(
+            "engine requested rebootstrap before ATTACHED identified the session".to_owned(),
+        )
+    })?;
     let attach_id = send_attach(conn, AttachTarget::ById(session_id)).await?;
     completion.restart_attach();
     Ok(attach_id)

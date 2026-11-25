@@ -1,20 +1,10 @@
 #![allow(clippy::expect_used, clippy::panic, reason = "test assertions")]
 
+use super::super::test_support::{COLS, ROWS, remote_with};
 use super::*;
-use phux_client_runtime::control::{ControlOptions, ControlPlane};
-use phux_protocol::ids::{SessionId, WindowId};
 use phux_protocol::wire::frame::FrameKind;
-use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
-const COLS: u16 = 24;
-const ROWS: u16 = 4;
-#[path = "../search/tests/support.rs"]
-mod support;
-use support::remote_with;
-fn pane(terminal: u32) -> String { id::encode(&ResourceId::local(terminal)) }
-fn bootstrap(client: &Client, terminal_id: ResourceId, bytes: &[u8]) {
-    for frame in phux_wire_fixtures::bootstrap_frames(&terminal_id, [1, 1], [COLS, ROWS], bytes) {
-        client.feed(frame).expect("bootstrap frame");
-    }
+fn pane(terminal: u32) -> String {
+    id::encode(&ResourceId::local(terminal))
 }
 #[test]
 fn binding_user_submissions_distinguish_journal_raw_and_refusal() {

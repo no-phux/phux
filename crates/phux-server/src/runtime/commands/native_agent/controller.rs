@@ -126,6 +126,10 @@ fn host_binding<'a>(
     Ok(binding)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one exhaustive arm per native request keeps the catalog auditable"
+)]
 pub(crate) async fn handle(ctx: &CommandContext, request: NativeRequest) -> CommandResult {
     let state = &ctx.state;
     let client = ctx.client_id;
@@ -133,10 +137,16 @@ pub(crate) async fn handle(ctx: &CommandContext, request: NativeRequest) -> Comm
         return result;
     }
     match request {
-        NativeRequest::PrepareRelaunch { operation, resource, expected } =>
-            crate::runtime::organization::launch_admission::prepare(ctx, operation, resource, expected),
-        NativeRequest::ApproveRelaunch { approval } =>
-            crate::runtime::organization::launch_admission::approve(ctx, approval),
+        NativeRequest::PrepareRelaunch {
+            operation,
+            resource,
+            expected,
+        } => crate::runtime::organization::launch_admission::prepare(
+            ctx, operation, resource, expected,
+        ),
+        NativeRequest::ApproveRelaunch { approval } => {
+            crate::runtime::organization::launch_admission::approve(ctx, &approval)
+        }
         request @ (NativeRequest::CurrentQuestions { .. }
         | NativeRequest::RespondQuestion { .. }
         | NativeRequest::QuestionReceipt { .. }) => questions::handle(ctx, request),
@@ -260,13 +270,13 @@ fn sealed_request(state: &SharedState, request: &NativeRequest) -> Option<Comman
                 )
             })))
         }
-        NativeRequest::Spawn { .. } | NativeRequest::LaunchIntegration { .. }
-        | NativeRequest::PrepareRelaunch { .. } | NativeRequest::ApproveRelaunch { .. } => {
-            Some(CommandResult::error(
-                ErrorCode::Overflow,
-                "daemon upgrade is in progress; no agent was started; reconnect before launching again",
-            ))
-        }
+        NativeRequest::Spawn { .. }
+        | NativeRequest::LaunchIntegration { .. }
+        | NativeRequest::PrepareRelaunch { .. }
+        | NativeRequest::ApproveRelaunch { .. } => Some(CommandResult::error(
+            ErrorCode::Overflow,
+            "daemon upgrade is in progress; no agent was started; reconnect before launching again",
+        )),
         NativeRequest::Complete { .. }
         | NativeRequest::Publish { .. }
         | NativeRequest::Close { .. } => Some(CommandResult::error(

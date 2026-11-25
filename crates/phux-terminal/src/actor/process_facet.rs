@@ -10,8 +10,8 @@ use phux_core::process::{
     ExitOutcome, ForegroundProcess, ProcessExit, ProcessIdentity, TerminalProcessState,
 };
 
-use super::{ProcessFacetRequest, PtyOwned, TerminalActor};
 use super::process::TerminalProcess;
+use super::{ProcessFacetRequest, PtyOwned, TerminalActor};
 
 /// Facts about the PTY child captured once, right after it is spawned or
 /// adopted, when its pid certainly still names it.
@@ -54,7 +54,6 @@ impl TerminalActor {
 }
 
 impl TerminalProcess {
-
     /// The typed process facet. `foreground` and `cwd` are live kernel
     /// queries, so they are `None` once the child has exited; `child` keeps
     /// naming the process that ran, from the identity captured at spawn.

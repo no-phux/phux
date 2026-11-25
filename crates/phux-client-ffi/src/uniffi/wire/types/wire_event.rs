@@ -80,7 +80,10 @@ pub enum WireEvent {
     },
     /// Canonical typed settlement for a queued spawn. Such spawns also emit
     /// the established `TerminalSpawned` compatibility projection.
-    TerminalCreation { request_id: u32, outcome: WireTerminalCreationOutcome },
+    TerminalCreation {
+        request_id: u32,
+        outcome: WireTerminalCreationOutcome,
+    },
     /// The server answered one of OUR `ATTACH_TERMINAL` commands
     /// (`COMMAND_RESULT`, correlated by `request_id` — the value
     /// `attach_terminal()` returned, or a bridge-internal id for the

@@ -449,4 +449,3 @@ impl Client {
         lock(&self.inner.control).engine().cloned()
     }
 }
-

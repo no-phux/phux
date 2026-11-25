@@ -469,4 +469,3 @@ async fn subscribe_on_a_full_mailbox_registers_nothing_and_notifies_the_consumer
         }
     ));
 }
-

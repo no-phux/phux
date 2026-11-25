@@ -8,17 +8,18 @@ pub(crate) mod seed;
 pub(crate) mod signal;
 pub(crate) mod spawn;
 pub(crate) mod terminal_input;
+use crate::runtime::commands::CommandContext;
+use crate::runtime::commands::terminal::agent_reports::{
+    handle_report_agent_state, handle_report_asked,
+};
+use crate::runtime::commands::terminal::input_lease::{handle_acquire_input, handle_release_input};
+use crate::runtime::operation_dedupe::OperationClaim;
 pub(crate) use input_route::*;
+use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode};
 pub(crate) use resize::*;
 pub(crate) use screen::*;
 pub(crate) use spawn::*;
 pub(crate) use terminal_input::*;
-use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode};
-use crate::runtime::commands::CommandContext;
-use crate::runtime::operation_dedupe::OperationClaim;
-use crate::runtime::commands::terminal::agent_reports::{handle_report_agent_state, handle_report_asked};
-use crate::runtime::commands::terminal::input_lease::{handle_acquire_input, handle_release_input};
-
 
 use crate::runtime::commands::terminal::signal::handle_signal_terminal;
 /// One flat arm per Terminal facet command keeps the catalog auditable.

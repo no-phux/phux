@@ -101,5 +101,4 @@ impl RelayHandle {
             refusal => Err(refusal),
         }
     }
-
 }

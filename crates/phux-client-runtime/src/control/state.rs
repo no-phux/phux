@@ -61,9 +61,12 @@ impl ControlPlane {
                     );
                 }
                 Pending::Spawn { .. } => {
-                    self.publish_spawn_outcome(request_id, super::TerminalCreationOutcome::Unknown {
-                        message: message.to_owned(),
-                    });
+                    self.publish_spawn_outcome(
+                        request_id,
+                        super::TerminalCreationOutcome::Unknown {
+                            message: message.to_owned(),
+                        },
+                    );
                 }
                 Pending::AttachTerminal(terminal_id) => {
                     self.push_event(Event::TerminalAttached {
@@ -161,7 +164,10 @@ impl ControlPlane {
 
     /// Whether a correlated reply belongs to the live inventory request.
     pub(crate) fn expects_topology_reply(&self, request_id: u32) -> bool {
-        matches!(self.pending.get(&request_id), Some(Pending::RefreshTopology))
+        matches!(
+            self.pending.get(&request_id),
+            Some(Pending::RefreshTopology)
+        )
     }
 
     // ----- small helpers -----------------------------------------------
@@ -204,8 +210,12 @@ impl ControlPlane {
     }
 
     pub(super) fn now_ms(&self) -> u64 {
-        u64::try_from(self.observed_time.saturating_duration_since(self.clock_origin).as_millis())
-            .unwrap_or(u64::MAX)
+        u64::try_from(
+            self.observed_time
+                .saturating_duration_since(self.clock_origin)
+                .as_millis(),
+        )
+        .unwrap_or(u64::MAX)
     }
 
     pub(super) fn next_delivery_id(&mut self) -> u64 {

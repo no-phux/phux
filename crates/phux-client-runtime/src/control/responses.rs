@@ -84,7 +84,6 @@ impl ControlPlane {
         Ok(())
     }
 
-
     pub(super) fn ensure_engine(
         &mut self,
         profile: BootstrapProfile,

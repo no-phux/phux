@@ -121,7 +121,7 @@ impl TerminalActor {
                 Some(((), interest)) =
                     self.publication.next_cancelled() =>
                     self.service_cancelled_consumer(
-                        interest,
+                        &interest,
                         &mut state.tick, &mut state.tick_interval,
                     ),
 

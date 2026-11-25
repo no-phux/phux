@@ -146,7 +146,13 @@ fn judge(
         .gate
         .into_iter()
         .chain(facet.and_then(|spec| spec.gate))
-        .any(|gate| !gate.advertised(negotiated.features, negotiated.features_ext, negotiated.features_ext2));
+        .any(|gate| {
+            !gate.advertised(
+                negotiated.features,
+                negotiated.features_ext,
+                negotiated.features_ext2,
+            )
+        });
     if unadvertised {
         return Some(Unavailable::FeatureUnadvertised);
     }
@@ -195,9 +201,24 @@ pub async fn methods(socket: &Path, resource: &ResourceId) -> Result<ResourceMet
     let mut conn = Connection::connect(socket).await?;
     let (info, _snapshot, _unreachable) = super::lookup_on(&mut conn, resource).await?;
     let (features, features_ext, features_ext2) = conn.negotiated_bootstrap().map_or_else(
-        || (ServerFeatureSet::new(), ServerFeatureExtSet::new(), phux_protocol::caps::ServerFeatureExt2Set::new()),
-        |negotiated| (negotiated.server_features, negotiated.server_features_ext,
-            if resource.is_local() { negotiated.server_features_ext2 } else { phux_protocol::caps::ServerFeatureExt2Set::new() }),
+        || {
+            (
+                ServerFeatureSet::new(),
+                ServerFeatureExtSet::new(),
+                phux_protocol::caps::ServerFeatureExt2Set::new(),
+            )
+        },
+        |negotiated| {
+            (
+                negotiated.server_features,
+                negotiated.server_features_ext,
+                if resource.is_local() {
+                    negotiated.server_features_ext2
+                } else {
+                    phux_protocol::caps::ServerFeatureExt2Set::new()
+                },
+            )
+        },
     );
     drop(conn);
     let negotiated = Negotiated {

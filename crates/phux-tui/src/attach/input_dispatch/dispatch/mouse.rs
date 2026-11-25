@@ -10,9 +10,9 @@ use super::{
 mod chrome;
 mod pane;
 
-pub(in crate::attach::input_dispatch) use chrome::{
-    bar_click_action, drag_resize, open_context_menu,
-};
+#[cfg(test)]
+pub(in crate::attach::input_dispatch) use chrome::bar_click_action;
+pub(in crate::attach::input_dispatch) use chrome::{drag_resize, open_context_menu};
 
 #[allow(
     clippy::future_not_send,
@@ -129,7 +129,6 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         let dismissed = self.dismiss_floating().await?;
         Ok(Some(StageOutcome::consumed(dismissed)))
     }
-
 }
 
 /// A primary-button press: the gesture the client's own chrome claims
@@ -143,7 +142,6 @@ pub(super) fn is_left_press(mouse: &MouseEvent) -> bool {
 pub(super) fn is_right_press(mouse: &MouseEvent) -> bool {
     matches!(mouse.action, MouseAction::Press) && mouse.button == MouseButton::Right
 }
-
 
 /// Quantise an f64 pointer position (1 px per cell) to a cell,
 /// saturating into `u16`.

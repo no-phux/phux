@@ -33,9 +33,14 @@ impl AttachPublication<'_> {
             () = self.connection.cancelled() => return false,
             permit = self.out_tx.reserve() => permit,
         };
-        let Ok(permit) = permit else { publication_phase("session_bootstrap_queue", "outbound_closed"); return false; };
+        let Ok(permit) = permit else {
+            publication_phase("session_bootstrap_queue", "outbound_closed");
+            return false;
+        };
         self.state.with(|_| {
-            if self.cancellation.is_cancelled() || self.connection.is_cancelled() { return false; }
+            if self.cancellation.is_cancelled() || self.connection.is_cancelled() {
+                return false;
+            }
             permit.send(Outbound::Frame(frame));
             true
         })

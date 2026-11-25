@@ -192,4 +192,3 @@ fn close_and_detach_do_not_replay_undrained_publications() {
         assert!(take_agent_records(&mut plane).is_empty());
     }
 }
-

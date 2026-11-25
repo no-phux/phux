@@ -34,7 +34,9 @@ impl DocumentApi for TreeDocument {
 
     fn creation(target: &str, _name: Option<&str>) -> phux_core::NewResource {
         phux_core::NewResource::child(
-            phux_core::LaunchSpec::Tree(phux_core::resource::TreeLaunch { target: target.to_owned() }),
+            phux_core::LaunchSpec::Tree(phux_core::resource::TreeLaunch {
+                target: target.to_owned(),
+            }),
             target_name(target),
         )
     }
@@ -59,7 +61,9 @@ impl DocumentApi for SurfaceDocument {
 
     fn creation(target: &str, _name: Option<&str>) -> phux_core::NewResource {
         phux_core::NewResource::child(
-            phux_core::LaunchSpec::Surface(phux_core::resource::SurfaceLaunch { target: target.to_owned() }),
+            phux_core::LaunchSpec::Surface(phux_core::resource::SurfaceLaunch {
+                target: target.to_owned(),
+            }),
             target_name(target),
         )
     }
@@ -90,7 +94,9 @@ impl DocumentApi for TypedDocument {
 
     fn creation(content_type: &str, name: Option<&str>) -> phux_core::NewResource {
         phux_core::NewResource::child(
-            phux_core::LaunchSpec::Document(phux_core::resource::DocumentLaunch { content_type: content_type.to_owned() }),
+            phux_core::LaunchSpec::Document(phux_core::resource::DocumentLaunch {
+                content_type: content_type.to_owned(),
+            }),
             name.map(str::to_owned),
         )
     }

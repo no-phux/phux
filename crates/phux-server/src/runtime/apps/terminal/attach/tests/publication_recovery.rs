@@ -236,7 +236,9 @@ async fn session_entry(
     core: ResourceId,
     output: tokio::sync::broadcast::Receiver<ResourceOutput>,
 ) {
-    let reservation = crate::runtime::apps::StreamHost::new(state, ctx.client_id).reserve(core, ctx.initial_bootstrap_id, connection).unwrap();
+    let reservation = crate::runtime::apps::StreamHost::new(state, ctx.client_id)
+        .reserve(core, ctx.initial_bootstrap_id, connection)
+        .unwrap();
     let lease = reservation.lease.clone();
     let reply = capture(&ctx).await;
     let (cut, capture) = publish_native_bootstrap(&ctx.out_tx, reply)
@@ -252,18 +254,20 @@ async fn session_entry(
     };
     let owner = lease.clone();
     let mut pumps = JoinSet::new();
-    assert!(lease.spawn(Some(&mut pumps), ctx.drain.clone(), async move {
-        if let Some(fault) = run_output_pump(&ctx, receive, output).await {
-            owner.retire_terminal_fault(fault);
-        }
-    }));
-    release_gates(
-        &lease,
-        vec![snapshot_gate],
-    )
-    .await.expect("session publication");
+    assert!(
+        lease.spawn(Some(&mut pumps), ctx.drain.clone(), async move {
+            if let Some(fault) = run_output_pump(&ctx, receive, output).await {
+                owner.retire_terminal_fault(fault);
+            }
+        })
+    );
+    release_gates(&lease, vec![snapshot_gate])
+        .await
+        .expect("session publication");
     assert!(reservation.published(|| true));
-    while let Some(result) = pumps.join_next().await { result.expect("session pump"); }
+    while let Some(result) = pumps.join_next().await {
+        result.expect("session pump");
+    }
 }
 
 async fn replacement_entry(
@@ -279,12 +283,9 @@ async fn replacement_entry(
     let (cut, capture) = publish_native_bootstrap(&ctx.out_tx, reply)
         .await
         .expect("initial READY");
-    let publication = activate_native_publication(
-        real,
-        capture,
-    )
-    .await
-    .expect("initial activation");
+    let publication = activate_native_publication(real, capture)
+        .await
+        .expect("initial activation");
     let mut start = OutputPumpStart {
         superseded: false,
         published_cut: cut,
@@ -358,14 +359,13 @@ async fn run_entry(
             pumps.shutdown().await;
         }
         Entry::Resource => {
-            let host = crate::runtime::apps::StreamHost::new(&state, ctx.client_id);
+            let reservation = crate::runtime::apps::StreamHost::new(&state, ctx.client_id)
+                .reserve(core, ctx.initial_bootstrap_id, &connection)
+                .expect("reserve ATTACH_RESOURCE");
             let session =
                 crate::runtime::apps::terminal::capture::attach_resource::AttachResourceSession {
-                    host: &host,
                     out_tx: &ctx.out_tx,
-                    connection_token: &connection,
                     terminal_id: &ctx.wire_terminal_id,
-                    core,
                     handle,
                     terminal: ctx.terminal,
                     client_id: ctx.client_id,
@@ -375,7 +375,7 @@ async fn run_entry(
                     bootstrap_limits: ctx.limits,
                 };
             let generation = session
-                .establish_generation(ctx.initial_bootstrap_id)
+                .establish_generation(reservation)
                 .await
                 .expect("establish ATTACH_RESOURCE");
             session

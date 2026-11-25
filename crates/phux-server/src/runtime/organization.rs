@@ -6,6 +6,11 @@
 //! `ActivationChanged`. A live termination starts under the commit lock
 //! using the cascade checked before persistence.
 
+#![expect(
+    clippy::redundant_pub_crate,
+    reason = "private organization modules re-export crate-scoped handlers through this facade; pub would violate unreachable_pub"
+)]
+
 use std::time::Duration;
 
 #[cfg(doc)]
@@ -21,12 +26,12 @@ pub(in crate::runtime) mod launch_admission;
 mod read;
 mod translate;
 
-pub(crate) use self::effects::run_effect;
-use crate::state::org_operation::{mutate, session_kill};
-use self::read::{arrangement_get, organization_page};
 pub(crate) use self::answer::answer;
 use self::answer::lookup_creation;
+pub(crate) use self::effects::run_effect;
+use self::read::{arrangement_get, organization_page};
 pub(crate) use self::translate::translate;
+use crate::state::org_operation::{mutate, session_kill};
 
 /// Records per `GET_ORGANIZATION` page when the caller asks for the
 /// default.

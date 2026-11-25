@@ -1,28 +1,15 @@
 #![allow(clippy::expect_used, reason = "test assertions")]
 #![allow(clippy::panic, reason = "test assertions")]
 
-use phux_client_runtime::control::{ControlOptions, ControlPlane};
-use phux_protocol::ids::{SessionId, WindowId};
 use phux_protocol::wire::frame::FrameKind;
-use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
 
 use super::*;
-
-const COLS: u16 = 24;
-const ROWS: u16 = 4;
 
 fn history(lines: &[&str]) -> Vec<u8> {
     lines.join("\r\n").into_bytes()
 }
 
-mod support;
-use support::remote_with;
-
-fn bootstrap(client: &Client, terminal_id: ResourceId, bytes: &[u8]) {
-    for frame in phux_wire_fixtures::bootstrap_frames(&terminal_id, [1, 1], [COLS, ROWS], bytes) {
-        client.feed(frame).expect("bootstrap frame");
-    }
-}
+use super::super::test_support::{COLS, ROWS, remote_with};
 
 fn top_row(remote: &RemoteClient, terminal: u32) -> String {
     remote
@@ -423,5 +410,3 @@ fn retained_close_keeps_real_kernel_failures_as_engine_errors() {
     engine.release(&ResourceId::local(1));
     assert_search_unavailable(&remote, 1, u64::MAX);
 }
-
-

@@ -140,7 +140,13 @@ fn a_guess_nobody_echoes_is_erased_by_an_idle_driver() {
         let (_tmp, client, mut socket, terminal) = fake_server().await;
         clear_prefetch(&mut socket, &terminal).await;
         wait_for_status(&client, Status::Attached).await;
-        let view = client.create_view(&terminal).unwrap();
+        let view = client
+            .create_view(
+                &client
+                    .view_source(&terminal, Some(&[1; 16]), client.connection_epoch())
+                    .unwrap(),
+            )
+            .unwrap();
         let shown = |view| client.acquire_view(view).unwrap().text();
         let before = (client.acquire(&terminal).unwrap().text(), shown(view));
 
@@ -176,7 +182,9 @@ fn view_scroll_and_pin_wake_an_idle_connected_driver_for_history() {
             let (_tmp, client, mut socket, terminal) = fake_server().await;
             clear_prefetch(&mut socket, &terminal).await;
             wait_for_status(&client, Status::Attached).await;
-            let source = client.view_source(&terminal, Some(&[1; 16]), client.connection_epoch()).unwrap();
+            let source = client
+                .view_source(&terminal, Some(&[1; 16]), client.connection_epoch())
+                .unwrap();
             let view = client.create_view(&source).unwrap();
             let anchor = client
                 .engine()

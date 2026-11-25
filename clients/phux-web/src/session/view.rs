@@ -122,7 +122,9 @@ impl Connection {
         let terminal_id = self.first_published_terminal()?;
         {
             let state = self.input_delivery.borrow();
-            if state.journal.must_order_after(&terminal_id) || state.journal.delivery_fenced(&terminal_id) {
+            if state.journal.must_order_after(&terminal_id)
+                || state.journal.delivery_fenced(&terminal_id)
+            {
                 return None;
             }
         }

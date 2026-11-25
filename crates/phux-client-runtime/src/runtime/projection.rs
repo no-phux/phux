@@ -89,6 +89,10 @@ impl Client {
     /// permission to ignore a negotiated server. Capture before deferring work
     /// and retain the returned source; never recapture after stale admission.
     #[cfg(feature = "engine")]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the control lock pins the checked epoch until the capture completes"
+    )]
     pub fn view_source(
         &self,
         terminal: &ResourceId,
@@ -97,7 +101,8 @@ impl Client {
     ) -> Result<crate::engine::ViewSource, crate::engine::EngineError> {
         let control = lock(&self.inner.control);
         if control.connection_epoch() != expected_connection_epoch
-            || control.server().map(|server| server.id.as_slice()) != expected_server {
+            || control.server().map(|server| server.id.as_slice()) != expected_server
+        {
             return Err(crate::engine::EngineError::StaleViewSource);
         }
         crate::engine::ViewSource::capture(&self.inner.publication, terminal)

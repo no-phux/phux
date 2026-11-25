@@ -54,43 +54,43 @@ pub(crate) struct SessionCapture<'a> {
 }
 
 async fn capture_panes<'a>(
-        make: impl Fn(apps::StreamLease) -> SessionCapture<'a>,
-        staging: &mut SessionStaging,
-        panes: Vec<(AttachSnapshotPane, apps::StreamLease)>,
-        mut closed: Vec<phux_protocol::ids::ResourceId>,
-    ) -> Result<(), String> {
-        closed
-            .try_reserve(panes.len())
-            .map_err(|_| "host allocation failed".to_owned())?;
-        for (pane, lease) in panes {
-            let wire = pane.wire_terminal_id.clone();
-            match apps::app_for(pane.handle.kind)
-                .stage_session(make(lease), staging, pane)
-                .await
-            {
-                Ok(()) => {}
-                Err(CaptureFailure::Failed(reason)) => return Err(reason),
-                Err(CaptureFailure::Closed(reason)) => {
-                    tracing::debug!(resource = %wire, %reason, "resource closed during ATTACH capture");
-                    closed.push(wire);
-                }
+    make: impl Fn(apps::StreamLease) -> SessionCapture<'a>,
+    staging: &mut SessionStaging,
+    panes: Vec<(AttachSnapshotPane, apps::StreamLease)>,
+    mut closed: Vec<phux_protocol::ids::ResourceId>,
+) -> Result<(), String> {
+    closed
+        .try_reserve(panes.len())
+        .map_err(|_| "host allocation failed".to_owned())?;
+    for (pane, lease) in panes {
+        let wire = pane.wire_terminal_id.clone();
+        match apps::app_for(pane.handle.kind)
+            .stage_session(make(lease), staging, pane)
+            .await
+        {
+            Ok(()) => {}
+            Err(CaptureFailure::Failed(reason)) => return Err(reason),
+            Err(CaptureFailure::Closed(reason)) => {
+                tracing::debug!(resource = %wire, %reason, "resource closed during ATTACH capture");
+                closed.push(wire);
             }
         }
-        let closures = staging
-            .collect_frames(
-                closed
-                    .into_iter()
-                    .map(|terminal_id| FrameKind::ResourceClosed {
-                        terminal_id,
-                        exit_status: None,
-                        reason: phux_protocol::wire::frame::CloseReason::Unknown,
-                        signal: None,
-                    }),
-            )
-            .map_err(|failure| format!("{failure:?}"))?;
-        staging
-            .append(closures, 0)
-            .map_err(|failure| format!("{failure:?}"))
+    }
+    let closures = staging
+        .collect_frames(
+            closed
+                .into_iter()
+                .map(|terminal_id| FrameKind::ResourceClosed {
+                    terminal_id,
+                    exit_status: None,
+                    reason: phux_protocol::wire::frame::CloseReason::Unknown,
+                    signal: None,
+                }),
+        )
+        .map_err(|failure| format!("{failure:?}"))?;
+    staging
+        .append(closures, 0)
+        .map_err(|failure| format!("{failure:?}"))
 }
 
 /// Refuse a missing Terminal profile before resolving a target that could seed
@@ -145,13 +145,11 @@ async fn prepare_panes(
     // Single-resource pumps are not owned by the aggregate JoinSet. Fence all
     // prior paths, not just Terminal ticks, before staging their replacements.
     for reservation in reservations {
-        if !reservation.ready().await { return false; }
+        if !reservation.ready().await {
+            return false;
+        }
     }
-    terminal::attach::prepare_consumers(
-        panes,
-        attach.client_caps,
-    )
-    .await;
+    terminal::attach::prepare_consumers(panes, attach.client_caps).await;
     if viewport.cols == 0 || viewport.rows == 0 {
         return true;
     }
@@ -206,11 +204,16 @@ async fn fail_prepublication(
         () = connection.cancelled() => return,
         result = tokio::time::timeout(std::time::Duration::from_secs(1), out_tx.reserve()) => result.ok().and_then(Result::ok),
     };
-    let fatal = permit.map(|permit| (permit, Outbound::FatalError {
-        request_id: None,
-        code: ErrorCode::CodecUnavailable,
-        message: format!("ATTACH {attach_id} failed before publication: {reason}"),
-    }));
+    let fatal = permit.map(|permit| {
+        (
+            permit,
+            Outbound::FatalError {
+                request_id: None,
+                code: ErrorCode::CodecUnavailable,
+                message: format!("ATTACH {attach_id} failed before publication: {reason}"),
+            },
+        )
+    });
     host.abort_pending(publication, connection, fatal);
 }
 
@@ -285,14 +288,36 @@ pub(crate) async fn handle_attach(
     let publication_token = publication_guard.disarm();
     let _publication_guard = publication_token.clone().drop_guard();
     let host = apps::StreamHost::new(state, client_id);
-    let Ok(reservations) = host.reserve_session(&panes, initial_bootstrap_id(), connection_token, &publication_token) else { return false; };
+    let Ok(mut reservations) = host.reserve_session(
+        &panes,
+        initial_bootstrap_id(),
+        connection_token,
+        &publication_token,
+    ) else {
+        return false;
+    };
     let prepared = tokio::select! {
         biased;
         () = publication_token.cancelled() => false,
         () = connection_token.cancelled() => false,
         result = prepare_panes(attach, &panes, viewport, &reservations) => result,
     };
-    if !prepared { return false; }
+    if !prepared {
+        return false;
+    }
+    // Every pane's predecessor is now retired. A stream this ATTACH does not
+    // open leaves no generation for its own later request to tombstone.
+    let opens_stream = |pane: &&AttachSnapshotPane| {
+        apps::publishes_session_stream(pane.handle.kind, defer_subscription)
+    };
+    let mut kinds = panes.iter();
+    reservations.retain(|reservation| {
+        let captured = kinds.next().is_some_and(|pane| opens_stream(&pane));
+        if !captured {
+            reservation.withdraw();
+        }
+        captured
+    });
     let publication = AttachPublication {
         state,
         out_tx,
@@ -309,8 +334,9 @@ pub(crate) async fn handle_attach(
     // Only Terminal supports deferred STREAM_BIND. Other apps still capture in
     // this transaction and their control-stream output shares ATTACH_READY.
     let captured_panes = panes
-        .iter().zip(&reservations)
-        .filter(|(pane, _)| !defer_subscription || !apps::defers_stream_bootstrap(pane.handle.kind))
+        .iter()
+        .filter(opens_stream)
+        .zip(&reservations)
         .map(|(pane, reservation)| (pane.clone(), reservation.lease.clone()))
         .collect();
     let capture = |lease| SessionCapture {
@@ -334,7 +360,9 @@ pub(crate) async fn handle_attach(
     };
     crate::perf::ATTACH_CAPTURE_WALL.record_elapsed(started);
     if let Err(reason) = result {
-        if publication_token.is_cancelled() || connection_token.is_cancelled() { return false; }
+        if publication_token.is_cancelled() || connection_token.is_cancelled() {
+            return false;
+        }
         fail_prepublication(
             &host,
             attach_id,
@@ -359,10 +387,16 @@ pub(crate) async fn handle_attach(
             () = connection_token.cancelled() => return false,
             () = apply_role(attach, &panes, role) => {},
         }
-        if !host.publish_session(reservations, &publication_token, connection_token, || release.send(true).is_ok()) { return false; }
+        if !host.publish_session(reservations, &publication_token, connection_token, || {
+            release.send(true).is_ok()
+        }) {
+            return false;
+        }
         let mut pumps = staging.pumps;
         while output_pumps.try_join_next().is_some() {}
         output_pumps.spawn_local(async move { while pumps.join_next().await.is_some() {} });
-    } else { host.abort_pending(&publication_token, connection_token, None); }
+    } else {
+        host.abort_pending(&publication_token, connection_token, None);
+    }
     published
 }

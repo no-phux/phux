@@ -62,11 +62,21 @@ pub(crate) fn apply_viewport(
     rows: u16,
     cell_px: Option<(u16, u16)>,
 ) -> bool {
-    let Ok(terminal) = handle.terminal() else { return false; };
+    let Ok(terminal) = handle.terminal() else {
+        return false;
+    };
     match terminal.resize.try_send(ResizeRequest {
-        cols, rows, cell_px, resync_clients: false, resync_only: false, resync_for: None,
+        cols,
+        rows,
+        cell_px,
+        resync_clients: false,
+        resync_only: false,
+        resync_for: None,
     }) {
         Ok(()) => true,
-        Err(error) => { debug!(%error, "ATTACH viewport apply: actor gone"); false }
+        Err(error) => {
+            debug!(%error, "ATTACH viewport apply: actor gone");
+            false
+        }
     }
 }

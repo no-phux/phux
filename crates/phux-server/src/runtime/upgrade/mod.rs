@@ -4,6 +4,11 @@
 //! [`prepare_upgrade`] is reversible; [`UpgradePlan::exec`] is not, and the
 //! caller acks the client between the two.
 
+#![expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-private upgrade modules share their items across the runtime; pub would violate unreachable_pub"
+)]
+
 use std::ffi::OsString;
 use std::io::{Seek, SeekFrom, Write};
 use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd, RawFd};

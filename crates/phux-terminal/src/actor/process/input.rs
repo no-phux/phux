@@ -5,7 +5,11 @@ use crate::actor::{GhosttyTerminal, InputEncoderSnapshot, PasteOutcome, Terminal
 use tracing::warn;
 
 impl TerminalProcess {
-    pub(in crate::actor) fn publish_input_snapshot(&self, terminal: &GhosttyTerminal<'_, '_>, cell_px: (u16, u16)) {
+    pub(in crate::actor) fn publish_input_snapshot(
+        &self,
+        terminal: &GhosttyTerminal<'_, '_>,
+        cell_px: (u16, u16),
+    ) {
         match InputEncoderSnapshot::capture(
             terminal,
             cell_px,
@@ -23,7 +27,12 @@ impl TerminalProcess {
         }
     }
 
-    pub(in crate::actor) fn encode_input(&self, input: &TerminalInput, terminal: &GhosttyTerminal<'_, '_>, cell_px: (u16, u16)) -> Result<Option<Vec<u8>>, libghostty_vt::Error> {
+    pub(in crate::actor) fn encode_input(
+        &self,
+        input: &TerminalInput,
+        terminal: &GhosttyTerminal<'_, '_>,
+        cell_px: (u16, u16),
+    ) -> Result<Option<Vec<u8>>, libghostty_vt::Error> {
         match input {
             TerminalInput::Key(event) => {
                 let mut enc = self.key_enc.borrow_mut();
@@ -52,5 +61,4 @@ impl TerminalProcess {
             )),
         }
     }
-
 }

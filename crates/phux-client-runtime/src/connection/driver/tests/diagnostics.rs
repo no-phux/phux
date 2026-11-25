@@ -196,7 +196,11 @@ fn type_line(shared: &Shared, terminal: &ResourceId, line: &str) -> bool {
         return false;
     }
     let sent = control.send_text(terminal, line);
-    trace::phase(if sent { "input_injected" } else { "input_refused" });
+    trace::phase(if sent {
+        "input_injected"
+    } else {
+        "input_refused"
+    });
     sent
 }
 
@@ -213,11 +217,14 @@ async fn attach_then_type(prompt: bool) -> (Vec<serde_json::Value>, u64, Vec<Fra
     let recorded = Recorded::default();
     let _subscriber = tracing::subscriber::set_default(recorded.clone());
     let mut fixture = WriteFixture::new(64 * 1024);
-    fixture.shared = Arc::new(Mutex::new(ControlPlane::new(std::time::Instant::now(), ControlOptions {
-        attach: None,
-        session_recovery: crate::control::SessionRecovery::CallerValidated,
-        ..ControlOptions::default()
-    })));
+    fixture.shared = Arc::new(Mutex::new(ControlPlane::new(
+        std::time::Instant::now(),
+        ControlOptions {
+            attach: None,
+            session_recovery: crate::control::SessionRecovery::CallerValidated,
+            ..ControlOptions::default()
+        },
+    )));
     let outbound = Arc::clone(&fixture.signals.outbound);
     let WriteFixture {
         mut io,

@@ -1,8 +1,8 @@
 //! Language-neutral public terminal workflow contracts, separate from wire carriers.
+use crate::ids::parse_hex16;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use crate::ids::parse_hex16;
 
 mod errors;
 mod execution;

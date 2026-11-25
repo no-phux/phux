@@ -58,6 +58,7 @@ mod picks;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod plugin_actions;
 pub use pending::Pending;
+mod archived_relaunch;
 pub mod phone;
 pub mod pitch;
 pub mod pitlane;
@@ -73,7 +74,6 @@ mod scene_host;
 mod screenshot;
 mod seen;
 mod sessions;
-mod archived_relaunch;
 mod settings;
 mod shown;
 mod size_lock;

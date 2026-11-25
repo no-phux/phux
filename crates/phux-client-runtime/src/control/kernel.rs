@@ -8,6 +8,10 @@ use super::{
 use phux_protocol::ids::ResourceKind;
 
 /// One engine batch handed out by [`ControlPlane::prepare_engine_apply`].
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "crate-wide items in a private module: `pub` trips `unreachable_pub` instead"
+)]
 pub(crate) struct EngineApply {
     pub(crate) engine: EngineHandle,
     pub(crate) events: Vec<EngineEvent>,

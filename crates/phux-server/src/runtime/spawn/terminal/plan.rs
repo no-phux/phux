@@ -257,15 +257,13 @@ pub(super) fn spawn_terminal_output_pump(
 ) -> Option<oneshot::Sender<OutputPumpStart>> {
     let owner = lease.clone();
     let (gate_tx, gate_rx) = oneshot::channel::<OutputPumpStart>();
-    if !lease.spawn(
-        Some(output_pumps),
-        ctx.drain.clone(),
-        async move {
-            let Some(fault) = run_output_pump(&ctx, gate_rx, output_rx).await else {
-                return;
-            };
-            owner.retire_spawn_fault(fault);
-        },
-    ) { return None; }
+    if !lease.spawn(Some(output_pumps), ctx.drain.clone(), async move {
+        let Some(fault) = run_output_pump(&ctx, gate_rx, output_rx).await else {
+            return;
+        };
+        owner.retire_spawn_fault(fault);
+    }) {
+        return None;
+    }
     Some(gate_tx)
 }

@@ -38,7 +38,8 @@ impl TerminalActor {
         tick_span.record("total_out_bytes", walk.total_out_bytes);
         crate::perf::TICK_EMIT.record_elapsed(walk.started);
         for client_id in walk.closed {
-            if let Some(generation) = self.publication
+            if let Some(generation) = self
+                .publication
                 .consumers
                 .get(&client_id)
                 .map(|state| (state.sync.stream_id, state.sync.bootstrap_id))
@@ -53,7 +54,13 @@ impl TerminalActor {
     /// tick-managed; raw consumers get the broadcast pump.
     pub(super) fn tick_emit_audience(&self) -> Option<bool> {
         let force_all_consumers = self.publication.force_tick;
-        if !force_all_consumers && !self.publication.consumers.values().any(|s| s.wants_state_sync) {
+        if !force_all_consumers
+            && !self
+                .publication
+                .consumers
+                .values()
+                .any(|s| s.wants_state_sync)
+        {
             // No tick-managed consumer: nothing to emit (dirty flag untouched).
             return None;
         }
@@ -66,7 +73,8 @@ impl TerminalActor {
         let mutated = self.terminal_dirty_since_tick;
         self.terminal_dirty_since_tick = false;
         if !mutated
-            && !self.publication
+            && !self
+                .publication
                 .consumers
                 .values()
                 .any(|s| s.sync.must_walk_when_clean())

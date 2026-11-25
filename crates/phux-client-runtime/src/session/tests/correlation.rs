@@ -122,54 +122,117 @@ fn a_server_that_closes_before_answering_is_a_disconnect() {
     });
 }
 
+/// Negotiate a client against a peer that advertises every extended feature
+/// but predates archived relaunch, returning `(client, peer)`.
+async fn negotiate_with_old_peer() -> (Session, Session) {
+    let (mut client, server) = pair();
+    let mut server = Session::from_stream(server);
+    let peer = tokio::task::spawn_local(async move {
+        let FrameKind::Hello { client_caps, .. } = server.recv().await.unwrap() else {
+            panic!("HELLO");
+        };
+        server
+            .send(&hello_ok(
+                &client_caps,
+                phux_protocol::caps::ServerCapabilities::new()
+                    .with_features_ext(phux_protocol::caps::ServerFeatureExtSet::all()),
+            ))
+            .await
+            .unwrap();
+        server
+    });
+    client
+        .negotiate("archive-policy-probe".into(), control_caps())
+        .await
+        .unwrap();
+    (client, peer.await.unwrap())
+}
+
+fn assert_unsupported(result: &CommandResult) {
+    assert!(matches!(
+        result,
+        CommandResult::Error {
+            code: ErrorCode::Unsupported,
+            ..
+        }
+    ));
+}
+
+/// A native spawn that names an archived guardian.
+fn archived_guardian_spec() -> phux_protocol::native_agent::SpawnNativeAgent {
+    phux_protocol::native_agent::SpawnNativeAgent {
+        session: "archive".into(),
+        backend: "acp".into(),
+        provider: "fixture".into(),
+        command: vec!["explicit-program".into()],
+        cwd: Some("/".into()),
+        env: std::collections::BTreeMap::new(),
+        native_id: None,
+        guardian: Some(ResourceId::local(1)),
+        guardian_key: None,
+        guardian_expected: None,
+    }
+}
+
 #[test]
 fn ordinary_archived_relaunch_to_an_old_peer_is_refused_without_writing() {
+    use phux_protocol::native_agent::{NativeRequest, NativeRequestPayload};
     block_on(async {
-        let (mut client, server) = pair();
-        let mut server = Session::from_stream(server);
-        let peer = tokio::task::spawn_local(async move {
-            let FrameKind::Hello { client_caps, .. } = server.recv().await.unwrap() else { panic!("HELLO"); };
-            server.send(&hello_ok(&client_caps, phux_protocol::caps::ServerCapabilities::new()
-                .with_features_ext(phux_protocol::caps::ServerFeatureExtSet::all()))).await.unwrap();
-            server
-        });
-        client.negotiate("archive-policy-probe".into(), control_caps()).await.unwrap();
-        let mut server = peer.await.unwrap();
+        let (mut client, mut server) = negotiate_with_old_peer().await;
         let command = Command::ResourceRelaunch {
-            operation: phux_protocol::ids::OperationId::new([1;16]).unwrap(),
-            resource: phux_protocol::ids::ResourceKey::new([2;16]).unwrap(),
+            operation: phux_protocol::ids::OperationId::new([1; 16]).unwrap(),
+            resource: phux_protocol::ids::ResourceKey::new([2; 16]).unwrap(),
             expected: phux_protocol::ids::Revision::new(1),
         };
         let (result, _) = client.request(7, command).await.unwrap().into_parts();
-        assert!(matches!(result, CommandResult::Error { code: ErrorCode::Unsupported, .. }));
-        use phux_protocol::native_agent::{NativeRequest, NativeRequestPayload, SpawnNativeAgent};
-        let mut spec = SpawnNativeAgent {
-            session: "archive".into(), backend: "acp".into(), provider: "fixture".into(),
-            command: vec!["explicit-program".into()], cwd: Some("/".into()), env: Default::default(),
-            native_id: None, guardian: Some(ResourceId::local(1)), guardian_key: None, guardian_expected: None,
-        };
+        assert_unsupported(&result);
+        let mut spec = archived_guardian_spec();
         for request in [
             NativeRequest::PrepareRelaunch {
-                operation: phux_protocol::ids::OperationId::new([3;16]).unwrap(),
-                resource: phux_protocol::ids::ResourceKey::new([2;16]).unwrap(),
+                operation: phux_protocol::ids::OperationId::new([3; 16]).unwrap(),
+                resource: phux_protocol::ids::ResourceKey::new([2; 16]).unwrap(),
                 expected: phux_protocol::ids::Revision::new(1),
             },
             NativeRequest::Spawn { spec: spec.clone() },
         ] {
-            let command = Command::NativeAgent { request: NativeRequestPayload::new(request).unwrap() };
+            let command = Command::NativeAgent {
+                request: NativeRequestPayload::new(request).unwrap(),
+            };
             let (result, _) = client.request(8, command).await.unwrap().into_parts();
-            assert!(matches!(result, CommandResult::Error { code: ErrorCode::Unsupported, .. }));
-            assert!(server.try_recv().unwrap().is_none(), "neither owner review nor archived guardian intent reaches an old peer");
+            assert_unsupported(&result);
+            assert!(
+                server.try_recv().unwrap().is_none(),
+                "neither owner review nor archived guardian intent reaches an old peer"
+            );
         }
         spec.guardian = None;
-        let fresh = Command::NativeAgent { request: NativeRequestPayload::new(NativeRequest::Spawn { spec }).unwrap() };
+        let fresh = Command::NativeAgent {
+            request: NativeRequestPayload::new(NativeRequest::Spawn { spec }).unwrap(),
+        };
         let (fresh_result, ()) = tokio::join!(client.request(9, fresh), async {
             let FrameKind::Command { request_id: 9, .. } =
-                tokio::time::timeout(WEDGE_TIMEOUT, server.recv()).await.unwrap().unwrap().unwrap() else { panic!("fresh request"); };
-            server.send(&FrameKind::CommandResult { request_id: 9, result: CommandResult::Ok }).await.unwrap();
+                tokio::time::timeout(WEDGE_TIMEOUT, server.recv())
+                    .await
+                    .unwrap()
+                    .unwrap()
+            else {
+                panic!("fresh request");
+            };
+            server
+                .send(&FrameKind::CommandResult {
+                    request_id: 9,
+                    result: CommandResult::Ok,
+                })
+                .await
+                .unwrap();
         });
-        assert!(matches!(fresh_result.unwrap().into_parts().0, CommandResult::Ok),
-            "fresh explicitly requested native launch retains its old-peer contract");
-        assert!(server.try_recv().unwrap().is_none(), "an old peer receives no executable archived intent");
+        assert!(
+            matches!(fresh_result.unwrap().into_parts().0, CommandResult::Ok),
+            "fresh explicitly requested native launch retains its old-peer contract"
+        );
+        assert!(
+            server.try_recv().unwrap().is_none(),
+            "an old peer receives no executable archived intent"
+        );
     });
 }

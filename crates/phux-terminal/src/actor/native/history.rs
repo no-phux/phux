@@ -10,7 +10,8 @@ use super::*;
 impl TerminalActor {
     pub(in crate::actor) fn handle_native_publication(&mut self, req: NativePublicationRequest) {
         self.expire_native_cursors();
-        self.publication.handle_native_publication(req, &self.terminal, &self.core.output_tx);
+        self.publication
+            .handle_native_publication(req, &self.terminal, &self.core.output_tx);
     }
 
     /// Queue one HISTORY request for bounded cooperative capture.
@@ -23,7 +24,9 @@ impl TerminalActor {
             self.publication.pending_native_history = Some(pending);
             return;
         }
-        if self.publication.native_history_backlog.len() < MAX_NATIVE_HISTORY_CLIENTS.saturating_sub(1) {
+        if self.publication.native_history_backlog.len()
+            < MAX_NATIVE_HISTORY_CLIENTS.saturating_sub(1)
+        {
             self.publication.native_history_backlog.push_back(pending);
             return;
         }
@@ -96,7 +99,8 @@ impl TerminalActor {
         // Completion can release an owner, which already promotes the next
         // request through cancellation cleanup. Never overwrite that owner.
         if self.publication.pending_native_history.is_none() {
-            self.publication.pending_native_history = self.publication.native_history_backlog.pop_front();
+            self.publication.pending_native_history =
+                self.publication.native_history_backlog.pop_front();
         }
     }
 
@@ -271,7 +275,10 @@ impl TerminalActor {
                 id.tombstone(phux_protocol::wire::frame::HistoryTombstoneReason::Limit)
             }
         };
-        (frame, self.publication.native_cursor_owners.contains_key(&key))
+        (
+            frame,
+            self.publication.native_cursor_owners.contains_key(&key),
+        )
     }
 }
 

@@ -124,7 +124,9 @@ pub(super) fn decode_server_capabilities(
         ));
     }
     if !d.at_body_end() {
-        caps = caps.with_features_ext2(crate::caps::ServerFeatureExt2Set::from_wire(d.read_u32_be()?));
+        caps = caps.with_features_ext2(crate::caps::ServerFeatureExt2Set::from_wire(
+            d.read_u32_be()?,
+        ));
     }
     Ok(caps)
 }

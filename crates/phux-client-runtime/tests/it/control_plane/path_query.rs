@@ -22,9 +22,11 @@ fn ordinary_runtime_admission_matches_catalog_for_each_extended_bit() {
         plane.feed(hello).unwrap();
         let _ = plane.take_outbound();
         let advertised = |name| {
-            method_named(name)
-                .unwrap()
-                .advertised(ServerFeatureSet::with(ServerFeature::ALL), ext, phux_protocol::caps::ServerFeatureExt2Set::new())
+            method_named(name).unwrap().advertised(
+                ServerFeatureSet::with(ServerFeature::ALL),
+                ext,
+                phux_protocol::caps::ServerFeatureExt2Set::new(),
+            )
         };
 
         assert_eq!(

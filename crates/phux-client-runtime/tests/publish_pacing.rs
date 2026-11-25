@@ -180,11 +180,13 @@ fn flood_publications_against_display_rate_reads() {
         let (shutdown, server) = spawn_server(socket.clone(), Some("main"));
         let client = Runtime::connect(Target::uds(&socket), options()).expect("connect");
         wait_until("attach", || client.status() == Status::Attached).await;
-        let server = client.server().expect("original HELLO");
+        let hello = client.server().expect("original HELLO");
         let terminal = spawn(&client, "/bin/sh").await;
         // The desktop's shape: an independent view is what the window reads;
         // the default presentation exists and nobody reads it.
-        let source = client.view_source(&terminal, Some(&server.id), client.connection_epoch()).expect("source");
+        let source = client
+            .view_source(&terminal, Some(&hello.id), client.connection_epoch())
+            .expect("source");
         let view = client.create_view(&source).expect("view");
         wait_until("a prompt", || {
             client
@@ -268,9 +270,11 @@ fn keystroke_echo_to_publication_latency() {
         let (shutdown, server) = spawn_server(socket.clone(), Some("main"));
         let client = Runtime::connect(Target::uds(&socket), options()).expect("connect");
         wait_until("attach", || client.status() == Status::Attached).await;
-        let server = client.server().expect("original HELLO");
+        let hello = client.server().expect("original HELLO");
         let terminal = spawn(&client, "/bin/cat").await;
-        let source = client.view_source(&terminal, Some(&server.id), client.connection_epoch()).expect("source");
+        let source = client
+            .view_source(&terminal, Some(&hello.id), client.connection_epoch())
+            .expect("source");
         let view = client.create_view(&source).expect("view");
         let slot = client.view_slot(view).expect("view slot");
         let mut latencies = Vec::new();

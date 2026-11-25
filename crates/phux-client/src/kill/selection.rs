@@ -34,17 +34,24 @@ pub struct KillIdentity {
 
 impl KillIdentity {
     pub(super) const fn new(operation: Option<IdempotencyKey>) -> Self {
-        Self { operation, authority: None }
+        Self {
+            operation,
+            authority: None,
+        }
     }
 
-    pub(super) fn recovery(&self, certainty: crate::recovery::EffectCertainty) -> crate::recovery::Recovery {
+    pub(super) fn recovery(
+        &self,
+        certainty: crate::recovery::EffectCertainty,
+    ) -> crate::recovery::Recovery {
         use crate::recovery::{NextAction, Recovery, ScopeKind};
         Recovery::new(
             ScopeKind::OrganizationAuthority,
             self.operation.map(IdempotencyKey::to_hex),
             certainty,
             NextAction::Reconcile,
-        ).with_scope_id(self.authority.as_deref())
+        )
+        .with_scope_id(self.authority.as_deref())
     }
 }
 
@@ -158,21 +165,43 @@ impl KillError {
     pub fn outcome_document(&self) -> Option<serde_json::Value> {
         use crate::recovery::EffectCertainty;
         let (code, target, recovery, results) = match self {
-            Self::NotSent { target, identity, .. } => (
-                "not_sent", Some(target.as_str()),
-                Some(identity.recovery(EffectCertainty::NotApplied)), None,
+            Self::NotSent {
+                target, identity, ..
+            } => (
+                "not_sent",
+                Some(target.as_str()),
+                Some(identity.recovery(EffectCertainty::NotApplied)),
+                None,
             ),
-            Self::OutcomeUnknown { target, identity, results, .. } => (
-                "outcome_unknown", Some(target.as_str()),
-                Some(identity.recovery(EffectCertainty::Unknown)), results.as_deref(),
+            Self::OutcomeUnknown {
+                target,
+                identity,
+                results,
+                ..
+            } => (
+                "outcome_unknown",
+                Some(target.as_str()),
+                Some(identity.recovery(EffectCertainty::Unknown)),
+                results.as_deref(),
             ),
-            Self::Partial { target, results, identity, .. } => (
-                "partial_results", Some(target.as_str()),
-                Some(identity.recovery(EffectCertainty::Unknown)), Some(results.as_ref()),
+            Self::Partial {
+                target,
+                results,
+                identity,
+                ..
+            } => (
+                "partial_results",
+                Some(target.as_str()),
+                Some(identity.recovery(EffectCertainty::Unknown)),
+                Some(results.as_ref()),
             ),
-            Self::Refused { label, identity, .. } => (
-                "refused", Some(label.as_str()),
-                Some(identity.recovery(EffectCertainty::NotApplied)), None,
+            Self::Refused {
+                label, identity, ..
+            } => (
+                "refused",
+                Some(label.as_str()),
+                Some(identity.recovery(EffectCertainty::NotApplied)),
+                None,
             ),
             Self::Org(error) => (error.code(), None, Some(error.recovery()), None),
             _ => return None,

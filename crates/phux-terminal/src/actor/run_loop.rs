@@ -217,7 +217,10 @@ impl TerminalActor {
         reason = "ADR-0014: TerminalActor owns !Send Terminal; lives on LocalSet"
     )]
     async fn flush_exit_resync_if_needed(&mut self, resync: &mut ResyncDebounce) {
-        if self.process.pty_rx.is_some() || self.core.exit_notify.is_none() || self.process.exit.is_none() {
+        if self.process.pty_rx.is_some()
+            || self.core.exit_notify.is_none()
+            || self.process.exit.is_none()
+        {
             return;
         }
         let _ = self.flush_final_gap_resync(resync);
@@ -348,18 +351,25 @@ impl TerminalActor {
 
     fn service_cancelled_consumer(
         &mut self,
-        interest: super::sync::PublicationCancellation,
+        interest: &super::sync::PublicationCancellation,
         tick: &mut tokio::time::Interval,
         tick_interval: &mut std::time::Duration,
     ) {
-        match interest {
+        match *interest {
             super::sync::PublicationCancellation::Consumer(client, stream, bootstrap) => {
                 self.unregister_consumer_generation(client, stream, bootstrap);
             }
-            super::sync::PublicationCancellation::Native(key, bootstrap, cursor) => {
-                if self.publication.native_cursor_owners.get(&key).is_some_and(|binding| {
-                    binding.bootstrap_id == bootstrap && binding.cursor == cursor && binding.cancellation.is_cancelled()
-                }) {
+            super::sync::PublicationCancellation::Native(key, bootstrap, ref cursor) => {
+                if self
+                    .publication
+                    .native_cursor_owners
+                    .get(&key)
+                    .is_some_and(|binding| {
+                        binding.bootstrap_id == bootstrap
+                            && binding.cursor == *cursor
+                            && binding.cancellation.is_cancelled()
+                    })
+                {
                     self.release_native_binding(key);
                 }
             }

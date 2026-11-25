@@ -97,7 +97,9 @@ async fn a_real_actor_resize_after_ready_does_not_close_either_replacement_conne
         for (i, connection) in connections.iter().enumerate() {
             let (ctx, out_rx) = context(held_terminal.clone(), ClientId(7 + i as u64));
             let mut live = output.subscribe();
-            let reservation = crate::runtime::apps::StreamHost::new(&state, ctx.client_id).reserve(ResourceId::default(), ctx.initial_bootstrap_id, connection).unwrap();
+            let reservation = crate::runtime::apps::StreamHost::new(&state, ctx.client_id)
+                .reserve(ResourceId::default(), ctx.initial_bootstrap_id, connection)
+                .unwrap();
             let lease = reservation.lease.clone();
             assert!(reservation.published(|| true));
             tasks.push(tokio::task::spawn_local(async move {
@@ -176,7 +178,9 @@ async fn a_real_actor_teardown_after_ready_is_quiet_pane_gone_not_supersession()
         let connection = CancellationToken::new();
         let (ctx, mut mailbox) = context(terminal, ClientId(7));
         let mut live = output.subscribe();
-        let reservation = crate::runtime::apps::StreamHost::new(&state, ctx.client_id).reserve(ResourceId::default(), ctx.initial_bootstrap_id, &connection).unwrap();
+        let reservation = crate::runtime::apps::StreamHost::new(&state, ctx.client_id)
+            .reserve(ResourceId::default(), ctx.initial_bootstrap_id, &connection)
+            .unwrap();
         let lease = reservation.lease.clone();
         assert!(reservation.published(|| true));
         let pump = tokio::task::spawn_local(async move {

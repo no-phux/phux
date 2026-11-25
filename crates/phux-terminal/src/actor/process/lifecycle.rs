@@ -1,8 +1,7 @@
 use crate::actor::HangupPolicy;
 
 use crate::actor::{
-    PANE_KILL_POLL, PANE_KILL_REAP_BUDGET, PtyOwned, debug, exit_outcome, trace,
-    warn,
+    PANE_KILL_POLL, PANE_KILL_REAP_BUDGET, PtyOwned, debug, exit_outcome, trace, warn,
 };
 
 // A slave can close before its owner is waitable. Allow scheduler delay
@@ -26,10 +25,16 @@ impl super::TerminalProcess {
     }
 
     /// Close input admission and observe EOF exactly once.
-    #[allow(clippy::future_not_send, reason = "process observation runs on the terminal LocalSet")]
+    #[allow(
+        clippy::future_not_send,
+        reason = "process observation runs on the terminal LocalSet"
+    )]
     pub(in crate::actor) async fn observe_eof(&mut self) -> phux_core::process::ExitOutcome {
         if let Some(exit) = &self.exit {
-            return phux_core::process::ExitOutcome { status: exit.status, signal: exit.signal };
+            return phux_core::process::ExitOutcome {
+                status: exit.status,
+                signal: exit.signal,
+            };
         }
         self.close_input();
         let outcome = self.reap_child_if_any().await;

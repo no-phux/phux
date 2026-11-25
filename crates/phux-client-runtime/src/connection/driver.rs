@@ -390,8 +390,11 @@ impl<'a> Pump<'a> {
             let mut control = lock(self.shared);
             control.observe_time(std::time::Instant::now());
             control.connection_opened();
-            *self.signals.trace.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
-                AttemptTrace::current();
+            *self
+                .signals
+                .trace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = AttemptTrace::current();
             control.take_outbound()
         };
         self.write_all(opening).await?;
