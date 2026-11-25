@@ -49,3 +49,22 @@ fn the_arrows_move_the_picked_row() {
     assert_eq!(rt.state.palette_picked, 1, "the field keeps the arrows");
     assert!(rt.state.palette_open);
 }
+
+#[test]
+fn only_chords_are_drawn_as_key_caps() {
+    use crate::palette as rows;
+
+    let listed = rows::items(None, &[], &[]);
+    let chords = (listed.iter()).filter(|item| super::details_keys(item));
+    assert!(chords.count() > 10, "commands show their keys");
+    assert!(rows::shortcut_items().iter().all(super::details_keys));
+    let all = rows::essential_items().pop().expect("the last row");
+    let worded = [
+        rows::new_session_item(None, "work").expect("a session row"),
+        rows::new_worktree_item("topic").expect("a worktree row"),
+        all,
+    ];
+    for item in worded {
+        assert!(!super::details_keys(&item), "{item:?}");
+    }
+}
