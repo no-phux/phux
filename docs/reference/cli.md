@@ -3299,6 +3299,7 @@ Usage: phux forward [FLAGS]
 Flags:
   -L <SPEC>                       What to forward:
                                   `[BIND_ADDR:]LOCAL_PORT:REMOTE_HOST:REMOTE_PORT`.
+                                  Repeat for more than one.
       --agent                     Serve this machine's ssh-agent
                                   (`SSH_AUTH_SOCK`) to the server's panes,
                                   asking here before each signature.

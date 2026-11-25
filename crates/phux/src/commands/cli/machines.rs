@@ -41,13 +41,14 @@ pub(crate) struct DownloadArgs {
 )]
 pub(crate) struct ForwardArgs {
     /// What to forward: `[BIND_ADDR:]LOCAL_PORT:REMOTE_HOST:REMOTE_PORT`.
+    /// Repeat for more than one.
     #[usage(
         short = 'L',
         value_name = "SPEC",
         group = "forward_what",
         required_unless = "--agent"
     )]
-    pub(crate) local: Option<String>,
+    pub(crate) local: Vec<String>,
     /// Serve this machine's ssh-agent (`SSH_AUTH_SOCK`) to the server's
     /// panes, asking here before each signature.
     #[usage(long, group = "forward_what")]

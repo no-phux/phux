@@ -100,7 +100,8 @@ phux forward -L 3000:localhost:3000 --remote mini
 ```
 
 Like `ssh -L`, through the phux connection: listens on `127.0.0.1:3000` here
-and carries each connection to `localhost:3000` on `mini`, until Ctrl-C. If
+and carries each connection to `localhost:3000` on `mini`, until Ctrl-C.
+Repeat `-L` to forward more than one port; if any can't listen, none does. If
 the phux connection drops, open connections close, the listener stays, and
 new connections are served once phux reconnects; a cut-off transfer ends
 early rather than with an error. There is no `-R`, `-D`, or UDP, and a

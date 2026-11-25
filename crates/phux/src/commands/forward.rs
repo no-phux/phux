@@ -68,26 +68,33 @@ impl Listener for Activity {
     }
 }
 
-/// `-L local`, or with none `--agent` (`yes` skips its per-signature ask).
+/// Every `-L`, or with none `--agent` (`yes` skips its per-signature ask).
 pub(crate) fn run(
     args: crate::commands::ForwardArgs,
     socket: Option<std::path::PathBuf>,
 ) -> ExitCode {
     let spec = args.remote.with_socket(socket);
-    let local = args.local.as_deref();
     let yes = args.yes;
-    let forward = match local.map(parse).transpose() {
-        Ok(forward) => forward,
-        Err(err) => {
-            error!("-L {}: {err}", local.unwrap_or_default());
-            return ExitCode::from(2);
+    let mut forwards = Vec::new();
+    for local in &args.local {
+        match parse(local) {
+            Ok(forward) => forwards.push(forward),
+            Err(err) => {
+                error!("-L {local}: {err}");
+                return ExitCode::from(2);
+            }
         }
-    };
+    }
     let host = spec.remote.clone();
     let (rt, server) = match spec.prepare("forward", false) {
         Ok(value) => value,
         Err(code) => return code,
     };
+    // One bounded dial first: the runtime below would redial a server that is
+    // not there for longer than PHUX_TIMEOUT, and without its exit code.
+    if let Err(err) = rt.block_on(server.connect()) {
+        return server.report_unreachable(false, &err, "forward");
+    }
     let options = ClientOptions {
         control: ControlOptions {
             client_name: "phux-forward".to_owned(),
@@ -113,9 +120,10 @@ pub(crate) fn run(
         if let Err(code) = attached(&client, &activity).await {
             return code;
         }
-        match &forward {
-            Some(forward) => serve(&client, &activity, forward).await,
-            None => super::forward_agent::serve(&client, &activity, host, yes).await,
+        if forwards.is_empty() {
+            super::forward_agent::serve(&client, &activity, host, yes).await
+        } else {
+            serve(&client, &activity, &forwards).await
         }
     });
     client.close();
@@ -135,7 +143,7 @@ async fn attached(client: &Client, activity: &Activity) -> Result<(), ExitCode> 
     }
 }
 
-async fn serve(client: &Arc<Client>, activity: &Activity, spec: &Spec) -> ExitCode {
+async fn serve(client: &Arc<Client>, activity: &Activity, specs: &[Spec]) -> ExitCode {
     if !client.with_control(|control| control.forward_supported()) {
         error!(
             "the server does not advertise FORWARD_TCP: upgrade phux on that host, or set \
@@ -143,31 +151,33 @@ async fn serve(client: &Arc<Client>, activity: &Activity, spec: &Spec) -> ExitCo
         );
         return ExitCode::FAILURE;
     }
-    let listener = match TcpListener::bind((spec.bind.as_str(), spec.local_port)).await {
-        Ok(listener) => listener,
-        Err(err) => {
-            error!("cannot listen on {}:{}: {err}", spec.bind, spec.local_port);
-            return ExitCode::FAILURE;
+    // Every listener before any is served: one that is taken fails the run.
+    let mut listeners = Vec::new();
+    for spec in specs {
+        match TcpListener::bind((spec.bind.as_str(), spec.local_port)).await {
+            Ok(listener) => listeners.push(listener),
+            Err(err) => {
+                error!("cannot listen on {}:{}: {err}", spec.bind, spec.local_port);
+                return ExitCode::FAILURE;
+            }
         }
-    };
-    let here = listener
-        .local_addr()
-        .map_or_else(|_| spec.bind.clone(), |addr| addr.to_string());
-    outln!(
-        "Forwarding {here} to {}:{} on the server; Ctrl-C stops",
-        spec.host,
-        spec.port
-    );
+    }
+    let mut accepting = tokio::task::JoinSet::new();
+    for (listener, spec) in listeners.into_iter().zip(specs) {
+        let here = listener
+            .local_addr()
+            .map_or_else(|_| spec.bind.clone(), |addr| addr.to_string());
+        outln!(
+            "Forwarding {here} to {}:{} on the server; Ctrl-C stops",
+            spec.host,
+            spec.port
+        );
+        accepting.spawn(accept(Arc::clone(client), listener, spec.clone(), here));
+    }
     let mut lost = false;
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => return ExitCode::SUCCESS,
-            accepted = listener.accept() => match accepted {
-                Ok((local, _)) => {
-                    tokio::spawn(carry(Arc::clone(client), spec.clone(), local));
-                }
-                Err(err) => warn!("accept on {here}: {err}"),
-            },
             () = activity.0.notified() => {
                 for event in client.take_events() {
                     match event {
@@ -187,6 +197,18 @@ async fn serve(client: &Arc<Client>, activity: &Activity, spec: &Spec) -> ExitCo
                     return unreachable_server(client);
                 }
             }
+        }
+    }
+}
+
+/// Carry every connection to one `-L`, until the forward ends.
+async fn accept(client: Arc<Client>, listener: TcpListener, spec: Spec, here: String) {
+    loop {
+        match listener.accept().await {
+            Ok((local, _)) => {
+                tokio::spawn(carry(Arc::clone(&client), spec.clone(), local));
+            }
+            Err(err) => warn!("accept on {here}: {err}"),
         }
     }
 }

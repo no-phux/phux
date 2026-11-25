@@ -22,6 +22,7 @@ fn a_server_that_never_answers_times_out_with_exit_four() {
         &["ls", "--socket", sock][..],
         &["ls", "--json", "--socket", sock],
         &["snapshot", "--json", "work", "--socket", sock],
+        &["forward", "-L", "0:localhost:80", "--socket", sock],
     ] {
         let started = std::time::Instant::now();
         let (code, stdout, stderr) =
