@@ -64,13 +64,21 @@ impl OrganizationReplica {
         };
         self.install(seed.filter, &first, seed.sessions, seed.resources);
         let buffered = std::mem::take(&mut self.buffered);
+        let mut arrangements = HashSet::new();
         for (seq, event) in buffered {
             // A reseed requested while replaying wins; the rest is moot.
-            if matches!(self.apply_event(seq, &event), ReplicaAction::Reseed) {
-                return ReplicaAction::Reseed;
+            match self.apply_event(seq, &event) {
+                ReplicaAction::Reseed => return ReplicaAction::Reseed,
+                ReplicaAction::RefetchArrangement(key) => {
+                    arrangements.insert(key);
+                }
+                _ => {}
             }
         }
-        ReplicaAction::Seeded
+        ReplicaAction::Seeded {
+            filter: seed.filter,
+            arrangements,
+        }
     }
 
     /// The seed was refused or failed: drop it. The replica keeps what it

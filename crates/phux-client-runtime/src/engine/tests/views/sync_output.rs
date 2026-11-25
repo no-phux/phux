@@ -156,12 +156,13 @@ fn synchronized_bootstrap_and_new_view_wait_for_a_complete_frame() {
     attach(&owner, &terminal, b"\x1b[?2026hpartial");
     let view = owner.create_view(&terminal).unwrap();
     assert!(publication.acquire(&terminal).is_none());
-    assert!(publication.acquire_view(view).is_none());
+    assert_eq!(publication.view_generation(view), Some(0));
     apply_ok(
         &owner,
         output(&terminal, 1, b"\x1b[2J\x1b[Hcomplete\x1b[?2026l"),
     );
     assert_eq!(publication.acquire(&terminal).unwrap().text(), "complete");
+    assert_eq!(publication.view_generation(view), Some(1));
     assert_eq!(publication.acquire_view(view).unwrap().text(), "complete");
 }
 

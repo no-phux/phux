@@ -347,6 +347,12 @@ pub(super) fn connect(target: Target) -> Result<Client, String> {
                 prediction_style: PredictionStyle::Plain,
                 // ACP questions arrive as AgentSession views.
                 subscribe_agent_sessions: true,
+                // A native checkpoint encodes Kitty pixels as one history
+                // record. A HiDPI browser frame can exceed the 1 MiB default.
+                bootstrap_limits: phux_protocol::caps::BootstrapLimits::clamped(
+                    phux_protocol::DEFAULT_BOOTSTRAP_CHUNK_BYTES,
+                    phux_protocol::MAX_HISTORY_PAGE_BYTES,
+                ),
                 ..ControlOptions::default()
             },
             ..ClientOptions::default()

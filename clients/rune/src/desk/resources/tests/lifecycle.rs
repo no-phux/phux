@@ -55,6 +55,43 @@ fn replace_records(client: &Client, records: Vec<ResourceRecord>) {
     );
 }
 
+#[test]
+fn an_external_split_appears_beside_the_terminal_that_kept_focus() {
+    let records = mirrors([Terminal, Terminal]);
+    let (client, mut rt) = fixture(&records, &doc(LayoutNode::Leaf(id(1))));
+    assert_eq!(rt.state.on_screen(), [id(1)]);
+    outbound(&client);
+
+    // The resource page knows the existing arrangement's key, not that a
+    // terminal-browser split changed its tree before the page's cut.
+    replace_records(&client, records.to_vec());
+    let request = outbound(&client)
+        .into_iter()
+        .find_map(|frame| match frame {
+            FrameKind::Command {
+                request_id,
+                command: Command::ArrangementGet { arrangement: key },
+            } if key == arrangement() => Some(request_id),
+            _ => None,
+        })
+        .expect("refresh the previously fetched arrangement");
+    let handles = HandleMap::from_pairs(records.iter().map(|r| (r.key, r.live.clone())));
+    let document = to_protocol(&doc(split(1, 2)), &handles, &EntryBinding::default()).unwrap();
+    answer(
+        &client,
+        request,
+        CommandValue::Arrangement(Box::new(ArrangementValue::new(
+            arrangement(),
+            ArrangementOwner::Session(session()),
+            Revision::new(2),
+            document,
+        ))),
+    );
+    step(&mut rt);
+    assert_eq!(rt.state.on_screen(), [id(1), id(2)]);
+    assert_eq!(focus(&rt), id(1));
+}
+
 fn accept_hide(
     client: &Client,
     records: &[ResourceRecord],
