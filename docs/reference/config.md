@@ -97,6 +97,7 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `policy.mode` | unset — `local`, and a configured remote listener, relay connector, or workload authority location refuses to start the server. `local` admits the owner socket only; `paired` requires an enrolled workload certificate on every TLS connection |
 | `policy.tailnet-owner` | `false` |
 | `restore.on-start` | `false` |
+| `restore.scrollback` | `0` |
 | `sidebar.agents-share` | `50` |
 | `sidebar.enabled` | `true` |
 | `sidebar.hosts` | `true` |

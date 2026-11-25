@@ -1,7 +1,7 @@
 use super::{
-    Format, Formatter, GhosttyTerminal, GridRef, Point, PointCoordinate, RENDER_BUDGET_BYTES,
-    RENDERED_FORMAT_HTML, RENDERED_FORMAT_VT, ROW_WINDOW_MAX, RenderedScreen, SCROLLBACK_ALL,
-    Selection, SnapshotSynthesizer, SynthesisError, history_window_start,
+    Extras, Format, Formatter, GhosttyTerminal, GridRef, Point, PointCoordinate,
+    RENDER_BUDGET_BYTES, RENDERED_FORMAT_HTML, RENDERED_FORMAT_VT, ROW_WINDOW_MAX, RenderedScreen,
+    SCROLLBACK_ALL, Screen, Selection, SnapshotSynthesizer, SynthesisError, history_window_start,
 };
 use base64::Engine as _;
 
@@ -71,6 +71,43 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
             format: tag.to_owned(),
             data,
         }))
+    }
+
+    /// The primary screen and up to `lines` history rows as styled text, its
+    /// soft-wrapped rows joined, at most `max_bytes`: the oldest history goes
+    /// first. `None` on the alternate screen.
+    pub(crate) fn kept_text(
+        terminal: &GhosttyTerminal<'alloc, '_>,
+        lines: u32,
+        max_bytes: usize,
+    ) -> Result<Option<Vec<u8>>, SynthesisError> {
+        if terminal.active_screen()? != Screen::Primary {
+            return Ok(None);
+        }
+        let mut want = Some(lines);
+        loop {
+            let selection = Self::render_selection(terminal, want)?;
+            let mut formatter = Formatter::new_with_selection(terminal, &selection)?;
+            formatter
+                .set_format(Format::Vt)?
+                .set_trim(true)?
+                .set_unwrap(true)?
+                .set_extras(Extras::NONE)?;
+            let required = formatter.format_len()?;
+            if required <= max_bytes {
+                return Ok(Some(formatter.format_alloc(None)?.to_vec()));
+            }
+            want = match want {
+                Some(rows) if rows > 1 => Some(rows / 2),
+                Some(_) => None,
+                None => {
+                    return Err(SynthesisError::RenderBudgetExceeded {
+                        required,
+                        budget: max_bytes,
+                    });
+                }
+            };
+        }
     }
 
     /// The selection [`Self::render_screen`] passes: from as far into history

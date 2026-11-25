@@ -48,6 +48,7 @@ pub mod fast_pty;
 mod fd_shrink;
 mod hangup;
 mod io;
+mod keep;
 mod native;
 mod osc_scan;
 #[cfg(target_os = "linux")]
@@ -247,6 +248,8 @@ pub struct TerminalActor {
     icon_owed: Option<osc_scan::IconChange>,
     /// OSC 9 / OSC 777 notifications, for the server to map onto notes.
     program_note_sink: Option<watch::Sender<Option<phux_terminal_api::agent_detect::ProgramNote>>>,
+    /// `[restore] scrollback`; `None` when off.
+    keep: Option<keep::Keep>,
     /// Agent-state detector (ADR-0046), built in [`Self::run`] for PTY-backed
     /// actors with a sink and rules.
     agent_detect: Option<crate::agent_detect::AgentDetector>,

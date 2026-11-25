@@ -109,6 +109,16 @@ and docs, not a quiet rewrite. Retired records are
   command. A relaunch runs only the argv in `[[restore.program]]`, with the
   token as whole arguments and no shell, because any pane writer can set it
   ([program protocol](./program-protocol.md)).
+- Scrollback reaches disk only by opt-in (`[restore] scrollback`), because it
+  holds secrets. The files are owner-only and not encrypted: a key the server
+  can use with nobody present protects little that full-disk encryption does
+  not, so revisit only with platform key stores. They are named by resource
+  key, live beside the organization store that owns those keys (two servers
+  of one profile must not sweep each other's), and end with the record. A
+  file is untrusted input, reduced to text and SGR both ways. Restored lines
+  go to history under a blank screen, so no rule that reads the screen takes
+  them for new output. Alternate screens are never kept
+  ([security](./security.md#kept-scrollback)).
 - One keeper writes each work store, and shared work has one home store.
   Delegated credentials cannot mint ([substrate](./substrate.md)).
 

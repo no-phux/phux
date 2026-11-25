@@ -34,11 +34,33 @@ impl TerminalActorError {
     }
 }
 
+/// Most bytes one saved screen may take (`[restore] scrollback`).
+pub const KEPT_SCROLLBACK_MAX_BYTES: usize = 8 * 1024 * 1024;
+
+/// `[restore] scrollback`: what the host keeps of a Terminal's primary
+/// screen and history. The alternate screen is never reported.
+#[derive(Clone)]
+pub struct KeepScrollback {
+    /// History rows to report beside the screen.
+    pub lines: u32,
+    /// Takes the styled text, at most [`KEPT_SCROLLBACK_MAX_BYTES`], once
+    /// output settles and when the engine stops.
+    pub save: std::rc::Rc<dyn Fn(Vec<u8>)>,
+}
+impl std::fmt::Debug for KeepScrollback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeepScrollback")
+            .field("lines", &self.lines)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Host-provided report bounds and observation. No host state escapes here.
 pub struct EngineReports {
     pub event_capacity: usize,
     pub agent_capacity: usize,
     pub live_session: Option<LiveSessionProbe>,
+    pub keep_scrollback: Option<KeepScrollback>,
 }
 impl std::fmt::Debug for EngineReports {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -48,7 +70,12 @@ impl std::fmt::Debug for EngineReports {
 
 #[derive(Debug)]
 pub enum EngineSource {
-    Fresh(Option<LaunchCommand>),
+    /// `seed` is written to the grid before the command's first output, and
+    /// never reaches its PTY.
+    Fresh {
+        command: Option<LaunchCommand>,
+        seed: Vec<u8>,
+    },
     /// Descriptor ownership follows the existing graceful-upgrade contract.
     Adopt {
         master_fd: std::os::fd::RawFd,

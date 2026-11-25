@@ -1111,6 +1111,30 @@
             "$ref": "#/definitions/RestoreProgram"
           },
           "type": "array"
+        },
+        "scrollback": {
+          "default": 0,
+          "description": "Lines of each pane's output to keep on disk, at most 10000, and show\nabove a divider when the pane starts again after the server stopped.\n`0`, the default, keeps nothing, and deletes what an earlier setting\nkept when the server next starts. The files are readable by you only\nand not encrypted.",
+          "format": "uint32",
+          "maximum": 10000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "scrollback-exclude": {
+          "default": [],
+          "description": "Panes whose output is never kept: each entry is a session's name, a\npane's name (`phux rename`), or the program a pane was started with.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "scrollback-exclude-append": {
+          "default": [],
+          "description": "Panes whose output is never kept: each entry is a session's name, a\npane's name (`phux rename`), or the program a pane was started with.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         }
       },
       "type": "object"
@@ -2111,7 +2135,9 @@
       ],
       "default": {
         "on-start": false,
-        "program": []
+        "program": [],
+        "scrollback": 0,
+        "scrollback-exclude": []
       },
       "description": "`[restore]`: whether a starting server relaunches what the last one\nended."
     },

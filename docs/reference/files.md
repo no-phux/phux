@@ -61,6 +61,7 @@ $XDG_STATE_HOME/<profile-dir>/
 ├── workload-keys       # client keys the server admits
 ├── workload-org-roots/ # each organization's root certificates (owner-only)
 ├── org/                # organization store: sessions, panes, and their records
+│                       # org/v1.scrollback/ keeps `[restore] scrollback` (0700)
 ├── remotes/            # credentials for each `[[remote]]` host
 ├── satellites/         # credentials for each `[[satellites]]` host
 ├── relay-cert.pem, relay-key.pem, relay-tokens  # `phux relay`

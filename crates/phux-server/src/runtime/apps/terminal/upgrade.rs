@@ -437,6 +437,7 @@ fn wired(
 ) -> Result<RebuiltPane<super::commands::PaneWiring>, RebuildError>
 + 'static {
     let engine = state.terminal_engine();
+    let keeper = super::scrollback::keeper(&state);
     move |core, p, scrollback| {
         let source = match (p.master_fd, p.child_pid) {
             (Some(master_fd), Some(child_pid)) => phux_terminal_api::EngineSource::Adopt {
@@ -447,7 +448,11 @@ fn wired(
             (None, None) => phux_terminal_api::EngineSource::Replay(pane_seed(p)),
             _ => return Err(RebuildError::InvalidPtyPair { wire_id: p.wire_id }),
         };
-        let reports = crate::runtime::apps::terminal::commands::spawn::engine_reports(&state, core);
+        let reports = crate::runtime::apps::terminal::commands::spawn::engine_reports(
+            &state,
+            core,
+            keeper.clone(),
+        );
         let engine = engine.as_ref().ok_or_else(|| {
             RebuildError::Actor(Box::new(phux_terminal_api::TerminalActorError::Refused(
                 "no Terminal engine supplied".into(),

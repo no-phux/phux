@@ -145,6 +145,9 @@ impl TerminalActor {
         self.publish_input_snapshot();
         self.terminal_dirty_since_tick = true;
         self.agent_dirty_since_detect = true;
+        if let Some(keep) = &mut self.keep {
+            keep.touch(started);
+        }
         self.source_events();
         self.start_next_native_bootstrap();
         let done = std::time::Instant::now();
