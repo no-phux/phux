@@ -460,7 +460,9 @@ pub(super) fn category_value(category: Category, desk: &Desk) -> String {
         Category::Notifications => Entry::Notifications.value(desk),
         Category::RemoteHosts => desk.machines.label().to_owned(),
         Category::Developer => "Diagnostics".to_owned(),
-        Category::About => crate::updates::VERSION.to_owned(),
+        Category::About => (desk.native.as_ref())
+            .and_then(|native| native.app.clone())
+            .unwrap_or_else(|| crate::updates::VERSION.to_owned()),
     }
 }
 

@@ -169,13 +169,26 @@ pub fn pill(desk: &Desk, p: &Tokens) -> Option<El> {
     })
 }
 
+/// What a person reports: the distributed app's own name and version, when
+/// it has one, and the Rune client inside it.
+fn version(desk: &Desk) -> String {
+    let app = desk
+        .native
+        .as_ref()
+        .and_then(|native| native.app.as_deref());
+    app.map_or_else(
+        || format!("Phux Rune {VERSION}"),
+        |app| format!("{app} (Rune {VERSION})"),
+    )
+}
+
 pub fn settings(desk: &Desk, t: &Tokens) -> El {
     let s = &t.space;
     let dim = t.roles.text.dim.paint();
     if desk.native.is_some() {
         return col().w_full().gap(s.s2)
             .child(section("Updates", t))
-            .child(text(format!("Phux Rune {VERSION}")).font(primary(desk, t)).color(t.roles.text.text.paint()))
+            .child(text(version(desk)).font(primary(desk, t)).color(t.roles.text.text.paint()))
             .child(text("Native iOS builds update through their distribution channel. This app never installs a desktop binary or starts a local server.")
                 .font(secondary(desk, t)).color(dim).wrap());
     }

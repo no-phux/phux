@@ -204,6 +204,7 @@ fn a_native_connection_replacement_keeps_its_host_and_trust() {
         "desk::native_input::tests::a_native_connection_replacement_keeps_its_host_and_trust",
         || {
             let mut state = crate::mobile::state(crate::mobile::Configuration {
+                app: None,
                 endpoint: "quic://localhost:8788".into(),
                 name: None,
                 tls_server_name: None,

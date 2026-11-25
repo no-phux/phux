@@ -30,7 +30,9 @@ final class NativeControls {
         init(button: UIButton) { self.button = button }
     }
 
-    private unowned let host: UIView
+    /// Weak, not unowned: a closing surface removes its controls from its
+    /// own deinit, when every reference to it is already dead.
+    private weak var host: UIView?
     private var controls: [String: Control] = [:]
     /// A tap on the control `id`; true when Rune ran its press.
     var pressed: ((String) -> Void)?
@@ -72,7 +74,7 @@ final class NativeControls {
         // Reordering unchanged controls marks the host for layout, which
         // draws again. Check the real hierarchy so new non-controls still
         // stay beneath the buttons, without perpetuating idle frames.
-        guard !host.subviews.suffix(ordered.count).elementsEqual(ordered, by: { $0 === $1 }) else { return }
+        guard let host, !host.subviews.suffix(ordered.count).elementsEqual(ordered, by: { $0 === $1 }) else { return }
         for button in ordered { host.bringSubviewToFront(button) }
     }
 
@@ -113,7 +115,7 @@ final class NativeControls {
         control.badge.isUserInteractionEnabled = false
         control.badge.isAccessibilityElement = false
         button.addSubview(control.badge)
-        host.addSubview(button)
+        host?.addSubview(button)
         controls[id] = control
         return control
     }

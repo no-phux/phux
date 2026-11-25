@@ -99,6 +99,9 @@ pub const fn notifications_detail(available: bool, macos: bool) -> &'static str 
     match (available, macos) {
         (true, _) => "When an agent asks, finishes, or an action is held, and you're elsewhere.",
         (false, true) => "Needs the installed app; this build can't post.",
+        (false, false) if cfg!(target_os = "ios") => {
+            "This app doesn't post notifications yet. Sessions and Inbox show what needs you."
+        }
         (false, false) => {
             "Needs notify-send (libnotify). The sidebar and inbox show what needs you."
         }
