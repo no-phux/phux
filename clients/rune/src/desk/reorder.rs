@@ -183,23 +183,33 @@ impl Desk {
                 continue;
             }
             let Some(key) = session.key else { continue };
-            let grab = Grab::Session(key);
-            if self.rect_hit(grab, point) {
-                return Some(grab);
-            }
-            if self.sidebar_collapsed.contains(&key) {
-                continue;
-            }
-            let over_row = self.connection.reorder.rects.iter().any(|(row, rect)| {
-                matches!(*row, Grab::Resource(id, owner)
-                    if owner == key && self.resource_in_session(id, key, session.id))
-                    && contains(*rect, point)
-            });
-            if over_row {
-                return Some(grab);
+            if self.sidebar_session_hit(key, session.id, point) {
+                return Some(Grab::Session(key));
             }
         }
         None
+    }
+
+    /// Both a session handle (including an empty/single session) and a live
+    /// resource row name the owning session as a drop destination.
+    fn sidebar_session_hit(&self, key: SessionKey, session_id: u32, point: [f32; 2]) -> bool {
+        if self.rect_hit(Grab::Session(key), point) {
+            return true;
+        }
+        self.connection.reorder.rects.iter().any(|(row, rect)| {
+            contains(*rect, point)
+                && matches!(*row, Grab::Resource(id, owner)
+                if owner == key && self.resource_in_session(id, key, session_id)
+                    && self.sidebar_row_is_drawn(id))
+        })
+    }
+
+    /// Grouping can retire a previously laid-out member row. Its retained
+    /// rectangle must not steal a later drop from a different session.
+    fn sidebar_row_is_drawn(&self, id: u32) -> bool {
+        let resource = ResourceId::local(id);
+        matches!(crate::ui::sidebar_focus_target(self, &resource),
+            Some((lead, _)) if lead == resource)
     }
 
     /// The pane under `point` the resource `id` would join as a slot tab:

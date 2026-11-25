@@ -6,12 +6,12 @@ use super::{Desk, Look, control, row_h};
 use crate::activity::Mark;
 use crate::addressable::Addressable;
 use crate::ui::icons;
-use crate::ui::phone::status_mark;
 use crate::ui::tokens::Paint;
 
 pub(super) fn resource_row(desk: &Desk, resource: &Addressable, p: &Look) -> El {
     let s = &p.space;
     let mark = desk.activities.mark(&resource.id);
+    let presentation = resource.presentation(desk);
     let current = desk
         .connection
         .shown
@@ -32,7 +32,7 @@ pub(super) fn resource_row(desk: &Desk, resource: &Addressable, p: &Look) -> El 
     let (id, session) = (resource.id.clone(), resource.session.clone());
     let label = format!(
         "{} · {} · {detail}{}",
-        resource.label,
+        presentation.name,
         resource.session,
         if current { " · current pane" } else { "" }
     );
@@ -57,13 +57,13 @@ pub(super) fn resource_row(desk: &Desk, resource: &Addressable, p: &Look) -> El 
     .children([
         el().h(p.ty.body.line_px())
             .center()
-            .child(state_mark(mark, p)),
+            .child(crate::ui::tile::tile(&presentation.identity, mark, 1, p.roles.layer.ground.paint(), p)),
         col()
             .grow(1.0)
             .min_w(0.0)
             .gap(s.s1)
             .child(
-                text(resource.label.clone())
+                text(presentation.name)
                     .key(format!("phone-session-pane-title-{}", resource.id))
                     .font(p.ty.body)
                     .color(p.roles.text.text.paint())
@@ -108,32 +108,5 @@ fn resource_detail(desk: &Desk, resource: &Addressable, mark: Mark) -> String {
     if !activity.is_empty() {
         return activity;
     }
-    if !resource.kind.is_terminal() {
-        return resource.mirror.to_owned();
-    }
-    desk.connection
-        .topology
-        .as_ref()
-        .and_then(|t| t.pane(&resource.id))
-        .and_then(|pane| pane.cwd.as_deref())
-        .map(|cwd| {
-            let trimmed = cwd.trim_end_matches('/');
-            trimmed
-                .rsplit('/')
-                .next()
-                .filter(|s| !s.is_empty())
-                .unwrap_or(cwd)
-        })
-        .unwrap_or_default()
-        .to_owned()
-}
-
-/// The terminal's state mark, a plain shell's slot left empty so names
-/// line up. Never animated: a busy agent costs no frames.
-fn state_mark(mark: Mark, p: &Look) -> El {
-    let size = p.icon.grid;
-    el().size(size, size)
-        .center()
-        .children(status_mark(mark, p.icon.size.md, p))
-        .a11y_hidden()
+    resource.presentation(desk).detail
 }

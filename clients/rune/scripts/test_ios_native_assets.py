@@ -99,6 +99,8 @@ class NativeAssetTests(unittest.TestCase):
             self.assertEqual(metadata[-1], build.IOS / "bridge/Cargo.toml")
             self.assertIn("--locked", metadata)
             self.assertIn("phux-rune-ios", run.call_args_list[1].args[0][2])
+            self.assertIn("renderNotices(crates, read, 'Phux Rune') + identityNotices()",
+                          run.call_args_list[1].args[0][2])
             self.assertEqual((app / "THIRD-PARTY-NOTICES.txt").read_text(), "native notices\n")
             self.assertIn("Inter.ttf", fonts)
 

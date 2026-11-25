@@ -34,7 +34,11 @@ pub(super) fn host_header(
         .expanded(open)
         .label(label.to_owned())
         .on_press(press)
-        .child(super::disclosure_mark(open, t))
+        .help(if open {
+            "Hide sessions"
+        } else {
+            "Show sessions"
+        })
         .child(host_color::dot(label, s.s2, t.roles.layer.sidebar.paint()))
         .child(
             text(label.to_owned())
@@ -63,8 +67,7 @@ fn glance_row(host: Option<String>, label: &str, glance: &Glance, dial: bool, t:
         .title_style(t.ty.label)
         .subtitle_color(t.roles.text.dim.paint())
         .detail(terminals)
-        .height(t.space.row_h)
-        .depth(1);
+        .height(t.space.row_h);
     if !dial {
         // Reached only by ssh: nothing to press, so no Tab stop either.
         return row

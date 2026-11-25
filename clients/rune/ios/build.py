@@ -125,11 +125,11 @@ def copy_resources(app, env, out, target):
     reader = json.dumps(str(RUNE / "scripts/notice-texts.ts"))
     script = f"""
 import {{ canonicalLicenses, renderNotices, shippedCrates }} from {renderer};
-import {{ runeNoticeReader }} from {reader};
+import {{ identityNotices, runeNoticeReader }} from {reader};
 const crates = shippedCrates(await Bun.file(process.argv[1]).text());
 if (!crates.some(c => c.name === 'phux-rune-ios')) throw new Error('missing bridge notices');
 const read = runeNoticeReader(crates, canonicalLicenses());
-process.stdout.write(renderNotices(crates, read, 'Phux Rune'));
+process.stdout.write(renderNotices(crates, read, 'Phux Rune') + identityNotices());
 """
     notices = run(["bun", "-e", script, metadata_path], env, out,
                   "third-party-notices", timeout=300, stdout_only=True)

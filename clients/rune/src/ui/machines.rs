@@ -10,7 +10,7 @@ use rune_kit::{Button, ButtonVariant, ControlSize};
 
 use super::settings::{grown, section};
 use super::tokens::{Paint, Tokens};
-use super::{Sheet, icons, pressable};
+use super::{Sheet, pressable};
 use crate::desk::Desk;
 use crate::desk::machines::ssh::Offered;
 use crate::host_color;
@@ -47,11 +47,7 @@ pub fn switch(desk: &Desk, p: &Tokens) -> El {
                 .truncate()
                 .a11y_hidden(),
         )
-        .child(
-            rune::icon(&icons::CHEVRON, t.icon.size.sm)
-                .color(t.roles.text.dim.paint())
-                .a11y_hidden(),
-        )
+        .help("Choose a machine")
 }
 
 /// The least height a row's action takes: its label's line, or on a phone
