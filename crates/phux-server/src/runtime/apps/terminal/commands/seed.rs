@@ -242,13 +242,20 @@ pub(crate) fn spawn_pane_with_pty_and_colors(
     Ok(Some(terminal))
 }
 
-/// The directory a PTY child spawned from `cmd` starts in: the builder's cwd,
-/// else the server's own (which the child inherits).
+/// The directory a PTY child spawned from `cmd` starts in, as the engine
+/// picks it: the builder's cwd, else its home when that is unset or is not a
+/// directory, else the server's own (which the child inherits).
 pub(in crate::runtime) fn spawn_cwd_of(
     cmd: &phux_terminal_api::launch::LaunchCommand,
 ) -> Option<std::path::PathBuf> {
-    cmd.get_cwd()
-        .map(std::path::PathBuf::from)
+    let strict = cmd
+        .get_env(phux_terminal_api::launch::STRICT_CWD_KEY)
+        .is_some();
+    let asked = cmd.get_cwd().map(std::path::PathBuf::from);
+    let home = cmd.get_env("HOME").map(std::path::PathBuf::from);
+    asked
+        .filter(|dir| strict || dir.is_dir())
+        .or_else(|| home.filter(|dir| dir.is_dir()))
         .or_else(|| std::env::current_dir().ok())
 }
 
@@ -273,3 +280,23 @@ pub(crate) const EVENT_SINK_CAPACITY: usize = 64;
 /// Per-pane agent-state sink capacity (ADR-0046). The detector is
 /// edge-filtered and re-derives each tick, so a dropped event is re-published.
 pub(crate) const AGENT_STATE_SINK_CAPACITY: usize = 8;
+
+#[cfg(test)]
+mod tests {
+    use super::spawn_cwd_of;
+    use std::path::PathBuf;
+
+    /// The recorded directory is the one the child runs in: a spawn with no
+    /// usable directory runs in its home, not in the server's directory.
+    #[test]
+    fn a_spawn_with_no_usable_directory_is_recorded_in_its_home() {
+        let home = std::env::temp_dir();
+        let mut cmd = phux_terminal_api::launch::LaunchCommand::new("sh");
+        cmd.env("HOME", &home);
+        assert_eq!(spawn_cwd_of(&cmd), Some(home.clone()));
+        cmd.cwd(home.join("phux-no-such-directory"));
+        assert_eq!(spawn_cwd_of(&cmd), Some(home));
+        cmd.cwd("/");
+        assert_eq!(spawn_cwd_of(&cmd), Some(PathBuf::from("/")));
+    }
+}

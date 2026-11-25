@@ -7754,7 +7754,9 @@ Flags:
                                  resolving the selector again.
       --parent <PANE>            The pane the new one is a child of, folded
                                  under it in lists; `none` for no parent.
-                                 Default: the pane this runs in.
+                                 Default: the pane this runs in. Without
+                                 `--target`, the new pane joins its parent's
+                                 session and starts in its directory.
       --app <NAME>               Run an application in the new pane instead of a
                                  command: launched, mirrored into documents
                                  under the pane, and quit when the pane is

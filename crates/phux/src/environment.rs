@@ -28,6 +28,21 @@ pub(crate) fn own_terminal_id() -> Option<u32> {
     parse_terminal_id(&std::env::var(TERMINAL_ID_ENV).ok()?)
 }
 
+/// [`own_terminal_id`], when that pane is on the server at `socket`: a pane
+/// id means nothing on another server, so one that `PHUX_SOCKET` says this
+/// process does not run on is `None`.
+pub(crate) fn own_terminal_id_on(socket: &std::path::Path) -> Option<u32> {
+    let same = std::env::var_os("PHUX_SOCKET")
+        .filter(|own| !own.is_empty())
+        .is_none_or(|own| same_socket(own.as_ref(), socket));
+    own_terminal_id().filter(|_| same)
+}
+
+/// Whether two socket paths name one socket (`/tmp` is a link on macOS).
+fn same_socket(a: &std::path::Path, b: &std::path::Path) -> bool {
+    a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
+}
+
 fn parse_terminal_id(raw: &str) -> Option<u32> {
     let digits = raw.strip_prefix('@').unwrap_or(raw);
     digits.parse::<u32>().ok().filter(|id| *id != 0)

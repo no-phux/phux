@@ -75,3 +75,29 @@ fn a_spawned_pane_names_its_parent_and_keeps_it_when_the_parent_exits() {
         "closing the parent leaves the child naming it"
     );
 }
+
+/// phux-dsako.5: a spawn from inside a pane joins that pane's session and
+/// starts in its directory, not the session touched last and the home
+/// directory; one that outlives its pane still spawns, where it used to.
+#[test]
+#[ignore = "spawns a real phux server; run via `just e2e`."]
+fn a_spawn_from_a_pane_joins_its_session_and_directory() {
+    let server = common::ServerGuard::builder("child-session")
+        .seed_command("exec sleep 600")
+        .start();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let dir = dir.path().canonicalize().expect("canonical");
+    let cwd = dir.to_str().expect("UTF-8");
+    let sleep = ["--", "sleep", "600"];
+    let new = |args: &[&str]| json(&server, None, &[&["new", "--json"], args, &sleep].concat());
+    let alpha = new(&["-s", "alpha", "-c", cwd])["terminal_id"].to_string();
+    new(&["-s", "beta"]);
+    let show = |pane: &str| json(&server, None, &["resource", "show", pane, "--json"]);
+
+    let child = show(&spawn(&server, Some(&alpha), &[]));
+    assert_eq!(child["session"], "alpha", "{child}");
+    assert_eq!(child["cwd"], cwd, "{child}");
+
+    let outlived = show(&spawn(&server, Some("9999"), &[]));
+    assert_ne!(outlived["session"], "alpha", "{outlived}");
+}
