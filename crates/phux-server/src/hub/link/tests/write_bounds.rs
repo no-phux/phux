@@ -281,6 +281,7 @@ async fn blocked_session(cancel: CancellationToken) -> Blocked {
             conn,
             &mut requests,
             &mut unsubscribes,
+            &mut crate::hub::relay::RelayResume::default(),
             &cancel,
             None,
             &crate::hub::operation_fence::OperationFence::default(),

@@ -160,6 +160,7 @@ pub(super) fn attach(
 mod bootstrap;
 mod capabilities;
 mod commands;
+mod delivery;
 mod events;
 mod kind_profiles;
 mod kinds;
@@ -167,13 +168,16 @@ mod leases;
 mod listings;
 mod mirror;
 mod requests;
+mod resume;
 mod retention;
 mod routing;
 mod snapshots;
 mod stream;
+mod supersede;
 mod withdrawal;
 
 use bootstrap::*;
 use capabilities::*;
 use requests::*;
 use snapshots::*;
+use supersede::*;

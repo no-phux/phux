@@ -80,6 +80,7 @@ use spawn_plan::{
     subscribe_spawning_client, usable_initial_size, validate_local_spawn,
 };
 use spawn_publication::SpawnPublication;
+pub(in crate::runtime) use spawn_publication::past_invalidation;
 pub(crate) use target::*;
 
 #[cfg(test)]

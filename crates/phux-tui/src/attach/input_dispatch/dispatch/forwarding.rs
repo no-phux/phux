@@ -30,6 +30,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             })
             .cloned()
     }
+
     /// Feed a key to predictive echo, peeking the focused grid so arrows can
     /// size the grapheme they cross (ADR-0090).
     pub(super) fn feed_predict(&mut self, ev: &InputEvent) -> bool {
@@ -38,6 +39,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             return false;
         };
         if !self.predict.is_enabled()
+            || self.ctx.typing_held()
             || crate::attach::floating::floating_pane(self.panes).is_some()
         {
             return false;
@@ -109,6 +111,11 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             tracing::debug!("dropping input received before ATTACHED");
             return Ok(false);
         };
+        if self.ctx.typing_held() {
+            tracing::debug!(terminal = ?pane, "dropping input: another pane is opening");
+            let _ = crate::attach::actions::write_bell(self.out);
+            return Ok(false);
+        }
         // ADR-0124: a retained pane's process exited; there is nothing to
         // type into, and the server would refuse it anyway. A held popup
         // failure closes on any key.

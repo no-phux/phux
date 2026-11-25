@@ -34,7 +34,7 @@ use tokio_tungstenite::tungstenite::Message;
 
 mod checkout;
 mod clients;
-use clients::hub_client;
+use clients::{hub_client, spawn_hub};
 mod commands;
 use commands::{focus_gained, on_satellite, report_asked};
 mod conditional_kill;
@@ -53,6 +53,7 @@ mod path_query;
 mod retain_on_exit;
 mod reverse_enrollment;
 mod satellite_spawn;
+mod second_viewer;
 mod service_http;
 
 /// Per-step hang guard (the hub link dials with backoff).
@@ -162,13 +163,6 @@ fn spawn_hub_with_env(
         ..ServerConfig::with_default_socket()
     };
     run_runtime(terminal_server(cfg).hub(satellites))
-}
-
-fn spawn_hub(
-    socket_path: PathBuf,
-    satellites: Vec<SatelliteConfigEntry>,
-) -> (oneshot::Sender<()>, ServerTask) {
-    spawn_hub_with_session(socket_path, satellites, None)
 }
 
 async fn stop(shutdown: oneshot::Sender<()>, task: ServerTask) {

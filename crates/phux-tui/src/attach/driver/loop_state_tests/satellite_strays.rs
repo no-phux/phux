@@ -96,7 +96,7 @@ async fn an_adopted_stray_is_not_killed_on_retry() {
                 901,
                 PendingWindow {
                     name: "edge/build".to_owned(),
-                    adopt: Some(Adopt::Existing(spawned_edge_pane())),
+                    adopt: Some(Adopt::existing(spawned_edge_pane())),
                 },
             );
         }

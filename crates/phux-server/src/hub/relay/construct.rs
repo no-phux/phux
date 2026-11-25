@@ -3,8 +3,8 @@
 #[cfg(test)]
 use super::ServerFeature;
 use super::{
-    BootstrapLimits, BootstrapProfile, BytesMut, HashMap, HashSet, RelaySession,
-    ResourceKindCatalog, SatelliteHost, ServerFeatureExtSet, ServerFeatureSet,
+    Arc, BootstrapLimits, BootstrapProfile, BytesMut, HashMap, HashSet, RelaySession,
+    ResourceKindCatalog, SatelliteHost, ServerFeatureExtSet, ServerFeatureSet, first_generation,
 };
 
 impl RelaySession {
@@ -47,6 +47,7 @@ impl RelaySession {
             explicit_content: HashSet::new(),
             legacy_events: HashSet::new(),
             bootstrap_flows: HashMap::new(),
+            generations: first_generation(),
             retained_bytes: 0,
             retained_frames: 0,
             orphaned_by_delivery: HashSet::new(),
@@ -73,6 +74,11 @@ impl RelaySession {
         self.incarnation = incarnation;
     }
 
+    /// The incarnation this connection's satellite announced.
+    pub(crate) const fn incarnation(&self) -> crate::hub::operation_fence::Incarnation {
+        self.incarnation
+    }
+
     /// Share the link's incarnation fence, which outlives this connection.
     pub(crate) fn set_operation_fence(
         &mut self,
@@ -93,6 +99,7 @@ impl RelaySession {
             catalog.kinds.clear();
             catalog.controls.clear();
             catalog.terminal_profile = Some(self.bootstrap_profile);
+            self.generations = Arc::clone(&catalog.generations);
         }
         self.resource_kinds = Some(resource_kinds);
     }
