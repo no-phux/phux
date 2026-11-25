@@ -170,8 +170,8 @@ pub(crate) fn run(args: RemoteAttach<'_>) -> ExitCode {
     let entry = match resolve(&args.target, args.code, args.bootstrap) {
         Ok(entry) => entry,
         Err(err) => {
-            crate::output::error_block(err.lines());
-            return ExitCode::FAILURE;
+            crate::output::error_block(err.report.lines());
+            return ExitCode::from(err.exit);
         }
     };
     if was_registered {
@@ -256,7 +256,7 @@ fn attach_registered(args: &RemoteAttach<'_>, entry: RemoteEntry) -> ExitCode {
                         "check `ssh {ssh_host}` from this machine, then `phux attach {name}` again; \
                          or, if the server should be up, run `phux doctor` on {name}"
                     );
-                    return ExitCode::FAILURE;
+                    return ExitCode::from(failure.exit_code());
                 }
             }
         }
@@ -278,13 +278,28 @@ fn attach_registered(args: &RemoteAttach<'_>, entry: RemoteEntry) -> ExitCode {
     attach::run_attach_remote(&entry, args.session.clone(), args.rec)
 }
 
+/// Why a target did not resolve, and the exit code that says so.
+pub(crate) struct Unresolved {
+    pub(crate) report: String,
+    pub(crate) exit: u8,
+}
+
+impl From<String> for Unresolved {
+    fn from(report: String) -> Self {
+        Self {
+            report,
+            exit: crate::exit_codes::EXIT_FAILURE,
+        }
+    }
+}
+
 /// Walk the ladder: registered, pasted code, ssh, refuse. Shared with the
 /// headless verbs' `--remote` so a target means one host everywhere.
 pub(crate) fn resolve(
     target: &RemoteTarget,
     code: Option<&str>,
     bootstrap: Bootstrap,
-) -> Result<RemoteEntry, String> {
+) -> Result<RemoteEntry, Unresolved> {
     // Rung 1: already registered. A pasted `--code` still wins, because the
     // operator is holding fresher credentials than the ones on disk — that
     // is what re-pairing after a revoke looks like.
@@ -297,16 +312,21 @@ pub(crate) fn resolve(
 
     // Rung 2: a connect code carries the endpoint, the pin, and the token.
     if let Some(code) = code {
-        return code::register_from_code(target, code);
+        return code::register_from_code(target, code).map_err(Unresolved::from);
     }
 
     // Rung 3: mint credentials over the operator's existing ssh trust.
     if bootstrap == Bootstrap::Never {
-        return Err(unregistered_message(target, None));
+        return Err(unregistered_message(target, None).into());
     }
     // `ssh` takes the typed `user@host` spelling as its destination.
-    register_over_ssh(target, &target.registry_name(), None).map_err(|err| {
-        unregistered_message(target, Some(&format!("{}\n{}", err.message, err.remedy)))
+    register_over_ssh(target, &target.registry_name(), None).map_err(|err| Unresolved {
+        exit: if err.message.starts_with("cannot reach ") {
+            crate::exit_codes::ssh_exit(&err.message)
+        } else {
+            crate::exit_codes::EXIT_FAILURE
+        },
+        report: unregistered_message(target, Some(&format!("{}\n{}", err.message, err.remedy))),
     })
 }
 

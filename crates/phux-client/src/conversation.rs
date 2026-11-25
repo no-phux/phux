@@ -368,10 +368,16 @@ fn check_directory(path: &Path, metadata: &Metadata, private: bool) -> Result<()
 }
 
 fn check_private(path: &Path, metadata: &Metadata) -> Result<(), String> {
-    if metadata.uid() != rustix::process::getuid().as_raw() || metadata.mode() & 0o077 != 0 {
+    if metadata.uid() != rustix::process::getuid().as_raw() {
+        return Err(at(path, "must be owned by this user"));
+    }
+    if metadata.mode() & 0o077 != 0 {
         return Err(at(
             path,
-            "must be owned by this user with owner-only permissions",
+            format_args!(
+                "must be open to this user only; run `chmod go= '{}'`",
+                path.display()
+            ),
         ));
     }
     Ok(())

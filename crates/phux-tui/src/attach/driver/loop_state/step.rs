@@ -3,8 +3,8 @@
 use super::{
     AtomicBool, AttachError, Connection, ESC_FLUSH_IDLE, Ordering, RepaintLevel,
     SYNC_OUTPUT_WATCHDOG, SidebarReservation, Signal, StatusBarPainter, Step,
-    desired_mouse_capture, exit_on_signal, mark_focused_seen, peer_gone, sleep_for_or_pending,
-    sleep_until_or_pending, sync_hover_tracking, sync_mouse_capture, update_which_key_deadline,
+    desired_mouse_capture, exit_on_signal, mark_focused_seen, peer_gone, sleep_until_or_pending,
+    sync_hover_tracking, sync_mouse_capture, update_which_key_deadline,
 };
 use crate::attach::driver::terminal::{outer_title, sync_outer_title};
 
@@ -173,13 +173,7 @@ impl super::SessionLoop {
         let flush_sleep = sleep_until_or_pending(self.esc_deadline);
         self.arm_which_key();
         let which_key_sleep = sleep_until_or_pending(self.which_key_deadline);
-        // Status-bar repaint cadence; never fires for a bar with no polling widget.
-        let status_tick = sleep_for_or_pending(
-            self.settings
-                .status_bar
-                .as_ref()
-                .and_then(StatusBarPainter::min_poll_interval),
-        );
+        let status_tick = sleep_until_or_pending(self.arm_status_tick());
         // The pacer's settle deadline, armed only while a paint is owed, or
         // a held switch's deadline: the release after this step paints it.
         let paint_sleep = sleep_until_or_pending(
@@ -199,6 +193,13 @@ impl super::SessionLoop {
 
         tokio::select! {
             biased;
+
+            // First, so frames that are always ready cannot starve it.
+            () = status_tick => {
+                self.status_tick_at = None;
+                self.on_status_tick(out, sidebar);
+                Ok(Step::Continue)
+            }
 
             n = self.stdin.read(&mut self.stdin_buf) => self.on_stdin_timed(conn, out, sidebar, n).await,
 
@@ -236,12 +237,6 @@ impl super::SessionLoop {
 
             // SIGWINCH.
             _ = self.sigwinch.recv() => self.on_sigwinch(conn, out, sidebar).await,
-
-            // Periodic status-bar repaint.
-            () = status_tick => {
-                self.on_status_tick(out, sidebar);
-                Ok(Step::Continue)
-            }
 
             // Check the kernel's deadlines; ask which grey satellite panes can
             // be reattached.
@@ -338,6 +333,22 @@ impl super::SessionLoop {
             tokio::time::Instant::now(),
             self.settings.which_key.delay,
         );
+    }
+
+    /// The status-bar repaint cadence, kept across iterations: a pane that
+    /// outputs faster than it would otherwise put the tick off forever. `None`
+    /// for a bar with no polling widget.
+    fn arm_status_tick(&mut self) -> Option<tokio::time::Instant> {
+        let interval = self
+            .settings
+            .status_bar
+            .as_ref()
+            .and_then(StatusBarPainter::min_poll_interval)?;
+        Some(
+            *self
+                .status_tick_at
+                .get_or_insert_with(|| tokio::time::Instant::now() + interval),
+        )
     }
 
     /// The sooner of the satellite probe and the kernel's next deadline: a

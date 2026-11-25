@@ -15,6 +15,7 @@ mod checklist_e2e;
 mod document_upgrade_e2e;
 mod empty_session_e2e;
 mod failure_ux_e2e;
+mod forward_e2e;
 mod hermetic;
 mod host_add_e2e;
 mod idle_exit_e2e;

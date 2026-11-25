@@ -349,10 +349,17 @@ fn run_cli() -> ExitCode {
         return code;
     }
 
+    let timeout = std::env::var(environment::TIMEOUT_ENV).ok();
+    let timeout = match environment::deadline_from(timeout.as_deref()) {
+        Ok(timeout) => timeout,
+        // A server makes none of these exchanges; a typo must not stop it.
+        Err(_) if matches!(cli.command, Some(Command::Server(_))) => {
+            Some(environment::DEFAULT_TIMEOUT)
+        }
+        Err(err) => return emit_usage_error(err),
+    };
     let _log_guard: Option<phux_server::telemetry::WorkerGuard> = init_tracing(&cli);
-    phux_client::attach::connection::install_deadline(environment::deadline_from(
-        std::env::var(environment::TIMEOUT_ENV).ok().as_deref(),
-    ));
+    phux_client::attach::connection::install_deadline(timeout);
 
     let Cli {
         rec: root_rec,

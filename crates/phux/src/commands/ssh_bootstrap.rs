@@ -22,6 +22,7 @@ use phux_protocol::{PROTOCOL_VERSION, Version};
 use super::attach;
 use super::enroll::{authority, login, ssh_hostname, ssh_program};
 use super::rec::RecordSpec;
+use crate::exit_codes::{EXIT_FAILURE, ssh_exit};
 
 mod quic_probe;
 use quic_probe::probe;
@@ -64,7 +65,7 @@ struct Report {
 enum Failure {
     /// ssh itself cannot reach the host, or there is no phux there: the
     /// `ssh -t` fallback would fail the same way, so report and stop.
-    Fatal(String),
+    Fatal(String, u8),
     /// The host is reachable but cannot bootstrap: fall back to `ssh -t`.
     Fallback(String),
 }
@@ -104,9 +105,9 @@ pub(crate) fn run(args: SshAttach<'_>) -> ExitCode {
     info!("bootstrapping {} over ssh…", args.destination);
     let report = match bootstrap(&args) {
         Ok(report) => report,
-        Err(Failure::Fatal(message)) => {
+        Err(Failure::Fatal(message, code)) => {
             error!("{message}");
-            return ExitCode::FAILURE;
+            return ExitCode::from(code);
         }
         Err(Failure::Fallback(message)) => return fall_back(&args, &message),
     };
@@ -219,10 +220,10 @@ fn bootstrap(args: &SshAttach<'_>) -> Result<Report, Failure> {
     let mut retry = 0;
     let (output, stderr) = loop {
         let (output, stderr) = bootstrap_once(&program, args, false).map_err(|err| {
-            Failure::Fatal(format!(
-                "could not run {}: {err}",
-                program.to_string_lossy()
-            ))
+            Failure::Fatal(
+                format!("could not run {}: {err}", program.to_string_lossy()),
+                EXIT_FAILURE,
+            )
         })?;
         let dropped = output.status.code() == Some(SSH_FAILED)
             && phux_client_runtime::connection::ssh_retry_login(&stderr);
@@ -241,24 +242,27 @@ fn bootstrap(args: &SshAttach<'_>) -> Result<Report, Failure> {
         && let Some(hint) =
             phux_client_runtime::connection::ssh_failure_hint(&stderr, &args.destination)
     {
-        return Err(Failure::Fatal(format!(
-            "ssh to {} failed (see above): {hint}",
-            args.destination
-        )));
+        return Err(Failure::Fatal(
+            format!("ssh to {} failed (see above): {hint}", args.destination),
+            ssh_exit(&stderr),
+        ));
     }
     match output.status.code() {
         Some(0) => {}
         Some(SSH_FAILED) => {
-            return Err(Failure::Fatal(format!(
-                "ssh to {} failed (see above)",
-                args.destination
-            )));
+            return Err(Failure::Fatal(
+                format!("ssh to {} failed (see above)", args.destination),
+                ssh_exit(&stderr),
+            ));
         }
         Some(COMMAND_NOT_FOUND) => {
-            return Err(Failure::Fatal(format!(
-                "`{}` was not found on {}; install phux there, or name it with --remote-phux PATH",
-                args.remote_phux, args.destination
-            )));
+            return Err(Failure::Fatal(
+                format!(
+                    "`{}` was not found on {}; install phux there, or name it with --remote-phux PATH",
+                    args.remote_phux, args.destination
+                ),
+                EXIT_FAILURE,
+            ));
         }
         code => {
             let status = code.map_or_else(|| "a signal".to_owned(), |code| format!("exit {code}"));

@@ -4,10 +4,9 @@
 //!   protocol/PTY bytes), plus a non-blocking tee to `PHUX_LOG` when set,
 //!   plus `tokio-console` when built for it. The returned [`WorkerGuard`]
 //!   must live for the process.
-//! * [`init_client`]: TUI. Never stderr (the alt screen owns it); a
-//!   synchronous file writer at `PHUX_LOG` or a per-pid default, because
-//!   the client exits via `std::process::exit` and would lose a buffered
-//!   tail.
+//! * [`init_client`]: TUI. Never stderr (the alt screen owns it); a file
+//!   at `PHUX_LOG` or a per-pid default, written synchronously
+//!   (`std::process::exit` would lose a buffered tail).
 //!
 //! `RUST_LOG` filters (default `phux=info,warn`); `PHUX_LOG_FORMAT` picks
 //! `text` or `json`. Both layers report span-close timing. Call either at
@@ -17,7 +16,7 @@
 use std::path::{Path, PathBuf};
 
 pub use phux_config::instance::server_log_path;
-/// Re-exported so binaries can hold the guard without depending on
+/// Re-exported so binaries can hold it without depending on
 /// `tracing-appender`; dropping it stops the non-blocking writer.
 pub use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::Layer;
@@ -27,8 +26,9 @@ use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt as _;
 use tracing_subscriber::{EnvFilter, fmt};
 
-/// Default filter when `RUST_LOG` is unset.
+/// Default filters, `RUST_LOG` unset; stderr has no dialing.
 const DEFAULT_FILTER: &str = "phux=info,warn";
+const STDERR_FILTER: &str = "phux=info,phux_client_runtime=warn,warn";
 
 /// Explicit log file path: a server tee, or the client's file instead of
 /// the per-pid default.
@@ -58,8 +58,8 @@ impl LogFormat {
 }
 
 /// Build the env filter from `RUST_LOG`, falling back to [`DEFAULT_FILTER`].
-fn env_filter() -> EnvFilter {
-    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_FILTER))
+fn env_filter(default: &str) -> EnvFilter {
+    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default))
 }
 
 /// A fmt layer over `writer` in `format`, with span-close timing.
@@ -241,10 +241,9 @@ pub fn state_dir() -> PathBuf {
 /// Install the subscriber for a server or one-shot CLI process, before the
 /// runtime is built.
 ///
-/// Logs to stderr, and also to `PHUX_LOG` when set (hold the returned
-/// [`WorkerGuard`] for the process). Installs no panic hook: daemons call
-/// [`install_server_panic_hook`] themselves, so a CLI panic is never
-/// reported as a server panic.
+/// Logs to stderr, and to `PHUX_LOG` when set (hold the
+/// returned [`WorkerGuard`]). Installs no panic hook: daemons call
+/// [`install_server_panic_hook`] themselves.
 ///
 /// # Errors
 ///
@@ -252,7 +251,7 @@ pub fn state_dir() -> PathBuf {
 pub fn init() -> Result<Option<WorkerGuard>, Box<dyn std::error::Error + Send + Sync>> {
     let format = LogFormat::from_env();
 
-    // Always-on stderr layer: ANSI only for an interactive operator. An
+    // Always-on stderr layer, ANSI only for an operator. An
     // auto-spawned or supervised server's stderr is the server log file.
     let ansi = std::io::IsTerminal::is_terminal(&std::io::stderr());
     let stderr_layer = fmt_layer(format, std::io::stderr as fn() -> std::io::Stderr, ansi);
@@ -268,7 +267,7 @@ pub fn init() -> Result<Option<WorkerGuard>, Box<dyn std::error::Error + Send + 
     };
 
     let registry = tracing_subscriber::registry()
-        .with(env_filter())
+        .with(env_filter(STDERR_FILTER))
         .with(stderr_layer)
         .with(file_layer);
 
@@ -309,7 +308,7 @@ pub fn init_client() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let file_layer = fmt_layer(format, appender(&path)?, false);
 
     tracing_subscriber::registry()
-        .with(env_filter())
+        .with(env_filter(DEFAULT_FILTER))
         .with(file_layer)
         .try_init()?;
 

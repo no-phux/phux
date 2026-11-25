@@ -131,9 +131,9 @@ fn resolve_remote(
 ) -> Result<RemoteServer, Refusal> {
     let target = remote_target::parse_target(raw)
         .map_err(|err| Refusal::new(codes::REMOTE_UNRESOLVED, err, "", 2))?;
-    let entry = remote_target::resolve(&target, None, bootstrap).map_err(|report| {
-        Refusal::from_error(ladder_refusal_error(&report), 1)
-            .with_human(report.lines().map(str::to_owned).collect())
+    let entry = remote_target::resolve(&target, None, bootstrap).map_err(|err| {
+        Refusal::from_error(ladder_refusal_error(&err.report), err.exit)
+            .with_human(err.report.lines().map(str::to_owned).collect())
     })?;
     plan_entry_inner(rt, &entry, verb, warn_renewal).map_err(|err| Refusal::from_error(err, 1))
 }

@@ -205,7 +205,9 @@ fn rejects_symlinks_and_unsafe_permissions_without_following() {
     ] {
         let permissions = fs::metadata(target).unwrap().permissions();
         fs::set_permissions(target, fs::Permissions::from_mode(0o777)).unwrap();
-        assert!(load_at(&state, "buddy").is_err(), "{}", target.display());
+        let refused = load_at(&state, "buddy").unwrap_err();
+        let remedy = format!("chmod go= '{}'", target.display());
+        assert!(refused.contains(&remedy), "{refused}");
         fs::set_permissions(target, permissions).unwrap();
     }
     let chats = state.join("chats");

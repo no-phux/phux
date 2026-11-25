@@ -149,6 +149,9 @@ impl ChatTarget {
 }
 
 pub(crate) fn run(args: ChatArgs, socket: Option<PathBuf>) -> ExitCode {
+    // An older phux made it 0755, which conversations refuse; a refusal below
+    // reports what this could not repair.
+    let _ = phux_server::owner_dir::tighten(&phux_config::instance::state_dir());
     match args.action {
         ChatAction::Invite {
             name,
