@@ -83,12 +83,16 @@ fn launch(
 
 /// An execution failure settles only the effect that failed. A newer
 /// activation, or a failure already reported by the engine, is untouched.
-fn fail_launch(
+pub(super) fn fail_launch(
     state: &SharedState,
     resource: phux_core::ResourceKey,
     activation: phux_core::ActivationId,
 ) {
     state.with_mut(|s| {
+        // A stop cut the launch off: the next start reconciles it.
+        if s.shutting_down() {
+            return;
+        }
         let still_starting = s
             .org()
             .resource(&resource)

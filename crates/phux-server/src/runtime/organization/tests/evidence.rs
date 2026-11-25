@@ -19,6 +19,34 @@ fn missing_exit_evidence_never_becomes_zero_in_inventory() {
         activation.outcome,
         Some(phux_protocol::wire::frame::Outcome::Unobserved)
     );
+    assert!(!activation.launch_interrupted, "a real failure");
+    assert!(!exact.resources[0].ended_by_restart());
+}
+
+#[test]
+fn a_launch_a_stop_cut_off_is_restorable_and_a_failed_one_is_not() {
+    let state = SharedState::new();
+    let (session, id) = state.with_mut(|s| s.seed_session("cut-off"));
+    let (key, activation) = state.with(|s| {
+        let record = s.registry().record(id).unwrap();
+        (record.key, record.activation.as_ref().unwrap().id)
+    });
+    // Shutdown starts while the launch is in flight; its late failure is the
+    // stop's doing and must not be recorded as the program's.
+    state.with_mut(ServerState::begin_shutdown);
+    super::effects::fail_launch(&state, key, activation);
+    state.with_mut(|s| {
+        assert_eq!(
+            s.reconcile_with(None, |_| panic!("must not probe"))
+                .never_launched,
+            1
+        );
+    });
+    let session =
+        state.with(|s| ow::session_key(s.registry().session_key(session).unwrap()).unwrap());
+    let record = &page(&state, OrgFilter::Session(session)).resources[0];
+    assert_eq!(record.activation.unwrap().state, ExecState::Failed);
+    assert!(record.ended_by_restart());
 }
 
 #[test]
