@@ -33,9 +33,14 @@ fn shell_quote(word: &str) -> String {
 }
 
 /// Start the server if it is not running, then bridge to its socket.
+///
+/// The shell ssh starts reads no interactive profile, where the installer
+/// puts phux on `PATH`, so the places it installs to are searched last
+/// (`scripts/install.sh`: its default directory, then those `has_cli` knows).
+/// `sh` runs it whatever the login shell is; the program is its `$0`.
 fn remote_command(remote_phux: &str) -> String {
-    let phux = shell_quote(remote_phux);
-    format!("{phux} server --ensure >/dev/null 2>&1; exec {phux} stdio-bridge")
+    const BRIDGE: &str = r#"sh -c 'PATH="$PATH:${PHUX_INSTALL_DIR:-$HOME/.local/bin}:$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin"; export PATH; "$0" server --ensure >/dev/null 2>&1; exec "$0" stdio-bridge'"#;
+    format!("{BRIDGE} {}", shell_quote(remote_phux))
 }
 
 /// `-o` options that make an ssh run a client of phux's own master
@@ -264,16 +269,47 @@ mod tests {
         let command = command("me@box", "/opt/my phux/phux", None).expect("valid");
         let args: Vec<_> = command.as_std().get_args().map(OsString::from).collect();
         let tail: Vec<_> = args.iter().rev().take(3).rev().cloned().collect();
-        assert_eq!(
-            tail,
-            [
-                "--",
-                "me@box",
-                "'/opt/my phux/phux' server --ensure >/dev/null 2>&1; \
-                 exec '/opt/my phux/phux' stdio-bridge"
-            ]
-            .map(OsString::from)
-        );
+        assert_eq!(tail[..2], ["--", "me@box"].map(OsString::from));
+        let far = tail[2].to_str().expect("utf-8");
+        assert!(far.ends_with(" '/opt/my phux/phux'"), "{far}");
+    }
+
+    /// The far shell runs the command line for real: a login that set no
+    /// `PATH` for phux finds where the installer put it, one whose `PATH`
+    /// has a phux keeps it, and a path with a quote in it stays one word.
+    #[cfg(unix)]
+    #[test]
+    fn the_far_shell_finds_the_installed_phux_after_its_own_path() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let install = |dir: &str| {
+            let dir = root.path().join(dir);
+            std::fs::create_dir_all(&dir).expect("dir");
+            let phux = dir.join("phux");
+            std::fs::write(&phux, "#!/bin/sh\necho \"$0 $*\"\n").expect("write");
+            std::fs::set_permissions(&phux, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+            phux
+        };
+        let installed = install("home/.local/bin");
+        let chosen = install("it's/a dir");
+        let own = install("bin");
+        let run = |remote_phux: &str, path: &str| {
+            let out = std::process::Command::new("/bin/sh")
+                .args(["-c", &remote_command(remote_phux)])
+                .env_clear()
+                .env("HOME", root.path().join("home"))
+                .env("PATH", path)
+                .output()
+                .expect("sh");
+            String::from_utf8(out.stdout).expect("utf-8")
+        };
+        let bridged = |phux: &Path| format!("{} stdio-bridge\n", phux.display());
+        assert_eq!(run("phux", "/usr/bin:/bin"), bridged(&installed));
+        let path = format!("{}:/usr/bin:/bin", root.path().join("bin").display());
+        assert_eq!(run("phux", &path), bridged(&own));
+        let chosen_path = chosen.to_str().expect("utf-8");
+        assert_eq!(run(chosen_path, "/usr/bin:/bin"), bridged(&chosen));
     }
 
     /// Command-line options beat the user's ssh config, so these hold

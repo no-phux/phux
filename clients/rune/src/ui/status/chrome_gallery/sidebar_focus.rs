@@ -36,6 +36,7 @@ fn previous(rt: &mut Runtime<Desk>) {
 fn split_window(size: (u16, u16), dark: bool, mode: &str) -> Runtime<Desk> {
     let mut rt = window(dark);
     rt.on_key = Some(Desk::key);
+    rt.poll = Some(|d, _, tx| d.return_keyboard(tx));
     rt.set_system_reduced_motion(true);
     rt.set_viewport((f32::from(size.0), f32::from(size.1)), scale());
     rt.update(|d, _| {

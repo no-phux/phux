@@ -6,7 +6,7 @@ use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::DetachReason;
 use rune::Tx;
 
-use super::{Desk, NoticeKind, layout};
+use super::{Desk, NoticeKind};
 
 mod receipts;
 pub(super) use receipts::Receipts;
@@ -291,8 +291,9 @@ impl Desk {
     fn resource_closed(&mut self, client: &Client, id: &ResourceId, exit: Option<i32>) -> bool {
         let producer = self.producer_ended(id, exit);
         let document = self.forget_document(client, id);
-        let pending_phone = self.phone.is_some()
-            && self.connection.shown.is_none()
+        self.connection.tabs.recent.retain(|left| left != id);
+        // The next of a closing tab, asked for a moment ago.
+        let pending = self.connection.shown.is_none()
             && self
                 .connection
                 .wanted
@@ -303,20 +304,18 @@ impl Desk {
             .shown
             .as_ref()
             .is_some_and(|s| &s.resource == id)
-            || pending_phone
+            || pending
         {
-            let next = self
-                .connection
-                .layout
-                .as_ref()
-                .filter(|_| self.phone.is_none())
-                .and_then(|tree| layout::neighbour(tree, id));
-            self.close_shown(client, std::slice::from_ref(id));
+            let closed = std::slice::from_ref(id);
+            let next = self.after_closing(closed);
+            self.close_shown(client, closed);
+            self.drop_leaf(id);
             if let Some(next) = next {
                 self.want_automatic(next);
             }
             return true;
         }
+        self.drop_leaf(id);
         let other = self.connection.others.remove(id);
         if let Some(view) = other.flatten() {
             let _ = client.destroy_view(view);

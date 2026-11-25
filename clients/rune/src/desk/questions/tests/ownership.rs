@@ -203,4 +203,9 @@ fn widget_roles_and_opaque_components_are_unambiguous_slash_free_segments() {
         keys.iter().collect::<std::collections::HashSet<_>>().len()
     );
     assert!(owner.form_key("x").starts_with("acp-form-"));
+    // Focus on a text field survives a click; on no other widget does it.
+    let fields: Vec<_> = widgets.map(|w| is_field_key(&owner.widget(w))).into();
+    let want: Vec<_> = widgets.map(|w| matches!(w, Widget::Field(_))).into();
+    assert_eq!(fields, want);
+    assert!(is_field_key(&owner.field_key("-a-")) && !is_field_key("pane-host-@1"));
 }

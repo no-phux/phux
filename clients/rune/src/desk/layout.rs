@@ -172,6 +172,18 @@ impl Desk {
         changed
     }
 
+    /// Take a closed pane out of what is on screen ahead of the refresh, so
+    /// another close in the same batch does not go back to it.
+    pub(super) fn drop_leaf(&mut self, id: &ResourceId) {
+        if self.phone.is_some() {
+            return;
+        }
+        let tree = self.connection.layout.as_ref();
+        if let Some(Ok(left)) = tree.map(|tree| kill_pane(tree, id)) {
+            self.connection.layout = left;
+        }
+    }
+
     /// Show each slot's tab this window chose, the keyboard's above all, and
     /// keep the slots for sizing and badging their tabs.
     fn choose_slot_tabs(&mut self, doc: &mut ArrangementDoc, shown: &ResourceId) {
@@ -350,14 +362,13 @@ fn prune(tree: LayoutNode, listed: &[ResourceId], keep: &ResourceId) -> Option<L
         .try_fold(tree, |tree, gone| kill_pane(&tree, &gone).ok().flatten())
 }
 
-/// The pane that takes the keyboard when `closed` goes: the leaf before it in
-/// reading order, else the one after.
-pub fn neighbour(tree: &LayoutNode, closed: &ResourceId) -> Option<ResourceId> {
+/// The pane beside `closed`: the leaf before it in reading order, else the
+/// next one that stays.
+pub fn neighbour(tree: &LayoutNode, closed: &[ResourceId]) -> Option<ResourceId> {
     let all = leaves(tree);
-    let at = all.iter().position(|id| id == closed)?;
-    at.checked_sub(1)
-        .and_then(|i| all.get(i))
-        .or_else(|| all.get(at + 1))
+    let at = all.iter().position(|id| closed.contains(id))?;
+    (all[..at].last())
+        .or_else(|| all[at..].iter().find(|id| !closed.contains(id)))
         .cloned()
 }
 
@@ -419,14 +430,14 @@ mod tests {
             split(SplitDir::Vertical, 0.5, leaf(2), leaf(3)),
         );
         assert_eq!(
-            neighbour(&tree, &ResourceId::local(3)),
+            neighbour(&tree, &[ResourceId::local(3)]),
             Some(ResourceId::local(2))
         );
         assert_eq!(
-            neighbour(&tree, &ResourceId::local(1)),
+            neighbour(&tree, &[ResourceId::local(1)]),
             Some(ResourceId::local(2))
         );
-        assert_eq!(neighbour(&leaf(1), &ResourceId::local(1)), None);
+        assert_eq!(neighbour(&leaf(1), &[ResourceId::local(1)]), None);
     }
 
     #[test]

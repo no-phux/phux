@@ -28,7 +28,7 @@ fn sidebar_focus_reaches_grouped_row_and_inbox_without_changing_panes() {
             let sidebar_preference = rt.state.sidebar_open;
             let shown = rt.state.connection.shown.as_ref().unwrap().resource.clone();
             let layout = rt.state.connection.layout.clone();
-            let remembered = rt.state.connection.tabs.last_pane.clone();
+            let remembered = rt.state.connection.tabs.recent.clone();
             let tab_ids: Vec<_> = rt.state.connection.tabs.list.iter().map(|t| t.id).collect();
             let other = SessionKey::new([2; 16]).unwrap();
             rt.update(|d, _| {
@@ -50,7 +50,7 @@ fn sidebar_focus_reaches_grouped_row_and_inbox_without_changing_panes() {
             );
             assert_eq!(rt.state.connection.shown.as_ref().unwrap().resource, shown);
             assert_eq!(rt.state.connection.layout, layout);
-            assert_eq!(rt.state.connection.tabs.last_pane, remembered);
+            assert_eq!(rt.state.connection.tabs.recent, remembered);
             assert_eq!(
                 rt.state
                     .connection
@@ -71,6 +71,23 @@ fn sidebar_focus_reaches_grouped_row_and_inbox_without_changing_panes() {
             assert!(rt.state.inbox.open);
             no_terminal_input(&rt);
         }
+    }
+}
+
+#[test]
+fn the_palettes_sidebar_focus_outlives_the_palette() {
+    for closed in [false, true] {
+        let mut rt = split_window((1100, 720), true, "normal");
+        rt.update(|d, _| d.sidebar_open = !closed);
+        rt.frame(3.0);
+        rt.update(|d, _| d.toggle_palette());
+        server::settle(&mut rt);
+        let action = crate::palette::Target::Action(crate::keys::Shortcut::FocusSidebar);
+        rt.update(|d, tx| d.palette_run_target(action, tx));
+        server::settle(&mut rt);
+        assert!(!rt.state.palette_open);
+        let row = crate::ui::element(&rt, &format!("pane-{}", ResourceId::local(2)));
+        assert!(row.focused && row.focus_visible, "closed={closed}: {row:?}");
     }
 }
 

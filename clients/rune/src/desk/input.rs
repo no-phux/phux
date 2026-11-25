@@ -12,6 +12,7 @@ use super::{Desk, NoticeKind, Pending};
 use crate::keys::{self, Shortcut, Typed};
 
 mod echo;
+pub(super) mod focus;
 mod modal;
 pub(super) mod selection;
 mod shortcuts;

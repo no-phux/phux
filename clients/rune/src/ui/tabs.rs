@@ -108,11 +108,7 @@ fn trailing(index: usize, tab: &Tab, width: f32, t: &Tokens) -> Option<El> {
         .variant(rune_kit::IconButtonVariant::Ghost)
         .control_size(rune_kit::ControlSize::Small)
         .label("Close tab")
-        .on_press(move |d: &mut Desk| {
-            // The question a busy tab asks is about the tab on screen.
-            d.select_tab(index);
-            d.close_tab(index);
-        })
+        .on_press(move |d: &mut Desk| d.close_tab(index))
         .build(&t.kit)
         .key(format!("tab-close-{index}"))
         .max_w(slot)
